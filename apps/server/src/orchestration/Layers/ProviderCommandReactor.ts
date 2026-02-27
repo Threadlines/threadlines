@@ -267,9 +267,11 @@ const make = Effect.gen(function* () {
       ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
       ...(event.payload.model !== undefined ? { model: event.payload.model } : {}),
       ...(event.payload.effort !== undefined ? { effort: event.payload.effort } : {}),
+      ...(event.payload.approvalPolicy !== undefined
+        ? { approvalPolicy: event.payload.approvalPolicy }
+        : {}),
+      ...(event.payload.sandboxMode !== undefined ? { sandboxMode: event.payload.sandboxMode } : {}),
       createdAt: event.payload.createdAt,
-      approvalPolicy: event.payload.approvalPolicy,
-      sandboxMode: event.payload.sandboxMode,
     });
   });
 
