@@ -142,8 +142,8 @@ export const OrchestrationSession = Schema.Struct({
   providerName: Schema.NullOr(TrimmedNonEmptyString),
   providerSessionId: Schema.NullOr(ProviderSessionId),
   providerThreadId: Schema.NullOr(ProviderThreadId),
-  approvalPolicy: Schema.optional(ProviderApprovalPolicy),
-  sandboxMode: Schema.optional(ProviderSandboxMode),
+  approvalPolicy: ProviderApprovalPolicy,
+  sandboxMode: ProviderSandboxMode,
   activeTurnId: Schema.NullOr(TurnId),
   lastError: Schema.NullOr(TrimmedNonEmptyString),
   updatedAt: IsoDateTime,
@@ -284,8 +284,8 @@ export const ThreadTurnStartCommand = Schema.Struct({
   model: Schema.optional(TrimmedNonEmptyString),
   effort: Schema.optional(TrimmedNonEmptyString),
   assistantDeliveryMode: Schema.optional(AssistantDeliveryMode),
-  approvalPolicy: Schema.optional(ProviderApprovalPolicy),
-  sandboxMode: Schema.optional(ProviderSandboxMode),
+  approvalPolicy: ProviderApprovalPolicy,
+  sandboxMode: ProviderSandboxMode,
   createdAt: IsoDateTime,
 });
 
@@ -500,8 +500,8 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
   model: Schema.optional(TrimmedNonEmptyString),
   effort: Schema.optional(TrimmedNonEmptyString),
   assistantDeliveryMode: Schema.optional(AssistantDeliveryMode),
-  approvalPolicy: Schema.optional(ProviderApprovalPolicy),
-  sandboxMode: Schema.optional(ProviderSandboxMode),
+  approvalPolicy: ProviderApprovalPolicy,
+  sandboxMode: ProviderSandboxMode,
   createdAt: IsoDateTime,
 });
 

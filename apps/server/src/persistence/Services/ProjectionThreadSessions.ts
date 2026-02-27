@@ -9,6 +9,8 @@
 import {
   IsoDateTime,
   OrchestrationSessionStatus,
+  ProviderApprovalPolicy,
+  ProviderSandboxMode,
   ProviderSessionId,
   ProviderThreadId,
   ThreadId,
@@ -25,6 +27,8 @@ export const ProjectionThreadSession = Schema.Struct({
   providerName: Schema.NullOr(Schema.String),
   providerSessionId: Schema.NullOr(ProviderSessionId),
   providerThreadId: Schema.NullOr(ProviderThreadId),
+  approvalPolicy: ProviderApprovalPolicy,
+  sandboxMode: ProviderSandboxMode,
   activeTurnId: Schema.NullOr(TurnId),
   lastError: Schema.NullOr(Schema.String),
   updatedAt: IsoDateTime,

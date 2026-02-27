@@ -164,6 +164,8 @@ describe("ProviderRuntimeIngestion", () => {
           providerName: "codex",
           providerSessionId: asSessionId("sess-1"),
           providerThreadId: ProviderThreadId.makeUnsafe("provider-thread-1"),
+          approvalPolicy: "on-request",
+          sandboxMode: "workspace-write",
           activeTurnId: null,
           updatedAt: createdAt,
           lastError: null,
@@ -332,6 +334,8 @@ describe("ProviderRuntimeIngestion", () => {
           attachments: [],
         },
         assistantDeliveryMode: "streaming",
+        approvalPolicy: "on-request",
+        sandboxMode: "workspace-write",
         createdAt: now,
       }),
     );

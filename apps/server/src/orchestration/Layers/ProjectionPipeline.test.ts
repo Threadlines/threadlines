@@ -794,6 +794,8 @@ it.effect("restores pending turn-start metadata across projection pipeline resta
         payload: {
           threadId,
           messageId,
+          approvalPolicy: "on-request",
+          sandboxMode: "workspace-write",
           createdAt: turnStartedAt,
         },
       });
@@ -827,6 +829,8 @@ it.effect("restores pending turn-start metadata across projection pipeline resta
             providerName: "codex",
             providerSessionId: ProviderSessionId.makeUnsafe("provider-session-restart"),
             providerThreadId: ProviderThreadId.makeUnsafe("provider-thread-restart"),
+            approvalPolicy: "on-request",
+            sandboxMode: "workspace-write",
             activeTurnId: turnId,
             lastError: null,
             updatedAt: sessionSetAt,

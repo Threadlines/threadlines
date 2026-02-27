@@ -1055,6 +1055,8 @@ describe("WebSocket Server", () => {
         attachments: [],
       },
       assistantDeliveryMode: "streaming",
+      approvalPolicy: "on-request",
+      sandboxMode: "workspace-write",
       createdAt,
     });
     expect(startTurnResponse.error).toBeUndefined();

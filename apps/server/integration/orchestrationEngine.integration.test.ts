@@ -136,6 +136,8 @@ const startTurn = (input: {
       text: input.text,
       attachments: [],
     },
+    approvalPolicy: "on-request",
+    sandboxMode: "workspace-write",
     createdAt: nowIso(),
   });
 

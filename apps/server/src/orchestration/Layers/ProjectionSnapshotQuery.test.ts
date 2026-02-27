@@ -143,6 +143,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           provider_name,
           provider_session_id,
           provider_thread_id,
+          approval_policy,
+          sandbox_mode,
           active_turn_id,
           last_error,
           updated_at
@@ -153,6 +155,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           'codex',
           'provider-session-1',
           'provider-thread-1',
+          'on-request',
+          'workspace-write',
           'turn-1',
           NULL,
           '2026-02-24T00:00:07.000Z'
@@ -282,6 +286,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             providerName: "codex",
             providerSessionId: asProviderSessionId("provider-session-1"),
             providerThreadId: asProviderThreadId("provider-thread-1"),
+            approvalPolicy: "on-request",
+            sandboxMode: "workspace-write",
             activeTurnId: asTurnId("turn-1"),
             lastError: null,
             updatedAt: "2026-02-24T00:00:07.000Z",

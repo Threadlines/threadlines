@@ -64,6 +64,8 @@ const serverCommandId = (tag: string): CommandId =>
 
 const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
+const DEFAULT_APPROVAL_POLICY: ProviderApprovalPolicy = "never";
+const DEFAULT_SANDBOX_MODE: ProviderSandboxMode = "workspace-write";
 
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
@@ -143,8 +145,10 @@ const make = Effect.gen(function* () {
       return yield* Effect.die(new Error(`Thread '${threadId}' was not found in read model.`));
     }
 
-    const desiredApprovalPolicy = options?.approvalPolicy ?? thread.session?.approvalPolicy;
-    const desiredSandboxMode = options?.sandboxMode ?? thread.session?.sandboxMode;
+    const desiredApprovalPolicy =
+      options?.approvalPolicy ?? thread.session?.approvalPolicy ?? DEFAULT_APPROVAL_POLICY;
+    const desiredSandboxMode =
+      options?.sandboxMode ?? thread.session?.sandboxMode ?? DEFAULT_SANDBOX_MODE;
     const preferredProvider: ProviderKind | undefined =
       thread.session?.providerName === "codex" || thread.session?.providerName === "claudeCode"
         ? thread.session.providerName
@@ -160,8 +164,8 @@ const make = Effect.gen(function* () {
         ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
         ...(thread.model ? { model: thread.model } : {}),
         ...(resumeThreadId ? { resumeThreadId } : {}),
-        ...(desiredApprovalPolicy !== undefined ? { approvalPolicy: desiredApprovalPolicy } : {}),
-        ...(desiredSandboxMode !== undefined ? { sandboxMode: desiredSandboxMode } : {}),
+        approvalPolicy: desiredApprovalPolicy,
+        sandboxMode: desiredSandboxMode,
       });
 
     const bindSessionToThread = (session: ProviderSession) =>
@@ -173,8 +177,8 @@ const make = Effect.gen(function* () {
           providerName: session.provider,
           providerSessionId: session.sessionId,
           providerThreadId: session.threadId ?? null,
-          ...(desiredApprovalPolicy !== undefined ? { approvalPolicy: desiredApprovalPolicy } : {}),
-          ...(desiredSandboxMode !== undefined ? { sandboxMode: desiredSandboxMode } : {}),
+          approvalPolicy: desiredApprovalPolicy,
+          sandboxMode: desiredSandboxMode,
           // Provider turn ids are not orchestration turn ids.
           activeTurnId: null,
           lastError: session.lastError ?? null,
@@ -211,8 +215,8 @@ const make = Effect.gen(function* () {
     readonly attachments?: ReadonlyArray<ChatAttachment>;
     readonly model?: string;
     readonly effort?: string;
-    readonly approvalPolicy?: ProviderApprovalPolicy;
-    readonly sandboxMode?: ProviderSandboxMode;
+    readonly approvalPolicy: ProviderApprovalPolicy;
+    readonly sandboxMode: ProviderSandboxMode;
     readonly createdAt: string;
   }) {
     const thread = yield* resolveThread(input.threadId);
@@ -220,8 +224,8 @@ const make = Effect.gen(function* () {
       return;
     }
     const sessionId = yield* ensureSessionForThread(input.threadId, input.createdAt, {
-      ...(input.approvalPolicy !== undefined ? { approvalPolicy: input.approvalPolicy } : {}),
-      ...(input.sandboxMode !== undefined ? { sandboxMode: input.sandboxMode } : {}),
+      approvalPolicy: input.approvalPolicy,
+      sandboxMode: input.sandboxMode,
     });
     const normalizedInput = toNonEmptyProviderInput(input.messageText);
     const normalizedAttachments = input.attachments ?? [];
@@ -267,10 +271,8 @@ const make = Effect.gen(function* () {
       ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
       ...(event.payload.model !== undefined ? { model: event.payload.model } : {}),
       ...(event.payload.effort !== undefined ? { effort: event.payload.effort } : {}),
-      ...(event.payload.approvalPolicy !== undefined
-        ? { approvalPolicy: event.payload.approvalPolicy }
-        : {}),
-      ...(event.payload.sandboxMode !== undefined ? { sandboxMode: event.payload.sandboxMode } : {}),
+      approvalPolicy: event.payload.approvalPolicy,
+      sandboxMode: event.payload.sandboxMode,
       createdAt: event.payload.createdAt,
     });
   });
@@ -347,6 +349,8 @@ const make = Effect.gen(function* () {
         providerName: thread.session?.providerName ?? null,
         providerSessionId: null,
         providerThreadId: null,
+        approvalPolicy: thread.session?.approvalPolicy ?? DEFAULT_APPROVAL_POLICY,
+        sandboxMode: thread.session?.sandboxMode ?? DEFAULT_SANDBOX_MODE,
         activeTurnId: null,
         lastError: thread.session?.lastError ?? null,
         updatedAt: now,

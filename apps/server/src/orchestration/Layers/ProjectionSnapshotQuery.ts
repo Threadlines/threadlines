@@ -196,6 +196,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           provider_name AS "providerName",
           provider_session_id AS "providerSessionId",
           provider_thread_id AS "providerThreadId",
+          approval_policy AS "approvalPolicy",
+          sandbox_mode AS "sandboxMode",
           active_turn_id AS "activeTurnId",
           last_error AS "lastError",
           updated_at AS "updatedAt"
@@ -378,6 +380,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               providerName: row.providerName,
               providerSessionId: row.providerSessionId,
               providerThreadId: row.providerThreadId,
+              approvalPolicy: row.approvalPolicy,
+              sandboxMode: row.sandboxMode,
               activeTurnId: row.activeTurnId,
               lastError: row.lastError,
               updatedAt: row.updatedAt,

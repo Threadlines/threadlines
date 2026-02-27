@@ -3,6 +3,8 @@ import {
   CommandId,
   MessageId,
   type OrchestrationEvent,
+  type ProviderApprovalPolicy,
+  type ProviderSandboxMode,
   ProviderThreadId,
   type ThreadId,
   TurnId,
@@ -24,6 +26,8 @@ const providerCommandId = (event: ProviderRuntimeEvent, tag: string): CommandId 
   CommandId.makeUnsafe(`provider:${event.eventId}:${tag}:${crypto.randomUUID()}`);
 
 const DEFAULT_ASSISTANT_DELIVERY_MODE: AssistantDeliveryMode = "buffered";
+const DEFAULT_APPROVAL_POLICY: ProviderApprovalPolicy = "never";
+const DEFAULT_SANDBOX_MODE: ProviderSandboxMode = "workspace-write";
 const TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY = 10_000;
 const TURN_MESSAGE_IDS_BY_TURN_TTL = Duration.minutes(120);
 const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_CACHE_CAPACITY = 20_000;
@@ -371,12 +375,8 @@ const make = Effect.gen(function* () {
             providerName: event.provider,
             providerSessionId: event.sessionId,
             providerThreadId,
-            ...(thread.session?.approvalPolicy !== undefined
-              ? { approvalPolicy: thread.session.approvalPolicy }
-              : {}),
-            ...(thread.session?.sandboxMode !== undefined
-              ? { sandboxMode: thread.session.sandboxMode }
-              : {}),
+            approvalPolicy: thread.session?.approvalPolicy ?? DEFAULT_APPROVAL_POLICY,
+            sandboxMode: thread.session?.sandboxMode ?? DEFAULT_SANDBOX_MODE,
             activeTurnId,
             lastError,
             updatedAt: now,
@@ -485,12 +485,8 @@ const make = Effect.gen(function* () {
             providerName: event.provider,
             providerSessionId: event.sessionId,
             providerThreadId,
-            ...(thread.session?.approvalPolicy !== undefined
-              ? { approvalPolicy: thread.session.approvalPolicy }
-              : {}),
-            ...(thread.session?.sandboxMode !== undefined
-              ? { sandboxMode: thread.session.sandboxMode }
-              : {}),
+            approvalPolicy: thread.session?.approvalPolicy ?? DEFAULT_APPROVAL_POLICY,
+            sandboxMode: thread.session?.sandboxMode ?? DEFAULT_SANDBOX_MODE,
             activeTurnId: toTurnId(event.turnId) ?? null,
             lastError: event.message,
             updatedAt: now,

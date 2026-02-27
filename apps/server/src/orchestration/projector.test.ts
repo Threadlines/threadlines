@@ -135,6 +135,8 @@ describe("orchestration projector", () => {
           payload: {
             threadId: "thread-1",
             messageId: "message-1",
+            approvalPolicy: "on-request",
+            sandboxMode: "workspace-write",
             createdAt: "2026-01-01T00:00:00.000Z",
           },
         }),
@@ -193,6 +195,8 @@ describe("orchestration projector", () => {
               providerName: "codex",
               providerSessionId: "session-1",
               providerThreadId: "provider-thread-1",
+              approvalPolicy: "on-request",
+              sandboxMode: "workspace-write",
               activeTurnId: "turn-1",
               lastError: null,
               updatedAt: startedAt,
