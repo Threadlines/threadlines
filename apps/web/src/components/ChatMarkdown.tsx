@@ -87,28 +87,20 @@ function createHighlightCacheKey(code: string, language: string, themeName: Diff
   return `${fnv1a32(code).toString(36)}:${code.length}:${language}:${themeName}`;
 }
 
-function createHighlighterPromiseKey(language: string, themeName: DiffThemeName): string {
-  return `${language}:${themeName}`;
-}
-
 function estimateHighlightedSize(html: string, code: string): number {
   return Math.max(html.length * 2, code.length * 3);
 }
 
-function getHighlighterPromise(
-  language: string,
-  themeName: DiffThemeName,
-): Promise<DiffsHighlighter> {
-  const cacheKey = createHighlighterPromiseKey(language, themeName);
-  const cached = highlighterPromiseCache.get(cacheKey);
+function getHighlighterPromise(language: string): Promise<DiffsHighlighter> {
+  const cached = highlighterPromiseCache.get(language);
   if (cached) return cached;
 
   const promise = getSharedHighlighter({
-    themes: [themeName],
+    themes: ["pierre-dark", "pierre-light"],
     langs: [language as SupportedLanguages],
     preferredHighlighter: "shiki-js",
   });
-  highlighterPromiseCache.set(cacheKey, promise);
+  highlighterPromiseCache.set(language, promise);
   return promise;
 }
 
@@ -186,7 +178,7 @@ function SuspenseShikiCodeBlock({
     );
   }
 
-  const highlighter = use(getHighlighterPromise(language, themeName));
+  const highlighter = use(getHighlighterPromise(language));
   const highlightedHtml = useMemo(
     () => highlighter.codeToHtml(code, { lang: language, theme: themeName }),
     [code, highlighter, language, themeName],
