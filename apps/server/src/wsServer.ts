@@ -55,9 +55,7 @@ import { clamp } from "effect/Number";
 import { Open } from "./open";
 import { ServerConfig } from "./config";
 import { GitCore } from "./git/Services/GitCore.ts";
-import { tryHandleProjectFaviconRequest } from "./projectFaviconRoute";
-
-const ATTACHMENTS_ROUTE_PREFIX = "/attachments/";
+import { ATTACHMENTS_ROUTE_PREFIX, tryHandleProjectFaviconRequest } from "./projectFaviconRoute";
 
 /**
  * ServerShape - Service API for server lifecycle control.

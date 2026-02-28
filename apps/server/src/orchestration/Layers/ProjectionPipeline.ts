@@ -38,6 +38,11 @@ import {
   OrchestrationProjectionPipeline,
   type OrchestrationProjectionPipelineShape,
 } from "../Services/ProjectionPipeline.ts";
+import {
+  ATTACHMENTS_ROUTE_PREFIX,
+  IMAGE_EXTENSION_BY_MIME_TYPE,
+  SAFE_IMAGE_FILE_EXTENSIONS,
+} from "../../projectFaviconRoute.ts";
 
 export const ORCHESTRATION_PROJECTOR_NAMES = {
   projects: "projection.projects",
@@ -60,31 +65,6 @@ interface ProjectorDefinition {
     attachmentSideEffects: AttachmentSideEffects,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 }
-
-const ATTACHMENTS_ROUTE_PREFIX = "/attachments";
-const ATTACHMENTS_STATE_SUBDIRECTORY = "attachments";
-const IMAGE_EXTENSION_BY_MIME_TYPE: Record<string, string> = {
-  "image/png": ".png",
-  "image/jpeg": ".jpg",
-  "image/jpg": ".jpg",
-  "image/gif": ".gif",
-  "image/webp": ".webp",
-  "image/svg+xml": ".svg",
-  "image/bmp": ".bmp",
-  "image/tiff": ".tiff",
-  "image/heic": ".heic",
-};
-const SAFE_IMAGE_FILE_EXTENSIONS = new Set([
-  ".jpg",
-  ".jpeg",
-  ".png",
-  ".gif",
-  ".webp",
-  ".bmp",
-  ".tiff",
-  ".svg",
-  ".ico",
-]);
 
 interface PendingAttachmentWrite {
   readonly absolutePath: string;
@@ -133,7 +113,7 @@ const materializeAttachmentsForProjection = Effect.fn(function* (input: {
   if (Option.isNone(serverConfig)) return input.attachments;
 
   const path = yield* Path.Path;
-  const attachmentsRootDir = path.join(serverConfig.value.stateDir, ATTACHMENTS_STATE_SUBDIRECTORY);
+  const attachmentsRootDir = path.join(serverConfig.value.stateDir, "attachments");
   const threadSegment = encodeURIComponent(input.threadId);
   const messageSegment = encodeURIComponent(input.messageId);
 
@@ -332,10 +312,7 @@ const runAttachmentSideEffects = Effect.fn(function* (input: {
     return;
   }
 
-  const attachmentsRootDir = input.path.join(
-    serverConfig.value.stateDir,
-    ATTACHMENTS_STATE_SUBDIRECTORY,
-  );
+  const attachmentsRootDir = input.path.join(serverConfig.value.stateDir, "attachments");
 
   yield* Effect.forEach(
     input.sideEffects.deletedThreadIds,

@@ -2,6 +2,32 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 
+export const ATTACHMENTS_ROUTE_PREFIX = "/attachments";
+
+export const IMAGE_EXTENSION_BY_MIME_TYPE: Record<string, string> = {
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/jpg": ".jpg",
+  "image/gif": ".gif",
+  "image/webp": ".webp",
+  "image/svg+xml": ".svg",
+  "image/bmp": ".bmp",
+  "image/tiff": ".tiff",
+  "image/heic": ".heic",
+};
+
+export const SAFE_IMAGE_FILE_EXTENSIONS = new Set([
+  ".jpg",
+  ".jpeg",
+  ".png",
+  ".gif",
+  ".webp",
+  ".bmp",
+  ".tiff",
+  ".svg",
+  ".ico",
+]);
+
 const FAVICON_MIME_TYPES: Record<string, string> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
