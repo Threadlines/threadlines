@@ -253,7 +253,14 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
         if (url.pathname.startsWith(ATTACHMENTS_ROUTE_PREFIX)) {
           const attachmentsRoot = path.resolve(path.join(serverConfig.stateDir, "attachments"));
-          const rawRelativePath = url.pathname.slice(ATTACHMENTS_ROUTE_PREFIX.length);
+          const encodedRelativePath = url.pathname.slice(ATTACHMENTS_ROUTE_PREFIX.length);
+          let rawRelativePath: string;
+          try {
+            rawRelativePath = decodeURIComponent(encodedRelativePath);
+          } catch {
+            respond(400, { "Content-Type": "text/plain" }, "Invalid attachment path");
+            return;
+          }
           const normalizedRelativePath = path.normalize(rawRelativePath).replace(/^[/\\]+/, "");
 
           if (
@@ -279,23 +286,27 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             return;
           }
 
-          const data = yield* fileSystem
-            .readFile(filePath)
-            .pipe(Effect.catch(() => Effect.succeed(null)));
-          if (!data) {
-            respond(500, { "Content-Type": "text/plain" }, "Internal Server Error");
+          const contentType = Mime.getType(filePath) ?? "application/octet-stream";
+          res.writeHead(200, {
+            "Content-Type": contentType,
+            "Cache-Control": "public, max-age=31536000, immutable",
+          });
+          const streamExit = yield* Stream.runForEach(fileSystem.stream(filePath), (chunk) =>
+            Effect.sync(() => {
+              if (!res.destroyed) {
+                res.write(chunk);
+              }
+            }),
+          ).pipe(Effect.exit);
+          if (streamExit._tag === "Failure") {
+            if (!res.destroyed) {
+              res.destroy();
+            }
             return;
           }
-
-          const contentType = Mime.getType(filePath) ?? "application/octet-stream";
-          respond(
-            200,
-            {
-              "Content-Type": contentType,
-              "Cache-Control": "public, max-age=31536000, immutable",
-            },
-            data,
-          );
+          if (!res.writableEnded) {
+            res.end();
+          }
           return;
         }
 
