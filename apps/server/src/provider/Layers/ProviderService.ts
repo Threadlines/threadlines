@@ -93,14 +93,14 @@ function toRuntimePayloadFromSession(session: ProviderSession): Record<string, u
   };
 }
 
-function readPersistedCwd(runtimePayload: ProviderSessionBinding["runtimePayload"]): string | undefined {
+function readPersistedCwd(
+  runtimePayload: ProviderSessionBinding["runtimePayload"],
+): string | undefined {
   if (!runtimePayload || typeof runtimePayload !== "object" || Array.isArray(runtimePayload)) {
     return undefined;
   }
-  const rawCwd = runtimePayload.cwd;
-  if (typeof rawCwd !== "string") {
-    return undefined;
-  }
+  const rawCwd = "cwd" in runtimePayload ? runtimePayload.cwd : undefined;
+  if (typeof rawCwd !== "string") return undefined;
   const trimmed = rawCwd.trim();
   return trimmed.length > 0 ? trimmed : undefined;
 }
