@@ -37,9 +37,8 @@ import {
   OrchestrationProjectionPipeline,
   type OrchestrationProjectionPipelineShape,
 } from "../Services/ProjectionPipeline.ts";
-import {
-  ATTACHMENTS_ROUTE_PREFIX,
-} from "../../projectFaviconRoute.ts";
+import { attachmentRouteToRelativePath } from "../../attachmentPaths.ts";
+import { ATTACHMENTS_ROUTE_PREFIX } from "../../projectFaviconRoute.ts";
 import { inferImageExtension, parseBase64DataUrl } from "../../imageMime.ts";
 
 export const ORCHESTRATION_PROJECTOR_NAMES = {
@@ -262,18 +261,6 @@ function retainProjectionActivitiesAfterRevert(
   );
 }
 
-function toAttachmentRelativePath(dataUrl: string): string | null {
-  const prefix = `${ATTACHMENTS_ROUTE_PREFIX}/`;
-  if (!dataUrl.startsWith(prefix)) {
-    return null;
-  }
-  const relativePath = dataUrl.slice(prefix.length).replace(/^[/\\]+/, "");
-  if (relativePath.length === 0 || relativePath.startsWith("..")) {
-    return null;
-  }
-  return relativePath.replace(/\\/g, "/");
-}
-
 function collectThreadAttachmentRelativePaths(
   threadId: string,
   messages: ReadonlyArray<ProjectionThreadMessage>,
@@ -289,7 +276,7 @@ function collectThreadAttachmentRelativePaths(
       if (attachment.type !== "image") {
         continue;
       }
-      const relativePath = toAttachmentRelativePath(attachment.dataUrl);
+      const relativePath = attachmentRouteToRelativePath(attachment.dataUrl);
       if (!relativePath || !relativePath.startsWith(threadPrefix)) {
         continue;
       }

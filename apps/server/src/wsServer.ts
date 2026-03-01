@@ -55,6 +55,7 @@ import { Open } from "./open";
 import { ServerConfig } from "./config";
 import { GitCore } from "./git/Services/GitCore.ts";
 import { ATTACHMENTS_ROUTE_PREFIX, tryHandleProjectFaviconRequest } from "./projectFaviconRoute";
+import { normalizeAttachmentRelativePath, resolveAttachmentRelativePath } from "./attachmentPaths";
 
 /**
  * ServerShape - Service API for server lifecycle control.
@@ -249,21 +250,18 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         }
 
         if (url.pathname.startsWith(ATTACHMENTS_ROUTE_PREFIX)) {
-          const attachmentsRoot = path.resolve(path.join(serverConfig.stateDir, "attachments"));
           const rawRelativePath = url.pathname.slice(ATTACHMENTS_ROUTE_PREFIX.length);
-          const normalizedRelativePath = path.normalize(rawRelativePath).replace(/^[/\\]+/, "");
-
-          if (
-            normalizedRelativePath.length === 0 ||
-            normalizedRelativePath.startsWith("..") ||
-            normalizedRelativePath.includes("\0")
-          ) {
+          const normalizedRelativePath = normalizeAttachmentRelativePath(rawRelativePath);
+          if (!normalizedRelativePath) {
             respond(400, { "Content-Type": "text/plain" }, "Invalid attachment path");
             return;
           }
 
-          const filePath = path.resolve(path.join(attachmentsRoot, normalizedRelativePath));
-          if (!filePath.startsWith(`${attachmentsRoot}${path.sep}`)) {
+          const filePath = resolveAttachmentRelativePath({
+            stateDir: serverConfig.stateDir,
+            relativePath: normalizedRelativePath,
+          });
+          if (!filePath) {
             respond(400, { "Content-Type": "text/plain" }, "Invalid attachment path");
             return;
           }

@@ -1,3 +1,7 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 import type { ProviderRuntimeEvent } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
@@ -13,6 +17,7 @@ import {
 import { Effect, Exit, Layer, ManagedRuntime, PubSub, Scope, Stream } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { type ServerConfigShape, ServerConfig } from "../../config.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -35,6 +40,23 @@ const asApprovalRequestId = (value: string): ApprovalRequestId =>
   ApprovalRequestId.makeUnsafe(value);
 const asMessageId = (value: string): MessageId => MessageId.makeUnsafe(value);
 const asTurnId = (value: string): TurnId => TurnId.makeUnsafe(value);
+
+function makeTestServerConfig(stateDir: string): ServerConfigShape {
+  return {
+    mode: "web",
+    port: 0,
+    host: undefined,
+    cwd: process.cwd(),
+    keybindingsConfigPath: "",
+    stateDir,
+    staticDir: undefined,
+    devUrl: undefined,
+    noBrowser: true,
+    authToken: undefined,
+    autoBootstrapProjectFromCwd: false,
+    logWebSocketEvents: false,
+  };
+}
 
 async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -70,7 +92,7 @@ describe("ProviderCommandReactor", () => {
     runtime = null;
   });
 
-  async function createHarness() {
+  async function createHarness(input?: { readonly stateDir?: string }) {
     const now = new Date().toISOString();
     const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
     let nextSessionIndex = 1;
@@ -124,7 +146,7 @@ describe("ProviderCommandReactor", () => {
       Layer.provide(OrchestrationCommandReceiptRepositoryLive),
       Layer.provide(SqlitePersistenceMemory),
     );
-    const layer = ProviderCommandReactorLive.pipe(
+    const liveLayer = ProviderCommandReactorLive.pipe(
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(Layer.succeed(ProviderService, service)),
       Layer.provideMerge(Layer.succeed(GitCore, { renameBranch } as unknown as GitCoreShape)),
@@ -135,6 +157,14 @@ describe("ProviderCommandReactor", () => {
         ),
       ),
     );
+    const layer =
+      input?.stateDir !== undefined
+        ? liveLayer.pipe(
+            Layer.provideMerge(
+              Layer.succeed(ServerConfig, makeTestServerConfig(input.stateDir)),
+            ),
+          )
+        : liveLayer;
     runtime = ManagedRuntime.make(layer);
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
     const reactor = await runtime.runPromise(Effect.service(ProviderCommandReactor));
@@ -283,6 +313,83 @@ describe("ProviderCommandReactor", () => {
       const thread = readModel.threads.find((entry) => entry.id === ThreadId.makeUnsafe("thread-1"));
       return thread?.branch === "t3code/generated-name";
     });
+  });
+
+  it("reuses persisted attachment files for branch generation and turn start", async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3code-reactor-attachments-"));
+    const harness = await createHarness({ stateDir });
+    const now = new Date().toISOString();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.makeUnsafe("cmd-thread-meta-set-temp-branch-persisted"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        branch: "t3code/abcdef12",
+        worktreePath: "/tmp/provider-project/.t3/worktrees/t3code-abcdef12",
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-turn-start-persisted-attachments"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-persisted-attachments"),
+          role: "user",
+          text: "Fix visual bug from screenshot",
+          attachments: [
+            {
+              type: "image",
+              name: "bug.png",
+              mimeType: "image/png",
+              sizeBytes: 5,
+              dataUrl: "data:image/png;base64,SGVsbG8=",
+            },
+          ],
+        },
+        approvalPolicy: "on-request",
+        sandboxMode: "workspace-write",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.generateBranchName.mock.calls.length === 1);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    const expectedAttachmentPath = path.join(
+      stateDir,
+      "attachments",
+      "thread-1",
+      "user-message-persisted-attachments-0.png",
+    );
+
+    expect(harness.generateBranchName.mock.calls[0]?.[0]).toEqual({
+      cwd: "/tmp/provider-project/.t3/worktrees/t3code-abcdef12",
+      message: "Fix visual bug from screenshot",
+      attachments: [
+        {
+          type: "image",
+          name: "bug.png",
+          mimeType: "image/png",
+          sizeBytes: 5,
+          dataUrl: expectedAttachmentPath,
+        },
+      ],
+    });
+    expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+      attachments: [
+        {
+          type: "image",
+          name: "bug.png",
+          mimeType: "image/png",
+          sizeBytes: 5,
+          dataUrl: expectedAttachmentPath,
+        },
+      ],
+    });
+    expect(fs.existsSync(expectedAttachmentPath)).toBe(true);
   });
 
   it("skips worktree branch generation after the first user turn", async () => {

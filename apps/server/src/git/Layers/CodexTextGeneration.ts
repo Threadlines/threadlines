@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import { Effect, FileSystem, Layer, Option, Path, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
+import { resolveAttachmentRoutePath } from "../../attachmentPaths.ts";
+import { ServerConfig } from "../../config.ts";
 import { TextGenerationError } from "../Errors.ts";
 import { inferImageExtension, parseBase64DataUrl } from "../../imageMime.ts";
 import {
@@ -245,6 +247,7 @@ const makeCodexTextGeneration = Effect.gen(function* () {
       if (!attachments || attachments.length === 0) {
         return [];
       }
+      const serverConfig = yield* Effect.serviceOption(ServerConfig);
 
       const imagePaths: string[] = [];
       for (const [index, attachment] of attachments.entries()) {
@@ -253,26 +256,44 @@ const makeCodexTextGeneration = Effect.gen(function* () {
         }
 
         const parsed = parseBase64DataUrl(attachment.dataUrl);
-        if (!parsed || !parsed.mimeType.startsWith("image/")) {
+        if (parsed && parsed.mimeType.startsWith("image/")) {
+          const bytes = Buffer.from(parsed.base64, "base64");
+          if (bytes.byteLength === 0) {
+            continue;
+          }
+
+          const extension = inferImageExtension({
+            mimeType: parsed.mimeType,
+            fileName: attachment.name,
+          });
+          const imagePath = yield* writeTempBinaryFile(
+            operation,
+            `codex-image-${index}`,
+            bytes,
+            extension,
+          );
+          imagePaths.push(imagePath);
           continue;
         }
 
-        const bytes = Buffer.from(parsed.base64, "base64");
-        if (bytes.byteLength === 0) {
+        const persistedPath =
+          Option.isSome(serverConfig)
+            ? resolveAttachmentRoutePath({
+                stateDir: serverConfig.value.stateDir,
+                dataUrl: attachment.dataUrl,
+              })
+            : null;
+        const localPath = persistedPath ?? attachment.dataUrl;
+        if (!path.isAbsolute(localPath)) {
           continue;
         }
-
-        const extension = inferImageExtension({
-          mimeType: parsed.mimeType,
-          fileName: attachment.name,
-        });
-        const imagePath = yield* writeTempBinaryFile(
-          operation,
-          `codex-image-${index}`,
-          bytes,
-          extension,
+        const fileInfo = yield* fileSystem.stat(localPath).pipe(
+          Effect.catch(() => Effect.succeed(null)),
         );
-        imagePaths.push(imagePath);
+        if (!fileInfo || fileInfo.type !== "File") {
+          continue;
+        }
+        imagePaths.push(localPath);
       }
       return imagePaths;
     });

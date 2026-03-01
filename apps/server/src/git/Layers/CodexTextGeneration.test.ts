@@ -3,9 +3,27 @@ import { it } from "@effect/vitest";
 import { Effect, FileSystem, Layer, Path } from "effect";
 import { expect } from "vitest";
 
+import { type ServerConfigShape, ServerConfig } from "../../config.ts";
 import { CodexTextGenerationLive } from "./CodexTextGeneration.ts";
 import { TextGenerationError } from "../Errors.ts";
 import { TextGeneration } from "../Services/TextGeneration.ts";
+
+function makeTestServerConfig(stateDir: string): ServerConfigShape {
+  return {
+    mode: "web",
+    port: 0,
+    host: undefined,
+    cwd: process.cwd(),
+    keybindingsConfigPath: "",
+    stateDir,
+    staticDir: undefined,
+    devUrl: undefined,
+    noBrowser: true,
+    authToken: undefined,
+    autoBootstrapProjectFromCwd: false,
+    logWebSocketEvents: false,
+  };
+}
 
 function makeFakeCodexBinary(dir: string) {
   return Effect.gen(function* () {
@@ -305,6 +323,51 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
             },
           ],
         });
+
+        expect(generated.branch).toBe("fix/ui-regression");
+      }),
+    ),
+  );
+
+  it.effect("resolves persisted attachment URLs to files for codex image inputs", () =>
+    withFakeCodexEnv(
+      {
+        output: JSON.stringify({
+          branch: "fix/ui-regression",
+        }),
+        requireImage: true,
+      },
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-state-textgen-" });
+        const imagePath = path.join(
+          stateDir,
+          "attachments",
+          "thread-1",
+          "message-1-0.png",
+        );
+        yield* fs.makeDirectory(path.join(stateDir, "attachments", "thread-1"), {
+          recursive: true,
+        });
+        yield* fs.writeFile(imagePath, Buffer.from("hello"));
+
+        const textGeneration = yield* TextGeneration;
+        const generated = yield* textGeneration
+          .generateBranchName({
+            cwd: process.cwd(),
+            message: "Fix layout bug from screenshot.",
+            attachments: [
+              {
+                type: "image",
+                name: "bug.png",
+                mimeType: "image/png",
+                sizeBytes: 5,
+                dataUrl: "/attachments/thread-1/message-1-0.png",
+              },
+            ],
+          })
+          .pipe(Effect.provideService(ServerConfig, makeTestServerConfig(stateDir)));
 
         expect(generated.branch).toBe("fix/ui-regression");
       }),

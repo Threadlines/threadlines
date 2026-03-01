@@ -1,3 +1,5 @@
+import fs from "node:fs";
+
 import {
   type ChatAttachment,
   CommandId,
@@ -15,8 +17,11 @@ import {
 import { Cache, Cause, Duration, Effect, Layer, Option, Queue, Stream } from "effect";
 
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
+import { resolveAttachmentRelativePath, resolveAttachmentRoutePath } from "../../attachmentPaths.ts";
+import { ServerConfig } from "../../config.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
 import { TextGeneration } from "../../git/Services/TextGeneration.ts";
+import { inferImageExtension, parseBase64DataUrl } from "../../imageMime.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import {
@@ -103,6 +108,7 @@ const make = Effect.gen(function* () {
   const providerService = yield* ProviderService;
   const git = yield* GitCore;
   const textGeneration = yield* TextGeneration;
+  const serverConfig = yield* Effect.serviceOption(ServerConfig);
   const handledTurnStartKeys = yield* Cache.make<string, true>({
     capacity: HANDLED_TURN_START_KEY_MAX,
     timeToLive: HANDLED_TURN_START_KEY_TTL,
@@ -280,6 +286,74 @@ const make = Effect.gen(function* () {
     });
   });
 
+  const resolvePersistedAttachments = Effect.fnUntraced(function* (
+    input: {
+      readonly threadId: ThreadId;
+      readonly messageId: string;
+      readonly attachments: ReadonlyArray<ChatAttachment> | undefined;
+    },
+  ) {
+    if (!input.attachments || input.attachments.length === 0) {
+      return input.attachments ?? [];
+    }
+
+    if (Option.isNone(serverConfig)) {
+      return input.attachments;
+    }
+    const threadSegment = encodeURIComponent(input.threadId);
+    const messageSegment = encodeURIComponent(input.messageId);
+
+    return yield* Effect.forEach(
+      Array.from(input.attachments.entries()),
+      ([index, attachment]) =>
+        Effect.gen(function* () {
+          if (attachment.type !== "image") {
+            return attachment;
+          }
+
+          const resolvedRoutePath = resolveAttachmentRoutePath({
+            stateDir: serverConfig.value.stateDir,
+            dataUrl: attachment.dataUrl,
+          });
+          const resolvedMaterializedPath =
+            resolvedRoutePath ??
+            (() => {
+              const parsed = parseBase64DataUrl(attachment.dataUrl);
+              if (!parsed || !parsed.mimeType.startsWith("image/")) {
+                return null;
+              }
+              const extension = inferImageExtension({
+                mimeType: parsed.mimeType,
+                fileName: attachment.name,
+              });
+              return resolveAttachmentRelativePath({
+                stateDir: serverConfig.value.stateDir,
+                relativePath: `${threadSegment}/${messageSegment}-${index}${extension}`,
+              });
+            })();
+
+          if (!resolvedMaterializedPath) {
+            return attachment;
+          }
+
+          const isFile = yield* Effect.sync(() => {
+            try {
+              return fs.statSync(resolvedMaterializedPath).isFile();
+            } catch {
+              return false;
+            }
+          });
+          if (!isFile) {
+            return attachment;
+          }
+          return {
+            ...attachment,
+            dataUrl: resolvedMaterializedPath,
+          } satisfies ChatAttachment;
+        }),
+    );
+  });
+
   const maybeGenerateAndRenameWorktreeBranchForFirstTurn = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly branch: string | null;
@@ -381,19 +455,25 @@ const make = Effect.gen(function* () {
       return;
     }
 
+    const resolvedAttachments = yield* resolvePersistedAttachments({
+      threadId: event.payload.threadId,
+      messageId: message.id,
+      attachments: message.attachments,
+    });
+
     yield* maybeGenerateAndRenameWorktreeBranchForFirstTurn({
       threadId: event.payload.threadId,
       branch: thread.branch,
       worktreePath: thread.worktreePath,
       messageId: message.id,
       messageText: message.text,
-      ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+      ...(message.attachments !== undefined ? { attachments: resolvedAttachments } : {}),
     });
 
     yield* sendTurnForThread({
       threadId: event.payload.threadId,
       messageText: message.text,
-      ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+      ...(message.attachments !== undefined ? { attachments: resolvedAttachments } : {}),
       ...(event.payload.model !== undefined ? { model: event.payload.model } : {}),
       ...(event.payload.effort !== undefined ? { effort: event.payload.effort } : {}),
       approvalPolicy: event.payload.approvalPolicy,
