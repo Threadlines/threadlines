@@ -515,15 +515,15 @@ describe("when: HEAD is detached and there are no local changes", () => {
 });
 
 describe("when: branch has no upstream configured", () => {
-  it("resolveQuickAction runs push and create PR when clean, no upstream, and no local commits are ahead", () => {
+  it("resolveQuickAction runs push when clean, no upstream, and no local commits are ahead", () => {
     const quick = resolveQuickAction(
       status({ hasUpstream: false, pr: null, aheadCount: 0 }),
       false,
     );
     assert.deepInclude(quick, {
       kind: "run_action",
-      action: "commit_push_pr",
-      label: "Push & create PR",
+      action: "commit_push",
+      label: "Push",
       disabled: false,
     });
   });
@@ -576,9 +576,59 @@ describe("when: branch has no upstream configured", () => {
     });
   });
 
-  it("buildMenuItems enables push and create PR to publish branch when no upstream exists", () => {
+  it("buildMenuItems enables push but keeps create PR disabled when no commits are ahead", () => {
     const items = buildMenuItems(
       status({ hasUpstream: false, pr: null, aheadCount: 0 }),
+      false,
+    );
+    assert.deepEqual(items, [
+      {
+        id: "commit",
+        label: "Commit",
+        disabled: true,
+        icon: "commit",
+        kind: "open_dialog",
+        dialogAction: "commit",
+      },
+      {
+        id: "push",
+        label: "Push",
+        disabled: false,
+        icon: "push",
+        kind: "open_dialog",
+        dialogAction: "push",
+      },
+      {
+        id: "pr",
+        label: "Create PR",
+        disabled: true,
+        icon: "pr",
+        kind: "open_dialog",
+        dialogAction: "create_pr",
+      },
+    ]);
+  });
+
+  it("resolveQuickAction runs push and create PR when no upstream and commits are ahead", () => {
+    const quick = resolveQuickAction(
+      status({
+        hasUpstream: false,
+        aheadCount: 2,
+        pr: null,
+      }),
+      false,
+    );
+    assert.deepInclude(quick, {
+      kind: "run_action",
+      action: "commit_push_pr",
+      label: "Push & create PR",
+      disabled: false,
+    });
+  });
+
+  it("buildMenuItems enables create PR when no upstream and commits are ahead", () => {
+    const items = buildMenuItems(
+      status({ hasUpstream: false, pr: null, aheadCount: 2 }),
       false,
     );
     assert.deepEqual(items, [

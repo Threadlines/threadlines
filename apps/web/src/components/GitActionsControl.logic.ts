@@ -124,7 +124,7 @@ export function buildMenuItems(
     hasBranch &&
     !hasChanges &&
     !hasOpenPr &&
-    (gitStatus.aheadCount > 0 || canPublishUntrackedBranch) &&
+    gitStatus.aheadCount > 0 &&
     !isBehind;
   const canOpenPr = !isBusy && hasOpenPr;
 
@@ -212,6 +212,9 @@ export function resolveQuickAction(
 
   if (!gitStatus.hasUpstream) {
     if (hasOpenPr || isDefaultBranch) {
+      return { label: "Push", disabled: false, kind: "run_action", action: "commit_push" };
+    }
+    if (!isAhead) {
       return { label: "Push", disabled: false, kind: "run_action", action: "commit_push" };
     }
     return {
