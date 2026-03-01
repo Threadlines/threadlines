@@ -1167,11 +1167,9 @@ const makeGitCore = Effect.gen(function* () {
       });
 
       // Refresh upstream refs in the background so checkout remains responsive.
-      yield* Effect.sync(() => {
-        void Effect.runPromise(
-          refreshCheckedOutBranchUpstream(input.cwd).pipe(Effect.catch(() => Effect.void)),
-        );
-      });
+      yield* Effect.forkScoped(
+        refreshCheckedOutBranchUpstream(input.cwd).pipe(Effect.catch(() => Effect.void)),
+      );
     });
 
   const initRepo: GitCoreShape["initRepo"] = (input) =>
