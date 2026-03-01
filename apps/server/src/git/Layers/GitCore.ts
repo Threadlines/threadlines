@@ -368,6 +368,19 @@ const makeGitCore = Effect.gen(function* () {
       allowNonZeroExit: true,
     }).pipe(Effect.map((result) => result.code === 0));
 
+  const remoteBranchExists = (
+    cwd: string,
+    branch: string,
+  ): Effect.Effect<boolean, GitCommandError> =>
+    executeGit(
+      "GitCore.remoteBranchExists",
+      cwd,
+      ["show-ref", "--verify", "--quiet", `refs/remotes/origin/${branch}`],
+      {
+        allowNonZeroExit: true,
+      },
+    ).pipe(Effect.map((result) => result.code === 0));
+
   const resolveBaseBranchForNoUpstream = (
     cwd: string,
     branch: string,
@@ -388,12 +401,23 @@ const makeGitCore = Effect.gen(function* () {
       ];
 
       for (const candidate of candidates) {
-        if (!candidate || candidate === branch) {
+        if (!candidate) {
           continue;
         }
 
-        if (yield* branchExists(cwd, candidate)) {
-          return candidate;
+        const normalizedCandidate = candidate.startsWith("origin/")
+          ? candidate.slice("origin/".length)
+          : candidate;
+        if (normalizedCandidate.length === 0 || normalizedCandidate === branch) {
+          continue;
+        }
+
+        if (yield* branchExists(cwd, normalizedCandidate)) {
+          return normalizedCandidate;
+        }
+
+        if (yield* remoteBranchExists(cwd, normalizedCandidate)) {
+          return `origin/${normalizedCandidate}`;
         }
       }
 
