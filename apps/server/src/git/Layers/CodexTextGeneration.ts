@@ -105,6 +105,7 @@ const makeCodexTextGeneration = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const serverConfig = yield* Effect.service(ServerConfig);
 
   const readStreamAsString = <E>(
     operation: string,
@@ -180,7 +181,6 @@ const makeCodexTextGeneration = Effect.gen(function* () {
       if (!attachments || attachments.length === 0) {
         return [];
       }
-      const serverConfig = yield* Effect.serviceOption(ServerConfig);
 
       const imagePaths: string[] = [];
       for (const [index, attachment] of attachments.entries()) {
@@ -209,12 +209,10 @@ const makeCodexTextGeneration = Effect.gen(function* () {
           continue;
         }
 
-        const persistedPath = Option.isSome(serverConfig)
-          ? resolveAttachmentRoutePath({
-              stateDir: serverConfig.value.stateDir,
-              dataUrl: attachment.dataUrl,
-            })
-          : null;
+        const persistedPath = resolveAttachmentRoutePath({
+          stateDir: serverConfig.stateDir,
+          dataUrl: attachment.dataUrl,
+        });
         const localPath = persistedPath ?? attachment.dataUrl;
         if (!path.isAbsolute(localPath)) {
           continue;

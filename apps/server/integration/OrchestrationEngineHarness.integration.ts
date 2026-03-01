@@ -56,6 +56,7 @@ import {
   makeTestProviderAdapterHarness,
   type TestProviderAdapterHarness,
 } from "./TestProviderAdapter.integration.ts";
+import { ServerConfig } from "../src/config.ts";
 
 function runGit(cwd: string, args: ReadonlyArray<string>) {
   return execFileSync("git", args, {
@@ -229,19 +230,13 @@ export const makeOrchestrationIntegrationHarness = Effect.gen(function* () {
   const runtimeIngestionLayer = ProviderRuntimeIngestionLive.pipe(
     Layer.provideMerge(runtimeServicesLayer),
   );
-  const gitCoreLayer = Layer.succeed(
-    GitCore,
-    {
-      renameBranch: (input: Parameters<GitCoreShape["renameBranch"]>[0]) =>
-        Effect.succeed({ branch: input.newBranch }),
-    } as unknown as GitCoreShape,
-  );
-  const textGenerationLayer = Layer.succeed(
-    TextGeneration,
-    {
-      generateBranchName: () => Effect.succeed({ branch: null }),
-    } as unknown as TextGenerationShape,
-  );
+  const gitCoreLayer = Layer.succeed(GitCore, {
+    renameBranch: (input: Parameters<GitCoreShape["renameBranch"]>[0]) =>
+      Effect.succeed({ branch: input.newBranch }),
+  } as unknown as GitCoreShape);
+  const textGenerationLayer = Layer.succeed(TextGeneration, {
+    generateBranchName: () => Effect.succeed({ branch: null }),
+  } as unknown as TextGenerationShape);
   const providerCommandReactorLayer = ProviderCommandReactorLive.pipe(
     Layer.provideMerge(runtimeServicesLayer),
     Layer.provideMerge(gitCoreLayer),
@@ -257,6 +252,7 @@ export const makeOrchestrationIntegrationHarness = Effect.gen(function* () {
   );
   const layer = orchestrationReactorLayer.pipe(
     Layer.provide(persistenceLayer),
+    Layer.provideMerge(ServerConfig.layerTest(workspaceDir, stateDir)),
     Layer.provideMerge(NodeServices.layer),
   );
 

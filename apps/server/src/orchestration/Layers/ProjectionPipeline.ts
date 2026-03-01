@@ -96,11 +96,10 @@ const materializeAttachmentsForProjection = Effect.fn(function* (input: {
 }) {
   if (input.attachments.length === 0) return [];
 
-  const serverConfig = yield* Effect.serviceOption(ServerConfig);
-  if (Option.isNone(serverConfig)) return input.attachments;
+  const serverConfig = yield* Effect.service(ServerConfig);
 
   const path = yield* Path.Path;
-  const attachmentsRootDir = path.join(serverConfig.value.stateDir, "attachments");
+  const attachmentsRootDir = path.join(serverConfig.stateDir, "attachments");
   const threadSegment = toSafeThreadAttachmentSegment(input.threadId);
   if (!threadSegment) {
     yield* Effect.logWarning("skipping attachment materialization for unsafe thread id", {
@@ -289,20 +288,15 @@ function collectThreadAttachmentRelativePaths(
   return relativePaths;
 }
 
-const runAttachmentSideEffects = Effect.fn(function* (input: {
-  readonly sideEffects: AttachmentSideEffects;
-  readonly fileSystem: FileSystem.FileSystem;
-  readonly path: Path.Path;
-}) {
-  const serverConfig = yield* Effect.serviceOption(ServerConfig);
-  if (Option.isNone(serverConfig)) {
-    return;
-  }
+const runAttachmentSideEffects = Effect.fn(function* (sideEffects: AttachmentSideEffects) {
+  const serverConfig = yield* Effect.service(ServerConfig);
+  const fileSystem = yield* Effect.service(FileSystem.FileSystem);
+  const path = yield* Effect.service(Path.Path);
 
-  const attachmentsRootDir = input.path.join(serverConfig.value.stateDir, "attachments");
+  const attachmentsRootDir = path.join(serverConfig.stateDir, "attachments");
 
   yield* Effect.forEach(
-    input.sideEffects.deletedThreadIds,
+    sideEffects.deletedThreadIds,
     (threadId) =>
       Effect.gen(function* () {
         const threadSegment = toSafeThreadAttachmentSegment(threadId);
@@ -312,16 +306,16 @@ const runAttachmentSideEffects = Effect.fn(function* (input: {
           });
           return;
         }
-        const threadDir = input.path.join(attachmentsRootDir, threadSegment);
-        yield* input.fileSystem.remove(threadDir, { recursive: true, force: true });
+        const threadDir = path.join(attachmentsRootDir, threadSegment);
+        yield* fileSystem.remove(threadDir, { recursive: true, force: true });
       }),
     { concurrency: 1 },
   );
 
   yield* Effect.forEach(
-    input.sideEffects.prunedThreadRelativePaths.entries(),
+    sideEffects.prunedThreadRelativePaths.entries(),
     ([threadId, keptThreadRelativePaths]) => {
-      if (input.sideEffects.deletedThreadIds.has(threadId)) {
+      if (sideEffects.deletedThreadIds.has(threadId)) {
         return Effect.void;
       }
       return Effect.gen(function* () {
@@ -330,8 +324,8 @@ const runAttachmentSideEffects = Effect.fn(function* (input: {
           yield* Effect.logWarning("skipping attachment prune for unsafe thread id", { threadId });
           return;
         }
-        const threadDir = input.path.join(attachmentsRootDir, threadSegment);
-        const entries = yield* input.fileSystem
+        const threadDir = path.join(attachmentsRootDir, threadSegment);
+        const entries = yield* fileSystem
           .readDirectory(threadDir, { recursive: true })
           .pipe(Effect.catch(() => Effect.succeed([] as Array<string>)));
         yield* Effect.forEach(
@@ -343,8 +337,8 @@ const runAttachmentSideEffects = Effect.fn(function* (input: {
                 return;
               }
 
-              const absolutePath = input.path.join(threadDir, threadRelativePath);
-              const fileInfo = yield* input.fileSystem
+              const absolutePath = path.join(threadDir, threadRelativePath);
+              const fileInfo = yield* fileSystem
                 .stat(absolutePath)
                 .pipe(Effect.catch(() => Effect.succeed(null)));
               if (!fileInfo || fileInfo.type !== "File") {
@@ -352,7 +346,7 @@ const runAttachmentSideEffects = Effect.fn(function* (input: {
               }
 
               if (!keptThreadRelativePaths.has(threadRelativePath)) {
-                yield* input.fileSystem.remove(absolutePath, { force: true });
+                yield* fileSystem.remove(absolutePath, { force: true });
               }
             }),
           { concurrency: 1 },
@@ -363,7 +357,7 @@ const runAttachmentSideEffects = Effect.fn(function* (input: {
   );
 
   const writesByPath = new Map<string, Uint8Array>();
-  for (const pendingWrite of input.sideEffects.writes) {
+  for (const pendingWrite of sideEffects.writes) {
     // Last write wins for a path so updated attachment contents replace stale bytes.
     writesByPath.set(pendingWrite.absolutePath, pendingWrite.bytes);
   }
@@ -371,10 +365,10 @@ const runAttachmentSideEffects = Effect.fn(function* (input: {
     writesByPath.entries(),
     ([absolutePath, bytes]) =>
       Effect.gen(function* () {
-        yield* input.fileSystem.makeDirectory(input.path.dirname(absolutePath), {
+        yield* fileSystem.makeDirectory(path.dirname(absolutePath), {
           recursive: true,
         });
-        yield* input.fileSystem.writeFile(absolutePath, bytes);
+        yield* fileSystem.writeFile(absolutePath, bytes);
       }),
     { concurrency: 1 },
   );
@@ -394,6 +388,7 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
 
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const serverConfig = yield* ServerConfig;
 
   const applyProjectsProjection: ProjectorDefinition["apply"] = (event, _attachmentSideEffects) =>
     Effect.gen(function* () {
@@ -600,7 +595,10 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
                   stageFileWrite: (pendingWrite) => {
                     attachmentSideEffects.writes.push(pendingWrite);
                   },
-                }).pipe(Effect.provideService(Path.Path, path))
+                }).pipe(
+                  Effect.provideService(ServerConfig, serverConfig),
+                  Effect.provideService(Path.Path, path),
+                )
               : existingMessage?.attachments;
           yield* projectionThreadMessageRepository.upsert({
             messageId: event.payload.messageId,
@@ -1108,11 +1106,7 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
         ),
       );
 
-      yield* runAttachmentSideEffects({
-        sideEffects: attachmentSideEffects,
-        fileSystem,
-        path,
-      }).pipe(
+      yield* runAttachmentSideEffects(attachmentSideEffects).pipe(
         Effect.catch((cause) =>
           Effect.logWarning("failed to apply projected attachment side-effects", {
             projector: projector.name,
@@ -1144,6 +1138,9 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
     Effect.forEach(projectors, (projector) => runProjectorForEvent(projector, event), {
       concurrency: 1,
     }).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+      Effect.provideService(ServerConfig, serverConfig),
       Effect.asVoid,
       Effect.catchTag("SqlError", (sqlError) =>
         Effect.fail(toPersistenceSqlError("ProjectionPipeline.projectEvent:query")(sqlError)),
@@ -1155,6 +1152,9 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
     bootstrapProjector,
     { concurrency: 1 },
   ).pipe(
+    Effect.provideService(FileSystem.FileSystem, fileSystem),
+    Effect.provideService(Path.Path, path),
+    Effect.provideService(ServerConfig, serverConfig),
     Effect.asVoid,
     Effect.tap(() =>
       Effect.log("orchestration projection pipeline bootstrapped").pipe(

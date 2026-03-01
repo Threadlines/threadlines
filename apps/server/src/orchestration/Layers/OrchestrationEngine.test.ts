@@ -25,6 +25,8 @@ import {
   OrchestrationProjectionPipeline,
   type OrchestrationProjectionPipelineShape,
 } from "../Services/ProjectionPipeline.ts";
+import { ServerConfig } from "../../config.ts";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 
 const asProjectId = (value: string): ProjectId => ProjectId.makeUnsafe(value);
 const asMessageId = (value: string): MessageId => MessageId.makeUnsafe(value);
@@ -37,6 +39,8 @@ async function createOrchestrationSystem() {
     Layer.provide(OrchestrationEventStoreLive),
     Layer.provide(OrchestrationCommandReceiptRepositoryLive),
     Layer.provide(SqlitePersistenceMemory),
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(NodeServices.layer),
   );
   const runtime = ManagedRuntime.make(orchestrationLayer);
   const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
@@ -310,6 +314,8 @@ describe("OrchestrationEngine", () => {
         Layer.provide(Layer.succeed(OrchestrationEventStore, flakyStore)),
         Layer.provide(OrchestrationCommandReceiptRepositoryLive),
         Layer.provide(SqlitePersistenceMemory),
+        Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+        Layer.provideMerge(NodeServices.layer),
       ),
     );
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));

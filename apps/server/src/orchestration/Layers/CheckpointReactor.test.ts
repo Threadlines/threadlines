@@ -37,6 +37,7 @@ import {
   type ProviderServiceShape,
 } from "../../provider/Services/ProviderService.ts";
 import { checkpointRefForThreadTurn } from "../../checkpointing/Utils.ts";
+import { ServerConfig } from "../../config.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.makeUnsafe(value);
 const asSessionId = (value: string): ProviderSessionId => ProviderSessionId.makeUnsafe(value);
@@ -238,6 +239,7 @@ describe("CheckpointReactor", () => {
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
       Layer.provideMerge(CheckpointStoreLive),
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
       Layer.provideMerge(NodeServices.layer),
     );
 

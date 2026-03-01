@@ -3,27 +3,16 @@ import { it } from "@effect/vitest";
 import { Effect, FileSystem, Layer, Path } from "effect";
 import { expect } from "vitest";
 
-import { type ServerConfigShape, ServerConfig } from "../../config.ts";
+import { ServerConfig } from "../../config.ts";
 import { CodexTextGenerationLive } from "./CodexTextGeneration.ts";
 import { TextGenerationError } from "../Errors.ts";
 import { TextGeneration } from "../Services/TextGeneration.ts";
 
-function makeTestServerConfig(stateDir: string): ServerConfigShape {
-  return {
-    mode: "web",
-    port: 0,
-    host: undefined,
-    cwd: process.cwd(),
-    keybindingsConfigPath: "",
-    stateDir,
-    staticDir: undefined,
-    devUrl: undefined,
-    noBrowser: true,
-    authToken: undefined,
-    autoBootstrapProjectFromCwd: false,
-    logWebSocketEvents: false,
-  };
-}
+const makeCodexTextGenerationTestLayer = (stateDir: string) =>
+  CodexTextGenerationLive.pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), stateDir)),
+    Layer.provideMerge(NodeServices.layer),
+  );
 
 function makeFakeCodexBinary(dir: string) {
   return Effect.gen(function* () {
@@ -197,10 +186,7 @@ function withFakeCodexEnv<A, E, R>(
   );
 }
 
-const CodexTextGenerationTestLayer = Layer.provideMerge(
-  CodexTextGenerationLive,
-  NodeServices.layer,
-);
+const CodexTextGenerationTestLayer = makeCodexTextGenerationTestLayer(process.cwd());
 
 it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
   it.effect("generates and sanitizes commit messages", () =>
@@ -340,14 +326,10 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-state-textgen-" });
-        const imagePath = path.join(
-          stateDir,
-          "attachments",
-          "thread-1",
-          "message-1-0.png",
-        );
-        yield* fs.makeDirectory(path.join(stateDir, "attachments", "thread-1"), {
+        const uniqueSuffix = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        const imageFileName = `message-1-${uniqueSuffix}.png`;
+        const imagePath = path.join(process.cwd(), "attachments", "thread-1", imageFileName);
+        yield* fs.makeDirectory(path.join(process.cwd(), "attachments", "thread-1"), {
           recursive: true,
         });
         yield* fs.writeFile(imagePath, Buffer.from("hello"));
@@ -363,46 +345,52 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
                 name: "bug.png",
                 mimeType: "image/png",
                 sizeBytes: 5,
-                dataUrl: "/attachments/thread-1/message-1-0.png",
+                dataUrl: `/attachments/thread-1/${imageFileName}`,
               },
             ],
           })
-          .pipe(Effect.provideService(ServerConfig, makeTestServerConfig(stateDir)));
+          .pipe(
+            Effect.ensuring(
+              fs.remove(imagePath).pipe(Effect.catch(() => Effect.void)),
+            ),
+          );
 
         expect(generated.branch).toBe("fix/ui-regression");
       }),
     ),
   );
 
-  it.effect("fails with typed TextGenerationError when codex returns wrong branch payload shape", () =>
-    withFakeCodexEnv(
-      {
-        output: JSON.stringify({
-          title: "This is not a branch payload",
+  it.effect(
+    "fails with typed TextGenerationError when codex returns wrong branch payload shape",
+    () =>
+      withFakeCodexEnv(
+        {
+          output: JSON.stringify({
+            title: "This is not a branch payload",
+          }),
+        },
+        Effect.gen(function* () {
+          const textGeneration = yield* TextGeneration;
+
+          const result = yield* textGeneration
+            .generateBranchName({
+              cwd: process.cwd(),
+              message: "Fix websocket reconnect flake",
+            })
+            .pipe(
+              Effect.match({
+                onFailure: (error) => ({ _tag: "Left" as const, left: error }),
+                onSuccess: (value) => ({ _tag: "Right" as const, right: value }),
+              }),
+            );
+
+          expect(result._tag).toBe("Left");
+          if (result._tag === "Left") {
+            expect(result.left).toBeInstanceOf(TextGenerationError);
+            expect(result.left.message).toContain("Codex returned invalid structured output");
+          }
         }),
-      },
-      Effect.gen(function* () {
-        const textGeneration = yield* TextGeneration;
-
-        const result = yield* textGeneration
-          .generateBranchName({
-            cwd: process.cwd(),
-            message: "Fix websocket reconnect flake",
-          })
-          .pipe(
-            Effect.match({
-              onFailure: (error) => ({ _tag: "Left" as const, left: error }),
-              onSuccess: (value) => ({ _tag: "Right" as const, right: value }),
-            }),
-          );
-
-        expect(result._tag).toBe("Left");
-        if (result._tag === "Left") {
-          expect(result.left).toBeInstanceOf(TextGenerationError);
-          expect(result.left.message).toContain("Codex returned invalid structured output");
-        }
-      }),
-    ),
+      ),
   );
 
   it.effect("returns typed TextGenerationError when codex exits non-zero", () =>

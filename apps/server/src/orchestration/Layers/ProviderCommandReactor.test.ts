@@ -17,7 +17,7 @@ import {
 import { Effect, Exit, Layer, ManagedRuntime, PubSub, Scope, Stream } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { type ServerConfigShape, ServerConfig } from "../../config.ts";
+import { ServerConfig } from "../../config.ts";
 import { TextGenerationError } from "../../git/Errors.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
@@ -33,6 +33,7 @@ import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { ProviderCommandReactorLive } from "./ProviderCommandReactor.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 
 const asProjectId = (value: string): ProjectId => ProjectId.makeUnsafe(value);
 const asSessionId = (value: string): ProviderSessionId => ProviderSessionId.makeUnsafe(value);
@@ -41,23 +42,6 @@ const asApprovalRequestId = (value: string): ApprovalRequestId =>
   ApprovalRequestId.makeUnsafe(value);
 const asMessageId = (value: string): MessageId => MessageId.makeUnsafe(value);
 const asTurnId = (value: string): TurnId => TurnId.makeUnsafe(value);
-
-function makeTestServerConfig(stateDir: string): ServerConfigShape {
-  return {
-    mode: "web",
-    port: 0,
-    host: undefined,
-    cwd: process.cwd(),
-    keybindingsConfigPath: "",
-    stateDir,
-    staticDir: undefined,
-    devUrl: undefined,
-    noBrowser: true,
-    authToken: undefined,
-    autoBootstrapProjectFromCwd: false,
-    logWebSocketEvents: false,
-  };
-}
 
 async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -81,6 +65,7 @@ describe("ProviderCommandReactor", () => {
     unknown
   > | null = null;
   let scope: Scope.Closeable | null = null;
+  const createdStateDirs = new Set<string>();
 
   afterEach(async () => {
     if (scope) {
@@ -91,10 +76,16 @@ describe("ProviderCommandReactor", () => {
       await runtime.dispose();
     }
     runtime = null;
+    for (const stateDir of createdStateDirs) {
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+    createdStateDirs.clear();
   });
 
   async function createHarness(input?: { readonly stateDir?: string }) {
     const now = new Date().toISOString();
+    const stateDir = input?.stateDir ?? fs.mkdtempSync(path.join(os.tmpdir(), "t3code-reactor-"));
+    createdStateDirs.add(stateDir);
     const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
     let nextSessionIndex = 1;
     const startSession = vi.fn((_: unknown, __: unknown) => {
@@ -147,21 +138,18 @@ describe("ProviderCommandReactor", () => {
       Layer.provide(OrchestrationCommandReceiptRepositoryLive),
       Layer.provide(SqlitePersistenceMemory),
     );
-    const liveLayer = ProviderCommandReactorLive.pipe(
+    const layer = ProviderCommandReactorLive.pipe(
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(Layer.succeed(ProviderService, service)),
       Layer.provideMerge(Layer.succeed(GitCore, { renameBranch } as unknown as GitCoreShape)),
       Layer.provideMerge(
         Layer.succeed(TextGeneration, { generateBranchName } as unknown as TextGenerationShape),
       ),
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), stateDir)),
+      Layer.provideMerge(NodeServices.layer),
     );
-    const layer =
-      input?.stateDir !== undefined
-        ? liveLayer.pipe(
-            Layer.provideMerge(Layer.succeed(ServerConfig, makeTestServerConfig(input.stateDir))),
-          )
-        : liveLayer;
-    runtime = ManagedRuntime.make(layer);
+    const runtime = ManagedRuntime.make(layer);
+
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
     const reactor = await runtime.runPromise(Effect.service(ProviderCommandReactor));
     scope = await Effect.runPromise(Scope.make("sequential"));
@@ -202,6 +190,7 @@ describe("ProviderCommandReactor", () => {
       stopSession,
       renameBranch,
       generateBranchName,
+      stateDir,
     };
   }
 
@@ -294,7 +283,12 @@ describe("ProviderCommandReactor", () => {
           name: "bug.png",
           mimeType: "image/png",
           sizeBytes: 5,
-          dataUrl: "data:image/png;base64,SGVsbG8=",
+          dataUrl: path.join(
+            harness.stateDir,
+            "attachments",
+            "thread-1",
+            "user-message-worktree-rename-0.png",
+          ),
         },
       ],
     });

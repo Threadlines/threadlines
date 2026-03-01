@@ -36,7 +36,29 @@ export interface ServerConfigShape {
  */
 export class ServerConfig extends ServiceMap.Service<ServerConfig, ServerConfigShape>()(
   "t3/config/ServerConfig",
-) {}
+) {
+  static readonly layerTest = (cwd: string, statedir: string) =>
+    Layer.effect(
+      ServerConfig,
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        return {
+          cwd,
+          stateDir: statedir,
+          mode: "web",
+          autoBootstrapProjectFromCwd: false,
+          logWebSocketEvents: false,
+          port: 0,
+          host: undefined,
+          authToken: undefined,
+          keybindingsConfigPath: path.join(statedir, "keybindings.json"),
+          staticDir: undefined,
+          devUrl: undefined,
+          noBrowser: false,
+        };
+      }),
+    );
+}
 
 // Helpers
 

@@ -111,7 +111,7 @@ const make = Effect.gen(function* () {
   const providerService = yield* ProviderService;
   const git = yield* GitCore;
   const textGeneration = yield* TextGeneration;
-  const serverConfig = yield* Effect.serviceOption(ServerConfig);
+  const serverConfig = yield* Effect.service(ServerConfig);
   const handledTurnStartKeys = yield* Cache.make<string, true>({
     capacity: HANDLED_TURN_START_KEY_MAX,
     timeToLive: HANDLED_TURN_START_KEY_TTL,
@@ -301,20 +301,15 @@ const make = Effect.gen(function* () {
       return input.attachments ?? [];
     }
 
-    if (Option.isNone(serverConfig)) {
-      return input.attachments;
-    }
     const threadSegment = encodeURIComponent(input.threadId);
     const messageSegment = encodeURIComponent(input.messageId);
 
     return yield* Effect.forEach(Array.from(input.attachments.entries()), ([index, attachment]) =>
       Effect.gen(function* () {
-        if (attachment.type !== "image") {
-          return attachment;
-        }
+        if (attachment.type !== "image") return attachment;
 
         const resolvedRoutePath = resolveAttachmentRoutePath({
-          stateDir: serverConfig.value.stateDir,
+          stateDir: serverConfig.stateDir,
           dataUrl: attachment.dataUrl,
         });
         const resolvedMaterializedPath =
@@ -329,7 +324,7 @@ const make = Effect.gen(function* () {
               fileName: attachment.name,
             });
             return resolveAttachmentRelativePath({
-              stateDir: serverConfig.value.stateDir,
+              stateDir: serverConfig.stateDir,
               relativePath: `${threadSegment}/${messageSegment}-${index}${extension}`,
             });
           })();

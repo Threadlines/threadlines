@@ -28,11 +28,12 @@ import {
   type OrchestrationEngineShape,
 } from "../Services/OrchestrationEngine.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
+import { ServerConfig } from "../../config.ts";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 
 const asProjectId = (value: string): ProjectId => ProjectId.makeUnsafe(value);
 const asSessionId = (value: string): ProviderSessionId => ProviderSessionId.makeUnsafe(value);
-const asProviderThreadId = (value: string): ProviderThreadId =>
-  ProviderThreadId.makeUnsafe(value);
+const asProviderThreadId = (value: string): ProviderThreadId => ProviderThreadId.makeUnsafe(value);
 const asProviderTurnId = (value: string): ProviderTurnId => ProviderTurnId.makeUnsafe(value);
 const asItemId = (value: string): ProviderItemId => ProviderItemId.makeUnsafe(value);
 const asEventId = (value: string): EventId => EventId.makeUnsafe(value);
@@ -122,6 +123,8 @@ describe("ProviderRuntimeIngestion", () => {
     const layer = ProviderRuntimeIngestionLive.pipe(
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+      Layer.provideMerge(NodeServices.layer),
     );
     runtime = ManagedRuntime.make(layer);
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
@@ -255,7 +258,9 @@ describe("ProviderRuntimeIngestion", () => {
 
     await Effect.runPromise(Effect.sleep("40 millis"));
     const midReadModel = await Effect.runPromise(harness.engine.getReadModel());
-    const midThread = midReadModel.threads.find((entry) => entry.id === ThreadId.makeUnsafe("thread-1"));
+    const midThread = midReadModel.threads.find(
+      (entry) => entry.id === ThreadId.makeUnsafe("thread-1"),
+    );
     expect(midThread?.session?.status).toBe("running");
     expect(midThread?.session?.activeTurnId).toBe("turn-primary");
 
@@ -308,7 +313,9 @@ describe("ProviderRuntimeIngestion", () => {
 
     await Effect.runPromise(Effect.sleep("40 millis"));
     const midReadModel = await Effect.runPromise(harness.engine.getReadModel());
-    const midThread = midReadModel.threads.find((entry) => entry.id === ThreadId.makeUnsafe("thread-1"));
+    const midThread = midReadModel.threads.find(
+      (entry) => entry.id === ThreadId.makeUnsafe("thread-1"),
+    );
     expect(midThread?.session?.status).toBe("running");
     expect(midThread?.session?.activeTurnId).toBe("turn-guarded-main");
 
@@ -401,7 +408,9 @@ describe("ProviderRuntimeIngestion", () => {
 
     await Effect.runPromise(Effect.sleep("30 millis"));
     const midReadModel = await Effect.runPromise(harness.engine.getReadModel());
-    const midThread = midReadModel.threads.find((entry) => entry.id === ThreadId.makeUnsafe("thread-1"));
+    const midThread = midReadModel.threads.find(
+      (entry) => entry.id === ThreadId.makeUnsafe("thread-1"),
+    );
     expect(midThread?.messages.some((message) => message.id === "assistant:item-buffered")).toBe(
       false,
     );
@@ -416,10 +425,10 @@ describe("ProviderRuntimeIngestion", () => {
       itemId: asItemId("item-buffered"),
     });
 
-    const thread = await waitForThread(
-      harness.engine,
-      (entry) =>
-        entry.messages.some((message) => message.id === "assistant:item-buffered" && !message.streaming),
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.messages.some(
+        (message) => message.id === "assistant:item-buffered" && !message.streaming,
+      ),
     );
     const message = thread.messages.find((entry) => entry.id === "assistant:item-buffered");
     expect(message?.text).toBe("buffer me");
@@ -475,15 +484,13 @@ describe("ProviderRuntimeIngestion", () => {
       delta: "hello live",
     });
 
-    const liveThread = await waitForThread(
-      harness.engine,
-      (entry) =>
-        entry.messages.some(
-          (message) =>
-            message.id === "assistant:item-streaming-mode" &&
-            message.streaming &&
-            message.text === "hello live",
-        ),
+    const liveThread = await waitForThread(harness.engine, (entry) =>
+      entry.messages.some(
+        (message) =>
+          message.id === "assistant:item-streaming-mode" &&
+          message.streaming &&
+          message.text === "hello live",
+      ),
     );
     const liveMessage = liveThread.messages.find(
       (entry) => entry.id === "assistant:item-streaming-mode",
@@ -500,12 +507,10 @@ describe("ProviderRuntimeIngestion", () => {
       itemId: asItemId("item-streaming-mode"),
     });
 
-    const finalThread = await waitForThread(
-      harness.engine,
-      (entry) =>
-        entry.messages.some(
-          (message) => message.id === "assistant:item-streaming-mode" && !message.streaming,
-        ),
+    const finalThread = await waitForThread(harness.engine, (entry) =>
+      entry.messages.some(
+        (message) => message.id === "assistant:item-streaming-mode" && !message.streaming,
+      ),
     );
     const finalMessage = finalThread.messages.find(
       (entry) => entry.id === "assistant:item-streaming-mode",
@@ -554,12 +559,10 @@ describe("ProviderRuntimeIngestion", () => {
       itemId: asItemId("item-buffer-spill"),
     });
 
-    const thread = await waitForThread(
-      harness.engine,
-      (entry) =>
-        entry.messages.some(
-          (message) => message.id === "assistant:item-buffer-spill" && !message.streaming,
-        ),
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.messages.some(
+        (message) => message.id === "assistant:item-buffer-spill" && !message.streaming,
+      ),
     );
     const message = thread.messages.find((entry) => entry.id === "assistant:item-buffer-spill");
     expect(message?.text.length).toBe(oversizedText.length);
