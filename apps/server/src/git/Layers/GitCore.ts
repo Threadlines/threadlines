@@ -664,6 +664,38 @@ const makeGitCore = Effect.gen(function* () {
         );
       }
 
+      const remoteBranchResultEffect = executeGit(
+        "GitCore.listBranches.remoteBranches",
+        input.cwd,
+        ["branch", "--no-color", "--remotes"],
+        {
+          timeoutMs: 10_000,
+          allowNonZeroExit: true,
+        },
+      ).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning(
+            `GitCore.listBranches: remote branch lookup failed for ${input.cwd}: ${error.message}. Falling back to an empty remote branch list.`,
+          ).pipe(Effect.as({ code: 1, stdout: "", stderr: "" })),
+        ),
+      );
+
+      const remoteNamesResultEffect = executeGit(
+        "GitCore.listBranches.remoteNames",
+        input.cwd,
+        ["remote"],
+        {
+          timeoutMs: 5_000,
+          allowNonZeroExit: true,
+        },
+      ).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning(
+            `GitCore.listBranches: remote name lookup failed for ${input.cwd}: ${error.message}. Falling back to an empty remote name list.`,
+          ).pipe(Effect.as({ code: 1, stdout: "", stderr: "" })),
+        ),
+      );
+
       const [defaultRef, worktreeList, remoteBranchResult, remoteNamesResult, branchLastCommit] =
         yield* Effect.all(
         [
@@ -685,25 +717,24 @@ const makeGitCore = Effect.gen(function* () {
               allowNonZeroExit: true,
             },
           ),
-          executeGit(
-            "GitCore.listBranches.remoteBranches",
-            input.cwd,
-            ["branch", "--no-color", "--remotes"],
-            {
-              timeoutMs: 10_000,
-              allowNonZeroExit: true,
-            },
-          ),
-          executeGit("GitCore.listBranches.remoteNames", input.cwd, ["remote"], {
-            timeoutMs: 5_000,
-            allowNonZeroExit: true,
-          }),
+          remoteBranchResultEffect,
+          remoteNamesResultEffect,
           branchRecencyPromise,
         ],
         { concurrency: "unbounded" },
       );
 
       const remoteNames = remoteNamesResult.code === 0 ? parseRemoteNames(remoteNamesResult.stdout) : [];
+      if (remoteBranchResult.code !== 0 && remoteBranchResult.stderr.trim().length > 0) {
+        yield* Effect.logWarning(
+          `GitCore.listBranches: remote branch lookup returned code ${remoteBranchResult.code} for ${input.cwd}: ${remoteBranchResult.stderr.trim()}. Falling back to an empty remote branch list.`,
+        );
+      }
+      if (remoteNamesResult.code !== 0 && remoteNamesResult.stderr.trim().length > 0) {
+        yield* Effect.logWarning(
+          `GitCore.listBranches: remote name lookup returned code ${remoteNamesResult.code} for ${input.cwd}: ${remoteNamesResult.stderr.trim()}. Falling back to an empty remote name list.`,
+        );
+      }
 
       const defaultBranch =
         defaultRef.code === 0
