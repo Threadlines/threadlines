@@ -112,11 +112,10 @@ import { newCommandId, newMessageId } from "~/lib/utils";
 import { readNativeApi } from "~/nativeApi";
 import { getAppModelOptions, useAppSettings } from "../appSettings";
 import {
-  COMPOSER_DRAFT_STORAGE_KEY,
   type ComposerImageAttachment,
   type DraftThreadState,
   type PersistedComposerImageAttachment,
-  readPersistedComposerDraftAttachments,
+  readComposerDraftPersistStorageChars,
   useComposerDraftStore,
   useComposerThreadDraft,
 } from "../composerDraftStore";
@@ -292,18 +291,6 @@ function cloneComposerImageForRetry(image: ComposerImageAttachment): ComposerIma
     };
   } catch {
     return image;
-  }
-}
-
-function readComposerDraftStorageChars(): number | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
-  try {
-    const raw = window.localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY);
-    return raw?.length ?? 0;
-  } catch {
-    return null;
   }
 }
 
@@ -1286,7 +1273,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
             sizeBytes: attachment.sizeBytes,
             dataUrlChars: attachment.dataUrl.length,
           })),
-          storageCharsBefore: readComposerDraftStorageChars(),
+          storageCharsBefore: readComposerDraftPersistStorageChars(),
         });
         syncComposerDraftPersistedAttachments(
           threadId,
@@ -1296,11 +1283,12 @@ export default function ChatView({ threadId }: ChatViewProps) {
           threadId,
           stagedCount: stagedAttachmentIds.length,
           serializationFailedCount: serializationFailedImageIds.length,
-          storageCharsAfter: readComposerDraftStorageChars(),
+          storageCharsAfter: readComposerDraftPersistStorageChars(),
         });
       } catch (error) {
         const currentImageIds = new Set(composerImages.map((image) => image.id));
-        const fallbackPersistedAttachments = readPersistedComposerDraftAttachments(threadId);
+        const fallbackPersistedAttachments =
+          useComposerDraftStore.getState().draftsByThreadId[threadId]?.persistedAttachments ?? [];
         const fallbackPersistedIds = fallbackPersistedAttachments
           .map((attachment) => attachment.id)
           .filter((id) => currentImageIds.has(id));
@@ -1313,7 +1301,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           error: error instanceof Error ? error.message : String(error),
           imageIds: composerImages.map((image) => image.id),
           fallbackPersistedCount: fallbackPersistedIds.length,
-          storageChars: readComposerDraftStorageChars(),
+          storageChars: readComposerDraftPersistStorageChars(),
         });
         if (cancelled) {
           return;

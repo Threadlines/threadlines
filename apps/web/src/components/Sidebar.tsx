@@ -230,11 +230,15 @@ function ProjectFavicon({ cwd }: { cwd: string }) {
 export default function Sidebar() {
   const { state, dispatch } = useStore();
   const clearComposerDraftForThread = useComposerDraftStore((store) => store.clearThreadDraft);
-  const readDraftThread = useComposerDraftStore((store) => store.readDraftThread);
-  const readProjectDraftThreadId = useComposerDraftStore((store) => store.readProjectDraftThreadId);
+  const getDraftThreadByProjectId = useComposerDraftStore(
+    (store) => store.getDraftThreadByProjectId,
+  );
+  const getDraftThread = useComposerDraftStore((store) => store.getDraftThread);
   const setProjectDraftThreadId = useComposerDraftStore((store) => store.setProjectDraftThreadId);
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
-  const clearProjectDraftThreadId = useComposerDraftStore((store) => store.clearProjectDraftThreadId);
+  const clearProjectDraftThreadId = useComposerDraftStore(
+    (store) => store.clearProjectDraftThreadId,
+  );
   const clearProjectDraftThreadById = useComposerDraftStore(
     (store) => store.clearProjectDraftThreadById,
   );
@@ -275,15 +279,14 @@ export default function Sidebar() {
     [projectCwdById, state.threads],
   );
   const threadGitStatusCwds = useMemo(
-    () =>
-      [
-        ...new Set(
-          threadGitTargets
-            .filter((target) => target.branch !== null)
-            .map((target) => target.cwd)
-            .filter((cwd): cwd is string => cwd !== null),
-        ),
-      ],
+    () => [
+      ...new Set(
+        threadGitTargets
+          .filter((target) => target.branch !== null)
+          .map((target) => target.cwd)
+          .filter((cwd): cwd is string => cwd !== null),
+      ),
+    ],
     [threadGitTargets],
   );
   const threadGitStatusQueries = useQueries({
@@ -346,31 +349,28 @@ export default function Sidebar() {
     ): Promise<void> => {
       const hasBranchOption = options?.branch !== undefined;
       const hasWorktreePathOption = options?.worktreePath !== undefined;
-      const storedDraftThreadId = readProjectDraftThreadId(projectId);
-      const storedDraftThread = storedDraftThreadId ? readDraftThread(storedDraftThreadId) : null;
-      if (storedDraftThread && storedDraftThread.projectId === projectId && storedDraftThreadId) {
+      const storedDraftThread = getDraftThreadByProjectId(projectId);
+      if (storedDraftThread) {
         return (async () => {
           if (hasBranchOption || hasWorktreePathOption) {
-            setDraftThreadContext(storedDraftThreadId, {
+            setDraftThreadContext(storedDraftThread.threadId, {
               ...(hasBranchOption ? { branch: options?.branch ?? null } : {}),
               ...(hasWorktreePathOption ? { worktreePath: options?.worktreePath ?? null } : {}),
             });
           }
-          setProjectDraftThreadId(projectId, storedDraftThreadId);
-          if (routeThreadId === storedDraftThreadId) {
+          setProjectDraftThreadId(projectId, storedDraftThread.threadId);
+          if (routeThreadId === storedDraftThread.threadId) {
             return;
           }
           await navigate({
             to: "/$threadId",
-            params: { threadId: storedDraftThreadId },
+            params: { threadId: storedDraftThread.threadId },
           });
         })();
       }
-      if (storedDraftThreadId) {
-        clearProjectDraftThreadId(projectId);
-      }
+      clearProjectDraftThreadId(projectId);
 
-      const activeDraftThread = routeThreadId ? readDraftThread(routeThreadId) : null;
+      const activeDraftThread = routeThreadId ? getDraftThread(routeThreadId) : null;
       if (activeDraftThread && routeThreadId && activeDraftThread.projectId === projectId) {
         if (hasBranchOption || hasWorktreePathOption) {
           setDraftThreadContext(routeThreadId, {
@@ -398,9 +398,9 @@ export default function Sidebar() {
     },
     [
       clearProjectDraftThreadId,
+      getDraftThreadByProjectId,
       navigate,
-      readDraftThread,
-      readProjectDraftThreadId,
+      getDraftThread,
       routeThreadId,
       setDraftThreadContext,
       setProjectDraftThreadId,
@@ -632,9 +632,9 @@ export default function Sidebar() {
       if (!confirmed) return;
 
       try {
-        const projectDraftThreadId = readProjectDraftThreadId(projectId);
-        if (projectDraftThreadId) {
-          clearComposerDraftForThread(projectDraftThreadId);
+        const projectDraftThread = getDraftThreadByProjectId(projectId);
+        if (projectDraftThread) {
+          clearComposerDraftForThread(projectDraftThread.threadId);
         }
         clearProjectDraftThreadId(projectId);
         await api.orchestration.dispatchCommand({
@@ -655,7 +655,7 @@ export default function Sidebar() {
     [
       clearComposerDraftForThread,
       clearProjectDraftThreadId,
-      readProjectDraftThreadId,
+      getDraftThreadByProjectId,
       state.projects,
       state.threads,
     ],
@@ -666,9 +666,10 @@ export default function Sidebar() {
       const activeThread = routeThreadId
         ? state.threads.find((thread) => thread.id === routeThreadId)
         : undefined;
-      const activeDraftThread = routeThreadId ? readDraftThread(routeThreadId) : null;
+      const activeDraftThread = routeThreadId ? getDraftThread(routeThreadId) : null;
       if (isChatNewLocalShortcut(event, keybindings)) {
-        const projectId = activeThread?.projectId ?? activeDraftThread?.projectId ?? state.projects[0]?.id;
+        const projectId =
+          activeThread?.projectId ?? activeDraftThread?.projectId ?? state.projects[0]?.id;
         if (!projectId) return;
         event.preventDefault();
         void handleNewThread(projectId);
@@ -676,7 +677,8 @@ export default function Sidebar() {
       }
 
       if (!isChatNewShortcut(event, keybindings)) return;
-      const projectId = activeThread?.projectId ?? activeDraftThread?.projectId ?? state.projects[0]?.id;
+      const projectId =
+        activeThread?.projectId ?? activeDraftThread?.projectId ?? state.projects[0]?.id;
       if (!projectId) return;
       event.preventDefault();
       void handleNewThread(projectId, {
@@ -689,7 +691,7 @@ export default function Sidebar() {
     return () => {
       window.removeEventListener("keydown", onWindowKeyDown);
     };
-  }, [handleNewThread, keybindings, readDraftThread, routeThreadId, state.projects, state.threads]);
+  }, [handleNewThread, keybindings, routeThreadId, state.projects, state.threads]);
 
   const onCreateThreadClick = () => {
     if (state.projects.length === 0) {

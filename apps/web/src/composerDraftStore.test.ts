@@ -15,7 +15,10 @@ function makeImage(input: {
   const mimeType = input.mimeType ?? "image/png";
   const sizeBytes = input.sizeBytes ?? 4;
   const lastModified = input.lastModified ?? 1_700_000_000_000;
-  const file = new File([new Uint8Array(sizeBytes).fill(1)], name, { type: mimeType, lastModified });
+  const file = new File([new Uint8Array(sizeBytes).fill(1)], name, {
+    type: mimeType,
+    lastModified,
+  });
   return {
     type: "image",
     id: input.id,
@@ -166,16 +169,22 @@ describe("composerDraftStore project draft thread mapping", () => {
 
   it("stores and reads project draft thread ids via actions", () => {
     const store = useComposerDraftStore.getState();
-    expect(store.readProjectDraftThreadId(projectId)).toBeNull();
-    expect(store.readDraftThread(threadId)).toBeNull();
+    expect(store.getDraftThreadByProjectId(projectId)).toBeNull();
+    expect(store.getDraftThread(threadId)).toBeNull();
 
     store.setProjectDraftThreadId(projectId, threadId, {
       branch: "feature/test",
       worktreePath: "/tmp/worktree-test",
       createdAt: "2026-01-01T00:00:00.000Z",
     });
-    expect(useComposerDraftStore.getState().readProjectDraftThreadId(projectId)).toBe(threadId);
-    expect(useComposerDraftStore.getState().readDraftThread(threadId)).toEqual({
+    expect(useComposerDraftStore.getState().getDraftThreadByProjectId(projectId)).toEqual({
+      threadId,
+      projectId,
+      branch: "feature/test",
+      worktreePath: "/tmp/worktree-test",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    expect(useComposerDraftStore.getState().getDraftThread(threadId)).toEqual({
       projectId,
       branch: "feature/test",
       worktreePath: "/tmp/worktree-test",
@@ -188,27 +197,29 @@ describe("composerDraftStore project draft thread mapping", () => {
     store.setProjectDraftThreadId(projectId, threadId);
 
     store.clearProjectDraftThreadById(projectId, otherThreadId);
-    expect(useComposerDraftStore.getState().readProjectDraftThreadId(projectId)).toBe(threadId);
+    expect(useComposerDraftStore.getState().getDraftThreadByProjectId(projectId)?.threadId).toBe(
+      threadId,
+    );
 
     store.clearProjectDraftThreadById(projectId, threadId);
-    expect(useComposerDraftStore.getState().readProjectDraftThreadId(projectId)).toBeNull();
-    expect(useComposerDraftStore.getState().readDraftThread(threadId)).toBeNull();
+    expect(useComposerDraftStore.getState().getDraftThreadByProjectId(projectId)).toBeNull();
+    expect(useComposerDraftStore.getState().getDraftThread(threadId)).toBeNull();
   });
 
   it("clears project draft mapping by project id", () => {
     const store = useComposerDraftStore.getState();
     store.setProjectDraftThreadId(projectId, threadId);
     store.clearProjectDraftThreadId(projectId);
-    expect(useComposerDraftStore.getState().readProjectDraftThreadId(projectId)).toBeNull();
-    expect(useComposerDraftStore.getState().readDraftThread(threadId)).toBeNull();
+    expect(useComposerDraftStore.getState().getDraftThreadByProjectId(projectId)).toBeNull();
+    expect(useComposerDraftStore.getState().getDraftThread(threadId)).toBeNull();
   });
 
   it("clears draft registration independently", () => {
     const store = useComposerDraftStore.getState();
     store.setProjectDraftThreadId(projectId, threadId);
     store.clearDraftThread(threadId);
-    expect(useComposerDraftStore.getState().readProjectDraftThreadId(projectId)).toBeNull();
-    expect(useComposerDraftStore.getState().readDraftThread(threadId)).toBeNull();
+    expect(useComposerDraftStore.getState().getDraftThreadByProjectId(projectId)).toBeNull();
+    expect(useComposerDraftStore.getState().getDraftThread(threadId)).toBeNull();
   });
 
   it("updates branch context on an existing draft thread", () => {
@@ -221,8 +232,10 @@ describe("composerDraftStore project draft thread mapping", () => {
       branch: "feature/next",
       worktreePath: "/tmp/feature-next",
     });
-    expect(useComposerDraftStore.getState().readProjectDraftThreadId(projectId)).toBe(threadId);
-    expect(useComposerDraftStore.getState().readDraftThread(threadId)).toMatchObject({
+    expect(useComposerDraftStore.getState().getDraftThreadByProjectId(projectId)?.threadId).toBe(
+      threadId,
+    );
+    expect(useComposerDraftStore.getState().getDraftThread(threadId)).toMatchObject({
       projectId,
       branch: "feature/next",
       worktreePath: "/tmp/feature-next",

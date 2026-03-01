@@ -8,42 +8,9 @@ import {
 } from "@t3tools/contracts";
 import type { ChatImageAttachment } from "./types";
 import { create } from "zustand";
-import { createJSONStorage, persist, type StateStorage } from "zustand/middleware";
+import { createJSONStorage, persist } from "zustand/middleware";
 
 export const COMPOSER_DRAFT_STORAGE_KEY = "t3code:composer-drafts:v1";
-
-const SAFE_LOCAL_STORAGE: StateStorage = {
-  getItem: (key) => {
-    if (typeof window === "undefined") {
-      return null;
-    }
-    try {
-      return window.localStorage.getItem(key);
-    } catch {
-      return null;
-    }
-  },
-  setItem: (key, value) => {
-    if (typeof window === "undefined") {
-      return;
-    }
-    try {
-      window.localStorage.setItem(key, value);
-    } catch {
-      // Swallow quota/storage errors so draft state stays usable in-memory.
-    }
-  },
-  removeItem: (key) => {
-    if (typeof window === "undefined") {
-      return;
-    }
-    try {
-      window.localStorage.removeItem(key);
-    } catch {
-      // Best-effort cleanup.
-    }
-  },
-};
 
 export interface PersistedComposerImageAttachment {
   id: string;
@@ -79,7 +46,7 @@ interface PersistedComposerDraftStoreState {
   projectDraftThreadIdByProjectId: Record<ProjectId, ThreadId>;
 }
 
-export interface ComposerThreadDraftState {
+interface ComposerThreadDraftState {
   prompt: string;
   cursor: number;
   images: ComposerImageAttachment[];
@@ -96,13 +63,16 @@ export interface DraftThreadState {
   worktreePath: string | null;
 }
 
+interface ProjectDraftThread extends DraftThreadState {
+  threadId: ThreadId;
+}
+
 interface ComposerDraftStoreState {
   draftsByThreadId: Record<ThreadId, ComposerThreadDraftState>;
   draftThreadsByThreadId: Record<ThreadId, DraftThreadState>;
   projectDraftThreadIdByProjectId: Record<ProjectId, ThreadId>;
-  readDraftThread: (threadId: ThreadId) => DraftThreadState | null;
-  isDraftThread: (threadId: ThreadId) => boolean;
-  readProjectDraftThreadId: (projectId: ProjectId) => ThreadId | null;
+  getDraftThreadByProjectId: (projectId: ProjectId) => ProjectDraftThread | null;
+  getDraftThread: (threadId: ThreadId) => DraftThreadState | null;
   setProjectDraftThreadId: (
     projectId: ProjectId,
     threadId: ThreadId,
@@ -132,10 +102,22 @@ interface ComposerDraftStoreState {
   addImages: (threadId: ThreadId, images: ComposerImageAttachment[]) => void;
   removeImage: (threadId: ThreadId, imageId: string) => void;
   clearPersistedAttachments: (threadId: ThreadId) => void;
-  syncPersistedAttachments: (threadId: ThreadId, attachments: PersistedComposerImageAttachment[]) => void;
+  syncPersistedAttachments: (
+    threadId: ThreadId,
+    attachments: PersistedComposerImageAttachment[],
+  ) => void;
   clearComposerContent: (threadId: ThreadId) => void;
   clearThreadDraft: (threadId: ThreadId) => void;
 }
+
+const EMPTY_PERSISTED_DRAFT_STORE_STATE: PersistedComposerDraftStoreState = {
+  draftsByThreadId: {},
+  draftThreadsByThreadId: {},
+  projectDraftThreadIdByProjectId: {},
+};
+
+let persistedDraftStateCache: PersistedComposerDraftStoreState = EMPTY_PERSISTED_DRAFT_STORE_STATE;
+let persistedDraftStorageChars: number | null = null;
 
 const EMPTY_IMAGES: ComposerImageAttachment[] = [];
 const EMPTY_IDS: string[] = [];
@@ -223,7 +205,7 @@ function normalizePersistedAttachment(value: unknown): PersistedComposerImageAtt
 
 function normalizePersistedComposerDraftState(value: unknown): PersistedComposerDraftStoreState {
   if (!value || typeof value !== "object") {
-    return { draftsByThreadId: {}, draftThreadsByThreadId: {}, projectDraftThreadIdByProjectId: {} };
+    return EMPTY_PERSISTED_DRAFT_STORE_STATE;
   }
   const candidate = value as Record<string, unknown>;
   const rawDraftMap = candidate.draftsByThreadId;
@@ -250,7 +232,10 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
       }
       draftThreadsByThreadId[threadId as ThreadId] = {
         projectId: projectId as ProjectId,
-        createdAt: typeof createdAt === "string" && createdAt.length > 0 ? createdAt : new Date().toISOString(),
+        createdAt:
+          typeof createdAt === "string" && createdAt.length > 0
+            ? createdAt
+            : new Date().toISOString(),
         branch: typeof branch === "string" ? branch : null,
         worktreePath: typeof worktreePath === "string" ? worktreePath : null,
       };
@@ -258,7 +243,10 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
   }
   const projectDraftThreadIdByProjectId: PersistedComposerDraftStoreState["projectDraftThreadIdByProjectId"] =
     {};
-  if (rawProjectDraftThreadIdByProjectId && typeof rawProjectDraftThreadIdByProjectId === "object") {
+  if (
+    rawProjectDraftThreadIdByProjectId &&
+    typeof rawProjectDraftThreadIdByProjectId === "object"
+  ) {
     for (const [projectId, threadId] of Object.entries(
       rawProjectDraftThreadIdByProjectId as Record<string, unknown>,
     )) {
@@ -327,7 +315,35 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
       ...(effort ? { effort } : {}),
     };
   }
-  return { draftsByThreadId: nextDraftsByThreadId, draftThreadsByThreadId, projectDraftThreadIdByProjectId };
+  return {
+    draftsByThreadId: nextDraftsByThreadId,
+    draftThreadsByThreadId,
+    projectDraftThreadIdByProjectId,
+  };
+}
+
+function parsePersistedDraftStateRaw(raw: string | null): PersistedComposerDraftStoreState {
+  if (!raw) {
+    return EMPTY_PERSISTED_DRAFT_STORE_STATE;
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed && typeof parsed === "object" && "state" in parsed) {
+      return normalizePersistedComposerDraftState((parsed as { state?: unknown }).state);
+    }
+    return normalizePersistedComposerDraftState(parsed);
+  } catch {
+    return EMPTY_PERSISTED_DRAFT_STORE_STATE;
+  }
+}
+
+function readPersistedAttachmentIdsFromCache(threadId: ThreadId): string[] {
+  if (threadId.length === 0) {
+    return [];
+  }
+  return (persistedDraftStateCache.draftsByThreadId[threadId]?.attachments ?? []).map(
+    (attachment) => attachment.id,
+  );
 }
 
 function fileFromDataUrl(dataUrl: string, name: string, mimeType: string): File | null {
@@ -379,25 +395,6 @@ function hydrateImagesFromPersisted(
   });
 }
 
-function readPersistedDraftStateFromLocalStorage(): PersistedComposerDraftStoreState {
-  if (typeof window === "undefined") {
-    return { draftsByThreadId: {}, draftThreadsByThreadId: {}, projectDraftThreadIdByProjectId: {} };
-  }
-  try {
-    const raw = window.localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY);
-    if (!raw) {
-      return { draftsByThreadId: {}, draftThreadsByThreadId: {}, projectDraftThreadIdByProjectId: {} };
-    }
-    const parsed = JSON.parse(raw) as unknown;
-    if (parsed && typeof parsed === "object" && "state" in parsed) {
-      return normalizePersistedComposerDraftState((parsed as { state?: unknown }).state);
-    }
-    return normalizePersistedComposerDraftState(parsed);
-  } catch {
-    return { draftsByThreadId: {}, draftThreadsByThreadId: {}, projectDraftThreadIdByProjectId: {} };
-  }
-}
-
 function toHydratedThreadDraft(
   persistedDraft: PersistedComposerThreadDraftState,
 ): ComposerThreadDraftState {
@@ -412,29 +409,80 @@ function toHydratedThreadDraft(
   };
 }
 
+const composerDraftStorage = createJSONStorage(() => ({
+  getItem: (name: string): string | null => {
+    if (typeof window === "undefined") {
+      persistedDraftStateCache = EMPTY_PERSISTED_DRAFT_STORE_STATE;
+      persistedDraftStorageChars = null;
+      return null;
+    }
+    try {
+      const raw = window.localStorage.getItem(name);
+      persistedDraftStateCache = parsePersistedDraftStateRaw(raw);
+      persistedDraftStorageChars = raw?.length ?? 0;
+      return raw;
+    } catch {
+      persistedDraftStateCache = EMPTY_PERSISTED_DRAFT_STORE_STATE;
+      persistedDraftStorageChars = null;
+      return null;
+    }
+  },
+  setItem: (name: string, value: string): void => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    try {
+      window.localStorage.setItem(name, value);
+      persistedDraftStateCache = parsePersistedDraftStateRaw(value);
+      persistedDraftStorageChars = value.length;
+    } catch {
+      // Quota/storage errors are expected for large drafts. Keep last successful snapshot.
+    }
+  },
+  removeItem: (name: string): void => {
+    if (typeof window === "undefined") {
+      persistedDraftStateCache = EMPTY_PERSISTED_DRAFT_STORE_STATE;
+      persistedDraftStorageChars = null;
+      return;
+    }
+    try {
+      window.localStorage.removeItem(name);
+    } catch {
+      // Ignore remove failures; clear in-memory cache regardless.
+    }
+    persistedDraftStateCache = EMPTY_PERSISTED_DRAFT_STORE_STATE;
+    persistedDraftStorageChars = 0;
+  },
+}));
+
 export const useComposerDraftStore = create<ComposerDraftStoreState>()(
   persist(
     (set, get) => ({
       draftsByThreadId: {},
       draftThreadsByThreadId: {},
       projectDraftThreadIdByProjectId: {},
-      readDraftThread: (threadId) => {
+      getDraftThreadByProjectId: (projectId) => {
+        if (projectId.length === 0) {
+          return null;
+        }
+        const threadId = get().projectDraftThreadIdByProjectId[projectId];
+        if (!threadId) {
+          return null;
+        }
+        const draftThread = get().draftThreadsByThreadId[threadId];
+        if (!draftThread || draftThread.projectId !== projectId) {
+          return null;
+        }
+        return {
+          threadId,
+          ...draftThread,
+        };
+      },
+      getDraftThread: (threadId) => {
         if (threadId.length === 0) {
           return null;
         }
         return get().draftThreadsByThreadId[threadId] ?? null;
-      },
-      isDraftThread: (threadId) => {
-        if (threadId.length === 0) {
-          return false;
-        }
-        return get().draftThreadsByThreadId[threadId] !== undefined;
-      },
-      readProjectDraftThreadId: (projectId) => {
-        if (projectId.length === 0) {
-          return null;
-        }
-        return get().projectDraftThreadIdByProjectId[projectId] ?? null;
       },
       setProjectDraftThreadId: (projectId, threadId, options) => {
         if (projectId.length === 0 || threadId.length === 0) {
@@ -502,7 +550,9 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           const nextDraftThread: DraftThreadState = {
             projectId: nextProjectId,
             createdAt:
-              options.createdAt === undefined ? existing.createdAt : (options.createdAt || existing.createdAt),
+              options.createdAt === undefined
+                ? existing.createdAt
+                : options.createdAt || existing.createdAt,
             branch: options.branch === undefined ? existing.branch : (options.branch ?? null),
             worktreePath:
               options.worktreePath === undefined
@@ -544,7 +594,8 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           if (threadId === undefined) {
             return state;
           }
-          const { [projectId]: _removed, ...restProjectMappingsRaw } = state.projectDraftThreadIdByProjectId;
+          const { [projectId]: _removed, ...restProjectMappingsRaw } =
+            state.projectDraftThreadIdByProjectId;
           const restProjectMappings = restProjectMappingsRaw as Record<ProjectId, ThreadId>;
           const nextDraftThreadsByThreadId: Record<ThreadId, DraftThreadState> = {
             ...state.draftThreadsByThreadId,
@@ -566,7 +617,8 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           if (state.projectDraftThreadIdByProjectId[projectId] !== threadId) {
             return state;
           }
-          const { [projectId]: _removed, ...restProjectMappingsRaw } = state.projectDraftThreadIdByProjectId;
+          const { [projectId]: _removed, ...restProjectMappingsRaw } =
+            state.projectDraftThreadIdByProjectId;
           const restProjectMappings = restProjectMappingsRaw as Record<ProjectId, ThreadId>;
           const nextDraftThreadsByThreadId: Record<ThreadId, DraftThreadState> = {
             ...state.draftThreadsByThreadId,
@@ -586,7 +638,9 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
         }
         set((state) => {
           const hasDraftThread = state.draftThreadsByThreadId[threadId] !== undefined;
-          const hasProjectMapping = Object.values(state.projectDraftThreadIdByProjectId).includes(threadId);
+          const hasProjectMapping = Object.values(state.projectDraftThreadIdByProjectId).includes(
+            threadId,
+          );
           if (!hasDraftThread && !hasProjectMapping) {
             return state;
           }
@@ -681,9 +735,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           return;
         }
         const nextEffort =
-          effort &&
-          REASONING_EFFORT_VALUES.has(effort) &&
-          effort !== DEFAULT_REASONING
+          effort && REASONING_EFFORT_VALUES.has(effort) && effort !== DEFAULT_REASONING
             ? effort
             : null;
         set((state) => {
@@ -721,7 +773,9 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
         set((state) => {
           const existing = state.draftsByThreadId[threadId] ?? createEmptyThreadDraft();
           const existingIds = new Set(existing.images.map((image) => image.id));
-          const existingDedupKeys = new Set(existing.images.map((image) => composerImageDedupKey(image)));
+          const existingDedupKeys = new Set(
+            existing.images.map((image) => composerImageDedupKey(image)),
+          );
           const acceptedPreviewUrls = new Set(existing.images.map((image) => image.previewUrl));
           const dedupedIncoming: ComposerImageAttachment[] = [];
           for (const image of images) {
@@ -823,8 +877,8 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
             ...current,
             // Stage attempted attachments so persist middleware can try writing them.
             persistedAttachments: attachments,
-            nonPersistedImageIds: current.nonPersistedImageIds.filter((id) =>
-              !attachmentIdSet.has(id),
+            nonPersistedImageIds: current.nonPersistedImageIds.filter(
+              (id) => !attachmentIdSet.has(id),
             ),
           };
           const nextDraftsByThreadId = { ...state.draftsByThreadId };
@@ -836,7 +890,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           return { draftsByThreadId: nextDraftsByThreadId };
         });
         Promise.resolve().then(() => {
-          const persistedIdSet = new Set(readPersistedComposerDraftAttachmentIds(threadId));
+          const persistedIdSet = new Set(readPersistedAttachmentIdsFromCache(threadId));
           set((state) => {
             const current = state.draftsByThreadId[threadId];
             if (!current) {
@@ -903,7 +957,9 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
         set((state) => {
           const hasComposerDraft = state.draftsByThreadId[threadId] !== undefined;
           const hasDraftThread = state.draftThreadsByThreadId[threadId] !== undefined;
-          const hasProjectMapping = Object.values(state.projectDraftThreadIdByProjectId).includes(threadId);
+          const hasProjectMapping = Object.values(state.projectDraftThreadIdByProjectId).includes(
+            threadId,
+          );
           if (!hasComposerDraft && !hasDraftThread && !hasProjectMapping) {
             return state;
           }
@@ -927,7 +983,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
     {
       name: COMPOSER_DRAFT_STORAGE_KEY,
       version: 1,
-      storage: createJSONStorage(() => SAFE_LOCAL_STORAGE),
+      storage: composerDraftStorage,
       partialize: (state) => {
         const persistedDraftsByThreadId: PersistedComposerDraftStoreState["draftsByThreadId"] = {};
         for (const [threadId, draft] of Object.entries(state.draftsByThreadId)) {
@@ -963,6 +1019,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
       },
       merge: (persistedState, currentState) => {
         const normalizedPersisted = normalizePersistedComposerDraftState(persistedState);
+        persistedDraftStateCache = normalizedPersisted;
         const draftsByThreadId = Object.fromEntries(
           Object.entries(normalizedPersisted.draftsByThreadId).map(([threadId, draft]) => [
             threadId,
@@ -984,19 +1041,6 @@ export function useComposerThreadDraft(threadId: ThreadId): ComposerThreadDraftS
   return useComposerDraftStore((state) => state.draftsByThreadId[threadId] ?? EMPTY_THREAD_DRAFT);
 }
 
-export function readPersistedComposerDraftAttachmentIds(threadId: ThreadId): string[] {
-  if (threadId.length === 0) {
-    return [];
-  }
-  return readPersistedComposerDraftAttachments(threadId).map((attachment) => attachment.id);
-}
-
-export function readPersistedComposerDraftAttachments(
-  threadId: ThreadId,
-): PersistedComposerImageAttachment[] {
-  if (threadId.length === 0) {
-    return [];
-  }
-  const persisted = readPersistedDraftStateFromLocalStorage();
-  return persisted.draftsByThreadId[threadId]?.attachments ?? [];
+export function readComposerDraftPersistStorageChars(): number | null {
+  return persistedDraftStorageChars;
 }
