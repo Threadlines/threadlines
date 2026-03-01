@@ -14,7 +14,6 @@ import {
   normalizeModelSlug,
   type ProviderApprovalDecision,
   type ProviderEvent,
-  type ProviderSendTurnInput,
   type ProviderSession,
   type ProviderSessionStartInput,
   type ProviderTurnStartResult,
@@ -69,6 +68,14 @@ interface JsonRpcResponse {
 interface JsonRpcNotification {
   method: string;
   params?: unknown;
+}
+
+export interface CodexAppServerSendTurnInput {
+  readonly sessionId: ProviderSessionId;
+  readonly input?: string;
+  readonly attachments?: ReadonlyArray<{ type: "image"; url: string }>;
+  readonly model?: string;
+  readonly effort?: string;
 }
 
 export interface CodexThreadTurnSnapshot {
@@ -290,7 +297,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     }
   }
 
-  async sendTurn(input: ProviderSendTurnInput): Promise<ProviderTurnStartResult> {
+  async sendTurn(input: CodexAppServerSendTurnInput): Promise<ProviderTurnStartResult> {
     const context = this.requireSession(input.sessionId);
     if (!context.session.threadId) {
       throw new Error("Session is missing a thread id.");
@@ -310,7 +317,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       if (attachment.type === "image") {
         turnInput.push({
           type: "image",
-          url: attachment.dataUrl,
+          url: attachment.url,
         });
       }
     }

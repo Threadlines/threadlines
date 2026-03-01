@@ -229,6 +229,10 @@ function toAttachmentPreviewUrl(rawUrl: string): string {
   return rawUrl;
 }
 
+function attachmentPreviewRoutePath(attachmentId: string): string {
+  return `/attachments/${encodeURIComponent(attachmentId)}`;
+}
+
 function normalizeTerminalIds(terminalIds: string[]): string[] {
   const ids = terminalIds.map((id) => id.trim()).filter((id) => id.length > 0);
   const unique = [...new Set(ids)].slice(0, MAX_THREAD_TERMINAL_COUNT);
@@ -487,13 +491,13 @@ export function reducer(state: AppState, action: Action): AppState {
                 }
               : null,
             messages: thread.messages.map((message) => {
-              const attachments = message.attachments?.map((attachment, index) => ({
+              const attachments = message.attachments?.map((attachment) => ({
                 type: "image" as const,
-                id: `${message.id}:${index}`,
+                id: attachment.id,
                 name: attachment.name,
                 mimeType: attachment.mimeType,
                 sizeBytes: attachment.sizeBytes,
-                previewUrl: toAttachmentPreviewUrl(attachment.dataUrl),
+                previewUrl: toAttachmentPreviewUrl(attachmentPreviewRoutePath(attachment.id)),
               }));
               const normalizedMessage: ChatMessage = {
                 id: message.id,

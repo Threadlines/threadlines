@@ -3,10 +3,9 @@ import { randomUUID } from "node:crypto";
 import { Effect, FileSystem, Layer, Option, Path, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-import { resolveAttachmentRoutePath } from "../../attachmentPaths.ts";
+import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { TextGenerationError } from "../Errors.ts";
-import { inferImageExtension, parseBase64DataUrl } from "../../imageMime.ts";
 import {
   type BranchNameGenerationInput,
   type BranchNameGenerationResult,
@@ -109,7 +108,6 @@ const makeCodexTextGeneration = Effect.gen(function* () {
 
   type MaterializedImageAttachments = {
     readonly imagePaths: ReadonlyArray<string>;
-    readonly tempImagePaths: ReadonlyArray<string>;
   };
 
   const readStreamAsString = <E>(
@@ -151,96 +149,41 @@ const makeCodexTextGeneration = Effect.gen(function* () {
     );
   };
 
-  const writeTempBinaryFile = (
-    operation: string,
-    prefix: string,
-    bytes: Uint8Array,
-    extension: string,
-  ): Effect.Effect<string, TextGenerationError> => {
-    const normalizedExtension = extension.startsWith(".") ? extension : `.${extension}`;
-    const filePath = path.join(
-      tempDir,
-      `t3code-${prefix}-${process.pid}-${randomUUID()}${normalizedExtension}`,
-    );
-    return fileSystem.writeFile(filePath, bytes).pipe(
-      Effect.mapError(
-        (cause) =>
-          new TextGenerationError({
-            operation,
-            detail: `Failed to write temp file at ${filePath}.`,
-            cause,
-          }),
-      ),
-      Effect.as(filePath),
-    );
-  };
-
   const safeUnlink = (filePath: string): Effect.Effect<void, never> =>
     fileSystem.remove(filePath).pipe(Effect.catch(() => Effect.void));
 
   const materializeImageAttachments = (
-    operation: "generateCommitMessage" | "generatePrContent" | "generateBranchName",
+    _operation: "generateCommitMessage" | "generatePrContent" | "generateBranchName",
     attachments: BranchNameGenerationInput["attachments"],
-  ): Effect.Effect<MaterializedImageAttachments, TextGenerationError> => {
-    const tempImagePaths: string[] = [];
-
-    return Effect.gen(function* () {
+  ): Effect.Effect<MaterializedImageAttachments, TextGenerationError> =>
+    Effect.gen(function* () {
       if (!attachments || attachments.length === 0) {
-        return { imagePaths: [], tempImagePaths };
+        return { imagePaths: [] };
       }
 
       const imagePaths: string[] = [];
-      for (const [index, attachment] of attachments.entries()) {
+      for (const attachment of attachments) {
         if (attachment.type !== "image") {
           continue;
         }
 
-        const parsed = parseBase64DataUrl(attachment.dataUrl);
-        if (parsed && parsed.mimeType.startsWith("image/")) {
-          const bytes = Buffer.from(parsed.base64, "base64");
-          if (bytes.byteLength === 0) {
-            continue;
-          }
-
-          const extension = inferImageExtension({
-            mimeType: parsed.mimeType,
-            fileName: attachment.name,
-          });
-          const imagePath = yield* writeTempBinaryFile(
-            operation,
-            `codex-image-${index}`,
-            bytes,
-            extension,
-          );
-          imagePaths.push(imagePath);
-          tempImagePaths.push(imagePath);
-          continue;
-        }
-
-        const persistedPath = resolveAttachmentRoutePath({
+        const resolvedPath = resolveAttachmentPath({
           stateDir: serverConfig.stateDir,
-          dataUrl: attachment.dataUrl,
+          attachment,
         });
-        if (!persistedPath || !path.isAbsolute(persistedPath)) {
+        if (!resolvedPath || !path.isAbsolute(resolvedPath)) {
           continue;
         }
         const fileInfo = yield* fileSystem
-          .stat(persistedPath)
+          .stat(resolvedPath)
           .pipe(Effect.catch(() => Effect.succeed(null)));
         if (!fileInfo || fileInfo.type !== "File") {
           continue;
         }
-        imagePaths.push(persistedPath);
+        imagePaths.push(resolvedPath);
       }
-      return { imagePaths, tempImagePaths };
-    }).pipe(
-      Effect.tapError(() =>
-        Effect.all(tempImagePaths.map((filePath) => safeUnlink(filePath)), {
-          concurrency: "unbounded",
-        }).pipe(Effect.asVoid),
-      ),
-    );
-  };
+      return { imagePaths };
+    });
 
   const runCodexJson = <S extends Schema.Top>({
     operation,
@@ -454,10 +397,7 @@ const makeCodexTextGeneration = Effect.gen(function* () {
 
   const generateBranchName: TextGenerationShape["generateBranchName"] = (input) => {
     return Effect.gen(function* () {
-      const { imagePaths, tempImagePaths } = yield* materializeImageAttachments(
-        "generateBranchName",
-        input.attachments,
-      );
+      const { imagePaths } = yield* materializeImageAttachments("generateBranchName", input.attachments);
       const attachmentLines = (input.attachments ?? []).map(
         (attachment) =>
           `- ${attachment.name} (${attachment.mimeType}, ${attachment.sizeBytes} bytes)`,
@@ -492,7 +432,6 @@ const makeCodexTextGeneration = Effect.gen(function* () {
           branch: Schema.String,
         }),
         imagePaths,
-        cleanupPaths: tempImagePaths,
       });
 
       return {

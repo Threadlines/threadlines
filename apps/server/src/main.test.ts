@@ -49,10 +49,21 @@ const testLayer = Layer.mergeAll(
 const runCli = (
   args: ReadonlyArray<string>,
   env: Record<string, string> = { T3CODE_NO_BROWSER: "true" },
-) =>
-  Command.runWith(t3Cli, { version: "0.0.0-test" })(args).pipe(
-    Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env }))),
+) => {
+  const uniqueStateDir = `/tmp/t3-cli-state-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  return Command.runWith(t3Cli, { version: "0.0.0-test" })(args).pipe(
+    Effect.provide(
+      ConfigProvider.layer(
+        ConfigProvider.fromEnv({
+          env: {
+            T3CODE_STATE_DIR: uniqueStateDir,
+            ...env,
+          },
+        }),
+      ),
+    ),
   );
+};
 
 beforeEach(() => {
   vi.clearAllMocks();

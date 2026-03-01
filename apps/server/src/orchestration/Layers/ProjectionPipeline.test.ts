@@ -178,7 +178,7 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
     }),
   );
 
-  it.effect("materializes message image attachments into stateDir and stores URL references", () =>
+  it.effect("stores message attachment references without mutating payloads", () =>
     Effect.sync(() => fs.mkdtempSync(path.join(os.tmpdir(), "t3-projection-attachments-"))).pipe(
       Effect.flatMap((stateDir) =>
         Effect.gen(function* () {
@@ -205,10 +205,10 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
               attachments: [
                 {
                   type: "image",
+                  id: "thread-attachments-att-1",
                   name: "example.png",
                   mimeType: "image/png",
                   sizeBytes: 5,
-                  dataUrl: "data:image/png;base64,SGVsbG8=",
                 },
               ],
               turnId: null,
@@ -232,21 +232,12 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
           assert.deepEqual(JSON.parse(rows[0]?.attachmentsJson ?? "null"), [
             {
               type: "image",
+              id: "thread-attachments-att-1",
               name: "example.png",
               mimeType: "image/png",
               sizeBytes: 5,
-              dataUrl: "/attachments/thread-attachments/message-attachments-0.png",
             },
           ]);
-
-          const attachmentPath = path.join(
-            stateDir,
-            "attachments",
-            "thread-attachments",
-            "message-attachments-0.png",
-          );
-          assert.equal(fs.existsSync(attachmentPath), true);
-          assert.deepEqual(fs.readFileSync(attachmentPath), Buffer.from("SGVsbG8=", "base64"));
         }).pipe(
           (effect) => runWithProjectionPipelineLayer(stateDir, effect),
           Effect.ensuring(Effect.sync(() => fs.rmSync(stateDir, { recursive: true, force: true }))),
@@ -255,7 +246,7 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
     ),
   );
 
-  it.effect("materializes only image data URLs and uses a safe extension whitelist", () =>
+  it.effect("preserves mixed image attachment metadata as-is", () =>
     Effect.sync(() => fs.mkdtempSync(path.join(os.tmpdir(), "t3-projection-attachments-"))).pipe(
       Effect.flatMap((stateDir) =>
         Effect.gen(function* () {
@@ -282,17 +273,17 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
               attachments: [
                 {
                   type: "image",
+                  id: "thread-attachments-safe-att-1",
                   name: "untrusted.exe",
                   mimeType: "image/x-unknown",
                   sizeBytes: 5,
-                  dataUrl: "data:image/x-unknown;base64,SGVsbG8=",
                 },
                 {
                   type: "image",
+                  id: "thread-attachments-safe-att-2",
                   name: "not-image.png",
                   mimeType: "image/png",
                   sizeBytes: 5,
-                  dataUrl: "data:text/plain;base64,SGVsbG8=",
                 },
               ],
               turnId: null,
@@ -316,36 +307,19 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
           assert.deepEqual(JSON.parse(rows[0]?.attachmentsJson ?? "null"), [
             {
               type: "image",
+              id: "thread-attachments-safe-att-1",
               name: "untrusted.exe",
               mimeType: "image/x-unknown",
               sizeBytes: 5,
-              dataUrl: "/attachments/thread-attachments-safe/message-attachments-safe-0.bin",
             },
             {
               type: "image",
+              id: "thread-attachments-safe-att-2",
               name: "not-image.png",
               mimeType: "image/png",
               sizeBytes: 5,
-              dataUrl: "data:text/plain;base64,SGVsbG8=",
             },
           ]);
-
-          const firstAttachmentPath = path.join(
-            stateDir,
-            "attachments",
-            "thread-attachments-safe",
-            "message-attachments-safe-0.bin",
-          );
-          assert.equal(fs.existsSync(firstAttachmentPath), true);
-          assert.deepEqual(fs.readFileSync(firstAttachmentPath), Buffer.from("SGVsbG8=", "base64"));
-
-          const secondAttachmentPath = path.join(
-            stateDir,
-            "attachments",
-            "thread-attachments-safe",
-            "message-attachments-safe-1.png",
-          );
-          assert.equal(fs.existsSync(secondAttachmentPath), false);
         }).pipe(
           (effect) => runWithProjectionPipelineLayer(stateDir, effect),
           Effect.ensuring(Effect.sync(() => fs.rmSync(stateDir, { recursive: true, force: true }))),
@@ -425,10 +399,10 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
             attachments: [
               {
                 type: "image",
+                id: "thread-clear-attachments-att-1",
                 name: "clear.png",
                 mimeType: "image/png",
                 sizeBytes: 5,
-                dataUrl: "data:image/png;base64,SGVsbG8=",
               },
             ],
             turnId: null,
@@ -477,17 +451,18 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
   );
 
   it.effect(
-    "overwrites attachment file bytes when a message updates the same attachment index",
+    "overwrites stored attachment references when a message updates attachments",
     () =>
       Effect.sync(() =>
         fs.mkdtempSync(path.join(os.tmpdir(), "t3-projection-attachments-overwrite-")),
       ).pipe(
-        Effect.flatMap((stateDir) =>
-          Effect.gen(function* () {
-            const projectionPipeline = yield* OrchestrationProjectionPipeline;
-            const eventStore = yield* OrchestrationEventStore;
-            const now = new Date().toISOString();
-            const later = new Date(Date.now() + 1_000).toISOString();
+          Effect.flatMap((stateDir) =>
+            Effect.gen(function* () {
+              const projectionPipeline = yield* OrchestrationProjectionPipeline;
+              const eventStore = yield* OrchestrationEventStore;
+              const sql = yield* SqlClient.SqlClient;
+              const now = new Date().toISOString();
+              const later = new Date(Date.now() + 1_000).toISOString();
 
             yield* eventStore.append({
           type: "project.created",
@@ -550,10 +525,10 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
             attachments: [
               {
                 type: "image",
+                id: "thread-overwrite-att-1",
                 name: "file.png",
                 mimeType: "image/png",
                 sizeBytes: 5,
-                dataUrl: "data:image/png;base64,SGVsbG8=",
               },
             ],
             turnId: null,
@@ -581,10 +556,10 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
             attachments: [
               {
                 type: "image",
+                id: "thread-overwrite-att-2",
                 name: "file.png",
                 mimeType: "image/png",
                 sizeBytes: 5,
-                dataUrl: "data:image/png;base64,V29ybGQ=",
               },
             ],
             turnId: null,
@@ -596,14 +571,23 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
 
             yield* projectionPipeline.bootstrap;
 
-            const attachmentPath = path.join(
-              stateDir,
-              "attachments",
-              "thread-overwrite",
-              "message-overwrite-0.png",
-            );
-            assert.equal(fs.existsSync(attachmentPath), true);
-            assert.deepEqual(fs.readFileSync(attachmentPath), Buffer.from("V29ybGQ=", "base64"));
+            const rows = yield* sql<{
+              readonly attachmentsJson: string | null;
+            }>`
+              SELECT attachments_json AS "attachmentsJson"
+              FROM projection_thread_messages
+              WHERE message_id = 'message-overwrite'
+            `;
+            assert.equal(rows.length, 1);
+            assert.deepEqual(JSON.parse(rows[0]?.attachmentsJson ?? "null"), [
+              {
+                type: "image",
+                id: "thread-overwrite-att-2",
+                name: "file.png",
+                mimeType: "image/png",
+                sizeBytes: 5,
+              },
+            ]);
           }).pipe(
             (effect) => runWithProjectionPipelineLayer(stateDir, effect),
             Effect.ensuring(
@@ -701,10 +685,10 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
                 attachments: [
                   {
                     type: "image",
+                    id: "thread-rollback-att-1",
                     name: "rollback.png",
                     mimeType: "image/png",
                     sizeBytes: 5,
-                    dataUrl: "data:image/png;base64,SGVsbG8=",
                   },
                 ],
                 turnId: null,
@@ -728,8 +712,7 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
           const attachmentPath = path.join(
             stateDir,
             "attachments",
-            "thread-rollback",
-            "message-rollback-0.png",
+            "thread-rollback-att-1.png",
           );
           assert.equal(fs.existsSync(attachmentPath), false);
           yield* sql`DROP TRIGGER IF EXISTS fail_thread_messages_projection_state_update`;
@@ -839,10 +822,10 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
           attachments: [
             {
               type: "image",
+              id: "thread-revert-files-keep",
               name: "keep.png",
               mimeType: "image/png",
               sizeBytes: 5,
-              dataUrl: "data:image/png;base64,SGVsbG8=",
             },
           ],
           turnId: TurnId.makeUnsafe("turn-keep"),
@@ -892,10 +875,10 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
           attachments: [
             {
               type: "image",
+              id: "thread-revert-files-remove",
               name: "remove.png",
               mimeType: "image/png",
               sizeBytes: 5,
-              dataUrl: "data:image/png;base64,V29ybGQ=",
             },
           ],
           turnId: TurnId.makeUnsafe("turn-remove"),
@@ -908,15 +891,16 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
       const keepPath = path.join(
         stateDir,
         "attachments",
-        "thread-revert-files",
-        "message-keep-0.png",
+        "thread-revert-files-keep.png",
       );
       const removePath = path.join(
         stateDir,
         "attachments",
-        "thread-revert-files",
-        "message-remove-0.png",
+        "thread-revert-files-remove.png",
       );
+      fs.mkdirSync(path.join(stateDir, "attachments"), { recursive: true });
+      fs.writeFileSync(keepPath, Buffer.from("keep"));
+      fs.writeFileSync(removePath, Buffer.from("remove"));
       assert.equal(fs.existsSync(keepPath), true);
       assert.equal(fs.existsSync(removePath), true);
 
@@ -1022,10 +1006,10 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
           attachments: [
             {
               type: "image",
+              id: "thread-delete-files-att-1",
               name: "delete.png",
               mimeType: "image/png",
               sizeBytes: 5,
-              dataUrl: "data:image/png;base64,SGVsbG8=",
             },
           ],
           turnId: null,
@@ -1035,8 +1019,10 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
         },
       });
 
-      const threadAttachmentDir = path.join(stateDir, "attachments", "thread-delete-files");
-      assert.equal(fs.existsSync(threadAttachmentDir), true);
+      const threadAttachmentPath = path.join(stateDir, "attachments", "thread-delete-files-att-1.png");
+      fs.mkdirSync(path.join(stateDir, "attachments"), { recursive: true });
+      fs.writeFileSync(threadAttachmentPath, Buffer.from("delete"));
+      assert.equal(fs.existsSync(threadAttachmentPath), true);
 
       yield* appendAndProject({
         type: "thread.deleted",
@@ -1054,7 +1040,7 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
         },
       });
 
-          assert.equal(fs.existsSync(threadAttachmentDir), false);
+          assert.equal(fs.existsSync(threadAttachmentPath), false);
         }).pipe(
           (effect) => runWithProjectionPipelineLayer(stateDir, effect),
           Effect.ensuring(Effect.sync(() => fs.rmSync(stateDir, { recursive: true, force: true }))),

@@ -191,10 +191,7 @@ describe("sendTurn", () => {
       attachments: [
         {
           type: "image",
-          name: "error.png",
-          mimeType: "image/png",
-          sizeBytes: 1_024,
-          dataUrl: "data:image/png;base64,AAAA",
+          url: "data:image/png;base64,AAAA",
         },
       ],
       model: "gpt-5.3",
@@ -242,10 +239,7 @@ describe("sendTurn", () => {
       attachments: [
         {
           type: "image",
-          name: "diagram.png",
-          mimeType: "image/png",
-          sizeBytes: 256,
-          dataUrl: "data:image/png;base64,BBBB",
+          url: "data:image/png;base64,BBBB",
         },
       ],
     });

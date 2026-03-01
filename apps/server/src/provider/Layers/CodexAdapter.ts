@@ -17,7 +17,7 @@ import {
   ProviderThreadId,
   ProviderTurnId,
 } from "@t3tools/contracts";
-import { Effect, Layer, Queue, Schema, Stream } from "effect";
+import { Effect, FileSystem, Layer, Queue, Schema, Stream } from "effect";
 
 import {
   ProviderAdapterProcessError,
@@ -29,6 +29,8 @@ import {
 } from "../Errors.ts";
 import { CodexAdapter, type CodexAdapterShape } from "../Services/CodexAdapter.ts";
 import { CodexAppServerManager } from "../../codexAppServerManager.ts";
+import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import { ServerConfig } from "../../config.ts";
 import { makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 
 const PROVIDER = "codex" as const;
@@ -426,6 +428,8 @@ function mapToRuntimeEvents(event: ProviderEvent): ReadonlyArray<ProviderRuntime
 
 const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
   Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const serverConfig = yield* Effect.service(ServerConfig);
     const nativeEventLogger =
       options?.nativeEventLogPath !== undefined
         ? makeEventNdjsonLogger(options.nativeEventLogPath)
@@ -475,9 +479,46 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
     };
 
     const sendTurn: CodexAdapterShape["sendTurn"] = (input) =>
-      Effect.tryPromise({
-        try: () => manager.sendTurn(input),
-        catch: (cause) => toRequestError(input.sessionId, "turn/start", cause),
+      Effect.gen(function* () {
+        const codexAttachments = yield* Effect.forEach(
+          input.attachments ?? [],
+          (attachment) =>
+            Effect.gen(function* () {
+              const attachmentPath = resolveAttachmentPath({
+                stateDir: serverConfig.stateDir,
+                attachment,
+              });
+              if (!attachmentPath) {
+                return yield* toRequestError(
+                  input.sessionId,
+                  "turn/start",
+                  new Error(`Invalid attachment id '${attachment.id}'.`),
+                );
+              }
+              const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
+                Effect.mapError((cause) => toRequestError(input.sessionId, "turn/start", cause)),
+              );
+              return {
+                type: "image" as const,
+                url: `data:${attachment.mimeType};base64,${Buffer.from(bytes).toString("base64")}`,
+              };
+            }),
+          { concurrency: 1 },
+        );
+
+        return yield* Effect.tryPromise({
+          try: () => {
+            const managerInput = {
+              sessionId: input.sessionId,
+              ...(input.input !== undefined ? { input: input.input } : {}),
+              ...(input.model !== undefined ? { model: input.model } : {}),
+              ...(input.effort !== undefined ? { effort: input.effort } : {}),
+              ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
+            };
+            return manager.sendTurn(managerInput);
+          },
+          catch: (cause) => toRequestError(input.sessionId, "turn/start", cause),
+        });
       });
 
     const interruptTurn: CodexAdapterShape["interruptTurn"] = (sessionId, turnId) =>

@@ -294,28 +294,36 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
         stdinMustContain: "Attachment metadata:",
       },
       Effect.gen(function* () {
-        const textGeneration = yield* TextGeneration;
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const attachmentId = `thread-branch-image-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        const attachmentPath = path.join(process.cwd(), "attachments", `${attachmentId}.png`);
+        yield* fs.makeDirectory(path.join(process.cwd(), "attachments"), { recursive: true });
+        yield* fs.writeFile(attachmentPath, Buffer.from("hello"));
 
-        const generated = yield* textGeneration.generateBranchName({
-          cwd: process.cwd(),
-          message: "Fix layout bug from screenshot.",
-          attachments: [
-            {
-              type: "image",
-              name: "bug.png",
-              mimeType: "image/png",
-              sizeBytes: 5,
-              dataUrl: "data:image/png;base64,SGVsbG8=",
-            },
-          ],
-        });
+        const textGeneration = yield* TextGeneration;
+        const generated = yield* textGeneration
+          .generateBranchName({
+            cwd: process.cwd(),
+            message: "Fix layout bug from screenshot.",
+            attachments: [
+              {
+                type: "image",
+                id: attachmentId,
+                name: "bug.png",
+                mimeType: "image/png",
+                sizeBytes: 5,
+              },
+            ],
+          })
+          .pipe(Effect.ensuring(fs.remove(attachmentPath).pipe(Effect.catch(() => Effect.void))));
 
         expect(generated.branch).toBe("fix/ui-regression");
       }),
     ),
   );
 
-  it.effect("resolves persisted attachment URLs to files for codex image inputs", () =>
+  it.effect("resolves persisted attachment ids to files for codex image inputs", () =>
     withFakeCodexEnv(
       {
         output: JSON.stringify({
@@ -326,12 +334,10 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        const uniqueSuffix = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-        const imageFileName = `message-1-${uniqueSuffix}.png`;
-        const imagePath = path.join(process.cwd(), "attachments", "thread-1", imageFileName);
-        yield* fs.makeDirectory(path.join(process.cwd(), "attachments", "thread-1"), {
-          recursive: true,
-        });
+        const attachmentId =
+          `thread-1-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        const imagePath = path.join(process.cwd(), "attachments", `${attachmentId}.png`);
+        yield* fs.makeDirectory(path.join(process.cwd(), "attachments"), { recursive: true });
         yield* fs.writeFile(imagePath, Buffer.from("hello"));
 
         const textGeneration = yield* TextGeneration;
@@ -342,10 +348,10 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
             attachments: [
               {
                 type: "image",
+                id: attachmentId,
                 name: "bug.png",
                 mimeType: "image/png",
                 sizeBytes: 5,
-                dataUrl: `/attachments/thread-1/${imageFileName}`,
               },
             ],
           })
@@ -357,8 +363,6 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
                 }),
               ),
             ),
-          )
-          .pipe(
             Effect.ensuring(
               fs.remove(imagePath).pipe(Effect.catch(() => Effect.void)),
             ),
@@ -369,7 +373,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
     ),
   );
 
-  it.effect("ignores absolute non-route attachment paths for codex image inputs", () =>
+  it.effect("ignores missing attachment ids for codex image inputs", () =>
     withFakeCodexEnv(
       {
         output: JSON.stringify({
@@ -380,11 +384,9 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        const tempDir = yield* fs.makeTempDirectoryScoped({
-          prefix: "t3code-codex-attachment-bypass-",
-        });
-        const absoluteImagePath = path.join(tempDir, "outside.png");
-        yield* fs.writeFile(absoluteImagePath, Buffer.from("hello"));
+        const missingAttachmentId = `thread-missing-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        const missingPath = path.join(process.cwd(), "attachments", `${missingAttachmentId}.png`);
+        yield* fs.remove(missingPath).pipe(Effect.catch(() => Effect.void));
 
         const textGeneration = yield* TextGeneration;
         const result = yield* textGeneration
@@ -394,10 +396,10 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
             attachments: [
               {
                 type: "image",
+                id: missingAttachmentId,
                 name: "outside.png",
                 mimeType: "image/png",
                 sizeBytes: 5,
-                dataUrl: absoluteImagePath,
               },
             ],
           })

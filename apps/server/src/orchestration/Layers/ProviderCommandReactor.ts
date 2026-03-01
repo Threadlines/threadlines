@@ -12,17 +12,11 @@ import {
   type ProviderThreadId,
   type TurnId,
 } from "@t3tools/contracts";
-import { Cache, Cause, Duration, Effect, FileSystem, Layer, Option, Queue, Stream } from "effect";
+import { Cache, Cause, Duration, Effect, Layer, Option, Queue, Stream } from "effect";
 
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
-import {
-  resolveAttachmentRelativePath,
-  resolveAttachmentRoutePath,
-} from "../../attachmentPaths.ts";
-import { ServerConfig } from "../../config.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
 import { TextGeneration } from "../../git/Services/TextGeneration.ts";
-import { inferImageExtension, parseBase64DataUrl } from "../../imageMime.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import {
@@ -109,8 +103,6 @@ const make = Effect.gen(function* () {
   const providerService = yield* ProviderService;
   const git = yield* GitCore;
   const textGeneration = yield* TextGeneration;
-  const fileSystem = yield* FileSystem.FileSystem;
-  const serverConfig = yield* Effect.service(ServerConfig);
   const handledTurnStartKeys = yield* Cache.make<string, true>({
     capacity: HANDLED_TURN_START_KEY_MAX,
     timeToLive: HANDLED_TURN_START_KEY_TTL,
@@ -291,61 +283,6 @@ const make = Effect.gen(function* () {
     });
   });
 
-  const resolvePersistedAttachments = Effect.fnUntraced(function* (input: {
-    readonly threadId: ThreadId;
-    readonly messageId: string;
-    readonly attachments: ReadonlyArray<ChatAttachment> | undefined;
-  }) {
-    if (!input.attachments || input.attachments.length === 0) {
-      return input.attachments ?? [];
-    }
-
-    const threadSegment = encodeURIComponent(input.threadId);
-    const messageSegment = encodeURIComponent(input.messageId);
-
-    return yield* Effect.forEach(Array.from(input.attachments.entries()), ([index, attachment]) =>
-      Effect.gen(function* () {
-        if (attachment.type !== "image") return attachment;
-
-        const resolvedRoutePath = resolveAttachmentRoutePath({
-          stateDir: serverConfig.stateDir,
-          dataUrl: attachment.dataUrl,
-        });
-        const resolvedMaterializedPath =
-          resolvedRoutePath ??
-          (() => {
-            const parsed = parseBase64DataUrl(attachment.dataUrl);
-            if (!parsed || !parsed.mimeType.startsWith("image/")) {
-              return null;
-            }
-            const extension = inferImageExtension({
-              mimeType: parsed.mimeType,
-              fileName: attachment.name,
-            });
-            return resolveAttachmentRelativePath({
-              stateDir: serverConfig.stateDir,
-              relativePath: `${threadSegment}/${messageSegment}-${index}${extension}`,
-            });
-          })();
-
-        if (!resolvedMaterializedPath) {
-          return attachment;
-        }
-
-        const fileInfo = yield* fileSystem
-          .stat(resolvedMaterializedPath)
-          .pipe(Effect.catch(() => Effect.succeed(null)));
-        if (!fileInfo || fileInfo.type !== "File") {
-          return attachment;
-        }
-        return {
-          ...attachment,
-          dataUrl: resolvedMaterializedPath,
-        } satisfies ChatAttachment;
-      }),
-    );
-  });
-
   const maybeGenerateAndRenameWorktreeBranchForFirstTurn = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly branch: string | null;
@@ -440,19 +377,13 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    const branchGenerationAttachments = yield* resolvePersistedAttachments({
-      threadId: event.payload.threadId,
-      messageId: message.id,
-      attachments: message.attachments,
-    });
-
     yield* maybeGenerateAndRenameWorktreeBranchForFirstTurn({
       threadId: event.payload.threadId,
       branch: thread.branch,
       worktreePath: thread.worktreePath,
       messageId: message.id,
       messageText: message.text,
-      ...(message.attachments !== undefined ? { attachments: branchGenerationAttachments } : {}),
+      ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
     }).pipe(Effect.forkScoped);
 
     yield* sendTurnForThread({

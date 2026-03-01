@@ -60,12 +60,28 @@ export const PROVIDER_SEND_TURN_MAX_INPUT_CHARS = 120_000;
 export const PROVIDER_SEND_TURN_MAX_ATTACHMENTS = 8;
 export const PROVIDER_SEND_TURN_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 export const PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_CHARS = 14_000_000;
+export const CHAT_ATTACHMENT_ID_MAX_CHARS = 128;
 
 // Correlation id is command id by design in this model.
 export const CorrelationId = CommandId;
 export type CorrelationId = typeof CorrelationId.Type;
 
+export const ChatAttachmentId = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(CHAT_ATTACHMENT_ID_MAX_CHARS),
+  Schema.isPattern(/^[a-z0-9_-]+$/i),
+);
+export type ChatAttachmentId = typeof ChatAttachmentId.Type;
+
 export const ChatImageAttachment = Schema.Struct({
+  type: Schema.Literal("image"),
+  id: ChatAttachmentId,
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
+  mimeType: TrimmedNonEmptyString.check(Schema.isMaxLength(100), Schema.isPattern(/^image\//i)),
+  sizeBytes: NonNegativeInt.check(Schema.isLessThanOrEqualTo(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES)),
+});
+export type ChatImageAttachment = typeof ChatImageAttachment.Type;
+
+export const UploadChatImageAttachment = Schema.Struct({
   type: Schema.Literal("image"),
   name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
   mimeType: TrimmedNonEmptyString.check(Schema.isMaxLength(100), Schema.isPattern(/^image\//i)),
@@ -74,10 +90,12 @@ export const ChatImageAttachment = Schema.Struct({
     Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_CHARS),
   ),
 });
-export type ChatImageAttachment = typeof ChatImageAttachment.Type;
+export type UploadChatImageAttachment = typeof UploadChatImageAttachment.Type;
 
 export const ChatAttachment = Schema.Union([ChatImageAttachment]);
 export type ChatAttachment = typeof ChatAttachment.Type;
+export const UploadChatAttachment = Schema.Union([UploadChatImageAttachment]);
+export type UploadChatAttachment = typeof UploadChatAttachment.Type;
 
 export const ProjectScriptIcon = Schema.Literals([
   "play",
@@ -307,6 +325,24 @@ export const ThreadTurnStartCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+export const ClientThreadTurnStartCommand = Schema.Struct({
+  type: Schema.Literal("thread.turn.start"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  message: Schema.Struct({
+    messageId: MessageId,
+    role: Schema.Literal("user"),
+    text: Schema.String,
+    attachments: Schema.Array(UploadChatAttachment),
+  }),
+  model: Schema.optional(TrimmedNonEmptyString),
+  effort: Schema.optional(TrimmedNonEmptyString),
+  assistantDeliveryMode: Schema.optional(AssistantDeliveryMode),
+  approvalPolicy: ProviderApprovalPolicy,
+  sandboxMode: ProviderSandboxMode,
+  createdAt: IsoDateTime,
+});
+
 export const ThreadTurnInterruptCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.interrupt"),
   commandId: CommandId,
@@ -339,7 +375,7 @@ export const ThreadSessionStopCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
-export const ClientOrchestrationCommand = Schema.Union([
+export const DispatchableClientOrchestrationCommand = Schema.Union([
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,
   ProjectDeleteCommand,
@@ -347,6 +383,22 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadDeleteCommand,
   ThreadMetaUpdateCommand,
   ThreadTurnStartCommand,
+  ThreadTurnInterruptCommand,
+  ThreadApprovalRespondCommand,
+  ThreadCheckpointRevertCommand,
+  ThreadSessionStopCommand,
+]);
+export type DispatchableClientOrchestrationCommand =
+  typeof DispatchableClientOrchestrationCommand.Type;
+
+export const ClientOrchestrationCommand = Schema.Union([
+  ProjectCreateCommand,
+  ProjectMetaUpdateCommand,
+  ProjectDeleteCommand,
+  ThreadCreateCommand,
+  ThreadDeleteCommand,
+  ThreadMetaUpdateCommand,
+  ClientThreadTurnStartCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadCheckpointRevertCommand,
@@ -422,7 +474,7 @@ export const InternalOrchestrationCommand = Schema.Union([
 export type InternalOrchestrationCommand = typeof InternalOrchestrationCommand.Type;
 
 export const OrchestrationCommand = Schema.Union([
-  ClientOrchestrationCommand,
+  DispatchableClientOrchestrationCommand,
   InternalOrchestrationCommand,
 ]);
 export type OrchestrationCommand = typeof OrchestrationCommand.Type;

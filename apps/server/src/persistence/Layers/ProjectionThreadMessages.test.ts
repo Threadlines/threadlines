@@ -21,10 +21,10 @@ layer("ProjectionThreadMessageRepository", (it) => {
       const persistedAttachments = [
         {
           type: "image" as const,
+          id: "thread-preserve-attachments-att-1",
           name: "example.png",
           mimeType: "image/png",
           sizeBytes: 5,
-          dataUrl: "/attachments/thread-preserve-attachments/message-preserve-attachments/0.png",
         },
       ];
 
@@ -74,10 +74,10 @@ layer("ProjectionThreadMessageRepository", (it) => {
         attachments: [
           {
             type: "image",
+            id: "thread-clear-attachments-att-1",
             name: "example.png",
             mimeType: "image/png",
             sizeBytes: 5,
-            dataUrl: "/attachments/thread-clear-attachments/message-clear-attachments/0.png",
           },
         ],
         isStreaming: false,

@@ -4,7 +4,6 @@ import {
   ProviderItemId,
   type ProviderApprovalDecision,
   type ProviderEvent,
-  type ProviderSendTurnInput,
   ProviderSessionId,
   type ProviderSession,
   type ProviderSessionStartInput,
@@ -12,12 +11,17 @@ import {
   ProviderTurnId,
   type ProviderTurnStartResult,
 } from "@t3tools/contracts";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { afterAll, assert, it, vi } from "@effect/vitest";
 import { assertFailure } from "@effect/vitest/utils";
 
-import { Effect, Fiber, Stream } from "effect";
+import { Effect, Fiber, Layer, Stream } from "effect";
 
-import { CodexAppServerManager } from "../../codexAppServerManager.ts";
+import {
+  CodexAppServerManager,
+  type CodexAppServerSendTurnInput,
+} from "../../codexAppServerManager.ts";
+import { ServerConfig } from "../../config.ts";
 import { ProviderAdapterValidationError } from "../Errors.ts";
 import { CodexAdapter } from "../Services/CodexAdapter.ts";
 import { makeCodexAdapterLive } from "./CodexAdapter.ts";
@@ -44,7 +48,7 @@ class FakeCodexManager extends CodexAppServerManager {
   );
 
   public sendTurnImpl = vi.fn(
-    async (_input: ProviderSendTurnInput): Promise<ProviderTurnStartResult> => ({
+    async (_input: CodexAppServerSendTurnInput): Promise<ProviderTurnStartResult> => ({
       threadId: ProviderThreadId.makeUnsafe("thread-1"),
       turnId: asTurnId("turn-1"),
     }),
@@ -78,7 +82,7 @@ class FakeCodexManager extends CodexAppServerManager {
     return this.startSessionImpl(input);
   }
 
-  override sendTurn(input: ProviderSendTurnInput): Promise<ProviderTurnStartResult> {
+  override sendTurn(input: CodexAppServerSendTurnInput): Promise<ProviderTurnStartResult> {
     return this.sendTurnImpl(input);
   }
 
@@ -118,7 +122,12 @@ class FakeCodexManager extends CodexAppServerManager {
 }
 
 const validationManager = new FakeCodexManager();
-const validationLayer = it.layer(makeCodexAdapterLive({ manager: validationManager }));
+const validationLayer = it.layer(
+  makeCodexAdapterLive({ manager: validationManager }).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(NodeServices.layer),
+  ),
+);
 
 validationLayer("CodexAdapterLive validation", (it) => {
   it.effect("returns validation error for non-codex provider on startSession", () =>
@@ -147,7 +156,12 @@ const sessionErrorManager = new FakeCodexManager();
 sessionErrorManager.sendTurnImpl.mockImplementation(async () => {
   throw new Error("Unknown session: sess-missing");
 });
-const sessionErrorLayer = it.layer(makeCodexAdapterLive({ manager: sessionErrorManager }));
+const sessionErrorLayer = it.layer(
+  makeCodexAdapterLive({ manager: sessionErrorManager }).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(NodeServices.layer),
+  ),
+);
 
 sessionErrorLayer("CodexAdapterLive session errors", (it) => {
   it.effect("maps unknown-session sendTurn errors to ProviderAdapterSessionNotFoundError", () =>
@@ -178,7 +192,12 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
 });
 
 const lifecycleManager = new FakeCodexManager();
-const lifecycleLayer = it.layer(makeCodexAdapterLive({ manager: lifecycleManager }));
+const lifecycleLayer = it.layer(
+  makeCodexAdapterLive({ manager: lifecycleManager }).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(NodeServices.layer),
+  ),
+);
 
 lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
   it.effect("maps completed agent message items to canonical message.completed events", () =>

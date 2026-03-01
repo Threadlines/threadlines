@@ -1,7 +1,7 @@
 import path from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Effect, Layer } from "effect";
+import { Effect, FileSystem, Layer } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { CheckpointDiffQueryLive } from "./checkpointing/Layers/CheckpointDiffQuery";
@@ -37,7 +37,7 @@ import { NodePtyAdapterLive } from "./terminal/Layers/NodePTY";
 export function makeServerProviderLayer(): Layer.Layer<
   ProviderService,
   ProviderUnsupportedError,
-  SqlClient.SqlClient | ServerConfig
+  SqlClient.SqlClient | ServerConfig | FileSystem.FileSystem
 > {
   return Effect.gen(function* () {
     const { stateDir } = yield* ServerConfig;

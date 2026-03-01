@@ -258,10 +258,10 @@ describe("ProviderCommandReactor", () => {
           attachments: [
             {
               type: "image",
+              id: "thread-1-att-rename",
               name: "bug.png",
               mimeType: "image/png",
               sizeBytes: 5,
-              dataUrl: "data:image/png;base64,SGVsbG8=",
             },
           ],
         },
@@ -280,15 +280,10 @@ describe("ProviderCommandReactor", () => {
       attachments: [
         {
           type: "image",
+          id: "thread-1-att-rename",
           name: "bug.png",
           mimeType: "image/png",
           sizeBytes: 5,
-          dataUrl: path.join(
-            harness.stateDir,
-            "attachments",
-            "thread-1",
-            "user-message-worktree-rename-0.png",
-          ),
         },
       ],
     });
@@ -307,9 +302,8 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
-  it("reuses persisted attachment files for branch generation and turn start", async () => {
-    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3code-reactor-attachments-"));
-    const harness = await createHarness({ stateDir });
+  it("passes persisted attachment references to branch generation and turn start", async () => {
+    const harness = await createHarness();
     const now = new Date().toISOString();
 
     await Effect.runPromise(
@@ -334,10 +328,10 @@ describe("ProviderCommandReactor", () => {
           attachments: [
             {
               type: "image",
+              id: "thread-1-att-persisted",
               name: "bug.png",
               mimeType: "image/png",
               sizeBytes: 5,
-              dataUrl: "data:image/png;base64,SGVsbG8=",
             },
           ],
         },
@@ -350,23 +344,16 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.generateBranchName.mock.calls.length === 1);
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
 
-    const expectedAttachmentPath = path.join(
-      stateDir,
-      "attachments",
-      "thread-1",
-      "user-message-persisted-attachments-0.png",
-    );
-
     expect(harness.generateBranchName.mock.calls[0]?.[0]).toEqual({
       cwd: "/tmp/provider-project/.t3/worktrees/t3code-abcdef12",
       message: "Fix visual bug from screenshot",
       attachments: [
         {
           type: "image",
+          id: "thread-1-att-persisted",
           name: "bug.png",
           mimeType: "image/png",
           sizeBytes: 5,
-          dataUrl: expectedAttachmentPath,
         },
       ],
     });
@@ -374,14 +361,13 @@ describe("ProviderCommandReactor", () => {
       attachments: [
         {
           type: "image",
+          id: "thread-1-att-persisted",
           name: "bug.png",
           mimeType: "image/png",
           sizeBytes: 5,
-          dataUrl: "data:image/png;base64,SGVsbG8=",
         },
       ],
     });
-    expect(fs.existsSync(expectedAttachmentPath)).toBe(true);
   });
 
   it("skips worktree branch generation after the first user turn", async () => {

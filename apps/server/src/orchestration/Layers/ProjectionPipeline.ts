@@ -37,8 +37,7 @@ import {
   OrchestrationProjectionPipeline,
   type OrchestrationProjectionPipelineShape,
 } from "../Services/ProjectionPipeline.ts";
-import { ATTACHMENTS_ROUTE_PREFIX, attachmentRouteToRelativePath } from "../../attachmentPaths.ts";
-import { inferImageExtension, parseBase64DataUrl } from "../../imageMime.ts";
+import { attachmentRelativePath } from "../../attachmentStore.ts";
 
 export const ORCHESTRATION_PROJECTOR_NAMES = {
   projects: "projection.projects",
@@ -62,13 +61,7 @@ interface ProjectorDefinition {
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 }
 
-interface PendingAttachmentWrite {
-  readonly absolutePath: string;
-  readonly bytes: Uint8Array;
-}
-
 interface AttachmentSideEffects {
-  readonly writes: Array<PendingAttachmentWrite>;
   readonly deletedThreadIds: Set<string>;
   readonly prunedThreadRelativePaths: Map<string, Set<string>>;
 }
@@ -89,62 +82,10 @@ function toSafeThreadAttachmentSegment(threadId: string): string | null {
 }
 
 const materializeAttachmentsForProjection = Effect.fn(function* (input: {
-  readonly threadId: string;
-  readonly messageId: string;
   readonly attachments: ReadonlyArray<ChatAttachment>;
-  readonly stageFileWrite: (pendingWrite: PendingAttachmentWrite) => void;
 }) {
   if (input.attachments.length === 0) return [];
-
-  const serverConfig = yield* Effect.service(ServerConfig);
-
-  const path = yield* Path.Path;
-  const attachmentsRootDir = path.join(serverConfig.stateDir, "attachments");
-  const threadSegment = toSafeThreadAttachmentSegment(input.threadId);
-  if (!threadSegment) {
-    yield* Effect.logWarning("skipping attachment materialization for unsafe thread id", {
-      threadId: input.threadId,
-      messageId: input.messageId,
-    });
-    return input.attachments;
-  }
-  const messageSegment = encodeURIComponent(input.messageId);
-
-  return yield* Effect.forEach(
-    input.attachments,
-    (attachment, index) =>
-      Effect.sync(() => {
-        if (attachment.type !== "image" || !attachment.dataUrl.startsWith("data:")) {
-          return attachment;
-        }
-
-        const parsed = parseBase64DataUrl(attachment.dataUrl);
-        if (!parsed) {
-          return attachment;
-        }
-        if (!parsed.mimeType.startsWith("image/")) {
-          return attachment;
-        }
-
-        const bytes = Buffer.from(parsed.base64, "base64");
-        if (bytes.byteLength === 0) return attachment;
-
-        const fileName = `${index}${inferImageExtension({
-          mimeType: parsed.mimeType,
-          fileName: attachment.name,
-        })}`;
-        const uniqueFileName = `${messageSegment}-${fileName}`;
-        const relativePath = `${threadSegment}/${uniqueFileName}`;
-        const absolutePath = path.join(attachmentsRootDir, threadSegment, uniqueFileName);
-        input.stageFileWrite({ absolutePath, bytes });
-
-        return {
-          ...attachment,
-          dataUrl: `${ATTACHMENTS_ROUTE_PREFIX}/${relativePath}`,
-        } satisfies ChatAttachment;
-      }),
-    { concurrency: 1 },
-  );
+  return input.attachments;
 });
 
 function extractActivityRequestId(payload: unknown): ApprovalRequestId | null {
@@ -267,22 +208,16 @@ function collectThreadAttachmentRelativePaths(
   if (!threadSegment) {
     return new Set();
   }
-  const threadPrefix = `${threadSegment}/`;
   const relativePaths = new Set<string>();
   for (const message of messages) {
     for (const attachment of message.attachments ?? []) {
       if (attachment.type !== "image") {
         continue;
       }
-      const relativePath = attachmentRouteToRelativePath(attachment.dataUrl);
-      if (!relativePath || !relativePath.startsWith(threadPrefix)) {
+      if (!attachment.id.startsWith(`${threadSegment}-`)) {
         continue;
       }
-      const threadRelativePath = relativePath.slice(threadPrefix.length).replace(/^[/\\]+/, "");
-      if (threadRelativePath.length === 0 || threadRelativePath.startsWith("..")) {
-        continue;
-      }
-      relativePaths.add(threadRelativePath.replace(/\\/g, "/"));
+      relativePaths.add(attachmentRelativePath(attachment));
     }
   }
   return relativePaths;
@@ -306,8 +241,26 @@ const runAttachmentSideEffects = Effect.fn(function* (sideEffects: AttachmentSid
           });
           return;
         }
-        const threadDir = path.join(attachmentsRootDir, threadSegment);
-        yield* fileSystem.remove(threadDir, { recursive: true, force: true });
+        const entries = yield* fileSystem
+          .readDirectory(attachmentsRootDir, { recursive: false })
+          .pipe(Effect.catch(() => Effect.succeed([] as Array<string>)));
+        yield* Effect.forEach(
+          entries,
+          (entry) =>
+            Effect.gen(function* () {
+              const normalizedEntry = entry.replace(/^[/\\]+/, "").replace(/\\/g, "/");
+              if (normalizedEntry.length === 0 || normalizedEntry.includes("/")) {
+                return;
+              }
+              if (!normalizedEntry.startsWith(`${threadSegment}-`)) {
+                return;
+              }
+              yield* fileSystem.remove(path.join(attachmentsRootDir, normalizedEntry), {
+                force: true,
+              });
+            }),
+          { concurrency: 1 },
+        );
       }),
     { concurrency: 1 },
   );
@@ -324,20 +277,22 @@ const runAttachmentSideEffects = Effect.fn(function* (sideEffects: AttachmentSid
           yield* Effect.logWarning("skipping attachment prune for unsafe thread id", { threadId });
           return;
         }
-        const threadDir = path.join(attachmentsRootDir, threadSegment);
         const entries = yield* fileSystem
-          .readDirectory(threadDir, { recursive: true })
+          .readDirectory(attachmentsRootDir, { recursive: false })
           .pipe(Effect.catch(() => Effect.succeed([] as Array<string>)));
         yield* Effect.forEach(
           entries,
           (entry) =>
             Effect.gen(function* () {
-              const threadRelativePath = entry.replace(/^[/\\]+/, "").replace(/\\/g, "/");
-              if (threadRelativePath.length === 0 || threadRelativePath.startsWith("..")) {
+              const relativePath = entry.replace(/^[/\\]+/, "").replace(/\\/g, "/");
+              if (relativePath.length === 0 || relativePath.includes("/")) {
+                return;
+              }
+              if (!relativePath.startsWith(`${threadSegment}-`)) {
                 return;
               }
 
-              const absolutePath = path.join(threadDir, threadRelativePath);
+              const absolutePath = path.join(attachmentsRootDir, relativePath);
               const fileInfo = yield* fileSystem
                 .stat(absolutePath)
                 .pipe(Effect.catch(() => Effect.succeed(null)));
@@ -345,7 +300,7 @@ const runAttachmentSideEffects = Effect.fn(function* (sideEffects: AttachmentSid
                 return;
               }
 
-              if (!keptThreadRelativePaths.has(threadRelativePath)) {
+              if (!keptThreadRelativePaths.has(relativePath)) {
                 yield* fileSystem.remove(absolutePath, { force: true });
               }
             }),
@@ -356,22 +311,6 @@ const runAttachmentSideEffects = Effect.fn(function* (sideEffects: AttachmentSid
     { concurrency: 1 },
   );
 
-  const writesByPath = new Map<string, Uint8Array>();
-  for (const pendingWrite of sideEffects.writes) {
-    // Last write wins for a path so updated attachment contents replace stale bytes.
-    writesByPath.set(pendingWrite.absolutePath, pendingWrite.bytes);
-  }
-  yield* Effect.forEach(
-    writesByPath.entries(),
-    ([absolutePath, bytes]) =>
-      Effect.gen(function* () {
-        yield* fileSystem.makeDirectory(path.dirname(absolutePath), {
-          recursive: true,
-        });
-        yield* fileSystem.writeFile(absolutePath, bytes);
-      }),
-    { concurrency: 1 },
-  );
 });
 
 const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
@@ -589,16 +528,8 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           const nextAttachments =
             event.payload.attachments !== undefined
               ? yield* materializeAttachmentsForProjection({
-                  threadId: event.payload.threadId,
-                  messageId: event.payload.messageId,
                   attachments: event.payload.attachments,
-                  stageFileWrite: (pendingWrite) => {
-                    attachmentSideEffects.writes.push(pendingWrite);
-                  },
-                }).pipe(
-                  Effect.provideService(ServerConfig, serverConfig),
-                  Effect.provideService(Path.Path, path),
-                )
+                })
               : existingMessage?.attachments;
           yield* projectionThreadMessageRepository.upsert({
             messageId: event.payload.messageId,
@@ -1089,7 +1020,6 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
   const runProjectorForEvent = (projector: ProjectorDefinition, event: OrchestrationEvent) =>
     Effect.gen(function* () {
       const attachmentSideEffects: AttachmentSideEffects = {
-        writes: [],
         deletedThreadIds: new Set<string>(),
         prunedThreadRelativePaths: new Map<string, Set<string>>(),
       };
