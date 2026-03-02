@@ -21,6 +21,8 @@ import {
   $createParagraphNode,
   $createTextNode,
   KEY_ARROW_DOWN_COMMAND,
+  KEY_ARROW_LEFT_COMMAND,
+  KEY_ARROW_RIGHT_COMMAND,
   KEY_ARROW_UP_COMMAND,
   KEY_ENTER_COMMAND,
   KEY_TAB_COMMAND,
@@ -97,6 +99,8 @@ class ComposerMentionNode extends TextNode {
     const dom = document.createElement("span");
     dom.className =
       "inline-flex select-none items-center gap-1 rounded-md border border-border/70 bg-accent/40 px-1.5 py-px font-medium text-[12px] leading-[1.1] text-foreground align-middle";
+    dom.contentEditable = "false";
+    dom.setAttribute("spellcheck", "false");
     renderMentionChipDom(dom, this.__path);
     return dom;
   }
@@ -106,6 +110,7 @@ class ComposerMentionNode extends TextNode {
     dom: HTMLElement,
     _config: EditorConfig,
   ): boolean {
+    dom.contentEditable = "false";
     if (prevNode.__text !== this.__text || prevNode.__path !== this.__path) {
       renderMentionChipDom(dom, this.__path);
     }
@@ -144,18 +149,25 @@ function inferMentionPathKind(pathValue: string): "file" | "directory" {
   return "directory";
 }
 
+function resolvedThemeFromDocument(): "light" | "dark" {
+  return document.documentElement.classList.contains("dark") ? "dark" : "light";
+}
+
 function renderMentionChipDom(container: HTMLElement, pathValue: string): void {
   container.textContent = "";
+  container.style.setProperty("user-select", "none");
+  container.style.setProperty("-webkit-user-select", "none");
 
+  const theme = resolvedThemeFromDocument();
   const icon = document.createElement("img");
   icon.alt = "";
   icon.ariaHidden = "true";
   icon.className = "size-3.5 shrink-0 opacity-85";
   icon.loading = "lazy";
-  icon.src = getVscodeIconUrlForEntry(pathValue, inferMentionPathKind(pathValue), "dark");
+  icon.src = getVscodeIconUrlForEntry(pathValue, inferMentionPathKind(pathValue), theme);
 
   const label = document.createElement("span");
-  label.className = "truncate leading-tight";
+  label.className = "truncate select-none leading-tight";
   label.textContent = basenameOfPath(pathValue);
 
   container.append(icon, label);
@@ -167,6 +179,9 @@ function clampCursor(value: string, cursor: number): number {
 }
 
 function getComposerNodeTextLength(node: LexicalNode): number {
+  if (node instanceof ComposerMentionNode) {
+    return 1;
+  }
   if ($isTextNode(node)) {
     return node.getTextContentSize();
   }
@@ -199,6 +214,9 @@ function getAbsoluteOffsetForPoint(node: LexicalNode, pointOffset: number): numb
   }
 
   if ($isTextNode(node)) {
+    if (node instanceof ComposerMentionNode) {
+      return offset + (pointOffset > 0 ? 1 : 0);
+    }
     return offset + Math.min(pointOffset, node.getTextContentSize());
   }
 
@@ -224,6 +242,28 @@ function findSelectionPointAtOffset(
   node: LexicalNode,
   remainingRef: { value: number },
 ): { key: string; offset: number; type: "text" | "element" } | null {
+  if (node instanceof ComposerMentionNode) {
+    const parent = node.getParent();
+    if (!parent || !$isElementNode(parent)) return null;
+    const index = node.getIndexWithinParent();
+    if (remainingRef.value === 0) {
+      return {
+        key: parent.getKey(),
+        offset: index,
+        type: "element",
+      };
+    }
+    if (remainingRef.value === 1) {
+      return {
+        key: parent.getKey(),
+        offset: index + 1,
+        type: "element",
+      };
+    }
+    remainingRef.value -= 1;
+    return null;
+  }
+
   if ($isTextNode(node)) {
     const size = node.getTextContentSize();
     if (remainingRef.value <= size) {
@@ -279,10 +319,16 @@ function findSelectionPointAtOffset(
   return null;
 }
 
+function $getComposerRootLength(): number {
+  const root = $getRoot();
+  const children = root.getChildren();
+  return children.reduce((sum, child) => sum + getComposerNodeTextLength(child), 0);
+}
+
 function $setSelectionAtComposerOffset(nextOffset: number): void {
   const root = $getRoot();
-  const rootText = root.getTextContent();
-  const boundedOffset = clampCursor(rootText, nextOffset);
+  const composerLength = $getComposerRootLength();
+  const boundedOffset = Math.max(0, Math.min(nextOffset, composerLength));
   const remainingRef = { value: boundedOffset };
   const point =
     findSelectionPointAtOffset(root, remainingRef) ?? {
@@ -301,9 +347,10 @@ function $readSelectionOffsetFromEditorState(fallback: number): number {
   if (!$isRangeSelection(selection) || !selection.isCollapsed()) {
     return fallback;
   }
-  const rootText = $getRoot().getTextContent();
   const anchorNode = selection.anchor.getNode();
-  return clampCursor(rootText, getAbsoluteOffsetForPoint(anchorNode, selection.anchor.offset));
+  const offset = getAbsoluteOffsetForPoint(anchorNode, selection.anchor.offset);
+  const composerLength = $getComposerRootLength();
+  return Math.max(0, Math.min(offset, composerLength));
 }
 
 function $appendTextWithLineBreaks(parent: ElementNode, text: string): void {
@@ -412,6 +459,83 @@ function ComposerCommandKeyPlugin(props: {
       unregisterTab();
     };
   }, [editor, props]);
+
+  return null;
+}
+
+function ComposerMentionArrowPlugin() {
+  const [editor] = useLexicalComposerContext();
+
+  useEffect(() => {
+    const unregisterLeft = editor.registerCommand(
+      KEY_ARROW_LEFT_COMMAND,
+      () => {
+        let currentOffset = -1;
+        editor.getEditorState().read(() => {
+          const selection = $getSelection();
+          if (!$isRangeSelection(selection) || !selection.isCollapsed()) return;
+          currentOffset = $readSelectionOffsetFromEditorState(0);
+        });
+        if (currentOffset <= 0) return false;
+        editor.update(() => {
+          $setSelectionAtComposerOffset(currentOffset - 1);
+        });
+        return true;
+      },
+      COMMAND_PRIORITY_HIGH,
+    );
+    const unregisterRight = editor.registerCommand(
+      KEY_ARROW_RIGHT_COMMAND,
+      () => {
+        let currentOffset = -1;
+        let composerLength = 0;
+        editor.getEditorState().read(() => {
+          const selection = $getSelection();
+          if (!$isRangeSelection(selection) || !selection.isCollapsed()) return;
+          composerLength = $getComposerRootLength();
+          currentOffset = $readSelectionOffsetFromEditorState(0);
+        });
+        if (currentOffset < 0 || currentOffset >= composerLength) return false;
+        editor.update(() => {
+          $setSelectionAtComposerOffset(currentOffset + 1);
+        });
+        return true;
+      },
+      COMMAND_PRIORITY_HIGH,
+    );
+    return () => {
+      unregisterLeft();
+      unregisterRight();
+    };
+  }, [editor]);
+
+  return null;
+}
+
+function ComposerMentionSelectionNormalizePlugin() {
+  const [editor] = useLexicalComposerContext();
+
+  useEffect(() => {
+    return editor.registerUpdateListener(({ editorState }) => {
+      let afterOffset: number | null = null;
+      editorState.read(() => {
+        const selection = $getSelection();
+        if (!$isRangeSelection(selection) || !selection.isCollapsed()) return;
+        const anchorNode = selection.anchor.getNode();
+        if (!(anchorNode instanceof ComposerMentionNode)) return;
+        if (selection.anchor.offset === 0) return;
+        const beforeOffset = getAbsoluteOffsetForPoint(anchorNode, 0);
+        afterOffset = beforeOffset + 1;
+      });
+      if (afterOffset !== null) {
+        queueMicrotask(() => {
+          editor.update(() => {
+            $setSelectionAtComposerOffset(afterOffset!);
+          });
+        });
+      }
+    });
+  }, [editor]);
 
   return null;
 }
@@ -618,6 +742,8 @@ function ComposerPromptEditorInner({
       />
       <OnChangePlugin onChange={handleEditorChange} />
       <ComposerCommandKeyPlugin {...(onCommandKeyDown ? { onCommandKeyDown } : {})} />
+      <ComposerMentionArrowPlugin />
+      <ComposerMentionSelectionNormalizePlugin />
       <ComposerMentionBackspacePlugin />
       <HistoryPlugin />
     </div>

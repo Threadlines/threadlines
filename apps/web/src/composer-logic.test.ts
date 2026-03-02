@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { detectComposerTrigger, replaceTextRange } from "./composer-logic";
+import {
+  detectComposerTrigger,
+  expandCollapsedComposerCursor,
+  replaceTextRange,
+} from "./composer-logic";
 
 describe("detectComposerTrigger", () => {
   it("detects @path trigger at cursor", () => {
@@ -47,5 +51,29 @@ describe("replaceTextRange", () => {
       text: "hello ",
       cursor: 6,
     });
+  });
+});
+
+describe("expandCollapsedComposerCursor", () => {
+  it("keeps cursor unchanged when no mention segment is present", () => {
+    expect(expandCollapsedComposerCursor("plain text", 5)).toBe(5);
+  });
+
+  it("maps collapsed mention cursor to expanded text cursor", () => {
+    const text = "what's in my @AGENTS.md fsfdas";
+    const collapsedCursorAfterMention = "what's in my ".length + 2;
+    const expandedCursorAfterMention = "what's in my @AGENTS.md ".length;
+
+    expect(expandCollapsedComposerCursor(text, collapsedCursorAfterMention)).toBe(
+      expandedCursorAfterMention,
+    );
+  });
+
+  it("allows path trigger detection to close after selecting a mention", () => {
+    const text = "what's in my @AGENTS.md ";
+    const collapsedCursorAfterMention = "what's in my ".length + 2;
+    const expandedCursor = expandCollapsedComposerCursor(text, collapsedCursorAfterMention);
+
+    expect(detectComposerTrigger(text, expandedCursor)).toBeNull();
   });
 });

@@ -40,6 +40,7 @@ import {
   type ComposerTrigger,
   type ComposerTriggerKind,
   detectComposerTrigger,
+  expandCollapsedComposerCursor,
   replaceTextRange,
 } from "../composer-logic";
 import {
@@ -365,7 +366,7 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
   return (
     <CommandItem
       value={props.item.id}
-      className="cursor-pointer gap-2"
+      className="cursor-pointer select-none gap-2"
       onMouseDown={(event) => {
         event.preventDefault();
       }}
@@ -2195,9 +2196,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
     trigger: ComposerTrigger | null;
   } => {
     const snapshot = readComposerSnapshot();
+    const expandedCursor = expandCollapsedComposerCursor(snapshot.value, snapshot.cursor);
     return {
       snapshot,
-      trigger: detectComposerTrigger(snapshot.value, snapshot.cursor),
+      trigger: detectComposerTrigger(snapshot.value, expandedCursor),
     };
   }, [readComposerSnapshot]);
 
@@ -2276,7 +2278,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
     promptRef.current = nextPrompt;
     setPrompt(nextPrompt);
     setComposerCursor(nextCursor);
-    setComposerTrigger(detectComposerTrigger(nextPrompt, nextCursor));
+    setComposerTrigger(
+      detectComposerTrigger(nextPrompt, expandCollapsedComposerCursor(nextPrompt, nextCursor)),
+    );
   }, [setPrompt]);
 
   const onComposerCommandKey = (key: "ArrowDown" | "ArrowUp" | "Enter" | "Tab", event: KeyboardEvent) => {

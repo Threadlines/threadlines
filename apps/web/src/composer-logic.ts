@@ -1,3 +1,5 @@
+import { splitPromptIntoComposerSegments } from "./composer-editor-mentions";
+
 export type ComposerTriggerKind = "path" | "slash-command" | "slash-model";
 
 export interface ComposerTrigger {
@@ -22,6 +24,38 @@ function tokenStartForCursor(text: string, cursor: number): number {
     index -= 1;
   }
   return index + 1;
+}
+
+export function expandCollapsedComposerCursor(text: string, cursorInput: number): number {
+  const collapsedCursor = clampCursor(text, cursorInput);
+  const segments = splitPromptIntoComposerSegments(text);
+  if (segments.length === 0) {
+    return collapsedCursor;
+  }
+
+  let remaining = collapsedCursor;
+  let expandedCursor = 0;
+
+  for (const segment of segments) {
+    if (segment.type === "mention") {
+      const expandedLength = segment.path.length + 1;
+      if (remaining <= 1) {
+        return expandedCursor + (remaining === 0 ? 0 : expandedLength);
+      }
+      remaining -= 1;
+      expandedCursor += expandedLength;
+      continue;
+    }
+
+    const segmentLength = segment.text.length;
+    if (remaining <= segmentLength) {
+      return expandedCursor + remaining;
+    }
+    remaining -= segmentLength;
+    expandedCursor += segmentLength;
+  }
+
+  return expandedCursor;
 }
 
 export function detectComposerTrigger(text: string, cursorInput: number): ComposerTrigger | null {
