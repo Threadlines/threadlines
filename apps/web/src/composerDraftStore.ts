@@ -28,7 +28,6 @@ export interface ComposerImageAttachment extends Omit<ChatImageAttachment, "prev
 
 interface PersistedComposerThreadDraftState {
   prompt: string;
-  cursor: number;
   attachments: PersistedComposerImageAttachment[];
   model?: string | null;
   effort?: ReasoningEffort | null;
@@ -50,7 +49,6 @@ interface PersistedComposerDraftStoreState {
 
 interface ComposerThreadDraftState {
   prompt: string;
-  cursor: number;
   images: ComposerImageAttachment[];
   nonPersistedImageIds: string[];
   persistedAttachments: PersistedComposerImageAttachment[];
@@ -100,7 +98,6 @@ interface ComposerDraftStoreState {
   clearProjectDraftThreadById: (projectId: ProjectId, threadId: ThreadId) => void;
   clearDraftThread: (threadId: ThreadId) => void;
   setPrompt: (threadId: ThreadId, prompt: string) => void;
-  setCursor: (threadId: ThreadId, cursor: number) => void;
   setModel: (threadId: ThreadId, model: string | null | undefined) => void;
   setEffort: (threadId: ThreadId, effort: ReasoningEffort | null | undefined) => void;
   addImage: (threadId: ThreadId, image: ComposerImageAttachment) => void;
@@ -129,7 +126,6 @@ Object.freeze(EMPTY_IDS);
 Object.freeze(EMPTY_PERSISTED_ATTACHMENTS);
 const EMPTY_THREAD_DRAFT = Object.freeze({
   prompt: "",
-  cursor: 0,
   images: EMPTY_IMAGES,
   nonPersistedImageIds: EMPTY_IDS,
   persistedAttachments: EMPTY_PERSISTED_ATTACHMENTS,
@@ -142,7 +138,6 @@ const REASONING_EFFORT_VALUES = new Set<ReasoningEffort>(REASONING_OPTIONS);
 function createEmptyThreadDraft(): ComposerThreadDraftState {
   return {
     prompt: "",
-    cursor: 0,
     images: [],
     nonPersistedImageIds: [],
     persistedAttachments: [],
@@ -304,10 +299,6 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
     }
     const draftCandidate = draftValue as Record<string, unknown>;
     const prompt = typeof draftCandidate.prompt === "string" ? draftCandidate.prompt : "";
-    const cursor =
-      typeof draftCandidate.cursor === "number" && Number.isFinite(draftCandidate.cursor)
-        ? Math.max(0, Math.floor(draftCandidate.cursor))
-        : 0;
     const attachments = Array.isArray(draftCandidate.attachments)
       ? draftCandidate.attachments.flatMap((entry) => {
           const normalized = normalizePersistedAttachment(entry);
@@ -327,7 +318,6 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
     }
     nextDraftsByThreadId[threadId as ThreadId] = {
       prompt,
-      cursor,
       attachments,
       ...(model ? { model } : {}),
       ...(effort ? { effort } : {}),
@@ -429,7 +419,6 @@ function toHydratedThreadDraft(
 ): ComposerThreadDraftState {
   return {
     prompt: persistedDraft.prompt,
-    cursor: persistedDraft.cursor,
     images: hydrateImagesFromPersisted(persistedDraft.attachments),
     nonPersistedImageIds: [],
     persistedAttachments: persistedDraft.attachments,
@@ -672,36 +661,9 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
         }
         set((state) => {
           const existing = state.draftsByThreadId[threadId] ?? createEmptyThreadDraft();
-          const cursor = Math.min(existing.cursor, prompt.length);
           const nextDraft: ComposerThreadDraftState = {
             ...existing,
             prompt,
-            cursor,
-          };
-          const nextDraftsByThreadId = { ...state.draftsByThreadId };
-          if (shouldRemoveDraft(nextDraft)) {
-            delete nextDraftsByThreadId[threadId];
-          } else {
-            nextDraftsByThreadId[threadId] = nextDraft;
-          }
-          return { draftsByThreadId: nextDraftsByThreadId };
-        });
-      },
-      setCursor: (threadId, cursor) => {
-        if (threadId.length === 0) {
-          return;
-        }
-        const nextCursor = Number.isFinite(cursor) ? Math.max(0, Math.floor(cursor)) : 0;
-        set((state) => {
-          const existing = state.draftsByThreadId[threadId];
-          if (!existing && nextCursor === 0) {
-            return state;
-          }
-          const base = existing ?? createEmptyThreadDraft();
-          const boundedCursor = Math.min(nextCursor, base.prompt.length);
-          const nextDraft: ComposerThreadDraftState = {
-            ...base,
-            cursor: boundedCursor,
           };
           const nextDraftsByThreadId = { ...state.draftsByThreadId };
           if (shouldRemoveDraft(nextDraft)) {
@@ -939,7 +901,6 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           const nextDraft: ComposerThreadDraftState = {
             ...current,
             prompt: "",
-            cursor: 0,
             images: [],
             nonPersistedImageIds: [],
             persistedAttachments: [],
@@ -1009,7 +970,6 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           }
           const persistedDraft: PersistedComposerThreadDraftState = {
             prompt: draft.prompt,
-            cursor: Math.min(Math.max(0, draft.cursor), draft.prompt.length),
             attachments: draft.persistedAttachments,
           };
           if (draft.model) {

@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@base-ui/react": "^1.2.0",
+    "@lexical/react": "^0.41.0",
     "@pierre/diffs": "^1.1.0-beta.16",
     "@t3tools/contracts": "workspace:*",
     "@tanstack/react-pacer": "^0.19.4",
@@ -22,6 +23,7 @@
     "@xterm/xterm": "^6.0.0",
     "class-variance-authority": "^0.7.1",
     "effect": "catalog:",
+    "lexical": "^0.41.0",
     "lucide-react": "^0.564.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

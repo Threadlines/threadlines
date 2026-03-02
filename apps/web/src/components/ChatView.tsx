@@ -37,6 +37,7 @@ import { serverConfigQueryOptions, serverQueryKeys } from "~/lib/serverReactQuer
 import { isElectron } from "../env";
 import { parseDiffRouteSearch, stripDiffSearchParams } from "../diffRouteSearch";
 import {
+  type ComposerTrigger,
   type ComposerTriggerKind,
   detectComposerTrigger,
   replaceTextRange,
@@ -127,6 +128,7 @@ import {
 } from "../composerDraftStore";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { clamp } from "effect/Number";
+import { ComposerPromptEditor, type ComposerPromptEditorHandle } from "./ComposerPromptEditor";
 
 function formatMessageMeta(createdAt: string, duration: string | null): string {
   if (!duration) return formatTimestamp(createdAt);
@@ -458,10 +460,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const composerDraft = useComposerThreadDraft(threadId);
   const prompt = composerDraft.prompt;
   const composerImages = composerDraft.images;
-  const composerCursor = composerDraft.cursor;
   const nonPersistedComposerImageIds = composerDraft.nonPersistedImageIds;
   const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);
-  const setComposerDraftCursor = useComposerDraftStore((store) => store.setCursor);
   const setComposerDraftModel = useComposerDraftStore((store) => store.setModel);
   const setComposerDraftEffort = useComposerDraftStore((store) => store.setEffort);
   const addComposerDraftImage = useComposerDraftStore((store) => store.addImage);
@@ -500,6 +500,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const [attachmentPreviewHandoffByMessageId, setAttachmentPreviewHandoffByMessageId] = useState<
     Record<string, string[]>
   >({});
+  const [composerCursor, setComposerCursor] = useState(() => prompt.length);
+  const [composerTrigger, setComposerTrigger] = useState<ComposerTrigger | null>(() =>
+    detectComposerTrigger(prompt, prompt.length),
+  );
   const [lastInvokedScriptByProjectId, setLastInvokedScriptByProjectId] = useState<
     Record<string, string>
   >(() => readLastInvokedScriptByProjectFromStorage());
@@ -507,10 +511,15 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const [messagesScrollElement, setMessagesScrollElement] = useState<HTMLDivElement | null>(null);
   const shouldAutoScrollRef = useRef(true);
   const pendingAutoScrollFrameRef = useRef<number | null>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composerEditorRef = useRef<ComposerPromptEditorHandle>(null);
+  const composerCommandInputRef = useRef<HTMLInputElement>(null);
   const composerFormRef = useRef<HTMLFormElement>(null);
   const composerFormHeightRef = useRef(0);
   const composerImagesRef = useRef<ComposerImageAttachment[]>([]);
+  const composerSelectLockRef = useRef(false);
+  const composerMenuOpenRef = useRef(false);
+  const composerMenuItemsRef = useRef<ComposerCommandItem[]>([]);
+  const activeComposerMenuItemRef = useRef<ComposerCommandItem | null>(null);
   const attachmentPreviewHandoffByMessageIdRef = useRef<Record<string, string[]>>({});
   const attachmentPreviewHandoffTimeoutByMessageIdRef = useRef<Record<string, number>>({});
   const sendInFlightRef = useRef(false);
@@ -536,12 +545,6 @@ export default function ChatView({ threadId }: ChatViewProps) {
       setComposerDraftPrompt(threadId, nextPrompt);
     },
     [setComposerDraftPrompt, threadId],
-  );
-  const setComposerCursor = useCallback(
-    (nextCursor: number) => {
-      setComposerDraftCursor(threadId, nextCursor);
-    },
-    [setComposerDraftCursor, threadId],
   );
   const addComposerImage = useCallback(
     (image: ComposerImageAttachment) => {
@@ -845,10 +848,6 @@ export default function ChatView({ threadId }: ChatViewProps) {
     timelineEntries,
   ]);
   const gitCwd = activeThread?.worktreePath ?? activeProject?.cwd ?? null;
-  const composerTrigger = useMemo(
-    () => detectComposerTrigger(prompt, composerCursor),
-    [prompt, composerCursor],
-  );
   const composerTriggerKind = composerTrigger?.kind ?? null;
   const pathTriggerQuery = composerTrigger?.kind === "path" ? composerTrigger.query : "";
   const isPathTrigger = composerTriggerKind === "path";
@@ -927,6 +926,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
       null,
     [composerHighlightedItemId, composerMenuItems],
   );
+  composerMenuOpenRef.current = composerMenuOpen;
+  composerMenuItemsRef.current = composerMenuItems;
+  activeComposerMenuItemRef.current = activeComposerMenuItem;
   const nonPersistedComposerImageIdSet = useMemo(
     () => new Set(nonPersistedComposerImageIds),
     [nonPersistedComposerImageIds],
@@ -1000,11 +1002,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
   );
 
   const focusComposer = useCallback(() => {
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    textarea.focus();
-    const cursor = textarea.value.length;
-    textarea.setSelectionRange(cursor, cursor);
+    composerEditorRef.current?.focusAtEnd();
   }, []);
   const scheduleComposerFocus = useCallback(() => {
     window.requestAnimationFrame(() => {
@@ -1434,7 +1432,24 @@ export default function ChatView({ threadId }: ChatViewProps) {
 
   useEffect(() => {
     promptRef.current = prompt;
+    setComposerCursor((existing) => Math.min(Math.max(0, existing), prompt.length));
   }, [prompt]);
+
+  useEffect(() => {
+    setOptimisticUserMessages((existing) => {
+      for (const message of existing) {
+        revokeUserMessagePreviewUrls(message);
+      }
+      return [];
+    });
+    setSendPhase("idle");
+    setComposerHighlightedItemId(null);
+    setComposerCursor(promptRef.current.length);
+    setComposerTrigger(detectComposerTrigger(promptRef.current, promptRef.current.length));
+    dragDepthRef.current = 0;
+    setIsDragOverComposer(false);
+    setExpandedImage(null);
+  }, [threadId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1556,14 +1571,6 @@ export default function ChatView({ threadId }: ChatViewProps) {
     : isLocalDraftThread
       ? (draftThread?.envMode ?? "local")
       : "local";
-
-  // Auto-resize textarea
-  useEffect(() => {
-    const ta = textareaRef.current;
-    if (!ta) return;
-    ta.style.height = "auto";
-    ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
-  }, [prompt]);
 
   useEffect(() => {
     if (phase !== "running") return;
@@ -1727,7 +1734,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     removeComposerImageFromDraft(imageId);
   };
 
-  const onComposerPaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+  const onComposerPaste = (event: React.ClipboardEvent<HTMLElement>) => {
     const files = Array.from(event.clipboardData.files);
     if (files.length === 0) {
       return;
@@ -1826,8 +1833,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
     [activeThread, isConnecting, isRevertingCheckpoint, isSendBusy, phase, setThreadError],
   );
 
-  const onSend = async (e: React.SubmitEvent | React.KeyboardEvent) => {
-    e.preventDefault();
+  const onSend = async (e?: { preventDefault: () => void }) => {
+    e?.preventDefault();
     const api = readNativeApi();
     if (!api || !activeThread || isSendBusy || isConnecting || sendInFlightRef.current) return;
     const trimmed = prompt.trim();
@@ -1894,6 +1901,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
     promptRef.current = "";
     clearComposerDraftContent(threadIdForSend);
     setComposerHighlightedItemId(null);
+    setComposerCursor(0);
+    setComposerTrigger(null);
 
     let createdServerThreadForLocalDraft = false;
     let turnStartSucceeded = false;
@@ -2050,8 +2059,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
         });
         promptRef.current = trimmed;
         setPrompt(trimmed);
-        addComposerImagesToDraft(composerImagesSnapshot.map(cloneComposerImageForRetry));
         setComposerCursor(trimmed.length);
+        addComposerImagesToDraft(composerImagesSnapshot.map(cloneComposerImageForRetry));
+        setComposerTrigger(detectComposerTrigger(trimmed, trimmed.length));
       }
       setThreadError(
         threadIdForSend,
@@ -2144,40 +2154,96 @@ export default function ChatView({ threadId }: ChatViewProps) {
   );
 
   const applyPromptReplacement = useCallback(
-    (rangeStart: number, rangeEnd: number, replacement: string) => {
+    (
+      rangeStart: number,
+      rangeEnd: number,
+      replacement: string,
+      options?: { expectedText?: string },
+    ): boolean => {
+      const currentText = promptRef.current;
+      const safeStart = Math.max(0, Math.min(currentText.length, rangeStart));
+      const safeEnd = Math.max(safeStart, Math.min(currentText.length, rangeEnd));
+      if (
+        options?.expectedText !== undefined &&
+        currentText.slice(safeStart, safeEnd) !== options.expectedText
+      ) {
+        return false;
+      }
       const next = replaceTextRange(promptRef.current, rangeStart, rangeEnd, replacement);
       promptRef.current = next.text;
       setPrompt(next.text);
+      setComposerCursor(next.cursor);
+      setComposerTrigger(detectComposerTrigger(next.text, next.cursor));
       window.requestAnimationFrame(() => {
-        const textarea = textareaRef.current;
-        if (!textarea) return;
-        textarea.focus();
-        textarea.setSelectionRange(next.cursor, next.cursor);
-        setComposerCursor(next.cursor);
+        composerEditorRef.current?.focusAt(next.cursor);
       });
+      return true;
     },
-    [setComposerCursor, setPrompt],
+    [setPrompt],
   );
+
+  const readComposerSnapshot = useCallback((): { value: string; cursor: number } => {
+    const editorSnapshot = composerEditorRef.current?.readSnapshot();
+    if (editorSnapshot) {
+      return editorSnapshot;
+    }
+    return { value: promptRef.current, cursor: composerCursor };
+  }, [composerCursor]);
+
+  const resolveActiveComposerTrigger = useCallback((): {
+    snapshot: { value: string; cursor: number };
+    trigger: ComposerTrigger | null;
+  } => {
+    const snapshot = readComposerSnapshot();
+    return {
+      snapshot,
+      trigger: detectComposerTrigger(snapshot.value, snapshot.cursor),
+    };
+  }, [readComposerSnapshot]);
 
   const onSelectComposerItem = useCallback(
     (item: ComposerCommandItem) => {
-      if (!composerTrigger) return;
+      if (composerSelectLockRef.current) return;
+      composerSelectLockRef.current = true;
+      window.requestAnimationFrame(() => {
+        composerSelectLockRef.current = false;
+      });
+      const { snapshot, trigger } = resolveActiveComposerTrigger();
+      if (!trigger) return;
+      const expectedToken = snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd);
       if (item.type === "path") {
-        applyPromptReplacement(
-          composerTrigger.rangeStart,
-          composerTrigger.rangeEnd,
+        const applied = applyPromptReplacement(
+          trigger.rangeStart,
+          trigger.rangeEnd,
           `@${item.path} `,
+          { expectedText: expectedToken },
         );
+        if (applied) {
+          setComposerHighlightedItemId(null);
+        }
         return;
       }
       if (item.type === "slash-command") {
-        applyPromptReplacement(composerTrigger.rangeStart, composerTrigger.rangeEnd, "/model ");
+        const applied = applyPromptReplacement(
+          trigger.rangeStart,
+          trigger.rangeEnd,
+          "/model ",
+          { expectedText: expectedToken },
+        );
+        if (applied) {
+          setComposerHighlightedItemId(null);
+        }
         return;
       }
       onModelSelect(item.model);
-      applyPromptReplacement(composerTrigger.rangeStart, composerTrigger.rangeEnd, "");
+      const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
+        expectedText: expectedToken,
+      });
+      if (applied) {
+        setComposerHighlightedItemId(null);
+      }
     },
-    [applyPromptReplacement, composerTrigger, onModelSelect],
+    [applyPromptReplacement, onModelSelect, resolveActiveComposerTrigger],
   );
   const onComposerMenuItemHighlighted = useCallback((itemId: string | null) => {
     setComposerHighlightedItemId(itemId);
@@ -2206,41 +2272,41 @@ export default function ChatView({ threadId }: ChatViewProps) {
       workspaceEntriesQuery.isLoading ||
       workspaceEntriesQuery.isFetching);
 
-  const onPromptChange = useCallback(
-    (nextPrompt: string, nextCursor: number) => {
-      promptRef.current = nextPrompt;
-      setPrompt(nextPrompt);
-      setComposerCursor(nextCursor);
-    },
-    [setComposerCursor, setPrompt],
-  );
+  const onPromptChange = useCallback((nextPrompt: string, nextCursor: number) => {
+    promptRef.current = nextPrompt;
+    setPrompt(nextPrompt);
+    setComposerCursor(nextCursor);
+    setComposerTrigger(detectComposerTrigger(nextPrompt, nextCursor));
+  }, [setPrompt]);
 
-  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (composerMenuOpen && composerMenuItems.length > 0) {
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
+  const onComposerCommandKey = (key: "ArrowDown" | "ArrowUp" | "Enter" | "Tab", event: KeyboardEvent) => {
+    const { trigger } = resolveActiveComposerTrigger();
+    const menuIsActive = composerMenuOpenRef.current || trigger !== null;
+
+    if (menuIsActive) {
+      const currentItems = composerMenuItemsRef.current;
+      if (key === "ArrowDown" && currentItems.length > 0) {
         nudgeComposerMenuHighlight("ArrowDown");
-        return;
+        return true;
       }
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
+      if (key === "ArrowUp" && currentItems.length > 0) {
         nudgeComposerMenuHighlight("ArrowUp");
-        return;
+        return true;
       }
-      if (e.key === "Tab" || e.key === "Enter") {
-        const selectedItem = activeComposerMenuItem ?? composerMenuItems[0];
+      if (key === "Tab" || key === "Enter") {
+        const selectedItem = activeComposerMenuItemRef.current ?? currentItems[0];
         if (selectedItem) {
-          e.preventDefault();
           onSelectComposerItem(selectedItem);
-          return;
         }
+        return true;
       }
     }
 
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      void onSend(e);
+    if (key === "Enter" && !event.shiftKey) {
+      void onSend();
+      return true;
     }
+    return false;
   };
   const onToggleWorkGroup = useCallback((groupId: string) => {
     setExpandedWorkGroups((existing) => ({
@@ -2464,33 +2530,12 @@ export default function ChatView({ threadId }: ChatViewProps) {
                   ))}
                 </div>
               )}
-              <textarea
-                ref={textareaRef}
-                className="w-full resize-none bg-transparent text-[14px] leading-relaxed text-foreground placeholder:text-muted-foreground/35 focus:outline-none"
-                rows={2}
+              <ComposerPromptEditor
+                ref={composerEditorRef}
                 value={prompt}
-                onChange={(event) =>
-                  onPromptChange(
-                    event.target.value,
-                    event.target.selectionStart ?? event.target.value.length,
-                  )
-                }
-                onKeyDown={onKeyDown}
-                onKeyUp={(event) =>
-                  setComposerCursor(
-                    event.currentTarget.selectionStart ?? event.currentTarget.value.length,
-                  )
-                }
-                onClick={(event) =>
-                  setComposerCursor(
-                    event.currentTarget.selectionStart ?? event.currentTarget.value.length,
-                  )
-                }
-                onSelect={(event) =>
-                  setComposerCursor(
-                    event.currentTarget.selectionStart ?? event.currentTarget.value.length,
-                  )
-                }
+                cursor={composerCursor}
+                onChange={onPromptChange}
+                onCommandKeyDown={onComposerCommandKey}
                 onPaste={onComposerPaste}
                 placeholder={
                   phase === "disconnected"
