@@ -24,7 +24,11 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useDebouncedValue } from "@tanstack/react-pacer";
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { type VirtualItem, useVirtualizer } from "@tanstack/react-virtual";
+import {
+  measureElement as measureVirtualElement,
+  type VirtualItem,
+  useVirtualizer,
+} from "@tanstack/react-virtual";
 import { gitBranchesQueryOptions, gitCreateWorktreeMutationOptions } from "~/lib/gitReactQuery";
 import { projectSearchEntriesQueryOptions } from "~/lib/projectReactQuery";
 import { serverConfigQueryOptions, serverQueryKeys } from "~/lib/serverReactQuery";
@@ -47,7 +51,7 @@ import {
   formatElapsed,
   formatTimestamp,
 } from "../session-logic";
-import { isScrollContainerNearBottom } from "../chat-scroll";
+import { AUTO_SCROLL_BOTTOM_THRESHOLD_PX, isScrollContainerNearBottom } from "../chat-scroll";
 import { useStore } from "../store";
 import { truncateTitle } from "../truncateTitle";
 import {
@@ -130,6 +134,8 @@ function formatMessageMeta(createdAt: string, duration: string | null): string {
 const LAST_EDITOR_KEY = "t3code:last-editor";
 const LAST_INVOKED_SCRIPT_BY_PROJECT_KEY = "t3code:last-invoked-script-by-project";
 const MAX_VISIBLE_WORK_LOG_ENTRIES = 6;
+const ALWAYS_UNVIRTUALIZED_TAIL_ROWS = 8;
+const ATTACHMENT_PREVIEW_HANDOFF_TTL_MS = 5000;
 const IMAGE_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES / (1024 * 1024))}MB`;
 const IMAGE_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more images without additional text. Respond using the conversation context and the attached image(s).]";
@@ -249,6 +255,19 @@ function revokeUserMessagePreviewUrls(message: ChatMessage): void {
     }
     revokeBlobPreviewUrl(attachment.previewUrl);
   }
+}
+
+function collectUserMessageBlobPreviewUrls(message: ChatMessage): string[] {
+  if (message.role !== "user" || !message.attachments) {
+    return [];
+  }
+  const previewUrls: string[] = [];
+  for (const attachment of message.attachments) {
+    if (attachment.type !== "image") continue;
+    if (!attachment.previewUrl || !attachment.previewUrl.startsWith("blob:")) continue;
+    previewUrls.push(attachment.previewUrl);
+  }
+  return previewUrls;
 }
 
 type ComposerCommandItem =
@@ -485,14 +504,22 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [terminalFocusRequestId, setTerminalFocusRequestId] = useState(0);
   const [composerHighlightedItemId, setComposerHighlightedItemId] = useState<string | null>(null);
+  const [attachmentPreviewHandoffByMessageId, setAttachmentPreviewHandoffByMessageId] = useState<
+    Record<string, string[]>
+  >({});
   const [lastInvokedScriptByProjectId, setLastInvokedScriptByProjectId] = useState<
     Record<string, string>
   >(() => readLastInvokedScriptByProjectFromStorage());
   const messagesScrollRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollRef = useRef(true);
+  const pendingAutoScrollFrameRef = useRef<number | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composerFormRef = useRef<HTMLFormElement>(null);
+  const composerFormHeightRef = useRef(0);
   const composerCommandInputRef = useRef<HTMLInputElement>(null);
   const composerImagesRef = useRef<ComposerImageAttachment[]>([]);
+  const attachmentPreviewHandoffByMessageIdRef = useRef<Record<string, string[]>>({});
+  const attachmentPreviewHandoffTimeoutByMessageIdRef = useRef<Record<string, number>>({});
   const sendInFlightRef = useRef(false);
   const dragDepthRef = useRef(0);
   const terminalOpenByThreadRef = useRef<Record<string, boolean>>({});
@@ -614,18 +641,100 @@ export default function ChatView({ threadId }: ChatViewProps) {
     () => derivePendingApprovals(threadActivities),
     [threadActivities],
   );
+  useEffect(() => {
+    attachmentPreviewHandoffByMessageIdRef.current = attachmentPreviewHandoffByMessageId;
+  }, [attachmentPreviewHandoffByMessageId]);
+  const clearAttachmentPreviewHandoffs = useCallback(() => {
+    for (const timeoutId of Object.values(attachmentPreviewHandoffTimeoutByMessageIdRef.current)) {
+      window.clearTimeout(timeoutId);
+    }
+    attachmentPreviewHandoffTimeoutByMessageIdRef.current = {};
+    for (const previewUrls of Object.values(attachmentPreviewHandoffByMessageIdRef.current)) {
+      for (const previewUrl of previewUrls) {
+        revokeBlobPreviewUrl(previewUrl);
+      }
+    }
+    attachmentPreviewHandoffByMessageIdRef.current = {};
+    setAttachmentPreviewHandoffByMessageId({});
+  }, []);
+  const handoffAttachmentPreviews = useCallback((messageId: MessageId, previewUrls: string[]) => {
+    if (previewUrls.length === 0) return;
+
+    const previousPreviewUrls = attachmentPreviewHandoffByMessageIdRef.current[messageId] ?? [];
+    for (const previewUrl of previousPreviewUrls) {
+      if (!previewUrls.includes(previewUrl)) {
+        revokeBlobPreviewUrl(previewUrl);
+      }
+    }
+    setAttachmentPreviewHandoffByMessageId((existing) => {
+      const next = {
+        ...existing,
+        [messageId]: previewUrls,
+      };
+      attachmentPreviewHandoffByMessageIdRef.current = next;
+      return next;
+    });
+
+    const existingTimeout = attachmentPreviewHandoffTimeoutByMessageIdRef.current[messageId];
+    if (typeof existingTimeout === "number") {
+      window.clearTimeout(existingTimeout);
+    }
+    attachmentPreviewHandoffTimeoutByMessageIdRef.current[messageId] = window.setTimeout(() => {
+      const currentPreviewUrls = attachmentPreviewHandoffByMessageIdRef.current[messageId];
+      if (currentPreviewUrls) {
+        for (const previewUrl of currentPreviewUrls) {
+          revokeBlobPreviewUrl(previewUrl);
+        }
+      }
+      setAttachmentPreviewHandoffByMessageId((existing) => {
+        if (!(messageId in existing)) return existing;
+        const { [messageId]: _removed, ...rest } = existing;
+        attachmentPreviewHandoffByMessageIdRef.current = rest;
+        return rest;
+      });
+      delete attachmentPreviewHandoffTimeoutByMessageIdRef.current[messageId];
+    }, ATTACHMENT_PREVIEW_HANDOFF_TTL_MS);
+  }, []);
   const timelineMessages = useMemo(() => {
     const serverMessages = activeThread?.messages ?? [];
+    const serverMessagesWithPreviewHandoff =
+      Object.keys(attachmentPreviewHandoffByMessageId).length === 0
+        ? serverMessages
+        : serverMessages.map((message) => {
+            if (message.role !== "user" || !message.attachments || message.attachments.length === 0) {
+              return message;
+            }
+            const handoffPreviewUrls = attachmentPreviewHandoffByMessageId[message.id];
+            if (!handoffPreviewUrls || handoffPreviewUrls.length === 0) {
+              return message;
+            }
+
+            let changed = false;
+            const attachments = message.attachments.map((attachment, index) => {
+              const handoffPreviewUrl = handoffPreviewUrls[index];
+              if (!handoffPreviewUrl || attachment.previewUrl === handoffPreviewUrl) {
+                return attachment;
+              }
+              changed = true;
+              return {
+                ...attachment,
+                previewUrl: handoffPreviewUrl,
+              };
+            });
+
+            return changed ? { ...message, attachments } : message;
+          });
+
     if (optimisticUserMessages.length === 0) {
-      return serverMessages;
+      return serverMessagesWithPreviewHandoff;
     }
-    const serverIds = new Set(serverMessages.map((message) => message.id));
+    const serverIds = new Set(serverMessagesWithPreviewHandoff.map((message) => message.id));
     const pendingMessages = optimisticUserMessages.filter((message) => !serverIds.has(message.id));
     if (pendingMessages.length === 0) {
-      return serverMessages;
+      return serverMessagesWithPreviewHandoff;
     }
-    return [...serverMessages, ...pendingMessages];
-  }, [activeThread?.messages, optimisticUserMessages]);
+    return [...serverMessagesWithPreviewHandoff, ...pendingMessages];
+  }, [activeThread?.messages, attachmentPreviewHandoffByMessageId, optimisticUserMessages]);
   const timelineEntries = useMemo(
     () => deriveTimelineEntries(timelineMessages, workLogEntries),
     [timelineMessages, workLogEntries],
@@ -1177,24 +1286,79 @@ export default function ChatView({ threadId }: ChatViewProps) {
     scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior });
     shouldAutoScrollRef.current = true;
   }, []);
+  const scheduleStickToBottom = useCallback(() => {
+    if (pendingAutoScrollFrameRef.current !== null) return;
+    pendingAutoScrollFrameRef.current = window.requestAnimationFrame(() => {
+      pendingAutoScrollFrameRef.current = null;
+      scrollMessagesToBottom();
+    });
+  }, [scrollMessagesToBottom]);
   const onMessagesScroll = useCallback(() => {
     const scrollContainer = messagesScrollRef.current;
     if (!scrollContainer) return;
     shouldAutoScrollRef.current = isScrollContainerNearBottom(scrollContainer);
   }, []);
+  useEffect(() => {
+    return () => {
+      const frame = pendingAutoScrollFrameRef.current;
+      if (frame !== null) {
+        window.cancelAnimationFrame(frame);
+      }
+    };
+  }, []);
   useLayoutEffect(() => {
     if (!activeThread?.id) return;
-    scrollMessagesToBottom();
-  }, [activeThread?.id, scrollMessagesToBottom]);
+    shouldAutoScrollRef.current = true;
+    scheduleStickToBottom();
+    const timeout = window.setTimeout(() => {
+      const scrollContainer = messagesScrollRef.current;
+      if (!scrollContainer) return;
+      if (isScrollContainerNearBottom(scrollContainer)) return;
+      scheduleStickToBottom();
+    }, 96);
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [activeThread?.id, scheduleStickToBottom]);
+  useLayoutEffect(() => {
+    const composerForm = composerFormRef.current;
+    if (!composerForm) return;
+
+    composerFormHeightRef.current = composerForm.getBoundingClientRect().height;
+    if (typeof ResizeObserver === "undefined") return;
+
+    const observer = new ResizeObserver((entries) => {
+      const [entry] = entries;
+      if (!entry) return;
+
+      const nextHeight = entry.contentRect.height;
+      const previousHeight = composerFormHeightRef.current;
+      composerFormHeightRef.current = nextHeight;
+
+      if (previousHeight > 0 && Math.abs(nextHeight - previousHeight) < 0.5) return;
+      if (!shouldAutoScrollRef.current) return;
+      scheduleStickToBottom();
+    });
+
+    observer.observe(composerForm);
+    return () => {
+      observer.disconnect();
+    };
+  }, [activeThread?.id, scheduleStickToBottom]);
   useEffect(() => {
     if (!shouldAutoScrollRef.current) return;
-    scrollMessagesToBottom("smooth");
-  }, [messageCount, scrollMessagesToBottom]);
+    scheduleStickToBottom();
+  }, [messageCount, scheduleStickToBottom]);
   useEffect(() => {
     if (phase !== "running") return;
     if (!shouldAutoScrollRef.current) return;
-    scrollMessagesToBottom("smooth");
-  }, [phase, workLogCount, scrollMessagesToBottom]);
+    scheduleStickToBottom();
+  }, [phase, scheduleStickToBottom, workLogCount]);
+  useEffect(() => {
+    if (phase !== "running") return;
+    if (!shouldAutoScrollRef.current) return;
+    scheduleStickToBottom();
+  }, [phase, scheduleStickToBottom, timelineEntries]);
 
   useEffect(() => {
     setExpandedWorkGroups({});
@@ -1230,6 +1394,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
 
   useEffect(() => {
     if (!activeThread?.id) {
+      clearAttachmentPreviewHandoffs();
       setOptimisticUserMessages((existing) => {
         for (const message of existing) {
           revokeUserMessagePreviewUrls(message);
@@ -1242,21 +1407,33 @@ export default function ChatView({ threadId }: ChatViewProps) {
       return;
     }
     const serverIds = new Set(activeThread.messages.map((message) => message.id));
-    setOptimisticUserMessages((existing) => {
-      const removed = existing.filter((message) => serverIds.has(message.id));
-      for (const message of removed) {
-        revokeUserMessagePreviewUrls(message);
+    const removedMessages = optimisticUserMessages.filter((message) => serverIds.has(message.id));
+    if (removedMessages.length === 0) {
+      return;
+    }
+    setOptimisticUserMessages((existing) => existing.filter((message) => !serverIds.has(message.id)));
+    for (const removedMessage of removedMessages) {
+      const previewUrls = collectUserMessageBlobPreviewUrls(removedMessage);
+      if (previewUrls.length > 0) {
+        handoffAttachmentPreviews(removedMessage.id, previewUrls);
+        continue;
       }
-      const next = existing.filter((message) => !serverIds.has(message.id));
-      return next.length === existing.length ? existing : next;
-    });
-  }, [activeThread?.id, activeThread?.messages]);
+      revokeUserMessagePreviewUrls(removedMessage);
+    }
+  }, [
+    activeThread?.id,
+    activeThread?.messages,
+    clearAttachmentPreviewHandoffs,
+    handoffAttachmentPreviews,
+    optimisticUserMessages,
+  ]);
 
   useEffect(() => {
     promptRef.current = prompt;
   }, [prompt]);
 
   useEffect(() => {
+    clearAttachmentPreviewHandoffs();
     setOptimisticUserMessages((existing) => {
       for (const message of existing) {
         revokeUserMessagePreviewUrls(message);
@@ -1268,7 +1445,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     dragDepthRef.current = 0;
     setIsDragOverComposer(false);
     setExpandedImage(null);
-  }, [threadId]);
+  }, [clearAttachmentPreviewHandoffs, threadId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1760,6 +1937,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
         streaming: false,
       },
     ]);
+    // Sending a message should always bring the latest user turn into view.
+    shouldAutoScrollRef.current = true;
+    scheduleStickToBottom();
 
     setThreadError(threadIdForSend, null);
     promptRef.current = "";
@@ -2185,6 +2365,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         onScroll={onMessagesScroll}
       >
         <MessagesTimeline
+          key={activeThread.id}
           hasMessages={timelineMessages.length > 0}
           isWorking={isWorking}
           activeTurnInProgress={!latestTurnSettled}
@@ -2209,6 +2390,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       {/* Input bar */}
       <div className={cn("px-3 pt-1.5 sm:px-5 sm:pt-2", isGitRepo ? "pb-1" : "pb-3 sm:pb-4")}>
         <form
+          ref={composerFormRef}
           onSubmit={onSend}
           className="mx-auto w-full min-w-fit max-w-3xl"
           data-chat-composer-form="true"
@@ -2804,6 +2986,20 @@ type TimelineRow =
     }
   | { kind: "working"; id: string; createdAt: string | null };
 
+function estimateTimelineMessageHeight(message: TimelineMessage): number {
+  const textLength = message.text.length;
+  if (message.role === "assistant") {
+    const estimatedLines = Math.max(1, Math.ceil(textLength / 72));
+    return 78 + Math.min(estimatedLines * 22, 820);
+  }
+
+  const estimatedLines = Math.max(1, Math.ceil(textLength / 56));
+  const attachmentCount = message.attachments?.length ?? 0;
+  const attachmentRows = Math.ceil(attachmentCount / 2);
+  const attachmentHeight = attachmentRows * 124;
+  return 96 + Math.min(estimatedLines * 22, 620) + attachmentHeight;
+}
+
 const MessagesTimeline = memo(function MessagesTimeline({
   hasMessages,
   isWorking,
@@ -2875,7 +3071,8 @@ const MessagesTimeline = memo(function MessagesTimeline({
   }, [timelineEntries, completionDividerBeforeEntryId, isWorking, activeTurnStartedAt]);
 
   const firstUnvirtualizedRowIndex = useMemo(() => {
-    if (!activeTurnInProgress) return rows.length;
+    const firstTailRowIndex = Math.max(rows.length - ALWAYS_UNVIRTUALIZED_TAIL_ROWS, 0);
+    if (!activeTurnInProgress) return firstTailRowIndex;
 
     const turnStartedAtMs =
       typeof activeTurnStartedAt === "string" ? Date.parse(activeTurnStartedAt) : Number.NaN;
@@ -2895,22 +3092,20 @@ const MessagesTimeline = memo(function MessagesTimeline({
       );
     }
 
-    if (firstCurrentTurnRowIndex < 0) {
-      return rows.length;
-    }
+    if (firstCurrentTurnRowIndex < 0) return firstTailRowIndex;
 
     for (let index = firstCurrentTurnRowIndex - 1; index >= 0; index -= 1) {
       const previousRow = rows[index];
       if (!previousRow || previousRow.kind !== "message") continue;
       if (previousRow.message.role === "user") {
-        return index;
+        return Math.min(index, firstTailRowIndex);
       }
       if (previousRow.message.role === "assistant" && !previousRow.message.streaming) {
         break;
       }
     }
 
-    return firstCurrentTurnRowIndex;
+    return Math.min(firstCurrentTurnRowIndex, firstTailRowIndex);
   }, [activeTurnInProgress, activeTurnStartedAt, rows]);
 
   const virtualizedRowCount = clamp(firstUnvirtualizedRowIndex, {
@@ -2921,16 +3116,46 @@ const MessagesTimeline = memo(function MessagesTimeline({
   const rowVirtualizer = useVirtualizer({
     count: virtualizedRowCount,
     getScrollElement: () => scrollContainerRef.current,
+    // Use stable row ids so virtual measurements do not leak across thread switches.
+    getItemKey: (index: number) => rows[index]?.id ?? index,
     estimateSize: (index: number) => {
       const row = rows[index];
       if (!row) return 96;
       if (row.kind === "work") return 112;
       if (row.kind === "working") return 40;
-      return row.message.role === "assistant" ? 220 : 170;
+      return estimateTimelineMessageHeight(row.message);
     },
-    measureElement: (element: HTMLElement) => element.getBoundingClientRect().height,
+    measureElement: measureVirtualElement,
+    useAnimationFrameWithResizeObserver: true,
     overscan: 8,
   });
+  useEffect(() => {
+    rowVirtualizer.shouldAdjustScrollPositionOnItemSizeChange = (_item, _delta, instance) => {
+      const viewportHeight = instance.scrollRect?.height ?? 0;
+      const scrollOffset = instance.scrollOffset ?? 0;
+      const remainingDistance = instance.getTotalSize() - (scrollOffset + viewportHeight);
+      return remainingDistance > AUTO_SCROLL_BOTTOM_THRESHOLD_PX;
+    };
+    return () => {
+      rowVirtualizer.shouldAdjustScrollPositionOnItemSizeChange = undefined;
+    };
+  }, [rowVirtualizer]);
+  const pendingMeasureFrameRef = useRef<number | null>(null);
+  const onTimelineImageLoad = useCallback(() => {
+    if (pendingMeasureFrameRef.current !== null) return;
+    pendingMeasureFrameRef.current = window.requestAnimationFrame(() => {
+      pendingMeasureFrameRef.current = null;
+      rowVirtualizer.measure();
+    });
+  }, [rowVirtualizer]);
+  useEffect(() => {
+    return () => {
+      const frame = pendingMeasureFrameRef.current;
+      if (frame !== null) {
+        window.cancelAnimationFrame(frame);
+      }
+    };
+  }, []);
 
   const virtualRows = rowVirtualizer.getVirtualItems();
   const nonVirtualizedRows = rows.slice(virtualizedRowCount);
@@ -3022,6 +3247,8 @@ const MessagesTimeline = memo(function MessagesTimeline({
                               src={image.previewUrl}
                               alt={image.name}
                               className="h-full max-h-[220px] w-full cursor-zoom-in object-cover"
+                              onLoad={onTimelineImageLoad}
+                              onError={onTimelineImageLoad}
                               onClick={() => {
                                 const preview = buildExpandedImagePreview(userImages, image.id);
                                 if (!preview) return;
