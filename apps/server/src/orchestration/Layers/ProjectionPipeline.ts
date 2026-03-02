@@ -37,7 +37,7 @@ import {
   OrchestrationProjectionPipeline,
   type OrchestrationProjectionPipelineShape,
 } from "../Services/ProjectionPipeline.ts";
-import { attachmentRelativePath } from "../../attachmentStore.ts";
+import { attachmentRelativePath, toSafeThreadAttachmentSegment } from "../../attachmentStore.ts";
 
 export const ORCHESTRATION_PROJECTOR_NAMES = {
   projects: "projection.projects",
@@ -66,27 +66,11 @@ interface AttachmentSideEffects {
   readonly prunedThreadRelativePaths: Map<string, Set<string>>;
 }
 
-function toSafeThreadAttachmentSegment(threadId: string): string | null {
-  const segment = encodeURIComponent(threadId);
-  if (
-    segment.length === 0 ||
-    segment === "." ||
-    segment === ".." ||
-    segment.includes("/") ||
-    segment.includes("\\") ||
-    segment.includes("\0")
-  ) {
-    return null;
-  }
-  return segment;
-}
-
-const materializeAttachmentsForProjection = Effect.fn(function* (input: {
-  readonly attachments: ReadonlyArray<ChatAttachment>;
-}) {
-  if (input.attachments.length === 0) return [];
-  return input.attachments;
-});
+const materializeAttachmentsForProjection = Effect.fn(
+  (input: {
+    readonly attachments: ReadonlyArray<ChatAttachment>;
+  }) => Effect.succeed(input.attachments.length === 0 ? [] : input.attachments),
+);
 
 function extractActivityRequestId(payload: unknown): ApprovalRequestId | null {
   if (typeof payload !== "object" || payload === null) {

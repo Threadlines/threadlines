@@ -733,6 +733,9 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
           const projectionPipeline = yield* OrchestrationProjectionPipeline;
           const eventStore = yield* OrchestrationEventStore;
           const now = new Date().toISOString();
+          const threadId = ThreadId.makeUnsafe("thread revert.files");
+          const keepAttachmentId = "thread-revert-files-keep";
+          const removeAttachmentId = "thread-revert-files-remove";
 
           const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
             eventStore
@@ -764,14 +767,14 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
         type: "thread.created",
         eventId: EventId.makeUnsafe("evt-revert-files-2"),
         aggregateKind: "thread",
-        aggregateId: ThreadId.makeUnsafe("thread-revert-files"),
+        aggregateId: threadId,
         occurredAt: now,
         commandId: CommandId.makeUnsafe("cmd-revert-files-2"),
         causationEventId: null,
         correlationId: CorrelationId.makeUnsafe("cmd-revert-files-2"),
         metadata: {},
         payload: {
-          threadId: ThreadId.makeUnsafe("thread-revert-files"),
+          threadId,
           projectId: ProjectId.makeUnsafe("project-revert-files"),
           title: "Thread Revert Files",
           model: "gpt-5-codex",
@@ -786,14 +789,14 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
         type: "thread.turn-diff-completed",
         eventId: EventId.makeUnsafe("evt-revert-files-3"),
         aggregateKind: "thread",
-        aggregateId: ThreadId.makeUnsafe("thread-revert-files"),
+        aggregateId: threadId,
         occurredAt: now,
         commandId: CommandId.makeUnsafe("cmd-revert-files-3"),
         causationEventId: null,
         correlationId: CorrelationId.makeUnsafe("cmd-revert-files-3"),
         metadata: {},
         payload: {
-          threadId: ThreadId.makeUnsafe("thread-revert-files"),
+          threadId,
           turnId: TurnId.makeUnsafe("turn-keep"),
           checkpointTurnCount: 1,
           checkpointRef: CheckpointRef.makeUnsafe("refs/t3/checkpoints/thread-revert-files/turn/1"),
@@ -808,21 +811,21 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
         type: "thread.message-sent",
         eventId: EventId.makeUnsafe("evt-revert-files-4"),
         aggregateKind: "thread",
-        aggregateId: ThreadId.makeUnsafe("thread-revert-files"),
+        aggregateId: threadId,
         occurredAt: now,
         commandId: CommandId.makeUnsafe("cmd-revert-files-4"),
         causationEventId: null,
         correlationId: CorrelationId.makeUnsafe("cmd-revert-files-4"),
         metadata: {},
         payload: {
-          threadId: ThreadId.makeUnsafe("thread-revert-files"),
+          threadId,
           messageId: MessageId.makeUnsafe("message-keep"),
           role: "assistant",
           text: "Keep",
           attachments: [
             {
               type: "image",
-              id: "thread-revert-files-keep",
+              id: keepAttachmentId,
               name: "keep.png",
               mimeType: "image/png",
               sizeBytes: 5,
@@ -839,14 +842,14 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
         type: "thread.turn-diff-completed",
         eventId: EventId.makeUnsafe("evt-revert-files-5"),
         aggregateKind: "thread",
-        aggregateId: ThreadId.makeUnsafe("thread-revert-files"),
+        aggregateId: threadId,
         occurredAt: now,
         commandId: CommandId.makeUnsafe("cmd-revert-files-5"),
         causationEventId: null,
         correlationId: CorrelationId.makeUnsafe("cmd-revert-files-5"),
         metadata: {},
         payload: {
-          threadId: ThreadId.makeUnsafe("thread-revert-files"),
+          threadId,
           turnId: TurnId.makeUnsafe("turn-remove"),
           checkpointTurnCount: 2,
           checkpointRef: CheckpointRef.makeUnsafe("refs/t3/checkpoints/thread-revert-files/turn/2"),
@@ -861,21 +864,21 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
         type: "thread.message-sent",
         eventId: EventId.makeUnsafe("evt-revert-files-6"),
         aggregateKind: "thread",
-        aggregateId: ThreadId.makeUnsafe("thread-revert-files"),
+        aggregateId: threadId,
         occurredAt: now,
         commandId: CommandId.makeUnsafe("cmd-revert-files-6"),
         causationEventId: null,
         correlationId: CorrelationId.makeUnsafe("cmd-revert-files-6"),
         metadata: {},
         payload: {
-          threadId: ThreadId.makeUnsafe("thread-revert-files"),
+          threadId,
           messageId: MessageId.makeUnsafe("message-remove"),
           role: "assistant",
           text: "Remove",
           attachments: [
             {
               type: "image",
-              id: "thread-revert-files-remove",
+              id: removeAttachmentId,
               name: "remove.png",
               mimeType: "image/png",
               sizeBytes: 5,
@@ -891,12 +894,12 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
       const keepPath = path.join(
         stateDir,
         "attachments",
-        "thread-revert-files-keep.png",
+        `${keepAttachmentId}.png`,
       );
       const removePath = path.join(
         stateDir,
         "attachments",
-        "thread-revert-files-remove.png",
+        `${removeAttachmentId}.png`,
       );
       fs.mkdirSync(path.join(stateDir, "attachments"), { recursive: true });
       fs.writeFileSync(keepPath, Buffer.from("keep"));
@@ -908,14 +911,14 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
         type: "thread.reverted",
         eventId: EventId.makeUnsafe("evt-revert-files-7"),
         aggregateKind: "thread",
-        aggregateId: ThreadId.makeUnsafe("thread-revert-files"),
+        aggregateId: threadId,
         occurredAt: now,
         commandId: CommandId.makeUnsafe("cmd-revert-files-7"),
         causationEventId: null,
         correlationId: CorrelationId.makeUnsafe("cmd-revert-files-7"),
         metadata: {},
         payload: {
-          threadId: ThreadId.makeUnsafe("thread-revert-files"),
+          threadId,
           turnCount: 1,
         },
       });
@@ -939,6 +942,8 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
           const projectionPipeline = yield* OrchestrationProjectionPipeline;
           const eventStore = yield* OrchestrationEventStore;
           const now = new Date().toISOString();
+          const threadId = ThreadId.makeUnsafe("thread delete.files");
+          const attachmentId = "thread-delete-files-att-1";
 
           const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
             eventStore
@@ -970,14 +975,14 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
         type: "thread.created",
         eventId: EventId.makeUnsafe("evt-delete-files-2"),
         aggregateKind: "thread",
-        aggregateId: ThreadId.makeUnsafe("thread-delete-files"),
+        aggregateId: threadId,
         occurredAt: now,
         commandId: CommandId.makeUnsafe("cmd-delete-files-2"),
         causationEventId: null,
         correlationId: CorrelationId.makeUnsafe("cmd-delete-files-2"),
         metadata: {},
         payload: {
-          threadId: ThreadId.makeUnsafe("thread-delete-files"),
+          threadId,
           projectId: ProjectId.makeUnsafe("project-delete-files"),
           title: "Thread Delete Files",
           model: "gpt-5-codex",
@@ -992,21 +997,21 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
         type: "thread.message-sent",
         eventId: EventId.makeUnsafe("evt-delete-files-3"),
         aggregateKind: "thread",
-        aggregateId: ThreadId.makeUnsafe("thread-delete-files"),
+        aggregateId: threadId,
         occurredAt: now,
         commandId: CommandId.makeUnsafe("cmd-delete-files-3"),
         causationEventId: null,
         correlationId: CorrelationId.makeUnsafe("cmd-delete-files-3"),
         metadata: {},
         payload: {
-          threadId: ThreadId.makeUnsafe("thread-delete-files"),
+          threadId,
           messageId: MessageId.makeUnsafe("message-delete-files"),
           role: "user",
           text: "Delete",
           attachments: [
             {
               type: "image",
-              id: "thread-delete-files-att-1",
+              id: attachmentId,
               name: "delete.png",
               mimeType: "image/png",
               sizeBytes: 5,
@@ -1019,7 +1024,7 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
         },
       });
 
-      const threadAttachmentPath = path.join(stateDir, "attachments", "thread-delete-files-att-1.png");
+      const threadAttachmentPath = path.join(stateDir, "attachments", `${attachmentId}.png`);
       fs.mkdirSync(path.join(stateDir, "attachments"), { recursive: true });
       fs.writeFileSync(threadAttachmentPath, Buffer.from("delete"));
       assert.equal(fs.existsSync(threadAttachmentPath), true);
@@ -1028,14 +1033,14 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
         type: "thread.deleted",
         eventId: EventId.makeUnsafe("evt-delete-files-4"),
         aggregateKind: "thread",
-        aggregateId: ThreadId.makeUnsafe("thread-delete-files"),
+        aggregateId: threadId,
         occurredAt: now,
         commandId: CommandId.makeUnsafe("cmd-delete-files-4"),
         causationEventId: null,
         correlationId: CorrelationId.makeUnsafe("cmd-delete-files-4"),
         metadata: {},
         payload: {
-          threadId: ThreadId.makeUnsafe("thread-delete-files"),
+          threadId,
           deletedAt: now,
         },
       });

@@ -13,7 +13,7 @@ import { inferImageExtension, SAFE_IMAGE_FILE_EXTENSIONS } from "./imageMime.ts"
 const ATTACHMENT_FILENAME_EXTENSIONS = [...SAFE_IMAGE_FILE_EXTENSIONS, ".bin"];
 const ATTACHMENT_ID_THREAD_SEGMENT_MAX_CHARS = 80;
 
-function toSafeThreadAttachmentSegment(threadId: string): string | null {
+export function toSafeThreadAttachmentSegment(threadId: string): string | null {
   const segment = threadId
     .trim()
     .replace(/[^a-z0-9_-]+/gi, "-")
