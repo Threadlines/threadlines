@@ -75,8 +75,11 @@ npx t3
 - `bun run build` — Builds contracts, web app, and server through Turbo.
 - `bun run typecheck` — Strict TypeScript checks for all packages.
 - `bun run test` — Runs workspace tests.
+- `bun run dist:desktop:artifact -- --platform <mac|linux|win> --target <target> --arch <arch>` — Builds a desktop artifact for a specific platform/target/arch.
 - `bun run dist:desktop:dmg` — Builds a shareable macOS `.dmg` into `./release`.
 - `bun run dist:desktop:dmg:x64` — Builds an Intel macOS `.dmg`.
+- `bun run dist:desktop:linux` — Builds a Linux AppImage into `./release`.
+- `bun run dist:desktop:win` — Builds a Windows NSIS installer into `./release`.
 
 ### Desktop `.dmg` packaging notes
 
@@ -86,6 +89,12 @@ npx t3
 - Desktop packaging includes `apps/server/dist` (the `t3` backend) and starts it on loopback with an auth token for WebSocket/API traffic.
 - Your tester can still open it on macOS by right-clicking the app and choosing **Open** on first launch.
 - To keep staging files for debugging package contents, run: `bun run dist:desktop:dmg -- --keep-stage`
+- To allow code-signing/notarization when configured in CI/secrets, add: `--signed`.
+- Windows `--signed` uses Azure Trusted Signing and expects:
+  `AZURE_TRUSTED_SIGNING_ENDPOINT`, `AZURE_TRUSTED_SIGNING_ACCOUNT_NAME`,
+  `AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME`, and `AZURE_TRUSTED_SIGNING_PUBLISHER_NAME`.
+- Azure authentication env vars are also required (for example service principal with secret):
+  `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`.
 
 ### Running multiple dev instances
 
@@ -122,3 +131,6 @@ Codex is the only implemented provider. `claudeCode` is reserved in contracts/UI
 ## CI quality gates
 
 - `.github/workflows/ci.yml` runs `bun run lint`, `bun run typecheck`, and `bun run test` on pull requests and pushes to `main`.
+- `.github/workflows/release.yml` builds macOS (`arm64` and `x64`), Linux (`x64`), and Windows (`x64`) desktop artifacts from a single `v*.*.*` tag and publishes one GitHub release.
+- The release workflow auto-enables signing only when secrets are present: Apple credentials for macOS and Azure Trusted Signing credentials for Windows. Without secrets, it still releases unsigned artifacts.
+- See `docs/release.md` for full release/signing setup checklist.
