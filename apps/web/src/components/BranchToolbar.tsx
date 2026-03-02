@@ -48,13 +48,6 @@ export default function BranchToolbar({
   const setThreadBranchAction = useStore((store) => store.setThreadBranch);
   const setThreadErrorAction = useStore((store) => store.setError);
   const draftThread = useComposerDraftStore((store) => store.getDraftThread(threadId));
-  const serverThread = useStore((state) =>
-    state.threads.find((thread) => thread.id === threadId),
-  );
-  const activeProjectId = serverThread?.projectId ?? draftThread?.projectId ?? null;
-  const activeProject = useStore((state) =>
-    activeProjectId ? state.projects.find((project) => project.id === activeProjectId) : undefined,
-  );
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
   const queryClient = useQueryClient();
 

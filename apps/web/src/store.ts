@@ -25,29 +25,6 @@ export interface AppState {
   runtimeMode: RuntimeMode;
 }
 
-interface AppStore extends AppState {
-  syncServerReadModel: (readModel: OrchestrationReadModel) => void;
-  markThreadVisited: (threadId: ThreadId, visitedAt?: string) => void;
-  markThreadUnread: (threadId: ThreadId) => void;
-  toggleProject: (projectId: Project["id"]) => void;
-  setThreadTerminalActivity: (
-    threadId: ThreadId,
-    terminalId: string,
-    hasRunningSubprocess: boolean,
-  ) => void;
-  setProjectExpanded: (projectId: Project["id"], expanded: boolean) => void;
-  toggleThreadTerminal: (threadId: ThreadId) => void;
-  setThreadTerminalOpen: (threadId: ThreadId, open: boolean) => void;
-  setThreadTerminalHeight: (threadId: ThreadId, height: number) => void;
-  splitThreadTerminal: (threadId: ThreadId, terminalId: string) => void;
-  newThreadTerminal: (threadId: ThreadId, terminalId: string) => void;
-  setThreadActiveTerminal: (threadId: ThreadId, terminalId: string) => void;
-  closeThreadTerminal: (threadId: ThreadId, terminalId: string) => void;
-  setThreadError: (threadId: ThreadId, error: string | null) => void;
-  setThreadBranch: (threadId: ThreadId, branch: string | null, worktreePath: string | null) => void;
-  setRuntimeMode: (mode: RuntimeMode) => void;
-}
-
 const PERSISTED_STATE_KEY = "t3code:renderer-state:v7";
 const LEGACY_PERSISTED_STATE_KEYS = [
   "t3code:renderer-state:v6",

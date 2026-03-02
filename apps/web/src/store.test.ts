@@ -1,5 +1,5 @@
 import { ProjectId, ThreadId, TurnId } from "@t3tools/contracts";
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { markThreadUnread, type AppState } from "./store";
 import type { Thread } from "./types";
@@ -61,7 +61,7 @@ describe("store pure functions", () => {
 
     const next = markThreadUnread(initialState, ThreadId.makeUnsafe("thread-1"));
 
-    const updatedThread = useStore.getState().threads[0];
+    const updatedThread = next.threads[0];
     expect(updatedThread).toBeDefined();
     expect(updatedThread?.lastVisitedAt).toBe("2026-02-25T12:29:59.999Z");
     expect(Date.parse(updatedThread?.lastVisitedAt ?? "")).toBeLessThan(
@@ -79,6 +79,6 @@ describe("store pure functions", () => {
 
     const next = markThreadUnread(initialState, ThreadId.makeUnsafe("thread-1"));
 
-    expect(useStore.getState().threads[0]?.lastVisitedAt).toBe("2026-02-25T12:35:00.000Z");
+    expect(next).toEqual(initialState);
   });
 });

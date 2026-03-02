@@ -470,10 +470,11 @@ export default function Sidebar() {
             await handleNewThread(projectId).catch(() => undefined);
           }
         }
+      } finally {
+        setIsAddingProject(false);
+        setNewCwd("");
+        setAddingProject(false);
       }
-      setIsAddingProject(false);
-      setNewCwd("");
-      setAddingProject(false);
     },
     [focusMostRecentThreadForProject, handleNewThread, isAddingProject, projects],
   );

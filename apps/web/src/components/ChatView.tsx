@@ -475,15 +475,6 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const clearDraftThread = useComposerDraftStore((store) => store.clearDraftThread);
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
   const draftThread = useComposerDraftStore((store) => store.draftThreadsByThreadId[threadId] ?? null);
-  const serverThread = useStore((state) =>
-    state.threads.find((thread) => thread.id === threadId),
-  );
-  const fallbackDraftProjectId = draftThread?.projectId ?? null;
-  const fallbackDraftProject = useStore((state) =>
-    fallbackDraftProjectId
-      ? state.projects.find((project) => project.id === fallbackDraftProjectId)
-      : undefined,
-  );
   const promptRef = useRef(prompt);
   const [isDragOverComposer, setIsDragOverComposer] = useState(false);
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
@@ -1714,7 +1705,6 @@ export default function ChatView({ threadId }: ChatViewProps) {
     splitTerminal,
     keybindings,
     onToggleDiff,
-    setThreadTerminalOpen,
     toggleTerminalVisibility,
   ]);
 
