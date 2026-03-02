@@ -5,6 +5,8 @@
     "": {
       "name": "@t3tools/monorepo",
       "devDependencies": {
+        "@effect/platform-node": "catalog:",
+        "effect": "catalog:",
         "oxfmt": "^0.35.0",
         "oxlint": "^1.50.0",
         "turbo": "^2.3.3",

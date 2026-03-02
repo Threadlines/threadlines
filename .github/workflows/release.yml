@@ -109,7 +109,7 @@ jobs:
             --platform "${{ matrix.platform }}"
             --target "${{ matrix.target }}"
             --arch "${{ matrix.arch }}"
-            --version "${{ needs.preflight.outputs.version }}"
+            --build-version "${{ needs.preflight.outputs.version }}"
           )
 
           has_all() {
