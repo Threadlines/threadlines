@@ -282,10 +282,14 @@ describe("composerDraftStore project draft thread mapping", () => {
       branch: "main",
       worktreePath: "/tmp/main-worktree",
     });
-    store.setProjectDraftThreadId(projectId, threadId, {
+    const runtimeUndefinedOptions = {
       branch: undefined,
       worktreePath: undefined,
-    });
+    } as unknown as {
+      branch?: string | null;
+      worktreePath?: string | null;
+    };
+    store.setProjectDraftThreadId(projectId, threadId, runtimeUndefinedOptions);
 
     expect(useComposerDraftStore.getState().getDraftThread(threadId)).toMatchObject({
       projectId,
