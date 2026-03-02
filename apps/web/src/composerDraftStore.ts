@@ -1,5 +1,4 @@
 import {
-  DEFAULT_MODEL,
   DEFAULT_REASONING,
   ProjectId,
   REASONING_OPTIONS,
@@ -671,11 +670,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
         if (threadId.length === 0) {
           return;
         }
-        const normalizedModelCandidate = normalizeModelSlug(model);
-        const normalizedModel =
-          normalizedModelCandidate && normalizedModelCandidate !== DEFAULT_MODEL
-            ? normalizedModelCandidate
-            : null;
+        const normalizedModel = normalizeModelSlug(model) ?? null;
         set((state) => {
           const existing = state.draftsByThreadId[threadId];
           if (!existing && normalizedModel === null) {

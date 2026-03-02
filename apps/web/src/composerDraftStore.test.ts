@@ -242,3 +242,23 @@ describe("composerDraftStore project draft thread mapping", () => {
     });
   });
 });
+
+describe("composerDraftStore setModel", () => {
+  const threadId = ThreadId.makeUnsafe("thread-model");
+
+  beforeEach(() => {
+    useComposerDraftStore.setState({
+      draftsByThreadId: {},
+      draftThreadsByThreadId: {},
+      projectDraftThreadIdByProjectId: {},
+    });
+  });
+
+  it("keeps explicit DEFAULT_MODEL overrides instead of coercing to null", () => {
+    const store = useComposerDraftStore.getState();
+
+    store.setModel(threadId, "gpt-5.3-codex");
+
+    expect(useComposerDraftStore.getState().draftsByThreadId[threadId]?.model).toBe("gpt-5.3-codex");
+  });
+});
