@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import net from "node:net";
 import { homedir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -6,6 +7,7 @@ import { pathToFileURL } from "node:url";
 const BASE_SERVER_PORT = 3773;
 const BASE_WEB_PORT = 5733;
 const MAX_HASH_OFFSET = 3000;
+const MAX_PORT = 65535;
 export const DEFAULT_DEV_STATE_DIR = path.join(homedir(), ".t3", "dev");
 const MODE_ARGS = {
   dev: [
@@ -209,7 +211,127 @@ export function createDevRunnerEnv({ mode, env, offset, envOverrides }) {
   return output;
 }
 
-export function runDevRunner(argv = process.argv) {
+function portPairForOffset(offset) {
+  return {
+    serverPort: BASE_SERVER_PORT + offset,
+    webPort: BASE_WEB_PORT + offset,
+  };
+}
+
+async function canListenOnHost(port, host) {
+  return await new Promise((resolve) => {
+    const server = net.createServer();
+    server.unref();
+    server.once("error", (error) => {
+      const code = error?.code;
+      if (code === "EADDRNOTAVAIL") {
+        // Host family unavailable on this machine (for example, no IPv6 loopback).
+        resolve(true);
+        return;
+      }
+      resolve(false);
+    });
+    server.once("listening", () => {
+      server.close(() => {
+        resolve(true);
+      });
+    });
+    server.listen({ host, port });
+  });
+}
+
+async function isPortAvailable(port) {
+  // Vite/dev traffic uses localhost loopback. Verify both IPv4 and IPv6 loopback
+  // so we don't pick a port that fails later on one address family.
+  const [ipv4, ipv6] = await Promise.all([
+    canListenOnHost(port, "127.0.0.1"),
+    canListenOnHost(port, "::1"),
+  ]);
+  return ipv4 && ipv6;
+}
+
+const defaultCheckPortAvailability = isPortAvailable;
+
+export async function findFirstAvailableOffset({
+  startOffset,
+  requireServerPort,
+  requireWebPort,
+  checkPortAvailability = defaultCheckPortAvailability,
+}) {
+  for (let candidate = startOffset; ; candidate += 1) {
+    const { serverPort, webPort } = portPairForOffset(candidate);
+    if (serverPort > MAX_PORT || webPort > MAX_PORT) {
+      break;
+    }
+
+    const checks = [];
+    if (requireServerPort) {
+      checks.push(checkPortAvailability(serverPort));
+    }
+    if (requireWebPort) {
+      checks.push(checkPortAvailability(webPort));
+    }
+
+    if (checks.length === 0) {
+      return candidate;
+    }
+
+    const availability = await Promise.all(checks);
+    if (availability.every(Boolean)) {
+      return candidate;
+    }
+  }
+
+  throw new Error(
+    `No available dev ports found from offset ${startOffset}. Tried server=${BASE_SERVER_PORT}+n web=${BASE_WEB_PORT}+n up to port ${MAX_PORT}.`,
+  );
+}
+
+export async function resolveModePortOffsets({
+  mode,
+  startOffset,
+  envOverrides,
+  checkPortAvailability,
+}) {
+  const hasExplicitServerPort = typeof envOverrides.T3CODE_PORT === "string";
+  const hasExplicitDevUrl = typeof envOverrides.VITE_DEV_SERVER_URL === "string";
+
+  if (mode === "dev:web") {
+    if (hasExplicitDevUrl) {
+      return { serverOffset: startOffset, webOffset: startOffset };
+    }
+    const webOffset = await findFirstAvailableOffset({
+      startOffset,
+      requireServerPort: false,
+      requireWebPort: true,
+      checkPortAvailability,
+    });
+    return { serverOffset: startOffset, webOffset };
+  }
+
+  if (mode === "dev:server") {
+    if (hasExplicitServerPort) {
+      return { serverOffset: startOffset, webOffset: startOffset };
+    }
+    const serverOffset = await findFirstAvailableOffset({
+      startOffset,
+      requireServerPort: true,
+      requireWebPort: false,
+      checkPortAvailability,
+    });
+    return { serverOffset, webOffset: serverOffset };
+  }
+
+  const sharedOffset = await findFirstAvailableOffset({
+    startOffset,
+    requireServerPort: !hasExplicitServerPort,
+    requireWebPort: !hasExplicitDevUrl,
+    checkPortAvailability,
+  });
+  return { serverOffset: sharedOffset, webOffset: sharedOffset };
+}
+
+export async function runDevRunner(argv = process.argv) {
   const mode = argv[2];
   const parsedArgs = parseDevRunnerArgs(argv.slice(3));
   if (!mode || !(mode in MODE_ARGS)) {
@@ -218,24 +340,49 @@ export function runDevRunner(argv = process.argv) {
   }
 
   const { offset, source } = resolveOffset();
-  const serverPort = BASE_SERVER_PORT + offset;
-  const webPort = BASE_WEB_PORT + offset;
+  const { serverOffset, webOffset } = await resolveModePortOffsets({
+    mode,
+    startOffset: offset,
+    envOverrides: parsedArgs.envOverrides,
+  });
 
-  if (serverPort > 65535 || webPort > 65535) {
-    throw new Error(
-      `Port offset too large (${offset}). Computed ports: server=${serverPort}, web=${webPort}`,
-    );
+  const mergedEnvOverrides = { ...parsedArgs.envOverrides };
+  if (!("VITE_DEV_SERVER_URL" in mergedEnvOverrides)) {
+    const { webPort } = portPairForOffset(webOffset);
+    mergedEnvOverrides.PORT = String(webPort);
+    mergedEnvOverrides.ELECTRON_RENDERER_PORT = String(webPort);
+    mergedEnvOverrides.VITE_DEV_SERVER_URL = `http://localhost:${webPort}`;
   }
 
   const env = createDevRunnerEnv({
     mode,
     env: process.env,
-    offset,
-    envOverrides: parsedArgs.envOverrides,
+    offset: serverOffset,
+    envOverrides: mergedEnvOverrides,
   });
 
+  const parsedServerPort = Number(env.T3CODE_PORT);
+  const parsedWebPort = Number(env.PORT);
+  if (
+    !Number.isInteger(parsedServerPort) ||
+    parsedServerPort < 1 ||
+    parsedServerPort > MAX_PORT ||
+    !Number.isInteger(parsedWebPort) ||
+    parsedWebPort < 1 ||
+    parsedWebPort > MAX_PORT
+  ) {
+    throw new Error(
+      `Invalid computed dev ports: server='${String(env.T3CODE_PORT)}' web='${String(env.PORT)}'.`,
+    );
+  }
+
+  const selectionSuffix =
+    serverOffset !== offset || webOffset !== offset
+      ? ` selectedOffset(server=${serverOffset},web=${webOffset})`
+      : "";
+
   console.info(
-    `[dev-runner] mode=${mode} source=${source} serverPort=${serverPort} webPort=${webPort} stateDir=${env.T3CODE_STATE_DIR}`,
+    `[dev-runner] mode=${mode} source=${source}${selectionSuffix} serverPort=${parsedServerPort} webPort=${parsedWebPort} stateDir=${env.T3CODE_STATE_DIR}`,
   );
 
   if (parsedArgs.isDryRun) {
@@ -265,10 +412,8 @@ export function runDevRunner(argv = process.argv) {
 const entrypointPath = process.argv[1] ? pathToFileURL(process.argv[1]).href : "";
 
 if (import.meta.url === entrypointPath) {
-  try {
-    runDevRunner();
-  } catch (error) {
+  runDevRunner().catch((error) => {
     console.error("[dev-runner]", error);
     process.exit(1);
-  }
+  });
 }

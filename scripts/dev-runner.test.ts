@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_DEV_STATE_DIR,
   createDevRunnerEnv,
+  findFirstAvailableOffset,
   parseDevRunnerArgs,
+  resolveModePortOffsets,
 } from "./dev-runner.mjs";
 
 describe("parseDevRunnerArgs", () => {
@@ -121,5 +123,90 @@ describe("createDevRunnerEnv", () => {
         envOverrides: { T3CODE_PORT: "not-a-port" },
       }),
     ).toThrow("Invalid T3CODE_PORT override");
+  });
+});
+
+describe("findFirstAvailableOffset", () => {
+  it("returns the starting offset when required ports are available", async () => {
+    const offset = await findFirstAvailableOffset({
+      startOffset: 0,
+      requireServerPort: true,
+      requireWebPort: true,
+      checkPortAvailability: async () => true,
+    });
+
+    expect(offset).toBe(0);
+  });
+
+  it("advances until all required ports are available", async () => {
+    const taken = new Set([3773, 5733, 3774, 5734]);
+    const offset = await findFirstAvailableOffset({
+      startOffset: 0,
+      requireServerPort: true,
+      requireWebPort: true,
+      checkPortAvailability: async (port) => !taken.has(port),
+    });
+
+    expect(offset).toBe(2);
+  });
+});
+
+describe("resolveModePortOffsets", () => {
+  it("uses a shared fallback offset for dev mode", async () => {
+    const taken = new Set([3773, 5733]);
+    const offsets = await resolveModePortOffsets({
+      mode: "dev",
+      startOffset: 0,
+      envOverrides: {},
+      checkPortAvailability: async (port) => !taken.has(port),
+    });
+
+    expect(offsets).toEqual({ serverOffset: 1, webOffset: 1 });
+  });
+
+  it("keeps server offset stable for dev:web and only shifts web offset", async () => {
+    const taken = new Set([5733]);
+    const offsets = await resolveModePortOffsets({
+      mode: "dev:web",
+      startOffset: 0,
+      envOverrides: {},
+      checkPortAvailability: async (port) => !taken.has(port),
+    });
+
+    expect(offsets).toEqual({ serverOffset: 0, webOffset: 1 });
+  });
+
+  it("shifts only server offset for dev:server", async () => {
+    const taken = new Set([3773]);
+    const offsets = await resolveModePortOffsets({
+      mode: "dev:server",
+      startOffset: 0,
+      envOverrides: {},
+      checkPortAvailability: async (port) => !taken.has(port),
+    });
+
+    expect(offsets).toEqual({ serverOffset: 1, webOffset: 1 });
+  });
+
+  it("respects explicit dev-url override for dev:web", async () => {
+    const offsets = await resolveModePortOffsets({
+      mode: "dev:web",
+      startOffset: 0,
+      envOverrides: { VITE_DEV_SERVER_URL: "http://localhost:9999" },
+      checkPortAvailability: async () => false,
+    });
+
+    expect(offsets).toEqual({ serverOffset: 0, webOffset: 0 });
+  });
+
+  it("respects explicit server port override for dev:server", async () => {
+    const offsets = await resolveModePortOffsets({
+      mode: "dev:server",
+      startOffset: 0,
+      envOverrides: { T3CODE_PORT: "4888" },
+      checkPortAvailability: async () => false,
+    });
+
+    expect(offsets).toEqual({ serverOffset: 0, webOffset: 0 });
   });
 });
