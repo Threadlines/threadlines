@@ -5,20 +5,29 @@ import { Effect } from "effect";
 import { assertSuccess } from "@effect/vitest/utils";
 
 describe("resolveEditorLaunch", () => {
-  it.effect("returns cursor command for cursor editor", () =>
+  it.effect("returns commands for command-based editors", () =>
     Effect.gen(function* () {
-      const launch = yield* resolveEditorLaunch(
+      const cursorLaunch = yield* resolveEditorLaunch(
         { cwd: "/tmp/workspace", editor: "cursor" },
         "darwin",
       );
-      assert.deepEqual(launch, {
+      assert.deepEqual(cursorLaunch, {
         command: "cursor",
+        args: ["/tmp/workspace"],
+      });
+
+      const vscodeLaunch = yield* resolveEditorLaunch(
+        { cwd: "/tmp/workspace", editor: "vscode" },
+        "darwin",
+      );
+      assert.deepEqual(vscodeLaunch, {
+        command: "code",
         args: ["/tmp/workspace"],
       });
     }),
   );
 
-  it.effect("uses --goto when cursor target includes line/column suffixes", () =>
+  it.effect("uses --goto when editor supports line/column suffixes", () =>
     Effect.gen(function* () {
       const lineOnly = yield* resolveEditorLaunch(
         { cwd: "/tmp/workspace/AGENTS.md:48", editor: "cursor" },
@@ -35,6 +44,15 @@ describe("resolveEditorLaunch", () => {
       );
       assert.deepEqual(lineAndColumn, {
         command: "cursor",
+        args: ["--goto", "/tmp/workspace/src/open.ts:71:5"],
+      });
+
+      const vscodeLineAndColumn = yield* resolveEditorLaunch(
+        { cwd: "/tmp/workspace/src/open.ts:71:5", editor: "vscode" },
+        "darwin",
+      );
+      assert.deepEqual(vscodeLineAndColumn, {
+        command: "code",
         args: ["--goto", "/tmp/workspace/src/open.ts:71:5"],
       });
     }),

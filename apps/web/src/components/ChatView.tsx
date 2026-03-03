@@ -517,6 +517,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const messagesScrollRef = useRef<HTMLDivElement>(null);
   const [messagesScrollElement, setMessagesScrollElement] = useState<HTMLDivElement | null>(null);
   const shouldAutoScrollRef = useRef(true);
+  const lastKnownScrollTopRef = useRef(0);
+  const isPointerScrollActiveRef = useRef(false);
+  const lastTouchClientYRef = useRef<number | null>(null);
+  const pendingUserScrollUpIntentRef = useRef(false);
   const pendingAutoScrollFrameRef = useRef<number | null>(null);
   const composerEditorRef = useRef<ComposerPromptEditorHandle>(null);
   const composerCommandInputRef = useRef<HTMLInputElement>(null);
@@ -1324,7 +1328,14 @@ export default function ChatView({ threadId }: ChatViewProps) {
     const scrollContainer = messagesScrollRef.current;
     if (!scrollContainer) return;
     scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior });
+    lastKnownScrollTopRef.current = scrollContainer.scrollTop;
     shouldAutoScrollRef.current = true;
+  }, []);
+  const cancelPendingStickToBottom = useCallback(() => {
+    const pendingFrame = pendingAutoScrollFrameRef.current;
+    if (pendingFrame === null) return;
+    pendingAutoScrollFrameRef.current = null;
+    window.cancelAnimationFrame(pendingFrame);
   }, []);
   const scheduleStickToBottom = useCallback(() => {
     if (pendingAutoScrollFrameRef.current !== null) return;
@@ -1333,19 +1344,77 @@ export default function ChatView({ threadId }: ChatViewProps) {
       scrollMessagesToBottom();
     });
   }, [scrollMessagesToBottom]);
+  const forceStickToBottom = useCallback(() => {
+    cancelPendingStickToBottom();
+    scrollMessagesToBottom();
+    scheduleStickToBottom();
+  }, [cancelPendingStickToBottom, scheduleStickToBottom, scrollMessagesToBottom]);
   const onMessagesScroll = useCallback(() => {
     const scrollContainer = messagesScrollRef.current;
     if (!scrollContainer) return;
-    shouldAutoScrollRef.current = isScrollContainerNearBottom(scrollContainer);
+    const currentScrollTop = scrollContainer.scrollTop;
+    const isNearBottom = isScrollContainerNearBottom(scrollContainer);
+
+    if (!shouldAutoScrollRef.current && isNearBottom) {
+      shouldAutoScrollRef.current = true;
+      pendingUserScrollUpIntentRef.current = false;
+    } else if (shouldAutoScrollRef.current && pendingUserScrollUpIntentRef.current) {
+      const scrolledUp = currentScrollTop < lastKnownScrollTopRef.current - 1;
+      if (scrolledUp) {
+        shouldAutoScrollRef.current = false;
+      }
+      pendingUserScrollUpIntentRef.current = false;
+    } else if (shouldAutoScrollRef.current && isPointerScrollActiveRef.current) {
+      const scrolledUp = currentScrollTop < lastKnownScrollTopRef.current - 1;
+      if (scrolledUp) {
+        shouldAutoScrollRef.current = false;
+      }
+    } else if (shouldAutoScrollRef.current && !isNearBottom) {
+      // Catch-all for keyboard/assistive scroll interactions.
+      const scrolledUp = currentScrollTop < lastKnownScrollTopRef.current - 1;
+      if (scrolledUp) {
+        shouldAutoScrollRef.current = false;
+      }
+    }
+
+    lastKnownScrollTopRef.current = currentScrollTop;
+  }, []);
+  const onMessagesWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
+    if (event.deltaY < 0) {
+      pendingUserScrollUpIntentRef.current = true;
+    }
+  }, []);
+  const onMessagesPointerDown = useCallback((_event: React.PointerEvent<HTMLDivElement>) => {
+    isPointerScrollActiveRef.current = true;
+  }, []);
+  const onMessagesPointerUp = useCallback((_event: React.PointerEvent<HTMLDivElement>) => {
+    isPointerScrollActiveRef.current = false;
+  }, []);
+  const onMessagesPointerCancel = useCallback((_event: React.PointerEvent<HTMLDivElement>) => {
+    isPointerScrollActiveRef.current = false;
+  }, []);
+  const onMessagesTouchStart = useCallback((event: React.TouchEvent<HTMLDivElement>) => {
+    const touch = event.touches[0];
+    if (!touch) return;
+    lastTouchClientYRef.current = touch.clientY;
+  }, []);
+  const onMessagesTouchMove = useCallback((event: React.TouchEvent<HTMLDivElement>) => {
+    const touch = event.touches[0];
+    if (!touch) return;
+    const previousTouchY = lastTouchClientYRef.current;
+    if (previousTouchY !== null && touch.clientY > previousTouchY + 1) {
+      pendingUserScrollUpIntentRef.current = true;
+    }
+    lastTouchClientYRef.current = touch.clientY;
+  }, []);
+  const onMessagesTouchEnd = useCallback((_event: React.TouchEvent<HTMLDivElement>) => {
+    lastTouchClientYRef.current = null;
   }, []);
   useEffect(() => {
     return () => {
-      const frame = pendingAutoScrollFrameRef.current;
-      if (frame !== null) {
-        window.cancelAnimationFrame(frame);
-      }
+      cancelPendingStickToBottom();
     };
-  }, []);
+  }, [cancelPendingStickToBottom]);
   useLayoutEffect(() => {
     if (!activeThread?.id) return;
     shouldAutoScrollRef.current = true;
@@ -1922,7 +1991,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     ]);
     // Sending a message should always bring the latest user turn into view.
     shouldAutoScrollRef.current = true;
-    scheduleStickToBottom();
+    forceStickToBottom();
 
     setThreadError(threadIdForSend, null);
     promptRef.current = "";
@@ -2442,6 +2511,14 @@ export default function ChatView({ threadId }: ChatViewProps) {
         ref={setMessagesScrollContainerRef}
         className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-y-contain px-3 py-3 sm:px-5 sm:py-4"
         onScroll={onMessagesScroll}
+        onWheel={onMessagesWheel}
+        onPointerDown={onMessagesPointerDown}
+        onPointerUp={onMessagesPointerUp}
+        onPointerCancel={onMessagesPointerCancel}
+        onTouchStart={onMessagesTouchStart}
+        onTouchMove={onMessagesTouchMove}
+        onTouchEnd={onMessagesTouchEnd}
+        onTouchCancel={onMessagesTouchEnd}
       >
         <MessagesTimeline
           key={activeThread.id}
@@ -3601,6 +3678,11 @@ const OpenInPicker = memo(function OpenInPicker({
       label: "Cursor",
       Icon: CursorIcon,
       value: "cursor",
+    },
+    {
+      label: "VS Code",
+      Icon: FileIcon,
+      value: "vscode",
     },
     {
       label: isMacPlatform(navigator.platform)
