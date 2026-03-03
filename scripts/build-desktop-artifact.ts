@@ -162,7 +162,7 @@ const resolveBooleanFlag = (flag: Option.Option<boolean>, envValue: boolean) =>
 const mergeOptions = <A>(a: Option.Option<A>, b: Option.Option<A>, defaultValue: A) =>
   Option.getOrElse(a, () => Option.getOrElse(b, () => defaultValue));
 
-const resolveBuildOptions = Effect.fn(function* (input: BuildCliInput) {
+const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (input: BuildCliInput) {
   const path = yield* Path.Path;
   const repoRoot = yield* RepoRoot;
   const env = yield* BuildEnvConfig.asEffect();
@@ -208,7 +208,7 @@ const commandOutputOptions = (verbose: boolean) =>
     stderr: "inherit",
   }) as const;
 
-const runCommand = Effect.fn(function* (command: ChildProcess.Command) {
+const runCommand = Effect.fn("runCommand")(function* (command: ChildProcess.Command) {
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const child = yield* commandSpawner.spawn(command);
   const exitCode = yield* child.exitCode;
@@ -321,7 +321,7 @@ function validateBundledClientAssets(clientDir: string) {
   });
 }
 
-const createBuildConfig = Effect.fn(function* (
+const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   platform: typeof BuildPlatform.Type,
   target: string,
   productName: string,
@@ -366,7 +366,7 @@ const createBuildConfig = Effect.fn(function* (
   return buildConfig;
 });
 
-const assertPlatformBuildResources = Effect.fn(function* (
+const assertPlatformBuildResources = Effect.fn("assertPlatformBuildResources")(function* (
   platform: typeof BuildPlatform.Type,
   stageResourcesDir: string,
   verbose: boolean,
@@ -399,7 +399,9 @@ const assertPlatformBuildResources = Effect.fn(function* (
   }
 });
 
-const buildDesktopArtifact = Effect.fn(function* (options: ResolvedBuildOptions) {
+const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
+  options: ResolvedBuildOptions,
+) {
   const repoRoot = yield* RepoRoot;
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
