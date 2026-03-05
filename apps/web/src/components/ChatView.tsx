@@ -72,6 +72,7 @@ import {
   derivePhase,
   deriveTimelineEntries,
   deriveActivePlanState,
+  findLatestProposedPlan,
   type PendingApproval,
   type PendingUserInput,
   PROVIDER_OPTIONS,
@@ -93,8 +94,6 @@ import {
   buildPlanImplementationThreadTitle,
   buildPlanImplementationPrompt,
   buildProposedPlanMarkdownFilename,
-  findLatestProposedPlanMessage,
-  parseProposedPlanMessage,
   proposedPlanTitle,
 } from "../proposedPlan";
 import { truncateTitle } from "../truncateTitle";
@@ -334,6 +333,7 @@ function buildLocalDraftThread(
     worktreePath: draftThread.worktreePath,
     turnDiffSummaries: [],
     activities: [],
+    proposedPlans: [],
   };
 }
 
@@ -904,11 +904,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
     if (!latestTurnSettled) {
       return null;
     }
-    return findLatestProposedPlanMessage(
-      activeThread?.messages ?? [],
-      activeLatestTurn?.assistantMessageId ?? null,
+    return findLatestProposedPlan(
+      activeThread?.proposedPlans ?? [],
+      activeLatestTurn?.turnId ?? null,
     );
-  }, [activeLatestTurn?.assistantMessageId, activeThread?.messages, latestTurnSettled]);
+  }, [activeLatestTurn?.turnId, activeThread?.proposedPlans, latestTurnSettled]);
   const activePlan = useMemo(
     () => deriveActivePlanState(threadActivities, activeLatestTurn?.turnId ?? undefined),
     [activeLatestTurn?.turnId, threadActivities],
@@ -1055,8 +1055,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
     return [...serverMessagesWithPreviewHandoff, ...pendingMessages];
   }, [serverMessages, attachmentPreviewHandoffByMessageId, optimisticUserMessages]);
   const timelineEntries = useMemo(
-    () => deriveTimelineEntries(timelineMessages, workLogEntries),
-    [timelineMessages, workLogEntries],
+    () => deriveTimelineEntries(timelineMessages, activeThread?.proposedPlans ?? [], workLogEntries),
+    [activeThread?.proposedPlans, timelineMessages, workLogEntries],
   );
   const { turnDiffSummaries, inferredCheckpointTurnCountByTurnId } =
     useTurnDiffSummaries(activeThread);
@@ -2279,8 +2279,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
     if (showPlanFollowUpPrompt && activeProposedPlan) {
       const followUpText =
         trimmed.length > 0
-          ? trimmed
-          : buildPlanImplementationPrompt(activeProposedPlan.plan.planMarkdown);
+        ? trimmed
+          : buildPlanImplementationPrompt(activeProposedPlan.planMarkdown);
       const nextInteractionMode = trimmed.length > 0 ? "plan" : "default";
       promptRef.current = "";
       clearComposerDraftContent(activeThread.id);
@@ -2815,7 +2815,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
 
     const createdAt = new Date().toISOString();
     const nextThreadId = newThreadId();
-    const planMarkdown = activeProposedPlan.plan.planMarkdown;
+    const planMarkdown = activeProposedPlan.planMarkdown;
     const implementationPrompt = buildPlanImplementationPrompt(planMarkdown);
     const nextThreadTitle = truncateTitle(buildPlanImplementationThreadTitle(planMarkdown));
     const nextThreadModel: ModelSlug =
@@ -3334,7 +3334,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       >
         <MessagesTimeline
           key={activeThread.id}
-          hasMessages={timelineMessages.length > 0}
+          hasMessages={timelineEntries.length > 0}
           isWorking={isWorking}
           activeTurnInProgress={!latestTurnSettled}
           activeTurnStartedAt={activeLatestTurn?.startedAt ?? null}
@@ -3387,8 +3387,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
             ) : showPlanFollowUpPrompt && activeProposedPlan ? (
               <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
                 <ComposerPlanFollowUpBanner
-                  key={activeProposedPlan.message.id}
-                  planTitle={proposedPlanTitle(activeProposedPlan.plan.planMarkdown) ?? null}
+                  key={activeProposedPlan.id}
+                  planTitle={proposedPlanTitle(activeProposedPlan.planMarkdown) ?? null}
                 />
               </div>
             ) : null}
@@ -4205,7 +4205,6 @@ const ComposerPendingUserInputPanel = memo(function ComposerPendingUserInputPane
     <ComposerPendingUserInputCard
       key={activePrompt.requestId}
       prompt={activePrompt}
-      pendingPromptCount={pendingUserInputs.length}
       isResponding={respondingRequestIds.includes(activePrompt.requestId)}
       answers={answers}
       questionIndex={questionIndex}
@@ -4216,14 +4215,12 @@ const ComposerPendingUserInputPanel = memo(function ComposerPendingUserInputPane
 
 const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard({
   prompt,
-  pendingPromptCount,
   isResponding,
   answers,
   questionIndex,
   onSelectOption,
 }: {
   prompt: PendingUserInput;
-  pendingPromptCount: number;
   isResponding: boolean;
   answers: Record<string, PendingUserInputDraftAnswer>;
   questionIndex: number;
@@ -4448,33 +4445,29 @@ const ChangedFilesTree = memo(function ChangedFilesTree(props: {
   return (
     <div className="space-y-0.5">
       {treeNodes.map((node) => renderTreeNode(node, 0))}
-const ProposedPlanMessage = memo(function ProposedPlanMessage({
-  text,
+    </div>
+  );
+});
+
+const ProposedPlanCard = memo(function ProposedPlanCard({
+  planMarkdown,
   cwd,
   workspaceRoot,
-  isStreaming,
 }: {
-  text: string;
+  planMarkdown: string;
   cwd: string | undefined;
   workspaceRoot: string | undefined;
-  isStreaming: boolean;
 }) {
-  const proposedPlan = parseProposedPlanMessage(text);
   const [expanded, setExpanded] = useState(false);
   const [isSaveDialogOpen, setIsSaveDialogOpen] = useState(false);
   const [savePath, setSavePath] = useState("");
   const [isSavingToWorkspace, setIsSavingToWorkspace] = useState(false);
   const savePathInputId = useId();
-
-  if (!proposedPlan) {
-    return <ChatMarkdown text={text} cwd={cwd} isStreaming={isStreaming} />;
-  }
-
-  const title = proposedPlanTitle(proposedPlan.planMarkdown) ?? "Proposed plan";
-  const lineCount = proposedPlan.planMarkdown.split("\n").length;
-  const canCollapse = proposedPlan.planMarkdown.length > 900 || lineCount > 20;
-  const downloadFilename = buildProposedPlanMarkdownFilename(proposedPlan.planMarkdown);
-  const saveContents = normalizePlanMarkdownForExport(proposedPlan.planMarkdown);
+  const title = proposedPlanTitle(planMarkdown) ?? "Proposed plan";
+  const lineCount = planMarkdown.split("\n").length;
+  const canCollapse = planMarkdown.length > 900 || lineCount > 20;
+  const downloadFilename = buildProposedPlanMarkdownFilename(planMarkdown);
+  const saveContents = normalizePlanMarkdownForExport(planMarkdown);
 
   const handleDownload = () => {
     downloadTextFile(downloadFilename, saveContents);
@@ -4540,46 +4533,40 @@ const ProposedPlanMessage = memo(function ProposedPlanMessage({
   };
 
   return (
-    <div className="space-y-3">
-      {proposedPlan.beforeText ? (
-        <ChatMarkdown text={proposedPlan.beforeText} cwd={cwd} isStreaming={isStreaming} />
-      ) : null}
-
-      <div className="rounded-[24px] border border-border/80 bg-card/70 p-4 sm:p-5">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-2">
-            <Badge variant="secondary">Plan</Badge>
-            <p className="truncate text-sm font-medium text-foreground">{title}</p>
-          </div>
-          <Menu>
-            <MenuTrigger
-              render={<Button aria-label="Plan actions" size="icon-xs" variant="outline" />}
-            >
-              <EllipsisIcon aria-hidden="true" className="size-4" />
-            </MenuTrigger>
-            <MenuPopup align="end">
-              <MenuItem onClick={handleDownload}>Download as markdown</MenuItem>
-              <MenuItem onClick={openSaveDialog} disabled={!workspaceRoot || isSavingToWorkspace}>
-                Save to workspace
-              </MenuItem>
-            </MenuPopup>
-          </Menu>
+    <div className="rounded-[24px] border border-border/80 bg-card/70 p-4 sm:p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <Badge variant="secondary">Plan</Badge>
+          <p className="truncate text-sm font-medium text-foreground">{title}</p>
         </div>
-        <div className="mt-4">
-          <div className={cn("relative", canCollapse && !expanded && "max-h-104 overflow-hidden")}>
-            <ChatMarkdown text={proposedPlan.planMarkdown} cwd={cwd} isStreaming={false} />
-            {canCollapse && !expanded ? (
-              <div className="pointer-events-none absolute inset-x-0 bottom-0 h-24 bg-linear-to-t from-card/95 via-card/80 to-transparent" />
-            ) : null}
-          </div>
-          {canCollapse ? (
-            <div className="mt-4 flex justify-center">
-              <Button size="sm" variant="outline" onClick={() => setExpanded((value) => !value)}>
-                {expanded ? "Collapse plan" : "Expand plan"}
-              </Button>
-            </div>
+        <Menu>
+          <MenuTrigger
+            render={<Button aria-label="Plan actions" size="icon-xs" variant="outline" />}
+          >
+            <EllipsisIcon aria-hidden="true" className="size-4" />
+          </MenuTrigger>
+          <MenuPopup align="end">
+            <MenuItem onClick={handleDownload}>Download as markdown</MenuItem>
+            <MenuItem onClick={openSaveDialog} disabled={!workspaceRoot || isSavingToWorkspace}>
+              Save to workspace
+            </MenuItem>
+          </MenuPopup>
+        </Menu>
+      </div>
+      <div className="mt-4">
+        <div className={cn("relative", canCollapse && !expanded && "max-h-104 overflow-hidden")}>
+          <ChatMarkdown text={planMarkdown} cwd={cwd} isStreaming={false} />
+          {canCollapse && !expanded ? (
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-24 bg-linear-to-t from-card/95 via-card/80 to-transparent" />
           ) : null}
         </div>
+        {canCollapse ? (
+          <div className="mt-4 flex justify-center">
+            <Button size="sm" variant="outline" onClick={() => setExpanded((value) => !value)}>
+              {expanded ? "Collapse plan" : "Expand plan"}
+            </Button>
+          </div>
+        ) : null}
       </div>
 
       <Dialog
@@ -4629,10 +4616,6 @@ const ProposedPlanMessage = memo(function ProposedPlanMessage({
           </DialogFooter>
         </DialogPopup>
       </Dialog>
-
-      {proposedPlan.afterText ? (
-        <ChatMarkdown text={proposedPlan.afterText} cwd={cwd} isStreaming={isStreaming} />
-      ) : null}
     </div>
   );
 });
@@ -4662,6 +4645,7 @@ interface MessagesTimelineProps {
 
 type TimelineEntry = ReturnType<typeof deriveTimelineEntries>[number];
 type TimelineMessage = Extract<TimelineEntry, { kind: "message" }>["message"];
+type TimelineProposedPlan = Extract<TimelineEntry, { kind: "proposed-plan" }>["proposedPlan"];
 type TimelineWorkEntry = Extract<TimelineEntry, { kind: "work" }>["entry"];
 type TimelineRow =
   | {
@@ -4677,7 +4661,32 @@ type TimelineRow =
       message: TimelineMessage;
       showCompletionDivider: boolean;
     }
+  | {
+      kind: "proposed-plan";
+      id: string;
+      createdAt: string;
+      proposedPlan: TimelineProposedPlan;
+    }
   | { kind: "working"; id: string; createdAt: string | null };
+
+function estimateTimelineMessageHeight(message: TimelineMessage): number {
+  const textLength = message.text.length;
+  if (message.role === "assistant") {
+    const estimatedLines = Math.max(1, Math.ceil(textLength / 72));
+    return 78 + Math.min(estimatedLines * 22, 820);
+  }
+
+  const estimatedLines = Math.max(1, Math.ceil(textLength / 56));
+  const attachmentCount = message.attachments?.length ?? 0;
+  const attachmentRows = Math.ceil(attachmentCount / 2);
+  const attachmentHeight = attachmentRows * 124;
+  return 96 + Math.min(estimatedLines * 22, 620) + attachmentHeight;
+}
+
+function estimateTimelineProposedPlanHeight(proposedPlan: TimelineProposedPlan): number {
+  const estimatedLines = Math.max(1, Math.ceil(proposedPlan.planMarkdown.length / 72));
+  return 120 + Math.min(estimatedLines * 22, 880);
+}
 
 const MessagesTimeline = memo(function MessagesTimeline({
   hasMessages,
@@ -4757,6 +4766,16 @@ const MessagesTimeline = memo(function MessagesTimeline({
         continue;
       }
 
+      if (timelineEntry.kind === "proposed-plan") {
+        nextRows.push({
+          kind: "proposed-plan",
+          id: timelineEntry.id,
+          createdAt: timelineEntry.createdAt,
+          proposedPlan: timelineEntry.proposedPlan,
+        });
+        continue;
+      }
+
       nextRows.push({
         kind: "message",
         id: timelineEntry.id,
@@ -4831,6 +4850,7 @@ const MessagesTimeline = memo(function MessagesTimeline({
       const row = rows[index];
       if (!row) return 96;
       if (row.kind === "work") return 112;
+      if (row.kind === "proposed-plan") return estimateTimelineProposedPlanHeight(row.proposedPlan);
       if (row.kind === "working") return 40;
       return estimateTimelineMessageHeight(row.message, { timelineWidthPx });
     },
@@ -5044,10 +5064,9 @@ const MessagesTimeline = memo(function MessagesTimeline({
                 </div>
               )}
               <div className="min-w-0 px-1 py-0.5">
-                <ProposedPlanMessage
+                <ChatMarkdown
                   text={messageText}
                   cwd={markdownCwd}
-                  workspaceRoot={workspaceRoot}
                   isStreaming={Boolean(row.message.streaming)}
                 />
                 {(() => {
@@ -5118,6 +5137,16 @@ const MessagesTimeline = memo(function MessagesTimeline({
             </>
           );
         })()}
+
+      {row.kind === "proposed-plan" && (
+        <div className="min-w-0 px-1 py-0.5">
+          <ProposedPlanCard
+            planMarkdown={row.proposedPlan.planMarkdown}
+            cwd={markdownCwd}
+            workspaceRoot={workspaceRoot}
+          />
+        </div>
+      )}
 
       {row.kind === "working" && (
         <div className="flex items-center gap-2 py-0.5 pl-1.5">

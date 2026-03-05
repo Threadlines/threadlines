@@ -18,6 +18,7 @@ import {
   ThreadDeletedPayload,
   ThreadInteractionModeSetPayload,
   ThreadMetaUpdatedPayload,
+  ThreadProposedPlanUpsertedPayload,
   ThreadRuntimeModeSetPayload,
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
@@ -123,6 +124,15 @@ function retainThreadActivitiesAfterRevert(
 ): ReadonlyArray<OrchestrationThread["activities"][number]> {
   return activities.filter(
     (activity) => activity.turnId === null || retainedTurnIds.has(activity.turnId),
+  );
+}
+
+function retainThreadProposedPlansAfterRevert(
+  proposedPlans: ReadonlyArray<OrchestrationThread["proposedPlans"][number]>,
+  retainedTurnIds: ReadonlySet<string>,
+): ReadonlyArray<OrchestrationThread["proposedPlans"][number]> {
+  return proposedPlans.filter(
+    (proposedPlan) => proposedPlan.turnId === null || retainedTurnIds.has(proposedPlan.turnId),
   );
 }
 
@@ -435,6 +445,38 @@ export function projectEvent(
         };
       });
 
+    case "thread.proposed-plan-upserted":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          ThreadProposedPlanUpsertedPayload,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+        if (!thread) {
+          return nextBase;
+        }
+
+        const proposedPlans = [
+          ...thread.proposedPlans.filter((entry) => entry.id !== payload.proposedPlan.id),
+          payload.proposedPlan,
+        ]
+          .toSorted(
+            (left, right) =>
+              left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
+          )
+          .slice(-200);
+
+        return {
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            proposedPlans,
+            updatedAt: event.occurredAt,
+          }),
+        };
+      });
+
     case "thread.turn-diff-completed":
       return Effect.gen(function* () {
         const payload = yield* decodeForEvent(
@@ -511,6 +553,10 @@ export function projectEvent(
             retainedTurnIds,
             payload.turnCount,
           ).slice(-MAX_THREAD_MESSAGES);
+          const proposedPlans = retainThreadProposedPlansAfterRevert(
+            thread.proposedPlans,
+            retainedTurnIds,
+          ).slice(-200);
           const activities = retainThreadActivitiesAfterRevert(thread.activities, retainedTurnIds);
 
           const latestCheckpoint = checkpoints.at(-1) ?? null;
@@ -531,6 +577,7 @@ export function projectEvent(
             threads: updateThread(nextBase.threads, payload.threadId, {
               checkpoints,
               messages,
+              proposedPlans,
               activities,
               latestTurn,
               updatedAt: event.occurredAt,

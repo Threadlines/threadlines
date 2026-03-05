@@ -1,4 +1,4 @@
-import { EventId, TurnId, type OrchestrationThreadActivity } from "@t3tools/contracts";
+import { EventId, MessageId, TurnId, type OrchestrationThreadActivity } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -6,7 +6,9 @@ import {
   PROVIDER_OPTIONS,
   derivePendingApprovals,
   derivePendingUserInputs,
+  deriveTimelineEntries,
   deriveWorkLogEntries,
+  findLatestProposedPlan,
   hasToolActivityForTurn,
   isLatestTurnSettled,
 } from "./session-logic";
@@ -257,6 +259,69 @@ describe("deriveActivePlanState", () => {
   });
 });
 
+describe("findLatestProposedPlan", () => {
+  it("prefers the latest proposed plan for the active turn", () => {
+    expect(
+      findLatestProposedPlan(
+        [
+          {
+            id: "plan:thread-1:turn:turn-1",
+            turnId: TurnId.makeUnsafe("turn-1"),
+            planMarkdown: "# Older",
+            createdAt: "2026-02-23T00:00:01.000Z",
+            updatedAt: "2026-02-23T00:00:01.000Z",
+          },
+          {
+            id: "plan:thread-1:turn:turn-1",
+            turnId: TurnId.makeUnsafe("turn-1"),
+            planMarkdown: "# Latest",
+            createdAt: "2026-02-23T00:00:01.000Z",
+            updatedAt: "2026-02-23T00:00:02.000Z",
+          },
+          {
+            id: "plan:thread-1:turn:turn-2",
+            turnId: TurnId.makeUnsafe("turn-2"),
+            planMarkdown: "# Different turn",
+            createdAt: "2026-02-23T00:00:03.000Z",
+            updatedAt: "2026-02-23T00:00:03.000Z",
+          },
+        ],
+        TurnId.makeUnsafe("turn-1"),
+      ),
+    ).toEqual({
+      id: "plan:thread-1:turn:turn-1",
+      turnId: "turn-1",
+      planMarkdown: "# Latest",
+      createdAt: "2026-02-23T00:00:01.000Z",
+      updatedAt: "2026-02-23T00:00:02.000Z",
+    });
+  });
+
+  it("falls back to the most recently updated proposed plan", () => {
+    const latestPlan = findLatestProposedPlan(
+      [
+        {
+          id: "plan:thread-1:turn:turn-1",
+          turnId: TurnId.makeUnsafe("turn-1"),
+          planMarkdown: "# First",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          updatedAt: "2026-02-23T00:00:01.000Z",
+        },
+        {
+          id: "plan:thread-1:turn:turn-2",
+          turnId: TurnId.makeUnsafe("turn-2"),
+          planMarkdown: "# Latest",
+          createdAt: "2026-02-23T00:00:02.000Z",
+          updatedAt: "2026-02-23T00:00:03.000Z",
+        },
+      ],
+      null,
+    );
+
+    expect(latestPlan?.planMarkdown).toBe("# Latest");
+  });
+});
+
 describe("deriveWorkLogEntries", () => {
   it("omits tool started entries and keeps completed entries", () => {
     const activities: OrchestrationThreadActivity[] = [
@@ -335,6 +400,47 @@ describe("deriveWorkLogEntries", () => {
 
     const entries = deriveWorkLogEntries(activities, undefined);
     expect(entries.map((entry) => entry.id)).toEqual(["first", "second"]);
+  });
+});
+
+describe("deriveTimelineEntries", () => {
+  it("includes proposed plans alongside messages and work entries in chronological order", () => {
+    const entries = deriveTimelineEntries(
+      [
+        {
+          id: MessageId.makeUnsafe("message-1"),
+          role: "assistant",
+          text: "hello",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          streaming: false,
+        },
+      ],
+      [
+        {
+          id: "plan:thread-1:turn:turn-1",
+          turnId: TurnId.makeUnsafe("turn-1"),
+          planMarkdown: "# Ship it",
+          createdAt: "2026-02-23T00:00:02.000Z",
+          updatedAt: "2026-02-23T00:00:02.000Z",
+        },
+      ],
+      [
+        {
+          id: "work-1",
+          createdAt: "2026-02-23T00:00:03.000Z",
+          label: "Ran tests",
+          tone: "tool",
+        },
+      ],
+    );
+
+    expect(entries.map((entry) => entry.kind)).toEqual(["message", "proposed-plan", "work"]);
+    expect(entries[1]).toMatchObject({
+      kind: "proposed-plan",
+      proposedPlan: {
+        planMarkdown: "# Ship it",
+      },
+    });
   });
 });
 

@@ -2,12 +2,13 @@ import {
   ApprovalRequestId,
   type OrchestrationLatestTurn,
   type OrchestrationThreadActivity,
+  type OrchestrationProposedPlanId,
   type ProviderKind,
   type UserInputQuestion,
   type TurnId,
 } from "@t3tools/contracts";
 
-import type { ChatMessage, SessionPhase, ThreadSession, TurnDiffSummary } from "./types";
+import type { ChatMessage, ProposedPlan, SessionPhase, ThreadSession, TurnDiffSummary } from "./types";
 
 export const PROVIDER_OPTIONS: Array<{
   value: ProviderKind;
@@ -50,12 +51,26 @@ export interface ActivePlanState {
   }>;
 }
 
+export interface LatestProposedPlanState {
+  id: OrchestrationProposedPlanId;
+  createdAt: string;
+  updatedAt: string;
+  turnId: TurnId | null;
+  planMarkdown: string;
+}
+
 export type TimelineEntry =
   | {
       id: string;
       kind: "message";
       createdAt: string;
       message: ChatMessage;
+    }
+  | {
+      id: string;
+      kind: "proposed-plan";
+      createdAt: string;
+      proposedPlan: ProposedPlan;
     }
   | {
       id: string;
@@ -327,6 +342,48 @@ export function deriveActivePlanState(
   };
 }
 
+export function findLatestProposedPlan(
+  proposedPlans: ReadonlyArray<ProposedPlan>,
+  latestTurnId: TurnId | string | null | undefined,
+): LatestProposedPlanState | null {
+  if (latestTurnId) {
+    const matchingTurnPlan = [...proposedPlans]
+      .filter((proposedPlan) => proposedPlan.turnId === latestTurnId)
+      .toSorted(
+        (left, right) =>
+          left.updatedAt.localeCompare(right.updatedAt) || left.id.localeCompare(right.id),
+      )
+      .at(-1);
+    if (matchingTurnPlan) {
+      return {
+        id: matchingTurnPlan.id,
+        createdAt: matchingTurnPlan.createdAt,
+        updatedAt: matchingTurnPlan.updatedAt,
+        turnId: matchingTurnPlan.turnId,
+        planMarkdown: matchingTurnPlan.planMarkdown,
+      };
+    }
+  }
+
+  const latestPlan = [...proposedPlans]
+    .toSorted(
+      (left, right) =>
+        left.updatedAt.localeCompare(right.updatedAt) || left.id.localeCompare(right.id),
+    )
+    .at(-1);
+  if (!latestPlan) {
+    return null;
+  }
+
+  return {
+    id: latestPlan.id,
+    createdAt: latestPlan.createdAt,
+    updatedAt: latestPlan.updatedAt,
+    turnId: latestPlan.turnId,
+    planMarkdown: latestPlan.planMarkdown,
+  };
+}
+
 export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   latestTurnId: TurnId | undefined,
@@ -381,6 +438,7 @@ export function hasToolActivityForTurn(
 
 export function deriveTimelineEntries(
   messages: ChatMessage[],
+  proposedPlans: ProposedPlan[],
   workEntries: WorkLogEntry[],
 ): TimelineEntry[] {
   const messageRows: TimelineEntry[] = messages.map((message) => ({
@@ -389,13 +447,21 @@ export function deriveTimelineEntries(
     createdAt: message.createdAt,
     message,
   }));
+  const proposedPlanRows: TimelineEntry[] = proposedPlans.map((proposedPlan) => ({
+    id: proposedPlan.id,
+    kind: "proposed-plan",
+    createdAt: proposedPlan.createdAt,
+    proposedPlan,
+  }));
   const workRows: TimelineEntry[] = workEntries.map((entry) => ({
     id: entry.id,
     kind: "work",
     createdAt: entry.createdAt,
     entry,
   }));
-  return [...messageRows, ...workRows].toSorted((a, b) => a.createdAt.localeCompare(b.createdAt));
+  return [...messageRows, ...proposedPlanRows, ...workRows].toSorted((a, b) =>
+    a.createdAt.localeCompare(b.createdAt),
+  );
 }
 
 export function inferCheckpointTurnCountByTurnId(

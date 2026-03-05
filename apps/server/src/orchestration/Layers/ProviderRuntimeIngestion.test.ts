@@ -103,6 +103,7 @@ async function waitForThread(
 type ProviderRuntimeTestReadModel = OrchestrationReadModel;
 type ProviderRuntimeTestThread = ProviderRuntimeTestReadModel["threads"][number];
 type ProviderRuntimeTestMessage = ProviderRuntimeTestThread["messages"][number];
+type ProviderRuntimeTestProposedPlan = ProviderRuntimeTestThread["proposedPlans"][number];
 type ProviderRuntimeTestActivity = ProviderRuntimeTestThread["activities"][number];
 type ProviderRuntimeTestCheckpoint = ProviderRuntimeTestThread["checkpoints"][number];
 
@@ -633,41 +634,35 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
-  it("projects completed plan items into finalized proposed-plan assistant messages", async () => {
+  it("projects completed plan items into first-class proposed plans", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
 
     harness.emit({
-      type: "item.completed",
+      type: "turn.proposed.completed",
       eventId: asEventId("evt-plan-item-completed"),
       provider: "codex",
       createdAt: now,
       threadId: asThreadId("thread-1"),
       turnId: asTurnId("turn-plan-final"),
-      itemId: asItemId("item-plan-final"),
       payload: {
-        itemType: "plan",
-        status: "completed",
-        detail: "## Ship plan\n\n- wire projection\n- render follow-up",
+        planMarkdown: "## Ship plan\n\n- wire projection\n- render follow-up",
       },
     });
 
-    const thread = await waitForThread(harness.engine, (entry) => {
-      const message = entry.messages.find(
-        (candidate: ProviderRuntimeTestMessage) => candidate.id === "assistant:item-plan-final",
-      );
-      return message?.streaming === false && message.text.includes("<proposed_plan>");
-    });
-    const message = thread.messages.find(
-      (entry: ProviderRuntimeTestMessage) => entry.id === "assistant:item-plan-final",
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.proposedPlans.some(
+        (proposedPlan: ProviderRuntimeTestProposedPlan) =>
+          proposedPlan.id === "plan:thread-1:turn:turn-plan-final",
+      ),
     );
-    expect(message?.text).toBe(
-      "<proposed_plan>\n## Ship plan\n\n- wire projection\n- render follow-up\n</proposed_plan>",
+    const proposedPlan = thread.proposedPlans.find(
+      (entry: ProviderRuntimeTestProposedPlan) => entry.id === "plan:thread-1:turn:turn-plan-final",
     );
-    expect(message?.streaming).toBe(false);
+    expect(proposedPlan?.planMarkdown).toBe("## Ship plan\n\n- wire projection\n- render follow-up");
   });
 
-  it("finalizes buffered plan deltas into a proposed-plan assistant message on turn completion", async () => {
+  it("finalizes buffered proposed-plan deltas into a first-class proposed plan on turn completion", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
 
@@ -687,28 +682,24 @@ describe("ProviderRuntimeIngestion", () => {
     );
 
     harness.emit({
-      type: "content.delta",
+      type: "turn.proposed.delta",
       eventId: asEventId("evt-plan-delta-1"),
       provider: "codex",
       createdAt: now,
       threadId: asThreadId("thread-1"),
       turnId: asTurnId("turn-plan-buffer"),
-      itemId: asItemId("item-plan-buffer"),
       payload: {
-        streamKind: "plan_text",
         delta: "## Buffered plan\n\n- first",
       },
     });
     harness.emit({
-      type: "content.delta",
+      type: "turn.proposed.delta",
       eventId: asEventId("evt-plan-delta-2"),
       provider: "codex",
       createdAt: now,
       threadId: asThreadId("thread-1"),
       turnId: asTurnId("turn-plan-buffer"),
-      itemId: asItemId("item-plan-buffer"),
       payload: {
-        streamKind: "plan_text",
         delta: "\n- second",
       },
     });
@@ -724,19 +715,16 @@ describe("ProviderRuntimeIngestion", () => {
       },
     });
 
-    const thread = await waitForThread(harness.engine, (entry) => {
-      const message = entry.messages.find(
-        (candidate: ProviderRuntimeTestMessage) => candidate.id === "assistant:item-plan-buffer",
-      );
-      return message?.streaming === false && message.text.includes("<proposed_plan>");
-    });
-    const message = thread.messages.find(
-      (entry: ProviderRuntimeTestMessage) => entry.id === "assistant:item-plan-buffer",
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.proposedPlans.some(
+        (proposedPlan: ProviderRuntimeTestProposedPlan) =>
+          proposedPlan.id === "plan:thread-1:turn:turn-plan-buffer",
+      ),
     );
-    expect(message?.text).toBe(
-      "<proposed_plan>\n## Buffered plan\n\n- first\n- second\n</proposed_plan>",
+    const proposedPlan = thread.proposedPlans.find(
+      (entry: ProviderRuntimeTestProposedPlan) => entry.id === "plan:thread-1:turn:turn-plan-buffer",
     );
-    expect(message?.streaming).toBe(false);
+    expect(proposedPlan?.planMarkdown).toBe("## Buffered plan\n\n- first\n- second");
   });
 
   it("buffers assistant deltas by default until completion", async () => {
@@ -1370,12 +1358,27 @@ describe("ProviderRuntimeIngestion", () => {
         summary: "<proposed_plan>\n# Plan title\n</proposed_plan>",
       },
     });
+    harness.emit({
+      type: "turn.proposed.completed",
+      eventId: asEventId("evt-task-proposed-plan-completed"),
+      provider: "codex",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-task-1"),
+      payload: {
+        planMarkdown: "# Plan title",
+      },
+    });
 
     const thread = await waitForThread(
       harness.engine,
       (entry) =>
         entry.activities.some(
           (activity: ProviderRuntimeTestActivity) => activity.kind === "task.completed",
+        ) &&
+        entry.proposedPlans.some(
+          (proposedPlan: ProviderRuntimeTestProposedPlan) =>
+            proposedPlan.id === "plan:thread-1:turn:turn-task-1",
         ),
     );
 
@@ -1406,6 +1409,11 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(completed?.kind).toBe("task.completed");
     expect(completedPayload?.detail).toBe("<proposed_plan>\n# Plan title\n</proposed_plan>");
+    expect(
+      thread.proposedPlans.find(
+        (entry: ProviderRuntimeTestProposedPlan) => entry.id === "plan:thread-1:turn:turn-task-1",
+      )?.planMarkdown,
+    ).toBe("# Plan title");
   });
 
   it("projects structured user input request and resolution as thread activities", async () => {

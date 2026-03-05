@@ -270,7 +270,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
-  it.effect("maps completed plan items to canonical item.completed plan events", () =>
+  it.effect("maps completed plan items to canonical proposed-plan completion events", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;
       const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
@@ -300,13 +300,46 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       if (firstEvent._tag !== "Some") {
         return;
       }
-      assert.equal(firstEvent.value.type, "item.completed");
-      if (firstEvent.value.type !== "item.completed") {
+      assert.equal(firstEvent.value.type, "turn.proposed.completed");
+      if (firstEvent.value.type !== "turn.proposed.completed") {
         return;
       }
-      assert.equal(firstEvent.value.itemId, "plan_1");
-      assert.equal(firstEvent.value.payload.itemType, "plan");
-      assert.equal(firstEvent.value.payload.detail, "## Final plan\n\n- one\n- two");
+      assert.equal(firstEvent.value.turnId, "turn-1");
+      assert.equal(firstEvent.value.payload.planMarkdown, "## Final plan\n\n- one\n- two");
+    }),
+  );
+
+  it.effect("maps plan deltas to canonical proposed-plan delta events", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      lifecycleManager.emit("event", {
+        id: asEventId("evt-plan-delta"),
+        kind: "notification",
+        provider: "codex",
+        createdAt: new Date().toISOString(),
+        method: "item/plan/delta",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-1"),
+        itemId: asItemId("plan_1"),
+        payload: {
+          delta: "## Final plan",
+        },
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      assert.equal(firstEvent.value.type, "turn.proposed.delta");
+      if (firstEvent.value.type !== "turn.proposed.delta") {
+        return;
+      }
+      assert.equal(firstEvent.value.turnId, "turn-1");
+      assert.equal(firstEvent.value.payload.delta, "## Final plan");
     }),
   );
 
@@ -487,7 +520,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
   it.effect("maps Codex task and reasoning event chunks into canonical runtime events", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;
-      const eventsFiber = yield* Stream.runCollect(Stream.take(adapter.streamEvents, 4)).pipe(
+      const eventsFiber = yield* Stream.runCollect(Stream.take(adapter.streamEvents, 5)).pipe(
         Effect.forkChild,
       );
 
@@ -591,6 +624,12 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         assert.equal(events[3].turnId, "turn-structured-1");
         assert.equal(events[3].payload.taskId, "turn-structured-1");
         assert.equal(events[3].payload.summary, "<proposed_plan>\n# Ship it\n</proposed_plan>");
+      }
+
+      assert.equal(events[4]?.type, "turn.proposed.completed");
+      if (events[4]?.type === "turn.proposed.completed") {
+        assert.equal(events[4].turnId, "turn-structured-1");
+        assert.equal(events[4].payload.planMarkdown, "# Ship it");
       }
     }),
   );

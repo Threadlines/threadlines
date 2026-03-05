@@ -154,6 +154,8 @@ export const ProviderRuntimeEventType = Schema.Literals([
   "turn.completed",
   "turn.aborted",
   "turn.plan.updated",
+  "turn.proposed.delta",
+  "turn.proposed.completed",
   "turn.diff.updated",
   "item.started",
   "item.updated",
@@ -202,6 +204,8 @@ export const TurnStartedType = Schema.Literal("turn.started");
 export const TurnCompletedType = Schema.Literal("turn.completed");
 export const TurnAbortedType = Schema.Literal("turn.aborted");
 export const TurnPlanUpdatedType = Schema.Literal("turn.plan.updated");
+export const TurnProposedDeltaType = Schema.Literal("turn.proposed.delta");
+export const TurnProposedCompletedType = Schema.Literal("turn.proposed.completed");
 export const TurnDiffUpdatedType = Schema.Literal("turn.diff.updated");
 export const ItemStartedType = Schema.Literal("item.started");
 export const ItemUpdatedType = Schema.Literal("item.updated");
@@ -348,6 +352,16 @@ export const TurnPlanUpdatedPayload = Schema.Struct({
   plan: Schema.Array(RuntimePlanStep),
 });
 export type TurnPlanUpdatedPayload = typeof TurnPlanUpdatedPayload.Type;
+
+export const TurnProposedDeltaPayload = Schema.Struct({
+  delta: Schema.String,
+});
+export type TurnProposedDeltaPayload = typeof TurnProposedDeltaPayload.Type;
+
+export const TurnProposedCompletedPayload = Schema.Struct({
+  planMarkdown: TrimmedNonEmptyStringSchema,
+});
+export type TurnProposedCompletedPayload = typeof TurnProposedCompletedPayload.Type;
 
 export const TurnDiffUpdatedPayload = Schema.Struct({
   unifiedDiff: Schema.String,
@@ -677,6 +691,22 @@ export const ProviderRuntimeTurnPlanUpdatedEvent = Schema.Struct({
 });
 export type ProviderRuntimeTurnPlanUpdatedEvent = typeof ProviderRuntimeTurnPlanUpdatedEvent.Type;
 
+export const ProviderRuntimeTurnProposedDeltaEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: TurnProposedDeltaType,
+  payload: TurnProposedDeltaPayload,
+});
+export type ProviderRuntimeTurnProposedDeltaEvent =
+  typeof ProviderRuntimeTurnProposedDeltaEvent.Type;
+
+export const ProviderRuntimeTurnProposedCompletedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: TurnProposedCompletedType,
+  payload: TurnProposedCompletedPayload,
+});
+export type ProviderRuntimeTurnProposedCompletedEvent =
+  typeof ProviderRuntimeTurnProposedCompletedEvent.Type;
+
 export const ProviderRuntimeTurnDiffUpdatedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: TurnDiffUpdatedType,
@@ -893,6 +923,8 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeTurnCompletedEvent,
   ProviderRuntimeTurnAbortedEvent,
   ProviderRuntimeTurnPlanUpdatedEvent,
+  ProviderRuntimeTurnProposedDeltaEvent,
+  ProviderRuntimeTurnProposedCompletedEvent,
   ProviderRuntimeTurnDiffUpdatedEvent,
   ProviderRuntimeItemStartedEvent,
   ProviderRuntimeItemUpdatedEvent,

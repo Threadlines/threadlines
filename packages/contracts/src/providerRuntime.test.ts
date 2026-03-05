@@ -32,6 +32,26 @@ describe("ProviderRuntimeEvent", () => {
     expect(parsed.payload.plan[1]?.status).toBe("inProgress");
   });
 
+  it("decodes proposed-plan completion events", () => {
+    const parsed = decodeRuntimeEvent({
+      type: "turn.proposed.completed",
+      eventId: "event-proposed-plan-1",
+      provider: "codex",
+      createdAt: "2026-02-28T00:00:00.000Z",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      payload: {
+        planMarkdown: "# Ship it",
+      },
+    });
+
+    expect(parsed.type).toBe("turn.proposed.completed");
+    if (parsed.type !== "turn.proposed.completed") {
+      throw new Error("expected turn.proposed.completed");
+    }
+    expect(parsed.payload.planMarkdown).toBe("# Ship it");
+  });
+
   it("decodes user-input.requested with structured questions", () => {
     const parsed = decodeRuntimeEvent({
       type: "user-input.requested",
@@ -39,6 +59,7 @@ describe("ProviderRuntimeEvent", () => {
       provider: "claudeCode",
       sessionId: "runtime-session-2",
       createdAt: "2026-02-28T00:00:01.000Z",
+      threadId: "thread-2",
       requestId: "request-1",
       payload: {
         questions: [
@@ -76,6 +97,7 @@ describe("ProviderRuntimeEvent", () => {
       provider: "claudeCode",
       sessionId: "runtime-session-2",
       createdAt: "2026-02-28T00:00:02.000Z",
+      threadId: "thread-2",
       requestId: "request-1",
       payload: {
         answers: {

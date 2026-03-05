@@ -289,6 +289,13 @@ export function syncServerReadModel(
           };
           return normalizedMessage;
         }),
+        proposedPlans: thread.proposedPlans.map((proposedPlan) => ({
+          id: proposedPlan.id,
+          turnId: proposedPlan.turnId,
+          planMarkdown: proposedPlan.planMarkdown,
+          createdAt: proposedPlan.createdAt,
+          updatedAt: proposedPlan.updatedAt,
+        })),
         error: thread.session?.lastError ?? null,
         createdAt: thread.createdAt,
         latestTurn: thread.latestTurn,

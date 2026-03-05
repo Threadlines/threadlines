@@ -374,8 +374,6 @@ function contentStreamKindFromMethod(
       return "reasoning_text";
     case "item/reasoning/summaryTextDelta":
       return "reasoning_summary_text";
-    case "item/plan/delta":
-      return "plan_text";
     case "item/commandExecution/outputDelta":
       return "command_output";
     case "item/fileChange/outputDelta":
@@ -383,6 +381,14 @@ function contentStreamKindFromMethod(
     default:
       return "assistant_text";
   }
+}
+
+const PROPOSED_PLAN_BLOCK_REGEX = /<proposed_plan>\s*([\s\S]*?)\s*<\/proposed_plan>/i;
+
+function extractProposedPlanMarkdown(text: string | undefined): string | undefined {
+  const match = text ? PROPOSED_PLAN_BLOCK_REGEX.exec(text) : null;
+  const planMarkdown = match?.[1]?.trim();
+  return planMarkdown && planMarkdown.length > 0 ? planMarkdown : undefined;
 }
 
 function asRuntimeItemId(itemId: ProviderItemId): RuntimeItemId {
@@ -487,7 +493,7 @@ function mapItemLifecycle(
     return undefined;
   }
 
-  const detail = itemDetail(source, payload ?? source);
+  const detail = itemDetail(source, payload ?? {});
   const status =
     lifecycle === "item.started"
       ? "inProgress"
@@ -800,6 +806,28 @@ function mapToRuntimeEvents(
   }
 
   if (event.method === "item/completed") {
+    const payload = asObject(event.payload);
+    const item = asObject(payload?.item);
+    const source = item ?? payload;
+    if (!source) {
+      return [];
+    }
+    const itemType = source ? toCanonicalItemType(source.type ?? source.kind) : "unknown";
+    if (itemType === "plan") {
+      const detail = itemDetail(source, payload ?? {});
+      if (!detail) {
+        return [];
+      }
+      return [
+        {
+          ...runtimeEventBase(event, canonicalThreadId),
+          type: "turn.proposed.completed",
+          payload: {
+            planMarkdown: detail,
+          },
+        },
+      ];
+    }
     const completed = mapItemLifecycle(event, canonicalThreadId, "item.completed");
     return completed ? [completed] : [];
   }
@@ -812,9 +840,28 @@ function mapToRuntimeEvents(
     return updated ? [updated] : [];
   }
 
+  if (event.method === "item/plan/delta") {
+    const delta =
+      event.textDelta ??
+      asString(payload?.delta) ??
+      asString(payload?.text) ??
+      asString(asObject(payload?.content)?.text);
+    if (!delta || delta.length === 0) {
+      return [];
+    }
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        type: "turn.proposed.delta",
+        payload: {
+          delta,
+        },
+      },
+    ];
+  }
+
   if (
     event.method === "item/agentMessage/delta" ||
-    event.method === "item/plan/delta" ||
     event.method === "item/commandExecution/outputDelta" ||
     event.method === "item/fileChange/outputDelta" ||
     event.method === "item/reasoning/summaryTextDelta" ||
@@ -919,10 +966,22 @@ function mapToRuntimeEvents(
   if (event.method === "codex/event/task_complete") {
     const msg = codexEventMessage(payload);
     const taskId = asString(payload?.id) ?? asString(msg?.turn_id);
+    const proposedPlanMarkdown = extractProposedPlanMarkdown(asString(msg?.last_agent_message));
     if (!taskId) {
-      return [];
+      if (!proposedPlanMarkdown) {
+        return [];
+      }
+      return [
+        {
+          ...codexEventBase(event, canonicalThreadId),
+          type: "turn.proposed.completed",
+          payload: {
+            planMarkdown: proposedPlanMarkdown,
+          },
+        },
+      ];
     }
-    return [
+    const events: ProviderRuntimeEvent[] = [
       {
         ...codexEventBase(event, canonicalThreadId),
         type: "task.completed",
@@ -935,6 +994,16 @@ function mapToRuntimeEvents(
         },
       },
     ];
+    if (proposedPlanMarkdown) {
+      events.push({
+        ...codexEventBase(event, canonicalThreadId),
+        type: "turn.proposed.completed",
+        payload: {
+          planMarkdown: proposedPlanMarkdown,
+        },
+      });
+    }
+    return events;
   }
 
   if (event.method === "codex/event/agent_reasoning") {

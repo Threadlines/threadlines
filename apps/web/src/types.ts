@@ -1,5 +1,6 @@
 import type {
   OrchestrationLatestTurn,
+  OrchestrationProposedPlanId,
   OrchestrationSessionStatus,
   OrchestrationThreadActivity,
   ProjectScript as ContractProjectScript,
@@ -48,6 +49,14 @@ export interface ChatMessage {
   streaming: boolean;
 }
 
+export interface ProposedPlan {
+  id: OrchestrationProposedPlanId;
+  turnId: TurnId | null;
+  planMarkdown: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface TurnDiffFileChange {
   path: string;
   kind?: string | undefined;
@@ -84,6 +93,7 @@ export interface Thread {
   interactionMode: InteractionMode;
   session: ThreadSession | null;
   messages: ChatMessage[];
+  proposedPlans: ProposedPlan[];
   error: string | null;
   createdAt: string;
   latestTurn: OrchestrationLatestTurn | null;

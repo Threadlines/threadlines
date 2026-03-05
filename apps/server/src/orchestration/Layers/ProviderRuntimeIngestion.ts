@@ -26,10 +26,10 @@ const providerCommandId = (event: ProviderRuntimeEvent, tag: string): CommandId 
 const DEFAULT_ASSISTANT_DELIVERY_MODE: AssistantDeliveryMode = "buffered";
 const TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY = 10_000;
 const TURN_MESSAGE_IDS_BY_TURN_TTL = Duration.minutes(120);
-const MESSAGE_STREAM_KIND_BY_MESSAGE_ID_CACHE_CAPACITY = 20_000;
-const MESSAGE_STREAM_KIND_BY_MESSAGE_ID_TTL = Duration.minutes(120);
 const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_CACHE_CAPACITY = 20_000;
 const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_TTL = Duration.minutes(120);
+const BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY = 10_000;
+const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
 
@@ -67,12 +67,27 @@ function truncateDetail(value: string, limit = 180): string {
   return value.length > limit ? `${value.slice(0, limit - 3)}...` : value;
 }
 
-function wrapProposedPlanMessage(planMarkdown: string | undefined): string | undefined {
+function normalizeProposedPlanMarkdown(planMarkdown: string | undefined): string | undefined {
   const trimmed = planMarkdown?.trim();
   if (!trimmed) {
     return undefined;
   }
-  return `<proposed_plan>\n${trimmed}\n</proposed_plan>`;
+  return trimmed;
+}
+
+function proposedPlanIdForTurn(threadId: ThreadId, turnId: TurnId): string {
+  return `plan:${threadId}:turn:${turnId}`;
+}
+
+function proposedPlanIdFromEvent(event: ProviderRuntimeEvent, threadId: ThreadId): string {
+  const turnId = toTurnId(event.turnId);
+  if (turnId) {
+    return proposedPlanIdForTurn(threadId, turnId);
+  }
+  if (event.itemId) {
+    return `plan:${threadId}:item:${event.itemId}`;
+  }
+  return `plan:${threadId}:event:${event.eventId}`;
 }
 
 function asString(value: unknown): string | undefined {
@@ -480,16 +495,16 @@ const make = Effect.gen(function* () {
     lookup: () => Effect.succeed(new Set<MessageId>()),
   });
 
-  const messageStreamKindByMessageId = yield* Cache.make<MessageId, "assistant_text" | "plan_text">({
-    capacity: MESSAGE_STREAM_KIND_BY_MESSAGE_ID_CACHE_CAPACITY,
-    timeToLive: MESSAGE_STREAM_KIND_BY_MESSAGE_ID_TTL,
-    lookup: () => Effect.succeed("assistant_text"),
-  });
-
   const bufferedAssistantTextByMessageId = yield* Cache.make<MessageId, string>({
     capacity: BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_CACHE_CAPACITY,
     timeToLive: BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_TTL,
     lookup: () => Effect.succeed(""),
+  });
+
+  const bufferedProposedPlanById = yield* Cache.make<string, { text: string; createdAt: string }>({
+    capacity: BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY,
+    timeToLive: BUFFERED_PROPOSED_PLAN_BY_ID_TTL,
+    lookup: () => Effect.succeed({ text: "", createdAt: "" }),
   });
 
   const rememberAssistantMessageId = (
@@ -545,16 +560,6 @@ const make = Effect.gen(function* () {
   const clearAssistantMessageIdsForTurn = (threadId: ThreadId, turnId: TurnId) =>
     Cache.invalidate(turnMessageIdsByTurnKey, providerTurnKey(threadId, turnId));
 
-  const rememberMessageStreamKind = (
-    messageId: MessageId,
-    streamKind: "assistant_text" | "plan_text",
-  ) => Cache.set(messageStreamKindByMessageId, messageId, streamKind);
-
-  const getMessageStreamKind = (messageId: MessageId) =>
-    Cache.getOption(messageStreamKindByMessageId, messageId).pipe(
-      Effect.map((streamKind) => Option.getOrElse(streamKind, () => "assistant_text" as const)),
-    );
-
   const appendBufferedAssistantText = (messageId: MessageId, delta: string) =>
     Cache.getOption(bufferedAssistantTextByMessageId, messageId).pipe(
       Effect.flatMap((existingText) =>
@@ -587,11 +592,30 @@ const make = Effect.gen(function* () {
   const clearBufferedAssistantText = (messageId: MessageId) =>
     Cache.invalidate(bufferedAssistantTextByMessageId, messageId);
 
-  const clearAssistantMessageState = (messageId: MessageId) =>
-    Effect.all([
-      clearBufferedAssistantText(messageId),
-      Cache.invalidate(messageStreamKindByMessageId, messageId),
-    ]).pipe(Effect.asVoid);
+  const appendBufferedProposedPlan = (planId: string, delta: string, createdAt: string) =>
+    Cache.getOption(bufferedProposedPlanById, planId).pipe(
+      Effect.flatMap((existingEntry) => {
+        const existing = Option.getOrUndefined(existingEntry);
+        return Cache.set(bufferedProposedPlanById, planId, {
+          text: `${existing?.text ?? ""}${delta}`,
+          createdAt: existing?.createdAt && existing.createdAt.length > 0 ? existing.createdAt : createdAt,
+        });
+      }),
+    );
+
+  const takeBufferedProposedPlan = (planId: string) =>
+    Cache.getOption(bufferedProposedPlanById, planId).pipe(
+      Effect.flatMap((existingEntry) =>
+        Cache.invalidate(bufferedProposedPlanById, planId).pipe(
+          Effect.as(Option.getOrUndefined(existingEntry)),
+        ),
+      ),
+    );
+
+  const clearBufferedProposedPlan = (planId: string) =>
+    Cache.invalidate(bufferedProposedPlanById, planId);
+
+  const clearAssistantMessageState = (messageId: MessageId) => clearBufferedAssistantText(messageId);
 
   const finalizeAssistantMessage = (input: {
     event: ProviderRuntimeEvent;
@@ -604,17 +628,10 @@ const make = Effect.gen(function* () {
     fallbackText?: string;
   }) =>
     Effect.gen(function* () {
-      const messageStreamKind = yield* getMessageStreamKind(input.messageId);
       const bufferedText = yield* takeBufferedAssistantText(input.messageId);
-      const bufferedFinalText =
-        bufferedText.length > 0
-          ? messageStreamKind === "plan_text"
-            ? (wrapProposedPlanMessage(bufferedText) ?? "")
-            : bufferedText
-          : "";
       const text =
-        bufferedFinalText.length > 0
-          ? bufferedFinalText
+        bufferedText.length > 0
+          ? bufferedText
           : (input.fallbackText?.trim().length ?? 0) > 0
             ? input.fallbackText!
             : "";
@@ -642,10 +659,84 @@ const make = Effect.gen(function* () {
       yield* clearAssistantMessageState(input.messageId);
     });
 
+  const upsertProposedPlan = (input: {
+    event: ProviderRuntimeEvent;
+    threadId: ThreadId;
+    threadProposedPlans: ReadonlyArray<{
+      id: string;
+      createdAt: string;
+    }>;
+    planId: string;
+    turnId?: TurnId;
+    planMarkdown: string | undefined;
+    createdAt: string;
+    updatedAt: string;
+  }) =>
+    Effect.gen(function* () {
+      const planMarkdown = normalizeProposedPlanMarkdown(input.planMarkdown);
+      if (!planMarkdown) {
+        return;
+      }
+
+      const existingPlan = input.threadProposedPlans.find((entry) => entry.id === input.planId);
+      yield* orchestrationEngine.dispatch({
+        type: "thread.proposed-plan.upsert",
+        commandId: providerCommandId(input.event, "proposed-plan-upsert"),
+        threadId: input.threadId,
+        proposedPlan: {
+          id: input.planId,
+          turnId: input.turnId ?? null,
+          planMarkdown,
+          createdAt: existingPlan?.createdAt ?? input.createdAt,
+          updatedAt: input.updatedAt,
+        },
+        createdAt: input.updatedAt,
+      });
+    });
+
+  const finalizeBufferedProposedPlan = (input: {
+    event: ProviderRuntimeEvent;
+    threadId: ThreadId;
+    threadProposedPlans: ReadonlyArray<{
+      id: string;
+      createdAt: string;
+    }>;
+    planId: string;
+    turnId?: TurnId;
+    fallbackMarkdown?: string;
+    updatedAt: string;
+  }) =>
+    Effect.gen(function* () {
+      const bufferedPlan = yield* takeBufferedProposedPlan(input.planId);
+      const bufferedMarkdown = normalizeProposedPlanMarkdown(bufferedPlan?.text);
+      const fallbackMarkdown = normalizeProposedPlanMarkdown(input.fallbackMarkdown);
+      const planMarkdown = bufferedMarkdown ?? fallbackMarkdown;
+      if (!planMarkdown) {
+        return;
+      }
+
+      yield* upsertProposedPlan({
+        event: input.event,
+        threadId: input.threadId,
+        threadProposedPlans: input.threadProposedPlans,
+        planId: input.planId,
+        ...(input.turnId ? { turnId: input.turnId } : {}),
+        planMarkdown,
+        createdAt:
+          bufferedPlan?.createdAt && bufferedPlan.createdAt.length > 0
+            ? bufferedPlan.createdAt
+            : input.updatedAt,
+        updatedAt: input.updatedAt,
+      });
+      yield* clearBufferedProposedPlan(input.planId);
+    });
+
   const clearTurnStateForSession = (threadId: ThreadId) =>
     Effect.gen(function* () {
       const prefix = `${threadId}:`;
+      const proposedPlanPrefix = `plan:${threadId}:`;
       const turnKeys = Array.from(yield* Cache.keys(turnMessageIdsByTurnKey));
+      const proposedPlanKeys = Array.from(yield* Cache.keys(bufferedProposedPlanById));
       yield* Effect.forEach(
         turnKeys,
         (key) =>
@@ -663,6 +754,14 @@ const make = Effect.gen(function* () {
 
             yield* Cache.invalidate(turnMessageIdsByTurnKey, key);
           }),
+        { concurrency: 1 },
+      ).pipe(Effect.asVoid);
+      yield* Effect.forEach(
+        proposedPlanKeys,
+        (key) =>
+          key.startsWith(proposedPlanPrefix)
+            ? Cache.invalidate(bufferedProposedPlanById, key)
+            : Effect.void,
         { concurrency: 1 },
       ).pipe(Effect.asVoid);
     });
@@ -768,24 +867,20 @@ const make = Effect.gen(function* () {
       }
 
       const assistantDelta =
-        event.type === "content.delta" &&
-        (event.payload.streamKind === "assistant_text" || event.payload.streamKind === "plan_text")
+        event.type === "content.delta" && event.payload.streamKind === "assistant_text"
           ? event.payload.delta
           : undefined;
+      const proposedPlanDelta =
+        event.type === "turn.proposed.delta" ? event.payload.delta : undefined;
 
       if (assistantDelta && assistantDelta.length > 0) {
         const assistantMessageId = MessageId.makeUnsafe(
           `assistant:${event.itemId ?? event.turnId ?? event.eventId}`,
         );
         const turnId = toTurnId(event.turnId);
-        const messageStreamKind =
-          event.type === "content.delta" && event.payload.streamKind === "plan_text"
-            ? "plan_text"
-            : "assistant_text";
         if (turnId) {
           yield* rememberAssistantMessageId(thread.id, turnId, assistantMessageId);
         }
-        yield* rememberMessageStreamKind(assistantMessageId, messageStreamKind);
 
         const assistantDeliveryMode = yield* Ref.get(assistantDeliveryModeRef);
         if (assistantDeliveryMode === "buffered") {
@@ -814,15 +909,24 @@ const make = Effect.gen(function* () {
         }
       }
 
+      if (proposedPlanDelta && proposedPlanDelta.length > 0) {
+        const planId = proposedPlanIdFromEvent(event, thread.id);
+        yield* appendBufferedProposedPlan(planId, proposedPlanDelta, now);
+      }
+
       const assistantCompletion =
-        event.type === "item.completed" &&
-        (event.payload.itemType === "assistant_message" || event.payload.itemType === "plan")
+        event.type === "item.completed" && event.payload.itemType === "assistant_message"
           ? {
               messageId: MessageId.makeUnsafe(`assistant:${event.itemId ?? event.turnId ?? event.eventId}`),
-              fallbackText:
-                event.payload.itemType === "plan"
-                  ? wrapProposedPlanMessage(event.payload.detail)
-                  : event.payload.detail,
+              fallbackText: event.payload.detail,
+            }
+          : undefined;
+      const proposedPlanCompletion =
+        event.type === "turn.proposed.completed"
+          ? {
+              planId: proposedPlanIdFromEvent(event, thread.id),
+              turnId: toTurnId(event.turnId),
+              planMarkdown: event.payload.planMarkdown,
             }
           : undefined;
 
@@ -851,6 +955,18 @@ const make = Effect.gen(function* () {
         }
       }
 
+      if (proposedPlanCompletion) {
+        yield* finalizeBufferedProposedPlan({
+          event,
+          threadId: thread.id,
+          threadProposedPlans: thread.proposedPlans,
+          planId: proposedPlanCompletion.planId,
+          ...(proposedPlanCompletion.turnId ? { turnId: proposedPlanCompletion.turnId } : {}),
+          fallbackMarkdown: proposedPlanCompletion.planMarkdown,
+          updatedAt: now,
+        });
+      }
+
       if (event.type === "turn.completed") {
         const turnId = toTurnId(event.turnId);
         if (turnId) {
@@ -870,6 +986,15 @@ const make = Effect.gen(function* () {
             { concurrency: 1 },
           ).pipe(Effect.asVoid);
           yield* clearAssistantMessageIdsForTurn(thread.id, turnId);
+
+          yield* finalizeBufferedProposedPlan({
+            event,
+            threadId: thread.id,
+            threadProposedPlans: thread.proposedPlans,
+            planId: proposedPlanIdForTurn(thread.id, turnId),
+            turnId,
+            updatedAt: now,
+          });
         }
       }
 
