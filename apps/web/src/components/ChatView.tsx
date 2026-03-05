@@ -63,11 +63,17 @@ import {
   MAX_THREAD_TERMINAL_COUNT,
   type ChatMessage,
   type Thread,
+  type TurnDiffFileChange,
   type TurnDiffSummary,
 } from "../types";
 import { basenameOfPath, getVscodeIconUrlForEntry } from "../vscode-icons";
 import { useTheme } from "../hooks/useTheme";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
+import {
+  buildTurnDiffTree,
+  summarizeTurnDiffStats,
+  type TurnDiffTreeNode,
+} from "../lib/turnDiffTree";
 import BranchToolbar from "./BranchToolbar";
 import GitActionsControl from "./GitActionsControl";
 import {
@@ -3127,6 +3133,126 @@ const MessageCopyButton = memo(function MessageCopyButton({ text }: { text: stri
   );
 });
 
+function hasNonZeroStat(stat: { additions: number; deletions: number }): boolean {
+  return stat.additions > 0 || stat.deletions > 0;
+}
+
+const DiffStatLabel = memo(function DiffStatLabel(props: {
+  additions: number;
+  deletions: number;
+  showParentheses?: boolean;
+}) {
+  const { additions, deletions, showParentheses = false } = props;
+  return (
+    <>
+      {showParentheses && <span className="text-muted-foreground/70">(</span>}
+      <span className="text-success">+{additions}</span>
+      <span className="mx-0.5 text-muted-foreground/70">/</span>
+      <span className="text-destructive">-{deletions}</span>
+      {showParentheses && <span className="text-muted-foreground/70">)</span>}
+    </>
+  );
+});
+
+function buildInitiallyExpandedDirectoryState(
+  nodes: ReadonlyArray<TurnDiffTreeNode>,
+): Record<string, boolean> {
+  const expandedState: Record<string, boolean> = {};
+  for (const node of nodes) {
+    if (node.kind === "directory") {
+      expandedState[node.path] = true;
+    }
+  }
+  return expandedState;
+}
+
+const ChangedFilesTree = memo(function ChangedFilesTree(props: {
+  turnId: TurnId;
+  files: ReadonlyArray<TurnDiffFileChange>;
+  onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
+}) {
+  const { files, onOpenTurnDiff, turnId } = props;
+  const treeNodes = useMemo(() => buildTurnDiffTree(files), [files]);
+  const [expandedDirectories, setExpandedDirectories] = useState<Record<string, boolean>>(
+    () => buildInitiallyExpandedDirectoryState(treeNodes),
+  );
+
+  const toggleDirectory = useCallback((pathValue: string) => {
+    setExpandedDirectories((current) => ({
+      ...current,
+      [pathValue]: !current[pathValue],
+    }));
+  }, []);
+
+  const renderTreeNode = (node: TurnDiffTreeNode, depth: number) => {
+    const leftPadding = 8 + depth * 14;
+    if (node.kind === "directory") {
+      const isExpanded = expandedDirectories[node.path] ?? depth === 0;
+      return (
+        <div key={`dir:${node.path}`}>
+          <button
+            type="button"
+            className="group flex w-full items-center gap-1.5 rounded-md py-1 pr-2 text-left hover:bg-background/80"
+            style={{ paddingLeft: `${leftPadding}px` }}
+            onClick={() => toggleDirectory(node.path)}
+          >
+            <ChevronRightIcon
+              aria-hidden="true"
+              className={cn(
+                "size-3.5 shrink-0 text-muted-foreground/70 transition-transform group-hover:text-foreground/80",
+                isExpanded && "rotate-90",
+              )}
+            />
+            {isExpanded ? (
+              <FolderIcon className="size-3.5 shrink-0 text-muted-foreground/75" />
+            ) : (
+              <FolderClosedIcon className="size-3.5 shrink-0 text-muted-foreground/75" />
+            )}
+            <span className="truncate font-mono text-[11px] text-muted-foreground/90 group-hover:text-foreground/90">
+              {node.name}
+            </span>
+            <span className="ml-auto shrink-0 font-mono text-[10px] tabular-nums">
+              <DiffStatLabel additions={node.stat.additions} deletions={node.stat.deletions} />
+            </span>
+          </button>
+          {isExpanded && (
+            <div className="space-y-0.5">
+              {node.children.map((childNode) => renderTreeNode(childNode, depth + 1))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    return (
+      <button
+        key={`file:${node.path}`}
+        type="button"
+        className="group flex w-full items-center gap-1.5 rounded-md py-1 pr-2 text-left hover:bg-background/80"
+        style={{ paddingLeft: `${leftPadding}px` }}
+        onClick={() => onOpenTurnDiff(turnId, node.path)}
+      >
+        <span aria-hidden="true" className="size-3.5 shrink-0" />
+        <FileIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+        <span className="truncate font-mono text-[11px] text-muted-foreground/80 group-hover:text-foreground/90">
+          {node.name}
+        </span>
+        {node.stat && (
+          <span className="ml-auto shrink-0 font-mono text-[10px] tabular-nums">
+            <DiffStatLabel additions={node.stat.additions} deletions={node.stat.deletions} />
+          </span>
+        )}
+      </button>
+    );
+  };
+
+  return (
+    <div className="space-y-0.5">
+      {treeNodes.map((node) => renderTreeNode(node, 0))}
+    </div>
+  );
+});
+
 interface MessagesTimelineProps {
   hasMessages: boolean;
   isWorking: boolean;
@@ -3531,33 +3657,20 @@ const MessagesTimeline = memo(function MessagesTimeline({
                   if (!turnSummary) return null;
                   const checkpointFiles = turnSummary.files;
                   if (checkpointFiles.length === 0) return null;
-                  const summaryStat = checkpointFiles.reduce(
-                    (acc, file) => {
-                      if (
-                        typeof file.additions !== "number" ||
-                        typeof file.deletions !== "number"
-                      ) {
-                        return acc;
-                      }
-                      return {
-                        additions: acc.additions + file.additions,
-                        deletions: acc.deletions + file.deletions,
-                      };
-                    },
-                    { additions: 0, deletions: 0 },
-                  );
+                  const summaryStat = summarizeTurnDiffStats(checkpointFiles);
                   const changedFileCountLabel = String(checkpointFiles.length);
                   return (
                     <div className="mt-2 rounded-lg border border-border/80 bg-card/45 p-2.5">
                       <div className="mb-1.5 flex items-center justify-between gap-2">
                         <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground/65">
                           <span>Changed files ({changedFileCountLabel})</span>
-                          {(summaryStat.additions > 0 || summaryStat.deletions > 0) && (
+                          {hasNonZeroStat(summaryStat) && (
                             <>
                               <span className="mx-1">•</span>
-                              <span className="text-success">+{summaryStat.additions}</span>
-                              <span className="mx-0.5 text-muted-foreground/70">/</span>
-                              <span className="text-destructive">-{summaryStat.deletions}</span>
+                              <DiffStatLabel
+                                additions={summaryStat.additions}
+                                deletions={summaryStat.deletions}
+                              />
                             </>
                           )}
                         </p>
@@ -3572,40 +3685,12 @@ const MessagesTimeline = memo(function MessagesTimeline({
                           View diff
                         </Button>
                       </div>
-                      <div className="flex flex-wrap gap-1.5">
-                        {checkpointFiles.map((file) => (
-                          <button
-                            key={`${turnSummary.turnId}:${file.path}`}
-                            type="button"
-                            className="rounded-md border border-border/70 bg-background/70 px-2 py-1 font-mono text-[11px] text-muted-foreground/80 transition-colors hover:border-border hover:text-foreground/90"
-                            onClick={() => onOpenTurnDiff(turnSummary.turnId, file.path)}
-                          >
-                            {(() => {
-                              const stat =
-                                typeof file.additions === "number" &&
-                                typeof file.deletions === "number"
-                                  ? {
-                                      additions: file.additions,
-                                      deletions: file.deletions,
-                                    }
-                                  : null;
-                              if (!stat) {
-                                return file.path;
-                              }
-                              return (
-                                <>
-                                  <span>{file.path}</span>
-                                  <span className="ml-1 text-muted-foreground/70">(</span>
-                                  <span className="text-success">+{stat.additions}</span>
-                                  <span className="mx-0.5 text-muted-foreground/70">/</span>
-                                  <span className="text-destructive">-{stat.deletions}</span>
-                                  <span className="text-muted-foreground/70">)</span>
-                                </>
-                              );
-                            })()}
-                          </button>
-                        ))}
-                      </div>
+                      <ChangedFilesTree
+                        key={`changed-files-tree:${turnSummary.turnId}`}
+                        turnId={turnSummary.turnId}
+                        files={checkpointFiles}
+                        onOpenTurnDiff={onOpenTurnDiff}
+                      />
                     </div>
                   );
                 })()}
