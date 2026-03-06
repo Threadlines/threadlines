@@ -23,7 +23,7 @@ const TerminalIdWithDefaultSchema = TerminalIdSchema.pipe(
   Schema.withDecodingDefault(() => DEFAULT_TERMINAL_ID),
 );
 
-const TerminalThreadInput = Schema.Struct({
+export const TerminalThreadInput = Schema.Struct({
   threadId: TrimmedNonEmptyStringSchema,
 });
 export type TerminalThreadInput = Schema.Codec.Encoded<typeof TerminalThreadInput>;

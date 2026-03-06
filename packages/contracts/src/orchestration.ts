@@ -263,7 +263,7 @@ export const OrchestrationReadModel = Schema.Struct({
 });
 export type OrchestrationReadModel = typeof OrchestrationReadModel.Type;
 
-const ProjectCreateCommand = Schema.Struct({
+export const ProjectCreateCommand = Schema.Struct({
   type: Schema.Literal("project.create"),
   commandId: CommandId,
   projectId: ProjectId,
@@ -337,7 +337,7 @@ const ThreadInteractionModeSetCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
-const ThreadTurnStartCommand = Schema.Struct({
+export const ThreadTurnStartCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.start"),
   commandId: CommandId,
   threadId: ThreadId,
@@ -980,7 +980,7 @@ export const TurnCountRange = Schema.Struct({
   ),
 );
 
-const ThreadTurnDiff = TurnCountRange.mapFields(
+export const ThreadTurnDiff = TurnCountRange.mapFields(
   Struct.assign({
     threadId: ThreadId,
     diff: Schema.String,

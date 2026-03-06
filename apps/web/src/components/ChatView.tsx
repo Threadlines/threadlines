@@ -4716,20 +4716,6 @@ type TimelineRow =
     }
   | { kind: "working"; id: string; createdAt: string | null };
 
-function estimateTimelineMessageHeight(message: TimelineMessage): number {
-  const textLength = message.text.length;
-  if (message.role === "assistant") {
-    const estimatedLines = Math.max(1, Math.ceil(textLength / 72));
-    return 78 + Math.min(estimatedLines * 22, 820);
-  }
-
-  const estimatedLines = Math.max(1, Math.ceil(textLength / 56));
-  const attachmentCount = message.attachments?.length ?? 0;
-  const attachmentRows = Math.ceil(attachmentCount / 2);
-  const attachmentHeight = attachmentRows * 124;
-  return 96 + Math.min(estimatedLines * 22, 620) + attachmentHeight;
-}
-
 function estimateTimelineProposedPlanHeight(proposedPlan: TimelineProposedPlan): number {
   const estimatedLines = Math.max(1, Math.ceil(proposedPlan.planMarkdown.length / 72));
   return 120 + Math.min(estimatedLines * 22, 880);

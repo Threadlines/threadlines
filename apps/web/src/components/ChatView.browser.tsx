@@ -6,7 +6,6 @@ import {
   type MessageId,
   type OrchestrationReadModel,
   type ProjectId,
-  type ProviderSessionId,
   type ServerConfig,
   type ThreadId,
   type WsWelcomePayload,
@@ -204,6 +203,8 @@ function createSnapshotForTargetUser(options: {
         projectId: PROJECT_ID,
         title: "Browser test thread",
         model: "gpt-5",
+        interactionMode: "default",
+        runtimeMode: "full-access",
         branch: "main",
         worktreePath: null,
         latestTurn: null,
@@ -212,15 +213,13 @@ function createSnapshotForTargetUser(options: {
         deletedAt: null,
         messages,
         activities: [],
+        proposedPlans: [],
         checkpoints: [],
         session: {
           threadId: THREAD_ID,
           status: "ready",
           providerName: "codex",
-          providerSessionId: "session-1" as ProviderSessionId,
-          providerThreadId: null,
-          approvalPolicy: "on-failure",
-          sandboxMode: "workspace-write",
+          runtimeMode: "full-access",
           activeTurnId: null,
           lastError: null,
           updatedAt: NOW_ISO,
@@ -552,7 +551,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
       projects: [],
       threads: [],
       threadsHydrated: false,
-      runtimeMode: "full-access",
     });
   });
 
