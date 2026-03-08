@@ -187,15 +187,34 @@ function EventRouter() {
 
     void syncSnapshot().catch(() => undefined);
 
+    // Batch domain events: collect over a short window then sync once.
+    const DOMAIN_EVENT_BATCH_MS = 100;
+    let batchTimer: ReturnType<typeof setTimeout> | null = null;
+    let needsProviderInvalidation = false;
+
+    const flushBatch = () => {
+      batchTimer = null;
+      if (needsProviderInvalidation) {
+        needsProviderInvalidation = false;
+        void queryClient.invalidateQueries({ queryKey: providerQueryKeys.all });
+      }
+      void syncSnapshot();
+    };
+
     const unsubDomainEvent = api.orchestration.onDomainEvent((event) => {
       if (event.sequence <= latestSequence) {
         return;
       }
       latestSequence = event.sequence;
       if (event.type === "thread.turn-diff-completed" || event.type === "thread.reverted") {
-        void queryClient.invalidateQueries({ queryKey: providerQueryKeys.all });
+        needsProviderInvalidation = true;
       }
-      void syncSnapshot();
+      // Throttle (not debounce): schedule a flush if none is pending.
+      // This guarantees at most one syncSnapshot per batch window
+      // without starving the UI during sustained event bursts.
+      if (batchTimer === null) {
+        batchTimer = setTimeout(flushBatch, DOMAIN_EVENT_BATCH_MS);
+      }
     });
     const unsubTerminalEvent = api.terminal.onEvent((event) => {
       const hasRunningSubprocess = terminalRunningSubprocessFromEvent(event);
@@ -280,6 +299,9 @@ function EventRouter() {
     });
     return () => {
       disposed = true;
+      if (batchTimer !== null) {
+        clearTimeout(batchTimer);
+      }
       unsubDomainEvent();
       unsubTerminalEvent();
       unsubWelcome();
