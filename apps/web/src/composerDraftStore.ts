@@ -14,6 +14,7 @@ import {
   DEFAULT_RUNTIME_MODE,
   type ChatImageAttachment,
 } from "./types";
+import { Debouncer } from "@tanstack/react-pacer";
 import { create } from "zustand";
 import { createJSONStorage, persist, type StateStorage } from "zustand/middleware";
 
@@ -27,41 +28,24 @@ interface DebouncedStorage extends StateStorage {
 }
 
 export function createDebouncedStorage(baseStorage: StateStorage): DebouncedStorage {
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  let pendingName: string | null = null;
-  let pendingValue: string | null = null;
+  const debouncedSetItem = new Debouncer(
+    (name: string, value: string) => {
+      baseStorage.setItem(name, value);
+    },
+    { wait: COMPOSER_PERSIST_DEBOUNCE_MS },
+  );
+
   return {
     getItem: (name) => baseStorage.getItem(name),
     setItem: (name, value) => {
-      pendingName = name;
-      pendingValue = value;
-      if (timer !== null) {
-        clearTimeout(timer);
-      }
-      timer = setTimeout(() => {
-        timer = null;
-        pendingName = null;
-        pendingValue = null;
-        baseStorage.setItem(name, value);
-      }, COMPOSER_PERSIST_DEBOUNCE_MS);
+      debouncedSetItem.maybeExecute(name, value);
     },
     removeItem: (name) => {
-      if (timer !== null) {
-        clearTimeout(timer);
-        timer = null;
-        pendingName = null;
-        pendingValue = null;
-      }
+      debouncedSetItem.cancel();
       baseStorage.removeItem(name);
     },
     flush: () => {
-      if (timer !== null && pendingName !== null && pendingValue !== null) {
-        clearTimeout(timer);
-        timer = null;
-        baseStorage.setItem(pendingName, pendingValue);
-        pendingName = null;
-        pendingValue = null;
-      }
+      debouncedSetItem.flush();
     },
   };
 }
