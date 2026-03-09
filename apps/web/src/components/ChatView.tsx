@@ -753,11 +753,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     composerDraft.interactionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE;
   const isServerThread = serverThread !== undefined;
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
-  const diffSearch = useMemo(
-    () => parseDiffRouteSearch(rawSearch as Record<string, unknown>),
-    [rawSearch],
-  );
-  const diffOpen = diffSearch.diff === "1";
+  const diffOpen = rawSearch.diff === "1";
   const activeThreadId = activeThread?.id ?? null;
   const activeLatestTurn = activeThread?.latestTurn ?? null;
   const latestTurnSettled = isLatestTurnSettled(activeLatestTurn, activeThread?.session ?? null);
