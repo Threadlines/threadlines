@@ -32,7 +32,6 @@ import { type Thread } from "../types";
 import { derivePendingApprovals } from "../session-logic";
 import { gitRemoveWorktreeMutationOptions, gitStatusQueryOptions } from "../lib/gitReactQuery";
 import { serverConfigQueryOptions } from "../lib/serverReactQuery";
-import { useMediaQuery } from "../hooks/useMediaQuery";
 import { readNativeApi } from "../nativeApi";
 import { type DraftThreadEnvMode, useComposerDraftStore } from "../composerDraftStore";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
@@ -268,7 +267,6 @@ function ProjectFavicon({ cwd }: { cwd: string }) {
 }
 
 export default function Sidebar() {
-  const isMobile = useMediaQuery("(max-width: 767px)");
   const projects = useStore((store) => store.projects);
   const threads = useStore((store) => store.threads);
   const markThreadUnread = useStore((store) => store.markThreadUnread);
@@ -317,7 +315,6 @@ export default function Sidebar() {
   const [desktopUpdateState, setDesktopUpdateState] = useState<DesktopUpdateState | null>(null);
   const shouldBrowseForProjectImmediately = shouldOpenProjectFolderPickerImmediately({
     isElectron,
-    isMobile,
   });
   const shouldShowProjectPathEntry = addingProject && !shouldBrowseForProjectImmediately;
   const pendingApprovalByThreadId = useMemo(() => {
