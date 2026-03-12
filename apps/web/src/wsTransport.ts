@@ -190,6 +190,7 @@ export class WsTransport {
       // Log WebSocket errors for debugging (close event will follow)
       console.warn("WebSocket connection error", { type: event.type, url: this.url });
     });
+  }
 
   private handleMessage(raw: unknown) {
     const result = decodeWsResponse(raw);
