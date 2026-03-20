@@ -22,7 +22,7 @@ export const ProviderHealthBanner = memo(function ProviderHealthBanner({
     status.status === "error"
       ? `${providerLabel} provider is unavailable.`
       : `${providerLabel} provider has limited availability.`;
-  const title = providerLabel === "Codex" ? "Codex provider status" : `${providerLabel} status`;
+  const title = `${providerLabel} provider status`;
 
   return (
     <div className="pt-3 mx-auto max-w-3xl">
