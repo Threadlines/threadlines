@@ -1,6 +1,10 @@
 import { useCallback } from "react";
 import { Option, Schema } from "effect";
-import { TrimmedNonEmptyString, type ProviderKind } from "@t3tools/contracts";
+import {
+  TrimmedNonEmptyString,
+  type ProviderKind,
+  type ProviderStartOptions,
+} from "@t3tools/contracts";
 import {
   getDefaultModel,
   getModelOptions,
@@ -47,6 +51,7 @@ const withDefaults =
     );
 
 export const AppSettingsSchema = Schema.Struct({
+  claudeBinaryPath: Schema.String.check(Schema.isMaxLength(4096)).pipe(withDefaults(() => "")),
   codexBinaryPath: Schema.String.check(Schema.isMaxLength(4096)).pipe(withDefaults(() => "")),
   codexHomePath: Schema.String.check(Schema.isMaxLength(4096)).pipe(withDefaults(() => "")),
   defaultThreadEnvMode: EnvMode.pipe(withDefaults(() => "local" as const satisfies EnvMode)),
@@ -219,6 +224,30 @@ export function getCustomModelOptionsByProvider(
     codex: getAppModelOptions("codex", customModelsByProvider.codex),
     claudeAgent: getAppModelOptions("claudeAgent", customModelsByProvider.claudeAgent),
   };
+}
+
+export function getProviderStartOptions(
+  settings: Pick<AppSettings, "claudeBinaryPath" | "codexBinaryPath" | "codexHomePath">,
+): ProviderStartOptions | undefined {
+  const providerOptions: ProviderStartOptions = {
+    ...(settings.codexBinaryPath || settings.codexHomePath
+      ? {
+          codex: {
+            ...(settings.codexBinaryPath ? { binaryPath: settings.codexBinaryPath } : {}),
+            ...(settings.codexHomePath ? { homePath: settings.codexHomePath } : {}),
+          },
+        }
+      : {}),
+    ...(settings.claudeBinaryPath
+      ? {
+          claudeAgent: {
+            binaryPath: settings.claudeBinaryPath,
+          },
+        }
+      : {}),
+  };
+
+  return Object.keys(providerOptions).length > 0 ? providerOptions : undefined;
 }
 
 export function useAppSettings() {
