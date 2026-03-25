@@ -188,9 +188,10 @@ validationLayer("CodexAdapterLive validation", (it) => {
       yield* adapter.startSession({
         provider: "codex",
         threadId: asThreadId("thread-1"),
-        model: "gpt-5.3-codex",
-        modelOptions: {
-          codex: {
+        modelSelection: {
+          provider: "codex",
+          model: "gpt-5.3-codex",
+          options: {
             fastMode: true,
           },
         },
@@ -256,9 +257,10 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
         adapter.sendTurn({
           threadId: asThreadId("sess-missing"),
           input: "hello",
-          model: "gpt-5.3-codex",
-          modelOptions: {
-            codex: {
+          modelSelection: {
+            provider: "codex",
+            model: "gpt-5.3-codex",
+            options: {
               reasoningEffort: "high",
               fastMode: true,
             },

@@ -343,16 +343,21 @@ describe("getVisibleThreadsForProject", () => {
 });
 
 function makeProject(overrides: Partial<Project> = {}): Project {
+  const { defaultModelSelection, ...rest } = overrides;
   return {
     id: ProjectId.makeUnsafe("project-1"),
     name: "Project",
     cwd: "/tmp/project",
-    model: "gpt-5.4",
+    defaultModelSelection: {
+      provider: "codex",
+      model: "gpt-5.4",
+      ...defaultModelSelection,
+    },
     expanded: true,
     createdAt: "2026-03-09T10:00:00.000Z",
     updatedAt: "2026-03-09T10:00:00.000Z",
     scripts: [],
-    ...overrides,
+    ...rest,
   };
 }
 
@@ -362,7 +367,11 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     codexThreadId: null,
     projectId: ProjectId.makeUnsafe("project-1"),
     title: "Thread",
-    model: "gpt-5.4",
+    modelSelection: {
+      provider: "codex",
+      model: "gpt-5.4",
+      ...overrides?.modelSelection,
+    },
     runtimeMode: DEFAULT_RUNTIME_MODE,
     interactionMode: DEFAULT_INTERACTION_MODE,
     session: null,
