@@ -1,6 +1,6 @@
 {
   "name": "@t3tools/desktop",
-  "version": "0.0.24",
+  "version": "0.0.1",
   "private": true,
   "type": "module",
   "main": "dist-electron/main.cjs",
@@ -32,5 +32,5 @@
     "typescript": "catalog:",
     "vitest": "catalog:"
   },
-  "productName": "T3 Code (Alpha)"
+  "productName": "BadCode (Alpha)"
 }

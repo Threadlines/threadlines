@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import * as Schema from "effect/Schema";
 
 import {
+  VcsCommitGraphInput,
+  VcsCommitGraphResult,
   VcsCreateWorktreeInput,
   GitPreparePullRequestThreadInput,
   GitRunStackedActionResult,
@@ -9,6 +11,8 @@ import {
   GitResolvePullRequestResult,
 } from "./git.ts";
 
+const decodeCommitGraphInput = Schema.decodeUnknownSync(VcsCommitGraphInput);
+const decodeCommitGraphResult = Schema.decodeUnknownSync(VcsCommitGraphResult);
 const decodeCreateWorktreeInput = Schema.decodeUnknownSync(VcsCreateWorktreeInput);
 const decodePreparePullRequestThreadInput = Schema.decodeUnknownSync(
   GitPreparePullRequestThreadInput,
@@ -27,6 +31,32 @@ describe("VcsCreateWorktreeInput", () => {
 
     expect(parsed.newRefName).toBeUndefined();
     expect(parsed.refName).toBe("feature/existing");
+  });
+});
+
+describe("VcsCommitGraph", () => {
+  it("accepts a bounded commit graph request and result", () => {
+    const input = decodeCommitGraphInput({
+      cwd: "/repo",
+      limit: 24,
+    });
+    const result = decodeCommitGraphResult({
+      commits: [
+        {
+          sha: "89abcdef0123456789abcdef0123456789abcdef",
+          shortSha: "89abcde",
+          parents: ["0123456789abcdef0123456789abcdef01234567"],
+          refs: ["source-control-panel", "origin/source-control-panel"],
+          subject: "Add source control panel",
+          authorName: "BadCode",
+          committedAt: "2026-05-25T12:00:00.000Z",
+        },
+      ],
+      truncated: false,
+    });
+
+    expect(input.limit).toBe(24);
+    expect(result.commits[0]?.shortSha).toBe("89abcde");
   });
 });
 

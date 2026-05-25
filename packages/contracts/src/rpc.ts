@@ -11,9 +11,17 @@ import {
 } from "./filesystem.ts";
 import {
   GitActionProgressEvent,
+  VcsCommitGraphInput,
+  VcsCommitGraphResult,
+  VcsWorkingTreeDiffInput,
+  VcsWorkingTreeDiffResult,
+  VcsMergeRefInput,
+  VcsMergeRefResult,
   VcsSwitchRefInput,
   VcsSwitchRefResult,
   GitCommandError,
+  GitGenerateCommitMessageInput,
+  GitGenerateCommitMessageResult,
   VcsCreateRefInput,
   VcsCreateRefResult,
   VcsCreateWorktreeInput,
@@ -117,14 +125,18 @@ export const WS_METHODS = {
   vcsPull: "vcs.pull",
   vcsRefreshStatus: "vcs.refreshStatus",
   vcsListRefs: "vcs.listRefs",
+  vcsCommitGraph: "vcs.commitGraph",
+  vcsWorkingTreeDiff: "vcs.workingTreeDiff",
   vcsCreateWorktree: "vcs.createWorktree",
   vcsRemoveWorktree: "vcs.removeWorktree",
   vcsCreateRef: "vcs.createRef",
   vcsSwitchRef: "vcs.switchRef",
+  vcsMergeRef: "vcs.mergeRef",
   vcsInit: "vcs.init",
 
   // Git workflow methods
   gitRunStackedAction: "git.runStackedAction",
+  gitGenerateCommitMessage: "git.generateCommitMessage",
   gitResolvePullRequest: "git.resolvePullRequest",
   gitPreparePullRequestThread: "git.preparePullRequestThread",
 
@@ -313,6 +325,12 @@ export const WsGitRunStackedActionRpc = Rpc.make(WS_METHODS.gitRunStackedAction,
   stream: true,
 });
 
+export const WsGitGenerateCommitMessageRpc = Rpc.make(WS_METHODS.gitGenerateCommitMessage, {
+  payload: GitGenerateCommitMessageInput,
+  success: GitGenerateCommitMessageResult,
+  error: GitManagerServiceError,
+});
+
 export const WsGitResolvePullRequestRpc = Rpc.make(WS_METHODS.gitResolvePullRequest, {
   payload: GitPullRequestRefInput,
   success: GitResolvePullRequestResult,
@@ -328,6 +346,18 @@ export const WsGitPreparePullRequestThreadRpc = Rpc.make(WS_METHODS.gitPreparePu
 export const WsVcsListRefsRpc = Rpc.make(WS_METHODS.vcsListRefs, {
   payload: VcsListRefsInput,
   success: VcsListRefsResult,
+  error: GitCommandError,
+});
+
+export const WsVcsCommitGraphRpc = Rpc.make(WS_METHODS.vcsCommitGraph, {
+  payload: VcsCommitGraphInput,
+  success: VcsCommitGraphResult,
+  error: GitCommandError,
+});
+
+export const WsVcsWorkingTreeDiffRpc = Rpc.make(WS_METHODS.vcsWorkingTreeDiff, {
+  payload: VcsWorkingTreeDiffInput,
+  success: VcsWorkingTreeDiffResult,
   error: GitCommandError,
 });
 
@@ -351,6 +381,12 @@ export const WsVcsCreateRefRpc = Rpc.make(WS_METHODS.vcsCreateRef, {
 export const WsVcsSwitchRefRpc = Rpc.make(WS_METHODS.vcsSwitchRef, {
   payload: VcsSwitchRefInput,
   success: VcsSwitchRefResult,
+  error: GitCommandError,
+});
+
+export const WsVcsMergeRefRpc = Rpc.make(WS_METHODS.vcsMergeRef, {
+  payload: VcsMergeRefInput,
+  success: VcsMergeRefResult,
   error: GitCommandError,
 });
 
@@ -496,13 +532,17 @@ export const WsRpcGroup = RpcGroup.make(
   WsVcsPullRpc,
   WsVcsRefreshStatusRpc,
   WsGitRunStackedActionRpc,
+  WsGitGenerateCommitMessageRpc,
   WsGitResolvePullRequestRpc,
   WsGitPreparePullRequestThreadRpc,
   WsVcsListRefsRpc,
+  WsVcsCommitGraphRpc,
+  WsVcsWorkingTreeDiffRpc,
   WsVcsCreateWorktreeRpc,
   WsVcsRemoveWorktreeRpc,
   WsVcsCreateRefRpc,
   WsVcsSwitchRefRpc,
+  WsVcsMergeRefRpc,
   WsVcsInitRpc,
   WsTerminalOpenRpc,
   WsTerminalWriteRpc,

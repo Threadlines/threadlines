@@ -22,6 +22,22 @@ export const gitQueryKeys = {
   all: ["git"] as const,
   refs: (environmentId: EnvironmentId | null, cwd: string | null) =>
     ["git", "refs", environmentId ?? null, cwd] as const,
+  commitGraph: (environmentId: EnvironmentId | null, cwd: string | null, limit: number) =>
+    ["git", "commit-graph", environmentId ?? null, cwd, limit] as const,
+  workingTreeDiff: (
+    environmentId: EnvironmentId | null,
+    cwd: string | null,
+    filePaths: readonly string[] | null,
+    ignoreWhitespace: boolean,
+  ) =>
+    [
+      "git",
+      "working-tree-diff",
+      environmentId ?? null,
+      cwd,
+      filePaths?.join("\0") ?? null,
+      ignoreWhitespace,
+    ] as const,
   branchSearch: (environmentId: EnvironmentId | null, cwd: string | null, query: string) =>
     ["git", "refs", environmentId ?? null, cwd, "search", query] as const,
 };
@@ -31,8 +47,12 @@ export const gitMutationKeys = {
     ["git", "mutation", "init", environmentId ?? null, cwd] as const,
   switchRef: (environmentId: EnvironmentId | null, cwd: string | null) =>
     ["git", "mutation", "switchRef", environmentId ?? null, cwd] as const,
+  mergeRef: (environmentId: EnvironmentId | null, cwd: string | null) =>
+    ["git", "mutation", "mergeRef", environmentId ?? null, cwd] as const,
   runStackedAction: (environmentId: EnvironmentId | null, cwd: string | null) =>
     ["git", "mutation", "run-stacked-action", environmentId ?? null, cwd] as const,
+  generateCommitMessage: (environmentId: EnvironmentId | null, cwd: string | null) =>
+    ["git", "mutation", "generate-commit-message", environmentId ?? null, cwd] as const,
   pull: (environmentId: EnvironmentId | null, cwd: string | null) =>
     ["git", "mutation", "pull", environmentId ?? null, cwd] as const,
   preparePullRequestThread: (environmentId: EnvironmentId | null, cwd: string | null) =>
@@ -127,6 +147,63 @@ export function gitResolvePullRequestQueryOptions(input: {
   });
 }
 
+export function gitCommitGraphQueryOptions(input: {
+  environmentId: EnvironmentId | null;
+  cwd: string | null;
+  limit?: number;
+  enabled?: boolean;
+}) {
+  const limit = input.limit ?? 24;
+  return queryOptions({
+    queryKey: gitQueryKeys.commitGraph(input.environmentId, input.cwd, limit),
+    queryFn: async () => {
+      if (!input.cwd || !input.environmentId) {
+        throw new Error("Git graph is unavailable.");
+      }
+      const api = ensureEnvironmentApi(input.environmentId);
+      return api.vcs.commitGraph({ cwd: input.cwd, limit });
+    },
+    enabled: input.environmentId !== null && input.cwd !== null && (input.enabled ?? true),
+    staleTime: 10_000,
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
+  });
+}
+
+export function gitWorkingTreeDiffQueryOptions(input: {
+  environmentId: EnvironmentId | null;
+  cwd: string | null;
+  filePaths?: readonly string[] | null;
+  ignoreWhitespace: boolean;
+  enabled?: boolean;
+}) {
+  const filePaths =
+    input.filePaths && input.filePaths.length > 0 ? [...input.filePaths].toSorted() : null;
+  return queryOptions({
+    queryKey: gitQueryKeys.workingTreeDiff(
+      input.environmentId,
+      input.cwd,
+      filePaths,
+      input.ignoreWhitespace,
+    ),
+    queryFn: async () => {
+      if (!input.cwd || !input.environmentId) {
+        throw new Error("Working tree diff is unavailable.");
+      }
+      const api = ensureEnvironmentApi(input.environmentId);
+      return api.vcs.workingTreeDiff({
+        cwd: input.cwd,
+        ignoreWhitespace: input.ignoreWhitespace,
+        ...(filePaths ? { filePaths } : {}),
+      });
+    },
+    enabled: input.environmentId !== null && input.cwd !== null && (input.enabled ?? true),
+    staleTime: 2_000,
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
+  });
+}
+
 /**
  * @deprecated Use a VCS-named mutation helper once the UI naming migration lands.
  */
@@ -169,6 +246,27 @@ export function gitCheckoutMutationOptions(input: {
   });
 }
 
+/**
+ * @deprecated Use a VCS-named mutation helper once the UI naming migration lands.
+ */
+export function gitMergeRefMutationOptions(input: {
+  environmentId: EnvironmentId | null;
+  cwd: string | null;
+  queryClient: QueryClient;
+}) {
+  return mutationOptions({
+    mutationKey: gitMutationKeys.mergeRef(input.environmentId, input.cwd),
+    mutationFn: async (refName: string) => {
+      if (!input.cwd || !input.environmentId) throw new Error("Git merge is unavailable.");
+      const api = ensureEnvironmentApi(input.environmentId);
+      return api.vcs.mergeRef({ cwd: input.cwd, refName });
+    },
+    onSuccess: async () => {
+      await invalidateGitBranchQueries(input.queryClient, input.environmentId, input.cwd);
+    },
+  });
+}
+
 export function gitRunStackedActionMutationOptions(input: {
   environmentId: EnvironmentId | null;
   cwd: string | null;
@@ -206,6 +304,24 @@ export function gitRunStackedActionMutationOptions(input: {
     },
     onSuccess: async () => {
       await invalidateGitBranchQueries(input.queryClient, input.environmentId, input.cwd);
+    },
+  });
+}
+
+export function gitGenerateCommitMessageMutationOptions(input: {
+  environmentId: EnvironmentId | null;
+  cwd: string | null;
+}) {
+  return mutationOptions({
+    mutationKey: gitMutationKeys.generateCommitMessage(input.environmentId, input.cwd),
+    mutationFn: async (args?: { filePaths?: string[] }) => {
+      if (!input.cwd || !input.environmentId) {
+        throw new Error("Commit message generation is unavailable.");
+      }
+      return requireEnvironmentConnection(input.environmentId).client.git.generateCommitMessage({
+        cwd: input.cwd,
+        ...(args?.filePaths && args.filePaths.length > 0 ? { filePaths: args.filePaths } : {}),
+      });
     },
   });
 }

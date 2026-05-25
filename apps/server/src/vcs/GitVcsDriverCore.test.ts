@@ -310,6 +310,92 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         assert.notInclude(status, "a.txt");
       }),
     );
+
+    it.effect("previews commit context without mutating the real index", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        yield* writeTextFile(cwd, "a.txt", "a\n");
+        yield* writeTextFile(cwd, "b.txt", "b\n");
+
+        const context = yield* driver.previewCommitContext(cwd, ["a.txt"]);
+        assert.include(context?.stagedSummary ?? "", "a.txt");
+        assert.notInclude(context?.stagedSummary ?? "", "b.txt");
+
+        const status = yield* git(cwd, ["status", "--porcelain"]);
+        assert.include(status, "?? a.txt");
+        assert.include(status, "?? b.txt");
+
+        const staged = yield* git(cwd, ["diff", "--cached", "--name-only"]);
+        assert.equal(staged, "");
+      }),
+    );
+
+    it.effect("reads working tree diffs without mutating the real index", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        yield* writeTextFile(cwd, "a.txt", "a\n");
+        yield* writeTextFile(cwd, "b.txt", "b\n");
+
+        const result = yield* driver.workingTreeDiff({ cwd, filePaths: ["a.txt"] });
+
+        assert.include(result.diff, "diff --git a/a.txt b/a.txt");
+        assert.notInclude(result.diff, "b.txt");
+        assert.equal(yield* git(cwd, ["diff", "--cached", "--name-only"]), "");
+      }),
+    );
+  });
+
+  describe("commit graph", () => {
+    it.effect("filters T3 checkpoint commits from graph results", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        yield* writeTextFile(cwd, "checkpoint.txt", "checkpoint\n");
+        yield* git(cwd, ["add", "."]);
+        yield* git(cwd, ["commit", "-m", "t3 checkpoint ref=refs/t3/checkpoints/example"]);
+
+        const graph = yield* driver.commitGraph({ cwd, limit: 5 });
+
+        assert.notInclude(
+          graph.commits.map((commit) => commit.subject),
+          "t3 checkpoint ref=refs/t3/checkpoints/example",
+        );
+        assert.include(
+          graph.commits.map((commit) => commit.subject),
+          "initial commit",
+        );
+      }),
+    );
+  });
+
+  describe("branch operations", () => {
+    it.effect("merges a clean branch into the current branch", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        yield* driver.createRef({ cwd, refName: "feature/merge" });
+        yield* driver.switchRef({ cwd, refName: "feature/merge" });
+        yield* writeTextFile(cwd, "feature.txt", "feature\n");
+        yield* git(cwd, ["add", "."]);
+        yield* git(cwd, ["commit", "-m", "Add feature"]);
+        yield* driver.switchRef({ cwd, refName: initialBranch });
+
+        const result = yield* driver.mergeRef({ cwd, refName: "feature/merge" });
+
+        assert.equal(result.refName, initialBranch);
+        assert.equal(yield* git(cwd, ["log", "-1", "--pretty=%s"]), "Add feature");
+      }),
+    );
   });
 
   describe("remote operations", () => {

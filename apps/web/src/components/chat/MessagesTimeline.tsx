@@ -294,10 +294,13 @@ function keyExtractor(item: MessagesTimelineRow) {
 // TimelineRowContent — the actual row component
 // ---------------------------------------------------------------------------
 
-type TimelineEntry = ReturnType<typeof deriveTimelineEntries>[number];
-type TimelineMessage = Extract<TimelineEntry, { kind: "message" }>["message"];
 type TimelineWorkEntry = Extract<MessagesTimelineRow, { kind: "work" }>["groupedEntries"][number];
 type TimelineRow = MessagesTimelineRow;
+type TimelineImagePreviewItem = {
+  id: string;
+  name: string;
+  previewUrl?: string;
+};
 
 const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: TimelineRow }) {
   return (
@@ -332,39 +335,11 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   return (
     <div className="flex justify-end">
       <div className="group relative max-w-[80%] rounded-2xl rounded-br-sm border border-border bg-secondary px-4 py-3">
-        {userImages.length > 0 && (
-          <div className="mb-2 grid max-w-[420px] grid-cols-2 gap-2">
-            {userImages.map((image: NonNullable<TimelineMessage["attachments"]>[number]) => (
-              <div
-                key={image.id}
-                className="overflow-hidden rounded-lg border border-border/80 bg-background/70"
-              >
-                {image.previewUrl ? (
-                  <button
-                    type="button"
-                    className="h-full w-full cursor-zoom-in"
-                    aria-label={`Preview ${image.name}`}
-                    onClick={() => {
-                      const preview = buildExpandedImagePreview(userImages, image.id);
-                      if (!preview) return;
-                      ctx.onImageExpand(preview);
-                    }}
-                  >
-                    <img
-                      src={image.previewUrl}
-                      alt={image.name}
-                      className="block h-auto max-h-[220px] w-full object-cover"
-                    />
-                  </button>
-                ) : (
-                  <div className="flex min-h-[72px] items-center justify-center px-2 py-3 text-center text-[11px] text-muted-foreground/70">
-                    {image.name}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
+        <TimelineImagePreviewGrid
+          images={userImages}
+          className="mb-2 max-w-[420px]"
+          imageClassName="max-h-[220px] object-cover"
+        />
         <CollapsibleUserMessageBody
           text={displayedUserMessage.visibleText}
           terminalContexts={terminalContexts}
@@ -387,6 +362,57 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
     </div>
   );
 }
+
+const TimelineImagePreviewGrid = memo(function TimelineImagePreviewGrid(props: {
+  images: ReadonlyArray<TimelineImagePreviewItem>;
+  className?: string | undefined;
+  imageClassName?: string | undefined;
+}) {
+  const ctx = use(TimelineRowCtx);
+  if (props.images.length === 0) {
+    return null;
+  }
+
+  return (
+    <div
+      className={cn(
+        "grid gap-2",
+        props.images.length === 1 ? "grid-cols-1" : "grid-cols-2",
+        props.className,
+      )}
+    >
+      {props.images.map((image) => (
+        <div
+          key={image.id}
+          className="overflow-hidden rounded-lg border border-border/80 bg-background/70"
+        >
+          {image.previewUrl ? (
+            <button
+              type="button"
+              className="h-full w-full cursor-zoom-in"
+              aria-label={`Preview ${image.name}`}
+              onClick={() => {
+                const preview = buildExpandedImagePreview(props.images, image.id);
+                if (!preview) return;
+                ctx.onImageExpand(preview);
+              }}
+            >
+              <img
+                src={image.previewUrl}
+                alt={image.name}
+                className={cn("block h-auto w-full", props.imageClassName)}
+              />
+            </button>
+          ) : (
+            <div className="flex min-h-[72px] items-center justify-center px-2 py-3 text-center text-[11px] text-muted-foreground/70">
+              {image.name}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+});
 
 function RevertUserMessageButton({ messageId }: { messageId: MessageId }) {
   const ctx = use(TimelineRowCtx);
@@ -1118,6 +1144,25 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const displayText = preview ? `${heading} - ${preview}` : heading;
   const hasChangedFiles = (workEntry.changedFiles?.length ?? 0) > 0;
   const previewIsChangedFiles = hasChangedFiles && !workEntry.command && !workEntry.detail;
+  const imagePreviews = workEntry.images ?? [];
+  const isStandaloneImagePreview =
+    imagePreviews.length > 0 &&
+    workEntry.itemType === "image_view" &&
+    !preview &&
+    !rawCommand &&
+    !hasChangedFiles;
+
+  if (isStandaloneImagePreview) {
+    return (
+      <div className="rounded-lg px-1 py-1">
+        <TimelineImagePreviewGrid
+          images={imagePreviews}
+          className="max-w-[420px] pl-7"
+          imageClassName="max-h-[260px] object-contain"
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-lg px-1 py-1">
@@ -1215,6 +1260,13 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
             </span>
           )}
         </div>
+      )}
+      {imagePreviews.length > 0 && (
+        <TimelineImagePreviewGrid
+          images={imagePreviews}
+          className="mt-2 max-w-[420px] pl-7"
+          imageClassName="max-h-[260px] object-contain"
+        />
       )}
     </div>
   );

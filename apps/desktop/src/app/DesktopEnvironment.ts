@@ -61,6 +61,7 @@ export interface DesktopEnvironmentShape {
   readonly commitHashOverride: Option.Option<string>;
   readonly otlpTracesUrl: Option.Option<string>;
   readonly otlpExportIntervalMs: number;
+  readonly openDevToolsInDevelopment: boolean;
   readonly branding: DesktopAppBranding;
   readonly displayName: string;
   readonly appUserModelId: string;
@@ -80,7 +81,7 @@ export class DesktopEnvironment extends Context.Service<
   DesktopEnvironmentShape
 >()("t3/desktop/Environment") {}
 
-const APP_BASE_NAME = "T3 Code";
+const APP_BASE_NAME = "BadCode";
 
 function resolveDesktopAppStageLabel(input: {
   readonly isDevelopment: boolean;
@@ -160,8 +161,8 @@ const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
   });
   const displayName = branding.displayName;
   const stateDir = path.join(baseDir, isDevelopment ? "dev" : "userdata");
-  const userDataDirName = isDevelopment ? "t3code-dev" : "t3code";
-  const legacyUserDataDirName = isDevelopment ? "T3 Code (Dev)" : "T3 Code (Alpha)";
+  const userDataDirName = isDevelopment ? "badcode-dev" : "badcode";
+  const legacyUserDataDirName = userDataDirName;
   const resourcesPath = input.resourcesPath;
 
   return DesktopEnvironment.of({
@@ -197,11 +198,12 @@ const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
     commitHashOverride: config.commitHashOverride,
     otlpTracesUrl: config.otlpTracesUrl,
     otlpExportIntervalMs: config.otlpExportIntervalMs,
+    openDevToolsInDevelopment: config.openDevToolsInDevelopment,
     branding,
     displayName,
-    appUserModelId: isDevelopment ? "com.t3tools.t3code.dev" : "com.t3tools.t3code",
-    linuxDesktopEntryName: isDevelopment ? "t3code-dev.desktop" : "t3code.desktop",
-    linuxWmClass: isDevelopment ? "t3code-dev" : "t3code",
+    appUserModelId: isDevelopment ? "com.badcuban.badcode.dev" : "com.badcuban.badcode",
+    linuxDesktopEntryName: isDevelopment ? "badcode-dev.desktop" : "badcode.desktop",
+    linuxWmClass: isDevelopment ? "badcode-dev" : "badcode",
     userDataDirName,
     legacyUserDataDirName,
     defaultDesktopSettings: resolveDefaultDesktopSettings(input.appVersion),
@@ -241,7 +243,7 @@ const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
       path.join(resourcesPath, "resources", fileName),
       path.join(resourcesPath, fileName),
     ],
-    developmentDockIconPath: path.join(rootDir, "assets", "dev", "blueprint-macos-1024.png"),
+    developmentDockIconPath: path.join(rootDir, "assets", "dev", "badcode-dev-macos-1024.png"),
   });
 });
 

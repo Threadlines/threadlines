@@ -5,14 +5,22 @@ import * as Layer from "effect/Layer";
 import {
   GitManagerError,
   GitCommandError,
+  type VcsCommitGraphInput,
+  type VcsCommitGraphResult,
+  type VcsWorkingTreeDiffInput,
+  type VcsWorkingTreeDiffResult,
   type VcsSwitchRefInput,
   type VcsSwitchRefResult,
+  type VcsMergeRefInput,
+  type VcsMergeRefResult,
   type VcsCreateRefInput,
   type VcsCreateRefResult,
   type VcsCreateWorktreeInput,
   type VcsCreateWorktreeResult,
   type VcsListRefsInput,
   type VcsListRefsResult,
+  type GitGenerateCommitMessageInput,
+  type GitGenerateCommitMessageResult,
   type GitManagerServiceError,
   type GitPreparePullRequestThreadInput,
   type GitPreparePullRequestThreadResult,
@@ -50,6 +58,9 @@ export interface GitWorkflowServiceShape {
     input: GitRunStackedActionInput,
     options?: GitRunStackedActionOptions,
   ) => Effect.Effect<GitRunStackedActionResult, GitManagerServiceError>;
+  readonly generateCommitMessage: (
+    input: GitGenerateCommitMessageInput,
+  ) => Effect.Effect<GitGenerateCommitMessageResult, GitManagerServiceError>;
   readonly resolvePullRequest: (
     input: GitPullRequestRefInput,
   ) => Effect.Effect<GitResolvePullRequestResult, GitManagerServiceError>;
@@ -57,6 +68,12 @@ export interface GitWorkflowServiceShape {
     input: GitPreparePullRequestThreadInput,
   ) => Effect.Effect<GitPreparePullRequestThreadResult, GitManagerServiceError>;
   readonly listRefs: (input: VcsListRefsInput) => Effect.Effect<VcsListRefsResult, GitCommandError>;
+  readonly commitGraph: (
+    input: VcsCommitGraphInput,
+  ) => Effect.Effect<VcsCommitGraphResult, GitCommandError>;
+  readonly workingTreeDiff: (
+    input: VcsWorkingTreeDiffInput,
+  ) => Effect.Effect<VcsWorkingTreeDiffResult, GitCommandError>;
   readonly createWorktree: (
     input: VcsCreateWorktreeInput,
   ) => Effect.Effect<VcsCreateWorktreeResult, GitCommandError>;
@@ -67,6 +84,7 @@ export interface GitWorkflowServiceShape {
   readonly switchRef: (
     input: VcsSwitchRefInput,
   ) => Effect.Effect<VcsSwitchRefResult, GitCommandError>;
+  readonly mergeRef: (input: VcsMergeRefInput) => Effect.Effect<VcsMergeRefResult, GitCommandError>;
   readonly renameBranch: (input: {
     readonly cwd: string;
     readonly oldBranch: string;
@@ -126,6 +144,13 @@ function nonRepositoryListRefs(): VcsListRefsResult {
     hasPrimaryRemote: false,
     nextCursor: null,
     totalCount: 0,
+  };
+}
+
+function nonRepositoryCommitGraph(): VcsCommitGraphResult {
+  return {
+    commits: [],
+    truncated: false,
   };
 }
 
@@ -276,6 +301,10 @@ export const make = Effect.fn("makeGitWorkflowService")(function* () {
       ensureGit("GitWorkflowService.runStackedAction", input.cwd).pipe(
         Effect.andThen(gitManager.runStackedAction(input, options)),
       ),
+    generateCommitMessage: (input) =>
+      ensureGit("GitWorkflowService.generateCommitMessage", input.cwd).pipe(
+        Effect.andThen(gitManager.generateCommitMessage(input)),
+      ),
     resolvePullRequest: routeGitManager(
       "GitWorkflowService.resolvePullRequest",
       gitManager.resolvePullRequest,
@@ -289,6 +318,16 @@ export const make = Effect.fn("makeGitWorkflowService")(function* () {
         Effect.flatMap((isGitRepository) =>
           isGitRepository ? git.listRefs(input) : Effect.succeed(nonRepositoryListRefs()),
         ),
+      ),
+    commitGraph: (input) =>
+      detectGitRepositoryForCommand("GitWorkflowService.commitGraph", input.cwd).pipe(
+        Effect.flatMap((isGitRepository) =>
+          isGitRepository ? git.commitGraph(input) : Effect.succeed(nonRepositoryCommitGraph()),
+        ),
+      ),
+    workingTreeDiff: (input) =>
+      ensureGitCommand("GitWorkflowService.workingTreeDiff", input.cwd).pipe(
+        Effect.andThen(git.workingTreeDiff(input)),
       ),
     createWorktree: (input) =>
       ensureGitCommand("GitWorkflowService.createWorktree", input.cwd).pipe(
@@ -305,6 +344,10 @@ export const make = Effect.fn("makeGitWorkflowService")(function* () {
     switchRef: (input) =>
       ensureGitCommand("GitWorkflowService.switchRef", input.cwd).pipe(
         Effect.andThen(Effect.scoped(git.switchRef(input))),
+      ),
+    mergeRef: (input) =>
+      ensureGitCommand("GitWorkflowService.mergeRef", input.cwd).pipe(
+        Effect.andThen(git.mergeRef(input)),
       ),
     renameBranch: (input) =>
       ensureGit("GitWorkflowService.renameBranch", input.cwd).pipe(

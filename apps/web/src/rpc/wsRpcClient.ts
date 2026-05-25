@@ -1,5 +1,7 @@
 import {
   type GitActionProgressEvent,
+  type GitGenerateCommitMessageInput,
+  type GitGenerateCommitMessageResult,
   type GitRunStackedActionInput,
   type GitRunStackedActionResult,
   type VcsStatusResult,
@@ -93,10 +95,13 @@ export interface WsRpcClient {
       options?: StreamSubscriptionOptions,
     ) => () => void;
     readonly listRefs: RpcUnaryMethod<typeof WS_METHODS.vcsListRefs>;
+    readonly commitGraph: RpcUnaryMethod<typeof WS_METHODS.vcsCommitGraph>;
+    readonly workingTreeDiff: RpcUnaryMethod<typeof WS_METHODS.vcsWorkingTreeDiff>;
     readonly createWorktree: RpcUnaryMethod<typeof WS_METHODS.vcsCreateWorktree>;
     readonly removeWorktree: RpcUnaryMethod<typeof WS_METHODS.vcsRemoveWorktree>;
     readonly createRef: RpcUnaryMethod<typeof WS_METHODS.vcsCreateRef>;
     readonly switchRef: RpcUnaryMethod<typeof WS_METHODS.vcsSwitchRef>;
+    readonly mergeRef: RpcUnaryMethod<typeof WS_METHODS.vcsMergeRef>;
     readonly init: RpcUnaryMethod<typeof WS_METHODS.vcsInit>;
   };
   /**
@@ -107,6 +112,9 @@ export interface WsRpcClient {
       input: GitRunStackedActionInput,
       options?: GitRunStackedActionOptions,
     ) => Promise<GitRunStackedActionResult>;
+    readonly generateCommitMessage: (
+      input: GitGenerateCommitMessageInput,
+    ) => Promise<GitGenerateCommitMessageResult>;
     readonly resolvePullRequest: RpcUnaryMethod<typeof WS_METHODS.gitResolvePullRequest>;
     readonly preparePullRequestThread: RpcUnaryMethod<
       typeof WS_METHODS.gitPreparePullRequestThread
@@ -213,12 +221,17 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         );
       },
       listRefs: (input) => transport.request((client) => client[WS_METHODS.vcsListRefs](input)),
+      commitGraph: (input) =>
+        transport.request((client) => client[WS_METHODS.vcsCommitGraph](input)),
+      workingTreeDiff: (input) =>
+        transport.request((client) => client[WS_METHODS.vcsWorkingTreeDiff](input)),
       createWorktree: (input) =>
         transport.request((client) => client[WS_METHODS.vcsCreateWorktree](input)),
       removeWorktree: (input) =>
         transport.request((client) => client[WS_METHODS.vcsRemoveWorktree](input)),
       createRef: (input) => transport.request((client) => client[WS_METHODS.vcsCreateRef](input)),
       switchRef: (input) => transport.request((client) => client[WS_METHODS.vcsSwitchRef](input)),
+      mergeRef: (input) => transport.request((client) => client[WS_METHODS.vcsMergeRef](input)),
       init: (input) => transport.request((client) => client[WS_METHODS.vcsInit](input)),
     },
     git: {
@@ -241,6 +254,8 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
 
         throw new Error("Git action stream completed without a final result.");
       },
+      generateCommitMessage: (input) =>
+        transport.request((client) => client[WS_METHODS.gitGenerateCommitMessage](input)),
       resolvePullRequest: (input) =>
         transport.request((client) => client[WS_METHODS.gitResolvePullRequest](input)),
       preparePullRequestThread: (input) =>

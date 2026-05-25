@@ -6,6 +6,7 @@ import * as Option from "effect/Option";
 import * as Electron from "electron";
 
 const SAFE_EXTERNAL_PROTOCOLS = new Set(["http:", "https:"]);
+const WINDOWS_SCREEN_CLIP_URI = "ms-screenclip:";
 
 export function parseSafeExternalUrl(rawUrl: unknown): Option.Option<string> {
   if (typeof rawUrl !== "string") {
@@ -22,6 +23,7 @@ export function parseSafeExternalUrl(rawUrl: unknown): Option.Option<string> {
 
 export interface ElectronShellShape {
   readonly openExternal: (rawUrl: unknown) => Effect.Effect<boolean>;
+  readonly openScreenClip: () => Effect.Effect<boolean>;
   readonly copyText: (text: string) => Effect.Effect<void>;
 }
 
@@ -41,6 +43,13 @@ const make = ElectronShell.of({
           ),
         ),
     }),
+  openScreenClip: () =>
+    Effect.promise(() =>
+      Electron.shell.openExternal(WINDOWS_SCREEN_CLIP_URI).then(
+        () => true,
+        () => false,
+      ),
+    ),
   copyText: (text) =>
     Effect.sync(() => {
       Electron.clipboard.writeText(text);

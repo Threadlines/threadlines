@@ -519,7 +519,7 @@ export function GeneralSettingsPanel() {
       <SettingsSection title="General">
         <SettingsRow
           title="Theme"
-          description="Choose how T3 Code looks across the app."
+          description="Choose how BadCode looks across the app."
           resetAction={
             theme !== "system" ? (
               <SettingResetButton label="theme" onClick={() => setTheme("system")} />
@@ -738,7 +738,7 @@ export function GeneralSettingsPanel() {
 
         <SettingsRow
           title="Add project starts in"
-          description='Leave empty to use "~/" when the Add Project browser opens.'
+          description='Leave empty to start in your home folder ("~/"). On Windows, Desktop follows the real user Desktop folder, including OneDrive redirection.'
           resetAction={
             settings.addProjectBaseDirectory !==
             DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory ? (

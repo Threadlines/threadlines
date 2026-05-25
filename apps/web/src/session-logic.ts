@@ -47,6 +47,12 @@ export const PROVIDER_OPTIONS: Array<{
   },
 ];
 
+export interface WorkLogImagePreview {
+  id: string;
+  name: string;
+  previewUrl: string;
+}
+
 export interface WorkLogEntry {
   id: string;
   createdAt: string;
@@ -55,6 +61,7 @@ export interface WorkLogEntry {
   command?: string;
   rawCommand?: string;
   changedFiles?: ReadonlyArray<string>;
+  images?: ReadonlyArray<WorkLogImagePreview>;
   tone: "thinking" | "tool" | "info" | "error";
   toolTitle?: string;
   itemType?: ToolLifecycleItemType;
@@ -486,7 +493,7 @@ export function deriveWorkLogEntries(
 ): WorkLogEntry[] {
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
   const entries = ordered
-    .filter((activity) => (latestTurnId ? activity.turnId === latestTurnId : true))
+    .filter((activity) => shouldIncludeActivityInWorkLog(activity, latestTurnId))
     .filter((activity) => activity.kind !== "tool.started")
     .filter((activity) => activity.kind !== "task.started")
     .filter((activity) => activity.kind !== "context-window.updated")
@@ -496,6 +503,21 @@ export function deriveWorkLogEntries(
   return collapseDerivedWorkLogEntries(entries).map(
     ({ activityKind: _activityKind, collapseKey: _collapseKey, ...entry }) => entry,
   );
+}
+
+function shouldIncludeActivityInWorkLog(
+  activity: OrchestrationThreadActivity,
+  latestTurnId: TurnId | undefined,
+): boolean {
+  if (!latestTurnId || activity.turnId === latestTurnId) {
+    return true;
+  }
+
+  const payload =
+    activity.payload && typeof activity.payload === "object"
+      ? (activity.payload as Record<string, unknown>)
+      : null;
+  return extractWorkLogItemType(payload) === "image_view";
 }
 
 function isPlanBoundaryToolActivity(activity: OrchestrationThreadActivity): boolean {
@@ -517,6 +539,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
       : null;
   const commandPreview = extractToolCommand(payload);
   const changedFiles = extractChangedFiles(payload);
+  const images = extractWorkLogImages(payload);
   const title = extractToolTitle(payload);
   const isTaskActivity = activity.kind === "task.progress" || activity.kind === "task.completed";
   const taskSummary =
@@ -565,6 +588,9 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   }
   if (changedFiles.length > 0) {
     entry.changedFiles = changedFiles;
+  }
+  if (images.length > 0) {
+    entry.images = images;
   }
   if (title) {
     entry.toolTitle = title;
@@ -633,6 +659,7 @@ function mergeDerivedWorkLogEntries(
   const detail = next.detail ?? previous.detail;
   const command = next.command ?? previous.command;
   const rawCommand = next.rawCommand ?? previous.rawCommand;
+  const images = mergeWorkLogImages(previous.images, next.images);
   const toolTitle = next.toolTitle ?? previous.toolTitle;
   const itemType = next.itemType ?? previous.itemType;
   const requestKind = next.requestKind ?? previous.requestKind;
@@ -645,12 +672,28 @@ function mergeDerivedWorkLogEntries(
     ...(command ? { command } : {}),
     ...(rawCommand ? { rawCommand } : {}),
     ...(changedFiles.length > 0 ? { changedFiles } : {}),
+    ...(images.length > 0 ? { images } : {}),
     ...(toolTitle ? { toolTitle } : {}),
     ...(itemType ? { itemType } : {}),
     ...(requestKind ? { requestKind } : {}),
     ...(collapseKey ? { collapseKey } : {}),
     ...(toolCallId ? { toolCallId } : {}),
   };
+}
+
+function mergeWorkLogImages(
+  previous: ReadonlyArray<WorkLogImagePreview> | undefined,
+  next: ReadonlyArray<WorkLogImagePreview> | undefined,
+): WorkLogImagePreview[] {
+  const merged = [...(previous ?? []), ...(next ?? [])];
+  if (merged.length === 0) {
+    return [];
+  }
+  const byId = new Map<string, WorkLogImagePreview>();
+  for (const image of merged) {
+    byId.set(image.id, image);
+  }
+  return [...byId.values()];
 }
 
 function mergeChangedFiles(
@@ -710,6 +753,106 @@ function asTrimmedString(value: unknown): string | null {
 
 function asNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function asBase64ImageDataUrl(value: string): { previewUrl: string; mimeType: string } | null {
+  const normalized = value.replace(/\s+/g, "");
+  if (normalized.length < 32 || !/^[A-Za-z0-9+/=_-]+$/u.test(normalized)) {
+    return null;
+  }
+
+  const base64 = normalized.replace(/-/g, "+").replace(/_/g, "/");
+  const mimeType = inferImageMimeTypeFromBase64(base64);
+  return {
+    previewUrl: `data:${mimeType};base64,${padBase64(base64)}`,
+    mimeType,
+  };
+}
+
+function imageSourceFromValue(
+  value: string,
+  options?: { readonly allowBase64?: boolean },
+): { previewUrl: string; mimeType?: string | undefined } | null {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+
+  const dataUrlMatch = /^data:(image\/[a-z0-9.+-]+);base64,/iu.exec(trimmed);
+  if (dataUrlMatch) {
+    return {
+      previewUrl: trimmed,
+      mimeType: dataUrlMatch[1],
+    };
+  }
+
+  if (/^(?:https?:|blob:)/iu.test(trimmed)) {
+    return { previewUrl: trimmed };
+  }
+
+  if (options?.allowBase64) {
+    return asBase64ImageDataUrl(trimmed);
+  }
+
+  return null;
+}
+
+function inferImageMimeTypeFromBase64(value: string): string {
+  if (value.startsWith("iVBORw0KGgo")) return "image/png";
+  if (value.startsWith("/9j/")) return "image/jpeg";
+  if (value.startsWith("R0lGOD")) return "image/gif";
+  if (value.startsWith("UklGR")) return "image/webp";
+  if (value.startsWith("PHN2Zy") || value.startsWith("PD94bWw")) return "image/svg+xml";
+  if (value.includes("ZnR5cGF2aWY", 4)) return "image/avif";
+  return "image/png";
+}
+
+function padBase64(value: string): string {
+  const remainder = value.length % 4;
+  return remainder === 0 ? value : `${value}${"=".repeat(4 - remainder)}`;
+}
+
+function extensionForImageMimeType(mimeType: string | undefined): string {
+  switch (mimeType) {
+    case "image/jpeg":
+      return ".jpg";
+    case "image/gif":
+      return ".gif";
+    case "image/webp":
+      return ".webp";
+    case "image/svg+xml":
+      return ".svg";
+    case "image/avif":
+      return ".avif";
+    default:
+      return ".png";
+  }
+}
+
+function fileNameFromPath(value: unknown): string | null {
+  const raw = asTrimmedString(value);
+  if (!raw) {
+    return null;
+  }
+
+  const pathWithoutQuery = raw.split(/[?#]/u)[0] ?? raw;
+  const normalized = pathWithoutQuery.replace(/\\/g, "/");
+  const segments = normalized.split("/");
+  for (let index = segments.length - 1; index >= 0; index -= 1) {
+    const candidate = segments[index]?.trim();
+    if (candidate && candidate.length > 0) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function generatedImageName(input: {
+  readonly id: string;
+  readonly mimeType: string | undefined;
+  readonly path: unknown;
+}): string {
+  return fileNameFromPath(input.path) ?? `${input.id}${extensionForImageMimeType(input.mimeType)}`;
 }
 
 function trimMatchingOuterQuotes(value: string): string {
@@ -893,6 +1036,41 @@ function extractToolCommand(payload: Record<string, unknown> | null): {
 
 function extractToolTitle(payload: Record<string, unknown> | null): string | null {
   return asTrimmedString(payload?.title);
+}
+
+function extractWorkLogImages(payload: Record<string, unknown> | null): WorkLogImagePreview[] {
+  if (extractWorkLogItemType(payload) !== "image_view") {
+    return [];
+  }
+
+  const data = asRecord(payload?.data);
+  const item = asRecord(data?.item);
+  const imageId =
+    asTrimmedString(item?.id) ??
+    asTrimmedString(data?.itemId) ??
+    asTrimmedString(data?.id) ??
+    "generated-image";
+  const result = asTrimmedString(item?.result ?? data?.result ?? payload?.result);
+  const path = item?.savedPath ?? item?.saved_path ?? item?.path ?? data?.savedPath ?? data?.path;
+  const source = result
+    ? imageSourceFromValue(result, { allowBase64: true })
+    : imageSourceFromValue(asTrimmedString(path) ?? "", { allowBase64: false });
+
+  if (!source) {
+    return [];
+  }
+
+  return [
+    {
+      id: imageId,
+      name: generatedImageName({
+        id: imageId,
+        mimeType: source.mimeType,
+        path,
+      }),
+      previewUrl: source.previewUrl,
+    },
+  ];
 }
 
 function extractToolCallId(payload: Record<string, unknown> | null): string | null {

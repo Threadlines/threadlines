@@ -345,7 +345,7 @@ interface PublishRepositoryDialogProps {
   readonly gitCwd: string;
 }
 
-function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
+export function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const sourceControlDiscovery = useSourceControlDiscovery();

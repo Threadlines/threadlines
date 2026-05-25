@@ -13,7 +13,7 @@ import { ServerConfig } from "../../config.ts";
 import * as VcsDriverRegistry from "../../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import { WorkspaceEntries } from "../Services/WorkspaceEntries.ts";
-import { WorkspaceEntriesLive } from "./WorkspaceEntries.ts";
+import { expandHomePathForBrowse, WorkspaceEntriesLive } from "./WorkspaceEntries.ts";
 import { WorkspacePathsLive } from "./WorkspacePaths.ts";
 
 const TestLayer = Layer.empty.pipe(
@@ -314,6 +314,30 @@ it.layer(TestLayer)("WorkspaceEntriesLive", (it) => {
   });
 
   describe("browse", () => {
+    it.effect("resolves Windows Desktop home paths through OneDrive when it exists", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const homeDirectory = yield* makeTempDir({
+          prefix: "t3code-workspace-browse-known-home-",
+        });
+        const oneDriveDirectory = path.join(homeDirectory, "OneDrive");
+        const oneDriveDesktop = path.join(oneDriveDirectory, "Desktop");
+        const existingDirectories = new Set([path.resolve(oneDriveDesktop).toLowerCase()]);
+
+        const resolvedPath = yield* Effect.promise(() =>
+          expandHomePathForBrowse("~/Desktop/GitHubCode", path, {
+            directoryExists: async (candidate) =>
+              existingDirectories.has(path.resolve(candidate).toLowerCase()),
+            env: { OneDrive: oneDriveDirectory },
+            homeDirectory,
+            platform: "win32",
+          }),
+        );
+
+        expect(resolvedPath).toBe(path.join(oneDriveDesktop, "GitHubCode"));
+      }),
+    );
+
     it.effect("returns matching directories and excludes files", () =>
       Effect.gen(function* () {
         const workspaceEntries = yield* WorkspaceEntries;
@@ -357,6 +381,27 @@ it.layer(TestLayer)("WorkspaceEntriesLive", (it) => {
           parentPath: cwd,
           entries: [{ name: ".config", fullPath: path.join(cwd, ".config") }],
         });
+      }),
+    );
+
+    it.effect("includes directory symlinks when browsing", () =>
+      Effect.gen(function* () {
+        const workspaceEntries = yield* WorkspaceEntries;
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir({ prefix: "t3code-workspace-browse-symlink-" });
+        const target = path.join(cwd, "target");
+        const link = path.join(cwd, "linked");
+        yield* writeTextFile(cwd, "target/index.ts", "export {};\n");
+        yield* Effect.promise(() =>
+          fsPromises.symlink(target, link, process.platform === "win32" ? "junction" : "dir"),
+        );
+
+        const result = yield* workspaceEntries.browse({
+          partialPath: appendSeparator(cwd),
+        });
+
+        expect(result.entries).toContainEqual({ name: "linked", fullPath: link });
+        expect(result.entries).toContainEqual({ name: "target", fullPath: target });
       }),
     );
 

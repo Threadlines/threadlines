@@ -1027,6 +1027,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       assert.equal(response.status, 200);
       assert.include(yield* response.text, 'data-fallback="project-favicon"');
+      assert.equal(response.headers["cache-control"], "no-store");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -2720,9 +2721,11 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               Effect.succeed({
                 worktree: { path: "/tmp/wt", refName: "feature/demo" },
               }),
+            workingTreeDiff: () => Effect.succeed({ diff: "" }),
             removeWorktree: () => Effect.void,
             createRef: (input) => Effect.succeed({ refName: input.refName }),
             switchRef: (input) => Effect.succeed({ refName: input.refName }),
+            mergeRef: (input) => Effect.succeed({ refName: input.refName }),
           },
           vcsDriver: {
             isInsideWorkTree: () => Effect.succeed(true),

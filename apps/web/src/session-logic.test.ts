@@ -669,6 +669,54 @@ describe("deriveWorkLogEntries", () => {
     expect(entries.map((entry) => entry.id)).toEqual(["turn-2"]);
   });
 
+  it("keeps generated image previews from previous turns", () => {
+    const imageBase64 =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "old-command",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        turnId: "turn-1",
+        summary: "Ran command",
+        kind: "tool.completed",
+      }),
+      makeActivity({
+        id: "old-image",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        turnId: "turn-1",
+        summary: "Image view",
+        kind: "tool.completed",
+        payload: {
+          itemType: "image_view",
+          title: "Image view",
+          data: {
+            item: {
+              id: "ig_old",
+              result: imageBase64,
+              savedPath: "C:\\Users\\wilfr\\.codex\\generated_images\\logo.png",
+              type: "imageGeneration",
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "new-command",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        turnId: "turn-2",
+        summary: "Ran command",
+        kind: "tool.completed",
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, TurnId.make("turn-2"));
+    expect(entries.map((entry) => entry.id)).toEqual(["old-image", "new-command"]);
+    expect(entries[0]?.images?.[0]).toMatchObject({
+      id: "ig_old",
+      name: "logo.png",
+      previewUrl: `data:image/png;base64,${imageBase64}`,
+    });
+  });
+
   it("omits checkpoint captured info entries", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
@@ -890,6 +938,43 @@ describe("deriveWorkLogEntries", () => {
       detail: '{ "dev": "vite dev --port 3000" }',
       itemType: "command_execution",
       toolTitle: "bash",
+    });
+  });
+
+  it("extracts generated image previews from Codex image lifecycle payloads", () => {
+    const imageBase64 =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "image-generation-complete",
+        kind: "tool.completed",
+        summary: "Image view",
+        payload: {
+          itemType: "image_view",
+          title: "Image view",
+          data: {
+            item: {
+              id: "ig_123",
+              result: imageBase64,
+              savedPath: "C:\\Users\\wilfr\\.codex\\generated_images\\logo.png",
+              status: "completed",
+              type: "imageGeneration",
+            },
+          },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities, undefined);
+    expect(entry).toMatchObject({
+      itemType: "image_view",
+      images: [
+        {
+          id: "ig_123",
+          name: "logo.png",
+          previewUrl: `data:image/png;base64,${imageBase64}`,
+        },
+      ],
     });
   });
 

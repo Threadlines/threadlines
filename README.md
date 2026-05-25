@@ -1,63 +1,70 @@
-# T3 Code
+# BadCode
 
-T3 Code is a minimal web GUI for coding agents (currently Codex, Claude, and OpenCode, more coming soon).
+BadCode is a Windows-first desktop GUI for coding agents. It is a fork of
+[T3 Code](https://github.com/pingdotgg/t3code), with the upstream Git history
+kept intact so useful changes can still be reviewed and brought forward.
+
+The main maintained provider paths are Codex and Claude. OpenCode and Cursor
+support may still be present because they came from upstream T3 Code, but they
+are best-effort unless that changes later.
 
 ## Installation
 
 > [!WARNING]
-> T3 Code currently supports Codex, Claude, and OpenCode.
-> Install and authenticate at least one provider before use:
+> BadCode uses locally installed coding agents. Install and authenticate at
+> least one maintained provider before use:
 >
 > - Codex: install [Codex CLI](https://developers.openai.com/codex/cli) and run `codex login`
 > - Claude: install [Claude Code](https://claude.com/product/claude-code) and run `claude auth login`
-> - OpenCode: install [OpenCode](https://opencode.ai) and run `opencode auth login`
-
-### Run without installing
-
-```bash
-npx t3
-```
 
 ### Desktop app
 
-Install the latest version of the desktop app from [GitHub Releases](https://github.com/pingdotgg/t3code/releases), or from your favorite package registry:
+Install the latest Windows alpha from
+[GitHub Releases](https://github.com/badcuban/badcode/releases).
 
-#### Windows (`winget`)
+This repository is private, so release downloads require a GitHub account with
+access to the repo.
 
-```bash
-winget install T3Tools.T3Code
-```
-
-#### macOS (Homebrew)
+### Local development
 
 ```bash
-brew install --cask t3-code
+bun install --frozen-lockfile
+bun run dev
 ```
 
-#### Arch Linux (AUR)
+### Local Windows installer
 
-```bash
-yay -S t3code-bin
+```powershell
+bun install --frozen-lockfile
+bun run dist:desktop:artifact -- --platform win --target nsis --arch x64 --build-version 0.0.1
 ```
 
-## Some notes
+The installer is written to `release/`.
 
-We are very very early in this project. Expect bugs.
+## Releases
 
-We are not accepting contributions yet.
+BadCode keeps the upstream Git history but uses its own app versions starting
+at `0.0.1`.
 
-Observability guide: [docs/observability.md](./docs/observability.md)
+See [docs/release.md](./docs/release.md) for the Windows-only release workflow,
+private-repo download notes, and auto-update requirements.
 
-## If you REALLY want to contribute still.... read this first
+## Development Notes
+
+This is still early WIP. Expect sharp edges.
+
+The repository is private today, but it may become open source later. Treat it
+as public-safe now: do not commit `.env` files, tokens, private keys, local app
+data, customer data, or screenshots containing secrets. See
+[SECURITY_GUARDRAILS.md](./SECURITY_GUARDRAILS.md) before publishing code or
+release artifacts.
 
 Before local development, prepare the environment and install dependencies:
 
 ```bash
 # Optional: only needed if you use mise for dev tool management.
 mise install
-bun install .
+bun install
 ```
 
 Read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening an issue or PR.
-
-Need support? Join the [Discord](https://discord.gg/jn4EGJjrvv).

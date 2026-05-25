@@ -206,6 +206,7 @@ function createClient() {
       refreshStatus: vi.fn(async () => undefined),
       onStatus: vi.fn(() => () => undefined),
       runStackedAction: vi.fn(async () => ({})),
+      generateCommitMessage: vi.fn(async () => ({ subject: "test", body: "", message: "test" })),
       listBranches: vi.fn(async () => []),
       createWorktree: vi.fn(async () => undefined),
       removeWorktree: vi.fn(async () => undefined),

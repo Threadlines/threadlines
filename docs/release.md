@@ -1,230 +1,111 @@
-# Release Checklist
+# BadCode Windows Release Notes
 
-This document covers the unified release workflow for stable and nightly desktop releases.
+BadCode currently ships as a Windows x64 Electron desktop app. The release
+pipeline builds an NSIS `.exe` installer, uploads it to this repository's
+GitHub Releases, and includes the Electron updater metadata files that the app
+needs for future updates.
 
-## What the workflow does
+## Versioning
 
-- Workflow: `.github/workflows/release.yml`
-- Triggers:
-  - push tag matching `v*.*.*` for stable releases
-  - scheduled nightly at `09:00 UTC`
-  - manual `workflow_dispatch` for either channel
-- Runs quality gates first: lint, typecheck, test.
-- Builds four artifacts in parallel for both channels:
-  - macOS `arm64` DMG
-  - macOS `x64` DMG
-  - Linux `x64` AppImage
-  - Windows `x64` NSIS installer
-- Publishes one GitHub Release with all produced files.
-  - Stable tags with a suffix after `X.Y.Z` (for example `1.2.3-alpha.1`) are published as GitHub prereleases.
-  - Only plain stable `X.Y.Z` releases are marked as the repository's latest release.
-  - Nightly runs are always GitHub prereleases and never marked latest.
-  - Automatically generated release notes are pinned to the previous tag in the same channel, so stable compares to the previous stable tag and nightly compares to the previous nightly tag.
-- Includes Electron auto-update metadata (for example `latest*.yml`, `nightly*.yml`, and `*.blockmap`) in release assets.
-- Publishes the CLI package (`apps/server`, npm package `t3`) with OIDC trusted publishing from the same workflow file:
-  - stable releases publish npm dist-tag `latest`
-  - nightly releases publish npm dist-tag `nightly`
-- Deploys the hosted web app to Vercel only after a release is published:
-  - stable releases are aliased to the `latest` hosted app channel
-  - nightly releases are aliased to the `nightly` hosted app channel
-- Signing is optional and auto-detected per platform from secrets.
+BadCode keeps the fork's Git history, but uses its own app versions.
 
-## Hosted web app release deployment
+- First BadCode alpha: `0.0.1`
+- Stable tags: `v0.0.1`, `v0.0.2`, `v0.1.0`
+- Prerelease tags: `v0.0.1-alpha.1`, `v0.0.1-beta.1`
 
-The hosted app is intentionally not deployed by Vercel's Git integration. The
-web project disables automatic Git deployments in `apps/web/vercel.ts` via
-`git.deploymentEnabled: false`, and `.github/workflows/release.yml` deploys the
-web app with Vercel CLI after the GitHub Release succeeds.
+The release workflow aligns the releasable package versions during the build,
+so a tag like `v0.0.1` produces an installer and updater metadata for `0.0.1`.
 
-Required GitHub Actions secrets:
+If you previously installed a local build that reported an upstream-style
+`0.0.24` version, uninstall it before installing the first `0.0.1` BadCode
+build. Auto-updaters normally treat `0.0.1` as older than `0.0.24`.
 
-- `VERCEL_TOKEN`
-- `VERCEL_ORG_ID`
-- `VERCEL_PROJECT_ID`
+## Local Windows Installer
 
-Optional GitHub Actions variables:
+Use this when you want a local installer before publishing a GitHub Release:
 
-- `VERCEL_TEAM_SLUG`: overrides the Vercel CLI scope when the team slug is preferred over the `VERCEL_ORG_ID` secret.
-- `T3CODE_WEB_ROUTER_URL`: defaults to `https://app.t3.codes`.
-- `T3CODE_WEB_LATEST_DOMAIN`: defaults to `latest.app.t3.codes`.
-- `T3CODE_WEB_NIGHTLY_DOMAIN`: defaults to `nightly.app.t3.codes`.
+```powershell
+bun install --frozen-lockfile
+bun run dist:desktop:artifact -- --platform win --target nsis --arch x64 --build-version 0.0.1
+```
 
-Required Vercel domains:
+The installer and updater metadata are written to `release/`.
 
-- `app.t3.codes`: the router domain users open, updated by stable releases.
-- `latest.app.t3.codes`: channel alias updated by stable releases.
-- `nightly.app.t3.codes`: channel alias updated by nightly releases.
+For a private-repo update feed, set the update repository while building:
 
-The router domain uses `apps/web/vercel.ts` routes. Users opt into a channel by
-visiting `/__t3code/channel?channel=latest` or
-`/__t3code/channel?channel=nightly`; the router stores the
-`t3code_web_channel` cookie and rewrites future requests on `app.t3.codes` to
-the matching channel alias.
+```powershell
+$env:T3CODE_DESKTOP_UPDATE_REPOSITORY = "badcuban/badcode"
+bun run dist:desktop:artifact -- --platform win --target nsis --arch x64 --build-version 0.0.1
+```
 
-The release deploy job rewrites release package versions before upload so the
-hosted app's About panel renders the release version. Stable deploys alias the
-same deployment to both the `latest` channel and the router domain so the router
-rules stay current. Nightly deploys only alias the `nightly` channel. The job
-also passes `VITE_HOSTED_APP_CHANNEL=latest|nightly`, which renders the hosted
-update track selector in the About panel. Changing the selector navigates
-through `/__t3code/channel` on the router domain so the user's channel cookie is
-updated before redirecting to the hosted app root.
+## GitHub Release
 
-One-time Vercel dashboard setup:
+The workflow is `.github/workflows/release.yml`.
 
-1. Confirm the web project root directory remains `apps/web`.
-2. Add the three domains above to the web project.
-3. Disable automatic Git deployments in the dashboard if desired; the committed
-   `vercel.ts` setting is the source-of-truth, but disconnecting Git in the
-   dashboard is also safe.
-4. Run one stable release deployment, or manually alias the current stable
-   deployment, so `app.t3.codes` points at a deployment containing the router
-   rules in `apps/web/vercel.ts`. Future stable releases keep this alias current.
+It runs:
 
-## Nightly builds
+- `bun run fmt:check`
+- `bun run lint`
+- `bun run typecheck`
+- `bun run test`
+- Windows x64 NSIS packaging
+- GitHub Release publishing
 
-- Workflow: `.github/workflows/release.yml`
-- Triggers:
-  - scheduled every day at `09:00 UTC`
-  - manual `workflow_dispatch` with `channel=nightly`
-- Runs the same desktop quality gates and artifact matrix as the tagged release flow.
-- Publishes a GitHub prerelease only:
-  - tag format: `nightly-vX.Y.Z-nightly.YYYYMMDD.<run_number>`
-  - release name includes the short commit SHA
-  - `make_latest` is always `false`
-- Uses the next stable patch version as the nightly base. For example, `0.0.17` produces nightlies on `0.0.18-nightly.*`.
-- Publishes Electron auto-update metadata to the dedicated `nightly` updater channel, so desktop users can opt into that track independently from stable.
-- Publishes the CLI package (`apps/server`, npm package `t3`) to the `nightly` npm dist-tag using the same nightly version.
-- Does not commit version bumps back to `main`.
+To publish by tag:
 
-## Desktop auto-update notes
+```powershell
+git tag v0.0.1
+git push origin v0.0.1
+```
 
-- Runtime updater: `electron-updater` in `apps/desktop/src/main.ts`.
-- Update UX:
-  - Background checks run on startup delay + interval.
-  - No automatic download or install.
-  - The desktop UI shows a rocket update button when an update is available; click once to download, click again after download to restart/install.
-- Provider: GitHub Releases (`provider: github`) configured at build time.
-- Repository slug source:
-  - `T3CODE_DESKTOP_UPDATE_REPOSITORY` (format `owner/repo`), if set.
-  - otherwise `GITHUB_REPOSITORY` from GitHub Actions.
-- Temporary private-repo auth workaround:
-  - set `T3CODE_DESKTOP_UPDATE_GITHUB_TOKEN` (or `GH_TOKEN`) in the desktop app runtime environment.
-  - the app forwards it as an `Authorization: Bearer <token>` request header for updater HTTP calls.
-- Required release assets for updater:
-  - platform installers (`.exe`, `.dmg`, `.AppImage`, plus macOS `.zip` for Squirrel.Mac update payloads)
-  - channel metadata: `latest*.yml` for stable releases, `nightly*.yml` for nightly releases
-  - `*.blockmap` files (used for differential downloads)
-- macOS metadata note:
-  - `electron-updater` reads `latest-mac.yml` on stable and `nightly-mac.yml` on nightly, for both Intel and Apple Silicon.
-  - The workflow merges the per-arch mac manifests into one channel-specific mac manifest before publishing the GitHub Release.
+To publish manually, open GitHub Actions, run **Windows Release**, and enter a
+version such as `0.0.1`.
 
-## 0) npm OIDC trusted publishing setup (CLI)
+The release assets should include:
 
-The workflow publishes the CLI with `npm publish` from `apps/server` after bumping
-the package version to the release tag version.
+- `BadCode-<version>-x64.exe`
+- `BadCode-<version>-x64.exe.blockmap`
+- `latest.yml`
 
-Checklist:
+## Private Repository Downloads
 
-1. Confirm npm org/user owns package `t3` (or rename package first if needed).
-2. In npm package settings, configure Trusted Publisher:
-   - Provider: GitHub Actions
-   - Repository: this repo
-   - Workflow file: `.github/workflows/release.yml`
-   - Environment (if used): match your npm trusted publishing config
-3. Ensure npm account and org policies allow trusted publishing for the package.
-4. Create release tag `vX.Y.Z` and push; workflow will:
-   - set `apps/server/package.json` version to `X.Y.Z`
-   - build web + server
-   - run `npm publish --access public --tag latest`
-5. Nightly runs from the same workflow file publish with `npm publish --access public --tag nightly`.
+Because this repository is private, downloading the installer from GitHub
+Releases requires a GitHub account with access to the repo.
 
-## 1) Dry-run release without signing
+For another Windows laptop:
 
-Use this first to validate the release pipeline.
+1. Sign into GitHub with an account that can access `badcuban/badcode`.
+2. Open the release page.
+3. Download the `BadCode-<version>-x64.exe` asset.
+4. Run the installer.
 
-1. Confirm no signing secrets are required for this test.
-2. Create a test tag:
-   - `git tag v0.0.0-test.1`
-   - `git push origin v0.0.0-test.1`
-3. Wait for `.github/workflows/release.yml` to finish.
-4. Verify the GitHub Release contains all platform artifacts.
-5. Download each artifact and sanity-check installation on each OS.
+Unsigned alpha builds may show Windows SmartScreen or "unknown publisher"
+warnings. Code signing can be added later without changing the basic release
+flow.
 
-## 2) Apple signing + notarization setup (macOS)
+## Auto-Updates In A Private Repo
 
-Required secrets used by the workflow:
+The app uses `electron-updater` and GitHub Releases metadata. For private
+repositories, the updater needs a token at runtime because GitHub release
+assets are not public.
 
-- `CSC_LINK`
-- `CSC_KEY_PASSWORD`
-- `APPLE_API_KEY`
-- `APPLE_API_KEY_ID`
-- `APPLE_API_ISSUER`
+For personal testing, launch BadCode from a shell with a GitHub token that can
+read releases from this private repo:
 
-Checklist:
+```powershell
+$env:GH_TOKEN = "github_pat_or_classic_token_here"
+& "$env:LOCALAPPDATA\Programs\BadCode (Alpha)\BadCode (Alpha).exe"
+```
 
-1. Apple Developer account access:
-   - Team has rights to create Developer ID certificates.
-2. Create `Developer ID Application` certificate.
-3. Export certificate + private key as `.p12` from Keychain.
-4. Base64-encode the `.p12` and store as `CSC_LINK`.
-5. Store the `.p12` export password as `CSC_KEY_PASSWORD`.
-6. In App Store Connect, create an API key (Team key).
-7. Add API key values:
-   - `APPLE_API_KEY`: contents of the downloaded `.p8`
-   - `APPLE_API_KEY_ID`: Key ID
-   - `APPLE_API_ISSUER`: Issuer ID
-8. Re-run a tag release and confirm macOS artifacts are signed/notarized.
+`GITHUB_TOKEN` also works. Do not commit tokens, screenshots containing tokens,
+or local token setup scripts.
 
-Notes:
+If BadCode becomes public later, or if release assets move to public hosting,
+users will not need a private-repo token for updates.
 
-- `APPLE_API_KEY` is stored as raw key text in secrets.
-- The workflow writes it to a temporary `AuthKey_<id>.p8` file at runtime.
+## Signing Later
 
-## 3) Azure Trusted Signing setup (Windows)
-
-Required secrets used by the workflow:
-
-- `AZURE_TENANT_ID`
-- `AZURE_CLIENT_ID`
-- `AZURE_CLIENT_SECRET`
-- `AZURE_TRUSTED_SIGNING_ENDPOINT`
-- `AZURE_TRUSTED_SIGNING_ACCOUNT_NAME`
-- `AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME`
-- `AZURE_TRUSTED_SIGNING_PUBLISHER_NAME`
-
-Checklist:
-
-1. Create Azure Trusted Signing account and certificate profile.
-2. Record ATS values:
-   - Endpoint
-   - Account name
-   - Certificate profile name
-   - Publisher name
-3. Create/choose an Entra app registration (service principal).
-4. Grant service principal permissions required by Trusted Signing.
-5. Create a client secret for the service principal.
-6. Add Azure secrets listed above in GitHub Actions secrets.
-7. Re-run a tag release and confirm Windows installer is signed.
-
-## 4) Ongoing release checklist
-
-1. Ensure `main` is green in CI.
-2. Bump app version as needed.
-3. Create release tag: `vX.Y.Z`.
-4. Push tag.
-5. Verify workflow steps:
-   - preflight passes
-   - all matrix builds pass
-   - release job uploads expected files
-6. Smoke test downloaded artifacts.
-
-## 5) Troubleshooting
-
-- macOS build unsigned when expected signed:
-  - Check all Apple secrets are populated and non-empty.
-- Windows build unsigned when expected signed:
-  - Check all Azure ATS and auth secrets are populated and non-empty.
-- Build fails with signing error:
-  - Retry with secrets removed to confirm unsigned path still works.
-  - Re-check certificate/profile names and tenant/client credentials.
+Windows signing is not required for local alpha testing, but it is strongly
+recommended before wider distribution. The existing build script already has an
+optional Azure Trusted Signing path; the workflow intentionally leaves it off
+for the first Windows-only release lane.

@@ -86,6 +86,7 @@ function createTestClient() {
     },
     git: {
       runStackedAction: vi.fn(async () => ({}) as any),
+      generateCommitMessage: vi.fn(async () => ({ subject: "test", body: "", message: "test" })),
       resolvePullRequest: vi.fn(async () => undefined),
       preparePullRequestThread: vi.fn(async () => undefined),
     },

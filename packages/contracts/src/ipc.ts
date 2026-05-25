@@ -1,7 +1,13 @@
 import type {
   VcsSwitchRefInput,
   VcsSwitchRefResult,
+  VcsCommitGraphInput,
+  VcsCommitGraphResult,
+  VcsWorkingTreeDiffInput,
+  VcsWorkingTreeDiffResult,
   VcsCreateRefInput,
+  GitGenerateCommitMessageInput,
+  GitGenerateCommitMessageResult,
   GitPreparePullRequestThreadInput,
   GitPreparePullRequestThreadResult,
   GitPullRequestRefInput,
@@ -10,6 +16,8 @@ import type {
   VcsInitInput,
   VcsListRefsInput,
   VcsListRefsResult,
+  VcsMergeRefInput,
+  VcsMergeRefResult,
   VcsPullInput,
   VcsPullResult,
   VcsRemoveWorktreeInput,
@@ -523,10 +531,13 @@ export interface EnvironmentApi {
   };
   vcs: {
     listRefs: (input: VcsListRefsInput) => Promise<VcsListRefsResult>;
+    commitGraph: (input: VcsCommitGraphInput) => Promise<VcsCommitGraphResult>;
+    workingTreeDiff: (input: VcsWorkingTreeDiffInput) => Promise<VcsWorkingTreeDiffResult>;
     createWorktree: (input: VcsCreateWorktreeInput) => Promise<VcsCreateWorktreeResult>;
     removeWorktree: (input: VcsRemoveWorktreeInput) => Promise<void>;
     createRef: (input: VcsCreateRefInput) => Promise<VcsCreateRefResult>;
     switchRef: (input: VcsSwitchRefInput) => Promise<VcsSwitchRefResult>;
+    mergeRef: (input: VcsMergeRefInput) => Promise<VcsMergeRefResult>;
     init: (input: VcsInitInput) => Promise<void>;
     pull: (input: VcsPullInput) => Promise<VcsPullResult>;
     refreshStatus: (input: VcsStatusInput) => Promise<VcsStatusResult>;
@@ -539,6 +550,9 @@ export interface EnvironmentApi {
     ) => () => void;
   };
   git: {
+    generateCommitMessage: (
+      input: GitGenerateCommitMessageInput,
+    ) => Promise<GitGenerateCommitMessageResult>;
     resolvePullRequest: (input: GitPullRequestRefInput) => Promise<GitResolvePullRequestResult>;
     preparePullRequestThread: (
       input: GitPreparePullRequestThreadInput,
