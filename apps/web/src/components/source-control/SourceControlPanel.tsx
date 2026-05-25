@@ -32,6 +32,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -203,6 +204,8 @@ function ActionButton({
 
 const GRAPH_LIMIT = 24;
 const BRANCH_MENU_REF_LIMIT = 14;
+const SOURCE_CONTROL_STATUS_REFRESH_INTERVAL_MS = 3_000;
+const DEFAULT_CHANGES_PANEL_HEIGHT = 150;
 const MIN_GRAPH_PANEL_HEIGHT = 120;
 const MIN_CHANGES_PANEL_HEIGHT = 96;
 
@@ -604,7 +607,7 @@ export function SourceControlPanel({
   const [isPublishDialogOpen, setIsPublishDialogOpen] = useState(false);
   const [pendingDefaultBranchAction, setPendingDefaultBranchAction] =
     useState<DefaultBranchConfirmableAction | null>(null);
-  const [changesPanelHeight, setChangesPanelHeight] = useState<number | null>(null);
+  const [changesPanelHeight, setChangesPanelHeight] = useState(DEFAULT_CHANGES_PANEL_HEIGHT);
   const bodyRef = useRef<HTMLDivElement>(null);
   const changesSectionRef = useRef<HTMLElement>(null);
   const commitControlsRef = useRef<HTMLElement>(null);
@@ -651,13 +654,15 @@ export function SourceControlPanel({
       queryClient,
     }),
   );
+  const runningStackedActionCount = useIsMutating({
+    mutationKey: gitMutationKeys.runStackedAction(environmentId, cwd),
+  });
+  const runningPublishActionCount = useIsMutating({
+    mutationKey: gitMutationKeys.publishRepository(environmentId, cwd),
+  });
   const isGitActionRunning =
-    useIsMutating({
-      mutationKey: gitMutationKeys.runStackedAction(environmentId, cwd),
-    }) > 0 ||
-    useIsMutating({
-      mutationKey: gitMutationKeys.publishRepository(environmentId, cwd),
-    }) > 0 ||
+    runningStackedActionCount > 0 ||
+    runningPublishActionCount > 0 ||
     actionMutation.isPending ||
     initMutation.isPending ||
     pullMutation.isPending;
@@ -710,6 +715,30 @@ export function SourceControlPanel({
       queryKey: gitQueryKeys.commitGraph(environmentId, cwd, GRAPH_LIMIT),
     });
   }, [cwd, environmentId, queryClient]);
+
+  useEffect(() => {
+    if (!environmentId || !cwd) {
+      return;
+    }
+
+    const refreshStatus = () => {
+      if (document.visibilityState === "hidden") {
+        return;
+      }
+      void refreshGitStatus({ environmentId, cwd }).catch(() => undefined);
+    };
+
+    refreshStatus();
+    const intervalId = window.setInterval(refreshStatus, SOURCE_CONTROL_STATUS_REFRESH_INTERVAL_MS);
+    window.addEventListener("focus", refreshStatus);
+    document.addEventListener("visibilitychange", refreshStatus);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", refreshStatus);
+      document.removeEventListener("visibilitychange", refreshStatus);
+    };
+  }, [cwd, environmentId]);
 
   const runAction = useCallback(
     async (action: GitStackedAction, options?: { readonly skipDefaultBranchPrompt?: boolean }) => {
@@ -966,11 +995,8 @@ export function SourceControlPanel({
         ) : null}
         <section
           ref={changesSectionRef}
-          className={cn(
-            "flex min-h-[6rem] flex-col space-y-2",
-            changesPanelHeight === null ? "min-h-0 flex-1" : "shrink-0",
-          )}
-          style={changesPanelHeight === null ? undefined : { height: changesPanelHeight }}
+          className="flex min-h-[6rem] shrink-0 flex-col space-y-2"
+          style={{ height: changesPanelHeight }}
         >
           <div className="flex items-center justify-between gap-2">
             <h3 className="text-xs font-medium text-foreground">Changes</h3>
@@ -1044,10 +1070,10 @@ export function SourceControlPanel({
           role="separator"
           aria-orientation="horizontal"
           aria-label="Resize changes list"
-          className="group -mx-1 my-2 flex h-3 shrink-0 cursor-row-resize items-center px-1"
+          className="group/source-control-resizer -mx-1 my-2 flex h-3 shrink-0 cursor-row-resize items-center px-1"
           onPointerDown={startChangesResize}
         >
-          <div className="h-px w-full bg-border/70 transition-colors group-hover:bg-primary/70" />
+          <div className="h-px w-full bg-border/70 transition-colors group-hover/source-control-resizer:bg-primary/70" />
         </div>
 
         <div className="flex min-h-0 flex-1 flex-col gap-3">
