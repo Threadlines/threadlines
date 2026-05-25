@@ -144,6 +144,7 @@ function makeTestLayer(input: {
         desktopEnvironmentLayer,
         desktopServerExposureLayer,
         DesktopState.layer,
+        NodeServices.layer,
         electronMenuLayer,
         electronShellLayer,
         electronThemeLayer,

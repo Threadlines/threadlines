@@ -1,9 +1,14 @@
+import { fromJsonStringPretty } from "@t3tools/shared/schemaJson";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 
 import type * as Electron from "electron";
 
@@ -22,6 +27,12 @@ const TITLEBAR_HEIGHT = 40;
 const TITLEBAR_COLOR = "#01000000"; // #00000000 does not work correctly on Linux
 const TITLEBAR_LIGHT_SYMBOL_COLOR = "#1f2937";
 const TITLEBAR_DARK_SYMBOL_COLOR = "#f8fafc";
+const DEFAULT_MAIN_WINDOW_WIDTH = 1100;
+const DEFAULT_MAIN_WINDOW_HEIGHT = 780;
+const MIN_MAIN_WINDOW_WIDTH = 840;
+const MIN_MAIN_WINDOW_HEIGHT = 620;
+const MAX_RESTORED_MAIN_WINDOW_DIMENSION = 10_000;
+const MAIN_WINDOW_STATE_FILE_NAME = "window-state.json";
 
 type WindowTitleBarOptions = Pick<
   Electron.BrowserWindowConstructorOptions,
@@ -33,10 +44,12 @@ type DesktopWindowRuntimeServices =
   | DesktopAssets.DesktopAssets
   | DesktopServerExposure.DesktopServerExposure
   | DesktopState.DesktopState
+  | FileSystem.FileSystem
   | ElectronMenu.ElectronMenu
   | ElectronShell.ElectronShell
   | ElectronTheme.ElectronTheme
-  | ElectronWindow.ElectronWindow;
+  | ElectronWindow.ElectronWindow
+  | Path.Path;
 
 export class DesktopWindowDevServerUrlMissingError extends Data.TaggedError(
   "DesktopWindowDevServerUrlMissingError",
@@ -67,6 +80,23 @@ export class DesktopWindow extends Context.Service<DesktopWindow, DesktopWindowS
 
 const { logInfo: logWindowInfo, logWarning: logWindowWarning } =
   DesktopObservability.makeComponentLogger("desktop-window");
+
+interface PersistedMainWindowState {
+  readonly width: number;
+  readonly height: number;
+  readonly isMaximized: boolean;
+}
+
+const PersistedMainWindowStateDocument = Schema.Struct({
+  width: Schema.Number,
+  height: Schema.Number,
+  isMaximized: Schema.optionalKey(Schema.Boolean),
+});
+type PersistedMainWindowStateDocument = typeof PersistedMainWindowStateDocument.Type;
+
+const PersistedMainWindowStateJson = fromJsonStringPretty(PersistedMainWindowStateDocument);
+const decodePersistedMainWindowStateJson = Schema.decodeEffect(PersistedMainWindowStateJson);
+const encodePersistedMainWindowStateJson = Schema.encodeEffect(PersistedMainWindowStateJson);
 
 function resolveDesktopDevServerUrl(
   environment: DesktopEnvironment.DesktopEnvironmentShape,
@@ -110,6 +140,59 @@ function getWindowTitleBarOptions(shouldUseDarkColors: boolean): WindowTitleBarO
   };
 }
 
+function normalizeRestoredDimension(value: unknown, minimum: number): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+
+  const rounded = Math.round(value);
+  if (rounded < minimum || rounded > MAX_RESTORED_MAIN_WINDOW_DIMENSION) {
+    return null;
+  }
+
+  return rounded;
+}
+
+function normalizePersistedMainWindowState(
+  rawState: PersistedMainWindowStateDocument,
+): Option.Option<PersistedMainWindowState> {
+  const width = normalizeRestoredDimension(rawState.width, MIN_MAIN_WINDOW_WIDTH);
+  const height = normalizeRestoredDimension(rawState.height, MIN_MAIN_WINDOW_HEIGHT);
+  if (width === null || height === null) {
+    return Option.none();
+  }
+
+  return Option.some({
+    width,
+    height,
+    isMaximized: rawState.isMaximized === true,
+  });
+}
+
+function loadPersistedMainWindowState(
+  fileSystem: FileSystem.FileSystem,
+  filePath: string,
+): Effect.Effect<Option.Option<PersistedMainWindowState>> {
+  return fileSystem.readFileString(filePath, "utf-8").pipe(
+    Effect.flatMap(decodePersistedMainWindowStateJson),
+    Effect.map(normalizePersistedMainWindowState),
+    Effect.catch(() => Effect.succeed(Option.none())),
+  );
+}
+
+function savePersistedMainWindowState(
+  fileSystem: FileSystem.FileSystem,
+  path: Path.Path,
+  filePath: string,
+  state: PersistedMainWindowState,
+): Effect.Effect<void, PlatformError.PlatformError | Schema.SchemaError> {
+  return Effect.gen(function* () {
+    const encoded = yield* encodePersistedMainWindowStateJson(state);
+    yield* fileSystem.makeDirectory(path.dirname(filePath), { recursive: true });
+    yield* fileSystem.writeFileString(filePath, `${encoded}\n`);
+  });
+}
+
 function syncWindowAppearance(
   window: Electron.BrowserWindow,
   shouldUseDarkColors: boolean,
@@ -147,10 +230,12 @@ function bindFirstRevealTrigger(
 const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const assets = yield* DesktopAssets.DesktopAssets;
+  const fileSystem = yield* FileSystem.FileSystem;
   const electronMenu = yield* ElectronMenu.ElectronMenu;
   const electronShell = yield* ElectronShell.ElectronShell;
   const electronTheme = yield* ElectronTheme.ElectronTheme;
   const electronWindow = yield* ElectronWindow.ElectronWindow;
+  const path = yield* Path.Path;
   const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
   const state = yield* DesktopState.DesktopState;
   const context = yield* Effect.context<DesktopWindowRuntimeServices>();
@@ -162,11 +247,24 @@ const make = Effect.gen(function* () {
     const iconPaths = yield* assets.iconPaths;
     const iconOption = getIconOption(iconPaths);
     const shouldUseDarkColors = yield* electronTheme.shouldUseDarkColors;
+    const windowStatePath = environment.path.join(
+      environment.stateDir,
+      MAIN_WINDOW_STATE_FILE_NAME,
+    );
+    const persistedWindowState = yield* loadPersistedMainWindowState(fileSystem, windowStatePath);
+    const persistedWindowOptions = Option.isSome(persistedWindowState)
+      ? {
+          width: persistedWindowState.value.width,
+          height: persistedWindowState.value.height,
+        }
+      : {
+          width: DEFAULT_MAIN_WINDOW_WIDTH,
+          height: DEFAULT_MAIN_WINDOW_HEIGHT,
+        };
     const window = yield* electronWindow.create({
-      width: 1100,
-      height: 780,
-      minWidth: 840,
-      minHeight: 620,
+      ...persistedWindowOptions,
+      minWidth: MIN_MAIN_WINDOW_WIDTH,
+      minHeight: MIN_MAIN_WINDOW_HEIGHT,
       show: false,
       autoHideMenuBar: true,
       backgroundColor: getInitialWindowBackgroundColor(shouldUseDarkColors),
@@ -179,6 +277,34 @@ const make = Effect.gen(function* () {
         nodeIntegration: false,
         sandbox: true,
       },
+    });
+
+    if (Option.isSome(persistedWindowState) && persistedWindowState.value.isMaximized) {
+      window.maximize();
+    }
+
+    window.on("close", () => {
+      const bounds = window.getBounds();
+      const width = normalizeRestoredDimension(bounds.width, MIN_MAIN_WINDOW_WIDTH);
+      const height = normalizeRestoredDimension(bounds.height, MIN_MAIN_WINDOW_HEIGHT);
+      if (width === null || height === null) {
+        return;
+      }
+
+      void runPromise(
+        savePersistedMainWindowState(fileSystem, path, windowStatePath, {
+          width,
+          height,
+          isMaximized: window.isMaximized(),
+        }).pipe(
+          Effect.catch((error) =>
+            logWindowWarning("failed to persist main window state", {
+              error: String(error),
+              path: windowStatePath,
+            }),
+          ),
+        ),
+      );
     });
 
     window.webContents.on("context-menu", (event, params) => {

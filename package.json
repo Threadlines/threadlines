@@ -42,7 +42,7 @@
     "build:marketing": "turbo run build --filter=@t3tools/marketing",
     "build:desktop": "turbo run build --filter=@t3tools/desktop --filter=t3",
     "typecheck": "turbo run typecheck",
-    "lint": "oxlint --report-unused-disable-directives",
+    "lint": "NODE_OPTIONS=--experimental-strip-types oxlint --report-unused-disable-directives",
     "test": "turbo run test",
     "test:desktop-smoke": "turbo run smoke-test --filter=@t3tools/desktop",
     "fmt": "oxfmt",

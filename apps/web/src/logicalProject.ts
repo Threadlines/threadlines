@@ -1,6 +1,10 @@
 import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime";
-import type { ScopedProjectRef, SidebarProjectGroupingMode } from "@t3tools/contracts";
-import type { UnifiedSettings } from "@t3tools/contracts/settings";
+import type { ScopedProjectRef } from "@t3tools/contracts";
+import {
+  DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE,
+  type SidebarProjectGroupingMode,
+  type UnifiedSettings,
+} from "@t3tools/contracts/settings";
 import { normalizeProjectPathForComparison } from "./lib/projectPaths";
 import type { Project } from "./types";
 
@@ -119,7 +123,7 @@ export function deriveLogicalProjectKey(
     groupingMode?: SidebarProjectGroupingMode;
   },
 ): string {
-  const groupingMode = options?.groupingMode ?? "repository";
+  const groupingMode = options?.groupingMode ?? DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE;
   if (groupingMode === "separate") {
     return derivePhysicalProjectKey(project);
   }

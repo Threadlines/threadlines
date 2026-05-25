@@ -280,7 +280,7 @@ describe("environment grouping", () => {
       expect(deriveLogicalProjectKey(primary)).toBe(deriveLogicalProjectKey(remote));
     });
 
-    it("groups repo root and nested projects from the same repository by default", () => {
+    it("keeps repo root and nested projects separate by default", () => {
       const rootProject = makeProject({
         id: sharedProjectPrimaryId,
         environmentId: primaryEnvId,
@@ -313,7 +313,7 @@ describe("environment grouping", () => {
       });
 
       expect(deriveLogicalProjectKey(rootProject)).toBe(SHARED_REPO_CANONICAL_KEY);
-      expect(deriveLogicalProjectKey(nestedProject)).toBe(SHARED_REPO_CANONICAL_KEY);
+      expect(deriveLogicalProjectKey(nestedProject)).toBe(`${SHARED_REPO_CANONICAL_KEY}::apps/web`);
     });
 
     it("uses repository path grouping when requested", () => {

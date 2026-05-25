@@ -14,6 +14,8 @@ import {
   VcsProcessExitError,
   type VcsSwitchRefInput,
   type VcsSwitchRefResult,
+  type VcsCommitGraphInput,
+  type VcsCommitGraphResult,
   type VcsCreateRefInput,
   type VcsCreateRefResult,
   type VcsCreateWorktreeInput,
@@ -184,6 +186,9 @@ export interface GitVcsDriverShape {
     key: string,
   ) => Effect.Effect<string | null, GitCommandError>;
   readonly listRefs: (input: VcsListRefsInput) => Effect.Effect<VcsListRefsResult, GitCommandError>;
+  readonly commitGraph: (
+    input: VcsCommitGraphInput,
+  ) => Effect.Effect<VcsCommitGraphResult, GitCommandError>;
   readonly pullCurrentBranch: (cwd: string) => Effect.Effect<VcsPullResult, GitCommandError>;
   readonly createWorktree: (
     input: VcsCreateWorktreeInput,
@@ -608,10 +613,10 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       const commitEnv: NodeJS.ProcessEnv = {
         ...process.env,
         GIT_INDEX_FILE: tempIndexPath,
-        GIT_AUTHOR_NAME: "T3 Code",
-        GIT_AUTHOR_EMAIL: "t3code@users.noreply.github.com",
-        GIT_COMMITTER_NAME: "T3 Code",
-        GIT_COMMITTER_EMAIL: "t3code@users.noreply.github.com",
+        GIT_AUTHOR_NAME: "BadCode",
+        GIT_AUTHOR_EMAIL: "badcode@users.noreply.github.com",
+        GIT_COMMITTER_NAME: "BadCode",
+        GIT_COMMITTER_EMAIL: "badcode@users.noreply.github.com",
       };
 
       const cleanupTempIndex = fileSystem

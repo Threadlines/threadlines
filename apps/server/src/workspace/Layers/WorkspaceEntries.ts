@@ -11,7 +11,11 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 
-import { type FilesystemBrowseInput, type ProjectEntry } from "@t3tools/contracts";
+import {
+  type FilesystemBrowseEntry,
+  type FilesystemBrowseInput,
+  type ProjectEntry,
+} from "@t3tools/contracts";
 import { isExplicitRelativePath, isWindowsAbsolutePath } from "@t3tools/shared/path";
 import {
   insertRankedSearchResult,
@@ -44,6 +48,29 @@ const IGNORED_DIRECTORY_NAMES = new Set([
   "out",
   ".cache",
 ]);
+const WINDOWS_KNOWN_HOME_FOLDER_NAMES = [
+  "Desktop",
+  "Documents",
+  "Downloads",
+  "Pictures",
+  "Music",
+  "Videos",
+] as const;
+const WINDOWS_KNOWN_HOME_FOLDER_NAME_BY_LOWERCASE = new Map(
+  WINDOWS_KNOWN_HOME_FOLDER_NAMES.map((name) => [name.toLowerCase(), name]),
+);
+const WINDOWS_LEGACY_PROFILE_JUNCTION_NAMES = new Set([
+  "Application Data",
+  "Cookies",
+  "Local Settings",
+  "My Documents",
+  "NetHood",
+  "PrintHood",
+  "Recent",
+  "SendTo",
+  "Start Menu",
+  "Templates",
+]);
 
 interface WorkspaceIndex {
   scannedAt: number;
@@ -57,19 +84,214 @@ interface SearchableWorkspaceEntry extends ProjectEntry {
 }
 
 type RankedWorkspaceEntry = RankedSearchResult<SearchableWorkspaceEntry>;
+type WindowsKnownHomeFolderName = (typeof WINDOWS_KNOWN_HOME_FOLDER_NAMES)[number];
+
+interface BrowseHomePathOptions {
+  readonly directoryExists?: (path: string) => Promise<boolean>;
+  readonly env?: NodeJS.ProcessEnv;
+  readonly homeDirectory?: string;
+  readonly platform?: NodeJS.Platform;
+}
 
 function toPosixPath(input: string): string {
   return input.replaceAll("\\", "/");
 }
 
-function expandHomePath(input: string, path: Path.Path): string {
+async function defaultDirectoryExists(path: string): Promise<boolean> {
+  try {
+    const stat = await fsPromises.stat(path);
+    return stat.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function isDirectoryEntry(dirent: Dirent, fullPath: string): Promise<boolean> {
+  if (dirent.isDirectory()) {
+    return true;
+  }
+  if (!dirent.isSymbolicLink()) {
+    return false;
+  }
+  if (process.platform === "win32" && WINDOWS_LEGACY_PROFILE_JUNCTION_NAMES.has(dirent.name)) {
+    return false;
+  }
+
+  try {
+    const stat = await fsPromises.stat(fullPath);
+    return stat.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function uniquePaths(paths: string[]): string[] {
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const path of paths) {
+    const normalizedPath = path.toLowerCase();
+    if (seen.has(normalizedPath)) {
+      continue;
+    }
+    seen.add(normalizedPath);
+    unique.push(path);
+  }
+  return unique;
+}
+
+function parseHomeRelativeSegments(input: string): string[] | null {
   if (input === "~") {
-    return OS.homedir();
+    return [];
   }
   if (input.startsWith("~/") || input.startsWith("~\\")) {
-    return path.join(OS.homedir(), input.slice(2));
+    return input
+      .slice(2)
+      .split(/[\\/]+/)
+      .filter((segment) => segment.length > 0);
   }
-  return input;
+  return null;
+}
+
+function canonicalWindowsKnownHomeFolderName(input: string): WindowsKnownHomeFolderName | null {
+  return WINDOWS_KNOWN_HOME_FOLDER_NAME_BY_LOWERCASE.get(input.toLowerCase()) ?? null;
+}
+
+function oneDriveBasePaths(
+  homeDirectory: string,
+  env: NodeJS.ProcessEnv,
+  path: Path.Path,
+): string[] {
+  return uniquePaths(
+    [
+      env.OneDrive,
+      env.OneDriveConsumer,
+      env.OneDriveCommercial,
+      path.join(homeDirectory, "OneDrive"),
+    ]
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      .map((value) => path.resolve(value)),
+  );
+}
+
+function windowsKnownHomeFolderCandidates(
+  folderName: WindowsKnownHomeFolderName,
+  path: Path.Path,
+  options: BrowseHomePathOptions = {},
+): string[] {
+  const homeDirectory = path.resolve(options.homeDirectory ?? OS.homedir());
+  const env = options.env ?? process.env;
+  const homeCandidate = path.join(homeDirectory, folderName);
+  const oneDriveCandidates = oneDriveBasePaths(homeDirectory, env, path).map((basePath) =>
+    path.join(basePath, folderName),
+  );
+
+  if (folderName === "Desktop" || folderName === "Documents" || folderName === "Pictures") {
+    return uniquePaths([...oneDriveCandidates, homeCandidate]);
+  }
+
+  return uniquePaths([homeCandidate, ...oneDriveCandidates]);
+}
+
+async function resolveWindowsKnownHomeFolder(
+  folderName: string,
+  path: Path.Path,
+  options: BrowseHomePathOptions = {},
+): Promise<string | null> {
+  if ((options.platform ?? process.platform) !== "win32") {
+    return null;
+  }
+
+  const canonicalFolderName = canonicalWindowsKnownHomeFolderName(folderName);
+  if (!canonicalFolderName) {
+    return null;
+  }
+
+  const directoryExists = options.directoryExists ?? defaultDirectoryExists;
+  for (const candidate of windowsKnownHomeFolderCandidates(canonicalFolderName, path, options)) {
+    if (await directoryExists(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+export async function expandHomePathForBrowse(
+  input: string,
+  path: Path.Path,
+  options: BrowseHomePathOptions = {},
+): Promise<string> {
+  const homeSegments = parseHomeRelativeSegments(input);
+  if (homeSegments === null) {
+    return input;
+  }
+
+  const homeDirectory = path.resolve(options.homeDirectory ?? OS.homedir());
+  if (homeSegments.length === 0) {
+    return homeDirectory;
+  }
+
+  const [firstSegment, ...remainingSegments] = homeSegments;
+  const knownHomeFolderPath = firstSegment
+    ? await resolveWindowsKnownHomeFolder(firstSegment, path, {
+        ...options,
+        homeDirectory,
+      })
+    : null;
+
+  if (knownHomeFolderPath) {
+    return path.join(knownHomeFolderPath, ...remainingSegments);
+  }
+
+  return path.join(homeDirectory, ...homeSegments);
+}
+
+async function normalizeWindowsHomeBrowseEntries(
+  input: {
+    readonly parentPath: string;
+    readonly entries: ReadonlyArray<FilesystemBrowseEntry>;
+    readonly prefix: string;
+  },
+  path: Path.Path,
+  options: BrowseHomePathOptions = {},
+): Promise<FilesystemBrowseEntry[]> {
+  if ((options.platform ?? process.platform) !== "win32") {
+    return [...input.entries];
+  }
+
+  const homeDirectory = path.resolve(options.homeDirectory ?? OS.homedir());
+  if (path.resolve(input.parentPath).toLowerCase() !== homeDirectory.toLowerCase()) {
+    return [...input.entries];
+  }
+
+  const lowerPrefix = input.prefix.toLowerCase();
+  const entries = [...input.entries];
+  const entryIndexesByName = new Map<string, number>();
+  entries.forEach((entry, index) => {
+    entryIndexesByName.set(entry.name.toLowerCase(), index);
+  });
+
+  for (const folderName of WINDOWS_KNOWN_HOME_FOLDER_NAMES) {
+    if (!folderName.toLowerCase().startsWith(lowerPrefix)) {
+      continue;
+    }
+
+    const knownHomeFolderPath = await resolveWindowsKnownHomeFolder(folderName, path, options);
+    if (!knownHomeFolderPath) {
+      continue;
+    }
+
+    const existingIndex = entryIndexesByName.get(folderName.toLowerCase());
+    const entry = { name: folderName, fullPath: knownHomeFolderPath };
+    if (existingIndex === undefined) {
+      entryIndexesByName.set(folderName.toLowerCase(), entries.length);
+      entries.push(entry);
+    } else {
+      entries[existingIndex] = entry;
+    }
+  }
+
+  return entries;
 }
 
 function parentPathOf(input: string): string | undefined {
@@ -164,7 +386,18 @@ const resolveBrowseTarget = (
     }
 
     if (!isExplicitRelativePath(input.partialPath)) {
-      return pathService.resolve(expandHomePath(input.partialPath, pathService));
+      const expandedPath = yield* Effect.tryPromise({
+        try: () => expandHomePathForBrowse(input.partialPath, pathService),
+        catch: (cause) =>
+          new WorkspaceEntriesBrowseError({
+            cwd: input.cwd,
+            partialPath: input.partialPath,
+            operation: "workspaceEntries.resolveBrowseTarget",
+            detail: `Unable to resolve '${input.partialPath}': ${cause instanceof Error ? cause.message : String(cause)}`,
+            cause,
+          }),
+      });
+      return pathService.resolve(expandedPath);
     }
 
     if (!input.cwd) {
@@ -176,7 +409,19 @@ const resolveBrowseTarget = (
       });
     }
 
-    return pathService.resolve(expandHomePath(input.cwd, pathService), input.partialPath);
+    const cwd = input.cwd;
+    const expandedCwd = yield* Effect.tryPromise({
+      try: () => expandHomePathForBrowse(cwd, pathService),
+      catch: (cause) =>
+        new WorkspaceEntriesBrowseError({
+          cwd,
+          partialPath: input.partialPath,
+          operation: "workspaceEntries.resolveBrowseTarget",
+          detail: `Unable to resolve '${cwd}': ${cause instanceof Error ? cause.message : String(cause)}`,
+          cause,
+        }),
+    });
+    return pathService.resolve(expandedCwd, input.partialPath);
   });
 
 export const makeWorkspaceEntries = Effect.gen(function* () {
@@ -456,21 +701,63 @@ export const makeWorkspaceEntries = Effect.gen(function* () {
 
       const showHidden = endsWithSeparator || prefix.startsWith(".");
       const lowerPrefix = prefix.toLowerCase();
+      const directoryEntries = yield* Effect.forEach(
+        dirents,
+        (dirent) =>
+          Effect.tryPromise({
+            try: async (): Promise<FilesystemBrowseEntry | null> => {
+              const fullPath = path.join(parentPath, dirent.name);
+              const matchesPrefix = dirent.name.toLowerCase().startsWith(lowerPrefix);
+              const matchesVisibility = showHidden || !dirent.name.startsWith(".");
+              if (
+                !matchesPrefix ||
+                !matchesVisibility ||
+                !(await isDirectoryEntry(dirent, fullPath))
+              ) {
+                return null;
+              }
+              return {
+                name: dirent.name,
+                fullPath,
+              };
+            },
+            catch: (cause) =>
+              new WorkspaceEntriesBrowseError({
+                cwd: input.cwd,
+                partialPath: input.partialPath,
+                operation: "workspaceEntries.browse.resolveDirectoryEntry",
+                detail: `Unable to resolve '${dirent.name}': ${cause instanceof Error ? cause.message : String(cause)}`,
+                cause,
+              }),
+          }),
+        { concurrency: 16 },
+      );
+      const entries = directoryEntries.filter(
+        (entry): entry is FilesystemBrowseEntry => entry !== null,
+      );
+      const normalizedEntries = yield* Effect.tryPromise({
+        try: () =>
+          normalizeWindowsHomeBrowseEntries(
+            {
+              parentPath,
+              entries,
+              prefix,
+            },
+            path,
+          ),
+        catch: (cause) =>
+          new WorkspaceEntriesBrowseError({
+            cwd: input.cwd,
+            partialPath: input.partialPath,
+            operation: "workspaceEntries.browse.normalizeWindowsKnownFolders",
+            detail: `Unable to resolve Windows user folders: ${cause instanceof Error ? cause.message : String(cause)}`,
+            cause,
+          }),
+      });
 
       return {
         parentPath,
-        entries: dirents
-          .filter(
-            (dirent) =>
-              dirent.isDirectory() &&
-              dirent.name.toLowerCase().startsWith(lowerPrefix) &&
-              (showHidden || !dirent.name.startsWith(".")),
-          )
-          .map((dirent) => ({
-            name: dirent.name,
-            fullPath: path.join(parentPath, dirent.name),
-          }))
-          .toSorted((left, right) => left.name.localeCompare(right.name)),
+        entries: normalizedEntries.toSorted((left, right) => left.name.localeCompare(right.name)),
       };
     },
   );

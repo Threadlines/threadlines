@@ -16,7 +16,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-import { GitCommandError, type VcsRef } from "@t3tools/contracts";
+import { GitCommandError, type VcsCommitGraphResult, type VcsRef } from "@t3tools/contracts";
 import { dedupeRemoteBranchesWithLocalMatches } from "@t3tools/shared/git";
 import { compactTraceAttributes } from "@t3tools/shared/observability";
 import { decodeJsonResult } from "@t3tools/shared/schemaJson";
@@ -46,6 +46,10 @@ const STATUS_UPSTREAM_REFRESH_ENV = Object.freeze({
 } satisfies NodeJS.ProcessEnv);
 const DEFAULT_BASE_BRANCH_CANDIDATES = ["main", "master"] as const;
 const GIT_LIST_BRANCHES_DEFAULT_LIMIT = 100;
+const GIT_COMMIT_GRAPH_DEFAULT_LIMIT = 24;
+const GIT_COMMIT_GRAPH_MAX_OUTPUT_BYTES = 512 * 1024;
+const GIT_GRAPH_RECORD_SEPARATOR = "\x1e";
+const GIT_GRAPH_FIELD_SEPARATOR = "\x1f";
 const NON_REPOSITORY_STATUS_DETAILS = Object.freeze<GitVcsDriver.GitStatusDetails>({
   isRepo: false,
   hasOriginRemote: false,
@@ -182,6 +186,54 @@ function paginateBranches(input: {
     refs,
     nextCursor,
     totalCount,
+  };
+}
+
+function parseCommitGraphRefs(value: string): string[] {
+  return value
+    .split(",")
+    .map((ref) => ref.trim().replace(/^HEAD -> /, ""))
+    .filter((ref) => ref.length > 0 && ref !== "HEAD");
+}
+
+function parseCommitGraphOutput(stdout: string, limit: number): VcsCommitGraphResult {
+  const records = stdout
+    .split(GIT_GRAPH_RECORD_SEPARATOR)
+    .map((record) => record.trim())
+    .filter((record) => record.length > 0);
+  const commits = records.flatMap((record) => {
+    const [
+      sha = "",
+      parentsRaw = "",
+      refsRaw = "",
+      authorName = "",
+      committedAt = "",
+      subject = "",
+    ] = record.split(GIT_GRAPH_FIELD_SEPARATOR);
+    const trimmedSha = sha.trim();
+    if (trimmedSha.length === 0) {
+      return [];
+    }
+
+    return [
+      {
+        sha: trimmedSha,
+        shortSha: trimmedSha.slice(0, 7),
+        parents: parentsRaw
+          .split(" ")
+          .map((parent) => parent.trim())
+          .filter((parent) => parent.length > 0),
+        refs: parseCommitGraphRefs(refsRaw),
+        subject: subject.trim(),
+        authorName: authorName.trim(),
+        committedAt: committedAt.trim(),
+      },
+    ];
+  });
+
+  return {
+    commits: commits.slice(0, limit),
+    truncated: commits.length > limit,
   };
 }
 
@@ -1869,6 +1921,50 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     },
   );
 
+  const commitGraph: GitVcsDriver.GitVcsDriverShape["commitGraph"] = Effect.fn("commitGraph")(
+    function* (input) {
+      const limit = input.limit ?? GIT_COMMIT_GRAPH_DEFAULT_LIMIT;
+      const result = yield* executeGit(
+        "GitVcsDriver.commitGraph",
+        input.cwd,
+        [
+          "log",
+          "--all",
+          "--date-order",
+          "--decorate=short",
+          `--max-count=${limit + 1}`,
+          `--pretty=format:%H%x1f%P%x1f%D%x1f%an%x1f%aI%x1f%s%x1e`,
+        ],
+        {
+          timeoutMs: 10_000,
+          allowNonZeroExit: true,
+          maxOutputBytes: GIT_COMMIT_GRAPH_MAX_OUTPUT_BYTES,
+          appendTruncationMarker: true,
+        },
+      );
+
+      if (result.exitCode === 0) {
+        return parseCommitGraphOutput(result.stdout, limit);
+      }
+
+      const stderr = result.stderr.trim().toLowerCase();
+      if (
+        stderr.includes("does not have any commits yet") ||
+        stderr.includes("your current branch") ||
+        stderr.includes("not a git repository")
+      ) {
+        return { commits: [], truncated: false };
+      }
+
+      return yield* createGitCommandError(
+        "GitVcsDriver.commitGraph",
+        input.cwd,
+        ["log", "--all", "--date-order"],
+        result.stderr.trim() || "git log failed",
+      );
+    },
+  );
+
   const createWorktree: GitVcsDriver.GitVcsDriverShape["createWorktree"] = Effect.fn(
     "createWorktree",
   )(function* (input) {
@@ -2126,6 +2222,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     readRangeContext,
     readConfigValue,
     listRefs,
+    commitGraph,
     createWorktree,
     fetchPullRequestBranch,
     ensureRemote,

@@ -13,6 +13,8 @@ const TestLayer = Layer.empty.pipe(
   Layer.provideMerge(NodeServices.layer),
 );
 
+const normalizePathSeparators = (value: string) => value.replaceAll("\\", "/");
+
 const makeTempDir = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   return yield* fileSystem.makeTempDirectoryScoped({
@@ -59,7 +61,20 @@ it.layer(TestLayer)("ProjectFaviconResolverLive", (it) => {
         const resolved = yield* resolver.resolvePath(cwd);
 
         expect(resolved).not.toBeNull();
-        expect(resolved).toContain("public/brand/logo.svg");
+        expect(normalizePathSeparators(resolved ?? "")).toContain("public/brand/logo.svg");
+      }),
+    );
+
+    it.effect("resolves favicons from common monorepo app workspaces", () =>
+      Effect.gen(function* () {
+        const resolver = yield* ProjectFaviconResolver;
+        const cwd = yield* makeTempDir;
+        yield* writeTextFile(cwd, "apps/web/public/favicon.ico", "badcode icon");
+
+        const resolved = yield* resolver.resolvePath(cwd);
+
+        expect(resolved).not.toBeNull();
+        expect(normalizePathSeparators(resolved ?? "")).toContain("apps/web/public/favicon.ico");
       }),
     );
 

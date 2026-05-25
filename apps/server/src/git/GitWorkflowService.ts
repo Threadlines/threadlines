@@ -5,6 +5,8 @@ import * as Layer from "effect/Layer";
 import {
   GitManagerError,
   GitCommandError,
+  type VcsCommitGraphInput,
+  type VcsCommitGraphResult,
   type VcsSwitchRefInput,
   type VcsSwitchRefResult,
   type VcsCreateRefInput,
@@ -57,6 +59,9 @@ export interface GitWorkflowServiceShape {
     input: GitPreparePullRequestThreadInput,
   ) => Effect.Effect<GitPreparePullRequestThreadResult, GitManagerServiceError>;
   readonly listRefs: (input: VcsListRefsInput) => Effect.Effect<VcsListRefsResult, GitCommandError>;
+  readonly commitGraph: (
+    input: VcsCommitGraphInput,
+  ) => Effect.Effect<VcsCommitGraphResult, GitCommandError>;
   readonly createWorktree: (
     input: VcsCreateWorktreeInput,
   ) => Effect.Effect<VcsCreateWorktreeResult, GitCommandError>;
@@ -126,6 +131,13 @@ function nonRepositoryListRefs(): VcsListRefsResult {
     hasPrimaryRemote: false,
     nextCursor: null,
     totalCount: 0,
+  };
+}
+
+function nonRepositoryCommitGraph(): VcsCommitGraphResult {
+  return {
+    commits: [],
+    truncated: false,
   };
 }
 
@@ -288,6 +300,12 @@ export const make = Effect.fn("makeGitWorkflowService")(function* () {
       detectGitRepositoryForCommand("GitWorkflowService.listRefs", input.cwd).pipe(
         Effect.flatMap((isGitRepository) =>
           isGitRepository ? git.listRefs(input) : Effect.succeed(nonRepositoryListRefs()),
+        ),
+      ),
+    commitGraph: (input) =>
+      detectGitRepositoryForCommand("GitWorkflowService.commitGraph", input.cwd).pipe(
+        Effect.flatMap((isGitRepository) =>
+          isGitRepository ? git.commitGraph(input) : Effect.succeed(nonRepositoryCommitGraph()),
         ),
       ),
     createWorktree: (input) =>

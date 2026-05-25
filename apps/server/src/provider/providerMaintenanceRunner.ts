@@ -76,7 +76,13 @@ const runProviderMaintenanceCommandWithSpawner = Effect.fn("ProviderMaintenanceR
     const collectCommandResult = Effect.fn("ProviderMaintenanceRunner.collectCommandResult")(
       function* () {
         const child = yield* input.spawner
-          .spawn(ChildProcess.make(input.command, [...input.args]))
+          .spawn(
+            ChildProcess.make(
+              input.command,
+              [...input.args],
+              process.platform === "win32" ? { shell: true } : {},
+            ),
+          )
           .pipe(
             Effect.mapError(
               (cause) =>
@@ -359,9 +365,9 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
                 startedAt,
                 finishedAt,
                 message: couldNotVerify
-                  ? "Update command completed, but T3 Code could not verify the provider version."
+                  ? "Update command completed, but BadCode could not verify the provider version."
                   : stillOutdated
-                    ? "Update command completed, but T3 Code still detects an outdated provider version."
+                    ? "Update command completed, but BadCode still detects an outdated provider version."
                     : "Provider updated.",
                 output: commandOutput(result),
               }),

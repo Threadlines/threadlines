@@ -71,6 +71,7 @@ const rpcClientMock = {
       registerListener(gitStatusListeners, listener),
     ),
     listRefs: vi.fn(),
+    commitGraph: vi.fn(),
     createWorktree: vi.fn(),
     removeWorktree: vi.fn(),
     createRef: vi.fn(),

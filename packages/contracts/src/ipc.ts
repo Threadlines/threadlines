@@ -1,6 +1,8 @@
 import type {
   VcsSwitchRefInput,
   VcsSwitchRefResult,
+  VcsCommitGraphInput,
+  VcsCommitGraphResult,
   VcsCreateRefInput,
   GitPreparePullRequestThreadInput,
   GitPreparePullRequestThreadResult,
@@ -523,6 +525,7 @@ export interface EnvironmentApi {
   };
   vcs: {
     listRefs: (input: VcsListRefsInput) => Promise<VcsListRefsResult>;
+    commitGraph: (input: VcsCommitGraphInput) => Promise<VcsCommitGraphResult>;
     createWorktree: (input: VcsCreateWorktreeInput) => Promise<VcsCreateWorktreeResult>;
     removeWorktree: (input: VcsRemoveWorktreeInput) => Promise<void>;
     createRef: (input: VcsCreateRefInput) => Promise<VcsCreateRefResult>;
