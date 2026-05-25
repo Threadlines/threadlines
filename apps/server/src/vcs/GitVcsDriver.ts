@@ -16,6 +16,8 @@ import {
   type VcsSwitchRefResult,
   type VcsCommitGraphInput,
   type VcsCommitGraphResult,
+  type VcsWorkingTreeDiffInput,
+  type VcsWorkingTreeDiffResult,
   type VcsCreateRefInput,
   type VcsCreateRefResult,
   type VcsCreateWorktreeInput,
@@ -23,6 +25,8 @@ import {
   type VcsInitInput,
   type VcsListRefsInput,
   type VcsListRefsResult,
+  type VcsMergeRefInput,
+  type VcsMergeRefResult,
   type VcsPullResult,
   type VcsRemoveWorktreeInput,
   type VcsStatusInput,
@@ -166,6 +170,10 @@ export interface GitVcsDriverShape {
     cwd: string,
     filePaths?: readonly string[],
   ) => Effect.Effect<GitPreparedCommitContext | null, GitCommandError>;
+  readonly previewCommitContext: (
+    cwd: string,
+    filePaths?: readonly string[],
+  ) => Effect.Effect<GitPreparedCommitContext | null, GitCommandError>;
   readonly commit: (
     cwd: string,
     subject: string,
@@ -189,6 +197,9 @@ export interface GitVcsDriverShape {
   readonly commitGraph: (
     input: VcsCommitGraphInput,
   ) => Effect.Effect<VcsCommitGraphResult, GitCommandError>;
+  readonly workingTreeDiff: (
+    input: VcsWorkingTreeDiffInput,
+  ) => Effect.Effect<VcsWorkingTreeDiffResult, GitCommandError>;
   readonly pullCurrentBranch: (cwd: string) => Effect.Effect<VcsPullResult, GitCommandError>;
   readonly createWorktree: (
     input: VcsCreateWorktreeInput,
@@ -217,6 +228,7 @@ export interface GitVcsDriverShape {
   readonly switchRef: (
     input: VcsSwitchRefInput,
   ) => Effect.Effect<VcsSwitchRefResult, GitCommandError>;
+  readonly mergeRef: (input: VcsMergeRefInput) => Effect.Effect<VcsMergeRefResult, GitCommandError>;
   readonly initRepo: (input: VcsInitInput) => Effect.Effect<void, GitCommandError>;
   readonly listLocalBranchNames: (cwd: string) => Effect.Effect<string[], GitCommandError>;
 }

@@ -1050,6 +1050,12 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             ),
             { "rpc.aggregate": "vcs" },
           ),
+        [WS_METHODS.gitGenerateCommitMessage]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.gitGenerateCommitMessage,
+            gitWorkflow.generateCommitMessage(input),
+            { "rpc.aggregate": "git" },
+          ),
         [WS_METHODS.gitResolvePullRequest]: (input) =>
           observeRpcEffect(
             WS_METHODS.gitResolvePullRequest,
@@ -1074,6 +1080,10 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           observeRpcEffect(WS_METHODS.vcsCommitGraph, gitWorkflow.commitGraph(input), {
             "rpc.aggregate": "vcs",
           }),
+        [WS_METHODS.vcsWorkingTreeDiff]: (input) =>
+          observeRpcEffect(WS_METHODS.vcsWorkingTreeDiff, gitWorkflow.workingTreeDiff(input), {
+            "rpc.aggregate": "vcs",
+          }),
         [WS_METHODS.vcsCreateWorktree]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsCreateWorktree,
@@ -1096,6 +1106,12 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           observeRpcEffect(
             WS_METHODS.vcsSwitchRef,
             gitWorkflow.switchRef(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            { "rpc.aggregate": "vcs" },
+          ),
+        [WS_METHODS.vcsMergeRef]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsMergeRef,
+            gitWorkflow.mergeRef(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.vcsInit]: (input) =>

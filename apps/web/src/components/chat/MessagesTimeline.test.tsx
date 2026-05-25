@@ -212,6 +212,43 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Work log");
   });
 
+  it("renders generated image previews in work log rows", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const imageSrc =
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Image view",
+              tone: "tool",
+              itemType: "image_view",
+              images: [
+                {
+                  id: "ig-1",
+                  name: "logo.png",
+                  previewUrl: imageSrc,
+                },
+              ],
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).not.toContain("Image view");
+    expect(markup).toContain('aria-label="Preview logo.png"');
+    expect(markup).toContain('alt="logo.png"');
+    expect(markup).toContain(imageSrc);
+  });
+
   it("formats changed file paths from the workspace root", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(

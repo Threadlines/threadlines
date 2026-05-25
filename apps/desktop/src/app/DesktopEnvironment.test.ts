@@ -86,6 +86,21 @@ describe("DesktopEnvironment", () => {
       assert.deepEqual(environment.commitHashOverride, Option.some("0123456789abcdef"));
       assert.deepEqual(environment.otlpTracesUrl, Option.some("http://127.0.0.1:4318/v1/traces"));
       assert.equal(environment.otlpExportIntervalMs, 2500);
+      assert.equal(environment.openDevToolsInDevelopment, false);
+    }),
+  );
+
+  it.effect("can opt into opening DevTools in development", () =>
+    Effect.gen(function* () {
+      const environment = yield* makeEnvironment(
+        {},
+        {
+          VITE_DEV_SERVER_URL: "http://localhost:5173",
+          T3CODE_DESKTOP_OPEN_DEVTOOLS: "true",
+        },
+      );
+
+      assert.equal(environment.openDevToolsInDevelopment, true);
     }),
   );
 

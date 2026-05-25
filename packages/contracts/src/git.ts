@@ -121,6 +121,14 @@ export const GitRunStackedActionInput = Schema.Struct({
 });
 export type GitRunStackedActionInput = typeof GitRunStackedActionInput.Type;
 
+export const GitGenerateCommitMessageInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  filePaths: Schema.optional(
+    Schema.Array(TrimmedNonEmptyStringSchema).check(Schema.isMinLength(1)),
+  ),
+});
+export type GitGenerateCommitMessageInput = typeof GitGenerateCommitMessageInput.Type;
+
 export const VcsListRefsInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
   query: Schema.optional(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(256))),
@@ -136,6 +144,20 @@ export const VcsCommitGraphInput = Schema.Struct({
   limit: Schema.optional(PositiveInt.check(Schema.isLessThanOrEqualTo(100))),
 });
 export type VcsCommitGraphInput = typeof VcsCommitGraphInput.Type;
+
+export const VcsWorkingTreeDiffInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  filePaths: Schema.optional(
+    Schema.Array(TrimmedNonEmptyStringSchema).check(Schema.isMinLength(1)),
+  ),
+  ignoreWhitespace: Schema.optional(Schema.Boolean),
+});
+export type VcsWorkingTreeDiffInput = typeof VcsWorkingTreeDiffInput.Type;
+
+export const VcsWorkingTreeDiffResult = Schema.Struct({
+  diff: Schema.String,
+});
+export type VcsWorkingTreeDiffResult = typeof VcsWorkingTreeDiffResult.Type;
 
 export const VcsCreateWorktreeInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
@@ -183,6 +205,17 @@ export const VcsSwitchRefInput = Schema.Struct({
   refName: TrimmedNonEmptyStringSchema,
 });
 export type VcsSwitchRefInput = typeof VcsSwitchRefInput.Type;
+
+export const VcsMergeRefInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  refName: TrimmedNonEmptyStringSchema,
+});
+export type VcsMergeRefInput = typeof VcsMergeRefInput.Type;
+
+export const VcsMergeRefResult = Schema.Struct({
+  refName: TrimmedNonEmptyStringSchema,
+});
+export type VcsMergeRefResult = typeof VcsMergeRefResult.Type;
 
 export const VcsInitInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
@@ -331,6 +364,13 @@ export const GitRunStackedActionResult = Schema.Struct({
   toast: GitRunStackedActionToast,
 });
 export type GitRunStackedActionResult = typeof GitRunStackedActionResult.Type;
+
+export const GitGenerateCommitMessageResult = Schema.Struct({
+  subject: TrimmedNonEmptyStringSchema,
+  body: Schema.String,
+  message: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(10_000)),
+});
+export type GitGenerateCommitMessageResult = typeof GitGenerateCommitMessageResult.Type;
 
 export const VcsPullResult = Schema.Struct({
   status: Schema.Literals(["pulled", "skipped_up_to_date"]),

@@ -43,7 +43,7 @@ import { usePrimaryEnvironmentId } from "../environments/primary";
 import { readEnvironmentApi } from "../environmentApi";
 import { isElectron } from "../env";
 import { readLocalApi } from "../localApi";
-import { parseDiffRouteSearch, stripDiffSearchParams } from "../diffRouteSearch";
+import { parseDiffRouteSearch, stripRightPanelSearchParams } from "../diffRouteSearch";
 import {
   collapseExpandedComposerCursor,
   parseStandaloneComposerSlashCommand,
@@ -812,7 +812,7 @@ export default function ChatView(props: ChatViewProps) {
     composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE;
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
-  const diffOpen = rawSearch.diff === "1";
+  const sourceControlOpen = rawSearch.sourceControl === "1";
   const activeThreadId = activeThread?.id ?? null;
   const activeThreadRef = useMemo(
     () => (activeThread ? scopeThreadRef(activeThread.environmentId, activeThread.id) : null),
@@ -1694,16 +1694,13 @@ export default function ChatView(props: ChatViewProps) {
     () => shortcutLabelForCommand(keybindings, "terminal.close", terminalShortcutLabelOptions),
     [keybindings, terminalShortcutLabelOptions],
   );
-  const diffPanelShortcutLabel = useMemo(
+  const sourceControlPanelShortcutLabel = useMemo(
     () => shortcutLabelForCommand(keybindings, "diff.toggle", nonTerminalShortcutLabelOptions),
     [keybindings, nonTerminalShortcutLabelOptions],
   );
-  const onToggleDiff = useCallback(() => {
+  const onToggleSourceControl = useCallback(() => {
     if (!isServerThread) {
       return;
-    }
-    if (!diffOpen) {
-      onDiffPanelOpen?.();
     }
     void navigate({
       to: "/$environmentId/$threadId",
@@ -1713,11 +1710,11 @@ export default function ChatView(props: ChatViewProps) {
       },
       replace: true,
       search: (previous) => {
-        const rest = stripDiffSearchParams(previous);
-        return diffOpen ? { ...rest, diff: undefined } : { ...rest, diff: "1" };
+        const rest = stripRightPanelSearchParams(previous);
+        return sourceControlOpen ? rest : { ...rest, sourceControl: "1" };
       },
     });
-  }, [diffOpen, environmentId, isServerThread, navigate, onDiffPanelOpen, threadId]);
+  }, [environmentId, isServerThread, navigate, sourceControlOpen, threadId]);
 
   const envLocked = Boolean(
     activeThread &&
@@ -2513,7 +2510,7 @@ export default function ChatView(props: ChatViewProps) {
       if (command === "diff.toggle") {
         event.preventDefault();
         event.stopPropagation();
-        onToggleDiff();
+        onToggleSourceControl();
         return;
       }
 
@@ -2545,7 +2542,7 @@ export default function ChatView(props: ChatViewProps) {
     runProjectScript,
     splitTerminal,
     keybindings,
-    onToggleDiff,
+    onToggleSourceControl,
     toggleTerminalVisibility,
   ]);
 
@@ -3468,7 +3465,7 @@ export default function ChatView(props: ChatViewProps) {
           threadId,
         },
         search: (previous) => {
-          const rest = stripDiffSearchParams(previous);
+          const rest = stripRightPanelSearchParams(previous);
           return filePath
             ? { ...rest, diff: "1", diffTurnId: turnId, diffFilePath: filePath }
             : { ...rest, diff: "1", diffTurnId: turnId };
@@ -3513,8 +3510,6 @@ export default function ChatView(props: ChatViewProps) {
       >
         <ChatHeader
           activeThreadEnvironmentId={activeThread.environmentId}
-          activeThreadId={activeThread.id}
-          {...(routeKind === "draft" && draftId ? { draftId } : {})}
           activeThreadTitle={activeThread.title}
           activeProjectName={activeProject?.name}
           isGitRepo={isGitRepo}
@@ -3528,15 +3523,14 @@ export default function ChatView(props: ChatViewProps) {
           terminalAvailable={activeProject !== undefined}
           terminalOpen={terminalState.terminalOpen}
           terminalToggleShortcutLabel={terminalToggleShortcutLabel}
-          diffToggleShortcutLabel={diffPanelShortcutLabel}
-          gitCwd={gitCwd}
-          diffOpen={diffOpen}
+          sourceControlToggleShortcutLabel={sourceControlPanelShortcutLabel}
+          sourceControlOpen={sourceControlOpen}
           onRunProjectScript={runProjectScript}
           onAddProjectScript={saveProjectScript}
           onUpdateProjectScript={updateProjectScript}
           onDeleteProjectScript={deleteProjectScript}
           onToggleTerminal={toggleTerminalVisibility}
-          onToggleDiff={onToggleDiff}
+          onToggleSourceControl={onToggleSourceControl}
         />
       </header>
 

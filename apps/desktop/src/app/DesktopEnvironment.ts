@@ -61,6 +61,7 @@ export interface DesktopEnvironmentShape {
   readonly commitHashOverride: Option.Option<string>;
   readonly otlpTracesUrl: Option.Option<string>;
   readonly otlpExportIntervalMs: number;
+  readonly openDevToolsInDevelopment: boolean;
   readonly branding: DesktopAppBranding;
   readonly displayName: string;
   readonly appUserModelId: string;
@@ -197,6 +198,7 @@ const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
     commitHashOverride: config.commitHashOverride,
     otlpTracesUrl: config.otlpTracesUrl,
     otlpExportIntervalMs: config.otlpExportIntervalMs,
+    openDevToolsInDevelopment: config.openDevToolsInDevelopment,
     branding,
     displayName,
     appUserModelId: isDevelopment ? "com.badcuban.badcode.dev" : "com.badcuban.badcode",

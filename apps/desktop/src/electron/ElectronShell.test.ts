@@ -46,6 +46,18 @@ describe("ElectronShell", () => {
     }).pipe(Effect.provide(ElectronShell.layer)),
   );
 
+  it.effect("opens the Windows screen clipping URI", () =>
+    Effect.gen(function* () {
+      openExternalMock.mockResolvedValue(undefined);
+
+      const electronShell = yield* ElectronShell.ElectronShell;
+      const result = yield* electronShell.openScreenClip();
+
+      assert.equal(result, true);
+      assert.deepEqual(openExternalMock.mock.calls, [["ms-screenclip:"]]);
+    }).pipe(Effect.provide(ElectronShell.layer)),
+  );
+
   it.effect("returns false when Electron rejects openExternal", () =>
     Effect.gen(function* () {
       openExternalMock.mockRejectedValue(new Error("open failed"));

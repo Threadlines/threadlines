@@ -1,22 +1,3 @@
-import type { VcsStatusResult } from "@t3tools/contracts";
-
-export function buildGeneratedCommitMessage(
-  files: ReadonlyArray<VcsStatusResult["workingTree"]["files"][number]>,
-): string {
-  if (files.length === 0) {
-    return "";
-  }
-
-  const firstFile = files[0]!;
-  const firstPathParts = firstFile.path.split(/[\\/]/g).filter(Boolean);
-  const firstName = firstPathParts.at(-1) ?? firstFile.path;
-  if (files.length === 1) {
-    return `Update ${firstName}`;
-  }
-
-  return `Update ${firstName} and ${files.length - 1} more`;
-}
-
 export function formatCommitGraphTimestamp(value: string, now = new Date()): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {

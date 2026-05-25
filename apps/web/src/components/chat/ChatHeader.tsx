@@ -3,13 +3,9 @@ import {
   type EditorId,
   type ProjectScript,
   type ResolvedKeybindingsConfig,
-  type ThreadId,
 } from "@t3tools/contracts";
-import { scopeThreadRef } from "@t3tools/client-runtime";
 import { memo } from "react";
-import GitActionsControl from "../GitActionsControl";
-import { type DraftId } from "~/composerDraftStore";
-import { DiffIcon, TerminalSquareIcon } from "lucide-react";
+import { GitBranchIcon, TerminalSquareIcon } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import ProjectScriptsControl, { type NewProjectScriptInput } from "../ProjectScriptsControl";
@@ -20,8 +16,6 @@ import { usePrimaryEnvironmentId } from "../../environments/primary";
 
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
-  activeThreadId: ThreadId;
-  draftId?: DraftId;
   activeThreadTitle: string;
   activeProjectName: string | undefined;
   isGitRepo: boolean;
@@ -33,15 +27,14 @@ interface ChatHeaderProps {
   terminalAvailable: boolean;
   terminalOpen: boolean;
   terminalToggleShortcutLabel: string | null;
-  diffToggleShortcutLabel: string | null;
-  gitCwd: string | null;
-  diffOpen: boolean;
+  sourceControlToggleShortcutLabel: string | null;
+  sourceControlOpen: boolean;
   onRunProjectScript: (script: ProjectScript) => void;
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<void>;
   onUpdateProjectScript: (scriptId: string, input: NewProjectScriptInput) => Promise<void>;
   onDeleteProjectScript: (scriptId: string) => Promise<void>;
   onToggleTerminal: () => void;
-  onToggleDiff: () => void;
+  onToggleSourceControl: () => void;
 }
 
 export function shouldShowOpenInPicker(input: {
@@ -58,8 +51,6 @@ export function shouldShowOpenInPicker(input: {
 
 export const ChatHeader = memo(function ChatHeader({
   activeThreadEnvironmentId,
-  activeThreadId,
-  draftId,
   activeThreadTitle,
   activeProjectName,
   isGitRepo,
@@ -71,15 +62,14 @@ export const ChatHeader = memo(function ChatHeader({
   terminalAvailable,
   terminalOpen,
   terminalToggleShortcutLabel,
-  diffToggleShortcutLabel,
-  gitCwd,
-  diffOpen,
+  sourceControlToggleShortcutLabel,
+  sourceControlOpen,
   onRunProjectScript,
   onAddProjectScript,
   onUpdateProjectScript,
   onDeleteProjectScript,
   onToggleTerminal,
-  onToggleDiff,
+  onToggleSourceControl,
 }: ChatHeaderProps) {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const showOpenInPicker = shouldShowOpenInPicker({
@@ -128,13 +118,6 @@ export const ChatHeader = memo(function ChatHeader({
             openInCwd={openInCwd}
           />
         )}
-        {activeProjectName && (
-          <GitActionsControl
-            gitCwd={gitCwd}
-            activeThreadRef={scopeThreadRef(activeThreadEnvironmentId, activeThreadId)}
-            {...(draftId ? { draftId } : {})}
-          />
-        )}
         <Tooltip>
           <TooltipTrigger
             render={
@@ -164,23 +147,23 @@ export const ChatHeader = memo(function ChatHeader({
             render={
               <Toggle
                 className="shrink-0"
-                pressed={diffOpen}
-                onPressedChange={onToggleDiff}
-                aria-label="Toggle diff panel"
+                pressed={sourceControlOpen}
+                onPressedChange={onToggleSourceControl}
+                aria-label="Toggle source control panel"
                 variant="outline"
                 size="xs"
-                disabled={!isGitRepo && !diffOpen}
+                disabled={!activeProjectName && !sourceControlOpen}
               >
-                <DiffIcon className="size-3" />
+                <GitBranchIcon className="size-3" />
               </Toggle>
             }
           />
           <TooltipPopup side="bottom">
-            {!isGitRepo && !diffOpen
-              ? "Diff panel is unavailable because this project is not a git repository."
-              : diffToggleShortcutLabel
-                ? `Toggle diff panel (${diffToggleShortcutLabel})`
-                : "Toggle diff panel"}
+            {!activeProjectName && !sourceControlOpen
+              ? "Source control is unavailable until this thread has an active project."
+              : sourceControlToggleShortcutLabel
+                ? `Toggle source control panel (${sourceControlToggleShortcutLabel})`
+                : "Toggle source control panel"}
           </TooltipPopup>
         </Tooltip>
       </div>

@@ -13,6 +13,7 @@ import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopState from "../app/DesktopState.ts";
 import * as ElectronMenu from "../electron/ElectronMenu.ts";
+import * as ElectronGlobalShortcut from "../electron/ElectronGlobalShortcut.ts";
 import * as ElectronShell from "../electron/ElectronShell.ts";
 import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
@@ -32,10 +33,15 @@ const environmentInput = {
 } satisfies DesktopEnvironment.MakeDesktopEnvironmentInput;
 
 function makeFakeBrowserWindow() {
+  const windowHandlers = new Map<string, Array<(...args: unknown[]) => void>>();
+  const webContentsHandlers = new Map<string, Array<(...args: unknown[]) => void>>();
   const webContents = {
     copyImageAt: vi.fn(),
     isLoadingMainFrame: vi.fn(() => false),
-    on: vi.fn(),
+    on: vi.fn((eventName: string, listener: (...args: unknown[]) => void) => {
+      webContentsHandlers.set(eventName, [...(webContentsHandlers.get(eventName) ?? []), listener]);
+      return webContents;
+    }),
     once: vi.fn(),
     openDevTools: vi.fn(),
     replaceMisspelling: vi.fn(),
@@ -49,7 +55,10 @@ function makeFakeBrowserWindow() {
     isMinimized: vi.fn(() => false),
     isVisible: vi.fn(() => true),
     loadURL: vi.fn(() => Promise.resolve()),
-    on: vi.fn(),
+    on: vi.fn((eventName: string, listener: (...args: unknown[]) => void) => {
+      windowHandlers.set(eventName, [...(windowHandlers.get(eventName) ?? []), listener]);
+      return window;
+    }),
     once: vi.fn(),
     restore: vi.fn(),
     setBackgroundColor: vi.fn(),
@@ -63,6 +72,17 @@ function makeFakeBrowserWindow() {
     window: window as unknown as Electron.BrowserWindow,
     loadURL: window.loadURL,
     openDevTools: webContents.openDevTools,
+    send: webContents.send,
+    emitWebContents: (eventName: string, ...args: unknown[]) => {
+      for (const listener of webContentsHandlers.get(eventName) ?? []) {
+        listener(...args);
+      }
+    },
+    emitWindow: (eventName: string, ...args: unknown[]) => {
+      for (const listener of windowHandlers.get(eventName) ?? []) {
+        listener(...args);
+      }
+    },
   };
 }
 
@@ -96,8 +116,14 @@ const electronMenuLayer = Layer.succeed(ElectronMenu.ElectronMenu, {
   showContextMenu: () => Effect.succeed(Option.none()),
 } satisfies ElectronMenu.ElectronMenuShape);
 
+const electronGlobalShortcutLayer = Layer.succeed(ElectronGlobalShortcut.ElectronGlobalShortcut, {
+  register: () => Effect.succeed(true),
+  unregister: () => Effect.void,
+} satisfies ElectronGlobalShortcut.ElectronGlobalShortcutShape);
+
 const electronShellLayer = Layer.succeed(ElectronShell.ElectronShell, {
   openExternal: () => Effect.succeed(true),
+  openScreenClip: () => Effect.succeed(true),
   copyText: () => Effect.void,
 } satisfies ElectronShell.ElectronShellShape);
 
@@ -107,22 +133,32 @@ const electronThemeLayer = Layer.succeed(ElectronTheme.ElectronTheme, {
   onUpdated: () => Effect.void,
 } satisfies ElectronTheme.ElectronThemeShape);
 
-const desktopEnvironmentLayer = DesktopEnvironment.layer(environmentInput).pipe(
-  Layer.provide(
-    Layer.mergeAll(
-      NodeServices.layer,
-      DesktopConfig.layerTest({
-        T3CODE_PORT: "3773",
-        VITE_DEV_SERVER_URL: "http://127.0.0.1:5733",
-      }),
+function makeDesktopEnvironmentLayer(
+  platform: NodeJS.Platform = "darwin",
+  env: Readonly<Record<string, string | undefined>> = {},
+) {
+  return DesktopEnvironment.layer({ ...environmentInput, platform }).pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        NodeServices.layer,
+        DesktopConfig.layerTest({
+          T3CODE_PORT: "3773",
+          VITE_DEV_SERVER_URL: "http://127.0.0.1:5733",
+          ...env,
+        }),
+      ),
     ),
-  ),
-);
+  );
+}
 
 function makeTestLayer(input: {
   readonly window: Electron.BrowserWindow;
   readonly createCount: Ref.Ref<number>;
   readonly mainWindow: Ref.Ref<Option.Option<Electron.BrowserWindow>>;
+  readonly platform?: NodeJS.Platform;
+  readonly env?: Readonly<Record<string, string | undefined>>;
+  readonly electronGlobalShortcut?: ElectronGlobalShortcut.ElectronGlobalShortcutShape;
+  readonly electronShell?: ElectronShell.ElectronShellShape;
 }) {
   const electronWindowLayer = Layer.succeed(ElectronWindow.ElectronWindow, {
     create: () => Ref.update(input.createCount, (count) => count + 1).pipe(Effect.as(input.window)),
@@ -141,12 +177,20 @@ function makeTestLayer(input: {
     Layer.provide(
       Layer.mergeAll(
         desktopAssetsLayer,
-        desktopEnvironmentLayer,
+        makeDesktopEnvironmentLayer(input.platform, input.env),
         desktopServerExposureLayer,
         DesktopState.layer,
         NodeServices.layer,
         electronMenuLayer,
-        electronShellLayer,
+        input.electronGlobalShortcut
+          ? Layer.succeed(
+              ElectronGlobalShortcut.ElectronGlobalShortcut,
+              input.electronGlobalShortcut,
+            )
+          : electronGlobalShortcutLayer,
+        input.electronShell
+          ? Layer.succeed(ElectronShell.ElectronShell, input.electronShell)
+          : electronShellLayer,
         electronThemeLayer,
         electronWindowLayer,
       ),
@@ -174,7 +218,188 @@ describe("DesktopWindow", () => {
         yield* desktopWindow.handleBackendReady;
         assert.equal(yield* Ref.get(createCount), 1);
         assert.deepEqual(fakeWindow.loadURL.mock.calls[0], ["http://127.0.0.1:5733/"]);
+        assert.equal(fakeWindow.openDevTools.mock.calls.length, 0);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("opens development DevTools only when explicitly requested", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const layer = makeTestLayer({
+        window: fakeWindow.window,
+        createCount,
+        mainWindow,
+        env: {
+          T3CODE_DESKTOP_OPEN_DEVTOOLS: "true",
+        },
+      });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.handleBackendReady;
+
         assert.equal(fakeWindow.openDevTools.mock.calls.length, 1);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("opens Windows screen clipping for bare PrintScreen", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const openScreenClip = vi.fn(() => Effect.succeed(true));
+      const layer = makeTestLayer({
+        window: fakeWindow.window,
+        createCount,
+        mainWindow,
+        platform: "win32",
+        electronShell: {
+          openExternal: () => Effect.succeed(true),
+          openScreenClip,
+          copyText: () => Effect.void,
+        },
+      });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.handleBackendReady;
+
+        const preventDefault = vi.fn();
+        fakeWindow.emitWebContents("before-input-event", { preventDefault }, {
+          type: "keyDown",
+          key: "PrintScreen",
+          code: "PrintScreen",
+          alt: false,
+          control: false,
+          meta: false,
+          shift: false,
+        } satisfies Partial<Electron.Input>);
+        yield* Effect.promise(() => Promise.resolve());
+
+        assert.equal(preventDefault.mock.calls.length, 1);
+        assert.equal(openScreenClip.mock.calls.length, 1);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("registers PrintScreen while the Windows window is focused", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const openScreenClip = vi.fn(() => Effect.succeed(true));
+      const unregister = vi.fn(() => Effect.void);
+      let shortcutCallback: (() => void) | null = null;
+      const register = vi.fn((accelerator: string, callback: () => void) => {
+        shortcutCallback = callback;
+        return Effect.succeed(accelerator === "PrintScreen");
+      });
+      const layer = makeTestLayer({
+        window: fakeWindow.window,
+        createCount,
+        mainWindow,
+        platform: "win32",
+        electronGlobalShortcut: {
+          register,
+          unregister,
+        },
+        electronShell: {
+          openExternal: () => Effect.succeed(true),
+          openScreenClip,
+          copyText: () => Effect.void,
+        },
+      });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.handleBackendReady;
+
+        fakeWindow.emitWindow("focus");
+        yield* Effect.promise(() => Promise.resolve());
+        assert.deepEqual(
+          register.mock.calls.map(([accelerator]) => accelerator),
+          ["PrintScreen"],
+        );
+
+        shortcutCallback?.();
+        yield* Effect.promise(() => Promise.resolve());
+        assert.equal(openScreenClip.mock.calls.length, 1);
+
+        fakeWindow.emitWindow("blur");
+        yield* Effect.promise(() => Promise.resolve());
+        assert.deepEqual(unregister.mock.calls, [["PrintScreen"]]);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("opens Windows screen clipping from the menu action", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const openScreenClip = vi.fn(() => Effect.succeed(true));
+      const layer = makeTestLayer({
+        window: fakeWindow.window,
+        createCount,
+        mainWindow,
+        platform: "win32",
+        electronShell: {
+          openExternal: () => Effect.succeed(true),
+          openScreenClip,
+          copyText: () => Effect.void,
+        },
+      });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.dispatchMenuAction(DesktopWindow.OPEN_SCREEN_CLIP_MENU_ACTION);
+
+        assert.equal(openScreenClip.mock.calls.length, 1);
+        assert.equal(fakeWindow.send.mock.calls.length, 0);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("does not override modified PrintScreen shortcuts", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const openScreenClip = vi.fn(() => Effect.succeed(true));
+      const layer = makeTestLayer({
+        window: fakeWindow.window,
+        createCount,
+        mainWindow,
+        platform: "win32",
+        electronShell: {
+          openExternal: () => Effect.succeed(true),
+          openScreenClip,
+          copyText: () => Effect.void,
+        },
+      });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.handleBackendReady;
+
+        const preventDefault = vi.fn();
+        fakeWindow.emitWebContents("before-input-event", { preventDefault }, {
+          type: "keyDown",
+          key: "PrintScreen",
+          code: "PrintScreen",
+          alt: true,
+          control: false,
+          meta: false,
+          shift: false,
+        } satisfies Partial<Electron.Input>);
+        yield* Effect.promise(() => Promise.resolve());
+
+        assert.equal(preventDefault.mock.calls.length, 0);
+        assert.equal(openScreenClip.mock.calls.length, 0);
       }).pipe(Effect.provide(layer));
     }),
   );

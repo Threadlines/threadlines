@@ -338,6 +338,19 @@ export function BranchToolbarBranchSelector({
       return;
     }
 
+    if (branchStatusQuery.data?.hasWorkingTreeChanges) {
+      setIsBranchMenuOpen(false);
+      onComposerFocusRequest?.();
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Cannot switch branches with changes",
+          description: "Commit or stash your working tree changes before switching branches.",
+        }),
+      );
+      return;
+    }
+
     const selectedBranchName = refName.isRemote
       ? deriveLocalBranchNameFromRemoteRef(refName.name)
       : refName.name;

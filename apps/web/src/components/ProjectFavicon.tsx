@@ -3,7 +3,7 @@ import { FolderIcon } from "lucide-react";
 import { useState } from "react";
 import { resolveEnvironmentHttpUrl } from "../environments/runtime";
 
-const PROJECT_FAVICON_RESOLVER_VERSION = "2";
+const PROJECT_FAVICON_RESOLVER_VERSION = "3";
 const loadedProjectFaviconSrcs = new Set<string>();
 
 export function ProjectFavicon(input: {

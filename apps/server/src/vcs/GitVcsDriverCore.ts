@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import * as Cache from "effect/Cache";
 import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
@@ -189,11 +191,41 @@ function paginateBranches(input: {
   };
 }
 
+function isT3CheckpointRef(value: string): boolean {
+  return (
+    value === "t3/checkpoints" ||
+    value.startsWith("t3/checkpoints/") ||
+    value === "refs/t3/checkpoints" ||
+    value.startsWith("refs/t3/checkpoints/") ||
+    value === "refs/t3" ||
+    value.startsWith("refs/t3/")
+  );
+}
+
+function isT3CheckpointSubject(value: string): boolean {
+  return value.trim().toLowerCase().startsWith("t3 checkpoint ref=refs/t3/");
+}
+
 function parseCommitGraphRefs(value: string): string[] {
   return value
     .split(",")
-    .map((ref) => ref.trim().replace(/^HEAD -> /, ""))
-    .filter((ref) => ref.length > 0 && ref !== "HEAD");
+    .flatMap((ref) => {
+      const trimmed = ref.trim();
+      if (trimmed.length === 0 || trimmed === "HEAD") {
+        return [];
+      }
+      if (trimmed.startsWith("HEAD -> ")) {
+        return [trimmed.slice("HEAD -> ".length).trim()];
+      }
+      if (trimmed.includes(" -> ")) {
+        return [];
+      }
+      if (trimmed.startsWith("tag: ")) {
+        return [trimmed.slice("tag: ".length).trim()];
+      }
+      return [trimmed];
+    })
+    .filter((ref) => ref.length > 0 && !isT3CheckpointRef(ref));
 }
 
 function parseCommitGraphOutput(stdout: string, limit: number): VcsCommitGraphResult {
@@ -215,6 +247,21 @@ function parseCommitGraphOutput(stdout: string, limit: number): VcsCommitGraphRe
       return [];
     }
 
+    const hasT3CheckpointRef = refsRaw
+      .split(",")
+      .map((ref) =>
+        ref
+          .trim()
+          .replace(/^HEAD -> /, "")
+          .replace(/^tag: /, ""),
+      )
+      .some(isT3CheckpointRef);
+    const refs = parseCommitGraphRefs(refsRaw);
+    const normalizedSubject = subject.trim();
+    if (isT3CheckpointSubject(normalizedSubject) || hasT3CheckpointRef) {
+      return [];
+    }
+
     return [
       {
         sha: trimmedSha,
@@ -223,8 +270,8 @@ function parseCommitGraphOutput(stdout: string, limit: number): VcsCommitGraphRe
           .split(" ")
           .map((parent) => parent.trim())
           .filter((parent) => parent.length > 0),
-        refs: parseCommitGraphRefs(refsRaw),
-        subject: subject.trim(),
+        refs,
+        subject: normalizedSubject,
         authorName: authorName.trim(),
         committedAt: committedAt.trim(),
       },
@@ -1399,37 +1446,27 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       })),
     );
 
-  const prepareCommitContext: GitVcsDriver.GitVcsDriverShape["prepareCommitContext"] = Effect.fn(
-    "prepareCommitContext",
-  )(function* (cwd, filePaths) {
-    if (filePaths && filePaths.length > 0) {
-      yield* runGit("GitVcsDriver.prepareCommitContext.reset", cwd, ["reset"]).pipe(
-        Effect.catch(() => Effect.void),
-      );
-      yield* runGit("GitVcsDriver.prepareCommitContext.addSelected", cwd, [
-        "add",
-        "-A",
-        "--",
-        ...filePaths,
-      ]);
-    } else {
-      yield* runGit("GitVcsDriver.prepareCommitContext.addAll", cwd, ["add", "-A"]);
-    }
-
-    const stagedSummary = yield* runGitStdout(
-      "GitVcsDriver.prepareCommitContext.stagedSummary",
+  const readStagedCommitContext = Effect.fn("readStagedCommitContext")(function* (
+    operation: string,
+    cwd: string,
+    env?: NodeJS.ProcessEnv,
+  ) {
+    const stagedSummary = yield* runGitStdoutWithOptions(
+      `${operation}.stagedSummary`,
       cwd,
       ["diff", "--cached", "--name-status"],
+      env ? { env } : {},
     ).pipe(Effect.map((stdout) => stdout.trim()));
     if (stagedSummary.length === 0) {
       return null;
     }
 
     const stagedPatch = yield* runGitStdoutWithOptions(
-      "GitVcsDriver.prepareCommitContext.stagedPatch",
+      `${operation}.stagedPatch`,
       cwd,
       ["diff", "--cached", "--patch", "--minimal"],
       {
+        ...(env ? { env } : {}),
         maxOutputBytes: PREPARED_COMMIT_PATCH_MAX_OUTPUT_BYTES,
         appendTruncationMarker: true,
       },
@@ -1439,6 +1476,105 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       stagedSummary,
       stagedPatch,
     };
+  });
+
+  const stageCommitContext = Effect.fn("stageCommitContext")(function* (
+    operation: string,
+    cwd: string,
+    filePaths: readonly string[] | undefined,
+    env?: NodeJS.ProcessEnv,
+  ) {
+    if (filePaths && filePaths.length > 0) {
+      yield* executeGit(`${operation}.reset`, cwd, ["reset"], env ? { env } : undefined).pipe(
+        Effect.asVoid,
+        Effect.catch(() => Effect.void),
+      );
+      yield* executeGit(
+        `${operation}.addSelected`,
+        cwd,
+        ["add", "-A", "--", ...filePaths],
+        env ? { env } : undefined,
+      ).pipe(Effect.asVoid);
+    } else {
+      yield* executeGit(`${operation}.addAll`, cwd, ["add", "-A"], env ? { env } : undefined).pipe(
+        Effect.asVoid,
+      );
+    }
+  });
+
+  const prepareCommitContext: GitVcsDriver.GitVcsDriverShape["prepareCommitContext"] = Effect.fn(
+    "prepareCommitContext",
+  )(function* (cwd, filePaths) {
+    const operation = "GitVcsDriver.prepareCommitContext";
+    yield* stageCommitContext(operation, cwd, filePaths);
+    return yield* readStagedCommitContext(operation, cwd);
+  });
+
+  const previewCommitContext: GitVcsDriver.GitVcsDriverShape["previewCommitContext"] = Effect.fn(
+    "previewCommitContext",
+  )(function* (cwd, filePaths) {
+    const operation = "GitVcsDriver.previewCommitContext";
+    const gitCommonDir = yield* resolveGitCommonDir(cwd);
+    const tempIndexPath = path.join(gitCommonDir, `t3-preview-index-${randomUUID()}`);
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      GIT_INDEX_FILE: tempIndexPath,
+    };
+    const cleanupTempIndex = fileSystem.remove(tempIndexPath, { force: true }).pipe(Effect.ignore);
+
+    return yield* Effect.gen(function* () {
+      const headResult = yield* executeGit(operation, cwd, ["rev-parse", "--verify", "HEAD"], {
+        allowNonZeroExit: true,
+        env,
+      });
+      if (headResult.exitCode === 0) {
+        yield* executeGit(operation, cwd, ["read-tree", "HEAD"], { env }).pipe(Effect.asVoid);
+      }
+      yield* stageCommitContext(operation, cwd, filePaths, env);
+      return yield* readStagedCommitContext(operation, cwd, env);
+    }).pipe(Effect.ensuring(cleanupTempIndex));
+  });
+
+  const workingTreeDiff: GitVcsDriver.GitVcsDriverShape["workingTreeDiff"] = Effect.fn(
+    "workingTreeDiff",
+  )(function* (input) {
+    const operation = "GitVcsDriver.workingTreeDiff";
+    const gitCommonDir = yield* resolveGitCommonDir(input.cwd);
+    const tempIndexPath = path.join(gitCommonDir, `t3-working-tree-diff-index-${randomUUID()}`);
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      GIT_INDEX_FILE: tempIndexPath,
+    };
+    const cleanupTempIndex = fileSystem.remove(tempIndexPath, { force: true }).pipe(Effect.ignore);
+
+    return yield* Effect.gen(function* () {
+      const headResult = yield* executeGit(
+        operation,
+        input.cwd,
+        ["rev-parse", "--verify", "HEAD"],
+        {
+          allowNonZeroExit: true,
+          env,
+        },
+      );
+      if (headResult.exitCode === 0) {
+        yield* executeGit(operation, input.cwd, ["read-tree", "HEAD"], { env }).pipe(Effect.asVoid);
+      }
+      yield* stageCommitContext(operation, input.cwd, input.filePaths, env);
+      const diffArgs = [
+        "diff",
+        "--cached",
+        "--patch",
+        "--minimal",
+        ...(input.ignoreWhitespace ? ["--ignore-all-space"] : []),
+      ];
+      const diff = yield* runGitStdoutWithOptions(operation, input.cwd, diffArgs, {
+        env,
+        maxOutputBytes: RANGE_DIFF_PATCH_MAX_OUTPUT_BYTES,
+        appendTruncationMarker: true,
+      });
+      return { diff };
+    }).pipe(Effect.ensuring(cleanupTempIndex));
   });
 
   const commit: GitVcsDriver.GitVcsDriverShape["commit"] = Effect.fn("commit")(function* (
@@ -1929,6 +2065,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         input.cwd,
         [
           "log",
+          "--exclude=refs/t3/*",
+          "--exclude=refs/t3/checkpoints/*",
           "--all",
           "--date-order",
           "--decorate=short",
@@ -2189,6 +2327,43 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     },
   );
 
+  const mergeRef: GitVcsDriver.GitVcsDriverShape["mergeRef"] = Effect.fn("mergeRef")(
+    function* (input) {
+      const details = yield* statusDetails(input.cwd);
+      if (!details.isRepo) {
+        return yield* createGitCommandError(
+          "GitVcsDriver.mergeRef",
+          input.cwd,
+          ["merge", "--no-edit", input.refName],
+          "Not a git repository.",
+        );
+      }
+      if (!details.branch) {
+        return yield* createGitCommandError(
+          "GitVcsDriver.mergeRef",
+          input.cwd,
+          ["merge", "--no-edit", input.refName],
+          "Cannot merge into a detached HEAD.",
+        );
+      }
+      if (details.hasWorkingTreeChanges) {
+        return yield* createGitCommandError(
+          "GitVcsDriver.mergeRef",
+          input.cwd,
+          ["merge", "--no-edit", input.refName],
+          "Commit or stash changes before merging.",
+        );
+      }
+
+      yield* executeGit("GitVcsDriver.mergeRef", input.cwd, ["merge", "--no-edit", input.refName], {
+        timeoutMs: 60_000,
+        fallbackErrorMessage: "git merge failed",
+      });
+
+      return { refName: details.branch };
+    },
+  );
+
   const initRepo: GitVcsDriver.GitVcsDriverShape["initRepo"] = (input) =>
     executeGit("GitVcsDriver.initRepo", input.cwd, ["init"], {
       timeoutMs: 10_000,
@@ -2216,6 +2391,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     statusDetails,
     statusDetailsLocal,
     prepareCommitContext,
+    previewCommitContext,
     commit,
     pushCurrentBranch,
     pullCurrentBranch,
@@ -2223,6 +2399,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     readConfigValue,
     listRefs,
     commitGraph,
+    workingTreeDiff,
     createWorktree,
     fetchPullRequestBranch,
     ensureRemote,
@@ -2234,6 +2411,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     renameBranch,
     createRef,
     switchRef,
+    mergeRef,
     initRepo,
     listLocalBranchNames,
   });

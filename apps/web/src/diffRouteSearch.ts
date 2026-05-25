@@ -2,6 +2,9 @@ import { TurnId } from "@t3tools/contracts";
 
 export interface DiffRouteSearch {
   diff?: "1" | undefined;
+  diffMode?: "workingTree" | undefined;
+  sourceControl?: "1" | undefined;
+  sourceControlReturn?: "1" | undefined;
   diffTurnId?: TurnId | undefined;
   diffFilePath?: string | undefined;
 }
@@ -20,19 +23,91 @@ function normalizeSearchString(value: unknown): string | undefined {
 
 export function stripDiffSearchParams<T extends Record<string, unknown>>(
   params: T,
-): Omit<T, "diff" | "diffTurnId" | "diffFilePath"> {
-  const { diff: _diff, diffTurnId: _diffTurnId, diffFilePath: _diffFilePath, ...rest } = params;
-  return rest as Omit<T, "diff" | "diffTurnId" | "diffFilePath">;
+): Omit<T, "diff" | "diffMode" | "diffTurnId" | "diffFilePath"> & {
+  diff?: undefined;
+  diffMode?: undefined;
+  diffTurnId?: undefined;
+  diffFilePath?: undefined;
+} {
+  const {
+    diff: _diff,
+    diffMode: _diffMode,
+    diffTurnId: _diffTurnId,
+    diffFilePath: _diffFilePath,
+    ...rest
+  } = params;
+  return {
+    ...rest,
+    diff: undefined,
+    diffMode: undefined,
+    diffTurnId: undefined,
+    diffFilePath: undefined,
+  } as Omit<T, "diff" | "diffMode" | "diffTurnId" | "diffFilePath"> & {
+    diff?: undefined;
+    diffMode?: undefined;
+    diffTurnId?: undefined;
+    diffFilePath?: undefined;
+  };
+}
+
+export function stripRightPanelSearchParams<T extends Record<string, unknown>>(
+  params: T,
+): Omit<
+  T,
+  "diff" | "diffMode" | "sourceControl" | "sourceControlReturn" | "diffTurnId" | "diffFilePath"
+> & {
+  diff?: undefined;
+  diffMode?: undefined;
+  sourceControl?: undefined;
+  sourceControlReturn?: undefined;
+  diffTurnId?: undefined;
+  diffFilePath?: undefined;
+} {
+  const {
+    diff: _diff,
+    diffMode: _diffMode,
+    sourceControl: _sourceControl,
+    sourceControlReturn: _sourceControlReturn,
+    diffTurnId: _diffTurnId,
+    diffFilePath: _diffFilePath,
+    ...rest
+  } = params;
+  return {
+    ...rest,
+    diff: undefined,
+    diffMode: undefined,
+    sourceControl: undefined,
+    sourceControlReturn: undefined,
+    diffTurnId: undefined,
+    diffFilePath: undefined,
+  } as Omit<
+    T,
+    "diff" | "diffMode" | "sourceControl" | "sourceControlReturn" | "diffTurnId" | "diffFilePath"
+  > & {
+    diff?: undefined;
+    diffMode?: undefined;
+    sourceControl?: undefined;
+    sourceControlReturn?: undefined;
+    diffTurnId?: undefined;
+    diffFilePath?: undefined;
+  };
 }
 
 export function parseDiffRouteSearch(search: Record<string, unknown>): DiffRouteSearch {
   const diff = isDiffOpenValue(search.diff) ? "1" : undefined;
-  const diffTurnIdRaw = diff ? normalizeSearchString(search.diffTurnId) : undefined;
+  const diffMode = diff && search.diffMode === "workingTree" ? "workingTree" : undefined;
+  const sourceControl = !diff && isDiffOpenValue(search.sourceControl) ? "1" : undefined;
+  const sourceControlReturn = diff && isDiffOpenValue(search.sourceControlReturn) ? "1" : undefined;
+  const diffTurnIdRaw =
+    diff && diffMode !== "workingTree" ? normalizeSearchString(search.diffTurnId) : undefined;
   const diffTurnId = diffTurnIdRaw ? TurnId.make(diffTurnIdRaw) : undefined;
-  const diffFilePath = diff && diffTurnId ? normalizeSearchString(search.diffFilePath) : undefined;
+  const diffFilePath = diff ? normalizeSearchString(search.diffFilePath) : undefined;
 
   return {
     ...(diff ? { diff } : {}),
+    ...(diffMode ? { diffMode } : {}),
+    ...(sourceControl ? { sourceControl } : {}),
+    ...(sourceControlReturn ? { sourceControlReturn } : {}),
     ...(diffTurnId ? { diffTurnId } : {}),
     ...(diffFilePath ? { diffFilePath } : {}),
   };

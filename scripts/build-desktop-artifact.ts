@@ -507,6 +507,7 @@ function resolveGitHubPublishConfig(updateChannel: "latest" | "nightly"):
       readonly provider: "github";
       readonly owner: string;
       readonly repo: string;
+      readonly private: true;
       readonly releaseType: "release" | "prerelease";
       readonly channel?: "nightly";
     }
@@ -524,6 +525,7 @@ function resolveGitHubPublishConfig(updateChannel: "latest" | "nightly"):
     provider: "github",
     owner,
     repo,
+    private: true,
     releaseType: updateChannel === "nightly" ? "prerelease" : "release",
     ...(updateChannel === "nightly" ? { channel: "nightly" as const } : {}),
   };

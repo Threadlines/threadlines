@@ -197,10 +197,6 @@ import {
   type SidebarProjectSnapshot,
 } from "../sidebarProjectGrouping";
 import { SidebarProviderUpdatePill } from "./sidebar/SidebarProviderUpdatePill";
-import {
-  SourceControlPanel,
-  type SourceControlProjectTarget,
-} from "./source-control/SourceControlPanel";
 const SIDEBAR_SORT_LABELS: Record<SidebarProjectSortOrder, string> = {
   updated_at: "Last user message",
   created_at: "Created at",
@@ -2539,8 +2535,6 @@ interface SidebarProjectsContentProps {
   suppressProjectClickForContextMenuRef: React.RefObject<boolean>;
   attachProjectListAutoAnimateRef: (node: HTMLElement | null) => void;
   projectsLength: number;
-  sourceControlTarget: SourceControlProjectTarget | null;
-  activeThreadRef: ScopedThreadRef | null;
 }
 
 const SidebarProjectsContent = memo(function SidebarProjectsContent(
@@ -2582,8 +2576,6 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     suppressProjectClickForContextMenuRef,
     attachProjectListAutoAnimateRef,
     projectsLength,
-    sourceControlTarget,
-    activeThreadRef,
   } = props;
 
   const handleProjectSortOrderChange = useCallback(
@@ -2773,7 +2765,6 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
           </div>
         )}
       </SidebarGroup>
-      <SourceControlPanel target={sourceControlTarget} activeThreadRef={activeThreadRef} />
     </SidebarContent>
   );
 });
@@ -3061,38 +3052,6 @@ export default function Sidebar() {
     sidebarProjects,
     visibleThreads,
   ]);
-  const sourceControlTarget = useMemo<SourceControlProjectTarget | null>(() => {
-    const activeProject =
-      (activeRouteProjectKey
-        ? sortedProjects.find((project) => project.projectKey === activeRouteProjectKey)
-        : null) ?? (sortedProjects.length === 1 ? sortedProjects[0] : null);
-    if (!activeProject) {
-      return null;
-    }
-
-    const activeMember =
-      (routeThreadRef
-        ? activeProject.memberProjects.find(
-            (member) => member.environmentId === routeThreadRef.environmentId,
-          )
-        : null) ??
-      (primaryEnvironmentId
-        ? activeProject.memberProjects.find(
-            (member) => member.environmentId === primaryEnvironmentId,
-          )
-        : null) ??
-      activeProject.memberProjects[0];
-    if (!activeMember) {
-      return null;
-    }
-
-    return {
-      environmentId: activeMember.environmentId,
-      cwd: activeMember.cwd,
-      name: activeProject.displayName,
-      environmentLabel: activeMember.environmentLabel,
-    };
-  }, [activeRouteProjectKey, primaryEnvironmentId, routeThreadRef, sortedProjects]);
   const isManualProjectSorting = sidebarProjectSortOrder === "manual";
   const visibleSidebarThreadKeys = useMemo(
     () =>
@@ -3480,8 +3439,6 @@ export default function Sidebar() {
             suppressProjectClickForContextMenuRef={suppressProjectClickForContextMenuRef}
             attachProjectListAutoAnimateRef={attachProjectListAutoAnimateRef}
             projectsLength={projects.length}
-            sourceControlTarget={sourceControlTarget}
-            activeThreadRef={routeThreadRef}
           />
 
           <SidebarSeparator />

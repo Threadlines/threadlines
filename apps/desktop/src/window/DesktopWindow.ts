@@ -17,6 +17,7 @@ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as DesktopState from "../app/DesktopState.ts";
 import * as ElectronMenu from "../electron/ElectronMenu.ts";
+import * as ElectronGlobalShortcut from "../electron/ElectronGlobalShortcut.ts";
 import * as ElectronShell from "../electron/ElectronShell.ts";
 import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
@@ -33,6 +34,9 @@ const MIN_MAIN_WINDOW_WIDTH = 840;
 const MIN_MAIN_WINDOW_HEIGHT = 620;
 const MAX_RESTORED_MAIN_WINDOW_DIMENSION = 10_000;
 const MAIN_WINDOW_STATE_FILE_NAME = "window-state.json";
+const PRINT_SCREEN_ACCELERATOR = "PrintScreen";
+const PRINT_SCREEN_KEYS = new Set(["print", "printscreen"]);
+export const OPEN_SCREEN_CLIP_MENU_ACTION = "open-screen-clip";
 
 type WindowTitleBarOptions = Pick<
   Electron.BrowserWindowConstructorOptions,
@@ -46,6 +50,7 @@ type DesktopWindowRuntimeServices =
   | DesktopState.DesktopState
   | FileSystem.FileSystem
   | ElectronMenu.ElectronMenu
+  | ElectronGlobalShortcut.ElectronGlobalShortcut
   | ElectronShell.ElectronShell
   | ElectronTheme.ElectronTheme
   | ElectronWindow.ElectronWindow
@@ -210,6 +215,34 @@ function syncWindowAppearance(
   });
 }
 
+function isBarePrintScreenInput(input: Electron.Input): boolean {
+  if (input.type !== "keyDown") {
+    return false;
+  }
+
+  const normalizedKey = input.key.toLowerCase();
+  const normalizedCode = input.code.toLowerCase();
+  return (
+    (PRINT_SCREEN_KEYS.has(normalizedKey) || normalizedCode === "printscreen") &&
+    !input.alt &&
+    !input.control &&
+    !input.meta &&
+    !input.shift
+  );
+}
+
+function openWindowsScreenClip(
+  electronShell: ElectronShell.ElectronShellShape,
+): Effect.Effect<void> {
+  return electronShell
+    .openScreenClip()
+    .pipe(
+      Effect.flatMap((opened) =>
+        opened ? Effect.void : logWindowWarning("failed to open Windows screen clipping overlay"),
+      ),
+    );
+}
+
 type RevealSubscription = (listener: () => void) => void;
 
 function bindFirstRevealTrigger(
@@ -232,6 +265,7 @@ const make = Effect.gen(function* () {
   const assets = yield* DesktopAssets.DesktopAssets;
   const fileSystem = yield* FileSystem.FileSystem;
   const electronMenu = yield* ElectronMenu.ElectronMenu;
+  const electronGlobalShortcut = yield* ElectronGlobalShortcut.ElectronGlobalShortcut;
   const electronShell = yield* ElectronShell.ElectronShell;
   const electronTheme = yield* ElectronTheme.ElectronTheme;
   const electronWindow = yield* ElectronWindow.ElectronWindow;
@@ -355,6 +389,69 @@ const make = Effect.gen(function* () {
       void runPromise(electronMenu.popupTemplate({ window, template: menuTemplate }));
     });
 
+    let printScreenShortcutRegistered = false;
+    let printScreenShortcutRegistering = false;
+    let printScreenShortcutFocused = false;
+
+    window.webContents.on("before-input-event", (event, input) => {
+      if (
+        environment.platform !== "win32" ||
+        printScreenShortcutRegistered ||
+        !isBarePrintScreenInput(input)
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+      void runPromise(openWindowsScreenClip(electronShell));
+    });
+
+    if (environment.platform === "win32") {
+      const unregisterPrintScreenShortcut = () => {
+        printScreenShortcutFocused = false;
+        if (!printScreenShortcutRegistered) {
+          return;
+        }
+
+        printScreenShortcutRegistered = false;
+        void runPromise(electronGlobalShortcut.unregister(PRINT_SCREEN_ACCELERATOR));
+      };
+
+      const registerPrintScreenShortcut = () => {
+        printScreenShortcutFocused = true;
+        if (printScreenShortcutRegistered || printScreenShortcutRegistering) {
+          return;
+        }
+
+        printScreenShortcutRegistering = true;
+        void runPromise(
+          electronGlobalShortcut
+            .register(PRINT_SCREEN_ACCELERATOR, () => {
+              void runPromise(openWindowsScreenClip(electronShell));
+            })
+            .pipe(
+              Effect.flatMap((registered) => {
+                printScreenShortcutRegistering = false;
+                if (!registered) {
+                  return logWindowWarning("failed to register Windows PrintScreen shortcut");
+                }
+
+                if (!printScreenShortcutFocused) {
+                  return electronGlobalShortcut.unregister(PRINT_SCREEN_ACCELERATOR);
+                }
+
+                printScreenShortcutRegistered = true;
+                return Effect.void;
+              }),
+            ),
+        );
+      };
+
+      window.on("focus", registerPrintScreenShortcut);
+      window.on("blur", unregisterPrintScreenShortcut);
+      window.on("closed", unregisterPrintScreenShortcut);
+    }
+
     window.webContents.setWindowOpenHandler(({ url }) => {
       if (Option.isSome(ElectronShell.parseSafeExternalUrl(url))) {
         void runPromise(electronShell.openExternal(url));
@@ -404,7 +501,9 @@ const make = Effect.gen(function* () {
     if (environment.isDevelopment) {
       const devServerUrl = yield* resolveDesktopDevServerUrl(environment);
       void window.loadURL(devServerUrl);
-      window.webContents.openDevTools({ mode: "detach" });
+      if (environment.openDevToolsInDevelopment) {
+        window.webContents.openDevTools({ mode: "detach" });
+      }
     } else {
       void window.loadURL(backendHttpUrl.href);
     }
@@ -465,6 +564,11 @@ const make = Effect.gen(function* () {
       yield* createMainIfBackendReady;
     }).pipe(Effect.withSpan("desktop.window.handleBackendReady")),
     dispatchMenuAction: Effect.fn("desktop.window.dispatchMenuAction")(function* (action) {
+      if (action === OPEN_SCREEN_CLIP_MENU_ACTION) {
+        yield* openWindowsScreenClip(electronShell);
+        return;
+      }
+
       yield* Effect.annotateCurrentSpan({ action });
       const existingWindow = yield* electronWindow.focusedMainOrFirst;
       const targetWindow = Option.isSome(existingWindow) ? existingWindow.value : yield* createMain;

@@ -127,6 +127,12 @@ const make = Effect.gen(function* () {
     const settingsClick = () => {
       runMenuEffect("open-settings", dispatchMenuAction("open-settings"));
     };
+    const screenClipClick = () => {
+      runMenuEffect(
+        DesktopWindow.OPEN_SCREEN_CLIP_MENU_ACTION,
+        dispatchMenuAction(DesktopWindow.OPEN_SCREEN_CLIP_MENU_ACTION),
+      );
+    };
     const template: Electron.MenuItemConstructorOptions[] = [];
 
     if (environment.platform === "darwin") {
@@ -187,6 +193,16 @@ const make = Effect.gen(function* () {
           { role: "zoomOut" },
           { type: "separator" },
           { role: "togglefullscreen" },
+          ...(environment.platform === "win32"
+            ? [
+                {
+                  label: "Screen Clip",
+                  accelerator: "PrintScreen",
+                  visible: false,
+                  click: screenClipClick,
+                },
+              ]
+            : []),
         ],
       },
       { role: "windowMenu" },
