@@ -157,3 +157,41 @@ it.effect("creates GitHub PRs through provider-neutral input names", () =>
     });
   }),
 );
+
+it.effect("scopes GitHub PR creation to the detected repository context", () =>
+  Effect.gen(function* () {
+    let createInput: Parameters<GitHubCli.GitHubCliShape["createPullRequest"]>[0] | null = null;
+    const provider = yield* makeProvider({
+      createPullRequest: (input) => {
+        createInput = input;
+        return Effect.void;
+      },
+    });
+
+    yield* provider.createChangeRequest({
+      cwd: "/repo",
+      context: {
+        provider: {
+          kind: "github",
+          name: "GitHub",
+          baseUrl: "https://github.com",
+        },
+        remoteName: "origin",
+        remoteUrl: "https://github.com/badcuban/badcode.git",
+      },
+      baseRefName: "main",
+      headSelector: "source-control-panel",
+      title: "Provider PR",
+      bodyFile: "/tmp/body.md",
+    });
+
+    assert.deepStrictEqual(createInput, {
+      cwd: "/repo",
+      repository: "badcuban/badcode",
+      baseBranch: "main",
+      headSelector: "source-control-panel",
+      title: "Provider PR",
+      bodyFile: "/tmp/body.md",
+    });
+  }),
+);

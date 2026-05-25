@@ -8,6 +8,7 @@ import {
   type ChangeRequest,
   type ChangeRequestState,
 } from "@t3tools/contracts";
+import { parseGitHubRepositoryNameWithOwnerFromRemoteUrl } from "@t3tools/shared/git";
 
 import * as GitHubCli from "./GitHubCli.ts";
 import * as GitHubPullRequests from "./gitHubPullRequests.ts";
@@ -47,6 +48,28 @@ function toChangeRequest(summary: GitHubCli.GitHubPullRequestSummary): ChangeReq
       ? { headRepositoryOwnerLogin: summary.headRepositoryOwnerLogin }
       : {}),
   };
+}
+
+function repositoryFromContext(
+  context: SourceControlProvider.SourceControlProviderContext | undefined,
+): string | undefined {
+  if (context?.provider.kind !== "github") {
+    return undefined;
+  }
+
+  return parseGitHubRepositoryNameWithOwnerFromRemoteUrl(context.remoteUrl) ?? undefined;
+}
+
+function repositoryOptionFromContext(
+  context: SourceControlProvider.SourceControlProviderContext | undefined,
+): { readonly repository?: string } {
+  const repository = repositoryFromContext(context);
+  return repository !== undefined ? { repository } : {};
+}
+
+function repositoryFlagArgs(repository: string | undefined): ReadonlyArray<string> {
+  const trimmed = repository?.trim() ?? "";
+  return trimmed.length > 0 ? ["--repo", trimmed] : [];
 }
 
 function parseGitHubAuth(input: SourceControlProviderDiscovery.SourceControlAuthProbeInput) {
@@ -97,10 +120,12 @@ export const make = Effect.fn("makeGitHubSourceControlProvider")(function* () {
 
   const listChangeRequests: SourceControlProvider.SourceControlProviderShape["listChangeRequests"] =
     (input) => {
+      const repository = repositoryFromContext(input.context);
       if (input.state === "open") {
         return github
           .listOpenPullRequests({
             cwd: input.cwd,
+            ...(repository !== undefined ? { repository } : {}),
             headSelector: input.headSelector,
             ...(input.limit !== undefined ? { limit: input.limit } : {}),
           })
@@ -117,6 +142,7 @@ export const make = Effect.fn("makeGitHubSourceControlProvider")(function* () {
           args: [
             "pr",
             "list",
+            ...repositoryFlagArgs(repository),
             "--head",
             input.headSelector,
             "--state",
@@ -165,14 +191,21 @@ export const make = Effect.fn("makeGitHubSourceControlProvider")(function* () {
     kind: "github",
     listChangeRequests,
     getChangeRequest: (input) =>
-      github.getPullRequest(input).pipe(
-        Effect.map(toChangeRequest),
-        Effect.mapError((error) => providerError("getChangeRequest", error)),
-      ),
+      github
+        .getPullRequest({
+          cwd: input.cwd,
+          ...repositoryOptionFromContext(input.context),
+          reference: input.reference,
+        })
+        .pipe(
+          Effect.map(toChangeRequest),
+          Effect.mapError((error) => providerError("getChangeRequest", error)),
+        ),
     createChangeRequest: (input) =>
       github
         .createPullRequest({
           cwd: input.cwd,
+          ...repositoryOptionFromContext(input.context),
           baseBranch: input.baseRefName,
           headSelector: input.headSelector,
           title: input.title,
@@ -189,11 +222,19 @@ export const make = Effect.fn("makeGitHubSourceControlProvider")(function* () {
         .pipe(Effect.mapError((error) => providerError("createRepository", error))),
     getDefaultBranch: (input) =>
       github
-        .getDefaultBranch(input)
+        .getDefaultBranch({
+          cwd: input.cwd,
+          ...repositoryOptionFromContext(input.context),
+        })
         .pipe(Effect.mapError((error) => providerError("getDefaultBranch", error))),
     checkoutChangeRequest: (input) =>
       github
-        .checkoutPullRequest(input)
+        .checkoutPullRequest({
+          cwd: input.cwd,
+          ...repositoryOptionFromContext(input.context),
+          reference: input.reference,
+          ...(input.force !== undefined ? { force: input.force } : {}),
+        })
         .pipe(Effect.mapError((error) => providerError("checkoutChangeRequest", error))),
   });
 });
