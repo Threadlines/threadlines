@@ -5,6 +5,7 @@ import type {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import { isCommandAvailable } from "@t3tools/shared/shell";
 
 import type * as VcsProcess from "../vcs/VcsProcess.ts";
 
@@ -36,6 +37,8 @@ export type SourceControlApiDiscoverySpec = SourceControlDiscoverySpecBase & {
 export type SourceControlProviderDiscoverySpec =
   | SourceControlCliDiscoverySpec
   | SourceControlApiDiscoverySpec;
+
+export type CommandAvailability = (command: string) => boolean;
 
 interface DiscoveryProbeResult {
   readonly kind: SourceControlProviderKind;
@@ -130,7 +133,20 @@ function probeCli(input: {
   readonly spec: SourceControlCliDiscoverySpec;
   readonly process: VcsProcess.VcsProcessShape;
   readonly cwd: string;
+  readonly commandAvailable: CommandAvailability;
 }): Effect.Effect<DiscoveryProbeResult> {
+  if (!input.commandAvailable(input.spec.executable)) {
+    return Effect.succeed({
+      kind: input.spec.kind,
+      label: input.spec.label,
+      executable: input.spec.executable,
+      status: "missing" as const,
+      version: Option.none<string>(),
+      installHint: input.spec.installHint,
+      detail: Option.some(`${input.spec.executable} was not found on the server PATH.`),
+    } satisfies DiscoveryProbeResult);
+  }
+
   return input.process
     .run({
       operation: "source-control.discovery.probe",
@@ -174,6 +190,7 @@ export function probeSourceControlProvider(input: {
   readonly spec: SourceControlProviderDiscoverySpec;
   readonly process: VcsProcess.VcsProcessShape;
   readonly cwd: string;
+  readonly commandAvailable?: CommandAvailability;
 }): Effect.Effect<SourceControlProviderDiscoveryItem> {
   if (input.spec.type === "api") {
     return input.spec.probeAuth.pipe(
@@ -193,11 +210,13 @@ export function probeSourceControlProvider(input: {
   }
 
   const spec = input.spec;
+  const commandAvailable = input.commandAvailable ?? ((command) => isCommandAvailable(command));
 
   return probeCli({
     spec,
     process: input.process,
     cwd: input.cwd,
+    commandAvailable,
   }).pipe(
     Effect.flatMap((item) => {
       if (item.status !== "available") {

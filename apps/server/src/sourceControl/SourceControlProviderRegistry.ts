@@ -35,6 +35,10 @@ export interface SourceControlProviderHandle {
   readonly context: SourceControlProvider.SourceControlProviderContext | null;
 }
 
+export interface SourceControlProviderRegistryOptions {
+  readonly commandAvailable?: SourceControlProviderDiscovery.CommandAvailability;
+}
+
 export interface SourceControlProviderRegistryShape {
   readonly get: (
     kind: SourceControlProviderKind,
@@ -158,7 +162,10 @@ function bindProviderContext(
 }
 
 export const makeWithProviders = Effect.fn("makeSourceControlProviderRegistryWithProviders")(
-  function* (registrations: ReadonlyArray<SourceControlProviderRegistration>) {
+  function* (
+    registrations: ReadonlyArray<SourceControlProviderRegistration>,
+    options?: SourceControlProviderRegistryOptions,
+  ) {
     const config = yield* ServerConfig;
     const process = yield* VcsProcess.VcsProcess;
     const vcsRegistry = yield* VcsDriverRegistry.VcsDriverRegistry;
@@ -205,6 +212,9 @@ export const makeWithProviders = Effect.fn("makeSourceControlProviderRegistryWit
         }),
       );
 
+    const commandAvailabilityOptions =
+      options?.commandAvailable === undefined ? {} : { commandAvailable: options.commandAvailable };
+
     return SourceControlProviderRegistry.of({
       get,
       resolveHandle,
@@ -215,6 +225,7 @@ export const makeWithProviders = Effect.fn("makeSourceControlProviderRegistryWit
             spec,
             process,
             cwd: config.cwd,
+            ...commandAvailabilityOptions,
           }),
         ),
         { concurrency: "unbounded" },
@@ -223,34 +234,39 @@ export const makeWithProviders = Effect.fn("makeSourceControlProviderRegistryWit
   },
 );
 
-export const make = Effect.fn("makeSourceControlProviderRegistry")(function* () {
+export const make = Effect.fn("makeSourceControlProviderRegistry")(function* (
+  options?: SourceControlProviderRegistryOptions,
+) {
   const github = yield* GitHubSourceControlProvider.make();
   const gitlab = yield* GitLabSourceControlProvider.make();
   const bitbucket = yield* BitbucketSourceControlProvider.make();
   const bitbucketDiscovery = yield* BitbucketSourceControlProvider.makeDiscovery();
   const azureDevOps = yield* AzureDevOpsSourceControlProvider.make();
-  return yield* makeWithProviders([
-    {
-      kind: "github",
-      provider: github,
-      discovery: GitHubSourceControlProvider.discovery,
-    },
-    {
-      kind: "gitlab",
-      provider: gitlab,
-      discovery: GitLabSourceControlProvider.discovery,
-    },
-    {
-      kind: "azure-devops",
-      provider: azureDevOps,
-      discovery: AzureDevOpsSourceControlProvider.discovery,
-    },
-    {
-      kind: "bitbucket",
-      provider: bitbucket,
-      discovery: bitbucketDiscovery,
-    },
-  ]);
+  return yield* makeWithProviders(
+    [
+      {
+        kind: "github",
+        provider: github,
+        discovery: GitHubSourceControlProvider.discovery,
+      },
+      {
+        kind: "gitlab",
+        provider: gitlab,
+        discovery: GitLabSourceControlProvider.discovery,
+      },
+      {
+        kind: "azure-devops",
+        provider: azureDevOps,
+        discovery: AzureDevOpsSourceControlProvider.discovery,
+      },
+      {
+        kind: "bitbucket",
+        provider: bitbucket,
+        discovery: bitbucketDiscovery,
+      },
+    ],
+    options,
+  );
 });
 
 export const layer = Layer.effect(SourceControlProviderRegistry, make());

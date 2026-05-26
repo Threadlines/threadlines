@@ -89,8 +89,21 @@ The app uses `electron-updater` and GitHub Releases metadata. For private
 repositories, the updater needs a token at runtime because GitHub release
 assets are not public.
 
-For personal testing, launch BadCode from a shell with a GitHub token that can
-read releases from this private repo:
+For personal testing on your own Windows machine, install and sign into the
+GitHub CLI once:
+
+```powershell
+gh auth login
+gh auth status
+```
+
+When the packaged app sees a private GitHub update feed, it checks
+`GH_TOKEN`/`GITHUB_TOKEN` first. If neither is set, it asks `gh auth token` for
+the signed-in GitHub CLI token and passes that token directly to the updater for
+the update check or download.
+
+If GitHub CLI is not installed or is not visible on `PATH`, launch BadCode from
+a shell with a token that can read releases from this private repo:
 
 ```powershell
 $env:GH_TOKEN = "github_pat_or_classic_token_here"
@@ -98,7 +111,8 @@ $env:GH_TOKEN = "github_pat_or_classic_token_here"
 ```
 
 `GITHUB_TOKEN` also works. Do not commit tokens, screenshots containing tokens,
-or local token setup scripts.
+or local token setup scripts. Prefer `gh auth login` for personal testing;
+environment tokens are inherited by the Electron process for that launch.
 
 If BadCode becomes public later, or if release assets move to public hosting,
 users will not need a private-repo token for updates.

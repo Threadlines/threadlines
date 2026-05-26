@@ -156,6 +156,9 @@ function actionDisabledReason(input: {
     return "No primary remote.";
   }
   if (input.action === "push") {
+    if (!status.hasUpstream && status.hasPrimaryRemote && !status.isDefaultRef) {
+      return null;
+    }
     return status.aheadCount > 0 ? null : "No local commits to push.";
   }
   if (status.pr?.state === "open") {
@@ -669,6 +672,13 @@ export function SourceControlPanel({
   const changedFiles = status?.workingTree.files ?? [];
   const changedFileCount = changedFiles.length;
   const canPublishRepository = Boolean(status?.isRepo && !status.hasPrimaryRemote);
+  const shouldPublishBranch = Boolean(
+    status?.isRepo &&
+    status.refName !== null &&
+    !status.hasUpstream &&
+    status.hasPrimaryRemote &&
+    !status.isDefaultRef,
+  );
   const sourceControlPresentation = getSourceControlPresentation(status?.sourceControlProvider);
   const changeRequestLabel = sourceControlPresentation.terminology.shortLabel;
   const openPullRequest = status?.pr?.state === "open" ? status.pr : null;
@@ -1130,7 +1140,7 @@ export function SourceControlPanel({
                 </Button>
               ) : (
                 <ActionButton
-                  label="Push"
+                  label={shouldPublishBranch ? "Publish branch" : "Push"}
                   icon={<UploadIcon className="size-3" />}
                   disabledReason={pushDisabledReason}
                   onClick={() => void runAction("push")}

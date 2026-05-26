@@ -1157,6 +1157,100 @@ describe("deriveWorkLogEntries", () => {
     expect(entry?.command).toBeUndefined();
   });
 
+  it("marks command tool updates as running and completed commands as terminal", () => {
+    const runningEntries = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "command-running",
+          kind: "tool.updated",
+          summary: "Ran command",
+          payload: {
+            itemType: "command_execution",
+            title: "Ran command",
+            data: {
+              toolCallId: "command-1",
+              kind: "execute",
+            },
+          },
+        }),
+      ],
+      undefined,
+    );
+
+    expect(runningEntries[0]).toMatchObject({
+      id: "command-running",
+      label: "Ran command",
+      executionState: "running",
+    });
+
+    const completedEntries = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "command-running",
+          kind: "tool.updated",
+          summary: "Ran command",
+          payload: {
+            itemType: "command_execution",
+            title: "Ran command",
+            data: {
+              toolCallId: "command-1",
+              kind: "execute",
+            },
+          },
+        }),
+        makeActivity({
+          id: "command-completed",
+          kind: "tool.completed",
+          summary: "Ran command",
+          payload: {
+            itemType: "command_execution",
+            title: "Ran command",
+            data: {
+              toolCallId: "command-1",
+              kind: "execute",
+            },
+          },
+        }),
+      ],
+      undefined,
+    );
+
+    expect(completedEntries).toHaveLength(1);
+    expect(completedEntries[0]).toMatchObject({
+      id: "command-completed",
+      label: "Ran command",
+      executionState: "completed",
+    });
+  });
+
+  it("marks failed command executions distinctly", () => {
+    const [entry] = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "command-failed",
+          kind: "tool.completed",
+          summary: "Ran command",
+          tone: "error",
+          payload: {
+            itemType: "command_execution",
+            title: "Ran command",
+            data: {
+              toolCallId: "command-1",
+              kind: "execute",
+            },
+          },
+        }),
+      ],
+      undefined,
+    );
+
+    expect(entry).toMatchObject({
+      id: "command-failed",
+      label: "Ran command",
+      executionState: "failed",
+    });
+  });
+
   it("collapses legacy completed tool rows that are missing tool metadata", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

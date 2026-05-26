@@ -5,9 +5,11 @@ import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as DesktopBackendManager from "../backend/DesktopBackendManager.ts";
@@ -25,9 +27,41 @@ interface UpdatesHarnessOptions {
     ElectronUpdater.ElectronUpdaterCheckForUpdatesError
   >;
   readonly env?: Record<string, string | undefined>;
+  readonly resourcesPath?: string;
 }
 
 const flushCallbacks = Effect.yieldNow;
+
+function withProcessEnvPatch<A, E, R>(
+  patch: Record<string, string | undefined>,
+  effect: Effect.Effect<A, E, R>,
+): Effect.Effect<A, E, R> {
+  return Effect.acquireUseRelease(
+    Effect.sync(() => {
+      const previous: Record<string, string | undefined> = {};
+      for (const [name, value] of Object.entries(patch)) {
+        previous[name] = process.env[name];
+        if (value === undefined) {
+          delete process.env[name];
+        } else {
+          process.env[name] = value;
+        }
+      }
+      return previous;
+    }),
+    () => effect,
+    (previous) =>
+      Effect.sync(() => {
+        for (const [name, value] of Object.entries(previous)) {
+          if (value === undefined) {
+            delete process.env[name];
+          } else {
+            process.env[name] = value;
+          }
+        }
+      }),
+  );
+}
 
 function makeHarness(options: UpdatesHarnessOptions = {}) {
   let checkCount = 0;
@@ -122,7 +156,7 @@ function makeHarness(options: UpdatesHarnessOptions = {}) {
     appVersion: "1.2.3",
     appPath: "/repo",
     isPackaged: true,
-    resourcesPath: "/missing/resources",
+    resourcesPath: options.resourcesPath ?? "/missing/resources",
     runningUnderArm64Translation: false,
   }).pipe(
     Layer.provide(
@@ -174,6 +208,68 @@ function makeHarness(options: UpdatesHarnessOptions = {}) {
   };
 }
 
+describe("resolvePrivateGitHubUpdateAuthToken", () => {
+  const privateGitHubFeed = Option.some({
+    provider: "github",
+    owner: "badcuban",
+    repo: "badcode",
+    private: "true",
+  });
+
+  it("prefers GH_TOKEN over GitHub CLI auth", () => {
+    const authToken = DesktopUpdates.resolvePrivateGitHubUpdateAuthToken({
+      appUpdateYmlConfig: privateGitHubFeed,
+      env: { GH_TOKEN: "env-token" },
+      githubCliToken: Option.some("cli-token"),
+    });
+
+    assert.deepEqual(Option.getOrUndefined(authToken), {
+      source: "env",
+      envName: "GH_TOKEN",
+      token: "env-token",
+    });
+  });
+
+  it("uses GitHub CLI auth when the private feed has no token env", () => {
+    const authToken = DesktopUpdates.resolvePrivateGitHubUpdateAuthToken({
+      appUpdateYmlConfig: privateGitHubFeed,
+      env: {},
+      githubCliToken: Option.some("cli-token"),
+    });
+
+    assert.deepEqual(Option.getOrUndefined(authToken), {
+      source: "github-cli",
+      token: "cli-token",
+    });
+  });
+
+  it("does not request auth for public or non-GitHub update feeds", () => {
+    const publicGitHubToken = DesktopUpdates.resolvePrivateGitHubUpdateAuthToken({
+      appUpdateYmlConfig: Option.some({ provider: "github" }),
+      env: { GH_TOKEN: "env-token" },
+      githubCliToken: Option.some("cli-token"),
+    });
+    const genericToken = DesktopUpdates.resolvePrivateGitHubUpdateAuthToken({
+      appUpdateYmlConfig: Option.some({ provider: "generic", url: "https://example.invalid" }),
+      env: { GH_TOKEN: "env-token" },
+      githubCliToken: Option.some("cli-token"),
+    });
+
+    assert.isTrue(Option.isNone(publicGitHubToken));
+    assert.isTrue(Option.isNone(genericToken));
+  });
+
+  it("returns none when a private GitHub feed has no runtime token", () => {
+    const authToken = DesktopUpdates.resolvePrivateGitHubUpdateAuthToken({
+      appUpdateYmlConfig: privateGitHubFeed,
+      env: {},
+      githubCliToken: Option.none(),
+    });
+
+    assert.isTrue(Option.isNone(authToken));
+  });
+});
+
 describe("DesktopUpdates", () => {
   it.effect("configures the updater and runs startup checks on the test clock", () => {
     const harness = makeHarness();
@@ -201,6 +297,52 @@ describe("DesktopUpdates", () => {
       assert.equal(harness.listenerCount(), 0);
     }).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });
+
+  it.effect("configures an authenticated private GitHub feed before the first check", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const resourcesPath = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "badcode-private-updates-",
+        });
+        yield* fileSystem.writeFileString(
+          path.join(resourcesPath, "app-update.yml"),
+          ["provider: github", "owner: badcuban", "repo: badcode", "private: true", ""].join("\n"),
+        );
+
+        const harness = makeHarness({
+          resourcesPath,
+          env: {
+            T3CODE_DESKTOP_MOCK_UPDATES: "false",
+          },
+        });
+
+        yield* withProcessEnvPatch(
+          { GH_TOKEN: "env-token", GITHUB_TOKEN: undefined },
+          Effect.scoped(
+            Effect.gen(function* () {
+              const updates = yield* DesktopUpdates.DesktopUpdates;
+              yield* updates.configure;
+              const result = yield* updates.check("manual");
+
+              assert.equal(result.checked, true);
+              assert.equal(harness.checkCount(), 1);
+              assert.deepEqual(harness.feedUrls(), [
+                {
+                  provider: "github",
+                  owner: "badcuban",
+                  repo: "badcode",
+                  private: true,
+                  token: "env-token",
+                },
+              ]);
+            }),
+          ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer))),
+        );
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
 
   it.effect("updates and broadcasts state from updater events", () => {
     const harness = makeHarness();

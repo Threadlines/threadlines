@@ -273,7 +273,7 @@ function getMenuActionDisabledReason({
     if (!gitStatus.hasUpstream && !hasPrimaryRemote) {
       return 'Add an "origin" remote before pushing.';
     }
-    if (!isAhead) {
+    if (!isAhead && (gitStatus.hasUpstream || gitStatus.isDefaultRef)) {
       return "No local commits to push.";
     }
     return "Push is currently unavailable.";

@@ -66,6 +66,7 @@ export interface WorkLogEntry {
   toolTitle?: string;
   itemType?: ToolLifecycleItemType;
   requestKind?: PendingApproval["requestKind"];
+  executionState?: "running" | "completed" | "failed";
 }
 
 interface DerivedWorkLogEntry extends WorkLogEntry {
@@ -604,6 +605,10 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (toolCallId) {
     entry.toolCallId = toolCallId;
   }
+  const executionState = deriveWorkLogExecutionState(activity, entry, payload);
+  if (executionState) {
+    entry.executionState = executionState;
+  }
   const collapseKey = deriveToolLifecycleCollapseKey(entry);
   if (collapseKey) {
     entry.collapseKey = collapseKey;
@@ -663,6 +668,7 @@ function mergeDerivedWorkLogEntries(
   const toolTitle = next.toolTitle ?? previous.toolTitle;
   const itemType = next.itemType ?? previous.itemType;
   const requestKind = next.requestKind ?? previous.requestKind;
+  const executionState = next.executionState ?? previous.executionState;
   const collapseKey = next.collapseKey ?? previous.collapseKey;
   const toolCallId = next.toolCallId ?? previous.toolCallId;
   return {
@@ -676,9 +682,68 @@ function mergeDerivedWorkLogEntries(
     ...(toolTitle ? { toolTitle } : {}),
     ...(itemType ? { itemType } : {}),
     ...(requestKind ? { requestKind } : {}),
+    ...(executionState ? { executionState } : {}),
     ...(collapseKey ? { collapseKey } : {}),
     ...(toolCallId ? { toolCallId } : {}),
   };
+}
+
+function isCommandWorkLogEntry(entry: Pick<WorkLogEntry, "command" | "itemType" | "requestKind">) {
+  return (
+    entry.requestKind === "command" || entry.itemType === "command_execution" || !!entry.command
+  );
+}
+
+function deriveWorkLogExecutionState(
+  activity: OrchestrationThreadActivity,
+  entry: Pick<WorkLogEntry, "command" | "itemType" | "requestKind" | "tone">,
+  payload: Record<string, unknown> | null,
+): WorkLogEntry["executionState"] | undefined {
+  if (!isCommandWorkLogEntry(entry)) {
+    return undefined;
+  }
+  const payloadStatus = normalizeWorkLogExecutionStatus(
+    asTrimmedString(payload?.status) ?? asTrimmedString(asRecord(payload?.data)?.status),
+  );
+  if (payloadStatus) {
+    return payloadStatus;
+  }
+  if (activity.kind === "tool.updated") {
+    return "running";
+  }
+  if (activity.kind === "tool.completed") {
+    return entry.tone === "error" ? "failed" : "completed";
+  }
+  return undefined;
+}
+
+function normalizeWorkLogExecutionStatus(
+  value: string | null,
+): WorkLogEntry["executionState"] | undefined {
+  const normalized = value
+    ?.trim()
+    .toLowerCase()
+    .replace(/[_\s-]+/g, "");
+  if (!normalized) {
+    return undefined;
+  }
+  if (normalized === "running" || normalized === "inprogress" || normalized === "pending") {
+    return "running";
+  }
+  if (normalized === "completed" || normalized === "complete" || normalized === "success") {
+    return "completed";
+  }
+  if (
+    normalized === "failed" ||
+    normalized === "failure" ||
+    normalized === "error" ||
+    normalized === "cancelled" ||
+    normalized === "canceled" ||
+    normalized === "declined"
+  ) {
+    return "failed";
+  }
+  return undefined;
 }
 
 function mergeWorkLogImages(
