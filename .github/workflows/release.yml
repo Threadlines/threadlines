@@ -19,11 +19,22 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  windows:
-    name: Build and publish Windows installer
-    runs-on: windows-latest
-    timeout-minutes: 45
+  preflight:
+    name: Verify release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      version: ${{ steps.release_meta.outputs.version }}
+      tag: ${{ steps.release_meta.outputs.tag }}
+      name: ${{ steps.release_meta.outputs.name }}
+      is_prerelease: ${{ steps.release_meta.outputs.is_prerelease }}
+      make_latest: ${{ steps.release_meta.outputs.make_latest }}
+      ref: ${{ github.sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -45,38 +56,50 @@ jobs:
 
       - id: release_meta
         name: Resolve release metadata
-        shell: pwsh
+        shell: bash
         env:
           DISPATCH_VERSION: ${{ inputs.version }}
           DISPATCH_PRERELEASE: ${{ inputs.prerelease }}
         run: |
-          $raw = if ($env:GITHUB_REF_TYPE -eq "tag") {
-            $env:GITHUB_REF_NAME
-          } else {
-            $env:DISPATCH_VERSION
-          }
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            raw="${GITHUB_REF_NAME}"
+          else
+            raw="${DISPATCH_VERSION:-}"
+          fi
 
-          if ([string]::IsNullOrWhiteSpace($raw)) {
-            Write-Error "Release version is required."
+          if [[ -z "${raw//[[:space:]]/}" ]]; then
+            echo "Release version is required." >&2
             exit 1
-          }
+          fi
 
-          $version = $raw.Trim() -replace "^v", ""
-          if ($version -notmatch "^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$") {
-            Write-Error "Invalid release version: $raw"
+          version="${raw#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release version: $raw" >&2
             exit 1
-          }
+          fi
 
-          $isPlainStable = $version -match "^[0-9]+\.[0-9]+\.[0-9]+$"
-          $forcedPrerelease = $env:DISPATCH_PRERELEASE -eq "true"
-          $isPrerelease = (-not $isPlainStable) -or $forcedPrerelease
-          $makeLatest = -not $isPrerelease
+          is_plain_stable=false
+          if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            is_plain_stable=true
+          fi
 
-          "version=$version" >> $env:GITHUB_OUTPUT
-          "tag=v$version" >> $env:GITHUB_OUTPUT
-          "name=BadCode v$version" >> $env:GITHUB_OUTPUT
-          "is_prerelease=$($isPrerelease.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
-          "make_latest=$($makeLatest.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          forced_prerelease=false
+          if [[ "${DISPATCH_PRERELEASE:-false}" == "true" ]]; then
+            forced_prerelease=true
+          fi
+
+          is_prerelease=true
+          make_latest=false
+          if [[ "$is_plain_stable" == "true" && "$forced_prerelease" != "true" ]]; then
+            is_prerelease=false
+            make_latest=true
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "name=BadCode v$version" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=$is_prerelease" >> "$GITHUB_OUTPUT"
+          echo "make_latest=$make_latest" >> "$GITHUB_OUTPUT"
 
       - name: Format check
         run: bun run fmt:check
@@ -88,10 +111,35 @@ jobs:
         run: bun run typecheck
 
       - name: Test
-        run: bun run test -- --concurrency=1
+        run: bun run test
+
+  windows:
+    name: Build and publish Windows installer
+    needs: preflight
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.preflight.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: package.json
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
 
       - name: Align release package versions
-        run: bun scripts/update-release-package-versions.ts "${{ steps.release_meta.outputs.version }}"
+        run: bun scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
 
       - name: Build Windows installer
         env:
@@ -101,7 +149,7 @@ jobs:
           --platform win
           --target nsis
           --arch x64
-          --build-version "${{ steps.release_meta.outputs.version }}"
+          --build-version "${{ needs.preflight.outputs.version }}"
           --verbose
 
       - name: List release assets
@@ -111,7 +159,7 @@ jobs:
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v7
         with:
-          name: badcode-windows-x64-${{ steps.release_meta.outputs.version }}
+          name: badcode-windows-x64-${{ needs.preflight.outputs.version }}
           path: |
             release/*.exe
             release/*.blockmap
@@ -121,12 +169,12 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.release_meta.outputs.tag }}
-          target_commitish: ${{ github.sha }}
-          name: ${{ steps.release_meta.outputs.name }}
+          tag_name: ${{ needs.preflight.outputs.tag }}
+          target_commitish: ${{ needs.preflight.outputs.ref }}
+          name: ${{ needs.preflight.outputs.name }}
           generate_release_notes: true
-          prerelease: ${{ steps.release_meta.outputs.is_prerelease }}
-          make_latest: ${{ steps.release_meta.outputs.make_latest }}
+          prerelease: ${{ needs.preflight.outputs.is_prerelease }}
+          make_latest: ${{ needs.preflight.outputs.make_latest }}
           files: |
             release/*.exe
             release/*.blockmap
