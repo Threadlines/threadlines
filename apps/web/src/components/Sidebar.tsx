@@ -2802,6 +2802,7 @@ export default function Sidebar() {
   const suppressProjectClickAfterDragRef = useRef(false);
   const suppressProjectClickForContextMenuRef = useRef(false);
   const [desktopUpdateState, setDesktopUpdateState] = useState<DesktopUpdateState | null>(null);
+  const desktopUpdatePromptKeyRef = useRef<string | null>(null);
   const clearSelection = useThreadSelectionStore((s) => s.clearSelection);
   const setSelectionAnchor = useThreadSelectionStore((s) => s.setAnchor);
   const platform = navigator.platform;
@@ -3376,6 +3377,51 @@ export default function Sidebar() {
         });
     }
   }, [desktopUpdateButtonAction, desktopUpdateButtonDisabled, desktopUpdateState]);
+
+  useEffect(() => {
+    if (!desktopUpdateState?.enabled) return;
+
+    const promptKind =
+      desktopUpdateState.status === "available"
+        ? "available"
+        : desktopUpdateState.status === "downloaded"
+          ? "downloaded"
+          : null;
+    if (!promptKind) return;
+
+    const version = desktopUpdateState.downloadedVersion ?? desktopUpdateState.availableVersion;
+    if (!version) return;
+
+    const promptKey = `${promptKind}:${version}`;
+    if (desktopUpdatePromptKeyRef.current === promptKey) return;
+    desktopUpdatePromptKeyRef.current = promptKey;
+
+    toastManager.add(
+      stackedThreadToast({
+        type: promptKind === "downloaded" ? "success" : "info",
+        title:
+          promptKind === "downloaded"
+            ? `Update ${version} downloaded`
+            : `Update ${version} available`,
+        description:
+          promptKind === "downloaded"
+            ? "Restart BadCode to finish installing it."
+            : "Download it now and restart when you're ready.",
+        timeout: 0,
+        actionProps: {
+          children: promptKind === "downloaded" ? "Restart" : "Download",
+          onClick: handleDesktopUpdateButtonClick,
+        },
+        actionVariant: "default",
+      }),
+    );
+  }, [
+    desktopUpdateState?.availableVersion,
+    desktopUpdateState?.downloadedVersion,
+    desktopUpdateState?.enabled,
+    desktopUpdateState?.status,
+    handleDesktopUpdateButtonClick,
+  ]);
 
   const expandThreadListForProject = useCallback((projectKey: string) => {
     setExpandedThreadListsByProject((current) => {

@@ -623,16 +623,16 @@ describe("when: HEAD is detached and there are no local changes", () => {
 });
 
 describe("when: ref has no upstream configured", () => {
-  it("resolveQuickAction is disabled when clean, no upstream, and no local commits are ahead", () => {
+  it("resolveQuickAction publishes the branch when clean, no upstream, and no local commits are ahead", () => {
     const quick = resolveQuickAction(
       status({ hasUpstream: false, pr: null, aheadCount: 0 }),
       false,
     );
     assert.deepInclude(quick, {
-      kind: "show_hint",
-      label: "Push",
-      hint: "No local commits to push.",
-      disabled: true,
+      kind: "run_action",
+      action: "push",
+      label: "Publish branch",
+      disabled: false,
     });
   });
 
@@ -683,7 +683,7 @@ describe("when: ref has no upstream configured", () => {
     });
   });
 
-  it("buildMenuItems disables push and create PR when no commits are ahead", () => {
+  it("buildMenuItems enables branch publishing and disables create PR when no commits are ahead", () => {
     const items = buildMenuItems(status({ hasUpstream: false, pr: null, aheadCount: 0 }), false);
     assert.deepEqual(items, [
       {
@@ -696,8 +696,8 @@ describe("when: ref has no upstream configured", () => {
       },
       {
         id: "push",
-        label: "Push",
-        disabled: true,
+        label: "Publish branch",
+        disabled: false,
         icon: "push",
         kind: "open_dialog",
         dialogAction: "push",
@@ -761,7 +761,7 @@ describe("when: ref has no upstream configured", () => {
       },
       {
         id: "push",
-        label: "Push",
+        label: "Publish branch",
         disabled: false,
         icon: "push",
         kind: "open_dialog",
@@ -855,7 +855,7 @@ describe("when: ref has no upstream configured", () => {
       },
       {
         id: "push",
-        label: "Push",
+        label: "Publish branch",
         disabled: true,
         icon: "push",
         kind: "open_dialog",

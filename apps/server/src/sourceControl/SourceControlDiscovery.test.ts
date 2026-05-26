@@ -16,11 +16,21 @@ import * as GitLabCli from "./GitLabCli.ts";
 import * as SourceControlDiscovery from "./SourceControlDiscovery.ts";
 import * as SourceControlProviderRegistry from "./SourceControlProviderRegistry.ts";
 
+const hasGitAndGhCommand = (command: string) => command === "git" || command === "gh";
+const hasAllCommandsExceptJj = (command: string) => command !== "jj";
+const noCommandsAvailable = () => false;
+
 const sourceControlProviderRegistryTestLayer = (input: {
   readonly bitbucket: Partial<BitbucketApi.BitbucketApiShape>;
   readonly process: Partial<VcsProcess.VcsProcessShape>;
+  readonly commandAvailable?: (command: string) => boolean;
 }) =>
-  SourceControlProviderRegistry.layer.pipe(
+  Layer.effect(
+    SourceControlProviderRegistry.SourceControlProviderRegistry,
+    SourceControlProviderRegistry.make(
+      input.commandAvailable ? { commandAvailable: input.commandAvailable } : undefined,
+    ),
+  ).pipe(
     Layer.provide(
       Layer.mergeAll(
         ServerConfig.layerTest(process.cwd(), { prefix: "t3-source-control-registry-test-" }).pipe(
@@ -51,8 +61,10 @@ const processOutput = (
 });
 
 it.effect("reports implemented tools separately from locally available executables", () => {
+  const processCommands: Array<string> = [];
   const processMock = {
     run: (input: VcsProcess.VcsProcessInput) => {
+      processCommands.push(input.command);
       if (input.command === "git") {
         return Effect.succeed(processOutput("git version 2.51.0\n"));
       }
@@ -80,7 +92,10 @@ Logged in to github.com account juliusmarminge (keyring)
       );
     },
   } satisfies Partial<VcsProcess.VcsProcessShape>;
-  const testLayer = SourceControlDiscovery.layer.pipe(
+  const testLayer = Layer.effect(
+    SourceControlDiscovery.SourceControlDiscovery,
+    SourceControlDiscovery.make({ commandAvailable: hasGitAndGhCommand }),
+  ).pipe(
     Layer.provide(
       ServerConfig.layerTest(process.cwd(), { prefix: "t3-source-control-discovery-" }),
     ),
@@ -88,6 +103,7 @@ Logged in to github.com account juliusmarminge (keyring)
     Layer.provide(
       sourceControlProviderRegistryTestLayer({
         process: processMock,
+        commandAvailable: hasGitAndGhCommand,
         bitbucket: {
           probeAuth: Effect.succeed({
             status: "unauthenticated",
@@ -155,6 +171,12 @@ Logged in to github.com account juliusmarminge (keyring)
     const bitbucket = result.sourceControlProviders.find((item) => item.kind === "bitbucket");
     assert.ok(bitbucket);
     assert.strictEqual(bitbucket.executable, undefined);
+    assert.deepStrictEqual(
+      processCommands.filter(
+        (command) => command === "jj" || command === "glab" || command === "az",
+      ),
+      [],
+    );
   }).pipe(Effect.provide(testLayer));
 });
 
@@ -196,7 +218,10 @@ Logged in to gitlab.com as gitlab-user
       );
     },
   } satisfies Partial<VcsProcess.VcsProcessShape>;
-  const testLayer = SourceControlDiscovery.layer.pipe(
+  const testLayer = Layer.effect(
+    SourceControlDiscovery.SourceControlDiscovery,
+    SourceControlDiscovery.make({ commandAvailable: hasAllCommandsExceptJj }),
+  ).pipe(
     Layer.provide(
       ServerConfig.layerTest(process.cwd(), { prefix: "t3-source-control-auth-discovery-" }),
     ),
@@ -204,6 +229,7 @@ Logged in to gitlab.com as gitlab-user
     Layer.provide(
       sourceControlProviderRegistryTestLayer({
         process: processMock,
+        commandAvailable: hasAllCommandsExceptJj,
         bitbucket: {
           probeAuth: Effect.succeed({
             status: "authenticated",
@@ -255,5 +281,76 @@ Logged in to gitlab.com as gitlab-user
         },
       ],
     );
+  }).pipe(Effect.provide(testLayer));
+});
+
+it.effect("skips unavailable discovery commands before spawning probes", () => {
+  const processCommands: Array<string> = [];
+  const processMock = {
+    run: (input: VcsProcess.VcsProcessInput) => {
+      processCommands.push(input.command);
+      return Effect.fail(
+        new VcsProcessSpawnError({
+          operation: input.operation,
+          command: input.command,
+          cwd: input.cwd,
+          cause: new Error(`${input.command} should not be spawned`),
+        }),
+      );
+    },
+  } satisfies Partial<VcsProcess.VcsProcessShape>;
+  const testLayer = Layer.effect(
+    SourceControlDiscovery.SourceControlDiscovery,
+    SourceControlDiscovery.make({ commandAvailable: noCommandsAvailable }),
+  ).pipe(
+    Layer.provide(
+      ServerConfig.layerTest(process.cwd(), { prefix: "t3-source-control-skip-discovery-" }),
+    ),
+    Layer.provide(Layer.mock(VcsProcess.VcsProcess)(processMock)),
+    Layer.provide(
+      sourceControlProviderRegistryTestLayer({
+        process: processMock,
+        commandAvailable: noCommandsAvailable,
+        bitbucket: {
+          probeAuth: Effect.succeed({
+            status: "unauthenticated",
+            account: Option.none(),
+            host: Option.some("bitbucket.org"),
+            detail: Option.none(),
+          }),
+        },
+      }),
+    ),
+    Layer.provideMerge(NodeServices.layer),
+  );
+
+  return Effect.gen(function* () {
+    const discovery = yield* SourceControlDiscovery.SourceControlDiscovery;
+    const result = yield* discovery.discover;
+
+    assert.deepStrictEqual(
+      result.versionControlSystems.map((item) => ({
+        kind: item.kind,
+        status: item.status,
+      })),
+      [
+        { kind: "git", status: "missing" },
+        { kind: "jj", status: "missing" },
+      ],
+    );
+    assert.deepStrictEqual(
+      result.sourceControlProviders
+        .filter((item) => item.kind !== "bitbucket")
+        .map((item) => ({
+          kind: item.kind,
+          status: item.status,
+        })),
+      [
+        { kind: "github", status: "missing" },
+        { kind: "gitlab", status: "missing" },
+        { kind: "azure-devops", status: "missing" },
+      ],
+    );
+    assert.deepStrictEqual(processCommands, []);
   }).pipe(Effect.provide(testLayer));
 });

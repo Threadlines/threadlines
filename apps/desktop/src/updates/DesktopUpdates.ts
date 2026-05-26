@@ -17,6 +17,7 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import * as DesktopBackendManager from "../backend/DesktopBackendManager.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
@@ -43,9 +44,29 @@ import {
 
 const AUTO_UPDATE_STARTUP_DELAY = "15 seconds";
 const AUTO_UPDATE_POLL_INTERVAL = "4 minutes";
+const GITHUB_CLI_AUTH_TIMEOUT = Duration.seconds(3);
+const PROCESS_TERMINATE_GRACE = Duration.seconds(1);
+const GITHUB_AUTH_TOKEN_ENV_NAMES = ["GH_TOKEN", "GITHUB_TOKEN"] as const;
+const PRIVATE_GITHUB_AUTH_REQUIRED_MESSAGE =
+  "Private GitHub update feed requires authentication. Run gh auth login or set GH_TOKEN/GITHUB_TOKEN before checking for updates.";
 
 const AppUpdateYmlConfig = Schema.Record(Schema.String, Schema.String);
 type AppUpdateYmlConfig = typeof AppUpdateYmlConfig.Type;
+
+interface PrivateGitHubUpdateFeedConfig {
+  readonly provider: "github";
+  readonly owner: string;
+  readonly repo: string;
+  readonly private: true;
+  readonly channel?: string;
+  readonly releaseType?: "draft" | "prerelease" | "release";
+}
+
+export interface PrivateGitHubUpdateAuthToken {
+  readonly source: "env" | "github-cli";
+  readonly envName?: (typeof GITHUB_AUTH_TOKEN_ENV_NAMES)[number];
+  readonly token: string;
+}
 
 const UpdateInfo = Schema.Struct({
   version: Schema.String,
@@ -124,6 +145,120 @@ function parseAppUpdateYml(raw: string): Effect.Effect<Option.Option<AppUpdateYm
   );
 }
 
+const trimNonEmpty = (value: string | null | undefined): Option.Option<string> =>
+  Option.fromNullishOr(value).pipe(
+    Option.map((entry) => entry.trim()),
+    Option.filter((entry) => entry.length > 0),
+  );
+
+const normalizeYmlScalar = (value: string | undefined): string | undefined => {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  return trimmed
+    .replace(/^['"]|['"]$/g, "")
+    .trim()
+    .toLowerCase();
+};
+
+function isPrivateGitHubUpdateFeedConfig(
+  appUpdateYmlConfig: Option.Option<Record<string, string>>,
+): boolean {
+  return Option.isSome(resolvePrivateGitHubUpdateFeedConfig(appUpdateYmlConfig));
+}
+
+function normalizeGitHubReleaseType(
+  value: string | undefined,
+): PrivateGitHubUpdateFeedConfig["releaseType"] | undefined {
+  const normalized = normalizeYmlScalar(value);
+  return normalized === "draft" || normalized === "prerelease" || normalized === "release"
+    ? normalized
+    : undefined;
+}
+
+function resolvePrivateGitHubUpdateFeedConfig(
+  appUpdateYmlConfig: Option.Option<Record<string, string>>,
+): Option.Option<PrivateGitHubUpdateFeedConfig> {
+  if (Option.isNone(appUpdateYmlConfig)) return Option.none();
+  const config = appUpdateYmlConfig.value;
+  if (normalizeYmlScalar(config.provider) !== "github") return Option.none();
+  if (normalizeYmlScalar(config.private) !== "true") return Option.none();
+
+  const owner = trimNonEmpty(config.owner);
+  const repo = trimNonEmpty(config.repo);
+  if (Option.isNone(owner) || Option.isNone(repo)) {
+    return Option.none();
+  }
+
+  return Option.some({
+    provider: "github",
+    owner: owner.value,
+    repo: repo.value,
+    private: true,
+    ...Option.match(trimNonEmpty(config.channel), {
+      onNone: () => ({}),
+      onSome: (channel) => ({ channel }),
+    }),
+    ...Option.fromNullishOr(normalizeGitHubReleaseType(config.releaseType)).pipe(
+      Option.match({
+        onNone: () => ({}),
+        onSome: (releaseType) => ({ releaseType }),
+      }),
+    ),
+  });
+}
+
+function findEnvGitHubToken(env: NodeJS.ProcessEnv): Option.Option<PrivateGitHubUpdateAuthToken> {
+  for (const envName of GITHUB_AUTH_TOKEN_ENV_NAMES) {
+    const token = trimNonEmpty(env[envName]);
+    if (Option.isSome(token)) {
+      return Option.some({ source: "env", envName, token: token.value });
+    }
+  }
+  return Option.none();
+}
+
+export function resolvePrivateGitHubUpdateAuthToken(input: {
+  readonly appUpdateYmlConfig: Option.Option<Record<string, string>>;
+  readonly env: NodeJS.ProcessEnv;
+  readonly githubCliToken: Option.Option<string>;
+}): Option.Option<PrivateGitHubUpdateAuthToken> {
+  if (!isPrivateGitHubUpdateFeedConfig(input.appUpdateYmlConfig)) {
+    return Option.none();
+  }
+
+  const envToken = findEnvGitHubToken(input.env);
+  if (Option.isSome(envToken)) {
+    return envToken;
+  }
+
+  return trimNonEmpty(Option.getOrUndefined(input.githubCliToken)).pipe(
+    Option.map((token) => ({ source: "github-cli" as const, token })),
+  );
+}
+
+const readGitHubCliToken: Effect.Effect<
+  Option.Option<string>,
+  never,
+  ChildProcessSpawner.ChildProcessSpawner
+> = Effect.gen(function* () {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  return yield* spawner
+    .string(
+      ChildProcess.make("gh", ["auth", "token"], {
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        killSignal: "SIGTERM",
+        forceKillAfter: PROCESS_TERMINATE_GRACE,
+      }),
+    )
+    .pipe(
+      Effect.timeoutOption(GITHUB_CLI_AUTH_TIMEOUT),
+      Effect.map((output) => Option.flatMap(output, (value) => trimNonEmpty(value))),
+      Effect.catch(() => Effect.succeed(Option.none<string>())),
+    );
+});
+
 function createBaseUpdateState(
   channel: DesktopUpdateChannel,
   enabled: boolean,
@@ -194,6 +329,7 @@ const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const fileSystem = yield* FileSystem.FileSystem;
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
+  const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
   const appUpdateYmlConfigRef = yield* Ref.make<Option.Option<AppUpdateYmlConfig>>(Option.none());
   const updateCheckInFlightRef = yield* Ref.make(false);
@@ -201,6 +337,9 @@ const make = Effect.gen(function* () {
   const updateInstallInFlightRef = yield* Ref.make(false);
   const updaterConfiguredRef = yield* Ref.make(false);
   const lastLoggedDownloadMilestoneRef = yield* Ref.make(-1);
+  const privateGitHubCliTokenRef = yield* Ref.make<Option.Option<string>>(Option.none());
+  const privateGitHubAuthWarningLoggedRef = yield* Ref.make(false);
+  const privateGitHubCliAuthLoggedRef = yield* Ref.make(false);
   const updateStateRef = yield* Ref.make<DesktopUpdateState>(
     createInitialDesktopUpdateState(
       environment.appVersion,
@@ -283,6 +422,94 @@ const make = Effect.gen(function* () {
     });
   });
 
+  const resolvePrivateGitHubAuthToken = Effect.gen(function* () {
+    const appUpdateYmlConfig = yield* Ref.get(appUpdateYmlConfigRef);
+    if (!isPrivateGitHubUpdateFeedConfig(appUpdateYmlConfig)) {
+      return Option.none<PrivateGitHubUpdateAuthToken>();
+    }
+
+    const envToken = findEnvGitHubToken(process.env);
+    if (Option.isSome(envToken)) {
+      return envToken;
+    }
+
+    let githubCliToken = yield* Ref.get(privateGitHubCliTokenRef);
+    if (Option.isNone(githubCliToken)) {
+      githubCliToken = yield* readGitHubCliToken.pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+      );
+      if (Option.isSome(githubCliToken)) {
+        yield* Ref.set(privateGitHubCliTokenRef, githubCliToken);
+      }
+    }
+
+    return resolvePrivateGitHubUpdateAuthToken({
+      appUpdateYmlConfig,
+      env: process.env,
+      githubCliToken,
+    });
+  });
+
+  const configurePrivateGitHubUpdateFeed = Effect.gen(function* () {
+    const appUpdateYmlConfig = yield* Ref.get(appUpdateYmlConfigRef);
+    const privateFeedConfig = resolvePrivateGitHubUpdateFeedConfig(appUpdateYmlConfig);
+    if (Option.isNone(privateFeedConfig)) {
+      return true;
+    }
+
+    const authToken = yield* resolvePrivateGitHubAuthToken;
+    if (Option.isNone(authToken)) {
+      if (!(yield* Ref.get(privateGitHubAuthWarningLoggedRef))) {
+        yield* Ref.set(privateGitHubAuthWarningLoggedRef, true);
+        yield* logUpdaterWarning(
+          "private GitHub update feed has no runtime token; run gh auth login or set GH_TOKEN/GITHUB_TOKEN before checking for updates",
+        );
+      }
+      return false;
+    }
+
+    yield* electronUpdater.setFeedURL({
+      ...privateFeedConfig.value,
+      token: authToken.value.token,
+    } satisfies ElectronUpdater.ElectronUpdaterFeedUrl);
+
+    if (
+      authToken.value.source === "github-cli" &&
+      !(yield* Ref.get(privateGitHubCliAuthLoggedRef))
+    ) {
+      yield* Ref.set(privateGitHubCliAuthLoggedRef, true);
+      yield* logUpdaterInfo("using GitHub CLI authentication for private update feed");
+    }
+
+    return true;
+  });
+
+  const markPrivateGitHubAuthMissingForCheck = Effect.gen(function* () {
+    const failedAt = yield* currentIsoTimestamp;
+    yield* updateState((current) =>
+      reduceDesktopUpdateStateOnCheckFailure(
+        current,
+        PRIVATE_GITHUB_AUTH_REQUIRED_MESSAGE,
+        failedAt,
+      ),
+    );
+    yield* logUpdaterWarning("skipping update check because private GitHub feed has no auth token");
+  });
+
+  const markPrivateGitHubAuthMissingForDownload = updateState((current) =>
+    reduceDesktopUpdateStateOnDownloadFailure(current, PRIVATE_GITHUB_AUTH_REQUIRED_MESSAGE),
+  ).pipe(
+    Effect.andThen(
+      logUpdaterWarning("skipping update download because private GitHub feed has no auth token"),
+    ),
+  );
+
+  const ensurePrivateGitHubUpdateFeed = Effect.fn("desktop.updates.ensurePrivateGitHubUpdateFeed")(
+    function* () {
+      return yield* configurePrivateGitHubUpdateFeed;
+    },
+  );
+
   const shouldEnableAutoUpdates = resolveDisabledReason.pipe(Effect.map(Option.isNone));
 
   const checkForUpdates = Effect.fn("desktop.updates.checkForUpdates")(function* (reason: string) {
@@ -305,8 +532,14 @@ const make = Effect.gen(function* () {
     yield* setState(reduceDesktopUpdateStateOnCheckStart(state, checkedAt));
     yield* logUpdaterInfo("checking for updates", { reason });
 
-    return yield* electronUpdater.checkForUpdates.pipe(
-      Effect.as(true),
+    return yield* Effect.gen(function* () {
+      if (!(yield* ensurePrivateGitHubUpdateFeed())) {
+        yield* markPrivateGitHubAuthMissingForCheck;
+        return true;
+      }
+      yield* electronUpdater.checkForUpdates;
+      return true;
+    }).pipe(
       Effect.catch(
         Effect.fn("desktop.updates.handleCheckForUpdatesFailure")(function* (error) {
           const failedAt = yield* currentIsoTimestamp;
@@ -338,6 +571,10 @@ const make = Effect.gen(function* () {
         isArm64HostRunningIntelBuild(environment.runtimeInfo),
       );
       yield* logUpdaterInfo("downloading update");
+      if (!(yield* ensurePrivateGitHubUpdateFeed())) {
+        yield* markPrivateGitHubAuthMissingForDownload;
+        return { accepted: true, completed: false };
+      }
       yield* electronUpdater.downloadUpdate;
       return { accepted: true, completed: true };
     }).pipe(

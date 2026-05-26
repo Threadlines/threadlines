@@ -61,9 +61,10 @@ interface BackendProcessExit {
 
 export class BackendTimeoutError extends Data.TaggedError("BackendTimeoutError")<{
   readonly url: URL;
+  readonly timeoutMs: number;
 }> {
   override get message() {
-    return `Timed out waiting for backend readiness at ${this.url.href}.`;
+    return `Timed out waiting ${this.timeoutMs}ms for backend readiness at ${this.url.href}.`;
   }
 }
 
@@ -181,6 +182,7 @@ const waitForHttpReady = Effect.fn("desktop.backendManager.waitForHttpReady")(fu
   timeout: Duration.Duration,
 ): Effect.fn.Return<void, BackendTimeoutError, HttpClient.HttpClient> {
   const readinessUrl = new URL(BACKEND_READINESS_PATH, baseUrl);
+  const timeoutMs = Duration.toMillis(timeout);
   const client = (yield* HttpClient.HttpClient).pipe(
     HttpClient.filterStatusOk,
     HttpClient.transformResponse(Effect.timeout(DEFAULT_BACKEND_READINESS_REQUEST_TIMEOUT)),
@@ -188,9 +190,10 @@ const waitForHttpReady = Effect.fn("desktop.backendManager.waitForHttpReady")(fu
   );
 
   yield* client.get(readinessUrl).pipe(
+    Effect.withTracerEnabled(false),
     Effect.asVoid,
     Effect.timeout(timeout),
-    Effect.mapError(() => new BackendTimeoutError({ url: readinessUrl })),
+    Effect.mapError(() => new BackendTimeoutError({ url: readinessUrl, timeoutMs })),
   );
 });
 

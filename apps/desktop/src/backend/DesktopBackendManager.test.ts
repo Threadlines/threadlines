@@ -280,6 +280,18 @@ describe("DesktopBackendManager", () => {
     }),
   );
 
+  it("includes the readiness timeout in backend timeout messages", () => {
+    const error = new DesktopBackendManager.BackendTimeoutError({
+      url: new URL("http://127.0.0.1:3773/.well-known/t3/environment"),
+      timeoutMs: 1_500,
+    });
+
+    assert.equal(
+      error.message,
+      "Timed out waiting 1500ms for backend readiness at http://127.0.0.1:3773/.well-known/t3/environment.",
+    );
+  });
+
   it.effect("starts the configured backend and closes the scoped process on stop", () =>
     Effect.gen(function* () {
       let startCount = 0;

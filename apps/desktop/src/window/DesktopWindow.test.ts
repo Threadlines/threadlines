@@ -1,9 +1,13 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 
 import type * as Electron from "electron";
 import { vi } from "vitest";
@@ -32,9 +36,29 @@ const environmentInput = {
   runningUnderArm64Translation: false,
 } satisfies DesktopEnvironment.MakeDesktopEnvironmentInput;
 
-function makeFakeBrowserWindow() {
+const PersistedMainWindowStateProbe = Schema.Struct({
+  width: Schema.Number,
+  height: Schema.Number,
+  isMaximized: Schema.Boolean,
+});
+const PersistedMainWindowStateProbeJson = Schema.fromJsonString(PersistedMainWindowStateProbe);
+const decodePersistedMainWindowStateProbeJson = Schema.decodeEffect(
+  PersistedMainWindowStateProbeJson,
+);
+const encodePersistedMainWindowStateProbeJson = Schema.encodeEffect(
+  PersistedMainWindowStateProbeJson,
+);
+
+function makeFakeBrowserWindow(input?: {
+  readonly bounds?: Electron.Rectangle;
+  readonly normalBounds?: Electron.Rectangle;
+  readonly isMaximized?: boolean;
+}) {
   const windowHandlers = new Map<string, Array<(...args: unknown[]) => void>>();
   const webContentsHandlers = new Map<string, Array<(...args: unknown[]) => void>>();
+  let isMaximized = input?.isMaximized ?? false;
+  const bounds = input?.bounds ?? { x: 0, y: 0, width: 1100, height: 780 };
+  const normalBounds = input?.normalBounds ?? bounds;
   const webContents = {
     copyImageAt: vi.fn(),
     isLoadingMainFrame: vi.fn(() => false),
@@ -51,10 +75,16 @@ function makeFakeBrowserWindow() {
 
   const window = {
     focus: vi.fn(),
+    getBounds: vi.fn(() => bounds),
+    getNormalBounds: vi.fn(() => normalBounds),
     isDestroyed: vi.fn(() => false),
+    isMaximized: vi.fn(() => isMaximized),
     isMinimized: vi.fn(() => false),
     isVisible: vi.fn(() => true),
     loadURL: vi.fn(() => Promise.resolve()),
+    maximize: vi.fn(() => {
+      isMaximized = true;
+    }),
     on: vi.fn((eventName: string, listener: (...args: unknown[]) => void) => {
       windowHandlers.set(eventName, [...(windowHandlers.get(eventName) ?? []), listener]);
       return window;
@@ -71,6 +101,7 @@ function makeFakeBrowserWindow() {
   return {
     window: window as unknown as Electron.BrowserWindow,
     loadURL: window.loadURL,
+    maximize: window.maximize,
     openDevTools: webContents.openDevTools,
     send: webContents.send,
     emitWebContents: (eventName: string, ...args: unknown[]) => {
@@ -157,11 +188,19 @@ function makeTestLayer(input: {
   readonly mainWindow: Ref.Ref<Option.Option<Electron.BrowserWindow>>;
   readonly platform?: NodeJS.Platform;
   readonly env?: Readonly<Record<string, string | undefined>>;
+  readonly createOptions?: Ref.Ref<ReadonlyArray<Electron.BrowserWindowConstructorOptions>>;
   readonly electronGlobalShortcut?: ElectronGlobalShortcut.ElectronGlobalShortcutShape;
   readonly electronShell?: ElectronShell.ElectronShellShape;
 }) {
   const electronWindowLayer = Layer.succeed(ElectronWindow.ElectronWindow, {
-    create: () => Ref.update(input.createCount, (count) => count + 1).pipe(Effect.as(input.window)),
+    create: (options) =>
+      Effect.gen(function* () {
+        yield* Ref.update(input.createCount, (count) => count + 1);
+        if (input.createOptions) {
+          yield* Ref.update(input.createOptions, (entries) => [...entries, options]);
+        }
+        return input.window;
+      }),
     main: Ref.get(input.mainWindow),
     currentMainOrFirst: Ref.get(input.mainWindow),
     focusedMainOrFirst: Ref.get(input.mainWindow),
@@ -244,6 +283,72 @@ describe("DesktopWindow", () => {
         assert.equal(fakeWindow.openDevTools.mock.calls.length, 1);
       }).pipe(Effect.provide(layer));
     }),
+  );
+
+  it.effect("restores maximized windows without overwriting the last normal size", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "badcode-window-state-",
+      });
+      const stateDir = path.join(baseDir, "dev");
+      const windowStatePath = path.join(stateDir, "window-state.json");
+      const fakeWindow = makeFakeBrowserWindow({
+        bounds: { x: 0, y: 0, width: 1920, height: 1040 },
+        normalBounds: { x: 120, y: 80, width: 960, height: 720 },
+        isMaximized: true,
+      });
+      const createCount = yield* Ref.make(0);
+      const createOptions = yield* Ref.make<
+        ReadonlyArray<Electron.BrowserWindowConstructorOptions>
+      >([]);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const layer = makeTestLayer({
+        window: fakeWindow.window,
+        createCount,
+        createOptions,
+        mainWindow,
+        env: {
+          T3CODE_HOME: baseDir,
+        },
+      });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* fileSystem.makeDirectory(stateDir, { recursive: true });
+        yield* fileSystem.writeFileString(
+          windowStatePath,
+          yield* encodePersistedMainWindowStateProbeJson({
+            width: 960,
+            height: 720,
+            isMaximized: true,
+          }),
+        );
+
+        yield* desktopWindow.handleBackendReady;
+        const [options] = yield* Ref.get(createOptions);
+        assert.equal(options?.width, 960);
+        assert.equal(options?.height, 720);
+        assert.equal(fakeWindow.maximize.mock.calls.length, 1);
+
+        fakeWindow.emitWindow("close");
+        let rawState = "";
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+          rawState = yield* fileSystem
+            .readFileString(windowStatePath)
+            .pipe(Effect.catch(() => Effect.succeed("")));
+          if (rawState.trim().length > 0) {
+            break;
+          }
+          yield* Effect.sleep(Duration.millis(5));
+        }
+        const persistedState = yield* decodePersistedMainWindowStateProbeJson(rawState);
+        assert.equal(persistedState.width, 960);
+        assert.equal(persistedState.height, 720);
+        assert.equal(persistedState.isMaximized, true);
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(NodeServices.layer)),
   );
 
   it.effect("opens Windows screen clipping for bare PrintScreen", () =>

@@ -104,13 +104,14 @@ export function buildMenuItems(
   const hasOpenPr = gitStatus.pr?.state === "open";
   const isBehind = gitStatus.behindCount > 0;
   const hasDefaultBranchDelta = (gitStatus.aheadOfDefaultCount ?? gitStatus.aheadCount) > 0;
-  const canPushWithoutUpstream = hasPrimaryRemote && !gitStatus.hasUpstream;
+  const canPushWithoutUpstream =
+    hasPrimaryRemote && !gitStatus.hasUpstream && !gitStatus.isDefaultRef;
   const canCommit = !isBusy && hasChanges;
   const canPush =
     !isBusy &&
     hasBranch &&
     !isBehind &&
-    gitStatus.aheadCount > 0 &&
+    (gitStatus.aheadCount > 0 || canPushWithoutUpstream) &&
     (gitStatus.hasUpstream || canPushWithoutUpstream);
   const canCreatePr =
     !isBusy &&
@@ -139,7 +140,7 @@ export function buildMenuItems(
     commitItem,
     {
       id: "push",
-      label: "Push",
+      label: gitStatus.hasUpstream ? "Push" : "Publish branch",
       disabled: !canPush,
       icon: "push",
       kind: "open_dialog",
@@ -230,6 +231,14 @@ export function resolveQuickAction(
     if (!isAhead) {
       if (hasOpenPr) {
         return { label: `View ${terminology.shortLabel}`, disabled: false, kind: "open_pr" };
+      }
+      if (!isDefaultRef) {
+        return {
+          label: "Publish branch",
+          disabled: false,
+          kind: "run_action",
+          action: "push",
+        };
       }
       return {
         label: "Push",

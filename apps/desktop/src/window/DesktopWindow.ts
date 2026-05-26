@@ -174,6 +174,12 @@ function normalizePersistedMainWindowState(
   });
 }
 
+function getPersistableMainWindowBounds(
+  window: Electron.BrowserWindow,
+): Pick<Electron.Rectangle, "width" | "height"> {
+  return window.isMaximized() ? window.getNormalBounds() : window.getBounds();
+}
+
 function loadPersistedMainWindowState(
   fileSystem: FileSystem.FileSystem,
   filePath: string,
@@ -318,7 +324,7 @@ const make = Effect.gen(function* () {
     }
 
     window.on("close", () => {
-      const bounds = window.getBounds();
+      const bounds = getPersistableMainWindowBounds(window);
       const width = normalizeRestoredDimension(bounds.width, MIN_MAIN_WINDOW_WIDTH);
       const height = normalizeRestoredDimension(bounds.height, MIN_MAIN_WINDOW_HEIGHT);
       if (width === null || height === null) {

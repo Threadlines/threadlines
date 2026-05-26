@@ -1110,6 +1110,18 @@ function workEntryIcon(workEntry: TimelineWorkEntry): LucideIcon {
   return workToneIcon(workEntry.tone).icon;
 }
 
+function isCommandWorkEntry(workEntry: TimelineWorkEntry): boolean {
+  return (
+    workEntry.requestKind === "command" ||
+    workEntry.itemType === "command_execution" ||
+    !!workEntry.command
+  );
+}
+
+function isRunningCommandWorkEntry(workEntry: TimelineWorkEntry): boolean {
+  return workEntry.executionState === "running" && isCommandWorkEntry(workEntry);
+}
+
 function capitalizePhrase(value: string): string {
   const trimmed = value.trim();
   if (trimmed.length === 0) {
@@ -1119,10 +1131,30 @@ function capitalizePhrase(value: string): string {
 }
 
 function toolWorkEntryHeading(workEntry: TimelineWorkEntry): string {
-  if (!workEntry.toolTitle) {
-    return capitalizePhrase(normalizeCompactToolLabel(workEntry.label));
+  if (isRunningCommandWorkEntry(workEntry)) {
+    return "Running command";
   }
-  return capitalizePhrase(normalizeCompactToolLabel(workEntry.toolTitle));
+
+  const rawHeading = workEntry.toolTitle ?? workEntry.label;
+  const normalizedHeading = normalizeCompactToolLabel(rawHeading);
+  if (
+    workEntry.executionState === "failed" &&
+    isCommandWorkEntry(workEntry) &&
+    /^(ran command|command)$/i.test(normalizedHeading)
+  ) {
+    return "Command failed";
+  }
+  return capitalizePhrase(normalizedHeading);
+}
+
+function RunningCommandIndicator() {
+  return (
+    <span className="ml-1.5 inline-flex items-center gap-[3px]" aria-label="Command still running">
+      <span className="size-1 rounded-full bg-current opacity-35 animate-pulse" />
+      <span className="size-1 rounded-full bg-current opacity-35 animate-pulse [animation-delay:180ms]" />
+      <span className="size-1 rounded-full bg-current opacity-35 animate-pulse [animation-delay:360ms]" />
+    </span>
+  );
 }
 
 const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
@@ -1132,15 +1164,16 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const { workEntry, workspaceRoot } = props;
   const iconConfig = workToneIcon(workEntry.tone);
   const EntryIcon = workEntryIcon(workEntry);
+  const isRunningCommand = isRunningCommandWorkEntry(workEntry);
   const heading = toolWorkEntryHeading(workEntry);
-  const rawPreview = workEntryPreview(workEntry, workspaceRoot);
+  const rawPreview = isRunningCommand ? null : workEntryPreview(workEntry, workspaceRoot);
   const preview =
     rawPreview &&
     normalizeCompactToolLabel(rawPreview).toLowerCase() ===
       normalizeCompactToolLabel(heading).toLowerCase()
       ? null
       : rawPreview;
-  const rawCommand = workEntryRawCommand(workEntry);
+  const rawCommand = isRunningCommand ? null : workEntryRawCommand(workEntry);
   const displayText = preview ? `${heading} - ${preview}` : heading;
   const hasChangedFiles = (workEntry.changedFiles?.length ?? 0) > 0;
   const previewIsChangedFiles = hasChangedFiles && !workEntry.command && !workEntry.detail;
@@ -1183,8 +1216,14 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                 )}
                 title={displayText}
               >
-                <span className={cn("text-foreground/80", workToneClass(workEntry.tone))}>
+                <span
+                  className={cn(
+                    "inline-flex items-center text-foreground/80",
+                    workToneClass(workEntry.tone),
+                  )}
+                >
                   {heading}
+                  {isRunningCommand ? <RunningCommandIndicator /> : null}
                 </span>
                 {preview && (
                   <Tooltip>
@@ -1225,8 +1264,14 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                     preview ? "text-muted-foreground/70" : "",
                   )}
                 >
-                  <span className={cn("text-foreground/80", workToneClass(workEntry.tone))}>
+                  <span
+                    className={cn(
+                      "inline-flex items-center text-foreground/80",
+                      workToneClass(workEntry.tone),
+                    )}
+                  >
                     {heading}
+                    {isRunningCommand ? <RunningCommandIndicator /> : null}
                   </span>
                   {preview && <span className="text-muted-foreground/55"> - {preview}</span>}
                 </p>
