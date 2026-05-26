@@ -790,14 +790,20 @@ it.layer(NodeServices.layer)("resolveAvailableEditors", (it) => {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-editors-" });
+      const platform = process.platform === "win32" ? "win32" : "linux";
+      const zeditorCommand = platform === "win32" ? "zeditor.CMD" : "zeditor";
+      const fileManagerCommand = platform === "win32" ? "explorer.CMD" : "xdg-open";
+      const commandContents =
+        platform === "win32" ? "@echo off\r\nexit /b 0\r\n" : "#!/bin/sh\nexit 0\n";
 
-      yield* fs.writeFileString(path.join(dir, "zeditor"), "#!/bin/sh\nexit 0\n");
-      yield* fs.writeFileString(path.join(dir, "xdg-open"), "#!/bin/sh\nexit 0\n");
-      yield* fs.chmod(path.join(dir, "zeditor"), 0o755);
-      yield* fs.chmod(path.join(dir, "xdg-open"), 0o755);
+      yield* fs.writeFileString(path.join(dir, zeditorCommand), commandContents);
+      yield* fs.writeFileString(path.join(dir, fileManagerCommand), commandContents);
+      yield* fs.chmod(path.join(dir, zeditorCommand), 0o755);
+      yield* fs.chmod(path.join(dir, fileManagerCommand), 0o755);
 
-      const editors = resolveAvailableEditors("linux", {
+      const editors = resolveAvailableEditors(platform, {
         PATH: dir,
+        PATHEXT: ".COM;.EXE;.BAT;.CMD",
       });
       assert.deepEqual(editors, ["zed", "file-manager"]);
     }),

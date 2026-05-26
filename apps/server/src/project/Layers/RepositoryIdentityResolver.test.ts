@@ -1,3 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import { statSync } from "node:fs";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import * as Duration from "effect/Duration";
@@ -15,7 +17,23 @@ import {
 } from "./RepositoryIdentityResolver.ts";
 
 const normalizePathSeparators = (value: string) => value.replaceAll("\\", "/");
-const normalizeResolvedPath = (value: string) => normalizePathSeparators(value);
+const normalizeResolvedPath = (value: string) =>
+  process.platform === "win32"
+    ? normalizePathSeparators(value).toLowerCase()
+    : normalizePathSeparators(value);
+
+function expectSameDirectory(received: string, expected: string): void {
+  if (normalizeResolvedPath(received) === normalizeResolvedPath(expected)) {
+    return;
+  }
+
+  const receivedStat = statSync(received);
+  const expectedStat = statSync(expected);
+  expect({ dev: receivedStat.dev, ino: receivedStat.ino }).toEqual({
+    dev: expectedStat.dev,
+    ino: expectedStat.ino,
+  });
+}
 
 const git = (cwd: string, args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
@@ -52,13 +70,10 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
 
       const resolver = yield* RepositoryIdentityResolver;
       const identity = yield* resolver.resolve(cwd);
-      const resolvedIdentityRoot =
-        identity?.rootPath === undefined ? "" : yield* fileSystem.realPath(identity.rootPath);
-      const resolvedCwd = yield* fileSystem.realPath(cwd);
 
       expect(identity).not.toBeNull();
       expect(identity?.canonicalKey).toBe("github.com/t3tools/t3code");
-      expect(normalizeResolvedPath(resolvedIdentityRoot)).toBe(normalizeResolvedPath(resolvedCwd));
+      expectSameDirectory(identity?.rootPath ?? "", cwd);
       expect(identity?.displayName).toBe("t3tools/t3code");
       expect(identity?.provider).toBe("github");
       expect(identity?.owner).toBe("t3tools");
@@ -81,15 +96,10 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
 
       const resolver = yield* RepositoryIdentityResolver;
       const identity = yield* resolver.resolve(nestedWorkspace);
-      const resolvedIdentityRoot =
-        identity?.rootPath === undefined ? "" : yield* fileSystem.realPath(identity.rootPath);
-      const resolvedRepoRoot = yield* fileSystem.realPath(repoRoot);
 
       expect(identity).not.toBeNull();
       expect(identity?.canonicalKey).toBe("github.com/t3tools/t3code");
-      expect(normalizeResolvedPath(resolvedIdentityRoot)).toBe(
-        normalizeResolvedPath(resolvedRepoRoot),
-      );
+      expectSameDirectory(identity?.rootPath ?? "", repoRoot);
     }).pipe(Effect.provide(RepositoryIdentityResolverLive)),
   );
 

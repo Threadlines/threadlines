@@ -3013,10 +3013,11 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         expect((yield* runGit(repoDir, ["rev-parse", "main"])).stdout.trim()).toBe(mainBefore);
         expect(
           (yield* runGit(result.worktreePath as string, [
-            "branch",
-            "--show-current",
+            "symbolic-ref",
+            "--quiet",
+            "HEAD",
           ])).stdout.trim(),
-        ).toBe("t3code/pr-91/main");
+        ).toBe("refs/heads/t3code/pr-91/main");
       }),
   );
 

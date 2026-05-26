@@ -1,3 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import { statSync } from "node:fs";
 import { assert, it, describe } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -12,7 +14,29 @@ import type { VcsDriverKind } from "@t3tools/contracts";
 import * as VcsDriver from "../VcsDriver.ts";
 
 function normalizePathForComparison(value: string): string {
-  return value.replaceAll("\\", "/");
+  const normalized = value.replaceAll("\\", "/");
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function pathsReferenceSameDirectory(left: string, right: string): boolean {
+  if (normalizePathForComparison(left) === normalizePathForComparison(right)) {
+    return true;
+  }
+
+  try {
+    const leftStat = statSync(left);
+    const rightStat = statSync(right);
+    return leftStat.dev === rightStat.dev && leftStat.ino === rightStat.ino;
+  } catch {
+    return false;
+  }
+}
+
+function assertSameDirectory(left: string, right: string): void {
+  assert.isTrue(
+    pathsReferenceSameDirectory(left, right),
+    `${left} should reference the same directory as ${right}`,
+  );
 }
 
 export interface VcsDriverFixture<R, E> {
@@ -71,11 +95,7 @@ export function runVcsDriverContractSuite<R, E>(input: VcsDriverContractSuiteInp
           yield* input.fixture.writeFile(cwd, "src/index.ts", "export const value = 1;\n");
           const identity = yield* driver.detectRepository(cwd);
           assert.equal(identity?.kind, input.kind);
-          assert.isTrue(
-            normalizePathForComparison(identity?.rootPath ?? "").endsWith(
-              normalizePathForComparison(cwd),
-            ),
-          );
+          assertSameDirectory(identity?.rootPath ?? "", cwd);
           assert.equal(identity?.freshness.source, "live-local");
           assert.isTrue(DateTime.isDateTime(identity?.freshness.observedAt));
           assert.isTrue(Option.isNone(identity?.freshness.expiresAt ?? Option.none()));
@@ -84,7 +104,7 @@ export function runVcsDriverContractSuite<R, E>(input: VcsDriverContractSuiteInp
           const path = yield* Path.Path;
           const nestedDir = path.join(cwd, "src");
           const nestedIdentity = yield* driver.detectRepository(nestedDir);
-          assert.equal(nestedIdentity?.rootPath, identity?.rootPath);
+          assertSameDirectory(nestedIdentity?.rootPath ?? "", identity?.rootPath ?? "");
           assert.equal(yield* driver.isInsideWorkTree(nestedDir), true);
         }),
       );

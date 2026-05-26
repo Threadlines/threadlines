@@ -158,7 +158,7 @@ describe("providerMaintenance", () => {
 
         expect(
           packageToolUpdate.resolve({
-            binaryPath: "package-tool",
+            binaryPath: packageToolPath,
             platform: "darwin",
             env: {
               PATH: vitePlusBinDir,
@@ -227,7 +227,7 @@ describe("providerMaintenance", () => {
 
         expect(
           scopedPackageToolUpdate.resolve({
-            binaryPath: "scoped-package-tool",
+            binaryPath: scopedPackageToolPath,
             platform: "darwin",
             env: {
               PATH: pnpmHomeDir,
@@ -286,7 +286,7 @@ describe("providerMaintenance", () => {
 
         expect(
           nativePackageToolUpdate.resolve({
-            binaryPath: "native-package-tool",
+            binaryPath: nativePackageToolPath,
             platform: "darwin",
             env: {
               PATH: nativeBinDir,
@@ -321,7 +321,7 @@ describe("providerMaintenance", () => {
 
         expect(
           scopedPackageToolUpdate.resolve({
-            binaryPath: "scoped-package-tool",
+            binaryPath: scopedPackageToolPath,
             platform: "darwin",
             env: {
               PATH: nativeBinDir,
