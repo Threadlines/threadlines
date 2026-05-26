@@ -1990,7 +1990,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           current: refName.current,
           isRemote: false,
           isDefault: refName.name === defaultBranch,
-          worktreePath: worktreeMap.get(refName.name) ?? null,
+          worktreePath: worktreeMap.get(refName.name) ?? (refName.current ? input.cwd : null),
         }))
         .toSorted((a, b) => {
           const aPriority = a.current ? 0 : a.isDefault ? 1 : 2;
@@ -2117,6 +2117,56 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     yield* executeGit("GitVcsDriver.createWorktree", input.cwd, args, {
       fallbackErrorMessage: "git worktree add failed",
     });
+
+    const expectedRef = `refs/heads/${targetBranch}`;
+    const readCreatedWorktreeHead = Effect.fn("GitVcsDriver.createWorktree.readHead")(function* () {
+      const result = yield* executeGit(
+        "GitVcsDriver.createWorktree.readHead",
+        worktreePath,
+        ["symbolic-ref", "--quiet", "HEAD"],
+        {
+          allowNonZeroExit: true,
+          timeoutMs: 5_000,
+        },
+      );
+      return result.exitCode === 0 ? result.stdout.trim() : null;
+    });
+
+    const verifyCreatedWorktreeBranch = Effect.fn("GitVcsDriver.createWorktree.verifyBranch")(
+      function* () {
+        let actualRef = yield* readCreatedWorktreeHead();
+        if (actualRef === expectedRef) {
+          return;
+        }
+
+        yield* runGit("GitVcsDriver.createWorktree.checkoutTargetBranch", worktreePath, [
+          "checkout",
+          "--quiet",
+          targetBranch,
+        ]);
+
+        actualRef = yield* readCreatedWorktreeHead();
+        if (actualRef !== expectedRef) {
+          return yield* createGitCommandError(
+            "GitVcsDriver.createWorktree.verifyBranch",
+            worktreePath,
+            ["symbolic-ref", "--quiet", "HEAD"],
+            `git worktree add checked out ${actualRef ?? "detached HEAD"} instead of ${expectedRef}.`,
+          );
+        }
+      },
+    );
+
+    yield* verifyCreatedWorktreeBranch().pipe(
+      Effect.tapError(() =>
+        runGit("GitVcsDriver.createWorktree.cleanupAfterVerifyFailure", input.cwd, [
+          "worktree",
+          "remove",
+          "--force",
+          worktreePath,
+        ]).pipe(Effect.catch(() => Effect.void)),
+      ),
+    );
 
     return {
       worktree: {
