@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   type EnvironmentId,
   type GitManagerServiceError,
+  type VcsStatusLocalResult,
   type VcsStatusResult,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -22,7 +23,8 @@ interface GitStatusState {
   readonly isPending: boolean;
 }
 
-type GitStatusClient = Pick<WsRpcClient["vcs"], "onStatus" | "refreshStatus">;
+type GitStatusClient = Pick<WsRpcClient["vcs"], "onStatus" | "refreshStatus"> &
+  Partial<Pick<WsRpcClient["vcs"], "refreshLocalStatus">>;
 interface ResolvedGitStatusClient {
   readonly clientIdentity: string;
   readonly client: GitStatusClient;
@@ -56,6 +58,7 @@ const EMPTY_GIT_STATUS_ATOM = Atom.make(EMPTY_GIT_STATUS_STATE).pipe(
 const NOOP: () => void = () => undefined;
 const watchedGitStatuses = new Map<string, WatchedGitStatus>();
 const knownGitStatusKeys = new Set<string>();
+const gitStatusLocalRefreshInFlight = new Map<string, Promise<VcsStatusLocalResult>>();
 const gitStatusRefreshInFlight = new Map<string, Promise<VcsStatusResult>>();
 const gitStatusLastRefreshAtByKey = new Map<string, number>();
 
@@ -148,11 +151,44 @@ export function refreshGitStatus(
   return refreshPromise;
 }
 
+export function refreshLocalGitStatus(
+  target: GitStatusTarget,
+  client?: GitStatusClient,
+): Promise<VcsStatusLocalResult | null> {
+  const targetKey = getGitStatusTargetKey(target);
+  if (targetKey === null || target.cwd === null) {
+    return Promise.resolve(null);
+  }
+
+  const resolvedClient = client ?? readResolvedGitStatusClient(target)?.client;
+  if (!resolvedClient?.refreshLocalStatus) {
+    return Promise.resolve(null);
+  }
+
+  const currentInFlight = gitStatusLocalRefreshInFlight.get(targetKey);
+  if (currentInFlight) {
+    return currentInFlight;
+  }
+
+  const lastRequestedAt = gitStatusLastRefreshAtByKey.get(targetKey) ?? 0;
+  if (Date.now() - lastRequestedAt < GIT_STATUS_REFRESH_DEBOUNCE_MS) {
+    return Promise.resolve(getGitStatusSnapshot(target).data);
+  }
+
+  gitStatusLastRefreshAtByKey.set(targetKey, Date.now());
+  const refreshPromise = resolvedClient.refreshLocalStatus({ cwd: target.cwd }).finally(() => {
+    gitStatusLocalRefreshInFlight.delete(targetKey);
+  });
+  gitStatusLocalRefreshInFlight.set(targetKey, refreshPromise);
+  return refreshPromise;
+}
+
 export function resetGitStatusStateForTests(): void {
   for (const watched of watchedGitStatuses.values()) {
     watched.unsubscribe();
   }
   watchedGitStatuses.clear();
+  gitStatusLocalRefreshInFlight.clear();
   gitStatusRefreshInFlight.clear();
   gitStatusLastRefreshAtByKey.clear();
 

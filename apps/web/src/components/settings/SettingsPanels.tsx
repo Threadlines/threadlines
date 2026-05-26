@@ -402,6 +402,10 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.diffIgnoreWhitespace !== DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace
         ? ["Diff whitespace changes"]
         : []),
+      ...(settings.chatChangedFilesDefaultExpanded !==
+      DEFAULT_UNIFIED_SETTINGS.chatChangedFilesDefaultExpanded
+        ? ["Changed files chat block"]
+        : []),
       ...(settings.autoOpenPlanSidebar !== DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar
         ? ["Auto-open task panel"]
         : []),
@@ -429,6 +433,7 @@ export function useSettingsRestore(onRestored?: () => void) {
     [
       isGitWritingModelDirty,
       settings.autoOpenPlanSidebar,
+      settings.chatChangedFilesDefaultExpanded,
       settings.confirmThreadArchive,
       settings.confirmThreadDelete,
       settings.addProjectBaseDirectory,
@@ -458,6 +463,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
       diffWordWrap: DEFAULT_UNIFIED_SETTINGS.diffWordWrap,
       diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
+      chatChangedFilesDefaultExpanded: DEFAULT_UNIFIED_SETTINGS.chatChangedFilesDefaultExpanded,
       sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount,
       autoOpenPlanSidebar: DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar,
       enableAssistantStreaming: DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming,
@@ -638,6 +644,34 @@ export function GeneralSettingsPanel() {
                 updateSettings({ diffIgnoreWhitespace: Boolean(checked) })
               }
               aria-label="Hide whitespace changes by default"
+            />
+          }
+        />
+
+        <SettingsRow
+          title="Changed files in chat"
+          description="Expand the changed-files block in assistant responses by default."
+          resetAction={
+            settings.chatChangedFilesDefaultExpanded !==
+            DEFAULT_UNIFIED_SETTINGS.chatChangedFilesDefaultExpanded ? (
+              <SettingResetButton
+                label="changed files in chat"
+                onClick={() =>
+                  updateSettings({
+                    chatChangedFilesDefaultExpanded:
+                      DEFAULT_UNIFIED_SETTINGS.chatChangedFilesDefaultExpanded,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.chatChangedFilesDefaultExpanded}
+              onCheckedChange={(checked) =>
+                updateSettings({ chatChangedFilesDefaultExpanded: Boolean(checked) })
+              }
+              aria-label="Expand changed files in chat by default"
             />
           }
         />

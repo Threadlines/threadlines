@@ -245,6 +245,16 @@ describe("ProcessDiagnostics", () => {
     }),
   );
 
+  it("builds one bulk Windows perf query instead of one CIM query per process", () => {
+    const command = ProcessDiagnostics.buildWindowsProcessQueryCommand();
+
+    expect(command).toContain("Win32_Process");
+    expect(command).toContain("Win32_PerfFormattedData_PerfProc_Process");
+    expect(command).toContain("$perfByPid");
+    expect(command).not.toContain("IDProcess = $($_.ProcessId)");
+    expect(command).not.toContain("-Filter");
+  });
+
   it.effect("does not allow signaling the diagnostics query process", () =>
     Effect.gen(function* () {
       const spawnerLayer = Layer.succeed(

@@ -23,6 +23,7 @@ import type {
   VcsRemoveWorktreeInput,
   GitResolvePullRequestResult,
   VcsStatusInput,
+  VcsStatusLocalResult,
   VcsStatusResult,
   VcsCreateRefResult,
 } from "./git.ts";
@@ -540,6 +541,7 @@ export interface EnvironmentApi {
     mergeRef: (input: VcsMergeRefInput) => Promise<VcsMergeRefResult>;
     init: (input: VcsInitInput) => Promise<void>;
     pull: (input: VcsPullInput) => Promise<VcsPullResult>;
+    refreshLocalStatus: (input: VcsStatusInput) => Promise<VcsStatusLocalResult>;
     refreshStatus: (input: VcsStatusInput) => Promise<VcsStatusResult>;
     onStatus: (
       input: VcsStatusInput,

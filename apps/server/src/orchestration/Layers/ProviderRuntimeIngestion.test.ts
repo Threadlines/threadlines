@@ -2419,6 +2419,7 @@ describe("ProviderRuntimeIngestion", () => {
       createdAt: now,
       threadId: asThreadId("thread-1"),
       turnId: asTurnId("turn-9"),
+      itemId: asItemId("item-tool-started"),
       payload: {
         itemType: "command_execution",
         status: "in_progress",
@@ -2443,6 +2444,15 @@ describe("ProviderRuntimeIngestion", () => {
         (activity: ProviderRuntimeTestActivity) => activity.kind === "tool.started",
       ),
     ).toBe(true);
+    const toolStartedActivity = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.kind === "tool.started",
+    );
+    const toolStartedPayload =
+      toolStartedActivity?.payload && typeof toolStartedActivity.payload === "object"
+        ? (toolStartedActivity.payload as Record<string, unknown>)
+        : undefined;
+    expect(toolStartedPayload?.toolCallId).toBe("item-tool-started");
+    expect(toolStartedPayload?.title).toBe("Read file");
   });
 
   it("consumes P1 runtime events into thread metadata, diff checkpoints, and activities", async () => {

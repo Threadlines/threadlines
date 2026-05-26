@@ -66,6 +66,7 @@ const rpcClientMock = {
   },
   vcs: {
     pull: vi.fn(),
+    refreshLocalStatus: vi.fn(),
     refreshStatus: vi.fn(),
     onStatus: vi.fn((input: { cwd: string }, listener: (event: VcsStatusResult) => void) =>
       registerListener(gitStatusListeners, listener),
@@ -414,6 +415,17 @@ describe("wsApi", () => {
     expect(rpcClientMock.vcs.refreshStatus).toHaveBeenCalledWith({ cwd: "/repo" });
   });
 
+  it("forwards local git status refreshes directly to the RPC client", async () => {
+    rpcClientMock.vcs.refreshLocalStatus.mockResolvedValue(baseGitStatus);
+    const { createEnvironmentApi } = await import("./environmentApi");
+
+    const api = createEnvironmentApi(rpcClientMock as never);
+
+    await api.vcs.refreshLocalStatus({ cwd: "/repo" });
+
+    expect(rpcClientMock.vcs.refreshLocalStatus).toHaveBeenCalledWith({ cwd: "/repo" });
+  });
+
   it("forwards shell stream subscription options to the RPC client", async () => {
     const { createEnvironmentApi } = await import("./environmentApi");
 
@@ -604,6 +616,7 @@ describe("wsApi", () => {
   it("reads and writes persistence through the desktop bridge when available", async () => {
     const clientSettings = {
       autoOpenPlanSidebar: false,
+      chatChangedFilesDefaultExpanded: false,
       confirmThreadArchive: true,
       confirmThreadDelete: false,
       dismissedProviderUpdateNotificationKeys: [],
@@ -667,6 +680,7 @@ describe("wsApi", () => {
     const api = createLocalApi(rpcClientMock as never);
     const clientSettings = {
       autoOpenPlanSidebar: false,
+      chatChangedFilesDefaultExpanded: false,
       confirmThreadArchive: true,
       confirmThreadDelete: false,
       dismissedProviderUpdateNotificationKeys: [],

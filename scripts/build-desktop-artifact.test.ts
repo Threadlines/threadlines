@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
 import {
+  createBuildConfig,
   resolveDesktopRuntimeDependencies,
   resolveBuildOptions,
   resolveDesktopBuildIconAssets,
@@ -85,6 +86,17 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         const exit = yield* Effect.exit(resolveMockUpdateServerPort(port));
         assert.equal(exit._tag, "Failure");
       }
+    }),
+  );
+
+  it.effect("keeps Windows icon resource editing enabled for unsigned builds", () =>
+    Effect.gen(function* () {
+      const buildConfig = yield* createBuildConfig("win", "nsis", "0.0.2", false, false, undefined);
+      const winConfig = buildConfig.win as Record<string, unknown>;
+
+      assert.equal(winConfig.icon, "icon.ico");
+      assert.equal(winConfig.signExecutable, false);
+      assert.equal(winConfig.signAndEditExecutable, undefined);
     }),
   );
 

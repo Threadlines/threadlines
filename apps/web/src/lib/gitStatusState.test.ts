@@ -6,6 +6,7 @@ import { resetAppAtomRegistryForTests } from "../rpc/atomRegistry";
 import {
   getGitStatusSnapshot,
   resetGitStatusStateForTests,
+  refreshLocalGitStatus,
   refreshGitStatus,
   watchGitStatus,
 } from "./gitStatusState";
@@ -53,6 +54,10 @@ const BASE_STATUS: VcsStatusResult = {
 };
 
 const gitClient = {
+  refreshLocalStatus: vi.fn(async (input: { cwd: string }) => ({
+    ...BASE_STATUS,
+    refName: `${input.cwd}-local-refreshed`,
+  })),
   refreshStatus: vi.fn(async (input: { cwd: string }) => ({
     ...BASE_STATUS,
     refName: `${input.cwd}-refreshed`,
@@ -91,6 +96,10 @@ function createRegisteredGitStatusClient(environmentId: EnvironmentId) {
     },
     vcs: {
       pull: vi.fn(async () => undefined),
+      refreshLocalStatus: vi.fn(async (input: { cwd: string }) => ({
+        ...BASE_STATUS,
+        refName: `${input.cwd}-local-refreshed`,
+      })),
       refreshStatus: vi.fn(async (input: { cwd: string }) => ({
         ...BASE_STATUS,
         refName: `${input.cwd}-refreshed`,
@@ -173,6 +182,7 @@ afterEach(async () => {
   serviceHarness.connections.clear();
   serviceHarness.listeners.clear();
   gitClient.onStatus.mockClear();
+  gitClient.refreshLocalStatus.mockClear();
   gitClient.refreshStatus.mockClear();
   resetGitStatusStateForTests();
   resetAppAtomRegistryForTests();
@@ -225,6 +235,26 @@ describe("gitStatusState", () => {
     expect(gitClient.onStatus).toHaveBeenCalledOnce();
     expect(gitClient.refreshStatus).toHaveBeenCalledWith({ cwd: "/repo" });
     expect(refreshed).toEqual({ ...BASE_STATUS, refName: "/repo-refreshed" });
+    expect(getGitStatusSnapshot(TARGET)).toEqual({
+      data: BASE_STATUS,
+      error: null,
+      cause: null,
+      isPending: false,
+    });
+
+    release();
+  });
+
+  it("refreshes local git status without using the full remote refresh RPC", async () => {
+    const release = watchGitStatus(TARGET, gitClient);
+
+    emitGitStatus(BASE_STATUS);
+    const refreshed = await refreshLocalGitStatus(TARGET, gitClient);
+
+    expect(gitClient.onStatus).toHaveBeenCalledOnce();
+    expect(gitClient.refreshLocalStatus).toHaveBeenCalledWith({ cwd: "/repo" });
+    expect(gitClient.refreshStatus).not.toHaveBeenCalled();
+    expect(refreshed).toEqual({ ...BASE_STATUS, refName: "/repo-local-refreshed" });
     expect(getGitStatusSnapshot(TARGET)).toEqual({
       data: BASE_STATUS,
       error: null,

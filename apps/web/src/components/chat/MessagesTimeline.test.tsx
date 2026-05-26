@@ -1,4 +1,4 @@
-import { EnvironmentId, MessageId } from "@t3tools/contracts";
+import { EnvironmentId, MessageId, TurnId } from "@t3tools/contracts";
 import { createRef, type ReactNode, type Ref } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vitest";
@@ -274,5 +274,106 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain("t3code/apps/web/src/session-logic.ts");
     expect(markup).not.toContain("C:/Users/mike/dev-stuff/t3code/apps/web/src/session-logic.ts");
+  });
+
+  it("shows inline diff stats on file change work rows when turn diff data is available", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const turnId = TurnId.make("turn-1");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "File change",
+              tone: "tool",
+              itemType: "file_change",
+              turnId,
+              changedFiles: ["C:/Users/mike/dev-stuff/t3code/apps/web/src/session-logic.ts"],
+            },
+          },
+        ]}
+        turnDiffSummaryByAssistantMessageId={
+          new Map([
+            [
+              MessageId.make("assistant-1"),
+              {
+                turnId,
+                completedAt: "2026-03-17T19:13:28.000Z",
+                files: [
+                  {
+                    path: "apps/web/src/session-logic.ts",
+                    kind: "modified",
+                    additions: 7,
+                    deletions: 2,
+                  },
+                ],
+              },
+            ],
+          ])
+        }
+        workspaceRoot="C:/Users/mike/dev-stuff/t3code"
+      />,
+    );
+
+    expect(markup).toContain("File change");
+    expect(markup).toContain("+7");
+    expect(markup).toContain("-2");
+  });
+
+  it("renders assistant changed files collapsed by default", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const turnId = TurnId.make("turn-1");
+    const assistantMessageId = MessageId.make("assistant-1");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "assistant-entry",
+            kind: "message",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            message: {
+              id: assistantMessageId,
+              role: "assistant",
+              text: "Done",
+              turnId,
+              createdAt: "2026-03-17T19:12:28.000Z",
+              completedAt: "2026-03-17T19:13:28.000Z",
+              streaming: false,
+            },
+          },
+        ]}
+        turnDiffSummaryByAssistantMessageId={
+          new Map([
+            [
+              assistantMessageId,
+              {
+                turnId,
+                completedAt: "2026-03-17T19:13:28.000Z",
+                files: [
+                  {
+                    path: "src/example.ts",
+                    kind: "modified",
+                    additions: 3,
+                    deletions: 1,
+                  },
+                ],
+              },
+            ],
+          ])
+        }
+      />,
+    );
+
+    expect(markup).toContain("Changed files (1)");
+    expect(markup).toContain("Show files");
+    expect(markup).toContain("View diff");
+    expect(markup).not.toContain("src/example.ts");
   });
 });

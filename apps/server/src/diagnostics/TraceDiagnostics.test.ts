@@ -184,6 +184,46 @@ describe("TraceDiagnostics", () => {
     }),
   );
 
+  it.effect("classifies expected subscription disconnect failures as interruptions", () =>
+    Effect.sync(() => {
+      const diagnostics = TraceDiagnostics.aggregateTraceDiagnostics({
+        traceFilePath: "/tmp/server.trace.ndjson",
+        readAt: DateTime.makeUnsafe("2026-05-05T10:00:00.000Z"),
+        files: [
+          {
+            path: "/tmp/server.trace.ndjson",
+            text: [
+              record({
+                name: "ws.rpc.subscribeServerConfig",
+                traceId: "trace-subscription",
+                spanId: "span-subscription",
+                startMs: 1_000,
+                durationMs: 5_000,
+                exit: {
+                  _tag: "Failure",
+                  cause: "InterruptError: All fibers interrupted without error",
+                },
+              }),
+              record({
+                name: "ws.rpc.serverGetConfig",
+                traceId: "trace-real-failure",
+                spanId: "span-real-failure",
+                startMs: 7_000,
+                durationMs: 10,
+                exit: { _tag: "Failure", cause: "Config read failed" },
+              }),
+            ].join("\n"),
+          },
+        ],
+      });
+
+      assert.equal(diagnostics.failureCount, 1);
+      assert.equal(diagnostics.interruptionCount, 1);
+      assert.equal(diagnostics.commonFailures[0]?.name, "ws.rpc.serverGetConfig");
+      assert.equal(diagnostics.latestFailures[0]?.traceId, "trace-real-failure");
+    }),
+  );
+
   it.effect("keeps loaded trace data when one rotated trace file fails to read", () =>
     Effect.gen(function* () {
       const traceFilePath = "/tmp/server.trace.ndjson";

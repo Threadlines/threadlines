@@ -1015,6 +1015,14 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               "rpc.aggregate": "vcs",
             },
           ),
+        [WS_METHODS.vcsRefreshLocalStatus]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsRefreshLocalStatus,
+            vcsStatusBroadcaster.refreshLocalStatus(input.cwd),
+            {
+              "rpc.aggregate": "vcs",
+            },
+          ),
         [WS_METHODS.vcsPull]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsPull,

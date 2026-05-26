@@ -39,6 +39,7 @@ import {
   GitResolvePullRequestResult,
   GitRunStackedActionInput,
   VcsStatusInput,
+  VcsStatusLocalResult,
   VcsStatusResult,
   VcsStatusStreamEvent,
 } from "./git.ts";
@@ -123,6 +124,7 @@ export const WS_METHODS = {
 
   // VCS methods
   vcsPull: "vcs.pull",
+  vcsRefreshLocalStatus: "vcs.refreshLocalStatus",
   vcsRefreshStatus: "vcs.refreshStatus",
   vcsListRefs: "vcs.listRefs",
   vcsCommitGraph: "vcs.commitGraph",
@@ -315,6 +317,12 @@ export const WsVcsPullRpc = Rpc.make(WS_METHODS.vcsPull, {
 export const WsVcsRefreshStatusRpc = Rpc.make(WS_METHODS.vcsRefreshStatus, {
   payload: VcsStatusInput,
   success: VcsStatusResult,
+  error: GitManagerServiceError,
+});
+
+export const WsVcsRefreshLocalStatusRpc = Rpc.make(WS_METHODS.vcsRefreshLocalStatus, {
+  payload: VcsStatusInput,
+  success: VcsStatusLocalResult,
   error: GitManagerServiceError,
 });
 
@@ -530,6 +538,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsFilesystemBrowseRpc,
   WsSubscribeVcsStatusRpc,
   WsVcsPullRpc,
+  WsVcsRefreshLocalStatusRpc,
   WsVcsRefreshStatusRpc,
   WsGitRunStackedActionRpc,
   WsGitGenerateCommitMessageRpc,
