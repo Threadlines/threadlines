@@ -1516,6 +1516,9 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
           if (branch.isRemote || branch.name !== pullRequest.headBranch || !branch.worktreePath) {
             continue;
           }
+          if (branch.current) {
+            continue;
+          }
 
           const worktreePath = yield* canonicalizeExistingPath(branch.worktreePath);
           if (worktreePath !== rootWorktreePath) {
@@ -1530,10 +1533,10 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
       const existingBranchBeforeFetchPath = existingBranchBeforeFetch?.worktreePath
         ? yield* canonicalizeExistingPath(existingBranchBeforeFetch.worktreePath)
         : null;
-      if (
-        existingBranchBeforeFetch?.worktreePath &&
-        existingBranchBeforeFetchPath !== rootWorktreePath
-      ) {
+      const existingBranchBeforeFetchIsRoot =
+        existingBranchBeforeFetch?.current === true ||
+        existingBranchBeforeFetchPath === rootWorktreePath;
+      if (existingBranchBeforeFetch?.worktreePath && !existingBranchBeforeFetchIsRoot) {
         yield* ensureExistingWorktreeUpstream(existingBranchBeforeFetch.worktreePath);
         return {
           pullRequest,
@@ -1541,7 +1544,7 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
           worktreePath: existingBranchBeforeFetch.worktreePath,
         };
       }
-      if (existingBranchBeforeFetchPath === rootWorktreePath) {
+      if (existingBranchBeforeFetchIsRoot) {
         return yield* gitManagerError(
           "preparePullRequestThread",
           "This PR branch is already checked out in the main repo. Use Local, or switch the main repo off that branch before creating a worktree thread.",
@@ -1558,10 +1561,10 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
       const existingBranchAfterFetchPath = existingBranchAfterFetch?.worktreePath
         ? yield* canonicalizeExistingPath(existingBranchAfterFetch.worktreePath)
         : null;
-      if (
-        existingBranchAfterFetch?.worktreePath &&
-        existingBranchAfterFetchPath !== rootWorktreePath
-      ) {
+      const existingBranchAfterFetchIsRoot =
+        existingBranchAfterFetch?.current === true ||
+        existingBranchAfterFetchPath === rootWorktreePath;
+      if (existingBranchAfterFetch?.worktreePath && !existingBranchAfterFetchIsRoot) {
         yield* ensureExistingWorktreeUpstream(existingBranchAfterFetch.worktreePath);
         return {
           pullRequest,
@@ -1569,7 +1572,7 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
           worktreePath: existingBranchAfterFetch.worktreePath,
         };
       }
-      if (existingBranchAfterFetchPath === rootWorktreePath) {
+      if (existingBranchAfterFetchIsRoot) {
         return yield* gitManagerError(
           "preparePullRequestThread",
           "This PR branch is already checked out in the main repo. Use Local, or switch the main repo off that branch before creating a worktree thread.",
