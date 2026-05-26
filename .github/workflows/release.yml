@@ -88,7 +88,7 @@ jobs:
         run: bun run typecheck
 
       - name: Test
-        run: bun run test
+        run: bun run test -- --concurrency=1
 
       - name: Align release package versions
         run: bun scripts/update-release-package-versions.ts "${{ steps.release_meta.outputs.version }}"
