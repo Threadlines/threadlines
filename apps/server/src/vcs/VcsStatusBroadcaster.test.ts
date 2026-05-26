@@ -1,4 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off
 import { assert, it, describe } from "@effect/vitest";
+import * as NodeFS from "node:fs/promises";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -232,7 +234,11 @@ describe("VcsStatusBroadcaster", () => {
         prefix: "t3-vcs-status-link-",
       });
       const linkDir = path.join(linkParent, "repo-link");
-      yield* fileSystem.symlink(realDir, linkDir);
+      if (process.platform === "win32") {
+        yield* Effect.promise(() => NodeFS.symlink(realDir, linkDir, "junction"));
+      } else {
+        yield* fileSystem.symlink(realDir, linkDir);
+      }
       const realPath = yield* fileSystem.realPath(realDir);
 
       const broadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;

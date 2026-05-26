@@ -1,4 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off
 import * as NodeOS from "node:os";
+import * as NodeFS from "node:fs/promises";
 
 import { ProviderDriverKind, type CodexSettings } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -157,20 +159,93 @@ const ensureSymlink = Effect.fn("CodexHomeLayout.ensureSymlink")(function* (inpu
   const state = yield* readLinkState(input.fileSystem, link);
 
   if (state._tag === "NotSymlink") {
+    if (process.platform === "win32" && (yield* isSharedHardLink({ target, link }))) {
+      return;
+    }
     return yield* new CodexShadowHomeError({
       detail: `Cannot create Codex shadow home because '${link}' already exists and is not a symlink.`,
     });
   }
 
   if (state._tag === "Missing") {
-    return yield* normalizeShadowHomeError(input.fileSystem.symlink(target, link));
+    return yield* createSharedEntryLink({
+      fileSystem: input.fileSystem,
+      target,
+      link,
+    });
   }
 
   const resolvedExisting = path.resolve(path.dirname(link), state.target);
   if (resolvedExisting !== target) {
     yield* normalizeShadowHomeError(input.fileSystem.remove(link));
-    yield* normalizeShadowHomeError(input.fileSystem.symlink(target, link));
+    yield* createSharedEntryLink({
+      fileSystem: input.fileSystem,
+      target,
+      link,
+    });
   }
+});
+
+const isSharedHardLink = Effect.fn("CodexHomeLayout.isSharedHardLink")(function* (input: {
+  readonly target: string;
+  readonly link: string;
+}): Effect.fn.Return<boolean> {
+  if (process.platform !== "win32") return false;
+
+  return yield* Effect.tryPromise({
+    try: async () => {
+      const [targetStats, linkStats] = await Promise.all([
+        NodeFS.stat(input.target),
+        NodeFS.stat(input.link),
+      ]);
+      return (
+        targetStats.isFile() &&
+        linkStats.isFile() &&
+        targetStats.dev === linkStats.dev &&
+        targetStats.ino === linkStats.ino
+      );
+    },
+    catch: (cause) =>
+      new CodexShadowHomeError({
+        detail: "Failed to inspect Codex shadow home link.",
+        cause,
+      }),
+  }).pipe(Effect.catchTag("CodexShadowHomeError", () => Effect.succeed(false)));
+});
+
+const createWindowsSharedEntryLink = Effect.fn("CodexHomeLayout.createWindowsSharedEntryLink")(
+  function* (input: {
+    readonly target: string;
+    readonly link: string;
+  }): Effect.fn.Return<void, CodexShadowHomeError> {
+    return yield* Effect.tryPromise({
+      try: async () => {
+        const stats = await NodeFS.stat(input.target);
+        if (stats.isDirectory()) {
+          await NodeFS.symlink(input.target, input.link, "junction");
+          return;
+        }
+        await NodeFS.link(input.target, input.link);
+      },
+      catch: (cause) =>
+        new CodexShadowHomeError({
+          detail: "Failed to materialize Codex shadow home.",
+          cause,
+        }),
+    });
+  },
+);
+
+const createSharedEntryLink = Effect.fn("CodexHomeLayout.createSharedEntryLink")(function* (input: {
+  readonly fileSystem: FileSystem.FileSystem;
+  readonly target: string;
+  readonly link: string;
+}): Effect.fn.Return<void, CodexShadowHomeError> {
+  const symlink = normalizeShadowHomeError(input.fileSystem.symlink(input.target, input.link));
+  if (process.platform !== "win32") {
+    return yield* symlink;
+  }
+  return yield* symlink.pipe(Effect.catch(() => createWindowsSharedEntryLink(input)));
 });
 
 const ensureShadowAuthIsPrivate = Effect.fn("CodexHomeLayout.ensureShadowAuthIsPrivate")(function* (

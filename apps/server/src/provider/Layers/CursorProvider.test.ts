@@ -33,6 +33,26 @@ const resolveMockAgentPath = Effect.fn("resolveMockAgentPath")(function* () {
   const path = yield* Path.Path;
   return yield* path.fromFileUrl(new URL("../../../scripts/acp-mock-agent.ts", import.meta.url));
 });
+const isWindows = process.platform === "win32";
+
+function batchQuote(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
+}
+
+function commandWrapperPath(
+  path: { readonly join: (path: string, ...paths: ReadonlyArray<string>) => string },
+  dir: string,
+): string {
+  return path.join(dir, isWindows ? "fake-agent.cmd" : "fake-agent.sh");
+}
+
+function commandWrapperEnv(extraEnv?: Record<string, string>): string {
+  return Object.entries(extraEnv ?? {})
+    .map(([key, value]) =>
+      isWindows ? `set "${key}=${value}"` : `export ${key}=${JSON.stringify(value)}`,
+    )
+    .join("\n");
+}
 
 function selectDescriptor(
   id: string,
@@ -69,15 +89,19 @@ const makeMockAgentWrapper = Effect.fn("makeMockAgentWrapper")(function* (
     directory: NodeOS.tmpdir(),
     prefix: "cursor-provider-mock-",
   });
-  const wrapperPath = path.join(dir, "fake-agent.sh");
+  const wrapperPath = commandWrapperPath(path, dir);
   // @effect-diagnostics-next-line preferSchemaOverJson:off
   const bunCommand = JSON.stringify("bun");
   // @effect-diagnostics-next-line preferSchemaOverJson:off
   const mockAgentPathJson = JSON.stringify(mockAgentPath);
-  const envExports = Object.entries(extraEnv ?? {})
-    .map(([key, value]) => `export ${key}=${JSON.stringify(value)}`)
-    .join("\n");
-  const script = `#!/bin/sh
+  const envExports = commandWrapperEnv(extraEnv);
+  const script = isWindows
+    ? `@echo off
+setlocal
+${envExports}
+${batchQuote("bun")} ${batchQuote(mockAgentPath)} %*
+`
+    : `#!/bin/sh
 ${envExports}
 exec ${bunCommand} ${mockAgentPathJson} "$@"
 `;
@@ -94,12 +118,21 @@ const makeMockAgentWithAboutWrapper = Effect.fn("makeMockAgentWithAboutWrapper")
     directory: NodeOS.tmpdir(),
     prefix: "cursor-provider-about-mock-",
   });
-  const wrapperPath = path.join(dir, "fake-agent.sh");
+  const wrapperPath = commandWrapperPath(path, dir);
   // @effect-diagnostics-next-line preferSchemaOverJson:off
   const bunCommand = JSON.stringify("bun");
   // @effect-diagnostics-next-line preferSchemaOverJson:off
   const mockAgentPathJson = JSON.stringify(mockAgentPath);
-  const script = `#!/bin/sh
+  const script = isWindows
+    ? `@echo off
+if "%~1"=="about" (
+  echo CLI Version         2026.04.09-f2b0fcd
+  echo User Email          cursor@example.com
+  exit /b 0
+)
+${batchQuote("bun")} ${batchQuote(mockAgentPath)} %*
+`
+    : `#!/bin/sh
 if [ "$1" = "about" ]; then
   printf 'CLI Version         2026.04.09-f2b0fcd\\n'
   printf 'User Email          cursor@example.com\\n'
@@ -558,6 +591,10 @@ describe("discoverCursorModelsViaAcp", () => {
   });
 
   it("closes the ACP probe runtime after discovery completes", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+
     const { exitLogPath, wrapperPath } = await runNode(
       makeExitLogFixture("cursor-provider-exit-log-"),
     );
@@ -578,6 +615,10 @@ describe("discoverCursorModelsViaAcp", () => {
 
 describe("discoverCursorModelCapabilitiesViaAcp", () => {
   it("closes all ACP probe runtimes after capability enrichment completes", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+
     const { exitLogPath, wrapperPath } = await runNode(
       makeExitLogFixture("cursor-capabilities-exit-log-"),
     );

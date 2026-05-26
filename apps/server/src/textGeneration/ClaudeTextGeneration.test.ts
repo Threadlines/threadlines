@@ -19,13 +19,67 @@ const ClaudeTextGenerationTestLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3code-claude-text-generation-test-",
 }).pipe(Layer.provideMerge(NodeServices.layer));
 
+function batchQuote(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
+}
+
 function makeFakeClaudeBinary(dir: string) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const binDir = path.join(dir, "bin");
-    const claudePath = path.join(binDir, "claude");
+    const claudePath = path.join(binDir, process.platform === "win32" ? "claude.cmd" : "claude");
     yield* fs.makeDirectory(binDir, { recursive: true });
+
+    if (process.platform === "win32") {
+      const ps1Path = path.join(binDir, "fake-claude.ps1");
+      yield* fs.writeFileString(
+        ps1Path,
+        [
+          "$argsText = $args -join ' '",
+          "$stdinContent = [Console]::In.ReadToEnd()",
+          "if ($env:T3_FAKE_CLAUDE_ARGS_MUST_CONTAIN) {",
+          "  if (-not $argsText.Contains($env:T3_FAKE_CLAUDE_ARGS_MUST_CONTAIN)) {",
+          '    [Console]::Error.WriteLine("args missing expected content: $argsText")',
+          "    exit 2",
+          "  }",
+          "}",
+          "if ($env:T3_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN) {",
+          "  if ($argsText.Contains($env:T3_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN)) {",
+          '    [Console]::Error.WriteLine("args contained forbidden content: $argsText")',
+          "    exit 3",
+          "  }",
+          "}",
+          "if ($env:T3_FAKE_CLAUDE_STDIN_MUST_CONTAIN) {",
+          "  if (-not $stdinContent.Contains($env:T3_FAKE_CLAUDE_STDIN_MUST_CONTAIN)) {",
+          "    [Console]::Error.WriteLine('stdin missing expected content')",
+          "    exit 4",
+          "  }",
+          "}",
+          "if ($env:T3_FAKE_CLAUDE_HOME_MUST_BE -and $env:HOME -ne $env:T3_FAKE_CLAUDE_HOME_MUST_BE) {",
+          '  [Console]::Error.WriteLine("HOME was $env:HOME")',
+          "  exit 5",
+          "}",
+          "if ($env:T3_FAKE_CLAUDE_STDERR) {",
+          "  [Console]::Error.WriteLine($env:T3_FAKE_CLAUDE_STDERR)",
+          "}",
+          "[Console]::Out.Write($env:T3_FAKE_CLAUDE_OUTPUT)",
+          "if ($env:T3_FAKE_CLAUDE_EXIT_CODE) { exit [int]$env:T3_FAKE_CLAUDE_EXIT_CODE }",
+          "exit 0",
+          "",
+        ].join("\n"),
+      );
+      yield* fs.writeFileString(
+        claudePath,
+        [
+          "@echo off",
+          `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ${batchQuote(ps1Path)} %*`,
+          "exit /b %ERRORLEVEL%",
+          "",
+        ].join("\r\n"),
+      );
+      return binDir;
+    }
 
     yield* fs.writeFileString(
       claudePath,
@@ -96,7 +150,7 @@ function withFakeClaudeEnv<A, E, R>(
 
     yield* Effect.acquireRelease(
       Effect.sync(() => {
-        process.env.PATH = `${binDir}:${previousPath ?? ""}`;
+        process.env.PATH = `${binDir}${process.platform === "win32" ? ";" : ":"}${previousPath ?? ""}`;
         process.env.T3_FAKE_CLAUDE_OUTPUT = input.output;
 
         if (input.exitCode !== undefined) {
@@ -199,7 +253,10 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
             body: "",
           },
         }),
-        argsMustContain: '--settings {"alwaysThinkingEnabled":false}',
+        argsMustContain:
+          process.platform === "win32"
+            ? "--settings {alwaysThinkingEnabled:false}"
+            : '--settings {"alwaysThinkingEnabled":false}',
         argsMustNotContain: "--effort",
       },
       (textGeneration) =>
@@ -231,7 +288,10 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
             body: "Body",
           },
         }),
-        argsMustContain: '--effort max --settings {"fastMode":true}',
+        argsMustContain:
+          process.platform === "win32"
+            ? "--effort max --settings {fastMode:true}"
+            : '--effort max --settings {"fastMode":true}',
       },
       (textGeneration) =>
         Effect.gen(function* () {

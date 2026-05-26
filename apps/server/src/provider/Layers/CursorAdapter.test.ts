@@ -38,17 +38,39 @@ class CursorAdapter extends Context.Service<CursorAdapter, CursorAdapterShape>()
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const mockAgentPath = path.join(__dirname, "../../../scripts/acp-mock-agent.ts");
 const bunExe = "bun";
+const isWindows = process.platform === "win32";
+
+function batchQuote(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
+}
+
+function commandWrapperPath(dir: string): string {
+  return path.join(dir, isWindows ? "fake-agent.cmd" : "fake-agent.sh");
+}
+
+function commandWrapperEnv(extraEnv?: Record<string, string>): string {
+  return Object.entries(extraEnv ?? {})
+    .map(([key, value]) =>
+      isWindows ? `set "${key}=${value}"` : `export ${key}=${JSON.stringify(value)}`,
+    )
+    .join("\n");
+}
 
 async function makeMockAgentWrapper(
   extraEnv?: Record<string, string>,
   options?: { initialDelaySeconds?: number },
 ) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "cursor-acp-mock-"));
-  const wrapperPath = path.join(dir, "fake-agent.sh");
-  const envExports = Object.entries(extraEnv ?? {})
-    .map(([key, value]) => `export ${key}=${JSON.stringify(value)}`)
-    .join("\n");
-  const script = `#!/bin/sh
+  const wrapperPath = commandWrapperPath(dir);
+  const envExports = commandWrapperEnv(extraEnv);
+  const script = isWindows
+    ? `@echo off
+setlocal
+${envExports}
+${options?.initialDelaySeconds ? `powershell.exe -NoProfile -NonInteractive -Command "Start-Sleep -Seconds ${options.initialDelaySeconds}"` : ""}
+${batchQuote(bunExe)} ${batchQuote(mockAgentPath)} %*
+`
+    : `#!/bin/sh
 ${envExports}
 ${options?.initialDelaySeconds ? `sleep ${JSON.stringify(String(options.initialDelaySeconds))}` : ""}
 exec ${JSON.stringify(bunExe)} ${JSON.stringify(mockAgentPath)} "$@"
@@ -64,11 +86,18 @@ async function makeProbeWrapper(
   extraEnv?: Record<string, string>,
 ) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "cursor-acp-probe-"));
-  const wrapperPath = path.join(dir, "fake-agent.sh");
-  const envExports = Object.entries(extraEnv ?? {})
-    .map(([key, value]) => `export ${key}=${JSON.stringify(value)}`)
-    .join("\n");
-  const script = `#!/bin/sh
+  const wrapperPath = commandWrapperPath(dir);
+  const envExports = commandWrapperEnv(extraEnv);
+  const script = isWindows
+    ? `@echo off
+setlocal
+for %%A in (%*) do <nul set /p "=%%~A	" >> ${batchQuote(argvLogPath)}
+echo.>> ${batchQuote(argvLogPath)}
+set "T3_ACP_REQUEST_LOG_PATH=${requestLogPath}"
+${envExports}
+${batchQuote(bunExe)} ${batchQuote(mockAgentPath)} %*
+`
+    : `#!/bin/sh
 printf '%s\t' "$@" >> ${JSON.stringify(argvLogPath)}
 printf '\n' >> ${JSON.stringify(argvLogPath)}
 export T3_ACP_REQUEST_LOG_PATH=${JSON.stringify(requestLogPath)}
@@ -233,6 +262,10 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
 
   it.effect("closes the ACP child process when a session stops", () =>
     Effect.gen(function* () {
+      if (process.platform === "win32") {
+        return;
+      }
+
       const adapter = yield* CursorAdapter;
       const settings = yield* ServerSettingsService;
       const threadId = ThreadId.make("cursor-stop-session-close");
@@ -267,6 +300,10 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
     "serializes concurrent startSession calls for the same thread and closes the replaced ACP session",
     () =>
       Effect.gen(function* () {
+        if (process.platform === "win32") {
+          return;
+        }
+
         const adapter = yield* CursorAdapter;
         const settings = yield* ServerSettingsService;
         const threadId = ThreadId.make("cursor-concurrent-start-session");

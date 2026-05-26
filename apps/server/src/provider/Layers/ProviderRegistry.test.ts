@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -1131,6 +1132,12 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             const initialCheckedAt = initialCodex?.checkedAt;
             assert.notStrictEqual(initialCheckedAt, undefined);
 
+            // Missing-command probes can fail synchronously, so advance the
+            // virtual clock before mutating settings to make a fresh probe
+            // observable through `checkedAt`.
+            yield* TestClock.adjust("1 second");
+            yield* Effect.yieldNow;
+
             // Drive a settings change. The Hydration layer's
             // `SettingsWatcherLive` consumes this via `streamChanges`,
             // calls `reconcile`, which rebuilds the codex instance (the
@@ -1541,6 +1548,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
         });
 
         return Effect.gen(function* () {
+          const path = yield* Path.Path;
           const status = yield* checkClaudeProviderStatus(
             {
               ...defaultClaudeSettings,
@@ -1551,7 +1559,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
           assert.strictEqual(status.status, "ready");
           assert.deepStrictEqual(
             recorded.commands.map((command) => command.env?.HOME),
-            [claudeHome],
+            [path.resolve(claudeHome)],
           );
         }).pipe(Effect.provide(recorded.layer));
       });

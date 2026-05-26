@@ -96,10 +96,12 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
         yield* writeTextFile(path.join(sharedHome, "auth.json"), '{"shared":true}\n');
         yield* fileSystem.makeDirectory(shadowHome, { recursive: true });
         yield* writeTextFile(path.join(shadowHome, "auth.json"), '{"shadow":true}\n');
-        yield* fileSystem.symlink(
-          path.join(sharedHome, "models_cache.json"),
-          path.join(shadowHome, "models_cache.json"),
-        );
+        if (process.platform !== "win32") {
+          yield* fileSystem.symlink(
+            path.join(sharedHome, "models_cache.json"),
+            path.join(shadowHome, "models_cache.json"),
+          );
+        }
 
         const layout = yield* resolveCodexHomeLayout(
           decodeCodexSettings({
@@ -110,8 +112,8 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
 
         yield* materializeCodexShadowHome(layout);
 
-        const sessionsTarget = yield* fileSystem.readLink(path.join(shadowHome, "sessions"));
-        const configTarget = yield* fileSystem.readLink(path.join(shadowHome, "config.toml"));
+        const sessionsPath = path.join(shadowHome, "sessions");
+        const configPath = path.join(shadowHome, "config.toml");
         const modelsCacheExists = yield* fileSystem.exists(
           path.join(shadowHome, "models_cache.json"),
         );
@@ -120,8 +122,13 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
           .pipe(Effect.result);
         const authContents = yield* fileSystem.readFileString(path.join(shadowHome, "auth.json"));
 
-        expect(sessionsTarget).toBe(path.join(sharedHome, "sessions"));
-        expect(configTarget).toBe(path.join(sharedHome, "config.toml"));
+        if (process.platform === "win32") {
+          expect(yield* fileSystem.exists(sessionsPath)).toBe(true);
+          expect(yield* fileSystem.readFileString(configPath)).toContain("gpt-5-codex");
+        } else {
+          expect(yield* fileSystem.readLink(sessionsPath)).toBe(path.join(sharedHome, "sessions"));
+          expect(yield* fileSystem.readLink(configPath)).toBe(path.join(sharedHome, "config.toml"));
+        }
         expect(modelsCacheExists).toBe(false);
         expect(authLinkResult._tag).toBe("Failure");
         expect(authContents).toContain("shadow");
@@ -154,7 +161,7 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
 
         yield* materializeCodexShadowHome(layout);
 
-        const configTarget = yield* fileSystem.readLink(path.join(shadowHome, "config.toml"));
+        const configPath = path.join(shadowHome, "config.toml");
         const logLinkResult = yield* fileSystem
           .readLink(path.join(shadowHome, "log"))
           .pipe(Effect.result);
@@ -165,7 +172,11 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
           .readLink(path.join(shadowHome, "tmp"))
           .pipe(Effect.result);
 
-        expect(configTarget).toBe(path.join(sharedHome, "config.toml"));
+        if (process.platform === "win32") {
+          expect(yield* fileSystem.readFileString(configPath)).toContain("gpt-5-codex");
+        } else {
+          expect(yield* fileSystem.readLink(configPath)).toBe(path.join(sharedHome, "config.toml"));
+        }
         expect(logLinkResult._tag).toBe("Failure");
         expect(memoriesLinkResult._tag).toBe("Failure");
         expect(tmpLinkResult._tag).toBe("Failure");

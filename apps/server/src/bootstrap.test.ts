@@ -40,6 +40,24 @@ vi.mock("node:fs", async (importOriginal) => {
 const TestEnvelopeSchema = Schema.Struct({ mode: Schema.String });
 const encodeTestEnvelopeSchema = Schema.encodeEffect(Schema.fromJsonString(TestEnvelopeSchema));
 
+function closeSyncIgnoringAlreadyClosed(fd: number): void {
+  try {
+    NFS.closeSync(fd);
+  } catch (error) {
+    if (!(error instanceof Error) || !("code" in error) || error.code !== "EBADF") {
+      throw error;
+    }
+  }
+}
+
+const openTestBootstrapFd = (filePath: string) =>
+  process.platform === "win32"
+    ? Effect.sync(() => NFS.openSync(filePath, "r"))
+    : Effect.acquireRelease(
+        Effect.sync(() => NFS.openSync(filePath, "r")),
+        (fd) => Effect.sync(() => closeSyncIgnoringAlreadyClosed(fd)),
+      );
+
 it.layer(NodeServices.layer)("readBootstrapEnvelope", (it) => {
   it.effect("uses platform-specific fd paths", () =>
     Effect.sync(() => {
@@ -59,10 +77,7 @@ it.layer(NodeServices.layer)("readBootstrapEnvelope", (it) => {
         `${yield* encodeTestEnvelopeSchema({ mode: "desktop" })}\n`,
       );
 
-      const fd = yield* Effect.acquireRelease(
-        Effect.sync(() => NFS.openSync(filePath, "r")),
-        (fd) => Effect.sync(() => NFS.closeSync(fd)),
-      );
+      const fd = yield* openTestBootstrapFd(filePath);
 
       const payload = yield* readBootstrapEnvelope(TestEnvelopeSchema, fd, { timeoutMs: 100 });
       assertSome(payload, {
@@ -81,11 +96,7 @@ it.layer(NodeServices.layer)("readBootstrapEnvelope", (it) => {
         `${yield* encodeTestEnvelopeSchema({ mode: "desktop" })}\n`,
       );
 
-      // Open without acquireRelease: the direct-stream fallback uses autoClose: true,
-      // so the stream owns the fd lifecycle and closes it asynchronously on end.
-      // Attempting to also close it synchronously in a finalizer races with the
-      // stream's async close and produces an uncaught EBADF.
-      const fd = NFS.openSync(filePath, "r");
+      const fd = yield* openTestBootstrapFd(filePath);
 
       openSyncInterceptor.failPath = `/proc/self/fd/${fd}`;
       try {
@@ -101,7 +112,7 @@ it.layer(NodeServices.layer)("readBootstrapEnvelope", (it) => {
 
   it.effect("returns none when the fd is unavailable", () =>
     Effect.gen(function* () {
-      const fd = NFS.openSync("/dev/null", "r");
+      const fd = NFS.openSync(process.platform === "win32" ? "\\\\.\\NUL" : "/dev/null", "r");
       NFS.closeSync(fd);
 
       const payload = yield* readBootstrapEnvelope(TestEnvelopeSchema, fd, { timeoutMs: 100 });
@@ -111,6 +122,10 @@ it.layer(NodeServices.layer)("readBootstrapEnvelope", (it) => {
 
   it.effect("returns none when the bootstrap read times out before any value arrives", () =>
     Effect.gen(function* () {
+      if (process.platform === "win32") {
+        return;
+      }
+
       const fs = yield* FileSystem.FileSystem;
       const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-bootstrap-" });
       const fifoPath = path.join(tempDir, "bootstrap.pipe");

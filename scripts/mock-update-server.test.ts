@@ -1,3 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs/promises";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { assert, it } from "@effect/vitest";
@@ -89,8 +91,12 @@ it.layer(NodeServices.layer)("mock-update-server", (it) => {
       const symlinkPath = path.join(linksDir, "outside.yml");
 
       yield* fileSystem.writeFileString(outsideFile, "version: outside\n");
-      yield* fileSystem.makeDirectory(linksDir, { recursive: true });
-      yield* fileSystem.symlink(outsideFile, symlinkPath);
+      if (process.platform === "win32") {
+        yield* Effect.promise(() => NodeFS.symlink(outside, linksDir, "junction"));
+      } else {
+        yield* fileSystem.makeDirectory(linksDir, { recursive: true });
+        yield* fileSystem.symlink(outsideFile, symlinkPath);
+      }
 
       yield* withMockUpdateServer(
         rootRealPath,

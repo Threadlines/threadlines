@@ -25,6 +25,10 @@ const CodexTextGenerationTestLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3code-codex-text-generation-test-",
 }).pipe(Layer.provideMerge(NodeServices.layer));
 
+function batchQuote(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
+}
+
 function makeFakeCodexBinary(
   dir: string,
   input: {
@@ -43,8 +47,142 @@ function makeFakeCodexBinary(
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const binDir = path.join(dir, "bin");
-    const codexPath = path.join(binDir, "codex");
+    const codexPath = path.join(binDir, process.platform === "win32" ? "codex.cmd" : "codex");
     yield* fs.makeDirectory(binDir, { recursive: true });
+
+    if (process.platform === "win32") {
+      const fakeOutputPath = path.join(binDir, "fake-output.txt");
+      const stderrPath = path.join(binDir, "fake-stderr.txt");
+      const scriptPath = path.join(binDir, "fake-codex.cjs");
+      yield* fs.writeFileString(fakeOutputPath, input.output);
+      if (input.stderr !== undefined) {
+        yield* fs.writeFileString(stderrPath, input.stderr);
+      }
+      yield* fs.writeFileString(
+        scriptPath,
+        [
+          '"use strict";',
+          'const fs = require("node:fs");',
+          // @effect-diagnostics-next-line preferSchemaOverJson:off
+          `const fake = ${JSON.stringify({
+            outputPath: fakeOutputPath,
+            stderrPath: input.stderr !== undefined ? stderrPath : null,
+            exitCode: input.exitCode ?? 0,
+            requireImage: input.requireImage === true,
+            requireFastServiceTier: input.requireFastServiceTier === true,
+            requireReasoningEffort: input.requireReasoningEffort ?? null,
+            forbidReasoningEffort: input.forbidReasoningEffort === true,
+            stdinMustContain: input.stdinMustContain ?? null,
+            stdinMustNotContain: input.stdinMustNotContain ?? null,
+          })};`,
+          "const argv = process.argv.slice(2);",
+          'let outputPath = "";',
+          "let seenImage = false;",
+          "let seenFastServiceTier = false;",
+          'let seenReasoningEffort = "";',
+          "for (let index = 0; index < argv.length; index += 1) {",
+          "  const arg = argv[index];",
+          '  if (arg === "--image") {',
+          "    index += 1;",
+          "    if (index < argv.length && argv[index]) {",
+          "      seenImage = true;",
+          "    }",
+          "    continue;",
+          "  }",
+          '  if (arg === "--config") {',
+          "    index += 1;",
+          "    if (index < argv.length) {",
+          "      const normalizedConfig = argv[index].replaceAll('\"', '');",
+          '      if (normalizedConfig === "service_tier=fast") {',
+          "        seenFastServiceTier = true;",
+          "      }",
+          '      if (normalizedConfig.startsWith("model_reasoning_effort=")) {',
+          "        seenReasoningEffort = normalizedConfig;",
+          "      }",
+          "    }",
+          "    continue;",
+          "  }",
+          '  if (arg === "--output-last-message") {',
+          "    index += 1;",
+          "    if (index < argv.length) {",
+          "      outputPath = argv[index];",
+          "    }",
+          "    continue",
+          "  }",
+          "}",
+          'const stdinContent = fs.readFileSync(0, "utf8");',
+          ...(input.requireImage === true
+            ? [
+                "if (!seenImage) {",
+                '  process.stderr.write("missing --image input\\n");',
+                "  process.exit(2);",
+                "}",
+              ]
+            : []),
+          ...(input.requireFastServiceTier === true
+            ? [
+                "if (!seenFastServiceTier) {",
+                '  process.stderr.write("missing fast service tier config\\n");',
+                "  process.exit(5);",
+                "}",
+              ]
+            : []),
+          ...(input.requireReasoningEffort !== undefined
+            ? [
+                // @effect-diagnostics-next-line preferSchemaOverJson:off
+                `if (seenReasoningEffort !== ${JSON.stringify(`model_reasoning_effort=${input.requireReasoningEffort}`)}) {`,
+                "  process.stderr.write(`unexpected reasoning effort config: ${seenReasoningEffort}\\n`);",
+                "  process.exit(6);",
+                "}",
+              ]
+            : []),
+          ...(input.forbidReasoningEffort === true
+            ? [
+                "if (seenReasoningEffort) {",
+                "  process.stderr.write(`reasoning effort config should be omitted: ${seenReasoningEffort}\\n`);",
+                "  process.exit(7);",
+                "}",
+              ]
+            : []),
+          ...(input.stdinMustContain !== undefined
+            ? [
+                // @effect-diagnostics-next-line preferSchemaOverJson:off
+                `if (!stdinContent.includes(${JSON.stringify(input.stdinMustContain)})) {`,
+                '  process.stderr.write("stdin missing expected content\\n");',
+                "  process.exit(3);",
+                "}",
+              ]
+            : []),
+          ...(input.stdinMustNotContain !== undefined
+            ? [
+                // @effect-diagnostics-next-line preferSchemaOverJson:off
+                `if (stdinContent.includes(${JSON.stringify(input.stdinMustNotContain)})) {`,
+                '  process.stderr.write("stdin contained forbidden content\\n");',
+                "  process.exit(4);",
+                "}",
+              ]
+            : []),
+          "if (fake.stderrPath) {",
+          '  process.stderr.write(fs.readFileSync(fake.stderrPath, "utf8"));',
+          "}",
+          "if (outputPath) {",
+          '  fs.writeFileSync(outputPath, fs.readFileSync(fake.outputPath, "utf8"), "utf8");',
+          "}",
+          "process.exit(fake.exitCode);",
+          "",
+        ].join("\n"),
+      );
+      yield* fs.writeFileString(
+        codexPath,
+        [
+          "@echo off",
+          `${batchQuote(process.execPath)} ${batchQuote(scriptPath)} %*`,
+          "exit /b %ERRORLEVEL%",
+          "",
+        ].join("\r\n"),
+      );
+      return codexPath;
+    }
 
     yield* fs.writeFileString(
       codexPath,

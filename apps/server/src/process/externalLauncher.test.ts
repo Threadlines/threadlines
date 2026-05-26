@@ -452,12 +452,22 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-external-launcher-test-" });
-      yield* fs.writeFileString(path.join(dir, "zeditor"), "#!/bin/sh\nexit 0\n");
-      yield* fs.chmod(path.join(dir, "zeditor"), 0o755);
+      const commandPath =
+        process.platform === "win32" ? path.join(dir, "zeditor.CMD") : path.join(dir, "zeditor");
+      yield* fs.writeFileString(
+        commandPath,
+        process.platform === "win32" ? "@echo off\r\nexit /b 0\r\n" : "#!/bin/sh\nexit 0\n",
+      );
+      yield* fs.chmod(commandPath, 0o755);
 
-      const result = yield* resolveEditorLaunch({ cwd: "/tmp/workspace", editor: "zed" }, "linux", {
-        PATH: dir,
-      });
+      const result = yield* resolveEditorLaunch(
+        { cwd: "/tmp/workspace", editor: "zed" },
+        process.platform === "win32" ? "win32" : "linux",
+        {
+          PATH: dir,
+          PATHEXT: ".COM;.EXE;.BAT;.CMD",
+        },
+      );
 
       assert.deepEqual(result, {
         command: "zeditor",

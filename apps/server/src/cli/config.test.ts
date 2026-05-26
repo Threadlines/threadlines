@@ -1,4 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off
 import NodeOS from "node:os";
+import * as NFS from "node:fs";
 
 import { assert, expect, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
@@ -34,6 +36,16 @@ const makeDesktopBootstrap = (
   ...overrides,
 });
 
+function closeSyncIgnoringAlreadyClosed(fd: number): void {
+  try {
+    NFS.closeSync(fd);
+  } catch (error) {
+    if (!(error instanceof Error) || !("code" in error) || error.code !== "EBADF") {
+      throw error;
+    }
+  }
+}
+
 it.layer(NodeServices.layer)("cli config resolution", (it) => {
   const defaultObservabilityConfig = {
     traceMinLevel: "Info",
@@ -52,8 +64,13 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
     const filePath = yield* fs.makeTempFileScoped({ prefix: "t3-bootstrap-", suffix: ".ndjson" });
     const encoded = yield* encodeDesktopBootstrap(payload);
     yield* fs.writeFileString(filePath, `${encoded}\n`);
-    const { fd } = yield* fs.open(filePath, { flag: "r" });
-    return fd;
+    if (process.platform === "win32") {
+      return yield* Effect.sync(() => NFS.openSync(filePath, "r"));
+    }
+    return yield* Effect.acquireRelease(
+      Effect.sync(() => NFS.openSync(filePath, "r")),
+      (fd) => Effect.sync(() => closeSyncIgnoringAlreadyClosed(fd)),
+    );
   });
 
   it.effect("falls back to effect/config values when flags are omitted", () =>
@@ -259,8 +276,8 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
 
   it.effect("uses bootstrap envelope values as fallbacks when flags and env are absent", () =>
     Effect.gen(function* () {
-      const { join } = yield* Path.Path;
-      const baseDir = "/tmp/t3-bootstrap-home";
+      const path = yield* Path.Path;
+      const baseDir = path.resolve("/tmp/t3-bootstrap-home");
       const fd = yield* openBootstrapFd(
         makeDesktopBootstrap({
           port: 4888,
@@ -328,7 +345,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         tailscaleServeEnabled: false,
         tailscaleServePort: 443,
       });
-      assert.equal(join(baseDir, "userdata"), resolved.stateDir);
+      assert.equal(path.join(baseDir, "userdata"), resolved.stateDir);
     }),
   );
 

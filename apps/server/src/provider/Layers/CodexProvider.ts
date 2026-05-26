@@ -23,6 +23,7 @@ import type {
 import { ServerSettingsError } from "@t3tools/contracts";
 
 import { createModelCapabilities } from "@t3tools/shared/model";
+import { isCommandAvailable } from "@t3tools/shared/shell";
 import {
   AUTH_PROBE_TIMEOUT_MS,
   buildServerProvider,
@@ -255,6 +256,13 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
   readonly customModels?: ReadonlyArray<string>;
   readonly environment?: NodeJS.ProcessEnv;
 }) {
+  if (!isCommandAvailable(input.binaryPath, { env: input.environment ?? process.env })) {
+    return yield* new CodexErrors.CodexAppServerSpawnError({
+      command: `${input.binaryPath} app-server`,
+      cause: new Error("Codex CLI is not available on PATH."),
+    });
+  }
+
   // `~` is not shell-expanded when env vars are set via `child_process.spawn`,
   // so `CODEX_HOME=~/.codex_work` would reach codex verbatim and trip
   // "CODEX_HOME points to '~/.codex_work', but that path does not exist".

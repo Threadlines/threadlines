@@ -28,14 +28,68 @@ function shellSingleQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
+function batchQuote(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
+}
+
 const CursorTextGenerationTestLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3code-cursor-text-generation-test-",
 }).pipe(Layer.provideMerge(NodeServices.layer));
 
 function makeAcpAgentWrapper(dir: string, env: Record<string, string>): string {
   const binDir = path.join(dir, "bin");
-  const agentPath = path.join(binDir, "agent");
+  const agentPath = path.join(binDir, process.platform === "win32" ? "agent.cmd" : "agent");
   mkdirSync(binDir, { recursive: true });
+
+  if (process.platform === "win32") {
+    const wrapperPath = path.join(binDir, "agent-wrapper.cjs");
+    writeFileSync(
+      wrapperPath,
+      [
+        '"use strict";',
+        'const { spawn } = require("node:child_process");',
+        `const mockAgentPath = ${JSON.stringify(mockAgentPath)};`,
+        `const env = ${JSON.stringify(env)};`,
+        "const args = process.argv.slice(2);",
+        'if (args[0] !== "acp") {',
+        '  process.stderr.write("unexpected args: " + args.join(" ") + "\\n");',
+        "  process.exit(11);",
+        "}",
+        "const child = spawn(process.execPath, [mockAgentPath], {",
+        '  stdio: "inherit",',
+        "  env: { ...process.env, ...env },",
+        "});",
+        "const terminate = (signal) => {",
+        "  if (!child.killed) {",
+        "    child.kill(signal);",
+        "  }",
+        "};",
+        'process.once("SIGTERM", () => terminate("SIGTERM"));',
+        'process.once("SIGINT", () => terminate("SIGINT"));',
+        'child.once("error", (error) => {',
+        '  process.stderr.write(String(error && error.stack ? error.stack : error) + "\\n");',
+        "  process.exit(1);",
+        "});",
+        'child.once("exit", (code) => {',
+        "  process.exit(code ?? 0);",
+        "});",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    writeFileSync(
+      agentPath,
+      [
+        "@echo off",
+        `${batchQuote(process.execPath)} ${batchQuote(wrapperPath)} %*`,
+        "exit /b %ERRORLEVEL%",
+        "",
+      ].join("\r\n"),
+      "utf8",
+    );
+    return agentPath;
+  }
+
   writeFileSync(
     agentPath,
     [
@@ -235,6 +289,10 @@ it.layer(CursorTextGenerationTestLayer)("CursorTextGeneration", (it) => {
   );
 
   it.effect("closes the ACP child process after text generation completes", () => {
+    if (process.platform === "win32") {
+      return Effect.void;
+    }
+
     const exitLogDir = mkdtempSync(path.join(os.tmpdir(), "t3code-cursor-text-exit-log-"));
     const exitLogPath = path.join(exitLogDir, "exit.log");
 

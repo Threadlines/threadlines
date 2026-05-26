@@ -192,6 +192,23 @@ describe("ProcessDiagnostics", () => {
             readonly args: ReadonlyArray<string>;
           };
           commands.push({ command: childProcess.command, args: childProcess.args });
+          if (process.platform === "win32") {
+            return Effect.succeed(
+              mockHandle({
+                stdout: JSON.stringify([
+                  {
+                    ProcessId: 4242,
+                    ParentProcessId: process.pid,
+                    Name: "agent.exe",
+                    CommandLine: "agent",
+                    Status: "Running",
+                    WorkingSetSize: 2048 * 1024,
+                    PercentProcessorTime: 1.5,
+                  },
+                ]),
+              }),
+            );
+          }
           return Effect.succeed(
             mockHandle({
               stdout: [
@@ -210,12 +227,21 @@ describe("ProcessDiagnostics", () => {
       );
 
       expect(diagnostics.processes.map((process) => process.pid)).toEqual([4242]);
-      expect(commands).toEqual([
-        {
-          command: "ps",
-          args: ["-axo", "pid=,ppid=,pgid=,stat=,pcpu=,rss=,etime=,command="],
-        },
-      ]);
+      if (process.platform === "win32") {
+        expect(commands[0]?.command).toBe("powershell.exe");
+        expect(commands[0]?.args.slice(0, 3)).toEqual([
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+        ]);
+      } else {
+        expect(commands).toEqual([
+          {
+            command: "ps",
+            args: ["-axo", "pid=,ppid=,pgid=,stat=,pcpu=,rss=,etime=,command="],
+          },
+        ]);
+      }
     }),
   );
 

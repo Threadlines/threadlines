@@ -22,6 +22,19 @@ const makeTempDir = Effect.fn("makeTempDir")(function* (name: string) {
   const id = yield* Random.nextUUIDv4;
   return path.join(os.tmpdir(), `${name}-${id}`);
 });
+
+function linkPackageCommand(input: {
+  readonly packageBinDir: string;
+  readonly packageBinPath: string;
+  readonly commandPath: string;
+}): void {
+  if (process.platform === "win32") {
+    symlinkSync(input.packageBinDir, input.commandPath, "junction");
+    return;
+  }
+  symlinkSync(input.packageBinPath, input.commandPath);
+}
+
 const isNativeTestCommandPath =
   (expectedPathSegment: string) =>
   (commandPath: string): boolean =>
@@ -396,7 +409,7 @@ describe("providerMaintenance", () => {
       const symlinkPath = path.join(binDir, "package-tool");
       writeFileSync(packageBinPath, "#!/usr/bin/env node\n");
       chmodSync(packageBinPath, 0o755);
-      symlinkSync(packageBinPath, symlinkPath);
+      linkPackageCommand({ packageBinDir, packageBinPath, commandPath: symlinkPath });
 
       const capabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(packageToolUpdate, {
         binaryPath: symlinkPath,
@@ -444,7 +457,7 @@ describe("providerMaintenance", () => {
       const symlinkPath = path.join(binDir, "package-tool");
       writeFileSync(packageBinPath, "#!/usr/bin/env node\n");
       chmodSync(packageBinPath, 0o755);
-      symlinkSync(packageBinPath, symlinkPath);
+      linkPackageCommand({ packageBinDir, packageBinPath, commandPath: symlinkPath });
 
       const capabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(packageToolUpdate, {
         binaryPath: symlinkPath,
