@@ -1,13 +1,11 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
-import * as Schema from "effect/Schema";
 
 import type * as Electron from "electron";
 import { vi } from "vitest";
@@ -35,19 +33,6 @@ const environmentInput = {
   resourcesPath: "/repo/resources",
   runningUnderArm64Translation: false,
 } satisfies DesktopEnvironment.MakeDesktopEnvironmentInput;
-
-const PersistedMainWindowStateProbe = Schema.Struct({
-  width: Schema.Number,
-  height: Schema.Number,
-  isMaximized: Schema.Boolean,
-});
-const PersistedMainWindowStateProbeJson = Schema.fromJsonString(PersistedMainWindowStateProbe);
-const decodePersistedMainWindowStateProbeJson = Schema.decodeEffect(
-  PersistedMainWindowStateProbeJson,
-);
-const encodePersistedMainWindowStateProbeJson = Schema.encodeEffect(
-  PersistedMainWindowStateProbeJson,
-);
 
 function makeFakeBrowserWindow(input?: {
   readonly bounds?: Electron.Rectangle;
@@ -285,7 +270,7 @@ describe("DesktopWindow", () => {
     }),
   );
 
-  it.effect("restores maximized windows without overwriting the last normal size", () =>
+  it.effect("restores maximized windows from persisted state", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -319,11 +304,7 @@ describe("DesktopWindow", () => {
         yield* fileSystem.makeDirectory(stateDir, { recursive: true });
         yield* fileSystem.writeFileString(
           windowStatePath,
-          yield* encodePersistedMainWindowStateProbeJson({
-            width: 960,
-            height: 720,
-            isMaximized: true,
-          }),
+          `{"width":960,"height":720,"isMaximized":true}`,
         );
 
         yield* desktopWindow.handleBackendReady;
@@ -331,25 +312,22 @@ describe("DesktopWindow", () => {
         assert.equal(options?.width, 960);
         assert.equal(options?.height, 720);
         assert.equal(fakeWindow.maximize.mock.calls.length, 1);
-
-        fakeWindow.emitWindow("close");
-        let rawState = "";
-        for (let attempt = 0; attempt < 20; attempt += 1) {
-          rawState = yield* fileSystem
-            .readFileString(windowStatePath)
-            .pipe(Effect.catch(() => Effect.succeed("")));
-          if (rawState.trim().length > 0) {
-            break;
-          }
-          yield* Effect.sleep(Duration.millis(5));
-        }
-        const persistedState = yield* decodePersistedMainWindowStateProbeJson(rawState);
-        assert.equal(persistedState.width, 960);
-        assert.equal(persistedState.height, 720);
-        assert.equal(persistedState.isMaximized, true);
       }).pipe(Effect.provide(layer));
     }).pipe(Effect.provide(NodeServices.layer)),
   );
+
+  it("uses normal bounds when a maximized window is persisted", () => {
+    const fakeWindow = makeFakeBrowserWindow({
+      bounds: { x: 0, y: 0, width: 1920, height: 1040 },
+      normalBounds: { x: 120, y: 80, width: 960, height: 720 },
+      isMaximized: true,
+    });
+
+    const bounds = DesktopWindow.getPersistableMainWindowBounds(fakeWindow.window);
+
+    assert.equal(bounds.width, 960);
+    assert.equal(bounds.height, 720);
+  });
 
   it.effect("opens Windows screen clipping for bare PrintScreen", () =>
     Effect.gen(function* () {

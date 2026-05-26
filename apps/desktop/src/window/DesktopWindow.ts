@@ -174,7 +174,7 @@ function normalizePersistedMainWindowState(
   });
 }
 
-function getPersistableMainWindowBounds(
+export function getPersistableMainWindowBounds(
   window: Electron.BrowserWindow,
 ): Pick<Electron.Rectangle, "width" | "height"> {
   return window.isMaximized() ? window.getNormalBounds() : window.getBounds();
