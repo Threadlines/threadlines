@@ -620,8 +620,6 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     };
     if (signed) {
       winConfig.azureSignOptions = yield* AzureTrustedSigningOptionsConfig;
-    } else {
-      winConfig.signExecutable = false;
     }
     buildConfig.win = winConfig;
   }

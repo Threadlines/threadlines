@@ -95,7 +95,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       const winConfig = buildConfig.win as Record<string, unknown>;
 
       assert.equal(winConfig.icon, "icon.ico");
-      assert.equal(winConfig.signExecutable, false);
+      assert.equal(winConfig.signExecutable, undefined);
       assert.equal(winConfig.signAndEditExecutable, undefined);
     }),
   );
