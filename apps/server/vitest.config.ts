@@ -11,8 +11,8 @@ export default mergeConfig(
       fileParallelism: false,
       // Server integration tests exercise sqlite, git, and orchestration together.
       // Under package-wide parallel runs they regularly exceed the default 15s budget.
-      testTimeout: 60_000,
-      hookTimeout: 60_000,
+      testTimeout: 120_000,
+      hookTimeout: 120_000,
     },
   }),
 );

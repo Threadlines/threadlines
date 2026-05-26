@@ -3,6 +3,7 @@ import { describe, it, assert } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
@@ -451,11 +452,25 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
 
       it.effect("closes the app-server probe scope when provider status times out", () =>
         Effect.gen(function* () {
-          const killCalls = yield* Ref.make(0);
-          const statusFiber = yield* checkCodexProviderStatus(defaultCodexSettings).pipe(
-            Effect.provide(hangingScopedSpawnerLayer(killCalls)),
-            Effect.forkChild,
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const binaryDir = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "t3-codex-status-timeout-",
+          });
+          const binaryName = process.platform === "win32" ? "codex.CMD" : "codex";
+          const binaryPath = path.join(binaryDir, binaryName);
+
+          yield* fileSystem.writeFileString(
+            binaryPath,
+            process.platform === "win32" ? "@echo off\r\n" : "#!/bin/sh\n",
           );
+          yield* fileSystem.chmod(binaryPath, 0o755);
+
+          const killCalls = yield* Ref.make(0);
+          const statusFiber = yield* checkCodexProviderStatus(defaultCodexSettings, undefined, {
+            PATH: binaryDir,
+            PATHEXT: ".COM;.EXE;.BAT;.CMD",
+          }).pipe(Effect.provide(hangingScopedSpawnerLayer(killCalls)), Effect.forkChild);
 
           yield* Effect.yieldNow;
           yield* TestClock.adjust("11 seconds");

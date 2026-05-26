@@ -7,7 +7,6 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import * as PlatformError from "effect/PlatformError";
 
 import { expandHomePath } from "../../pathExpansion.ts";
 
@@ -105,17 +104,6 @@ function normalizeShadowHomeError<A, E, R>(
   return effect.pipe(Effect.mapError(toShadowHomeError));
 }
 
-function isNotSymlinkError(error: PlatformError.PlatformError): boolean {
-  const cause = error.reason.cause;
-  return (
-    error.reason._tag === "Unknown" &&
-    typeof cause === "object" &&
-    cause !== null &&
-    "code" in cause &&
-    cause.code === "EINVAL"
-  );
-}
-
 const readLinkState = Effect.fn("CodexHomeLayout.readLinkState")(function* (
   fileSystem: FileSystem.FileSystem,
   linkPath: string,
@@ -126,10 +114,10 @@ const readLinkState = Effect.fn("CodexHomeLayout.readLinkState")(function* (
       if (error.reason._tag === "NotFound") {
         return Effect.succeed<LinkState>({ _tag: "Missing" });
       }
-      if (isNotSymlinkError(error)) {
-        return Effect.succeed<LinkState>({ _tag: "NotSymlink" });
-      }
-      return Effect.fail(toShadowHomeError(error));
+      return fileSystem.exists(linkPath).pipe(
+        Effect.map((exists): LinkState => (exists ? { _tag: "NotSymlink" } : { _tag: "Missing" })),
+        Effect.mapError(() => toShadowHomeError(error)),
+      );
     }),
   );
 });
