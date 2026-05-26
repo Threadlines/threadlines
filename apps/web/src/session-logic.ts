@@ -62,7 +62,7 @@ export interface WorkLogEntry {
   rawCommand?: string;
   changedFiles?: ReadonlyArray<string>;
   images?: ReadonlyArray<WorkLogImagePreview>;
-  tone: "thinking" | "tool" | "info" | "error";
+  tone: "thinking" | "tool" | "info" | "warning" | "error";
   toolTitle?: string;
   itemType?: ToolLifecycleItemType;
   requestKind?: PendingApproval["requestKind"];
@@ -562,7 +562,8 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
       payload.detail.length > 0
       ? stripTrailingExitCode(payload.detail).output
       : null
-    : extractToolDetail(payload, title ?? activity.summary);
+    : (extractRuntimeActivityDetail(activity, payload) ??
+      extractToolDetail(payload, title ?? activity.summary));
   const toolCallId = isTaskActivity ? null : extractToolCallId(payload);
   const entry: DerivedWorkLogEntry = {
     id: activity.id,
@@ -571,9 +572,11 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     tone:
       activity.kind === "task.progress"
         ? "thinking"
-        : activity.tone === "approval"
-          ? "info"
-          : activity.tone,
+        : activity.kind === "runtime.warning"
+          ? "warning"
+          : activity.tone === "approval"
+            ? "info"
+            : activity.tone,
     activityKind: activity.kind,
     turnId: activity.turnId,
   };
@@ -818,6 +821,28 @@ function normalizeWorkLogExecutionStatus(
     return "failed";
   }
   return undefined;
+}
+
+function extractRuntimeActivityDetail(
+  activity: OrchestrationThreadActivity,
+  payload: Record<string, unknown> | null,
+): string | null {
+  if (activity.kind !== "runtime.warning" && activity.kind !== "runtime.error") {
+    return null;
+  }
+
+  const message = asTrimmedString(payload?.message);
+  const detail = asRecord(payload?.detail);
+  const detailError = asRecord(detail?.error);
+  const detailMessage = asTrimmedString(detail?.message) ?? asTrimmedString(detailError?.message);
+  const additionalDetails = asTrimmedString(detailError?.additionalDetails);
+  const primaryMessage = message ?? detailMessage;
+
+  if (primaryMessage && additionalDetails && !primaryMessage.includes(additionalDetails)) {
+    return `${primaryMessage} - ${additionalDetails}`;
+  }
+
+  return primaryMessage ?? additionalDetails;
 }
 
 function mergeWorkLogImages(

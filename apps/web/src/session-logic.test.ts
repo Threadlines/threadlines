@@ -1335,6 +1335,39 @@ describe("deriveWorkLogEntries", () => {
     });
   });
 
+  it("surfaces runtime warning messages as warning work-log details", () => {
+    const [entry] = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "runtime-warning",
+          kind: "runtime.warning",
+          summary: "Runtime warning",
+          tone: "info",
+          payload: {
+            message: "Reconnecting... 5/5",
+            detail: {
+              error: {
+                message: "Reconnecting... 5/5",
+                additionalDetails:
+                  "stream disconnected before completion: websocket closed by server before response.completed",
+              },
+              willRetry: true,
+            },
+          },
+        }),
+      ],
+      undefined,
+    );
+
+    expect(entry).toMatchObject({
+      id: "runtime-warning",
+      label: "Runtime warning",
+      detail:
+        "Reconnecting... 5/5 - stream disconnected before completion: websocket closed by server before response.completed",
+      tone: "warning",
+    });
+  });
+
   it("marks failed command executions distinctly", () => {
     const [entry] = deriveWorkLogEntries(
       [
