@@ -96,7 +96,9 @@ it.layer(NodeServices.layer)("readBootstrapEnvelope", (it) => {
         `${yield* encodeTestEnvelopeSchema({ mode: "desktop" })}\n`,
       );
 
-      const fd = yield* openTestBootstrapFd(filePath);
+      // The direct-stream fallback uses autoClose: true, so the stream owns
+      // this fd lifecycle. A finalizer races the stream's async close on Linux.
+      const fd = NFS.openSync(filePath, "r");
 
       openSyncInterceptor.failPath = `/proc/self/fd/${fd}`;
       try {
