@@ -721,20 +721,13 @@ function AssistantChangedFilesSectionInner({
   resolvedTheme: "light" | "dark";
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
 }) {
+  const defaultTreeExpanded = useSettings((settings) => settings.chatChangedFilesDefaultExpanded);
   const allDirectoriesExpanded = useUiStateStore(
-    (store) => store.threadChangedFilesExpandedById[routeThreadKey]?.[turnSummary.turnId] ?? true,
+    (store) =>
+      store.threadChangedFilesExpandedById[routeThreadKey]?.[turnSummary.turnId] ??
+      defaultTreeExpanded,
   );
   const setExpanded = useUiStateStore((store) => store.setThreadChangedFilesExpanded);
-  const defaultSectionExpanded = useSettings(
-    (settings) => settings.chatChangedFilesDefaultExpanded,
-  );
-  const [sectionExpanded, setSectionExpanded] = useState(() => defaultSectionExpanded);
-  const sectionExpandedOverriddenRef = useRef(false);
-  useEffect(() => {
-    if (!sectionExpandedOverriddenRef.current) {
-      setSectionExpanded(defaultSectionExpanded);
-    }
-  }, [defaultSectionExpanded, turnSummary.turnId]);
   const summaryStat = summarizeTurnDiffStats(checkpointFiles);
   const changedFileCountLabel = String(checkpointFiles.length);
 
@@ -745,7 +738,7 @@ function AssistantChangedFilesSectionInner({
           <span>Changed files ({changedFileCountLabel})</span>
           {hasNonZeroStat(summaryStat) && (
             <>
-              <span className="mx-1">•</span>
+              <span className="mx-1">/</span>
               <DiffStatLabel additions={summaryStat.additions} deletions={summaryStat.deletions} />
             </>
           )}
@@ -756,26 +749,10 @@ function AssistantChangedFilesSectionInner({
             size="xs"
             variant="outline"
             data-scroll-anchor-ignore
-            onClick={() => {
-              sectionExpandedOverriddenRef.current = true;
-              setSectionExpanded((expanded) => !expanded);
-            }}
+            onClick={() => setExpanded(routeThreadKey, turnSummary.turnId, !allDirectoriesExpanded)}
           >
-            {sectionExpanded ? "Hide files" : "Show files"}
+            {allDirectoriesExpanded ? "Collapse tree" : "Expand tree"}
           </Button>
-          {sectionExpanded ? (
-            <Button
-              type="button"
-              size="xs"
-              variant="outline"
-              data-scroll-anchor-ignore
-              onClick={() =>
-                setExpanded(routeThreadKey, turnSummary.turnId, !allDirectoriesExpanded)
-              }
-            >
-              {allDirectoriesExpanded ? "Collapse tree" : "Expand tree"}
-            </Button>
-          ) : null}
           <Button
             type="button"
             size="xs"
@@ -787,16 +764,14 @@ function AssistantChangedFilesSectionInner({
           </Button>
         </div>
       </div>
-      {sectionExpanded ? (
-        <ChangedFilesTree
-          key={`changed-files-tree:${turnSummary.turnId}`}
-          turnId={turnSummary.turnId}
-          files={checkpointFiles}
-          allDirectoriesExpanded={allDirectoriesExpanded}
-          resolvedTheme={resolvedTheme}
-          onOpenTurnDiff={onOpenTurnDiff}
-        />
-      ) : null}
+      <ChangedFilesTree
+        key={`changed-files-tree:${turnSummary.turnId}`}
+        turnId={turnSummary.turnId}
+        files={checkpointFiles}
+        allDirectoriesExpanded={allDirectoriesExpanded}
+        resolvedTheme={resolvedTheme}
+        onOpenTurnDiff={onOpenTurnDiff}
+      />
     </div>
   );
 }
@@ -1142,10 +1117,10 @@ function summarizeWorkEntryDiffStat(
   workEntry: Pick<TimelineWorkEntry, "changedFiles" | "turnId">,
   turnDiffSummaryByTurnId: ReadonlyMap<TurnId, TurnDiffSummary>,
 ): { additions: number; deletions: number } | null {
-  if (!workEntry.turnId || (workEntry.changedFiles?.length ?? 0) === 0) {
+  if ((workEntry.changedFiles?.length ?? 0) === 0) {
     return null;
   }
-  const turnSummary = turnDiffSummaryByTurnId.get(workEntry.turnId);
+  const turnSummary = resolveWorkEntryTurnDiffSummary(workEntry, turnDiffSummaryByTurnId);
   if (!turnSummary) {
     return null;
   }
@@ -1169,6 +1144,30 @@ function summarizeWorkEntryDiffStat(
   }
 
   return matchedDiffPaths.size > 0 ? { additions, deletions } : null;
+}
+
+function resolveWorkEntryTurnDiffSummary(
+  workEntry: Pick<TimelineWorkEntry, "changedFiles" | "turnId">,
+  turnDiffSummaryByTurnId: ReadonlyMap<TurnId, TurnDiffSummary>,
+): TurnDiffSummary | null {
+  if (workEntry.turnId) {
+    return turnDiffSummaryByTurnId.get(workEntry.turnId) ?? null;
+  }
+  const changedFiles = workEntry.changedFiles ?? [];
+  const matchingSummaries: TurnDiffSummary[] = [];
+  for (const turnSummary of turnDiffSummaryByTurnId.values()) {
+    if (
+      turnSummary.files.some((diffFile) =>
+        changedFiles.some((changedFile) => diffPathsMatch(changedFile, diffFile.path)),
+      )
+    ) {
+      matchingSummaries.push(turnSummary);
+      if (matchingSummaries.length > 1) {
+        return null;
+      }
+    }
+  }
+  return matchingSummaries[0] ?? null;
 }
 
 function workEntryRawCommand(
@@ -1218,6 +1217,10 @@ function isRunningCommandWorkEntry(workEntry: TimelineWorkEntry): boolean {
   return workEntry.executionState === "running" && isCommandWorkEntry(workEntry);
 }
 
+function isRunningToolWorkEntry(workEntry: TimelineWorkEntry): boolean {
+  return workEntry.executionState === "running";
+}
+
 function capitalizePhrase(value: string): string {
   const trimmed = value.trim();
   if (trimmed.length === 0) {
@@ -1243,9 +1246,9 @@ function toolWorkEntryHeading(workEntry: TimelineWorkEntry): string {
   return capitalizePhrase(normalizedHeading);
 }
 
-function RunningCommandIndicator() {
+function RunningToolIndicator() {
   return (
-    <span className="ml-1.5 inline-flex items-center gap-[3px]" aria-label="Command still running">
+    <span className="ml-1.5 inline-flex items-center gap-[3px]" aria-label="Tool still running">
       <span className="size-1 rounded-full bg-current opacity-35 animate-pulse" />
       <span className="size-1 rounded-full bg-current opacity-35 animate-pulse [animation-delay:180ms]" />
       <span className="size-1 rounded-full bg-current opacity-35 animate-pulse [animation-delay:360ms]" />
@@ -1269,16 +1272,16 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const { workEntry, workspaceRoot } = props;
   const iconConfig = workToneIcon(workEntry.tone);
   const EntryIcon = workEntryIcon(workEntry);
-  const isRunningCommand = isRunningCommandWorkEntry(workEntry);
+  const isRunningTool = isRunningToolWorkEntry(workEntry);
   const heading = toolWorkEntryHeading(workEntry);
-  const rawPreview = isRunningCommand ? null : workEntryPreview(workEntry, workspaceRoot);
+  const rawPreview = workEntryPreview(workEntry, workspaceRoot);
   const preview =
     rawPreview &&
     normalizeCompactToolLabel(rawPreview).toLowerCase() ===
       normalizeCompactToolLabel(heading).toLowerCase()
       ? null
       : rawPreview;
-  const rawCommand = isRunningCommand ? null : workEntryRawCommand(workEntry);
+  const rawCommand = workEntryRawCommand(workEntry);
   const diffStat = summarizeWorkEntryDiffStat(workEntry, turnDiffSummaryByTurnId);
   const visibleDiffStat = diffStat && hasNonZeroStat(diffStat) ? diffStat : null;
   const diffStatText = visibleDiffStat
@@ -1336,7 +1339,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                 >
                   {heading}
                   {visibleDiffStat ? <InlineDiffStatLabel stat={visibleDiffStat} /> : null}
-                  {isRunningCommand ? <RunningCommandIndicator /> : null}
+                  {isRunningTool ? <RunningToolIndicator /> : null}
                 </span>
                 {preview && (
                   <Tooltip>
@@ -1385,7 +1388,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                   >
                     {heading}
                     {visibleDiffStat ? <InlineDiffStatLabel stat={visibleDiffStat} /> : null}
-                    {isRunningCommand ? <RunningCommandIndicator /> : null}
+                    {isRunningTool ? <RunningToolIndicator /> : null}
                   </span>
                   {preview && <span className="text-muted-foreground/55"> - {preview}</span>}
                 </p>

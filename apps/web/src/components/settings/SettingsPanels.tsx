@@ -650,7 +650,7 @@ export function GeneralSettingsPanel() {
 
         <SettingsRow
           title="Changed files in chat"
-          description="Expand the changed-files block in assistant responses by default."
+          description="Expand the changed-files tree in assistant responses by default."
           resetAction={
             settings.chatChangedFilesDefaultExpanded !==
             DEFAULT_UNIFIED_SETTINGS.chatChangedFilesDefaultExpanded ? (
@@ -671,7 +671,7 @@ export function GeneralSettingsPanel() {
               onCheckedChange={(checked) =>
                 updateSettings({ chatChangedFilesDefaultExpanded: Boolean(checked) })
               }
-              aria-label="Expand changed files in chat by default"
+              aria-label="Expand changed files tree in chat by default"
             />
           }
         />

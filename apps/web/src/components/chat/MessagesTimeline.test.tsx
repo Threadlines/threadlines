@@ -326,7 +326,84 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("-2");
   });
 
-  it("renders assistant changed files collapsed by default", async () => {
+  it("matches inline diff stats by file path when the work row has no turn id", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const turnId = TurnId.make("turn-1");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "File change",
+              tone: "tool",
+              itemType: "file_change",
+              changedFiles: ["C:/Users/mike/dev-stuff/t3code/apps/web/src/session-logic.ts"],
+            },
+          },
+        ]}
+        turnDiffSummaryByAssistantMessageId={
+          new Map([
+            [
+              MessageId.make("assistant-1"),
+              {
+                turnId,
+                completedAt: "2026-03-17T19:13:28.000Z",
+                files: [
+                  {
+                    path: "apps/web/src/session-logic.ts",
+                    kind: "modified",
+                    additions: 7,
+                    deletions: 2,
+                  },
+                ],
+              },
+            ],
+          ])
+        }
+        workspaceRoot="C:/Users/mike/dev-stuff/t3code"
+      />,
+    );
+
+    expect(markup).toContain("File change");
+    expect(markup).toContain("+7");
+    expect(markup).toContain("-2");
+  });
+
+  it("shows the command text while a command is running", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Ran command",
+              tone: "tool",
+              itemType: "command_execution",
+              command: "bun run test src/session-logic.test.ts",
+              executionState: "running",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Running command");
+    expect(markup).toContain("bun run test src/session-logic.test.ts");
+  });
+
+  it("renders assistant changed files as a collapsed tree by default", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const turnId = TurnId.make("turn-1");
     const assistantMessageId = MessageId.make("assistant-1");
@@ -372,8 +449,9 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain("Changed files (1)");
-    expect(markup).toContain("Show files");
+    expect(markup).toContain("Expand tree");
     expect(markup).toContain("View diff");
     expect(markup).not.toContain("src/example.ts");
+    expect(markup).not.toContain("Hide files");
   });
 });

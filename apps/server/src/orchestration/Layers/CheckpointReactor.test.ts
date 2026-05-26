@@ -11,6 +11,7 @@ import {
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import {
+  CheckpointRef,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   EventId,
@@ -61,6 +62,7 @@ import { WorkspacePathsLive } from "../../workspace/Layers/WorkspacePaths.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
+const asCheckpointRef = (value: string): CheckpointRef => CheckpointRef.make(value);
 
 type LegacyProviderRuntimeEvent = {
   readonly type: string;
@@ -490,6 +492,65 @@ describe("CheckpointReactor", () => {
         "README.md",
       ),
     ).toBe("v2\n");
+  });
+
+  it("refreshes an early diff checkpoint when the turn completes", async () => {
+    const harness = await createHarness({ seedFilesystemCheckpoints: false });
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const turnId = asTurnId("turn-refresh-diff");
+
+    harness.provider.emit({
+      type: "turn.started",
+      eventId: EventId.make("evt-turn-started-refresh-diff"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId,
+      turnId,
+    });
+    await waitForGitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 0));
+
+    fs.writeFileSync(path.join(harness.cwd, "README.md"), "early\n", "utf8");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.diff.complete",
+        commandId: CommandId.make("cmd-placeholder-diff-refresh"),
+        threadId,
+        turnId,
+        completedAt: createdAt,
+        checkpointRef: asCheckpointRef("provider-diff:evt-refresh"),
+        status: "missing",
+        files: [],
+        checkpointTurnCount: 1,
+        createdAt,
+      }),
+    );
+
+    await waitForGitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 1));
+    expect(
+      gitShowFileAtRef(harness.cwd, checkpointRefForThreadTurn(threadId, 1), "README.md"),
+    ).toBe("early\n");
+
+    fs.writeFileSync(path.join(harness.cwd, "README.md"), "final\n", "utf8");
+    harness.provider.emit({
+      type: "turn.completed",
+      eventId: EventId.make("evt-turn-completed-refresh-diff"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId,
+      turnId,
+      payload: { state: "completed" },
+    });
+
+    const refreshedRef = checkpointRefForThreadTurn(threadId, 1);
+    await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.latestTurn?.turnId === "turn-refresh-diff" &&
+        entry.checkpoints.length === 1 &&
+        gitShowFileAtRef(harness.cwd, refreshedRef, "README.md") === "final\n",
+    );
+    expect(gitShowFileAtRef(harness.cwd, refreshedRef, "README.md")).toBe("final\n");
   });
 
   it("refreshes local git status state on turn completion using the session cwd", async () => {

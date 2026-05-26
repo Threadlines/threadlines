@@ -1,4 +1,4 @@
-import { DownloadIcon, RotateCwIcon, TriangleAlertIcon, XIcon } from "lucide-react";
+import { CheckIcon, DownloadIcon, RotateCwIcon, TriangleAlertIcon, XIcon } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useState } from "react";
 import { isElectron } from "../../env";
@@ -14,6 +14,7 @@ import {
   getDesktopUpdateInstallConfirmationMessage,
   isDesktopUpdateButtonDisabled,
   resolveDesktopUpdateButtonAction,
+  shouldHighlightDesktopUpdateError,
   shouldShowArm64IntelBuildWarning,
   shouldShowDesktopUpdateButton,
   shouldToastDesktopUpdateActionResult,
@@ -24,12 +25,35 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 export function SidebarUpdatePill() {
   const queryClient = useQueryClient();
   const state = useDesktopUpdateState().data ?? null;
-  const [dismissed, setDismissed] = useState(false);
+  const [dismissedVersion, setDismissedVersion] = useState<string | null>(null);
 
-  const visible = isElectron && shouldShowDesktopUpdateButton(state) && !dismissed;
+  const versionKey = state?.downloadedVersion ?? state?.availableVersion ?? null;
   const tooltip = state ? getDesktopUpdateButtonTooltip(state) : "Update available";
   const disabled = isDesktopUpdateButtonDisabled(state);
   const action = state ? resolveDesktopUpdateButtonAction(state) : "none";
+  const canDismiss = action === "download" && state?.status === "available";
+  const dismissed = canDismiss && versionKey !== null && dismissedVersion === versionKey;
+  const visible = isElectron && shouldShowDesktopUpdateButton(state) && !dismissed;
+  const isDownloaded = action === "install" || state?.status === "downloaded";
+  const isDownloading = state?.status === "downloading";
+  const isError = shouldHighlightDesktopUpdateError(state);
+  const progressPercent = isDownloaded
+    ? 100
+    : isDownloading && typeof state?.downloadPercent === "number"
+      ? Math.max(0, Math.min(100, state.downloadPercent))
+      : 0;
+  const progressClass = isDownloaded
+    ? "bg-emerald-500/20 opacity-100"
+    : isDownloading
+      ? "bg-sky-500/16 opacity-100"
+      : "opacity-0";
+  const toneClass = isDownloaded
+    ? "border border-emerald-400/30 bg-emerald-500/12 text-emerald-400 shadow-[inset_0_0_0_1px_rgba(52,211,153,0.12)]"
+    : isDownloading
+      ? "border border-sky-400/25 bg-sky-500/12 text-sky-400"
+      : isError
+        ? "border border-rose-400/25 bg-rose-500/12 text-rose-400"
+        : "border border-primary/15 bg-primary/15 text-primary";
 
   const showArm64Warning = isElectron && shouldShowArm64IntelBuildWarning(state);
   const arm64Description =
@@ -45,13 +69,6 @@ export function SidebarUpdatePill() {
         .downloadUpdate()
         .then((result) => {
           setDesktopUpdateStateQueryData(queryClient, result.state);
-          if (result.completed) {
-            toastManager.add({
-              type: "success",
-              title: "Update downloaded",
-              description: "Restart the app from the update button to install it.",
-            });
-          }
           if (!shouldToastDesktopUpdateActionResult(result)) return;
           const actionError = getDesktopUpdateActionError(result);
           if (!actionError) return;
@@ -118,11 +135,15 @@ export function SidebarUpdatePill() {
       )}
       {visible && (
         <div
-          className={`group/update relative flex h-7 w-full items-center rounded-lg bg-primary/15 text-xs font-medium text-primary ${
+          className={`group/update relative flex h-7 w-full items-center overflow-hidden rounded-lg text-xs font-medium transition-[background-color,border-color,color,box-shadow,opacity] duration-300 ${toneClass} ${
             disabled ? " cursor-not-allowed opacity-60" : ""
           }`}
         >
-          <div className="pointer-events-none absolute inset-0 rounded-lg transition-colors group-has-[button.update-main:hover]/update:bg-primary/22" />
+          <div
+            className={`pointer-events-none absolute inset-y-0 left-0 transition-[width,opacity,background-color] duration-500 ease-out ${progressClass}`}
+            style={{ width: `${progressPercent}%` }}
+          />
+          <div className="pointer-events-none absolute inset-0 rounded-lg transition-colors group-has-[button.update-main:hover]/update:bg-current/[0.08]" />
           <Tooltip>
             <TooltipTrigger
               render={
@@ -136,7 +157,7 @@ export function SidebarUpdatePill() {
                 >
                   {action === "install" ? (
                     <>
-                      <RotateCwIcon className="size-3.5" />
+                      <CheckIcon className="size-3.5" />
                       <span>Restart to update</span>
                     </>
                   ) : state?.status === "downloading" ? (
@@ -146,12 +167,12 @@ export function SidebarUpdatePill() {
                         Downloading
                         {typeof state.downloadPercent === "number"
                           ? ` (${Math.floor(state.downloadPercent)}%)`
-                          : "…"}
+                          : "..."}
                       </span>
                     </>
                   ) : (
                     <>
-                      <DownloadIcon className="size-3.5" />
+                      <RotateCwIcon className="size-3.5" />
                       <span>Update available</span>
                     </>
                   )}
@@ -160,15 +181,15 @@ export function SidebarUpdatePill() {
             />
             <TooltipPopup side="top">{tooltip}</TooltipPopup>
           </Tooltip>
-          {action === "download" && (
+          {canDismiss && versionKey !== null && (
             <Tooltip>
               <TooltipTrigger
                 render={
                   <button
                     type="button"
                     aria-label="Dismiss update"
-                    className="mr-1 inline-flex size-5 items-center justify-center rounded-md text-primary/60 transition-colors hover:text-primary"
-                    onClick={() => setDismissed(true)}
+                    className="relative mr-1 inline-flex size-5 items-center justify-center rounded-md text-current/60 transition-colors hover:text-current"
+                    onClick={() => setDismissedVersion(versionKey)}
                   >
                     <XIcon className="size-3.5" />
                   </button>

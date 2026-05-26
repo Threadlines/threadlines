@@ -1384,69 +1384,6 @@ function ComposerSurroundSelectionPlugin(props: {
   return null;
 }
 
-function ComposerSpellcheckRefreshPlugin() {
-  const [editor] = useLexicalComposerContext();
-  const refreshHandleRef = useRef<{
-    readonly timeoutId: number;
-    animationFrameId: number | null;
-  } | null>(null);
-
-  useEffect(() => {
-    const clearScheduledRefresh = () => {
-      const handle = refreshHandleRef.current;
-      if (!handle) {
-        return;
-      }
-      window.clearTimeout(handle.timeoutId);
-      if (handle.animationFrameId !== null) {
-        window.cancelAnimationFrame(handle.animationFrameId);
-      }
-      refreshHandleRef.current = null;
-    };
-
-    const scheduleSpellcheckRefresh = () => {
-      clearScheduledRefresh();
-      const timeoutId = window.setTimeout(() => {
-        const animationFrameId = window.requestAnimationFrame(() => {
-          refreshHandleRef.current = null;
-          const rootElement = editor.getRootElement();
-          if (!rootElement || document.activeElement !== rootElement) {
-            return;
-          }
-
-          rootElement.blur();
-          rootElement.focus({ preventScroll: true });
-        });
-        refreshHandleRef.current = { timeoutId, animationFrameId };
-      }, 0);
-      refreshHandleRef.current = { timeoutId, animationFrameId: null };
-    };
-
-    const onBeforeInput = (event: InputEvent) => {
-      if (event.inputType === "insertReplacementText") {
-        scheduleSpellcheckRefresh();
-      }
-    };
-
-    let activeRootElement: HTMLElement | null = null;
-    const unregisterRootListener = editor.registerRootListener((rootElement, prevRootElement) => {
-      prevRootElement?.removeEventListener("beforeinput", onBeforeInput, true);
-      rootElement?.addEventListener("beforeinput", onBeforeInput, true);
-      activeRootElement = rootElement;
-    });
-
-    return () => {
-      clearScheduledRefresh();
-      if (activeRootElement) {
-        activeRootElement.removeEventListener("beforeinput", onBeforeInput, true);
-      }
-      unregisterRootListener();
-    };
-  }, [editor]);
-
-  return null;
-}
-
 function ComposerPromptEditorInner({
   value,
   cursor,
@@ -1680,6 +1617,7 @@ function ComposerPromptEditorInner({
               data-testid="composer-editor"
               aria-placeholder={placeholder}
               placeholder={<span />}
+              spellCheck={true}
               onPaste={onPaste}
             />
           }
@@ -1695,7 +1633,6 @@ function ComposerPromptEditorInner({
         <OnChangePlugin onChange={handleEditorChange} />
         <ComposerCommandKeyPlugin {...(onCommandKeyDown ? { onCommandKeyDown } : {})} />
         <ComposerSurroundSelectionPlugin terminalContexts={terminalContexts} skills={skills} />
-        <ComposerSpellcheckRefreshPlugin />
         <ComposerInlineTokenArrowPlugin />
         <ComposerInlineTokenSelectionNormalizePlugin />
         <ComposerInlineTokenBackspacePlugin />

@@ -3478,6 +3478,51 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("keeps native spellcheck replacements from blurring the composer", async () => {
+    useComposerDraftStore.getState().setPrompt(THREAD_REF, "speeling and teh");
+
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-spellcheck-replacement" as MessageId,
+        targetText: "spellcheck replacement",
+      }),
+    });
+
+    try {
+      await waitForComposerText("speeling and teh");
+      const composerEditor = await waitForComposerEditor();
+      composerEditor.focus();
+      expect(document.activeElement).toBe(composerEditor);
+      expect(composerEditor.spellcheck).toBe(true);
+
+      const blurSpy = vi.spyOn(composerEditor, "blur");
+      const focusSpy = vi.spyOn(composerEditor, "focus");
+      try {
+        composerEditor.dispatchEvent(
+          new InputEvent("beforeinput", {
+            data: "spelling",
+            inputType: "insertReplacementText",
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+        await waitForLayout();
+
+        expect(blurSpy).not.toHaveBeenCalled();
+        expect(focusSpy).not.toHaveBeenCalled();
+        expect(document.activeElement).toBe(composerEditor);
+      } finally {
+        blurSpy.mockRestore();
+        focusSpy.mockRestore();
+      }
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("surrounds text after a mention using the correct expanded offsets", async () => {
     useComposerDraftStore.getState().setPrompt(THREAD_REF, "hi @package.json there");
 

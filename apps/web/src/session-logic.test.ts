@@ -1235,6 +1235,106 @@ describe("deriveWorkLogEntries", () => {
     });
   });
 
+  it("collapses command lifecycle events without tool call ids and preserves the command text", () => {
+    const entries = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "command-started",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          kind: "tool.started",
+          summary: "Ran command started",
+          payload: {
+            itemType: "command_execution",
+            title: "Ran command",
+            status: "inProgress",
+            data: {
+              item: {
+                command: "bun run test src/session-logic.test.ts",
+              },
+            },
+          },
+        }),
+        makeActivity({
+          id: "command-completed",
+          createdAt: "2026-02-23T00:00:02.000Z",
+          kind: "tool.completed",
+          summary: "Ran command",
+          payload: {
+            itemType: "command_execution",
+            title: "Ran command",
+            data: {
+              item: {
+                command: "bun run test src/session-logic.test.ts",
+              },
+            },
+          },
+        }),
+      ],
+      undefined,
+    );
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      id: "command-completed",
+      command: "bun run test src/session-logic.test.ts",
+      executionState: "completed",
+    });
+  });
+
+  it("shows running browser-style tool lifecycle rows with compact tool input", () => {
+    const entries = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "browser-started",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          kind: "tool.started",
+          summary: "Tool call started",
+          payload: {
+            itemType: "dynamic_tool_call",
+            title: "Tool call",
+            status: "inProgress",
+            data: {
+              item: {
+                namespace: "browser",
+                tool: "open",
+                arguments: {
+                  url: "http://localhost:3000",
+                },
+              },
+            },
+          },
+        }),
+        makeActivity({
+          id: "browser-completed",
+          createdAt: "2026-02-23T00:00:02.000Z",
+          kind: "tool.completed",
+          summary: "Tool call",
+          payload: {
+            itemType: "dynamic_tool_call",
+            title: "Tool call",
+            data: {
+              item: {
+                namespace: "browser",
+                tool: "open",
+                arguments: {
+                  url: "http://localhost:3000",
+                },
+              },
+            },
+          },
+        }),
+      ],
+      undefined,
+    );
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      id: "browser-completed",
+      detail: "browser.open: url=http://localhost:3000",
+      executionState: "completed",
+    });
+  });
+
   it("marks failed command executions distinctly", () => {
     const [entry] = deriveWorkLogEntries(
       [

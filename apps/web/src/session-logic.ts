@@ -656,6 +656,9 @@ function shouldCollapseToolLifecycleEntries(
   if (previous.collapseKey !== undefined && previous.collapseKey === next.collapseKey) {
     return true;
   }
+  if (canCollapseAdjacentToolLifecycleEntries(previous, next)) {
+    return true;
+  }
   return (
     previous.toolCallId !== undefined &&
     next.toolCallId === undefined &&
@@ -663,6 +666,49 @@ function shouldCollapseToolLifecycleEntries(
     normalizeCompactToolLabel(previous.toolTitle ?? previous.label) ===
       normalizeCompactToolLabel(next.toolTitle ?? next.label)
   );
+}
+
+function canCollapseAdjacentToolLifecycleEntries(
+  previous: DerivedWorkLogEntry,
+  next: DerivedWorkLogEntry,
+): boolean {
+  if (previous.toolCallId !== undefined || next.toolCallId !== undefined) {
+    return false;
+  }
+  if (previous.itemType !== next.itemType) {
+    return false;
+  }
+  if (
+    previous.turnId !== undefined &&
+    next.turnId !== undefined &&
+    previous.turnId !== next.turnId
+  ) {
+    return false;
+  }
+  if (
+    normalizeCompactToolLabel(previous.toolTitle ?? previous.label) !==
+    normalizeCompactToolLabel(next.toolTitle ?? next.label)
+  ) {
+    return false;
+  }
+  if (previous.command && next.command && previous.command !== next.command) {
+    return false;
+  }
+  if (previous.detail && next.detail && previous.detail !== next.detail) {
+    return false;
+  }
+
+  const previousFiles = previous.changedFiles ?? [];
+  const nextFiles = next.changedFiles ?? [];
+  if (
+    previousFiles.length > 0 &&
+    nextFiles.length > 0 &&
+    !previousFiles.some((filePath) => nextFiles.includes(filePath))
+  ) {
+    return false;
+  }
+
+  return true;
 }
 
 function mergeDerivedWorkLogEntries(
@@ -705,12 +751,26 @@ function isCommandWorkLogEntry(entry: Pick<WorkLogEntry, "command" | "itemType" 
   );
 }
 
+function isLifecycleWorkLogEntry(
+  entry: Pick<WorkLogEntry, "command" | "itemType" | "requestKind">,
+) {
+  return (
+    isCommandWorkLogEntry(entry) ||
+    entry.itemType === "file_change" ||
+    entry.itemType === "mcp_tool_call" ||
+    entry.itemType === "dynamic_tool_call" ||
+    entry.itemType === "collab_agent_tool_call" ||
+    entry.itemType === "web_search" ||
+    entry.itemType === "image_view"
+  );
+}
+
 function deriveWorkLogExecutionState(
   activity: OrchestrationThreadActivity,
   entry: Pick<WorkLogEntry, "command" | "itemType" | "requestKind" | "tone">,
   payload: Record<string, unknown> | null,
 ): WorkLogEntry["executionState"] | undefined {
-  if (!isCommandWorkLogEntry(entry)) {
+  if (!isLifecycleWorkLogEntry(entry)) {
     return undefined;
   }
   const payloadStatus = normalizeWorkLogExecutionStatus(
@@ -1221,6 +1281,82 @@ function summarizeToolRawOutput(payload: Record<string, unknown> | null): string
   return null;
 }
 
+function formatToolName(serverOrNamespace: unknown, tool: unknown): string | null {
+  const toolName = asTrimmedString(tool);
+  if (!toolName) {
+    return null;
+  }
+  const prefix = asTrimmedString(serverOrNamespace);
+  return prefix && !toolName.toLowerCase().startsWith(`${prefix.toLowerCase()}.`)
+    ? `${prefix}.${toolName}`
+    : toolName;
+}
+
+function summarizeToolArguments(value: unknown): string | null {
+  const direct = asTrimmedString(value);
+  if (direct) {
+    return truncateInlinePreview(normalizeInlinePreview(direct));
+  }
+
+  const record = asRecord(value);
+  if (!record) {
+    return null;
+  }
+
+  const summaryParts: string[] = [];
+  for (const key of [
+    "url",
+    "uri",
+    "path",
+    "filePath",
+    "query",
+    "q",
+    "pattern",
+    "selector",
+    "ref_id",
+    "id",
+    "text",
+    "prompt",
+    "description",
+  ]) {
+    const summaryValue = asTrimmedString(record[key]);
+    if (!summaryValue) {
+      continue;
+    }
+    summaryParts.push(`${key}=${truncateInlinePreview(normalizeInlinePreview(summaryValue), 48)}`);
+    if (summaryParts.length >= 2) {
+      break;
+    }
+  }
+
+  return summaryParts.length > 0 ? summaryParts.join(" ") : null;
+}
+
+function summarizeToolRequest(payload: Record<string, unknown> | null): string | null {
+  const data = asRecord(payload?.data);
+  const item = asRecord(data?.item);
+  const itemType = extractWorkLogItemType(payload);
+  if (
+    itemType !== "mcp_tool_call" &&
+    itemType !== "dynamic_tool_call" &&
+    itemType !== "collab_agent_tool_call" &&
+    itemType !== "web_search"
+  ) {
+    return null;
+  }
+
+  const toolName = formatToolName(
+    item?.server ?? data?.server ?? item?.namespace ?? data?.namespace,
+    item?.tool ?? data?.tool,
+  );
+  if (!toolName) {
+    return null;
+  }
+
+  const argumentSummary = summarizeToolArguments(item?.arguments ?? data?.arguments);
+  return argumentSummary ? `${toolName}: ${argumentSummary}` : toolName;
+}
+
 function isCommandToolDetail(payload: Record<string, unknown> | null, heading: string): boolean {
   const data = asRecord(payload?.data);
   const kind = asTrimmedString(data?.kind)?.toLowerCase();
@@ -1248,6 +1384,14 @@ function extractToolDetail(
 
   if (isCommandToolDetail(payload, heading)) {
     return null;
+  }
+
+  const toolRequestSummary = summarizeToolRequest(payload);
+  if (toolRequestSummary) {
+    const normalizedToolRequestSummary = normalizePreviewForComparison(toolRequestSummary);
+    if (normalizedToolRequestSummary !== normalizedHeading) {
+      return toolRequestSummary;
+    }
   }
 
   const rawOutputSummary = summarizeToolRawOutput(payload);

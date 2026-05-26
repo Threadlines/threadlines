@@ -2425,6 +2425,7 @@ describe("ProviderRuntimeIngestion", () => {
         status: "in_progress",
         title: "Read file",
         detail: "/tmp/file.ts",
+        data: { item: { command: "Get-Content /tmp/file.ts" } },
       },
     });
 
@@ -2453,6 +2454,7 @@ describe("ProviderRuntimeIngestion", () => {
         : undefined;
     expect(toolStartedPayload?.toolCallId).toBe("item-tool-started");
     expect(toolStartedPayload?.title).toBe("Read file");
+    expect(toolStartedPayload?.data).toEqual({ item: { command: "Get-Content /tmp/file.ts" } });
   });
 
   it("consumes P1 runtime events into thread metadata, diff checkpoints, and activities", async () => {
