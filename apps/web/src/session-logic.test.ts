@@ -984,6 +984,7 @@ describe("deriveWorkLogEntries", () => {
         id: "file-tool",
         kind: "tool.completed",
         summary: "File change",
+        turnId: "turn-file-change",
         payload: {
           itemType: "file_change",
           data: {
@@ -1003,6 +1004,7 @@ describe("deriveWorkLogEntries", () => {
       "apps/web/src/components/ChatView.tsx",
       "apps/web/src/session-logic.ts",
     ]);
+    expect(entry?.turnId).toBe(TurnId.make("turn-file-change"));
   });
 
   it("drops duplicated tool detail when it only repeats the title", () => {
@@ -1161,16 +1163,14 @@ describe("deriveWorkLogEntries", () => {
     const runningEntries = deriveWorkLogEntries(
       [
         makeActivity({
-          id: "command-running",
-          kind: "tool.updated",
-          summary: "Ran command",
+          id: "command-started",
+          kind: "tool.started",
+          summary: "Ran command started",
           payload: {
             itemType: "command_execution",
+            toolCallId: "command-1",
             title: "Ran command",
-            data: {
-              toolCallId: "command-1",
-              kind: "execute",
-            },
+            detail: "bun test",
           },
         }),
       ],
@@ -1178,22 +1178,34 @@ describe("deriveWorkLogEntries", () => {
     );
 
     expect(runningEntries[0]).toMatchObject({
-      id: "command-running",
-      label: "Ran command",
+      id: "command-started",
+      label: "Ran command started",
+      toolTitle: "Ran command",
       executionState: "running",
     });
 
     const completedEntries = deriveWorkLogEntries(
       [
         makeActivity({
+          id: "command-started",
+          kind: "tool.started",
+          summary: "Ran command started",
+          payload: {
+            itemType: "command_execution",
+            toolCallId: "command-1",
+            title: "Ran command",
+            detail: "bun test",
+          },
+        }),
+        makeActivity({
           id: "command-running",
           kind: "tool.updated",
           summary: "Ran command",
           payload: {
             itemType: "command_execution",
+            toolCallId: "command-1",
             title: "Ran command",
             data: {
-              toolCallId: "command-1",
               kind: "execute",
             },
           },
@@ -1204,9 +1216,9 @@ describe("deriveWorkLogEntries", () => {
           summary: "Ran command",
           payload: {
             itemType: "command_execution",
+            toolCallId: "command-1",
             title: "Ran command",
             data: {
-              toolCallId: "command-1",
               kind: "execute",
             },
           },

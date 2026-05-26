@@ -206,15 +206,10 @@ export function resolveQuickAction(
     if (!gitStatus.hasUpstream && !hasPrimaryRemote) {
       return { label: "Commit", disabled: false, kind: "run_action", action: "commit" };
     }
-    if (hasOpenPr || isDefaultRef) {
-      return { label: "Commit & push", disabled: false, kind: "run_action", action: "commit_push" };
+    if (isBehind) {
+      return { label: "Commit", disabled: false, kind: "run_action", action: "commit" };
     }
-    return {
-      label: `Commit, push & ${terminology.shortLabel}`,
-      disabled: false,
-      kind: "run_action",
-      action: "commit_push_pr",
-    };
+    return { label: "Commit & push", disabled: false, kind: "run_action", action: "commit_push" };
   }
 
   if (!gitStatus.hasUpstream) {

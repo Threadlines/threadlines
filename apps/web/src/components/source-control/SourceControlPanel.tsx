@@ -33,10 +33,12 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
+import * as Schema from "effect/Schema";
 
 import { openInPreferredEditor } from "~/editorPreferences";
 import { readEnvironmentApi } from "~/environmentApi";
@@ -52,8 +54,9 @@ import {
   gitQueryKeys,
   gitRunStackedActionMutationOptions,
 } from "~/lib/gitReactQuery";
-import { refreshGitStatus, useGitStatus } from "~/lib/gitStatusState";
+import { refreshGitStatus, refreshLocalGitStatus, useGitStatus } from "~/lib/gitStatusState";
 import { cn, newCommandId, randomUUID } from "~/lib/utils";
+import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { readLocalApi } from "~/localApi";
 import { getSourceControlPresentation } from "~/sourceControlPresentation";
 import { useStore } from "~/store";
@@ -120,7 +123,7 @@ function splitPath(filePath: string): { readonly name: string; readonly director
 
 function actionDisabledReason(input: {
   readonly status: VcsStatusResult | null;
-  readonly action: "commit" | "pull" | "push" | "create_pr";
+  readonly action: "commit" | "commit_push" | "pull" | "push" | "create_pr";
   readonly isBusy: boolean;
 }): string | null {
   if (input.isBusy) {
@@ -132,6 +135,21 @@ function actionDisabledReason(input: {
   }
   if (input.action === "commit") {
     return status.hasWorkingTreeChanges ? null : "No working tree changes.";
+  }
+  if (input.action === "commit_push") {
+    if (!status.hasWorkingTreeChanges) {
+      return "No working tree changes.";
+    }
+    if (status.refName === null) {
+      return "Detached HEAD.";
+    }
+    if (status.behindCount > 0) {
+      return "Branch is behind upstream.";
+    }
+    if (!status.hasUpstream && !status.hasPrimaryRemote) {
+      return "No primary remote.";
+    }
+    return null;
   }
   if (input.action === "pull") {
     if (status.refName === null) {
@@ -174,15 +192,17 @@ function ActionButton({
   icon,
   disabledReason,
   onClick,
+  variant = "outline",
 }: {
   readonly label: string;
   readonly icon: ReactNode;
   readonly disabledReason: string | null;
   readonly onClick: () => void;
+  readonly variant?: "default" | "outline";
 }) {
   const button = (
     <Button
-      variant="outline"
+      variant={variant}
       size="xs"
       disabled={disabledReason !== null}
       onClick={disabledReason === null ? onClick : undefined}
@@ -209,8 +229,25 @@ const GRAPH_LIMIT = 24;
 const BRANCH_MENU_REF_LIMIT = 14;
 const SOURCE_CONTROL_STATUS_REFRESH_INTERVAL_MS = 3_000;
 const DEFAULT_CHANGES_PANEL_HEIGHT = 150;
+const DEFAULT_CHANGES_PANEL_RATIO = 0.4;
+const MIN_CHANGES_PANEL_RATIO = 0.2;
+const MAX_CHANGES_PANEL_RATIO = 0.8;
 const MIN_GRAPH_PANEL_HEIGHT = 120;
 const MIN_CHANGES_PANEL_HEIGHT = 96;
+const SOURCE_CONTROL_SPLIT_VERTICAL_CHROME = 28;
+const SOURCE_CONTROL_CHANGES_PANEL_RATIO_STORAGE_KEY =
+  "badcode:source-control:changes-panel-ratio:v1";
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function clampChangesPanelRatio(value: number): number {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_CHANGES_PANEL_RATIO;
+  }
+  return clampNumber(value, MIN_CHANGES_PANEL_RATIO, MAX_CHANGES_PANEL_RATIO);
+}
 
 function toGitActionErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "An error occurred.";
@@ -610,6 +647,11 @@ export function SourceControlPanel({
   const [isPublishDialogOpen, setIsPublishDialogOpen] = useState(false);
   const [pendingDefaultBranchAction, setPendingDefaultBranchAction] =
     useState<DefaultBranchConfirmableAction | null>(null);
+  const [changesPanelRatio, setChangesPanelRatio] = useLocalStorage(
+    SOURCE_CONTROL_CHANGES_PANEL_RATIO_STORAGE_KEY,
+    DEFAULT_CHANGES_PANEL_RATIO,
+    Schema.Finite,
+  );
   const [changesPanelHeight, setChangesPanelHeight] = useState(DEFAULT_CHANGES_PANEL_HEIGHT);
   const bodyRef = useRef<HTMLDivElement>(null);
   const changesSectionRef = useRef<HTMLElement>(null);
@@ -687,6 +729,11 @@ export function SourceControlPanel({
     action: "commit",
     isBusy: isGitActionRunning,
   });
+  const commitAndPushDisabledReason = actionDisabledReason({
+    status,
+    action: "commit_push",
+    isBusy: isGitActionRunning,
+  });
   const pullDisabledReason = actionDisabledReason({
     status,
     action: "pull",
@@ -702,6 +749,15 @@ export function SourceControlPanel({
     action: "create_pr",
     isBusy: isGitActionRunning,
   });
+  const generateCommitMessageDisabledReason =
+    changedFiles.length === 0
+      ? "No working tree changes."
+      : generateCommitMessageMutation.isPending
+        ? "Commit message generation in progress."
+        : null;
+  const primaryCommitPushDisabledReason = generateCommitMessageMutation.isPending
+    ? "Commit message generation in progress."
+    : commitAndPushDisabledReason;
   const changeRequestDisabledReason = openPullRequest
     ? isGitActionRunning
       ? "Git action in progress."
@@ -711,7 +767,9 @@ export function SourceControlPanel({
     ? resolveDefaultBranchActionDialogCopy({
         action: pendingDefaultBranchAction,
         branchName: status?.refName ?? "current ref",
-        includesCommit: false,
+        includesCommit:
+          pendingDefaultBranchAction === "commit_push" ||
+          pendingDefaultBranchAction === "commit_push_pr",
         terminology: sourceControlPresentation.terminology,
       })
     : null;
@@ -735,7 +793,7 @@ export function SourceControlPanel({
       if (document.visibilityState === "hidden") {
         return;
       }
-      void refreshGitStatus({ environmentId, cwd }).catch(() => undefined);
+      void refreshLocalGitStatus({ environmentId, cwd }).catch(() => undefined);
     };
 
     refreshStatus();
@@ -760,7 +818,12 @@ export function SourceControlPanel({
         status?.isDefaultRef &&
         requiresDefaultBranchConfirmation(action, true)
       ) {
-        if (action === "push" || action === "create_pr") {
+        if (
+          action === "push" ||
+          action === "create_pr" ||
+          action === "commit_push" ||
+          action === "commit_push_pr"
+        ) {
           setPendingDefaultBranchAction(action);
         }
         return;
@@ -774,7 +837,11 @@ export function SourceControlPanel({
             ? "Committing..."
             : action === "push"
               ? "Pushing..."
-              : `Creating ${changeRequestLabel}...`,
+              : action === "commit_push"
+                ? "Committing & pushing..."
+                : action === "commit_push_pr"
+                  ? `Committing, pushing & creating ${changeRequestLabel}...`
+                  : `Creating ${changeRequestLabel}...`,
         timeout: 0,
         data: threadToastData,
       });
@@ -783,11 +850,12 @@ export function SourceControlPanel({
         const result = await actionMutation.mutateAsync({
           actionId,
           action,
-          ...(action === "commit" && trimmedMessage.length > 0
+          ...((action === "commit" || action === "commit_push" || action === "commit_push_pr") &&
+          trimmedMessage.length > 0
             ? { commitMessage: trimmedMessage }
             : {}),
         });
-        if (action === "commit") {
+        if (action === "commit" || action === "commit_push" || action === "commit_push_pr") {
           setCommitMessage("");
         }
         toastManager.update(toastId, {
@@ -905,46 +973,115 @@ export function SourceControlPanel({
     }
   }, [changedFileCount, cwd, environmentId, generateCommitMessageMutation, threadToastData]);
 
-  const startChangesResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+  const normalizedChangesPanelRatio = clampChangesPanelRatio(changesPanelRatio);
+
+  const measureSourceControlSplit = useCallback(() => {
     const body = bodyRef.current;
     const changesSection = changesSectionRef.current;
     if (!body || !changesSection) {
-      return;
+      return null;
     }
 
-    event.preventDefault();
     const bodyRect = body.getBoundingClientRect();
     const changesRect = changesSection.getBoundingClientRect();
     const commitControlsHeight = commitControlsRef.current?.getBoundingClientRect().height ?? 0;
+    const availableSplitHeight = Math.max(
+      MIN_CHANGES_PANEL_HEIGHT + MIN_GRAPH_PANEL_HEIGHT,
+      bodyRect.bottom -
+        changesRect.top -
+        commitControlsHeight -
+        SOURCE_CONTROL_SPLIT_VERTICAL_CHROME,
+    );
     const maxChangesHeight = Math.max(
       MIN_CHANGES_PANEL_HEIGHT,
-      bodyRect.bottom - changesRect.top - commitControlsHeight - MIN_GRAPH_PANEL_HEIGHT - 28,
+      availableSplitHeight - MIN_GRAPH_PANEL_HEIGHT,
     );
     const minChangesHeight = Math.min(MIN_CHANGES_PANEL_HEIGHT, maxChangesHeight);
-
-    const updateChangesHeight = (clientY: number) => {
-      const nextHeight = clientY - changesRect.top;
-      setChangesPanelHeight(Math.min(maxChangesHeight, Math.max(minChangesHeight, nextHeight)));
+    return {
+      changesTop: changesRect.top,
+      availableSplitHeight,
+      maxChangesHeight,
+      minChangesHeight,
     };
-
-    updateChangesHeight(event.clientY);
-
-    const onPointerMove = (moveEvent: PointerEvent) => {
-      moveEvent.preventDefault();
-      updateChangesHeight(moveEvent.clientY);
-    };
-    const onPointerUp = () => {
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerup", onPointerUp);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
-
-    document.body.style.cursor = "row-resize";
-    document.body.style.userSelect = "none";
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", onPointerUp, { once: true });
   }, []);
+
+  const applyChangesPanelRatio = useCallback(
+    (ratio: number) => {
+      const split = measureSourceControlSplit();
+      if (!split) {
+        return;
+      }
+      const nextHeight = split.availableSplitHeight * clampChangesPanelRatio(ratio);
+      setChangesPanelHeight(
+        clampNumber(nextHeight, split.minChangesHeight, split.maxChangesHeight),
+      );
+    },
+    [measureSourceControlSplit],
+  );
+
+  useLayoutEffect(() => {
+    applyChangesPanelRatio(normalizedChangesPanelRatio);
+  }, [applyChangesPanelRatio, normalizedChangesPanelRatio, target?.cwd, target?.environmentId]);
+
+  useEffect(() => {
+    const body = bodyRef.current;
+    const commitControls = commitControlsRef.current;
+    if (!body || typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const resizeObserver = new ResizeObserver(() => {
+      applyChangesPanelRatio(normalizedChangesPanelRatio);
+    });
+    resizeObserver.observe(body);
+    if (commitControls) {
+      resizeObserver.observe(commitControls);
+    }
+    return () => resizeObserver.disconnect();
+  }, [applyChangesPanelRatio, normalizedChangesPanelRatio]);
+
+  const startChangesResize = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const split = measureSourceControlSplit();
+      if (!split) {
+        return;
+      }
+
+      event.preventDefault();
+      let latestChangesHeight = changesPanelHeight;
+
+      const updateChangesHeight = (clientY: number) => {
+        const nextHeight = clampNumber(
+          clientY - split.changesTop,
+          split.minChangesHeight,
+          split.maxChangesHeight,
+        );
+        latestChangesHeight = nextHeight;
+        setChangesPanelHeight(nextHeight);
+      };
+
+      updateChangesHeight(event.clientY);
+
+      const onPointerMove = (moveEvent: PointerEvent) => {
+        moveEvent.preventDefault();
+        updateChangesHeight(moveEvent.clientY);
+      };
+      const onPointerUp = () => {
+        window.removeEventListener("pointermove", onPointerMove);
+        window.removeEventListener("pointerup", onPointerUp);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+        setChangesPanelRatio(
+          clampChangesPanelRatio(latestChangesHeight / split.availableSplitHeight),
+        );
+      };
+
+      document.body.style.cursor = "row-resize";
+      document.body.style.userSelect = "none";
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", onPointerUp, { once: true });
+    },
+    [changesPanelHeight, measureSourceControlSplit, setChangesPanelRatio],
+  );
 
   if (!target) {
     return null;
@@ -1095,57 +1232,71 @@ export function SourceControlPanel({
               size="sm"
               className="min-h-[4.5rem] resize-none text-xs"
             />
-            <div className="grid grid-cols-2 gap-1.5">
-              <Button
-                type="button"
-                variant="outline"
-                size="xs"
-                className="w-full justify-center"
-                disabled={changedFiles.length === 0 || generateCommitMessageMutation.isPending}
-                onClick={() => void generateCommitMessage()}
-              >
-                <SparklesIcon
-                  className={cn(
-                    "size-3",
-                    generateCommitMessageMutation.isPending && "animate-pulse",
-                  )}
-                />
-                {generateCommitMessageMutation.isPending ? "Generating" : "Generate"}
-              </Button>
+            <div className="grid grid-cols-[minmax(0,1fr)_2rem] gap-1.5">
               <ActionButton
-                label="Commit"
-                icon={<GitCommitIcon className="size-3" />}
-                disabledReason={commitDisabledReason}
-                onClick={() => void runAction("commit")}
+                label="Generate, commit & push"
+                icon={<SparklesIcon className="size-3" />}
+                disabledReason={primaryCommitPushDisabledReason}
+                onClick={() => void runAction("commit_push")}
+                variant="default"
               />
+              <Menu>
+                <MenuTrigger
+                  render={
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon-xs"
+                      className="h-7 w-full"
+                      aria-label="Source control actions"
+                    />
+                  }
+                  disabled={isGitActionRunning || generateCommitMessageMutation.isPending}
+                >
+                  <ChevronDownIcon className="size-3.5" />
+                </MenuTrigger>
+                <MenuPopup align="end" side="top" className="w-56">
+                  <MenuGroup>
+                    <MenuGroupLabel>Actions</MenuGroupLabel>
+                    <MenuItem
+                      disabled={generateCommitMessageDisabledReason !== null}
+                      onClick={() => void generateCommitMessage()}
+                    >
+                      <SparklesIcon className="size-3.5" />
+                      <span>Generate message</span>
+                    </MenuItem>
+                    <MenuItem
+                      disabled={commitDisabledReason !== null}
+                      onClick={() => void runAction("commit")}
+                    >
+                      <GitCommitIcon className="size-3.5" />
+                      <span>Commit only</span>
+                    </MenuItem>
+                    <MenuItem
+                      disabled={commitAndPushDisabledReason !== null}
+                      onClick={() => void runAction("commit_push")}
+                    >
+                      <UploadIcon className="size-3.5" />
+                      <span>Commit & push</span>
+                    </MenuItem>
+                    <MenuItem
+                      disabled={pushDisabledReason !== null}
+                      onClick={() => void runAction("push")}
+                    >
+                      <UploadIcon className="size-3.5" />
+                      <span>{shouldPublishBranch ? "Publish branch" : "Push only"}</span>
+                    </MenuItem>
+                  </MenuGroup>
+                </MenuPopup>
+              </Menu>
             </div>
-            <div className="grid grid-cols-3 gap-1.5">
+            <div className="grid grid-cols-2 gap-1.5">
               <ActionButton
                 label="Pull"
                 icon={<DownloadIcon className="size-3" />}
                 disabledReason={pullDisabledReason}
                 onClick={runPull}
               />
-              {canPublishRepository ? (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="xs"
-                  disabled={isGitActionRunning}
-                  onClick={() => setIsPublishDialogOpen(true)}
-                  className="w-full min-w-0 justify-center"
-                >
-                  <CloudUploadIcon className="size-3" />
-                  <span className="truncate">Publish</span>
-                </Button>
-              ) : (
-                <ActionButton
-                  label={shouldPublishBranch ? "Publish branch" : "Push"}
-                  icon={<UploadIcon className="size-3" />}
-                  disabledReason={pushDisabledReason}
-                  onClick={() => void runAction("push")}
-                />
-              )}
               <ActionButton
                 label={openPullRequest ? `Open ${changeRequestLabel}` : `New ${changeRequestLabel}`}
                 icon={
@@ -1159,6 +1310,19 @@ export function SourceControlPanel({
                 onClick={openPullRequest ? openExistingPr : () => void runAction("create_pr")}
               />
             </div>
+            {canPublishRepository ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="xs"
+                disabled={isGitActionRunning}
+                onClick={() => setIsPublishDialogOpen(true)}
+                className="w-full min-w-0 justify-center"
+              >
+                <CloudUploadIcon className="size-3" />
+                <span className="truncate">Publish repository</span>
+              </Button>
+            ) : null}
             <SourceControlBranchMenu
               target={target}
               activeThreadRef={activeThreadRef}

@@ -107,6 +107,23 @@ function readExitCause(exit: unknown): string {
   return toStringValue(exit.cause)?.trim() ?? "Failure";
 }
 
+function isSubscriptionSpan(name: string): boolean {
+  return name.startsWith("ws.rpc.subscribe") || name.startsWith("ws.rpc.orchestration.subscribe");
+}
+
+function isExpectedSubscriptionInterruption(name: string, cause: string): boolean {
+  if (!isSubscriptionSpan(name)) {
+    return false;
+  }
+  const normalizedCause = cause.toLowerCase();
+  return (
+    normalizedCause.includes("all fibers interrupted without error") ||
+    normalizedCause.includes("socketcloseerror") ||
+    normalizedCause.includes("socket closed") ||
+    normalizedCause.includes("websocket closed")
+  );
+}
+
 function isTraceEvent(value: unknown): value is TraceEventLike {
   return typeof value === "object" && value !== null;
 }
@@ -251,8 +268,11 @@ export function aggregateTraceDiagnostics(
         lastSpanAt === null || DateTime.isGreaterThan(endedAt, lastSpanAt) ? endedAt : lastSpanAt;
 
       const exitTag = readExitTag(parsed.exit);
-      const isFailure = exitTag === "Failure";
-      const isInterrupted = exitTag === "Interrupted";
+      const failureCause = exitTag === "Failure" ? readExitCause(parsed.exit) : null;
+      const expectedSubscriptionInterruption =
+        failureCause !== null && isExpectedSubscriptionInterruption(name, failureCause);
+      const isFailure = exitTag === "Failure" && !expectedSubscriptionInterruption;
+      const isInterrupted = exitTag === "Interrupted" || expectedSubscriptionInterruption;
       if (isFailure) failureCount += 1;
       if (isInterrupted) interruptionCount += 1;
 
@@ -275,7 +295,7 @@ export function aggregateTraceDiagnostics(
       insertBoundedSlowestSpan(slowestSpans, spanItem);
 
       if (isFailure) {
-        const cause = readExitCause(parsed.exit);
+        const cause = failureCause ?? readExitCause(parsed.exit);
         latestFailures.push({ ...spanItem, cause });
 
         const failureKey = `${name}\0${cause}`;

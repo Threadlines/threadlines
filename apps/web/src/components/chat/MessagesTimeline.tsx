@@ -59,6 +59,7 @@ import { cn } from "~/lib/utils";
 import { useUiStateStore } from "~/uiStateStore";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { formatTimestamp } from "../../timestampFormat";
+import { useSettings } from "../../hooks/useSettings";
 
 import {
   buildInlineTerminalContextText,
@@ -83,6 +84,7 @@ interface TimelineRowSharedState {
   workspaceRoot: string | undefined;
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   activeThreadEnvironmentId: EnvironmentId;
+  turnDiffSummaryByTurnId: ReadonlyMap<TurnId, TurnDiffSummary>;
   onRevertUserMessage: (messageId: MessageId) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
@@ -182,6 +184,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     ],
   );
   const rows = useStableRows(rawRows);
+  const turnDiffSummaryByTurnId = useMemo(() => {
+    const next = new Map<TurnId, TurnDiffSummary>();
+    for (const summary of turnDiffSummaryByAssistantMessageId.values()) {
+      next.set(summary.turnId, summary);
+    }
+    return next;
+  }, [turnDiffSummaryByAssistantMessageId]);
 
   const handleScroll = useCallback(() => {
     const state = listRef.current?.getState?.();
@@ -217,6 +226,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       workspaceRoot,
       skills,
       activeThreadEnvironmentId,
+      turnDiffSummaryByTurnId,
       onRevertUserMessage,
       onImageExpand,
       onOpenTurnDiff,
@@ -229,6 +239,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       workspaceRoot,
       skills,
       activeThreadEnvironmentId,
+      turnDiffSummaryByTurnId,
       onRevertUserMessage,
       onImageExpand,
       onOpenTurnDiff,
@@ -714,6 +725,16 @@ function AssistantChangedFilesSectionInner({
     (store) => store.threadChangedFilesExpandedById[routeThreadKey]?.[turnSummary.turnId] ?? true,
   );
   const setExpanded = useUiStateStore((store) => store.setThreadChangedFilesExpanded);
+  const defaultSectionExpanded = useSettings(
+    (settings) => settings.chatChangedFilesDefaultExpanded,
+  );
+  const [sectionExpanded, setSectionExpanded] = useState(() => defaultSectionExpanded);
+  const sectionExpandedOverriddenRef = useRef(false);
+  useEffect(() => {
+    if (!sectionExpandedOverriddenRef.current) {
+      setSectionExpanded(defaultSectionExpanded);
+    }
+  }, [defaultSectionExpanded, turnSummary.turnId]);
   const summaryStat = summarizeTurnDiffStats(checkpointFiles);
   const changedFileCountLabel = String(checkpointFiles.length);
 
@@ -735,28 +756,47 @@ function AssistantChangedFilesSectionInner({
             size="xs"
             variant="outline"
             data-scroll-anchor-ignore
-            onClick={() => setExpanded(routeThreadKey, turnSummary.turnId, !allDirectoriesExpanded)}
+            onClick={() => {
+              sectionExpandedOverriddenRef.current = true;
+              setSectionExpanded((expanded) => !expanded);
+            }}
           >
-            {allDirectoriesExpanded ? "Collapse all" : "Expand all"}
+            {sectionExpanded ? "Hide files" : "Show files"}
           </Button>
+          {sectionExpanded ? (
+            <Button
+              type="button"
+              size="xs"
+              variant="outline"
+              data-scroll-anchor-ignore
+              onClick={() =>
+                setExpanded(routeThreadKey, turnSummary.turnId, !allDirectoriesExpanded)
+              }
+            >
+              {allDirectoriesExpanded ? "Collapse tree" : "Expand tree"}
+            </Button>
+          ) : null}
           <Button
             type="button"
             size="xs"
             variant="outline"
+            data-scroll-anchor-ignore
             onClick={() => onOpenTurnDiff(turnSummary.turnId, checkpointFiles[0]?.path)}
           >
             View diff
           </Button>
         </div>
       </div>
-      <ChangedFilesTree
-        key={`changed-files-tree:${turnSummary.turnId}`}
-        turnId={turnSummary.turnId}
-        files={checkpointFiles}
-        allDirectoriesExpanded={allDirectoriesExpanded}
-        resolvedTheme={resolvedTheme}
-        onOpenTurnDiff={onOpenTurnDiff}
-      />
+      {sectionExpanded ? (
+        <ChangedFilesTree
+          key={`changed-files-tree:${turnSummary.turnId}`}
+          turnId={turnSummary.turnId}
+          files={checkpointFiles}
+          allDirectoriesExpanded={allDirectoriesExpanded}
+          resolvedTheme={resolvedTheme}
+          onOpenTurnDiff={onOpenTurnDiff}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1075,6 +1115,62 @@ function workEntryPreview(
     : `${displayPath} +${workEntry.changedFiles!.length - 1} more`;
 }
 
+function normalizeDiffMatchPath(filePath: string): string {
+  return filePath
+    .replaceAll("\\", "/")
+    .replace(/^\/([A-Za-z]:\/)/, "$1")
+    .replace(/^\.\/+/, "")
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "")
+    .toLowerCase();
+}
+
+function diffPathsMatch(left: string, right: string): boolean {
+  const normalizedLeft = normalizeDiffMatchPath(left);
+  const normalizedRight = normalizeDiffMatchPath(right);
+  if (!normalizedLeft || !normalizedRight) {
+    return false;
+  }
+  return (
+    normalizedLeft === normalizedRight ||
+    normalizedLeft.endsWith(`/${normalizedRight}`) ||
+    normalizedRight.endsWith(`/${normalizedLeft}`)
+  );
+}
+
+function summarizeWorkEntryDiffStat(
+  workEntry: Pick<TimelineWorkEntry, "changedFiles" | "turnId">,
+  turnDiffSummaryByTurnId: ReadonlyMap<TurnId, TurnDiffSummary>,
+): { additions: number; deletions: number } | null {
+  if (!workEntry.turnId || (workEntry.changedFiles?.length ?? 0) === 0) {
+    return null;
+  }
+  const turnSummary = turnDiffSummaryByTurnId.get(workEntry.turnId);
+  if (!turnSummary) {
+    return null;
+  }
+
+  const matchedDiffPaths = new Set<string>();
+  let additions = 0;
+  let deletions = 0;
+  for (const diffFile of turnSummary.files) {
+    if (
+      !workEntry.changedFiles?.some((changedFile) => diffPathsMatch(changedFile, diffFile.path))
+    ) {
+      continue;
+    }
+    const matchKey = normalizeDiffMatchPath(diffFile.path);
+    if (matchedDiffPaths.has(matchKey)) {
+      continue;
+    }
+    matchedDiffPaths.add(matchKey);
+    additions += diffFile.additions ?? 0;
+    deletions += diffFile.deletions ?? 0;
+  }
+
+  return matchedDiffPaths.size > 0 ? { additions, deletions } : null;
+}
+
 function workEntryRawCommand(
   workEntry: Pick<TimelineWorkEntry, "command" | "rawCommand">,
 ): string | null {
@@ -1157,10 +1253,19 @@ function RunningCommandIndicator() {
   );
 }
 
+function InlineDiffStatLabel({ stat }: { stat: { additions: number; deletions: number } }) {
+  return (
+    <span className="ml-1.5 font-mono text-[10px]">
+      <DiffStatLabel additions={stat.additions} deletions={stat.deletions} />
+    </span>
+  );
+}
+
 const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
 }) {
+  const { turnDiffSummaryByTurnId } = use(TimelineRowCtx);
   const { workEntry, workspaceRoot } = props;
   const iconConfig = workToneIcon(workEntry.tone);
   const EntryIcon = workEntryIcon(workEntry);
@@ -1174,7 +1279,14 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       ? null
       : rawPreview;
   const rawCommand = isRunningCommand ? null : workEntryRawCommand(workEntry);
-  const displayText = preview ? `${heading} - ${preview}` : heading;
+  const diffStat = summarizeWorkEntryDiffStat(workEntry, turnDiffSummaryByTurnId);
+  const visibleDiffStat = diffStat && hasNonZeroStat(diffStat) ? diffStat : null;
+  const diffStatText = visibleDiffStat
+    ? ` +${visibleDiffStat.additions} / -${visibleDiffStat.deletions}`
+    : "";
+  const displayText = preview
+    ? `${heading}${diffStatText} - ${preview}`
+    : `${heading}${diffStatText}`;
   const hasChangedFiles = (workEntry.changedFiles?.length ?? 0) > 0;
   const previewIsChangedFiles = hasChangedFiles && !workEntry.command && !workEntry.detail;
   const imagePreviews = workEntry.images ?? [];
@@ -1223,6 +1335,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                   )}
                 >
                   {heading}
+                  {visibleDiffStat ? <InlineDiffStatLabel stat={visibleDiffStat} /> : null}
                   {isRunningCommand ? <RunningCommandIndicator /> : null}
                 </span>
                 {preview && (
@@ -1271,6 +1384,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                     )}
                   >
                     {heading}
+                    {visibleDiffStat ? <InlineDiffStatLabel stat={visibleDiffStat} /> : null}
                     {isRunningCommand ? <RunningCommandIndicator /> : null}
                   </span>
                   {preview && <span className="text-muted-foreground/55"> - {preview}</span>}
