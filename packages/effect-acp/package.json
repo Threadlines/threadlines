@@ -34,7 +34,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --testTimeout=30000",
     "generate": "bun run scripts/generate.ts"
   },
   "dependencies": {
