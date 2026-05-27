@@ -34,9 +34,13 @@ The installer and updater metadata are written to `release/`.
 For a private-repo update feed, set the update repository while building:
 
 ```powershell
-$env:T3CODE_DESKTOP_UPDATE_REPOSITORY = "badcuban/badcode"
+$env:BADCODE_DESKTOP_UPDATE_REPOSITORY = "badcuban/badcode"
 bun run dist:desktop:artifact -- --platform win --target nsis --arch x64 --build-version 0.0.1
 ```
+
+The desktop artifact script still accepts legacy `T3CODE_DESKTOP_*` variables
+for compatibility. When both names are set, `BADCODE_DESKTOP_*` takes
+precedence.
 
 ## GitHub Release
 

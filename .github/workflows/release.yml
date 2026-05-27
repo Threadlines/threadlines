@@ -143,7 +143,7 @@ jobs:
 
       - name: Build Windows installer
         env:
-          T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
+          BADCODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
         run: >
           bun run dist:desktop:artifact --
           --platform win

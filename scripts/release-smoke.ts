@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -66,13 +67,13 @@ function writeMacManifestFixtures(targetRoot: string): { arm64Path: string; x64P
     arm64Path,
     `version: 9.9.9-smoke.0
 files:
-  - url: T3-Code-9.9.9-smoke.0-arm64.zip
+  - url: BadCode-9.9.9-smoke.0-arm64.zip
     sha512: arm64zip
     size: 125621344
-  - url: T3-Code-9.9.9-smoke.0-arm64.dmg
+  - url: BadCode-9.9.9-smoke.0-arm64.dmg
     sha512: arm64dmg
     size: 131754935
-path: T3-Code-9.9.9-smoke.0-arm64.zip
+path: BadCode-9.9.9-smoke.0-arm64.zip
 sha512: arm64zip
 releaseDate: '2026-03-08T10:32:14.587Z'
 `,
@@ -82,13 +83,13 @@ releaseDate: '2026-03-08T10:32:14.587Z'
     x64Path,
     `version: 9.9.9-smoke.0
 files:
-  - url: T3-Code-9.9.9-smoke.0-x64.zip
+  - url: BadCode-9.9.9-smoke.0-x64.zip
     sha512: x64zip
     size: 132000112
-  - url: T3-Code-9.9.9-smoke.0-x64.dmg
+  - url: BadCode-9.9.9-smoke.0-x64.dmg
     sha512: x64dmg
     size: 138148807
-path: T3-Code-9.9.9-smoke.0-x64.zip
+path: BadCode-9.9.9-smoke.0-x64.zip
 sha512: x64zip
 releaseDate: '2026-03-08T10:36:07.540Z'
 `,
@@ -111,13 +112,13 @@ function writeWindowsManifestFixtures(
     arm64Path,
     `version: 9.9.9-smoke.0
 files:
-  - url: T3-Code-9.9.9-smoke.0-arm64.exe
+  - url: BadCode-9.9.9-smoke.0-arm64.exe
     sha512: arm64exe
     size: 126621344
-  - url: T3-Code-9.9.9-smoke.0-arm64.exe.blockmap
+  - url: BadCode-9.9.9-smoke.0-arm64.exe.blockmap
     sha512: arm64blockmap
     size: 152344
-path: T3-Code-9.9.9-smoke.0-arm64.exe
+path: BadCode-9.9.9-smoke.0-arm64.exe
 sha512: arm64exe
 releaseDate: '2026-03-08T10:32:14.587Z'
 `,
@@ -127,13 +128,13 @@ releaseDate: '2026-03-08T10:32:14.587Z'
     x64Path,
     `version: 9.9.9-smoke.0
 files:
-  - url: T3-Code-9.9.9-smoke.0-x64.exe
+  - url: BadCode-9.9.9-smoke.0-x64.exe
     sha512: x64exe
     size: 132000112
-  - url: T3-Code-9.9.9-smoke.0-x64.exe.blockmap
+  - url: BadCode-9.9.9-smoke.0-x64.exe.blockmap
     sha512: x64blockmap
     size: 160112
-path: T3-Code-9.9.9-smoke.0-x64.exe
+path: BadCode-9.9.9-smoke.0-x64.exe
 sha512: x64exe
 releaseDate: '2026-03-08T10:36:07.540Z'
 `,
@@ -164,6 +165,53 @@ nsis:
 
   return { arm64Path, x64Path };
 }
+
+function mergeWindowsManifestFixtures(targetRoot: string): void {
+  const assetDirectory = resolve(targetRoot, "release-assets");
+  const x64ManifestNames = readdirSync(assetDirectory).filter(
+    (entry) => entry.endsWith("-win-x64.yml") && !entry.startsWith("builder-debug-"),
+  );
+
+  if (x64ManifestNames.length === 0) {
+    throw new Error("No Windows updater manifests found to merge.");
+  }
+
+  for (const x64ManifestName of x64ManifestNames) {
+    const x64ManifestPath = resolve(assetDirectory, x64ManifestName);
+    const arm64ManifestPath = resolve(
+      assetDirectory,
+      x64ManifestName.replace("-x64.yml", "-arm64.yml"),
+    );
+    const outputManifestPath = resolve(
+      assetDirectory,
+      x64ManifestName.replace("-win-x64.yml", ".yml"),
+    );
+
+    assertExists(
+      arm64ManifestPath,
+      `Missing matching arm64 Windows manifest for ${x64ManifestPath}`,
+    );
+
+    execFileSync(
+      process.execPath,
+      [
+        resolve(repoRoot, "scripts/merge-update-manifests.ts"),
+        "--platform",
+        "win",
+        arm64ManifestPath,
+        x64ManifestPath,
+        outputManifestPath,
+      ],
+      {
+        cwd: repoRoot,
+        stdio: "inherit",
+      },
+    );
+    rmSync(arm64ManifestPath, { force: true });
+    rmSync(x64ManifestPath, { force: true });
+  }
+}
+
 function assertContains(haystack: string, needle: string, message: string): void {
   if (!haystack.includes(needle)) {
     throw new Error(message);
@@ -182,7 +230,7 @@ function assertMissing(path: string, message: string): void {
   }
 }
 
-const tempRoot = mkdtempSync(join(tmpdir(), "t3-release-smoke-"));
+const tempRoot = mkdtempSync(join(tmpdir(), "badcode-release-smoke-"));
 
 try {
   copyWorkspaceManifestFixture(tempRoot);
@@ -245,7 +293,7 @@ try {
   );
   assertContains(
     nightlyReleaseMetadata,
-    "name=T3 Code Nightly 9.9.10-nightly.20260413.321 (abcdef123456)",
+    "name=BadCode Nightly 9.9.10-nightly.20260413.321 (abcdef123456)",
     "Expected nightly metadata to include the short commit SHA in the release name.",
   );
 
@@ -268,12 +316,12 @@ try {
   const mergedManifest = readFileSync(arm64Path, "utf8");
   assertContains(
     mergedManifest,
-    "T3-Code-9.9.9-smoke.0-arm64.zip",
+    "BadCode-9.9.9-smoke.0-arm64.zip",
     "Merged manifest is missing the arm64 asset.",
   );
   assertContains(
     mergedManifest,
-    "T3-Code-9.9.9-smoke.0-x64.zip",
+    "BadCode-9.9.9-smoke.0-x64.zip",
     "Merged manifest is missing the x64 asset.",
   );
 
@@ -290,77 +338,39 @@ try {
   const mergedPreviewWindowsManifestPath = resolve(tempRoot, "release-assets/preview.yml");
   const { arm64Path: winDebugArm64Path, x64Path: winDebugX64Path } =
     writeWindowsBuilderDebugFixtures(tempRoot);
-  execFileSync(
-    "bash",
-    [
-      "-lc",
-      `
-        release_assets_dir=${JSON.stringify(resolve(tempRoot, "release-assets"))}
-        shopt -s nullglob
-        found_windows_manifest=false
-        for x64_manifest in "$release_assets_dir"/*-win-x64.yml; do
-          if [[ "$(basename "$x64_manifest")" == builder-debug-* ]]; then
-            continue
-          fi
-
-          arm64_manifest="\${x64_manifest/-x64.yml/-arm64.yml}"
-          output_manifest="\${x64_manifest/-win-x64.yml/.yml}"
-          if [[ ! -f "$arm64_manifest" ]]; then
-            echo "Missing matching arm64 Windows manifest for $x64_manifest" >&2
-            exit 1
-          fi
-
-          found_windows_manifest=true
-          ${JSON.stringify(process.execPath)} ${JSON.stringify(resolve(repoRoot, "scripts/merge-update-manifests.ts"))} --platform win \
-            "$arm64_manifest" \
-            "$x64_manifest" \
-            "$output_manifest"
-          rm -f "$arm64_manifest" "$x64_manifest"
-        done
-
-        if [[ "$found_windows_manifest" != true ]]; then
-          echo "No Windows updater manifests found to merge." >&2
-          exit 1
-        fi
-      `,
-    ],
-    {
-      cwd: repoRoot,
-      stdio: "inherit",
-    },
-  );
+  mergeWindowsManifestFixtures(tempRoot);
 
   const mergedWindowsManifest = readFileSync(mergedWindowsManifestPath, "utf8");
   assertContains(
     mergedWindowsManifest,
-    "T3-Code-9.9.9-smoke.0-arm64.exe",
+    "BadCode-9.9.9-smoke.0-arm64.exe",
     "Merged Windows manifest is missing the arm64 asset.",
   );
   assertContains(
     mergedWindowsManifest,
-    "T3-Code-9.9.9-smoke.0-x64.exe",
+    "BadCode-9.9.9-smoke.0-x64.exe",
     "Merged Windows manifest is missing the x64 asset.",
   );
   const mergedNightlyWindowsManifest = readFileSync(mergedNightlyWindowsManifestPath, "utf8");
   assertContains(
     mergedNightlyWindowsManifest,
-    "T3-Code-9.9.9-smoke.0-arm64.exe",
+    "BadCode-9.9.9-smoke.0-arm64.exe",
     "Merged nightly Windows manifest is missing the arm64 asset.",
   );
   assertContains(
     mergedNightlyWindowsManifest,
-    "T3-Code-9.9.9-smoke.0-x64.exe",
+    "BadCode-9.9.9-smoke.0-x64.exe",
     "Merged nightly Windows manifest is missing the x64 asset.",
   );
   const mergedPreviewWindowsManifest = readFileSync(mergedPreviewWindowsManifestPath, "utf8");
   assertContains(
     mergedPreviewWindowsManifest,
-    "T3-Code-9.9.9-smoke.0-arm64.exe",
+    "BadCode-9.9.9-smoke.0-arm64.exe",
     "Merged preview Windows manifest is missing the arm64 asset.",
   );
   assertContains(
     mergedPreviewWindowsManifest,
-    "T3-Code-9.9.9-smoke.0-x64.exe",
+    "BadCode-9.9.9-smoke.0-x64.exe",
     "Merged preview Windows manifest is missing the x64 asset.",
   );
   assertMissing(
