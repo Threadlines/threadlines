@@ -297,7 +297,7 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("1 search");
     expect(markup).toContain("1 file read");
     expect(markup).toContain("2 git checks");
-    expect(markup).toContain("Running command");
+    expect(markup).toContain("Verifying bun typecheck");
     expect(markup).toContain("bun typecheck");
     expect(markup).not.toContain("View transcript");
     expect(markup).not.toContain("git status --short");
@@ -444,7 +444,7 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("File change");
+    expect(markup).toContain("Edited session-logic.ts");
     expect(markup).toContain("+7");
     expect(markup).toContain("-2");
   });
@@ -493,12 +493,12 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("File change");
+    expect(markup).toContain("Edited session-logic.ts");
     expect(markup).toContain("+7");
     expect(markup).toContain("-2");
   });
 
-  it("shows the command text while a command is running", async () => {
+  it("shows a live verification label while a command is running", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(
       <MessagesTimeline
@@ -522,8 +522,38 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("Running command");
+    expect(markup).toContain("Verifying bun test");
     expect(markup).toContain("bun run test src/session-logic.test.ts");
+  });
+
+  it("shows a live read label while a file-read command is running", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        workspaceRoot="C:/Users/mike/dev-stuff/t3code"
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Ran command",
+              tone: "tool",
+              itemType: "command_execution",
+              command:
+                "Get-Content -Path C:/Users/mike/dev-stuff/t3code/apps/web/src/session-logic.ts",
+              executionState: "running",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Reading session-logic.ts");
+    expect(markup).toContain("Get-Content -Path");
   });
 
   it("renders assistant changed files as a collapsed tree by default", async () => {

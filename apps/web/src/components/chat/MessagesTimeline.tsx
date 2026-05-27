@@ -1022,7 +1022,7 @@ function verificationCommandLabel(command: string, fallbackName: string | null):
 }
 
 function commandDisplayName(command: string | undefined): string | null {
-  const trimmedCommand = command?.trim();
+  const trimmedCommand = firstShellPipelineSegment(command);
   if (!trimmedCommand) {
     return null;
   }
@@ -1039,6 +1039,31 @@ function commandDisplayName(command: string | undefined): string | null {
     .at(-1)
     ?.replace(/\.(?:exe|cmd|ps1)$/iu, "");
   return name?.trim() || null;
+}
+
+function firstShellPipelineSegment(command: string | undefined): string | null {
+  const trimmedCommand = command?.trim();
+  if (!trimmedCommand) {
+    return null;
+  }
+  return trimmedCommand.split("|")[0]?.trim() || trimmedCommand;
+}
+
+function tokenizeShellSegment(command: string | undefined): string[] {
+  const segment = firstShellPipelineSegment(command);
+  if (!segment) {
+    return [];
+  }
+
+  const tokens: string[] = [];
+  const tokenPattern = /"([^"]*)"|'([^']*)'|([^\s]+)/gu;
+  for (const match of segment.matchAll(tokenPattern)) {
+    const token = match[1] ?? match[2] ?? match[3];
+    if (token) {
+      tokens.push(token);
+    }
+  }
+  return tokens;
 }
 
 function summarizeHiddenWorkEntries(entries: ReadonlyArray<TimelineWorkEntry>): string | null {
@@ -1662,10 +1687,6 @@ function isCommandWorkEntry(workEntry: TimelineWorkEntry): boolean {
   );
 }
 
-function isRunningCommandWorkEntry(workEntry: TimelineWorkEntry): boolean {
-  return workEntry.executionState === "running" && isCommandWorkEntry(workEntry);
-}
-
 function isRunningToolWorkEntry(workEntry: TimelineWorkEntry): boolean {
   return workEntry.executionState === "running";
 }
@@ -1678,9 +1699,13 @@ function capitalizePhrase(value: string): string {
   return `${trimmed.charAt(0).toUpperCase()}${trimmed.slice(1)}`;
 }
 
-function toolWorkEntryHeading(workEntry: TimelineWorkEntry): string {
-  if (isRunningCommandWorkEntry(workEntry)) {
-    return "Running command";
+function toolWorkEntryHeading(
+  workEntry: TimelineWorkEntry,
+  workspaceRoot: string | undefined,
+): string {
+  const actionHeading = workEntryActionHeading(workEntry, workspaceRoot);
+  if (actionHeading) {
+    return actionHeading;
   }
 
   const rawHeading = workEntry.toolTitle ?? workEntry.label;
@@ -1693,6 +1718,204 @@ function toolWorkEntryHeading(workEntry: TimelineWorkEntry): string {
     return "Command failed";
   }
   return capitalizePhrase(normalizedHeading);
+}
+
+function workEntryActionHeading(
+  workEntry: TimelineWorkEntry,
+  workspaceRoot: string | undefined,
+): string | null {
+  if (workEntry.executionState === "failed" && isCommandWorkEntry(workEntry)) {
+    return "Command failed";
+  }
+
+  if (isCommandWorkEntry(workEntry) && workEntry.command) {
+    return commandActionHeading(workEntry.command, workEntry.executionState, workspaceRoot);
+  }
+
+  if (
+    workEntry.requestKind === "file-read" ||
+    /^read file$/i.test(workEntry.toolTitle ?? workEntry.label)
+  ) {
+    return formatActionHeading(
+      workEntry.executionState,
+      "Reading",
+      "Read",
+      workEntrySubjectFromDetail(workEntry, workspaceRoot) ?? "file",
+    );
+  }
+  if (workEntry.itemType === "web_search") {
+    return formatActionHeading(workEntry.executionState, "Searching", "Searched", "web");
+  }
+  if (workEntry.itemType === "file_change" || (workEntry.changedFiles?.length ?? 0) > 0) {
+    return formatActionHeading(
+      workEntry.executionState,
+      "Editing",
+      "Edited",
+      workEntrySubjectFromChangedFiles(workEntry, workspaceRoot) ?? "files",
+    );
+  }
+  if (workEntry.itemType === "image_view" || (workEntry.images?.length ?? 0) > 0) {
+    return formatActionHeading(workEntry.executionState, "Viewing", "Viewed", "image");
+  }
+
+  return null;
+}
+
+function commandActionHeading(
+  command: string,
+  executionState: TimelineWorkEntry["executionState"],
+  workspaceRoot: string | undefined,
+): string {
+  const summary = classifyCommandActivity(command);
+  if (summary.kind === "explore") {
+    if (summary.signal === "search") {
+      return formatActionHeading(
+        executionState,
+        "Searching",
+        "Searched",
+        commandSubjectLabel(command, "search", workspaceRoot) ?? "project",
+      );
+    }
+    if (summary.signal === "read") {
+      return formatActionHeading(
+        executionState,
+        "Reading",
+        "Read",
+        commandSubjectLabel(command, "read", workspaceRoot) ?? "file",
+      );
+    }
+    if (summary.signal === "list") {
+      return formatActionHeading(
+        executionState,
+        "Listing",
+        "Listed",
+        commandSubjectLabel(command, "list", workspaceRoot) ?? "directory",
+      );
+    }
+    if (summary.signal === "git") {
+      return formatActionHeading(executionState, "Checking", "Checked", "git state");
+    }
+    if (summary.signal === "environment") {
+      return formatActionHeading(executionState, "Checking", "Checked", "environment");
+    }
+  }
+
+  if (summary.kind === "verify") {
+    return formatActionHeading(
+      executionState,
+      "Verifying",
+      "Verified",
+      summary.commandName ?? "changes",
+    );
+  }
+
+  return formatActionHeading(executionState, "Running", "Ran", "command");
+}
+
+function formatActionHeading(
+  executionState: TimelineWorkEntry["executionState"],
+  activeVerb: string,
+  completedVerb: string,
+  subject: string,
+): string {
+  const verb = executionState === "running" ? activeVerb : completedVerb;
+  return `${verb} ${subject}`;
+}
+
+function commandSubjectLabel(
+  command: string,
+  signal: "search" | "read" | "list",
+  workspaceRoot: string | undefined,
+): string | null {
+  const target = extractCommandPathTarget(command);
+  if (!target) {
+    return null;
+  }
+
+  const formattedTarget = formatWorkspaceRelativePath(target, workspaceRoot);
+  if (signal === "read") {
+    return lastPathSegment(formattedTarget) ?? formattedTarget;
+  }
+  return formattedTarget;
+}
+
+function extractCommandPathTarget(command: string): string | null {
+  const tokens = tokenizeShellSegment(command);
+  for (let index = 0; index < tokens.length - 1; index += 1) {
+    if (/^-(?:literalpath|path)$/iu.test(tokens[index]!)) {
+      return cleanCommandPathToken(tokens[index + 1]);
+    }
+  }
+
+  for (let index = tokens.length - 1; index >= 1; index -= 1) {
+    const token = cleanCommandPathToken(tokens[index]);
+    if (token && isPathLikeCommandToken(token)) {
+      return token;
+    }
+  }
+  return null;
+}
+
+function cleanCommandPathToken(token: string | undefined): string | null {
+  const cleaned = token
+    ?.trim()
+    .replace(/^["']|["']$/gu, "")
+    .replace(/[),;]+$/gu, "");
+  return cleaned || null;
+}
+
+function isPathLikeCommandToken(token: string): boolean {
+  if (token.startsWith("-")) {
+    return false;
+  }
+  return (
+    /[\\/]/u.test(token) ||
+    /^[A-Za-z]:/u.test(token) ||
+    /^\.\.?$/u.test(token) ||
+    /^\.\.?[\\/]/u.test(token) ||
+    /\.[A-Za-z0-9]{1,8}$/u.test(token)
+  );
+}
+
+function workEntrySubjectFromDetail(
+  workEntry: Pick<TimelineWorkEntry, "detail" | "changedFiles">,
+  workspaceRoot: string | undefined,
+): string | null {
+  if ((workEntry.changedFiles?.length ?? 0) > 0) {
+    return workEntrySubjectFromChangedFiles(workEntry, workspaceRoot);
+  }
+  if (!workEntry.detail) {
+    return null;
+  }
+  const detail = workEntry.detail.trim();
+  return isPathLikeCommandToken(detail)
+    ? (lastPathSegment(formatWorkspaceRelativePath(detail, workspaceRoot)) ?? detail)
+    : null;
+}
+
+function workEntrySubjectFromChangedFiles(
+  workEntry: Pick<TimelineWorkEntry, "changedFiles">,
+  workspaceRoot: string | undefined,
+): string | null {
+  const [firstPath] = workEntry.changedFiles ?? [];
+  if (!firstPath) {
+    return null;
+  }
+  const displayPath = formatWorkspaceRelativePath(firstPath, workspaceRoot);
+  return workEntry.changedFiles!.length === 1
+    ? (lastPathSegment(displayPath) ?? displayPath)
+    : `${lastPathSegment(displayPath) ?? displayPath} +${workEntry.changedFiles!.length - 1}`;
+}
+
+function lastPathSegment(pathValue: string): string | null {
+  const parts = pathValue.replaceAll("\\", "/").split("/");
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    const part = parts[index]?.trim();
+    if (part) {
+      return part;
+    }
+  }
+  return null;
 }
 
 function RunningToolIndicator() {
@@ -1722,7 +1945,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const iconConfig = workToneIcon(workEntry.tone);
   const EntryIcon = workEntryIcon(workEntry);
   const isRunningTool = isRunningToolWorkEntry(workEntry);
-  const heading = toolWorkEntryHeading(workEntry);
+  const heading = toolWorkEntryHeading(workEntry, workspaceRoot);
   const rawPreview = workEntryPreview(workEntry, workspaceRoot);
   const preview =
     rawPreview &&
