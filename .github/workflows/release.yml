@@ -7,8 +7,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version, for example 0.1.0 or v0.1.0-alpha.1"
-        required: true
+        description: "Optional. Leave blank to release the next stable patch version."
+        required: false
         type: string
       prerelease:
         description: "Mark the GitHub Release as a prerelease"
@@ -71,13 +71,34 @@ jobs:
           fi
 
           if [[ -z "${raw//[[:space:]]/}" ]]; then
-            echo "Release version is required." >&2
+            git fetch --force --tags origin "refs/tags/*:refs/tags/*"
+
+            latest_stable_tag="$(
+              git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname |
+                grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' |
+                head -n 1 || true
+            )"
+
+            if [[ -z "$latest_stable_tag" ]]; then
+              version="0.0.1"
+              echo "No stable release tags found; defaulting to v$version."
+            else
+              latest_version="${latest_stable_tag#v}"
+              IFS='.' read -r major minor patch <<< "$latest_version"
+              version="$major.$minor.$((patch + 1))"
+              echo "No release version supplied; using next patch after $latest_stable_tag: v$version."
+            fi
+          else
+            version="${raw#v}"
+          fi
+
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release version: ${raw:-$version}" >&2
             exit 1
           fi
 
-          version="${raw#v}"
-          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-            echo "Invalid release version: $raw" >&2
+          if [[ "${GITHUB_REF_TYPE}" != "tag" ]] && git rev-parse --verify --quiet "refs/tags/v$version" >/dev/null; then
+            echo "Release tag already exists: v$version" >&2
             exit 1
           fi
 
