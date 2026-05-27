@@ -405,13 +405,7 @@ function CommitGraphGlyph({
         );
       })}
       {highlighted ? (
-        <circle
-          cx={nodeX}
-          cy={nodeY}
-          r={radius}
-          className="fill-primary"
-          opacity={1}
-        />
+        <circle cx={nodeX} cy={nodeY} r={radius} className="fill-primary" opacity={1} />
       ) : isMergeCommit ? (
         <circle
           cx={nodeX}
