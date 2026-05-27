@@ -105,6 +105,9 @@ export interface SourceControlProjectTarget {
 interface SourceControlPanelProps {
   readonly target: SourceControlProjectTarget | null;
   readonly activeThreadRef: ScopedThreadRef | null;
+  readonly onActiveBranchChange?:
+    | ((branch: string | null, worktreePath: string | null) => void)
+    | undefined;
   readonly onOpenDiff?: (filePath?: string) => void;
 }
 
@@ -290,12 +293,16 @@ function getBranchActionDisabledReason(input: {
 function SourceControlBranchMenu({
   target,
   activeThreadRef,
+  onActiveBranchChange,
   status,
   isBusy,
   refreshPanel,
 }: {
   readonly target: SourceControlProjectTarget;
   readonly activeThreadRef: ScopedThreadRef | null;
+  readonly onActiveBranchChange?:
+    | ((branch: string | null, worktreePath: string | null) => void)
+    | undefined;
   readonly status: VcsStatusResult | null | undefined;
   readonly isBusy: boolean;
   readonly refreshPanel: () => void;
@@ -369,6 +376,10 @@ function SourceControlBranchMenu({
 
   const syncActiveThreadBranch = useCallback(
     (branch: string | null) => {
+      if (onActiveBranchChange) {
+        onActiveBranchChange(branch, target.worktreePath);
+        return;
+      }
       if (!activeThreadRef) {
         return;
       }
@@ -386,7 +397,13 @@ function SourceControlBranchMenu({
       }
       setThreadBranch(activeThreadRef, branch, target.worktreePath);
     },
-    [activeThreadRef, setThreadBranch, target.environmentId, target.worktreePath],
+    [
+      activeThreadRef,
+      onActiveBranchChange,
+      setThreadBranch,
+      target.environmentId,
+      target.worktreePath,
+    ],
   );
 
   const runSwitchRef = useCallback(
@@ -640,10 +657,12 @@ function SourceControlBranchMenu({
 export function SourceControlPanel({
   target,
   activeThreadRef,
+  onActiveBranchChange,
   onOpenDiff,
 }: SourceControlPanelProps) {
   const queryClient = useQueryClient();
   const [commitMessage, setCommitMessage] = useState("");
+  const [commitMessageEditorOpen, setCommitMessageEditorOpen] = useState(false);
   const [isPublishDialogOpen, setIsPublishDialogOpen] = useState(false);
   const [pendingDefaultBranchAction, setPendingDefaultBranchAction] =
     useState<DefaultBranchConfirmableAction | null>(null);
@@ -857,6 +876,7 @@ export function SourceControlPanel({
         });
         if (action === "commit" || action === "commit_push" || action === "commit_push_pr") {
           setCommitMessage("");
+          setCommitMessageEditorOpen(false);
         }
         toastManager.update(toastId, {
           type: "success",
@@ -958,6 +978,7 @@ export function SourceControlPanel({
       return;
     }
 
+    setCommitMessageEditorOpen(true);
     try {
       const result = await generateCommitMessageMutation.mutateAsync({});
       setCommitMessage(result.message);
@@ -973,6 +994,8 @@ export function SourceControlPanel({
     }
   }, [changedFileCount, cwd, environmentId, generateCommitMessageMutation, threadToastData]);
 
+  const hasCommitMessage = commitMessage.trim().length > 0;
+  const showCommitMessageEditor = commitMessageEditorOpen || hasCommitMessage;
   const normalizedChangesPanelRatio = clampChangesPanelRatio(changesPanelRatio);
 
   const measureSourceControlSplit = useCallback(() => {
@@ -1225,16 +1248,19 @@ export function SourceControlPanel({
 
         <div className="flex min-h-0 flex-1 flex-col gap-3">
           <section ref={commitControlsRef} className="shrink-0 space-y-2">
-            <Textarea
-              value={commitMessage}
-              onChange={(event) => setCommitMessage(event.target.value)}
-              placeholder="Commit message"
-              size="sm"
-              className="min-h-[4.5rem] resize-none text-xs"
-            />
+            {showCommitMessageEditor ? (
+              <Textarea
+                value={commitMessage}
+                onChange={(event) => setCommitMessage(event.target.value)}
+                placeholder="Commit message"
+                size="sm"
+                className="min-h-[4.5rem] resize-none text-xs"
+                autoFocus={commitMessageEditorOpen}
+              />
+            ) : null}
             <div className="grid grid-cols-[minmax(0,1fr)_2rem] gap-1.5">
               <ActionButton
-                label="Generate, commit & push"
+                label={hasCommitMessage ? "Commit & push" : "Generate, commit & push"}
                 icon={<SparklesIcon className="size-3" />}
                 disabledReason={primaryCommitPushDisabledReason}
                 onClick={() => void runAction("commit_push")}
@@ -1326,6 +1352,7 @@ export function SourceControlPanel({
             <SourceControlBranchMenu
               target={target}
               activeThreadRef={activeThreadRef}
+              onActiveBranchChange={onActiveBranchChange}
               status={status}
               isBusy={isGitActionRunning}
               refreshPanel={refreshPanel}

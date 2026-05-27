@@ -588,7 +588,7 @@ describe("deriveWorkLogEntries", () => {
     ];
 
     const entries = deriveWorkLogEntries(activities, undefined);
-    expect(entries.map((entry) => entry.id)).toEqual(["tool-complete"]);
+    expect(entries.map((entry) => entry.id)).toEqual(["tool-start"]);
   });
 
   it("omits task.started but shows task.progress and task.completed", () => {
@@ -978,6 +978,43 @@ describe("deriveWorkLogEntries", () => {
     });
   });
 
+  it("keeps thumbnails for image generation tools even when projected as dynamic calls", () => {
+    const imageBase64 =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "dynamic-image-generation-complete",
+        kind: "tool.completed",
+        summary: "Tool call",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "image_gen",
+          data: {
+            item: {
+              id: "ig_456",
+              result: imageBase64,
+              savedPath: "C:\\Users\\wilfr\\.codex\\generated_images\\badge.png",
+              tool: "image_gen",
+              type: "imageGeneration",
+            },
+          },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities, undefined);
+    expect(entry).toMatchObject({
+      itemType: "dynamic_tool_call",
+      images: [
+        {
+          id: "ig_456",
+          name: "badge.png",
+          previewUrl: `data:image/png;base64,${imageBase64}`,
+        },
+      ],
+    });
+  });
+
   it("extracts changed file paths for file-change tool activities", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
@@ -1068,7 +1105,7 @@ describe("deriveWorkLogEntries", () => {
     const entries = deriveWorkLogEntries(activities, undefined);
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
-      id: "grep-complete",
+      id: "grep-update",
       toolTitle: "grep",
       detail: "19 files",
       itemType: "web_search",
@@ -1117,7 +1154,7 @@ describe("deriveWorkLogEntries", () => {
     const entries = deriveWorkLogEntries(activities, undefined);
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
-      id: "read-complete",
+      id: "read-update",
       toolTitle: "Read File",
       detail: 'import * as Effect from "effect/Effect"',
       itemType: "dynamic_tool_call",
@@ -1229,7 +1266,7 @@ describe("deriveWorkLogEntries", () => {
 
     expect(completedEntries).toHaveLength(1);
     expect(completedEntries[0]).toMatchObject({
-      id: "command-completed",
+      id: "command-started",
       label: "Ran command",
       executionState: "completed",
     });
@@ -1275,10 +1312,96 @@ describe("deriveWorkLogEntries", () => {
 
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
-      id: "command-completed",
+      id: "command-started",
       command: "bun run test src/session-logic.test.ts",
       executionState: "completed",
     });
+  });
+
+  it("collapses interleaved parallel command lifecycles by tool call id", () => {
+    const entries = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "command-a-started",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          kind: "tool.started",
+          summary: "Ran command started",
+          payload: {
+            itemType: "command_execution",
+            toolCallId: "command-a",
+            title: "Ran command",
+            data: {
+              item: {
+                command: "bun lint",
+              },
+            },
+          },
+        }),
+        makeActivity({
+          id: "command-b-started",
+          createdAt: "2026-02-23T00:00:02.000Z",
+          kind: "tool.started",
+          summary: "Ran command started",
+          payload: {
+            itemType: "command_execution",
+            toolCallId: "command-b",
+            title: "Ran command",
+            data: {
+              item: {
+                command: "bun typecheck",
+              },
+            },
+          },
+        }),
+        makeActivity({
+          id: "command-b-completed",
+          createdAt: "2026-02-23T00:00:03.000Z",
+          kind: "tool.completed",
+          summary: "Ran command",
+          payload: {
+            itemType: "command_execution",
+            toolCallId: "command-b",
+            title: "Ran command",
+            data: {
+              item: {
+                command: "bun typecheck",
+              },
+            },
+          },
+        }),
+        makeActivity({
+          id: "command-a-completed",
+          createdAt: "2026-02-23T00:00:04.000Z",
+          kind: "tool.completed",
+          summary: "Ran command",
+          payload: {
+            itemType: "command_execution",
+            toolCallId: "command-a",
+            title: "Ran command",
+            data: {
+              item: {
+                command: "bun lint",
+              },
+            },
+          },
+        }),
+      ],
+      undefined,
+    );
+
+    expect(entries).toHaveLength(2);
+    expect(entries).toMatchObject([
+      {
+        id: "command-a-started",
+        command: "bun lint",
+        executionState: "completed",
+      },
+      {
+        id: "command-b-started",
+        command: "bun typecheck",
+        executionState: "completed",
+      },
+    ]);
   });
 
   it("shows running browser-style tool lifecycle rows with compact tool input", () => {
@@ -1329,7 +1452,7 @@ describe("deriveWorkLogEntries", () => {
 
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
-      id: "browser-completed",
+      id: "browser-started",
       detail: "browser.open: url=http://localhost:3000",
       executionState: "completed",
     });
@@ -1430,7 +1553,7 @@ describe("deriveWorkLogEntries", () => {
     const entries = deriveWorkLogEntries(activities, undefined);
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
-      id: "legacy-read-complete",
+      id: "legacy-read-update",
       toolTitle: "Read File",
       itemType: "dynamic_tool_call",
     });
@@ -1483,8 +1606,8 @@ describe("deriveWorkLogEntries", () => {
 
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
-      id: "tool-complete",
-      createdAt: "2026-02-23T00:00:03.000Z",
+      id: "tool-update-1",
+      createdAt: "2026-02-23T00:00:01.000Z",
       label: "Tool call completed",
       detail: 'Read: {"file_path":"/tmp/app.ts"}',
       command: "sed -n 1,40p /tmp/app.ts",
@@ -1543,7 +1666,7 @@ describe("deriveWorkLogEntries", () => {
 
     const entries = deriveWorkLogEntries(activities, undefined);
 
-    expect(entries.map((entry) => entry.id)).toEqual(["tool-1-complete", "tool-2-complete"]);
+    expect(entries.map((entry) => entry.id)).toEqual(["tool-1-update", "tool-2-update"]);
   });
 
   it("collapses same-timestamp lifecycle rows even when completed sorts before updated by id", () => {
@@ -1586,7 +1709,7 @@ describe("deriveWorkLogEntries", () => {
     const entries = deriveWorkLogEntries(activities, undefined);
 
     expect(entries).toHaveLength(1);
-    expect(entries[0]?.id).toBe("a-complete-same-timestamp");
+    expect(entries[0]?.id).toBe("z-update-earlier");
   });
 });
 

@@ -1,9 +1,13 @@
 import { scopeProjectRef } from "@t3tools/client-runtime";
 import { projectScriptCwd } from "@t3tools/shared/projectScripts";
 import { createFileRoute, retainSearchParams, useNavigate } from "@tanstack/react-router";
-import { Suspense, lazy, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
 
 import ChatView from "../components/ChatView";
+import {
+  ChatRightPanelInlineSidebar,
+  RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
+} from "../components/ChatRightPanelInlineSidebar";
 import { threadHasStarted } from "../components/ChatView.logic";
 import { DiffWorkerPoolProvider } from "../components/DiffWorkerPoolProvider";
 import {
@@ -19,23 +23,17 @@ import {
   stripRightPanelSearchParams,
 } from "../diffRouteSearch";
 import { useMediaQuery } from "../hooks/useMediaQuery";
-import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import { selectEnvironmentState, selectThreadExistsByRef, useStore } from "../store";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
 import { resolveThreadRouteRef, buildThreadRouteParams } from "../threadRoutes";
 import { RightPanelSheet } from "../components/RightPanelSheet";
-import { Sidebar, SidebarInset, SidebarProvider, SidebarRail } from "~/components/ui/sidebar";
+import { SidebarInset } from "~/components/ui/sidebar";
 import {
   SourceControlPanel,
   type SourceControlProjectTarget,
 } from "../components/source-control/SourceControlPanel";
 
 const DiffPanel = lazy(() => import("../components/DiffPanel"));
-const RIGHT_PANEL_INLINE_SIDEBAR_WIDTH_STORAGE_KEY = "chat_right_panel_sidebar_width";
-const RIGHT_PANEL_INLINE_DEFAULT_WIDTH = "clamp(24rem,34vw,36rem)";
-const RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH = 22 * 16;
-const RIGHT_PANEL_INLINE_SIDEBAR_MAX_WIDTH = 256 * 16;
-const COMPOSER_COMPACT_MIN_LEFT_CONTROLS_WIDTH_PX = 208;
 
 const DiffLoadingFallback = (props: { mode: DiffPanelMode }) => {
   return (
@@ -60,95 +58,6 @@ const LazyDiffPanelWithBack = (props: {
         />
       </Suspense>
     </DiffWorkerPoolProvider>
-  );
-};
-
-const ChatRightPanelInlineSidebar = (props: {
-  open: boolean;
-  onClose: () => void;
-  onOpenSourceControl: () => void;
-  children: ReactNode;
-}) => {
-  const { open, onClose, onOpenSourceControl } = props;
-  const onOpenChange = useCallback(
-    (nextOpen: boolean) => {
-      if (nextOpen) {
-        onOpenSourceControl();
-        return;
-      }
-      onClose();
-    },
-    [onClose, onOpenSourceControl],
-  );
-  const shouldAcceptInlineSidebarWidth = useCallback(
-    ({ nextWidth, wrapper }: { nextWidth: number; wrapper: HTMLElement }) => {
-      const composerForm = document.querySelector<HTMLElement>("[data-chat-composer-form='true']");
-      if (!composerForm) return true;
-      const composerViewport = composerForm.parentElement;
-      if (!composerViewport) return true;
-      const previousSidebarWidth = wrapper.style.getPropertyValue("--sidebar-width");
-      wrapper.style.setProperty("--sidebar-width", `${nextWidth}px`);
-
-      const viewportStyle = window.getComputedStyle(composerViewport);
-      const viewportPaddingLeft = Number.parseFloat(viewportStyle.paddingLeft) || 0;
-      const viewportPaddingRight = Number.parseFloat(viewportStyle.paddingRight) || 0;
-      const viewportContentWidth = Math.max(
-        0,
-        composerViewport.clientWidth - viewportPaddingLeft - viewportPaddingRight,
-      );
-      const formRect = composerForm.getBoundingClientRect();
-      const composerFooter = composerForm.querySelector<HTMLElement>(
-        "[data-chat-composer-footer='true']",
-      );
-      const composerRightActions = composerForm.querySelector<HTMLElement>(
-        "[data-chat-composer-actions='right']",
-      );
-      const composerRightActionsWidth = composerRightActions?.getBoundingClientRect().width ?? 0;
-      const composerFooterGap = composerFooter
-        ? Number.parseFloat(window.getComputedStyle(composerFooter).columnGap) ||
-          Number.parseFloat(window.getComputedStyle(composerFooter).gap) ||
-          0
-        : 0;
-      const minimumComposerWidth =
-        COMPOSER_COMPACT_MIN_LEFT_CONTROLS_WIDTH_PX + composerRightActionsWidth + composerFooterGap;
-      const hasComposerOverflow = composerForm.scrollWidth > composerForm.clientWidth + 0.5;
-      const overflowsViewport = formRect.width > viewportContentWidth + 0.5;
-      const violatesMinimumComposerWidth = composerForm.clientWidth + 0.5 < minimumComposerWidth;
-
-      if (previousSidebarWidth.length > 0) {
-        wrapper.style.setProperty("--sidebar-width", previousSidebarWidth);
-      } else {
-        wrapper.style.removeProperty("--sidebar-width");
-      }
-
-      return !hasComposerOverflow && !overflowsViewport && !violatesMinimumComposerWidth;
-    },
-    [],
-  );
-
-  return (
-    <SidebarProvider
-      defaultOpen={false}
-      open={open}
-      onOpenChange={onOpenChange}
-      className="w-auto min-h-0 flex-none bg-transparent"
-      style={{ "--sidebar-width": RIGHT_PANEL_INLINE_DEFAULT_WIDTH } as React.CSSProperties}
-    >
-      <Sidebar
-        side="right"
-        collapsible="offcanvas"
-        className="border-l border-border bg-card text-foreground"
-        resizable={{
-          maxWidth: RIGHT_PANEL_INLINE_SIDEBAR_MAX_WIDTH,
-          minWidth: RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH,
-          shouldAcceptWidth: shouldAcceptInlineSidebarWidth,
-          storageKey: RIGHT_PANEL_INLINE_SIDEBAR_WIDTH_STORAGE_KEY,
-        }}
-      >
-        {props.children}
-        <SidebarRail />
-      </Sidebar>
-    </SidebarProvider>
   );
 };
 
@@ -184,14 +93,16 @@ function ChatThreadRouteView() {
   const diffOpen = search.diff === "1";
   const sourceControlOpen = search.sourceControl === "1";
   const rightPanelOpen = diffOpen || sourceControlOpen;
-  const activeProjectRef = serverThread
-    ? scopeProjectRef(serverThread.environmentId, serverThread.projectId)
+  const sourceControlThread = serverThread ?? draftThread;
+  const sourceControlProjectRef = sourceControlThread
+    ? scopeProjectRef(sourceControlThread.environmentId, sourceControlThread.projectId)
     : null;
   const activeProject = useStore(
-    useMemo(() => createProjectSelectorByRef(activeProjectRef), [activeProjectRef]),
+    useMemo(() => createProjectSelectorByRef(sourceControlProjectRef), [sourceControlProjectRef]),
   );
+  const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
   const sourceControlTarget = useMemo<SourceControlProjectTarget | null>(() => {
-    if (!threadRef || !serverThread || !activeProject) {
+    if (!threadRef || !sourceControlThread || !activeProject) {
       return null;
     }
 
@@ -199,13 +110,22 @@ function ChatThreadRouteView() {
       environmentId: threadRef.environmentId,
       cwd: projectScriptCwd({
         project: { cwd: activeProject.cwd },
-        worktreePath: serverThread.worktreePath ?? null,
+        worktreePath: sourceControlThread.worktreePath ?? null,
       }),
       name: activeProject.name,
       environmentLabel: null,
-      worktreePath: serverThread.worktreePath ?? null,
+      worktreePath: sourceControlThread.worktreePath ?? null,
     };
-  }, [activeProject, serverThread, threadRef]);
+  }, [activeProject, sourceControlThread, threadRef]);
+  const handleDraftSourceControlBranchChange = useCallback(
+    (branch: string | null, worktreePath: string | null) => {
+      if (!threadRef) {
+        return;
+      }
+      setDraftThreadContext(threadRef, { branch, worktreePath });
+    },
+    [setDraftThreadContext, threadRef],
+  );
   const shouldUseDiffSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   const currentThreadKey = threadRef ? `${threadRef.environmentId}:${threadRef.threadId}` : null;
   const [diffPanelMountState, setDiffPanelMountState] = useState(() => ({
@@ -301,13 +221,20 @@ function ChatThreadRouteView() {
     <SourceControlPanel
       target={sourceControlTarget}
       activeThreadRef={threadRef}
-      onOpenDiff={(filePath) => {
-        openDiff({
-          ...(filePath ? { filePath } : {}),
-          sourceControlReturn: true,
-          workingTree: true,
-        });
-      }}
+      {...(!serverThread && draftThread
+        ? { onActiveBranchChange: handleDraftSourceControlBranchChange }
+        : {})}
+      {...(serverThread
+        ? {
+            onOpenDiff: (filePath?: string) => {
+              openDiff({
+                ...(filePath ? { filePath } : {}),
+                sourceControlReturn: true,
+                workingTree: true,
+              });
+            },
+          }
+        : {})}
     />
   ) : shouldRenderDiffContent ? (
     <LazyDiffPanelWithBack

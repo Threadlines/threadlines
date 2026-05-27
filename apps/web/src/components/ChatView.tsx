@@ -1699,7 +1699,19 @@ export default function ChatView(props: ChatViewProps) {
     [keybindings, nonTerminalShortcutLabelOptions],
   );
   const onToggleSourceControl = useCallback(() => {
-    if (!isServerThread) {
+    if (!activeThread) {
+      return;
+    }
+    if (routeKind === "draft" && draftId) {
+      void navigate({
+        to: "/draft/$draftId",
+        params: buildDraftThreadRouteParams(draftId),
+        replace: true,
+        search: (previous) => {
+          const rest = stripRightPanelSearchParams(previous);
+          return sourceControlOpen ? rest : { ...rest, sourceControl: "1" };
+        },
+      });
       return;
     }
     void navigate({
@@ -1714,7 +1726,7 @@ export default function ChatView(props: ChatViewProps) {
         return sourceControlOpen ? rest : { ...rest, sourceControl: "1" };
       },
     });
-  }, [environmentId, isServerThread, navigate, sourceControlOpen, threadId]);
+  }, [activeThread, draftId, environmentId, navigate, routeKind, sourceControlOpen, threadId]);
 
   const envLocked = Boolean(
     activeThread &&

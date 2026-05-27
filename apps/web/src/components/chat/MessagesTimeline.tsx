@@ -636,28 +636,40 @@ const WorkGroupSection = memo(function WorkGroupSection({
   groupedEntries: Extract<MessagesTimelineRow, { kind: "work" }>["groupedEntries"];
 }) {
   const { workspaceRoot } = use(TimelineRowCtx);
+  const { isWorking } = use(TimelineRowActivityCtx);
   const [isExpanded, setIsExpanded] = useState(false);
-  const hasOverflow = groupedEntries.length > MAX_VISIBLE_WORK_LOG_ENTRIES;
+  const visibleLimit = isWorking
+    ? Math.min(5, MAX_VISIBLE_WORK_LOG_ENTRIES)
+    : MAX_VISIBLE_WORK_LOG_ENTRIES;
+  const hasOverflow = groupedEntries.length > visibleLimit;
   const visibleEntries =
-    hasOverflow && !isExpanded
-      ? groupedEntries.slice(-MAX_VISIBLE_WORK_LOG_ENTRIES)
-      : groupedEntries;
+    hasOverflow && !isExpanded ? groupedEntries.slice(-visibleLimit) : groupedEntries;
   const hiddenCount = groupedEntries.length - visibleEntries.length;
   const onlyToolEntries = groupedEntries.every((entry) => entry.tone === "tool");
+  const hiddenSummary =
+    hasOverflow && !isExpanded && !isWorking
+      ? summarizeHiddenWorkEntries(groupedEntries.slice(0, hiddenCount))
+      : null;
   const showHeader = hasOverflow || !onlyToolEntries;
-  const groupLabel = onlyToolEntries ? "Tool calls" : "Work log";
 
   return (
     <div className="rounded-xl border border-border/45 bg-card/25 px-2 py-1.5">
       {showHeader && (
-        <div className="mb-1.5 flex items-center justify-between gap-2 px-0.5">
-          <p className="text-[9px] uppercase tracking-[0.16em] text-muted-foreground/55">
-            {groupLabel} ({groupedEntries.length})
-          </p>
+        <div className="mb-1.5 flex items-start justify-between gap-2 px-0.5">
+          <div className="min-w-0">
+            <p className="text-[9px] uppercase tracking-[0.16em] text-muted-foreground/55">
+              Activity ({groupedEntries.length})
+            </p>
+            {hiddenSummary ? (
+              <p className="mt-0.5 truncate text-[10px] leading-4 text-muted-foreground/45">
+                {hiddenSummary}
+              </p>
+            ) : null}
+          </div>
           {hasOverflow && (
             <button
               type="button"
-              className="text-[9px] uppercase tracking-[0.12em] text-muted-foreground/55 transition-colors duration-150 hover:text-foreground/75"
+              className="shrink-0 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/55 transition-colors duration-150 hover:text-foreground/75"
               onClick={() => setIsExpanded((v) => !v)}
             >
               {isExpanded ? "Show less" : `Show ${hiddenCount} more`}
@@ -677,6 +689,78 @@ const WorkGroupSection = memo(function WorkGroupSection({
     </div>
   );
 });
+
+function summarizeHiddenWorkEntries(entries: ReadonlyArray<TimelineWorkEntry>): string | null {
+  if (entries.length === 0) {
+    return null;
+  }
+
+  let commandCount = 0;
+  let readCount = 0;
+  let searchCount = 0;
+  let imageCount = 0;
+  let otherToolCount = 0;
+  const editedFiles = new Set<string>();
+  let editFallbackCount = 0;
+
+  for (const entry of entries) {
+    if (isCommandWorkEntry(entry)) {
+      commandCount += 1;
+      continue;
+    }
+    if (entry.itemType === "file_change" || (entry.changedFiles?.length ?? 0) > 0) {
+      if ((entry.changedFiles?.length ?? 0) === 0) {
+        editFallbackCount += 1;
+      }
+      for (const filePath of entry.changedFiles ?? []) {
+        editedFiles.add(filePath);
+      }
+      continue;
+    }
+    if (entry.requestKind === "file-read" || /^read file$/i.test(entry.toolTitle ?? entry.label)) {
+      readCount += 1;
+      continue;
+    }
+    if (
+      entry.itemType === "web_search" ||
+      /search|grep|find/i.test(entry.toolTitle ?? entry.label)
+    ) {
+      searchCount += 1;
+      continue;
+    }
+    if (entry.itemType === "image_view" || (entry.images?.length ?? 0) > 0) {
+      imageCount += Math.max(1, entry.images?.length ?? 0);
+      continue;
+    }
+    if (entry.tone === "tool") {
+      otherToolCount += 1;
+    }
+  }
+
+  const editCount = editedFiles.size + editFallbackCount;
+  const parts = [
+    formatHiddenSummaryPart(commandCount, "Ran", "command"),
+    formatHiddenSummaryPart(readCount, "Read", "file"),
+    formatHiddenSummaryPart(editCount, "Edited", "file"),
+    formatHiddenSummaryPart(searchCount, "Searched", "time", "times"),
+    formatHiddenSummaryPart(imageCount, "Viewed", "image"),
+    formatHiddenSummaryPart(otherToolCount, "Used", "tool"),
+  ].filter((part): part is string => part !== null);
+
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+function formatHiddenSummaryPart(
+  count: number,
+  verb: string,
+  singular: string,
+  plural = `${singular}s`,
+): string | null {
+  if (count <= 0) {
+    return null;
+  }
+  return `${verb} ${count.toLocaleString()} ${count === 1 ? singular : plural}`;
+}
 
 /** Subscribes directly to the UI state store for expand/collapse state,
  *  so toggling re-renders only this component — not the entire list. */

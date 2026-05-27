@@ -624,94 +624,106 @@ function collapseDerivedWorkLogEntries(
   entries: ReadonlyArray<DerivedWorkLogEntry>,
 ): DerivedWorkLogEntry[] {
   const collapsed: DerivedWorkLogEntry[] = [];
+  const activeIndexByKey = new Map<string, number>();
+  const activeKeysByIndex = new Map<number, string[]>();
+
   for (const entry of entries) {
-    const previous = collapsed.at(-1);
-    if (previous && shouldCollapseToolLifecycleEntries(previous, entry)) {
-      collapsed[collapsed.length - 1] = mergeDerivedWorkLogEntries(previous, entry);
+    if (!isToolLifecycleActivityKind(entry.activityKind)) {
+      collapsed.push(entry);
       continue;
     }
+
+    const keys = deriveToolLifecycleCollapseKeys(entry);
+    const activeIndex = findActiveToolLifecycleIndex(
+      activeIndexByKey,
+      toolLifecycleLookupKeys(entry, keys),
+    );
+
+    if (activeIndex !== undefined) {
+      const previous = collapsed[activeIndex];
+      if (!previous) {
+        collapsed.push(entry);
+        continue;
+      }
+
+      const previousKeys = activeKeysByIndex.get(activeIndex) ?? [];
+      const merged = mergeDerivedWorkLogEntries(previous, entry);
+      collapsed[activeIndex] = merged;
+      deleteActiveToolLifecycleKeys(activeIndexByKey, previousKeys);
+
+      if (merged.activityKind === "tool.completed") {
+        activeKeysByIndex.delete(activeIndex);
+      } else {
+        const mergedKeys = uniqueStrings([
+          ...previousKeys,
+          ...keys,
+          ...deriveToolLifecycleCollapseKeys(merged),
+        ]);
+        activeKeysByIndex.set(activeIndex, mergedKeys);
+        setActiveToolLifecycleKeys(activeIndexByKey, mergedKeys, activeIndex);
+      }
+      continue;
+    }
+
     collapsed.push(entry);
+    if (entry.activityKind !== "tool.completed" && keys.length > 0) {
+      const entryIndex = collapsed.length - 1;
+      activeKeysByIndex.set(entryIndex, keys);
+      setActiveToolLifecycleKeys(activeIndexByKey, keys, entryIndex);
+    }
   }
+
   return collapsed;
 }
 
-function shouldCollapseToolLifecycleEntries(
-  previous: DerivedWorkLogEntry,
-  next: DerivedWorkLogEntry,
-): boolean {
-  if (
-    previous.activityKind !== "tool.started" &&
-    previous.activityKind !== "tool.updated" &&
-    previous.activityKind !== "tool.completed"
-  ) {
-    return false;
+function toolLifecycleLookupKeys(
+  entry: DerivedWorkLogEntry,
+  keys: ReadonlyArray<string>,
+): ReadonlyArray<string> {
+  if (entry.activityKind !== "tool.started") {
+    return keys;
   }
-  if (
-    next.activityKind !== "tool.started" &&
-    next.activityKind !== "tool.updated" &&
-    next.activityKind !== "tool.completed"
-  ) {
-    return false;
-  }
-  if (previous.activityKind === "tool.completed") {
-    return false;
-  }
-  if (previous.collapseKey !== undefined && previous.collapseKey === next.collapseKey) {
-    return true;
-  }
-  if (canCollapseAdjacentToolLifecycleEntries(previous, next)) {
-    return true;
-  }
-  return (
-    previous.toolCallId !== undefined &&
-    next.toolCallId === undefined &&
-    previous.itemType === next.itemType &&
-    normalizeCompactToolLabel(previous.toolTitle ?? previous.label) ===
-      normalizeCompactToolLabel(next.toolTitle ?? next.label)
-  );
+  return keys.filter((key) => !key.startsWith("tool-loose\u001f"));
 }
 
-function canCollapseAdjacentToolLifecycleEntries(
-  previous: DerivedWorkLogEntry,
-  next: DerivedWorkLogEntry,
-): boolean {
-  if (previous.toolCallId !== undefined || next.toolCallId !== undefined) {
-    return false;
-  }
-  if (previous.itemType !== next.itemType) {
-    return false;
-  }
-  if (
-    previous.turnId !== undefined &&
-    next.turnId !== undefined &&
-    previous.turnId !== next.turnId
-  ) {
-    return false;
-  }
-  if (
-    normalizeCompactToolLabel(previous.toolTitle ?? previous.label) !==
-    normalizeCompactToolLabel(next.toolTitle ?? next.label)
-  ) {
-    return false;
-  }
-  if (previous.command && next.command && previous.command !== next.command) {
-    return false;
-  }
-  if (previous.detail && next.detail && previous.detail !== next.detail) {
-    return false;
-  }
+function isToolLifecycleActivityKind(kind: OrchestrationThreadActivity["kind"]): boolean {
+  return kind === "tool.started" || kind === "tool.updated" || kind === "tool.completed";
+}
 
-  const previousFiles = previous.changedFiles ?? [];
-  const nextFiles = next.changedFiles ?? [];
-  if (
-    previousFiles.length > 0 &&
-    nextFiles.length > 0 &&
-    !previousFiles.some((filePath) => nextFiles.includes(filePath))
-  ) {
-    return false;
+function findActiveToolLifecycleIndex(
+  activeIndexByKey: ReadonlyMap<string, number>,
+  keys: ReadonlyArray<string>,
+): number | undefined {
+  for (const key of keys) {
+    const activeIndex = activeIndexByKey.get(key);
+    if (activeIndex !== undefined) {
+      return activeIndex;
+    }
   }
+  return undefined;
+}
 
-  return true;
+function setActiveToolLifecycleKeys(
+  activeIndexByKey: Map<string, number>,
+  keys: ReadonlyArray<string>,
+  index: number,
+) {
+  for (const key of keys) {
+    activeIndexByKey.set(key, index);
+  }
+}
+
+function deleteActiveToolLifecycleKeys(
+  activeIndexByKey: Map<string, number>,
+  keys: ReadonlyArray<string>,
+) {
+  for (const key of keys) {
+    activeIndexByKey.delete(key);
+  }
+}
+
+function uniqueStrings(values: ReadonlyArray<string>): string[] {
+  return [...new Set(values.filter((value) => value.length > 0))];
 }
 
 function mergeDerivedWorkLogEntries(
@@ -733,6 +745,8 @@ function mergeDerivedWorkLogEntries(
   return {
     ...previous,
     ...next,
+    id: previous.id,
+    createdAt: previous.createdAt,
     ...(detail ? { detail } : {}),
     ...(command ? { command } : {}),
     ...(rawCommand ? { rawCommand } : {}),
@@ -872,23 +886,39 @@ function mergeChangedFiles(
 }
 
 function deriveToolLifecycleCollapseKey(entry: DerivedWorkLogEntry): string | undefined {
+  return deriveToolLifecycleCollapseKeys(entry)[0];
+}
+
+function deriveToolLifecycleCollapseKeys(entry: DerivedWorkLogEntry): string[] {
   if (
     entry.activityKind !== "tool.started" &&
     entry.activityKind !== "tool.updated" &&
     entry.activityKind !== "tool.completed"
   ) {
-    return undefined;
+    return [];
   }
+  const keys: string[] = [];
   if (entry.toolCallId) {
-    return `tool:${entry.toolCallId}`;
+    keys.push(`tool:${entry.toolCallId}`);
   }
-  const normalizedLabel = normalizeCompactToolLabel(entry.toolTitle ?? entry.label);
-  const detail = entry.detail?.trim() ?? "";
+  const normalizedLabel = normalizeCompactToolLabel(entry.toolTitle ?? entry.label).toLowerCase();
   const itemType = entry.itemType ?? "";
-  if (normalizedLabel.length === 0 && detail.length === 0 && itemType.length === 0) {
-    return undefined;
+  const turnId = entry.turnId ?? "";
+  const subject = normalizeToolLifecycleSubject(entry);
+  if (subject) {
+    keys.push(["tool-subject", turnId, itemType, normalizedLabel, subject].join("\u001f"));
   }
-  return [itemType, normalizedLabel, detail].join("\u001f");
+  if (normalizedLabel.length > 0 || itemType.length > 0) {
+    keys.push(["tool-loose", turnId, itemType, normalizedLabel].join("\u001f"));
+  }
+  return uniqueStrings(keys);
+}
+
+function normalizeToolLifecycleSubject(entry: DerivedWorkLogEntry): string {
+  const changedFiles = entry.changedFiles ?? [];
+  const fileSubject = changedFiles.length > 0 ? changedFiles.join("\u001e") : undefined;
+  const rawSubject = entry.command ?? entry.detail ?? fileSubject;
+  return rawSubject ? normalizeInlinePreview(rawSubject).toLowerCase() : "";
 }
 
 function normalizeCompactToolLabel(value: string): string {
@@ -1207,7 +1237,7 @@ function extractToolTitle(payload: Record<string, unknown> | null): string | nul
 }
 
 function extractWorkLogImages(payload: Record<string, unknown> | null): WorkLogImagePreview[] {
-  if (extractWorkLogItemType(payload) !== "image_view") {
+  if (!isImagePreviewPayload(payload)) {
     return [];
   }
 
@@ -1239,6 +1269,27 @@ function extractWorkLogImages(payload: Record<string, unknown> | null): WorkLogI
       previewUrl: source.previewUrl,
     },
   ];
+}
+
+function isImagePreviewPayload(payload: Record<string, unknown> | null): boolean {
+  if (extractWorkLogItemType(payload) === "image_view") {
+    return true;
+  }
+
+  const data = asRecord(payload?.data);
+  const item = asRecord(data?.item);
+  const title = asTrimmedString(payload?.title)?.toLowerCase();
+  const namespace = asTrimmedString(item?.namespace ?? data?.namespace)?.toLowerCase();
+  const tool = asTrimmedString(item?.tool ?? data?.tool)?.toLowerCase();
+  const itemType = asTrimmedString(item?.type ?? data?.type)?.toLowerCase();
+  const path = asTrimmedString(
+    item?.savedPath ?? item?.saved_path ?? item?.path ?? data?.savedPath ?? data?.path,
+  )?.toLowerCase();
+
+  return [title, namespace, tool, itemType, path].some(
+    (value) =>
+      value?.includes("image") === true || /\.(?:png|jpe?g|gif|webp|avif|svg)$/iu.test(value ?? ""),
+  );
 }
 
 function extractToolCallId(payload: Record<string, unknown> | null): string | null {

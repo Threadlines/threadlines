@@ -66,6 +66,7 @@ function updateProviderUpdateToast(input: {
       title: input.view.title,
       description: input.view.description,
       timeout: 0,
+      actionProps: undefined,
       data: {
         hideCopyButton: true,
         ...(input.view.dismissAfterVisibleMs !== undefined

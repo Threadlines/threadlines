@@ -209,7 +209,7 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain("Context compacted");
-    expect(markup).toContain("Work log");
+    expect(markup).toContain("Activity");
   });
 
   it("renders generated image previews in work log rows", async () => {
