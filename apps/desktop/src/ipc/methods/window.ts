@@ -32,8 +32,9 @@ const ContextMenuInput = Schema.Struct({
   position: Schema.optionalKey(ContextMenuPosition),
 });
 
+// 16x16 transparent PNG with a compact, anti-aliased blue dot.
 const TASKBAR_COMPLETE_OVERLAY_ICON_DATA_URL =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAMUlEQVR42mNgGJTgPw5AtEbV5NdYMUGD8GlGNoRszXgNGTWACgZQHI1USUgUJ+UBAQAb8GawuTN4xwAAAABJRU5ErkJggg==";
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAASklEQVR42mNQTX7NQAlmGL4GGKsmv96gmvz6GxRvgIoRZYAxVNN/NPwNmyHYDNiARTMMbyDGgG94DPhGFwMo9gLFgUhxNI60vAAACfilkKE3QbkAAAAASUVORK5CYII=";
 
 let cachedTaskbarCompleteOverlayIcon: Electron.NativeImage | null = null;
 
