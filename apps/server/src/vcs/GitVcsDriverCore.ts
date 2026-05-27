@@ -206,6 +206,11 @@ function isT3CheckpointSubject(value: string): boolean {
   return value.trim().toLowerCase().startsWith("t3 checkpoint ref=refs/t3/");
 }
 
+function isSymbolicRemoteHeadRef(value: string): boolean {
+  const normalized = value.trim().replace(/^refs\/remotes\//, "");
+  return /^[^/]+\/HEAD$/i.test(normalized);
+}
+
 function parseCommitGraphRefs(value: string): string[] {
   return value
     .split(",")
@@ -225,7 +230,7 @@ function parseCommitGraphRefs(value: string): string[] {
       }
       return [trimmed];
     })
-    .filter((ref) => ref.length > 0 && !isT3CheckpointRef(ref));
+    .filter((ref) => ref.length > 0 && !isT3CheckpointRef(ref) && !isSymbolicRemoteHeadRef(ref));
 }
 
 function parseCommitGraphOutput(stdout: string, limit: number): VcsCommitGraphResult {

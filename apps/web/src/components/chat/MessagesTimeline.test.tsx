@@ -212,6 +212,129 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Activity");
   });
 
+  it("summarizes command-heavy activity groups by default", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          "git status --short",
+          'rg -n "isWorking" apps/web/src',
+          "Get-Content -Path apps/web/src/session-logic.ts",
+          "git diff --stat",
+        ].map((command, index) => ({
+          id: `entry-${index}`,
+          kind: "work" as const,
+          createdAt: `2026-03-17T19:12:2${index}.000Z`,
+          entry: {
+            id: `work-${index}`,
+            createdAt: `2026-03-17T19:12:2${index}.000Z`,
+            label: "Ran command",
+            tone: "tool" as const,
+            requestKind: "command" as const,
+            executionState: "completed" as const,
+            command,
+          },
+        }))}
+      />,
+    );
+
+    expect(markup).toContain("Activity (4)");
+    expect(markup).toContain("Explored project");
+    expect(markup).toContain("1 search");
+    expect(markup).toContain("1 file read");
+    expect(markup).toContain("2 git checks");
+    expect(markup).toContain("View transcript");
+    expect(markup).not.toContain("git status --short");
+    expect(markup).not.toContain("apps/web/src/session-logic.ts");
+  });
+
+  it("keeps the running command visible while summarizing completed command audit rows", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        timelineEntries={[
+          ...[
+            "git status --short",
+            'rg -n "isWorking" apps/web/src',
+            "Get-Content -Path apps/web/src/session-logic.ts",
+            "git diff --stat",
+          ].map((command, index) => ({
+            id: `entry-${index}`,
+            kind: "work" as const,
+            createdAt: `2026-03-17T19:12:2${index}.000Z`,
+            entry: {
+              id: `work-${index}`,
+              createdAt: `2026-03-17T19:12:2${index}.000Z`,
+              label: "Ran command",
+              tone: "tool" as const,
+              requestKind: "command" as const,
+              executionState: "completed" as const,
+              command,
+            },
+          })),
+          {
+            id: "entry-running",
+            kind: "work" as const,
+            createdAt: "2026-03-17T19:12:29.000Z",
+            entry: {
+              id: "work-running",
+              createdAt: "2026-03-17T19:12:29.000Z",
+              label: "Running command",
+              tone: "tool" as const,
+              requestKind: "command" as const,
+              executionState: "running" as const,
+              command: "bun typecheck",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Explored project");
+    expect(markup).toContain("1 search");
+    expect(markup).toContain("1 file read");
+    expect(markup).toContain("2 git checks");
+    expect(markup).toContain("Running command");
+    expect(markup).toContain("bun typecheck");
+    expect(markup).not.toContain("View transcript");
+    expect(markup).not.toContain("git status --short");
+  });
+
+  it("renders verification commands as a semantic activity summary", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          "bun run test src/components/chat/MessagesTimeline.test.tsx",
+          "bun lint",
+          "bun typecheck",
+        ].map((command, index) => ({
+          id: `entry-verify-${index}`,
+          kind: "work" as const,
+          createdAt: `2026-03-17T19:13:2${index}.000Z`,
+          entry: {
+            id: `work-verify-${index}`,
+            createdAt: `2026-03-17T19:13:2${index}.000Z`,
+            label: "Ran command",
+            tone: "tool" as const,
+            requestKind: "command" as const,
+            executionState: "completed" as const,
+            command,
+          },
+        }))}
+      />,
+    );
+
+    expect(markup).toContain("Verified changes");
+    expect(markup).toContain("bun test, bun lint, bun typecheck");
+    expect(markup).toContain("View transcript");
+    expect(markup).not.toContain("MessagesTimeline.test.tsx");
+  });
+
   it("renders generated image previews in work log rows", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const imageSrc =

@@ -712,9 +712,15 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (Option.isNone(existingRow)) {
             return;
           }
+          const nextLatestTurnId =
+            event.payload.session.status === "running"
+              ? event.payload.session.activeTurnId
+              : event.payload.session.status === "interrupted"
+                ? existingRow.value.latestTurnId
+                : event.payload.session.activeTurnId;
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
-            latestTurnId: event.payload.session.activeTurnId,
+            latestTurnId: nextLatestTurnId,
             updatedAt: event.occurredAt,
           });
           yield* refreshThreadShellSummary(event.payload.threadId);
@@ -998,6 +1004,27 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         case "thread.session-set": {
           const turnId = event.payload.session.activeTurnId;
           if (turnId === null || event.payload.session.status !== "running") {
+            if (event.payload.session.status === "interrupted") {
+              const threadRow = yield* projectionThreadRepository.getById({
+                threadId: event.payload.threadId,
+              });
+              const latestTurnId = Option.isSome(threadRow) ? threadRow.value.latestTurnId : null;
+              if (latestTurnId !== null) {
+                const existingTurn = yield* projectionTurnRepository.getByTurnId({
+                  threadId: event.payload.threadId,
+                  turnId: latestTurnId,
+                });
+                if (Option.isSome(existingTurn) && existingTurn.value.state === "running") {
+                  yield* projectionTurnRepository.upsertByTurnId({
+                    ...existingTurn.value,
+                    state: "interrupted",
+                    startedAt: existingTurn.value.startedAt ?? event.payload.session.updatedAt,
+                    requestedAt: existingTurn.value.requestedAt ?? event.payload.session.updatedAt,
+                    completedAt: existingTurn.value.completedAt ?? event.payload.session.updatedAt,
+                  });
+                }
+              }
+            }
             return;
           }
 

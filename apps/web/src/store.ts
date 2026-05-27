@@ -1473,7 +1473,19 @@ function applyEnvironmentOrchestrationEvent(
                     : null,
                 sourceProposedPlan: thread.pendingSourceProposedPlan,
               })
-            : thread.latestTurn,
+            : event.payload.session.status === "interrupted" &&
+                thread.latestTurn?.state === "running"
+              ? buildLatestTurn({
+                  previous: thread.latestTurn,
+                  turnId: thread.latestTurn.turnId,
+                  state: "interrupted",
+                  requestedAt: thread.latestTurn.requestedAt,
+                  startedAt: thread.latestTurn.startedAt ?? event.payload.session.updatedAt,
+                  completedAt: thread.latestTurn.completedAt ?? event.payload.session.updatedAt,
+                  assistantMessageId: thread.latestTurn.assistantMessageId,
+                  sourceProposedPlan: thread.latestTurn.sourceProposedPlan,
+                })
+              : thread.latestTurn,
         updatedAt: event.occurredAt,
       }));
 

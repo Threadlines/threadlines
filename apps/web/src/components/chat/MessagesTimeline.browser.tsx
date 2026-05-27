@@ -1,11 +1,13 @@
 import "../../index.css";
 
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, MessageId, TurnId } from "@t3tools/contracts";
 import { createRef } from "react";
 import type { LegendListRef } from "@legendapp/list/react";
 import { page } from "vitest/browser";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
+import { useUiStateStore } from "../../uiStateStore";
+import { __resetClientSettingsPersistenceForTests } from "../../hooks/useSettings";
 
 const scrollToEndSpy = vi.fn();
 const getStateSpy = vi.fn(() => ({ isAtEnd: true }));
@@ -98,6 +100,8 @@ describe("MessagesTimeline", () => {
   afterEach(() => {
     scrollToEndSpy.mockReset();
     getStateSpy.mockClear();
+    useUiStateStore.setState({ threadChangedFilesExpandedById: {} });
+    __resetClientSettingsPersistenceForTests();
     vi.restoreAllMocks();
     document.body.innerHTML = "";
   });
@@ -239,6 +243,64 @@ describe("MessagesTimeline", () => {
       expect(messageBody?.className).toContain("max-h-44");
       expect(messageBody?.getAttribute("data-user-message-fade")).toBe("true");
       expect((messageBody as HTMLDivElement | null)?.style.maskImage).toContain("linear-gradient");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("expands assistant changed-files trees from the header when the default is collapsed", async () => {
+    const turnId = TurnId.make("turn-1");
+    const assistantMessageId = MessageId.make("assistant-1");
+    const screen = await render(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "assistant-entry",
+            kind: "message",
+            createdAt: "2026-04-13T12:00:00.000Z",
+            message: {
+              id: assistantMessageId,
+              role: "assistant",
+              text: "Done",
+              turnId,
+              createdAt: "2026-04-13T12:00:00.000Z",
+              completedAt: "2026-04-13T12:01:00.000Z",
+              streaming: false,
+            },
+          },
+        ]}
+        turnDiffSummaryByAssistantMessageId={
+          new Map([
+            [
+              assistantMessageId,
+              {
+                turnId,
+                completedAt: "2026-04-13T12:01:00.000Z",
+                files: [
+                  {
+                    path: "src/chat/example.ts",
+                    kind: "modified",
+                    additions: 3,
+                    deletions: 1,
+                  },
+                ],
+              },
+            ],
+          ])
+        }
+      />,
+    );
+
+    try {
+      const expandTreeButton = page.getByRole("button", { name: "Expand tree" });
+      await expect.element(expandTreeButton).toBeVisible();
+      await expect.element(page.getByText("example.ts")).not.toBeInTheDocument();
+
+      await expandTreeButton.click();
+
+      await expect.element(page.getByRole("button", { name: "Collapse tree" })).toBeVisible();
+      await expect.element(page.getByText("example.ts")).toBeVisible();
     } finally {
       await screen.unmount();
     }

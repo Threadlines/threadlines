@@ -3479,8 +3479,14 @@ export default function ChatView(props: ChatViewProps) {
         search: (previous) => {
           const rest = stripRightPanelSearchParams(previous);
           return filePath
-            ? { ...rest, diff: "1", diffTurnId: turnId, diffFilePath: filePath }
-            : { ...rest, diff: "1", diffTurnId: turnId };
+            ? {
+                ...rest,
+                diff: "1",
+                sourceControlReturn: "1",
+                diffTurnId: turnId,
+                diffFilePath: filePath,
+              }
+            : { ...rest, diff: "1", sourceControlReturn: "1", diffTurnId: turnId };
         },
       });
     },

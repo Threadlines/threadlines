@@ -420,7 +420,7 @@ describe("uiStateStore pure functions", () => {
     const thread1 = ThreadId.make("thread-1");
     const initialState = makeUiState();
 
-    const next = setThreadChangedFilesExpanded(initialState, thread1, "turn-1", false);
+    const next = setThreadChangedFilesExpanded(initialState, thread1, "turn-1", false, true);
 
     expect(next.threadChangedFilesExpandedById).toEqual({
       [thread1]: {
@@ -439,7 +439,35 @@ describe("uiStateStore pure functions", () => {
       },
     });
 
-    const next = setThreadChangedFilesExpanded(initialState, thread1, "turn-1", true);
+    const next = setThreadChangedFilesExpanded(initialState, thread1, "turn-1", true, true);
+
+    expect(next.threadChangedFilesExpandedById).toEqual({});
+  });
+
+  it("setThreadChangedFilesExpanded stores expanded turns when the default is collapsed", () => {
+    const thread1 = ThreadId.make("thread-1");
+    const initialState = makeUiState();
+
+    const next = setThreadChangedFilesExpanded(initialState, thread1, "turn-1", true, false);
+
+    expect(next.threadChangedFilesExpandedById).toEqual({
+      [thread1]: {
+        "turn-1": true,
+      },
+    });
+  });
+
+  it("setThreadChangedFilesExpanded removes expanded overrides when collapsed back to default", () => {
+    const thread1 = ThreadId.make("thread-1");
+    const initialState = makeUiState({
+      threadChangedFilesExpandedById: {
+        [thread1]: {
+          "turn-1": true,
+        },
+      },
+    });
+
+    const next = setThreadChangedFilesExpanded(initialState, thread1, "turn-1", false, false);
 
     expect(next.threadChangedFilesExpandedById).toEqual({});
   });
@@ -577,6 +605,30 @@ describe("uiStateStore persistence round-trip", () => {
       localStorageStub.getItem(PERSISTED_STATE_KEY) ?? "{}",
     ) as PersistedUiState;
     expect(persisted.defaultAdvertisedEndpointKey).toBe("desktop-core:lan:http");
+  });
+
+  it("persists changed-files tree overrides for both default modes", () => {
+    const thread1 = ThreadId.make("thread-1");
+    const state = makeUiState({
+      threadChangedFilesExpandedById: {
+        [thread1]: {
+          "turn-collapsed": false,
+          "turn-expanded": true,
+        },
+      },
+    });
+
+    persistState(state);
+
+    const persisted = JSON.parse(
+      localStorageStub.getItem(PERSISTED_STATE_KEY) ?? "{}",
+    ) as PersistedUiState;
+    expect(persisted.threadChangedFilesExpandedById).toEqual({
+      [thread1]: {
+        "turn-collapsed": false,
+        "turn-expanded": true,
+      },
+    });
   });
 
   it("preserves expand state across restart when project's logical key changes", () => {

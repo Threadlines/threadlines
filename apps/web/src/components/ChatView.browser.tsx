@@ -16,6 +16,7 @@ import {
   type ThreadId,
   type TurnId,
   WS_METHODS,
+  CheckpointRef,
   OrchestrationSessionStatus,
   DEFAULT_SERVER_SETTINGS,
   ServerConfig as ServerConfigSchema,
@@ -66,6 +67,7 @@ vi.mock("../lib/gitStatusState", () => ({
   useGitStatus: () => ({ data: null, error: null, cause: null, isPending: false }),
   useGitStatuses: () => new Map(),
   refreshGitStatus: () => Promise.resolve(null),
+  refreshLocalGitStatus: () => Promise.resolve(null),
   resetGitStatusStateForTests: () => undefined,
 }));
 
@@ -630,6 +632,61 @@ function createDraftOnlySnapshot(): OrchestrationReadModel {
   return {
     ...snapshot,
     threads: [],
+  };
+}
+
+function createSnapshotWithChangedFileSummary(): OrchestrationReadModel {
+  const turnId = "turn-chat-diff" as TurnId;
+  const assistantMessageId = "assistant-chat-diff" as MessageId;
+  const snapshot = createSnapshotForTargetUser({
+    targetMessageId: "msg-user-chat-diff-target" as MessageId,
+    targetText: "show changed files",
+  });
+  const thread = snapshot.threads[0];
+  if (!thread) {
+    return snapshot;
+  }
+
+  return {
+    ...snapshot,
+    threads: [
+      {
+        ...thread,
+        messages: [
+          createUserMessage({
+            id: "user-chat-diff" as MessageId,
+            text: "show changed files",
+            offsetSeconds: 0,
+          }),
+          {
+            ...createAssistantMessage({
+              id: assistantMessageId,
+              text: "I changed a diff panel.",
+              offsetSeconds: 3,
+            }),
+            turnId,
+          },
+        ],
+        checkpoints: [
+          {
+            turnId,
+            checkpointTurnCount: 1,
+            checkpointRef: CheckpointRef.make("refs/t3/checkpoints/thread-browser-test/turn/1"),
+            status: "ready",
+            assistantMessageId,
+            completedAt: isoAt(10),
+            files: [
+              {
+                path: "apps/web/src/components/DiffPanel.tsx",
+                kind: "modified",
+                additions: 11,
+                deletions: 12,
+              },
+            ],
+          },
+        ],
+      },
+    ],
   };
 }
 
@@ -1939,6 +1996,49 @@ describe("ChatView timeline estimator parity (full app)", () => {
         { timeout: 8_000, interval: 16 },
       );
       await expect.element(page.getByRole("heading", { name: "Source Control" })).toBeVisible();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens chat changed-file diffs with the source control return affordance", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotWithChangedFileSummary(),
+      resolveRpc: (body) => {
+        if (body._tag === ORCHESTRATION_WS_METHODS.getTurnDiff) {
+          return {
+            diff: [
+              "diff --git a/apps/web/src/components/DiffPanel.tsx b/apps/web/src/components/DiffPanel.tsx",
+              "index 1111111..2222222 100644",
+              "--- a/apps/web/src/components/DiffPanel.tsx",
+              "+++ b/apps/web/src/components/DiffPanel.tsx",
+              "@@ -1 +1 @@",
+              "-old",
+              "+new",
+            ].join("\n"),
+          };
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      await expect.element(page.getByText("Changed files (1)")).toBeVisible();
+      await page.getByText("View diff").click();
+
+      await vi.waitFor(
+        () => {
+          expect(mounted.router.state.location.search).toMatchObject({
+            diff: "1",
+            sourceControlReturn: "1",
+            diffTurnId: "turn-chat-diff",
+            diffFilePath: "apps/web/src/components/DiffPanel.tsx",
+          });
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      await expect.element(page.getByTitle("Back to source control")).toBeVisible();
     } finally {
       await mounted.cleanup();
     }

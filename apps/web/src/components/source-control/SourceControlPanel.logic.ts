@@ -29,3 +29,205 @@ export function formatCommitGraphTimestamp(value: string, now = new Date()): str
     day: "numeric",
   });
 }
+
+export function formatCommitGraphDateTime(
+  value: string,
+  locale?: string,
+  timeZone?: string,
+): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  return date.toLocaleString(locale, {
+    dateStyle: "medium",
+    timeStyle: "short",
+    ...(timeZone ? { timeZone } : {}),
+  });
+}
+
+export function formatCommitGraphParentSummary(parentCount: number): string {
+  if (parentCount <= 0) {
+    return "Root commit";
+  }
+  if (parentCount === 1) {
+    return "1 parent";
+  }
+  return `${parentCount} parents - merge commit`;
+}
+
+export type CommitGraphRefKind = "branch" | "current" | "remote" | "tag";
+
+export interface CommitGraphTopologyCommit {
+  readonly sha: string;
+  readonly parents: readonly string[];
+  readonly refs?: readonly string[];
+}
+
+export interface CommitGraphLanePath {
+  readonly fromLane: number;
+  readonly toLane: number;
+}
+
+export interface CommitGraphLaneLayout {
+  readonly lane: number;
+  readonly topLanes: readonly number[];
+  readonly bottomLanes: readonly number[];
+  readonly parentPaths: readonly CommitGraphLanePath[];
+  readonly laneCount: number;
+  readonly isNewTip: boolean;
+}
+
+export interface CommitGraphDisplayRow<TCommit extends CommitGraphTopologyCommit> {
+  readonly commit: TCommit;
+  readonly layout: CommitGraphLaneLayout;
+  readonly visibleRefs: readonly string[];
+}
+
+export function normalizeCommitGraphRefName(refName: string): string {
+  return refName
+    .trim()
+    .replace(/^refs\/heads\//, "")
+    .replace(/^refs\/remotes\//, "")
+    .replace(/^refs\/tags\//, "")
+    .replace(/^tags\//, "");
+}
+
+export function isVisibleCommitGraphRef(refName: string): boolean {
+  const trimmed = refName.trim();
+  if (trimmed.length === 0 || trimmed === "HEAD" || trimmed.includes(" -> ")) {
+    return false;
+  }
+
+  const normalized = normalizeCommitGraphRefName(trimmed);
+  return !/^[^/]+\/HEAD$/i.test(normalized);
+}
+
+export function getVisibleCommitGraphRefs(refs: readonly string[]): string[] {
+  const seen = new Set<string>();
+  return refs.filter((ref) => {
+    if (!isVisibleCommitGraphRef(ref)) {
+      return false;
+    }
+    const normalized = normalizeCommitGraphRefName(ref);
+    if (seen.has(normalized)) {
+      return false;
+    }
+    seen.add(normalized);
+    return true;
+  });
+}
+
+export function getCommitGraphRefKind(
+  refName: string,
+  currentBranch: string | null | undefined,
+): CommitGraphRefKind {
+  const normalized = normalizeCommitGraphRefName(refName);
+  if (currentBranch && (normalized === currentBranch || normalized === `origin/${currentBranch}`)) {
+    return "current";
+  }
+  if (
+    refName.startsWith("refs/tags/") ||
+    refName.startsWith("tags/") ||
+    normalized.startsWith("tag/")
+  ) {
+    return "tag";
+  }
+  if (
+    refName.startsWith("refs/remotes/") ||
+    normalized.startsWith("origin/") ||
+    normalized.startsWith("upstream/") ||
+    normalized.startsWith("fork/")
+  ) {
+    return "remote";
+  }
+  return "branch";
+}
+
+export function buildCommitGraphRows<TCommit extends CommitGraphTopologyCommit>(
+  commits: readonly TCommit[],
+): Array<CommitGraphDisplayRow<TCommit>> {
+  let activeLanes: string[] = [];
+  const rows: Array<CommitGraphDisplayRow<TCommit>> = [];
+
+  for (const commit of commits) {
+    let lane = activeLanes.indexOf(commit.sha);
+    const isNewTip = lane < 0;
+    if (isNewTip) {
+      lane = activeLanes.length;
+      activeLanes = [...activeLanes, commit.sha];
+    }
+
+    const topLanes = activeLanes
+      .map((_, index) => index)
+      .filter((index) => !isNewTip || index !== lane);
+    let nextLanes = [...activeLanes];
+    const parentPaths: CommitGraphLanePath[] = [];
+
+    if (commit.parents.length === 0) {
+      nextLanes.splice(lane, 1);
+    } else {
+      const [firstParent, ...additionalParents] = commit.parents;
+      if (firstParent) {
+        const existingParentLane = nextLanes.findIndex(
+          (sha, index) => index !== lane && sha === firstParent,
+        );
+        if (existingParentLane >= 0) {
+          const toLane = lane < existingParentLane ? existingParentLane - 1 : existingParentLane;
+          nextLanes.splice(lane, 1);
+          parentPaths.push({ fromLane: lane, toLane });
+        } else {
+          nextLanes[lane] = firstParent;
+          parentPaths.push({ fromLane: lane, toLane: lane });
+        }
+      }
+
+      for (const parent of additionalParents) {
+        const existingParentLane = nextLanes.indexOf(parent);
+        if (existingParentLane >= 0) {
+          parentPaths.push({ fromLane: lane, toLane: existingParentLane });
+          continue;
+        }
+
+        const parentLane = nextLanes.length;
+        nextLanes.push(parent);
+        parentPaths.push({ fromLane: lane, toLane: parentLane });
+      }
+    }
+
+    const bottomLanes = nextLanes.map((_, index) => index);
+    const rowLaneCount = Math.max(
+      1,
+      lane + 1,
+      topLanes.length === 0 ? 0 : Math.max(...topLanes) + 1,
+      bottomLanes.length === 0 ? 0 : Math.max(...bottomLanes) + 1,
+      parentPaths.length === 0
+        ? 0
+        : Math.max(...parentPaths.flatMap((path) => [path.fromLane, path.toLane])) + 1,
+    );
+
+    rows.push({
+      commit,
+      layout: {
+        lane,
+        topLanes,
+        bottomLanes,
+        parentPaths,
+        laneCount: rowLaneCount,
+        isNewTip,
+      },
+      visibleRefs: getVisibleCommitGraphRefs(commit.refs ?? []),
+    });
+    activeLanes = nextLanes;
+  }
+
+  const laneCount = Math.max(1, ...rows.map((row) => row.layout.laneCount));
+  return rows.map((row) => ({
+    ...row,
+    layout: {
+      ...row.layout,
+      laneCount,
+    },
+  }));
+}

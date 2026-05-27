@@ -123,8 +123,8 @@ function sanitizePersistedThreadChangedFilesExpanded(
 
     const nextTurns: Record<string, boolean> = {};
     for (const [turnId, expanded] of Object.entries(turns)) {
-      if (turnId && typeof expanded === "boolean" && expanded === false) {
-        nextTurns[turnId] = false;
+      if (turnId && typeof expanded === "boolean") {
+        nextTurns[turnId] = expanded;
       }
     }
 
@@ -179,7 +179,7 @@ export function persistState(state: UiState): void {
     const threadChangedFilesExpandedById = Object.fromEntries(
       Object.entries(state.threadChangedFilesExpandedById).flatMap(([threadId, turns]) => {
         const nextTurns = Object.fromEntries(
-          Object.entries(turns).filter(([, expanded]) => expanded === false),
+          Object.entries(turns).filter(([, expanded]) => typeof expanded === "boolean"),
         );
         return Object.keys(nextTurns).length > 0 ? [[threadId, nextTurns]] : [];
       }),
@@ -500,14 +500,15 @@ export function setThreadChangedFilesExpanded(
   threadId: string,
   turnId: string,
   expanded: boolean,
+  defaultExpanded: boolean,
 ): UiState {
   const currentThreadState = state.threadChangedFilesExpandedById[threadId] ?? {};
-  const currentExpanded = currentThreadState[turnId] ?? true;
+  const currentExpanded = currentThreadState[turnId] ?? defaultExpanded;
   if (currentExpanded === expanded) {
     return state;
   }
 
-  if (expanded) {
+  if (expanded === defaultExpanded) {
     if (!(turnId in currentThreadState)) {
       return state;
     }
@@ -538,7 +539,7 @@ export function setThreadChangedFilesExpanded(
       ...state.threadChangedFilesExpandedById,
       [threadId]: {
         ...currentThreadState,
-        [turnId]: false,
+        [turnId]: expanded,
       },
     },
   };
@@ -628,7 +629,12 @@ interface UiStateStore extends UiState {
   markThreadVisited: (threadId: string, visitedAt?: string) => void;
   markThreadUnread: (threadId: string, latestTurnCompletedAt: string | null | undefined) => void;
   clearThreadUi: (threadId: string) => void;
-  setThreadChangedFilesExpanded: (threadId: string, turnId: string, expanded: boolean) => void;
+  setThreadChangedFilesExpanded: (
+    threadId: string,
+    turnId: string,
+    expanded: boolean,
+    defaultExpanded: boolean,
+  ) => void;
   setDefaultAdvertisedEndpointKey: (key: string | null) => void;
   toggleProject: (projectId: string) => void;
   setProjectExpanded: (projectId: string, expanded: boolean) => void;
@@ -647,8 +653,10 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
   markThreadUnread: (threadId, latestTurnCompletedAt) =>
     set((state) => markThreadUnread(state, threadId, latestTurnCompletedAt)),
   clearThreadUi: (threadId) => set((state) => clearThreadUi(state, threadId)),
-  setThreadChangedFilesExpanded: (threadId, turnId, expanded) =>
-    set((state) => setThreadChangedFilesExpanded(state, threadId, turnId, expanded)),
+  setThreadChangedFilesExpanded: (threadId, turnId, expanded, defaultExpanded) =>
+    set((state) =>
+      setThreadChangedFilesExpanded(state, threadId, turnId, expanded, defaultExpanded),
+    ),
   setDefaultAdvertisedEndpointKey: (key) =>
     set((state) => setDefaultAdvertisedEndpointKey(state, key)),
   toggleProject: (projectId) => set((state) => toggleProject(state, projectId)),

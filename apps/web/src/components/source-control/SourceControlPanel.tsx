@@ -2,6 +2,7 @@ import {
   type EnvironmentId,
   type GitStackedAction,
   type ScopedThreadRef,
+  type VcsCommitGraphCommit,
   type VcsRef,
   type VcsStatusResult,
 } from "@t3tools/contracts";
@@ -15,6 +16,7 @@ import {
 import {
   ChevronDownIcon,
   CloudUploadIcon,
+  CopyIcon,
   ExternalLinkIcon,
   FileTextIcon,
   GitBranchIcon,
@@ -29,6 +31,7 @@ import {
   UploadIcon,
 } from "lucide-react";
 import {
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
   useCallback,
@@ -92,7 +95,16 @@ import {
 import { Textarea } from "../ui/textarea";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { formatCommitGraphTimestamp } from "./SourceControlPanel.logic";
+import {
+  buildCommitGraphRows,
+  type CommitGraphLaneLayout,
+  formatCommitGraphDateTime,
+  formatCommitGraphParentSummary,
+  formatCommitGraphTimestamp,
+  getCommitGraphRefKind,
+  getVisibleCommitGraphRefs,
+  normalizeCommitGraphRefName,
+} from "./SourceControlPanel.logic";
 
 export interface SourceControlProjectTarget {
   readonly environmentId: EnvironmentId;
@@ -224,6 +236,338 @@ function ActionButton({
     <Tooltip>
       <TooltipTrigger render={<span className="min-w-0" />}>{button}</TooltipTrigger>
       <TooltipPopup side="top">{disabledReason}</TooltipPopup>
+    </Tooltip>
+  );
+}
+
+type CommitGraphContextAction = "copy-full-sha" | "copy-subject" | "create-tag";
+
+function commitGraphRefClassName(refName: string, currentBranch: string | null | undefined) {
+  const kind = getCommitGraphRefKind(refName, currentBranch);
+  if (kind === "current") {
+    return "border-primary/60 bg-primary/10 text-primary";
+  }
+  if (kind === "remote") {
+    return "border-info/45 bg-info/10 text-info-foreground";
+  }
+  if (kind === "tag") {
+    return "border-success/45 bg-success/10 text-success-foreground";
+  }
+  return "border-border/70 bg-background/60 text-muted-foreground";
+}
+
+function CommitGraphRefChip({
+  refName,
+  currentBranch,
+  compact = false,
+}: {
+  readonly refName: string;
+  readonly currentBranch: string | null | undefined;
+  readonly compact?: boolean;
+}) {
+  return (
+    <span
+      className={cn(
+        "min-w-0 shrink truncate rounded-sm border px-1 py-0.5 font-mono text-[10px] leading-none",
+        compact ? "max-w-24" : "max-w-full",
+        commitGraphRefClassName(refName, currentBranch),
+      )}
+    >
+      {normalizeCommitGraphRefName(refName)}
+    </span>
+  );
+}
+
+const COMMIT_GRAPH_LANE_GAP = 10;
+const COMMIT_GRAPH_LEFT_PADDING = 6;
+const COMMIT_GRAPH_ROW_HEIGHT = 40;
+const COMMIT_GRAPH_ROW_HEIGHT_WITH_REFS = 52;
+const COMMIT_GRAPH_NODE_Y = 18;
+const COMMIT_GRAPH_NODE_RADIUS = 4;
+
+function commitGraphLaneClassName(lane: number) {
+  const laneClasses = [
+    "stroke-info fill-info",
+    "stroke-warning fill-warning",
+    "stroke-success fill-success",
+    "stroke-primary fill-primary",
+    "stroke-muted-foreground fill-muted-foreground",
+  ];
+  return laneClasses[lane % laneClasses.length];
+}
+
+function commitGraphLaneX(lane: number) {
+  return COMMIT_GRAPH_LEFT_PADDING + lane * COMMIT_GRAPH_LANE_GAP;
+}
+
+function CommitGraphGlyph({
+  layout,
+  highlighted,
+  rowHeight,
+}: {
+  readonly layout: CommitGraphLaneLayout;
+  readonly highlighted: boolean;
+  readonly rowHeight: number;
+}) {
+  const width = commitGraphLaneX(layout.laneCount - 1) + COMMIT_GRAPH_LEFT_PADDING;
+  const nodeX = commitGraphLaneX(layout.lane);
+  const isMergeCommit = layout.parentPaths.length > 1;
+  const crossPathTargetLanes = new Set(
+    layout.parentPaths.filter((path) => path.fromLane !== path.toLane).map((path) => path.toLane),
+  );
+
+  return (
+    <svg
+      aria-hidden="true"
+      className="block overflow-visible"
+      width={width}
+      height={rowHeight}
+      viewBox={`0 0 ${width} ${rowHeight}`}
+    >
+      {layout.topLanes.map((lane) => {
+        const x = commitGraphLaneX(lane);
+        return (
+          <line
+            key={`top-${lane}`}
+            x1={x}
+            y1={0}
+            x2={x}
+            y2={COMMIT_GRAPH_NODE_Y}
+            className={cn("opacity-80", commitGraphLaneClassName(lane))}
+            strokeWidth="2"
+            strokeLinecap="round"
+          />
+        );
+      })}
+      {layout.bottomLanes
+        .filter((lane) => !crossPathTargetLanes.has(lane))
+        .map((lane) => {
+          const x = commitGraphLaneX(lane);
+          return (
+            <line
+              key={`bottom-${lane}`}
+              x1={x}
+              y1={COMMIT_GRAPH_NODE_Y}
+              x2={x}
+              y2={rowHeight}
+              className={cn("opacity-80", commitGraphLaneClassName(lane))}
+              strokeWidth="2"
+              strokeLinecap="round"
+            />
+          );
+        })}
+      {layout.parentPaths
+        .filter((path) => path.fromLane !== path.toLane)
+        .map((path) => {
+          const fromX = commitGraphLaneX(path.fromLane);
+          const toX = commitGraphLaneX(path.toLane);
+          const direction = Math.sign(toX - fromX) || 1;
+          const startX = fromX + direction * (COMMIT_GRAPH_NODE_RADIUS + 1);
+          const startY = COMMIT_GRAPH_NODE_Y + COMMIT_GRAPH_NODE_RADIUS + 1;
+          const controlY = COMMIT_GRAPH_NODE_Y + 11;
+          return (
+            <path
+              key={`${path.fromLane}-${path.toLane}`}
+              d={`M ${startX} ${startY} C ${startX} ${controlY}, ${toX} ${controlY}, ${toX} ${rowHeight}`}
+              className={cn("opacity-90", commitGraphLaneClassName(path.toLane))}
+              fill="none"
+              strokeWidth="2"
+              strokeLinecap="round"
+            />
+          );
+        })}
+      <circle
+        cx={nodeX}
+        cy={COMMIT_GRAPH_NODE_Y}
+        r={highlighted || isMergeCommit ? 5 : COMMIT_GRAPH_NODE_RADIUS}
+        className={cn(
+          isMergeCommit
+            ? "fill-background stroke-warning"
+            : highlighted
+              ? "fill-primary stroke-background"
+              : commitGraphLaneClassName(layout.lane),
+        )}
+        strokeWidth={isMergeCommit ? "2.5" : "2"}
+      />
+    </svg>
+  );
+}
+
+function CommitGraphDetailRow({
+  label,
+  children,
+}: {
+  readonly label: string;
+  readonly children: ReactNode;
+}) {
+  return (
+    <div className="grid grid-cols-[4.75rem_minmax(0,1fr)] gap-2">
+      <span className="text-muted-foreground/70">{label}</span>
+      <span className="min-w-0 text-popover-foreground">{children}</span>
+    </div>
+  );
+}
+
+function CommitGraphHoverCard({
+  commit,
+  currentBranch,
+  onCopyCommitValue,
+}: {
+  readonly commit: VcsCommitGraphCommit;
+  readonly currentBranch: string | null | undefined;
+  readonly onCopyCommitValue: (value: string, title: string) => void;
+}) {
+  const absoluteDate = formatCommitGraphDateTime(commit.committedAt);
+  const relativeDate = formatCommitGraphTimestamp(commit.committedAt);
+  const parentSummary = formatCommitGraphParentSummary(commit.parents.length);
+  const visibleRefs = getVisibleCommitGraphRefs(commit.refs);
+
+  return (
+    <div className="w-80 max-w-[calc(100vw-2rem)] space-y-2.5 p-1 text-left">
+      <div className="space-y-1">
+        <div className="line-clamp-2 text-xs font-medium leading-snug text-popover-foreground">
+          {commit.subject || "Untitled commit"}
+        </div>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <code className="min-w-0 flex-1 truncate rounded-sm bg-muted px-1.5 py-1 font-mono text-[10px] text-muted-foreground">
+            {commit.sha}
+          </code>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            className="size-6"
+            aria-label="Copy commit id"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onCopyCommitValue(commit.sha, "Commit id");
+            }}
+          >
+            <CopyIcon className="size-3" />
+          </Button>
+        </div>
+      </div>
+
+      <div className="space-y-1.5 text-[11px] leading-tight">
+        <CommitGraphDetailRow label="Author">
+          <span className="truncate">{commit.authorName || "Unknown author"}</span>
+        </CommitGraphDetailRow>
+        <CommitGraphDetailRow label="Date">
+          <span className="truncate">
+            {absoluteDate || "Unknown date"}
+            {relativeDate ? (
+              <span className="text-muted-foreground/70"> ({relativeDate})</span>
+            ) : null}
+          </span>
+        </CommitGraphDetailRow>
+        <CommitGraphDetailRow label="Parents">
+          <span className="truncate">{parentSummary}</span>
+        </CommitGraphDetailRow>
+        {visibleRefs.length > 0 ? (
+          <CommitGraphDetailRow label="Refs">
+            <span className="flex min-w-0 flex-wrap gap-1">
+              {visibleRefs.map((ref) => (
+                <CommitGraphRefChip key={ref} refName={ref} currentBranch={currentBranch} />
+              ))}
+            </span>
+          </CommitGraphDetailRow>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function CommitGraphRow({
+  commit,
+  currentBranch,
+  layout,
+  visibleRefs,
+  onCopyCommitValue,
+  onCommitContextMenu,
+}: {
+  readonly commit: VcsCommitGraphCommit;
+  readonly currentBranch: string | null | undefined;
+  readonly layout: CommitGraphLaneLayout;
+  readonly visibleRefs: readonly string[];
+  readonly onCopyCommitValue: (value: string, title: string) => void;
+  readonly onCommitContextMenu: (
+    commit: VcsCommitGraphCommit,
+    position: { readonly x: number; readonly y: number },
+  ) => void;
+}) {
+  const isCurrentBranchCommit = visibleRefs.some(
+    (ref) => getCommitGraphRefKind(ref, currentBranch) === "current",
+  );
+  const renderedRefs = visibleRefs.slice(0, 3);
+  const hiddenRefCount = Math.max(0, visibleRefs.length - renderedRefs.length);
+  const graphWidth = commitGraphLaneX(layout.laneCount - 1) + COMMIT_GRAPH_LEFT_PADDING;
+  const rowHeight =
+    renderedRefs.length > 0 ? COMMIT_GRAPH_ROW_HEIGHT_WITH_REFS : COMMIT_GRAPH_ROW_HEIGHT;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <div
+            aria-label={`Commit ${commit.shortSha}: ${commit.subject || "Untitled commit"}`}
+            role="listitem"
+            tabIndex={0}
+            onContextMenu={(event: ReactMouseEvent<HTMLDivElement>) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onCommitContextMenu(commit, { x: event.clientX, y: event.clientY });
+            }}
+            className={cn(
+              "grid min-h-10 cursor-default gap-2 px-2.5 transition-colors hover:bg-accent/60",
+              isCurrentBranchCommit && "bg-primary/10 hover:bg-primary/15",
+            )}
+            style={{ gridTemplateColumns: `${graphWidth}px minmax(0, 1fr)`, minHeight: rowHeight }}
+          >
+            <span className="flex items-stretch">
+              <CommitGraphGlyph
+                layout={layout}
+                highlighted={isCurrentBranchCommit}
+                rowHeight={rowHeight}
+              />
+            </span>
+            <span className="flex min-w-0 flex-col justify-center gap-1 py-2">
+              <span
+                className={cn(
+                  "min-w-0 truncate text-xs leading-tight text-foreground",
+                  isCurrentBranchCommit && "font-medium",
+                )}
+              >
+                {commit.subject || "Untitled commit"}
+              </span>
+              {renderedRefs.length > 0 ? (
+                <span className="flex min-w-0 items-center gap-1 overflow-hidden">
+                  {renderedRefs.map((ref) => (
+                    <CommitGraphRefChip
+                      key={ref}
+                      refName={ref}
+                      currentBranch={currentBranch}
+                      compact
+                    />
+                  ))}
+                  {hiddenRefCount > 0 ? (
+                    <span className="shrink-0 rounded-sm border border-border/60 px-1 py-0.5 font-mono text-[10px] leading-none text-muted-foreground/60">
+                      +{hiddenRefCount}
+                    </span>
+                  ) : null}
+                </span>
+              ) : null}
+            </span>
+          </div>
+        }
+      />
+      <TooltipPopup side="left" align="start" sideOffset={8} className="max-w-none">
+        <CommitGraphHoverCard
+          commit={commit}
+          currentBranch={currentBranch}
+          onCopyCommitValue={onCopyCommitValue}
+        />
+      </TooltipPopup>
     </Tooltip>
   );
 }
@@ -691,6 +1035,10 @@ export function SourceControlPanel({
       enabled: Boolean(status?.isRepo),
     }),
   );
+  const commitGraphRows = useMemo(
+    () => buildCommitGraphRows(graphQuery.data?.commits ?? []),
+    [graphQuery.data?.commits],
+  );
   const actionMutation = useMutation(
     gitRunStackedActionMutationOptions({
       environmentId,
@@ -972,6 +1320,65 @@ export function SourceControlPanel({
     }
     void api.shell.openExternal(openPullRequest.url).catch(() => undefined);
   }, [openPullRequest]);
+
+  const copyCommitValue = useCallback((value: string, title: string) => {
+    if (typeof window === "undefined" || !navigator.clipboard?.writeText) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: `Failed to copy ${title.toLowerCase()}`,
+          description: "Clipboard API unavailable.",
+        }),
+      );
+      return;
+    }
+
+    void navigator.clipboard.writeText(value).then(
+      () => {
+        toastManager.add({
+          type: "success",
+          title: `${title} copied`,
+          description: value,
+        });
+      },
+      (error) => {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: `Failed to copy ${title.toLowerCase()}`,
+            description: error instanceof Error ? error.message : "An error occurred.",
+          }),
+        );
+      },
+    );
+  }, []);
+
+  const handleCommitContextMenu = useCallback(
+    async (commit: VcsCommitGraphCommit, position: { readonly x: number; readonly y: number }) => {
+      const api = readLocalApi();
+      if (!api) {
+        return;
+      }
+
+      const clicked = await api.contextMenu.show<CommitGraphContextAction>(
+        [
+          { id: "copy-full-sha", label: "Copy commit id" },
+          { id: "copy-subject", label: "Copy commit message" },
+          { id: "create-tag", label: "Create tag...", disabled: true },
+        ],
+        position,
+      );
+
+      if (clicked === "copy-full-sha") {
+        copyCommitValue(commit.sha, "Commit id");
+        return;
+      }
+      if (clicked === "copy-subject") {
+        copyCommitValue(commit.subject, "Commit message");
+      }
+    },
+    [copyCommitValue],
+  );
 
   const generateCommitMessage = useCallback(async () => {
     if (!environmentId || !cwd || changedFileCount === 0) {
@@ -1367,80 +1774,21 @@ export function SourceControlPanel({
               </span>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto rounded-md border border-border/70 bg-background/35">
-              {(graphQuery.data?.commits.length ?? 0) === 0 ? (
+              {commitGraphRows.length === 0 ? (
                 <div className="px-2.5 py-2 text-xs text-muted-foreground/70">No commits yet</div>
               ) : (
-                <div className="divide-y divide-border/45">
-                  {graphQuery.data?.commits.map((commit) => {
-                    const isCurrentBranchCommit = commit.refs.some((ref) =>
-                      isRefOnCurrentBranch(ref, status?.refName),
-                    );
-                    const visibleRefs = commit.refs.slice(0, 2);
-                    const hiddenRefCount = Math.max(0, commit.refs.length - visibleRefs.length);
-                    return (
-                      <div
-                        key={commit.sha}
-                        title={[
-                          commit.subject,
-                          commit.refs.length > 0 ? `refs: ${commit.refs.join(", ")}` : null,
-                          `${commit.shortSha} - ${formatCommitGraphTimestamp(commit.committedAt)}`,
-                        ]
-                          .filter(Boolean)
-                          .join("\n")}
-                        className={cn(
-                          "grid min-h-8 grid-cols-[1rem_minmax(0,1fr)] gap-2 px-2.5 py-1.5",
-                          isCurrentBranchCommit && "bg-primary/10",
-                        )}
-                      >
-                        <span className="relative flex justify-center pt-1.5">
-                          <span className="absolute bottom-[-0.4rem] top-3 w-px bg-border/70" />
-                          <span
-                            className={cn(
-                              "z-10 size-2 rounded-full border bg-background",
-                              isCurrentBranchCommit
-                                ? "border-primary bg-primary"
-                                : commit.parents.length > 1
-                                  ? "border-warning"
-                                  : commit.refs.length > 0
-                                    ? "border-primary/80"
-                                    : "border-muted-foreground/45",
-                            )}
-                          />
-                        </span>
-                        <span className="flex min-w-0 items-center gap-1.5">
-                          <span
-                            className={cn(
-                              "min-w-0 flex-1 truncate text-xs text-foreground",
-                              isCurrentBranchCommit && "font-medium",
-                            )}
-                          >
-                            {commit.subject}
-                          </span>
-                          {visibleRefs.map((ref) => (
-                            <span
-                              key={ref}
-                              className={cn(
-                                "max-w-24 shrink truncate rounded-sm border px-1 py-0.5 text-[10px] leading-none",
-                                isRefOnCurrentBranch(ref, status?.refName)
-                                  ? "border-primary/60 bg-primary/10 text-primary"
-                                  : "border-border/70 text-muted-foreground",
-                              )}
-                            >
-                              {ref}
-                            </span>
-                          ))}
-                          {hiddenRefCount > 0 ? (
-                            <span className="shrink-0 text-[10px] text-muted-foreground/60">
-                              +{hiddenRefCount}
-                            </span>
-                          ) : null}
-                          <span className="ml-1 shrink-0 font-mono text-[10px] text-muted-foreground/60">
-                            {commit.shortSha} - {formatCommitGraphTimestamp(commit.committedAt)}
-                          </span>
-                        </span>
-                      </div>
-                    );
-                  })}
+                <div role="list" className="divide-y divide-border/45">
+                  {commitGraphRows.map((row) => (
+                    <CommitGraphRow
+                      key={row.commit.sha}
+                      commit={row.commit}
+                      currentBranch={status?.refName}
+                      layout={row.layout}
+                      visibleRefs={row.visibleRefs}
+                      onCopyCommitValue={copyCommitValue}
+                      onCommitContextMenu={handleCommitContextMenu}
+                    />
+                  ))}
                 </div>
               )}
             </div>

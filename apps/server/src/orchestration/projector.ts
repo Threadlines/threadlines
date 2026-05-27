@@ -461,7 +461,14 @@ export function projectEvent(
                         ? thread.latestTurn.assistantMessageId
                         : null,
                   }
-                : thread.latestTurn,
+                : session.status === "interrupted" && thread.latestTurn?.state === "running"
+                  ? {
+                      ...thread.latestTurn,
+                      state: "interrupted",
+                      startedAt: thread.latestTurn.startedAt ?? session.updatedAt,
+                      completedAt: thread.latestTurn.completedAt ?? session.updatedAt,
+                    }
+                  : thread.latestTurn,
             updatedAt: event.occurredAt,
           }),
         };

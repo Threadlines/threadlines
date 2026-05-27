@@ -374,6 +374,32 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         );
       }),
     );
+
+    it.effect("omits symbolic remote HEAD decorations from graph refs", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const remote = yield* makeTmpDir("git-vcs-driver-remote-");
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        yield* git(remote, ["init", "--bare"]);
+        yield* git(cwd, ["remote", "add", "origin", remote]);
+        yield* git(cwd, ["push", "-u", "origin", initialBranch]);
+        yield* git(cwd, [
+          "symbolic-ref",
+          "refs/remotes/origin/HEAD",
+          `refs/remotes/origin/${initialBranch}`,
+        ]);
+
+        const graph = yield* driver.commitGraph({ cwd, limit: 5 });
+        const initialCommit = graph.commits.find((commit) => commit.subject === "initial commit");
+
+        assert.deepStrictEqual(
+          initialCommit?.refs.filter((ref) => ref.toLowerCase().endsWith("/head")),
+          [],
+        );
+      }),
+    );
   });
 
   describe("branch operations", () => {

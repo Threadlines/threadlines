@@ -638,19 +638,38 @@ const WorkGroupSection = memo(function WorkGroupSection({
   const { workspaceRoot } = use(TimelineRowCtx);
   const { isWorking } = use(TimelineRowActivityCtx);
   const [isExpanded, setIsExpanded] = useState(false);
+  useEffect(() => {
+    if (isWorking && isExpanded) {
+      setIsExpanded(false);
+    }
+  }, [isExpanded, isWorking]);
+
+  const isShowingFullLog = isExpanded && !isWorking;
+  const activityEntries = isShowingFullLog
+    ? groupedEntries
+    : summarizeSemanticActivityEntries(groupedEntries);
   const visibleLimit = isWorking
     ? Math.min(5, MAX_VISIBLE_WORK_LOG_ENTRIES)
     : MAX_VISIBLE_WORK_LOG_ENTRIES;
-  const hasOverflow = groupedEntries.length > visibleLimit;
+  const hasOverflow = activityEntries.length > visibleLimit;
   const visibleEntries =
-    hasOverflow && !isExpanded ? groupedEntries.slice(-visibleLimit) : groupedEntries;
-  const hiddenCount = groupedEntries.length - visibleEntries.length;
+    hasOverflow && !isShowingFullLog ? activityEntries.slice(-visibleLimit) : activityEntries;
+  const hasCompactedEntries = activityEntries.length < groupedEntries.length;
+  const hiddenCount = isShowingFullLog
+    ? 0
+    : Math.max(0, groupedEntries.length - visibleEntries.length);
   const onlyToolEntries = groupedEntries.every((entry) => entry.tone === "tool");
   const hiddenSummary =
-    hasOverflow && !isExpanded && !isWorking
+    hasOverflow && !hasCompactedEntries && !isShowingFullLog && !isWorking
       ? summarizeHiddenWorkEntries(groupedEntries.slice(0, hiddenCount))
       : null;
-  const showHeader = hasOverflow || !onlyToolEntries;
+  const canToggleFullLog = !isWorking && (hasOverflow || hasCompactedEntries);
+  const showHeader = canToggleFullLog || hasCompactedEntries || hasOverflow || !onlyToolEntries;
+  const toggleLabel = isExpanded
+    ? "Hide transcript"
+    : hasCompactedEntries
+      ? "View transcript"
+      : `Show ${hiddenCount} more`;
 
   return (
     <div className="rounded-xl border border-border/45 bg-card/25 px-2 py-1.5">
@@ -666,13 +685,13 @@ const WorkGroupSection = memo(function WorkGroupSection({
               </p>
             ) : null}
           </div>
-          {hasOverflow && (
+          {canToggleFullLog && (
             <button
               type="button"
               className="shrink-0 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/55 transition-colors duration-150 hover:text-foreground/75"
               onClick={() => setIsExpanded((v) => !v)}
             >
-              {isExpanded ? "Show less" : `Show ${hiddenCount} more`}
+              {toggleLabel}
             </button>
           )}
         </div>
@@ -689,6 +708,338 @@ const WorkGroupSection = memo(function WorkGroupSection({
     </div>
   );
 });
+
+type SemanticActivityKind = "explore" | "verify" | "command" | "tool";
+type SemanticActivitySignal =
+  | "search"
+  | "read"
+  | "list"
+  | "git"
+  | "environment"
+  | "verify"
+  | "command"
+  | "tool";
+
+interface SemanticActivitySummary {
+  kind: SemanticActivityKind;
+  signal: SemanticActivitySignal;
+  commandName: string | null;
+}
+
+interface SemanticActivityBuffer {
+  kind: SemanticActivityKind;
+  entries: TimelineWorkEntry[];
+  signals: Map<SemanticActivitySignal, number>;
+  commandNames: string[];
+}
+
+function summarizeSemanticActivityEntries(
+  entries: ReadonlyArray<TimelineWorkEntry>,
+): TimelineWorkEntry[] {
+  const summarizedEntries: TimelineWorkEntry[] = [];
+  let buffer: SemanticActivityBuffer | null = null;
+
+  const flushBuffer = () => {
+    if (!buffer) {
+      return;
+    }
+
+    const summaryEntry = buildSemanticActivitySummaryEntry(buffer);
+    if (summaryEntry) {
+      summarizedEntries.push(summaryEntry);
+    } else {
+      summarizedEntries.push(...buffer.entries);
+    }
+    buffer = null;
+  };
+
+  for (const entry of entries) {
+    const summary = classifySummarizableActivityEntry(entry);
+    if (!summary) {
+      flushBuffer();
+      summarizedEntries.push(entry);
+      continue;
+    }
+
+    if (!buffer || buffer.kind !== summary.kind) {
+      flushBuffer();
+      buffer = {
+        kind: summary.kind,
+        entries: [],
+        signals: new Map(),
+        commandNames: [],
+      };
+    }
+
+    buffer.entries.push(entry);
+    buffer.signals.set(summary.signal, (buffer.signals.get(summary.signal) ?? 0) + 1);
+    if (summary.commandName) {
+      addUniqueString(buffer.commandNames, summary.commandName);
+    }
+  }
+
+  flushBuffer();
+  return summarizedEntries;
+}
+
+function classifySummarizableActivityEntry(
+  entry: TimelineWorkEntry,
+): SemanticActivitySummary | null {
+  if (
+    entry.executionState === "running" ||
+    entry.executionState === "failed" ||
+    (entry.changedFiles?.length ?? 0) > 0 ||
+    (entry.images?.length ?? 0) > 0
+  ) {
+    return null;
+  }
+
+  if (isCommandWorkEntry(entry) && entry.command) {
+    return classifyCommandActivity(entry.command);
+  }
+
+  const toolText = `${entry.toolTitle ?? ""} ${entry.label} ${entry.detail ?? ""}`.toLowerCase();
+  if (entry.requestKind === "file-read" || /^read file$/i.test(entry.toolTitle ?? entry.label)) {
+    return { kind: "explore", signal: "read", commandName: null };
+  }
+  if (entry.itemType === "web_search" || /search|grep|find/.test(toolText)) {
+    return { kind: "explore", signal: "search", commandName: null };
+  }
+  if (/list files|directory|folder/.test(toolText)) {
+    return { kind: "explore", signal: "list", commandName: null };
+  }
+  if (entry.tone === "tool") {
+    return { kind: "tool", signal: "tool", commandName: normalizedToolName(entry) };
+  }
+  return null;
+}
+
+function classifyCommandActivity(command: string): SemanticActivitySummary {
+  const name = commandDisplayName(command);
+  const normalizedName = name?.toLowerCase() ?? "";
+  const normalizedCommand = command.toLowerCase();
+
+  if (isSearchCommandName(normalizedName)) {
+    return { kind: "explore", signal: "search", commandName: name };
+  }
+  if (isReadCommandName(normalizedName)) {
+    return { kind: "explore", signal: "read", commandName: name };
+  }
+  if (isListCommandName(normalizedName)) {
+    return { kind: "explore", signal: "list", commandName: name };
+  }
+  if (isGitInspectionCommand(normalizedName, normalizedCommand)) {
+    return { kind: "explore", signal: "git", commandName: name };
+  }
+  if (isEnvironmentInspectionCommandName(normalizedName)) {
+    return { kind: "explore", signal: "environment", commandName: name };
+  }
+  if (isVerificationCommand(normalizedName, normalizedCommand)) {
+    return {
+      kind: "verify",
+      signal: "verify",
+      commandName: verificationCommandLabel(command, name),
+    };
+  }
+  return { kind: "command", signal: "command", commandName: name };
+}
+
+function isSearchCommandName(name: string): boolean {
+  return ["rg", "grep", "findstr", "select-string"].includes(name);
+}
+
+function isReadCommandName(name: string): boolean {
+  return ["cat", "gc", "get-content", "head", "less", "more", "sed", "tail", "type"].includes(name);
+}
+
+function isListCommandName(name: string): boolean {
+  return ["dir", "gci", "get-childitem", "ls", "tree"].includes(name);
+}
+
+function isGitInspectionCommand(name: string, command: string): boolean {
+  if (name !== "git") {
+    return false;
+  }
+  return /\bgit\s+(?:branch|diff|log|ls-files|rev-parse|show|status)\b/u.test(command);
+}
+
+function isEnvironmentInspectionCommandName(name: string): boolean {
+  return [
+    "get-nettcpconnection",
+    "get-process",
+    "invoke-webrequest",
+    "resolve-path",
+    "test-netconnection",
+    "test-path",
+  ].includes(name);
+}
+
+function isVerificationCommand(name: string, command: string): boolean {
+  if (
+    [
+      "eslint",
+      "jest",
+      "oxfmt",
+      "oxlint",
+      "playwright",
+      "prettier",
+      "pytest",
+      "tsc",
+      "vitest",
+    ].includes(name)
+  ) {
+    return true;
+  }
+  if (
+    /\b(?:bun|npm|pnpm|yarn|cargo|dotnet|go|uv)\s+(?:run\s+)?(?:build|check|fmt|format|lint|test|typecheck)\b/u.test(
+      command,
+    )
+  ) {
+    return true;
+  }
+  if (
+    /\b(?:build|check|fmt|format|lint|test|typecheck)\b/u.test(command) &&
+    /\b(?:bun|npm|pnpm|yarn|turbo|vitest|tsc)\b/u.test(command)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function buildSemanticActivitySummaryEntry(
+  buffer: SemanticActivityBuffer,
+): TimelineWorkEntry | null {
+  if (buffer.kind === "command" && buffer.entries.length < 2) {
+    return null;
+  }
+
+  const entries = buffer.entries;
+  const firstEntry = entries[0];
+  const lastEntry = entries.at(-1);
+  if (!firstEntry || !lastEntry) {
+    return null;
+  }
+
+  const count = entries.length;
+  const detail = formatSemanticActivitySummaryDetail(buffer);
+  return {
+    id: `activity-summary:${buffer.kind}:${firstEntry.id}:${lastEntry.id}:${count}`,
+    createdAt: firstEntry.createdAt,
+    label: semanticActivityLabel(buffer),
+    ...(detail ? { detail } : {}),
+    tone: "tool",
+    ...(buffer.kind === "command" || buffer.kind === "verify"
+      ? { requestKind: "command" as const }
+      : {}),
+    executionState: "completed",
+    turnId: firstEntry.turnId ?? lastEntry.turnId ?? null,
+  };
+}
+
+function semanticActivityLabel(buffer: SemanticActivityBuffer): string {
+  const count = buffer.entries.length;
+  if (buffer.kind === "explore") {
+    return "Explored project";
+  }
+  if (buffer.kind === "verify") {
+    return "Verified changes";
+  }
+  if (buffer.kind === "tool") {
+    return `Used ${count.toLocaleString()} ${count === 1 ? "tool" : "tools"}`;
+  }
+  return `Ran ${count.toLocaleString()} ${count === 1 ? "command" : "commands"}`;
+}
+
+function formatSemanticActivitySummaryDetail(buffer: SemanticActivityBuffer): string | null {
+  if (buffer.kind === "explore") {
+    const parts = [
+      formatActivityCount(buffer.signals.get("search") ?? 0, "search", "searches"),
+      formatActivityCount(buffer.signals.get("read") ?? 0, "file read", "file reads"),
+      formatActivityCount(buffer.signals.get("list") ?? 0, "directory list", "directory lists"),
+      formatActivityCount(buffer.signals.get("git") ?? 0, "git check", "git checks"),
+      formatActivityCount(
+        buffer.signals.get("environment") ?? 0,
+        "environment check",
+        "environment checks",
+      ),
+    ].filter((part): part is string => part !== null);
+    return parts.join(", ") || null;
+  }
+
+  if (buffer.kind === "verify" || buffer.kind === "command") {
+    return formatCommandNameList(buffer.commandNames);
+  }
+
+  if (buffer.kind === "tool") {
+    return formatCommandNameList(buffer.commandNames);
+  }
+
+  return null;
+}
+
+function formatActivityCount(count: number, singular: string, plural: string): string | null {
+  if (count <= 0) {
+    return null;
+  }
+  return `${count.toLocaleString()} ${count === 1 ? singular : plural}`;
+}
+
+function formatCommandNameList(names: ReadonlyArray<string>): string | null {
+  if (names.length === 0) {
+    return null;
+  }
+
+  const visibleNames = names.slice(0, 3);
+  const hiddenCount = names.length - visibleNames.length;
+  return hiddenCount > 0
+    ? `${visibleNames.join(", ")} +${hiddenCount.toLocaleString()}`
+    : visibleNames.join(", ");
+}
+
+function addUniqueString(values: string[], value: string) {
+  const key = value.toLowerCase();
+  if (values.some((existing) => existing.toLowerCase() === key)) {
+    return;
+  }
+  values.push(value);
+}
+
+function normalizedToolName(entry: TimelineWorkEntry): string | null {
+  const label = normalizeCompactToolLabel(entry.toolTitle ?? entry.label);
+  return label || null;
+}
+
+function verificationCommandLabel(command: string, fallbackName: string | null): string | null {
+  const normalizedCommand = command.trim().replace(/\s+/gu, " ");
+  const scriptMatch =
+    /\b(?:bun|npm|pnpm|yarn)\s+(?:run\s+)?([A-Za-z0-9:_./-]+)/u.exec(normalizedCommand) ??
+    /\bturbo\s+run\s+([A-Za-z0-9:_./-]+)/u.exec(normalizedCommand);
+  const scriptName = scriptMatch?.[1];
+  if (scriptName) {
+    return fallbackName ? `${fallbackName} ${scriptName}` : scriptName;
+  }
+  return fallbackName;
+}
+
+function commandDisplayName(command: string | undefined): string | null {
+  const trimmedCommand = command?.trim();
+  if (!trimmedCommand) {
+    return null;
+  }
+
+  const match = /^(?:&\s*)?(?:"([^"]+)"|'([^']+)'|([^\s|;]+))/u.exec(trimmedCommand);
+  const token = match?.[1] ?? match?.[2] ?? match?.[3];
+  if (!token) {
+    return null;
+  }
+
+  const normalizedToken = token.replaceAll("\\", "/");
+  const name = normalizedToken
+    .split("/")
+    .at(-1)
+    ?.replace(/\.(?:exe|cmd|ps1)$/iu, "");
+  return name?.trim() || null;
+}
 
 function summarizeHiddenWorkEntries(entries: ReadonlyArray<TimelineWorkEntry>): string | null {
   if (entries.length === 0) {
@@ -833,7 +1184,14 @@ function AssistantChangedFilesSectionInner({
             size="xs"
             variant="outline"
             data-scroll-anchor-ignore
-            onClick={() => setExpanded(routeThreadKey, turnSummary.turnId, !allDirectoriesExpanded)}
+            onClick={() =>
+              setExpanded(
+                routeThreadKey,
+                turnSummary.turnId,
+                !allDirectoriesExpanded,
+                defaultTreeExpanded,
+              )
+            }
           >
             {allDirectoriesExpanded ? "Collapse tree" : "Expand tree"}
           </Button>

@@ -1220,6 +1220,7 @@ const make = Effect.gen(function* () {
           case "turn.started":
             return !conflictsWithActiveTurn;
           case "turn.completed":
+          case "turn.aborted":
             if (conflictsWithActiveTurn || missingTurnForActiveTurn) {
               return false;
             }
@@ -1244,12 +1245,15 @@ const make = Effect.gen(function* () {
         event.type === "session.exited" ||
         event.type === "thread.started" ||
         event.type === "turn.started" ||
-        event.type === "turn.completed"
+        event.type === "turn.completed" ||
+        event.type === "turn.aborted"
       ) {
         const nextActiveTurnId =
           event.type === "turn.started"
             ? (eventTurnId ?? null)
-            : event.type === "turn.completed" || event.type === "session.exited"
+            : event.type === "turn.completed" ||
+                event.type === "turn.aborted" ||
+                event.type === "session.exited"
               ? null
               : activeTurnId;
         const status = (() => {
@@ -1260,6 +1264,8 @@ const make = Effect.gen(function* () {
               return "running";
             case "session.exited":
               return "stopped";
+            case "turn.aborted":
+              return "interrupted";
             case "turn.completed":
               return normalizeRuntimeTurnState(event.payload.state) === "failed"
                 ? "error"
@@ -1277,7 +1283,7 @@ const make = Effect.gen(function* () {
             : event.type === "turn.completed" &&
                 normalizeRuntimeTurnState(event.payload.state) === "failed"
               ? (event.payload.errorMessage ?? thread.session?.lastError ?? "Turn failed")
-              : status === "ready"
+              : status === "ready" || status === "interrupted"
                 ? null
                 : (thread.session?.lastError ?? null);
 
@@ -1504,7 +1510,7 @@ const make = Effect.gen(function* () {
         });
       }
 
-      if (event.type === "turn.completed") {
+      if (event.type === "turn.completed" || event.type === "turn.aborted") {
         const detailedThread = yield* getLoadedThreadDetail();
         const messages = detailedThread?.messages ?? [];
         const proposedPlans = detailedThread?.proposedPlans ?? [];

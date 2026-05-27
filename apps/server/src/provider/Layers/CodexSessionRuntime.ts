@@ -52,6 +52,8 @@ const CODEX_STDERR_LOG_REGEX =
 const BENIGN_ERROR_LOG_SNIPPETS = [
   "state db missing rollout path for thread",
   "state db record_discrepancy: find_thread_path_by_id_str_in_subdir, falling_back",
+  "codex_models_manager::manager: failed to refresh available models: timeout",
+  "mcp-transport-worker: worker quit with fatal: Transport channel closed",
 ];
 const CODEX_APP_SERVER_FORCE_KILL_AFTER = "2 seconds" as const;
 const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
@@ -388,7 +390,7 @@ export function buildTurnStartParams(input: {
   );
 }
 
-function classifyCodexStderrLine(rawLine: string): { readonly message: string } | null {
+export function classifyCodexStderrLine(rawLine: string): { readonly message: string } | null {
   const line = rawLine.replaceAll(ANSI_ESCAPE_REGEX, "").trim();
   if (!line) {
     return null;

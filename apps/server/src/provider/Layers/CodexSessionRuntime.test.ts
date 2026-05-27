@@ -13,6 +13,7 @@ import {
 } from "../CodexDeveloperInstructions.ts";
 import {
   buildTurnStartParams,
+  classifyCodexStderrLine,
   isRecoverableThreadResumeError,
   openCodexThread,
 } from "./CodexSessionRuntime.ts";
@@ -193,6 +194,24 @@ describe("isRecoverableThreadResumeError", () => {
       ),
       false,
     );
+  });
+});
+
+describe("classifyCodexStderrLine", () => {
+  it("filters benign Codex startup stderr noise", () => {
+    const modelRefreshWarning =
+      "2026-05-27T03:14:34.196768Z ERROR codex_models_manager::manager: failed to refresh available models: timeout while fetching models";
+    const mcpWorkerClosedWarning =
+      "2026-05-27T03:14:38.810814Z ERROR mcp-transport-worker: worker quit with fatal: Transport channel closed, when attempting to receive initialized notification";
+
+    assert.equal(classifyCodexStderrLine(modelRefreshWarning), null);
+    assert.equal(classifyCodexStderrLine(mcpWorkerClosedWarning), null);
+  });
+
+  it("keeps actionable Codex stderr lines visible", () => {
+    assert.deepStrictEqual(classifyCodexStderrLine("The filename or extension is too long."), {
+      message: "The filename or extension is too long.",
+    });
   });
 });
 
