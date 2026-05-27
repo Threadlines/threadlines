@@ -75,4 +75,57 @@ describe("SourceControlPanel.logic", () => {
     expect(sideParentRow?.layout.parentPaths).toEqual([{ fromLane: 1, toLane: 0 }]);
     expect(baseRow?.layout.lane).toBe(0);
   });
+
+  it("keeps a single lane for linear history", () => {
+    const rows = buildCommitGraphRows([
+      { sha: "c3", parents: ["c2"], refs: ["main"] },
+      { sha: "c2", parents: ["c1"], refs: [] },
+      { sha: "c1", parents: [], refs: [] },
+    ]);
+
+    expect(rows.every((row) => row.layout.lane === 0)).toBe(true);
+    expect(rows[0]?.layout.laneCount).toBe(1);
+    expect(rows[0]?.layout.parentPaths).toEqual([{ fromLane: 0, toLane: 0 }]);
+    expect(rows[0]?.layout.topLanes).toEqual([]);
+    expect(rows[1]?.layout.topLanes).toEqual([0]);
+    expect(rows[1]?.layout.bottomLanes).toEqual([0]);
+    expect(rows[2]?.layout.bottomLanes).toEqual([]);
+  });
+
+  it("splits a side branch into its own lane and merges it back", () => {
+    const [tipRow, sideTipRow, baseRow] = buildCommitGraphRows([
+      { sha: "tip", parents: ["base"], refs: ["main"] },
+      { sha: "side", parents: ["base"], refs: ["origin/feature"] },
+      { sha: "base", parents: [], refs: [] },
+    ]);
+
+    expect(tipRow?.layout.lane).toBe(0);
+    expect(tipRow?.layout.bottomLanes).toEqual([0]);
+    expect(sideTipRow?.layout.lane).toBe(1);
+    expect(sideTipRow?.layout.isNewTip).toBe(true);
+    expect(sideTipRow?.layout.topLanes).toEqual([0]);
+    expect(sideTipRow?.layout.parentPaths).toEqual([{ fromLane: 1, toLane: 0 }]);
+    expect(sideTipRow?.layout.bottomLanes).toEqual([0]);
+    expect(baseRow?.layout.lane).toBe(0);
+  });
+
+  it("preserves lane continuity through rows that also carry ref decorations", () => {
+    const rows = buildCommitGraphRows([
+      { sha: "merge", parents: ["main-parent", "side-parent"], refs: ["main", "origin/main"] },
+      { sha: "main-parent", parents: ["base"], refs: ["v1.0.0"] },
+      { sha: "side-parent", parents: ["base"], refs: ["origin/feature"] },
+      { sha: "base", parents: [], refs: [] },
+    ]);
+
+    for (let index = 0; index < rows.length - 1; index += 1) {
+      const current = rows[index];
+      const next = rows[index + 1];
+      if (!current || !next) {
+        continue;
+      }
+      expect(next.layout.topLanes).toEqual(current.layout.bottomLanes);
+    }
+    expect(rows[1]?.visibleRefs).toEqual(["v1.0.0"]);
+    expect(rows[2]?.visibleRefs).toEqual(["origin/feature"]);
+  });
 });

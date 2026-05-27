@@ -229,6 +229,28 @@ describe("SourceControlPanel commit graph", () => {
     }
   });
 
+  it("renders a split/merge topology with continuous lane heights", async () => {
+    const mounted = await renderPanel();
+
+    try {
+      await expect.element(page.getByText("Polish source control graph")).toBeVisible();
+
+      const commitRows = Array.from(
+        document.querySelectorAll<HTMLElement>('[aria-label^="Commit "]'),
+      );
+      expect(commitRows.length).toBe(GRAPH.commits.length);
+
+      const heights = commitRows.map((row) => Math.round(row.getBoundingClientRect().height));
+      const uniqueHeights = new Set(heights);
+      expect(uniqueHeights.size).toBe(1);
+
+      const crossLanePaths = document.querySelectorAll('svg path[d^="M "]');
+      expect(crossLanePaths.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("opens commit context actions from right click", async () => {
     const mounted = await renderPanel();
 

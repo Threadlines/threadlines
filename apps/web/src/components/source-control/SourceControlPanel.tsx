@@ -278,22 +278,40 @@ function CommitGraphRefChip({
   );
 }
 
-const COMMIT_GRAPH_LANE_GAP = 10;
-const COMMIT_GRAPH_LEFT_PADDING = 6;
-const COMMIT_GRAPH_ROW_HEIGHT = 40;
-const COMMIT_GRAPH_ROW_HEIGHT_WITH_REFS = 52;
-const COMMIT_GRAPH_NODE_Y = 18;
+const COMMIT_GRAPH_LANE_GAP = 12;
+const COMMIT_GRAPH_LEFT_PADDING = 8;
+const COMMIT_GRAPH_ROW_HEIGHT = 28;
+const COMMIT_GRAPH_NODE_Y = 14;
 const COMMIT_GRAPH_NODE_RADIUS = 4;
+const COMMIT_GRAPH_NODE_GAP = COMMIT_GRAPH_NODE_RADIUS + 1;
+const COMMIT_GRAPH_STROKE_WIDTH = 2;
 
-function commitGraphLaneClassName(lane: number) {
-  const laneClasses = [
-    "stroke-info fill-info",
-    "stroke-warning fill-warning",
-    "stroke-success fill-success",
-    "stroke-primary fill-primary",
-    "stroke-muted-foreground fill-muted-foreground",
-  ];
-  return laneClasses[lane % laneClasses.length];
+const COMMIT_GRAPH_LANE_STROKE = [
+  "stroke-primary",
+  "stroke-info",
+  "stroke-success",
+  "stroke-warning",
+  "stroke-muted-foreground",
+] as const;
+
+const COMMIT_GRAPH_LANE_FILL = [
+  "fill-primary",
+  "fill-info",
+  "fill-success",
+  "fill-warning",
+  "fill-muted-foreground",
+] as const;
+
+function commitGraphLaneStrokeClass(lane: number) {
+  return COMMIT_GRAPH_LANE_STROKE[lane % COMMIT_GRAPH_LANE_STROKE.length];
+}
+
+function commitGraphLaneFillClass(lane: number) {
+  return COMMIT_GRAPH_LANE_FILL[lane % COMMIT_GRAPH_LANE_FILL.length];
+}
+
+function commitGraphLaneOpacity(lane: number) {
+  return lane === 0 ? 0.95 : 0.65;
 }
 
 function commitGraphLaneX(lane: number) {
@@ -303,18 +321,28 @@ function commitGraphLaneX(lane: number) {
 function CommitGraphGlyph({
   layout,
   highlighted,
-  rowHeight,
 }: {
   readonly layout: CommitGraphLaneLayout;
   readonly highlighted: boolean;
-  readonly rowHeight: number;
 }) {
   const width = commitGraphLaneX(layout.laneCount - 1) + COMMIT_GRAPH_LEFT_PADDING;
+  const rowHeight = COMMIT_GRAPH_ROW_HEIGHT;
+  const nodeY = COMMIT_GRAPH_NODE_Y;
+  const radius = COMMIT_GRAPH_NODE_RADIUS;
+  const gap = COMMIT_GRAPH_NODE_GAP;
   const nodeX = commitGraphLaneX(layout.lane);
   const isMergeCommit = layout.parentPaths.length > 1;
-  const crossPathTargetLanes = new Set(
-    layout.parentPaths.filter((path) => path.fromLane !== path.toLane).map((path) => path.toLane),
+  const sameLaneParent = layout.parentPaths.some(
+    (path) => path.fromLane === layout.lane && path.toLane === layout.lane,
   );
+  const topLaneSet = new Set(layout.topLanes);
+  const visibleBottomLanes = layout.bottomLanes.filter((bottomLane) => {
+    if (bottomLane === layout.lane) {
+      return sameLaneParent;
+    }
+    return topLaneSet.has(bottomLane);
+  });
+  const crossLanePaths = layout.parentPaths.filter((path) => path.fromLane !== path.toLane);
 
   return (
     <svg
@@ -326,69 +354,82 @@ function CommitGraphGlyph({
     >
       {layout.topLanes.map((lane) => {
         const x = commitGraphLaneX(lane);
+        const y2 = lane === layout.lane ? nodeY - gap : nodeY;
         return (
           <line
             key={`top-${lane}`}
             x1={x}
             y1={0}
             x2={x}
-            y2={COMMIT_GRAPH_NODE_Y}
-            className={cn("opacity-80", commitGraphLaneClassName(lane))}
-            strokeWidth="2"
-            strokeLinecap="round"
+            y2={y2}
+            className={commitGraphLaneStrokeClass(lane)}
+            strokeWidth={COMMIT_GRAPH_STROKE_WIDTH}
+            strokeLinecap="square"
+            opacity={commitGraphLaneOpacity(lane)}
           />
         );
       })}
-      {layout.bottomLanes
-        .filter((lane) => !crossPathTargetLanes.has(lane))
-        .map((lane) => {
-          const x = commitGraphLaneX(lane);
-          return (
-            <line
-              key={`bottom-${lane}`}
-              x1={x}
-              y1={COMMIT_GRAPH_NODE_Y}
-              x2={x}
-              y2={rowHeight}
-              className={cn("opacity-80", commitGraphLaneClassName(lane))}
-              strokeWidth="2"
-              strokeLinecap="round"
-            />
-          );
-        })}
-      {layout.parentPaths
-        .filter((path) => path.fromLane !== path.toLane)
-        .map((path) => {
-          const fromX = commitGraphLaneX(path.fromLane);
-          const toX = commitGraphLaneX(path.toLane);
-          const direction = Math.sign(toX - fromX) || 1;
-          const startX = fromX + direction * (COMMIT_GRAPH_NODE_RADIUS + 1);
-          const startY = COMMIT_GRAPH_NODE_Y + COMMIT_GRAPH_NODE_RADIUS + 1;
-          const controlY = COMMIT_GRAPH_NODE_Y + 11;
-          return (
-            <path
-              key={`${path.fromLane}-${path.toLane}`}
-              d={`M ${startX} ${startY} C ${startX} ${controlY}, ${toX} ${controlY}, ${toX} ${rowHeight}`}
-              className={cn("opacity-90", commitGraphLaneClassName(path.toLane))}
-              fill="none"
-              strokeWidth="2"
-              strokeLinecap="round"
-            />
-          );
-        })}
-      <circle
-        cx={nodeX}
-        cy={COMMIT_GRAPH_NODE_Y}
-        r={highlighted || isMergeCommit ? 5 : COMMIT_GRAPH_NODE_RADIUS}
-        className={cn(
-          isMergeCommit
-            ? "fill-background stroke-warning"
-            : highlighted
-              ? "fill-primary stroke-background"
-              : commitGraphLaneClassName(layout.lane),
-        )}
-        strokeWidth={isMergeCommit ? "2.5" : "2"}
-      />
+      {visibleBottomLanes.map((lane) => {
+        const x = commitGraphLaneX(lane);
+        const y1 = lane === layout.lane ? nodeY + gap : nodeY;
+        return (
+          <line
+            key={`bottom-${lane}`}
+            x1={x}
+            y1={y1}
+            x2={x}
+            y2={rowHeight}
+            className={commitGraphLaneStrokeClass(lane)}
+            strokeWidth={COMMIT_GRAPH_STROKE_WIDTH}
+            strokeLinecap="square"
+            opacity={commitGraphLaneOpacity(lane)}
+          />
+        );
+      })}
+      {crossLanePaths.map((path) => {
+        const fromX = commitGraphLaneX(path.fromLane);
+        const toX = commitGraphLaneX(path.toLane);
+        const startY = nodeY + gap;
+        const midY = (startY + rowHeight) / 2;
+        return (
+          <path
+            key={`path-${path.fromLane}-${path.toLane}`}
+            d={`M ${fromX} ${startY} C ${fromX} ${midY}, ${toX} ${midY}, ${toX} ${rowHeight}`}
+            className={commitGraphLaneStrokeClass(path.toLane)}
+            fill="none"
+            strokeWidth={COMMIT_GRAPH_STROKE_WIDTH}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            opacity={commitGraphLaneOpacity(path.toLane)}
+          />
+        );
+      })}
+      {highlighted ? (
+        <circle
+          cx={nodeX}
+          cy={nodeY}
+          r={radius}
+          className="fill-primary"
+          opacity={1}
+        />
+      ) : isMergeCommit ? (
+        <circle
+          cx={nodeX}
+          cy={nodeY}
+          r={radius}
+          className={cn("fill-background", commitGraphLaneStrokeClass(layout.lane))}
+          strokeWidth={COMMIT_GRAPH_STROKE_WIDTH}
+          opacity={commitGraphLaneOpacity(layout.lane)}
+        />
+      ) : (
+        <circle
+          cx={nodeX}
+          cy={nodeY}
+          r={radius}
+          className={commitGraphLaneFillClass(layout.lane)}
+          opacity={commitGraphLaneOpacity(layout.lane)}
+        />
+      )}
     </svg>
   );
 }
@@ -499,11 +540,9 @@ function CommitGraphRow({
   const isCurrentBranchCommit = visibleRefs.some(
     (ref) => getCommitGraphRefKind(ref, currentBranch) === "current",
   );
-  const renderedRefs = visibleRefs.slice(0, 3);
+  const renderedRefs = visibleRefs.slice(0, 2);
   const hiddenRefCount = Math.max(0, visibleRefs.length - renderedRefs.length);
   const graphWidth = commitGraphLaneX(layout.laneCount - 1) + COMMIT_GRAPH_LEFT_PADDING;
-  const rowHeight =
-    renderedRefs.length > 0 ? COMMIT_GRAPH_ROW_HEIGHT_WITH_REFS : COMMIT_GRAPH_ROW_HEIGHT;
 
   return (
     <Tooltip>
@@ -519,29 +558,26 @@ function CommitGraphRow({
               onCommitContextMenu(commit, { x: event.clientX, y: event.clientY });
             }}
             className={cn(
-              "grid min-h-10 cursor-default gap-2 px-2.5 transition-colors hover:bg-accent/60",
+              "grid cursor-default items-center gap-2 px-2.5 transition-colors hover:bg-accent/60",
               isCurrentBranchCommit && "bg-primary/10 hover:bg-primary/15",
             )}
-            style={{ gridTemplateColumns: `${graphWidth}px minmax(0, 1fr)`, minHeight: rowHeight }}
+            style={{
+              gridTemplateColumns: `${graphWidth}px minmax(0, 1fr)`,
+              height: COMMIT_GRAPH_ROW_HEIGHT,
+            }}
           >
-            <span className="flex items-stretch">
-              <CommitGraphGlyph
-                layout={layout}
-                highlighted={isCurrentBranchCommit}
-                rowHeight={rowHeight}
-              />
-            </span>
-            <span className="flex min-w-0 flex-col justify-center gap-1 py-2">
+            <CommitGraphGlyph layout={layout} highlighted={isCurrentBranchCommit} />
+            <span className="flex min-w-0 items-center gap-2">
               <span
                 className={cn(
-                  "min-w-0 truncate text-xs leading-tight text-foreground",
+                  "min-w-0 flex-1 truncate text-xs leading-tight text-foreground",
                   isCurrentBranchCommit && "font-medium",
                 )}
               >
                 {commit.subject || "Untitled commit"}
               </span>
               {renderedRefs.length > 0 ? (
-                <span className="flex min-w-0 items-center gap-1 overflow-hidden">
+                <span className="flex shrink-0 items-center gap-1">
                   {renderedRefs.map((ref) => (
                     <CommitGraphRefChip
                       key={ref}
@@ -1777,7 +1813,7 @@ export function SourceControlPanel({
               {commitGraphRows.length === 0 ? (
                 <div className="px-2.5 py-2 text-xs text-muted-foreground/70">No commits yet</div>
               ) : (
-                <div role="list" className="divide-y divide-border/45">
+                <div role="list">
                   {commitGraphRows.map((row) => (
                     <CommitGraphRow
                       key={row.commit.sha}
