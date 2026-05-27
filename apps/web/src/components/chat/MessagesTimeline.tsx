@@ -645,16 +645,17 @@ const WorkGroupSection = memo(function WorkGroupSection({
   }, [isExpanded, isWorking]);
 
   const isShowingFullLog = isExpanded && !isWorking;
-  const activityEntries = isShowingFullLog
-    ? groupedEntries
-    : summarizeSemanticActivityEntries(groupedEntries);
+  const activityEntries =
+    isShowingFullLog || isWorking
+      ? groupedEntries
+      : summarizeSemanticActivityEntries(groupedEntries);
   const visibleLimit = isWorking
     ? Math.min(5, MAX_VISIBLE_WORK_LOG_ENTRIES)
     : MAX_VISIBLE_WORK_LOG_ENTRIES;
   const hasOverflow = activityEntries.length > visibleLimit;
   const visibleEntries =
     hasOverflow && !isShowingFullLog ? activityEntries.slice(-visibleLimit) : activityEntries;
-  const hasCompactedEntries = activityEntries.length < groupedEntries.length;
+  const hasCompactedEntries = !isWorking && activityEntries.length < groupedEntries.length;
   const hiddenCount = isShowingFullLog
     ? 0
     : Math.max(0, groupedEntries.length - visibleEntries.length);

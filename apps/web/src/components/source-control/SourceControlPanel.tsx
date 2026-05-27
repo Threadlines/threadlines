@@ -286,19 +286,26 @@ const COMMIT_GRAPH_NODE_RADIUS = 4;
 const COMMIT_GRAPH_NODE_GAP = COMMIT_GRAPH_NODE_RADIUS + 1;
 const COMMIT_GRAPH_STROKE_WIDTH = 2;
 
+// Lane 0 is reserved for the "main line" (the leftmost lane carrying the current branch
+// in typical workflows). Side lanes rotate through distinct hues so adjacent branches
+// stay visually distinguishable without looking decorative.
 const COMMIT_GRAPH_LANE_STROKE = [
   "stroke-primary",
-  "stroke-info",
-  "stroke-success",
-  "stroke-warning",
+  "stroke-amber-400",
+  "stroke-emerald-400",
+  "stroke-pink-400",
+  "stroke-cyan-400",
+  "stroke-violet-400",
   "stroke-muted-foreground",
 ] as const;
 
 const COMMIT_GRAPH_LANE_FILL = [
   "fill-primary",
-  "fill-info",
-  "fill-success",
-  "fill-warning",
+  "fill-amber-400",
+  "fill-emerald-400",
+  "fill-pink-400",
+  "fill-cyan-400",
+  "fill-violet-400",
   "fill-muted-foreground",
 ] as const;
 
@@ -311,7 +318,15 @@ function commitGraphLaneFillClass(lane: number) {
 }
 
 function commitGraphLaneOpacity(lane: number) {
-  return lane === 0 ? 0.95 : 0.65;
+  return lane === 0 ? 0.95 : 0.8;
+}
+
+// Cross-lane curves always carry the SIDE lane's identity, regardless of direction.
+// A curve from main (0) → side (1) starts a side branch; a curve from side (1) → main (0)
+// closes it. In both cases the curve belongs to the side branch, so it should pick up
+// the higher lane index's color, never the main lane's color.
+function commitGraphCurveLane(fromLane: number, toLane: number): number {
+  return Math.max(fromLane, toLane);
 }
 
 function commitGraphLaneX(lane: number) {
@@ -391,21 +406,31 @@ function CommitGraphGlyph({
         const toX = commitGraphLaneX(path.toLane);
         const startY = nodeY + gap;
         const midY = (startY + rowHeight) / 2;
+        const curveLane = commitGraphCurveLane(path.fromLane, path.toLane);
         return (
           <path
             key={`path-${path.fromLane}-${path.toLane}`}
             d={`M ${fromX} ${startY} C ${fromX} ${midY}, ${toX} ${midY}, ${toX} ${rowHeight}`}
-            className={commitGraphLaneStrokeClass(path.toLane)}
+            className={commitGraphLaneStrokeClass(curveLane)}
             fill="none"
             strokeWidth={COMMIT_GRAPH_STROKE_WIDTH}
             strokeLinecap="round"
             strokeLinejoin="round"
-            opacity={commitGraphLaneOpacity(path.toLane)}
+            opacity={commitGraphLaneOpacity(curveLane)}
           />
         );
       })}
       {highlighted ? (
-        <circle cx={nodeX} cy={nodeY} r={radius} className="fill-primary" opacity={1} />
+        <>
+          <circle
+            cx={nodeX}
+            cy={nodeY}
+            r={radius + 1.5}
+            className="fill-background stroke-primary"
+            strokeWidth={COMMIT_GRAPH_STROKE_WIDTH}
+          />
+          <circle cx={nodeX} cy={nodeY} r={radius - 1} className="fill-primary" />
+        </>
       ) : isMergeCommit ? (
         <circle
           cx={nodeX}

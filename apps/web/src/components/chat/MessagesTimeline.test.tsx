@@ -249,7 +249,7 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("apps/web/src/session-logic.ts");
   });
 
-  it("keeps the running command visible while summarizing completed command audit rows", async () => {
+  it("keeps live command activity uncollapsed while a turn is working", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(
       <MessagesTimeline
@@ -293,14 +293,14 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("Explored project");
-    expect(markup).toContain("1 search");
-    expect(markup).toContain("1 file read");
-    expect(markup).toContain("2 git checks");
+    expect(markup).toContain("git status --short");
+    expect(markup).toContain("rg -n");
+    expect(markup).toContain("apps/web/src/session-logic.ts");
+    expect(markup).toContain("git diff --stat");
     expect(markup).toContain("Verifying bun typecheck");
     expect(markup).toContain("bun typecheck");
+    expect(markup).not.toContain("Explored project");
     expect(markup).not.toContain("View transcript");
-    expect(markup).not.toContain("git status --short");
   });
 
   it("renders verification commands as a semantic activity summary", async () => {
