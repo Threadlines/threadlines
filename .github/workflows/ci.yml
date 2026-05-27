@@ -47,9 +47,7 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Ensure Electron binary is installed
-        working-directory: apps/desktop
-        run: |
-          node -e "const { execFileSync } = require('node:child_process'); const env = { ...process.env, force_no_cache: 'true', npm_config_platform: process.platform, npm_config_arch: process.arch }; delete env.ELECTRON_SKIP_BINARY_DOWNLOAD; execFileSync(process.execPath, [require.resolve('electron/install')], { stdio: 'inherit', env }); console.log('Electron binary: ' + require('electron'))"
+        run: node scripts/ensure-electron-binary.ts
 
       - name: Format
         run: bun run fmt:check
