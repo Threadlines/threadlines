@@ -477,10 +477,10 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
           yield* Effect.yieldNow;
 
           const status = yield* Fiber.join(statusFiber);
-          assert.strictEqual(status.status, "error");
+          assert.strictEqual(status.status, "warning");
           assert.strictEqual(
             status.message,
-            "Timed out while checking Codex app-server provider status.",
+            "Codex provider status check timed out. Chat may still work if a Codex session is already running; refresh provider status if this keeps happening.",
           );
           assert.strictEqual(yield* Ref.get(killCalls), 1);
         }),

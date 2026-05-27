@@ -175,6 +175,7 @@ function Sidebar({
   variant = "sidebar",
   collapsible = "offcanvas",
   resizable = false,
+  motion = "animated",
   className,
   children,
   ...props
@@ -182,9 +183,11 @@ function Sidebar({
   side?: "left" | "right";
   variant?: "sidebar" | "floating" | "inset";
   collapsible?: "offcanvas" | "icon" | "none";
+  motion?: "animated" | "instant";
   resizable?: boolean | SidebarResizableOptions;
 }) {
   const { isMobile, state, openMobile, setOpenMobile } = useSidebar();
+  const animateLayout = motion === "animated";
   const resolvedResizable = React.useMemo<SidebarResolvedResizableOptions | null>(() => {
     if (isMobile || collapsible === "none" || !resizable) {
       return null;
@@ -272,7 +275,8 @@ function Sidebar({
         {/* This is what handles the sidebar gap on desktop */}
         <div
           className={cn(
-            "relative w-(--sidebar-width) bg-transparent transition-[width] duration-200 ease-linear",
+            "relative w-(--sidebar-width) bg-transparent",
+            animateLayout && "transition-[width] duration-200 ease-linear",
             "group-data-[collapsible=offcanvas]:w-0",
             "group-data-[side=right]:rotate-180",
             variant === "floating" || variant === "inset"
@@ -283,7 +287,8 @@ function Sidebar({
         />
         <div
           className={cn(
-            "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) transition-[left,right,width] duration-200 ease-linear md:flex",
+            "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) md:flex",
+            animateLayout && "transition-[left,right,width] duration-200 ease-linear",
             side === "left"
               ? "left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)]"
               : "right-0 group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)]",

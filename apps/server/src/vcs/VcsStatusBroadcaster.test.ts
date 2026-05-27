@@ -339,6 +339,33 @@ describe("VcsStatusBroadcaster", () => {
     );
   });
 
+  it("backs off unchanged successful remote refreshes up to five minutes", () => {
+    assert.equal(
+      Duration.toMillis(VcsStatusBroadcaster.remoteRefreshSuccessDelay(0, Duration.seconds(30))),
+      30_000,
+    );
+    assert.equal(
+      Duration.toMillis(VcsStatusBroadcaster.remoteRefreshSuccessDelay(1, Duration.seconds(30))),
+      30_000,
+    );
+    assert.equal(
+      Duration.toMillis(VcsStatusBroadcaster.remoteRefreshSuccessDelay(2, Duration.seconds(30))),
+      60_000,
+    );
+    assert.equal(
+      Duration.toMillis(VcsStatusBroadcaster.remoteRefreshSuccessDelay(4, Duration.seconds(30))),
+      240_000,
+    );
+    assert.equal(
+      Duration.toMillis(VcsStatusBroadcaster.remoteRefreshSuccessDelay(5, Duration.seconds(30))),
+      300_000,
+    );
+    assert.equal(
+      Duration.toMillis(VcsStatusBroadcaster.remoteRefreshSuccessDelay(12, Duration.seconds(30))),
+      300_000,
+    );
+  });
+
   it.effect("stops the remote poller after the last stream subscriber disconnects", () => {
     const state = {
       currentLocalStatus: baseLocalStatus,

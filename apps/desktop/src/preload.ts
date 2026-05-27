@@ -90,6 +90,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   pickFolder: (options) => ipcRenderer.invoke(IpcChannels.PICK_FOLDER_CHANNEL, options),
   confirm: (message) => ipcRenderer.invoke(IpcChannels.CONFIRM_CHANNEL, message),
   setTheme: (theme) => ipcRenderer.invoke(IpcChannels.SET_THEME_CHANNEL, theme),
+  setTaskbarStatus: (input) => ipcRenderer.invoke(IpcChannels.SET_TASKBAR_STATUS_CHANNEL, input),
   showContextMenu: (items, position) =>
     ipcRenderer.invoke(IpcChannels.CONTEXT_MENU_CHANNEL, {
       items,

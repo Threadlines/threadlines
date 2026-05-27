@@ -854,6 +854,8 @@ export function DiagnosticsSettingsPanel() {
   }, [availableEditors, observability?.logsDirectoryPath]);
 
   const isInitialLoading = isPending && data === null;
+  const subscriptionSpanCount = data?.subscriptionSpanCount ?? 0;
+  const longestSubscriptionSpans = data?.longestSubscriptionSpans ?? [];
   const isProcessInitialLoading = isProcessPending && processData === null;
   const signalProcess = useCallback(
     (pid: number, signal: ServerProcessSignal) => {
@@ -1080,10 +1082,15 @@ export function DiagnosticsSettingsPanel() {
             value={data ? formatCount(data.slowSpanCount) : "..."}
             tooltip={
               data
-                ? `Spans with a duration of ${formatDuration(data.slowSpanThresholdMs)} or longer.`
-                : "Spans at or above the configured slow-span threshold."
+                ? `Completed operation spans with a duration of ${formatDuration(data.slowSpanThresholdMs)} or longer. Long-lived subscriptions are counted separately.`
+                : "Completed operation spans at or above the configured slow-span threshold."
             }
             tone={data && data.slowSpanCount > 0 ? "warning" : "default"}
+          />
+          <StatBlock
+            label="Subscriptions"
+            value={data ? formatCount(subscriptionSpanCount) : "..."}
+            tooltip="Long-lived streaming or subscription spans. These are lifetimes, not request latency."
           />
           <StatBlock
             label="Parse Errors"
@@ -1207,6 +1214,41 @@ export function DiagnosticsSettingsPanel() {
           </DiagnosticsTable>
         ) : (
           <EmptyRows label={isInitialLoading ? "Loading slow spans..." : "No spans found."} />
+        )}
+      </SettingsSection>
+
+      <SettingsSection title="Longest Subscriptions">
+        {data && longestSubscriptionSpans.length > 0 ? (
+          <DiagnosticsTable
+            headers={["Span", "Duration", "Ended", "Trace"]}
+            minTableWidth="min-w-[900px]"
+            columnWidths={["w-[44%]", "w-[14%]", "w-[12%]", "w-[30%]"]}
+          >
+            {longestSubscriptionSpans.map((span) => (
+              <tr key={`${span.traceId}:${span.spanId}`}>
+                <td className="px-4 py-3 align-top text-xs font-medium text-foreground first:sm:pl-5">
+                  {span.name}
+                </td>
+                <td className="px-4 py-3 align-top font-mono tabular-nums">
+                  {formatDuration(span.durationMs)}
+                </td>
+                <td className="w-px whitespace-nowrap px-4 py-3 align-top font-mono tabular-nums text-muted-foreground">
+                  {formatRelativeNoWrap(span.endedAt)}
+                </td>
+                <td className="min-w-0 whitespace-nowrap px-4 py-3 align-top text-muted-foreground last:sm:pr-5">
+                  <TraceIdCell traceId={span.traceId} />
+                </td>
+              </tr>
+            ))}
+          </DiagnosticsTable>
+        ) : (
+          <EmptyRows
+            label={
+              isInitialLoading
+                ? "Loading subscription spans..."
+                : "No long-lived subscription spans found."
+            }
+          />
         )}
       </SettingsSection>
 

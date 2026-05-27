@@ -219,8 +219,16 @@ describe("TraceDiagnostics", () => {
 
       assert.equal(diagnostics.failureCount, 1);
       assert.equal(diagnostics.interruptionCount, 1);
+      assert.equal(diagnostics.slowSpanCount, 0);
+      assert.equal(diagnostics.subscriptionSpanCount, 1);
       assert.equal(diagnostics.commonFailures[0]?.name, "ws.rpc.serverGetConfig");
       assert.equal(diagnostics.latestFailures[0]?.traceId, "trace-real-failure");
+      assert.equal(diagnostics.slowestSpans[0]?.name, "ws.rpc.serverGetConfig");
+      assert.equal(diagnostics.longestSubscriptionSpans?.[0]?.traceId, "trace-subscription");
+      assert.equal(
+        diagnostics.topSubscriptionSpansByCount?.[0]?.name,
+        "ws.rpc.subscribeServerConfig",
+      );
     }),
   );
 

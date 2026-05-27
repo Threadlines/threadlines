@@ -157,6 +157,9 @@ function makeEmptyDiagnostics(input: {
     logLevelCounts: {},
     topSpansByCount: [],
     slowestSpans: [],
+    subscriptionSpanCount: 0,
+    topSubscriptionSpansByCount: [],
+    longestSubscriptionSpans: [],
     commonFailures: [],
     latestFailures: [],
     latestWarningAndErrorLogs: [],
@@ -216,6 +219,7 @@ export function aggregateTraceDiagnostics(
   let failureCount = 0;
   let interruptionCount = 0;
   let slowSpanCount = 0;
+  let subscriptionSpanCount = 0;
   let firstSpanAt: DateTime.Utc | null = null;
   let lastSpanAt: DateTime.Utc | null = null;
 
@@ -223,9 +227,14 @@ export function aggregateTraceDiagnostics(
     string,
     { count: number; failureCount: number; totalDurationMs: number; maxDurationMs: number }
   >();
+  const subscriptionSpansByName = new Map<
+    string,
+    { count: number; failureCount: number; totalDurationMs: number; maxDurationMs: number }
+  >();
   const failuresByKey = new Map<string, ServerTraceDiagnosticsFailureSummary>();
   const latestFailures: ServerTraceDiagnosticsRecentFailure[] = [];
   const slowestSpans: ServerTraceDiagnosticsSpanOccurrence[] = [];
+  const longestSubscriptionSpans: ServerTraceDiagnosticsSpanOccurrence[] = [];
   const latestWarningAndErrorLogs: ServerTraceDiagnosticsLogEvent[] = [];
   const logLevelCounts: Record<string, number> = {};
 
@@ -273,10 +282,12 @@ export function aggregateTraceDiagnostics(
         failureCause !== null && isExpectedSubscriptionInterruption(name, failureCause);
       const isFailure = exitTag === "Failure" && !expectedSubscriptionInterruption;
       const isInterrupted = exitTag === "Interrupted" || expectedSubscriptionInterruption;
+      const subscriptionSpan = isSubscriptionSpan(name);
       if (isFailure) failureCount += 1;
       if (isInterrupted) interruptionCount += 1;
 
-      const spanSummary = spansByName.get(name) ?? {
+      const spanSummaryMap = subscriptionSpan ? subscriptionSpansByName : spansByName;
+      const spanSummary = spanSummaryMap.get(name) ?? {
         count: 0,
         failureCount: 0,
         totalDurationMs: 0,
@@ -286,13 +297,18 @@ export function aggregateTraceDiagnostics(
       spanSummary.totalDurationMs += durationMs;
       spanSummary.maxDurationMs = Math.max(spanSummary.maxDurationMs, durationMs);
       if (isFailure) spanSummary.failureCount += 1;
-      spansByName.set(name, spanSummary);
+      spanSummaryMap.set(name, spanSummary);
 
       const spanItem = { name, durationMs, endedAt, traceId, spanId };
-      if (durationMs >= slowSpanThresholdMs) {
+      if (subscriptionSpan) {
+        subscriptionSpanCount += 1;
+        insertBoundedSlowestSpan(longestSubscriptionSpans, spanItem);
+      } else if (durationMs >= slowSpanThresholdMs) {
         slowSpanCount += 1;
       }
-      insertBoundedSlowestSpan(slowestSpans, spanItem);
+      if (!subscriptionSpan) {
+        insertBoundedSlowestSpan(slowestSpans, spanItem);
+      }
 
       if (isFailure) {
         const cause = failureCause ?? readExitCause(parsed.exit);
@@ -355,6 +371,19 @@ export function aggregateTraceDiagnostics(
     }))
     .toSorted((left, right) => right.count - left.count || right.maxDurationMs - left.maxDurationMs)
     .slice(0, TOP_LIMIT);
+  const topSubscriptionSpansByCount: ServerTraceDiagnosticsSpanSummary[] = [
+    ...subscriptionSpansByName.entries(),
+  ]
+    .map(([name, span]) => ({
+      name,
+      count: span.count,
+      failureCount: span.failureCount,
+      totalDurationMs: span.totalDurationMs,
+      averageDurationMs: span.count > 0 ? span.totalDurationMs / span.count : 0,
+      maxDurationMs: span.maxDurationMs,
+    }))
+    .toSorted((left, right) => right.count - left.count || right.maxDurationMs - left.maxDurationMs)
+    .slice(0, TOP_LIMIT);
 
   return {
     traceFilePath: input.traceFilePath,
@@ -371,6 +400,9 @@ export function aggregateTraceDiagnostics(
     logLevelCounts,
     topSpansByCount,
     slowestSpans,
+    subscriptionSpanCount,
+    topSubscriptionSpansByCount,
+    longestSubscriptionSpans,
     commonFailures: [...failuresByKey.values()]
       .toSorted(
         (left, right) =>

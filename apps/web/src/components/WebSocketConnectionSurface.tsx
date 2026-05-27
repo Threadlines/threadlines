@@ -86,6 +86,18 @@ function describeRecoveredToast(
 function describeSlowRpcAckToast(requests: ReadonlyArray<SlowRpcAckRequest>): string {
   const count = requests.length;
   const thresholdSeconds = Math.round((requests[0]?.thresholdMs ?? 0) / 1000);
+  const requestLabels = requests
+    .slice(0, 2)
+    .map((request) => request.tag)
+    .filter((tag) => tag.trim().length > 0);
+  const requestSummary =
+    requestLabels.length === 0
+      ? null
+      : `${requestLabels.join(", ")}${requests.length > requestLabels.length ? ", ..." : ""}`;
+
+  if (requestSummary) {
+    return `${count} request${count === 1 ? "" : "s"} waiting longer than ${thresholdSeconds}s: ${requestSummary}.`;
+  }
 
   return `${count} request${count === 1 ? "" : "s"} waiting longer than ${thresholdSeconds}s.`;
 }

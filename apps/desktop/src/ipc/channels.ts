@@ -1,6 +1,7 @@
 export const PICK_FOLDER_CHANNEL = "desktop:pick-folder";
 export const CONFIRM_CHANNEL = "desktop:confirm";
 export const SET_THEME_CHANNEL = "desktop:set-theme";
+export const SET_TASKBAR_STATUS_CHANNEL = "desktop:set-taskbar-status";
 export const CONTEXT_MENU_CHANNEL = "desktop:context-menu";
 export const OPEN_EXTERNAL_CHANNEL = "desktop:open-external";
 export const MENU_ACTION_CHANNEL = "desktop:menu-action";

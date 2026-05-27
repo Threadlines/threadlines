@@ -1384,6 +1384,87 @@ function ComposerSurroundSelectionPlugin(props: {
   return null;
 }
 
+function refreshNativeSpellcheck(rootElement: HTMLElement): void {
+  if (!rootElement.isConnected || rootElement.spellcheck !== true) {
+    return;
+  }
+
+  const ownerDocument = rootElement.ownerDocument;
+  const selection = ownerDocument.getSelection();
+  const selectionRanges =
+    ownerDocument.activeElement === rootElement && selection !== null
+      ? Array.from({ length: selection.rangeCount }, (_, index) =>
+          selection.getRangeAt(index).cloneRange(),
+        ).filter(
+          (range) =>
+            rootElement.contains(range.startContainer) && rootElement.contains(range.endContainer),
+        )
+      : [];
+
+  rootElement.spellcheck = false;
+  rootElement.setAttribute("spellcheck", "false");
+  void rootElement.offsetHeight;
+  rootElement.spellcheck = true;
+  rootElement.setAttribute("spellcheck", "true");
+
+  if (
+    selection &&
+    ownerDocument.activeElement === rootElement &&
+    selection.rangeCount === 0 &&
+    selectionRanges.length > 0
+  ) {
+    for (const range of selectionRanges) {
+      selection.addRange(range);
+    }
+  }
+}
+
+function ComposerNativeSpellcheckRefreshPlugin() {
+  const [editor] = useLexicalComposerContext();
+
+  useEffect(() => {
+    let pendingFrame: number | null = null;
+
+    const scheduleRefresh = (rootElement: HTMLElement) => {
+      if (pendingFrame !== null) {
+        window.cancelAnimationFrame(pendingFrame);
+      }
+      pendingFrame = window.requestAnimationFrame(() => {
+        pendingFrame = null;
+        refreshNativeSpellcheck(rootElement);
+      });
+    };
+
+    const onInput = (event: Event) => {
+      const inputEvent = event as InputEvent;
+      if (inputEvent.inputType !== "insertReplacementText") {
+        return;
+      }
+      const rootElement = event.currentTarget;
+      if (rootElement instanceof HTMLElement) {
+        scheduleRefresh(rootElement);
+      }
+    };
+
+    let activeRootElement: HTMLElement | null = null;
+    const unregisterRootListener = editor.registerRootListener((rootElement, prevRootElement) => {
+      prevRootElement?.removeEventListener("input", onInput);
+      rootElement?.addEventListener("input", onInput);
+      activeRootElement = rootElement;
+    });
+
+    return () => {
+      if (pendingFrame !== null) {
+        window.cancelAnimationFrame(pendingFrame);
+      }
+      activeRootElement?.removeEventListener("input", onInput);
+      unregisterRootListener();
+    };
+  }, [editor]);
+
+  return null;
+}
+
 function ComposerPromptEditorInner({
   value,
   cursor,
@@ -1633,6 +1714,7 @@ function ComposerPromptEditorInner({
         <OnChangePlugin onChange={handleEditorChange} />
         <ComposerCommandKeyPlugin {...(onCommandKeyDown ? { onCommandKeyDown } : {})} />
         <ComposerSurroundSelectionPlugin terminalContexts={terminalContexts} skills={skills} />
+        <ComposerNativeSpellcheckRefreshPlugin />
         <ComposerInlineTokenArrowPlugin />
         <ComposerInlineTokenSelectionNormalizePlugin />
         <ComposerInlineTokenBackspacePlugin />

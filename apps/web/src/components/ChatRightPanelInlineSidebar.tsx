@@ -86,6 +86,7 @@ export function ChatRightPanelInlineSidebar(props: {
         side="right"
         collapsible="offcanvas"
         className="border-l border-border bg-card text-foreground"
+        motion="instant"
         resizable={{
           maxWidth: RIGHT_PANEL_INLINE_SIDEBAR_MAX_WIDTH,
           minWidth: RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH,

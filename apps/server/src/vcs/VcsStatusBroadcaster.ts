@@ -26,6 +26,7 @@ import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 const DEFAULT_VCS_STATUS_REFRESH_INTERVAL = Duration.seconds(30);
 const VCS_STATUS_REFRESH_FAILURE_BASE_DELAY = Duration.seconds(30);
 const VCS_STATUS_REFRESH_FAILURE_MAX_DELAY = Duration.minutes(15);
+const VCS_STATUS_REFRESH_UNCHANGED_MAX_DELAY = Duration.minutes(5);
 
 interface VcsStatusChange {
   readonly cwd: string;
@@ -40,6 +41,11 @@ interface CachedValue<T> {
 interface CachedVcsStatus {
   readonly local: CachedValue<VcsStatusLocalResult> | null;
   readonly remote: CachedValue<VcsStatusRemoteResult | null> | null;
+}
+
+interface CachedUpdate<T> {
+  readonly changed: boolean;
+  readonly value: T;
 }
 
 interface ActiveRemotePoller {
@@ -63,6 +69,15 @@ export function remoteRefreshFailureDelay(
     VCS_STATUS_REFRESH_FAILURE_MAX_DELAY,
   );
   return Duration.max(configuredInterval, cappedBackoff);
+}
+
+export function remoteRefreshSuccessDelay(
+  consecutiveUnchangedRefreshes: number,
+  configuredInterval: Duration.Duration,
+) {
+  const exponent = Math.max(0, consecutiveUnchangedRefreshes - 1);
+  const backoffMs = Duration.toMillis(configuredInterval) * Math.pow(2, exponent);
+  return Duration.min(Duration.millis(backoffMs), VCS_STATUS_REFRESH_UNCHANGED_MAX_DELAY);
 }
 
 export interface VcsStatusBroadcasterShape {
@@ -175,7 +190,10 @@ export const layer = Layer.effect(
           });
         }
 
-        return remote;
+        return {
+          changed: shouldPublish,
+          value: remote,
+        } satisfies CachedUpdate<VcsStatusRemoteResult | null>;
       },
     );
 
@@ -190,7 +208,7 @@ export const layer = Layer.effect(
       cwd: string,
     ) {
       const remote = yield* workflow.remoteStatus({ cwd });
-      return yield* updateCachedRemoteStatus(cwd, remote);
+      return (yield* updateCachedRemoteStatus(cwd, remote)).value;
     });
 
     const getOrLoadLocalStatus = Effect.fn("VcsStatusBroadcaster.getOrLoadLocalStatus")(function* (
@@ -251,7 +269,7 @@ export const layer = Layer.effect(
         refreshLocalStatus(cwd),
         refreshRemoteStatus(cwd),
       ]);
-      return mergeGitStatusParts(local, remote);
+      return mergeGitStatusParts(local, remote.value);
     });
 
     const makeRemoteRefreshLoop = (
@@ -260,6 +278,7 @@ export const layer = Layer.effect(
     ) => {
       return Effect.gen(function* () {
         const consecutiveFailuresRef = yield* Ref.make(0);
+        const consecutiveUnchangedRefreshesRef = yield* Ref.make(0);
         const refreshRemoteStatusIfEnabled = Effect.gen(function* () {
           const configuredInterval = yield* automaticRemoteRefreshInterval;
           const activeInterval = Duration.isZero(configuredInterval)
@@ -272,7 +291,10 @@ export const layer = Layer.effect(
           const exit = yield* refreshRemoteStatus(cwd).pipe(Effect.exit);
           if (Exit.isSuccess(exit)) {
             yield* Ref.set(consecutiveFailuresRef, 0);
-            return activeInterval;
+            const consecutiveUnchangedRefreshes = exit.value.changed
+              ? yield* Ref.set(consecutiveUnchangedRefreshesRef, 0).pipe(Effect.as(0))
+              : yield* Ref.updateAndGet(consecutiveUnchangedRefreshesRef, (count) => count + 1);
+            return remoteRefreshSuccessDelay(consecutiveUnchangedRefreshes, activeInterval);
           }
 
           const consecutiveFailures = yield* Ref.updateAndGet(

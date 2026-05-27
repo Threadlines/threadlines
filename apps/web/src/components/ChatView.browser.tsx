@@ -1299,6 +1299,41 @@ async function pressComposerUndo(): Promise<void> {
   await waitForLayout();
 }
 
+async function replaceComposerSelectionWithNativeSpellcheckText(
+  replacement: string,
+): Promise<void> {
+  const composerEditor = await waitForComposerEditor();
+  const beforeInputEvent = new InputEvent("beforeinput", {
+    data: replacement,
+    inputType: "insertReplacementText",
+    bubbles: true,
+    cancelable: true,
+  });
+  composerEditor.dispatchEvent(beforeInputEvent);
+  if (!beforeInputEvent.defaultPrevented) {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) {
+      throw new Error("Unable to resolve composer selection for native replacement.");
+    }
+    const range = selection.getRangeAt(0);
+    range.deleteContents();
+    const textNode = document.createTextNode(replacement);
+    range.insertNode(textNode);
+    range.setStartAfter(textNode);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+  composerEditor.dispatchEvent(
+    new InputEvent("input", {
+      data: replacement,
+      inputType: "insertReplacementText",
+      bubbles: true,
+    }),
+  );
+  await waitForLayout();
+}
+
 async function waitForComposerText(expectedText: string): Promise<void> {
   await vi.waitFor(
     () => {
@@ -3629,7 +3664,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("keeps native spellcheck replacements from blurring the composer", async () => {
+  it("keeps native spellcheck replacements active and synced", async () => {
     useComposerDraftStore.getState().setPrompt(THREAD_REF, "speeling and teh");
 
     const mounted = await mountChatView({
@@ -3646,28 +3681,26 @@ describe("ChatView timeline estimator parity (full app)", () => {
       composerEditor.focus();
       expect(document.activeElement).toBe(composerEditor);
       expect(composerEditor.spellcheck).toBe(true);
+      await setComposerSelectionByTextOffsets({ start: 0, end: "speeling".length });
 
       const blurSpy = vi.spyOn(composerEditor, "blur");
       const focusSpy = vi.spyOn(composerEditor, "focus");
+      const setAttributeSpy = vi.spyOn(composerEditor, "setAttribute");
       try {
-        composerEditor.dispatchEvent(
-          new InputEvent("beforeinput", {
-            data: "spelling",
-            inputType: "insertReplacementText",
-            bubbles: true,
-            cancelable: true,
-          }),
-        );
+        await replaceComposerSelectionWithNativeSpellcheckText("spelling");
 
-        await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-        await waitForLayout();
+        await waitForComposerText("spelling and teh");
 
         expect(blurSpy).not.toHaveBeenCalled();
         expect(focusSpy).not.toHaveBeenCalled();
         expect(document.activeElement).toBe(composerEditor);
+        expect(composerEditor.spellcheck).toBe(true);
+        expect(setAttributeSpy).toHaveBeenCalledWith("spellcheck", "false");
+        expect(setAttributeSpy).toHaveBeenCalledWith("spellcheck", "true");
       } finally {
         blurSpy.mockRestore();
         focusSpy.mockRestore();
+        setAttributeSpy.mockRestore();
       }
     } finally {
       await mounted.cleanup();

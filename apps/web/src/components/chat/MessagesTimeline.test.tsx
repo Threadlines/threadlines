@@ -146,6 +146,19 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain('data-user-message-collapsible="false"');
   });
 
+  it("labels user messages that steered an active conversation", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        steeredMessageIds={new Set([MessageId.make("message-1")])}
+        timelineEntries={[buildUserTimelineEntry("Please use my last note before continuing.")]}
+      />,
+    );
+
+    expect(markup).toContain("Steered conversation");
+  });
+
   it("renders inline terminal labels with the composer chip UI", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(

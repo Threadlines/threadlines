@@ -129,6 +129,7 @@ export type DesktopRuntimeArch = "arm64" | "x64" | "other";
 export type DesktopTheme = "light" | "dark" | "system";
 export type DesktopUpdateChannel = "latest" | "nightly";
 export type DesktopAppStageLabel = "Alpha" | "Dev" | "Nightly";
+export type DesktopTaskbarStatus = "idle" | "working" | "completed";
 
 export const DesktopUpdateStatusSchema = Schema.Literals([
   "disabled",
@@ -144,6 +145,7 @@ export const DesktopRuntimeArchSchema = Schema.Literals(["arm64", "x64", "other"
 export const DesktopThemeSchema = Schema.Literals(["light", "dark", "system"]);
 export const DesktopUpdateChannelSchema = Schema.Literals(["latest", "nightly"]);
 export const DesktopAppStageLabelSchema = Schema.Literals(["Alpha", "Dev", "Nightly"]);
+export const DesktopTaskbarStatusSchema = Schema.Literals(["idle", "working", "completed"]);
 
 export interface DesktopAppBranding {
   baseName: string;
@@ -223,6 +225,16 @@ export interface DesktopUpdateCheckResult {
 export const DesktopUpdateCheckResultSchema = Schema.Struct({
   checked: Schema.Boolean,
   state: DesktopUpdateStateSchema,
+});
+
+export interface DesktopTaskbarStatusInput {
+  status: DesktopTaskbarStatus;
+  description?: string;
+}
+
+export const DesktopTaskbarStatusInputSchema = Schema.Struct({
+  status: DesktopTaskbarStatusSchema,
+  description: Schema.optionalKey(Schema.String),
 });
 
 export interface DesktopEnvironmentBootstrap {
@@ -423,6 +435,7 @@ export interface DesktopBridge {
     position?: { x: number; y: number },
   ) => Promise<T | null>;
   openExternal: (url: string) => Promise<boolean>;
+  setTaskbarStatus?: (input: DesktopTaskbarStatusInput) => Promise<void>;
   onMenuAction: (listener: (action: string) => void) => () => void;
   getUpdateState: () => Promise<DesktopUpdateState>;
   setUpdateChannel: (channel: DesktopUpdateChannel) => Promise<DesktopUpdateState>;

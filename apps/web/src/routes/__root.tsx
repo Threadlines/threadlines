@@ -1,4 +1,7 @@
-import { type ServerLifecycleWelcomePayload } from "@t3tools/contracts";
+import {
+  type DesktopTaskbarStatusInput,
+  type ServerLifecycleWelcomePayload,
+} from "@t3tools/contracts";
 import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime";
 import {
   Outlet,
@@ -43,7 +46,7 @@ import {
   useServerConfigUpdatedSubscription,
   useServerWelcomeSubscription,
 } from "../rpc/serverState";
-import { useStore } from "../store";
+import { selectThreadsAcrossEnvironments, useStore } from "../store";
 import { useUiStateStore } from "../uiStateStore";
 import { syncBrowserChromeTheme } from "../hooks/useTheme";
 import {
@@ -135,6 +138,7 @@ function RootRouteView() {
         {primaryEnvironmentAuthenticated ? <AuthenticatedTracingBootstrap /> : null}
         {primaryEnvironmentAuthenticated ? <ServerStateBootstrap /> : null}
         <EnvironmentConnectionManagerBootstrap />
+        <DesktopTaskbarStatusSync />
         <SshPasswordPromptDialog />
         <HostedStaticEnvironmentBootstrap />
         {primaryEnvironmentAuthenticated ? <EventRouter /> : null}
@@ -149,6 +153,107 @@ function RootRouteView() {
       </AnchoredToastProvider>
     </ToastProvider>
   );
+}
+
+function DesktopTaskbarStatusSync() {
+  const runningThreadCount = useStore(
+    (state) =>
+      selectThreadsAcrossEnvironments(state).filter(
+        (thread) =>
+          thread.session?.status === "running" || thread.session?.orchestrationStatus === "running",
+      ).length,
+  );
+  const hadRunningThreadRef = useRef(false);
+  const completionShownRef = useRef(false);
+  const lastStatusKeyRef = useRef<string | null>(null);
+
+  const setTaskbarStatus = useEffectEvent((input: DesktopTaskbarStatusInput) => {
+    const bridge = window.desktopBridge;
+    if (!bridge?.setTaskbarStatus) {
+      return;
+    }
+
+    const statusKey = `${input.status}:${input.description ?? ""}`;
+    if (lastStatusKeyRef.current === statusKey) {
+      return;
+    }
+    lastStatusKeyRef.current = statusKey;
+    void bridge.setTaskbarStatus(input).catch(() => {
+      lastStatusKeyRef.current = null;
+    });
+  });
+
+  useEffect(() => {
+    if (!window.desktopBridge?.setTaskbarStatus) {
+      return;
+    }
+
+    if (runningThreadCount > 0) {
+      hadRunningThreadRef.current = true;
+      completionShownRef.current = false;
+      setTaskbarStatus({
+        status: "working",
+        description:
+          runningThreadCount === 1
+            ? "One chat is working"
+            : `${runningThreadCount} chats are working`,
+      });
+      return;
+    }
+
+    if (hadRunningThreadRef.current) {
+      hadRunningThreadRef.current = false;
+      if (document.hasFocus()) {
+        completionShownRef.current = false;
+        setTaskbarStatus({ status: "idle", description: "No chats are working" });
+        return;
+      }
+
+      completionShownRef.current = true;
+      setTaskbarStatus({ status: "completed", description: "Chat completed" });
+      return;
+    }
+
+    if (!completionShownRef.current) {
+      setTaskbarStatus({ status: "idle", description: "No chats are working" });
+    }
+  }, [runningThreadCount]);
+
+  useEffect(() => {
+    const handleFocus = () => {
+      if (!document.hasFocus()) {
+        return;
+      }
+
+      if (runningThreadCount > 0) {
+        completionShownRef.current = false;
+        setTaskbarStatus({
+          status: "working",
+          description:
+            runningThreadCount === 1
+              ? "One chat is working"
+              : `${runningThreadCount} chats are working`,
+        });
+        return;
+      }
+
+      if (!completionShownRef.current) {
+        return;
+      }
+      completionShownRef.current = false;
+      setTaskbarStatus({ status: "idle", description: "No chats are working" });
+    };
+
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleFocus);
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleFocus);
+      setTaskbarStatus({ status: "idle", description: "No chats are working" });
+    };
+  }, [runningThreadCount]);
+
+  return null;
 }
 
 function HostedStaticEnvironmentBootstrap() {

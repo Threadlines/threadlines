@@ -104,7 +104,7 @@ import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import PlanSidebar from "./PlanSidebar";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
-import { ChevronDownIcon, TriangleAlertIcon, WifiOffIcon } from "lucide-react";
+import { ChevronDownIcon, CornerDownRightIcon, TriangleAlertIcon, WifiOffIcon } from "lucide-react";
 import { cn, randomUUID } from "~/lib/utils";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
@@ -205,6 +205,46 @@ type EnvironmentUnavailableState = {
   readonly label: string;
   readonly connectionState: "connecting" | "disconnected" | "error";
 };
+
+type SteeringMessageHandoff = {
+  readonly id: MessageId;
+  readonly threadKey: string;
+  readonly text: string;
+  readonly createdAt: string;
+  readonly status: "queued" | "read";
+};
+
+function SteeringQueueIndicator({
+  messages,
+}: {
+  readonly messages: ReadonlyArray<SteeringMessageHandoff>;
+}) {
+  const latest = messages[messages.length - 1];
+  if (!latest) {
+    return null;
+  }
+
+  const countLabel = messages.length > 1 ? `${messages.length} queued` : "Queued";
+
+  return (
+    <div className="mx-auto mb-2 max-w-208 px-1">
+      <div className="flex min-w-0 items-start gap-2 rounded-lg border border-blue-500/20 bg-blue-500/8 px-3 py-2 text-xs shadow-sm">
+        <CornerDownRightIcon className="mt-0.5 size-3.5 shrink-0 text-blue-400" />
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="font-medium text-blue-300">Steering conversation</span>
+            <span className="rounded-full bg-blue-500/12 px-1.5 py-0.5 text-[11px] text-blue-300/80">
+              {countLabel}
+            </span>
+          </div>
+          <div className="mt-0.5 truncate text-muted-foreground/70">
+            {truncate(latest.text, 140)}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 type ThreadPlanCatalogEntry = Pick<Thread, "id" | "proposedPlans">;
 
@@ -687,6 +727,9 @@ export default function ChatView(props: ChatViewProps) {
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatMessage[]>([]);
+  const [steeringMessagesById, setSteeringMessagesById] = useState<
+    Record<string, SteeringMessageHandoff>
+  >({});
   const optimisticUserMessagesRef = useRef(optimisticUserMessages);
   optimisticUserMessagesRef.current = optimisticUserMessages;
   const [localDraftErrorsByDraftId, setLocalDraftErrorsByDraftId] = useState<
@@ -1423,6 +1466,56 @@ export default function ChatView(props: ChatViewProps) {
     });
   }, []);
   const serverMessages = activeThread?.messages;
+  const activeThreadSteeringMessages = useMemo(
+    () =>
+      Object.values(steeringMessagesById).filter(
+        (message) => message.threadKey === activeThreadKey,
+      ),
+    [activeThreadKey, steeringMessagesById],
+  );
+  const queuedSteeringMessages = useMemo(
+    () => activeThreadSteeringMessages.filter((message) => message.status === "queued"),
+    [activeThreadSteeringMessages],
+  );
+  const queuedSteeringMessageIds = useMemo(
+    () => new Set(queuedSteeringMessages.map((message) => message.id)),
+    [queuedSteeringMessages],
+  );
+  const steeredMessageIds = useMemo(
+    () =>
+      new Set(
+        activeThreadSteeringMessages
+          .filter((message) => message.status === "read")
+          .map((message) => message.id),
+      ),
+    [activeThreadSteeringMessages],
+  );
+
+  useEffect(() => {
+    const latestTurn = activeThread?.latestTurn;
+    if (!activeThreadKey || !latestTurn) {
+      return;
+    }
+
+    const serverMessageIds = new Set((serverMessages ?? []).map((message) => message.id));
+    setSteeringMessagesById((existing) => {
+      let changed = false;
+      const next = { ...existing };
+      for (const [id, message] of Object.entries(existing)) {
+        if (message.threadKey !== activeThreadKey || message.status !== "queued") {
+          continue;
+        }
+        const hasAcceptedTurn = latestTurn.requestedAt === message.createdAt;
+        const hasSettledVisibleMessage = phase !== "running" && serverMessageIds.has(message.id);
+        if (!hasAcceptedTurn && !hasSettledVisibleMessage) {
+          continue;
+        }
+        next[id] = { ...message, status: "read" };
+        changed = true;
+      }
+      return changed ? next : existing;
+    });
+  }, [activeThread?.latestTurn, activeThreadKey, phase, serverMessages]);
   useEffect(() => {
     if (typeof Image === "undefined" || !serverMessages || serverMessages.length === 0) {
       return;
@@ -1505,7 +1598,10 @@ export default function ChatView(props: ChatViewProps) {
     };
   }, [attachmentPreviewHandoffByMessageId, clearAttachmentPreviewHandoff, serverMessages]);
   const timelineMessages = useMemo(() => {
-    const messages = serverMessages ?? [];
+    const messages =
+      queuedSteeringMessageIds.size === 0
+        ? (serverMessages ?? [])
+        : (serverMessages ?? []).filter((message) => !queuedSteeringMessageIds.has(message.id));
     const serverMessagesWithPreviewHandoff =
       Object.keys(attachmentPreviewHandoffByMessageId).length === 0
         ? messages
@@ -1556,7 +1652,12 @@ export default function ChatView(props: ChatViewProps) {
       return serverMessagesWithPreviewHandoff;
     }
     return [...serverMessagesWithPreviewHandoff, ...pendingMessages];
-  }, [serverMessages, attachmentPreviewHandoffByMessageId, optimisticUserMessages]);
+  }, [
+    serverMessages,
+    queuedSteeringMessageIds,
+    attachmentPreviewHandoffByMessageId,
+    optimisticUserMessages,
+  ]);
   const timelineEntries = useMemo(
     () =>
       deriveTimelineEntries(timelineMessages, activeThread?.proposedPlans ?? [], workLogEntries),
@@ -2699,6 +2800,8 @@ export default function ChatView(props: ChatViewProps) {
     if (!activeProject) return;
     const threadIdForSend = activeThread.id;
     const isFirstMessage = !isServerThread || activeThread.messages.length === 0;
+    const steeringThreadKey = activeThreadKey;
+    const isSteeringFollowUp = phase === "running" && isServerThread && steeringThreadKey !== null;
     const baseBranchForWorktree =
       isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath
         ? activeThreadBranch
@@ -2722,6 +2825,10 @@ export default function ChatView(props: ChatViewProps) {
       promptForSend,
       composerTerminalContextsSnapshot,
     );
+    const steeringPreviewText =
+      messageTextForSend.trim() ||
+      composerImagesSnapshot.map((image) => image.name).join(", ") ||
+      IMAGE_ONLY_BOOTSTRAP_PROMPT;
     const messageIdForSend = newMessageId();
     const messageCreatedAt = new Date().toISOString();
     const outgoingMessageText = formatOutgoingPrompt({
@@ -2748,25 +2855,38 @@ export default function ChatView(props: ChatViewProps) {
       sizeBytes: image.sizeBytes,
       previewUrl: image.previewUrl,
     }));
-    // Scroll to the current end *before* adding the optimistic message.
-    // This sets LegendList's internal isAtEnd=true so maintainScrollAtEnd
-    // automatically pins to the new item when the data changes.
-    isAtEndRef.current = true;
-    showScrollDebouncer.current.cancel();
-    setShowScrollToBottom(false);
-    await legendListRef.current?.scrollToEnd?.({ animated: false });
+    if (isSteeringFollowUp) {
+      setSteeringMessagesById((existing) => ({
+        ...existing,
+        [messageIdForSend]: {
+          id: messageIdForSend,
+          threadKey: steeringThreadKey,
+          text: steeringPreviewText,
+          createdAt: messageCreatedAt,
+          status: "queued",
+        },
+      }));
+    } else {
+      // Scroll to the current end *before* adding the optimistic message.
+      // This sets LegendList's internal isAtEnd=true so maintainScrollAtEnd
+      // automatically pins to the new item when the data changes.
+      isAtEndRef.current = true;
+      showScrollDebouncer.current.cancel();
+      setShowScrollToBottom(false);
+      await legendListRef.current?.scrollToEnd?.({ animated: false });
 
-    setOptimisticUserMessages((existing) => [
-      ...existing,
-      {
-        id: messageIdForSend,
-        role: "user",
-        text: outgoingMessageText,
-        ...(optimisticAttachments.length > 0 ? { attachments: optimisticAttachments } : {}),
-        createdAt: messageCreatedAt,
-        streaming: false,
-      },
-    ]);
+      setOptimisticUserMessages((existing) => [
+        ...existing,
+        {
+          id: messageIdForSend,
+          role: "user",
+          text: outgoingMessageText,
+          ...(optimisticAttachments.length > 0 ? { attachments: optimisticAttachments } : {}),
+          createdAt: messageCreatedAt,
+          streaming: false,
+        },
+      ]);
+    }
 
     setThreadError(threadIdForSend, null);
     if (expiredTerminalContextCount > 0) {
@@ -2888,14 +3008,25 @@ export default function ChatView(props: ChatViewProps) {
         composerImagesRef.current.length === 0 &&
         composerTerminalContextsRef.current.length === 0
       ) {
-        setOptimisticUserMessages((existing) => {
-          const removed = existing.filter((message) => message.id === messageIdForSend);
-          for (const message of removed) {
-            revokeUserMessagePreviewUrls(message);
-          }
-          const next = existing.filter((message) => message.id !== messageIdForSend);
-          return next.length === existing.length ? existing : next;
-        });
+        if (isSteeringFollowUp) {
+          setSteeringMessagesById((existing) => {
+            if (!(messageIdForSend in existing)) {
+              return existing;
+            }
+            const next = { ...existing };
+            delete next[messageIdForSend];
+            return next;
+          });
+        } else {
+          setOptimisticUserMessages((existing) => {
+            const removed = existing.filter((message) => message.id === messageIdForSend);
+            for (const message of removed) {
+              revokeUserMessagePreviewUrls(message);
+            }
+            const next = existing.filter((message) => message.id !== messageIdForSend);
+            return next.length === existing.length ? existing : next;
+          });
+        }
         promptRef.current = promptForSend;
         const retryComposerImages = composerImagesSnapshot.map(cloneComposerImageForRetry);
         composerImagesRef.current = retryComposerImages;
@@ -3576,6 +3707,7 @@ export default function ChatView(props: ChatViewProps) {
               completionDividerBeforeEntryId={completionDividerBeforeEntryId}
               completionSummary={completionSummary}
               turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
+              steeredMessageIds={steeredMessageIds}
               activeThreadEnvironmentId={activeThread.environmentId}
               routeThreadKey={routeThreadKey}
               onOpenTurnDiff={onOpenTurnDiff}
@@ -3616,6 +3748,7 @@ export default function ChatView(props: ChatViewProps) {
             )}
           >
             <div className="relative isolate">
+              <SteeringQueueIndicator messages={queuedSteeringMessages} />
               <ComposerBannerStack className="relative z-0" items={composerBannerItems} />
               <div className="relative z-10">
                 <ChatComposer

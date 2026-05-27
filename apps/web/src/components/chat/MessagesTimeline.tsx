@@ -24,6 +24,7 @@ import {
   BotIcon,
   CheckIcon,
   CircleAlertIcon,
+  CornerDownRightIcon,
   EyeIcon,
   GlobeIcon,
   HammerIcon,
@@ -85,6 +86,7 @@ interface TimelineRowSharedState {
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   activeThreadEnvironmentId: EnvironmentId;
   turnDiffSummaryByTurnId: ReadonlyMap<TurnId, TurnDiffSummary>;
+  steeredMessageIds: ReadonlySet<MessageId>;
   onRevertUserMessage: (messageId: MessageId) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
@@ -100,6 +102,7 @@ const TimelineRowActivityCtx = createContext<TimelineRowActivityState>(null!);
 const TIMELINE_LIST_HEADER = <div className="h-3 sm:h-4" />;
 const TIMELINE_LIST_FOOTER = <div className="h-3 sm:h-4" />;
 const EMPTY_TIMELINE_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
+const EMPTY_MESSAGE_ID_SET: ReadonlySet<MessageId> = new Set();
 
 // ---------------------------------------------------------------------------
 // Props (public API)
@@ -115,6 +118,7 @@ interface MessagesTimelineProps {
   completionDividerBeforeEntryId: string | null;
   completionSummary: string | null;
   turnDiffSummaryByAssistantMessageId: Map<MessageId, TurnDiffSummary>;
+  steeredMessageIds?: ReadonlySet<MessageId>;
   routeThreadKey: string;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   revertTurnCountByUserMessageId: Map<MessageId, number>;
@@ -144,6 +148,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   completionDividerBeforeEntryId,
   completionSummary,
   turnDiffSummaryByAssistantMessageId,
+  steeredMessageIds = EMPTY_MESSAGE_ID_SET,
   routeThreadKey,
   onOpenTurnDiff,
   revertTurnCountByUserMessageId,
@@ -227,6 +232,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       skills,
       activeThreadEnvironmentId,
       turnDiffSummaryByTurnId,
+      steeredMessageIds,
       onRevertUserMessage,
       onImageExpand,
       onOpenTurnDiff,
@@ -240,6 +246,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       skills,
       activeThreadEnvironmentId,
       turnDiffSummaryByTurnId,
+      steeredMessageIds,
       onRevertUserMessage,
       onImageExpand,
       onOpenTurnDiff,
@@ -342,10 +349,17 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   const displayedUserMessage = deriveDisplayedUserMessageState(row.message.text);
   const terminalContexts = displayedUserMessage.contexts;
   const canRevertAgentWork = typeof row.revertTurnCount === "number";
+  const isSteeredMessage = ctx.steeredMessageIds.has(row.message.id);
 
   return (
     <div className="flex justify-end">
       <div className="group relative max-w-[80%] rounded-2xl rounded-br-sm border border-border bg-secondary px-4 py-3">
+        {isSteeredMessage ? (
+          <div className="mb-2 flex items-center gap-1.5 text-[11px] font-medium text-blue-400">
+            <CornerDownRightIcon className="size-3" />
+            <span>Steered conversation</span>
+          </div>
+        ) : null}
         <TimelineImagePreviewGrid
           images={userImages}
           className="mb-2 max-w-[420px]"
