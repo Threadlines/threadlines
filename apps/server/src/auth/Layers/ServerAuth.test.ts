@@ -30,15 +30,33 @@ const makeServerAuthLayer = (overrides?: Partial<ServerConfigShape>) =>
     Layer.provide(makeServerConfigLayer(overrides)),
   );
 
-const makeCookieRequest = (
-  sessionToken: string,
-): Parameters<ServerAuthShape["authenticateHttpRequest"]>[0] =>
+type ServerAuthRequest = Parameters<ServerAuthShape["authenticateHttpRequest"]>[0];
+
+const makeAuthRequest = (input?: {
+  readonly sessionToken?: string;
+  readonly headers?: Record<string, string>;
+  readonly remoteAddress?: string | null;
+}): ServerAuthRequest =>
   ({
-    cookies: {
-      t3_session: sessionToken,
-    },
-    headers: {},
-  }) as unknown as Parameters<ServerAuthShape["authenticateHttpRequest"]>[0];
+    cookies: input?.sessionToken
+      ? {
+          t3_session: input.sessionToken,
+        }
+      : {},
+    headers: input?.headers ?? {},
+    ...(input?.remoteAddress !== undefined
+      ? {
+          source: {
+            socket: {
+              remoteAddress: input.remoteAddress,
+            },
+          },
+        }
+      : {}),
+  }) as unknown as ServerAuthRequest;
+
+const makeCookieRequest = (sessionToken: string): ServerAuthRequest =>
+  makeAuthRequest({ sessionToken });
 
 const requestMetadata = {
   deviceType: "desktop" as const,
@@ -116,6 +134,93 @@ it.layer(NodeServices.layer)("ServerAuthLive", (it) => {
       expect(verified.role).toBe("owner");
       expect(verified.subject).toBe("owner-bootstrap");
     }).pipe(Effect.provide(makeServerAuthLayer())),
+  );
+
+  it.effect("trusts local dev loopback browser requests without pairing", () =>
+    Effect.gen(function* () {
+      const serverAuth = yield* ServerAuth;
+      const request = makeAuthRequest({
+        headers: {
+          host: "localhost:13773",
+          origin: "http://127.0.0.1:5733",
+        },
+        remoteAddress: "::ffff:127.0.0.1",
+      });
+
+      const sessionState = yield* serverAuth.getSessionState(request);
+      const session = yield* serverAuth.authenticateHttpRequest(request);
+      const websocketSession = yield* serverAuth.authenticateWebSocketUpgrade(request);
+      const websocketToken = yield* serverAuth.issueWebSocketToken(session);
+      const clients = yield* serverAuth.listClientSessions(session.sessionId);
+
+      expect(sessionState.authenticated).toBe(true);
+      expect(sessionState.role).toBe("owner");
+      expect(session.role).toBe("owner");
+      expect(session.subject).toBe("loopback-browser-dev");
+      expect(websocketSession.sessionId).toBe(session.sessionId);
+      expect(websocketToken.token.length).toBeGreaterThan(0);
+      expect(clients.find((client) => client.sessionId === session.sessionId)?.current).toBe(true);
+    }).pipe(
+      Effect.provide(
+        makeServerAuthLayer({
+          mode: "web",
+          host: "127.0.0.1",
+          devUrl: new URL("http://localhost:5733/"),
+        }),
+      ),
+    ),
+  );
+
+  it.effect("keeps pairing required for loopback browser servers outside web dev", () =>
+    Effect.gen(function* () {
+      const serverAuth = yield* ServerAuth;
+      const request = makeAuthRequest({
+        headers: {
+          host: "localhost:13773",
+        },
+        remoteAddress: "127.0.0.1",
+      });
+
+      const sessionState = yield* serverAuth.getSessionState(request);
+      const error = yield* Effect.flip(serverAuth.authenticateHttpRequest(request));
+
+      expect(sessionState.authenticated).toBe(false);
+      expect(error.status).toBe(401);
+    }).pipe(
+      Effect.provide(
+        makeServerAuthLayer({
+          mode: "web",
+          host: "127.0.0.1",
+        }),
+      ),
+    ),
+  );
+
+  it.effect("rejects non-local browser origins from the local dev auth bypass", () =>
+    Effect.gen(function* () {
+      const serverAuth = yield* ServerAuth;
+      const request = makeAuthRequest({
+        headers: {
+          host: "localhost:13773",
+          origin: "https://example.com",
+        },
+        remoteAddress: "127.0.0.1",
+      });
+
+      const sessionState = yield* serverAuth.getSessionState(request);
+      const error = yield* Effect.flip(serverAuth.authenticateHttpRequest(request));
+
+      expect(sessionState.authenticated).toBe(false);
+      expect(error.status).toBe(401);
+    }).pipe(
+      Effect.provide(
+        makeServerAuthLayer({
+          mode: "web",
+          host: "127.0.0.1",
+          devUrl: new URL("http://localhost:5733/"),
+        }),
+      ),
+    ),
   );
 
   it.effect("lists pairing links and revokes other client sessions while keeping the owner", () =>

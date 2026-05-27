@@ -18,8 +18,9 @@ import { AuthSessionId, TrimmedNonEmptyString } from "./baseSchemas.ts";
  * Meanings:
  * - `desktop-managed-local`: local desktop-managed environment with narrow
  *   trusted bootstrap, intended to avoid login prompts on the same machine
- * - `loopback-browser`: standalone local server intended for browser pairing on
- *   the same machine
+ * - `loopback-browser`: standalone local server intended for same-machine
+ *   browser access; dev servers may trust local browser requests directly,
+ *   while non-dev loopback servers can still use pairing
  * - `remote-reachable`: environment intended to be reached from other devices
  *   or networks, where explicit pairing/auth is expected
  * - `unsafe-no-auth`: intentionally unauthenticated mode; this is an explicit

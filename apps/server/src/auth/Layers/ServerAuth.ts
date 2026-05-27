@@ -12,6 +12,8 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 
+import { ServerConfig } from "../../config.ts";
+import { isLoopbackHost } from "../../startupAccess.ts";
 import { AuthControlPlane } from "../Services/AuthControlPlane.ts";
 import { ServerAuthPolicyLive } from "./ServerAuthPolicy.ts";
 import { BootstrapCredentialService } from "../Services/BootstrapCredentialService.ts";
@@ -26,6 +28,7 @@ import {
 import {
   SessionCredentialError,
   SessionCredentialService,
+  type VerifiedSession,
 } from "../Services/SessionCredentialService.ts";
 import { AuthControlPlaneLive, AuthCoreLive } from "./AuthControlPlane.ts";
 
@@ -36,6 +39,7 @@ type BootstrapExchangeResult = {
 
 const AUTHORIZATION_PREFIX = "Bearer ";
 const WEBSOCKET_TOKEN_QUERY_PARAM = "wsToken";
+const TRUSTED_LOOPBACK_BROWSER_DEV_SUBJECT = "loopback-browser-dev";
 
 export function toBootstrapExchangeAuthError(cause: BootstrapCredentialError): AuthError {
   if (cause.status === 500) {
@@ -62,12 +66,156 @@ function parseBearerToken(request: HttpServerRequest.HttpServerRequest): string 
   return token.length > 0 ? token : null;
 }
 
+function normalizeNonEmptyHeader(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : null;
+}
+
+function parseHostnameFromHeader(value: string | undefined): string | null {
+  const trimmed = normalizeNonEmptyHeader(value);
+  if (!trimmed) {
+    return null;
+  }
+
+  try {
+    return new URL(`http://${trimmed}`).hostname;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeIpAddress(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return null;
+  }
+  return trimmed.startsWith("::ffff:") ? trimmed.slice("::ffff:".length) : trimmed;
+}
+
+function readRequestRemoteAddress(request: HttpServerRequest.HttpServerRequest): string | null {
+  const source = request.source;
+  if (!source || typeof source !== "object") {
+    return null;
+  }
+
+  const candidate = source as {
+    readonly remoteAddress?: string | null;
+    readonly socket?: {
+      readonly remoteAddress?: string | null;
+    };
+  };
+
+  return normalizeIpAddress(candidate.socket?.remoteAddress ?? candidate.remoteAddress);
+}
+
+function getUrlPort(url: URL): string {
+  if (url.port) {
+    return url.port;
+  }
+  return url.protocol === "https:" || url.protocol === "wss:" ? "443" : "80";
+}
+
+function isTrustedDevOrigin(originHeader: string | undefined, devUrl: URL): boolean {
+  const origin = normalizeNonEmptyHeader(originHeader);
+  if (!origin) {
+    return true;
+  }
+
+  try {
+    const originUrl = new URL(origin);
+    return (
+      originUrl.protocol === devUrl.protocol &&
+      getUrlPort(originUrl) === getUrlPort(devUrl) &&
+      isLoopbackHost(originUrl.hostname) &&
+      isLoopbackHost(devUrl.hostname)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function toAuthenticatedSession(session: VerifiedSession): AuthenticatedSession {
+  return {
+    sessionId: session.sessionId,
+    subject: session.subject,
+    method: session.method,
+    role: session.role,
+    ...(session.expiresAt ? { expiresAt: session.expiresAt } : {}),
+  };
+}
+
+function toUnauthorizedAuthError(cause: SessionCredentialError): AuthError {
+  return new AuthError({
+    message: "Unauthorized request.",
+    status: 401,
+    cause,
+  });
+}
+
 export const makeServerAuth = Effect.gen(function* () {
+  const config = yield* ServerConfig;
   const policy = yield* ServerAuthPolicy;
   const bootstrapCredentials = yield* BootstrapCredentialService;
   const authControlPlane = yield* AuthControlPlane;
   const sessions = yield* SessionCredentialService;
   const descriptor = yield* policy.getDescriptor();
+
+  const isTrustedLoopbackBrowserDevRequest = (
+    request: HttpServerRequest.HttpServerRequest,
+  ): boolean => {
+    if (descriptor.policy !== "loopback-browser" || !config.devUrl) {
+      return false;
+    }
+
+    const requestHost = parseHostnameFromHeader(request.headers.host);
+    if (requestHost && !isLoopbackHost(requestHost)) {
+      return false;
+    }
+
+    const remoteAddress = readRequestRemoteAddress(request);
+    if (remoteAddress && !isLoopbackHost(remoteAddress)) {
+      return false;
+    }
+
+    return isTrustedDevOrigin(request.headers.origin, config.devUrl);
+  };
+
+  const getTrustedLoopbackBrowserDevSession = yield* Effect.cached(
+    sessions
+      .issue({
+        method: "browser-session-cookie",
+        subject: TRUSTED_LOOPBACK_BROWSER_DEV_SUBJECT,
+        role: "owner",
+        client: {
+          label: "Local browser dev",
+          deviceType: "desktop",
+        },
+      })
+      .pipe(
+        Effect.map(
+          (session): AuthenticatedSession => ({
+            sessionId: session.sessionId,
+            subject: TRUSTED_LOOPBACK_BROWSER_DEV_SUBJECT,
+            method: session.method,
+            role: session.role,
+            expiresAt: session.expiresAt,
+          }),
+        ),
+        Effect.mapError(
+          (cause) =>
+            new AuthError({
+              message: "Failed to create local browser development session.",
+              status: 500,
+              cause,
+            }),
+        ),
+      ),
+  );
+
+  const verifySessionToken = (token: string): Effect.Effect<AuthenticatedSession, AuthError> =>
+    sessions
+      .verify(token)
+      .pipe(Effect.map(toAuthenticatedSession), Effect.mapError(toUnauthorizedAuthError));
 
   const authenticateToken = (token: string): Effect.Effect<AuthenticatedSession, AuthError> =>
     sessions.verify(token).pipe(
@@ -78,28 +226,19 @@ export const makeServerAuth = Effect.gen(function* () {
           }),
         ),
       ),
-      Effect.map((session) => ({
-        sessionId: session.sessionId,
-        subject: session.subject,
-        method: session.method,
-        role: session.role,
-        ...(session.expiresAt ? { expiresAt: session.expiresAt } : {}),
-      })),
-      Effect.mapError(
-        (cause) =>
-          new AuthError({
-            message: "Unauthorized request.",
-            status: 401,
-            cause,
-          }),
-      ),
+      Effect.map(toAuthenticatedSession),
+      Effect.mapError(toUnauthorizedAuthError),
     );
 
   const authenticateRequest = (request: HttpServerRequest.HttpServerRequest) => {
+    const trustedDevRequest = isTrustedLoopbackBrowserDevRequest(request);
     const cookieToken = request.cookies[sessions.cookieName];
     const bearerToken = parseBearerToken(request);
     const credential = cookieToken ?? bearerToken;
     if (!credential) {
+      if (trustedDevRequest) {
+        return getTrustedLoopbackBrowserDevSession;
+      }
       return Effect.fail(
         new AuthError({
           message: "Authentication required.",
@@ -107,7 +246,9 @@ export const makeServerAuth = Effect.gen(function* () {
         }),
       );
     }
-    return authenticateToken(credential);
+    return trustedDevRequest
+      ? verifySessionToken(credential).pipe(Effect.catch(() => getTrustedLoopbackBrowserDevSession))
+      : authenticateToken(credential);
   };
 
   const getSessionState: ServerAuthShape["getSessionState"] = (request) =>
