@@ -157,6 +157,14 @@ export function shouldRestartStalledReconnect(
   );
 }
 
+export function shouldShowReconnectIssueToast(status: WsConnectionStatus): boolean {
+  return (
+    status.hasConnected &&
+    status.disconnectedAt !== null &&
+    getWsConnectionUiState(status) === "reconnecting"
+  );
+}
+
 export function WebSocketConnectionCoordinator() {
   const status = useWsConnectionStatus();
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -283,7 +291,7 @@ export function WebSocketConnectionCoordinator() {
     const uiState = getWsConnectionUiState(status);
     const previousUiState = previousUiStateRef.current;
     const previousDisconnectedAt = previousDisconnectedAtRef.current;
-    const shouldShowReconnectToast = status.hasConnected && uiState === "reconnecting";
+    const shouldShowReconnectToast = shouldShowReconnectIssueToast(status);
     const shouldShowOfflineToast = uiState === "offline" && status.disconnectedAt !== null;
     const shouldShowExhaustedToast = status.hasConnected && status.reconnectPhase === "exhausted";
 

@@ -2,6 +2,7 @@ import type {
   ProviderDriverKind,
   ModelCapabilities,
   ServerProvider,
+  ServerProviderAccountUsage,
   ServerProviderAuth,
   ServerProviderSkill,
   ServerProviderSlashCommand,
@@ -38,6 +39,7 @@ export interface ProviderProbeResult {
   readonly version: string | null;
   readonly status: Exclude<ServerProviderState, "disabled">;
   readonly auth: ServerProviderAuth;
+  readonly accountUsage?: ServerProviderAccountUsage;
   readonly message?: string;
 }
 
@@ -219,6 +221,7 @@ export function buildServerProvider(input: {
     version: input.probe.version,
     status: input.enabled ? input.probe.status : "disabled",
     auth: input.probe.auth,
+    ...(input.probe.accountUsage ? { accountUsage: input.probe.accountUsage } : {}),
     checkedAt: input.checkedAt,
     ...(input.probe.message ? { message: input.probe.message } : {}),
     models: input.models,

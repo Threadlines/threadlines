@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import type { WsConnectionStatus } from "../rpc/wsConnectionState";
-import { shouldAutoReconnect, shouldRestartStalledReconnect } from "./WebSocketConnectionSurface";
+import {
+  shouldAutoReconnect,
+  shouldRestartStalledReconnect,
+  shouldShowReconnectIssueToast,
+} from "./WebSocketConnectionSurface";
 
 function makeStatus(overrides: Partial<WsConnectionStatus> = {}): WsConnectionStatus {
   return {
@@ -110,5 +114,32 @@ describe("WebSocketConnectionSurface.logic", () => {
         "2026-04-03T20:00:01.000Z",
       ),
     ).toBe(false);
+  });
+
+  it("does not show the reconnect toast for a forced reconnect without a recorded disconnect", () => {
+    expect(
+      shouldShowReconnectIssueToast(
+        makeStatus({
+          hasConnected: true,
+          phase: "connecting",
+          reconnectAttemptCount: 1,
+          reconnectPhase: "attempting",
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("shows the reconnect toast when the live websocket actually disconnected", () => {
+    expect(
+      shouldShowReconnectIssueToast(
+        makeStatus({
+          disconnectedAt: "2026-04-03T20:00:00.000Z",
+          hasConnected: true,
+          phase: "disconnected",
+          reconnectAttemptCount: 1,
+          reconnectPhase: "waiting",
+        }),
+      ),
+    ).toBe(true);
   });
 });

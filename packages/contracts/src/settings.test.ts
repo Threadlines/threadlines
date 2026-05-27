@@ -13,6 +13,11 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
     expect(DEFAULT_SERVER_SETTINGS.providerInstances).toEqual({});
   });
 
+  it("streams agent responses by default so chat output appears progressively", () => {
+    expect(DEFAULT_SERVER_SETTINGS.enableAssistantStreaming).toBe(true);
+    expect(decodeServerSettings({}).enableAssistantStreaming).toBe(true);
+  });
+
   it("decodes a fully empty config (legacy on-disk shape) without complaint", () => {
     const decoded = decodeServerSettings({});
     expect(decoded.providerInstances).toEqual({});

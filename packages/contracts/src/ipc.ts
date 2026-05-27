@@ -36,6 +36,14 @@ import type {
 } from "./project.ts";
 import type { ProviderInstanceId } from "./providerInstance.ts";
 import type {
+  ProviderExtensionsInventoryInput,
+  ProviderExtensionsInventoryResult,
+  ProviderInstructionFilesInput,
+  ProviderInstructionFilesResult,
+  ProviderInstructionWriteInput,
+  ProviderInstructionWriteResult,
+} from "./providerExtensions.ts";
+import type {
   ServerConfig,
   ServerProcessDiagnosticsResult,
   ServerProcessResourceHistoryInput,
@@ -503,6 +511,15 @@ export interface LocalApi {
       input: ServerProcessResourceHistoryInput,
     ) => Promise<ServerProcessResourceHistoryResult>;
     signalProcess: (input: ServerSignalProcessInput) => Promise<ServerSignalProcessResult>;
+    getProviderExtensions: (
+      input: ProviderExtensionsInventoryInput,
+    ) => Promise<ProviderExtensionsInventoryResult>;
+    getProviderInstructionFiles: (
+      input: ProviderInstructionFilesInput,
+    ) => Promise<ProviderInstructionFilesResult>;
+    writeProviderInstructionFile: (
+      input: ProviderInstructionWriteInput,
+    ) => Promise<ProviderInstructionWriteResult>;
   };
 }
 

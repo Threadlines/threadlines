@@ -24,7 +24,6 @@ import {
   BotIcon,
   CheckIcon,
   CircleAlertIcon,
-  CornerDownRightIcon,
   EyeIcon,
   GlobeIcon,
   HammerIcon,
@@ -86,7 +85,6 @@ interface TimelineRowSharedState {
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   activeThreadEnvironmentId: EnvironmentId;
   turnDiffSummaryByTurnId: ReadonlyMap<TurnId, TurnDiffSummary>;
-  steeredMessageIds: ReadonlySet<MessageId>;
   onRevertUserMessage: (messageId: MessageId) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
@@ -102,7 +100,7 @@ const TimelineRowActivityCtx = createContext<TimelineRowActivityState>(null!);
 const TIMELINE_LIST_HEADER = <div className="h-3 sm:h-4" />;
 const TIMELINE_LIST_FOOTER = <div className="h-3 sm:h-4" />;
 const EMPTY_TIMELINE_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
-const EMPTY_MESSAGE_ID_SET: ReadonlySet<MessageId> = new Set();
+const LIVE_WORK_LOG_ENTRY_COUNT = 2;
 
 // ---------------------------------------------------------------------------
 // Props (public API)
@@ -118,7 +116,6 @@ interface MessagesTimelineProps {
   completionDividerBeforeEntryId: string | null;
   completionSummary: string | null;
   turnDiffSummaryByAssistantMessageId: Map<MessageId, TurnDiffSummary>;
-  steeredMessageIds?: ReadonlySet<MessageId>;
   routeThreadKey: string;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   revertTurnCountByUserMessageId: Map<MessageId, number>;
@@ -148,7 +145,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   completionDividerBeforeEntryId,
   completionSummary,
   turnDiffSummaryByAssistantMessageId,
-  steeredMessageIds = EMPTY_MESSAGE_ID_SET,
   routeThreadKey,
   onOpenTurnDiff,
   revertTurnCountByUserMessageId,
@@ -232,7 +228,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       skills,
       activeThreadEnvironmentId,
       turnDiffSummaryByTurnId,
-      steeredMessageIds,
       onRevertUserMessage,
       onImageExpand,
       onOpenTurnDiff,
@@ -246,7 +241,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       skills,
       activeThreadEnvironmentId,
       turnDiffSummaryByTurnId,
-      steeredMessageIds,
       onRevertUserMessage,
       onImageExpand,
       onOpenTurnDiff,
@@ -349,17 +343,10 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   const displayedUserMessage = deriveDisplayedUserMessageState(row.message.text);
   const terminalContexts = displayedUserMessage.contexts;
   const canRevertAgentWork = typeof row.revertTurnCount === "number";
-  const isSteeredMessage = ctx.steeredMessageIds.has(row.message.id);
 
   return (
     <div className="flex justify-end">
       <div className="group relative max-w-[80%] rounded-2xl rounded-br-sm border border-border bg-secondary px-4 py-3">
-        {isSteeredMessage ? (
-          <div className="mb-2 flex items-center gap-1.5 text-[11px] font-medium text-blue-400">
-            <CornerDownRightIcon className="size-3" />
-            <span>Steered conversation</span>
-          </div>
-        ) : null}
         <TimelineImagePreviewGrid
           images={userImages}
           className="mb-2 max-w-[420px]"
@@ -467,12 +454,14 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
         <AssistantCompletionDivider completionSummary={row.completionSummary} />
       )}
       <div className="min-w-0 px-1 py-0.5">
-        <ChatMarkdown
-          text={messageText}
-          cwd={ctx.markdownCwd}
-          isStreaming={Boolean(row.message.streaming)}
-          skills={ctx.skills}
-        />
+        <div data-agent-response-body="true" data-assistant-message-body="true">
+          <ChatMarkdown
+            text={messageText}
+            cwd={ctx.markdownCwd}
+            isStreaming={Boolean(row.message.streaming)}
+            skills={ctx.skills}
+          />
+        </div>
         <AssistantChangedFilesSection
           turnSummary={row.assistantTurnDiffSummary}
           routeThreadKey={ctx.routeThreadKey}
@@ -659,13 +648,12 @@ const WorkGroupSection = memo(function WorkGroupSection({
   }, [isExpanded, isWorking]);
 
   const isShowingFullLog = isExpanded && !isWorking;
-  const activityEntries =
-    isShowingFullLog || isWorking
+  const activityEntries = isWorking
+    ? deriveLiveActivityEntries(groupedEntries)
+    : isShowingFullLog
       ? groupedEntries
       : summarizeSemanticActivityEntries(groupedEntries);
-  const visibleLimit = isWorking
-    ? Math.min(5, MAX_VISIBLE_WORK_LOG_ENTRIES)
-    : MAX_VISIBLE_WORK_LOG_ENTRIES;
+  const visibleLimit = isWorking ? LIVE_WORK_LOG_ENTRY_COUNT : MAX_VISIBLE_WORK_LOG_ENTRIES;
   const hasOverflow = activityEntries.length > visibleLimit;
   const visibleEntries =
     hasOverflow && !isShowingFullLog ? activityEntries.slice(-visibleLimit) : activityEntries;
@@ -678,8 +666,12 @@ const WorkGroupSection = memo(function WorkGroupSection({
     hasOverflow && !hasCompactedEntries && !isShowingFullLog && !isWorking
       ? summarizeHiddenWorkEntries(groupedEntries.slice(0, hiddenCount))
       : null;
+  const liveHiddenSummary = isWorking
+    ? summarizeLiveHiddenWorkEntries(groupedEntries, visibleEntries)
+    : null;
   const canToggleFullLog = !isWorking && (hasOverflow || hasCompactedEntries);
-  const showHeader = canToggleFullLog || hasCompactedEntries || hasOverflow || !onlyToolEntries;
+  const showHeader =
+    isWorking || canToggleFullLog || hasCompactedEntries || hasOverflow || !onlyToolEntries;
   const toggleLabel = isExpanded
     ? "Hide transcript"
     : hasCompactedEntries
@@ -692,11 +684,11 @@ const WorkGroupSection = memo(function WorkGroupSection({
         <div className="mb-1.5 flex items-start justify-between gap-2 px-0.5">
           <div className="min-w-0">
             <p className="text-[9px] uppercase tracking-[0.16em] text-muted-foreground/55">
-              Activity ({groupedEntries.length})
+              {isWorking ? "Current activity" : `Activity (${groupedEntries.length})`}
             </p>
-            {hiddenSummary ? (
+            {hiddenSummary || liveHiddenSummary ? (
               <p className="mt-0.5 truncate text-[10px] leading-4 text-muted-foreground/45">
-                {hiddenSummary}
+                {hiddenSummary ?? liveHiddenSummary}
               </p>
             ) : null}
           </div>
@@ -711,7 +703,10 @@ const WorkGroupSection = memo(function WorkGroupSection({
           )}
         </div>
       )}
-      <div className="space-y-0.5">
+      <div
+        className={cn("space-y-0.5", isWorking ? "min-h-[3.25rem]" : null)}
+        data-live-activity-strip={isWorking ? "true" : undefined}
+      >
         {visibleEntries.map((workEntry) => (
           <SimpleWorkEntryRow
             key={`work-row:${workEntry.id}`}
@@ -724,7 +719,113 @@ const WorkGroupSection = memo(function WorkGroupSection({
   );
 });
 
-type SemanticActivityKind = "explore" | "verify" | "command" | "tool";
+function deriveLiveActivityEntries(entries: ReadonlyArray<TimelineWorkEntry>): TimelineWorkEntry[] {
+  const dedupedEntries = dedupeLiveActivityEntries(entries);
+  const selected: TimelineWorkEntry[] = [];
+
+  for (let index = dedupedEntries.length - 1; index >= 0; index -= 1) {
+    const entry = dedupedEntries[index];
+    if (!entry || !isLivePrimaryWorkEntry(entry)) {
+      continue;
+    }
+    selected.push(entry);
+    if (selected.length >= LIVE_WORK_LOG_ENTRY_COUNT) {
+      return selected.toReversed();
+    }
+  }
+
+  for (let index = dedupedEntries.length - 1; index >= 0; index -= 1) {
+    const entry = dedupedEntries[index];
+    if (!entry || selected.includes(entry) || !isLiveFallbackWorkEntry(entry)) {
+      continue;
+    }
+    selected.push(entry);
+    if (selected.length >= LIVE_WORK_LOG_ENTRY_COUNT) {
+      break;
+    }
+  }
+
+  return selected
+    .toReversed()
+    .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
+}
+
+function dedupeLiveActivityEntries(entries: ReadonlyArray<TimelineWorkEntry>): TimelineWorkEntry[] {
+  const seen = new Set<string>();
+  const deduped: TimelineWorkEntry[] = [];
+
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (!entry) {
+      continue;
+    }
+    const key = liveActivityDedupeKey(entry);
+    if (key && seen.has(key)) {
+      continue;
+    }
+    if (key) {
+      seen.add(key);
+    }
+    deduped.push(entry);
+  }
+
+  return deduped.toReversed();
+}
+
+function liveActivityDedupeKey(entry: TimelineWorkEntry): string | null {
+  const subject =
+    entry.command ??
+    entry.detail ??
+    entry.changedFiles?.join("\u001e") ??
+    entry.toolTitle ??
+    entry.label;
+  const normalizedSubject = subject.trim().replace(/\s+/gu, " ").toLowerCase();
+  if (!normalizedSubject) {
+    return null;
+  }
+  return [entry.turnId ?? "", entry.itemType ?? "", normalizeCompactToolLabel(normalizedSubject)]
+    .join("\u001f")
+    .toLowerCase();
+}
+
+function isLivePrimaryWorkEntry(entry: TimelineWorkEntry): boolean {
+  return (
+    entry.executionState === "running" ||
+    entry.executionState === "failed" ||
+    entry.itemType === "collab_agent_tool_call"
+  );
+}
+
+function isLiveFallbackWorkEntry(entry: TimelineWorkEntry): boolean {
+  if (entry.tone === "thinking" || entry.tone === "warning" || entry.tone === "error") {
+    return true;
+  }
+  return entry.tone === "tool" || entry.tone === "info";
+}
+
+function summarizeLiveHiddenWorkEntries(
+  allEntries: ReadonlyArray<TimelineWorkEntry>,
+  visibleEntries: ReadonlyArray<TimelineWorkEntry>,
+): string | null {
+  const hiddenCount = Math.max(0, allEntries.length - visibleEntries.length);
+  if (hiddenCount <= 0) {
+    return null;
+  }
+  const runningCount = allEntries.filter((entry) => entry.executionState === "running").length;
+  const delegatedCount = allEntries.filter(
+    (entry) => entry.itemType === "collab_agent_tool_call",
+  ).length;
+  const parts = [
+    runningCount > 0 ? formatActivityCount(runningCount, "active item", "active items") : null,
+    delegatedCount > 0
+      ? formatActivityCount(delegatedCount, "delegated task", "delegated tasks")
+      : null,
+    `${hiddenCount.toLocaleString()} earlier ${hiddenCount === 1 ? "event" : "events"}`,
+  ].filter((part): part is string => part !== null);
+  return parts.join(", ");
+}
+
+type SemanticActivityKind = "explore" | "verify" | "command" | "tool" | "agent";
 type SemanticActivitySignal =
   | "search"
   | "read"
@@ -733,6 +834,7 @@ type SemanticActivitySignal =
   | "environment"
   | "verify"
   | "command"
+  | "agent"
   | "tool";
 
 interface SemanticActivitySummary {
@@ -811,6 +913,10 @@ function classifySummarizableActivityEntry(
 
   if (isCommandWorkEntry(entry) && entry.command) {
     return classifyCommandActivity(entry.command);
+  }
+
+  if (entry.itemType === "collab_agent_tool_call") {
+    return { kind: "agent", signal: "agent", commandName: normalizedToolName(entry) };
   }
 
   const toolText = `${entry.toolTitle ?? ""} ${entry.label} ${entry.detail ?? ""}`.toLowerCase();
@@ -924,7 +1030,7 @@ function isVerificationCommand(name: string, command: string): boolean {
 function buildSemanticActivitySummaryEntry(
   buffer: SemanticActivityBuffer,
 ): TimelineWorkEntry | null {
-  if (buffer.kind === "command" && buffer.entries.length < 2) {
+  if ((buffer.kind === "command" || buffer.kind === "agent") && buffer.entries.length < 2) {
     return null;
   }
 
@@ -962,6 +1068,9 @@ function semanticActivityLabel(buffer: SemanticActivityBuffer): string {
   if (buffer.kind === "tool") {
     return `Used ${count.toLocaleString()} ${count === 1 ? "tool" : "tools"}`;
   }
+  if (buffer.kind === "agent") {
+    return "Delegated work";
+  }
   return `Ran ${count.toLocaleString()} ${count === 1 ? "command" : "commands"}`;
 }
 
@@ -987,6 +1096,13 @@ function formatSemanticActivitySummaryDetail(buffer: SemanticActivityBuffer): st
 
   if (buffer.kind === "tool") {
     return formatCommandNameList(buffer.commandNames);
+  }
+
+  if (buffer.kind === "agent") {
+    const count = buffer.signals.get("agent") ?? buffer.entries.length;
+    const countLabel = formatActivityCount(count, "subagent task", "subagent tasks");
+    const names = formatCommandNameList(buffer.commandNames);
+    return [countLabel, names].filter((part): part is string => part !== null).join(", ") || null;
   }
 
   return null;
@@ -1670,6 +1786,7 @@ function workEntryRawCommand(
 }
 
 function workEntryIcon(workEntry: TimelineWorkEntry): LucideIcon {
+  if (isSubagentWorkEntry(workEntry)) return BotIcon;
   if (workEntry.requestKind === "command") return TerminalIcon;
   if (workEntry.requestKind === "file-read") return EyeIcon;
   if (workEntry.requestKind === "file-change") return SquarePenIcon;
@@ -1687,7 +1804,6 @@ function workEntryIcon(workEntry: TimelineWorkEntry): LucideIcon {
     case "mcp_tool_call":
       return WrenchIcon;
     case "dynamic_tool_call":
-    case "collab_agent_tool_call":
       return HammerIcon;
   }
 
@@ -1704,6 +1820,13 @@ function isCommandWorkEntry(workEntry: TimelineWorkEntry): boolean {
 
 function isRunningToolWorkEntry(workEntry: TimelineWorkEntry): boolean {
   return workEntry.executionState === "running";
+}
+
+function isSubagentWorkEntry(workEntry: TimelineWorkEntry): boolean {
+  return (
+    workEntry.itemType === "collab_agent_tool_call" ||
+    /sub-?agent|delegat/i.test(`${workEntry.toolTitle ?? ""} ${workEntry.label}`)
+  );
 }
 
 function capitalizePhrase(value: string): string {
@@ -1747,6 +1870,15 @@ function workEntryActionHeading(
     return commandActionHeading(workEntry.command, workEntry.executionState, workspaceRoot);
   }
 
+  if (isSubagentWorkEntry(workEntry)) {
+    return formatActionHeading(
+      workEntry.executionState,
+      "Running",
+      "Finished",
+      subagentSubjectLabel(workEntry),
+    );
+  }
+
   if (
     workEntry.requestKind === "file-read" ||
     /^read file$/i.test(workEntry.toolTitle ?? workEntry.label)
@@ -1774,6 +1906,61 @@ function workEntryActionHeading(
   }
 
   return null;
+}
+
+function subagentSubjectLabel(workEntry: TimelineWorkEntry): string {
+  const title = normalizeCompactToolLabel(workEntry.toolTitle ?? workEntry.label);
+  if (/^delegated work$/iu.test(title)) {
+    return "delegated work";
+  }
+  if (title && !/^subagent task$/iu.test(title)) {
+    return title.toLowerCase().includes("subagent") ? title : `${title} subagent`;
+  }
+
+  const role = subagentRoleLabel(workEntry);
+  if (role) {
+    return `${role} subagent`;
+  }
+
+  return "subagent task";
+}
+
+function subagentRoleLabel(workEntry: TimelineWorkEntry): string | null {
+  const detailParts = splitSubagentDetail(workEntry.detail);
+  if (detailParts?.role) {
+    return detailParts.role;
+  }
+  return null;
+}
+
+function subagentObjectiveText(workEntry: TimelineWorkEntry): string | null {
+  const detailParts = splitSubagentDetail(workEntry.detail);
+  if (detailParts?.objective) {
+    return detailParts.objective;
+  }
+
+  const detail = workEntry.detail?.trim();
+  if (detail) {
+    return detail;
+  }
+
+  return null;
+}
+
+function splitSubagentDetail(
+  detail: string | undefined,
+): { role: string; objective: string } | null {
+  const [prefix, ...restParts] = detail?.split(":") ?? [];
+  const rawRole = prefix?.trim();
+  const objective = restParts.join(":").trim();
+  if (!rawRole || !objective || !/^[A-Za-z][A-Za-z0-9_-]{1,32}$/u.test(rawRole)) {
+    return null;
+  }
+
+  return {
+    role: rawRole.replace(/[_-]+/gu, " ").toLowerCase(),
+    objective,
+  };
 }
 
 function commandActionHeading(
@@ -1951,12 +2138,125 @@ function InlineDiffStatLabel({ stat }: { stat: { additions: number; deletions: n
   );
 }
 
+const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
+  workEntry: TimelineWorkEntry;
+  workspaceRoot: string | undefined;
+  compact: boolean;
+}) {
+  const { workEntry, workspaceRoot, compact } = props;
+  const [isExpanded, setIsExpanded] = useState(false);
+  const isRunningTool = isRunningToolWorkEntry(workEntry);
+  const heading = toolWorkEntryHeading(workEntry, workspaceRoot);
+  const objective = subagentObjectiveText(workEntry);
+  const rawCommand = workEntryRawCommand(workEntry);
+  const command = workEntry.command?.trim();
+  const detail = workEntry.detail?.trim();
+  const hasDetailBody =
+    !compact &&
+    Boolean(detail || command || rawCommand || (workEntry.changedFiles?.length ?? 0) > 0);
+  const displayText = objective ? `${heading} - ${objective}` : heading;
+
+  useEffect(() => {
+    if (compact && isExpanded) {
+      setIsExpanded(false);
+    }
+  }, [compact, isExpanded]);
+
+  return (
+    <div className="rounded-lg px-1 py-1" data-subagent-activity-row="true">
+      <div className="flex items-start gap-2 transition-[opacity,translate] duration-200">
+        <span className="flex size-5 shrink-0 items-center justify-center text-foreground/85">
+          <BotIcon className="size-3" />
+        </span>
+        <div className="min-w-0 flex-1 overflow-hidden">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <p
+              className={cn(
+                "min-w-0 truncate text-[11px] leading-5 text-muted-foreground/70",
+                compact ? "text-xs" : "",
+              )}
+              title={displayText}
+            >
+              <span className="inline-flex items-center text-foreground/80">
+                {heading}
+                {isRunningTool ? <RunningToolIndicator /> : null}
+              </span>
+              {objective ? <span className="text-muted-foreground/55"> - {objective}</span> : null}
+            </p>
+            {!compact ? (
+              <span className="shrink-0 rounded border border-border/55 bg-background/55 px-1 py-px text-[9px] uppercase tracking-[0.12em] text-muted-foreground/55">
+                Subagent
+              </span>
+            ) : null}
+          </div>
+        </div>
+        {hasDetailBody ? (
+          <button
+            type="button"
+            className="mt-0.5 shrink-0 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/50 transition-colors duration-150 hover:text-foreground/75"
+            aria-expanded={isExpanded}
+            onClick={() => setIsExpanded((value) => !value)}
+          >
+            {isExpanded ? "Hide" : "Details"}
+          </button>
+        ) : null}
+      </div>
+      {hasDetailBody && isExpanded ? (
+        <div
+          className="mt-1.5 ml-7 space-y-1.5 border-l border-border/45 pl-3 text-[11px] leading-5 text-muted-foreground/70"
+          data-subagent-activity-details="true"
+        >
+          {detail ? <p className="whitespace-pre-wrap wrap-break-word">{detail}</p> : null}
+          {command ? (
+            <p className="overflow-x-auto font-mono whitespace-nowrap text-muted-foreground/65">
+              {command}
+            </p>
+          ) : null}
+          {rawCommand ? (
+            <p className="overflow-x-auto font-mono whitespace-nowrap text-muted-foreground/55">
+              {rawCommand}
+            </p>
+          ) : null}
+          {(workEntry.changedFiles?.length ?? 0) > 0 ? (
+            <div className="flex flex-wrap gap-1">
+              {workEntry.changedFiles?.slice(0, 4).map((filePath) => {
+                const displayPath = formatWorkspaceRelativePath(filePath, workspaceRoot);
+                return (
+                  <span
+                    key={`${workEntry.id}:subagent-file:${filePath}`}
+                    className="rounded-md border border-border/55 bg-background/75 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/75"
+                    title={displayPath}
+                  >
+                    {displayPath}
+                  </span>
+                );
+              })}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+});
+
 const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
 }) {
   const { turnDiffSummaryByTurnId } = use(TimelineRowCtx);
+  const { isWorking } = use(TimelineRowActivityCtx);
   const { workEntry, workspaceRoot } = props;
+
+  if (isSubagentWorkEntry(workEntry)) {
+    return (
+      <SubagentWorkEntryRow
+        workEntry={workEntry}
+        workspaceRoot={workspaceRoot}
+        compact={isWorking}
+      />
+    );
+  }
+
   const iconConfig = workToneIcon(workEntry.tone);
   const EntryIcon = workEntryIcon(workEntry);
   const isRunningTool = isRunningToolWorkEntry(workEntry);

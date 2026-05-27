@@ -15,6 +15,10 @@ import * as CodexErrors from "effect-codex-app-server/errors";
 import type {
   CodexSettings,
   ServerProvider,
+  ServerProviderAccountUsage,
+  ServerProviderUsageCredits,
+  ServerProviderUsageLimit,
+  ServerProviderUsageWindow,
   ServerProviderState,
   ModelCapabilities,
   ServerProviderModel,
@@ -40,6 +44,7 @@ const CODEX_PRESENTATION = {
 
 export interface CodexAppServerProviderSnapshot {
   readonly account: CodexSchema.V2GetAccountResponse;
+  readonly rateLimits?: CodexSchema.V2GetAccountRateLimitsResponse;
   readonly version: string | undefined;
   readonly models: ReadonlyArray<ServerProviderModel>;
   readonly skills: ReadonlyArray<ServerProviderSkill>;
@@ -92,6 +97,126 @@ function codexAccountAuthLabel(account: CodexSchema.V2GetAccountResponse["accoun
 function codexAccountEmail(account: CodexSchema.V2GetAccountResponse["account"]) {
   if (!account || account.type !== "chatgpt") return undefined;
   return account.email;
+}
+
+function optionalString(value: string | null | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function optionalNonNegativeInt(value: number | null | undefined): number | undefined {
+  if (value === null || value === undefined || !Number.isInteger(value) || value < 0) {
+    return undefined;
+  }
+  return value;
+}
+
+function normalizeUsagePercent(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function normalizeCodexUsageWindow(
+  window: CodexSchema.V2GetAccountRateLimitsResponse__RateLimitWindow | null | undefined,
+): ServerProviderUsageWindow | undefined {
+  if (!window) return undefined;
+
+  const usedPercent = normalizeUsagePercent(window.usedPercent);
+  const resetsAt = optionalNonNegativeInt(window.resetsAt);
+  const windowDurationMins = optionalNonNegativeInt(window.windowDurationMins);
+  return {
+    usedPercent,
+    remainingPercent: Math.max(0, 100 - usedPercent),
+    ...(resetsAt !== undefined ? { resetsAt } : {}),
+    ...(windowDurationMins !== undefined ? { windowDurationMins } : {}),
+  };
+}
+
+function normalizeCodexUsageCredits(
+  credits: CodexSchema.V2GetAccountRateLimitsResponse__CreditsSnapshot | null | undefined,
+): ServerProviderUsageCredits | undefined {
+  if (!credits) return undefined;
+
+  const balance = optionalString(credits.balance);
+  return {
+    hasCredits: credits.hasCredits,
+    unlimited: credits.unlimited,
+    ...(balance ? { balance } : {}),
+  };
+}
+
+function normalizeCodexUsageLimit(
+  snapshot: CodexSchema.V2GetAccountRateLimitsResponse__RateLimitSnapshot,
+  fallbackLimitId?: string,
+): ServerProviderUsageLimit | undefined {
+  const limitId = optionalString(snapshot.limitId) ?? optionalString(fallbackLimitId);
+  const limitName = optionalString(snapshot.limitName);
+  const planType = optionalString(snapshot.planType);
+  const rateLimitReachedType = optionalString(snapshot.rateLimitReachedType);
+  const credits = normalizeCodexUsageCredits(snapshot.credits);
+  const primary = normalizeCodexUsageWindow(snapshot.primary);
+  const secondary = normalizeCodexUsageWindow(snapshot.secondary);
+
+  if (
+    !limitId &&
+    !limitName &&
+    !planType &&
+    !rateLimitReachedType &&
+    !credits &&
+    !primary &&
+    !secondary
+  ) {
+    return undefined;
+  }
+
+  return {
+    ...(limitId ? { limitId } : {}),
+    ...(limitName ? { limitName } : {}),
+    ...(planType ? { planType } : {}),
+    ...(rateLimitReachedType ? { rateLimitReachedType } : {}),
+    ...(credits ? { credits } : {}),
+    ...(primary ? { primary } : {}),
+    ...(secondary ? { secondary } : {}),
+  };
+}
+
+function normalizeCodexAccountUsage(
+  rateLimits: CodexSchema.V2GetAccountRateLimitsResponse | undefined,
+  checkedAt: string,
+): ServerProviderAccountUsage | undefined {
+  if (!rateLimits) return undefined;
+
+  const limits: ServerProviderUsageLimit[] = [];
+  const seen = new Set<string>();
+  const appendLimit = (
+    snapshot: CodexSchema.V2GetAccountRateLimitsResponse__RateLimitSnapshot,
+    fallbackLimitId?: string,
+  ) => {
+    const normalized = normalizeCodexUsageLimit(snapshot, fallbackLimitId);
+    if (!normalized) return;
+
+    const key = normalized.limitId ?? normalized.limitName ?? `limit-${limits.length}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    limits.push(normalized);
+  };
+
+  appendLimit(rateLimits.rateLimits);
+  const byLimitId = rateLimits.rateLimitsByLimitId ?? {};
+  for (const [limitId, snapshot] of Object.entries(byLimitId)) {
+    appendLimit(snapshot, limitId);
+  }
+
+  if (limits.length === 0) return undefined;
+
+  const primaryLimitId =
+    optionalString(rateLimits.rateLimits.limitId) ?? limits.find((limit) => limit.limitId)?.limitId;
+  return {
+    source: "codex-rate-limits",
+    checkedAt,
+    ...(primaryLimitId ? { primaryLimitId } : {}),
+    limits,
+  };
 }
 
 function mapCodexModelCapabilities(
@@ -309,18 +434,22 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     } satisfies CodexAppServerProviderSnapshot;
   }
 
-  const [skillsResponse, models] = yield* Effect.all(
+  const [skillsResponse, models, rateLimits] = yield* Effect.all(
     [
       client.request("skills/list", {
         cwds: [input.cwd],
       }),
       requestAllCodexModels(client),
+      client
+        .request("account/rateLimits/read", undefined)
+        .pipe(Effect.orElseSucceed(() => undefined)),
     ],
     { concurrency: "unbounded" },
   );
 
   return {
     account: accountResponse,
+    ...(rateLimits ? { rateLimits } : {}),
     version,
     models: appendCustomCodexModels(models, input.customModels ?? []),
     skills: parseCodexSkillsListResponse(skillsResponse, input.cwd),
@@ -499,6 +628,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
 
   const snapshot = probeResult.success.value;
   const accountStatus = accountProbeStatus(snapshot.account);
+  const accountUsage = normalizeCodexAccountUsage(snapshot.rateLimits, checkedAt);
 
   return buildServerProvider({
     presentation: CODEX_PRESENTATION,
@@ -511,6 +641,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       version: snapshot.version ?? null,
       status: accountStatus.status,
       auth: accountStatus.auth,
+      ...(accountUsage ? { accountUsage } : {}),
       ...(accountStatus.message ? { message: accountStatus.message } : {}),
     },
   });

@@ -5,6 +5,7 @@ import {
   ChevronDownIcon,
   CopyIcon,
   DownloadIcon,
+  GaugeIcon,
   LoaderIcon,
   PlusIcon,
   Trash2Icon,
@@ -18,6 +19,9 @@ import {
   type ProviderInstanceId,
   type ProviderDriverKind,
   type ServerProvider,
+  type ServerProviderAccountUsage,
+  type ServerProviderUsageLimit,
+  type ServerProviderUsageWindow,
   type ServerProviderModel,
 } from "@t3tools/contracts";
 
@@ -133,6 +137,87 @@ export function deriveProviderModelsForDisplay(input: {
       },
   );
   return [...serverModels, ...customModels];
+}
+
+export interface ProviderAccountUsagePresentation {
+  readonly label: string;
+  readonly detail: string;
+  readonly usedPercent: number;
+  readonly remainingPercent: number;
+  readonly reachedLimit: boolean;
+}
+
+function normalizeResetTimestampMs(resetsAt: number | undefined): number | null {
+  if (!Number.isFinite(resetsAt) || resetsAt === undefined || resetsAt <= 0) return null;
+  return resetsAt < 10_000_000_000 ? resetsAt * 1000 : resetsAt;
+}
+
+function formatResetDetail(resetsAt: number | undefined, nowMs: number): string | null {
+  const resetMs = normalizeResetTimestampMs(resetsAt);
+  if (resetMs === null) return null;
+
+  const diffMinutes = Math.ceil((resetMs - nowMs) / 60_000);
+  if (diffMinutes <= 0) return "resets now";
+  if (diffMinutes < 60) return `resets in ${diffMinutes}m`;
+
+  const hours = Math.floor(diffMinutes / 60);
+  const minutes = diffMinutes % 60;
+  if (hours < 24) {
+    return minutes > 0 ? `resets in ${hours}h ${minutes}m` : `resets in ${hours}h`;
+  }
+
+  const days = Math.floor(hours / 24);
+  const remainingHours = hours % 24;
+  return remainingHours > 0 ? `resets in ${days}d ${remainingHours}h` : `resets in ${days}d`;
+}
+
+function selectProviderUsageLimit(
+  usage: ServerProviderAccountUsage,
+): ServerProviderUsageLimit | null {
+  if (usage.primaryLimitId) {
+    const primaryLimit = usage.limits.find((limit) => limit.limitId === usage.primaryLimitId);
+    if (primaryLimit) return primaryLimit;
+  }
+  return (
+    usage.limits.find((limit) => limit.limitId === "codex") ??
+    usage.limits.find((limit) => limit.primary || limit.secondary) ??
+    usage.limits[0] ??
+    null
+  );
+}
+
+function selectUsageWindow(limit: ServerProviderUsageLimit): ServerProviderUsageWindow | null {
+  return limit.primary ?? limit.secondary ?? null;
+}
+
+export function deriveProviderAccountUsagePresentation(
+  usage: ServerProviderAccountUsage | undefined,
+  nowMs: number = Date.now(),
+): ProviderAccountUsagePresentation | null {
+  if (!usage || usage.source !== "codex-rate-limits") return null;
+
+  const limit = selectProviderUsageLimit(usage);
+  if (!limit) return null;
+
+  const window = selectUsageWindow(limit);
+  if (!window) return null;
+
+  const usedPercent = Math.max(0, Math.min(100, window.usedPercent));
+  const remainingPercent = Math.max(0, Math.min(100, window.remainingPercent));
+  const resetDetail = formatResetDetail(window.resetsAt, nowMs);
+  const reachedLimit = Boolean(limit.rateLimitReachedType);
+  const detailParts = [
+    reachedLimit ? "limit reached" : `${remainingPercent}% remaining`,
+    resetDetail,
+  ].filter((part): part is string => Boolean(part));
+
+  return {
+    label: limit.limitName ?? "Codex usage",
+    detail: detailParts.join(" · "),
+    usedPercent,
+    remainingPercent,
+    reachedLimit,
+  };
 }
 
 function ProviderAuthEmail(props: {
@@ -484,6 +569,7 @@ export function ProviderInstanceCard({
   const versionLabel = getProviderVersionLabel(liveProvider?.version);
   const versionAdvisory = getProviderVersionAdvisoryPresentation(liveProvider?.versionAdvisory);
   const updateCommand = versionAdvisory?.updateCommand ?? null;
+  const usagePresentation = deriveProviderAccountUsagePresentation(liveProvider?.accountUsage);
   const FallbackIconComponent = driverOption?.icon;
   const displayName =
     instance.displayName?.trim() || driverOption?.label || String(instance.driver);
@@ -776,6 +862,35 @@ export function ProviderInstanceCard({
               {titleTailNode}
             </div>
             {authRowNode}
+            {usagePresentation ? (
+              <div className="mt-2 max-w-md space-y-1.5">
+                <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+                  <GaugeIcon className="size-3.5 shrink-0" aria-hidden />
+                  <span className="font-medium text-foreground">{usagePresentation.label}</span>
+                  <span>{usagePresentation.usedPercent}% used</span>
+                  <span aria-hidden>·</span>
+                  <span>{usagePresentation.detail}</span>
+                </div>
+                <div
+                  role="meter"
+                  aria-label={`${usagePresentation.label} ${usagePresentation.usedPercent}% used`}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={usagePresentation.usedPercent}
+                  className="h-1.5 overflow-hidden rounded-full bg-muted"
+                >
+                  <div
+                    className={cn(
+                      "h-full rounded-full transition-[width]",
+                      usagePresentation.reachedLimit || usagePresentation.usedPercent >= 90
+                        ? "bg-warning"
+                        : "bg-primary",
+                    )}
+                    style={{ width: `${usagePresentation.usedPercent}%` }}
+                  />
+                </div>
+              </div>
+            ) : null}
           </div>
           <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
             <Button

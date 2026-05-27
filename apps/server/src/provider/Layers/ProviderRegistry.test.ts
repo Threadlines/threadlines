@@ -430,6 +430,70 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
         }),
       );
 
+      it.effect("normalizes Codex app-server rate limits into account usage", () =>
+        Effect.gen(function* () {
+          const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
+            Effect.succeed(
+              makeCodexProbeSnapshot({
+                rateLimits: {
+                  rateLimits: {
+                    limitId: "codex",
+                    limitName: "Codex",
+                    planType: "pro",
+                    rateLimitReachedType: null,
+                    credits: {
+                      hasCredits: true,
+                      unlimited: false,
+                      balance: "$5.00",
+                    },
+                    primary: {
+                      usedPercent: 42,
+                      resetsAt: 1_800_000_000,
+                      windowDurationMins: 300,
+                    },
+                    secondary: {
+                      usedPercent: 10,
+                      resetsAt: null,
+                      windowDurationMins: 1440,
+                    },
+                  },
+                  rateLimitsByLimitId: null,
+                },
+              }),
+            ),
+          );
+
+          assert.deepStrictEqual(status.accountUsage, {
+            source: "codex-rate-limits",
+            checkedAt: status.checkedAt,
+            primaryLimitId: "codex",
+            limits: [
+              {
+                limitId: "codex",
+                limitName: "Codex",
+                planType: "pro",
+                credits: {
+                  hasCredits: true,
+                  unlimited: false,
+                  balance: "$5.00",
+                },
+                primary: {
+                  usedPercent: 42,
+                  remainingPercent: 58,
+                  resetsAt: 1_800_000_000,
+                  windowDurationMins: 300,
+                },
+                secondary: {
+                  usedPercent: 10,
+                  remainingPercent: 90,
+                  windowDurationMins: 1440,
+                },
+              },
+            ],
+          });
+        }),
+      );
+
       it.effect("returns unavailable when codex is missing", () =>
         Effect.gen(function* () {
           const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>

@@ -148,6 +148,13 @@ export interface WsRpcClient {
       typeof WS_METHODS.serverGetProcessResourceHistory
     >;
     readonly signalProcess: RpcUnaryMethod<typeof WS_METHODS.serverSignalProcess>;
+    readonly getProviderExtensions: RpcUnaryMethod<typeof WS_METHODS.serverGetProviderExtensions>;
+    readonly getProviderInstructionFiles: RpcUnaryMethod<
+      typeof WS_METHODS.serverGetProviderInstructionFiles
+    >;
+    readonly writeProviderInstructionFile: RpcUnaryMethod<
+      typeof WS_METHODS.serverWriteProviderInstructionFile
+    >;
     readonly subscribeConfig: RpcStreamMethod<typeof WS_METHODS.subscribeServerConfig>;
     readonly subscribeLifecycle: RpcStreamMethod<typeof WS_METHODS.subscribeServerLifecycle>;
     readonly subscribeAuthAccess: RpcStreamMethod<typeof WS_METHODS.subscribeAuthAccess>;
@@ -296,6 +303,24 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       signalProcess: (input) =>
         transport.request((client) =>
           client[WS_METHODS.serverSignalProcess](input).pipe(Effect.withTracerEnabled(false)),
+        ),
+      getProviderExtensions: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverGetProviderExtensions](input).pipe(
+            Effect.withTracerEnabled(false),
+          ),
+        ),
+      getProviderInstructionFiles: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverGetProviderInstructionFiles](input).pipe(
+            Effect.withTracerEnabled(false),
+          ),
+        ),
+      writeProviderInstructionFile: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverWriteProviderInstructionFile](input).pipe(
+            Effect.withTracerEnabled(false),
+          ),
         ),
       subscribeConfig: (listener, options) =>
         transport.subscribe((client) => client[WS_METHODS.subscribeServerConfig]({}), listener, {

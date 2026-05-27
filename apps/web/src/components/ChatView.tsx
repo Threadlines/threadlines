@@ -168,6 +168,7 @@ import {
   cloneComposerImageForRetry,
   deriveLockedProvider,
   readFileAsDataUrl,
+  reconcileSteeringHandoffStatuses,
   reconcileMountedTerminalThreadIds,
   resolveSendEnvMode,
   revokeBlobPreviewUrl,
@@ -224,7 +225,7 @@ function SteeringQueueIndicator({
     return null;
   }
 
-  const countLabel = messages.length > 1 ? `${messages.length} queued` : "Queued";
+  const countLabel = messages.length > 1 ? `${messages.length} pending` : "Pending";
 
   return (
     <div className="mx-auto mb-2 max-w-208 px-1">
@@ -232,7 +233,7 @@ function SteeringQueueIndicator({
         <CornerDownRightIcon className="mt-0.5 size-3.5 shrink-0 text-blue-400" />
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2">
-            <span className="font-medium text-blue-300">Steering conversation</span>
+            <span className="font-medium text-blue-300">Follow-up pending</span>
             <span className="rounded-full bg-blue-500/12 px-1.5 py-0.5 text-[11px] text-blue-300/80">
               {countLabel}
             </span>
@@ -1481,41 +1482,22 @@ export default function ChatView(props: ChatViewProps) {
     () => new Set(queuedSteeringMessages.map((message) => message.id)),
     [queuedSteeringMessages],
   );
-  const steeredMessageIds = useMemo(
-    () =>
-      new Set(
-        activeThreadSteeringMessages
-          .filter((message) => message.status === "read")
-          .map((message) => message.id),
-      ),
-    [activeThreadSteeringMessages],
-  );
 
   useEffect(() => {
-    const latestTurn = activeThread?.latestTurn;
-    if (!activeThreadKey || !latestTurn) {
+    if (!activeThreadKey) {
       return;
     }
 
     const serverMessageIds = new Set((serverMessages ?? []).map((message) => message.id));
     setSteeringMessagesById((existing) => {
-      let changed = false;
-      const next = { ...existing };
-      for (const [id, message] of Object.entries(existing)) {
-        if (message.threadKey !== activeThreadKey || message.status !== "queued") {
-          continue;
-        }
-        const hasAcceptedTurn = latestTurn.requestedAt === message.createdAt;
-        const hasSettledVisibleMessage = phase !== "running" && serverMessageIds.has(message.id);
-        if (!hasAcceptedTurn && !hasSettledVisibleMessage) {
-          continue;
-        }
-        next[id] = { ...message, status: "read" };
-        changed = true;
-      }
-      return changed ? next : existing;
+      return reconcileSteeringHandoffStatuses({
+        messagesById: existing,
+        activeThreadKey,
+        latestTurn: activeThread?.latestTurn,
+        serverMessageIds,
+      });
     });
-  }, [activeThread?.latestTurn, activeThreadKey, phase, serverMessages]);
+  }, [activeThread?.latestTurn, activeThreadKey, serverMessages]);
   useEffect(() => {
     if (typeof Image === "undefined" || !serverMessages || serverMessages.length === 0) {
       return;
@@ -3707,7 +3689,6 @@ export default function ChatView(props: ChatViewProps) {
               completionDividerBeforeEntryId={completionDividerBeforeEntryId}
               completionSummary={completionSummary}
               turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
-              steeredMessageIds={steeredMessageIds}
               activeThreadEnvironmentId={activeThread.environmentId}
               routeThreadKey={routeThreadKey}
               onOpenTurnDiff={onOpenTurnDiff}

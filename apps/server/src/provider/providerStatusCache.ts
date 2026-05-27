@@ -64,6 +64,9 @@ export const hydrateCachedProvider = (input: {
     version: input.cachedProvider.version,
     status: input.cachedProvider.status,
     auth: input.cachedProvider.auth,
+    ...(input.cachedProvider.accountUsage
+      ? { accountUsage: input.cachedProvider.accountUsage }
+      : {}),
     checkedAt: input.cachedProvider.checkedAt,
     slashCommands: input.cachedProvider.slashCommands,
     skills: input.cachedProvider.skills,

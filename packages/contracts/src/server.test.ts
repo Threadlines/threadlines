@@ -71,4 +71,39 @@ describe("ServerProvider", () => {
 
     expect(parsed.continuation?.groupKey).toBe("codex:home:/Users/julius/.codex");
   });
+
+  it("decodes account usage snapshots", () => {
+    const parsed = decodeServerProvider({
+      instanceId: "codex",
+      driver: "codex",
+      enabled: true,
+      installed: true,
+      version: "1.0.0",
+      status: "ready",
+      auth: {
+        status: "authenticated",
+      },
+      accountUsage: {
+        source: "codex-rate-limits",
+        checkedAt: "2026-04-10T00:00:00.000Z",
+        primaryLimitId: "codex",
+        limits: [
+          {
+            limitId: "codex",
+            limitName: "Codex",
+            primary: {
+              usedPercent: 25,
+              remainingPercent: 75,
+              resetsAt: 1_800_000_000,
+              windowDurationMins: 300,
+            },
+          },
+        ],
+      },
+      checkedAt: "2026-04-10T00:00:00.000Z",
+      models: [],
+    });
+
+    expect(parsed.accountUsage?.limits[0]?.primary?.remainingPercent).toBe(75);
+  });
 });

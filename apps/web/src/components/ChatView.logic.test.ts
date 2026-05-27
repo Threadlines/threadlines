@@ -17,6 +17,7 @@ import {
   createLocalDispatchSnapshot,
   deriveComposerSendState,
   hasServerAcknowledgedLocalDispatch,
+  reconcileSteeringHandoffStatuses,
   reconcileMountedTerminalThreadIds,
   resolveSendEnvMode,
   shouldWriteThreadErrorToCurrentServerThread,
@@ -723,5 +724,50 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
         threadError: null,
       }),
     ).toBe(true);
+  });
+});
+
+describe("reconcileSteeringHandoffStatuses", () => {
+  const queuedMessage = {
+    id: "message-steer",
+    threadKey: "environment-local:thread-1",
+    createdAt: "2026-03-29T00:01:00.000Z",
+    status: "queued" as const,
+    text: "adjust the current answer",
+  };
+
+  it("marks a queued steering handoff read as soon as the server message is visible", () => {
+    const messagesById = {
+      [queuedMessage.id]: queuedMessage,
+    };
+
+    const next = reconcileSteeringHandoffStatuses({
+      messagesById,
+      activeThreadKey: queuedMessage.threadKey,
+      latestTurn: {
+        requestedAt: "2026-03-29T00:00:00.000Z",
+      },
+      serverMessageIds: new Set([queuedMessage.id]),
+    });
+
+    expect(next[queuedMessage.id]?.status).toBe("read");
+  });
+
+  it("keeps a queued steering handoff while neither the turn nor server message has acknowledged it", () => {
+    const messagesById = {
+      [queuedMessage.id]: queuedMessage,
+    };
+
+    const next = reconcileSteeringHandoffStatuses({
+      messagesById,
+      activeThreadKey: queuedMessage.threadKey,
+      latestTurn: {
+        requestedAt: "2026-03-29T00:00:00.000Z",
+      },
+      serverMessageIds: new Set(),
+    });
+
+    expect(next).toBe(messagesById);
+    expect(next[queuedMessage.id]?.status).toBe("queued");
   });
 });

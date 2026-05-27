@@ -28,6 +28,7 @@ import {
   ProjectWriteFileError,
   OrchestrationReplayEventsError,
   FilesystemBrowseError,
+  ProviderExtensionsError,
   ThreadId,
   type TerminalEvent,
   WS_METHODS,
@@ -51,6 +52,11 @@ import {
 } from "./observability/RpcInstrumentation.ts";
 import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
+import {
+  readProviderInstructionFiles,
+  readProviderExtensionsInventory,
+  writeInstructionFile,
+} from "./provider/providerExtensions.ts";
 import { ServerLifecycleEvents } from "./serverLifecycleEvents.ts";
 import { ServerRuntimeStartup } from "./serverRuntimeStartup.ts";
 import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
@@ -923,6 +929,44 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           observeRpcEffect(WS_METHODS.serverSignalProcess, processDiagnostics.signal(input), {
             "rpc.aggregate": "server",
           }),
+        [WS_METHODS.serverGetProviderExtensions]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverGetProviderExtensions,
+            Effect.gen(function* () {
+              const [settings, providers] = yield* Effect.all(
+                [serverSettings.getSettings, providerRegistry.getProviders],
+                { concurrency: "unbounded" },
+              ).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderExtensionsError({
+                      message: cause.message,
+                      cause,
+                    }),
+                ),
+              );
+              return yield* readProviderExtensionsInventory({
+                request: input,
+                settings,
+                providers,
+              });
+            }),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverGetProviderInstructionFiles]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverGetProviderInstructionFiles,
+            readProviderInstructionFiles(input),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverWriteProviderInstructionFile]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverWriteProviderInstructionFile,
+            writeInstructionFile(input),
+            {
+              "rpc.aggregate": "server",
+            },
+          ),
         [WS_METHODS.sourceControlLookupRepository]: (input) =>
           observeRpcEffect(
             WS_METHODS.sourceControlLookupRepository,

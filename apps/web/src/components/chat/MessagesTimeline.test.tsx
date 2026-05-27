@@ -146,19 +146,6 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain('data-user-message-collapsible="false"');
   });
 
-  it("labels user messages that steered an active conversation", async () => {
-    const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
-      <MessagesTimeline
-        {...buildProps()}
-        steeredMessageIds={new Set([MessageId.make("message-1")])}
-        timelineEntries={[buildUserTimelineEntry("Please use my last note before continuing.")]}
-      />,
-    );
-
-    expect(markup).toContain("Steered conversation");
-  });
-
   it("renders inline terminal labels with the composer chip UI", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(
@@ -262,7 +249,7 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("apps/web/src/session-logic.ts");
   });
 
-  it("keeps live command activity uncollapsed while a turn is working", async () => {
+  it("keeps live activity compact and height-stable while a turn is working", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(
       <MessagesTimeline
@@ -306,9 +293,13 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("git status --short");
-    expect(markup).toContain("rg -n");
-    expect(markup).toContain("apps/web/src/session-logic.ts");
+    expect(markup).toContain("Current activity");
+    expect(markup).toContain("3 earlier events");
+    expect(markup).toContain('data-live-activity-strip="true"');
+    expect(markup).toContain("min-h-[3.25rem]");
+    expect(markup).not.toContain("git status --short");
+    expect(markup).not.toContain("rg -n");
+    expect(markup).not.toContain("apps/web/src/session-logic.ts");
     expect(markup).toContain("git diff --stat");
     expect(markup).toContain("Verifying bun typecheck");
     expect(markup).toContain("bun typecheck");
@@ -346,6 +337,67 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("bun test, bun lint, bun typecheck");
     expect(markup).toContain("View transcript");
     expect(markup).not.toContain("MessagesTimeline.test.tsx");
+  });
+
+  it("renders subagent tool calls with delegated-work language", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-subagent",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-subagent",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Subagent task",
+              detail: "reviewer: Inspect timeline rendering",
+              tone: "tool",
+              itemType: "collab_agent_tool_call",
+              executionState: "completed",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Finished reviewer subagent");
+    expect(markup).toContain("Inspect timeline rendering");
+    expect(markup).toContain('data-subagent-activity-row="true"');
+    expect(markup).toContain("Subagent");
+    expect(markup).toContain("Details");
+    expect(markup).not.toContain('data-subagent-activity-details="true"');
+  });
+
+  it("marks agent response bodies without changing markdown rendering", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "assistant-entry",
+            kind: "message",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            message: {
+              id: MessageId.make("assistant-entry"),
+              role: "assistant",
+              text: "Subagent review complete.",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              completedAt: "2026-03-17T19:12:30.000Z",
+              streaming: false,
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('data-agent-response-body="true"');
+    expect(markup).toContain('data-assistant-message-body="true"');
+    expect(markup).not.toContain("agent-response-reveal");
+    expect(markup).not.toContain("--agent-response-reveal-duration");
   });
 
   it("renders generated image previews in work log rows", async () => {

@@ -58,6 +58,40 @@ export const ServerProviderAuth = Schema.Struct({
 });
 export type ServerProviderAuth = typeof ServerProviderAuth.Type;
 
+export const ServerProviderUsageWindow = Schema.Struct({
+  usedPercent: NonNegativeInt,
+  remainingPercent: NonNegativeInt,
+  resetsAt: Schema.optional(NonNegativeInt),
+  windowDurationMins: Schema.optional(NonNegativeInt),
+});
+export type ServerProviderUsageWindow = typeof ServerProviderUsageWindow.Type;
+
+export const ServerProviderUsageCredits = Schema.Struct({
+  hasCredits: Schema.Boolean,
+  unlimited: Schema.Boolean,
+  balance: Schema.optional(TrimmedNonEmptyString),
+});
+export type ServerProviderUsageCredits = typeof ServerProviderUsageCredits.Type;
+
+export const ServerProviderUsageLimit = Schema.Struct({
+  limitId: Schema.optional(TrimmedNonEmptyString),
+  limitName: Schema.optional(TrimmedNonEmptyString),
+  planType: Schema.optional(TrimmedNonEmptyString),
+  rateLimitReachedType: Schema.optional(TrimmedNonEmptyString),
+  credits: Schema.optional(ServerProviderUsageCredits),
+  primary: Schema.optional(ServerProviderUsageWindow),
+  secondary: Schema.optional(ServerProviderUsageWindow),
+});
+export type ServerProviderUsageLimit = typeof ServerProviderUsageLimit.Type;
+
+export const ServerProviderAccountUsage = Schema.Struct({
+  source: Schema.Literal("codex-rate-limits"),
+  checkedAt: IsoDateTime,
+  primaryLimitId: Schema.optional(TrimmedNonEmptyString),
+  limits: Schema.Array(ServerProviderUsageLimit),
+});
+export type ServerProviderAccountUsage = typeof ServerProviderAccountUsage.Type;
+
 export const ServerProviderModel = Schema.Struct({
   slug: TrimmedNonEmptyString,
   name: TrimmedNonEmptyString,
@@ -170,6 +204,7 @@ export const ServerProvider = Schema.Struct({
   version: Schema.NullOr(TrimmedNonEmptyString),
   status: ServerProviderState,
   auth: ServerProviderAuth,
+  accountUsage: Schema.optional(ServerProviderAccountUsage),
   checkedAt: IsoDateTime,
   message: Schema.optional(TrimmedNonEmptyString),
   // Optional for back-compat: every legacy producer omits this field and

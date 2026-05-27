@@ -382,3 +382,41 @@ export function hasServerAcknowledgedLocalDispatch(input: {
     input.localDispatch.sessionUpdatedAt !== (session?.updatedAt ?? null)
   );
 }
+
+export type SteeringHandoffStatus = "queued" | "read";
+
+export interface SteeringHandoffState {
+  readonly id: string;
+  readonly threadKey: string;
+  readonly createdAt: string;
+  readonly status: SteeringHandoffStatus;
+}
+
+export function reconcileSteeringHandoffStatuses<T extends SteeringHandoffState>(input: {
+  readonly messagesById: Record<string, T>;
+  readonly activeThreadKey: string | null | undefined;
+  readonly latestTurn: Pick<NonNullable<Thread["latestTurn"]>, "requestedAt"> | null | undefined;
+  readonly serverMessageIds: ReadonlySet<string>;
+}): Record<string, T> {
+  const { activeThreadKey } = input;
+  if (!activeThreadKey) {
+    return input.messagesById;
+  }
+
+  let changed = false;
+  const next = { ...input.messagesById };
+  for (const [id, message] of Object.entries(input.messagesById)) {
+    if (message.threadKey !== activeThreadKey || message.status !== "queued") {
+      continue;
+    }
+    const hasAcceptedTurn = input.latestTurn?.requestedAt === message.createdAt;
+    const hasVisibleServerMessage = input.serverMessageIds.has(message.id);
+    if (!hasAcceptedTurn && !hasVisibleServerMessage) {
+      continue;
+    }
+    next[id] = { ...message, status: "read" };
+    changed = true;
+  }
+
+  return changed ? next : input.messagesById;
+}

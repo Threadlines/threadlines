@@ -410,7 +410,7 @@ export function useSettingsRestore(onRestored?: () => void) {
         ? ["Auto-open task panel"]
         : []),
       ...(settings.enableAssistantStreaming !== DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming
-        ? ["Assistant output"]
+        ? ["Agent responses"]
         : []),
       ...(Duration.toMillis(settings.automaticGitFetchInterval) !==
       Duration.toMillis(DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval)
@@ -650,7 +650,7 @@ export function GeneralSettingsPanel() {
 
         <SettingsRow
           title="Changed files in chat"
-          description="Expand the changed-files tree in assistant responses by default."
+          description="Expand the changed-files tree in agent responses by default."
           resetAction={
             settings.chatChangedFilesDefaultExpanded !==
             DEFAULT_UNIFIED_SETTINGS.chatChangedFilesDefaultExpanded ? (
@@ -677,13 +677,13 @@ export function GeneralSettingsPanel() {
         />
 
         <SettingsRow
-          title="Assistant output"
-          description="Show token-by-token output while a response is in progress."
+          title="Agent responses"
+          description="Stream response text while a turn is in progress."
           resetAction={
             settings.enableAssistantStreaming !==
             DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming ? (
               <SettingResetButton
-                label="assistant output"
+                label="agent responses"
                 onClick={() =>
                   updateSettings({
                     enableAssistantStreaming: DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming,
@@ -698,7 +698,7 @@ export function GeneralSettingsPanel() {
               onCheckedChange={(checked) =>
                 updateSettings({ enableAssistantStreaming: Boolean(checked) })
               }
-              aria-label="Stream assistant messages"
+              aria-label="Stream agent responses"
             />
           }
         />

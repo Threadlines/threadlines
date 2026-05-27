@@ -59,6 +59,15 @@ import {
 } from "./orchestration.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import {
+  ProviderExtensionsError,
+  ProviderExtensionsInventoryInput,
+  ProviderExtensionsInventoryResult,
+  ProviderInstructionFilesInput,
+  ProviderInstructionFilesResult,
+  ProviderInstructionWriteInput,
+  ProviderInstructionWriteResult,
+} from "./providerExtensions.ts";
+import {
   ProjectSearchEntriesError,
   ProjectSearchEntriesInput,
   ProjectSearchEntriesResult,
@@ -163,6 +172,9 @@ export const WS_METHODS = {
   serverGetProcessDiagnostics: "server.getProcessDiagnostics",
   serverGetProcessResourceHistory: "server.getProcessResourceHistory",
   serverSignalProcess: "server.signalProcess",
+  serverGetProviderExtensions: "server.getProviderExtensions",
+  serverGetProviderInstructionFiles: "server.getProviderInstructionFiles",
+  serverWriteProviderInstructionFile: "server.writeProviderInstructionFile",
 
   // Source control methods
   sourceControlLookupRepository: "sourceControl.lookupRepository",
@@ -253,6 +265,30 @@ export const WsServerSignalProcessRpc = Rpc.make(WS_METHODS.serverSignalProcess,
   payload: ServerSignalProcessInput,
   success: ServerSignalProcessResult,
 });
+
+export const WsServerGetProviderExtensionsRpc = Rpc.make(WS_METHODS.serverGetProviderExtensions, {
+  payload: ProviderExtensionsInventoryInput,
+  success: ProviderExtensionsInventoryResult,
+  error: ProviderExtensionsError,
+});
+
+export const WsServerGetProviderInstructionFilesRpc = Rpc.make(
+  WS_METHODS.serverGetProviderInstructionFiles,
+  {
+    payload: ProviderInstructionFilesInput,
+    success: ProviderInstructionFilesResult,
+    error: ProviderExtensionsError,
+  },
+);
+
+export const WsServerWriteProviderInstructionFileRpc = Rpc.make(
+  WS_METHODS.serverWriteProviderInstructionFile,
+  {
+    payload: ProviderInstructionWriteInput,
+    success: ProviderInstructionWriteResult,
+    error: ProviderExtensionsError,
+  },
+);
 
 export const WsSourceControlLookupRepositoryRpc = Rpc.make(
   WS_METHODS.sourceControlLookupRepository,
@@ -529,6 +565,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetProcessDiagnosticsRpc,
   WsServerGetProcessResourceHistoryRpc,
   WsServerSignalProcessRpc,
+  WsServerGetProviderExtensionsRpc,
+  WsServerGetProviderInstructionFilesRpc,
+  WsServerWriteProviderInstructionFileRpc,
   WsSourceControlLookupRepositoryRpc,
   WsSourceControlCloneRepositoryRpc,
   WsSourceControlPublishRepositoryRpc,
