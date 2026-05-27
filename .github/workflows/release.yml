@@ -57,7 +57,7 @@ jobs:
       - name: Ensure Electron binary is installed
         working-directory: apps/desktop
         run: |
-          node -e "require('node:child_process').execFileSync(process.execPath, [require.resolve('electron/install')], { stdio: 'inherit' }); console.log('Electron binary: ' + require('electron'))"
+          node -e "const { execFileSync } = require('node:child_process'); const env = { ...process.env, force_no_cache: 'true', npm_config_platform: process.platform, npm_config_arch: process.arch }; delete env.ELECTRON_SKIP_BINARY_DOWNLOAD; execFileSync(process.execPath, [require.resolve('electron/install')], { stdio: 'inherit', env }); console.log('Electron binary: ' + require('electron'))"
 
       - id: release_meta
         name: Resolve release metadata
@@ -146,7 +146,7 @@ jobs:
       - name: Ensure Electron binary is installed
         working-directory: apps/desktop
         run: |
-          node -e "require('node:child_process').execFileSync(process.execPath, [require.resolve('electron/install')], { stdio: 'inherit' }); console.log('Electron binary: ' + require('electron'))"
+          node -e "const { execFileSync } = require('node:child_process'); const env = { ...process.env, force_no_cache: 'true', npm_config_platform: process.platform, npm_config_arch: process.arch }; delete env.ELECTRON_SKIP_BINARY_DOWNLOAD; execFileSync(process.execPath, [require.resolve('electron/install')], { stdio: 'inherit', env }); console.log('Electron binary: ' + require('electron'))"
 
       - name: Align release package versions
         run: bun scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
