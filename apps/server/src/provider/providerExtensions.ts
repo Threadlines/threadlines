@@ -44,6 +44,8 @@ import { spawnAndCollect } from "./providerSnapshot.ts";
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
 const CLAUDE_DRIVER = ProviderDriverKind.make("claudeAgent");
 const INVENTORY_COMMAND_TIMEOUT = Duration.seconds(20);
+const CODEX_APP_SERVER_INVENTORY_TIMEOUT = Duration.seconds(20);
+const CODEX_APP_SERVER_REQUEST_TIMEOUT = Duration.seconds(15);
 const MAX_SKILL_FILE_BYTES = 32_000;
 const MAX_ERROR_MESSAGE_LENGTH = 240;
 
@@ -53,6 +55,10 @@ const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
 function optionalText(value: string | null | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed && trimmed.length > 0 ? trimmed : undefined;
+}
+
+function requiredText(value: string | null | undefined): string | null {
+  return optionalText(value) ?? null;
 }
 
 function sanitizeErrorMessage(message: string): string {
@@ -272,10 +278,11 @@ function mapCodexPlugins(response: CodexSchema.V2PluginListResponse): ProviderEx
   const byId = new Map<string, ProviderExtensionPlugin>();
   for (const marketplace of response.marketplaces) {
     for (const plugin of marketplace.plugins) {
-      if (byId.has(plugin.id)) continue;
-      byId.set(plugin.id, {
-        id: plugin.id,
-        name: plugin.name,
+      const id = requiredText(plugin.id);
+      if (!id || byId.has(id)) continue;
+      byId.set(id, {
+        id,
+        name: requiredText(plugin.name) ?? id,
         displayName: optionalText(plugin.interface?.displayName ?? null),
         description: optionalText(plugin.interface?.shortDescription ?? null),
         enabled: plugin.enabled,
@@ -296,18 +303,25 @@ function mapCodexSkills(
     ? matchingEntry.skills
     : response.data.flatMap((entry) => entry.skills);
   return skills
-    .map((skill) => ({
-      name: skill.name,
-      path: skill.path,
-      displayName: optionalText(skill.interface?.displayName ?? null),
-      description: optionalText(skill.description),
-      shortDescription: optionalText(
-        skill.shortDescription ?? skill.interface?.shortDescription ?? null,
-      ),
-      enabled: skill.enabled,
-      scope: skill.scope,
-      source: "Codex app-server",
-    }))
+    .flatMap((skill) => {
+      const path = requiredText(skill.path);
+      if (!path) return [];
+      const displayName = optionalText(skill.interface?.displayName ?? null);
+      return [
+        {
+          name: requiredText(skill.name) ?? displayName ?? path,
+          path,
+          displayName,
+          description: optionalText(skill.description),
+          shortDescription: optionalText(
+            skill.shortDescription ?? skill.interface?.shortDescription ?? null,
+          ),
+          enabled: skill.enabled,
+          scope: skill.scope,
+          source: "Codex app-server",
+        },
+      ];
+    })
     .toSorted((left, right) => left.name.localeCompare(right.name));
 }
 
@@ -315,26 +329,63 @@ function mapCodexMcpServers(
   response: CodexSchema.V2ListMcpServerStatusResponse,
 ): ProviderExtensionMcpServer[] {
   return response.data
-    .map((server) => ({
-      name: server.name,
-      authStatus: server.authStatus,
-      status: server.authStatus,
-      toolCount: Object.keys(server.tools).length,
-      resourceCount: server.resources.length + server.resourceTemplates.length,
-    }))
+    .flatMap((server) => {
+      const name = requiredText(server.name);
+      if (!name) return [];
+      return [
+        {
+          name,
+          authStatus: optionalText(server.authStatus),
+          status: optionalText(server.authStatus),
+          toolCount: Object.keys(server.tools ?? {}).length,
+          resourceCount: (server.resources ?? []).length + (server.resourceTemplates ?? []).length,
+        },
+      ];
+    })
     .toSorted((left, right) => left.name.localeCompare(right.name));
 }
 
 function mapCodexApps(response: CodexSchema.V2AppsListResponse): ProviderExtensionApp[] {
   return response.data
-    .map((app) => ({
-      id: app.id,
-      name: app.name,
-      description: optionalText(app.description ?? null),
-      enabled: app.isEnabled,
-      accessible: app.isAccessible,
-    }))
+    .flatMap((app) => {
+      const id = requiredText(app.id);
+      if (!id) return [];
+      return [
+        {
+          id,
+          name: requiredText(app.name) ?? id,
+          description: optionalText(app.description ?? null),
+          enabled: app.isEnabled,
+          accessible: app.isAccessible,
+        },
+      ];
+    })
     .toSorted((left, right) => left.name.localeCompare(right.name));
+}
+
+function codexInventoryTimeoutMessage(label: string): string {
+  return `Timed out reading Codex ${label}.`;
+}
+
+function collectCodexRequest<A, E, R>(
+  label: string,
+): (
+  effect: Effect.Effect<A, E, R>,
+) => Effect.Effect<Result.Result<A, E | ProviderExtensionsError>, never, R> {
+  return (effect) =>
+    effect.pipe(
+      Effect.timeoutOption(CODEX_APP_SERVER_REQUEST_TIMEOUT),
+      Effect.flatMap((result) =>
+        Option.isSome(result)
+          ? Effect.succeed(result.value)
+          : Effect.fail(
+              new ProviderExtensionsError({
+                message: codexInventoryTimeoutMessage(label),
+              }),
+            ),
+      ),
+      Effect.result,
+    );
 }
 
 const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppServerInventory")(
@@ -387,28 +438,28 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
           [
             client
               .request("plugin/list", { cwds: [input.cwd] })
-              .pipe(Effect.map(mapCodexPlugins), Effect.result),
+              .pipe(Effect.map(mapCodexPlugins), collectCodexRequest("plugins")),
             client.request("skills/list", { cwds: [input.cwd] }).pipe(
               Effect.map((response) => mapCodexSkills(response, input.cwd)),
-              Effect.result,
+              collectCodexRequest("skills"),
             ),
             client
               .request("mcpServerStatus/list", { detail: "toolsAndAuthOnly", limit: 100 })
-              .pipe(Effect.map(mapCodexMcpServers), Effect.result),
+              .pipe(Effect.map(mapCodexMcpServers), collectCodexRequest("MCP servers")),
             client
               .request("app/list", { limit: 100 })
-              .pipe(Effect.map(mapCodexApps), Effect.result),
+              .pipe(Effect.map(mapCodexApps), collectCodexRequest("apps")),
           ],
           { concurrency: "unbounded" },
         );
         return { plugins, skills, mcpServers, apps };
       }),
-    ).pipe(Effect.result);
+    ).pipe(Effect.result, Effect.timeoutOption(CODEX_APP_SERVER_INVENTORY_TIMEOUT));
 
-    if (Result.isFailure(clientResult)) {
+    if (Option.isNone(clientResult)) {
       return {
         status: "error",
-        message: toErrorMessage(clientResult.failure),
+        message: codexInventoryTimeoutMessage("extension inventory"),
         plugins: [],
         skills: [],
         mcpServers: [],
@@ -416,7 +467,18 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
       };
     }
 
-    const data = clientResult.success;
+    if (Result.isFailure(clientResult.value)) {
+      return {
+        status: "error",
+        message: toErrorMessage(clientResult.value.failure),
+        plugins: [],
+        skills: [],
+        mcpServers: [],
+        apps: [],
+      };
+    }
+
+    const data = clientResult.value.success;
     const messages = [
       resultMessage(data.plugins),
       resultMessage(data.skills),

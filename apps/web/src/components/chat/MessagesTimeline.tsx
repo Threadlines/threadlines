@@ -641,42 +641,74 @@ const WorkGroupSection = memo(function WorkGroupSection({
   const { workspaceRoot } = use(TimelineRowCtx);
   const { isWorking } = use(TimelineRowActivityCtx);
   const [isExpanded, setIsExpanded] = useState(false);
+  const previousIsWorkingRef = useRef(isWorking);
+
   useEffect(() => {
-    if (isWorking && isExpanded) {
+    const wasWorking = previousIsWorkingRef.current;
+    previousIsWorkingRef.current = isWorking;
+
+    if (!wasWorking && isWorking) {
       setIsExpanded(false);
     }
-  }, [isExpanded, isWorking]);
+  }, [isWorking]);
 
-  const isShowingFullLog = isExpanded && !isWorking;
+  const isShowingLiveHistory = isWorking && isExpanded;
+  const isShowingFullLog = !isWorking && isExpanded;
+  const liveActivityEntries = isWorking ? deriveLiveActivityEntries(groupedEntries) : [];
   const activityEntries = isWorking
-    ? deriveLiveActivityEntries(groupedEntries)
+    ? isShowingLiveHistory
+      ? groupedEntries
+      : liveActivityEntries
     : isShowingFullLog
       ? groupedEntries
       : summarizeSemanticActivityEntries(groupedEntries);
   const visibleLimit = isWorking ? LIVE_WORK_LOG_ENTRY_COUNT : MAX_VISIBLE_WORK_LOG_ENTRIES;
   const hasOverflow = activityEntries.length > visibleLimit;
   const visibleEntries =
-    hasOverflow && !isShowingFullLog ? activityEntries.slice(-visibleLimit) : activityEntries;
+    hasOverflow && !isShowingFullLog && !isShowingLiveHistory
+      ? activityEntries.slice(-visibleLimit)
+      : activityEntries;
   const hasCompactedEntries = !isWorking && activityEntries.length < groupedEntries.length;
-  const hiddenCount = isShowingFullLog
-    ? 0
-    : Math.max(0, groupedEntries.length - visibleEntries.length);
+  const liveHiddenCount = isWorking
+    ? Math.max(0, groupedEntries.length - liveActivityEntries.length)
+    : 0;
+  const hiddenCount = isWorking
+    ? liveHiddenCount
+    : isShowingFullLog
+      ? 0
+      : Math.max(0, groupedEntries.length - visibleEntries.length);
   const onlyToolEntries = groupedEntries.every((entry) => entry.tone === "tool");
   const hiddenSummary =
     hasOverflow && !hasCompactedEntries && !isShowingFullLog && !isWorking
       ? summarizeHiddenWorkEntries(groupedEntries.slice(0, hiddenCount))
       : null;
-  const liveHiddenSummary = isWorking
-    ? summarizeLiveHiddenWorkEntries(groupedEntries, visibleEntries)
-    : null;
+  const liveHiddenSummary =
+    isWorking && !isShowingLiveHistory
+      ? summarizeLiveHiddenWorkEntries(groupedEntries, liveActivityEntries)
+      : null;
+  const canToggleLiveHistory = isWorking && liveHiddenCount > 0;
   const canToggleFullLog = !isWorking && (hasOverflow || hasCompactedEntries);
+  const canToggleActivityLog = canToggleLiveHistory || canToggleFullLog;
   const showHeader =
-    isWorking || canToggleFullLog || hasCompactedEntries || hasOverflow || !onlyToolEntries;
+    isWorking || canToggleActivityLog || hasCompactedEntries || hasOverflow || !onlyToolEntries;
   const toggleLabel = isExpanded
-    ? "Hide transcript"
-    : hasCompactedEntries
-      ? "View transcript"
-      : `Show ${hiddenCount} more`;
+    ? isWorking
+      ? "Hide previous"
+      : "Hide transcript"
+    : isWorking
+      ? "Show previous"
+      : hasCompactedEntries
+        ? "View transcript"
+        : `Show ${hiddenCount} more`;
+  const toggleAriaLabel = isExpanded
+    ? isWorking
+      ? "Hide previous activities"
+      : "Hide activity transcript"
+    : isWorking
+      ? `Show ${liveHiddenCount.toLocaleString()} previous ${
+          liveHiddenCount === 1 ? "activity" : "activities"
+        }`
+      : toggleLabel;
 
   return (
     <div className="rounded-xl border border-border/45 bg-card/25 px-2 py-1.5">
@@ -692,10 +724,12 @@ const WorkGroupSection = memo(function WorkGroupSection({
               </p>
             ) : null}
           </div>
-          {canToggleFullLog && (
+          {canToggleActivityLog && (
             <button
               type="button"
               className="shrink-0 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/55 transition-colors duration-150 hover:text-foreground/75"
+              aria-expanded={isExpanded}
+              aria-label={toggleAriaLabel}
               onClick={() => setIsExpanded((v) => !v)}
             >
               {toggleLabel}
