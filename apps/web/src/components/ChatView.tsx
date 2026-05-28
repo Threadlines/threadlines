@@ -1411,13 +1411,11 @@ export default function ChatView(props: ChatViewProps) {
     ? "Reverting checkpoint"
     : isPreparingWorktree
       ? "Preparing worktree"
-      : phase === "connecting" || isConnecting
-        ? "Connecting"
-        : phase === "running"
-          ? "Working"
-          : isSendBusy
-            ? "Sending"
-            : "Working";
+      : phase === "running"
+        ? "Working"
+        : phase === "connecting" || isConnecting || isSendBusy
+          ? "Connecting"
+          : "Working";
   const activeWorkStartedAt = deriveActiveWorkStartedAt(
     activeLatestTurn,
     activeThread?.session ?? null,

@@ -360,6 +360,68 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.lastError).toBe("turn failed");
   });
 
+  it("keeps pending turn startup visible until the provider turn starts", async () => {
+    const harness = await createHarness();
+    const requestedAt = "2026-01-01T00:00:01.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-preserve-starting"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-preserve-starting"),
+          role: "user",
+          text: "keep startup visible",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: requestedAt,
+      }),
+    );
+
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.status === "starting" && thread.session.updatedAt === requestedAt,
+    );
+
+    harness.emit({
+      type: "session.started",
+      eventId: asEventId("evt-session-started-before-turn"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:05.000Z",
+      payload: {
+        message: "ready",
+      },
+    });
+    await harness.drain();
+
+    const stillStarting = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(stillStarting?.session?.status).toBe("starting");
+    expect(stillStarting?.session?.updatedAt).toBe(requestedAt);
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-after-session"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:06.000Z",
+      turnId: asTurnId("turn-preserve-starting"),
+    });
+
+    const runningThread = await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.status === "running" &&
+        thread.session.activeTurnId === asTurnId("turn-preserve-starting"),
+    );
+    expect(runningThread.session?.updatedAt).toBe("2026-01-01T00:00:06.000Z");
+  });
+
   it("settles a running turn when the provider reports turn.aborted", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

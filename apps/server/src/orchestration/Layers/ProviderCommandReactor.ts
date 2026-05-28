@@ -425,18 +425,23 @@ const make = Effect.gen(function* () {
             detail: `Provider session '${session.threadId}' started without a provider instance id.`,
           });
         }
+        const mappedStatus = mapProviderSessionStatusToOrchestrationStatus(session.status);
+        const shouldPreservePendingTurnStartup =
+          thread.session?.status === "starting" && mappedStatus === "ready";
         yield* setThreadSession({
           threadId,
           session: {
             threadId,
-            status: mapProviderSessionStatusToOrchestrationStatus(session.status),
+            status: shouldPreservePendingTurnStartup ? "starting" : mappedStatus,
             providerName: session.provider,
             providerInstanceId: session.providerInstanceId,
             runtimeMode: desiredRuntimeMode,
             // Provider turn ids are not orchestration turn ids.
             activeTurnId: null,
             lastError: session.lastError ?? null,
-            updatedAt: session.updatedAt,
+            updatedAt: shouldPreservePendingTurnStartup
+              ? (thread.session?.updatedAt ?? session.updatedAt)
+              : session.updatedAt,
           },
           createdAt,
         });

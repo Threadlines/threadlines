@@ -75,12 +75,15 @@ const makeManualProviderMaintenanceCapabilities = (provider: ProviderDriverKind)
     packageName: null,
   });
 
+const CLAUDE_DRIVER = ProviderDriverKind.make("claudeAgent");
+
 const hasModelCapabilities = (model: ServerProvider["models"][number]): boolean =>
   (model.capabilities?.optionDescriptors?.length ?? 0) > 0;
 
 const mergeProviderModels = (
   previousModels: ReadonlyArray<ServerProvider["models"][number]>,
   nextModels: ReadonlyArray<ServerProvider["models"][number]>,
+  options?: { readonly preserveMissingPreviousModels?: boolean },
 ): ReadonlyArray<ServerProvider["models"][number]> => {
   if (nextModels.length === 0 && previousModels.length > 0) {
     return previousModels;
@@ -98,7 +101,9 @@ const mergeProviderModels = (
     };
   });
   const nextSlugs = new Set(nextModels.map((model) => model.slug));
-  return [...mergedModels, ...previousModels.filter((model) => !nextSlugs.has(model.slug))];
+  return options?.preserveMissingPreviousModels === false
+    ? mergedModels
+    : [...mergedModels, ...previousModels.filter((model) => !nextSlugs.has(model.slug))];
 };
 
 export const mergeProviderSnapshot = (
@@ -109,7 +114,9 @@ export const mergeProviderSnapshot = (
     ? nextProvider
     : {
         ...nextProvider,
-        models: mergeProviderModels(previousProvider.models, nextProvider.models),
+        models: mergeProviderModels(previousProvider.models, nextProvider.models, {
+          preserveMissingPreviousModels: nextProvider.driver !== CLAUDE_DRIVER,
+        }),
       };
 
 export const mergeProviderSnapshots = (

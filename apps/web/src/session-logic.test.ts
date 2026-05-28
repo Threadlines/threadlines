@@ -1949,6 +1949,20 @@ describe("deriveActiveWorkStartedAt", () => {
     ).toBe("2026-02-27T21:11:00.000Z");
   });
 
+  it("keeps the session startup timestamp after the local send state clears", () => {
+    expect(
+      deriveActiveWorkStartedAt(
+        latestTurn,
+        {
+          orchestrationStatus: "starting",
+          activeTurnId: undefined,
+          updatedAt: "2026-02-27T21:11:00.000Z",
+        },
+        null,
+      ),
+    ).toBe("2026-02-27T21:11:00.000Z");
+  });
+
   it("uses sendStartedAt for a fresh send after the prior turn completed", () => {
     expect(
       deriveActiveWorkStartedAt(

@@ -1256,7 +1256,7 @@ const make = Effect.gen(function* () {
                 event.type === "session.exited"
               ? null
               : activeTurnId;
-        const status = (() => {
+        const runtimeStatus = (() => {
           switch (event.type) {
             case "session.state.changed":
               return orchestrationSessionStatusFromRuntimeState(event.payload.state);
@@ -1277,6 +1277,17 @@ const make = Effect.gen(function* () {
               return activeTurnId !== null ? "running" : "ready";
           }
         })();
+        const shouldPreservePendingTurnStartup =
+          thread.session?.status === "starting" &&
+          nextActiveTurnId === null &&
+          runtimeStatus === "ready" &&
+          (event.type === "session.started" ||
+            event.type === "thread.started" ||
+            event.type === "session.state.changed");
+        const status = shouldPreservePendingTurnStartup ? "starting" : runtimeStatus;
+        const sessionUpdatedAt = shouldPreservePendingTurnStartup
+          ? (thread.session?.updatedAt ?? now)
+          : now;
         const lastError =
           event.type === "session.state.changed" && event.payload.state === "error"
             ? (event.payload.reason ?? thread.session?.lastError ?? "Provider session error")
@@ -1322,7 +1333,7 @@ const make = Effect.gen(function* () {
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
               activeTurnId: nextActiveTurnId,
               lastError,
-              updatedAt: now,
+              updatedAt: sessionUpdatedAt,
             },
             createdAt: now,
           });
