@@ -116,4 +116,26 @@ describe("ElectronMenu", () => {
       assert.equal(popupMock.mock.calls.length, 1);
     }).pipe(Effect.provide(ElectronMenu.layer)),
   );
+
+  it.effect("passes context frame and source type through popupTemplate", () =>
+    Effect.gen(function* () {
+      const popupMock = vi.fn();
+      buildFromTemplateMock.mockImplementation(() => ({ popup: popupMock }));
+      const frame = {} as Electron.WebFrameMain;
+
+      const electronMenu = yield* ElectronMenu.ElectronMenu;
+      yield* electronMenu.popupTemplate({
+        window: {} as Electron.BrowserWindow,
+        frame,
+        sourceType: "mouse",
+        template: [{ label: "Copy" }],
+      });
+
+      assert.deepEqual(popupMock.mock.calls[0]?.[0], {
+        window: {},
+        frame,
+        sourceType: "mouse",
+      });
+    }).pipe(Effect.provide(ElectronMenu.layer)),
+  );
 });

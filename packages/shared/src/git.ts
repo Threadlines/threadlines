@@ -128,6 +128,71 @@ export function normalizeGitRemoteUrl(value: string): string {
   return normalized;
 }
 
+function getLastRepositoryPathSegment(value: string): string | null {
+  let lastSegment: string | null = null;
+  for (const segment of value.split(/[\\/]+/)) {
+    const trimmed = segment.trim();
+    if (trimmed.length > 0) {
+      lastSegment = trimmed;
+    }
+  }
+  return lastSegment;
+}
+
+function sanitizeRepositoryDirectoryCharacter(character: string): string {
+  if (character.charCodeAt(0) < 32 || /[<>:"|?*]/.test(character)) {
+    return "-";
+  }
+  return character;
+}
+
+function sanitizeRepositoryDirectoryName(value: string): string | null {
+  let decoded = value.trim();
+  try {
+    decoded = decodeURIComponent(decoded);
+  } catch {
+    // Keep the original segment if it is not URI-encoded.
+  }
+
+  const sanitized = decoded
+    .replace(/\.git$/i, "")
+    .split("")
+    .map(sanitizeRepositoryDirectoryCharacter)
+    .join("")
+    .replace(/[\\/]+/g, "-")
+    .replace(/^[.\s]+|[.\s]+$/g, "");
+  return sanitized.length > 0 ? sanitized : null;
+}
+
+/**
+ * Derive the local clone directory name from an owner/repo value or remote URL.
+ */
+export function deriveRepositoryDirectoryName(value: string | null | undefined): string | null {
+  const trimmed = value?.trim() ?? "";
+  if (trimmed.length === 0) {
+    return null;
+  }
+
+  const withoutQueryOrHash = trimmed.split(/[?#]/, 1)[0]?.trim() ?? "";
+  let candidate: string | null = null;
+
+  if (/^(?:ssh|https?|git):\/\//i.test(withoutQueryOrHash)) {
+    try {
+      candidate = getLastRepositoryPathSegment(new URL(withoutQueryOrHash).pathname);
+    } catch {
+      candidate = null;
+    }
+  }
+
+  if (!candidate) {
+    const scpStylePath = /^[^@\s]+@[^:/\s]+[:/](.+)$/i.exec(withoutQueryOrHash)?.[1];
+    candidate = scpStylePath ? getLastRepositoryPathSegment(scpStylePath) : null;
+  }
+
+  candidate ??= getLastRepositoryPathSegment(withoutQueryOrHash);
+  return candidate ? sanitizeRepositoryDirectoryName(candidate) : null;
+}
+
 /**
  * Best-effort parse of a GitHub `owner/repo` identifier from common remote URL shapes.
  */

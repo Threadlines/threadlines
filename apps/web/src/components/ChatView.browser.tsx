@@ -20,6 +20,7 @@ import {
   OrchestrationSessionStatus,
   DEFAULT_SERVER_SETTINGS,
   ServerConfig as ServerConfigSchema,
+  type DesktopBridge,
 } from "@t3tools/contracts";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime";
 import { createModelCapabilities, createModelSelection } from "@t3tools/shared/model";
@@ -537,6 +538,33 @@ function addUserMessageToThreadInSnapshot(
   };
 }
 
+function setPromotedServerLatestTurnInSnapshot(
+  snapshot: OrchestrationReadModel,
+  threadId: ThreadId,
+): OrchestrationReadModel {
+  const turnId = `turn-${threadId}` as TurnId;
+  return {
+    ...snapshot,
+    snapshotSequence: snapshot.snapshotSequence + 1,
+    threads: snapshot.threads.map((thread) =>
+      thread.id === threadId
+        ? {
+            ...thread,
+            latestTurn: {
+              turnId,
+              state: "running",
+              requestedAt: NOW_ISO,
+              startedAt: NOW_ISO,
+              completedAt: null,
+              assistantMessageId: null,
+            },
+            updatedAt: NOW_ISO,
+          }
+        : thread,
+    ),
+  };
+}
+
 function sendShellThreadUpsert(
   threadId: ThreadId,
   options?: {
@@ -645,17 +673,25 @@ async function addPromotedServerUserMessageViaDomainEvent(threadId: ThreadId): P
   sendShellThreadUpsert(threadId);
 }
 
+async function startPromotedServerTurnViaDomainEvent(threadId: ThreadId): Promise<void> {
+  fixture.snapshot = setPromotedServerLatestTurnInSnapshot(fixture.snapshot, threadId);
+  sendShellThreadUpsert(threadId);
+}
+
 async function startPromotedServerThreadViaDomainEvent(threadId: ThreadId): Promise<void> {
-  fixture.snapshot = addUserMessageToThreadInSnapshot(
-    updateThreadSessionInSnapshot(fixture.snapshot, threadId, {
+  fixture.snapshot = setPromotedServerLatestTurnInSnapshot(
+    addUserMessageToThreadInSnapshot(
+      updateThreadSessionInSnapshot(fixture.snapshot, threadId, {
+        threadId,
+        status: "running",
+        providerName: "codex",
+        runtimeMode: "full-access",
+        activeTurnId: `turn-${threadId}` as TurnId,
+        lastError: null,
+        updatedAt: NOW_ISO,
+      }),
       threadId,
-      status: "running",
-      providerName: "codex",
-      runtimeMode: "full-access",
-      activeTurnId: `turn-${threadId}` as TurnId,
-      lastError: null,
-      updatedAt: NOW_ISO,
-    }),
+    ),
     threadId,
   );
   sendShellThreadUpsert(threadId);
@@ -3832,6 +3868,77 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("refreshes native spellcheck from the desktop replacement bridge", async () => {
+    useComposerDraftStore.getState().setPrompt(THREAD_REF, "speeling and teh");
+
+    const spellcheckReplacementListenerRef: { current: (() => void) | null } = { current: null };
+    const unsubscribeSpellcheckReplacement = vi.fn();
+    const emitDesktopSpellcheckReplacement = () => {
+      const listener = spellcheckReplacementListenerRef.current;
+      if (listener === null) {
+        throw new Error("Expected desktop spellcheck replacement listener to be registered.");
+      }
+      listener();
+    };
+    window.desktopBridge = {
+      onSpellcheckReplacement: vi.fn((listener: () => void) => {
+        spellcheckReplacementListenerRef.current = listener;
+        return unsubscribeSpellcheckReplacement;
+      }),
+    } as Partial<DesktopBridge> as DesktopBridge;
+
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-spellcheck-desktop-bridge" as MessageId,
+        targetText: "spellcheck desktop bridge",
+      }),
+    });
+    const outsideButton = document.createElement("button");
+    outsideButton.type = "button";
+    document.body.append(outsideButton);
+
+    try {
+      await waitForComposerText("speeling and teh");
+      expect(spellcheckReplacementListenerRef.current).toBeTypeOf("function");
+      const composerEditor = await waitForComposerEditor();
+      composerEditor.focus();
+      composerEditor.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      outsideButton.focus();
+      expect(document.activeElement).toBe(outsideButton);
+
+      const focusSpy = vi.spyOn(composerEditor, "focus");
+      const setAttributeSpy = vi.spyOn(composerEditor, "setAttribute");
+      try {
+        emitDesktopSpellcheckReplacement();
+
+        await vi.waitFor(
+          () => {
+            expect(focusSpy).toHaveBeenCalledWith({ preventScroll: true });
+            expect(setAttributeSpy).toHaveBeenCalledWith("spellcheck", "false");
+            expect(setAttributeSpy).toHaveBeenCalledWith("spellcheck", "true");
+            expect(document.activeElement).toBe(composerEditor);
+            expect(composerEditor.spellcheck).toBe(true);
+            expect(composerEditor.getAttribute("spellcheck")).toBe("true");
+          },
+          { timeout: 1_000, interval: 16 },
+        );
+      } finally {
+        focusSpy.mockRestore();
+        setAttributeSpy.mockRestore();
+      }
+    } finally {
+      outsideButton.remove();
+      await mounted.cleanup();
+      Reflect.deleteProperty(window, "desktopBridge");
+    }
+  });
+
   it("does not refresh native spellcheck for normal typing", async () => {
     useComposerDraftStore.getState().setPrompt(THREAD_REF, "speeling and teh");
 
@@ -4262,7 +4369,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await waitForComposerEditor();
 
       // `thread.created` should only mark the draft as promoting; it should
-      // not navigate away until the server projection has the user message.
+      // not navigate away until the server projection has real turn activity.
       await materializePromotedDraftThreadViaDomainEvent(newThreadId);
       expect(mounted.router.state.location.pathname).toBe(newThreadPath);
       await expect.element(page.getByTestId("composer-editor")).toBeInTheDocument();
@@ -4273,9 +4380,14 @@ describe("ChatView timeline estimator parity (full app)", () => {
       expect(mounted.router.state.location.pathname).toBe(newThreadPath);
       await expect.element(page.getByTestId("composer-editor")).toBeInTheDocument();
 
-      // Once the shell confirms the server has the user message, the route
-      // should canonicalize.
+      // The server user message can arrive before the provider turn record.
+      // Keep the draft view mounted so the optimistic working timer stays visible.
       await addPromotedServerUserMessageViaDomainEvent(newThreadId);
+      expect(mounted.router.state.location.pathname).toBe(newThreadPath);
+      await expect.element(page.getByTestId("composer-editor")).toBeInTheDocument();
+
+      // Once the shell confirms real turn activity, the route should canonicalize.
+      await startPromotedServerTurnViaDomainEvent(newThreadId);
       await vi.waitFor(
         () => {
           expect(useComposerDraftStore.getState().draftThreadsByThreadKey[newDraftId]).toBe(
@@ -5044,12 +5156,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await palette.getByText("Add project", { exact: true }).click();
       await palette.getByText("GitHub repository", { exact: true }).click();
 
-      const repositoryInput = await waitForCommandPaletteInput(
-        "Enter GitHub repository (owner/repo)",
-      );
+      await waitForCommandPaletteInput("Enter GitHub repository (owner/repo)");
       await expect.element(palette.getByText("t3-oss/t3-env", { exact: true })).toBeVisible();
-      await page.getByPlaceholder("Enter GitHub repository (owner/repo)").fill("t3-oss/t3-env");
-      await dispatchInputKey(repositoryInput, { key: "Enter" });
+      await palette.getByText("t3-oss/t3-env", { exact: true }).click();
 
       await vi.waitFor(
         () => {
@@ -5067,9 +5176,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
         { timeout: 8_000, interval: 16 },
       );
 
-      await page
-        .getByPlaceholder("Enter path (e.g. ~/projects/my-app)")
-        .fill("~/Development/t3env");
       const clonePathInput = await waitForCommandPaletteInput(
         "Enter path (e.g. ~/projects/my-app)",
       );
@@ -5079,10 +5185,11 @@ describe("ChatView timeline estimator parity (full app)", () => {
         () => {
           const cloneRequest = wsRequests.find(
             (request) => request._tag === WS_METHODS.sourceControlCloneRepository,
-          ) as { destinationPath?: string; remoteUrl?: string } | undefined;
+          ) as { destinationPath?: string; provider?: string; remoteUrl?: string } | undefined;
           expect(cloneRequest).toMatchObject({
+            provider: "github",
             remoteUrl: "git@github.com:t3-oss/t3-env.git",
-            destinationPath: "~/Development/t3env",
+            destinationPath: "~/t3-env",
           });
         },
         { timeout: 8_000, interval: 16 },

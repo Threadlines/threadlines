@@ -48,13 +48,15 @@ const PROVIDER = ProviderDriverKind.make("codex");
 const ANSI_ESCAPE_CHAR = String.fromCharCode(27);
 const ANSI_ESCAPE_REGEX = new RegExp(`${ANSI_ESCAPE_CHAR}\\[[0-9;]*m`, "g");
 const CODEX_STDERR_LOG_REGEX =
-  /^\d{4}-\d{2}-\d{2}T\S+\s+(TRACE|DEBUG|INFO|WARN|ERROR)\s+\S+:\s+(.*)$/;
+  /^\d{4}-\d{2}-\d{2}T\S+\s+(TRACE|DEBUG|INFO|WARN|ERROR)\s+(\S+):\s+(.*)$/;
 const BENIGN_ERROR_LOG_SNIPPETS = [
   "state db missing rollout path for thread",
   "state db record_discrepancy: find_thread_path_by_id_str_in_subdir, falling_back",
   "codex_models_manager::manager: failed to refresh available models: timeout",
   "mcp-transport-worker: worker quit with fatal: Transport channel closed",
 ];
+const ACTIONABLE_SUPPRESSED_TOOL_FAILURE_STDERR_SNIPPETS = ["failed to connect to websocket"];
+const CODEX_TOOL_ROUTER_LOG_TARGET = "codex_core::tools::router";
 const CODEX_APP_SERVER_FORCE_KILL_AFTER = "2 seconds" as const;
 const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
   "not found",
@@ -391,23 +393,61 @@ export function buildTurnStartParams(input: {
 }
 
 export function classifyCodexStderrLine(rawLine: string): { readonly message: string } | null {
-  const line = rawLine.replaceAll(ANSI_ESCAPE_REGEX, "").trim();
-  if (!line) {
-    return null;
-  }
+  return makeCodexStderrLineClassifier().classify(rawLine);
+}
 
-  const match = line.match(CODEX_STDERR_LOG_REGEX);
-  if (match) {
-    const level = match[1];
-    if (level && level !== "ERROR") {
-      return null;
-    }
-    if (BENIGN_ERROR_LOG_SNIPPETS.some((snippet) => line.includes(snippet))) {
-      return null;
-    }
-  }
+export function makeCodexStderrLineClassifier(): {
+  readonly classify: (rawLine: string) => { readonly message: string } | null;
+} {
+  let suppressLoggedToolFailureContinuation = false;
 
-  return { message: line };
+  return {
+    classify: (rawLine) => {
+      const line = rawLine.replaceAll(ANSI_ESCAPE_REGEX, "").trim();
+      if (!line) {
+        return null;
+      }
+
+      const match = line.match(CODEX_STDERR_LOG_REGEX);
+      if (match) {
+        suppressLoggedToolFailureContinuation = false;
+
+        const level = match[1];
+        const target = match[2];
+        const message = match[3] ?? "";
+
+        if (level && level !== "ERROR") {
+          return null;
+        }
+        if (BENIGN_ERROR_LOG_SNIPPETS.some((snippet) => line.includes(snippet))) {
+          return null;
+        }
+        if (isLoggedToolRouterExitCode(target, message)) {
+          suppressLoggedToolFailureContinuation = true;
+          return null;
+        }
+
+        return { message: line };
+      }
+
+      if (suppressLoggedToolFailureContinuation) {
+        if (
+          !ACTIONABLE_SUPPRESSED_TOOL_FAILURE_STDERR_SNIPPETS.some((snippet) =>
+            line.toLowerCase().includes(snippet),
+          )
+        ) {
+          return null;
+        }
+        suppressLoggedToolFailureContinuation = false;
+      }
+
+      return { message: line };
+    },
+  };
+}
+
+function isLoggedToolRouterExitCode(target: string | undefined, message: string): boolean {
+  return target === CODEX_TOOL_ROUTER_LOG_TARGET && /^error=Exit code: \d+\b/.test(message);
 }
 
 export function isRecoverableThreadResumeError(error: unknown): boolean {
@@ -1120,6 +1160,7 @@ export const makeCodexSessionRuntime = (
     );
 
     const stderrRemainderRef = yield* Ref.make("");
+    const stderrClassifier = makeCodexStderrLineClassifier();
     yield* child.stderr.pipe(
       Stream.decodeText(),
       Stream.runForEach((chunk) =>
@@ -1133,7 +1174,7 @@ export const makeCodexSessionRuntime = (
             Effect.forEach(
               lines,
               (line) => {
-                const classified = classifyCodexStderrLine(line);
+                const classified = stderrClassifier.classify(line);
                 if (!classified) {
                   return Effect.void;
                 }

@@ -17,6 +17,7 @@ import {
   createLocalDispatchSnapshot,
   deriveComposerSendState,
   hasServerAcknowledgedLocalDispatch,
+  threadHasPromotableServerActivity,
   reconcileSteeringHandoffStatuses,
   reconcileMountedTerminalThreadIds,
   resolveSendEnvMode,
@@ -215,6 +216,12 @@ describe("shouldWriteThreadErrorToCurrentServerThread", () => {
 
 const makeThread = (input?: {
   id?: ThreadId;
+  session?: Thread["session"];
+  messages?: Thread["messages"];
+  activities?: Thread["activities"];
+  proposedPlans?: Thread["proposedPlans"];
+  turnDiffSummaries?: Thread["turnDiffSummaries"];
+  error?: string | null;
   latestTurn?: {
     turnId: TurnId;
     state: "running" | "completed";
@@ -231,10 +238,10 @@ const makeThread = (input?: {
   modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
   runtimeMode: "full-access" as const,
   interactionMode: "default" as const,
-  session: null,
-  messages: [],
-  proposedPlans: [],
-  error: null,
+  session: input?.session ?? null,
+  messages: input?.messages ?? [],
+  proposedPlans: input?.proposedPlans ?? [],
+  error: input?.error ?? null,
   createdAt: "2026-03-29T00:00:00.000Z",
   archivedAt: null,
   updatedAt: "2026-03-29T00:00:00.000Z",
@@ -246,8 +253,8 @@ const makeThread = (input?: {
     : null,
   branch: null,
   worktreePath: null,
-  turnDiffSummaries: [],
-  activities: [],
+  turnDiffSummaries: input?.turnDiffSummaries ?? [],
+  activities: input?.activities ?? [],
 });
 
 function setStoreThreads(threads: ReadonlyArray<ReturnType<typeof makeThread>>) {
@@ -355,6 +362,68 @@ function setStoreThreads(threads: ReadonlyArray<ReturnType<typeof makeThread>>) 
     },
   });
 }
+
+describe("threadHasPromotableServerActivity", () => {
+  const readySession = {
+    provider: ProviderDriverKind.make("codex"),
+    status: "ready" as const,
+    createdAt: "2026-03-29T00:00:00.000Z",
+    updatedAt: "2026-03-29T00:00:05.000Z",
+    orchestrationStatus: "ready" as const,
+  };
+
+  it("does not treat server metadata or the echoed user message as turn activity", () => {
+    expect(
+      threadHasPromotableServerActivity(
+        makeThread({
+          session: readySession,
+          messages: [
+            {
+              id: "message-1" as never,
+              role: "user",
+              text: "start this",
+              createdAt: "2026-03-29T00:00:04.000Z",
+              completedAt: "2026-03-29T00:00:04.000Z",
+              streaming: false,
+            },
+          ],
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("does not promote on a running session before turn details arrive", () => {
+    expect(
+      threadHasPromotableServerActivity(
+        makeThread({
+          session: {
+            ...readySession,
+            status: "running",
+            orchestrationStatus: "running",
+          },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("promotes once provider turn activity or failure state is visible", () => {
+    expect(
+      threadHasPromotableServerActivity(
+        makeThread({
+          latestTurn: {
+            turnId: TurnId.make("turn-activity"),
+            state: "running",
+            requestedAt: "2026-03-29T00:00:04.000Z",
+            startedAt: "2026-03-29T00:00:05.000Z",
+            completedAt: null,
+          },
+        }),
+      ),
+    ).toBe(true);
+
+    expect(threadHasPromotableServerActivity(makeThread({ error: "Failed to start" }))).toBe(true);
+  });
+});
 
 afterEach(() => {
   vi.useRealTimers();

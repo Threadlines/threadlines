@@ -8,7 +8,7 @@ import {
   ChatRightPanelInlineSidebar,
   RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
 } from "../components/ChatRightPanelInlineSidebar";
-import { threadHasStarted } from "../components/ChatView.logic";
+import { threadHasPromotableServerActivity } from "../components/ChatView.logic";
 import { DiffWorkerPoolProvider } from "../components/DiffWorkerPoolProvider";
 import {
   DiffPanelHeaderSkeleton,
@@ -88,7 +88,7 @@ function ChatThreadRouteView() {
     return store.hasDraftThreadsInEnvironment(threadRef.environmentId);
   });
   const routeThreadExists = threadExists || draftThreadExists;
-  const serverThreadStarted = threadHasStarted(serverThread);
+  const serverThreadHasPromotableActivity = threadHasPromotableServerActivity(serverThread);
   const environmentHasAnyThreads = environmentHasServerThreads || environmentHasDraftThreads;
   const diffOpen = search.diff === "1";
   const sourceControlOpen = search.sourceControl === "1";
@@ -206,11 +206,11 @@ function ChatThreadRouteView() {
   }, [bootstrapComplete, environmentHasAnyThreads, navigate, routeThreadExists, threadRef]);
 
   useEffect(() => {
-    if (!threadRef || !serverThreadStarted || !draftThread?.promotedTo) {
+    if (!threadRef || !serverThreadHasPromotableActivity || !draftThread?.promotedTo) {
       return;
     }
     finalizePromotedDraftThreadByRef(threadRef);
-  }, [draftThread?.promotedTo, serverThreadStarted, threadRef]);
+  }, [draftThread?.promotedTo, serverThreadHasPromotableActivity, threadRef]);
 
   if (!threadRef || !bootstrapComplete || !routeThreadExists) {
     return null;

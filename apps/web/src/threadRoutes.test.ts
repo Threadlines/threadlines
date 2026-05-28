@@ -66,38 +66,38 @@ describe("threadRoutes", () => {
     });
   });
 
-  it("keeps a draft route mounted while its server thread exists without a user message", () => {
+  it("keeps a draft route mounted while its server thread has no turn activity", () => {
     const serverThreadRef = scopeThreadRef("env-1" as never, ThreadId.make("thread-1"));
 
     expect(
       resolveDraftCanonicalThreadRef({
         serverThreadRef,
-        serverThreadHasUserMessage: false,
+        serverThreadHasTurnActivity: false,
       }),
     ).toBeNull();
 
     expect(
       resolveDraftCanonicalThreadRef({
         serverThreadRef,
-        serverThreadHasUserMessage: true,
+        serverThreadHasTurnActivity: true,
       }),
     ).toEqual(serverThreadRef);
   });
 
-  it("waits for the server user message even after a draft has been marked as promoting", () => {
+  it("waits for server turn activity even after a draft has been marked as promoting", () => {
     const promotedTo = scopeThreadRef("env-1" as never, ThreadId.make("thread-promoted"));
 
     expect(
       resolveDraftCanonicalThreadRef({
         draftPromotedTo: promotedTo,
-        serverThreadHasUserMessage: false,
+        serverThreadHasTurnActivity: false,
       }),
     ).toBeNull();
 
     expect(
       resolveDraftCanonicalThreadRef({
         draftPromotedTo: promotedTo,
-        serverThreadHasUserMessage: true,
+        serverThreadHasTurnActivity: true,
       }),
     ).toEqual(promotedTo);
   });

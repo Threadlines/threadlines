@@ -155,6 +155,19 @@ export function resolveProjectPathForDispatch(value: string, cwd?: string | null
   return normalizeProjectPathForDispatch(`${absoluteBase.root}${joinedPath}`);
 }
 
+export function resolveCloneDestinationPathForDispatch(input: {
+  readonly destinationPath: string;
+  readonly repositoryDirectoryName: string | null;
+  readonly cwd?: string | null;
+}): string {
+  const trimmedDestinationPath = input.destinationPath.trim();
+  const destinationPath =
+    input.repositoryDirectoryName && hasTrailingPathSeparator(trimmedDestinationPath)
+      ? appendBrowsePathSegment(trimmedDestinationPath, input.repositoryDirectoryName)
+      : trimmedDestinationPath;
+  return resolveProjectPathForDispatch(destinationPath, input.cwd);
+}
+
 export function normalizeProjectPathForComparison(value: string): string {
   const normalized = normalizeProjectPathForDispatch(value);
   if (isWindowsDrivePath(normalized) || normalized.startsWith("\\\\")) {

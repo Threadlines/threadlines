@@ -77,6 +77,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 const COMPOSER_EDITOR_HMR_KEY = `composer-editor-${Math.random().toString(36).slice(2)}`;
 const NATIVE_SPELLCHECK_REFRESH_RETRY_DELAYS_MS = [0, 80, 240] as const;
+const NATIVE_SPELLCHECK_CONTEXT_MENU_GRACE_MS = 5_000;
 const SURROUND_SYMBOLS: [string, string][] = [
   ["(", ")"],
   ["[", "]"],
@@ -1439,6 +1440,14 @@ function restoreNativeSpellcheckSelection(
   }
 }
 
+function focusNativeSpellcheckRoot(rootElement: HTMLElement): void {
+  if (!rootElement.isConnected || rootElement.ownerDocument.activeElement === rootElement) {
+    return;
+  }
+
+  rootElement.focus({ preventScroll: true });
+}
+
 function enableNativeSpellcheck(rootElement: HTMLElement, selectionRanges: Range[]): void {
   if (!rootElement.isConnected || rootElement.spellcheck === true) {
     return;
@@ -1456,6 +1465,7 @@ function ComposerNativeSpellcheckRefreshPlugin() {
     let pendingFrames: number[] = [];
     let pendingTimeouts: number[] = [];
     let refreshGeneration = 0;
+    let lastComposerContextMenuAt = 0;
 
     const clearPendingRefresh = () => {
       for (const frame of pendingFrames) {
@@ -1468,19 +1478,29 @@ function ComposerNativeSpellcheckRefreshPlugin() {
       pendingTimeouts = [];
     };
 
-    const requestRefreshFrame = (rootElement: HTMLElement, generation: number) => {
+    const requestRefreshFrame = (
+      rootElement: HTMLElement,
+      generation: number,
+      options?: { restoreFocus?: boolean },
+    ) => {
       const frame = window.requestAnimationFrame(() => {
         pendingFrames = pendingFrames.filter((pendingFrame) => pendingFrame !== frame);
         if (generation !== refreshGeneration) {
           return;
         }
 
+        if (options?.restoreFocus === true) {
+          focusNativeSpellcheckRoot(rootElement);
+        }
         const selectionRanges = captureNativeSpellcheckSelection(rootElement);
         disableNativeSpellcheck(rootElement);
         const enableFrame = window.requestAnimationFrame(() => {
           pendingFrames = pendingFrames.filter((pendingFrame) => pendingFrame !== enableFrame);
           if (generation !== refreshGeneration) {
             return;
+          }
+          if (options?.restoreFocus === true) {
+            focusNativeSpellcheckRoot(rootElement);
           }
           enableNativeSpellcheck(rootElement, selectionRanges);
         });
@@ -1489,20 +1509,20 @@ function ComposerNativeSpellcheckRefreshPlugin() {
       pendingFrames.push(frame);
     };
 
-    const scheduleRefresh = (rootElement: HTMLElement) => {
+    const scheduleRefresh = (rootElement: HTMLElement, options?: { restoreFocus?: boolean }) => {
       clearPendingRefresh();
       refreshGeneration += 1;
       const generation = refreshGeneration;
 
       for (const delayMs of NATIVE_SPELLCHECK_REFRESH_RETRY_DELAYS_MS) {
         if (delayMs === 0) {
-          requestRefreshFrame(rootElement, generation);
+          requestRefreshFrame(rootElement, generation, options);
           continue;
         }
 
         const timeout = window.setTimeout(() => {
           pendingTimeouts = pendingTimeouts.filter((pendingTimeout) => pendingTimeout !== timeout);
-          requestRefreshFrame(rootElement, generation);
+          requestRefreshFrame(rootElement, generation, options);
         }, delayMs);
         pendingTimeouts.push(timeout);
       }
@@ -1519,19 +1539,46 @@ function ComposerNativeSpellcheckRefreshPlugin() {
       }
     };
 
+    const onComposerContextMenu = () => {
+      lastComposerContextMenuAt = performance.now();
+    };
+
+    const onDesktopSpellcheckReplacement = () => {
+      if (!activeRootElement) {
+        return;
+      }
+
+      const hasRecentComposerContextMenu =
+        performance.now() - lastComposerContextMenuAt <= NATIVE_SPELLCHECK_CONTEXT_MENU_GRACE_MS;
+      if (
+        !hasRecentComposerContextMenu &&
+        activeRootElement.ownerDocument.activeElement !== activeRootElement
+      ) {
+        return;
+      }
+
+      scheduleRefresh(activeRootElement, { restoreFocus: hasRecentComposerContextMenu });
+    };
+
     let activeRootElement: HTMLElement | null = null;
     const unregisterRootListener = editor.registerRootListener((rootElement, prevRootElement) => {
       prevRootElement?.removeEventListener("beforeinput", onNativeReplacement);
       prevRootElement?.removeEventListener("input", onNativeReplacement);
+      prevRootElement?.removeEventListener("contextmenu", onComposerContextMenu);
       rootElement?.addEventListener("beforeinput", onNativeReplacement);
       rootElement?.addEventListener("input", onNativeReplacement);
+      rootElement?.addEventListener("contextmenu", onComposerContextMenu);
       activeRootElement = rootElement;
     });
+    const unregisterSpellcheckReplacementListener =
+      window.desktopBridge?.onSpellcheckReplacement?.(onDesktopSpellcheckReplacement) ?? (() => {});
 
     return () => {
       clearPendingRefresh();
       activeRootElement?.removeEventListener("beforeinput", onNativeReplacement);
       activeRootElement?.removeEventListener("input", onNativeReplacement);
+      activeRootElement?.removeEventListener("contextmenu", onComposerContextMenu);
+      unregisterSpellcheckReplacementListener();
       unregisterRootListener();
     };
   }, [editor]);

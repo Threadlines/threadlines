@@ -19,6 +19,7 @@ import * as ElectronGlobalShortcut from "../electron/ElectronGlobalShortcut.ts";
 import * as ElectronShell from "../electron/ElectronShell.ts";
 import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
+import * as IpcChannels from "../ipc/channels.ts";
 import * as DesktopServerExposure from "../backend/DesktopServerExposure.ts";
 import * as DesktopWindow from "./DesktopWindow.ts";
 
@@ -46,6 +47,7 @@ function makeFakeBrowserWindow(input?: {
   const normalBounds = input?.normalBounds ?? bounds;
   const webContents = {
     copyImageAt: vi.fn(),
+    focus: vi.fn(),
     isLoadingMainFrame: vi.fn(() => false),
     on: vi.fn((eventName: string, listener: (...args: unknown[]) => void) => {
       webContentsHandlers.set(eventName, [...(webContentsHandlers.get(eventName) ?? []), listener]);
@@ -87,7 +89,9 @@ function makeFakeBrowserWindow(input?: {
     window: window as unknown as Electron.BrowserWindow,
     loadURL: window.loadURL,
     maximize: window.maximize,
+    webContentsFocus: webContents.focus,
     openDevTools: webContents.openDevTools,
+    replaceMisspelling: webContents.replaceMisspelling,
     send: webContents.send,
     emitWebContents: (eventName: string, ...args: unknown[]) => {
       for (const listener of webContentsHandlers.get(eventName) ?? []) {
@@ -175,6 +179,7 @@ function makeTestLayer(input: {
   readonly env?: Readonly<Record<string, string | undefined>>;
   readonly createOptions?: Ref.Ref<ReadonlyArray<Electron.BrowserWindowConstructorOptions>>;
   readonly electronGlobalShortcut?: ElectronGlobalShortcut.ElectronGlobalShortcutShape;
+  readonly electronMenu?: ElectronMenu.ElectronMenuShape;
   readonly electronShell?: ElectronShell.ElectronShellShape;
 }) {
   const electronWindowLayer = Layer.succeed(ElectronWindow.ElectronWindow, {
@@ -205,7 +210,9 @@ function makeTestLayer(input: {
         desktopServerExposureLayer,
         DesktopState.layer,
         NodeServices.layer,
-        electronMenuLayer,
+        input.electronMenu
+          ? Layer.succeed(ElectronMenu.ElectronMenu, input.electronMenu)
+          : electronMenuLayer,
         input.electronGlobalShortcut
           ? Layer.succeed(
               ElectronGlobalShortcut.ElectronGlobalShortcut,
@@ -266,6 +273,71 @@ describe("DesktopWindow", () => {
         yield* desktopWindow.handleBackendReady;
 
         assert.equal(fakeWindow.openDevTools.mock.calls.length, 1);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("notifies the renderer after accepting a native spellcheck suggestion", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const frame = {} as Electron.WebFrameMain;
+      const popupTemplate = vi.fn((input: ElectronMenu.ElectronMenuTemplateInput) =>
+        Effect.sync(() => {
+          const [firstItem] = input.template;
+          if (!firstItem?.click) {
+            throw new Error("Expected first context menu item to accept the spelling suggestion.");
+          }
+          firstItem.click({} as Electron.MenuItem, fakeWindow.window, {} as KeyboardEvent);
+        }),
+      );
+      const layer = makeTestLayer({
+        window: fakeWindow.window,
+        createCount,
+        mainWindow,
+        electronMenu: {
+          setApplicationMenu: () => Effect.void,
+          popupTemplate,
+          showContextMenu: () => Effect.succeed(Option.none()),
+        },
+      });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.handleBackendReady;
+
+        const preventDefault = vi.fn();
+        fakeWindow.emitWebContents("context-menu", { preventDefault }, {
+          misspelledWord: "speeling",
+          dictionarySuggestions: ["spelling"],
+          linkURL: "",
+          mediaType: "none",
+          editFlags: {
+            canUndo: false,
+            canRedo: false,
+            canCut: true,
+            canCopy: true,
+            canPaste: true,
+            canDelete: false,
+            canSelectAll: true,
+            canEditRichly: false,
+          },
+          frame,
+          menuSourceType: "mouse",
+        } satisfies Partial<Electron.ContextMenuParams>);
+        yield* Effect.promise(() => Promise.resolve());
+        yield* Effect.promise(() => Promise.resolve());
+
+        assert.equal(preventDefault.mock.calls.length, 1);
+        assert.equal(popupTemplate.mock.calls.length, 1);
+        assert.equal(popupTemplate.mock.calls[0]?.[0].frame, frame);
+        assert.equal(popupTemplate.mock.calls[0]?.[0].sourceType, "mouse");
+        assert.deepEqual(fakeWindow.replaceMisspelling.mock.calls, [["spelling"]]);
+        assert.equal(fakeWindow.webContentsFocus.mock.calls.length, 1);
+        assert.deepEqual(fakeWindow.send.mock.calls, [
+          [IpcChannels.SPELLCHECK_REPLACEMENT_CHANNEL],
+        ]);
       }).pipe(Effect.provide(layer));
     }),
   );

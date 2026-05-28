@@ -479,6 +479,7 @@ describe("resolveThreadStatusPill", () => {
     hasPendingUserInput: false,
     interactionMode: "plan" as const,
     latestTurn: null,
+    latestUserMessageAt: null,
     lastVisitedAt: undefined,
     session: {
       provider: ProviderDriverKind.make("codex"),
@@ -518,6 +519,58 @@ describe("resolveThreadStatusPill", () => {
         thread: baseThread,
       }),
     ).toMatchObject({ label: "Working", pulse: true });
+  });
+
+  it("keeps working after a user message while the server turn is still pending", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          latestUserMessageAt: "2026-03-09T10:00:10.000Z",
+          session: {
+            ...baseThread.session,
+            status: "ready",
+            orchestrationStatus: "ready",
+            updatedAt: "2026-03-09T10:00:12.000Z",
+          },
+        },
+      }),
+    ).toMatchObject({ label: "Working", pulse: true });
+  });
+
+  it("keeps working when the latest user message is newer than the last projected turn", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          latestTurn: makeLatestTurn(),
+          latestUserMessageAt: "2026-03-09T10:06:00.000Z",
+          session: {
+            ...baseThread.session,
+            status: "ready",
+            orchestrationStatus: "ready",
+            updatedAt: "2026-03-09T10:06:01.000Z",
+          },
+        },
+      }),
+    ).toMatchObject({ label: "Working", pulse: true });
+  });
+
+  it("does not keep working after the matching latest turn has completed", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          latestTurn: makeLatestTurn(),
+          latestUserMessageAt: "2026-03-09T10:00:00.000Z",
+          session: {
+            ...baseThread.session,
+            status: "ready",
+            orchestrationStatus: "ready",
+          },
+        },
+      }),
+    ).toMatchObject({ label: "Completed", pulse: false });
   });
 
   it("shows plan ready when a settled plan turn has a proposed plan ready for follow-up", () => {

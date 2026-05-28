@@ -3,6 +3,7 @@ import { projectScriptCwd } from "@t3tools/shared/projectScripts";
 import { createFileRoute, retainSearchParams, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo } from "react";
 import ChatView from "../components/ChatView";
+import { threadHasPromotableServerActivity } from "../components/ChatView.logic";
 import {
   ChatRightPanelInlineSidebar,
   RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
@@ -24,7 +25,7 @@ import {
   createProjectSelectorByRef,
   createThreadSelectorAcrossEnvironments,
 } from "../storeSelectors";
-import { type AppState, selectSidebarThreadSummaryByRef, useStore } from "../store";
+import { useStore } from "../store";
 import {
   buildDraftThreadRouteParams,
   buildThreadRouteParams,
@@ -48,23 +49,15 @@ function DraftChatThreadRouteView() {
     () => (draftSession ? scopeThreadRef(draftSession.environmentId, draftSession.threadId) : null),
     [draftSession],
   );
-  const serverThreadSummary = useStore(
-    useMemo(
-      () => (state: AppState) => selectSidebarThreadSummaryByRef(state, serverThreadRef),
-      [serverThreadRef],
-    ),
-  );
-  const serverThreadHasUserMessage =
-    Boolean(serverThreadSummary?.latestUserMessageAt) ||
-    Boolean(serverThread?.messages.some((message) => message.role === "user"));
+  const serverThreadHasTurnActivity = threadHasPromotableServerActivity(serverThread);
   const canonicalThreadRef = useMemo(
     () =>
       resolveDraftCanonicalThreadRef({
         draftPromotedTo: draftSession?.promotedTo,
         serverThreadRef: serverThreadRef && serverThread ? serverThreadRef : null,
-        serverThreadHasUserMessage,
+        serverThreadHasTurnActivity,
       }),
-    [draftSession?.promotedTo, serverThread, serverThreadHasUserMessage, serverThreadRef],
+    [draftSession?.promotedTo, serverThread, serverThreadHasTurnActivity, serverThreadRef],
   );
   const sourceControlOpen = search.sourceControl === "1";
   const shouldUseSourceControlSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);

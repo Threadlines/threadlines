@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyGitStatusStreamEvent,
   buildTemporaryWorktreeBranchName,
+  deriveRepositoryDirectoryName,
   isTemporaryWorktreeBranch,
   normalizeGitRemoteUrl,
   parseGitHubRepositoryNameWithOwnerFromRemoteUrl,
@@ -50,6 +51,24 @@ describe("parseGitHubRepositoryNameWithOwnerFromRemoteUrl", () => {
     expect(
       parseGitHubRepositoryNameWithOwnerFromRemoteUrl("https://github.com/T3Tools/T3Code.git"),
     ).toBe("T3Tools/T3Code");
+  });
+});
+
+describe("deriveRepositoryDirectoryName", () => {
+  it("uses the final repository path segment from provider identifiers and remotes", () => {
+    expect(deriveRepositoryDirectoryName("t3-oss/t3-env")).toBe("t3-env");
+    expect(deriveRepositoryDirectoryName("https://github.com/T3Tools/T3Code.git")).toBe("T3Code");
+    expect(deriveRepositoryDirectoryName("git@github.com:T3Tools/T3Code.git")).toBe("T3Code");
+    expect(deriveRepositoryDirectoryName("git@ssh.dev.azure.com:v3/acme/project/repo")).toBe(
+      "repo",
+    );
+  });
+
+  it("sanitizes values before using them as local directory names", () => {
+    expect(deriveRepositoryDirectoryName("https://example.com/team/bad%3Aname.git")).toBe(
+      "bad-name",
+    );
+    expect(deriveRepositoryDirectoryName("   ")).toBeNull();
   });
 });
 

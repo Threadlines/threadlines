@@ -351,12 +351,24 @@ const make = Effect.gen(function* () {
       event.preventDefault();
 
       const menuTemplate: Electron.MenuItemConstructorOptions[] = [];
+      const notifySpellcheckReplacement = () => {
+        window.webContents.focus();
+        queueMicrotask(() => {
+          if (window.isDestroyed()) {
+            return;
+          }
+          window.webContents.send(IpcChannels.SPELLCHECK_REPLACEMENT_CHANNEL);
+        });
+      };
 
       if (params.misspelledWord) {
         for (const suggestion of params.dictionarySuggestions.slice(0, 5)) {
           menuTemplate.push({
             label: suggestion,
-            click: () => window.webContents.replaceMisspelling(suggestion),
+            click: () => {
+              window.webContents.replaceMisspelling(suggestion);
+              notifySpellcheckReplacement();
+            },
           });
         }
         if (params.dictionarySuggestions.length === 0) {
@@ -392,7 +404,14 @@ const make = Effect.gen(function* () {
         { role: "selectAll", enabled: params.editFlags.canSelectAll },
       );
 
-      void runPromise(electronMenu.popupTemplate({ window, template: menuTemplate }));
+      void runPromise(
+        electronMenu.popupTemplate({
+          window,
+          template: menuTemplate,
+          frame: params.frame,
+          sourceType: params.menuSourceType,
+        }),
+      );
     });
 
     let printScreenShortcutRegistered = false;

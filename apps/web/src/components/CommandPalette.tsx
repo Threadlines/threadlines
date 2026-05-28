@@ -11,7 +11,7 @@ import {
   type SourceControlProviderKind,
   type SourceControlRepositoryInfo,
 } from "@t3tools/contracts";
-import { normalizeGitRemoteUrl } from "@t3tools/shared/git";
+import { deriveRepositoryDirectoryName, normalizeGitRemoteUrl } from "@t3tools/shared/git";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import * as Option from "effect/Option";
@@ -70,6 +70,7 @@ import {
   isExplicitRelativeProjectPath,
   isFilesystemBrowseQuery,
   isUnsupportedWindowsProjectPath,
+  resolveCloneDestinationPathForDispatch,
   resolveProjectPathForDispatch,
 } from "../lib/projectPaths";
 import { isTerminalFocused } from "../lib/terminalFocus";
@@ -335,6 +336,16 @@ function sourceControlRepositoryComparisonKeys(
   return [repository.sshUrl, repository.url]
     .map((remoteUrl) => normalizeGitRemoteUrl(remoteUrl))
     .filter((key) => key.length > 0);
+}
+
+function getAddProjectCloneDirectoryName(
+  input: Extract<AddProjectCloneFlow, { readonly step: "confirm" }>,
+): string | null {
+  return (
+    deriveRepositoryDirectoryName(input.repository?.nameWithOwner) ??
+    deriveRepositoryDirectoryName(input.remoteUrl) ??
+    deriveRepositoryDirectoryName(input.repositoryInput)
+  );
 }
 
 export function CommandPalette({ children }: { children: ReactNode }) {
@@ -1338,19 +1349,23 @@ function OpenCommandPaletteDialog() {
       return;
     }
 
-    const destinationPath = resolveProjectPathForDispatch(
-      rawDestination,
-      currentProjectCwdForBrowse,
-    );
+    const cloneDirectoryName = getAddProjectCloneDirectoryName(addProjectCloneFlow);
+    const destinationPath = resolveCloneDestinationPathForDispatch({
+      destinationPath: rawDestination,
+      repositoryDirectoryName: cloneDirectoryName,
+      cwd: currentProjectCwdForBrowse,
+    });
     if (destinationPath.length === 0) {
       return;
     }
 
     setIsRemoteProjectCloning(true);
     try {
+      const provider = remoteProjectSourceProvider(addProjectCloneFlow.source);
       const result = await api.sourceControl.cloneRepository({
         remoteUrl: addProjectCloneFlow.remoteUrl,
         destinationPath,
+        ...(provider ? { provider } : {}),
       });
       await handleAddProject(result.cwd);
     } catch (error) {

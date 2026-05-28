@@ -15,6 +15,7 @@ import {
   buildTurnStartParams,
   classifyCodexStderrLine,
   isRecoverableThreadResumeError,
+  makeCodexStderrLineClassifier,
   openCodexThread,
 } from "./CodexSessionRuntime.ts";
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
@@ -211,6 +212,61 @@ describe("classifyCodexStderrLine", () => {
   it("keeps actionable Codex stderr lines visible", () => {
     assert.deepStrictEqual(classifyCodexStderrLine("The filename or extension is too long."), {
       message: "The filename or extension is too long.",
+    });
+  });
+
+  it("filters logged command failure output that is already represented as tool output", () => {
+    const classifier = makeCodexStderrLineClassifier();
+
+    assert.equal(
+      classifier.classify(
+        "2026-05-28T16:11:20.013735Z ERROR codex_core::tools::router: error=Exit code: 1",
+      ),
+      null,
+    );
+    assert.equal(classifier.classify("Wall time: 0.6 seconds"), null);
+    assert.equal(classifier.classify("Output:"), null);
+    assert.equal(
+      classifier.classify(
+        "Select-String : A positional parameter cannot be found that accepts argument '~/t3-env\\|provider: \\github\\'.",
+      ),
+      null,
+    );
+  });
+
+  it("resumes stderr classification at the next Codex log line", () => {
+    const classifier = makeCodexStderrLineClassifier();
+
+    assert.equal(
+      classifier.classify(
+        "2026-05-28T16:11:20.013735Z ERROR codex_core::tools::router: error=Exit code: 1",
+      ),
+      null,
+    );
+
+    assert.deepStrictEqual(
+      classifier.classify(
+        "2026-05-28T16:11:21.013735Z ERROR codex_runtime::transport: provider disconnected",
+      ),
+      {
+        message:
+          "2026-05-28T16:11:21.013735Z ERROR codex_runtime::transport: provider disconnected",
+      },
+    );
+  });
+
+  it("keeps fatal transport stderr visible during suppressed tool output", () => {
+    const classifier = makeCodexStderrLineClassifier();
+
+    assert.equal(
+      classifier.classify(
+        "2026-05-28T16:11:20.013735Z ERROR codex_core::tools::router: error=Exit code: 1",
+      ),
+      null,
+    );
+
+    assert.deepStrictEqual(classifier.classify("failed to connect to websocket"), {
+      message: "failed to connect to websocket",
     });
   });
 });

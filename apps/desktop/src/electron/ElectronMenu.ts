@@ -20,6 +20,8 @@ export interface ElectronMenuContextInput {
 export interface ElectronMenuTemplateInput {
   readonly window: Electron.BrowserWindow;
   readonly template: readonly Electron.MenuItemConstructorOptions[];
+  readonly frame?: Electron.WebFrameMain | null;
+  readonly sourceType?: Electron.PopupOptions["sourceType"];
 }
 
 export interface ElectronMenuShape {
@@ -142,7 +144,14 @@ export const layer = Layer.sync(ElectronMenu, () => {
         if (input.template.length === 0) {
           return;
         }
-        Electron.Menu.buildFromTemplate([...input.template]).popup({ window: input.window });
+        const popupOptions: Electron.PopupOptions = { window: input.window };
+        if (input.frame) {
+          popupOptions.frame = input.frame;
+        }
+        if (input.sourceType !== undefined) {
+          popupOptions.sourceType = input.sourceType;
+        }
+        Electron.Menu.buildFromTemplate([...input.template]).popup(popupOptions);
       }),
     showContextMenu: (input) =>
       Effect.callback<Option.Option<string>>((resume) => {

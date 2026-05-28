@@ -31,10 +31,10 @@ export function buildDraftThreadRouteParams(draftId: DraftId): {
 export function resolveDraftCanonicalThreadRef(input: {
   draftPromotedTo?: ScopedThreadRef | null | undefined;
   serverThreadRef?: ScopedThreadRef | null | undefined;
-  serverThreadHasUserMessage: boolean;
+  serverThreadHasTurnActivity: boolean;
 }): ScopedThreadRef | null {
   const target = input.draftPromotedTo ?? input.serverThreadRef ?? null;
-  if (!target || !input.serverThreadHasUserMessage) {
+  if (!target || !input.serverThreadHasTurnActivity) {
     return null;
   }
   if (

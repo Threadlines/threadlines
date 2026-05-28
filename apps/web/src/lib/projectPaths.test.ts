@@ -13,6 +13,7 @@ import {
   isFilesystemBrowseQuery,
   normalizeProjectPathForComparison,
   normalizeProjectPathForDispatch,
+  resolveCloneDestinationPathForDispatch,
   isUnsupportedWindowsProjectPath,
   resolveProjectPathForDispatch,
 } from "./projectPaths";
@@ -80,6 +81,37 @@ describe("projectPaths", () => {
     expect(resolveProjectPathForDispatch("./docs", "/home/user\\project")).toBe(
       "/home/user\\project/docs",
     );
+  });
+
+  it("resolves clone destinations by appending the repository name to directory paths", () => {
+    expect(
+      resolveCloneDestinationPathForDispatch({
+        destinationPath: "~/",
+        repositoryDirectoryName: "t3-env",
+      }),
+    ).toBe("~/t3-env");
+    expect(
+      resolveCloneDestinationPathForDispatch({
+        destinationPath: "C:\\Work\\",
+        repositoryDirectoryName: "Repo",
+      }),
+    ).toBe("C:\\Work\\Repo");
+    expect(
+      resolveCloneDestinationPathForDispatch({
+        destinationPath: "./",
+        repositoryDirectoryName: "docs",
+        cwd: "/repo/app",
+      }),
+    ).toBe("/repo/app/docs");
+  });
+
+  it("leaves explicit clone destination folder names unchanged", () => {
+    expect(
+      resolveCloneDestinationPathForDispatch({
+        destinationPath: "~/Development/t3env",
+        repositoryDirectoryName: "t3-env",
+      }),
+    ).toBe("~/Development/t3env");
   });
 
   it("navigates browse paths with matching separators", () => {
