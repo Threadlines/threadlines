@@ -89,6 +89,8 @@ import type {
   SourceControlCloneRepositoryInput,
   SourceControlCloneRepositoryResult,
   SourceControlDiscoveryResult,
+  SourceControlListRepositoriesInput,
+  SourceControlListRepositoriesResult,
   SourceControlPublishRepositoryInput,
   SourceControlPublishRepositoryResult,
   SourceControlRepositoryInfo,
@@ -553,6 +555,9 @@ export interface EnvironmentApi {
     lookupRepository: (
       input: SourceControlRepositoryLookupInput,
     ) => Promise<SourceControlRepositoryInfo>;
+    listRepositories: (
+      input: SourceControlListRepositoriesInput,
+    ) => Promise<SourceControlListRepositoriesResult>;
     cloneRepository: (
       input: SourceControlCloneRepositoryInput,
     ) => Promise<SourceControlCloneRepositoryResult>;

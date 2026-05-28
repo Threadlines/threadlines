@@ -128,6 +128,14 @@ export const make = Effect.fn("makeGitLabSourceControlProvider")(function* () {
       gitlab
         .getRepositoryCloneUrls(input)
         .pipe(Effect.mapError((error) => providerError("getRepositoryCloneUrls", error))),
+    listRepositories: () =>
+      Effect.fail(
+        new SourceControlProviderError({
+          provider: "gitlab",
+          operation: "listRepositories",
+          detail: "GitLab repository listing is not supported yet.",
+        }),
+      ),
     createRepository: (input) =>
       gitlab
         .createRepository(input)

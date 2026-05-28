@@ -7,7 +7,6 @@ import {
   ChatRightPanelInlineSidebar,
   RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
 } from "../components/ChatRightPanelInlineSidebar";
-import { threadHasStarted } from "../components/ChatView.logic";
 import { useComposerDraftStore, DraftId } from "../composerDraftStore";
 import {
   type DiffRouteSearch,
@@ -25,9 +24,12 @@ import {
   createProjectSelectorByRef,
   createThreadSelectorAcrossEnvironments,
 } from "../storeSelectors";
-import { useStore } from "../store";
-import { buildThreadRouteParams } from "../threadRoutes";
-import { buildDraftThreadRouteParams } from "../threadRoutes";
+import { type AppState, selectSidebarThreadSummaryByRef, useStore } from "../store";
+import {
+  buildDraftThreadRouteParams,
+  buildThreadRouteParams,
+  resolveDraftCanonicalThreadRef,
+} from "../threadRoutes";
 
 function DraftChatThreadRouteView() {
   const navigate = useNavigate();
@@ -42,20 +44,27 @@ function DraftChatThreadRouteView() {
       [draftSession?.threadId],
     ),
   );
-  const serverThreadStarted = threadHasStarted(serverThread);
+  const serverThreadRef = useMemo(
+    () => (draftSession ? scopeThreadRef(draftSession.environmentId, draftSession.threadId) : null),
+    [draftSession],
+  );
+  const serverThreadSummary = useStore(
+    useMemo(
+      () => (state: AppState) => selectSidebarThreadSummaryByRef(state, serverThreadRef),
+      [serverThreadRef],
+    ),
+  );
+  const serverThreadHasUserMessage =
+    Boolean(serverThreadSummary?.latestUserMessageAt) ||
+    Boolean(serverThread?.messages.some((message) => message.role === "user"));
   const canonicalThreadRef = useMemo(
     () =>
-      draftSession?.promotedTo
-        ? serverThreadStarted
-          ? draftSession.promotedTo
-          : null
-        : serverThread
-          ? {
-              environmentId: serverThread.environmentId,
-              threadId: serverThread.id,
-            }
-          : null,
-    [draftSession?.promotedTo, serverThread, serverThreadStarted],
+      resolveDraftCanonicalThreadRef({
+        draftPromotedTo: draftSession?.promotedTo,
+        serverThreadRef: serverThreadRef && serverThread ? serverThreadRef : null,
+        serverThreadHasUserMessage,
+      }),
+    [draftSession?.promotedTo, serverThread, serverThreadHasUserMessage, serverThreadRef],
   );
   const sourceControlOpen = search.sourceControl === "1";
   const shouldUseSourceControlSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
@@ -65,10 +74,7 @@ function DraftChatThreadRouteView() {
   const draftProject = useStore(
     useMemo(() => createProjectSelectorByRef(draftProjectRef), [draftProjectRef]),
   );
-  const draftThreadRef = useMemo(
-    () => (draftSession ? scopeThreadRef(draftSession.environmentId, draftSession.threadId) : null),
-    [draftSession],
-  );
+  const draftThreadRef = serverThreadRef;
   const sourceControlTarget = useMemo<SourceControlProjectTarget | null>(() => {
     if (!draftSession || !draftProject) {
       return null;

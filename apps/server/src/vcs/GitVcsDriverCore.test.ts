@@ -210,6 +210,25 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         assert.equal(status.aheadOfDefaultCount, 1);
       }),
     );
+
+    it.effect("auto-follows remote tags during background upstream status refreshes", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const remote = yield* makeTmpDir("git-vcs-driver-remote-");
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        yield* git(remote, ["init", "--bare"]);
+        yield* git(cwd, ["remote", "add", "origin", remote]);
+        yield* git(cwd, ["push", "-u", "origin", initialBranch]);
+        const initialSha = yield* git(cwd, ["rev-parse", "HEAD"]);
+        yield* git(remote, ["tag", "v0.0.9", initialSha]);
+
+        assert.equal(yield* git(cwd, ["tag", "--list", "v0.0.9"]), "");
+
+        yield* (yield* GitVcsDriver.GitVcsDriver).statusDetails(cwd);
+
+        assert.equal(yield* git(cwd, ["tag", "--list", "v0.0.9"]), "v0.0.9");
+      }),
+    );
   });
 
   describe("refName operations", () => {

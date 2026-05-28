@@ -58,6 +58,7 @@ const rpcClientMock = {
   },
   sourceControl: {
     lookupRepository: vi.fn(),
+    listRepositories: vi.fn(),
     cloneRepository: vi.fn(),
     publishRepository: vi.fn(),
   },

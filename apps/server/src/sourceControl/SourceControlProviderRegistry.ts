@@ -75,6 +75,7 @@ function unsupportedProvider(
     getChangeRequest: () => unsupported("getChangeRequest"),
     createChangeRequest: () => unsupported("createChangeRequest"),
     getRepositoryCloneUrls: () => unsupported("getRepositoryCloneUrls"),
+    listRepositories: () => unsupported("listRepositories"),
     createRepository: () => unsupported("createRepository"),
     getDefaultBranch: () => unsupported("getDefaultBranch"),
     checkoutChangeRequest: () => unsupported("checkoutChangeRequest"),
@@ -147,6 +148,7 @@ function bindProviderContext(
         ...input,
         context: input.context ?? context,
       }),
+    listRepositories: (input) => provider.listRepositories(input),
     createRepository: (input) => provider.createRepository(input),
     getDefaultBranch: (input) =>
       provider.getDefaultBranch({

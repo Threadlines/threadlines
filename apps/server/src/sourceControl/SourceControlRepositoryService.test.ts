@@ -35,6 +35,7 @@ function makeProvider(
     getChangeRequest: () => unsupported("getChangeRequest"),
     createChangeRequest: () => unsupported("createChangeRequest"),
     getRepositoryCloneUrls: () => Effect.succeed(CLONE_URLS),
+    listRepositories: () => Effect.succeed([{ provider: "github", ...CLONE_URLS }]),
     createRepository: () => Effect.succeed(CLONE_URLS),
     getDefaultBranch: () => Effect.succeed(null),
     checkoutChangeRequest: () => unsupported("checkoutChangeRequest"),
@@ -101,6 +102,29 @@ it.effect("looks up repositories through the requested provider without search",
 
     assert.deepStrictEqual(result, { provider: "github", ...CLONE_URLS });
     assert.deepStrictEqual(calls, [{ cwd: "/workspace", repository: "octocat/t3code" }]);
+  }).pipe(Effect.provide(makeLayer({ provider })));
+});
+
+it.effect("lists repositories through the requested provider", () => {
+  const calls: Array<{ cwd: string; limit?: number }> = [];
+  const provider = makeProvider({
+    listRepositories: (input) =>
+      Effect.sync(() => {
+        calls.push(input);
+        return [{ provider: "github", ...CLONE_URLS }];
+      }),
+  });
+
+  return Effect.gen(function* () {
+    const service = yield* SourceControlRepositoryService.SourceControlRepositoryService;
+    const result = yield* service.listRepositories({
+      provider: "github",
+      cwd: "/workspace",
+      limit: 25,
+    });
+
+    assert.deepStrictEqual(result, { repositories: [{ provider: "github", ...CLONE_URLS }] });
+    assert.deepStrictEqual(calls, [{ cwd: "/workspace", limit: 25 }]);
   }).pipe(Effect.provide(makeLayer({ provider })));
 });
 

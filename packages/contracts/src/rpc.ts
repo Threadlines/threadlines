@@ -109,6 +109,8 @@ import {
   SourceControlCloneRepositoryInput,
   SourceControlCloneRepositoryResult,
   SourceControlDiscoveryResult,
+  SourceControlListRepositoriesInput,
+  SourceControlListRepositoriesResult,
   SourceControlPublishRepositoryInput,
   SourceControlPublishRepositoryResult,
   SourceControlRepositoryError,
@@ -178,6 +180,7 @@ export const WS_METHODS = {
 
   // Source control methods
   sourceControlLookupRepository: "sourceControl.lookupRepository",
+  sourceControlListRepositories: "sourceControl.listRepositories",
   sourceControlCloneRepository: "sourceControl.cloneRepository",
   sourceControlPublishRepository: "sourceControl.publishRepository",
 
@@ -295,6 +298,15 @@ export const WsSourceControlLookupRepositoryRpc = Rpc.make(
   {
     payload: SourceControlRepositoryLookupInput,
     success: SourceControlRepositoryInfo,
+    error: SourceControlRepositoryError,
+  },
+);
+
+export const WsSourceControlListRepositoriesRpc = Rpc.make(
+  WS_METHODS.sourceControlListRepositories,
+  {
+    payload: SourceControlListRepositoriesInput,
+    success: SourceControlListRepositoriesResult,
     error: SourceControlRepositoryError,
   },
 );
@@ -569,6 +581,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetProviderInstructionFilesRpc,
   WsServerWriteProviderInstructionFileRpc,
   WsSourceControlLookupRepositoryRpc,
+  WsSourceControlListRepositoriesRpc,
   WsSourceControlCloneRepositoryRpc,
   WsSourceControlPublishRepositoryRpc,
   WsProjectsSearchEntriesRpc,

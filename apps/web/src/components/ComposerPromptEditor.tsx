@@ -76,6 +76,7 @@ import { formatProviderSkillDisplayName } from "~/providerSkillPresentation";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 const COMPOSER_EDITOR_HMR_KEY = `composer-editor-${Math.random().toString(36).slice(2)}`;
+const NATIVE_SPELLCHECK_REFRESH_RETRY_DELAYS_MS = [0, 80, 240] as const;
 const SURROUND_SYMBOLS: [string, string][] = [
   ["(", ")"],
   ["[", "]"],
@@ -1384,58 +1385,130 @@ function ComposerSurroundSelectionPlugin(props: {
   return null;
 }
 
-function refreshNativeSpellcheck(rootElement: HTMLElement): void {
+function captureNativeSpellcheckSelection(rootElement: HTMLElement): Range[] {
+  const ownerDocument = rootElement.ownerDocument;
+  const selection = ownerDocument.getSelection();
+  if (ownerDocument.activeElement !== rootElement || selection === null) {
+    return [];
+  }
+
+  return Array.from({ length: selection.rangeCount }, (_, index) =>
+    selection.getRangeAt(index).cloneRange(),
+  ).filter(
+    (range) =>
+      rootElement.contains(range.startContainer) && rootElement.contains(range.endContainer),
+  );
+}
+
+function disableNativeSpellcheck(rootElement: HTMLElement): void {
   if (!rootElement.isConnected || rootElement.spellcheck !== true) {
+    return;
+  }
+  rootElement.spellcheck = false;
+  rootElement.setAttribute("spellcheck", "false");
+  void rootElement.offsetHeight;
+}
+
+function restoreNativeSpellcheckSelection(
+  rootElement: HTMLElement,
+  selectionRanges: Range[],
+): void {
+  if (selectionRanges.length === 0) {
     return;
   }
 
   const ownerDocument = rootElement.ownerDocument;
   const selection = ownerDocument.getSelection();
-  const selectionRanges =
-    ownerDocument.activeElement === rootElement && selection !== null
-      ? Array.from({ length: selection.rangeCount }, (_, index) =>
-          selection.getRangeAt(index).cloneRange(),
-        ).filter(
-          (range) =>
-            rootElement.contains(range.startContainer) && rootElement.contains(range.endContainer),
-        )
-      : [];
+  if (selection === null || ownerDocument.activeElement !== rootElement) {
+    return;
+  }
 
-  rootElement.spellcheck = false;
-  rootElement.setAttribute("spellcheck", "false");
-  void rootElement.offsetHeight;
+  const selectionStillInsideComposer =
+    selection.rangeCount > 0 &&
+    Array.from({ length: selection.rangeCount }, (_, index) => selection.getRangeAt(index)).every(
+      (range) =>
+        rootElement.contains(range.startContainer) && rootElement.contains(range.endContainer),
+    );
+  if (selectionStillInsideComposer) {
+    return;
+  }
+
+  selection.removeAllRanges();
+  for (const range of selectionRanges) {
+    selection.addRange(range);
+  }
+}
+
+function enableNativeSpellcheck(rootElement: HTMLElement, selectionRanges: Range[]): void {
+  if (!rootElement.isConnected || rootElement.spellcheck === true) {
+    return;
+  }
+
   rootElement.spellcheck = true;
   rootElement.setAttribute("spellcheck", "true");
-
-  if (
-    selection &&
-    ownerDocument.activeElement === rootElement &&
-    selection.rangeCount === 0 &&
-    selectionRanges.length > 0
-  ) {
-    for (const range of selectionRanges) {
-      selection.addRange(range);
-    }
-  }
+  restoreNativeSpellcheckSelection(rootElement, selectionRanges);
 }
 
 function ComposerNativeSpellcheckRefreshPlugin() {
   const [editor] = useLexicalComposerContext();
 
   useEffect(() => {
-    let pendingFrame: number | null = null;
+    let pendingFrames: number[] = [];
+    let pendingTimeouts: number[] = [];
+    let refreshGeneration = 0;
 
-    const scheduleRefresh = (rootElement: HTMLElement) => {
-      if (pendingFrame !== null) {
-        window.cancelAnimationFrame(pendingFrame);
+    const clearPendingRefresh = () => {
+      for (const frame of pendingFrames) {
+        window.cancelAnimationFrame(frame);
       }
-      pendingFrame = window.requestAnimationFrame(() => {
-        pendingFrame = null;
-        refreshNativeSpellcheck(rootElement);
-      });
+      for (const timeout of pendingTimeouts) {
+        window.clearTimeout(timeout);
+      }
+      pendingFrames = [];
+      pendingTimeouts = [];
     };
 
-    const onInput = (event: Event) => {
+    const requestRefreshFrame = (rootElement: HTMLElement, generation: number) => {
+      const frame = window.requestAnimationFrame(() => {
+        pendingFrames = pendingFrames.filter((pendingFrame) => pendingFrame !== frame);
+        if (generation !== refreshGeneration) {
+          return;
+        }
+
+        const selectionRanges = captureNativeSpellcheckSelection(rootElement);
+        disableNativeSpellcheck(rootElement);
+        const enableFrame = window.requestAnimationFrame(() => {
+          pendingFrames = pendingFrames.filter((pendingFrame) => pendingFrame !== enableFrame);
+          if (generation !== refreshGeneration) {
+            return;
+          }
+          enableNativeSpellcheck(rootElement, selectionRanges);
+        });
+        pendingFrames.push(enableFrame);
+      });
+      pendingFrames.push(frame);
+    };
+
+    const scheduleRefresh = (rootElement: HTMLElement) => {
+      clearPendingRefresh();
+      refreshGeneration += 1;
+      const generation = refreshGeneration;
+
+      for (const delayMs of NATIVE_SPELLCHECK_REFRESH_RETRY_DELAYS_MS) {
+        if (delayMs === 0) {
+          requestRefreshFrame(rootElement, generation);
+          continue;
+        }
+
+        const timeout = window.setTimeout(() => {
+          pendingTimeouts = pendingTimeouts.filter((pendingTimeout) => pendingTimeout !== timeout);
+          requestRefreshFrame(rootElement, generation);
+        }, delayMs);
+        pendingTimeouts.push(timeout);
+      }
+    };
+
+    const onNativeReplacement = (event: Event) => {
       const inputEvent = event as InputEvent;
       if (inputEvent.inputType !== "insertReplacementText") {
         return;
@@ -1448,16 +1521,17 @@ function ComposerNativeSpellcheckRefreshPlugin() {
 
     let activeRootElement: HTMLElement | null = null;
     const unregisterRootListener = editor.registerRootListener((rootElement, prevRootElement) => {
-      prevRootElement?.removeEventListener("input", onInput);
-      rootElement?.addEventListener("input", onInput);
+      prevRootElement?.removeEventListener("beforeinput", onNativeReplacement);
+      prevRootElement?.removeEventListener("input", onNativeReplacement);
+      rootElement?.addEventListener("beforeinput", onNativeReplacement);
+      rootElement?.addEventListener("input", onNativeReplacement);
       activeRootElement = rootElement;
     });
 
     return () => {
-      if (pendingFrame !== null) {
-        window.cancelAnimationFrame(pendingFrame);
-      }
-      activeRootElement?.removeEventListener("input", onInput);
+      clearPendingRefresh();
+      activeRootElement?.removeEventListener("beforeinput", onNativeReplacement);
+      activeRootElement?.removeEventListener("input", onNativeReplacement);
       unregisterRootListener();
     };
   }, [editor]);

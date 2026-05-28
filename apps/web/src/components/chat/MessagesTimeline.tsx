@@ -2154,9 +2154,12 @@ function lastPathSegment(pathValue: string): string | null {
   return null;
 }
 
-function RunningToolIndicator() {
+function RunningToolIndicator({ className }: { className?: string }) {
   return (
-    <span className="ml-1.5 inline-flex items-center gap-[3px]" aria-label="Tool still running">
+    <span
+      className={cn("inline-flex items-center gap-[3px]", className)}
+      aria-label="Tool still running"
+    >
       <span className="size-1 rounded-full bg-current opacity-35 animate-pulse" />
       <span className="size-1 rounded-full bg-current opacity-35 animate-pulse [animation-delay:180ms]" />
       <span className="size-1 rounded-full bg-current opacity-35 animate-pulse [animation-delay:360ms]" />
@@ -2212,8 +2215,8 @@ const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
               title={displayText}
             >
               <span className="inline-flex items-center text-foreground/80">
+                {isRunningTool ? <RunningToolIndicator className="mr-1.5" /> : null}
                 {heading}
-                {isRunningTool ? <RunningToolIndicator /> : null}
               </span>
               {objective ? <span className="text-muted-foreground/55"> - {objective}</span> : null}
             </p>
@@ -2358,9 +2361,9 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                     workToneClass(workEntry.tone),
                   )}
                 >
+                  {isRunningTool ? <RunningToolIndicator className="mr-1.5" /> : null}
                   {heading}
                   {visibleDiffStat ? <InlineDiffStatLabel stat={visibleDiffStat} /> : null}
-                  {isRunningTool ? <RunningToolIndicator /> : null}
                 </span>
                 {preview && (
                   <Tooltip>
@@ -2407,9 +2410,9 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                       workToneClass(workEntry.tone),
                     )}
                   >
+                    {isRunningTool ? <RunningToolIndicator className="mr-1.5" /> : null}
                     {heading}
                     {visibleDiffStat ? <InlineDiffStatLabel stat={visibleDiffStat} /> : null}
-                    {isRunningTool ? <RunningToolIndicator /> : null}
                   </span>
                   {preview && <span className="text-muted-foreground/55"> - {preview}</span>}
                 </p>

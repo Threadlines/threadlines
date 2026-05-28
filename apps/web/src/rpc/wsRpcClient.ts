@@ -77,6 +77,7 @@ export interface WsRpcClient {
   };
   readonly sourceControl: {
     readonly lookupRepository: RpcUnaryMethod<typeof WS_METHODS.sourceControlLookupRepository>;
+    readonly listRepositories: RpcUnaryMethod<typeof WS_METHODS.sourceControlListRepositories>;
     readonly cloneRepository: RpcUnaryMethod<typeof WS_METHODS.sourceControlCloneRepository>;
     readonly publishRepository: RpcUnaryMethod<typeof WS_METHODS.sourceControlPublishRepository>;
   };
@@ -204,6 +205,8 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
     sourceControl: {
       lookupRepository: (input) =>
         transport.request((client) => client[WS_METHODS.sourceControlLookupRepository](input)),
+      listRepositories: (input) =>
+        transport.request((client) => client[WS_METHODS.sourceControlListRepositories](input)),
       cloneRepository: (input) =>
         transport.request((client) => client[WS_METHODS.sourceControlCloneRepository](input)),
       publishRepository: (input) =>

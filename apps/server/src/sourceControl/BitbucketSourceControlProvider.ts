@@ -89,6 +89,14 @@ export const make = Effect.fn("makeBitbucketSourceControlProvider")(function* ()
       bitbucket
         .getRepositoryCloneUrls(input)
         .pipe(Effect.mapError((error) => providerError("getRepositoryCloneUrls", error))),
+    listRepositories: () =>
+      Effect.fail(
+        new SourceControlProviderError({
+          provider: "bitbucket",
+          operation: "listRepositories",
+          detail: "Bitbucket repository listing is not supported yet.",
+        }),
+      ),
     createRepository: (input) =>
       bitbucket
         .createRepository(input)

@@ -61,6 +61,36 @@ it.effect("maps GitHub PR summaries into provider-neutral change requests", () =
   }),
 );
 
+it.effect("maps GitHub repository listings into provider-neutral repositories", () =>
+  Effect.gen(function* () {
+    let listInput: Parameters<GitHubCli.GitHubCliShape["listRepositories"]>[0] | null = null;
+    const provider = yield* makeProvider({
+      listRepositories: (input) => {
+        listInput = input;
+        return Effect.succeed([
+          {
+            nameWithOwner: "octocat/t3code",
+            url: "https://github.com/octocat/t3code",
+            sshUrl: "git@github.com:octocat/t3code.git",
+          },
+        ]);
+      },
+    });
+
+    const repositories = yield* provider.listRepositories({ cwd: "/repo", limit: 25 });
+
+    assert.deepStrictEqual(listInput, { cwd: "/repo", limit: 25 });
+    assert.deepStrictEqual(repositories, [
+      {
+        provider: "github",
+        nameWithOwner: "octocat/t3code",
+        url: "https://github.com/octocat/t3code",
+        sshUrl: "git@github.com:octocat/t3code.git",
+      },
+    ]);
+  }),
+);
+
 it.effect("uses gh json listing for non-open change request state queries", () =>
   Effect.gen(function* () {
     let executeArgs: ReadonlyArray<string> = [];

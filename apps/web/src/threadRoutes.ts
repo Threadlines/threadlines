@@ -28,6 +28,25 @@ export function buildDraftThreadRouteParams(draftId: DraftId): {
   return { draftId };
 }
 
+export function resolveDraftCanonicalThreadRef(input: {
+  draftPromotedTo?: ScopedThreadRef | null | undefined;
+  serverThreadRef?: ScopedThreadRef | null | undefined;
+  serverThreadHasUserMessage: boolean;
+}): ScopedThreadRef | null {
+  const target = input.draftPromotedTo ?? input.serverThreadRef ?? null;
+  if (!target || !input.serverThreadHasUserMessage) {
+    return null;
+  }
+  if (
+    input.serverThreadRef &&
+    (input.serverThreadRef.environmentId !== target.environmentId ||
+      input.serverThreadRef.threadId !== target.threadId)
+  ) {
+    return null;
+  }
+  return target;
+}
+
 export function resolveThreadRouteRef(
   params: Partial<Record<"environmentId" | "threadId", string | undefined>>,
 ): ScopedThreadRef | null {

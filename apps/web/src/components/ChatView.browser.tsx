@@ -508,6 +508,35 @@ function updateThreadSessionInSnapshot(
   };
 }
 
+function addUserMessageToThreadInSnapshot(
+  snapshot: OrchestrationReadModel,
+  threadId: ThreadId,
+): OrchestrationReadModel {
+  const messageId = `msg-user-promoted-${threadId}` as MessageId;
+  return {
+    ...snapshot,
+    snapshotSequence: snapshot.snapshotSequence + 1,
+    threads: snapshot.threads.map((thread) =>
+      thread.id === threadId
+        ? {
+            ...thread,
+            messages: thread.messages.some((message) => message.id === messageId)
+              ? thread.messages
+              : [
+                  ...thread.messages,
+                  createUserMessage({
+                    id: messageId,
+                    text: "promoted draft user message",
+                    offsetSeconds: 0,
+                  }),
+                ],
+            updatedAt: NOW_ISO,
+          }
+        : thread,
+    ),
+  };
+}
+
 function sendShellThreadUpsert(
   threadId: ThreadId,
   options?: {
@@ -598,7 +627,7 @@ async function materializePromotedDraftThreadViaDomainEvent(threadId: ThreadId):
   sendShellThreadUpsert(threadId, { session: null });
 }
 
-async function startPromotedServerThreadViaDomainEvent(threadId: ThreadId): Promise<void> {
+async function setPromotedServerThreadRunningViaDomainEvent(threadId: ThreadId): Promise<void> {
   fixture.snapshot = updateThreadSessionInSnapshot(fixture.snapshot, threadId, {
     threadId,
     status: "running",
@@ -608,6 +637,27 @@ async function startPromotedServerThreadViaDomainEvent(threadId: ThreadId): Prom
     lastError: null,
     updatedAt: NOW_ISO,
   });
+  sendShellThreadUpsert(threadId);
+}
+
+async function addPromotedServerUserMessageViaDomainEvent(threadId: ThreadId): Promise<void> {
+  fixture.snapshot = addUserMessageToThreadInSnapshot(fixture.snapshot, threadId);
+  sendShellThreadUpsert(threadId);
+}
+
+async function startPromotedServerThreadViaDomainEvent(threadId: ThreadId): Promise<void> {
+  fixture.snapshot = addUserMessageToThreadInSnapshot(
+    updateThreadSessionInSnapshot(fixture.snapshot, threadId, {
+      threadId,
+      status: "running",
+      providerName: "codex",
+      runtimeMode: "full-access",
+      activeTurnId: `turn-${threadId}` as TurnId,
+      lastError: null,
+      updatedAt: NOW_ISO,
+    }),
+    threadId,
+  );
   sendShellThreadUpsert(threadId);
 }
 
@@ -1080,6 +1130,18 @@ function resolveWsRpc(body: NormalizedWsRpcRequestBody): unknown {
             host: Option.some("dev.azure.com"),
             detail: Option.none(),
           },
+        },
+      ],
+    };
+  }
+  if (tag === WS_METHODS.sourceControlListRepositories) {
+    return {
+      repositories: [
+        {
+          provider: "github",
+          nameWithOwner: "t3-oss/t3-env",
+          url: "https://github.com/t3-oss/t3-env",
+          sshUrl: "git@github.com:t3-oss/t3-env.git",
         },
       ],
     };
@@ -3695,11 +3757,106 @@ describe("ChatView timeline estimator parity (full app)", () => {
         expect(focusSpy).not.toHaveBeenCalled();
         expect(document.activeElement).toBe(composerEditor);
         expect(composerEditor.spellcheck).toBe(true);
-        expect(setAttributeSpy).toHaveBeenCalledWith("spellcheck", "false");
-        expect(setAttributeSpy).toHaveBeenCalledWith("spellcheck", "true");
+        expect(composerEditor.getAttribute("spellcheck")).toBe("true");
+        const selection = window.getSelection();
+        expect(selection?.rangeCount).toBe(1);
+        const selectionRange = selection?.getRangeAt(0);
+        expect(
+          selectionRange ? composerEditor.contains(selectionRange.startContainer) : false,
+        ).toBe(true);
+        await vi.waitFor(
+          () => {
+            const spellcheckFalseCalls = setAttributeSpy.mock.calls.filter(
+              ([name, value]) => name === "spellcheck" && value === "false",
+            );
+            const spellcheckTrueCalls = setAttributeSpy.mock.calls.filter(
+              ([name, value]) => name === "spellcheck" && value === "true",
+            );
+            expect(spellcheckFalseCalls.length).toBeGreaterThanOrEqual(2);
+            expect(spellcheckTrueCalls.length).toBeGreaterThanOrEqual(2);
+          },
+          { timeout: 1_000, interval: 16 },
+        );
       } finally {
         blurSpy.mockRestore();
         focusSpy.mockRestore();
+        setAttributeSpy.mockRestore();
+      }
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("refreshes native spellcheck from replacement beforeinput", async () => {
+    useComposerDraftStore.getState().setPrompt(THREAD_REF, "speeling and teh");
+
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-spellcheck-beforeinput" as MessageId,
+        targetText: "spellcheck beforeinput",
+      }),
+    });
+
+    try {
+      await waitForComposerText("speeling and teh");
+      const composerEditor = await waitForComposerEditor();
+      composerEditor.focus();
+      expect(document.activeElement).toBe(composerEditor);
+
+      const setAttributeSpy = vi.spyOn(composerEditor, "setAttribute");
+      try {
+        composerEditor.dispatchEvent(
+          new InputEvent("beforeinput", {
+            data: "spelling",
+            inputType: "insertReplacementText",
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+
+        await vi.waitFor(
+          () => {
+            expect(setAttributeSpy).toHaveBeenCalledWith("spellcheck", "false");
+            expect(setAttributeSpy).toHaveBeenCalledWith("spellcheck", "true");
+            expect(composerEditor.spellcheck).toBe(true);
+            expect(composerEditor.getAttribute("spellcheck")).toBe("true");
+          },
+          { timeout: 1_000, interval: 16 },
+        );
+      } finally {
+        setAttributeSpy.mockRestore();
+      }
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("does not refresh native spellcheck for normal typing", async () => {
+    useComposerDraftStore.getState().setPrompt(THREAD_REF, "speeling and teh");
+
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-spellcheck-normal-input" as MessageId,
+        targetText: "spellcheck normal input",
+      }),
+    });
+
+    try {
+      await waitForComposerText("speeling and teh");
+      const composerEditor = await waitForComposerEditor();
+      await setComposerSelectionByTextOffsets({
+        start: "speeling and teh".length,
+        end: "speeling and teh".length,
+      });
+
+      const setAttributeSpy = vi.spyOn(composerEditor, "setAttribute");
+      try {
+        await pressComposerKey("!");
+        await waitForComposerText("speeling and teh!");
+        expect(setAttributeSpy.mock.calls.some(([name]) => name === "spellcheck")).toBe(false);
+      } finally {
         setAttributeSpy.mockRestore();
       }
     } finally {
@@ -4105,13 +4262,20 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await waitForComposerEditor();
 
       // `thread.created` should only mark the draft as promoting; it should
-      // not navigate away until the server thread has actual runtime state.
+      // not navigate away until the server projection has the user message.
       await materializePromotedDraftThreadViaDomainEvent(newThreadId);
       expect(mounted.router.state.location.pathname).toBe(newThreadPath);
       await expect.element(page.getByTestId("composer-editor")).toBeInTheDocument();
 
-      // Once the server thread starts, the route should canonicalize.
-      await startPromotedServerThreadViaDomainEvent(newThreadId);
+      // Runtime/session state can arrive before the server message detail.
+      // Keep the draft view mounted so the optimistic user message is not lost.
+      await setPromotedServerThreadRunningViaDomainEvent(newThreadId);
+      expect(mounted.router.state.location.pathname).toBe(newThreadPath);
+      await expect.element(page.getByTestId("composer-editor")).toBeInTheDocument();
+
+      // Once the shell confirms the server has the user message, the route
+      // should canonicalize.
+      await addPromotedServerUserMessageViaDomainEvent(newThreadId);
       await vi.waitFor(
         () => {
           expect(useComposerDraftStore.getState().draftThreadsByThreadKey[newDraftId]).toBe(
@@ -4883,6 +5047,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       const repositoryInput = await waitForCommandPaletteInput(
         "Enter GitHub repository (owner/repo)",
       );
+      await expect.element(palette.getByText("t3-oss/t3-env", { exact: true })).toBeVisible();
       await page.getByPlaceholder("Enter GitHub repository (owner/repo)").fill("t3-oss/t3-env");
       await dispatchInputKey(repositoryInput, { key: "Enter" });
 

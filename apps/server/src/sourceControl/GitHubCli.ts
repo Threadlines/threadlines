@@ -69,6 +69,11 @@ export interface GitHubCliShape {
     readonly repository: string;
   }) => Effect.Effect<GitHubRepositoryCloneUrls, GitHubCliError>;
 
+  readonly listRepositories: (input: {
+    readonly cwd: string;
+    readonly limit?: number;
+  }) => Effect.Effect<ReadonlyArray<GitHubRepositoryCloneUrls>, GitHubCliError>;
+
   readonly createRepository: (input: {
     readonly cwd: string;
     readonly repository: string;
@@ -226,7 +231,11 @@ function deriveRepositoryCloneUrlsFromCreateOutput(
 function decodeGitHubJson<S extends Schema.Top>(
   raw: string,
   schema: S,
-  operation: "listOpenPullRequests" | "getPullRequest" | "getRepositoryCloneUrls",
+  operation:
+    | "listOpenPullRequests"
+    | "getPullRequest"
+    | "getRepositoryCloneUrls"
+    | "listRepositories",
   invalidDetail: string,
 ): Effect.Effect<S["Type"], GitHubCliError, S["DecodingServices"]> {
   return Schema.decodeEffect(Schema.fromJsonString(schema))(raw).pipe(
@@ -345,6 +354,30 @@ export const make = Effect.fn("makeGitHubCli")(function* () {
           ),
         ),
         Effect.map(normalizeRepositoryCloneUrls),
+      ),
+    listRepositories: (input) =>
+      execute({
+        cwd: input.cwd,
+        args: [
+          "repo",
+          "list",
+          "--no-archived",
+          "--limit",
+          String(input.limit ?? 50),
+          "--json",
+          "nameWithOwner,url,sshUrl",
+        ],
+      }).pipe(
+        Effect.map((result) => result.stdout.trim()),
+        Effect.flatMap((raw) =>
+          decodeGitHubJson(
+            raw.length === 0 ? "[]" : raw,
+            Schema.Array(RawGitHubRepositoryCloneUrlsSchema),
+            "listRepositories",
+            "GitHub CLI returned invalid repository list JSON.",
+          ),
+        ),
+        Effect.map((repositories) => repositories.map(normalizeRepositoryCloneUrls)),
       ),
     createRepository: (input) =>
       execute({

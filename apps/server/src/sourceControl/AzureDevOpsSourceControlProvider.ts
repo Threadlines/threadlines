@@ -123,6 +123,14 @@ export const make = Effect.fn("makeAzureDevOpsSourceControlProvider")(function* 
       azure
         .getRepositoryCloneUrls(input)
         .pipe(Effect.mapError((error) => providerError("getRepositoryCloneUrls", error))),
+    listRepositories: () =>
+      Effect.fail(
+        new SourceControlProviderError({
+          provider: "azure-devops",
+          operation: "listRepositories",
+          detail: "Azure DevOps repository listing is not supported yet.",
+        }),
+      ),
     createRepository: (input) =>
       azure
         .createRepository(input)

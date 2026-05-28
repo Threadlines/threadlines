@@ -215,6 +215,51 @@ describe("GitHubCli.layer", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("lists authenticated user repositories", () =>
+    Effect.gen(function* () {
+      mockRun.mockReturnValueOnce(
+        Effect.succeed(
+          processOutput(
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
+            JSON.stringify([
+              {
+                nameWithOwner: "octocat/codething-mvp",
+                url: "https://github.com/octocat/codething-mvp",
+                sshUrl: "git@github.com:octocat/codething-mvp.git",
+              },
+            ]),
+          ),
+        ),
+      );
+
+      const gh = yield* GitHubCli.GitHubCli;
+      const result = yield* gh.listRepositories({ cwd: "/repo", limit: 25 });
+
+      assert.deepStrictEqual(result, [
+        {
+          nameWithOwner: "octocat/codething-mvp",
+          url: "https://github.com/octocat/codething-mvp",
+          sshUrl: "git@github.com:octocat/codething-mvp.git",
+        },
+      ]);
+      assert.deepStrictEqual(mockRun.mock.calls[0]?.[0], {
+        operation: "GitHubCli.execute",
+        command: "gh",
+        args: [
+          "repo",
+          "list",
+          "--no-archived",
+          "--limit",
+          "25",
+          "--json",
+          "nameWithOwner,url,sshUrl",
+        ],
+        cwd: "/repo",
+        timeoutMs: 30_000,
+      });
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("creates repositories and parses clone URLs from create output", () =>
     Effect.gen(function* () {
       mockRun.mockReturnValueOnce(

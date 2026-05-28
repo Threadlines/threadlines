@@ -7,6 +7,7 @@ import type {
   SourceControlProviderInfo,
   SourceControlProviderKind,
   SourceControlRepositoryCloneUrls,
+  SourceControlRepositoryInfo,
   SourceControlRepositoryVisibility,
 } from "@t3tools/contracts";
 
@@ -79,6 +80,10 @@ export interface SourceControlProviderShape {
     readonly context?: SourceControlProviderContext;
     readonly repository: string;
   }) => Effect.Effect<SourceControlRepositoryCloneUrls, SourceControlProviderError>;
+  readonly listRepositories: (input: {
+    readonly cwd: string;
+    readonly limit?: number;
+  }) => Effect.Effect<ReadonlyArray<SourceControlRepositoryInfo>, SourceControlProviderError>;
   readonly createRepository: (input: {
     readonly cwd: string;
     readonly repository: string;

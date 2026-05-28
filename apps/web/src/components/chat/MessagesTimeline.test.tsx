@@ -305,6 +305,7 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("git diff --stat");
     expect(markup).toContain("Verifying bun typecheck");
     expect(markup).toContain("bun typecheck");
+    expect(markup).toMatch(/aria-label="Tool still running"[\s\S]*Verifying bun typecheck/u);
     expect(markup).not.toContain("Explored project");
     expect(markup).not.toContain("View transcript");
   });

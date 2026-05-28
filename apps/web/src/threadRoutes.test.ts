@@ -6,6 +6,7 @@ import { DraftId } from "./composerDraftStore";
 import {
   buildDraftThreadRouteParams,
   buildThreadRouteParams,
+  resolveDraftCanonicalThreadRef,
   resolveThreadRouteRef,
   resolveThreadRouteTarget,
 } from "./threadRoutes";
@@ -63,5 +64,41 @@ describe("threadRoutes", () => {
       kind: "draft",
       draftId: "draft-1",
     });
+  });
+
+  it("keeps a draft route mounted while its server thread exists without a user message", () => {
+    const serverThreadRef = scopeThreadRef("env-1" as never, ThreadId.make("thread-1"));
+
+    expect(
+      resolveDraftCanonicalThreadRef({
+        serverThreadRef,
+        serverThreadHasUserMessage: false,
+      }),
+    ).toBeNull();
+
+    expect(
+      resolveDraftCanonicalThreadRef({
+        serverThreadRef,
+        serverThreadHasUserMessage: true,
+      }),
+    ).toEqual(serverThreadRef);
+  });
+
+  it("waits for the server user message even after a draft has been marked as promoting", () => {
+    const promotedTo = scopeThreadRef("env-1" as never, ThreadId.make("thread-promoted"));
+
+    expect(
+      resolveDraftCanonicalThreadRef({
+        draftPromotedTo: promotedTo,
+        serverThreadHasUserMessage: false,
+      }),
+    ).toBeNull();
+
+    expect(
+      resolveDraftCanonicalThreadRef({
+        draftPromotedTo: promotedTo,
+        serverThreadHasUserMessage: true,
+      }),
+    ).toEqual(promotedTo);
   });
 });

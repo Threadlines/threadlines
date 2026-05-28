@@ -10,6 +10,8 @@ import {
   SourceControlRepositoryError,
   type SourceControlCloneRepositoryInput,
   type SourceControlCloneRepositoryResult,
+  type SourceControlListRepositoriesInput,
+  type SourceControlListRepositoriesResult,
   type SourceControlCloneProtocol,
   type SourceControlProviderKind,
   type SourceControlPublishRepositoryInput,
@@ -28,6 +30,9 @@ export interface SourceControlRepositoryServiceShape {
   readonly lookupRepository: (
     input: SourceControlRepositoryLookupInput,
   ) => Effect.Effect<SourceControlRepositoryInfo, SourceControlRepositoryError>;
+  readonly listRepositories: (
+    input: SourceControlListRepositoriesInput,
+  ) => Effect.Effect<SourceControlListRepositoriesResult, SourceControlRepositoryError>;
   readonly cloneRepository: (
     input: SourceControlCloneRepositoryInput,
   ) => Effect.Effect<SourceControlCloneRepositoryResult, SourceControlRepositoryError>;
@@ -153,6 +158,21 @@ export const make = Effect.fn("makeSourceControlRepositoryService")(function* ()
       repository: input.repository.trim(),
     });
     return toRepositoryInfo(providerKind, urls);
+  });
+
+  const listRepositories = Effect.fn("SourceControlRepositoryService.listRepositories")(function* (
+    input: SourceControlListRepositoriesInput,
+  ) {
+    const providerKind = yield* ensureConcreteProvider({
+      operation: "listRepositories",
+      provider: input.provider,
+    });
+    const provider = yield* providers.get(providerKind);
+    const repositories = yield* provider.listRepositories({
+      cwd: input.cwd ?? config.cwd,
+      ...(input.limit !== undefined ? { limit: input.limit } : {}),
+    });
+    return { repositories };
   });
 
   const normalizeDestinationPath = Effect.fn("SourceControlRepositoryService.normalizeDestination")(
@@ -308,6 +328,8 @@ export const make = Effect.fn("makeSourceControlRepositoryService")(function* ()
   return SourceControlRepositoryService.of({
     lookupRepository: (input) =>
       lookupRepository(input).pipe(mapRepositoryError("lookupRepository", input.provider)),
+    listRepositories: (input) =>
+      listRepositories(input).pipe(mapRepositoryError("listRepositories", input.provider)),
     cloneRepository: (input) =>
       cloneRepository(input).pipe(
         mapRepositoryError("cloneRepository", input.provider ?? "unknown"),

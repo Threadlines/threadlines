@@ -7,6 +7,7 @@ import {
   SourceControlProviderError,
   type ChangeRequest,
   type ChangeRequestState,
+  type SourceControlRepositoryInfo,
 } from "@t3tools/contracts";
 import { parseGitHubRepositoryNameWithOwnerFromRemoteUrl } from "@t3tools/shared/git";
 
@@ -47,6 +48,17 @@ function toChangeRequest(summary: GitHubCli.GitHubPullRequestSummary): ChangeReq
     ...(summary.headRepositoryOwnerLogin !== undefined
       ? { headRepositoryOwnerLogin: summary.headRepositoryOwnerLogin }
       : {}),
+  };
+}
+
+function toRepositoryInfo(
+  summary: GitHubCli.GitHubRepositoryCloneUrls,
+): SourceControlRepositoryInfo {
+  return {
+    provider: "github",
+    nameWithOwner: summary.nameWithOwner,
+    url: summary.url,
+    sshUrl: summary.sshUrl,
   };
 }
 
@@ -216,6 +228,11 @@ export const make = Effect.fn("makeGitHubSourceControlProvider")(function* () {
       github
         .getRepositoryCloneUrls(input)
         .pipe(Effect.mapError((error) => providerError("getRepositoryCloneUrls", error))),
+    listRepositories: (input) =>
+      github.listRepositories(input).pipe(
+        Effect.map((repositories) => repositories.map(toRepositoryInfo)),
+        Effect.mapError((error) => providerError("listRepositories", error)),
+      ),
     createRepository: (input) =>
       github
         .createRepository(input)
