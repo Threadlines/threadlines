@@ -717,7 +717,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               ? event.payload.session.activeTurnId
               : event.payload.session.status === "interrupted"
                 ? existingRow.value.latestTurnId
-                : event.payload.session.activeTurnId;
+                : (event.payload.session.activeTurnId ?? existingRow.value.latestTurnId);
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             latestTurnId: nextLatestTurnId,

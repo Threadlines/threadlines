@@ -68,6 +68,7 @@ import * as Stream from "effect/Stream";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
+import { addProviderAuthHint } from "../providerAuthHints.ts";
 import {
   getClaudeModelCapabilities,
   normalizeClaudeCliEffort,
@@ -1342,7 +1343,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       threadId: context.session.threadId,
       ...(turnState ? { turnId: asCanonicalTurnId(turnState.turnId) } : {}),
       payload: {
-        message,
+        message: addProviderAuthHint(PROVIDER, message),
         class: "provider_error",
         ...(cause !== undefined ? { detail: cause } : {}),
       },
@@ -1426,6 +1427,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     result?: SDKResultMessage,
   ) {
     const resultContextWindow = maxClaudeContextWindowFromModelUsage(result?.modelUsage);
+    const providerErrorMessage =
+      status === "failed" && errorMessage
+        ? addProviderAuthHint(PROVIDER, errorMessage)
+        : errorMessage;
     if (resultContextWindow !== undefined) {
       context.lastKnownContextWindow = resultContextWindow;
     }
@@ -1491,7 +1496,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ...(typeof result?.total_cost_usd === "number"
             ? { totalCostUsd: result.total_cost_usd }
             : {}),
-          ...(errorMessage ? { errorMessage } : {}),
+          ...(providerErrorMessage ? { errorMessage: providerErrorMessage } : {}),
         },
         providerRefs: {},
       });
@@ -1577,7 +1582,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(typeof result?.total_cost_usd === "number"
           ? { totalCostUsd: result.total_cost_usd }
           : {}),
-        ...(errorMessage ? { errorMessage } : {}),
+        ...(providerErrorMessage ? { errorMessage: providerErrorMessage } : {}),
       },
       providerRefs: nativeProviderRefs(context),
     });
@@ -1589,7 +1594,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       status: "ready",
       activeTurnId: undefined,
       updatedAt,
-      ...(status === "failed" && errorMessage ? { lastError: errorMessage } : {}),
+      ...(status === "failed" && providerErrorMessage ? { lastError: providerErrorMessage } : {}),
     };
     yield* updateResumeCursor(context);
   });
@@ -2903,11 +2908,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         pathToClaudeCodeExecutable: claudeBinaryPath,
         systemPrompt: { type: "preset", preset: "claude_code" },
         settingSources: [...CLAUDE_SETTING_SOURCES],
-        // The SDK type lags the CLI here: Opus 4.7 accepts `xhigh` even though
-        // the published `Options["effort"]` union currently stops at `max`.
         ...(effectiveEffort
           ? {
-              effort: effectiveEffort as unknown as NonNullable<ClaudeQueryOptions["effort"]>,
+              effort: effectiveEffort,
             }
           : {}),
         ...(permissionMode ? { permissionMode } : {}),

@@ -33,7 +33,7 @@ import { createModelCapabilities } from "@t3tools/shared/model";
 import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 
 import { checkCodexProviderStatus, type CodexAppServerProviderSnapshot } from "./CodexProvider.ts";
-import { checkClaudeProviderStatus, getClaudeModelCapabilities } from "./ClaudeProvider.ts";
+import { checkClaudeProviderStatus } from "./ClaudeProvider.ts";
 import { OpenCodeRuntimeLive } from "../opencodeRuntime.ts";
 import { NoOpProviderEventLoggers, ProviderEventLoggers } from "./ProviderEventLoggers.ts";
 import { ProviderInstanceRegistryHydrationLive } from "./ProviderInstanceRegistryHydration.ts";
@@ -103,7 +103,6 @@ type TestClaudeCapabilities = {
   readonly subscriptionType: string | undefined;
   readonly tokenSource: string | undefined;
   readonly slashCommands: ReadonlyArray<ServerProviderSlashCommand>;
-  readonly models: ReadonlyArray<ServerProvider["models"][number]>;
 };
 
 function claudeCapabilities(overrides: Partial<TestClaudeCapabilities> = {}) {
@@ -113,7 +112,6 @@ function claudeCapabilities(overrides: Partial<TestClaudeCapabilities> = {}) {
       subscriptionType: undefined,
       tokenSource: undefined,
       slashCommands: [],
-      models: [],
       ...overrides,
     });
 }
@@ -674,62 +672,6 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
         assert.deepStrictEqual(mergeProviderSnapshot(previousProvider, refreshedProvider).models, [
           ...previousProvider.models,
         ]);
-      });
-
-      it("does not append stale Claude models after Claude reports a fresh non-empty list", () => {
-        const previousProvider = {
-          instanceId: ProviderInstanceId.make("claudeAgent"),
-          driver: ProviderDriverKind.make("claudeAgent"),
-          status: "ready",
-          enabled: true,
-          installed: true,
-          auth: { status: "authenticated" },
-          checkedAt: "2026-05-28T18:00:00.000Z",
-          version: "2.1.153",
-          models: [
-            {
-              slug: "claude-opus-4-7",
-              name: "Claude Opus 4.7",
-              isCustom: false,
-              capabilities: createModelCapabilities({
-                optionDescriptors: [
-                  selectDescriptor("effort", "Reasoning", [
-                    { id: "xhigh", label: "Extra High", isDefault: true },
-                  ]),
-                ],
-              }),
-            },
-          ],
-          slashCommands: [],
-          skills: [],
-        } as const satisfies ServerProvider;
-        const refreshedProvider = {
-          ...previousProvider,
-          checkedAt: "2026-05-28T18:01:00.000Z",
-          version: "2.1.154",
-          models: [
-            {
-              slug: "default",
-              name: "Opus 4.8 with 1M context - Most capable for complex work",
-              isCustom: false,
-              capabilities: createModelCapabilities({
-                optionDescriptors: [
-                  selectDescriptor("effort", "Reasoning", [
-                    { id: "high", label: "High", isDefault: true },
-                  ]),
-                  booleanDescriptor("fastMode", "Fast Mode"),
-                ],
-              }),
-            },
-          ],
-        } satisfies ServerProvider;
-
-        assert.deepStrictEqual(
-          mergeProviderSnapshot(previousProvider, refreshedProvider).models.map(
-            (model) => model.slug,
-          ),
-          ["default"],
-        );
       });
 
       it("persists merged provider snapshots for the providers that were refreshed", () => {
@@ -1499,70 +1441,70 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
         ),
       );
 
-      it.effect("uses Claude-reported models when initialization returns a model list", () =>
-        Effect.gen(function* () {
-          const dynamicCapabilities = createModelCapabilities({
-            optionDescriptors: [
-              selectDescriptor("effort", "Reasoning", [
+      it.effect(
+        "includes Claude Opus 4.8 with current launch capabilities on supported versions",
+        () =>
+          Effect.gen(function* () {
+            const status = yield* checkClaudeProviderStatus(
+              defaultClaudeSettings,
+              claudeCapabilities(),
+            );
+            const opus48 = status.models.find((model) => model.slug === "claude-opus-4-8");
+            if (!opus48) {
+              assert.fail("Expected Claude Opus 4.8 to be present for Claude Code v2.1.154.");
+            }
+            if (!opus48.capabilities) {
+              assert.fail(
+                "Expected Claude Opus 4.8 capabilities to be present for Claude Code v2.1.154.",
+              );
+            }
+            assert.strictEqual(opus48.name, "Claude Opus 4.8");
+            const effortDescriptor = opus48.capabilities.optionDescriptors?.find(
+              (descriptor) => descriptor.type === "select" && descriptor.id === "effort",
+            );
+            assert.deepStrictEqual(
+              effortDescriptor?.type === "select" ? effortDescriptor.options : undefined,
+              [
                 { id: "low", label: "Low" },
                 { id: "medium", label: "Medium" },
                 { id: "high", label: "High", isDefault: true },
                 { id: "xhigh", label: "Extra High" },
                 { id: "max", label: "Max" },
-              ]),
-              booleanDescriptor("fastMode", "Fast Mode"),
-            ],
-          });
-          const status = yield* checkClaudeProviderStatus(
-            defaultClaudeSettings,
-            claudeCapabilities({
-              models: [
-                {
-                  slug: "default",
-                  name: "Opus 4.8 with 1M context - Most capable for complex work (Default recommended)",
-                  isCustom: false,
-                  capabilities: dynamicCapabilities,
-                },
-                {
-                  slug: "sonnet",
-                  name: "Sonnet 4.6 - Best for everyday tasks",
-                  isCustom: false,
-                  capabilities: createModelCapabilities({
-                    optionDescriptors: [
-                      selectDescriptor("effort", "Reasoning", [
-                        { id: "low", label: "Low" },
-                        { id: "medium", label: "Medium" },
-                        { id: "high", label: "High", isDefault: true },
-                        { id: "max", label: "Max" },
-                      ]),
-                    ],
-                  }),
-                },
               ],
-            }),
-          );
-
-          assert.deepStrictEqual(
-            status.models.map((model) => model.slug),
-            ["default", "sonnet"],
-          );
-          assert.strictEqual(status.models[0]?.name.includes("Opus 4.8"), true);
-          assert.deepStrictEqual(getClaudeModelCapabilities("default"), dynamicCapabilities);
-        }).pipe(
-          Effect.provide(
-            mockSpawnerLayer((args) => {
-              const joined = args.join(" ");
-              if (joined === "--version") return { stdout: "2.1.154\n", stderr: "", code: 0 };
-              if (joined === "auth status")
-                return {
-                  stdout: '{"loggedIn":true,"authMethod":"claude.ai"}\n',
-                  stderr: "",
-                  code: 0,
-                };
-              throw new Error(`Unexpected args: ${joined}`);
-            }),
+            );
+            const fastModeDescriptor = opus48.capabilities.optionDescriptors?.find(
+              (descriptor) => descriptor.type === "boolean" && descriptor.id === "fastMode",
+            );
+            assert.deepStrictEqual(fastModeDescriptor, {
+              id: "fastMode",
+              label: "Fast Mode",
+              type: "boolean",
+            });
+            const contextDescriptor = opus48.capabilities.optionDescriptors?.find(
+              (descriptor) => descriptor.type === "select" && descriptor.id === "contextWindow",
+            );
+            assert.deepStrictEqual(
+              contextDescriptor?.type === "select" ? contextDescriptor.options : undefined,
+              [
+                { id: "1m", label: "1M", isDefault: true },
+                { id: "200k", label: "200k" },
+              ],
+            );
+          }).pipe(
+            Effect.provide(
+              mockSpawnerLayer((args) => {
+                const joined = args.join(" ");
+                if (joined === "--version") return { stdout: "2.1.154\n", stderr: "", code: 0 };
+                if (joined === "auth status")
+                  return {
+                    stdout: '{"loggedIn":true,"authMethod":"claude.ai"}\n',
+                    stderr: "",
+                    code: 0,
+                  };
+                throw new Error(`Unexpected args: ${joined}`);
+              }),
+            ),
           ),
-        ),
       );
 
       it.effect(
@@ -1608,7 +1550,42 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
           ),
       );
 
-      it.effect("hides Claude Opus 4.7 on older Claude Code versions", () =>
+      it.effect("hides Claude Opus 4.8 before the Claude Code version that exposes it", () =>
+        Effect.gen(function* () {
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities(),
+          );
+          assert.strictEqual(
+            status.models.some((model) => model.slug === "claude-opus-4-8"),
+            false,
+          );
+          assert.strictEqual(
+            status.models.some((model) => model.slug === "claude-opus-4-7"),
+            true,
+          );
+          assert.strictEqual(
+            status.message,
+            "Claude Code v2.1.153 is too old for Claude Opus 4.8. Upgrade to v2.1.154 or newer to access it.",
+          );
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.153\n", stderr: "", code: 0 };
+              if (joined === "auth status")
+                return {
+                  stdout: '{"loggedIn":true,"authMethod":"claude.ai"}\n',
+                  stderr: "",
+                  code: 0,
+                };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      it.effect("hides Claude Opus 4.7 and 4.8 on older Claude Code versions", () =>
         Effect.gen(function* () {
           const status = yield* checkClaudeProviderStatus(
             defaultClaudeSettings,
@@ -1619,8 +1596,12 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             false,
           );
           assert.strictEqual(
+            status.models.some((model) => model.slug === "claude-opus-4-8"),
+            false,
+          );
+          assert.strictEqual(
             status.message,
-            "Claude Code v2.1.110 is too old for Claude Opus 4.7. Upgrade to v2.1.111 or newer to access it.",
+            "Claude Code v2.1.110 is too old for Claude Opus 4.8. Upgrade to v2.1.154 or newer to access it.",
           );
         }).pipe(
           Effect.provide(

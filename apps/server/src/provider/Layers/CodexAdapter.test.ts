@@ -743,6 +743,41 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("adds login guidance to Codex authentication runtime errors", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "runtime.error",
+      ).pipe(Stream.runHead, Effect.forkChild);
+
+      yield* runtime.emit({
+        id: asEventId("evt-codex-auth-error"),
+        kind: "error",
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "error",
+        message: "Not logged in",
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      assert.equal(firstEvent.value.type, "runtime.error");
+      if (firstEvent.value.type !== "runtime.error") {
+        return;
+      }
+      assert.equal(
+        firstEvent.value.payload.message,
+        "Not logged in Run `codex login` in a terminal, then retry.",
+      );
+    }),
+  );
+
   it.effect("preserves request type when mapping serverRequest/resolved", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();

@@ -14,14 +14,12 @@ import * as Result from "effect/Result";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import {
   createModelCapabilities,
-  getModelSelectionStringOptionValue,
   getProviderOptionCurrentValue,
   getProviderOptionDescriptors,
 } from "@t3tools/shared/model";
 import { compareSemverVersions } from "@t3tools/shared/semver";
 import {
   query as claudeQuery,
-  type ModelInfo as ClaudeModelInfo,
   type SlashCommand as ClaudeSlashCommand,
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -43,25 +41,47 @@ import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 const DEFAULT_CLAUDE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
 });
-type ClaudeEffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
-
-const CLAUDE_EFFORT_LABELS = {
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-  xhigh: "Extra High",
-  max: "Max",
-} satisfies Record<ClaudeEffortLevel, string>;
-
-const dynamicClaudeModelCapabilities = new Map<string, ModelCapabilities>();
 
 const PROVIDER = ProviderDriverKind.make("claudeAgent");
 const CLAUDE_PRESENTATION = {
   displayName: "Claude",
   showInteractionModeToggle: true,
 } as const;
+const MINIMUM_CLAUDE_OPUS_4_8_VERSION = "2.1.154";
 const MINIMUM_CLAUDE_OPUS_4_7_VERSION = "2.1.111";
 const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
+  {
+    slug: "claude-opus-4-8",
+    name: "Claude Opus 4.8",
+    isCustom: false,
+    capabilities: createModelCapabilities({
+      optionDescriptors: [
+        buildSelectOptionDescriptor({
+          id: "effort",
+          label: "Reasoning",
+          options: [
+            { value: "low", label: "Low" },
+            { value: "medium", label: "Medium" },
+            { value: "high", label: "High", isDefault: true },
+            { value: "xhigh", label: "Extra High" },
+            { value: "max", label: "Max" },
+          ],
+        }),
+        buildBooleanOptionDescriptor({
+          id: "fastMode",
+          label: "Fast Mode",
+        }),
+        buildSelectOptionDescriptor({
+          id: "contextWindow",
+          label: "Context Window",
+          options: [
+            { value: "1m", label: "1M", isDefault: true },
+            { value: "200k", label: "200k" },
+          ],
+        }),
+      ],
+    }),
+  },
   {
     slug: "claude-opus-4-7",
     name: "Claude Opus 4.7",
@@ -191,6 +211,10 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   },
 ];
 
+function supportsClaudeOpus48(version: string | null | undefined): boolean {
+  return version ? compareSemverVersions(version, MINIMUM_CLAUDE_OPUS_4_8_VERSION) >= 0 : false;
+}
+
 function supportsClaudeOpus47(version: string | null | undefined): boolean {
   return version ? compareSemverVersions(version, MINIMUM_CLAUDE_OPUS_4_7_VERSION) >= 0 : false;
 }
@@ -198,21 +222,48 @@ function supportsClaudeOpus47(version: string | null | undefined): boolean {
 function getBuiltInClaudeModelsForVersion(
   version: string | null | undefined,
 ): ReadonlyArray<ServerProviderModel> {
-  if (supportsClaudeOpus47(version)) {
-    return BUILT_IN_MODELS;
-  }
-  return BUILT_IN_MODELS.filter((model) => model.slug !== "claude-opus-4-7");
+  return BUILT_IN_MODELS.filter((model) => {
+    if (model.slug === "claude-opus-4-8") {
+      return supportsClaudeOpus48(version);
+    }
+    if (model.slug === "claude-opus-4-7") {
+      return supportsClaudeOpus47(version);
+    }
+    return true;
+  });
 }
 
-function formatClaudeOpus47UpgradeMessage(version: string | null): string {
+function formatClaudeModelUpgradeMessage(input: {
+  readonly version: string | null;
+  readonly modelName: string;
+  readonly minimumVersion: string;
+}): string {
+  const { version, modelName, minimumVersion } = input;
   const versionLabel = version ? `v${version}` : "the installed version";
-  return `Claude Code ${versionLabel} is too old for Claude Opus 4.7. Upgrade to v${MINIMUM_CLAUDE_OPUS_4_7_VERSION} or newer to access it.`;
+  return `Claude Code ${versionLabel} is too old for ${modelName}. Upgrade to v${minimumVersion} or newer to access it.`;
+}
+
+function formatClaudeUpgradeMessage(version: string | null): string | undefined {
+  if (!supportsClaudeOpus48(version)) {
+    return formatClaudeModelUpgradeMessage({
+      version,
+      modelName: "Claude Opus 4.8",
+      minimumVersion: MINIMUM_CLAUDE_OPUS_4_8_VERSION,
+    });
+  }
+  if (!supportsClaudeOpus47(version)) {
+    return formatClaudeModelUpgradeMessage({
+      version,
+      modelName: "Claude Opus 4.7",
+      minimumVersion: MINIMUM_CLAUDE_OPUS_4_7_VERSION,
+    });
+  }
+  return undefined;
 }
 
 export function getClaudeModelCapabilities(model: string | null | undefined): ModelCapabilities {
   const slug = model?.trim();
   return (
-    (slug ? dynamicClaudeModelCapabilities.get(slug) : undefined) ??
     BUILT_IN_MODELS.find((candidate) => candidate.slug === slug)?.capabilities ??
     DEFAULT_CLAUDE_MODEL_CAPABILITIES
   );
@@ -235,9 +286,6 @@ export function resolveClaudeEffort(
  * Normalize a resolved Claude effort value into one suitable for the Claude
  * CLI's `--effort` flag.
  *
- * Mirrors the mapping used when invoking the Claude Agent SDK
- * ({@link getEffectiveClaudeAgentEffort} in ClaudeAdapter): the Opus 4.7
- * capability `"xhigh"` is rewritten to the accepted CLI value `"max"`, and
  * `"ultrathink"` is filtered out because it is a prompt-prefix mode rather
  * than a CLI-effort value. Returns `undefined` when no flag should be passed.
  */
@@ -245,14 +293,18 @@ export function normalizeClaudeCliEffort(effort: string | null | undefined): str
   if (!effort || effort === "ultrathink") {
     return undefined;
   }
-  if (effort === "xhigh") {
-    return "max";
-  }
   return effort;
 }
 
 export function resolveClaudeApiModelId(modelSelection: ModelSelection): string {
-  switch (getModelSelectionStringOptionValue(modelSelection, "contextWindow")) {
+  const descriptors = getProviderOptionDescriptors({
+    caps: getClaudeModelCapabilities(modelSelection.model),
+    selections: modelSelection.options,
+  });
+  const contextWindowDescriptor = descriptors.find(
+    (descriptor) => descriptor.id === "contextWindow",
+  );
+  switch (getProviderOptionCurrentValue(contextWindowDescriptor)) {
     case "1m":
       return `${modelSelection.model}[1m]`;
     default:
@@ -362,8 +414,8 @@ function claudeAuthMetadata(input: {
 
 const CAPABILITIES_PROBE_TIMEOUT_MS = 8_000;
 
-function nonEmptyProbeString(value: string | null | undefined): string | undefined {
-  const candidate = value?.trim();
+function nonEmptyProbeString(value: string): string | undefined {
+  const candidate = value.trim();
   return candidate ? candidate : undefined;
 }
 
@@ -372,105 +424,7 @@ type ClaudeCapabilitiesProbe = {
   readonly subscriptionType: string | undefined;
   readonly tokenSource: string | undefined;
   readonly slashCommands: ReadonlyArray<ServerProviderSlashCommand>;
-  readonly models: ReadonlyArray<ServerProviderModel>;
 };
-
-function isClaudeEffortLevel(value: string): value is ClaudeEffortLevel {
-  return Object.prototype.hasOwnProperty.call(CLAUDE_EFFORT_LABELS, value);
-}
-
-function claudeModelEffortOptions(
-  model: ClaudeModelInfo,
-): ReadonlyArray<{ value: string; label: string; isDefault?: boolean }> {
-  const seen = new Set<string>();
-  const levels = (model.supportedEffortLevels ?? []).filter((level): level is ClaudeEffortLevel => {
-    if (!isClaudeEffortLevel(level) || seen.has(level)) return false;
-    seen.add(level);
-    return true;
-  });
-  if (!model.supportsEffort || levels.length === 0) return [];
-
-  const defaultLevel = levels.includes("high") ? "high" : levels[0]!;
-  return levels.map((level) => {
-    const option: { value: string; label: string; isDefault?: boolean } = {
-      value: level,
-      label: CLAUDE_EFFORT_LABELS[level],
-    };
-    if (level === defaultLevel) {
-      option.isDefault = true;
-    }
-    return option;
-  });
-}
-
-function modelCapabilitiesFromClaudeInfo(model: ClaudeModelInfo): ModelCapabilities {
-  const effortOptions = claudeModelEffortOptions(model);
-  const optionDescriptors = [
-    ...(effortOptions.length > 0
-      ? [
-          buildSelectOptionDescriptor({
-            id: "effort",
-            label: "Reasoning",
-            options: effortOptions,
-          }),
-        ]
-      : []),
-    ...(model.supportsFastMode
-      ? [
-          buildBooleanOptionDescriptor({
-            id: "fastMode",
-            label: "Fast Mode",
-          }),
-        ]
-      : []),
-  ];
-
-  return optionDescriptors.length > 0
-    ? createModelCapabilities({ optionDescriptors })
-    : DEFAULT_CLAUDE_MODEL_CAPABILITIES;
-}
-
-function formatClaudeModelName(model: ClaudeModelInfo): string {
-  const value = nonEmptyProbeString(model.value);
-  const displayName = nonEmptyProbeString(model.displayName);
-  const description = nonEmptyProbeString(model.description);
-  if (description && displayName) {
-    return description.toLowerCase().includes(displayName.toLowerCase())
-      ? description
-      : `${description} (${displayName})`;
-  }
-  return description ?? displayName ?? value ?? "Claude";
-}
-
-function parseClaudeInitializationModels(
-  models: ReadonlyArray<ClaudeModelInfo> | undefined,
-): ReadonlyArray<ServerProviderModel> {
-  const seen = new Set<string>();
-  const parsedModels: ServerProviderModel[] = [];
-
-  for (const model of models ?? []) {
-    const slug = nonEmptyProbeString(model.value);
-    if (!slug || seen.has(slug)) continue;
-    seen.add(slug);
-    const capabilities = modelCapabilitiesFromClaudeInfo(model);
-    parsedModels.push({
-      slug,
-      name: formatClaudeModelName(model),
-      isCustom: false,
-      capabilities,
-    });
-  }
-
-  return parsedModels;
-}
-
-function rememberClaudeModelCapabilities(models: ReadonlyArray<ServerProviderModel>): void {
-  for (const model of models) {
-    if (model.capabilities) {
-      dynamicClaudeModelCapabilities.set(model.slug, model.capabilities);
-    }
-  }
-}
 
 function parseClaudeInitializationCommands(
   commands: ReadonlyArray<ClaudeSlashCommand> | undefined,
@@ -595,7 +549,6 @@ const probeClaudeCapabilities = (
         subscriptionType: account?.subscriptionType,
         tokenSource: account?.tokenSource,
         slashCommands: parseClaudeInitializationCommands(init.commands),
-        models: parseClaudeInitializationModels(init.models),
       } satisfies ClaudeCapabilitiesProbe;
     });
   }).pipe(
@@ -723,25 +676,17 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     });
   }
 
-  const capabilities = resolveCapabilities
-    ? yield* resolveCapabilities(claudeSettings).pipe(Effect.orElseSucceed(() => undefined))
-    : undefined;
   const models = providerModelsFromSettings(
-    capabilities?.models && capabilities.models.length > 0
-      ? capabilities.models
-      : getBuiltInClaudeModelsForVersion(parsedVersion),
+    getBuiltInClaudeModelsForVersion(parsedVersion),
     PROVIDER,
     claudeSettings.customModels,
     DEFAULT_CLAUDE_MODEL_CAPABILITIES,
   );
-  const usesClaudeReportedModels = (capabilities?.models.length ?? 0) > 0;
-  if (usesClaudeReportedModels) {
-    rememberClaudeModelCapabilities(models);
-  }
-  const opus47UpgradeMessage =
-    usesClaudeReportedModels || supportsClaudeOpus47(parsedVersion)
-      ? undefined
-      : formatClaudeOpus47UpgradeMessage(parsedVersion);
+  const upgradeMessage = formatClaudeUpgradeMessage(parsedVersion);
+
+  const capabilities = resolveCapabilities
+    ? yield* resolveCapabilities(claudeSettings).pipe(Effect.orElseSucceed(() => undefined))
+    : undefined;
   const slashCommands = capabilities?.slashCommands ?? [];
   const dedupedSlashCommands = dedupeSlashCommands(slashCommands);
 
@@ -781,7 +726,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         ...(capabilities.email ? { email: capabilities.email } : {}),
         ...(authMetadata ? authMetadata : {}),
       },
-      ...(opus47UpgradeMessage ? { message: opus47UpgradeMessage } : {}),
+      ...(upgradeMessage ? { message: upgradeMessage } : {}),
     },
   });
 });

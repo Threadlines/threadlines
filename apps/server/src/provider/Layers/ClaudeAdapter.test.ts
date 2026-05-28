@@ -402,7 +402,7 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("maps the Claude Opus 4.7 default effort to the SDK-supported max value", () => {
+  it.effect("forwards the Claude Opus 4.7 default xhigh effort into query options", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
@@ -417,14 +417,14 @@ describe("ClaudeAdapterLive", () => {
       });
 
       const createInput = harness.getLastCreateQueryInput();
-      assert.equal(createInput?.options.effort, "max");
+      assert.equal(createInput?.options.effort, "xhigh");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
     );
   });
 
-  it.effect("maps xhigh effort for Claude Opus 4.7 to the SDK-supported max value", () => {
+  it.effect("forwards xhigh effort for Claude Opus 4.7 into query options", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
@@ -440,7 +440,30 @@ describe("ClaudeAdapterLive", () => {
       });
 
       const createInput = harness.getLastCreateQueryInput();
-      assert.equal(createInput?.options.effort, "max");
+      assert.equal(createInput?.options.effort, "xhigh");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("uses high effort and 1M context for Claude Opus 4.8 by default", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "claude-opus-4-8",
+        },
+        runtimeMode: "full-access",
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      assert.equal(createInput?.options.model, "claude-opus-4-8[1m]");
+      assert.equal(createInput?.options.effort, "high");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -861,6 +884,55 @@ describe("ClaudeAdapterLive", () => {
         assert.equal(String(turnCompleted.turnId), String(turn.turnId));
         assert.equal(turnCompleted.payload.state, "completed");
       }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("adds login guidance to Claude authentication runtime errors", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeErrorFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "runtime.error",
+      ).pipe(Stream.runHead, Effect.forkChild);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        errors: ["Failed to authenticate. API Error: 401 Invalid authentication credentials"],
+        session_id: "sdk-session-1",
+        uuid: "result-auth-error",
+      } as unknown as SDKMessage);
+
+      const runtimeError = yield* Fiber.join(runtimeErrorFiber);
+      assert.equal(runtimeError._tag, "Some");
+      if (runtimeError._tag !== "Some") {
+        return;
+      }
+      assert.equal(runtimeError.value.type, "runtime.error");
+      if (runtimeError.value.type !== "runtime.error") {
+        return;
+      }
+      assert.equal(
+        runtimeError.value.payload.message,
+        "Failed to authenticate. API Error: 401 Invalid authentication credentials Run `claude auth login` in a terminal, then retry.",
+      );
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

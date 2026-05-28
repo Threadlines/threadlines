@@ -50,6 +50,7 @@ import {
   type ProviderAdapterError,
 } from "../Errors.ts";
 import { type CodexAdapterShape } from "../Services/CodexAdapter.ts";
+import { addProviderAuthHint } from "../providerAuthHints.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import {
@@ -496,7 +497,7 @@ function mapToRuntimeEvents(
         ...runtimeEventBase(event, canonicalThreadId),
         type: "runtime.error",
         payload: {
-          message: event.message,
+          message: addProviderAuthHint(PROVIDER, event.message),
           class: "provider_error",
           ...(event.payload !== undefined ? { detail: event.payload } : {}),
         },
@@ -762,13 +763,16 @@ function mapToRuntimeEvents(
       return [];
     }
     const errorMessage = trimText(payload.turn.error?.message);
+    const hintedErrorMessage = errorMessage
+      ? addProviderAuthHint(PROVIDER, errorMessage)
+      : undefined;
     return [
       {
         ...runtimeEventBase(event, canonicalThreadId),
         type: "turn.completed",
         payload: {
           state: toTurnStatus(payload.turn.status),
-          ...(errorMessage ? { errorMessage } : {}),
+          ...(hintedErrorMessage ? { errorMessage: hintedErrorMessage } : {}),
         },
       },
     ];
@@ -1214,7 +1218,7 @@ function mapToRuntimeEvents(
         type: "thread.realtime.error",
         ...runtimeEventBase(event, canonicalThreadId),
         payload: {
-          message,
+          message: addProviderAuthHint(PROVIDER, message),
         },
       },
     ];
@@ -1245,7 +1249,7 @@ function mapToRuntimeEvents(
         type: willRetry ? "runtime.warning" : "runtime.error",
         ...runtimeEventBase(event, canonicalThreadId),
         payload: {
-          message,
+          message: addProviderAuthHint(PROVIDER, message),
           ...(!willRetry ? { class: "provider_error" as const } : {}),
           ...(event.payload !== undefined ? { detail: event.payload } : {}),
         },
@@ -1262,7 +1266,7 @@ function mapToRuntimeEvents(
             type: "runtime.error",
             ...runtimeEventBase(event, canonicalThreadId),
             payload: {
-              message,
+              message: addProviderAuthHint(PROVIDER, message),
               class: "provider_error" as const,
               ...(event.payload !== undefined ? { detail: event.payload } : {}),
             },
