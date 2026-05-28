@@ -1306,7 +1306,7 @@ function OpenCommandPaletteDialog() {
         continueAddProjectCloneFlowWithRepository(addProjectCloneFlow, {
           repositoryInput: rawRepository,
           repository,
-          remoteUrl: repository.sshUrl,
+          remoteUrl: repository.url,
         });
       } catch (error) {
         toastManager.add(
@@ -1453,7 +1453,7 @@ function OpenCommandPaletteDialog() {
           continueAddProjectCloneFlowWithRepository(addProjectCloneFlow, {
             repositoryInput: repository.nameWithOwner,
             repository,
-            remoteUrl: repository.sshUrl,
+            remoteUrl: repository.url,
           });
         },
       }));

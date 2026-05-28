@@ -1401,7 +1401,23 @@ export default function ChatView(props: ChatViewProps) {
     activePendingUserInput: activePendingUserInput?.requestId ?? null,
     threadError: activeThread?.error,
   });
-  const isWorking = phase === "running" || isSendBusy || isConnecting || isRevertingCheckpoint;
+  const isWorking =
+    phase === "running" ||
+    phase === "connecting" ||
+    isSendBusy ||
+    isConnecting ||
+    isRevertingCheckpoint;
+  const activeStatusLabel = isRevertingCheckpoint
+    ? "Reverting checkpoint"
+    : isPreparingWorktree
+      ? "Preparing worktree"
+      : phase === "connecting" || isConnecting
+        ? "Connecting"
+        : phase === "running"
+          ? "Working"
+          : isSendBusy
+            ? "Sending"
+            : "Working";
   const activeWorkStartedAt = deriveActiveWorkStartedAt(
     activeLatestTurn,
     activeThread?.session ?? null,
@@ -3681,6 +3697,7 @@ export default function ChatView(props: ChatViewProps) {
             <MessagesTimeline
               key={activeThread.id}
               isWorking={isWorking}
+              activeStatusLabel={activeStatusLabel}
               activeTurnInProgress={isWorking || !latestTurnSettled}
               activeTurnId={activeLatestTurn?.turnId ?? null}
               activeTurnStartedAt={activeWorkStartedAt}

@@ -96,7 +96,7 @@ describe("decider project scripts", () => {
     expect((event.payload as { scripts?: unknown[] }).scripts).toEqual(scripts);
   });
 
-  it("emits user message and turn-start-requested events for thread.turn.start", async () => {
+  it("emits user message, starting session, and turn-start-requested events for thread.turn.start", async () => {
     const now = "2026-01-01T00:00:00.000Z";
     const initial = createEmptyReadModel(now);
     const withProject = await Effect.runPromise(
@@ -178,9 +178,19 @@ describe("decider project scripts", () => {
 
     expect(Array.isArray(result)).toBe(true);
     const events = Array.isArray(result) ? result : [result];
-    expect(events).toHaveLength(2);
+    expect(events).toHaveLength(3);
     expect(events[0]?.type).toBe("thread.message-sent");
-    const turnStartEvent = events[1];
+    const sessionEvent = events[1];
+    expect(sessionEvent?.type).toBe("thread.session-set");
+    if (sessionEvent?.type === "thread.session-set") {
+      expect(sessionEvent.payload.session).toMatchObject({
+        threadId: ThreadId.make("thread-1"),
+        status: "starting",
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        runtimeMode: "approval-required",
+      });
+    }
+    const turnStartEvent = events[2];
     expect(turnStartEvent?.type).toBe("thread.turn-start-requested");
     expect(turnStartEvent?.causationEventId).toBe(events[0]?.eventId ?? null);
     if (turnStartEvent?.type !== "thread.turn-start-requested") {

@@ -38,7 +38,7 @@ export type MessagesTimelineRow =
       createdAt: string;
       proposedPlan: ProposedPlan;
     }
-  | { kind: "working"; id: string; createdAt: string | null };
+  | { kind: "working"; id: string; createdAt: string | null; label: string };
 
 export interface StableMessagesTimelineRowsState {
   byId: Map<string, MessagesTimelineRow>;
@@ -115,6 +115,7 @@ export function deriveMessagesTimelineRows(input: {
   completionDividerBeforeEntryId: string | null;
   completionSummary?: string | null;
   isWorking: boolean;
+  activeStatusLabel?: string | undefined;
   activeTurnInProgress?: boolean;
   activeTurnId?: TurnId | null;
   activeTurnStartedAt: string | null;
@@ -201,6 +202,7 @@ export function deriveMessagesTimelineRows(input: {
       kind: "working",
       id: "working-indicator-row",
       createdAt: input.activeTurnStartedAt,
+      label: input.activeStatusLabel ?? "Working",
     });
   }
 
@@ -233,7 +235,7 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
 
   switch (a.kind) {
     case "working":
-      return a.createdAt === (b as typeof a).createdAt;
+      return a.createdAt === (b as typeof a).createdAt && a.label === (b as typeof a).label;
 
     case "proposed-plan":
       return a.proposedPlan === (b as typeof a).proposedPlan;

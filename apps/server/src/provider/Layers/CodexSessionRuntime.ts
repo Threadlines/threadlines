@@ -19,9 +19,11 @@ import {
 import { normalizeModelSlug } from "@t3tools/shared/model";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
@@ -44,6 +46,7 @@ import {
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
 
 const PROVIDER = ProviderDriverKind.make("codex");
+const CODEX_APP_SERVER_REQUEST_TIMEOUT = Duration.seconds(60);
 
 const ANSI_ESCAPE_CHAR = String.fromCharCode(27);
 const ANSI_ESCAPE_REGEX = new RegExp(`${ANSI_ESCAPE_CHAR}\\[[0-9;]*m`, "g");
@@ -471,6 +474,26 @@ interface CodexThreadOpenClient {
   ) => Effect.Effect<CodexRpc.ClientRequestResponsesByMethod[M], CodexErrors.CodexAppServerError>;
 }
 
+function codexRequestTimeoutError(operation: string): CodexErrors.CodexAppServerRequestError {
+  return CodexErrors.CodexAppServerRequestError.internalError(
+    `Timed out waiting for Codex App Server to ${operation}.`,
+  );
+}
+
+function withCodexRequestTimeout<A, R>(
+  operation: string,
+  effect: Effect.Effect<A, CodexErrors.CodexAppServerError, R>,
+): Effect.Effect<A, CodexErrors.CodexAppServerError, R> {
+  return effect.pipe(
+    Effect.timeoutOption(CODEX_APP_SERVER_REQUEST_TIMEOUT),
+    Effect.flatMap((result) =>
+      Option.isSome(result)
+        ? Effect.succeed(result.value)
+        : Effect.fail(codexRequestTimeoutError(operation)),
+    ),
+  );
+}
+
 export const openCodexThread = (input: {
   readonly client: CodexThreadOpenClient;
   readonly threadId: ThreadId;
@@ -489,25 +512,36 @@ export const openCodexThread = (input: {
   });
 
   if (resumeThreadId === undefined) {
-    return input.client.request("thread/start", startParams);
+    return withCodexRequestTimeout(
+      "start a Codex thread",
+      input.client.request("thread/start", startParams),
+    );
   }
 
-  return input.client
-    .request("thread/resume", {
+  return withCodexRequestTimeout(
+    "resume a Codex thread",
+    input.client.request("thread/resume", {
       threadId: resumeThreadId,
       ...startParams,
-    })
-    .pipe(
-      Effect.catchIf(isRecoverableThreadResumeError, (error) =>
-        Effect.logWarning("codex app-server thread resume fell back to fresh start", {
-          threadId: input.threadId,
-          requestedRuntimeMode: input.runtimeMode,
-          resumeThreadId,
-          recoverable: true,
-          cause: error.message,
-        }).pipe(Effect.andThen(input.client.request("thread/start", startParams))),
+    }),
+  ).pipe(
+    Effect.catchIf(isRecoverableThreadResumeError, (error) =>
+      Effect.logWarning("codex app-server thread resume fell back to fresh start", {
+        threadId: input.threadId,
+        requestedRuntimeMode: input.runtimeMode,
+        resumeThreadId,
+        recoverable: true,
+        cause: error.message,
+      }).pipe(
+        Effect.andThen(
+          withCodexRequestTimeout(
+            "start a Codex thread",
+            input.client.request("thread/start", startParams),
+          ),
+        ),
       ),
-    );
+    ),
+  );
 };
 
 function readNotificationThreadId(notification: CodexServerNotification): string | undefined {
@@ -1222,8 +1256,14 @@ export const makeCodexSessionRuntime = (
 
     const start = Effect.fn("CodexSessionRuntime.start")(function* () {
       yield* emitSessionEvent("session/connecting", "Starting Codex App Server session.");
-      yield* client.request("initialize", buildCodexInitializeParams());
-      yield* client.notify("initialized", undefined);
+      yield* withCodexRequestTimeout(
+        "initialize a Codex session",
+        client.request("initialize", buildCodexInitializeParams()),
+      );
+      yield* withCodexRequestTimeout(
+        "confirm Codex initialization",
+        client.notify("initialized", undefined),
+      );
 
       const requestedModel = normalizeCodexModelSlug(options.model);
 
@@ -1297,7 +1337,10 @@ export const makeCodexSessionRuntime = (
             ...(input.effort ? { effort: input.effort } : {}),
             ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
           });
-          const rawResponse = yield* client.raw.request("turn/start", params);
+          const rawResponse = yield* withCodexRequestTimeout(
+            "start a Codex turn",
+            client.raw.request("turn/start", params),
+          );
           const response = yield* decodeV2TurnStartResponse(rawResponse).pipe(
             Effect.mapError((error) =>
               toProtocolParseError("Invalid turn/start response payload", error),

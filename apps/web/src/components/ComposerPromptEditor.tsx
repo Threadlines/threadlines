@@ -46,6 +46,7 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
 } from "react";
 
 import {
@@ -1458,7 +1459,15 @@ function enableNativeSpellcheck(rootElement: HTMLElement, selectionRanges: Range
   restoreNativeSpellcheckSelection(rootElement, selectionRanges);
 }
 
-function ComposerNativeSpellcheckRefreshPlugin() {
+interface NativeSpellcheckHostRefreshOptions {
+  restoreFocus: boolean;
+}
+
+function ComposerNativeSpellcheckRefreshPlugin({
+  onDesktopSpellcheckReplacementRefresh,
+}: {
+  onDesktopSpellcheckReplacementRefresh: (options: NativeSpellcheckHostRefreshOptions) => void;
+}) {
   const [editor] = useLexicalComposerContext();
 
   useEffect(() => {
@@ -1543,7 +1552,7 @@ function ComposerNativeSpellcheckRefreshPlugin() {
       lastComposerSpellcheckInteractionAt = performance.now();
     };
 
-    const onDesktopSpellcheckReplacement = () => {
+    const handleDesktopSpellcheckReplacement = () => {
       if (!activeRootElement) {
         return;
       }
@@ -1558,7 +1567,9 @@ function ComposerNativeSpellcheckRefreshPlugin() {
         return;
       }
 
-      scheduleRefresh(activeRootElement, { restoreFocus: hasRecentComposerInteraction });
+      const refreshOptions = { restoreFocus: hasRecentComposerInteraction };
+      onDesktopSpellcheckReplacementRefresh(refreshOptions);
+      scheduleRefresh(activeRootElement, refreshOptions);
     };
 
     let activeRootElement: HTMLElement | null = null;
@@ -1578,7 +1589,8 @@ function ComposerNativeSpellcheckRefreshPlugin() {
       activeRootElement = rootElement;
     });
     const unregisterSpellcheckReplacementListener =
-      window.desktopBridge?.onSpellcheckReplacement?.(onDesktopSpellcheckReplacement) ?? (() => {});
+      window.desktopBridge?.onSpellcheckReplacement?.(handleDesktopSpellcheckReplacement) ??
+      (() => {});
 
     return () => {
       clearPendingRefresh();
@@ -1591,7 +1603,7 @@ function ComposerNativeSpellcheckRefreshPlugin() {
       unregisterSpellcheckReplacementListener();
       unregisterRootListener();
     };
-  }, [editor]);
+  }, [editor, onDesktopSpellcheckReplacementRefresh]);
 
   return null;
 }
@@ -1625,6 +1637,10 @@ function ComposerPromptEditorInner({
     terminalContextIds: terminalContexts.map((context) => context.id),
   });
   const isApplyingControlledUpdateRef = useRef(false);
+  const pendingNativeSpellcheckHostRefreshRef = useRef<NativeSpellcheckHostRefreshOptions | null>(
+    null,
+  );
+  const [nativeSpellcheckHostVersion, setNativeSpellcheckHostVersion] = useState(0);
   const terminalContextActions = useMemo(
     () => ({ onRemoveTerminalContext }),
     [onRemoveTerminalContext],
@@ -1686,6 +1702,41 @@ function ComposerPromptEditorInner({
       isApplyingControlledUpdateRef.current = false;
     });
   }, [cursor, editor, skillsSignature, terminalContexts, terminalContextsSignature, value]);
+
+  useLayoutEffect(() => {
+    const pendingRefresh = pendingNativeSpellcheckHostRefreshRef.current;
+    if (!pendingRefresh) {
+      return;
+    }
+    pendingNativeSpellcheckHostRefreshRef.current = null;
+
+    const rootElement = editor.getRootElement();
+    if (!rootElement) {
+      return;
+    }
+
+    if (pendingRefresh.restoreFocus) {
+      focusNativeSpellcheckRoot(rootElement);
+    }
+    const selectionRanges = captureNativeSpellcheckSelection(rootElement);
+    disableNativeSpellcheck(rootElement);
+
+    const enableFrame = window.requestAnimationFrame(() => {
+      if (pendingRefresh.restoreFocus) {
+        focusNativeSpellcheckRoot(rootElement);
+      }
+      enableNativeSpellcheck(rootElement, selectionRanges);
+    });
+
+    return () => {
+      window.cancelAnimationFrame(enableFrame);
+    };
+  }, [editor, nativeSpellcheckHostVersion]);
+
+  const refreshNativeSpellcheckHost = useCallback((options: NativeSpellcheckHostRefreshOptions) => {
+    pendingNativeSpellcheckHostRefreshRef.current = options;
+    setNativeSpellcheckHostVersion((version) => version + 1);
+  }, []);
 
   const focusAt = useCallback(
     (nextCursor: number) => {
@@ -1822,6 +1873,7 @@ function ComposerPromptEditorInner({
         <PlainTextPlugin
           contentEditable={
             <ContentEditable
+              key={`native-spellcheck-host-${nativeSpellcheckHostVersion}`}
               className={cn(
                 "block max-h-50 min-h-17.5 w-full overflow-y-auto whitespace-pre-wrap wrap-break-word bg-transparent text-[16px] leading-relaxed text-foreground focus:outline-none sm:text-[14px]",
                 className,
@@ -1845,7 +1897,9 @@ function ComposerPromptEditorInner({
         <OnChangePlugin onChange={handleEditorChange} />
         <ComposerCommandKeyPlugin {...(onCommandKeyDown ? { onCommandKeyDown } : {})} />
         <ComposerSurroundSelectionPlugin terminalContexts={terminalContexts} skills={skills} />
-        <ComposerNativeSpellcheckRefreshPlugin />
+        <ComposerNativeSpellcheckRefreshPlugin
+          onDesktopSpellcheckReplacementRefresh={refreshNativeSpellcheckHost}
+        />
         <ComposerInlineTokenArrowPlugin />
         <ComposerInlineTokenSelectionNormalizePlugin />
         <ComposerInlineTokenBackspacePlugin />

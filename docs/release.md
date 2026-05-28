@@ -87,6 +87,20 @@ Unsigned alpha builds may show Windows SmartScreen or "unknown publisher"
 warnings. Code signing can be added later without changing the basic release
 flow.
 
+## Windows Publisher Name
+
+There are two different Windows publisher surfaces:
+
+- Installed app metadata can be set by the installer package. BadCode's desktop
+  artifact script stages the package author as `BadCode`, so newly built
+  unsigned installers should not inherit the upstream app metadata.
+- UAC, SmartScreen, and Authenticode publisher identity come from the signing
+  certificate. If an `.exe` is signed by an upstream certificate, Windows will
+  show that upstream identity. To make those verified publisher prompts say
+  BadCode, sign the installer with a BadCode-owned code-signing certificate or
+  Azure Trusted Signing identity. Without signing, Windows will show an unknown
+  publisher.
+
 ## Auto-Updates In A Private Repo
 
 The app uses `electron-updater` and GitHub Releases metadata. For private

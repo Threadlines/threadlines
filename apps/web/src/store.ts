@@ -36,6 +36,12 @@ import {
 } from "./types";
 import { resolveEnvironmentHttpUrl } from "./environments/runtime";
 import { sanitizeThreadErrorMessage } from "./rpc/transportError";
+import {
+  derivePendingApprovals,
+  derivePendingUserInputs,
+  findLatestProposedPlan,
+  hasActionableProposedPlan,
+} from "./session-logic";
 import { getThreadFromEnvironmentState } from "./threadDerivation";
 const isProviderDriverKindValue = Schema.is(ProviderDriverKind);
 
@@ -79,11 +85,10 @@ export interface EnvironmentState {
   turnDiffSummaryByThreadId: Record<ThreadId, Record<TurnId, TurnDiffSummary>>;
 
   // ---------------------------------------------------------------------------
-  // Sidebar summary — written ONLY by the shell stream
-  // (writeThreadShellState / mapThreadShell).  Pre-computed server-side with
-  // fields like latestUserMessageAt, hasPendingApprovals, etc.  The detail
-  // stream must NOT write here; the shell stream is the single source of
-  // truth for sidebar data.
+  // Sidebar summary — written by the shell stream and provisionally by the
+  // detail stream. Shell summaries are pre-computed server-side with fields
+  // like latestUserMessageAt, hasPendingApprovals, etc.; detail summaries keep
+  // the active thread visible while shell projection catches up.
   // ---------------------------------------------------------------------------
   sidebarThreadSummaryById: Record<ThreadId, SidebarThreadSummary>;
 
@@ -158,6 +163,16 @@ function mapSession(session: OrchestrationSession): ThreadSession {
     updatedAt: session.updatedAt,
     ...(session.lastError ? { lastError: session.lastError } : {}),
   };
+}
+
+function resolveSessionProviderFromModelSelection(input: {
+  modelSelection: Thread["modelSelection"];
+  previousSession: ThreadSession | null | undefined;
+}): ProviderDriverKind {
+  const instanceId = input.modelSelection.instanceId;
+  return isProviderDriverKindValue(instanceId)
+    ? instanceId
+    : (input.previousSession?.provider ?? ProviderDriverKind.make("codex"));
 }
 
 function mapMessage(environmentId: EnvironmentId, message: OrchestrationMessage): ChatMessage {
@@ -337,6 +352,61 @@ function toThreadTurnState(thread: Thread): ThreadTurnState {
     ...(thread.pendingSourceProposedPlan
       ? { pendingSourceProposedPlan: thread.pendingSourceProposedPlan }
       : {}),
+  };
+}
+
+function latestIso(left: string | null, right: string | null): string | null {
+  if (left === null) return right;
+  if (right === null) return left;
+  return left.localeCompare(right) >= 0 ? left : right;
+}
+
+function toSidebarThreadSummary(
+  thread: Thread,
+  previous: SidebarThreadSummary | undefined,
+): SidebarThreadSummary {
+  const latestDetailUserMessageAt =
+    thread.messages
+      .filter((message) => message.role === "user")
+      .toSorted(
+        (left, right) =>
+          left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
+      )
+      .at(-1)?.createdAt ?? null;
+  const latestUserMessageAt = latestIso(
+    previous?.latestUserMessageAt ?? null,
+    latestDetailUserMessageAt,
+  );
+  const latestProposedPlan = findLatestProposedPlan(
+    thread.proposedPlans,
+    thread.latestTurn?.turnId ?? null,
+  );
+  const hasActivityEvidence = thread.activities.length > 0;
+  const hasProposedPlanEvidence = thread.proposedPlans.length > 0;
+
+  return {
+    id: thread.id,
+    environmentId: thread.environmentId,
+    projectId: thread.projectId,
+    title: thread.title,
+    interactionMode: thread.interactionMode,
+    session: thread.session,
+    createdAt: thread.createdAt,
+    archivedAt: thread.archivedAt,
+    updatedAt: thread.updatedAt,
+    latestTurn: thread.latestTurn,
+    branch: thread.branch,
+    worktreePath: thread.worktreePath,
+    latestUserMessageAt,
+    hasPendingApprovals: hasActivityEvidence
+      ? derivePendingApprovals(thread.activities).length > 0
+      : (previous?.hasPendingApprovals ?? false),
+    hasPendingUserInput: hasActivityEvidence
+      ? derivePendingUserInputs(thread.activities).length > 0
+      : (previous?.hasPendingUserInput ?? false),
+    hasActionableProposedPlan: hasProposedPlanEvidence
+      ? hasActionableProposedPlan(latestProposedPlan)
+      : (previous?.hasActionableProposedPlan ?? false),
   };
 }
 
@@ -568,7 +638,8 @@ function ensureThreadRegistered(
  * the active thread has up-to-date state even if the shell stream event
  * hasn't arrived yet (both streams use structural equality checks to avoid
  * unnecessary re-renders when delivering equivalent data).
- * Does NOT write sidebarThreadSummaryById — that is shell-stream-only.
+ * In practice the detail stream also writes a provisional sidebar summary; the
+ * shell stream remains authoritative when it arrives.
  */
 function writeThreadState(
   state: EnvironmentState,
@@ -577,6 +648,10 @@ function writeThreadState(
 ): EnvironmentState {
   const nextShell = toThreadShell(nextThread);
   const nextTurnState = toThreadTurnState(nextThread);
+  const nextSummary = toSidebarThreadSummary(
+    nextThread,
+    state.sidebarThreadSummaryById[nextThread.id],
+  );
   const previousShell = state.threadShellById[nextThread.id];
   const previousTurnState = state.threadTurnStateById[nextThread.id];
 
@@ -613,6 +688,16 @@ function writeThreadState(
       threadTurnStateById: {
         ...nextState.threadTurnStateById,
         [nextThread.id]: nextTurnState,
+      },
+    };
+  }
+
+  if (!sidebarThreadSummariesEqual(state.sidebarThreadSummaryById[nextThread.id], nextSummary)) {
+    nextState = {
+      ...nextState,
+      sidebarThreadSummaryById: {
+        ...nextState.sidebarThreadSummaryById,
+        [nextThread.id]: nextSummary,
       },
     };
   }
@@ -1321,16 +1406,37 @@ function applyEnvironmentOrchestrationEvent(
       }));
 
     case "thread.turn-start-requested":
-      return updateThreadState(state, event.payload.threadId, (thread) => ({
-        ...thread,
-        ...(event.payload.modelSelection !== undefined
-          ? { modelSelection: normalizeModelSelection(event.payload.modelSelection) }
-          : {}),
-        runtimeMode: event.payload.runtimeMode,
-        interactionMode: event.payload.interactionMode,
-        pendingSourceProposedPlan: event.payload.sourceProposedPlan,
-        updatedAt: event.occurredAt,
-      }));
+      return updateThreadState(state, event.payload.threadId, (thread) => {
+        const modelSelection =
+          event.payload.modelSelection !== undefined
+            ? normalizeModelSelection(event.payload.modelSelection)
+            : thread.modelSelection;
+        const shouldPreserveRunningSession =
+          thread.session?.orchestrationStatus === "running" || thread.session?.status === "running";
+        const session = shouldPreserveRunningSession
+          ? thread.session
+          : ({
+              provider: resolveSessionProviderFromModelSelection({
+                modelSelection,
+                previousSession: thread.session,
+              }),
+              providerInstanceId: modelSelection.instanceId,
+              status: "connecting",
+              orchestrationStatus: "starting",
+              createdAt: thread.session?.createdAt ?? event.payload.createdAt,
+              updatedAt: event.payload.createdAt,
+              ...(thread.session?.lastError ? { lastError: thread.session.lastError } : {}),
+            } satisfies ThreadSession);
+        return {
+          ...thread,
+          modelSelection,
+          session,
+          runtimeMode: event.payload.runtimeMode,
+          interactionMode: event.payload.interactionMode,
+          pendingSourceProposedPlan: event.payload.sourceProposedPlan,
+          updatedAt: event.occurredAt,
+        };
+      });
 
     case "thread.turn-interrupt-requested": {
       if (event.payload.turnId === undefined) {

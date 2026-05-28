@@ -415,6 +415,34 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: command.createdAt,
         },
       };
+      const requestedModelSelection = command.modelSelection ?? targetThread.modelSelection;
+      const startingSessionEvent: Omit<OrchestrationEvent, "sequence"> | null =
+        targetThread.session?.status === "running"
+          ? null
+          : {
+              ...withEventBase({
+                aggregateKind: "thread",
+                aggregateId: command.threadId,
+                occurredAt: command.createdAt,
+                commandId: command.commandId,
+              }),
+              causationEventId: userMessageEvent.eventId,
+              type: "thread.session-set",
+              payload: {
+                threadId: command.threadId,
+                session: {
+                  threadId: command.threadId,
+                  status: "starting",
+                  providerName: targetThread.session?.providerName ?? null,
+                  providerInstanceId:
+                    targetThread.session?.providerInstanceId ?? requestedModelSelection.instanceId,
+                  runtimeMode: targetThread.runtimeMode,
+                  activeTurnId: null,
+                  lastError: targetThread.session?.lastError ?? null,
+                  updatedAt: command.createdAt,
+                },
+              },
+            };
       const turnStartRequestedEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...withEventBase({
           aggregateKind: "thread",
@@ -437,7 +465,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           createdAt: command.createdAt,
         },
       };
-      return [userMessageEvent, turnStartRequestedEvent];
+      return startingSessionEvent
+        ? [userMessageEvent, startingSessionEvent, turnStartRequestedEvent]
+        : [userMessageEvent, turnStartRequestedEvent];
     }
 
     case "thread.turn.interrupt": {

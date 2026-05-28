@@ -3913,25 +3913,27 @@ describe("ChatView timeline estimator parity (full app)", () => {
       outsideButton.focus();
       expect(document.activeElement).toBe(outsideButton);
 
-      const focusSpy = vi.spyOn(composerEditor, "focus");
-      const setAttributeSpy = vi.spyOn(composerEditor, "setAttribute");
+      const focusSpy = vi.spyOn(HTMLElement.prototype, "focus");
       try {
         emitDesktopSpellcheckReplacement();
 
         await vi.waitFor(
           () => {
             expect(focusSpy).toHaveBeenCalledWith({ preventScroll: true });
-            expect(setAttributeSpy).toHaveBeenCalledWith("spellcheck", "false");
-            expect(setAttributeSpy).toHaveBeenCalledWith("spellcheck", "true");
-            expect(document.activeElement).toBe(composerEditor);
-            expect(composerEditor.spellcheck).toBe(true);
-            expect(composerEditor.getAttribute("spellcheck")).toBe("true");
+            const refreshedComposerEditor = document.querySelector<HTMLElement>(
+              '[data-testid="composer-editor"]',
+            );
+            expect(refreshedComposerEditor).not.toBeNull();
+            expect(refreshedComposerEditor).not.toBe(composerEditor);
+            expect(composerEditor.isConnected).toBe(false);
+            expect(document.activeElement).toBe(refreshedComposerEditor);
+            expect(refreshedComposerEditor?.spellcheck).toBe(true);
+            expect(refreshedComposerEditor?.getAttribute("spellcheck")).toBe("true");
           },
           { timeout: 1_000, interval: 16 },
         );
       } finally {
         focusSpy.mockRestore();
-        setAttributeSpy.mockRestore();
       }
     } finally {
       outsideButton.remove();
@@ -5189,7 +5191,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
           ) as { destinationPath?: string; provider?: string; remoteUrl?: string } | undefined;
           expect(cloneRequest).toMatchObject({
             provider: "github",
-            remoteUrl: "git@github.com:t3-oss/t3-env.git",
+            remoteUrl: "https://github.com/t3-oss/t3-env",
             destinationPath: "~/t3-env",
           });
         },

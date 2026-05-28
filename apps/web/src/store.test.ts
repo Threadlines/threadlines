@@ -1,4 +1,4 @@
-import { scopeThreadRef } from "@t3tools/client-runtime";
+import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime";
 import {
   CheckpointRef,
   DEFAULT_MODEL,
@@ -21,6 +21,7 @@ import {
   selectProjectsAcrossEnvironments,
   selectThreadByRef,
   selectThreadExistsByRef,
+  selectSidebarThreadsForProjectRef,
   setThreadBranch,
   selectThreadsAcrossEnvironments,
   type AppState,
@@ -602,6 +603,85 @@ describe("incremental orchestration updates", () => {
     expect(localEnvironmentStateOf(next).threadIdsByProjectId[recreatedProjectId]).toEqual([
       threadId,
     ]);
+  });
+
+  it("surfaces detail-stream thread startup in sidebar summaries before shell projection", () => {
+    const projectId = ProjectId.make("project-1");
+    const threadId = ThreadId.make("thread-starting");
+    const messageId = MessageId.make("message-starting");
+    const state = makeEmptyState({
+      projectIds: [projectId],
+      projectById: {
+        [projectId]: {
+          id: projectId,
+          environmentId: localEnvironmentId,
+          name: "Project",
+          cwd: "/tmp/project",
+          defaultModelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: DEFAULT_MODEL,
+          },
+          createdAt: "2026-02-27T00:00:00.000Z",
+          updatedAt: "2026-02-27T00:00:00.000Z",
+          scripts: [],
+        },
+      },
+    });
+
+    const created = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.created", {
+        threadId,
+        projectId,
+        title: "Smooth startup",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: DEFAULT_MODEL,
+        },
+        runtimeMode: DEFAULT_RUNTIME_MODE,
+        interactionMode: DEFAULT_INTERACTION_MODE,
+        branch: null,
+        worktreePath: null,
+        createdAt: "2026-02-27T00:00:01.000Z",
+        updatedAt: "2026-02-27T00:00:01.000Z",
+      }),
+      localEnvironmentId,
+    );
+    const withMessage = applyOrchestrationEvent(
+      created,
+      makeEvent("thread.message-sent", {
+        threadId,
+        messageId,
+        role: "user",
+        text: "Start this thread",
+        turnId: null,
+        streaming: false,
+        createdAt: "2026-02-27T00:00:02.000Z",
+        updatedAt: "2026-02-27T00:00:02.000Z",
+      }),
+      localEnvironmentId,
+    );
+    const starting = applyOrchestrationEvent(
+      withMessage,
+      makeEvent("thread.turn-start-requested", {
+        threadId,
+        messageId,
+        runtimeMode: DEFAULT_RUNTIME_MODE,
+        interactionMode: DEFAULT_INTERACTION_MODE,
+        createdAt: "2026-02-27T00:00:02.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    const sidebarThreads = selectSidebarThreadsForProjectRef(
+      starting,
+      scopeProjectRef(localEnvironmentId, projectId),
+    );
+    expect(sidebarThreads).toHaveLength(1);
+    expect(sidebarThreads[0]?.title).toBe("Smooth startup");
+    expect(sidebarThreads[0]?.latestUserMessageAt).toBe("2026-02-27T00:00:02.000Z");
+    expect(sidebarThreads[0]?.session?.status).toBe("connecting");
+    expect(sidebarThreads[0]?.session?.orchestrationStatus).toBe("starting");
   });
 
   it("updates only the affected thread for message events", () => {

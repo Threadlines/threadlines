@@ -108,6 +108,7 @@ const LIVE_WORK_LOG_ENTRY_COUNT = 2;
 
 interface MessagesTimelineProps {
   isWorking: boolean;
+  activeStatusLabel?: string | undefined;
   activeTurnInProgress: boolean;
   activeTurnId?: TurnId | null;
   activeTurnStartedAt: string | null;
@@ -137,6 +138,7 @@ interface MessagesTimelineProps {
 
 export const MessagesTimeline = memo(function MessagesTimeline({
   isWorking,
+  activeStatusLabel,
   activeTurnInProgress,
   activeTurnId,
   activeTurnStartedAt,
@@ -166,6 +168,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         completionDividerBeforeEntryId,
         completionSummary,
         isWorking,
+        activeStatusLabel,
         activeTurnInProgress,
         activeTurnId: activeTurnId ?? null,
         activeTurnStartedAt,
@@ -177,6 +180,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       completionDividerBeforeEntryId,
       completionSummary,
       isWorking,
+      activeStatusLabel,
       activeTurnInProgress,
       activeTurnId,
       activeTurnStartedAt,
@@ -557,10 +561,10 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
         <span>
           {row.createdAt ? (
             <>
-              Working for <WorkingTimer createdAt={row.createdAt} />
+              {row.label} for <WorkingTimer createdAt={row.createdAt} />
             </>
           ) : (
-            "Working..."
+            `${row.label}...`
           )}
         </span>
       </div>
