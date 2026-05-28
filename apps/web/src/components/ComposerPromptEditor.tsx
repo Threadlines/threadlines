@@ -77,7 +77,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 const COMPOSER_EDITOR_HMR_KEY = `composer-editor-${Math.random().toString(36).slice(2)}`;
 const NATIVE_SPELLCHECK_REFRESH_RETRY_DELAYS_MS = [0, 80, 240] as const;
-const NATIVE_SPELLCHECK_CONTEXT_MENU_GRACE_MS = 5_000;
+const NATIVE_SPELLCHECK_INTERACTION_GRACE_MS = 5_000;
 const SURROUND_SYMBOLS: [string, string][] = [
   ["(", ")"],
   ["[", "]"],
@@ -1465,7 +1465,7 @@ function ComposerNativeSpellcheckRefreshPlugin() {
     let pendingFrames: number[] = [];
     let pendingTimeouts: number[] = [];
     let refreshGeneration = 0;
-    let lastComposerContextMenuAt = 0;
+    let lastComposerSpellcheckInteractionAt = 0;
 
     const clearPendingRefresh = () => {
       for (const frame of pendingFrames) {
@@ -1539,8 +1539,8 @@ function ComposerNativeSpellcheckRefreshPlugin() {
       }
     };
 
-    const onComposerContextMenu = () => {
-      lastComposerContextMenuAt = performance.now();
+    const markComposerSpellcheckInteraction = () => {
+      lastComposerSpellcheckInteractionAt = performance.now();
     };
 
     const onDesktopSpellcheckReplacement = () => {
@@ -1548,26 +1548,33 @@ function ComposerNativeSpellcheckRefreshPlugin() {
         return;
       }
 
-      const hasRecentComposerContextMenu =
-        performance.now() - lastComposerContextMenuAt <= NATIVE_SPELLCHECK_CONTEXT_MENU_GRACE_MS;
+      const hasRecentComposerInteraction =
+        performance.now() - lastComposerSpellcheckInteractionAt <=
+        NATIVE_SPELLCHECK_INTERACTION_GRACE_MS;
       if (
-        !hasRecentComposerContextMenu &&
+        !hasRecentComposerInteraction &&
         activeRootElement.ownerDocument.activeElement !== activeRootElement
       ) {
         return;
       }
 
-      scheduleRefresh(activeRootElement, { restoreFocus: hasRecentComposerContextMenu });
+      scheduleRefresh(activeRootElement, { restoreFocus: hasRecentComposerInteraction });
     };
 
     let activeRootElement: HTMLElement | null = null;
     const unregisterRootListener = editor.registerRootListener((rootElement, prevRootElement) => {
       prevRootElement?.removeEventListener("beforeinput", onNativeReplacement);
       prevRootElement?.removeEventListener("input", onNativeReplacement);
-      prevRootElement?.removeEventListener("contextmenu", onComposerContextMenu);
+      prevRootElement?.removeEventListener("contextmenu", markComposerSpellcheckInteraction);
+      prevRootElement?.removeEventListener("focusin", markComposerSpellcheckInteraction);
+      prevRootElement?.removeEventListener("mousedown", markComposerSpellcheckInteraction);
+      prevRootElement?.removeEventListener("pointerdown", markComposerSpellcheckInteraction);
       rootElement?.addEventListener("beforeinput", onNativeReplacement);
       rootElement?.addEventListener("input", onNativeReplacement);
-      rootElement?.addEventListener("contextmenu", onComposerContextMenu);
+      rootElement?.addEventListener("contextmenu", markComposerSpellcheckInteraction);
+      rootElement?.addEventListener("focusin", markComposerSpellcheckInteraction);
+      rootElement?.addEventListener("mousedown", markComposerSpellcheckInteraction);
+      rootElement?.addEventListener("pointerdown", markComposerSpellcheckInteraction);
       activeRootElement = rootElement;
     });
     const unregisterSpellcheckReplacementListener =
@@ -1577,7 +1584,10 @@ function ComposerNativeSpellcheckRefreshPlugin() {
       clearPendingRefresh();
       activeRootElement?.removeEventListener("beforeinput", onNativeReplacement);
       activeRootElement?.removeEventListener("input", onNativeReplacement);
-      activeRootElement?.removeEventListener("contextmenu", onComposerContextMenu);
+      activeRootElement?.removeEventListener("contextmenu", markComposerSpellcheckInteraction);
+      activeRootElement?.removeEventListener("focusin", markComposerSpellcheckInteraction);
+      activeRootElement?.removeEventListener("mousedown", markComposerSpellcheckInteraction);
+      activeRootElement?.removeEventListener("pointerdown", markComposerSpellcheckInteraction);
       unregisterSpellcheckReplacementListener();
       unregisterRootListener();
     };

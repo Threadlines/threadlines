@@ -20,6 +20,7 @@ import {
   type SourceControlRepositoryInfo,
   type SourceControlRepositoryLookupInput,
 } from "@t3tools/contracts";
+import { deriveRepositoryDirectoryName } from "@t3tools/shared/git";
 
 import { ServerConfig } from "../config.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
@@ -190,48 +191,92 @@ export const make = Effect.fn("makeSourceControlRepositoryService")(function* ()
     },
   );
 
+  const prepareConcreteDestination = Effect.fn(
+    "SourceControlRepositoryService.prepareConcreteDestination",
+  )(function* (normalizedDestination: string, provider: SourceControlProviderKind) {
+    if (yield* fileSystem.exists(normalizedDestination).pipe(Effect.orElseSucceed(() => false))) {
+      const entries = yield* fileSystem
+        .readDirectory(normalizedDestination, { recursive: false })
+        .pipe(
+          Effect.mapError((cause) =>
+            repositoryError({
+              operation: "cloneRepository",
+              provider,
+              detail: "Destination path already exists and is not a directory.",
+              cause,
+            }),
+          ),
+        );
+      if (entries.length > 0) {
+        return yield* repositoryError({
+          operation: "cloneRepository",
+          provider,
+          detail: "Destination path already exists and is not empty.",
+        });
+      }
+    } else {
+      yield* fileSystem.makeDirectory(path.dirname(normalizedDestination), { recursive: true });
+    }
+
+    return {
+      destinationPath: normalizedDestination,
+      parentPath: path.dirname(normalizedDestination),
+      directoryName: path.basename(normalizedDestination),
+    };
+  });
+
   const prepareDestination = Effect.fn("SourceControlRepositoryService.prepareDestination")(
-    function* (destinationPath: string) {
-      const normalizedDestination = yield* normalizeDestinationPath(destinationPath);
-      if (yield* fileSystem.exists(normalizedDestination).pipe(Effect.orElseSucceed(() => false))) {
+    function* (input: {
+      readonly destinationPath: string;
+      readonly provider: SourceControlProviderKind;
+      readonly fallbackDirectoryName: string | null;
+    }) {
+      const normalizedDestination = yield* normalizeDestinationPath(input.destinationPath);
+      if (
+        input.fallbackDirectoryName &&
+        (yield* fileSystem.exists(normalizedDestination).pipe(Effect.orElseSucceed(() => false)))
+      ) {
         const entries = yield* fileSystem
           .readDirectory(normalizedDestination, { recursive: false })
           .pipe(
             Effect.mapError((cause) =>
               repositoryError({
                 operation: "cloneRepository",
-                provider: "unknown",
+                provider: input.provider,
                 detail: "Destination path already exists and is not a directory.",
                 cause,
               }),
             ),
           );
-        if (entries.length > 0) {
-          return yield* repositoryError({
-            operation: "cloneRepository",
-            provider: "unknown",
-            detail: "Destination path already exists and is not empty.",
-          });
+        if (
+          entries.length > 0 &&
+          path.basename(normalizedDestination).toLowerCase() !==
+            input.fallbackDirectoryName.toLowerCase()
+        ) {
+          return yield* prepareConcreteDestination(
+            path.join(normalizedDestination, input.fallbackDirectoryName),
+            input.provider,
+          );
         }
-      } else {
-        yield* fileSystem.makeDirectory(path.dirname(normalizedDestination), { recursive: true });
       }
 
-      return {
-        destinationPath: normalizedDestination,
-        parentPath: path.dirname(normalizedDestination),
-        directoryName: path.basename(normalizedDestination),
-      };
+      return yield* prepareConcreteDestination(normalizedDestination, input.provider);
     },
   );
 
   const cloneRepository = Effect.fn("SourceControlRepositoryService.cloneRepository")(function* (
     input: SourceControlCloneRepositoryInput,
   ) {
-    const preparedDestination = yield* prepareDestination(input.destinationPath);
+    let provider: SourceControlProviderKind = input.provider ?? "unknown";
+    const preparedDestination = yield* prepareDestination({
+      destinationPath: input.destinationPath,
+      provider,
+      fallbackDirectoryName:
+        deriveRepositoryDirectoryName(input.repository) ??
+        deriveRepositoryDirectoryName(input.remoteUrl),
+    });
     let repository: SourceControlRepositoryInfo | null = null;
     let remoteUrl = input.remoteUrl?.trim() ?? null;
-    let provider: SourceControlProviderKind = input.provider ?? "unknown";
 
     if (input.provider && input.repository) {
       repository = yield* lookupRepository({

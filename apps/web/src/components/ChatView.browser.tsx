@@ -3904,9 +3904,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
       const composerEditor = await waitForComposerEditor();
       composerEditor.focus();
       composerEditor.dispatchEvent(
-        new MouseEvent("contextmenu", {
+        new MouseEvent("mousedown", {
           bubbles: true,
           cancelable: true,
+          button: 2,
         }),
       );
       outsideButton.focus();

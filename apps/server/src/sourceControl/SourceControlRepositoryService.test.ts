@@ -4,9 +4,14 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
-import { GitCommandError, type SourceControlProviderError } from "@t3tools/contracts";
+import {
+  GitCommandError,
+  type SourceControlProviderError,
+  SourceControlRepositoryError,
+} from "@t3tools/contracts";
 
 import { ServerConfig } from "../config.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
@@ -19,6 +24,7 @@ const CLONE_URLS = {
   url: "https://github.com/octocat/t3code",
   sshUrl: "git@github.com:octocat/t3code.git",
 };
+const isSourceControlRepositoryError = Schema.is(SourceControlRepositoryError);
 
 function makeProvider(
   overrides: Partial<SourceControlProvider.SourceControlProviderShape> = {},
@@ -80,6 +86,14 @@ function makeLayer(input: {
     Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-source-control-repos-" })),
     Layer.provideMerge(NodeServices.layer),
   );
+}
+
+function assertCloneDestinationConflict(error: unknown) {
+  if (!isSourceControlRepositoryError(error)) {
+    assert.fail(`Expected SourceControlRepositoryError, received ${String(error)}`);
+  }
+  assert.equal(error.provider, "github");
+  assert.equal(error.detail, "Destination path already exists and is not empty.");
 }
 
 it.effect("looks up repositories through the requested provider without search", () => {
@@ -171,6 +185,118 @@ it.effect("clones a looked-up repository into the requested destination", () =>
         }),
       ),
     );
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("clones into a repository-named child when the destination is a non-empty parent", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const parent = yield* fs.makeTempDirectoryScoped({
+      prefix: "t3-source-control-clone-parent-",
+    });
+    yield* fs.writeFileString(path.join(parent, "existing-project.txt"), "already here\n");
+    const destinationPath = path.join(parent, "t3code");
+    const cloneCalls: Array<{ cwd: string; args: ReadonlyArray<string> }> = [];
+
+    yield* Effect.gen(function* () {
+      const service = yield* SourceControlRepositoryService.SourceControlRepositoryService;
+      const result = yield* service.cloneRepository({
+        provider: "github",
+        remoteUrl: CLONE_URLS.sshUrl,
+        destinationPath: parent,
+      });
+
+      assert.deepStrictEqual(result, {
+        cwd: destinationPath,
+        remoteUrl: CLONE_URLS.sshUrl,
+        repository: null,
+      });
+      assert.deepStrictEqual(cloneCalls, [
+        {
+          cwd: parent,
+          args: ["clone", CLONE_URLS.sshUrl, "t3code"],
+        },
+      ]);
+    }).pipe(
+      Effect.provide(
+        makeLayer({
+          git: {
+            execute: (input) =>
+              Effect.sync(() => {
+                cloneCalls.push({ cwd: input.cwd, args: input.args });
+                return processOutput();
+              }),
+          },
+        }),
+      ),
+    );
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("reports the clone provider when the inferred destination child is not empty", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const parent = yield* fs.makeTempDirectoryScoped({
+      prefix: "t3-source-control-clone-parent-",
+    });
+    const existingChild = path.join(parent, "t3code");
+    yield* fs.makeDirectory(existingChild);
+    yield* fs.writeFileString(path.join(existingChild, "README.md"), "already cloned\n");
+
+    const result = yield* Effect.gen(function* () {
+      const service = yield* SourceControlRepositoryService.SourceControlRepositoryService;
+      return yield* service.cloneRepository({
+        provider: "github",
+        remoteUrl: CLONE_URLS.sshUrl,
+        destinationPath: parent,
+      });
+    }).pipe(
+      Effect.provide(makeLayer({})),
+      Effect.match({
+        onFailure: (left) => ({ _tag: "Left" as const, left }),
+        onSuccess: (right) => ({ _tag: "Right" as const, right }),
+      }),
+    );
+
+    assert.equal(result._tag, "Left");
+    if (result._tag === "Left") {
+      assertCloneDestinationConflict(result.left);
+    }
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("reports the clone provider when the concrete repository directory is not empty", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const parent = yield* fs.makeTempDirectoryScoped({
+      prefix: "t3-source-control-clone-parent-",
+    });
+    const destinationPath = path.join(parent, "t3code");
+    yield* fs.makeDirectory(destinationPath);
+    yield* fs.writeFileString(path.join(destinationPath, "README.md"), "already cloned\n");
+
+    const result = yield* Effect.gen(function* () {
+      const service = yield* SourceControlRepositoryService.SourceControlRepositoryService;
+      return yield* service.cloneRepository({
+        provider: "github",
+        remoteUrl: CLONE_URLS.sshUrl,
+        destinationPath,
+      });
+    }).pipe(
+      Effect.provide(makeLayer({})),
+      Effect.match({
+        onFailure: (left) => ({ _tag: "Left" as const, left }),
+        onSuccess: (right) => ({ _tag: "Right" as const, right }),
+      }),
+    );
+
+    assert.equal(result._tag, "Left");
+    if (result._tag === "Left") {
+      assertCloneDestinationConflict(result.left);
+    }
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 

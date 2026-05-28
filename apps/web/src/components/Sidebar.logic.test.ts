@@ -479,7 +479,6 @@ describe("resolveThreadStatusPill", () => {
     hasPendingUserInput: false,
     interactionMode: "plan" as const,
     latestTurn: null,
-    latestUserMessageAt: null,
     lastVisitedAt: undefined,
     session: {
       provider: ProviderDriverKind.make("codex"),
@@ -521,54 +520,133 @@ describe("resolveThreadStatusPill", () => {
     ).toMatchObject({ label: "Working", pulse: true });
   });
 
-  it("keeps working after a user message while the server turn is still pending", () => {
+  it("shows working from the orchestration running status even if the legacy status lags", () => {
     expect(
       resolveThreadStatusPill({
         thread: {
           ...baseThread,
-          latestUserMessageAt: "2026-03-09T10:00:10.000Z",
           session: {
             ...baseThread.session,
             status: "ready",
-            orchestrationStatus: "ready",
-            updatedAt: "2026-03-09T10:00:12.000Z",
+            orchestrationStatus: "running",
           },
         },
       }),
     ).toMatchObject({ label: "Working", pulse: true });
   });
 
-  it("keeps working when the latest user message is newer than the last projected turn", () => {
+  it("shows connecting from the orchestration starting status even if the legacy status lags", () => {
     expect(
       resolveThreadStatusPill({
         thread: {
           ...baseThread,
-          latestTurn: makeLatestTurn(),
-          latestUserMessageAt: "2026-03-09T10:06:00.000Z",
           session: {
             ...baseThread.session,
             status: "ready",
-            orchestrationStatus: "ready",
-            updatedAt: "2026-03-09T10:06:01.000Z",
+            orchestrationStatus: "starting",
           },
         },
       }),
-    ).toMatchObject({ label: "Working", pulse: true });
+    ).toMatchObject({ label: "Connecting", pulse: true });
+  });
+
+  it("does not infer working from a recent user message when the provider is ready", () => {
+    const threadWithRecentMessage = {
+      ...baseThread,
+      latestUserMessageAt: "2026-03-09T10:00:10.000Z",
+      session: {
+        ...baseThread.session,
+        status: "ready" as const,
+        orchestrationStatus: "ready" as const,
+        updatedAt: "2026-03-09T10:00:12.000Z",
+      },
+    };
+
+    expect(
+      resolveThreadStatusPill({
+        thread: threadWithRecentMessage,
+      }),
+    ).toBeNull();
+  });
+
+  it("does not infer working when the latest user message is newer than the last projected turn", () => {
+    const threadWithRecentMessage = {
+      ...baseThread,
+      latestTurn: makeLatestTurn(),
+      latestUserMessageAt: "2026-03-09T10:06:00.000Z",
+      session: {
+        ...baseThread.session,
+        status: "ready" as const,
+        orchestrationStatus: "ready" as const,
+        updatedAt: "2026-03-09T10:06:01.000Z",
+      },
+    };
+
+    expect(
+      resolveThreadStatusPill({
+        thread: threadWithRecentMessage,
+      }),
+    ).toMatchObject({ label: "Completed", pulse: false });
   });
 
   it("does not keep working after the matching latest turn has completed", () => {
+    const threadWithMatchingMessage = {
+      ...baseThread,
+      latestTurn: makeLatestTurn(),
+      latestUserMessageAt: "2026-03-09T10:00:00.000Z",
+      session: {
+        ...baseThread.session,
+        status: "ready" as const,
+        orchestrationStatus: "ready" as const,
+      },
+    };
+
     expect(
       resolveThreadStatusPill({
-        thread: {
-          ...baseThread,
-          latestTurn: makeLatestTurn(),
-          latestUserMessageAt: "2026-03-09T10:00:00.000Z",
-          session: {
-            ...baseThread.session,
-            status: "ready",
-            orchestrationStatus: "ready",
-          },
-        },
+        thread: threadWithMatchingMessage,
+      }),
+    ).toMatchObject({ label: "Completed", pulse: false });
+  });
+
+  it("does not infer working for stale historical user messages", () => {
+    const threadWithHistoricalMessage = {
+      ...baseThread,
+      latestTurn: null,
+      latestUserMessageAt: "2026-03-09T09:00:00.000Z",
+      session: {
+        ...baseThread.session,
+        status: "ready" as const,
+        orchestrationStatus: "ready" as const,
+        updatedAt: "2026-03-09T09:00:01.000Z",
+      },
+    };
+
+    expect(
+      resolveThreadStatusPill({
+        thread: threadWithHistoricalMessage,
+      }),
+    ).toBeNull();
+  });
+
+  it("does not infer working when a completed turn covered the latest user message", () => {
+    const threadWithCoveredMessage = {
+      ...baseThread,
+      latestTurn: {
+        ...makeLatestTurn(),
+        requestedAt: "2026-03-09T09:59:59.000Z",
+        completedAt: "2026-03-09T10:00:11.000Z",
+      },
+      latestUserMessageAt: "2026-03-09T10:00:10.000Z",
+      session: {
+        ...baseThread.session,
+        status: "ready" as const,
+        orchestrationStatus: "ready" as const,
+      },
+    };
+
+    expect(
+      resolveThreadStatusPill({
+        thread: threadWithCoveredMessage,
       }),
     ).toMatchObject({ label: "Completed", pulse: false });
   });

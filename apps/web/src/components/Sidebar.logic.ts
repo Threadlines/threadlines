@@ -56,7 +56,6 @@ type ThreadStatusInput = Pick<
   | "latestTurn"
   | "session"
 > & {
-  latestUserMessageAt?: string | null | undefined;
   lastVisitedAt?: string | undefined;
 };
 
@@ -154,51 +153,6 @@ export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
   const lastVisitedAt = Date.parse(thread.lastVisitedAt);
   if (Number.isNaN(lastVisitedAt)) return true;
   return completedAt > lastVisitedAt;
-}
-
-function parseStatusTimestamp(value: string | null | undefined): number | null {
-  if (!value) return null;
-  const timestamp = Date.parse(value);
-  return Number.isNaN(timestamp) ? null : timestamp;
-}
-
-function isTerminalSessionForPendingTurn(thread: ThreadStatusInput): boolean {
-  return (
-    thread.session?.status === "closed" ||
-    thread.session?.status === "error" ||
-    thread.session?.orchestrationStatus === "error" ||
-    thread.session?.orchestrationStatus === "interrupted" ||
-    thread.session?.orchestrationStatus === "stopped"
-  );
-}
-
-export function hasPendingTurnAfterLatestUserMessage(thread: ThreadStatusInput): boolean {
-  const latestUserMessageAt = parseStatusTimestamp(thread.latestUserMessageAt);
-  if (latestUserMessageAt === null || isTerminalSessionForPendingTurn(thread)) {
-    return false;
-  }
-  if (!thread.session && thread.latestTurn?.state !== "running") {
-    return false;
-  }
-
-  if (!thread.latestTurn) {
-    return thread.session !== null;
-  }
-
-  const latestTurnRequestedAt = parseStatusTimestamp(thread.latestTurn.requestedAt);
-  if (latestTurnRequestedAt === null) {
-    return false;
-  }
-  if (latestUserMessageAt > latestTurnRequestedAt) {
-    return true;
-  }
-  if (thread.latestTurn.state === "error" || thread.latestTurn.state === "interrupted") {
-    return false;
-  }
-  return (
-    latestUserMessageAt === latestTurnRequestedAt &&
-    !isLatestTurnSettled(thread.latestTurn, thread.session)
-  );
 }
 
 export function shouldClearThreadSelectionOnMouseDown(target: HTMLElement | null): boolean {
@@ -395,7 +349,7 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
-  if (thread.session?.status === "running") {
+  if (thread.session?.status === "running" || thread.session?.orchestrationStatus === "running") {
     return {
       label: "Working",
       colorClass: "text-sky-600 dark:text-sky-300/80",
@@ -404,18 +358,12 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
-  if (thread.session?.status === "connecting") {
+  if (
+    thread.session?.status === "connecting" ||
+    thread.session?.orchestrationStatus === "starting"
+  ) {
     return {
       label: "Connecting",
-      colorClass: "text-sky-600 dark:text-sky-300/80",
-      dotClass: "bg-sky-500 dark:bg-sky-300/80",
-      pulse: true,
-    };
-  }
-
-  if (hasPendingTurnAfterLatestUserMessage(thread)) {
-    return {
-      label: "Working",
       colorClass: "text-sky-600 dark:text-sky-300/80",
       dotClass: "bg-sky-500 dark:bg-sky-300/80",
       pulse: true,
