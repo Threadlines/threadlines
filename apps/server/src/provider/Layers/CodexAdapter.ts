@@ -29,6 +29,7 @@ import * as DateTime from "effect/DateTime";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -431,7 +432,10 @@ function isoFromEpochMillis(
   if (value === undefined || !Number.isFinite(value) || value <= 0) {
     return undefined;
   }
-  return DateTime.formatIso(DateTime.makeUnsafe(value));
+  return Option.match(DateTime.make(value), {
+    onNone: () => undefined,
+    onSome: DateTime.formatIso,
+  });
 }
 
 function lifecycleCreatedAt(event: ProviderEvent): ProviderRuntimeEvent["createdAt"] | undefined {
