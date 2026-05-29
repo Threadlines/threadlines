@@ -196,21 +196,21 @@ export function buildDescendantEntries(
     children.push(row);
     childrenByParent.set(row.ppid, children);
   }
+  for (const children of childrenByParent.values()) {
+    children.sort((left, right) => left.pid - right.pid);
+  }
 
   const entries: ServerProcessDiagnosticsEntry[] = [];
   const visited = new Set<number>();
-  const stack = [...(childrenByParent.get(serverPid) ?? [])]
-    .toSorted((left, right) => left.pid - right.pid)
-    .map((row) => ({ row, depth: 0 }));
+  const rootChildren = childrenByParent.get(serverPid) ?? [];
+  const stack = rootChildren.toReversed().map((row) => ({ row, depth: 0 }));
 
   while (stack.length > 0) {
-    const item = stack.shift();
+    const item = stack.pop();
     if (!item || visited.has(item.row.pid)) continue;
     visited.add(item.row.pid);
 
-    const children = [...(childrenByParent.get(item.row.pid) ?? [])].toSorted(
-      (left, right) => left.pid - right.pid,
-    );
+    const children = childrenByParent.get(item.row.pid) ?? [];
     entries.push({
       pid: item.row.pid,
       ppid: item.row.ppid,
@@ -224,7 +224,12 @@ export function buildDescendantEntries(
       childPids: children.map((child) => child.pid),
     });
 
-    stack.unshift(...children.map((row) => ({ row, depth: item.depth + 1 })));
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      const child = children[index];
+      if (child) {
+        stack.push({ row: child, depth: item.depth + 1 });
+      }
+    }
   }
 
   return entries;

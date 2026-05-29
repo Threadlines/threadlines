@@ -370,6 +370,8 @@ function createSnapshotForTargetUser(options: {
         checkpoints: [],
         session: {
           threadId: THREAD_ID,
+          providerThreadId: null,
+          providerSessionId: null,
           status: options.sessionStatus ?? "ready",
           providerName: "codex",
           runtimeMode: "full-access",
@@ -435,6 +437,8 @@ function addThreadToSnapshot(
         checkpoints: [],
         session: {
           threadId,
+          providerThreadId: null,
+          providerSessionId: null,
           status: "ready",
           providerName: "codex",
           runtimeMode: "full-access",
@@ -657,6 +661,8 @@ async function materializePromotedDraftThreadViaDomainEvent(threadId: ThreadId):
 async function setPromotedServerThreadRunningViaDomainEvent(threadId: ThreadId): Promise<void> {
   fixture.snapshot = updateThreadSessionInSnapshot(fixture.snapshot, threadId, {
     threadId,
+    providerThreadId: null,
+    providerSessionId: null,
     status: "running",
     providerName: "codex",
     runtimeMode: "full-access",
@@ -682,6 +688,8 @@ async function startPromotedServerThreadViaDomainEvent(threadId: ThreadId): Prom
     addUserMessageToThreadInSnapshot(
       updateThreadSessionInSnapshot(fixture.snapshot, threadId, {
         threadId,
+        providerThreadId: null,
+        providerSessionId: null,
         status: "running",
         providerName: "codex",
         runtimeMode: "full-access",
@@ -909,6 +917,8 @@ function createSnapshotWithSecondaryProject(options?: {
           checkpoints: [],
           session: {
             threadId: "thread-secondary-project" as ThreadId,
+            providerThreadId: null,
+            providerSessionId: null,
             status: "ready",
             providerName: "codex",
             runtimeMode: "full-access",
@@ -941,6 +951,8 @@ function createSnapshotWithSecondaryProject(options?: {
           checkpoints: [],
           session: {
             threadId: ARCHIVED_SECONDARY_THREAD_ID,
+            providerThreadId: null,
+            providerSessionId: null,
             status: "ready",
             providerName: "codex",
             runtimeMode: "full-access",

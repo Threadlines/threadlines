@@ -9,6 +9,8 @@ import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 
 export const ProviderExtensionsInventoryInput = Schema.Struct({
   cwd: Schema.optional(TrimmedNonEmptyString),
+  providerInstanceId: Schema.optional(ProviderInstanceId),
+  providerThreadId: Schema.optional(TrimmedNonEmptyString),
 });
 export type ProviderExtensionsInventoryInput = typeof ProviderExtensionsInventoryInput.Type;
 

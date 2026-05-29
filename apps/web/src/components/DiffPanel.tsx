@@ -308,6 +308,7 @@ export default function DiffPanel({
       fromTurnCount: activeCheckpointRange?.fromTurnCount ?? null,
       toTurnCount: activeCheckpointRange?.toTurnCount ?? null,
       ignoreWhitespace: diffIgnoreWhitespace,
+      rangeKind: selectedTurn ? "turn" : "fullThread",
       cacheScope: selectedTurn ? `turn:${selectedTurn.turnId}` : conversationCacheScope,
       enabled: isGitRepo && diffMode === "checkpoint",
     }),

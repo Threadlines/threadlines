@@ -828,6 +828,8 @@ describe("incremental orchestration updates", () => {
             threadId: thread.id,
             session: {
               threadId: thread.id,
+              providerThreadId: null,
+              providerSessionId: null,
               status: "running",
               providerName: "codex",
               runtimeMode: "full-access",
@@ -1112,6 +1114,8 @@ describe("incremental orchestration updates", () => {
         threadId: thread.id,
         session: {
           threadId: thread.id,
+          providerThreadId: null,
+          providerSessionId: null,
           status: "running",
           providerName: "codex",
           runtimeMode: "full-access",

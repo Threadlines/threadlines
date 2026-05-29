@@ -26,6 +26,8 @@ export const ProjectionThreadSession = Schema.Struct({
   status: OrchestrationSessionStatus,
   providerName: Schema.NullOr(Schema.String),
   providerInstanceId: Schema.NullOr(ProviderInstanceId),
+  providerSessionId: Schema.NullOr(Schema.String),
+  providerThreadId: Schema.NullOr(Schema.String),
   runtimeMode: RuntimeMode,
   activeTurnId: Schema.NullOr(TurnId),
   lastError: Schema.NullOr(Schema.String),

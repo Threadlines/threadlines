@@ -55,7 +55,10 @@ import {
   ProviderService,
   type ProviderServiceShape,
 } from "../../provider/Services/ProviderService.ts";
-import { checkpointRefForThreadTurn } from "../../checkpointing/Utils.ts";
+import {
+  checkpointPreTurnRefForThreadTurn,
+  checkpointRefForThreadTurn,
+} from "../../checkpointing/Utils.ts";
 import { ServerConfig } from "../../config.ts";
 import { WorkspaceEntriesLive } from "../../workspace/Layers/WorkspaceEntries.ts";
 import { WorkspacePathsLive } from "../../workspace/Layers/WorkspacePaths.ts";
@@ -479,6 +482,12 @@ describe("CheckpointReactor", () => {
       gitRefExists(harness.cwd, checkpointRefForThreadTurn(ThreadId.make("thread-1"), 1)),
     ).toBe(true);
     expect(
+      gitRefExists(
+        harness.cwd,
+        checkpointPreTurnRefForThreadTurn(ThreadId.make("thread-1"), asTurnId("turn-1")),
+      ),
+    ).toBe(true);
+    expect(
       gitShowFileAtRef(
         harness.cwd,
         checkpointRefForThreadTurn(ThreadId.make("thread-1"), 0),
@@ -492,6 +501,86 @@ describe("CheckpointReactor", () => {
         "README.md",
       ),
     ).toBe("v2\n");
+  });
+
+  it("uses the per-turn pre-state for changed-file summaries when the branch advances between turns", async () => {
+    const harness = await createHarness({ seedFilesystemCheckpoints: false });
+    const threadId = ThreadId.make("thread-1");
+    const createdAt = "2026-01-01T00:00:00.000Z";
+
+    harness.provider.emit({
+      type: "turn.started",
+      eventId: EventId.make("evt-turn-started-before-branch-move-1"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId,
+      turnId: asTurnId("turn-before-branch-move-1"),
+    });
+    await waitForGitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 0));
+
+    fs.writeFileSync(path.join(harness.cwd, "README.md"), "turn 1\n", "utf8");
+    harness.provider.emit({
+      type: "turn.completed",
+      eventId: EventId.make("evt-turn-completed-before-branch-move-1"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId,
+      turnId: asTurnId("turn-before-branch-move-1"),
+      payload: { state: "completed" },
+    });
+    await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.latestTurn?.turnId === "turn-before-branch-move-1" && entry.checkpoints.length === 1,
+    );
+
+    runGit(harness.cwd, ["add", "README.md"]);
+    runGit(harness.cwd, ["commit", "-m", "Commit first turn output"]);
+    fs.writeFileSync(path.join(harness.cwd, "README.md"), "external branch move\n", "utf8");
+    runGit(harness.cwd, ["add", "README.md"]);
+    runGit(harness.cwd, ["commit", "-m", "External branch movement"]);
+
+    harness.provider.emit({
+      type: "turn.started",
+      eventId: EventId.make("evt-turn-started-after-branch-move-2"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId,
+      turnId: asTurnId("turn-after-branch-move-2"),
+    });
+    await waitForGitRefExists(
+      harness.cwd,
+      checkpointPreTurnRefForThreadTurn(threadId, asTurnId("turn-after-branch-move-2")),
+    );
+    harness.provider.emit({
+      type: "turn.completed",
+      eventId: EventId.make("evt-turn-completed-after-branch-move-2"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId,
+      turnId: asTurnId("turn-after-branch-move-2"),
+      payload: { state: "completed" },
+    });
+
+    await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.latestTurn?.turnId === "turn-after-branch-move-2" && entry.checkpoints.length === 2,
+    );
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === threadId);
+    const secondCheckpoint = thread?.checkpoints.find(
+      (checkpoint) => checkpoint.checkpointTurnCount === 2,
+    );
+    expect(secondCheckpoint?.files).toEqual([]);
+
+    const chainDiff = runGit(harness.cwd, [
+      "diff",
+      "--numstat",
+      checkpointRefForThreadTurn(threadId, 1),
+      checkpointRefForThreadTurn(threadId, 2),
+    ]);
+    expect(chainDiff).toContain("README.md");
   });
 
   it("refreshes an early diff checkpoint when the turn completes", async () => {

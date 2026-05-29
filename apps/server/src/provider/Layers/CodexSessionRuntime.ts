@@ -60,6 +60,10 @@ const BENIGN_ERROR_LOG_SNIPPETS = [
 ];
 const ACTIONABLE_SUPPRESSED_TOOL_FAILURE_STDERR_SNIPPETS = ["failed to connect to websocket"];
 const CODEX_TOOL_ROUTER_LOG_TARGET = "codex_core::tools::router";
+const CODEX_MCP_TRANSPORT_WORKER_LOG_TARGETS = new Set([
+  "mcp-transport-worker",
+  "mcp::transport::worker",
+]);
 const CODEX_APP_SERVER_FORCE_KILL_AFTER = "2 seconds" as const;
 const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
   "not found",
@@ -422,7 +426,7 @@ export function makeCodexStderrLineClassifier(): {
         if (level && level !== "ERROR") {
           return null;
         }
-        if (BENIGN_ERROR_LOG_SNIPPETS.some((snippet) => line.includes(snippet))) {
+        if (isBenignCodexErrorLog(line, target, message)) {
           return null;
         }
         if (isLoggedToolRouterExitCode(target, message)) {
@@ -447,6 +451,18 @@ export function makeCodexStderrLineClassifier(): {
       return { message: line };
     },
   };
+}
+
+function isBenignCodexErrorLog(line: string, target: string | undefined, message: string): boolean {
+  if (BENIGN_ERROR_LOG_SNIPPETS.some((snippet) => line.includes(snippet))) {
+    return true;
+  }
+
+  return (
+    target !== undefined &&
+    CODEX_MCP_TRANSPORT_WORKER_LOG_TARGETS.has(target) &&
+    message.includes("worker quit with fatal: Transport channel closed")
+  );
 }
 
 function isLoggedToolRouterExitCode(target: string | undefined, message: string): boolean {

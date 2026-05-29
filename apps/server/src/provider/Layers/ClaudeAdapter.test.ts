@@ -1718,8 +1718,12 @@ describe("ClaudeAdapterLive", () => {
             usedTokens: 24542,
             lastUsedTokens: 24542,
             inputTokens: 23863,
+            cachedInputTokens: 21144,
             outputTokens: 679,
             maxTokens: 200000,
+            lastInputTokens: 23863,
+            lastCachedInputTokens: 21144,
+            lastOutputTokens: 679,
           },
         });
       }
@@ -1798,6 +1802,8 @@ describe("ClaudeAdapterLive", () => {
             inputTokens: 10,
             outputTokens: 70,
             reasoningOutputTokens: 50,
+            lastInputTokens: 10,
+            lastOutputTokens: 70,
             lastReasoningOutputTokens: 50,
             maxTokens: 1000000,
           },

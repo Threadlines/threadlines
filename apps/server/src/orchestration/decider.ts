@@ -436,6 +436,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                   providerName: targetThread.session?.providerName ?? null,
                   providerInstanceId:
                     targetThread.session?.providerInstanceId ?? requestedModelSelection.instanceId,
+                  providerSessionId: targetThread.session?.providerSessionId ?? null,
+                  providerThreadId: targetThread.session?.providerThreadId ?? null,
                   runtimeMode: targetThread.runtimeMode,
                   activeTurnId: null,
                   lastError: targetThread.session?.lastError ?? null,

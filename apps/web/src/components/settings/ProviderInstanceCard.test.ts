@@ -60,10 +60,65 @@ describe("deriveProviderAccountUsagePresentation", () => {
 
     expect(deriveProviderAccountUsagePresentation(usage, 1_800_000_000_000)).toEqual({
       label: "Codex",
-      detail: "63% remaining · resets in 1h",
-      usedPercent: 37,
-      remainingPercent: 63,
       reachedLimit: false,
+      windows: [
+        {
+          key: "primary",
+          label: "5h",
+          detail: "63% remaining · resets in 1h",
+          usedPercent: 37,
+          remainingPercent: 63,
+          reachedLimit: false,
+        },
+      ],
+    });
+  });
+
+  it("formats both Codex 5h and weekly usage windows", () => {
+    const usage: ServerProviderAccountUsage = {
+      source: "codex-rate-limits",
+      checkedAt: "2026-04-10T00:00:00.000Z",
+      primaryLimitId: "codex",
+      limits: [
+        {
+          limitId: "codex",
+          primary: {
+            usedPercent: 37,
+            remainingPercent: 63,
+            resetsAt: 1_800_003_600,
+            windowDurationMins: 300,
+          },
+          secondary: {
+            usedPercent: 64,
+            remainingPercent: 36,
+            resetsAt: 1_800_604_800,
+            windowDurationMins: 10_080,
+          },
+        },
+      ],
+    };
+
+    expect(deriveProviderAccountUsagePresentation(usage, 1_800_000_000_000)).toEqual({
+      label: "Codex usage",
+      reachedLimit: false,
+      windows: [
+        {
+          key: "primary",
+          label: "5h",
+          detail: "63% remaining · resets in 1h",
+          usedPercent: 37,
+          remainingPercent: 63,
+          reachedLimit: false,
+        },
+        {
+          key: "secondary",
+          label: "Weekly",
+          detail: "36% remaining · resets in 7d",
+          usedPercent: 64,
+          remainingPercent: 36,
+          reachedLimit: false,
+        },
+      ],
     });
   });
 
@@ -85,10 +140,17 @@ describe("deriveProviderAccountUsagePresentation", () => {
 
     expect(deriveProviderAccountUsagePresentation(usage, 1_800_000_000_000)).toEqual({
       label: "Codex usage",
-      detail: "limit reached",
-      usedPercent: 100,
-      remainingPercent: 0,
       reachedLimit: true,
+      windows: [
+        {
+          key: "primary",
+          label: "5h",
+          detail: "limit reached",
+          usedPercent: 100,
+          remainingPercent: 0,
+          reachedLimit: true,
+        },
+      ],
     });
   });
 });

@@ -852,7 +852,7 @@ export function GeneralSettingsPanel() {
 
         <SettingsRow
           title="Text generation model"
-          description="Configure the model used for generated commit messages, PR titles, and similar Git text."
+          description="Configure the model used for generated thread titles, branch names, commit messages, and PR text."
           resetAction={
             isGitWritingModelDirty ? (
               <SettingResetButton

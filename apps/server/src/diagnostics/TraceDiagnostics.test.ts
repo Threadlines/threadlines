@@ -303,4 +303,47 @@ describe("TraceDiagnostics", () => {
       );
     }),
   );
+
+  it.effect("keeps only the latest failures and warning logs while aggregating large inputs", () =>
+    Effect.sync(() => {
+      const diagnostics = TraceDiagnostics.aggregateTraceDiagnostics({
+        traceFilePath: "/tmp/server.trace.ndjson",
+        readAt: DateTime.makeUnsafe("2026-05-05T10:00:00.000Z"),
+        files: [
+          {
+            path: "/tmp/server.trace.ndjson",
+            text: Array.from({ length: 30 }, (_, index) =>
+              record({
+                name: "rpc.call",
+                traceId: `trace-${index}`,
+                spanId: `span-${index}`,
+                startMs: index * 1_000,
+                durationMs: 10,
+                exit: { _tag: "Failure", cause: `failure-${index}` },
+                events: [
+                  {
+                    name: `warning-${index}`,
+                    timeUnixNano: ns(index * 1_000 + 5),
+                    attributes: { "effect.logLevel": "Warning" },
+                  },
+                ],
+              }),
+            ).join("\n"),
+          },
+        ],
+      });
+
+      assert.equal(diagnostics.failureCount, 30);
+      assert.equal(diagnostics.latestFailures.length, 20);
+      assert.deepStrictEqual(
+        diagnostics.latestFailures.slice(0, 3).map((failure) => failure.traceId),
+        ["trace-29", "trace-28", "trace-27"],
+      );
+      assert.equal(diagnostics.latestWarningAndErrorLogs.length, 20);
+      assert.deepStrictEqual(
+        diagnostics.latestWarningAndErrorLogs.slice(0, 3).map((log) => log.message),
+        ["warning-29", "warning-28", "warning-27"],
+      );
+    }),
+  );
 });

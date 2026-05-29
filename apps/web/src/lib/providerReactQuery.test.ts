@@ -147,6 +147,33 @@ describe("checkpointDiffQueryOptions", () => {
     expect(getTurnDiff).not.toHaveBeenCalled();
   });
 
+  it("uses turn diff API for selected turn ranges that start from zero", async () => {
+    const getTurnDiff = vi.fn().mockResolvedValue({ diff: "patch" });
+    const getFullThreadDiff = vi.fn().mockResolvedValue({ diff: "patch" });
+    mockNativeApi({ getTurnDiff, getFullThreadDiff });
+
+    const options = checkpointDiffQueryOptions({
+      environmentId,
+      threadId,
+      fromTurnCount: 0,
+      toTurnCount: 1,
+      ignoreWhitespace: true,
+      rangeKind: "turn",
+      cacheScope: "turn:first",
+    });
+
+    const queryClient = new QueryClient();
+    await queryClient.fetchQuery(options);
+
+    expect(getTurnDiff).toHaveBeenCalledWith({
+      threadId,
+      fromTurnCount: 0,
+      toTurnCount: 1,
+      ignoreWhitespace: true,
+    });
+    expect(getFullThreadDiff).not.toHaveBeenCalled();
+  });
+
   it("fails fast on invalid range and does not call provider RPC", async () => {
     const getTurnDiff = vi.fn().mockResolvedValue({ diff: "patch" });
     const getFullThreadDiff = vi.fn().mockResolvedValue({ diff: "patch" });

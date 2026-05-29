@@ -156,6 +156,8 @@ function mapSession(session: OrchestrationSession): ThreadSession {
   return {
     provider: toLegacyProvider(session.providerName),
     providerInstanceId: session.providerInstanceId ?? undefined,
+    providerSessionId: session.providerSessionId ?? undefined,
+    providerThreadId: session.providerThreadId ?? undefined,
     status: toLegacySessionStatus(session.status),
     orchestrationStatus: session.status,
     activeTurnId: session.activeTurnId ?? undefined,
@@ -249,7 +251,8 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
   return {
     id: thread.id,
     environmentId,
-    codexThreadId: null,
+    codexThreadId:
+      thread.session?.providerName === "codex" ? (thread.session.providerThreadId ?? null) : null,
     projectId: thread.projectId,
     title: thread.title,
     modelSelection: normalizeModelSelection(thread.modelSelection),
@@ -283,7 +286,8 @@ function mapThreadShell(
   const shell: ThreadShell = {
     id: thread.id,
     environmentId,
-    codexThreadId: null,
+    codexThreadId:
+      thread.session?.providerName === "codex" ? (thread.session.providerThreadId ?? null) : null,
     projectId: thread.projectId,
     title: thread.title,
     modelSelection: normalizeModelSelection(thread.modelSelection),

@@ -194,6 +194,46 @@ function insertBoundedSlowestSpan(
   }
 }
 
+function insertBoundedLatestFailure(
+  latestFailures: ServerTraceDiagnosticsRecentFailure[],
+  failure: ServerTraceDiagnosticsRecentFailure,
+): void {
+  if (
+    latestFailures.length >= RECENT_LIMIT &&
+    DateTime.isLessThan(failure.endedAt, latestFailures[latestFailures.length - 1]!.endedAt)
+  ) {
+    return;
+  }
+
+  latestFailures.push(failure);
+  latestFailures.sort(
+    (left, right) => DateTime.toEpochMillis(right.endedAt) - DateTime.toEpochMillis(left.endedAt),
+  );
+  if (latestFailures.length > RECENT_LIMIT) {
+    latestFailures.length = RECENT_LIMIT;
+  }
+}
+
+function insertBoundedLatestLog(
+  latestLogs: ServerTraceDiagnosticsLogEvent[],
+  log: ServerTraceDiagnosticsLogEvent,
+): void {
+  if (
+    latestLogs.length >= RECENT_LIMIT &&
+    DateTime.isLessThan(log.seenAt, latestLogs[latestLogs.length - 1]!.seenAt)
+  ) {
+    return;
+  }
+
+  latestLogs.push(log);
+  latestLogs.sort(
+    (left, right) => DateTime.toEpochMillis(right.seenAt) - DateTime.toEpochMillis(left.seenAt),
+  );
+  if (latestLogs.length > RECENT_LIMIT) {
+    latestLogs.length = RECENT_LIMIT;
+  }
+}
+
 export function aggregateTraceDiagnostics(
   input: TraceDiagnosticsInput,
 ): ServerTraceDiagnosticsResult {
@@ -312,7 +352,7 @@ export function aggregateTraceDiagnostics(
 
       if (isFailure) {
         const cause = failureCause ?? readExitCause(parsed.exit);
-        latestFailures.push({ ...spanItem, cause });
+        insertBoundedLatestFailure(latestFailures, { ...spanItem, cause });
 
         const failureKey = `${name}\0${cause}`;
         const existing = failuresByKey.get(failureKey);
@@ -347,7 +387,7 @@ export function aggregateTraceDiagnostics(
 
           const seenAt = unixNanoToDateTime(rawEvent.timeUnixNano) ?? endedAt;
           const message = toStringValue(rawEvent.name)?.trim() ?? "Log event";
-          latestWarningAndErrorLogs.push({
+          insertBoundedLatestLog(latestWarningAndErrorLogs, {
             spanName: name,
             level,
             message,
@@ -410,17 +450,8 @@ export function aggregateTraceDiagnostics(
           DateTime.toEpochMillis(right.lastSeenAt) - DateTime.toEpochMillis(left.lastSeenAt),
       )
       .slice(0, TOP_LIMIT),
-    latestFailures: latestFailures
-      .toSorted(
-        (left, right) =>
-          DateTime.toEpochMillis(right.endedAt) - DateTime.toEpochMillis(left.endedAt),
-      )
-      .slice(0, RECENT_LIMIT),
-    latestWarningAndErrorLogs: latestWarningAndErrorLogs
-      .toSorted(
-        (left, right) => DateTime.toEpochMillis(right.seenAt) - DateTime.toEpochMillis(left.seenAt),
-      )
-      .slice(0, RECENT_LIMIT),
+    latestFailures,
+    latestWarningAndErrorLogs,
     partialFailure: input.partialFailure ? Option.some(true) : Option.none(),
     error: Option.fromNullishOr(input.error),
   };

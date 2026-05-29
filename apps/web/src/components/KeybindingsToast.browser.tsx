@@ -187,6 +187,8 @@ function createMinimalSnapshot(): OrchestrationReadModel {
         checkpoints: [],
         session: {
           threadId: THREAD_ID,
+          providerThreadId: null,
+          providerSessionId: null,
           status: "ready",
           providerName: "codex",
           runtimeMode: "full-access",

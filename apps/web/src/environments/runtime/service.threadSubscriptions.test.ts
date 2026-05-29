@@ -129,6 +129,8 @@ function makeThreadShellSnapshot(params: {
         session: params.sessionStatus
           ? {
               threadId: params.threadId,
+              providerThreadId: null,
+              providerSessionId: null,
               status: params.sessionStatus,
               providerName: "codex",
               runtimeMode: "full-access",

@@ -18,6 +18,7 @@ interface CheckpointDiffQueryInput {
   fromTurnCount: number | null;
   toTurnCount: number | null;
   ignoreWhitespace: boolean;
+  rangeKind?: "turn" | "fullThread";
   cacheScope?: string | null;
   enabled?: boolean;
 }
@@ -33,12 +34,13 @@ export const providerQueryKeys = {
       input.fromTurnCount,
       input.toTurnCount,
       input.ignoreWhitespace,
+      input.rangeKind ?? null,
       input.cacheScope ?? null,
     ] as const,
 };
 
 function decodeCheckpointDiffRequest(input: CheckpointDiffQueryInput) {
-  if (input.fromTurnCount === 0) {
+  if (input.rangeKind !== "turn" && input.fromTurnCount === 0) {
     return decodeFullThreadDiffInput({
       threadId: input.threadId,
       toTurnCount: input.toTurnCount,

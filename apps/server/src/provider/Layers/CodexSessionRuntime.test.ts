@@ -204,9 +204,12 @@ describe("classifyCodexStderrLine", () => {
       "2026-05-27T03:14:34.196768Z ERROR codex_models_manager::manager: failed to refresh available models: timeout while fetching models";
     const mcpWorkerClosedWarning =
       "2026-05-27T03:14:38.810814Z ERROR mcp-transport-worker: worker quit with fatal: Transport channel closed, when attempting to receive initialized notification";
+    const currentMcpWorkerClosedWarning =
+      '2026-05-29T05:34:54.565773Z ERROR mcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(TokenRefreshFailed("Failed to parse server response"))';
 
     assert.equal(classifyCodexStderrLine(modelRefreshWarning), null);
     assert.equal(classifyCodexStderrLine(mcpWorkerClosedWarning), null);
+    assert.equal(classifyCodexStderrLine(currentMcpWorkerClosedWarning), null);
   });
 
   it("keeps actionable Codex stderr lines visible", () => {
@@ -310,6 +313,13 @@ describe("openCodexThread", () => {
       calls.map((call) => call.method),
       ["thread/resume", "thread/start"],
     );
+    assert.deepStrictEqual(calls[0]?.payload, {
+      threadId: "stale-thread",
+      cwd: "/tmp/project",
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+      model: "gpt-5.3-codex",
+    });
   });
 
   it("propagates non-recoverable resume failures", async () => {

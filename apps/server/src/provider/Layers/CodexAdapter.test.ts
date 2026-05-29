@@ -448,6 +448,49 @@ function startLifecycleRuntime() {
 }
 
 lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
+  it.effect("uses item startedAtMs for canonical item.started timestamps", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      const event: ProviderEvent = {
+        id: asEventId("evt-msg-started"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "item/started",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-1"),
+        itemId: asItemId("msg_1"),
+        payload: {
+          startedAtMs: 1_778_000_001_234,
+          threadId: "thread-1",
+          turnId: "turn-1",
+          item: {
+            type: "agentMessage",
+            id: "msg_1",
+            text: "draft",
+          },
+        },
+      };
+
+      yield* runtime.emit(event);
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      assert.equal(firstEvent.value.type, "item.started");
+      if (firstEvent.value.type !== "item.started") {
+        return;
+      }
+      assert.equal(firstEvent.value.createdAt, "2026-05-05T16:53:21.234Z");
+      assert.equal(firstEvent.value.itemId, "msg_1");
+      assert.equal(firstEvent.value.payload.itemType, "assistant_message");
+    }),
+  );
+
   it.effect("maps completed agent message items to canonical item.completed events", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();
@@ -485,6 +528,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       if (firstEvent.value.type !== "item.completed") {
         return;
       }
+      assert.equal(firstEvent.value.createdAt, "2026-05-05T16:53:20.000Z");
       assert.equal(firstEvent.value.itemId, "msg_1");
       assert.equal(firstEvent.value.turnId, "turn-1");
       assert.equal(firstEvent.value.payload.itemType, "assistant_message");

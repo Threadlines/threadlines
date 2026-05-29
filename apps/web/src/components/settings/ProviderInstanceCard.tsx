@@ -139,11 +139,18 @@ export function deriveProviderModelsForDisplay(input: {
   return [...serverModels, ...customModels];
 }
 
-export interface ProviderAccountUsagePresentation {
+export interface ProviderAccountUsageWindowPresentation {
+  readonly key: "primary" | "secondary";
   readonly label: string;
   readonly detail: string;
   readonly usedPercent: number;
   readonly remainingPercent: number;
+  readonly reachedLimit: boolean;
+}
+
+export interface ProviderAccountUsagePresentation {
+  readonly label: string;
+  readonly windows: ReadonlyArray<ProviderAccountUsageWindowPresentation>;
   readonly reachedLimit: boolean;
 }
 
@@ -186,8 +193,42 @@ function selectProviderUsageLimit(
   );
 }
 
-function selectUsageWindow(limit: ServerProviderUsageLimit): ServerProviderUsageWindow | null {
-  return limit.primary ?? limit.secondary ?? null;
+function formatUsageWindowDurationLabel(
+  window: ServerProviderUsageWindow,
+  fallback: string,
+): string {
+  const minutes = window.windowDurationMins;
+  if (!Number.isFinite(minutes) || minutes === undefined || minutes <= 0) return fallback;
+  if (minutes === 300) return "5h";
+  if (minutes === 1_440) return "Daily";
+  if (minutes === 10_080) return "Weekly";
+  if (minutes % 1_440 === 0) return `${minutes / 1_440}d`;
+  if (minutes % 60 === 0) return `${minutes / 60}h`;
+  return `${minutes}m`;
+}
+
+function formatUsageWindowPresentation(
+  key: ProviderAccountUsageWindowPresentation["key"],
+  window: ServerProviderUsageWindow,
+  reachedLimit: boolean,
+  nowMs: number,
+): ProviderAccountUsageWindowPresentation {
+  const usedPercent = Math.max(0, Math.min(100, window.usedPercent));
+  const remainingPercent = Math.max(0, Math.min(100, window.remainingPercent));
+  const resetDetail = formatResetDetail(window.resetsAt, nowMs);
+  const detailParts = [
+    reachedLimit ? "limit reached" : `${remainingPercent}% remaining`,
+    resetDetail,
+  ].filter((part): part is string => Boolean(part));
+
+  return {
+    key,
+    label: formatUsageWindowDurationLabel(window, key === "primary" ? "5h" : "Weekly"),
+    detail: detailParts.join(" · "),
+    usedPercent,
+    remainingPercent,
+    reachedLimit,
+  };
 }
 
 export function deriveProviderAccountUsagePresentation(
@@ -199,23 +240,20 @@ export function deriveProviderAccountUsagePresentation(
   const limit = selectProviderUsageLimit(usage);
   if (!limit) return null;
 
-  const window = selectUsageWindow(limit);
-  if (!window) return null;
-
-  const usedPercent = Math.max(0, Math.min(100, window.usedPercent));
-  const remainingPercent = Math.max(0, Math.min(100, window.remainingPercent));
-  const resetDetail = formatResetDetail(window.resetsAt, nowMs);
   const reachedLimit = Boolean(limit.rateLimitReachedType);
-  const detailParts = [
-    reachedLimit ? "limit reached" : `${remainingPercent}% remaining`,
-    resetDetail,
-  ].filter((part): part is string => Boolean(part));
+  const windows = [
+    ...(limit.primary
+      ? [formatUsageWindowPresentation("primary", limit.primary, reachedLimit, nowMs)]
+      : []),
+    ...(limit.secondary
+      ? [formatUsageWindowPresentation("secondary", limit.secondary, reachedLimit, nowMs)]
+      : []),
+  ];
+  if (windows.length === 0) return null;
 
   return {
     label: limit.limitName ?? "Codex usage",
-    detail: detailParts.join(" · "),
-    usedPercent,
-    remainingPercent,
+    windows,
     reachedLimit,
   };
 }
@@ -867,27 +905,40 @@ export function ProviderInstanceCard({
                 <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
                   <GaugeIcon className="size-3.5 shrink-0" aria-hidden />
                   <span className="font-medium text-foreground">{usagePresentation.label}</span>
-                  <span>{usagePresentation.usedPercent}% used</span>
-                  <span aria-hidden>·</span>
-                  <span>{usagePresentation.detail}</span>
                 </div>
-                <div
-                  role="meter"
-                  aria-label={`${usagePresentation.label} ${usagePresentation.usedPercent}% used`}
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                  aria-valuenow={usagePresentation.usedPercent}
-                  className="h-1.5 overflow-hidden rounded-full bg-muted"
-                >
-                  <div
-                    className={cn(
-                      "h-full rounded-full transition-[width]",
-                      usagePresentation.reachedLimit || usagePresentation.usedPercent >= 90
-                        ? "bg-warning"
-                        : "bg-primary",
-                    )}
-                    style={{ width: `${usagePresentation.usedPercent}%` }}
-                  />
+                <div className="space-y-1.5 pl-5">
+                  {usagePresentation.windows.map((window) => (
+                    <div key={window.key} className="space-y-1">
+                      <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
+                        <span className="min-w-10 font-medium text-foreground">{window.label}</span>
+                        <span>{window.usedPercent}% used</span>
+                        {window.detail ? (
+                          <>
+                            <span aria-hidden>·</span>
+                            <span>{window.detail}</span>
+                          </>
+                        ) : null}
+                      </div>
+                      <div
+                        role="meter"
+                        aria-label={`${usagePresentation.label} ${window.label} ${window.usedPercent}% used`}
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-valuenow={window.usedPercent}
+                        className="h-1.5 overflow-hidden rounded-full bg-muted"
+                      >
+                        <div
+                          className={cn(
+                            "h-full rounded-full transition-[width]",
+                            window.reachedLimit || window.usedPercent >= 90
+                              ? "bg-warning"
+                              : "bg-primary",
+                          )}
+                          style={{ width: `${window.usedPercent}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             ) : null}

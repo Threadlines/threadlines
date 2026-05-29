@@ -12,7 +12,7 @@ import * as Schema from "effect/Schema";
 
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { CheckpointInvariantError, CheckpointUnavailableError } from "../Errors.ts";
-import { checkpointRefForThreadTurn } from "../Utils.ts";
+import { checkpointPreTurnRefForThreadTurn, checkpointRefForThreadTurn } from "../Utils.ts";
 import { CheckpointStore } from "../Services/CheckpointStore.ts";
 import {
   CheckpointDiffQuery,
@@ -112,22 +112,36 @@ const make = Effect.gen(function* () {
         });
       }
 
-      const toCheckpointRef = threadContext.value.checkpoints.find(
+      const toCheckpoint = threadContext.value.checkpoints.find(
         (checkpoint) => checkpoint.checkpointTurnCount === input.toTurnCount,
-      )?.checkpointRef;
-      if (!toCheckpointRef) {
+      );
+      if (!toCheckpoint) {
         return yield* new CheckpointUnavailableError({
           threadId: input.threadId,
           turnCount: input.toTurnCount,
           detail: `Checkpoint ref is unavailable for turn ${input.toTurnCount}.`,
         });
       }
+      const preTurnCheckpointRef = checkpointPreTurnRefForThreadTurn(
+        input.threadId,
+        toCheckpoint.turnId,
+      );
+      const canUsePreTurnCheckpoint = input.toTurnCount === input.fromTurnCount + 1;
+      const preTurnCheckpointExists = canUsePreTurnCheckpoint
+        ? yield* checkpointStore.hasCheckpointRef({
+            cwd: workspaceCwd,
+            checkpointRef: preTurnCheckpointRef,
+          })
+        : false;
+      const effectiveFromCheckpointRef = preTurnCheckpointExists
+        ? preTurnCheckpointRef
+        : fromCheckpointRef;
 
       const diff = yield* checkpointStore
         .diffCheckpoints({
           cwd: workspaceCwd,
-          fromCheckpointRef,
-          toCheckpointRef,
+          fromCheckpointRef: effectiveFromCheckpointRef,
+          toCheckpointRef: toCheckpoint.checkpointRef,
           fallbackFromToHead: false,
           ignoreWhitespace,
         })

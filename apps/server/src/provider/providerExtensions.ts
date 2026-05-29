@@ -393,6 +393,7 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
     readonly config: CodexSettings;
     readonly cwd: string;
     readonly environment: NodeJS.ProcessEnv;
+    readonly providerThreadId?: string | undefined;
   }): Effect.fn.Return<
     Pick<
       ProviderExtensionProviderInventory,
@@ -444,7 +445,13 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
               collectCodexRequest("skills"),
             ),
             client
-              .request("mcpServerStatus/list", { detail: "toolsAndAuthOnly", limit: 100 })
+              .request("mcpServerStatus/list", {
+                detail: "toolsAndAuthOnly",
+                limit: 100,
+                ...(input.providerThreadId !== undefined
+                  ? { threadId: input.providerThreadId }
+                  : {}),
+              })
               .pipe(Effect.map(mapCodexMcpServers), collectCodexRequest("MCP servers")),
             client
               .request("app/list", { limit: 100 })
@@ -756,6 +763,7 @@ const readProviderInventory = Effect.fn("providerExtensions.readProviderInventor
     readonly config: ProviderInstanceConfig;
     readonly snapshot: ServerProvider | undefined;
     readonly cwd: string;
+    readonly providerThreadId?: string | undefined;
   }) {
     const processEnv = mergeProviderInstanceEnvironment(input.config.environment ?? []);
     const base = {
@@ -790,6 +798,9 @@ const readProviderInventory = Effect.fn("providerExtensions.readProviderInventor
         config: { ...decoded, enabled },
         cwd: input.cwd,
         environment: processEnv,
+        ...(input.providerThreadId !== undefined
+          ? { providerThreadId: input.providerThreadId }
+          : {}),
       });
       return {
         ...base,
@@ -872,12 +883,19 @@ export const readProviderExtensionsInventory = Effect.fn(
     [
       Effect.forEach(
         providerEntries,
-        (entry) =>
-          readProviderInventory({
+        (entry) => {
+          const scopedProviderThreadId =
+            input.request.providerThreadId !== undefined &&
+            (input.request.providerInstanceId === undefined ||
+              String(input.request.providerInstanceId) === String(entry.instanceId))
+              ? input.request.providerThreadId
+              : undefined;
+          return readProviderInventory({
             instanceId: entry.instanceId,
             config: entry.config,
             snapshot: snapshotsByInstanceId.get(entry.instanceId),
             cwd,
+            providerThreadId: scopedProviderThreadId,
           }).pipe(
             Effect.catch((error: ProviderExtensionsError) =>
               Effect.succeed({
@@ -892,7 +910,8 @@ export const readProviderExtensionsInventory = Effect.fn(
                 apps: [],
               }),
             ),
-          ),
+          );
+        },
         { concurrency: 3 },
       ),
       readInstructionFiles(cwd),

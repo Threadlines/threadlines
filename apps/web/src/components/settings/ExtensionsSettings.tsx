@@ -7,7 +7,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { ensureLocalApi } from "../../localApi";
-import { selectProjectsAcrossEnvironments, useStore } from "../../store";
+import {
+  selectProjectsAcrossEnvironments,
+  selectThreadsAcrossEnvironments,
+  useStore,
+} from "../../store";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
@@ -174,6 +178,7 @@ function ProviderInventoryRow({ provider }: { provider: ProviderExtensionProvide
 
 export function ExtensionsSettingsPanel() {
   const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
+  const threads = useStore(useShallow(selectThreadsAcrossEnvironments));
   const projectOptions = useMemo(() => deriveSettingsProjectOptions(projects), [projects]);
   const [cwd, setCwd] = useState(() => projectOptions[0]?.value ?? "");
   const [inventory, setInventory] = useState<ProviderExtensionsInventoryResult | null>(null);
@@ -186,6 +191,36 @@ export function ExtensionsSettingsPanel() {
       setCwd(projectOptions[0].value);
     }
   }, [cwd, projectOptions]);
+
+  const providerThreadScope = useMemo(() => {
+    const requestCwd = cwd.trim();
+    if (!requestCwd) return undefined;
+
+    const projectIds = new Set(
+      projects.filter((project) => project.cwd.trim() === requestCwd).map((project) => project.id),
+    );
+    if (projectIds.size === 0) return undefined;
+
+    const thread = threads
+      .filter(
+        (thread) =>
+          projectIds.has(thread.projectId) &&
+          thread.session?.provider === "codex" &&
+          Boolean(thread.session.providerThreadId ?? thread.codexThreadId),
+      )
+      .toSorted((left, right) =>
+        (right.updatedAt ?? right.createdAt).localeCompare(left.updatedAt ?? left.createdAt),
+      )
+      .at(0);
+    const providerThreadId = thread?.session?.providerThreadId ?? thread?.codexThreadId;
+    if (!providerThreadId) return undefined;
+    return {
+      ...(thread?.session?.providerInstanceId !== undefined
+        ? { providerInstanceId: thread.session.providerInstanceId }
+        : {}),
+      providerThreadId,
+    };
+  }, [cwd, projects, threads]);
 
   const refresh = useCallback(async () => {
     const requestCwd = cwd.trim();
@@ -201,7 +236,15 @@ export function ExtensionsSettingsPanel() {
     setIsLoading(true);
     setError(null);
     try {
-      const result = await ensureLocalApi().server.getProviderExtensions({ cwd: requestCwd });
+      const result = await ensureLocalApi().server.getProviderExtensions({
+        cwd: requestCwd,
+        ...(providerThreadScope?.providerInstanceId !== undefined
+          ? { providerInstanceId: providerThreadScope.providerInstanceId }
+          : {}),
+        ...(providerThreadScope !== undefined
+          ? { providerThreadId: providerThreadScope.providerThreadId }
+          : {}),
+      });
       if (refreshRequestRef.current === requestId) {
         setInventory(result);
       }
@@ -216,7 +259,7 @@ export function ExtensionsSettingsPanel() {
         setIsLoading(false);
       }
     }
-  }, [cwd]);
+  }, [cwd, providerThreadScope]);
 
   useEffect(() => {
     void refresh();

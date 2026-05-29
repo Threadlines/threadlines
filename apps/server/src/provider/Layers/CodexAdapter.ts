@@ -25,6 +25,7 @@ import {
   ProviderSendTurnInput,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as DateTime from "effect/DateTime";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
@@ -424,6 +425,27 @@ function providerRefsFromEvent(
   return Object.keys(refs).length > 0 ? (refs as ProviderRuntimeEvent["providerRefs"]) : undefined;
 }
 
+function isoFromEpochMillis(
+  value: number | undefined,
+): ProviderRuntimeEvent["createdAt"] | undefined {
+  if (value === undefined || !Number.isFinite(value) || value <= 0) {
+    return undefined;
+  }
+  return DateTime.formatIso(DateTime.makeUnsafe(value));
+}
+
+function lifecycleCreatedAt(event: ProviderEvent): ProviderRuntimeEvent["createdAt"] | undefined {
+  const started = readPayload(EffectCodexSchema.V2ItemStartedNotification, event.payload);
+  if (started) {
+    return isoFromEpochMillis(started.startedAtMs);
+  }
+  const completed = readPayload(EffectCodexSchema.V2ItemCompletedNotification, event.payload);
+  if (completed) {
+    return isoFromEpochMillis(completed.completedAtMs);
+  }
+  return undefined;
+}
+
 function runtimeEventBase(
   event: ProviderEvent,
   canonicalThreadId: ThreadId,
@@ -433,7 +455,7 @@ function runtimeEventBase(
     eventId: event.id,
     provider: event.provider,
     threadId: canonicalThreadId,
-    createdAt: event.createdAt,
+    createdAt: lifecycleCreatedAt(event) ?? event.createdAt,
     ...(event.turnId ? { turnId: event.turnId } : {}),
     ...(event.itemId ? { itemId: asRuntimeItemId(event.itemId) } : {}),
     ...(event.requestId ? { requestId: asRuntimeRequestId(event.requestId) } : {}),
