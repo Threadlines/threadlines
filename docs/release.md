@@ -91,6 +91,14 @@ git push origin v0.0.18
 This builds a new stable installer with version `0.0.18`, marks it as the
 latest GitHub Release, and gives stable-channel installs a normal update target.
 
+## Release Notes
+
+Release notes are generated automatically from commit subjects. Nightly releases
+compare against the previous nightly build when one exists, otherwise against
+the latest prior stable tag. Stable releases compare against the previous stable
+tag, so their notes include the full stable-to-stable commit range even if some
+of those commits already appeared in nightly notes.
+
 The release assets should include:
 
 - `BadCode-<version>-x64.exe`
