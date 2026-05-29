@@ -71,6 +71,7 @@ import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import { addProviderAuthHint } from "../providerAuthHints.ts";
 import {
   getClaudeModelCapabilities,
+  isClaudeUltracodeEffort,
   normalizeClaudeCliEffort,
   resolveClaudeApiModelId,
   resolveClaudeEffort,
@@ -2953,6 +2954,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const thinking = thinkingSupported
         ? getModelSelectionBooleanOptionValue(modelSelection, "thinking")
         : undefined;
+      const ultracode = isClaudeUltracodeEffort(effort);
       const effectiveEffort = getEffectiveClaudeAgentEffort(effort);
       const runtimeModeToPermission: Record<string, PermissionMode> = {
         "auto-accept-edits": "acceptEdits",
@@ -2962,6 +2964,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const settings = {
         ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
         ...(fastMode ? { fastMode: true } : {}),
+        ...(ultracode ? { ultracode: true } : {}),
       };
       const queryOptions: ClaudeQueryOptions = {
         ...(input.cwd ? { cwd: input.cwd } : {}),

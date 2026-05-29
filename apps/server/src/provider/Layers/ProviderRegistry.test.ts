@@ -1548,6 +1548,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
                 { id: "high", label: "High", isDefault: true },
                 { id: "xhigh", label: "Extra High" },
                 { id: "max", label: "Max" },
+                { id: "ultracode", label: "Ultracode" },
+                { id: "ultrathink", label: "Ultrathink" },
               ],
             );
             const fastModeDescriptor = opus48.capabilities.optionDescriptors?.find(
@@ -1679,7 +1681,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
           );
           assert.strictEqual(
             status.message,
-            "Claude Code v2.1.110 is too old for Claude Opus 4.8. Upgrade to v2.1.154 or newer to access it.",
+            "Claude Code v2.1.110 is too old for Claude Opus 4.7. Upgrade to v2.1.111 or newer to access it.",
           );
         }).pipe(
           Effect.provide(

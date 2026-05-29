@@ -315,6 +315,41 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
     ),
   );
 
+  it.effect("forwards Claude ultracode as xhigh effort and CLI settings", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({
+          structured_output: {
+            title: "Coordinate deeper agent work",
+            body: "Body",
+          },
+        }),
+        argsMustContain:
+          process.platform === "win32"
+            ? "--effort xhigh --settings {ultracode:true}"
+            : '--effort xhigh --settings {"ultracode":true}',
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const generated = yield* textGeneration.generatePrContent({
+            cwd: process.cwd(),
+            baseBranch: "main",
+            headBranch: "feature/claude-ultracode",
+            commitSummary: "Coordinate deeper agent work",
+            diffSummary: "1 file changed",
+            diffPatch: "diff --git a/README.md b/README.md",
+            modelSelection: {
+              ...createModelSelection(ProviderInstanceId.make("claudeAgent"), "claude-opus-4-8", [
+                { id: "effort", value: "ultracode" },
+              ]),
+            },
+          });
+
+          expect(generated.title).toBe("Coordinate deeper agent work");
+        }),
+    ),
+  );
+
   it.effect("generates thread titles through the Claude provider", () =>
     withFakeClaudeEnv(
       {

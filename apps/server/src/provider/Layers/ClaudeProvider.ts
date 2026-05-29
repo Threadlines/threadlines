@@ -49,6 +49,47 @@ const CLAUDE_PRESENTATION = {
 } as const;
 const MINIMUM_CLAUDE_OPUS_4_8_VERSION = "2.1.154";
 const MINIMUM_CLAUDE_OPUS_4_7_VERSION = "2.1.111";
+
+const CLAUDE_EFFORT_OPTIONS = {
+  opus48: [
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High", isDefault: true },
+    { value: "xhigh", label: "Extra High" },
+    { value: "max", label: "Max" },
+    { value: "ultracode", label: "Ultracode" },
+    { value: "ultrathink", label: "Ultrathink" },
+  ],
+  opus47: [
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High" },
+    { value: "xhigh", label: "Extra High", isDefault: true },
+    { value: "max", label: "Max" },
+    { value: "ultrathink", label: "Ultrathink" },
+  ],
+  opus46: [
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High", isDefault: true },
+    { value: "max", label: "Max" },
+    { value: "ultrathink", label: "Ultrathink" },
+  ],
+  opus45: [
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High", isDefault: true },
+    { value: "max", label: "Max" },
+  ],
+  sonnet46: [
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High", isDefault: true },
+    { value: "max", label: "Max" },
+    { value: "ultrathink", label: "Ultrathink" },
+  ],
+} as const;
+
 const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   {
     slug: "claude-opus-4-8",
@@ -59,13 +100,8 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
         buildSelectOptionDescriptor({
           id: "effort",
           label: "Reasoning",
-          options: [
-            { value: "low", label: "Low" },
-            { value: "medium", label: "Medium" },
-            { value: "high", label: "High", isDefault: true },
-            { value: "xhigh", label: "Extra High" },
-            { value: "max", label: "Max" },
-          ],
+          options: CLAUDE_EFFORT_OPTIONS.opus48,
+          promptInjectedValues: ["ultrathink"],
         }),
         buildBooleanOptionDescriptor({
           id: "fastMode",
@@ -91,14 +127,7 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
         buildSelectOptionDescriptor({
           id: "effort",
           label: "Reasoning",
-          options: [
-            { value: "low", label: "Low" },
-            { value: "medium", label: "Medium" },
-            { value: "high", label: "High" },
-            { value: "xhigh", label: "Extra High", isDefault: true },
-            { value: "max", label: "Max" },
-            { value: "ultrathink", label: "Ultrathink" },
-          ],
+          options: CLAUDE_EFFORT_OPTIONS.opus47,
           promptInjectedValues: ["ultrathink"],
         }),
         buildSelectOptionDescriptor({
@@ -121,13 +150,7 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
         buildSelectOptionDescriptor({
           id: "effort",
           label: "Reasoning",
-          options: [
-            { value: "low", label: "Low" },
-            { value: "medium", label: "Medium" },
-            { value: "high", label: "High", isDefault: true },
-            { value: "max", label: "Max" },
-            { value: "ultrathink", label: "Ultrathink" },
-          ],
+          options: CLAUDE_EFFORT_OPTIONS.opus46,
           promptInjectedValues: ["ultrathink"],
         }),
         buildBooleanOptionDescriptor({
@@ -154,12 +177,7 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
         buildSelectOptionDescriptor({
           id: "effort",
           label: "Reasoning",
-          options: [
-            { value: "low", label: "Low" },
-            { value: "medium", label: "Medium" },
-            { value: "high", label: "High", isDefault: true },
-            { value: "max", label: "Max" },
-          ],
+          options: CLAUDE_EFFORT_OPTIONS.opus45,
         }),
         buildBooleanOptionDescriptor({
           id: "fastMode",
@@ -177,12 +195,7 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
         buildSelectOptionDescriptor({
           id: "effort",
           label: "Reasoning",
-          options: [
-            { value: "low", label: "Low" },
-            { value: "medium", label: "Medium" },
-            { value: "high", label: "High", isDefault: true },
-            { value: "ultrathink", label: "Ultrathink" },
-          ],
+          options: CLAUDE_EFFORT_OPTIONS.sonnet46,
           promptInjectedValues: ["ultrathink"],
         }),
         buildSelectOptionDescriptor({
@@ -244,18 +257,18 @@ function formatClaudeModelUpgradeMessage(input: {
 }
 
 function formatClaudeUpgradeMessage(version: string | null): string | undefined {
-  if (!supportsClaudeOpus48(version)) {
-    return formatClaudeModelUpgradeMessage({
-      version,
-      modelName: "Claude Opus 4.8",
-      minimumVersion: MINIMUM_CLAUDE_OPUS_4_8_VERSION,
-    });
-  }
   if (!supportsClaudeOpus47(version)) {
     return formatClaudeModelUpgradeMessage({
       version,
       modelName: "Claude Opus 4.7",
       minimumVersion: MINIMUM_CLAUDE_OPUS_4_7_VERSION,
+    });
+  }
+  if (!supportsClaudeOpus48(version)) {
+    return formatClaudeModelUpgradeMessage({
+      version,
+      modelName: "Claude Opus 4.8",
+      minimumVersion: MINIMUM_CLAUDE_OPUS_4_8_VERSION,
     });
   }
   return undefined;
@@ -287,13 +300,21 @@ export function resolveClaudeEffort(
  * CLI's `--effort` flag.
  *
  * `"ultrathink"` is filtered out because it is a prompt-prefix mode rather
- * than a CLI-effort value. Returns `undefined` when no flag should be passed.
+ * than a CLI-effort value. `"ultracode"` is a Claude Code setting that pairs
+ * with `xhigh` effort. Returns `undefined` when no flag should be passed.
  */
 export function normalizeClaudeCliEffort(effort: string | null | undefined): string | undefined {
   if (!effort || effort === "ultrathink") {
     return undefined;
   }
+  if (effort === "ultracode") {
+    return "xhigh";
+  }
   return effort;
+}
+
+export function isClaudeUltracodeEffort(effort: string | null | undefined): boolean {
+  return effort === "ultracode";
 }
 
 export function resolveClaudeApiModelId(modelSelection: ModelSelection): string {
