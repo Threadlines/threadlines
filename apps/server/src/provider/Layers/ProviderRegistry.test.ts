@@ -674,6 +674,84 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
         ]);
       });
 
+      it("drops stale cached Claude models when a refreshed curated list is available", () => {
+        const previousProvider = {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          driver: ProviderDriverKind.make("claudeAgent"),
+          status: "ready",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          checkedAt: "2026-05-28T18:00:00.000Z",
+          version: "2.1.154",
+          models: [
+            {
+              slug: "default",
+              name: "Opus 4.8 - Most capable for complex work",
+              isCustom: false,
+              capabilities: createModelCapabilities({
+                optionDescriptors: [
+                  selectDescriptor("effort", "Reasoning", [
+                    { id: "high", label: "High", isDefault: true },
+                  ]),
+                ],
+              }),
+            },
+            {
+              slug: "sonnet",
+              name: "Sonnet 4.6 - Best for everyday tasks",
+              isCustom: false,
+              capabilities: createModelCapabilities({
+                optionDescriptors: [
+                  selectDescriptor("effort", "Reasoning", [
+                    { id: "high", label: "High", isDefault: true },
+                  ]),
+                ],
+              }),
+            },
+          ],
+          slashCommands: [],
+          skills: [],
+        } as const satisfies ServerProvider;
+        const refreshedProvider = {
+          ...previousProvider,
+          checkedAt: "2026-05-28T18:01:00.000Z",
+          models: [
+            {
+              slug: "claude-opus-4-8",
+              name: "Claude Opus 4.8",
+              isCustom: false,
+              capabilities: createModelCapabilities({
+                optionDescriptors: [
+                  selectDescriptor("effort", "Reasoning", [
+                    { id: "high", label: "High", isDefault: true },
+                  ]),
+                ],
+              }),
+            },
+            {
+              slug: "claude-sonnet-4-6",
+              name: "Claude Sonnet 4.6",
+              isCustom: false,
+              capabilities: createModelCapabilities({
+                optionDescriptors: [
+                  selectDescriptor("effort", "Reasoning", [
+                    { id: "high", label: "High", isDefault: true },
+                  ]),
+                ],
+              }),
+            },
+          ],
+        } satisfies ServerProvider;
+
+        assert.deepStrictEqual(
+          mergeProviderSnapshot(previousProvider, refreshedProvider).models.map(
+            (model) => model.slug,
+          ),
+          ["claude-opus-4-8", "claude-sonnet-4-6"],
+        );
+      });
+
       it("persists merged provider snapshots for the providers that were refreshed", () => {
         const previousProviders = [
           {
