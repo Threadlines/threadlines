@@ -19,6 +19,7 @@ import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { parseTurnDiffFilesFromUnifiedDiff } from "../../checkpointing/Diffs.ts";
 import {
   checkpointPreTurnRefForThreadTurn,
+  checkpointPreTurnRefForThreadTurnCount,
   checkpointRefForThreadTurn,
   resolveThreadWorkspaceCwd,
 } from "../../checkpointing/Utils.ts";
@@ -217,16 +218,24 @@ const make = Effect.gen(function* () {
     const fromCheckpointRef = checkpointRefForThreadTurn(input.threadId, fromTurnCount);
     const targetCheckpointRef = checkpointRefForThreadTurn(input.threadId, input.turnCount);
     const preTurnCheckpointRef = checkpointPreTurnRefForThreadTurn(input.threadId, input.turnId);
+    const preTurnCountCheckpointRef = checkpointPreTurnRefForThreadTurnCount(
+      input.threadId,
+      input.turnCount,
+    );
 
     const fromCheckpointExists = yield* checkpointStore.hasCheckpointRef({
       cwd: input.cwd,
       checkpointRef: fromCheckpointRef,
     });
+    const preTurnCountCheckpointExists = yield* checkpointStore.hasCheckpointRef({
+      cwd: input.cwd,
+      checkpointRef: preTurnCountCheckpointRef,
+    });
     const preTurnCheckpointExists = yield* checkpointStore.hasCheckpointRef({
       cwd: input.cwd,
       checkpointRef: preTurnCheckpointRef,
     });
-    if (!fromCheckpointExists && !preTurnCheckpointExists) {
+    if (!fromCheckpointExists && !preTurnCountCheckpointExists && !preTurnCheckpointExists) {
       yield* Effect.logWarning("checkpoint capture missing summary baseline", {
         threadId: input.threadId,
         turnId: input.turnId,
@@ -243,9 +252,11 @@ const make = Effect.gen(function* () {
     // reflects files created or deleted during this turn.
     yield* workspaceEntries.invalidate(input.cwd);
 
-    const summaryFromCheckpointRef = preTurnCheckpointExists
-      ? preTurnCheckpointRef
-      : fromCheckpointRef;
+    const summaryFromCheckpointRef = preTurnCountCheckpointExists
+      ? preTurnCountCheckpointRef
+      : preTurnCheckpointExists
+        ? preTurnCheckpointRef
+        : fromCheckpointRef;
     const files = yield* checkpointStore
       .diffCheckpoints({
         cwd: input.cwd,
@@ -580,21 +591,34 @@ const make = Effect.gen(function* () {
       cwd: checkpointCwd,
       checkpointRef: baselineCheckpointRef,
     });
-    if (baselineExists) {
-      return;
+    if (!baselineExists) {
+      yield* checkpointStore.captureCheckpoint({
+        cwd: checkpointCwd,
+        checkpointRef: baselineCheckpointRef,
+      });
+      yield* receiptBus.publish({
+        type: "checkpoint.baseline.captured",
+        threadId,
+        checkpointTurnCount: currentTurnCount,
+        checkpointRef: baselineCheckpointRef,
+        createdAt: event.occurredAt,
+      });
     }
 
-    yield* checkpointStore.captureCheckpoint({
-      cwd: checkpointCwd,
-      checkpointRef: baselineCheckpointRef,
-    });
-    yield* receiptBus.publish({
-      type: "checkpoint.baseline.captured",
+    const preTurnCountCheckpointRef = checkpointPreTurnRefForThreadTurnCount(
       threadId,
-      checkpointTurnCount: currentTurnCount,
-      checkpointRef: baselineCheckpointRef,
-      createdAt: event.occurredAt,
+      currentTurnCount + 1,
+    );
+    const preTurnCountCheckpointExists = yield* checkpointStore.hasCheckpointRef({
+      cwd: checkpointCwd,
+      checkpointRef: preTurnCountCheckpointRef,
     });
+    if (!preTurnCountCheckpointExists) {
+      yield* checkpointStore.captureCheckpoint({
+        cwd: checkpointCwd,
+        checkpointRef: preTurnCountCheckpointRef,
+      });
+    }
   });
 
   const handleRevertRequested = Effect.fn("handleRevertRequested")(function* (
@@ -697,6 +721,10 @@ const make = Effect.gen(function* () {
       .flatMap((checkpoint) => [
         checkpoint.checkpointRef,
         checkpointPreTurnRefForThreadTurn(event.payload.threadId, checkpoint.turnId),
+        checkpointPreTurnRefForThreadTurnCount(
+          event.payload.threadId,
+          checkpoint.checkpointTurnCount,
+        ),
       ]);
 
     if (staleCheckpointRefs.length > 0) {

@@ -12,7 +12,11 @@ import * as Schema from "effect/Schema";
 
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { CheckpointInvariantError, CheckpointUnavailableError } from "../Errors.ts";
-import { checkpointPreTurnRefForThreadTurn, checkpointRefForThreadTurn } from "../Utils.ts";
+import {
+  checkpointPreTurnRefForThreadTurn,
+  checkpointPreTurnRefForThreadTurnCount,
+  checkpointRefForThreadTurn,
+} from "../Utils.ts";
 import { CheckpointStore } from "../Services/CheckpointStore.ts";
 import {
   CheckpointDiffQuery,
@@ -126,16 +130,29 @@ const make = Effect.gen(function* () {
         input.threadId,
         toCheckpoint.turnId,
       );
+      const preTurnCountCheckpointRef = checkpointPreTurnRefForThreadTurnCount(
+        input.threadId,
+        toCheckpoint.checkpointTurnCount,
+      );
       const canUsePreTurnCheckpoint = input.toTurnCount === input.fromTurnCount + 1;
-      const preTurnCheckpointExists = canUsePreTurnCheckpoint
+      const preTurnCountCheckpointExists = canUsePreTurnCheckpoint
         ? yield* checkpointStore.hasCheckpointRef({
             cwd: workspaceCwd,
-            checkpointRef: preTurnCheckpointRef,
+            checkpointRef: preTurnCountCheckpointRef,
           })
         : false;
-      const effectiveFromCheckpointRef = preTurnCheckpointExists
-        ? preTurnCheckpointRef
-        : fromCheckpointRef;
+      const preTurnCheckpointExists =
+        canUsePreTurnCheckpoint && !preTurnCountCheckpointExists
+          ? yield* checkpointStore.hasCheckpointRef({
+              cwd: workspaceCwd,
+              checkpointRef: preTurnCheckpointRef,
+            })
+          : false;
+      const effectiveFromCheckpointRef = preTurnCountCheckpointExists
+        ? preTurnCountCheckpointRef
+        : preTurnCheckpointExists
+          ? preTurnCheckpointRef
+          : fromCheckpointRef;
 
       const diff = yield* checkpointStore
         .diffCheckpoints({

@@ -24,7 +24,12 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
-import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
+import {
+  checkpointPreTurnRefForThreadTurnCount,
+  checkpointRefForThreadTurn,
+  resolveThreadWorkspaceCwd,
+} from "../../checkpointing/Utils.ts";
+import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
 import { increment, orchestrationEventsProcessedTotal } from "../../observability/Metrics.ts";
 import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import type { ProviderServiceError } from "../../provider/Errors.ts";
@@ -181,6 +186,7 @@ const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerService = yield* ProviderService;
+  const checkpointStore = yield* CheckpointStore;
   const gitWorkflow = yield* GitWorkflowService;
   const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
   const textGeneration = yield* TextGeneration;
@@ -580,6 +586,58 @@ const make = Effect.gen(function* () {
     };
   });
 
+  const capturePreTurnCheckpointForTurnStart = Effect.fn("capturePreTurnCheckpointForTurnStart")(
+    function* (input: { readonly threadId: ThreadId }) {
+      const thread = yield* resolveThread(input.threadId);
+      if (!thread) {
+        return;
+      }
+
+      const project = yield* resolveProject(thread.projectId);
+      const cwd = resolveThreadWorkspaceCwd({
+        thread,
+        projects: project ? [project] : [],
+      });
+      if (!cwd) {
+        return;
+      }
+
+      const isRepository = yield* checkpointStore.isGitRepository(cwd).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("provider command reactor failed to inspect checkpoint workspace", {
+            threadId: input.threadId,
+            cwd,
+            detail: error.message,
+          }).pipe(Effect.as(false)),
+        ),
+      );
+      if (!isRepository) {
+        return;
+      }
+
+      const currentTurnCount = thread.checkpoints.reduce(
+        (maxTurnCount, checkpoint) => Math.max(maxTurnCount, checkpoint.checkpointTurnCount),
+        0,
+      );
+      const baselineCheckpointRef = checkpointRefForThreadTurn(input.threadId, currentTurnCount);
+      const baselineExists = yield* checkpointStore.hasCheckpointRef({
+        cwd,
+        checkpointRef: baselineCheckpointRef,
+      });
+      if (!baselineExists) {
+        yield* checkpointStore.captureCheckpoint({
+          cwd,
+          checkpointRef: baselineCheckpointRef,
+        });
+      }
+
+      yield* checkpointStore.captureCheckpoint({
+        cwd,
+        checkpointRef: checkpointPreTurnRefForThreadTurnCount(input.threadId, currentTurnCount + 1),
+      });
+    },
+  );
+
   const maybeGenerateAndRenameWorktreeBranchForFirstTurn = Effect.fn(
     "maybeGenerateAndRenameWorktreeBranchForFirstTurn",
   )(function* (input: {
@@ -790,6 +848,15 @@ const make = Effect.gen(function* () {
     if (Option.isNone(sendTurnRequest)) {
       return;
     }
+
+    yield* capturePreTurnCheckpointForTurnStart({ threadId: event.payload.threadId }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("provider command reactor failed to capture pre-turn checkpoint", {
+          threadId: event.payload.threadId,
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
 
     yield* providerService
       .sendTurn(sendTurnRequest.value)

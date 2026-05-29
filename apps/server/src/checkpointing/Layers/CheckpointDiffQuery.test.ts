@@ -8,7 +8,11 @@ import {
   ProjectionSnapshotQuery,
   type ProjectionThreadCheckpointContext,
 } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { checkpointPreTurnRefForThreadTurn, checkpointRefForThreadTurn } from "../Utils.ts";
+import {
+  checkpointPreTurnRefForThreadTurn,
+  checkpointPreTurnRefForThreadTurnCount,
+  checkpointRefForThreadTurn,
+} from "../Utils.ts";
 import { CheckpointDiffQueryLive } from "./CheckpointDiffQuery.ts";
 import { CheckpointStore, type CheckpointStoreShape } from "../Services/CheckpointStore.ts";
 import { CheckpointDiffQuery } from "../Services/CheckpointDiffQuery.ts";
@@ -484,6 +488,7 @@ describe("CheckpointDiffQueryLive", () => {
     );
 
     expect(hasCheckpointRefCalls).toEqual([
+      checkpointPreTurnRefForThreadTurnCount(threadId, 1),
       checkpointPreTurnRefForThreadTurn(threadId, TurnId.make("turn-1")),
     ]);
     expect(diffCheckpointsCalls).toEqual([checkpointRefForThreadTurn(threadId, 0)]);
