@@ -279,7 +279,7 @@ function mapCodexPlugins(response: CodexSchema.V2PluginListResponse): ProviderEx
   for (const marketplace of response.marketplaces) {
     for (const plugin of marketplace.plugins) {
       const id = requiredText(plugin.id);
-      if (!id || byId.has(id)) continue;
+      if (!id || byId.has(id) || (plugin.installed !== true && plugin.enabled !== true)) continue;
       byId.set(id, {
         id,
         name: requiredText(plugin.name) ?? id,
@@ -345,24 +345,6 @@ function mapCodexMcpServers(
     .toSorted((left, right) => left.name.localeCompare(right.name));
 }
 
-function mapCodexApps(response: CodexSchema.V2AppsListResponse): ProviderExtensionApp[] {
-  return response.data
-    .flatMap((app) => {
-      const id = requiredText(app.id);
-      if (!id) return [];
-      return [
-        {
-          id,
-          name: requiredText(app.name) ?? id,
-          description: optionalText(app.description ?? null),
-          enabled: app.isEnabled,
-          accessible: app.isAccessible,
-        },
-      ];
-    })
-    .toSorted((left, right) => left.name.localeCompare(right.name));
-}
-
 function codexInventoryTimeoutMessage(label: string): string {
   return `Timed out reading Codex ${label}.`;
 }
@@ -386,6 +368,10 @@ function collectCodexRequest<A, E, R>(
       ),
       Effect.result,
     );
+}
+
+function isThreadNotFoundError(cause: unknown): boolean {
+  return /\bthread not found\b/i.test(toErrorMessage(cause));
 }
 
 const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppServerInventory")(
@@ -435,7 +421,17 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
         yield* client.request("initialize", buildCodexInitializeParams());
         yield* client.notify("initialized", undefined);
 
-        const [plugins, skills, mcpServers, apps] = yield* Effect.all(
+        const mcpStatusParams = {
+          detail: "toolsAndAuthOnly" as const,
+          limit: 100,
+          ...(input.providerThreadId !== undefined ? { threadId: input.providerThreadId } : {}),
+        };
+        const mcpStatusWithoutThreadParams = {
+          detail: "toolsAndAuthOnly" as const,
+          limit: 100,
+        };
+
+        const [plugins, skills, mcpServers] = yield* Effect.all(
           [
             client
               .request("plugin/list", { cwds: [input.cwd] })
@@ -444,21 +440,19 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
               Effect.map((response) => mapCodexSkills(response, input.cwd)),
               collectCodexRequest("skills"),
             ),
-            client
-              .request("mcpServerStatus/list", {
-                detail: "toolsAndAuthOnly",
-                limit: 100,
-                ...(input.providerThreadId !== undefined
-                  ? { threadId: input.providerThreadId }
-                  : {}),
-              })
-              .pipe(Effect.map(mapCodexMcpServers), collectCodexRequest("MCP servers")),
-            client
-              .request("app/list", { limit: 100 })
-              .pipe(Effect.map(mapCodexApps), collectCodexRequest("apps")),
+            client.request("mcpServerStatus/list", mcpStatusParams).pipe(
+              Effect.catch((cause) =>
+                input.providerThreadId !== undefined && isThreadNotFoundError(cause)
+                  ? client.request("mcpServerStatus/list", mcpStatusWithoutThreadParams)
+                  : Effect.fail(cause),
+              ),
+              Effect.map(mapCodexMcpServers),
+              collectCodexRequest("MCP servers"),
+            ),
           ],
-          { concurrency: "unbounded" },
+          { concurrency: 2 },
         );
+        const apps = Result.succeed([] as ProviderExtensionApp[]);
         return { plugins, skills, mcpServers, apps };
       }),
     ).pipe(Effect.result, Effect.timeoutOption(CODEX_APP_SERVER_INVENTORY_TIMEOUT));
@@ -877,6 +871,11 @@ export const readProviderExtensionsInventory = Effect.fn(
     }))
     .filter(
       (entry) => entry.config.driver === CODEX_DRIVER || entry.config.driver === CLAUDE_DRIVER,
+    )
+    .filter(
+      (entry) =>
+        input.request.providerInstanceId === undefined ||
+        String(entry.instanceId) === String(input.request.providerInstanceId),
     );
 
   const [providers, instructionFiles] = yield* Effect.all(

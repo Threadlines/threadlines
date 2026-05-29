@@ -3,21 +3,27 @@ import type {
   ProviderExtensionProviderInventory,
   ProviderExtensionsInventoryResult,
 } from "@t3tools/contracts";
+import { ProviderDriverKind, type ProviderInstanceId } from "@t3tools/contracts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { ensureLocalApi } from "../../localApi";
 import {
-  selectProjectsAcrossEnvironments,
-  selectThreadsAcrossEnvironments,
-  useStore,
-} from "../../store";
+  deriveProviderInstanceEntries,
+  sortProviderInstanceEntries,
+} from "../../providerInstances";
+import { useServerProviders } from "../../rpc/serverState";
+import { selectProjectsAcrossEnvironments, useStore } from "../../store";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
 import { deriveSettingsProjectOptions } from "./settingsProjectOptions";
+
+const COMPACT_LIST_PREVIEW_LIMIT = 8;
+const EXTENSIONS_CODEX_DRIVER = ProviderDriverKind.make("codex");
+const EXTENSIONS_CLAUDE_DRIVER = ProviderDriverKind.make("claudeAgent");
 
 function statusVariant(status: ProviderExtensionProviderInventory["status"]) {
   switch (status) {
@@ -52,6 +58,7 @@ function EmptyList({ label }: { label: string }) {
 
 function CompactList({
   items,
+  totalCount,
 }: {
   items: ReadonlyArray<{
     readonly id: string;
@@ -59,10 +66,12 @@ function CompactList({
     readonly detail?: string | undefined;
     readonly enabled?: boolean | undefined;
   }>;
+  totalCount: number;
 }) {
+  const hiddenCount = Math.max(0, totalCount - items.length);
   return (
     <div className="divide-y divide-border/50 rounded-md border border-border/60">
-      {items.slice(0, 8).map((item) => (
+      {items.map((item) => (
         <div key={item.id} className="flex min-h-8 items-center gap-2 px-2.5 py-1.5">
           <div className="min-w-0 flex-1">
             <div className="truncate text-xs font-medium text-foreground">{item.title}</div>
@@ -77,36 +86,34 @@ function CompactList({
           ) : null}
         </div>
       ))}
-      {items.length > 8 ? (
-        <div className="px-2.5 py-1.5 text-[11px] text-muted-foreground">
-          {items.length - 8} more
-        </div>
+      {hiddenCount > 0 ? (
+        <div className="px-2.5 py-1.5 text-[11px] text-muted-foreground">{hiddenCount} more</div>
       ) : null}
     </div>
   );
 }
 
 function ProviderInventoryRow({ provider }: { provider: ProviderExtensionProviderInventory }) {
-  const pluginItems = provider.plugins.map((plugin) => ({
+  const pluginItems = provider.plugins.slice(0, COMPACT_LIST_PREVIEW_LIMIT).map((plugin) => ({
     id: plugin.id,
     title: plugin.displayName ?? plugin.name,
     detail: plugin.description ?? plugin.scope ?? plugin.source,
     enabled: plugin.enabled,
   }));
-  const skillItems = provider.skills.map((skill) => ({
+  const skillItems = provider.skills.slice(0, COMPACT_LIST_PREVIEW_LIMIT).map((skill) => ({
     id: skill.path,
     title: skill.displayName ?? skill.name,
     detail: skill.shortDescription ?? skill.scope ?? skill.path,
     enabled: skill.enabled,
   }));
-  const mcpItems = provider.mcpServers.map((server) => ({
+  const mcpItems = provider.mcpServers.slice(0, COMPACT_LIST_PREVIEW_LIMIT).map((server) => ({
     id: server.name,
     title: server.name,
     detail:
       [server.transport, server.status, server.detail].filter(Boolean).join(" - ") ||
       `${server.toolCount ?? 0} tools`,
   }));
-  const appItems = provider.apps.map((app) => ({
+  const appItems = provider.apps.slice(0, COMPACT_LIST_PREVIEW_LIMIT).map((app) => ({
     id: app.id,
     title: app.displayName ?? app.name,
     detail: app.description,
@@ -137,7 +144,7 @@ function ProviderInventoryRow({ provider }: { provider: ProviderExtensionProvide
               Plugins
             </div>
             {pluginItems.length > 0 ? (
-              <CompactList items={pluginItems} />
+              <CompactList items={pluginItems} totalCount={provider.plugins.length} />
             ) : (
               <EmptyList label="No plugins reported." />
             )}
@@ -147,7 +154,7 @@ function ProviderInventoryRow({ provider }: { provider: ProviderExtensionProvide
               Skills
             </div>
             {skillItems.length > 0 ? (
-              <CompactList items={skillItems} />
+              <CompactList items={skillItems} totalCount={provider.skills.length} />
             ) : (
               <EmptyList label="No skills reported." />
             )}
@@ -157,7 +164,7 @@ function ProviderInventoryRow({ provider }: { provider: ProviderExtensionProvide
               MCP Servers
             </div>
             {mcpItems.length > 0 ? (
-              <CompactList items={mcpItems} />
+              <CompactList items={mcpItems} totalCount={provider.mcpServers.length} />
             ) : (
               <EmptyList label="No MCP servers reported." />
             )}
@@ -165,7 +172,7 @@ function ProviderInventoryRow({ provider }: { provider: ProviderExtensionProvide
           <div className="min-w-0 space-y-1.5">
             <div className="text-[11px] font-semibold uppercase text-muted-foreground/70">Apps</div>
             {appItems.length > 0 ? (
-              <CompactList items={appItems} />
+              <CompactList items={appItems} totalCount={provider.apps.length} />
             ) : (
               <EmptyList label="No apps reported." />
             )}
@@ -178,9 +185,26 @@ function ProviderInventoryRow({ provider }: { provider: ProviderExtensionProvide
 
 export function ExtensionsSettingsPanel() {
   const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
-  const threads = useStore(useShallow(selectThreadsAcrossEnvironments));
+  const serverProviders = useServerProviders();
   const projectOptions = useMemo(() => deriveSettingsProjectOptions(projects), [projects]);
+  const providerOptions = useMemo(
+    () =>
+      sortProviderInstanceEntries(deriveProviderInstanceEntries(serverProviders))
+        .filter(
+          (provider) =>
+            provider.enabled &&
+            provider.isAvailable &&
+            (provider.driverKind === EXTENSIONS_CODEX_DRIVER ||
+              provider.driverKind === EXTENSIONS_CLAUDE_DRIVER),
+        )
+        .map((provider) => ({
+          value: String(provider.instanceId),
+          label: provider.displayName,
+        })),
+    [serverProviders],
+  );
   const [cwd, setCwd] = useState(() => projectOptions[0]?.value ?? "");
+  const [providerInstanceId, setProviderInstanceId] = useState("");
   const [inventory, setInventory] = useState<ProviderExtensionsInventoryResult | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -192,39 +216,19 @@ export function ExtensionsSettingsPanel() {
     }
   }, [cwd, projectOptions]);
 
-  const providerThreadScope = useMemo(() => {
-    const requestCwd = cwd.trim();
-    if (!requestCwd) return undefined;
-
-    const projectIds = new Set(
-      projects.filter((project) => project.cwd.trim() === requestCwd).map((project) => project.id),
-    );
-    if (projectIds.size === 0) return undefined;
-
-    const thread = threads
-      .filter(
-        (thread) =>
-          projectIds.has(thread.projectId) &&
-          thread.session?.provider === "codex" &&
-          Boolean(thread.session.providerThreadId ?? thread.codexThreadId),
-      )
-      .toSorted((left, right) =>
-        (right.updatedAt ?? right.createdAt).localeCompare(left.updatedAt ?? left.createdAt),
-      )
-      .at(0);
-    const providerThreadId = thread?.session?.providerThreadId ?? thread?.codexThreadId;
-    if (!providerThreadId) return undefined;
-    return {
-      ...(thread?.session?.providerInstanceId !== undefined
-        ? { providerInstanceId: thread.session.providerInstanceId }
-        : {}),
-      providerThreadId,
-    };
-  }, [cwd, projects, threads]);
+  useEffect(() => {
+    if (providerOptions.length === 0) {
+      if (providerInstanceId) setProviderInstanceId("");
+      return;
+    }
+    if (!providerOptions.some((provider) => provider.value === providerInstanceId)) {
+      setProviderInstanceId(providerOptions[0]!.value);
+    }
+  }, [providerInstanceId, providerOptions]);
 
   const refresh = useCallback(async () => {
     const requestCwd = cwd.trim();
-    if (!requestCwd) {
+    if (!requestCwd || !providerInstanceId) {
       setInventory(null);
       setError(null);
       setIsLoading(false);
@@ -238,12 +242,7 @@ export function ExtensionsSettingsPanel() {
     try {
       const result = await ensureLocalApi().server.getProviderExtensions({
         cwd: requestCwd,
-        ...(providerThreadScope?.providerInstanceId !== undefined
-          ? { providerInstanceId: providerThreadScope.providerInstanceId }
-          : {}),
-        ...(providerThreadScope !== undefined
-          ? { providerThreadId: providerThreadScope.providerThreadId }
-          : {}),
+        providerInstanceId: providerInstanceId as ProviderInstanceId,
       });
       if (refreshRequestRef.current === requestId) {
         setInventory(result);
@@ -259,7 +258,7 @@ export function ExtensionsSettingsPanel() {
         setIsLoading(false);
       }
     }
-  }, [cwd, providerThreadScope]);
+  }, [cwd, providerInstanceId]);
 
   useEffect(() => {
     void refresh();
@@ -326,6 +325,34 @@ export function ExtensionsSettingsPanel() {
             ) : null
           }
         />
+        <SettingsRow
+          title="Provider"
+          description="Inventory is loaded for one supported provider instance."
+          control={
+            providerOptions.length > 0 ? (
+              <Select
+                value={providerInstanceId}
+                onValueChange={(value) => {
+                  if (value) setProviderInstanceId(value);
+                }}
+              >
+                <SelectTrigger className="w-full sm:w-56" aria-label="Provider">
+                  <SelectValue>
+                    {providerOptions.find((provider) => provider.value === providerInstanceId)
+                      ?.label ?? "Provider"}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  {providerOptions.map((provider) => (
+                    <SelectItem key={provider.value} hideIndicator value={provider.value}>
+                      {provider.label}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            ) : null
+          }
+        />
       </SettingsSection>
 
       <SettingsSection title="Providers" icon={<BotIcon className="size-3.5" />}>
@@ -344,10 +371,10 @@ export function ExtensionsSettingsPanel() {
             }
             description={
               !cwd
-                ? "Choose a project to inspect Codex and Claude extension surfaces."
+                ? "Choose a project to inspect extension surfaces."
                 : isLoading
                   ? "Checking Codex and Claude extension surfaces."
-                  : "Codex and Claude provider instances will appear here."
+                  : "Enable a Codex or Claude provider instance to inspect extensions."
             }
           />
         )}

@@ -132,4 +132,35 @@ describe("provider extensions inventory", () => {
       assert.equal(codex?.message, "Provider is disabled.");
     }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
   });
+
+  it.effect("filters inventory to the requested provider instance", () => {
+    const spawner = ChildProcessSpawner.make(() =>
+      Effect.succeed(makeProcessResult("", "unexpected spawn", 1)),
+    );
+    const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner);
+
+    return Effect.gen(function* () {
+      const result = yield* readProviderExtensionsInventory({
+        request: {
+          cwd: process.cwd(),
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        },
+        settings: makeSettings({
+          providers: {
+            codex: { enabled: false },
+            claudeAgent: { enabled: false },
+            cursor: { enabled: false },
+            opencode: { enabled: false },
+          },
+        }),
+        providers: [],
+      });
+
+      assert.deepEqual(
+        result.providers.map((provider) => provider.instanceId),
+        [ProviderInstanceId.make("claudeAgent")],
+      );
+      assert.equal(result.providers[0]?.status, "disabled");
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
 });
