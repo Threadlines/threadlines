@@ -59,6 +59,7 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
   const ultrathinkActive =
     (primarySelectDescriptor?.promptInjectedValues?.length ?? 0) > 0 &&
     isClaudeUltrathinkPrompt(prompt);
+  const ultracodeActive = promptEffort === "ultracode";
 
   return {
     provider,
@@ -70,7 +71,13 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
           composerSurfaceClassName: "shadow-[0_0_0_1px_rgba(255,255,255,0.04)_inset]",
           modelPickerIconClassName: "ultrathink-chroma",
         }
-      : {}),
+      : ultracodeActive
+        ? {
+            composerFrameClassName: "ultracode-frame",
+            composerSurfaceClassName: "shadow-[0_0_0_1px_rgba(168,85,247,0.18)_inset]",
+            modelPickerIconClassName: "ultracode-chroma",
+          }
+        : {}),
   };
 }
 

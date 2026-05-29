@@ -528,6 +528,25 @@ label:has(> select#reasoning-effort) select {
   }
 }
 
+@keyframes ultracode-flow {
+  0% {
+    background-position: 0% 50%;
+  }
+  100% {
+    background-position: 200% 50%;
+  }
+}
+
+@keyframes ultracode-chroma-pulse {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 0 rgba(168, 85, 247, 0)) saturate(1.08);
+  }
+  50% {
+    filter: drop-shadow(0 0 0.45rem rgba(168, 85, 247, 0.6)) saturate(1.35);
+  }
+}
+
 .ultrathink-frame {
   --ultrathink-spectrum: linear-gradient(
     120deg,
@@ -546,6 +565,30 @@ label:has(> select#reasoning-effort) select {
 
 .ultrathink-chroma {
   animation: ultrathink-chroma-shift 10s linear infinite;
+}
+
+.ultracode-frame {
+  --ultracode-spectrum: linear-gradient(
+    120deg,
+    #6d28d9 0%,
+    #a855f7 18%,
+    #d946ef 34%,
+    #7c3aed 50%,
+    #4f46e5 66%,
+    #c084fc 82%,
+    #6d28d9 100%
+  );
+  background-image: var(--ultracode-spectrum);
+  background-size: 220% 220%;
+  animation: ultracode-flow 8s linear infinite;
+  box-shadow:
+    0 0 0 1px rgba(168, 85, 247, 0.08),
+    0 0 1rem rgba(168, 85, 247, 0.16);
+}
+
+.ultracode-chroma {
+  color: #c084fc;
+  animation: ultracode-chroma-pulse 3.6s ease-in-out infinite;
 }
 
 .ultrathink-pill {
