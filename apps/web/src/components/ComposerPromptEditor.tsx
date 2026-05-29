@@ -46,7 +46,6 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
-  useState,
 } from "react";
 
 import {
@@ -77,8 +76,6 @@ import { formatProviderSkillDisplayName } from "~/providerSkillPresentation";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 const COMPOSER_EDITOR_HMR_KEY = `composer-editor-${Math.random().toString(36).slice(2)}`;
-const NATIVE_SPELLCHECK_REFRESH_RETRY_DELAYS_MS = [0, 80, 240] as const;
-const NATIVE_SPELLCHECK_INTERACTION_GRACE_MS = 5_000;
 const SURROUND_SYMBOLS: [string, string][] = [
   ["(", ")"],
   ["[", "]"],
@@ -1387,227 +1384,6 @@ function ComposerSurroundSelectionPlugin(props: {
   return null;
 }
 
-function captureNativeSpellcheckSelection(rootElement: HTMLElement): Range[] {
-  const ownerDocument = rootElement.ownerDocument;
-  const selection = ownerDocument.getSelection();
-  if (ownerDocument.activeElement !== rootElement || selection === null) {
-    return [];
-  }
-
-  return Array.from({ length: selection.rangeCount }, (_, index) =>
-    selection.getRangeAt(index).cloneRange(),
-  ).filter(
-    (range) =>
-      rootElement.contains(range.startContainer) && rootElement.contains(range.endContainer),
-  );
-}
-
-function disableNativeSpellcheck(rootElement: HTMLElement): void {
-  if (!rootElement.isConnected || rootElement.spellcheck !== true) {
-    return;
-  }
-  rootElement.spellcheck = false;
-  rootElement.setAttribute("spellcheck", "false");
-  void rootElement.offsetHeight;
-}
-
-function restoreNativeSpellcheckSelection(
-  rootElement: HTMLElement,
-  selectionRanges: Range[],
-): void {
-  if (selectionRanges.length === 0) {
-    return;
-  }
-
-  const ownerDocument = rootElement.ownerDocument;
-  const selection = ownerDocument.getSelection();
-  if (selection === null || ownerDocument.activeElement !== rootElement) {
-    return;
-  }
-
-  const selectionStillInsideComposer =
-    selection.rangeCount > 0 &&
-    Array.from({ length: selection.rangeCount }, (_, index) => selection.getRangeAt(index)).every(
-      (range) =>
-        rootElement.contains(range.startContainer) && rootElement.contains(range.endContainer),
-    );
-  if (selectionStillInsideComposer) {
-    return;
-  }
-
-  selection.removeAllRanges();
-  for (const range of selectionRanges) {
-    selection.addRange(range);
-  }
-}
-
-function focusNativeSpellcheckRoot(rootElement: HTMLElement): void {
-  if (!rootElement.isConnected || rootElement.ownerDocument.activeElement === rootElement) {
-    return;
-  }
-
-  rootElement.focus({ preventScroll: true });
-}
-
-function enableNativeSpellcheck(rootElement: HTMLElement, selectionRanges: Range[]): void {
-  if (!rootElement.isConnected || rootElement.spellcheck === true) {
-    return;
-  }
-
-  rootElement.spellcheck = true;
-  rootElement.setAttribute("spellcheck", "true");
-  restoreNativeSpellcheckSelection(rootElement, selectionRanges);
-}
-
-interface NativeSpellcheckHostRefreshOptions {
-  restoreFocus: boolean;
-}
-
-function ComposerNativeSpellcheckRefreshPlugin({
-  onDesktopSpellcheckReplacementRefresh,
-}: {
-  onDesktopSpellcheckReplacementRefresh: (options: NativeSpellcheckHostRefreshOptions) => void;
-}) {
-  const [editor] = useLexicalComposerContext();
-
-  useEffect(() => {
-    let pendingFrames: number[] = [];
-    let pendingTimeouts: number[] = [];
-    let refreshGeneration = 0;
-    let lastComposerSpellcheckInteractionAt = 0;
-
-    const clearPendingRefresh = () => {
-      for (const frame of pendingFrames) {
-        window.cancelAnimationFrame(frame);
-      }
-      for (const timeout of pendingTimeouts) {
-        window.clearTimeout(timeout);
-      }
-      pendingFrames = [];
-      pendingTimeouts = [];
-    };
-
-    const requestRefreshFrame = (
-      rootElement: HTMLElement,
-      generation: number,
-      options?: { restoreFocus?: boolean },
-    ) => {
-      const frame = window.requestAnimationFrame(() => {
-        pendingFrames = pendingFrames.filter((pendingFrame) => pendingFrame !== frame);
-        if (generation !== refreshGeneration) {
-          return;
-        }
-
-        if (options?.restoreFocus === true) {
-          focusNativeSpellcheckRoot(rootElement);
-        }
-        const selectionRanges = captureNativeSpellcheckSelection(rootElement);
-        disableNativeSpellcheck(rootElement);
-        const enableFrame = window.requestAnimationFrame(() => {
-          pendingFrames = pendingFrames.filter((pendingFrame) => pendingFrame !== enableFrame);
-          if (generation !== refreshGeneration) {
-            return;
-          }
-          if (options?.restoreFocus === true) {
-            focusNativeSpellcheckRoot(rootElement);
-          }
-          enableNativeSpellcheck(rootElement, selectionRanges);
-        });
-        pendingFrames.push(enableFrame);
-      });
-      pendingFrames.push(frame);
-    };
-
-    const scheduleRefresh = (rootElement: HTMLElement, options?: { restoreFocus?: boolean }) => {
-      clearPendingRefresh();
-      refreshGeneration += 1;
-      const generation = refreshGeneration;
-
-      for (const delayMs of NATIVE_SPELLCHECK_REFRESH_RETRY_DELAYS_MS) {
-        if (delayMs === 0) {
-          requestRefreshFrame(rootElement, generation, options);
-          continue;
-        }
-
-        const timeout = window.setTimeout(() => {
-          pendingTimeouts = pendingTimeouts.filter((pendingTimeout) => pendingTimeout !== timeout);
-          requestRefreshFrame(rootElement, generation, options);
-        }, delayMs);
-        pendingTimeouts.push(timeout);
-      }
-    };
-
-    const onNativeReplacement = (event: Event) => {
-      const inputEvent = event as InputEvent;
-      if (inputEvent.inputType !== "insertReplacementText") {
-        return;
-      }
-      const rootElement = event.currentTarget;
-      if (rootElement instanceof HTMLElement) {
-        scheduleRefresh(rootElement);
-      }
-    };
-
-    const markComposerSpellcheckInteraction = () => {
-      lastComposerSpellcheckInteractionAt = performance.now();
-    };
-
-    const handleDesktopSpellcheckReplacement = () => {
-      if (!activeRootElement) {
-        return;
-      }
-
-      const hasRecentComposerInteraction =
-        performance.now() - lastComposerSpellcheckInteractionAt <=
-        NATIVE_SPELLCHECK_INTERACTION_GRACE_MS;
-      if (
-        !hasRecentComposerInteraction &&
-        activeRootElement.ownerDocument.activeElement !== activeRootElement
-      ) {
-        return;
-      }
-
-      const refreshOptions = { restoreFocus: hasRecentComposerInteraction };
-      onDesktopSpellcheckReplacementRefresh(refreshOptions);
-      scheduleRefresh(activeRootElement, refreshOptions);
-    };
-
-    let activeRootElement: HTMLElement | null = null;
-    const unregisterRootListener = editor.registerRootListener((rootElement, prevRootElement) => {
-      prevRootElement?.removeEventListener("beforeinput", onNativeReplacement);
-      prevRootElement?.removeEventListener("input", onNativeReplacement);
-      prevRootElement?.removeEventListener("contextmenu", markComposerSpellcheckInteraction);
-      prevRootElement?.removeEventListener("focusin", markComposerSpellcheckInteraction);
-      prevRootElement?.removeEventListener("mousedown", markComposerSpellcheckInteraction);
-      prevRootElement?.removeEventListener("pointerdown", markComposerSpellcheckInteraction);
-      rootElement?.addEventListener("beforeinput", onNativeReplacement);
-      rootElement?.addEventListener("input", onNativeReplacement);
-      rootElement?.addEventListener("contextmenu", markComposerSpellcheckInteraction);
-      rootElement?.addEventListener("focusin", markComposerSpellcheckInteraction);
-      rootElement?.addEventListener("mousedown", markComposerSpellcheckInteraction);
-      rootElement?.addEventListener("pointerdown", markComposerSpellcheckInteraction);
-      activeRootElement = rootElement;
-    });
-    const unregisterSpellcheckReplacementListener =
-      window.desktopBridge?.onSpellcheckReplacement?.(handleDesktopSpellcheckReplacement) ??
-      (() => {});
-
-    return () => {
-      clearPendingRefresh();
-      activeRootElement?.removeEventListener("beforeinput", onNativeReplacement);
-      activeRootElement?.removeEventListener("input", onNativeReplacement);
-      activeRootElement?.removeEventListener("contextmenu", markComposerSpellcheckInteraction);
-      activeRootElement?.removeEventListener("focusin", markComposerSpellcheckInteraction);
-      activeRootElement?.removeEventListener("mousedown", markComposerSpellcheckInteraction);
-      activeRootElement?.removeEventListener("pointerdown", markComposerSpellcheckInteraction);
-      unregisterSpellcheckReplacementListener();
-      unregisterRootListener();
-    };
-  }, [editor, onDesktopSpellcheckReplacementRefresh]);
-
-  return null;
-}
-
 function ComposerPromptEditorInner({
   value,
   cursor,
@@ -1637,10 +1413,6 @@ function ComposerPromptEditorInner({
     terminalContextIds: terminalContexts.map((context) => context.id),
   });
   const isApplyingControlledUpdateRef = useRef(false);
-  const pendingNativeSpellcheckHostRefreshRef = useRef<NativeSpellcheckHostRefreshOptions | null>(
-    null,
-  );
-  const [nativeSpellcheckHostVersion, setNativeSpellcheckHostVersion] = useState(0);
   const terminalContextActions = useMemo(
     () => ({ onRemoveTerminalContext }),
     [onRemoveTerminalContext],
@@ -1702,41 +1474,6 @@ function ComposerPromptEditorInner({
       isApplyingControlledUpdateRef.current = false;
     });
   }, [cursor, editor, skillsSignature, terminalContexts, terminalContextsSignature, value]);
-
-  useLayoutEffect(() => {
-    const pendingRefresh = pendingNativeSpellcheckHostRefreshRef.current;
-    if (!pendingRefresh) {
-      return;
-    }
-    pendingNativeSpellcheckHostRefreshRef.current = null;
-
-    const rootElement = editor.getRootElement();
-    if (!rootElement) {
-      return;
-    }
-
-    if (pendingRefresh.restoreFocus) {
-      focusNativeSpellcheckRoot(rootElement);
-    }
-    const selectionRanges = captureNativeSpellcheckSelection(rootElement);
-    disableNativeSpellcheck(rootElement);
-
-    const enableFrame = window.requestAnimationFrame(() => {
-      if (pendingRefresh.restoreFocus) {
-        focusNativeSpellcheckRoot(rootElement);
-      }
-      enableNativeSpellcheck(rootElement, selectionRanges);
-    });
-
-    return () => {
-      window.cancelAnimationFrame(enableFrame);
-    };
-  }, [editor, nativeSpellcheckHostVersion]);
-
-  const refreshNativeSpellcheckHost = useCallback((options: NativeSpellcheckHostRefreshOptions) => {
-    pendingNativeSpellcheckHostRefreshRef.current = options;
-    setNativeSpellcheckHostVersion((version) => version + 1);
-  }, []);
 
   const focusAt = useCallback(
     (nextCursor: number) => {
@@ -1873,7 +1610,6 @@ function ComposerPromptEditorInner({
         <PlainTextPlugin
           contentEditable={
             <ContentEditable
-              key={`native-spellcheck-host-${nativeSpellcheckHostVersion}`}
               className={cn(
                 "block max-h-50 min-h-17.5 w-full overflow-y-auto whitespace-pre-wrap wrap-break-word bg-transparent text-[16px] leading-relaxed text-foreground focus:outline-none sm:text-[14px]",
                 className,
@@ -1881,6 +1617,13 @@ function ComposerPromptEditorInner({
               data-testid="composer-editor"
               aria-placeholder={placeholder}
               placeholder={<span />}
+              // Native browser spellcheck only. We deliberately do NOT try to
+              // force a re-check after programmatic edits (e.g. accepting a
+              // suggestion): Chromium re-checks a contenteditable only on real
+              // typing, so toggling `spellcheck`, remounting the host, or
+              // refocusing do not reliably restore the other words' underlines
+              // and just add churn. They reappear on the next keystroke. See
+              // chipx86.blog 2025-06-26 and Mozilla bug 674212.
               spellCheck={true}
               onPaste={onPaste}
             />
@@ -1897,9 +1640,6 @@ function ComposerPromptEditorInner({
         <OnChangePlugin onChange={handleEditorChange} />
         <ComposerCommandKeyPlugin {...(onCommandKeyDown ? { onCommandKeyDown } : {})} />
         <ComposerSurroundSelectionPlugin terminalContexts={terminalContexts} skills={skills} />
-        <ComposerNativeSpellcheckRefreshPlugin
-          onDesktopSpellcheckReplacementRefresh={refreshNativeSpellcheckHost}
-        />
         <ComposerInlineTokenArrowPlugin />
         <ComposerInlineTokenSelectionNormalizePlugin />
         <ComposerInlineTokenBackspacePlugin />

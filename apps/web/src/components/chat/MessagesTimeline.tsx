@@ -741,10 +741,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
           )}
         </div>
       )}
-      <div
-        className={cn("space-y-0.5", isWorking ? "min-h-[3.25rem]" : null)}
-        data-live-activity-strip={isWorking ? "true" : undefined}
-      >
+      <div className="space-y-0.5" data-live-activity-strip={isWorking ? "true" : undefined}>
         {visibleEntries.map((workEntry) => (
           <SimpleWorkEntryRow
             key={`work-row:${workEntry.id}`}

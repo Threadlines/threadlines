@@ -20,7 +20,6 @@ import {
   OrchestrationSessionStatus,
   DEFAULT_SERVER_SETTINGS,
   ServerConfig as ServerConfigSchema,
-  type DesktopBridge,
 } from "@t3tools/contracts";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime";
 import { createModelCapabilities, createModelSelection } from "@t3tools/shared/model";
@@ -3800,19 +3799,20 @@ describe("ChatView timeline estimator parity (full app)", () => {
         expect(
           selectionRange ? composerEditor.contains(selectionRange.startContainer) : false,
         ).toBe(true);
-        await vi.waitFor(
-          () => {
-            const spellcheckFalseCalls = setAttributeSpy.mock.calls.filter(
-              ([name, value]) => name === "spellcheck" && value === "false",
-            );
-            const spellcheckTrueCalls = setAttributeSpy.mock.calls.filter(
-              ([name, value]) => name === "spellcheck" && value === "true",
-            );
-            expect(spellcheckFalseCalls.length).toBeGreaterThanOrEqual(2);
-            expect(spellcheckTrueCalls.length).toBeGreaterThanOrEqual(2);
-          },
-          { timeout: 1_000, interval: 16 },
+        // We must NOT disable spellcheck (which clears every squiggle in the
+        // field) and must NOT remount the host element. Chromium re-checks the
+        // whole field natively after the replacement, exactly as it does after
+        // a keystroke, so any interference is what made the other underlines
+        // vanish until the next character was typed.
+        const spellcheckDisableCalls = setAttributeSpy.mock.calls.filter(
+          ([name, value]) => name === "spellcheck" && value === "false",
         );
+        expect(spellcheckDisableCalls).toEqual([]);
+        const refreshedComposerEditor = document.querySelector<HTMLElement>(
+          '[data-testid="composer-editor"]',
+        );
+        expect(refreshedComposerEditor).toBe(composerEditor);
+        expect(composerEditor.isConnected).toBe(true);
       } finally {
         blurSpy.mockRestore();
         focusSpy.mockRestore();
@@ -3820,125 +3820,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
       }
     } finally {
       await mounted.cleanup();
-    }
-  });
-
-  it("refreshes native spellcheck from replacement beforeinput", async () => {
-    useComposerDraftStore.getState().setPrompt(THREAD_REF, "speeling and teh");
-
-    const mounted = await mountChatView({
-      viewport: DEFAULT_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-spellcheck-beforeinput" as MessageId,
-        targetText: "spellcheck beforeinput",
-      }),
-    });
-
-    try {
-      await waitForComposerText("speeling and teh");
-      const composerEditor = await waitForComposerEditor();
-      composerEditor.focus();
-      expect(document.activeElement).toBe(composerEditor);
-
-      const setAttributeSpy = vi.spyOn(composerEditor, "setAttribute");
-      try {
-        composerEditor.dispatchEvent(
-          new InputEvent("beforeinput", {
-            data: "spelling",
-            inputType: "insertReplacementText",
-            bubbles: true,
-            cancelable: true,
-          }),
-        );
-
-        await vi.waitFor(
-          () => {
-            expect(setAttributeSpy).toHaveBeenCalledWith("spellcheck", "false");
-            expect(setAttributeSpy).toHaveBeenCalledWith("spellcheck", "true");
-            expect(composerEditor.spellcheck).toBe(true);
-            expect(composerEditor.getAttribute("spellcheck")).toBe("true");
-          },
-          { timeout: 1_000, interval: 16 },
-        );
-      } finally {
-        setAttributeSpy.mockRestore();
-      }
-    } finally {
-      await mounted.cleanup();
-    }
-  });
-
-  it("refreshes native spellcheck from the desktop replacement bridge", async () => {
-    useComposerDraftStore.getState().setPrompt(THREAD_REF, "speeling and teh");
-
-    const spellcheckReplacementListenerRef: { current: (() => void) | null } = { current: null };
-    const unsubscribeSpellcheckReplacement = vi.fn();
-    const emitDesktopSpellcheckReplacement = () => {
-      const listener = spellcheckReplacementListenerRef.current;
-      if (listener === null) {
-        throw new Error("Expected desktop spellcheck replacement listener to be registered.");
-      }
-      listener();
-    };
-    window.desktopBridge = {
-      onSpellcheckReplacement: vi.fn((listener: () => void) => {
-        spellcheckReplacementListenerRef.current = listener;
-        return unsubscribeSpellcheckReplacement;
-      }),
-    } as Partial<DesktopBridge> as DesktopBridge;
-
-    const mounted = await mountChatView({
-      viewport: DEFAULT_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-spellcheck-desktop-bridge" as MessageId,
-        targetText: "spellcheck desktop bridge",
-      }),
-    });
-    const outsideButton = document.createElement("button");
-    outsideButton.type = "button";
-    document.body.append(outsideButton);
-
-    try {
-      await waitForComposerText("speeling and teh");
-      expect(spellcheckReplacementListenerRef.current).toBeTypeOf("function");
-      const composerEditor = await waitForComposerEditor();
-      composerEditor.focus();
-      composerEditor.dispatchEvent(
-        new MouseEvent("mousedown", {
-          bubbles: true,
-          cancelable: true,
-          button: 2,
-        }),
-      );
-      outsideButton.focus();
-      expect(document.activeElement).toBe(outsideButton);
-
-      const focusSpy = vi.spyOn(HTMLElement.prototype, "focus");
-      try {
-        emitDesktopSpellcheckReplacement();
-
-        await vi.waitFor(
-          () => {
-            expect(focusSpy).toHaveBeenCalledWith({ preventScroll: true });
-            const refreshedComposerEditor = document.querySelector<HTMLElement>(
-              '[data-testid="composer-editor"]',
-            );
-            expect(refreshedComposerEditor).not.toBeNull();
-            expect(refreshedComposerEditor).not.toBe(composerEditor);
-            expect(composerEditor.isConnected).toBe(false);
-            expect(document.activeElement).toBe(refreshedComposerEditor);
-            expect(refreshedComposerEditor?.spellcheck).toBe(true);
-            expect(refreshedComposerEditor?.getAttribute("spellcheck")).toBe("true");
-          },
-          { timeout: 1_000, interval: 16 },
-        );
-      } finally {
-        focusSpy.mockRestore();
-      }
-    } finally {
-      outsideButton.remove();
-      await mounted.cleanup();
-      Reflect.deleteProperty(window, "desktopBridge");
     }
   });
 

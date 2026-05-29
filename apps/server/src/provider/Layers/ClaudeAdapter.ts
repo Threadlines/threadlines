@@ -125,6 +125,7 @@ interface ClaudeTurnState {
   readonly assistantTextBlockOrder: Array<AssistantTextBlockState>;
   readonly capturedProposedPlanKeys: Set<string>;
   nextSyntheticAssistantBlockIndex: number;
+  thinkingTokensEstimate?: number;
 }
 
 interface AssistantTextBlockState {
@@ -384,6 +385,46 @@ function normalizeClaudeTokenUsage(
     ...(typeof usage.duration_ms === "number" && Number.isFinite(usage.duration_ms)
       ? { durationMs: usage.duration_ms }
       : {}),
+  };
+}
+
+function normalizeClaudeThinkingTokens(value: unknown): number | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  const estimatedTokens = record.estimated_tokens;
+  if (typeof estimatedTokens !== "number" || !Number.isFinite(estimatedTokens)) {
+    return undefined;
+  }
+
+  return Math.max(0, Math.round(estimatedTokens));
+}
+
+function applyClaudeThinkingTokenUsage(
+  usage: ThreadTokenUsageSnapshot | undefined,
+  turnState: ClaudeTurnState | undefined,
+): ThreadTokenUsageSnapshot | undefined {
+  if (!usage || turnState?.thinkingTokensEstimate === undefined) {
+    return usage;
+  }
+
+  const reasoningOutputTokens = Math.max(
+    usage.reasoningOutputTokens ?? 0,
+    turnState.thinkingTokensEstimate,
+  );
+  if (reasoningOutputTokens <= 0) {
+    return usage;
+  }
+
+  return {
+    ...usage,
+    reasoningOutputTokens,
+    lastReasoningOutputTokens: Math.max(
+      usage.lastReasoningOutputTokens ?? 0,
+      reasoningOutputTokens,
+    ),
   };
 }
 
@@ -1426,6 +1467,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     errorMessage?: string,
     result?: SDKResultMessage,
   ) {
+    const turnState = context.turnState;
     const resultContextWindow = maxClaudeContextWindowFromModelUsage(result?.modelUsage);
     const providerErrorMessage =
       status === "failed" && errorMessage
@@ -1448,23 +1490,24 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       accumulatedSnapshot?.totalProcessedTokens ?? accumulatedSnapshot?.usedTokens;
     const lastGoodUsage = context.lastKnownTokenUsage;
     const maxTokens = resultContextWindow ?? context.lastKnownContextWindow;
-    const usageSnapshot: ThreadTokenUsageSnapshot | undefined = lastGoodUsage
-      ? {
-          ...lastGoodUsage,
-          ...(typeof maxTokens === "number" && Number.isFinite(maxTokens) && maxTokens > 0
-            ? { maxTokens }
-            : {}),
-          ...(typeof accumulatedTotalProcessedTokens === "number" &&
-          Number.isFinite(accumulatedTotalProcessedTokens) &&
-          accumulatedTotalProcessedTokens > lastGoodUsage.usedTokens
-            ? {
-                totalProcessedTokens: accumulatedTotalProcessedTokens,
-              }
-            : {}),
-        }
-      : accumulatedSnapshot;
-
-    const turnState = context.turnState;
+    const usageSnapshot = applyClaudeThinkingTokenUsage(
+      lastGoodUsage
+        ? {
+            ...lastGoodUsage,
+            ...(typeof maxTokens === "number" && Number.isFinite(maxTokens) && maxTokens > 0
+              ? { maxTokens }
+              : {}),
+            ...(typeof accumulatedTotalProcessedTokens === "number" &&
+            Number.isFinite(accumulatedTotalProcessedTokens) &&
+            accumulatedTotalProcessedTokens > lastGoodUsage.usedTokens
+              ? {
+                  totalProcessedTokens: accumulatedTotalProcessedTokens,
+                }
+              : {}),
+          }
+        : accumulatedSnapshot,
+      turnState,
+    );
     if (!turnState) {
       if (usageSnapshot) {
         const usageStamp = yield* makeEventStamp();
@@ -2069,6 +2112,17 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     message: SDKMessage,
   ) {
     if (message.type !== "system") {
+      return;
+    }
+
+    if (sdkMessageSubtype(message) === "thinking_tokens") {
+      const thinkingTokensEstimate = normalizeClaudeThinkingTokens(message);
+      if (thinkingTokensEstimate !== undefined && context.turnState) {
+        context.turnState.thinkingTokensEstimate = Math.max(
+          context.turnState.thinkingTokensEstimate ?? 0,
+          thinkingTokensEstimate,
+        );
+      }
       return;
     }
 

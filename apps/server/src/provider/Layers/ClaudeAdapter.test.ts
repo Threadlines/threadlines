@@ -1729,6 +1729,86 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("consumes Claude thinking token telemetry without surfacing runtime warnings", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 7).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "hello",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "thinking_tokens",
+        estimated_tokens: 50,
+        estimated_tokens_delta: 50,
+        session_id: "sdk-session-thinking-tokens",
+        uuid: "thinking-tokens-1",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        duration_ms: 1234,
+        duration_api_ms: 1200,
+        num_turns: 1,
+        result: "done",
+        stop_reason: "end_turn",
+        session_id: "sdk-session-thinking-tokens",
+        usage: {
+          input_tokens: 10,
+          output_tokens: 70,
+        },
+        modelUsage: {
+          "claude-opus-4-6": {
+            contextWindow: 1000000,
+            maxOutputTokens: 64000,
+          },
+        },
+      } as unknown as SDKMessage);
+      harness.query.finish();
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      assert.deepEqual(
+        runtimeEvents.filter((event) => event.type === "runtime.warning"),
+        [],
+      );
+      const usageEvent = runtimeEvents.find((event) => event.type === "thread.token-usage.updated");
+      assert.equal(usageEvent?.type, "thread.token-usage.updated");
+      if (usageEvent?.type === "thread.token-usage.updated") {
+        assert.deepEqual(usageEvent.payload, {
+          usage: {
+            usedTokens: 80,
+            lastUsedTokens: 80,
+            inputTokens: 10,
+            outputTokens: 70,
+            reasoningOutputTokens: 50,
+            lastReasoningOutputTokens: 50,
+            maxTokens: 1000000,
+          },
+        });
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("clamps oversized Claude usage to the reported context window", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

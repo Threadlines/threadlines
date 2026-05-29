@@ -298,7 +298,7 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain('aria-label="Show 3 previous activities"');
     expect(markup).toContain("Show previous");
     expect(markup).toContain('data-live-activity-strip="true"');
-    expect(markup).toContain("min-h-[3.25rem]");
+    expect(markup).not.toContain("min-h-[3.25rem]");
     expect(markup).not.toContain("git status --short");
     expect(markup).not.toContain("rg -n");
     expect(markup).not.toContain("apps/web/src/session-logic.ts");
