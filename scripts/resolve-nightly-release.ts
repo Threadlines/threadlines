@@ -2,14 +2,17 @@
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Array from "effect/Array";
 import * as Console from "effect/Console";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
-import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
+import * as String from "effect/String";
 import { Command, Flag } from "effect/unstable/cli";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 interface NightlyReleaseMetadata {
   readonly baseVersion: string;
@@ -25,16 +28,13 @@ const RunNumberSchema = Schema.FiniteFromString.check(
   Schema.isGreaterThanOrEqualTo(1),
 );
 const ShaSchema = Schema.String.check(Schema.isPattern(/^[0-9a-f]{7,40}$/i));
-const DesktopPackageJsonSchema = Schema.Struct({
-  version: Schema.NonEmptyString,
-});
+const TargetVersionSchema = Schema.String.check(Schema.isPattern(/^\d+\.\d+\.\d+$/));
 
-const RepoRoot = Effect.service(Path.Path).pipe(
-  Effect.flatMap((path) => path.fromFileUrl(new URL("..", import.meta.url))),
-);
-const decodeDesktopPackageJson = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(DesktopPackageJsonSchema),
-);
+interface StableVersion {
+  readonly major: number;
+  readonly minor: number;
+  readonly patch: number;
+}
 
 export const resolveNightlyBaseVersion = (version: string) => version.replace(/[-+].*$/, "");
 
@@ -48,6 +48,38 @@ export const resolveNightlyTargetVersion = (version: string) => {
   const [, major, minor, patch] = match;
   return `${major}.${minor}.${Number(patch) + 1}`;
 };
+
+function parseStableTag(tag: string): StableVersion | undefined {
+  const match = /^v(\d+)\.(\d+)\.(\d+)$/.exec(tag);
+  if (!match) return undefined;
+
+  const [, major, minor, patch] = match;
+  if (!major || !minor || !patch) return undefined;
+
+  return {
+    major: Number(major),
+    minor: Number(minor),
+    patch: Number(patch),
+  };
+}
+
+function compareStableVersions(left: StableVersion, right: StableVersion): number {
+  if (left.major !== right.major) return left.major - right.major;
+  if (left.minor !== right.minor) return left.minor - right.minor;
+  return left.patch - right.patch;
+}
+
+export function resolveLatestStableTag(tags: ReadonlyArray<string>): string | undefined {
+  return tags
+    .map((tag) => ({ tag, parsed: parseStableTag(tag) }))
+    .filter((entry): entry is { tag: string; parsed: StableVersion } => entry.parsed !== undefined)
+    .toSorted((left, right) => compareStableVersions(right.parsed, left.parsed))[0]?.tag;
+}
+
+export function resolveNightlyTargetVersionFromTags(tags: ReadonlyArray<string>): string {
+  const latestStableTag = resolveLatestStableTag(tags);
+  return latestStableTag ? resolveNightlyTargetVersion(latestStableTag.slice(1)) : "0.0.1";
+}
 
 export const resolveNightlyReleaseMetadata = (
   baseVersion: string,
@@ -66,17 +98,20 @@ export const resolveNightlyReleaseMetadata = (
   };
 };
 
-const readDesktopBaseVersion = Effect.fn("readDesktopBaseVersion")(function* (
-  rootDir: string | undefined,
-) {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const workspaceRoot = rootDir ? path.resolve(rootDir) : yield* RepoRoot;
-  const packageJsonPath = path.join(workspaceRoot, "apps/desktop/package.json");
-  const packageJson = yield* fs
-    .readFileString(packageJsonPath)
-    .pipe(Effect.flatMap(decodeDesktopPackageJson));
-  return resolveNightlyTargetVersion(packageJson.version);
+const listGitTags = Effect.fn("listGitTags")(function* () {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const child = yield* spawner.spawn(ChildProcess.make("git", ["tag", "--list"]));
+  const tags = yield* child.stdout.pipe(
+    Stream.decodeText(),
+    Stream.runFold(
+      () => "",
+      (acc, chunk) => acc + chunk,
+    ),
+    Effect.map(String.split(/\r?\n/)),
+    Effect.map(Array.map(String.trim)),
+    Effect.map(Array.filter(String.isNonEmpty)),
+  );
+  return tags;
 });
 
 const writeOutput = Effect.fn("writeOutput")(function* (
@@ -119,17 +154,23 @@ const command = Command.make(
       Flag.withSchema(ShaSchema),
       Flag.withDescription("Commit sha for the nightly build."),
     ),
+    targetVersion: Flag.string("target-version").pipe(
+      Flag.withSchema(TargetVersionSchema),
+      Flag.withDescription(
+        "Optional stable target version for the nightly, for example 0.0.18. Defaults to the next patch after the latest stable tag.",
+      ),
+      Flag.optional,
+    ),
     githubOutput: Flag.boolean("github-output").pipe(
       Flag.withDescription("Write values to GITHUB_OUTPUT instead of stdout."),
       Flag.withDefault(false),
     ),
-    root: Flag.string("root").pipe(
-      Flag.withDescription("Workspace root used to resolve apps/desktop/package.json."),
-      Flag.optional,
-    ),
   },
-  ({ date, runNumber, sha, githubOutput, root }) =>
-    readDesktopBaseVersion(Option.getOrUndefined(root)).pipe(
+  ({ date, runNumber, sha, targetVersion, githubOutput }) =>
+    Option.match(targetVersion, {
+      onNone: () => listGitTags().pipe(Effect.map(resolveNightlyTargetVersionFromTags)),
+      onSome: Effect.succeed,
+    }).pipe(
       Effect.map((baseVersion) => resolveNightlyReleaseMetadata(baseVersion, date, runNumber, sha)),
       Effect.flatMap((metadata) => writeOutput(metadata, githubOutput)),
     ),
@@ -137,6 +178,7 @@ const command = Command.make(
 
 if (import.meta.main) {
   Command.run(command, { version: "0.0.0" }).pipe(
+    Effect.scoped,
     Effect.provide(NodeServices.layer),
     NodeRuntime.runMain,
   );

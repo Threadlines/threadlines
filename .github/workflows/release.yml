@@ -6,15 +6,18 @@ on:
       - "v*.*.*"
   workflow_dispatch:
     inputs:
+      channel:
+        description: "Release channel. Nightly builds from main and publishes a GitHub prerelease."
+        required: true
+        default: nightly
+        type: choice
+        options:
+          - nightly
+          - stable
       version:
-        description: "Optional. Leave blank to release the next stable patch version."
+        description: "Optional. Stable target version. Blank uses the next patch after the latest stable tag; nightly appends -nightly.YYYYMMDD.RUN."
         required: false
         type: string
-      prerelease:
-        description: "Mark the GitHub Release as a prerelease"
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: write
@@ -32,6 +35,7 @@ jobs:
       version: ${{ steps.release_meta.outputs.version }}
       tag: ${{ steps.release_meta.outputs.tag }}
       name: ${{ steps.release_meta.outputs.name }}
+      channel: ${{ steps.release_meta.outputs.channel }}
       is_prerelease: ${{ steps.release_meta.outputs.is_prerelease }}
       make_latest: ${{ steps.release_meta.outputs.make_latest }}
       ref: ${{ github.sha }}
@@ -61,16 +65,13 @@ jobs:
         name: Resolve release metadata
         shell: bash
         env:
+          DISPATCH_CHANNEL: ${{ inputs.channel }}
           DISPATCH_VERSION: ${{ inputs.version }}
-          DISPATCH_PRERELEASE: ${{ inputs.prerelease }}
         run: |
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            raw="${GITHUB_REF_NAME}"
-          else
-            raw="${DISPATCH_VERSION:-}"
-          fi
+          plain_stable_pattern='^[0-9]+\.[0-9]+\.[0-9]+$'
+          nightly_pattern='^[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9]{8}\.[0-9]+$'
 
-          if [[ -z "${raw//[[:space:]]/}" ]]; then
+          resolve_next_stable_version() {
             git fetch --force --tags origin "refs/tags/*:refs/tags/*"
 
             latest_stable_tag="$(
@@ -80,20 +81,105 @@ jobs:
             )"
 
             if [[ -z "$latest_stable_tag" ]]; then
-              version="0.0.1"
-              echo "No stable release tags found; defaulting to v$version."
+              echo "0.0.1"
+              return
+            fi
+
+            latest_version="${latest_stable_tag#v}"
+            IFS='.' read -r major minor patch <<< "$latest_version"
+            echo "$major.$minor.$((patch + 1))"
+          }
+
+          resolve_nightly_metadata() {
+            target_version="${1:-}"
+            args=(
+              scripts/resolve-nightly-release.ts
+              --date "$(date -u +%Y%m%d)"
+              --run-number "$GITHUB_RUN_NUMBER"
+              --sha "$GITHUB_SHA"
+            )
+            if [[ -n "$target_version" ]]; then
+              args+=(--target-version "$target_version")
             else
-              latest_version="${latest_stable_tag#v}"
-              IFS='.' read -r major minor patch <<< "$latest_version"
-              version="$major.$minor.$((patch + 1))"
-              echo "No release version supplied; using next patch after $latest_stable_tag: v$version."
+              git fetch --force --tags origin "refs/tags/*:refs/tags/*"
+            fi
+
+            bun "${args[@]}"
+          }
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            if [[ "$version" =~ $nightly_pattern ]]; then
+              channel="nightly"
+              name="BadCode Nightly $version (${GITHUB_SHA:0:12})"
+              is_prerelease=true
+              make_latest=false
+            elif [[ "$version" =~ $plain_stable_pattern ]]; then
+              channel="stable"
+              name="BadCode v$version"
+              is_prerelease=false
+              make_latest=true
+            else
+              echo "Invalid release tag: ${GITHUB_REF_NAME}" >&2
+              exit 1
             fi
           else
-            version="${raw#v}"
+            channel="${DISPATCH_CHANNEL:-nightly}"
+            raw="${DISPATCH_VERSION:-}"
+
+            if [[ "$channel" != "stable" && "$channel" != "nightly" ]]; then
+              echo "Invalid release channel: $channel" >&2
+              exit 1
+            fi
+
+            if [[ "$channel" == "nightly" && "${GITHUB_REF_NAME}" != "main" ]]; then
+              echo "Nightly releases must be dispatched from main. Current ref is ${GITHUB_REF_NAME}." >&2
+              exit 1
+            fi
+
+            raw="${raw#v}"
+            if [[ "$channel" == "stable" ]]; then
+              if [[ -z "${raw//[[:space:]]/}" ]]; then
+                version="$(resolve_next_stable_version)"
+              elif [[ "$raw" =~ $plain_stable_pattern ]]; then
+                version="$raw"
+              else
+                echo "Stable releases require a plain semver version, got: ${raw:-<blank>}" >&2
+                exit 1
+              fi
+
+              name="BadCode v$version"
+              is_prerelease=false
+              make_latest=true
+            else
+              if [[ -z "${raw//[[:space:]]/}" ]]; then
+                nightly_metadata="$(resolve_nightly_metadata)"
+              elif [[ "$raw" =~ $plain_stable_pattern ]]; then
+                nightly_metadata="$(resolve_nightly_metadata "$raw")"
+              elif [[ "$raw" =~ $nightly_pattern ]]; then
+                version="$raw"
+                name="BadCode Nightly $version (${GITHUB_SHA:0:12})"
+              else
+                echo "Nightly releases require a blank version, a plain target version, or a full nightly version. Got: ${raw:-<blank>}" >&2
+                exit 1
+              fi
+
+              if [[ -n "${nightly_metadata:-}" ]]; then
+                while IFS='=' read -r key value; do
+                  case "$key" in
+                    version) version="$value" ;;
+                    name) name="$value" ;;
+                  esac
+                done <<< "$nightly_metadata"
+              fi
+
+              is_prerelease=true
+              make_latest=false
+            fi
           fi
 
           if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-            echo "Invalid release version: ${raw:-$version}" >&2
+            echo "Invalid release version: ${version:-<blank>}" >&2
             exit 1
           fi
 
@@ -102,26 +188,10 @@ jobs:
             exit 1
           fi
 
-          is_plain_stable=false
-          if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            is_plain_stable=true
-          fi
-
-          forced_prerelease=false
-          if [[ "${DISPATCH_PRERELEASE:-false}" == "true" ]]; then
-            forced_prerelease=true
-          fi
-
-          is_prerelease=true
-          make_latest=false
-          if [[ "$is_plain_stable" == "true" && "$forced_prerelease" != "true" ]]; then
-            is_prerelease=false
-            make_latest=true
-          fi
-
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
-          echo "name=BadCode v$version" >> "$GITHUB_OUTPUT"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
           echo "is_prerelease=$is_prerelease" >> "$GITHUB_OUTPUT"
           echo "make_latest=$make_latest" >> "$GITHUB_OUTPUT"
 
@@ -178,6 +248,16 @@ jobs:
           --arch x64
           --build-version "${{ needs.preflight.outputs.version }}"
           --verbose
+
+      - name: Ensure private GitHub nightly updater manifest
+        if: needs.preflight.outputs.channel == 'nightly'
+        shell: pwsh
+        run: |
+          if (Test-Path release\nightly.yml) {
+            Copy-Item release\nightly.yml release\latest.yml -Force
+          } elseif (-not (Test-Path release\latest.yml)) {
+            throw "Nightly build did not produce nightly.yml or latest.yml."
+          }
 
       - name: List release assets
         shell: pwsh

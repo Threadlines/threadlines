@@ -273,8 +273,8 @@ try {
       "321",
       "--sha",
       "abcdef1234567890",
-      "--root",
-      tempRoot,
+      "--target-version",
+      "9.9.10",
     ],
     {
       cwd: repoRoot,

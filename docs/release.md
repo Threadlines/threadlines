@@ -11,10 +11,13 @@ BadCode keeps the fork's Git history, but uses its own app versions.
 
 - First BadCode alpha: `0.0.1`
 - Stable tags: `v0.0.1`, `v0.0.2`, `v0.1.0`
-- Prerelease tags: `v0.0.1-alpha.1`, `v0.0.1-beta.1`
+- Nightly tags: `v0.0.18-nightly.20260529.123`
 
 The release workflow aligns the releasable package versions during the build,
 so a tag like `v0.0.1` produces an installer and updater metadata for `0.0.1`.
+Nightly releases are based on the next patch after the latest plain stable tag.
+For example, if the latest stable tag is `v0.0.17`, a nightly dispatch from
+`main` produces `0.0.18-nightly.<YYYYMMDD>.<run-number>`.
 
 If you previously installed a local build that reported an upstream-style
 `0.0.24` version, uninstall it before installing the first `0.0.1` BadCode
@@ -62,14 +65,41 @@ git tag v0.0.1
 git push origin v0.0.1
 ```
 
-To publish manually, open GitHub Actions, run **Windows Release**, and enter a
-version such as `0.0.1`.
+To publish a nightly from `main`, open GitHub Actions, run **Windows Release**,
+choose `nightly`, and leave the version blank. The workflow uses the latest
+stable tag to choose the next stable target version, then appends the nightly
+date/run suffix. You can also run the same dispatch from the CLI:
+
+```powershell
+gh workflow run release.yml --ref main -f channel=nightly
+```
+
+To publish a stable manually from `main`, choose `stable` and enter a version
+such as `0.0.18`, or leave it blank to use the next patch after the latest
+stable tag.
+
+To promote a tested nightly such as
+`v0.0.18-nightly.20260529.123` to stable, create a fresh stable release from the
+same commit instead of editing the prerelease in place:
+
+```powershell
+$sha = git rev-list -n 1 v0.0.18-nightly.20260529.123
+git tag v0.0.18 $sha
+git push origin v0.0.18
+```
+
+This builds a new stable installer with version `0.0.18`, marks it as the
+latest GitHub Release, and gives stable-channel installs a normal update target.
 
 The release assets should include:
 
 - `BadCode-<version>-x64.exe`
 - `BadCode-<version>-x64.exe.blockmap`
 - `latest.yml`
+
+Nightly releases may also include `nightly.yml`. The workflow keeps a
+`latest.yml` copy on nightly prereleases so private GitHub updater checks can
+read the prerelease manifest.
 
 ## Private Repository Downloads
 
