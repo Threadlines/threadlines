@@ -23,6 +23,9 @@ describe("buildCommitMessagePrompt", () => {
     expect(result.prompt).toContain("Staged patch:");
     expect(result.prompt).toContain("diff --git a/README.md b/README.md");
     expect(result.prompt).toContain("Branch: main");
+    expect(result.prompt).toContain(
+      "subject should be specific enough to make sense in release notes",
+    );
     // Should NOT include the branch generation instruction
     expect(result.prompt).not.toContain("branch must be a short semantic git branch fragment");
   });

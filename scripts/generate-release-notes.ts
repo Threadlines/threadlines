@@ -10,7 +10,9 @@ import { resolveReleaseNotesBaselineTag, type ReleaseChannel } from "./lib/relea
 export interface ReleaseNoteCommit {
   readonly hash: string;
   readonly shortHash: string;
+  readonly parentHashes: ReadonlyArray<string>;
   readonly subject: string;
+  readonly body: string;
 }
 
 interface FormatReleaseNotesInput {
@@ -19,6 +21,12 @@ interface FormatReleaseNotesInput {
   readonly previousTag: string | undefined;
   readonly repository: string | undefined;
   readonly commits: ReadonlyArray<ReleaseNoteCommit>;
+}
+
+interface ReleaseNoteEntry {
+  readonly title: string;
+  readonly commit: ReleaseNoteCommit;
+  readonly pullRequestNumber?: number;
 }
 
 function normalizeRequiredString(value: unknown, name: string): string {
@@ -50,7 +58,7 @@ function listGitTags(): ReadonlyArray<string> {
     .filter((tag) => tag.length > 0);
 }
 
-function parseGitLogOutput(output: string): ReadonlyArray<ReleaseNoteCommit> {
+export function parseGitLogOutput(output: string): ReadonlyArray<ReleaseNoteCommit> {
   if (output.trim().length === 0) return [];
 
   return output
@@ -58,7 +66,7 @@ function parseGitLogOutput(output: string): ReadonlyArray<ReleaseNoteCommit> {
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0)
     .map((entry) => {
-      const [hash, shortHash, subject] = entry.split("\x00");
+      const [hash, shortHash, parentHashes, subject, body = ""] = entry.split("\x00");
       if (!hash || !shortHash || !subject) {
         throw new Error(`Unexpected git log entry: ${JSON.stringify(entry)}`);
       }
@@ -66,7 +74,9 @@ function parseGitLogOutput(output: string): ReadonlyArray<ReleaseNoteCommit> {
       return {
         hash,
         shortHash,
+        parentHashes: parentHashes ? parentHashes.split(" ").filter(Boolean) : [],
         subject,
+        body: body.trim(),
       };
     });
 }
@@ -76,7 +86,9 @@ function listCommits(
   currentRef: string,
 ): ReadonlyArray<ReleaseNoteCommit> {
   const range = previousTag ? `${previousTag}..${currentRef}` : currentRef;
-  return parseGitLogOutput(git(["log", "--format=%H%x00%h%x00%s%x1e", range, "--"]));
+  return parseGitLogOutput(
+    git(["log", "--first-parent", "--format=%H%x00%h%x00%P%x00%s%x00%b%x1e", range, "--"]),
+  );
 }
 
 function commitUrl(repository: string | undefined, commit: ReleaseNoteCommit): string | undefined {
@@ -93,9 +105,81 @@ function compareUrl(
   return `https://github.com/${repository}/compare/${previousTag}...${currentTag}`;
 }
 
+function pullRequestUrl(
+  repository: string | undefined,
+  pullRequestNumber: number,
+): string | undefined {
+  if (!repository) return undefined;
+  return `https://github.com/${repository}/pull/${pullRequestNumber}`;
+}
+
+function firstMeaningfulBodyLine(body: string): string | undefined {
+  return body
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.length > 0 && !line.startsWith("#"));
+}
+
+function cleanPullRequestTitle(title: string): string {
+  return title
+    .replace(/\s+\(#\d+\)$/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function releaseNoteEntryFromCommit(commit: ReleaseNoteCommit): ReleaseNoteEntry {
+  const mergeMatch = /^Merge pull request #(\d+) from .+$/i.exec(commit.subject);
+  if (mergeMatch?.[1]) {
+    return {
+      title: cleanPullRequestTitle(
+        firstMeaningfulBodyLine(commit.body) ?? `Pull request #${mergeMatch[1]}`,
+      ),
+      commit,
+      pullRequestNumber: Number(mergeMatch[1]),
+    };
+  }
+
+  const squashMatch = /^(.+?)\s+\(#(\d+)\)$/.exec(commit.subject);
+  if (squashMatch?.[1] && squashMatch[2]) {
+    return {
+      title: cleanPullRequestTitle(squashMatch[1]),
+      commit,
+      pullRequestNumber: Number(squashMatch[2]),
+    };
+  }
+
+  return {
+    title: commit.subject,
+    commit,
+  };
+}
+
+function commitLink(repository: string | undefined, commit: ReleaseNoteCommit): string {
+  const url = commitUrl(repository, commit);
+  return url ? `[\`${commit.shortHash}\`](${url})` : `\`${commit.shortHash}\``;
+}
+
+function formatPullRequestEntry(repository: string | undefined, entry: ReleaseNoteEntry): string {
+  const pullRequestNumber = entry.pullRequestNumber;
+  const pullRequest = pullRequestNumber ? pullRequestUrl(repository, pullRequestNumber) : undefined;
+  const pullRequestLabel =
+    pullRequest && pullRequestNumber
+      ? `[#${pullRequestNumber}](${pullRequest})`
+      : `#${pullRequestNumber}`;
+
+  return `- ${pullRequestLabel} ${entry.title} (${commitLink(repository, entry.commit)})`;
+}
+
+function formatCommitEntry(repository: string | undefined, entry: ReleaseNoteEntry): string {
+  return `- ${commitLink(repository, entry.commit)} ${entry.title}`;
+}
+
 export function formatReleaseNotes(input: FormatReleaseNotesInput): string {
   const lines: Array<string> = [];
   const releaseKind = input.channel === "nightly" ? "Nightly" : "Stable";
+  const entries = input.commits.map(releaseNoteEntryFromCommit);
+  const pullRequestEntries = entries.filter((entry) => entry.pullRequestNumber !== undefined);
+  const commitEntries = entries.filter((entry) => entry.pullRequestNumber === undefined);
 
   lines.push(`## ${releaseKind} changes`, "");
 
@@ -108,10 +192,21 @@ export function formatReleaseNotes(input: FormatReleaseNotesInput): string {
   if (input.commits.length === 0) {
     lines.push("- No commits found in this release range.");
   } else {
-    for (const commit of input.commits) {
-      const url = commitUrl(input.repository, commit);
-      const hash = url ? `[\`${commit.shortHash}\`](${url})` : `\`${commit.shortHash}\``;
-      lines.push(`- ${hash} ${commit.subject}`);
+    if (pullRequestEntries.length > 0) {
+      lines.push("### Pull requests", "");
+      for (const entry of pullRequestEntries) {
+        lines.push(formatPullRequestEntry(input.repository, entry));
+      }
+      if (commitEntries.length > 0) {
+        lines.push("");
+      }
+    }
+
+    if (commitEntries.length > 0) {
+      lines.push("### Commits", "");
+      for (const entry of commitEntries) {
+        lines.push(formatCommitEntry(input.repository, entry));
+      }
     }
   }
 
