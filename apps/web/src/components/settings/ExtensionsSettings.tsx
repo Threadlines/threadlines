@@ -804,6 +804,24 @@ function isClaudeProvider(provider: ProviderExtensionProviderInventory): boolean
   return provider.driver === EXTENSIONS_CLAUDE_DRIVER;
 }
 
+function findManagedClaudePluginForMcp(item: ExtensionItem | null): ProviderExtensionPlugin | null {
+  if (!item || item.kind !== "mcp" || !isClaudeProvider(item.provider)) return null;
+  const serverName = item.server.name.toLowerCase();
+  const serverPluginName = serverName.split(":")[0] ?? serverName;
+  return (
+    item.provider.plugins.find((plugin) => {
+      const pluginName = plugin.name.toLowerCase();
+      const pluginIdName = plugin.id.split("@")[0]?.toLowerCase();
+      return (
+        pluginName === serverName ||
+        pluginName === serverPluginName ||
+        pluginIdName === serverName ||
+        pluginIdName === serverPluginName
+      );
+    }) ?? null
+  );
+}
+
 function wait(milliseconds: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
@@ -1095,6 +1113,7 @@ function ExtensionDetailDialog({
   const [toolArgumentMode, setToolArgumentMode] = useState<"form" | "json">("json");
   const [toolFormValues, setToolFormValues] = useState<Record<string, string | boolean>>({});
   const pollRef = useRef(0);
+  const managedClaudePlugin = useMemo(() => findManagedClaudePluginForMcp(item), [item]);
 
   useEffect(() => {
     setBusyAction(null);
@@ -1293,6 +1312,48 @@ function ExtensionDetailDialog({
     });
   }, [cwd, item, onInventoryMutated, runDialogAction]);
 
+  const readManagedClaudePlugin = useCallback(() => {
+    if (!item || !managedClaudePlugin) return;
+    void runDialogAction("Plugin details", async () => {
+      const result = await ensureLocalApi().server.readProviderExtensionPlugin({
+        ...actionBaseInput(item, cwd),
+        ...pluginSelectorInput(managedClaudePlugin),
+      });
+      return formatJson(result.plugin);
+    });
+  }, [cwd, item, managedClaudePlugin, runDialogAction]);
+
+  const toggleManagedClaudePlugin = useCallback(() => {
+    if (!item || !managedClaudePlugin) return;
+    const nextEnabled = !(managedClaudePlugin.enabled ?? true);
+    void runDialogAction(nextEnabled ? "Enable plugin" : "Disable plugin", async () => {
+      const result = await ensureLocalApi().server.setProviderExtensionPluginEnabled({
+        ...actionBaseInput(item, cwd),
+        pluginId: managedClaudePlugin.id,
+        ...(managedClaudePlugin.scope ? { scope: managedClaudePlugin.scope } : {}),
+        enabled: nextEnabled,
+      });
+      await onInventoryMutated();
+      return `Plugin ${result.effectiveEnabled ? "enabled" : "disabled"}.`;
+    });
+  }, [cwd, item, managedClaudePlugin, onInventoryMutated, runDialogAction]);
+
+  const uninstallManagedClaudePlugin = useCallback(() => {
+    if (!item || !managedClaudePlugin) return;
+    void runDialogAction("Uninstall plugin", async () => {
+      const api = ensureLocalApi();
+      const confirmed = await api.dialogs.confirm(`Uninstall ${managedClaudePlugin.name}?`);
+      if (!confirmed) return "Uninstall cancelled.";
+      await api.server.uninstallProviderExtensionPlugin({
+        ...actionBaseInput(item, cwd),
+        pluginId: managedClaudePlugin.id,
+        ...(managedClaudePlugin.scope ? { scope: managedClaudePlugin.scope } : {}),
+      });
+      await onInventoryMutated();
+      return "Plugin uninstalled.";
+    });
+  }, [cwd, item, managedClaudePlugin, onInventoryMutated, runDialogAction]);
+
   const selectedToolFormFields = useMemo(
     () => deriveExtensionJsonSchemaFormFields(selectedTool?.inputSchema),
     [selectedTool],
@@ -1471,6 +1532,11 @@ function ExtensionDetailDialog({
                   <DetailRow label="Tool Count" value={String(item.server.toolCount ?? 0)} />
                   <DetailRow label="Resources" value={String(item.server.resourceCount ?? 0)} />
                   <DetailRow label="Detail" value={item.server.detail} />
+                  <DetailRow
+                    label="Managed By"
+                    value={managedClaudePlugin ? `${managedClaudePlugin.name} plugin` : undefined}
+                    copyValue={managedClaudePlugin?.id}
+                  />
                 </>
               ) : null}
               {item.kind === "app" ? (
@@ -1822,6 +1888,49 @@ function ExtensionDetailDialog({
                     Install
                   </Button>
                 )}
+              </>
+            ) : null}
+            {claudeActionsAvailable && item.kind === "mcp" && managedClaudePlugin ? (
+              <>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={busyAction !== null}
+                  onClick={readManagedClaudePlugin}
+                >
+                  {busyAction === "Plugin details" ? (
+                    <LoaderIcon className="size-3.5 animate-spin" />
+                  ) : (
+                    <WrenchIcon className="size-3.5" />
+                  )}
+                  Plugin details
+                </Button>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={busyAction !== null}
+                  onClick={toggleManagedClaudePlugin}
+                >
+                  {busyAction === "Enable plugin" || busyAction === "Disable plugin" ? (
+                    <LoaderIcon className="size-3.5 animate-spin" />
+                  ) : (
+                    <PowerIcon className="size-3.5" />
+                  )}
+                  {managedClaudePlugin.enabled === false ? "Enable plugin" : "Disable plugin"}
+                </Button>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={busyAction !== null}
+                  onClick={uninstallManagedClaudePlugin}
+                >
+                  {busyAction === "Uninstall plugin" ? (
+                    <LoaderIcon className="size-3.5 animate-spin" />
+                  ) : (
+                    <PackageMinusIcon className="size-3.5" />
+                  )}
+                  Uninstall plugin
+                </Button>
               </>
             ) : null}
             <Tooltip>
