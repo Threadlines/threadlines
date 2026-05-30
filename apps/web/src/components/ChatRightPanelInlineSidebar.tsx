@@ -1,5 +1,7 @@
 import { type CSSProperties, type ReactNode, useCallback } from "react";
 
+import { isElectron } from "../env";
+import { cn } from "../lib/utils";
 import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import { Sidebar, SidebarProvider, SidebarRail } from "./ui/sidebar";
 
@@ -85,7 +87,10 @@ export function ChatRightPanelInlineSidebar(props: {
       <Sidebar
         side="right"
         collapsible="offcanvas"
-        className="border-l border-border bg-card text-foreground"
+        className={cn(
+          "border-l border-border bg-card text-foreground",
+          isElectron && "pe-[var(--app-window-resize-edge-inset)]",
+        )}
         motion="instant"
         resizable={{
           maxWidth: RIGHT_PANEL_INLINE_SIDEBAR_MAX_WIDTH,

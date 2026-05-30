@@ -60,6 +60,7 @@ import {
   readProviderExtensionsInventory,
   readProviderExtensionMcpResource,
   readProviderExtensionPlugin,
+  refreshProviderExtensionPluginMarketplaces,
   reloadProviderExtensionMcpServers,
   setProviderExtensionPluginEnabled,
   setProviderExtensionSkillEnabled,
@@ -1049,6 +1050,18 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             Effect.gen(function* () {
               const settings = yield* loadProviderExtensionSettings;
               return yield* updateProviderExtensionPlugin({ request: input, settings });
+            }),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverRefreshProviderExtensionPluginMarketplaces]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverRefreshProviderExtensionPluginMarketplaces,
+            Effect.gen(function* () {
+              const settings = yield* loadProviderExtensionSettings;
+              return yield* refreshProviderExtensionPluginMarketplaces({
+                request: input,
+                settings,
+              });
             }),
             { "rpc.aggregate": "server" },
           ),

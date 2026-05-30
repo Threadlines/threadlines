@@ -18,8 +18,11 @@ import {
 
 import {
   isCodexAppsDirectoryAccessDeniedError,
+  mapCodexMcpServers,
+  parseClaudeMcpList,
   parseClaudePluginList,
   readProviderExtensionsInventory,
+  refreshProviderExtensionPluginMarketplaces,
 } from "./providerExtensions.ts";
 
 const encoder = new TextEncoder();
@@ -137,6 +140,56 @@ describe("provider extensions inventory", () => {
     assert.equal(plugins[1]?.installed, false);
   });
 
+  it("maps Codex MCP auth status without treating unsupported auth as server failure", () => {
+    const servers = mapCodexMcpServers({
+      data: [
+        {
+          name: "playwright",
+          authStatus: "unsupported",
+          tools: {
+            browser_click: {
+              name: "browser_click",
+              description: "Click",
+              inputSchema: {},
+            },
+          },
+          resources: [],
+          resourceTemplates: [],
+        },
+        {
+          name: "supabase",
+          authStatus: "notLoggedIn",
+          tools: {},
+          resources: [],
+          resourceTemplates: [],
+        },
+      ],
+    });
+
+    assert.equal(servers[0]?.name, "playwright");
+    assert.equal(servers[0]?.status, "Ready");
+    assert.equal(servers[0]?.authStatus, "No auth required");
+    assert.equal(servers[0]?.toolCount, 1);
+    assert.equal(servers[1]?.name, "supabase");
+    assert.equal(servers[1]?.status, "Needs auth");
+    assert.equal(servers[1]?.authStatus, "Not logged in");
+  });
+
+  it("parses Claude plugin MCP entries without collapsing the name to plugin", () => {
+    const servers = parseClaudeMcpList(
+      [
+        "Checking MCP server health...",
+        "plugin:supabase:supabase: https://mcp.supabase.com/mcp (HTTP) - ! Needs authentication",
+      ].join("\n"),
+    );
+
+    assert.equal(servers[0]?.name, "supabase");
+    assert.equal(servers[0]?.status, "Needs authentication");
+    assert.equal(servers[0]?.authStatus, "Needs authentication");
+    assert.equal(servers[0]?.transport, "HTTP");
+    assert.equal(servers[0]?.detail, "https://mcp.supabase.com/mcp");
+  });
+
   it.effect(
     "returns a Codex provider error instead of hanging when app-server never responds",
     () => {
@@ -223,6 +276,51 @@ describe("provider extensions inventory", () => {
         [ProviderInstanceId.make("claudeAgent")],
       );
       assert.equal(result.providers[0]?.status, "disabled");
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
+  it.effect("refreshes Codex plugin marketplaces through the configured binary", () => {
+    const calls: Array<{
+      readonly command: string;
+      readonly args: ReadonlyArray<string>;
+      readonly cwd: string | undefined;
+    }> = [];
+    const spawner = ChildProcessSpawner.make((command) => {
+      const childProcess = command as unknown as {
+        readonly command: string;
+        readonly args: ReadonlyArray<string>;
+        readonly options: { readonly cwd?: string };
+      };
+      calls.push({
+        command: childProcess.command,
+        args: childProcess.args,
+        cwd: childProcess.options.cwd,
+      });
+      return Effect.succeed(makeProcessResult("marketplace updated"));
+    });
+    const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner);
+
+    return Effect.gen(function* () {
+      const result = yield* refreshProviderExtensionPluginMarketplaces({
+        request: {
+          cwd: process.cwd(),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+        },
+        settings: makeSettings({
+          providers: {
+            codex: { enabled: true, binaryPath: "custom-codex" },
+            claudeAgent: { enabled: false },
+            cursor: { enabled: false },
+            opencode: { enabled: false },
+          },
+        }),
+      });
+
+      assert.equal(result.refreshed, true);
+      assert.equal(result.output, "marketplace updated");
+      assert.equal(calls[0]?.command, "custom-codex");
+      assert.deepEqual(calls[0]?.args, ["plugin", "marketplace", "upgrade"]);
+      assert.equal(calls[0]?.cwd, process.cwd());
     }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
   });
 });

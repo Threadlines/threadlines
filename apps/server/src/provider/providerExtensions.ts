@@ -36,6 +36,8 @@ import {
   type ProviderExtensionPlugin,
   type ProviderExtensionPluginInstallInput,
   type ProviderExtensionPluginInstallResult,
+  type ProviderExtensionPluginMarketplaceRefreshInput,
+  type ProviderExtensionPluginMarketplaceRefreshResult,
   type ProviderExtensionPluginReadInput,
   type ProviderExtensionPluginReadResult,
   type ProviderExtensionPluginToggleInput,
@@ -76,6 +78,7 @@ const CODEX_APP_SERVER_INVENTORY_TIMEOUT = Duration.seconds(20);
 const CODEX_APP_SERVER_REQUEST_TIMEOUT = Duration.seconds(15);
 const CODEX_APP_SERVER_ACTION_TIMEOUT = Duration.seconds(120);
 const CLAUDE_PLUGIN_ACTION_TIMEOUT = Duration.seconds(120);
+const CODEX_PLUGIN_MARKETPLACE_ACTION_TIMEOUT = Duration.seconds(120);
 const CODEX_MCP_OAUTH_DEFAULT_TIMEOUT_SECONDS = 300;
 const CODEX_MCP_OAUTH_MAX_TIMEOUT_SECONDS = 900;
 const MAX_SKILL_FILE_BYTES = 32_000;
@@ -379,7 +382,28 @@ function mapCodexSkills(
     .toSorted((left, right) => left.name.localeCompare(right.name));
 }
 
-function mapCodexMcpServers(
+function codexMcpAuthStatusLabel(
+  authStatus: CodexSchema.V2ListMcpServerStatusResponse__McpAuthStatus,
+): string {
+  switch (authStatus) {
+    case "unsupported":
+      return "No auth required";
+    case "notLoggedIn":
+      return "Not logged in";
+    case "bearerToken":
+      return "Bearer token";
+    case "oAuth":
+      return "OAuth";
+  }
+}
+
+function codexMcpServerStatusLabel(
+  authStatus: CodexSchema.V2ListMcpServerStatusResponse__McpAuthStatus,
+): string {
+  return authStatus === "notLoggedIn" ? "Needs auth" : "Ready";
+}
+
+export function mapCodexMcpServers(
   response: CodexSchema.V2ListMcpServerStatusResponse,
 ): ProviderExtensionMcpServer[] {
   return response.data
@@ -443,8 +467,8 @@ function mapCodexMcpServers(
       return [
         {
           name,
-          authStatus: optionalText(server.authStatus),
-          status: optionalText(server.authStatus),
+          authStatus: codexMcpAuthStatusLabel(server.authStatus),
+          status: codexMcpServerStatusLabel(server.authStatus),
           ...(tools.length > 0 ? { tools } : {}),
           ...(toolDefinitions.length > 0 ? { toolDefinitions } : {}),
           ...(resources.length > 0 ? { resources } : {}),
@@ -724,6 +748,43 @@ function runCodexAppServerAction<A>(
     ),
     Effect.mapError(toProviderExtensionsError),
   );
+}
+
+const runCodexCommand = Effect.fn("providerExtensions.runCodexCommand")(function* (input: {
+  readonly binaryPath: string;
+  readonly args: ReadonlyArray<string>;
+  readonly cwd: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly timeout?: Duration.Duration | undefined;
+}) {
+  const result = yield* spawnAndCollect(
+    input.binaryPath,
+    ChildProcess.make(input.binaryPath, [...input.args], {
+      cwd: input.cwd,
+      env: input.env,
+      shell: process.platform === "win32",
+    }),
+  ).pipe(Effect.timeoutOption(input.timeout ?? INVENTORY_COMMAND_TIMEOUT));
+  if (Option.isNone(result)) {
+    return yield* new ProviderExtensionsError({
+      message: `Timed out running ${input.binaryPath} ${input.args.join(" ")}.`,
+    });
+  }
+  return result.value;
+});
+
+function providerCommandFailureMessage(input: {
+  readonly command: string;
+  readonly args: ReadonlyArray<string>;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly code: number;
+}): string {
+  const detail = optionalText(input.stderr) ?? optionalText(input.stdout);
+  const command = `${input.command} ${input.args.join(" ")}`;
+  return detail
+    ? `${command} failed: ${detail}`
+    : `${command} failed with exit code ${input.code}.`;
 }
 
 const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppServerInventory")(
@@ -1050,22 +1111,44 @@ export function parseClaudePluginList(output: string): ProviderExtensionPlugin[]
   return plugins.toSorted((left, right) => left.name.localeCompare(right.name));
 }
 
-function parseClaudeMcpList(output: string): ProviderExtensionMcpServer[] {
+function normalizeClaudeMcpStatus(value: string | undefined): string | undefined {
+  const normalized = optionalText(value?.replace(/^!+\s*/, ""));
+  if (!normalized) return undefined;
+  return /^needs authentication$/i.test(normalized) ? "Needs authentication" : normalized;
+}
+
+function claudeMcpDisplayName(rawName: string): string {
+  const parts = rawName
+    .split(":")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (parts[0] === "plugin" && parts.length >= 3) {
+    const pluginName = parts[1]!;
+    const serverName = parts.slice(2).join(":");
+    return serverName === pluginName ? pluginName : `${pluginName}:${serverName}`;
+  }
+  return rawName.trim();
+}
+
+export function parseClaudeMcpList(output: string): ProviderExtensionMcpServer[] {
   const servers: ProviderExtensionMcpServer[] = [];
   for (const line of output.split(/\r?\n/g)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.toLowerCase().startsWith("checking ")) continue;
-    const match = trimmed.match(/^([^:]+):\s*(.+?)(?:\s+-\s+(.+))?$/);
+    const match = trimmed.match(/^(.+?):\s+(.+?)(?:\s+-\s+(.+))?$/);
     if (!match) continue;
-    const name = match[1]!;
+    const name = claudeMcpDisplayName(match[1]!);
     const target = match[2] ?? "";
-    const status = match[3];
-    const transport = target?.match(/\(([^)]+)\)/)?.[1]?.trim();
+    const status = normalizeClaudeMcpStatus(match[3]);
+    const transport = target.match(/\(([^)]+)\)\s*$/)?.[1]?.trim();
+    const detail = optionalText(target.replace(/\s*\([^)]*\)\s*$/, ""));
+    const authStatus = status?.toLowerCase().includes("auth") ? status : undefined;
     servers.push({
-      name: name.trim(),
+      name,
       status: optionalText(status) ?? "configured",
+      ...(authStatus ? { authStatus } : {}),
       transport: optionalText(transport),
-      detail: optionalText(status),
+      ...(detail ? { detail } : {}),
     });
   }
   return servers.toSorted((left, right) => left.name.localeCompare(right.name));
@@ -1823,6 +1906,51 @@ export const updateProviderExtensionPlugin = Effect.fn(
     ...claudePluginScopeArgs(input.request.scope, new Set(["user", "project", "local", "managed"])),
   ]);
   return { updated: true };
+});
+
+export const refreshProviderExtensionPluginMarketplaces = Effect.fn(
+  "providerExtensions.refreshProviderExtensionPluginMarketplaces",
+)(function* (input: {
+  readonly request: ProviderExtensionPluginMarketplaceRefreshInput;
+  readonly settings: ServerSettings;
+}): Effect.fn.Return<
+  ProviderExtensionPluginMarketplaceRefreshResult,
+  ProviderExtensionsError,
+  FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
+> {
+  const context = yield* resolveCodexActionContext({
+    cwd: input.request.cwd,
+    providerInstanceId: input.request.providerInstanceId,
+    settings: input.settings,
+  });
+  const args = [
+    "plugin",
+    "marketplace",
+    "upgrade",
+    ...(input.request.marketplaceName ? [input.request.marketplaceName] : []),
+  ];
+  const result = yield* runCodexCommand({
+    binaryPath: context.config.binaryPath,
+    args,
+    cwd: context.cwd,
+    env: context.environment,
+    timeout: CODEX_PLUGIN_MARKETPLACE_ACTION_TIMEOUT,
+  }).pipe(Effect.mapError(toProviderExtensionsError));
+  if (result.code !== 0) {
+    return yield* new ProviderExtensionsError({
+      message: providerCommandFailureMessage({
+        command: context.config.binaryPath,
+        args,
+        ...result,
+      }),
+    });
+  }
+  return {
+    refreshed: true,
+    ...((optionalText(result.stdout) ?? optionalText(result.stderr))
+      ? { output: optionalText(result.stdout) ?? optionalText(result.stderr) }
+      : {}),
+  };
 });
 
 export const callProviderExtensionMcpTool = Effect.fn(

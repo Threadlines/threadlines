@@ -76,6 +76,13 @@ const initRepoWithCommit = (
     return { initialBranch };
   });
 
+function gitCommitDateEnv(isoDate: string): NodeJS.ProcessEnv {
+  return {
+    GIT_AUTHOR_DATE: isoDate,
+    GIT_COMMITTER_DATE: isoDate,
+  };
+}
+
 it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
   describe("repository status", () => {
     it.effect("reports non-repository directories without failing", () =>
@@ -416,6 +423,48 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         assert.deepStrictEqual(
           initialCommit?.refs.filter((ref) => ref.toLowerCase().endsWith("/head")),
           [],
+        );
+      }),
+    );
+
+    it.effect("keeps current branch ancestry together before unrelated remote tips", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        yield* git(
+          cwd,
+          ["commit", "--amend", "--no-edit", "--date", "2026-05-29T00:00:00Z"],
+          gitCommitDateEnv("2026-05-29T00:00:00Z"),
+        );
+
+        yield* writeTextFile(cwd, "main-parent.txt", "main parent\n");
+        yield* git(cwd, ["add", "."]);
+        yield* git(cwd, ["commit", "-m", "main parent"], gitCommitDateEnv("2026-05-29T01:00:00Z"));
+
+        yield* writeTextFile(cwd, "main-tip.txt", "main tip\n");
+        yield* git(cwd, ["add", "."]);
+        yield* git(cwd, ["commit", "-m", "main tip"], gitCommitDateEnv("2026-05-29T03:00:00Z"));
+
+        yield* git(cwd, ["checkout", "--orphan", "upstream-main"]);
+        yield* git(cwd, ["rm", "-rf", "."]);
+        yield* writeTextFile(cwd, "upstream.txt", "upstream\n");
+        yield* git(cwd, ["add", "."]);
+        yield* git(
+          cwd,
+          ["commit", "-m", "upstream remote tip"],
+          gitCommitDateEnv("2026-05-29T02:00:00Z"),
+        );
+        yield* git(cwd, ["update-ref", "refs/remotes/upstream/main", "HEAD"]);
+        yield* git(cwd, ["checkout", initialBranch]);
+        yield* git(cwd, ["branch", "-D", "upstream-main"]);
+
+        const graph = yield* driver.commitGraph({ cwd, limit: 3 });
+
+        assert.deepStrictEqual(
+          graph.commits.map((commit) => commit.subject),
+          ["main tip", "main parent", "initial commit"],
         );
       }),
     );

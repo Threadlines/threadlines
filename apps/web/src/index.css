@@ -86,6 +86,9 @@
 :root {
   color-scheme: light;
   --radius: 0.625rem;
+  --app-window-resize-edge-inset: 0px;
+  --app-scrollbar-hit-size: 10px;
+  --app-scrollbar-thumb-inset: 2px;
   --background: var(--color-white);
   --app-chrome-background: var(--background);
   --foreground: var(--color-neutral-800);
@@ -144,6 +147,11 @@
   }
 }
 
+/* Keep edge-facing scrollbars clear of Electron's native window resize hit zone. */
+html.electron {
+  --app-window-resize-edge-inset: 6px;
+}
+
 body {
   font-family:
     "DM Sans",
@@ -176,6 +184,7 @@ body {
   overflow-y: hidden;
   overscroll-behavior-y: none;
   padding-top: max(env(safe-area-inset-top), 0px);
+  padding-right: var(--app-window-resize-edge-inset);
 }
 
 body::after {
@@ -208,8 +217,27 @@ code {
 }
 
 /* Scrollbar styling */
+:root {
+  --app-scrollbar-thumb: rgba(0, 0, 0, 0.18);
+  --app-scrollbar-thumb-hover: rgba(0, 0, 0, 0.28);
+  --app-scrollbar-thumb-active: rgba(0, 0, 0, 0.36);
+
+  @variant dark {
+    --app-scrollbar-thumb: rgba(255, 255, 255, 0.14);
+    --app-scrollbar-thumb-hover: rgba(255, 255, 255, 0.24);
+    --app-scrollbar-thumb-active: rgba(255, 255, 255, 0.32);
+  }
+}
+
 ::-webkit-scrollbar {
-  width: 6px;
+  width: var(--app-scrollbar-hit-size);
+  height: var(--app-scrollbar-hit-size);
+}
+
+::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 ::-webkit-scrollbar-track {
@@ -217,20 +245,24 @@ code {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.15);
-  border-radius: 3px;
+  min-width: 40px;
+  min-height: 40px;
+  border: var(--app-scrollbar-thumb-inset) solid transparent;
+  border-radius: 999px;
+  background-color: var(--app-scrollbar-thumb);
+  background-clip: padding-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.25);
+  background-color: var(--app-scrollbar-thumb-hover);
 }
 
-.dark ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
+::-webkit-scrollbar-thumb:active {
+  background-color: var(--app-scrollbar-thumb-active);
 }
 
-.dark ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.18);
+::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 .turn-chip-strip {

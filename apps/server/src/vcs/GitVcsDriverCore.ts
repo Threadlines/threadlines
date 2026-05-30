@@ -2073,7 +2073,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           "--exclude=refs/t3/*",
           "--exclude=refs/t3/checkpoints/*",
           "--all",
-          "--date-order",
+          "--topo-order",
           "--decorate=short",
           `--max-count=${limit + 1}`,
           `--pretty=format:%H%x1f%P%x1f%D%x1f%an%x1f%aI%x1f%s%x1e`,
@@ -2102,7 +2102,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       return yield* createGitCommandError(
         "GitVcsDriver.commitGraph",
         input.cwd,
-        ["log", "--all", "--date-order"],
+        ["log", "--all", "--topo-order"],
         result.stderr.trim() || "git log failed",
       );
     },

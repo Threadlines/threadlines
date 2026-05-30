@@ -171,6 +171,64 @@ it.layer(NodeServices.layer)("ServerAuthLive", (it) => {
     ),
   );
 
+  it.effect("trusts local dev browser requests for desktop-managed local servers", () =>
+    Effect.gen(function* () {
+      const serverAuth = yield* ServerAuth;
+      const request = makeAuthRequest({
+        headers: {
+          host: "localhost:13773",
+          origin: "http://127.0.0.1:5733",
+        },
+        remoteAddress: "127.0.0.1",
+      });
+
+      const sessionState = yield* serverAuth.getSessionState(request);
+      const session = yield* serverAuth.authenticateHttpRequest(request);
+
+      expect(sessionState.authenticated).toBe(true);
+      expect(sessionState.auth.policy).toBe("desktop-managed-local");
+      expect(session.role).toBe("owner");
+      expect(session.subject).toBe("loopback-browser-dev");
+    }).pipe(
+      Effect.provide(
+        makeServerAuthLayer({
+          mode: "desktop",
+          host: "127.0.0.1",
+          devUrl: new URL("http://localhost:5733/"),
+          desktopBootstrapToken: "desktop-bootstrap-token",
+        }),
+      ),
+    ),
+  );
+
+  it.effect("keeps desktop-managed local servers paired outside dev mode", () =>
+    Effect.gen(function* () {
+      const serverAuth = yield* ServerAuth;
+      const request = makeAuthRequest({
+        headers: {
+          host: "localhost:13773",
+          origin: "http://127.0.0.1:5733",
+        },
+        remoteAddress: "127.0.0.1",
+      });
+
+      const sessionState = yield* serverAuth.getSessionState(request);
+      const error = yield* Effect.flip(serverAuth.authenticateHttpRequest(request));
+
+      expect(sessionState.authenticated).toBe(false);
+      expect(sessionState.auth.policy).toBe("desktop-managed-local");
+      expect(error.status).toBe(401);
+    }).pipe(
+      Effect.provide(
+        makeServerAuthLayer({
+          mode: "desktop",
+          host: "127.0.0.1",
+          desktopBootstrapToken: "desktop-bootstrap-token",
+        }),
+      ),
+    ),
+  );
+
   it.effect("keeps pairing required for loopback browser servers outside web dev", () =>
     Effect.gen(function* () {
       const serverAuth = yield* ServerAuth;

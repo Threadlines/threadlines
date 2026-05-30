@@ -93,6 +93,7 @@ const RuntimeSessionExitKind = Schema.Literals(["graceful", "error"]);
 export type RuntimeSessionExitKind = typeof RuntimeSessionExitKind.Type;
 
 const RuntimeErrorClass = Schema.Literals([
+  "authentication_error",
   "provider_error",
   "transport_error",
   "permission_error",

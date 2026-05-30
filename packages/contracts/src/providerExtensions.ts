@@ -314,6 +314,20 @@ export const ProviderExtensionPluginUpdateResult = Schema.Struct({
 });
 export type ProviderExtensionPluginUpdateResult = typeof ProviderExtensionPluginUpdateResult.Type;
 
+export const ProviderExtensionPluginMarketplaceRefreshInput = Schema.Struct({
+  ...ProviderExtensionActionBaseInput,
+  marketplaceName: Schema.optional(TrimmedNonEmptyString),
+});
+export type ProviderExtensionPluginMarketplaceRefreshInput =
+  typeof ProviderExtensionPluginMarketplaceRefreshInput.Type;
+
+export const ProviderExtensionPluginMarketplaceRefreshResult = Schema.Struct({
+  refreshed: Schema.Boolean,
+  output: Schema.optional(TrimmedString),
+});
+export type ProviderExtensionPluginMarketplaceRefreshResult =
+  typeof ProviderExtensionPluginMarketplaceRefreshResult.Type;
+
 export const ProviderExtensionMcpToolCallInput = Schema.Struct({
   ...ProviderExtensionActionBaseInput,
   serverName: TrimmedNonEmptyString,

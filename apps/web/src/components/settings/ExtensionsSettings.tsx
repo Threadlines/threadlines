@@ -6,6 +6,7 @@ import {
   DatabaseIcon,
   ExternalLinkIcon,
   FileTextIcon,
+  HistoryIcon,
   KeyRoundIcon,
   LoaderIcon,
   PackageMinusIcon,
@@ -29,16 +30,27 @@ import type {
   ProviderExtensionSkill,
 } from "@t3tools/contracts";
 import { ProviderDriverKind, type ProviderInstanceId } from "@t3tools/contracts";
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { openInPreferredEditor } from "../../editorPreferences";
 import { ensureLocalApi } from "../../localApi";
 import {
+  buildExtensionJsonSchemaFormArguments,
   deriveDetectedProviderThreadId,
+  deriveExtensionJsonSchemaFormFields,
   extensionTextMatchesFilter,
   extensionProviderDriverSortRank,
   isLikelyLocalPath,
+  makeExtensionJsonSchemaFormDefaults,
   type ExtensionItemKind,
 } from "./ExtensionsSettings.logic";
 import {
@@ -65,15 +77,28 @@ import {
 } from "../ui/dialog";
 import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
 import { deriveSettingsProjectOptions } from "./settingsProjectOptions";
+import { cn } from "../../lib/utils";
 
-const COMPACT_LIST_PREVIEW_LIMIT = 8;
+const EXTENSION_SECTION_PREVIEW_LIMIT = 10;
+const EXTENSION_BROWSER_PAGE_SIZE = 80;
 const EXTENSIONS_CODEX_DRIVER = ProviderDriverKind.make("codex");
 const EXTENSIONS_CLAUDE_DRIVER = ProviderDriverKind.make("claudeAgent");
+type ExtensionSectionKey = "plugins" | "skills" | "mcpServers" | "apps";
+type ExtensionBrowserFilter =
+  | "all"
+  | "enabled"
+  | "disabled"
+  | "installed"
+  | "needs-auth"
+  | "official"
+  | "local";
+type ExtensionBrowserSort = "recommended" | "name" | "status" | "category";
 
 type ExtensionItem =
   | {
@@ -116,6 +141,31 @@ type ExtensionItem =
       readonly searchValues: ReadonlyArray<string | null | undefined>;
       readonly app: ProviderExtensionApp;
     };
+
+interface ExtensionSectionConfig {
+  readonly key: ExtensionSectionKey;
+  readonly title: string;
+  readonly label: string;
+  readonly browseLabel: string;
+  readonly icon: ReactNode;
+  readonly items: ReadonlyArray<ExtensionItem>;
+  readonly totalCount: number;
+  readonly emptyLabel: string;
+}
+
+type ExtensionActionStatus = "running" | "success" | "error";
+
+interface ExtensionActionHistoryEntry {
+  readonly label: string;
+  readonly status: ExtensionActionStatus;
+  readonly startedAt: string;
+  readonly durationMs?: number | undefined;
+  readonly output?: string | undefined;
+}
+
+function extensionItemActionKey(item: ExtensionItem): string {
+  return `${item.provider.instanceId}:${item.kind}:${item.id}`;
+}
 
 function statusVariant(status: ProviderExtensionProviderInventory["status"]) {
   switch (status) {
@@ -176,12 +226,45 @@ function formatBoolean(value: boolean | undefined): string | undefined {
   return value ? "Yes" : "No";
 }
 
-function CountPill({ label, value }: { label: string; value: number }) {
+function SectionTabButton({
+  label,
+  value,
+  totalValue,
+  active,
+  icon,
+  panelId,
+  onClick,
+}: {
+  label: string;
+  value: number;
+  totalValue: number;
+  active: boolean;
+  icon: ReactNode;
+  panelId: string;
+  onClick: () => void;
+}) {
+  const countLabel = value === totalValue ? String(totalValue) : `${value}/${totalValue}`;
+
   return (
-    <span className="inline-flex h-5 items-center gap-1 rounded-sm border border-border/70 px-1.5 text-[11px] text-muted-foreground">
-      <span className="font-mono tabular-nums text-foreground/80">{value}</span>
-      {label}
-    </span>
+    <Button
+      size="xs"
+      variant={active ? "outline" : "ghost"}
+      className={cn(
+        "h-7 justify-start rounded-sm px-2 text-[11px]",
+        active
+          ? "border-primary/35 bg-accent/70 text-foreground shadow-none"
+          : "text-muted-foreground hover:text-foreground",
+      )}
+      role="tab"
+      aria-selected={active}
+      aria-controls={panelId}
+      data-pressed={active ? "" : undefined}
+      onClick={onClick}
+    >
+      {icon}
+      <span>{label}</span>
+      <span className="ml-1 font-mono tabular-nums text-foreground/80">{countLabel}</span>
+    </Button>
   );
 }
 
@@ -310,6 +393,236 @@ function filterExtensionItems(
   filterText: string,
 ): ReadonlyArray<ExtensionItem> {
   return items.filter((item) => extensionTextMatchesFilter(item.searchValues, filterText));
+}
+
+function compareExtensionItemsByTitle(left: ExtensionItem, right: ExtensionItem): number {
+  return left.title.localeCompare(right.title, undefined, { sensitivity: "base" });
+}
+
+function extensionItemInstalled(item: ExtensionItem): boolean {
+  if (item.kind === "plugin") return item.plugin.installed === true;
+  if (item.kind === "app") return item.app.accessible === true;
+  return false;
+}
+
+function extensionItemNeedsAuth(item: ExtensionItem): boolean {
+  if (item.kind === "mcp") {
+    const authStatus = item.server.authStatus?.toLowerCase() ?? "";
+    const status = item.server.status?.toLowerCase() ?? "";
+    const detail = item.server.detail?.toLowerCase() ?? "";
+    return [authStatus, status, detail].some(
+      (value) =>
+        value.includes("unauth") ||
+        value.includes("not logged in") ||
+        value.includes("notloggedin") ||
+        value.includes("not authenticated") ||
+        value.includes("needs auth") ||
+        value.includes("login required") ||
+        value.includes("expired"),
+    );
+  }
+
+  if (item.kind === "plugin") {
+    const authPolicy = item.plugin.authPolicy?.toLowerCase() ?? "";
+    const availability = item.plugin.availability?.toLowerCase() ?? "";
+    return [authPolicy, availability].some(
+      (value) =>
+        value.includes("unauth") ||
+        value.includes("not authenticated") ||
+        value.includes("needs auth") ||
+        value.includes("login required") ||
+        value.includes("expired"),
+    );
+  }
+
+  return false;
+}
+
+function extensionItemIsLocal(item: ExtensionItem): boolean {
+  if (extensionOpenPath(item)) return true;
+  if (item.kind === "plugin") {
+    return [item.plugin.source, item.plugin.projectPath, item.plugin.marketplacePath].some(
+      isLikelyLocalPath,
+    );
+  }
+  if (item.kind === "skill") {
+    return isLikelyLocalPath(item.skill.path) || isLikelyLocalPath(item.skill.source);
+  }
+  return false;
+}
+
+function extensionItemIsOfficial(item: ExtensionItem): boolean {
+  const values =
+    item.kind === "plugin"
+      ? [
+          item.plugin.source,
+          item.plugin.installPath,
+          item.plugin.marketplaceName,
+          item.plugin.marketplacePath,
+          item.plugin.remoteMarketplaceName,
+        ]
+      : item.kind === "skill"
+        ? [item.skill.source, item.skill.path]
+        : [item.provider.displayName, item.provider.driver];
+
+  return values.some((value) => {
+    const normalized = value?.toLowerCase() ?? "";
+    return (
+      normalized.includes("official") ||
+      normalized.includes("openai-curated") ||
+      normalized.includes("claude-plugins-official")
+    );
+  });
+}
+
+function extensionItemPriorityRank(item: ExtensionItem): number {
+  if (extensionItemNeedsAuth(item)) return 0;
+  if (item.enabled === true) return 1;
+  if (extensionItemInstalled(item)) return 2;
+  if (extensionItemIsLocal(item)) return 3;
+  return 4;
+}
+
+function extensionItemStatusRank(item: ExtensionItem): number {
+  if (extensionItemNeedsAuth(item)) return 0;
+  if (item.enabled === true) return 1;
+  if (extensionItemInstalled(item)) return 2;
+  if (item.enabled === false) return 3;
+  return 4;
+}
+
+function extensionItemGroupLabel(item: ExtensionItem): string {
+  if (item.kind === "mcp") {
+    return item.server.status ?? item.server.authStatus ?? item.server.transport ?? "MCP servers";
+  }
+
+  if (item.kind === "plugin") {
+    const value =
+      item.plugin.description ??
+      item.plugin.scope ??
+      item.plugin.installPolicy ??
+      item.plugin.availability ??
+      item.plugin.source;
+    if (value && !value.includes("://") && !isLikelyLocalPath(value)) return value;
+    if (extensionItemIsOfficial(item)) return "Official";
+    if (extensionItemIsLocal(item)) return "Local";
+    return "Plugins";
+  }
+
+  if (item.kind === "skill") {
+    return item.skill.scope ?? item.skill.source ?? "Skills";
+  }
+
+  if (item.kind === "app") {
+    if (item.app.enabled === false) return "Disabled";
+    if (item.app.accessible === false) return "Unavailable";
+    return "Apps";
+  }
+
+  return "Other";
+}
+
+function extensionItemGroupKey(item: ExtensionItem, sort: ExtensionBrowserSort): string {
+  if (sort === "name") {
+    const firstLetter = item.title.trim().charAt(0).toUpperCase();
+    return /^[A-Z0-9]$/.test(firstLetter) ? firstLetter : "#";
+  }
+  if (sort === "status") {
+    if (extensionItemNeedsAuth(item)) return "Needs auth";
+    if (item.enabled === true) return "Enabled";
+    if (extensionItemInstalled(item)) return "Installed";
+    if (item.enabled === false) return "Disabled";
+    return "Available";
+  }
+  return extensionItemGroupLabel(item);
+}
+
+function sortExtensionItems(
+  items: ReadonlyArray<ExtensionItem>,
+  sort: ExtensionBrowserSort,
+): ReadonlyArray<ExtensionItem> {
+  return items.toSorted((left, right) => {
+    if (sort === "name") return compareExtensionItemsByTitle(left, right);
+    if (sort === "status") {
+      const statusRank = extensionItemStatusRank(left) - extensionItemStatusRank(right);
+      return statusRank || compareExtensionItemsByTitle(left, right);
+    }
+    if (sort === "category") {
+      const categoryRank = extensionItemGroupLabel(left).localeCompare(
+        extensionItemGroupLabel(right),
+        undefined,
+        { sensitivity: "base" },
+      );
+      return categoryRank || compareExtensionItemsByTitle(left, right);
+    }
+    const priorityRank = extensionItemPriorityRank(left) - extensionItemPriorityRank(right);
+    return priorityRank || compareExtensionItemsByTitle(left, right);
+  });
+}
+
+function extensionItemMatchesBrowserFilter(
+  item: ExtensionItem,
+  filter: ExtensionBrowserFilter,
+): boolean {
+  switch (filter) {
+    case "all":
+      return true;
+    case "enabled":
+      return item.enabled === true;
+    case "disabled":
+      return item.enabled === false;
+    case "installed":
+      return extensionItemInstalled(item);
+    case "needs-auth":
+      return extensionItemNeedsAuth(item);
+    case "official":
+      return extensionItemIsOfficial(item);
+    case "local":
+      return extensionItemIsLocal(item);
+  }
+}
+
+function codexMcpSupportsLoginAction(item: ExtensionItem): boolean {
+  if (item.kind !== "mcp") return false;
+  const authStatus = item.server.authStatus?.toLowerCase() ?? "";
+  return (
+    authStatus.includes("oauth") ||
+    authStatus.includes("not logged in") ||
+    authStatus.includes("notloggedin") ||
+    authStatus.includes("needs auth")
+  );
+}
+
+function ExtensionItemBadges({ item }: { item: ExtensionItem }) {
+  return (
+    <div className="flex shrink-0 flex-wrap justify-end gap-1">
+      {extensionItemNeedsAuth(item) ? (
+        <Badge size="sm" variant="warning">
+          Auth
+        </Badge>
+      ) : null}
+      {typeof item.enabled === "boolean" ? (
+        <Badge size="sm" variant={item.enabled ? "success" : "outline"}>
+          {item.enabled ? "On" : "Off"}
+        </Badge>
+      ) : null}
+      {extensionItemInstalled(item) ? (
+        <Badge size="sm" variant="outline">
+          Installed
+        </Badge>
+      ) : null}
+      {extensionItemIsOfficial(item) ? (
+        <Badge size="sm" variant="outline">
+          Official
+        </Badge>
+      ) : null}
+      {extensionItemIsLocal(item) ? (
+        <Badge size="sm" variant="outline">
+          Local
+        </Badge>
+      ) : null}
+    </div>
+  );
 }
 
 function extensionOpenPath(item: ExtensionItem): string | null {
@@ -583,6 +896,44 @@ function ExtensionActionOutput({ value }: { value: string | null }) {
   );
 }
 
+function formatDuration(milliseconds: number): string {
+  if (milliseconds < 1000) return `${Math.max(1, Math.round(milliseconds))} ms`;
+  return `${(milliseconds / 1000).toFixed(1)} s`;
+}
+
+function actionOutputPreview(value: string | null | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  return trimmed.length > 320 ? `${trimmed.slice(0, 317).trimEnd()}...` : trimmed;
+}
+
+function ExtensionActionSummary({ entry }: { entry?: ExtensionActionHistoryEntry | undefined }) {
+  if (!entry) return null;
+  const variant =
+    entry.status === "success" ? "success" : entry.status === "error" ? "error" : "outline";
+
+  return (
+    <div className="rounded-md border border-border/60 bg-background px-3 py-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <HistoryIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+        <span className="text-[11px] font-semibold uppercase text-muted-foreground/70">
+          Last action
+        </span>
+        <Badge size="sm" variant={variant}>
+          {entry.status === "running" ? "Running" : entry.status === "success" ? "Done" : "Failed"}
+        </Badge>
+        <span className="min-w-0 truncate font-mono text-[11px] text-foreground/80">
+          {entry.label}
+          {entry.durationMs !== undefined ? ` (${formatDuration(entry.durationMs)})` : ""}
+        </span>
+      </div>
+      {entry.output ? (
+        <div className="mt-1 truncate text-[11px] text-muted-foreground/70">{entry.output}</div>
+      ) : null}
+    </div>
+  );
+}
+
 function ExtensionToolsList({
   tools,
   onSelectTool,
@@ -725,18 +1076,24 @@ function ExtensionDetailDialog({
   cwd,
   providerThreadId,
   onInventoryMutated,
+  lastAction,
+  onActionHistoryChange,
 }: {
   item: ExtensionItem | null;
   onClose: () => void;
   cwd: string;
   providerThreadId: string;
   onInventoryMutated: () => Promise<void>;
+  lastAction?: ExtensionActionHistoryEntry | undefined;
+  onActionHistoryChange: (itemKey: string, entry: ExtensionActionHistoryEntry) => void;
 }) {
   const openPath = item ? extensionOpenPath(item) : null;
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [actionOutput, setActionOutput] = useState<string | null>(null);
   const [selectedTool, setSelectedTool] = useState<ProviderExtensionMcpTool | null>(null);
   const [toolArguments, setToolArguments] = useState("{}");
+  const [toolArgumentMode, setToolArgumentMode] = useState<"form" | "json">("json");
+  const [toolFormValues, setToolFormValues] = useState<Record<string, string | boolean>>({});
   const pollRef = useRef(0);
 
   useEffect(() => {
@@ -744,19 +1101,49 @@ function ExtensionDetailDialog({
     setActionOutput(null);
     setSelectedTool(null);
     setToolArguments("{}");
+    setToolArgumentMode("json");
+    setToolFormValues({});
     pollRef.current += 1;
   }, [item?.kind, item?.id]);
 
   const runDialogAction = useCallback(
     async (label: string, action: () => Promise<string | null | undefined>) => {
+      const itemKey = item ? extensionItemActionKey(item) : null;
+      const startedAt = new Date().toISOString();
+      const startedMs = performance.now();
       setBusyAction(label);
       setActionOutput(null);
+      if (itemKey) {
+        onActionHistoryChange(itemKey, {
+          label,
+          status: "running",
+          startedAt,
+        });
+      }
       try {
         const output = await action();
         if (output) setActionOutput(output);
+        if (itemKey) {
+          onActionHistoryChange(itemKey, {
+            label,
+            status: "success",
+            startedAt,
+            durationMs: performance.now() - startedMs,
+            ...(actionOutputPreview(output) ? { output: actionOutputPreview(output) } : {}),
+          });
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : "An error occurred.";
         setActionOutput(message);
+        if (itemKey) {
+          onActionHistoryChange(itemKey, {
+            label,
+            status: "error",
+            startedAt,
+            durationMs: performance.now() - startedMs,
+            ...(actionOutputPreview(message) ? { output: actionOutputPreview(message) } : {}),
+          });
+        }
         toastManager.add(
           stackedThreadToast({
             type: "error",
@@ -768,7 +1155,7 @@ function ExtensionDetailDialog({
         setBusyAction((current) => (current === label ? null : current));
       }
     },
-    [],
+    [item, onActionHistoryChange],
   );
 
   const startMcpOAuth = useCallback(() => {
@@ -906,6 +1293,11 @@ function ExtensionDetailDialog({
     });
   }, [cwd, item, onInventoryMutated, runDialogAction]);
 
+  const selectedToolFormFields = useMemo(
+    () => deriveExtensionJsonSchemaFormFields(selectedTool?.inputSchema),
+    [selectedTool],
+  );
+
   const runSelectedTool = useCallback(() => {
     if (!item || item.kind !== "mcp" || !selectedTool) return;
     void runDialogAction("Run tool", async () => {
@@ -913,16 +1305,30 @@ function ExtensionDetailDialog({
       if (!threadId) {
         return "A provider thread id is required to run MCP tools.";
       }
+      const argumentsValue =
+        toolArgumentMode === "form" && selectedToolFormFields
+          ? buildExtensionJsonSchemaFormArguments(selectedToolFormFields, toolFormValues)
+          : parseJsonInput(toolArguments);
       const result = await ensureLocalApi().server.callProviderExtensionMcpTool({
         ...actionBaseInput(item, cwd),
         serverName: item.server.name,
         toolName: selectedTool.name,
         providerThreadId: threadId,
-        arguments: parseJsonInput(toolArguments),
+        arguments: argumentsValue,
       });
       return formatJson(result);
     });
-  }, [cwd, item, providerThreadId, runDialogAction, selectedTool, toolArguments]);
+  }, [
+    cwd,
+    item,
+    providerThreadId,
+    runDialogAction,
+    selectedTool,
+    selectedToolFormFields,
+    toolArgumentMode,
+    toolArguments,
+    toolFormValues,
+  ]);
 
   const readResource = useCallback(
     (uri: string) => {
@@ -943,6 +1349,7 @@ function ExtensionDetailDialog({
 
   const codexActionsAvailable = item ? isCodexProvider(item.provider) : false;
   const claudeActionsAvailable = item ? isClaudeProvider(item.provider) : false;
+  const codexMcpLoginAvailable = item ? codexMcpSupportsLoginAction(item) : false;
   const mcpTools =
     item?.kind === "mcp"
       ? (item.server.toolDefinitions ??
@@ -950,6 +1357,13 @@ function ExtensionDetailDialog({
           (tool) => ({ name: tool }) satisfies ProviderExtensionMcpTool,
         ))
       : [];
+  const selectTool = useCallback((tool: ProviderExtensionMcpTool) => {
+    const formFields = deriveExtensionJsonSchemaFormFields(tool.inputSchema);
+    setSelectedTool(tool);
+    setToolArguments("{}");
+    setToolArgumentMode(formFields ? "form" : "json");
+    setToolFormValues(formFields ? makeExtensionJsonSchemaFormDefaults(formFields) : {});
+  }, []);
 
   return (
     <Dialog
@@ -1072,13 +1486,7 @@ function ExtensionDetailDialog({
             </dl>
             {item.kind === "mcp" ? (
               <>
-                <ExtensionToolsList
-                  tools={mcpTools}
-                  onSelectTool={(tool) => {
-                    setSelectedTool(tool);
-                    setToolArguments("{}");
-                  }}
-                />
+                <ExtensionToolsList tools={mcpTools} onSelectTool={selectTool} />
                 <ExtensionResourcesList server={item.server} onReadResource={readResource} />
                 {selectedTool ? (
                   <div className="space-y-2 border-t border-border/50 pt-3">
@@ -1105,36 +1513,153 @@ function ExtensionDetailDialog({
                         Run
                       </Button>
                     </div>
-                    <Textarea
-                      size="sm"
-                      spellCheck={false}
-                      value={toolArguments}
-                      onChange={(event) => setToolArguments(event.currentTarget.value)}
-                      className="font-mono text-xs"
-                      aria-label="Tool arguments JSON"
-                    />
+                    {selectedToolFormFields ? (
+                      <div className="flex gap-1">
+                        <Button
+                          size="xs"
+                          variant={toolArgumentMode === "form" ? "default" : "outline"}
+                          onClick={() => setToolArgumentMode("form")}
+                        >
+                          Form
+                        </Button>
+                        <Button
+                          size="xs"
+                          variant={toolArgumentMode === "json" ? "default" : "outline"}
+                          onClick={() => setToolArgumentMode("json")}
+                        >
+                          JSON
+                        </Button>
+                      </div>
+                    ) : null}
+                    {toolArgumentMode === "form" && selectedToolFormFields ? (
+                      <div className="grid gap-2 rounded-md border border-border/60 bg-background p-3">
+                        {selectedToolFormFields.map((field) => {
+                          const value = toolFormValues[field.name];
+                          return (
+                            <label key={field.name} className="grid gap-1.5">
+                              <span className="flex min-w-0 items-center gap-2">
+                                <span className="truncate font-mono text-[11px] font-medium text-foreground/90">
+                                  {field.name}
+                                </span>
+                                {field.required ? (
+                                  <Badge size="sm" variant="outline">
+                                    required
+                                  </Badge>
+                                ) : null}
+                              </span>
+                              {field.description ? (
+                                <span className="text-[11px] text-muted-foreground/70">
+                                  {field.description}
+                                </span>
+                              ) : null}
+                              {field.type === "boolean" ? (
+                                <div className="flex items-center gap-2">
+                                  <Switch
+                                    checked={value === true}
+                                    onCheckedChange={(checked) =>
+                                      setToolFormValues((current) => ({
+                                        ...current,
+                                        [field.name]: Boolean(checked),
+                                      }))
+                                    }
+                                    aria-label={field.name}
+                                  />
+                                  <span className="text-xs text-muted-foreground">
+                                    {value === true ? "True" : "False"}
+                                  </span>
+                                </div>
+                              ) : field.type === "json" ? (
+                                <Textarea
+                                  size="sm"
+                                  spellCheck={false}
+                                  value={typeof value === "string" ? value : ""}
+                                  onChange={(event) =>
+                                    setToolFormValues((current) => ({
+                                      ...current,
+                                      [field.name]: event.currentTarget.value,
+                                    }))
+                                  }
+                                  className="font-mono text-xs"
+                                  aria-label={`${field.name} JSON`}
+                                />
+                              ) : field.enumValues ? (
+                                <Select
+                                  value={typeof value === "string" ? value : ""}
+                                  onValueChange={(nextValue) =>
+                                    setToolFormValues((current) => ({
+                                      ...current,
+                                      [field.name]: nextValue ?? "",
+                                    }))
+                                  }
+                                >
+                                  <SelectTrigger className="w-full" aria-label={field.name}>
+                                    <SelectValue>
+                                      {typeof value === "string" && value
+                                        ? value
+                                        : `Select ${field.name}`}
+                                    </SelectValue>
+                                  </SelectTrigger>
+                                  <SelectPopup align="start" alignItemWithTrigger={false}>
+                                    {field.enumValues.map((enumValue) => (
+                                      <SelectItem key={enumValue} hideIndicator value={enumValue}>
+                                        {enumValue}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectPopup>
+                                </Select>
+                              ) : (
+                                <Input
+                                  nativeInput
+                                  type={field.type === "number" ? "number" : "text"}
+                                  value={typeof value === "string" ? value : ""}
+                                  onChange={(event) =>
+                                    setToolFormValues((current) => ({
+                                      ...current,
+                                      [field.name]: event.currentTarget.value,
+                                    }))
+                                  }
+                                  aria-label={field.name}
+                                />
+                              )}
+                            </label>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <Textarea
+                        size="sm"
+                        spellCheck={false}
+                        value={toolArguments}
+                        onChange={(event) => setToolArguments(event.currentTarget.value)}
+                        className="font-mono text-xs"
+                        aria-label="Tool arguments JSON"
+                      />
+                    )}
                   </div>
                 ) : null}
               </>
             ) : null}
+            <ExtensionActionSummary entry={lastAction} />
             <ExtensionActionOutput value={actionOutput} />
           </DialogPanel>
           <DialogFooter>
             {codexActionsAvailable && item.kind === "mcp" ? (
               <>
-                <Button
-                  size="xs"
-                  variant="outline"
-                  disabled={busyAction !== null}
-                  onClick={startMcpOAuth}
-                >
-                  {busyAction === "OAuth" ? (
-                    <LoaderIcon className="size-3.5 animate-spin" />
-                  ) : (
-                    <KeyRoundIcon className="size-3.5" />
-                  )}
-                  OAuth
-                </Button>
+                {codexMcpLoginAvailable ? (
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    disabled={busyAction !== null}
+                    onClick={startMcpOAuth}
+                  >
+                    {busyAction === "OAuth" ? (
+                      <LoaderIcon className="size-3.5 animate-spin" />
+                    ) : (
+                      <KeyRoundIcon className="size-3.5" />
+                    )}
+                    OAuth
+                  </Button>
+                ) : null}
                 <Button
                   size="xs"
                   variant="outline"
@@ -1148,16 +1673,18 @@ function ExtensionDetailDialog({
                   )}
                   Reload MCP
                 </Button>
-                <Button
-                  size="xs"
-                  variant="outline"
-                  onClick={() =>
-                    copyText(codexMcpLoginCommand(item.server.name), "Terminal login command")
-                  }
-                >
-                  <TerminalIcon className="size-3.5" />
-                  Copy login
-                </Button>
+                {codexMcpLoginAvailable ? (
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    onClick={() =>
+                      copyText(codexMcpLoginCommand(item.server.name), "Terminal login command")
+                    }
+                  >
+                    <TerminalIcon className="size-3.5" />
+                    Copy login
+                  </Button>
+                ) : null}
               </>
             ) : null}
             {codexActionsAvailable && item.kind === "skill" ? (
@@ -1326,85 +1853,396 @@ function ExtensionDetailDialog({
   );
 }
 
-function ExtensionListSection({
+function ExtensionPreviewSection({
   title,
   items,
   totalCount,
   emptyLabel,
   filterText,
-  expanded,
-  onToggleExpanded,
   onSelect,
+  panelId,
+  browseLabel,
+  onBrowse,
 }: {
   title: string;
   items: ReadonlyArray<ExtensionItem>;
   totalCount: number;
   emptyLabel: string;
   filterText: string;
-  expanded: boolean;
-  onToggleExpanded: () => void;
   onSelect: (item: ExtensionItem) => void;
+  panelId: string;
+  browseLabel: string;
+  onBrowse: () => void;
 }) {
   const isFiltering = filterText.trim().length > 0;
-  const visibleItems = isFiltering || expanded ? items : items.slice(0, COMPACT_LIST_PREVIEW_LIMIT);
+  const visibleItems = items.slice(0, EXTENSION_SECTION_PREVIEW_LIMIT);
   const hiddenCount = Math.max(0, items.length - visibleItems.length);
 
   return (
-    <div className="min-w-0 space-y-1.5">
-      <div className="flex min-h-5 items-center justify-between gap-2">
-        <div className="text-[11px] font-semibold uppercase text-muted-foreground/70">{title}</div>
+    <div
+      id={panelId}
+      role="tabpanel"
+      className="min-w-0 rounded-md border border-border/60 bg-background/35"
+    >
+      <div className="flex min-h-10 items-center justify-between gap-3 border-b border-border/50 px-3 py-2">
+        <div className="min-w-0">
+          <div className="text-[11px] font-semibold uppercase text-muted-foreground/70">
+            {title}
+          </div>
+          {totalCount > 0 ? (
+            <div className="mt-0.5 text-[11px] text-muted-foreground/65">
+              {isFiltering ? `${items.length} matching ${totalCount} total` : `${totalCount} total`}
+            </div>
+          ) : null}
+        </div>
         {totalCount > 0 ? (
           <span className="font-mono text-[10px] text-muted-foreground/60">
-            {items.length === totalCount ? totalCount : `${items.length}/${totalCount}`}
+            {visibleItems.length === items.length
+              ? `${items.length}`
+              : `${visibleItems.length}/${items.length}`}
           </span>
         ) : null}
       </div>
       {visibleItems.length > 0 ? (
-        <div className="divide-y divide-border/50 rounded-md border border-border/60">
-          {visibleItems.map((item) => (
+        <>
+          <div className="divide-y divide-border/50">
+            {visibleItems.map((item) => (
+              <button
+                key={`${item.kind}:${item.id}`}
+                className="group flex min-h-10 w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-accent/55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onClick={() => onSelect(item)}
+                type="button"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-xs font-medium text-foreground">{item.title}</div>
+                  {item.detail ? (
+                    <div className="truncate text-[11px] text-muted-foreground/70">
+                      {item.detail}
+                    </div>
+                  ) : null}
+                </div>
+                <ExtensionItemBadges item={item} />
+                <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground/45 transition-colors group-hover:text-muted-foreground" />
+              </button>
+            ))}
+          </div>
+          {items.length > 0 ? (
             <button
-              key={`${item.kind}:${item.id}`}
-              className="group flex min-h-9 w-full items-center gap-2 px-2.5 py-1.5 text-left transition-colors hover:bg-accent/55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              onClick={() => onSelect(item)}
+              className="w-full border-t border-border/50 px-3 py-2 text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              onClick={onBrowse}
               type="button"
             >
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-xs font-medium text-foreground">{item.title}</div>
-                {item.detail ? (
-                  <div className="truncate text-[11px] text-muted-foreground/70">{item.detail}</div>
-                ) : null}
-              </div>
-              {typeof item.enabled === "boolean" ? (
-                <Badge size="sm" variant={item.enabled ? "success" : "outline"}>
-                  {item.enabled ? "On" : "Off"}
-                </Badge>
-              ) : null}
-              <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground/45 transition-colors group-hover:text-muted-foreground" />
-            </button>
-          ))}
-          {hiddenCount > 0 ? (
-            <button
-              className="w-full px-2.5 py-1.5 text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              onClick={onToggleExpanded}
-              type="button"
-            >
-              Show {hiddenCount} more
+              {hiddenCount > 0 ? `${browseLabel} (${hiddenCount} more)` : browseLabel}
             </button>
           ) : null}
-          {!isFiltering && expanded && items.length > COMPACT_LIST_PREVIEW_LIMIT ? (
-            <button
-              className="w-full px-2.5 py-1.5 text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              onClick={onToggleExpanded}
-              type="button"
-            >
-              Show less
-            </button>
+        </>
+      ) : (
+        <div className="px-3 py-2">
+          <EmptyList label={isFiltering && totalCount > 0 ? "No matches." : emptyLabel} />
+          {totalCount > 0 ? (
+            <Button size="xs" variant="outline" className="mt-2" onClick={onBrowse}>
+              {browseLabel}
+            </Button>
           ) : null}
         </div>
-      ) : (
-        <EmptyList label={isFiltering && totalCount > 0 ? "No matches." : emptyLabel} />
       )}
     </div>
+  );
+}
+
+const EXTENSION_BROWSER_FILTER_OPTIONS: ReadonlyArray<{
+  readonly value: ExtensionBrowserFilter;
+  readonly label: string;
+}> = [
+  { value: "all", label: "All" },
+  { value: "enabled", label: "Enabled" },
+  { value: "disabled", label: "Disabled" },
+  { value: "installed", label: "Installed" },
+  { value: "needs-auth", label: "Needs auth" },
+  { value: "official", label: "Official" },
+  { value: "local", label: "Local" },
+];
+
+const EXTENSION_BROWSER_SORT_OPTIONS: ReadonlyArray<{
+  readonly value: ExtensionBrowserSort;
+  readonly label: string;
+}> = [
+  { value: "recommended", label: "Recommended" },
+  { value: "name", label: "Name" },
+  { value: "status", label: "Status" },
+  { value: "category", label: "Category" },
+];
+
+function groupExtensionItems(
+  items: ReadonlyArray<ExtensionItem>,
+  sort: ExtensionBrowserSort,
+): ReadonlyArray<{
+  readonly key: string;
+  readonly label: string;
+  readonly items: ReadonlyArray<ExtensionItem>;
+}> {
+  const groups = new Map<string, ExtensionItem[]>();
+  for (const item of items) {
+    const key = extensionItemGroupKey(item, sort);
+    const existing = groups.get(key);
+    if (existing) {
+      existing.push(item);
+    } else {
+      groups.set(key, [item]);
+    }
+  }
+
+  return [...groups.entries()].map(([key, groupItems]) => ({
+    key,
+    label: key,
+    items: groupItems,
+  }));
+}
+
+function ExtensionBrowserDialog({
+  section,
+  providerLabel,
+  initialQuery,
+  onClose,
+  onSelect,
+}: {
+  section: ExtensionSectionConfig | null;
+  providerLabel: string;
+  initialQuery: string;
+  onClose: () => void;
+  onSelect: (item: ExtensionItem) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<ExtensionBrowserFilter>("all");
+  const [sort, setSort] = useState<ExtensionBrowserSort>("recommended");
+  const [visibleLimit, setVisibleLimit] = useState(EXTENSION_BROWSER_PAGE_SIZE);
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    setQuery(initialQuery);
+    setFilter("all");
+    setSort("recommended");
+    setVisibleLimit(EXTENSION_BROWSER_PAGE_SIZE);
+    setCollapsedGroups({});
+  }, [initialQuery, section?.key, section?.totalCount]);
+
+  const searchedItems = useMemo(
+    () => filterExtensionItems(section?.items ?? [], query),
+    [query, section?.items],
+  );
+  const filterCounts = useMemo(
+    () =>
+      Object.fromEntries(
+        EXTENSION_BROWSER_FILTER_OPTIONS.map((option) => [
+          option.value,
+          searchedItems.filter((item) => extensionItemMatchesBrowserFilter(item, option.value))
+            .length,
+        ]),
+      ) as Record<ExtensionBrowserFilter, number>,
+    [searchedItems],
+  );
+  const browserItems = useMemo(
+    () =>
+      sortExtensionItems(
+        searchedItems.filter((item) => extensionItemMatchesBrowserFilter(item, filter)),
+        sort,
+      ),
+    [filter, searchedItems, sort],
+  );
+  const visibleItems = browserItems.slice(0, visibleLimit);
+  const groups = useMemo(() => groupExtensionItems(visibleItems, sort), [sort, visibleItems]);
+  const hiddenCount = Math.max(0, browserItems.length - visibleItems.length);
+  const nextVisibleCount = Math.min(EXTENSION_BROWSER_PAGE_SIZE, hiddenCount);
+  const hasActiveRefinement = query.trim().length > 0 || filter !== "all" || sort !== "recommended";
+
+  const toggleGroup = useCallback((groupKey: string) => {
+    setCollapsedGroups((current) => ({ ...current, [groupKey]: !current[groupKey] }));
+  }, []);
+
+  return (
+    <Dialog
+      open={section !== null}
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+    >
+      {section ? (
+        <DialogPopup className="max-h-[min(86vh,54rem)] max-w-5xl overflow-hidden">
+          <DialogHeader className="shrink-0 border-b border-border/70 bg-background">
+            <div className="flex min-w-0 items-start gap-3 pr-8">
+              <span className="mt-0.5 inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/40 text-muted-foreground">
+                {section.icon}
+              </span>
+              <div className="min-w-0 space-y-1">
+                <DialogTitle className="truncate text-base">
+                  Browse {section.title.toLowerCase()}
+                </DialogTitle>
+                <DialogDescription>
+                  {providerLabel} - {browserItems.length} visible from {section.totalCount} total
+                </DialogDescription>
+              </div>
+            </div>
+          </DialogHeader>
+          <div className="shrink-0 space-y-3 border-b border-border/70 bg-muted/15 px-6 py-4">
+            <div className="grid gap-2 lg:grid-cols-[minmax(14rem,1fr)_12rem]">
+              <div className="relative min-w-0">
+                <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground/60" />
+                <Input
+                  nativeInput
+                  type="search"
+                  value={query}
+                  onChange={(event) => {
+                    setQuery(event.currentTarget.value);
+                    setVisibleLimit(EXTENSION_BROWSER_PAGE_SIZE);
+                  }}
+                  placeholder={`Search ${section.title.toLowerCase()}`}
+                  className="w-full [&_[data-slot=input]]:pl-8"
+                  aria-label={`Search ${section.title.toLowerCase()}`}
+                />
+              </div>
+              <Select
+                value={sort}
+                onValueChange={(value) => {
+                  setSort(value as ExtensionBrowserSort);
+                  setVisibleLimit(EXTENSION_BROWSER_PAGE_SIZE);
+                }}
+              >
+                <SelectTrigger className="w-full" aria-label="Sort extensions">
+                  <SelectValue>
+                    {EXTENSION_BROWSER_SORT_OPTIONS.find((option) => option.value === sort)
+                      ?.label ?? "Recommended"}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  {EXTENSION_BROWSER_SORT_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} hideIndicator value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {EXTENSION_BROWSER_FILTER_OPTIONS.map((option) => (
+                <Button
+                  key={option.value}
+                  size="xs"
+                  variant={filter === option.value ? "outline" : "ghost"}
+                  className={cn(
+                    "h-7 rounded-sm px-2 text-[11px]",
+                    filter === option.value
+                      ? "border-primary/35 bg-accent/70 text-foreground shadow-none"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                  data-pressed={filter === option.value ? "" : undefined}
+                  onClick={() => {
+                    setFilter(option.value);
+                    setVisibleLimit(EXTENSION_BROWSER_PAGE_SIZE);
+                  }}
+                >
+                  {option.label}
+                  <span className="font-mono tabular-nums text-foreground/80">
+                    {filterCounts[option.value]}
+                  </span>
+                </Button>
+              ))}
+              {hasActiveRefinement ? (
+                <Button
+                  size="xs"
+                  variant="outline"
+                  className="ml-auto"
+                  onClick={() => {
+                    setQuery("");
+                    setFilter("all");
+                    setSort("recommended");
+                    setVisibleLimit(EXTENSION_BROWSER_PAGE_SIZE);
+                    setCollapsedGroups({});
+                  }}
+                >
+                  Clear
+                </Button>
+              ) : null}
+            </div>
+          </div>
+          <div className="min-h-0 p-0">
+            {visibleItems.length > 0 ? (
+              <div className="max-h-[min(58vh,36rem)] overflow-y-auto overscroll-contain">
+                {groups.map((group) => {
+                  const collapsed = collapsedGroups[group.key] === true;
+                  return (
+                    <div key={group.key} className="border-b border-border/50 last:border-b-0">
+                      <button
+                        type="button"
+                        className="sticky top-0 z-10 flex min-h-8 w-full items-center justify-between gap-3 border-b border-border/50 bg-background/95 px-4 py-1.5 text-left backdrop-blur"
+                        onClick={() => toggleGroup(group.key)}
+                      >
+                        <span className="min-w-0 truncate text-[11px] font-semibold uppercase text-muted-foreground/75">
+                          {group.label}
+                        </span>
+                        <span className="flex items-center gap-2 text-[10px] text-muted-foreground/60">
+                          <span className="font-mono tabular-nums">{group.items.length}</span>
+                          <ChevronDownIcon
+                            className={cn(
+                              "size-3 transition-transform",
+                              collapsed ? "-rotate-90" : "",
+                            )}
+                          />
+                        </span>
+                      </button>
+                      {!collapsed ? (
+                        <div className="divide-y divide-border/50">
+                          {group.items.map((item) => (
+                            <button
+                              key={`${item.kind}:${item.id}`}
+                              type="button"
+                              className="group flex min-h-11 w-full items-center gap-3 px-4 py-2 text-left transition-colors hover:bg-accent/55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                              onClick={() => {
+                                onClose();
+                                onSelect(item);
+                              }}
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="truncate text-xs font-medium text-foreground">
+                                  {item.title}
+                                </div>
+                                {item.detail ? (
+                                  <div className="truncate text-[11px] text-muted-foreground/70">
+                                    {item.detail}
+                                  </div>
+                                ) : null}
+                              </div>
+                              <ExtensionItemBadges item={item} />
+                              <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground/45 transition-colors group-hover:text-muted-foreground" />
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+                {hiddenCount > 0 ? (
+                  <button
+                    className="w-full border-t border-border/50 px-4 py-2 text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    onClick={() =>
+                      setVisibleLimit((current) =>
+                        Math.min(browserItems.length, current + EXTENSION_BROWSER_PAGE_SIZE),
+                      )
+                    }
+                    type="button"
+                  >
+                    Load {nextVisibleCount} more
+                  </button>
+                ) : null}
+              </div>
+            ) : (
+              <div className="px-6 py-5">
+                <EmptyList label="No extensions match the current browser filters." />
+              </div>
+            )}
+          </div>
+        </DialogPopup>
+      ) : null}
+    </Dialog>
   );
 }
 
@@ -1417,33 +2255,108 @@ function ProviderInventoryRow({
   filterText: string;
   onSelectItem: (item: ExtensionItem) => void;
 }) {
-  const [expandedSections, setExpandedSections] = useState<Record<ExtensionItemKind, boolean>>({
-    plugin: false,
-    skill: false,
-    mcp: false,
-    app: false,
-  });
+  const [activeSection, setActiveSection] = useState<ExtensionSectionKey>("plugins");
+  const [browseSection, setBrowseSection] = useState<ExtensionSectionKey | null>(null);
+  const [providerFilterText, setProviderFilterText] = useState("");
+  const deferredProviderFilterText = useDeferredValue(providerFilterText);
 
-  const toggleExpanded = useCallback((kind: ExtensionItemKind) => {
-    setExpandedSections((current) => ({ ...current, [kind]: !current[kind] }));
-  }, []);
+  const allItems = useMemo(
+    () => ({
+      plugins: provider.plugins.map((plugin) => pluginExtensionItem(provider, plugin)),
+      skills: provider.skills.map((skill) => skillExtensionItem(provider, skill)),
+      mcpServers: provider.mcpServers.map((server) => mcpExtensionItem(provider, server)),
+      apps: provider.apps.map((app) => appExtensionItem(provider, app)),
+    }),
+    [provider],
+  );
+  const filterProviderItems = useCallback(
+    (items: ReadonlyArray<ExtensionItem>) =>
+      filterExtensionItems(filterExtensionItems(items, filterText), deferredProviderFilterText),
+    [deferredProviderFilterText, filterText],
+  );
+  const filteredItems = useMemo(
+    () => ({
+      plugins: sortExtensionItems(filterProviderItems(allItems.plugins), "recommended"),
+      skills: sortExtensionItems(filterProviderItems(allItems.skills), "recommended"),
+      mcpServers: sortExtensionItems(filterProviderItems(allItems.mcpServers), "recommended"),
+      apps: sortExtensionItems(filterProviderItems(allItems.apps), "recommended"),
+    }),
+    [allItems, filterProviderItems],
+  );
+  const panelIdBase = useMemo(
+    () => `extensions-${String(provider.instanceId).replace(/[^a-zA-Z0-9_-]/g, "-")}`,
+    [provider.instanceId],
+  );
+  const initialSection =
+    provider.plugins.length > 0
+      ? "plugins"
+      : provider.skills.length > 0
+        ? "skills"
+        : provider.mcpServers.length > 0
+          ? "mcpServers"
+          : provider.apps.length > 0
+            ? "apps"
+            : "plugins";
+  const sections: ReadonlyArray<ExtensionSectionConfig> = [
+    {
+      key: "plugins" as const,
+      title: "Plugins",
+      label: "Plugins",
+      browseLabel: "Browse all plugins",
+      icon: <PlugIcon className="size-3.5" />,
+      items: filteredItems.plugins,
+      totalCount: provider.plugins.length,
+      emptyLabel: "No plugins reported.",
+    },
+    {
+      key: "skills" as const,
+      title: "Skills",
+      label: "Skills",
+      browseLabel: "Browse all skills",
+      icon: <FileTextIcon className="size-3.5" />,
+      items: filteredItems.skills,
+      totalCount: provider.skills.length,
+      emptyLabel: "No skills reported.",
+    },
+    {
+      key: "mcpServers" as const,
+      title: "MCP Servers",
+      label: "MCP",
+      browseLabel: "Browse MCP servers",
+      icon: <DatabaseIcon className="size-3.5" />,
+      items: filteredItems.mcpServers,
+      totalCount: provider.mcpServers.length,
+      emptyLabel: "No MCP servers reported.",
+    },
+    {
+      key: "apps" as const,
+      title: "Apps",
+      label: "Apps",
+      browseLabel: "Browse apps",
+      icon: <BotIcon className="size-3.5" />,
+      items: filteredItems.apps,
+      totalCount: provider.apps.length,
+      emptyLabel: "No apps reported.",
+    },
+  ];
+  const activeSectionConfig =
+    sections.find((section) => section.key === activeSection) ?? sections[0];
+  const browseSectionConfig = sections.find((section) => section.key === browseSection) ?? null;
+  const firstFilteredSection =
+    sections.find((section) => section.items.length > 0)?.key ?? initialSection;
+  const activeSectionItemCount = filteredItems[activeSection]?.length ?? 0;
 
-  const pluginItems = filterExtensionItems(
-    provider.plugins.map((plugin) => pluginExtensionItem(provider, plugin)),
-    filterText,
-  );
-  const skillItems = filterExtensionItems(
-    provider.skills.map((skill) => skillExtensionItem(provider, skill)),
-    filterText,
-  );
-  const mcpItems = filterExtensionItems(
-    provider.mcpServers.map((server) => mcpExtensionItem(provider, server)),
-    filterText,
-  );
-  const appItems = filterExtensionItems(
-    provider.apps.map((app) => appExtensionItem(provider, app)),
-    filterText,
-  );
+  useEffect(() => {
+    setActiveSection(initialSection);
+    setBrowseSection(null);
+    setProviderFilterText("");
+  }, [initialSection, provider.instanceId]);
+
+  useEffect(() => {
+    if (activeSectionItemCount === 0 && firstFilteredSection !== activeSection) {
+      setActiveSection(firstFilteredSection);
+    }
+  }, [activeSection, activeSectionItemCount, firstFilteredSection]);
 
   return (
     <SettingsRow
@@ -1457,55 +2370,65 @@ function ProviderInventoryRow({
       }
     >
       <div className="mt-3 space-y-3 border-t border-border/50 py-3">
-        <div className="flex flex-wrap gap-1.5">
-          <CountPill label="plugins" value={pluginItems.length} />
-          <CountPill label="skills" value={skillItems.length} />
-          <CountPill label="MCP" value={mcpItems.length} />
-          <CountPill label="apps" value={appItems.length} />
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <div className="relative min-w-0 flex-1">
+            <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground/60" />
+            <Input
+              nativeInput
+              type="search"
+              value={providerFilterText}
+              onChange={(event) => setProviderFilterText(event.currentTarget.value)}
+              placeholder={`Search ${providerTitle(provider)} extensions`}
+              className="w-full [&_[data-slot=input]]:pl-8"
+              aria-label={`Search ${providerTitle(provider)} extensions`}
+            />
+          </div>
+          {providerFilterText.trim().length > 0 ? (
+            <Button
+              size="xs"
+              variant="outline"
+              className="self-start sm:self-auto"
+              onClick={() => setProviderFilterText("")}
+            >
+              Clear
+            </Button>
+          ) : null}
         </div>
-        <div className="grid gap-3 md:grid-cols-2">
-          <ExtensionListSection
-            title="Plugins"
-            items={pluginItems}
-            totalCount={provider.plugins.length}
-            emptyLabel="No plugins reported."
-            filterText={filterText}
-            expanded={expandedSections.plugin}
-            onToggleExpanded={() => toggleExpanded("plugin")}
-            onSelect={onSelectItem}
-          />
-          <ExtensionListSection
-            title="Skills"
-            items={skillItems}
-            totalCount={provider.skills.length}
-            emptyLabel="No skills reported."
-            filterText={filterText}
-            expanded={expandedSections.skill}
-            onToggleExpanded={() => toggleExpanded("skill")}
-            onSelect={onSelectItem}
-          />
-          <ExtensionListSection
-            title="MCP Servers"
-            items={mcpItems}
-            totalCount={provider.mcpServers.length}
-            emptyLabel="No MCP servers reported."
-            filterText={filterText}
-            expanded={expandedSections.mcp}
-            onToggleExpanded={() => toggleExpanded("mcp")}
-            onSelect={onSelectItem}
-          />
-          <ExtensionListSection
-            title="Apps"
-            items={appItems}
-            totalCount={provider.apps.length}
-            emptyLabel="No apps reported."
-            filterText={filterText}
-            expanded={expandedSections.app}
-            onToggleExpanded={() => toggleExpanded("app")}
-            onSelect={onSelectItem}
-          />
+        <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Extension section">
+          {sections.map((section) => (
+            <SectionTabButton
+              key={section.key}
+              label={section.label}
+              value={section.items.length}
+              totalValue={section.totalCount}
+              active={activeSection === section.key}
+              icon={section.icon}
+              panelId={`${panelIdBase}-${section.key}`}
+              onClick={() => setActiveSection(section.key)}
+            />
+          ))}
         </div>
+        {activeSectionConfig ? (
+          <ExtensionPreviewSection
+            title={activeSectionConfig.title}
+            items={activeSectionConfig.items}
+            totalCount={activeSectionConfig.totalCount}
+            emptyLabel={activeSectionConfig.emptyLabel}
+            filterText={filterText}
+            onSelect={onSelectItem}
+            panelId={`${panelIdBase}-${activeSectionConfig.key}`}
+            browseLabel={activeSectionConfig.browseLabel}
+            onBrowse={() => setBrowseSection(activeSectionConfig.key)}
+          />
+        ) : null}
       </div>
+      <ExtensionBrowserDialog
+        section={browseSectionConfig}
+        providerLabel={providerTitle(provider)}
+        initialQuery={providerFilterText}
+        onClose={() => setBrowseSection(null)}
+        onSelect={onSelectItem}
+      />
     </SettingsRow>
   );
 }
@@ -1525,21 +2448,74 @@ function countProviderMatches(
 ): number {
   if (filterText.trim().length === 0) return countProviderExtensions(provider);
   return (
-    filterExtensionItems(
-      provider.plugins.map((plugin) => pluginExtensionItem(provider, plugin)),
-      filterText,
+    provider.plugins.filter((plugin) =>
+      extensionTextMatchesFilter(
+        [
+          plugin.id,
+          plugin.name,
+          plugin.displayName,
+          plugin.description,
+          plugin.scope,
+          plugin.source,
+          plugin.version,
+          plugin.installPath,
+          plugin.projectPath,
+          plugin.authPolicy,
+          plugin.installPolicy,
+          plugin.availability,
+          plugin.marketplaceName,
+          plugin.marketplacePath,
+          plugin.remoteMarketplaceName,
+        ],
+        filterText,
+      ),
     ).length +
-    filterExtensionItems(
-      provider.skills.map((skill) => skillExtensionItem(provider, skill)),
-      filterText,
+    provider.skills.filter((skill) =>
+      extensionTextMatchesFilter(
+        [
+          skill.name,
+          skill.displayName,
+          skill.description,
+          skill.shortDescription,
+          skill.scope,
+          skill.source,
+          skill.path,
+        ],
+        filterText,
+      ),
     ).length +
-    filterExtensionItems(
-      provider.mcpServers.map((server) => mcpExtensionItem(provider, server)),
-      filterText,
+    provider.mcpServers.filter((server) =>
+      extensionTextMatchesFilter(
+        [
+          server.name,
+          server.authStatus,
+          server.status,
+          server.transport,
+          server.detail,
+          ...(server.tools ?? []),
+          ...(server.toolDefinitions ?? []).flatMap((tool) => [
+            tool.name,
+            tool.title,
+            tool.description,
+          ]),
+          ...(server.resources ?? []).flatMap((resource) => [
+            resource.name,
+            resource.title,
+            resource.description,
+            resource.uri,
+          ]),
+          ...(server.resourceTemplates ?? []).flatMap((resource) => [
+            resource.name,
+            resource.title,
+            resource.description,
+            resource.uriTemplate,
+          ]),
+        ],
+        filterText,
+      ),
     ).length +
-    filterExtensionItems(
-      provider.apps.map((app) => appExtensionItem(provider, app)),
-      filterText,
+    provider.apps.filter((app) =>
+      extensionTextMatchesFilter([app.id, app.name, app.displayName, app.description], filterText),
     ).length
   );
 }
@@ -1581,8 +2557,14 @@ export function ExtensionsSettingsPanel() {
   const [showAdvancedContext, setShowAdvancedContext] = useState(false);
   const [inventory, setInventory] = useState<ProviderExtensionsInventoryResult | null>(null);
   const [filterText, setFilterText] = useState("");
+  const deferredFilterText = useDeferredValue(filterText);
   const [selectedItem, setSelectedItem] = useState<ExtensionItem | null>(null);
+  const [actionHistoryByItem, setActionHistoryByItem] = useState<
+    Record<string, ExtensionActionHistoryEntry>
+  >({});
   const [isLoading, setIsLoading] = useState(false);
+  const [isRefreshingMarketplaces, setIsRefreshingMarketplaces] = useState(false);
+  const [lastInventoryLoadMs, setLastInventoryLoadMs] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const refreshRequestRef = useRef(0);
   const selectedProviderEntry = useMemo(
@@ -1636,11 +2618,11 @@ export function ExtensionsSettingsPanel() {
     return inventory.providers.reduce(
       (acc, provider) => ({
         total: acc.total + countProviderExtensions(provider),
-        matching: acc.matching + countProviderMatches(provider, filterText),
+        matching: acc.matching + countProviderMatches(provider, deferredFilterText),
       }),
       { total: 0, matching: 0 },
     );
-  }, [filterText, inventory]);
+  }, [deferredFilterText, inventory]);
 
   useEffect(() => {
     if (!cwd && projectOptions[0]?.value) {
@@ -1692,6 +2674,7 @@ export function ExtensionsSettingsPanel() {
     refreshRequestRef.current = requestId;
     setIsLoading(true);
     setError(null);
+    const startedMs = performance.now();
     try {
       const result = await ensureLocalApi().server.getProviderExtensions({
         cwd: requestCwd,
@@ -1700,12 +2683,14 @@ export function ExtensionsSettingsPanel() {
       });
       if (refreshRequestRef.current === requestId) {
         setInventory(result);
+        setLastInventoryLoadMs(performance.now() - startedMs);
       }
     } catch (refreshError) {
       if (refreshRequestRef.current === requestId) {
         setError(
           refreshError instanceof Error ? refreshError.message : "Extension inventory failed.",
         );
+        setLastInventoryLoadMs(null);
       }
     } finally {
       if (refreshRequestRef.current === requestId) {
@@ -1716,6 +2701,46 @@ export function ExtensionsSettingsPanel() {
 
   const canLoadInventory = cwd.trim().length > 0 && providerInstanceId.length > 0;
   const hasInventory = inventory !== null;
+  const canRefreshCodexMarketplaces =
+    canLoadInventory && selectedProviderEntry?.driverKind === EXTENSIONS_CODEX_DRIVER;
+  const refreshCodexMarketplaces = useCallback(async () => {
+    const requestCwd = cwd.trim();
+    if (!requestCwd || !providerInstanceId) return;
+
+    setIsRefreshingMarketplaces(true);
+    try {
+      const result = await ensureLocalApi().server.refreshProviderExtensionPluginMarketplaces({
+        cwd: requestCwd,
+        providerInstanceId: providerInstanceId as ProviderInstanceId,
+      });
+      toastManager.add({
+        type: "success",
+        title: "Marketplace refreshed",
+        description: result.output ?? "Codex plugin marketplace metadata is up to date.",
+      });
+      await refresh();
+    } catch (refreshError) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Marketplace refresh failed",
+          description: refreshError instanceof Error ? refreshError.message : "An error occurred.",
+        }),
+      );
+    } finally {
+      setIsRefreshingMarketplaces(false);
+    }
+  }, [cwd, providerInstanceId, refresh]);
+  const selectedItemActionKey = selectedItem ? extensionItemActionKey(selectedItem) : null;
+  const selectedItemLastAction = selectedItemActionKey
+    ? actionHistoryByItem[selectedItemActionKey]
+    : undefined;
+  const recordItemActionHistory = useCallback(
+    (itemKey: string, entry: ExtensionActionHistoryEntry) => {
+      setActionHistoryByItem((current) => ({ ...current, [itemKey]: entry }));
+    },
+    [],
+  );
 
   return (
     <SettingsPageContainer className="max-w-5xl">
@@ -1724,7 +2749,9 @@ export function ExtensionsSettingsPanel() {
           title="Project"
           description={
             inventory?.generatedAt
-              ? `Inventory generated ${new Date(inventory.generatedAt).toLocaleString()}.`
+              ? `Inventory generated ${new Date(inventory.generatedAt).toLocaleString()}${
+                  lastInventoryLoadMs !== null ? ` in ${formatDuration(lastInventoryLoadMs)}` : ""
+                }.`
               : "Pick the project context used for project skills and MCP status."
           }
           status={error}
@@ -1762,20 +2789,45 @@ export function ExtensionsSettingsPanel() {
           control={
             providerOptions.length > 0 ? (
               <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center sm:justify-end">
-                <Button
-                  className="order-2 w-full sm:order-1 sm:w-auto"
-                  size="xs"
-                  variant={hasInventory ? "outline" : "default"}
-                  disabled={!canLoadInventory || isLoading}
-                  onClick={() => void refresh()}
-                >
-                  {isLoading ? (
-                    <LoaderIcon className="size-3.5 animate-spin" />
-                  ) : (
-                    <RefreshCwIcon className="size-3.5" />
-                  )}
-                  {hasInventory ? "Reload" : "Load"}
-                </Button>
+                <div className="order-2 flex w-full items-center gap-1.5 sm:order-1 sm:w-auto">
+                  {canRefreshCodexMarketplaces ? (
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <Button
+                            className="size-7 shrink-0 rounded-sm"
+                            size="icon-xs"
+                            variant="outline"
+                            disabled={isLoading || isRefreshingMarketplaces}
+                            onClick={() => void refreshCodexMarketplaces()}
+                            aria-label="Refresh Codex plugin marketplace"
+                          >
+                            {isRefreshingMarketplaces ? (
+                              <LoaderIcon className="size-3.5 animate-spin" />
+                            ) : (
+                              <PackagePlusIcon className="size-3.5" />
+                            )}
+                          </Button>
+                        }
+                      />
+                      <TooltipPopup side="top">Refresh Codex marketplace</TooltipPopup>
+                    </Tooltip>
+                  ) : null}
+                  <Button
+                    className="flex-1 sm:flex-none"
+                    size="xs"
+                    variant={hasInventory ? "outline" : "default"}
+                    disabled={!canLoadInventory || isLoading || isRefreshingMarketplaces}
+                    onClick={() => void refresh()}
+                  >
+                    {isLoading ? (
+                      <LoaderIcon className="size-3.5 animate-spin" />
+                    ) : (
+                      <RefreshCwIcon className="size-3.5" />
+                    )}
+                    {hasInventory ? "Reload" : "Load"}
+                  </Button>
+                </div>
                 <div className="order-1 min-w-0 sm:order-2">
                   <Select
                     value={providerInstanceId}
@@ -1900,7 +2952,7 @@ export function ExtensionsSettingsPanel() {
             <ProviderInventoryRow
               key={provider.instanceId}
               provider={provider}
-              filterText={filterText}
+              filterText={deferredFilterText}
               onSelectItem={setSelectedItem}
             />
           ))
@@ -1933,6 +2985,8 @@ export function ExtensionsSettingsPanel() {
         providerThreadId={effectiveProviderThreadId}
         onClose={() => setSelectedItem(null)}
         onInventoryMutated={refresh}
+        lastAction={selectedItemLastAction}
+        onActionHistoryChange={recordItemActionHistory}
       />
     </SettingsPageContainer>
   );

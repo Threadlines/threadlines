@@ -163,7 +163,11 @@ export const makeServerAuth = Effect.gen(function* () {
   const isTrustedLoopbackBrowserDevRequest = (
     request: HttpServerRequest.HttpServerRequest,
   ): boolean => {
-    if (descriptor.policy !== "loopback-browser" || !config.devUrl) {
+    if (!config.devUrl) {
+      return false;
+    }
+
+    if (descriptor.policy !== "loopback-browser" && descriptor.policy !== "desktop-managed-local") {
       return false;
     }
 

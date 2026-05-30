@@ -1,5 +1,7 @@
 import { type ReactNode } from "react";
 
+import { isElectron } from "../env";
+import { cn } from "../lib/utils";
 import { RIGHT_PANEL_SHEET_CLASS_NAME } from "../rightPanelLayout";
 import { Sheet, SheetPopup } from "./ui/sheet";
 
@@ -21,7 +23,10 @@ export function RightPanelSheet(props: {
         side="right"
         showCloseButton={false}
         keepMounted
-        className={RIGHT_PANEL_SHEET_CLASS_NAME}
+        className={cn(
+          RIGHT_PANEL_SHEET_CLASS_NAME,
+          isElectron && "pe-[var(--app-window-resize-edge-inset)]",
+        )}
       >
         {props.children}
       </SheetPopup>

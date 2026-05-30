@@ -104,7 +104,13 @@ import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import PlanSidebar from "./PlanSidebar";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
-import { ChevronDownIcon, CornerDownRightIcon, TriangleAlertIcon, WifiOffIcon } from "lucide-react";
+import {
+  ChevronDownIcon,
+  CornerDownRightIcon,
+  LogInIcon,
+  TriangleAlertIcon,
+  WifiOffIcon,
+} from "lucide-react";
 import { cn, randomUUID } from "~/lib/utils";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
@@ -115,7 +121,11 @@ import {
   projectScriptIdFromCommand,
 } from "~/projectScripts";
 import { newCommandId, newDraftId, newMessageId, newThreadId } from "~/lib/utils";
-import { getProviderModelCapabilities, resolveSelectableProvider } from "../providerModels";
+import {
+  formatProviderDriverKindLabel,
+  getProviderModelCapabilities,
+  resolveSelectableProvider,
+} from "../providerModels";
 import { useSettings } from "../hooks/useSettings";
 import { resolveAppModelSelectionForInstance } from "../modelSelection";
 import { isTerminalFocused } from "../lib/terminalFocus";
@@ -160,6 +170,7 @@ import {
   collectUserMessageBlobPreviewUrls,
   createLocalDispatchSnapshot,
   deriveComposerSendState,
+  deriveProviderAuthReconnectPrompt,
   hasServerAcknowledgedLocalDispatch,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
   LastInvokedScriptByProjectSchema,
@@ -1222,7 +1233,7 @@ export default function ChatView(props: ChatViewProps) {
     savedEnvironmentRuntimeById,
     serverConfig?.environment.label,
   ]);
-  const composerBannerItems = useMemo<ComposerBannerStackItem[]>(() => {
+  const infrastructureComposerBannerItems = useMemo<ComposerBannerStackItem[]>(() => {
     const items: ComposerBannerStackItem[] = [];
     if (activeEnvironmentUnavailableState) {
       items.push({
@@ -1748,6 +1759,20 @@ export default function ChatView(props: ChatViewProps) {
     const defaultInstanceId = defaultInstanceIdForDriver(selectedProvider);
     return providerStatuses.find((status) => status.instanceId === defaultInstanceId) ?? null;
   }, [activeProviderInstanceId, providerStatuses, selectedProvider]);
+  const activeProviderDriver =
+    activeProviderStatus?.driver ?? activeThread?.session?.provider ?? selectedProvider;
+  const activeProviderLabel =
+    activeProviderStatus?.displayName?.trim() ||
+    formatProviderDriverKindLabel(activeProviderDriver);
+  const providerAuthReconnectPrompt = useMemo(
+    () =>
+      deriveProviderAuthReconnectPrompt({
+        provider: activeProviderDriver,
+        threadError: activeThread?.error ?? activeThread?.session?.lastError ?? null,
+        activities: threadActivities,
+      }),
+    [activeProviderDriver, activeThread?.error, activeThread?.session?.lastError, threadActivities],
+  );
   const activeProjectCwd = activeProject?.cwd ?? null;
   const activeThreadWorktreePath = activeThread?.worktreePath ?? null;
   const activeWorkspaceRoot = activeThreadWorktreePath ?? activeProjectCwd ?? undefined;
@@ -2061,6 +2086,70 @@ export default function ChatView(props: ChatViewProps) {
       terminalState.terminalIds,
     ],
   );
+  const runProviderAuthReconnect = useCallback(async () => {
+    if (!providerAuthReconnectPrompt) {
+      return;
+    }
+    await runProjectScript(
+      {
+        id: `provider-auth:${providerAuthReconnectPrompt.provider}`,
+        name: `${activeProviderLabel} login`,
+        command: providerAuthReconnectPrompt.command,
+        icon: "configure",
+        runOnWorktreeCreate: false,
+      },
+      {
+        preferNewTerminal: true,
+        rememberAsLastInvoked: false,
+      },
+    );
+  }, [activeProviderLabel, providerAuthReconnectPrompt, runProjectScript]);
+  const composerBannerItems = useMemo<ComposerBannerStackItem[]>(() => {
+    if (!providerAuthReconnectPrompt) {
+      return infrastructureComposerBannerItems;
+    }
+
+    return [
+      {
+        id: `provider-auth:${providerAuthReconnectPrompt.provider}`,
+        variant: "error",
+        icon: <LogInIcon />,
+        title: `${activeProviderLabel} needs sign in`,
+        description: (
+          <>
+            Run <code className="font-mono">{providerAuthReconnectPrompt.command}</code> in a
+            terminal, then retry this message.
+          </>
+        ),
+        actions: (
+          <>
+            <Button
+              size="xs"
+              disabled={!activeProject}
+              onClick={() => void runProviderAuthReconnect()}
+            >
+              Sign in
+            </Button>
+            <Button
+              size="xs"
+              variant="outline"
+              onClick={() => void navigate({ to: "/settings/providers" })}
+            >
+              Providers
+            </Button>
+          </>
+        ),
+      },
+      ...infrastructureComposerBannerItems,
+    ];
+  }, [
+    activeProject,
+    activeProviderLabel,
+    infrastructureComposerBannerItems,
+    navigate,
+    providerAuthReconnectPrompt,
+    runProviderAuthReconnect,
+  ]);
 
   const persistProjectScripts = useCallback(
     async (input: {

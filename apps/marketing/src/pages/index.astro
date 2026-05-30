@@ -15,12 +15,6 @@ import TuxIcon from "../components/TuxIcon.astro";
       <span class="hero-float-mark hf-codex" title="Codex">
         <img src="/harnesses/openai_dark.svg" alt="" />
       </span>
-      <span class="hero-float-mark hf-opencode" title="OpenCode">
-        <img src="/harnesses/opencode-dark.svg" alt="" />
-      </span>
-      <span class="hero-float-mark hf-cursor" title="Cursor">
-        <img src="/harnesses/cursor_light.svg" alt="" />
-      </span>
     </div>
 
     <div class="container hero-inner">
@@ -29,8 +23,8 @@ import TuxIcon from "../components/TuxIcon.astro";
       </h1>
 
       <p class="hero-sub">
-        Orchestrate Claude Code, Codex, OpenCode and Cursor from one surface.
-        Bring your own subscription. Fork the whole thing.
+        Orchestrate Claude Code and Codex from one native desktop surface.
+        Bring your own subscription. Keep agent work local and inspectable.
       </p>
 
       <div class="hero-actions">
@@ -72,9 +66,9 @@ import TuxIcon from "../components/TuxIcon.astro";
       <div class="section-head">
         <h2>Bring your own sub</h2>
         <p>
-          BadCode doesn't resell tokens. Plug in Claude Code, Codex, OpenCode,
-          or Cursor with the credentials you already have — we orchestrate
-          them, you keep your plan.
+          BadCode doesn't resell tokens. Plug in Claude Code and Codex with
+          the credentials you already have — we orchestrate them, you keep
+          your plan.
         </p>
       </div>
 
@@ -93,26 +87,12 @@ import TuxIcon from "../components/TuxIcon.astro";
             <div class="harness-tag">codex login</div>
           </div>
         </div>
-        <div class="harness">
-          <div class="harness-mark"><img src="/harnesses/opencode-dark.svg" alt="" /></div>
-          <div class="harness-meta">
-            <div class="harness-name">OpenCode</div>
-            <div class="harness-tag">opencode auth</div>
-          </div>
-        </div>
-        <div class="harness">
-          <div class="harness-mark"><img src="/harnesses/cursor_light.svg" alt="" /></div>
-          <div class="harness-meta">
-            <div class="harness-name">Cursor</div>
-            <div class="harness-tag">cursor-agent</div>
-          </div>
-        </div>
       </div>
 
       <div class="harness-footer">
         <div class="harness-footer-item"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l5 5L20 6"/></svg> No keys resold. No quota caps.</div>
         <div class="harness-footer-item"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l5 5L20 6"/></svg> Switch models mid-thread.</div>
-        <div class="harness-footer-item"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l5 5L20 6"/></svg> More harnesses shipping weekly.</div>
+        <div class="harness-footer-item"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l5 5L20 6"/></svg> Focused native support.</div>
       </div>
     </div>
   </section>
@@ -485,16 +465,12 @@ import TuxIcon from "../components/TuxIcon.astro";
 
   .hero-float-mark.hf-claude   { background: radial-gradient(circle at 30% 25%, rgba(217, 119, 87, 0.22), rgba(20, 20, 24, 0.92) 65%); top: 8%;  left: 7%;  animation-delay: 0s;    transform: rotate(-8deg); }
   .hero-float-mark.hf-codex    { background: radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.08), rgba(20, 20, 24, 0.92) 65%); top: 6%;  right: 7%; animation-delay: -2.5s; transform: rotate(6deg); }
-  .hero-float-mark.hf-opencode { background: radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.06), rgba(20, 20, 24, 0.92) 65%); top: 32%; left: 5%;  animation-delay: -5s;   transform: rotate(4deg); }
-  .hero-float-mark.hf-cursor   { background: radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.08), rgba(20, 20, 24, 0.92) 65%); top: 30%; right: 5%; animation-delay: -7s;   transform: rotate(-5deg); }
 
   @media (max-width: 1180px) {
     .hero-float-mark { width: 76px; height: 76px; border-radius: 20px; }
     .hero-float-mark img { width: 42px; height: 42px; }
     .hero-float-mark.hf-claude   { top: 4%;  left: 3%; }
     .hero-float-mark.hf-codex    { top: 2%;  right: 3%; }
-    .hero-float-mark.hf-opencode { top: 26%; left: 2%; }
-    .hero-float-mark.hf-cursor   { top: 24%; right: 2%; }
   }
 
   @media (max-width: 820px) {
@@ -529,7 +505,6 @@ import TuxIcon from "../components/TuxIcon.astro";
       height: 44px;
     }
 
-    /* Two above the title, two flanking the call-to-action area. */
     .hero-float-mark.hf-claude {
       top: 44px;
       left: 10px;
@@ -540,20 +515,6 @@ import TuxIcon from "../components/TuxIcon.astro";
       top: 44px;
       right: 10px;
       transform: rotate(8deg);
-    }
-
-    .hero-float-mark.hf-opencode {
-      top: 474px;
-      left: 4px;
-      right: auto;
-      transform: rotate(-6deg);
-    }
-
-    .hero-float-mark.hf-cursor {
-      top: 474px;
-      right: 4px;
-      left: auto;
-      transform: rotate(7deg);
     }
   }
 

@@ -41,6 +41,132 @@ export function isLikelyLocalPath(value: string | null | undefined): boolean {
   return /^(?:[a-zA-Z]:[\\/]|\\\\|\/)/.test(trimmed);
 }
 
+export type ExtensionJsonSchemaFieldType = "string" | "number" | "boolean" | "json";
+
+export interface ExtensionJsonSchemaFormField {
+  readonly name: string;
+  readonly type: ExtensionJsonSchemaFieldType;
+  readonly required: boolean;
+  readonly description?: string | undefined;
+  readonly defaultValue?: unknown;
+  readonly enumValues?: ReadonlyArray<string> | undefined;
+}
+
+const MAX_SCHEMA_FORM_FIELDS = 24;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function schemaType(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    return value.find((entry): entry is string => typeof entry === "string" && entry !== "null");
+  }
+  return undefined;
+}
+
+function formFieldType(propertySchema: Record<string, unknown>): ExtensionJsonSchemaFieldType {
+  const type = schemaType(propertySchema.type);
+  if (type === "integer" || type === "number") return "number";
+  if (type === "boolean") return "boolean";
+  if (type === "string") return "string";
+  return "json";
+}
+
+function enumValues(propertySchema: Record<string, unknown>): ReadonlyArray<string> | undefined {
+  if (!Array.isArray(propertySchema.enum)) return undefined;
+  const values = propertySchema.enum.flatMap((value) =>
+    typeof value === "string" || typeof value === "number" || typeof value === "boolean"
+      ? [String(value)]
+      : [],
+  );
+  return values.length > 0 ? values : undefined;
+}
+
+export function deriveExtensionJsonSchemaFormFields(
+  schema: unknown,
+): ReadonlyArray<ExtensionJsonSchemaFormField> | null {
+  if (!isRecord(schema)) return null;
+  const properties = isRecord(schema.properties) ? schema.properties : null;
+  if (!properties) return null;
+
+  const propertyEntries = Object.entries(properties).filter(
+    (entry): entry is [string, Record<string, unknown>] => isRecord(entry[1]),
+  );
+  if (propertyEntries.length === 0 || propertyEntries.length > MAX_SCHEMA_FORM_FIELDS) {
+    return null;
+  }
+
+  const required = new Set(
+    Array.isArray(schema.required)
+      ? schema.required.filter((value): value is string => typeof value === "string")
+      : [],
+  );
+
+  return propertyEntries.map(([name, propertySchema]) => ({
+    name,
+    type: formFieldType(propertySchema),
+    required: required.has(name),
+    description:
+      typeof propertySchema.description === "string" ? propertySchema.description : undefined,
+    defaultValue:
+      Object.hasOwn(propertySchema, "default") && propertySchema.default !== undefined
+        ? propertySchema.default
+        : undefined,
+    enumValues: enumValues(propertySchema),
+  }));
+}
+
+export function makeExtensionJsonSchemaFormDefaults(
+  fields: ReadonlyArray<ExtensionJsonSchemaFormField>,
+): Record<string, string | boolean> {
+  return Object.fromEntries(
+    fields.map((field) => {
+      if (field.type === "boolean") {
+        return [field.name, field.defaultValue === true] as const;
+      }
+      if (field.defaultValue === undefined) return [field.name, ""] as const;
+      if (field.type === "json")
+        return [field.name, JSON.stringify(field.defaultValue, null, 2)] as const;
+      return [field.name, String(field.defaultValue)] as const;
+    }),
+  );
+}
+
+export function buildExtensionJsonSchemaFormArguments(
+  fields: ReadonlyArray<ExtensionJsonSchemaFormField>,
+  values: Readonly<Record<string, string | boolean>>,
+): Record<string, unknown> {
+  const output: Record<string, unknown> = {};
+
+  for (const field of fields) {
+    const value = values[field.name];
+    if (field.type === "boolean") {
+      output[field.name] = value === true;
+      continue;
+    }
+
+    const text = typeof value === "string" ? value.trim() : "";
+    if (text.length === 0 && !field.required) continue;
+    if (field.type === "number") {
+      const numberValue = Number(text);
+      if (!Number.isFinite(numberValue)) {
+        throw new Error(`${field.name} must be a number.`);
+      }
+      output[field.name] = numberValue;
+      continue;
+    }
+    if (field.type === "json") {
+      output[field.name] = text.length > 0 ? JSON.parse(text) : null;
+      continue;
+    }
+    output[field.name] = text;
+  }
+
+  return output;
+}
+
 function normalizedCwdKey(value: string): string {
   return value.trim().replaceAll("\\", "/").toLowerCase();
 }

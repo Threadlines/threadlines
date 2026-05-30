@@ -1,6 +1,8 @@
 import { scopeThreadRef } from "@t3tools/client-runtime";
 import {
   EnvironmentId,
+  EventId,
+  type OrchestrationThreadActivity,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -16,6 +18,7 @@ import {
   buildExpiredTerminalContextToastCopy,
   createLocalDispatchSnapshot,
   deriveComposerSendState,
+  deriveProviderAuthReconnectPrompt,
   hasServerAcknowledgedLocalDispatch,
   threadHasPromotableServerActivity,
   reconcileSteeringHandoffStatuses,
@@ -73,6 +76,59 @@ describe("deriveComposerSendState", () => {
     expect(state.trimmedPrompt).toBe("yoo  waddup");
     expect(state.expiredTerminalContextCount).toBe(1);
     expect(state.hasSendableContent).toBe(true);
+  });
+});
+
+describe("deriveProviderAuthReconnectPrompt", () => {
+  const claudeProvider = ProviderDriverKind.make("claudeAgent");
+
+  it("detects Claude authentication failures from the thread error", () => {
+    expect(
+      deriveProviderAuthReconnectPrompt({
+        provider: claudeProvider,
+        threadError: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+      }),
+    ).toEqual({
+      provider: claudeProvider,
+      command: "claude auth login",
+      message: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+    });
+  });
+
+  it("detects structured authentication runtime activities", () => {
+    const activity: OrchestrationThreadActivity = {
+      id: EventId.make("evt-auth"),
+      tone: "error",
+      kind: "runtime.error",
+      summary: "Authentication required",
+      payload: {
+        message: "Failed to authenticate.",
+        class: "authentication_error",
+        provider: claudeProvider,
+      },
+      turnId: null,
+      createdAt: "2026-03-29T00:00:00.000Z",
+    };
+
+    expect(
+      deriveProviderAuthReconnectPrompt({
+        provider: claudeProvider,
+        activities: [activity],
+      }),
+    ).toEqual({
+      provider: claudeProvider,
+      command: "claude auth login",
+      message: "Failed to authenticate.",
+    });
+  });
+
+  it("ignores unrelated runtime errors", () => {
+    expect(
+      deriveProviderAuthReconnectPrompt({
+        provider: claudeProvider,
+        threadError: "Sandbox setup failed",
+      }),
+    ).toBeNull();
   });
 });
 

@@ -4,9 +4,9 @@ BadCode is a Windows-first desktop GUI for coding agents. It is a fork of
 [T3 Code](https://github.com/pingdotgg/t3code), with the upstream Git history
 kept intact so useful changes can still be reviewed and brought forward.
 
-The main maintained provider paths are Codex and Claude. OpenCode and Cursor
-support may still be present because they came from upstream T3 Code, but they
-are best-effort unless that changes later.
+The maintained provider paths are Codex and Claude. Inherited OpenCode and
+Cursor support is being phased out as BadCode narrows toward a smaller native
+desktop surface.
 
 ## Installation
 

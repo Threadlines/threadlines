@@ -959,6 +959,7 @@ describe("ClaudeAdapterLive", () => {
         runtimeError.value.payload.message,
         "Failed to authenticate. API Error: 401 Invalid authentication credentials Run `claude auth login` in a terminal, then retry.",
       );
+      assert.equal(runtimeError.value.payload.class, "authentication_error");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

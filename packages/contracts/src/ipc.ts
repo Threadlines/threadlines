@@ -48,6 +48,8 @@ import type {
   ProviderExtensionOperationStatusResult,
   ProviderExtensionPluginInstallInput,
   ProviderExtensionPluginInstallResult,
+  ProviderExtensionPluginMarketplaceRefreshInput,
+  ProviderExtensionPluginMarketplaceRefreshResult,
   ProviderExtensionPluginReadInput,
   ProviderExtensionPluginReadResult,
   ProviderExtensionPluginToggleInput,
@@ -566,6 +568,9 @@ export interface LocalApi {
     updateProviderExtensionPlugin: (
       input: ProviderExtensionPluginUpdateInput,
     ) => Promise<ProviderExtensionPluginUpdateResult>;
+    refreshProviderExtensionPluginMarketplaces: (
+      input: ProviderExtensionPluginMarketplaceRefreshInput,
+    ) => Promise<ProviderExtensionPluginMarketplaceRefreshResult>;
     callProviderExtensionMcpTool: (
       input: ProviderExtensionMcpToolCallInput,
     ) => Promise<ProviderExtensionMcpToolCallResult>;

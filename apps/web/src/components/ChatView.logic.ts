@@ -3,11 +3,16 @@ import {
   isProviderDriverKind,
   ProjectId,
   type ModelSelection,
+  type OrchestrationThreadActivity,
   type ProviderDriverKind,
   type ScopedThreadRef,
   type ThreadId,
   type TurnId,
 } from "@t3tools/contracts";
+import {
+  isProviderAuthErrorMessage,
+  providerAuthReconnectCommand,
+} from "@t3tools/shared/providerAuth";
 import { type ChatMessage, type SessionPhase, type Thread, type ThreadSession } from "../types";
 import { type ComposerImageAttachment, type DraftThreadState } from "../composerDraftStore";
 import * as Schema from "effect/Schema";
@@ -201,6 +206,79 @@ export function deriveComposerSendState(options: {
     hasSendableContent:
       trimmedPrompt.length > 0 || options.imageCount > 0 || sendableTerminalContexts.length > 0,
   };
+}
+
+export interface ProviderAuthReconnectPrompt {
+  readonly provider: ProviderDriverKind;
+  readonly command: string;
+  readonly message: string;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function asString(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function authMessageFromActivity(activity: OrchestrationThreadActivity): string | null {
+  if (activity.kind !== "runtime.error") {
+    return null;
+  }
+
+  const payload = asRecord(activity.payload);
+  const message = asString(payload?.message);
+  const errorClass = asString(payload?.class);
+  if (errorClass === "authentication_error") {
+    return message ?? activity.summary;
+  }
+  return isProviderAuthErrorMessage(message) ? message : null;
+}
+
+export function deriveProviderAuthReconnectPrompt(input: {
+  readonly provider: ProviderDriverKind | null | undefined;
+  readonly threadError?: string | null | undefined;
+  readonly activities?: ReadonlyArray<OrchestrationThreadActivity> | null | undefined;
+}): ProviderAuthReconnectPrompt | null {
+  const provider = input.provider ?? null;
+  if (!provider) {
+    return null;
+  }
+
+  const command = providerAuthReconnectCommand(provider);
+  if (!command) {
+    return null;
+  }
+
+  const threadError = input.threadError?.trim();
+  if (threadError && isProviderAuthErrorMessage(threadError)) {
+    return {
+      provider,
+      command,
+      message: threadError,
+    };
+  }
+
+  const activities = input.activities ?? [];
+  for (let index = activities.length - 1; index >= 0; index -= 1) {
+    const activity = activities[index];
+    if (!activity) {
+      continue;
+    }
+    const authMessage = authMessageFromActivity(activity);
+    if (authMessage) {
+      return {
+        provider,
+        command,
+        message: authMessage,
+      };
+    }
+  }
+
+  return null;
 }
 
 export function buildExpiredTerminalContextToastCopy(

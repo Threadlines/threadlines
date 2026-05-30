@@ -1121,7 +1121,7 @@ describe("GeneralSettingsPanel observability", () => {
     expect(openInEditor).toHaveBeenCalledWith("/repo/project/.t3/logs", "cursor");
   });
 
-  it("shows an OpenCode server URL field in provider settings", async () => {
+  it("shows Claude configuration fields in provider settings", async () => {
     setServerConfigSnapshot(createBaseServerConfig());
 
     mounted = await render(
@@ -1130,16 +1130,12 @@ describe("GeneralSettingsPanel observability", () => {
       </AppAtomRegistryProvider>,
     );
 
-    await page.getByLabelText("Toggle OpenCode details").click();
+    await page.getByLabelText("Toggle Claude details").click();
 
-    // The unified provider-instance card renders field labels without a
-    // driver-name prefix (the driver name is already shown in the card
-    // header), so the labels read "Server URL" / "Server password"
-    // rather than the old "OpenCode server URL" / "OpenCode server password".
-    await expect.element(page.getByText("Server URL")).toBeInTheDocument();
-    await expect.element(page.getByPlaceholder("http://127.0.0.1:4096")).toBeInTheDocument();
-    await expect.element(page.getByText("Server password")).toBeInTheDocument();
-    await expect.element(page.getByPlaceholder("Optional")).toBeInTheDocument();
+    await expect.element(page.getByText("Claude HOME path")).toBeInTheDocument();
+    await expect.element(page.getByPlaceholder("~")).toBeInTheDocument();
+    await expect.element(page.getByText("Launch arguments")).toBeInTheDocument();
+    await expect.element(page.getByPlaceholder("e.g. --chrome")).toBeInTheDocument();
   });
 
   it("runs one-click provider updates from the provider card", async () => {

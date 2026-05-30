@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildExtensionJsonSchemaFormArguments,
   deriveDetectedProviderThreadId,
+  deriveExtensionJsonSchemaFormFields,
   extensionTextMatchesFilter,
   extensionProviderDriverSortRank,
   isLikelyLocalPath,
+  makeExtensionJsonSchemaFormDefaults,
 } from "./ExtensionsSettings.logic";
 
 describe("ExtensionsSettings logic", () => {
@@ -151,5 +154,81 @@ describe("ExtensionsSettings logic", () => {
         threadLastVisitedAtById: {},
       }),
     ).toBe("");
+  });
+
+  it("derives a compact form from simple JSON object schemas", () => {
+    const fields = deriveExtensionJsonSchemaFormFields({
+      type: "object",
+      required: ["projectId", "dryRun"],
+      properties: {
+        projectId: {
+          type: "string",
+          description: "Supabase project ref",
+        },
+        limit: {
+          type: "integer",
+          default: 25,
+        },
+        dryRun: {
+          type: "boolean",
+          default: true,
+        },
+        filter: {
+          type: "object",
+          default: { schema: "public" },
+        },
+      },
+    });
+
+    expect(fields?.map((field) => [field.name, field.type, field.required])).toEqual([
+      ["projectId", "string", true],
+      ["limit", "number", false],
+      ["dryRun", "boolean", true],
+      ["filter", "json", false],
+    ]);
+    expect(makeExtensionJsonSchemaFormDefaults(fields ?? [])).toEqual({
+      projectId: "",
+      limit: "25",
+      dryRun: true,
+      filter: '{\n  "schema": "public"\n}',
+    });
+  });
+
+  it("builds MCP tool arguments from schema form values", () => {
+    const fields = deriveExtensionJsonSchemaFormFields({
+      type: "object",
+      required: ["name"],
+      properties: {
+        name: { type: "string" },
+        count: { type: "number" },
+        enabled: { type: "boolean" },
+        options: { type: "object" },
+      },
+    });
+
+    expect(
+      buildExtensionJsonSchemaFormArguments(fields ?? [], {
+        name: "demo",
+        count: "2",
+        enabled: false,
+        options: '{"safe":true}',
+      }),
+    ).toEqual({
+      name: "demo",
+      count: 2,
+      enabled: false,
+      options: { safe: true },
+    });
+  });
+
+  it("falls back to raw JSON for schemas that are too large for the inline form", () => {
+    expect(
+      deriveExtensionJsonSchemaFormFields({
+        type: "object",
+        properties: Object.fromEntries(
+          Array.from({ length: 25 }, (_, index) => [`field${index}`, { type: "string" }]),
+        ),
+      }),
+    ).toBeNull();
   });
 });

@@ -73,6 +73,8 @@ import {
   ProviderExtensionPluginInstallResult,
   ProviderExtensionPluginReadInput,
   ProviderExtensionPluginReadResult,
+  ProviderExtensionPluginMarketplaceRefreshInput,
+  ProviderExtensionPluginMarketplaceRefreshResult,
   ProviderExtensionPluginToggleInput,
   ProviderExtensionPluginToggleResult,
   ProviderExtensionPluginUninstallInput,
@@ -206,6 +208,8 @@ export const WS_METHODS = {
   serverUninstallProviderExtensionPlugin: "server.uninstallProviderExtensionPlugin",
   serverSetProviderExtensionPluginEnabled: "server.setProviderExtensionPluginEnabled",
   serverUpdateProviderExtensionPlugin: "server.updateProviderExtensionPlugin",
+  serverRefreshProviderExtensionPluginMarketplaces:
+    "server.refreshProviderExtensionPluginMarketplaces",
   serverCallProviderExtensionMcpTool: "server.callProviderExtensionMcpTool",
   serverReadProviderExtensionMcpResource: "server.readProviderExtensionMcpResource",
   serverGetProviderInstructionFiles: "server.getProviderInstructionFiles",
@@ -385,6 +389,15 @@ export const WsServerUpdateProviderExtensionPluginRpc = Rpc.make(
   {
     payload: ProviderExtensionPluginUpdateInput,
     success: ProviderExtensionPluginUpdateResult,
+    error: ProviderExtensionsError,
+  },
+);
+
+export const WsServerRefreshProviderExtensionPluginMarketplacesRpc = Rpc.make(
+  WS_METHODS.serverRefreshProviderExtensionPluginMarketplaces,
+  {
+    payload: ProviderExtensionPluginMarketplaceRefreshInput,
+    success: ProviderExtensionPluginMarketplaceRefreshResult,
     error: ProviderExtensionsError,
   },
 );
@@ -719,6 +732,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerUninstallProviderExtensionPluginRpc,
   WsServerSetProviderExtensionPluginEnabledRpc,
   WsServerUpdateProviderExtensionPluginRpc,
+  WsServerRefreshProviderExtensionPluginMarketplacesRpc,
   WsServerCallProviderExtensionMcpToolRpc,
   WsServerReadProviderExtensionMcpResourceRpc,
   WsServerGetProviderInstructionFilesRpc,

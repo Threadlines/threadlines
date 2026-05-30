@@ -68,7 +68,7 @@ import * as Stream from "effect/Stream";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
-import { addProviderAuthHint } from "../providerAuthHints.ts";
+import { addProviderAuthHint, isProviderAuthErrorMessage } from "../providerAuthHints.ts";
 import {
   getClaudeModelCapabilities,
   isClaudeUltracodeEffort,
@@ -1382,6 +1382,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     if (cause !== undefined) {
       void cause;
     }
+    const providerMessage = addProviderAuthHint(PROVIDER, message);
     const turnState = context.turnState;
     const stamp = yield* makeEventStamp();
     yield* offerRuntimeEvent({
@@ -1392,8 +1393,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       threadId: context.session.threadId,
       ...(turnState ? { turnId: asCanonicalTurnId(turnState.turnId) } : {}),
       payload: {
-        message: addProviderAuthHint(PROVIDER, message),
-        class: "provider_error",
+        message: providerMessage,
+        class: isProviderAuthErrorMessage(providerMessage)
+          ? "authentication_error"
+          : "provider_error",
         ...(cause !== undefined ? { detail: cause } : {}),
       },
       providerRefs: nativeProviderRefs(context),

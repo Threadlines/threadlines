@@ -329,15 +329,18 @@ function runtimeEventToActivities(
     }
 
     case "runtime.error": {
+      const isAuthenticationError = event.payload.class === "authentication_error";
       return [
         {
           id: event.eventId,
           createdAt: event.createdAt,
           tone: "error",
           kind: "runtime.error",
-          summary: "Runtime error",
+          summary: isAuthenticationError ? "Authentication required" : "Runtime error",
           payload: {
             message: truncateDetail(event.payload.message),
+            ...(event.payload.class ? { class: event.payload.class } : {}),
+            provider: event.provider,
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,

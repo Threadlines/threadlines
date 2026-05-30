@@ -42,12 +42,15 @@
  * @module provider/Layers/ProviderInstanceRegistryHydration
  */
 import {
+  DEFAULT_SERVER_SETTINGS,
   defaultInstanceIdForDriver,
+  ProviderDriverKind,
   type ProviderInstanceConfig,
   type ProviderInstanceConfigMap,
   ServerSettings,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Equal from "effect/Equal";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
@@ -56,6 +59,11 @@ import { BUILT_IN_DRIVERS, type BuiltInDriversEnv } from "../builtInDrivers.ts";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
 import { ProviderInstanceRegistryMutator } from "../Services/ProviderInstanceRegistryMutator.ts";
 import { ProviderInstanceRegistryMutableLayer } from "./ProviderInstanceRegistryLive.ts";
+
+const DEPRECATED_LEGACY_PROVIDER_DRIVER_KINDS = [
+  ProviderDriverKind.make("cursor"),
+  ProviderDriverKind.make("opencode"),
+] as const;
 
 /**
  * Synthesize a `ProviderInstanceConfigMap` from a `ServerSettings` snapshot.
@@ -96,6 +104,25 @@ export const deriveProviderInstanceConfigMap = (
 
     merged[instanceId] = {
       driver: driver.driverKind,
+      config: legacyConfig,
+    };
+  }
+
+  for (const driverKind of DEPRECATED_LEGACY_PROVIDER_DRIVER_KINDS) {
+    const instanceId = defaultInstanceIdForDriver(driverKind);
+    if (instanceId in merged) {
+      continue;
+    }
+
+    const legacyKey = driverKind as keyof ServerSettings["providers"];
+    const legacyConfig = settings.providers[legacyKey];
+    const defaultLegacyConfig = DEFAULT_SERVER_SETTINGS.providers[legacyKey];
+    if (legacyConfig === undefined || Equal.equals(legacyConfig, defaultLegacyConfig)) {
+      continue;
+    }
+
+    merged[instanceId] = {
+      driver: driverKind,
       config: legacyConfig,
     };
   }
