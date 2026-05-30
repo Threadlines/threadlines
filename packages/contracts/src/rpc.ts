@@ -59,6 +59,28 @@ import {
 } from "./orchestration.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import {
+  ProviderExtensionMcpOAuthStartInput,
+  ProviderExtensionMcpOAuthStartResult,
+  ProviderExtensionMcpReloadInput,
+  ProviderExtensionMcpReloadResult,
+  ProviderExtensionMcpResourceReadInput,
+  ProviderExtensionMcpResourceReadResult,
+  ProviderExtensionMcpToolCallInput,
+  ProviderExtensionMcpToolCallResult,
+  ProviderExtensionOperationStatusInput,
+  ProviderExtensionOperationStatusResult,
+  ProviderExtensionPluginInstallInput,
+  ProviderExtensionPluginInstallResult,
+  ProviderExtensionPluginReadInput,
+  ProviderExtensionPluginReadResult,
+  ProviderExtensionPluginToggleInput,
+  ProviderExtensionPluginToggleResult,
+  ProviderExtensionPluginUninstallInput,
+  ProviderExtensionPluginUninstallResult,
+  ProviderExtensionPluginUpdateInput,
+  ProviderExtensionPluginUpdateResult,
+  ProviderExtensionSkillToggleInput,
+  ProviderExtensionSkillToggleResult,
   ProviderExtensionsError,
   ProviderExtensionsInventoryInput,
   ProviderExtensionsInventoryResult,
@@ -175,6 +197,17 @@ export const WS_METHODS = {
   serverGetProcessResourceHistory: "server.getProcessResourceHistory",
   serverSignalProcess: "server.signalProcess",
   serverGetProviderExtensions: "server.getProviderExtensions",
+  serverStartProviderExtensionMcpOAuth: "server.startProviderExtensionMcpOAuth",
+  serverGetProviderExtensionOperationStatus: "server.getProviderExtensionOperationStatus",
+  serverReloadProviderExtensionMcpServers: "server.reloadProviderExtensionMcpServers",
+  serverSetProviderExtensionSkillEnabled: "server.setProviderExtensionSkillEnabled",
+  serverReadProviderExtensionPlugin: "server.readProviderExtensionPlugin",
+  serverInstallProviderExtensionPlugin: "server.installProviderExtensionPlugin",
+  serverUninstallProviderExtensionPlugin: "server.uninstallProviderExtensionPlugin",
+  serverSetProviderExtensionPluginEnabled: "server.setProviderExtensionPluginEnabled",
+  serverUpdateProviderExtensionPlugin: "server.updateProviderExtensionPlugin",
+  serverCallProviderExtensionMcpTool: "server.callProviderExtensionMcpTool",
+  serverReadProviderExtensionMcpResource: "server.readProviderExtensionMcpResource",
   serverGetProviderInstructionFiles: "server.getProviderInstructionFiles",
   serverWriteProviderInstructionFile: "server.writeProviderInstructionFile",
 
@@ -274,6 +307,105 @@ export const WsServerGetProviderExtensionsRpc = Rpc.make(WS_METHODS.serverGetPro
   success: ProviderExtensionsInventoryResult,
   error: ProviderExtensionsError,
 });
+
+export const WsServerStartProviderExtensionMcpOAuthRpc = Rpc.make(
+  WS_METHODS.serverStartProviderExtensionMcpOAuth,
+  {
+    payload: ProviderExtensionMcpOAuthStartInput,
+    success: ProviderExtensionMcpOAuthStartResult,
+    error: ProviderExtensionsError,
+  },
+);
+
+export const WsServerGetProviderExtensionOperationStatusRpc = Rpc.make(
+  WS_METHODS.serverGetProviderExtensionOperationStatus,
+  {
+    payload: ProviderExtensionOperationStatusInput,
+    success: ProviderExtensionOperationStatusResult,
+    error: ProviderExtensionsError,
+  },
+);
+
+export const WsServerReloadProviderExtensionMcpServersRpc = Rpc.make(
+  WS_METHODS.serverReloadProviderExtensionMcpServers,
+  {
+    payload: ProviderExtensionMcpReloadInput,
+    success: ProviderExtensionMcpReloadResult,
+    error: ProviderExtensionsError,
+  },
+);
+
+export const WsServerSetProviderExtensionSkillEnabledRpc = Rpc.make(
+  WS_METHODS.serverSetProviderExtensionSkillEnabled,
+  {
+    payload: ProviderExtensionSkillToggleInput,
+    success: ProviderExtensionSkillToggleResult,
+    error: ProviderExtensionsError,
+  },
+);
+
+export const WsServerReadProviderExtensionPluginRpc = Rpc.make(
+  WS_METHODS.serverReadProviderExtensionPlugin,
+  {
+    payload: ProviderExtensionPluginReadInput,
+    success: ProviderExtensionPluginReadResult,
+    error: ProviderExtensionsError,
+  },
+);
+
+export const WsServerInstallProviderExtensionPluginRpc = Rpc.make(
+  WS_METHODS.serverInstallProviderExtensionPlugin,
+  {
+    payload: ProviderExtensionPluginInstallInput,
+    success: ProviderExtensionPluginInstallResult,
+    error: ProviderExtensionsError,
+  },
+);
+
+export const WsServerUninstallProviderExtensionPluginRpc = Rpc.make(
+  WS_METHODS.serverUninstallProviderExtensionPlugin,
+  {
+    payload: ProviderExtensionPluginUninstallInput,
+    success: ProviderExtensionPluginUninstallResult,
+    error: ProviderExtensionsError,
+  },
+);
+
+export const WsServerSetProviderExtensionPluginEnabledRpc = Rpc.make(
+  WS_METHODS.serverSetProviderExtensionPluginEnabled,
+  {
+    payload: ProviderExtensionPluginToggleInput,
+    success: ProviderExtensionPluginToggleResult,
+    error: ProviderExtensionsError,
+  },
+);
+
+export const WsServerUpdateProviderExtensionPluginRpc = Rpc.make(
+  WS_METHODS.serverUpdateProviderExtensionPlugin,
+  {
+    payload: ProviderExtensionPluginUpdateInput,
+    success: ProviderExtensionPluginUpdateResult,
+    error: ProviderExtensionsError,
+  },
+);
+
+export const WsServerCallProviderExtensionMcpToolRpc = Rpc.make(
+  WS_METHODS.serverCallProviderExtensionMcpTool,
+  {
+    payload: ProviderExtensionMcpToolCallInput,
+    success: ProviderExtensionMcpToolCallResult,
+    error: ProviderExtensionsError,
+  },
+);
+
+export const WsServerReadProviderExtensionMcpResourceRpc = Rpc.make(
+  WS_METHODS.serverReadProviderExtensionMcpResource,
+  {
+    payload: ProviderExtensionMcpResourceReadInput,
+    success: ProviderExtensionMcpResourceReadResult,
+    error: ProviderExtensionsError,
+  },
+);
 
 export const WsServerGetProviderInstructionFilesRpc = Rpc.make(
   WS_METHODS.serverGetProviderInstructionFiles,
@@ -578,6 +710,17 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetProcessResourceHistoryRpc,
   WsServerSignalProcessRpc,
   WsServerGetProviderExtensionsRpc,
+  WsServerStartProviderExtensionMcpOAuthRpc,
+  WsServerGetProviderExtensionOperationStatusRpc,
+  WsServerReloadProviderExtensionMcpServersRpc,
+  WsServerSetProviderExtensionSkillEnabledRpc,
+  WsServerReadProviderExtensionPluginRpc,
+  WsServerInstallProviderExtensionPluginRpc,
+  WsServerUninstallProviderExtensionPluginRpc,
+  WsServerSetProviderExtensionPluginEnabledRpc,
+  WsServerUpdateProviderExtensionPluginRpc,
+  WsServerCallProviderExtensionMcpToolRpc,
+  WsServerReadProviderExtensionMcpResourceRpc,
   WsServerGetProviderInstructionFilesRpc,
   WsServerWriteProviderInstructionFileRpc,
   WsSourceControlLookupRepositoryRpc,

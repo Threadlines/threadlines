@@ -98,12 +98,14 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   buildCommitGraphRows,
   type CommitGraphLaneLayout,
+  formatCommitCount,
   formatCommitGraphDateTime,
   formatCommitGraphParentSummary,
   formatCommitGraphTimestamp,
   getCommitGraphRefKind,
   getVisibleCommitGraphRefs,
   normalizeCommitGraphRefName,
+  resolveSourceControlPrimaryAction,
 } from "./SourceControlPanel.logic";
 
 export interface SourceControlProjectTarget {
@@ -121,10 +123,6 @@ interface SourceControlPanelProps {
     | ((branch: string | null, worktreePath: string | null) => void)
     | undefined;
   readonly onOpenDiff?: (filePath?: string) => void;
-}
-
-function formatCommitCount(count: number): string {
-  return count === 1 ? "1 commit" : `${count} commits`;
 }
 
 function splitPath(filePath: string): { readonly name: string; readonly directory: string } {
@@ -1458,6 +1456,12 @@ export function SourceControlPanel({
 
   const hasCommitMessage = commitMessage.trim().length > 0;
   const showCommitMessageEditor = commitMessageEditorOpen || hasCommitMessage;
+  const primaryAction = resolveSourceControlPrimaryAction({
+    status,
+    hasCommitMessage,
+    commitAndPushDisabledReason: primaryCommitPushDisabledReason,
+    pushDisabledReason,
+  });
   const normalizedChangesPanelRatio = clampChangesPanelRatio(changesPanelRatio);
 
   const measureSourceControlSplit = useCallback(() => {
@@ -1722,10 +1726,16 @@ export function SourceControlPanel({
             ) : null}
             <div className="grid grid-cols-[minmax(0,1fr)_2rem] gap-1.5">
               <ActionButton
-                label={hasCommitMessage ? "Commit & push" : "Generate, commit & push"}
-                icon={<SparklesIcon className="size-3" />}
-                disabledReason={primaryCommitPushDisabledReason}
-                onClick={() => void runAction("commit_push")}
+                label={primaryAction.label}
+                icon={
+                  primaryAction.icon === "upload" ? (
+                    <UploadIcon className="size-3" />
+                  ) : (
+                    <SparklesIcon className="size-3" />
+                  )
+                }
+                disabledReason={primaryAction.disabledReason}
+                onClick={() => void runAction(primaryAction.action)}
                 variant="default"
               />
               <Menu>

@@ -150,6 +150,39 @@ export interface WsRpcClient {
     >;
     readonly signalProcess: RpcUnaryMethod<typeof WS_METHODS.serverSignalProcess>;
     readonly getProviderExtensions: RpcUnaryMethod<typeof WS_METHODS.serverGetProviderExtensions>;
+    readonly startProviderExtensionMcpOAuth: RpcUnaryMethod<
+      typeof WS_METHODS.serverStartProviderExtensionMcpOAuth
+    >;
+    readonly getProviderExtensionOperationStatus: RpcUnaryMethod<
+      typeof WS_METHODS.serverGetProviderExtensionOperationStatus
+    >;
+    readonly reloadProviderExtensionMcpServers: RpcUnaryMethod<
+      typeof WS_METHODS.serverReloadProviderExtensionMcpServers
+    >;
+    readonly setProviderExtensionSkillEnabled: RpcUnaryMethod<
+      typeof WS_METHODS.serverSetProviderExtensionSkillEnabled
+    >;
+    readonly readProviderExtensionPlugin: RpcUnaryMethod<
+      typeof WS_METHODS.serverReadProviderExtensionPlugin
+    >;
+    readonly installProviderExtensionPlugin: RpcUnaryMethod<
+      typeof WS_METHODS.serverInstallProviderExtensionPlugin
+    >;
+    readonly uninstallProviderExtensionPlugin: RpcUnaryMethod<
+      typeof WS_METHODS.serverUninstallProviderExtensionPlugin
+    >;
+    readonly setProviderExtensionPluginEnabled: RpcUnaryMethod<
+      typeof WS_METHODS.serverSetProviderExtensionPluginEnabled
+    >;
+    readonly updateProviderExtensionPlugin: RpcUnaryMethod<
+      typeof WS_METHODS.serverUpdateProviderExtensionPlugin
+    >;
+    readonly callProviderExtensionMcpTool: RpcUnaryMethod<
+      typeof WS_METHODS.serverCallProviderExtensionMcpTool
+    >;
+    readonly readProviderExtensionMcpResource: RpcUnaryMethod<
+      typeof WS_METHODS.serverReadProviderExtensionMcpResource
+    >;
     readonly getProviderInstructionFiles: RpcUnaryMethod<
       typeof WS_METHODS.serverGetProviderInstructionFiles
     >;
@@ -310,6 +343,72 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       getProviderExtensions: (input) =>
         transport.request((client) =>
           client[WS_METHODS.serverGetProviderExtensions](input).pipe(
+            Effect.withTracerEnabled(false),
+          ),
+        ),
+      startProviderExtensionMcpOAuth: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverStartProviderExtensionMcpOAuth](input).pipe(
+            Effect.withTracerEnabled(false),
+          ),
+        ),
+      getProviderExtensionOperationStatus: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverGetProviderExtensionOperationStatus](input).pipe(
+            Effect.withTracerEnabled(false),
+          ),
+        ),
+      reloadProviderExtensionMcpServers: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverReloadProviderExtensionMcpServers](input).pipe(
+            Effect.withTracerEnabled(false),
+          ),
+        ),
+      setProviderExtensionSkillEnabled: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverSetProviderExtensionSkillEnabled](input).pipe(
+            Effect.withTracerEnabled(false),
+          ),
+        ),
+      readProviderExtensionPlugin: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverReadProviderExtensionPlugin](input).pipe(
+            Effect.withTracerEnabled(false),
+          ),
+        ),
+      installProviderExtensionPlugin: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverInstallProviderExtensionPlugin](input).pipe(
+            Effect.withTracerEnabled(false),
+          ),
+        ),
+      uninstallProviderExtensionPlugin: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverUninstallProviderExtensionPlugin](input).pipe(
+            Effect.withTracerEnabled(false),
+          ),
+        ),
+      setProviderExtensionPluginEnabled: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverSetProviderExtensionPluginEnabled](input).pipe(
+            Effect.withTracerEnabled(false),
+          ),
+        ),
+      updateProviderExtensionPlugin: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverUpdateProviderExtensionPlugin](input).pipe(
+            Effect.withTracerEnabled(false),
+          ),
+        ),
+      callProviderExtensionMcpTool: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverCallProviderExtensionMcpTool](input).pipe(
+            Effect.withTracerEnabled(false),
+          ),
+        ),
+      readProviderExtensionMcpResource: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverReadProviderExtensionMcpResource](input).pipe(
             Effect.withTracerEnabled(false),
           ),
         ),

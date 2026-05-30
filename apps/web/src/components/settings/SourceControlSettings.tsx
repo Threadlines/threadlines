@@ -127,6 +127,12 @@ function itemStatusDot(item: VcsDiscoveryItem | SourceControlProviderDiscoveryIt
   return "bg-success";
 }
 
+function itemReady(item: VcsDiscoveryItem | SourceControlProviderDiscoveryItem): boolean {
+  if (item.status !== "available") return false;
+  if (isProviderDiscoveryItem(item)) return item.auth.status === "authenticated";
+  return item.implemented;
+}
+
 function SourceControlItemMark({
   item,
 }: {
@@ -218,8 +224,7 @@ function DiscoveryItemRow({
   readonly children?: ReactNode;
 }) {
   const version = optionLabel(item.version);
-  const enabled =
-    item.status === "available" && (isProviderDiscoveryItem(item) || item.implemented);
+  const isReady = itemReady(item);
   const auth = isProviderDiscoveryItem(item) ? item.auth : null;
   const authStatus = auth ? authPresentation(auth) : null;
   const authAccount = auth ? optionLabel(auth.account) : null;
@@ -273,7 +278,7 @@ function DiscoveryItemRow({
               </Button>
             ) : null}
             {!isVcsNotReady(item) ? (
-              <Switch checked={enabled} disabled aria-label={`${item.label} availability`} />
+              <Switch checked={isReady} disabled aria-label={`${item.label} availability`} />
             ) : null}
           </div>
         </div>

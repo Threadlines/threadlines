@@ -1,0 +1,13 @@
+- generic [ref=e4]:
+  - paragraph [ref=e5]: BadCode (Dev)
+  - heading "Pair with this environment" [level=1] [ref=e6]
+  - paragraph [ref=e7]: This environment expects a trusted pairing credential before the app can connect.
+  - generic [ref=e8]:
+    - generic [ref=e9]:
+      - text: Pairing token
+      - textbox "Pairing token" [ref=e11]:
+        - /placeholder: Paste a one-time token or pairing secret
+    - generic [ref=e12]:
+      - button "Continue" [ref=e13] [cursor=pointer]
+      - button "Reload app" [ref=e14] [cursor=pointer]
+  - generic [ref=e15]: This environment is desktop-managed. Open it from the desktop app or paste a bootstrap credential if one was issued explicitly.

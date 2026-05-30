@@ -32,6 +32,18 @@ export const ProviderExtensionPlugin = Schema.Struct({
   installed: Schema.optional(Schema.Boolean),
   source: Schema.optional(TrimmedNonEmptyString),
   scope: Schema.optional(TrimmedNonEmptyString),
+  authPolicy: Schema.optional(TrimmedNonEmptyString),
+  installPolicy: Schema.optional(TrimmedNonEmptyString),
+  availability: Schema.optional(TrimmedNonEmptyString),
+  marketplaceName: Schema.optional(TrimmedNonEmptyString),
+  marketplacePath: Schema.optional(TrimmedNonEmptyString),
+  remoteMarketplaceName: Schema.optional(TrimmedNonEmptyString),
+  version: Schema.optional(TrimmedNonEmptyString),
+  installPath: Schema.optional(TrimmedNonEmptyString),
+  installedAt: Schema.optional(IsoDateTime),
+  lastUpdated: Schema.optional(IsoDateTime),
+  installCount: Schema.optional(NonNegativeInt),
+  projectPath: Schema.optional(TrimmedNonEmptyString),
 });
 export type ProviderExtensionPlugin = typeof ProviderExtensionPlugin.Type;
 
@@ -47,11 +59,46 @@ export const ProviderExtensionSkill = Schema.Struct({
 });
 export type ProviderExtensionSkill = typeof ProviderExtensionSkill.Type;
 
+export const ProviderExtensionMcpTool = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  title: Schema.optional(TrimmedString),
+  description: Schema.optional(TrimmedString),
+  inputSchema: Schema.optional(Schema.Unknown),
+  outputSchema: Schema.optional(Schema.Unknown),
+  annotations: Schema.optional(Schema.Unknown),
+});
+export type ProviderExtensionMcpTool = typeof ProviderExtensionMcpTool.Type;
+
+export const ProviderExtensionMcpResource = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  uri: TrimmedNonEmptyString,
+  title: Schema.optional(TrimmedString),
+  description: Schema.optional(TrimmedString),
+  mimeType: Schema.optional(TrimmedNonEmptyString),
+  size: Schema.optional(NonNegativeInt),
+  annotations: Schema.optional(Schema.Unknown),
+});
+export type ProviderExtensionMcpResource = typeof ProviderExtensionMcpResource.Type;
+
+export const ProviderExtensionMcpResourceTemplate = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  uriTemplate: TrimmedNonEmptyString,
+  title: Schema.optional(TrimmedString),
+  description: Schema.optional(TrimmedString),
+  mimeType: Schema.optional(TrimmedNonEmptyString),
+  annotations: Schema.optional(Schema.Unknown),
+});
+export type ProviderExtensionMcpResourceTemplate = typeof ProviderExtensionMcpResourceTemplate.Type;
+
 export const ProviderExtensionMcpServer = Schema.Struct({
   name: TrimmedNonEmptyString,
   authStatus: Schema.optional(TrimmedNonEmptyString),
   status: Schema.optional(TrimmedNonEmptyString),
   transport: Schema.optional(TrimmedNonEmptyString),
+  tools: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+  toolDefinitions: Schema.optional(Schema.Array(ProviderExtensionMcpTool)),
+  resources: Schema.optional(Schema.Array(ProviderExtensionMcpResource)),
+  resourceTemplates: Schema.optional(Schema.Array(ProviderExtensionMcpResourceTemplate)),
   toolCount: Schema.optional(NonNegativeInt),
   resourceCount: Schema.optional(NonNegativeInt),
   detail: Schema.optional(TrimmedString),
@@ -129,6 +176,175 @@ export const ProviderInstructionWriteResult = Schema.Struct({
   file: ProviderInstructionFile,
 });
 export type ProviderInstructionWriteResult = typeof ProviderInstructionWriteResult.Type;
+
+const ProviderExtensionActionBaseInput = {
+  cwd: Schema.optional(TrimmedNonEmptyString),
+  providerInstanceId: ProviderInstanceId,
+};
+
+export const ProviderExtensionMcpOAuthStartInput = Schema.Struct({
+  ...ProviderExtensionActionBaseInput,
+  serverName: TrimmedNonEmptyString,
+  scopes: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+  timeoutSecs: Schema.optional(NonNegativeInt),
+});
+export type ProviderExtensionMcpOAuthStartInput = typeof ProviderExtensionMcpOAuthStartInput.Type;
+
+export const ProviderExtensionMcpOAuthStartResult = Schema.Struct({
+  operationId: TrimmedNonEmptyString,
+  serverName: TrimmedNonEmptyString,
+  authorizationUrl: TrimmedNonEmptyString,
+  terminalCommand: TrimmedNonEmptyString,
+  expiresAt: IsoDateTime,
+});
+export type ProviderExtensionMcpOAuthStartResult = typeof ProviderExtensionMcpOAuthStartResult.Type;
+
+export const ProviderExtensionOperationStatusInput = Schema.Struct({
+  operationId: TrimmedNonEmptyString,
+});
+export type ProviderExtensionOperationStatusInput =
+  typeof ProviderExtensionOperationStatusInput.Type;
+
+export const ProviderExtensionOperationStatus = Schema.Literals([
+  "running",
+  "completed",
+  "failed",
+  "expired",
+]);
+export type ProviderExtensionOperationStatus = typeof ProviderExtensionOperationStatus.Type;
+
+export const ProviderExtensionOperationStatusResult = Schema.Struct({
+  operationId: TrimmedNonEmptyString,
+  kind: TrimmedNonEmptyString,
+  status: ProviderExtensionOperationStatus,
+  message: Schema.optional(TrimmedString),
+  error: Schema.optional(TrimmedString),
+  completedAt: Schema.optional(IsoDateTime),
+});
+export type ProviderExtensionOperationStatusResult =
+  typeof ProviderExtensionOperationStatusResult.Type;
+
+export const ProviderExtensionMcpReloadInput = Schema.Struct({
+  ...ProviderExtensionActionBaseInput,
+});
+export type ProviderExtensionMcpReloadInput = typeof ProviderExtensionMcpReloadInput.Type;
+
+export const ProviderExtensionMcpReloadResult = Schema.Struct({
+  reloaded: Schema.Boolean,
+});
+export type ProviderExtensionMcpReloadResult = typeof ProviderExtensionMcpReloadResult.Type;
+
+export const ProviderExtensionSkillToggleInput = Schema.Struct({
+  ...ProviderExtensionActionBaseInput,
+  name: Schema.optional(TrimmedNonEmptyString),
+  path: Schema.optional(TrimmedNonEmptyString),
+  enabled: Schema.Boolean,
+});
+export type ProviderExtensionSkillToggleInput = typeof ProviderExtensionSkillToggleInput.Type;
+
+export const ProviderExtensionSkillToggleResult = Schema.Struct({
+  effectiveEnabled: Schema.Boolean,
+});
+export type ProviderExtensionSkillToggleResult = typeof ProviderExtensionSkillToggleResult.Type;
+
+export const ProviderExtensionPluginReadInput = Schema.Struct({
+  ...ProviderExtensionActionBaseInput,
+  pluginName: TrimmedNonEmptyString,
+  marketplacePath: Schema.optional(TrimmedNonEmptyString),
+  remoteMarketplaceName: Schema.optional(TrimmedNonEmptyString),
+});
+export type ProviderExtensionPluginReadInput = typeof ProviderExtensionPluginReadInput.Type;
+
+export const ProviderExtensionPluginReadResult = Schema.Struct({
+  plugin: Schema.Unknown,
+});
+export type ProviderExtensionPluginReadResult = typeof ProviderExtensionPluginReadResult.Type;
+
+export const ProviderExtensionPluginInstallInput = Schema.Struct({
+  ...ProviderExtensionActionBaseInput,
+  pluginName: TrimmedNonEmptyString,
+  marketplacePath: Schema.optional(TrimmedNonEmptyString),
+  remoteMarketplaceName: Schema.optional(TrimmedNonEmptyString),
+  scope: Schema.optional(TrimmedNonEmptyString),
+});
+export type ProviderExtensionPluginInstallInput = typeof ProviderExtensionPluginInstallInput.Type;
+
+export const ProviderExtensionPluginInstallResult = Schema.Struct({
+  authPolicy: TrimmedNonEmptyString,
+  appsNeedingAuth: Schema.Array(Schema.Unknown),
+});
+export type ProviderExtensionPluginInstallResult = typeof ProviderExtensionPluginInstallResult.Type;
+
+export const ProviderExtensionPluginUninstallInput = Schema.Struct({
+  ...ProviderExtensionActionBaseInput,
+  pluginId: TrimmedNonEmptyString,
+  scope: Schema.optional(TrimmedNonEmptyString),
+});
+export type ProviderExtensionPluginUninstallInput =
+  typeof ProviderExtensionPluginUninstallInput.Type;
+
+export const ProviderExtensionPluginUninstallResult = Schema.Struct({
+  uninstalled: Schema.Boolean,
+});
+export type ProviderExtensionPluginUninstallResult =
+  typeof ProviderExtensionPluginUninstallResult.Type;
+
+export const ProviderExtensionPluginToggleInput = Schema.Struct({
+  ...ProviderExtensionActionBaseInput,
+  pluginId: TrimmedNonEmptyString,
+  scope: Schema.optional(TrimmedNonEmptyString),
+  enabled: Schema.Boolean,
+});
+export type ProviderExtensionPluginToggleInput = typeof ProviderExtensionPluginToggleInput.Type;
+
+export const ProviderExtensionPluginToggleResult = Schema.Struct({
+  effectiveEnabled: Schema.Boolean,
+});
+export type ProviderExtensionPluginToggleResult = typeof ProviderExtensionPluginToggleResult.Type;
+
+export const ProviderExtensionPluginUpdateInput = Schema.Struct({
+  ...ProviderExtensionActionBaseInput,
+  pluginId: TrimmedNonEmptyString,
+  scope: Schema.optional(TrimmedNonEmptyString),
+});
+export type ProviderExtensionPluginUpdateInput = typeof ProviderExtensionPluginUpdateInput.Type;
+
+export const ProviderExtensionPluginUpdateResult = Schema.Struct({
+  updated: Schema.Boolean,
+});
+export type ProviderExtensionPluginUpdateResult = typeof ProviderExtensionPluginUpdateResult.Type;
+
+export const ProviderExtensionMcpToolCallInput = Schema.Struct({
+  ...ProviderExtensionActionBaseInput,
+  serverName: TrimmedNonEmptyString,
+  toolName: TrimmedNonEmptyString,
+  providerThreadId: TrimmedNonEmptyString,
+  arguments: Schema.optional(Schema.Unknown),
+});
+export type ProviderExtensionMcpToolCallInput = typeof ProviderExtensionMcpToolCallInput.Type;
+
+export const ProviderExtensionMcpToolCallResult = Schema.Struct({
+  content: Schema.Array(Schema.Unknown),
+  structuredContent: Schema.optional(Schema.Unknown),
+  isError: Schema.optional(Schema.Boolean),
+  meta: Schema.optional(Schema.Unknown),
+});
+export type ProviderExtensionMcpToolCallResult = typeof ProviderExtensionMcpToolCallResult.Type;
+
+export const ProviderExtensionMcpResourceReadInput = Schema.Struct({
+  ...ProviderExtensionActionBaseInput,
+  serverName: TrimmedNonEmptyString,
+  uri: TrimmedNonEmptyString,
+  providerThreadId: Schema.optional(TrimmedNonEmptyString),
+});
+export type ProviderExtensionMcpResourceReadInput =
+  typeof ProviderExtensionMcpResourceReadInput.Type;
+
+export const ProviderExtensionMcpResourceReadResult = Schema.Struct({
+  contents: Schema.Array(Schema.Unknown),
+});
+export type ProviderExtensionMcpResourceReadResult =
+  typeof ProviderExtensionMcpResourceReadResult.Type;
 
 export class ProviderExtensionsError extends Schema.TaggedErrorClass<ProviderExtensionsError>()(
   "ProviderExtensionsError",

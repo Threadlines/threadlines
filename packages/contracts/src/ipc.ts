@@ -36,6 +36,28 @@ import type {
 } from "./project.ts";
 import type { ProviderInstanceId } from "./providerInstance.ts";
 import type {
+  ProviderExtensionMcpOAuthStartInput,
+  ProviderExtensionMcpOAuthStartResult,
+  ProviderExtensionMcpReloadInput,
+  ProviderExtensionMcpReloadResult,
+  ProviderExtensionMcpResourceReadInput,
+  ProviderExtensionMcpResourceReadResult,
+  ProviderExtensionMcpToolCallInput,
+  ProviderExtensionMcpToolCallResult,
+  ProviderExtensionOperationStatusInput,
+  ProviderExtensionOperationStatusResult,
+  ProviderExtensionPluginInstallInput,
+  ProviderExtensionPluginInstallResult,
+  ProviderExtensionPluginReadInput,
+  ProviderExtensionPluginReadResult,
+  ProviderExtensionPluginToggleInput,
+  ProviderExtensionPluginToggleResult,
+  ProviderExtensionPluginUninstallInput,
+  ProviderExtensionPluginUninstallResult,
+  ProviderExtensionPluginUpdateInput,
+  ProviderExtensionPluginUpdateResult,
+  ProviderExtensionSkillToggleInput,
+  ProviderExtensionSkillToggleResult,
   ProviderExtensionsInventoryInput,
   ProviderExtensionsInventoryResult,
   ProviderInstructionFilesInput,
@@ -517,6 +539,39 @@ export interface LocalApi {
     getProviderExtensions: (
       input: ProviderExtensionsInventoryInput,
     ) => Promise<ProviderExtensionsInventoryResult>;
+    startProviderExtensionMcpOAuth: (
+      input: ProviderExtensionMcpOAuthStartInput,
+    ) => Promise<ProviderExtensionMcpOAuthStartResult>;
+    getProviderExtensionOperationStatus: (
+      input: ProviderExtensionOperationStatusInput,
+    ) => Promise<ProviderExtensionOperationStatusResult>;
+    reloadProviderExtensionMcpServers: (
+      input: ProviderExtensionMcpReloadInput,
+    ) => Promise<ProviderExtensionMcpReloadResult>;
+    setProviderExtensionSkillEnabled: (
+      input: ProviderExtensionSkillToggleInput,
+    ) => Promise<ProviderExtensionSkillToggleResult>;
+    readProviderExtensionPlugin: (
+      input: ProviderExtensionPluginReadInput,
+    ) => Promise<ProviderExtensionPluginReadResult>;
+    installProviderExtensionPlugin: (
+      input: ProviderExtensionPluginInstallInput,
+    ) => Promise<ProviderExtensionPluginInstallResult>;
+    uninstallProviderExtensionPlugin: (
+      input: ProviderExtensionPluginUninstallInput,
+    ) => Promise<ProviderExtensionPluginUninstallResult>;
+    setProviderExtensionPluginEnabled: (
+      input: ProviderExtensionPluginToggleInput,
+    ) => Promise<ProviderExtensionPluginToggleResult>;
+    updateProviderExtensionPlugin: (
+      input: ProviderExtensionPluginUpdateInput,
+    ) => Promise<ProviderExtensionPluginUpdateResult>;
+    callProviderExtensionMcpTool: (
+      input: ProviderExtensionMcpToolCallInput,
+    ) => Promise<ProviderExtensionMcpToolCallResult>;
+    readProviderExtensionMcpResource: (
+      input: ProviderExtensionMcpResourceReadInput,
+    ) => Promise<ProviderExtensionMcpResourceReadResult>;
     getProviderInstructionFiles: (
       input: ProviderInstructionFilesInput,
     ) => Promise<ProviderInstructionFilesResult>;

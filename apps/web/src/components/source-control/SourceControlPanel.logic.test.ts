@@ -8,9 +8,79 @@ import {
   getCommitGraphRefKind,
   getVisibleCommitGraphRefs,
   normalizeCommitGraphRefName,
+  resolveSourceControlPrimaryAction,
 } from "./SourceControlPanel.logic";
+import type { VcsStatusResult } from "@t3tools/contracts";
+
+function status(overrides: Partial<VcsStatusResult> = {}): VcsStatusResult {
+  return {
+    isRepo: true,
+    hasPrimaryRemote: true,
+    isDefaultRef: false,
+    refName: "development",
+    hasWorkingTreeChanges: false,
+    workingTree: {
+      files: [],
+      insertions: 0,
+      deletions: 0,
+    },
+    hasUpstream: true,
+    aheadCount: 0,
+    behindCount: 0,
+    pr: null,
+    ...overrides,
+  };
+}
 
 describe("SourceControlPanel.logic", () => {
+  it("surfaces push as the primary action when a clean branch is ahead of upstream", () => {
+    expect(
+      resolveSourceControlPrimaryAction({
+        status: status({ aheadCount: 3 }),
+        hasCommitMessage: false,
+        commitAndPushDisabledReason: "No working tree changes.",
+        pushDisabledReason: null,
+      }),
+    ).toEqual({
+      action: "push",
+      label: "Push 3 commits",
+      disabledReason: null,
+      icon: "upload",
+    });
+  });
+
+  it("keeps commit and push primary when the working tree has changes", () => {
+    expect(
+      resolveSourceControlPrimaryAction({
+        status: status({ hasWorkingTreeChanges: true }),
+        hasCommitMessage: true,
+        commitAndPushDisabledReason: null,
+        pushDisabledReason: "Commit changes first.",
+      }),
+    ).toEqual({
+      action: "commit_push",
+      label: "Commit & push",
+      disabledReason: null,
+      icon: "sparkles",
+    });
+  });
+
+  it("surfaces publish branch as the primary action when no upstream is configured", () => {
+    expect(
+      resolveSourceControlPrimaryAction({
+        status: status({ hasUpstream: false }),
+        hasCommitMessage: false,
+        commitAndPushDisabledReason: "No working tree changes.",
+        pushDisabledReason: null,
+      }),
+    ).toEqual({
+      action: "push",
+      label: "Publish branch",
+      disabledReason: null,
+      icon: "upload",
+    });
+  });
+
   it("formats recent commit timestamps", () => {
     expect(
       formatCommitGraphTimestamp("2026-05-25T12:00:00.000Z", new Date("2026-05-25T13:30:00.000Z")),

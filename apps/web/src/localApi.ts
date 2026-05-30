@@ -167,6 +167,50 @@ function createBrowserLocalApi(rpcClient?: WsRpcClient): LocalApi {
         rpcClient
           ? rpcClient.server.getProviderExtensions(input)
           : Promise.reject(unavailableLocalBackendError()),
+      startProviderExtensionMcpOAuth: (input) =>
+        rpcClient
+          ? rpcClient.server.startProviderExtensionMcpOAuth(input)
+          : Promise.reject(unavailableLocalBackendError()),
+      getProviderExtensionOperationStatus: (input) =>
+        rpcClient
+          ? rpcClient.server.getProviderExtensionOperationStatus(input)
+          : Promise.reject(unavailableLocalBackendError()),
+      reloadProviderExtensionMcpServers: (input) =>
+        rpcClient
+          ? rpcClient.server.reloadProviderExtensionMcpServers(input)
+          : Promise.reject(unavailableLocalBackendError()),
+      setProviderExtensionSkillEnabled: (input) =>
+        rpcClient
+          ? rpcClient.server.setProviderExtensionSkillEnabled(input)
+          : Promise.reject(unavailableLocalBackendError()),
+      readProviderExtensionPlugin: (input) =>
+        rpcClient
+          ? rpcClient.server.readProviderExtensionPlugin(input)
+          : Promise.reject(unavailableLocalBackendError()),
+      installProviderExtensionPlugin: (input) =>
+        rpcClient
+          ? rpcClient.server.installProviderExtensionPlugin(input)
+          : Promise.reject(unavailableLocalBackendError()),
+      uninstallProviderExtensionPlugin: (input) =>
+        rpcClient
+          ? rpcClient.server.uninstallProviderExtensionPlugin(input)
+          : Promise.reject(unavailableLocalBackendError()),
+      setProviderExtensionPluginEnabled: (input) =>
+        rpcClient
+          ? rpcClient.server.setProviderExtensionPluginEnabled(input)
+          : Promise.reject(unavailableLocalBackendError()),
+      updateProviderExtensionPlugin: (input) =>
+        rpcClient
+          ? rpcClient.server.updateProviderExtensionPlugin(input)
+          : Promise.reject(unavailableLocalBackendError()),
+      callProviderExtensionMcpTool: (input) =>
+        rpcClient
+          ? rpcClient.server.callProviderExtensionMcpTool(input)
+          : Promise.reject(unavailableLocalBackendError()),
+      readProviderExtensionMcpResource: (input) =>
+        rpcClient
+          ? rpcClient.server.readProviderExtensionMcpResource(input)
+          : Promise.reject(unavailableLocalBackendError()),
       getProviderInstructionFiles: (input) =>
         rpcClient
           ? rpcClient.server.getProviderInstructionFiles(input)

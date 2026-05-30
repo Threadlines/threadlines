@@ -1,3 +1,48 @@
+import type { GitStackedAction, VcsStatusResult } from "@t3tools/contracts";
+
+export type SourceControlPrimaryActionIcon = "sparkles" | "upload";
+
+export interface SourceControlPrimaryAction {
+  readonly action: Extract<GitStackedAction, "commit_push" | "push">;
+  readonly label: string;
+  readonly disabledReason: string | null;
+  readonly icon: SourceControlPrimaryActionIcon;
+}
+
+export function formatCommitCount(count: number): string {
+  return count === 1 ? "1 commit" : `${count} commits`;
+}
+
+export function resolveSourceControlPrimaryAction(input: {
+  readonly status: VcsStatusResult | null;
+  readonly hasCommitMessage: boolean;
+  readonly commitAndPushDisabledReason: string | null;
+  readonly pushDisabledReason: string | null;
+}): SourceControlPrimaryAction {
+  const status = input.status;
+  if (status?.isRepo && !status.hasWorkingTreeChanges && input.pushDisabledReason === null) {
+    const shouldPublishBranch =
+      !status.hasUpstream && status.hasPrimaryRemote && !status.isDefaultRef;
+    return {
+      action: "push",
+      label: shouldPublishBranch
+        ? "Publish branch"
+        : status.aheadCount > 0
+          ? `Push ${formatCommitCount(status.aheadCount)}`
+          : "Push",
+      disabledReason: input.pushDisabledReason,
+      icon: "upload",
+    };
+  }
+
+  return {
+    action: "commit_push",
+    label: input.hasCommitMessage ? "Commit & push" : "Generate, commit & push",
+    disabledReason: input.commitAndPushDisabledReason,
+    icon: "sparkles",
+  };
+}
+
 export function formatCommitGraphTimestamp(value: string, now = new Date()): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {

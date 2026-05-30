@@ -16,7 +16,11 @@ import {
   type ServerSettings as ServerSettingsContract,
 } from "@t3tools/contracts";
 
-import { readProviderExtensionsInventory } from "./providerExtensions.ts";
+import {
+  isCodexAppsDirectoryAccessDeniedError,
+  parseClaudePluginList,
+  readProviderExtensionsInventory,
+} from "./providerExtensions.ts";
 
 const encoder = new TextEncoder();
 const decodeServerSettings = Schema.decodeSync(ServerSettings);
@@ -75,6 +79,64 @@ function makeSettings(overrides: Record<string, unknown> = {}): ServerSettingsCo
 }
 
 describe("provider extensions inventory", () => {
+  it("treats Codex app-directory 403s as optional inventory misses", () => {
+    assert.equal(
+      isCodexAppsDirectoryAccessDeniedError(
+        new Error("failed to list apps: Request failed with status 403 Forbidden: <html>"),
+      ),
+      true,
+    );
+    assert.equal(
+      isCodexAppsDirectoryAccessDeniedError(
+        new Error("failed to list apps: Request failed with status 500 Internal Server Error"),
+      ),
+      false,
+    );
+  });
+
+  it("parses Claude plugin JSON inventory with installed and marketplace entries", () => {
+    const plugins = parseClaudePluginList(
+      JSON.stringify({
+        installed: [
+          {
+            id: "supabase@claude-plugins-official",
+            version: "0.1.9",
+            scope: "user",
+            enabled: false,
+            installPath: "C:\\Users\\wilfr\\.claude\\plugins\\cache\\supabase\\0.1.9",
+            installedAt: "2026-04-20T08:59:41.934Z",
+            lastUpdated: "2026-05-29T03:28:06.201Z",
+          },
+        ],
+        available: [
+          {
+            pluginId: "supabase@claude-plugins-official",
+            name: "supabase",
+            description: "Supabase MCP integration",
+            marketplaceName: "claude-plugins-official",
+            source: { url: "https://github.com/supabase-community/supabase-plugin.git" },
+            installCount: 100599,
+          },
+          {
+            pluginId: "vercel@claude-plugins-official",
+            name: "vercel",
+            description: "Vercel integration",
+            marketplaceName: "claude-plugins-official",
+          },
+        ],
+      }),
+    );
+
+    assert.equal(plugins[0]?.id, "supabase@claude-plugins-official");
+    assert.equal(plugins[0]?.name, "supabase");
+    assert.equal(plugins[0]?.enabled, false);
+    assert.equal(plugins[0]?.installed, true);
+    assert.equal(plugins[0]?.description, "Supabase MCP integration");
+    assert.equal(plugins[0]?.installCount, 100599);
+    assert.equal(plugins[1]?.id, "vercel@claude-plugins-official");
+    assert.equal(plugins[1]?.installed, false);
+  });
+
   it.effect(
     "returns a Codex provider error instead of hanging when app-server never responds",
     () => {

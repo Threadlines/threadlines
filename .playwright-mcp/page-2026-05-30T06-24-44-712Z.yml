@@ -1,0 +1,118 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - link "Go to BadCode threads" [ref=e9] [cursor=pointer]:
+        - /url: /
+        - generic [ref=e10]: BadCode
+        - generic [ref=e11]: Dev
+      - list [ref=e15]:
+        - listitem [ref=e16]:
+          - button "General" [ref=e17] [cursor=pointer]:
+            - img [ref=e18]
+            - generic [ref=e21]: General
+        - listitem [ref=e22]:
+          - button "Keybindings" [ref=e23] [cursor=pointer]:
+            - img [ref=e24]
+            - generic [ref=e26]: Keybindings
+        - listitem [ref=e27]:
+          - button "Providers" [ref=e28] [cursor=pointer]:
+            - img [ref=e29]
+            - generic [ref=e32]: Providers
+        - listitem [ref=e33]:
+          - button "Extensions" [ref=e34] [cursor=pointer]:
+            - img [ref=e35]
+            - generic [ref=e37]: Extensions
+        - listitem [ref=e38]:
+          - button "Instructions" [ref=e39] [cursor=pointer]:
+            - img [ref=e40]
+            - generic [ref=e43]: Instructions
+        - listitem [ref=e44]:
+          - button "Source Control" [ref=e45] [cursor=pointer]:
+            - img [ref=e46]
+            - generic [ref=e50]: Source Control
+        - listitem [ref=e51]:
+          - button "Connections" [ref=e52] [cursor=pointer]:
+            - img [ref=e53]
+            - generic [ref=e56]: Connections
+        - listitem [ref=e57]:
+          - button "Archive" [ref=e58] [cursor=pointer]:
+            - img [ref=e59]
+            - generic [ref=e62]: Archive
+      - separator [ref=e63]
+      - list [ref=e65]:
+        - listitem [ref=e66]:
+          - button "Back" [ref=e67] [cursor=pointer]:
+            - img [ref=e68]
+            - generic [ref=e70]: Back
+      - button "Resize Sidebar" [ref=e71]
+    - main [ref=e72]:
+      - generic [ref=e73]:
+        - generic [ref=e76]: Settings
+        - generic [ref=e79]:
+          - generic [ref=e80]:
+            - heading "Extensions" [level=2] [ref=e82]:
+              - img [ref=e84]
+              - text: Extensions
+            - generic [ref=e87]:
+              - generic [ref=e89]:
+                - generic [ref=e90]:
+                  - heading "Project" [level=3] [ref=e92]
+                  - paragraph [ref=e94]: Pick the project context used for project skills and MCP status.
+                - generic [ref=e140]:
+                  - combobox "Project" [ref=e141] [cursor=pointer]:
+                    - generic [ref=e142]: badcode
+                    - generic [ref=e143]:
+                      - img
+                  - textbox [ref=e144]: C:\Users\wilfr\OneDrive\Desktop\GitHubCode\badcode
+              - generic [ref=e96]:
+                - generic [ref=e97]:
+                  - heading "Provider" [level=3] [ref=e99]
+                  - paragraph [ref=e101]: Choose a supported provider, then load its extension inventory when needed.
+                - generic [ref=e146]:
+                  - button "Load" [disabled]:
+                    - img
+                    - text: Load
+                  - generic [ref=e147]:
+                    - combobox "Provider" [ref=e148] [cursor=pointer]:
+                      - generic [ref=e149]: Claude
+                      - generic [ref=e150]:
+                        - img
+                    - textbox [ref=e151]: claudeAgent
+              - generic [ref=e103]:
+                - generic [ref=e104]:
+                  - heading "Filter" [level=3] [ref=e106]
+                  - paragraph [ref=e108]: Load an extension inventory to filter it.
+                - generic [ref=e110]:
+                  - img
+                  - searchbox "Search extensions" [disabled] [ref=e112]
+              - generic [ref=e114]:
+                - generic [ref=e115]:
+                  - heading "MCP context" [level=3] [ref=e117]
+                  - paragraph [ref=e119]: OAuth, reload, plugins, and skills work without this. Running MCP tools needs an active Codex thread.
+                - generic [ref=e121]:
+                  - generic [ref=e122]: No context
+                  - button "Advanced" [ref=e123] [cursor=pointer]:
+                    - img
+                    - text: Advanced
+          - generic [ref=e124]:
+            - heading "Providers" [level=2] [ref=e126]:
+              - img [ref=e128]
+              - text: Providers
+            - generic [ref=e135]:
+              - heading "Loading inventory" [level=3] [ref=e180]
+              - paragraph [ref=e139]: Checking the selected provider extension surfaces.
+  - generic:
+    - region "Notifications"
+  - generic:
+    - region "Notifications":
+      - dialog "Disconnected from Wilfredo" [ref=e166]:
+        - button "Dismiss notification" [ref=e168] [cursor=pointer]:
+          - img [ref=e169]
+        - generic [ref=e172]:
+          - generic [ref=e173]:
+            - generic [ref=e174]:
+              - img
+            - generic [ref=e175]:
+              - heading "Disconnected from Wilfredo" [level=2] [ref=e176]
+              - paragraph [ref=e177]: Reconnecting in 12s... Attempt 5/8
+          - button "Retry now" [ref=e179] [cursor=pointer]

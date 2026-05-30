@@ -1322,6 +1322,57 @@ describe("SourceControlSettingsPanel discovery states", () => {
     await expect.element(page.getByText("Nothing detected yet")).not.toBeInTheDocument();
   });
 
+  it("shows unauthenticated source control providers as unavailable", async () => {
+    setSourceControlDiscoveryStub(async () => ({
+      versionControlSystems: [],
+      sourceControlProviders: [
+        {
+          kind: "github",
+          label: "GitHub",
+          executable: "gh",
+          status: "available",
+          version: Option.some("gh version 2.92.0"),
+          installHint: "Install GitHub CLI.",
+          detail: Option.none(),
+          auth: {
+            status: "authenticated",
+            account: Option.some("octocat"),
+            host: Option.some("github.com"),
+            detail: Option.none(),
+          },
+        },
+        {
+          kind: "bitbucket",
+          label: "Bitbucket",
+          status: "available",
+          version: Option.none(),
+          installHint: "Set T3CODE_BITBUCKET_EMAIL and T3CODE_BITBUCKET_API_TOKEN.",
+          detail: Option.none(),
+          auth: {
+            status: "unauthenticated",
+            account: Option.none(),
+            host: Option.some("bitbucket.org"),
+            detail: Option.none(),
+          },
+        },
+      ],
+    }));
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <SourceControlSettingsPanel />
+      </AppAtomRegistryProvider>,
+    );
+
+    await expect
+      .element(page.getByRole("switch", { name: "GitHub availability" }))
+      .toHaveAttribute("aria-checked", "true");
+    await expect
+      .element(page.getByRole("switch", { name: "Bitbucket availability" }))
+      .toHaveAttribute("aria-checked", "false");
+    await expect.element(page.getByText("Not authenticated")).toBeInTheDocument();
+  });
+
   it("shows Git fetch interval settings inside the Git details dropdown", async () => {
     setSourceControlDiscoveryStub(async () => ({
       versionControlSystems: [
