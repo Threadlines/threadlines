@@ -571,6 +571,7 @@ describe("MessagesTimeline", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
+        isWorking
         timelineEntries={[
           {
             id: "entry-1",
@@ -599,6 +600,7 @@ describe("MessagesTimeline", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
+        isWorking
         workspaceRoot="C:/Users/mike/dev-stuff/t3code"
         timelineEntries={[
           {
