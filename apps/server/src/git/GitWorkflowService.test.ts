@@ -19,6 +19,14 @@ function makeLayer(input: { readonly detect: VcsDriverRegistry.VcsDriverRegistry
   );
 }
 
+function makeGitHandle(): VcsDriverRegistry.VcsDriverHandle {
+  return {
+    kind: "git",
+    repository: {} as VcsDriverRegistry.VcsDriverHandle["repository"],
+    driver: {} as VcsDriverRegistry.VcsDriverHandle["driver"],
+  };
+}
+
 describe("GitWorkflowService", () => {
   it.effect("returns an empty local status when no VCS repository is detected", () =>
     Effect.gen(function* () {
@@ -130,4 +138,122 @@ describe("GitWorkflowService", () => {
       ),
     ),
   );
+
+  it.effect("mergeRef merges and pushes the current branch", () => {
+    const statusDetails = vi.fn(() =>
+      Effect.succeed({
+        isRepo: true,
+        hasOriginRemote: true,
+        isDefaultBranch: true,
+        branch: "main",
+        upstreamRef: "origin/main",
+        hasWorkingTreeChanges: false,
+        workingTree: {
+          files: [],
+          insertions: 0,
+          deletions: 0,
+        },
+        hasUpstream: true,
+        aheadCount: 0,
+        behindCount: 0,
+        aheadOfDefaultCount: 0,
+      }),
+    );
+    const mergeInputs: unknown[] = [];
+    const pushInputs: unknown[] = [];
+    const mergeRef = vi.fn((input: unknown) => {
+      mergeInputs.push(input);
+      return Effect.succeed({ refName: "main" });
+    });
+    const pushCurrentBranch = vi.fn((cwd: string, fallbackBranch: string | null) => {
+      pushInputs.push([cwd, fallbackBranch]);
+      return Effect.succeed({
+        status: "pushed" as const,
+        branch: "main",
+        upstreamBranch: "origin/main",
+        setUpstream: false,
+      });
+    });
+
+    const testLayer = GitWorkflowService.layer.pipe(
+      Layer.provide(
+        Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+          resolve: () => Effect.succeed(makeGitHandle()),
+        }),
+      ),
+      Layer.provide(
+        Layer.mock(GitVcsDriver.GitVcsDriver)({
+          statusDetails,
+          mergeRef,
+          pushCurrentBranch,
+        }),
+      ),
+      Layer.provide(Layer.mock(GitManager.GitManager)({})),
+    );
+
+    return Effect.gen(function* () {
+      const workflow = yield* GitWorkflowService.GitWorkflowService;
+      const result = yield* workflow.mergeRef({ cwd: "/repo", refName: "feature" });
+
+      assert.deepStrictEqual(result, {
+        refName: "main",
+        push: {
+          status: "pushed",
+          branch: "main",
+          upstreamBranch: "origin/main",
+          setUpstream: false,
+        },
+      });
+      assert.deepStrictEqual(mergeInputs[0], { cwd: "/repo", refName: "feature" });
+      assert.deepStrictEqual(pushInputs[0], ["/repo", "main"]);
+    }).pipe(Effect.provide(testLayer));
+  });
+
+  it.effect("mergeRef refuses to merge when the current branch is behind upstream", () => {
+    const mergeRef = vi.fn();
+    const pushCurrentBranch = vi.fn();
+    const testLayer = GitWorkflowService.layer.pipe(
+      Layer.provide(
+        Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+          resolve: () => Effect.succeed(makeGitHandle()),
+        }),
+      ),
+      Layer.provide(
+        Layer.mock(GitVcsDriver.GitVcsDriver)({
+          statusDetails: () =>
+            Effect.succeed({
+              isRepo: true,
+              hasOriginRemote: true,
+              isDefaultBranch: true,
+              branch: "main",
+              upstreamRef: "origin/main",
+              hasWorkingTreeChanges: false,
+              workingTree: {
+                files: [],
+                insertions: 0,
+                deletions: 0,
+              },
+              hasUpstream: true,
+              aheadCount: 0,
+              behindCount: 1,
+              aheadOfDefaultCount: 0,
+            }),
+          mergeRef,
+          pushCurrentBranch,
+        }),
+      ),
+      Layer.provide(Layer.mock(GitManager.GitManager)({})),
+    );
+
+    return Effect.gen(function* () {
+      const workflow = yield* GitWorkflowService.GitWorkflowService;
+      const error = yield* workflow
+        .mergeRef({ cwd: "/repo", refName: "feature" })
+        .pipe(Effect.flip);
+
+      assert.match(error.message, /behind upstream/i);
+      assert.equal(mergeRef.mock.calls.length, 0);
+      assert.equal(pushCurrentBranch.mock.calls.length, 0);
+    }).pipe(Effect.provide(testLayer));
+  });
 });

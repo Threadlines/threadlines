@@ -212,8 +212,16 @@ export const VcsMergeRefInput = Schema.Struct({
 });
 export type VcsMergeRefInput = typeof VcsMergeRefInput.Type;
 
+const VcsMergePushResult = Schema.Struct({
+  status: Schema.Literals(["pushed", "skipped_up_to_date"]),
+  branch: TrimmedNonEmptyStringSchema,
+  upstreamBranch: Schema.optional(TrimmedNonEmptyStringSchema),
+  setUpstream: Schema.optional(Schema.Boolean),
+});
+
 export const VcsMergeRefResult = Schema.Struct({
   refName: TrimmedNonEmptyStringSchema,
+  push: Schema.optional(VcsMergePushResult),
 });
 export type VcsMergeRefResult = typeof VcsMergeRefResult.Type;
 

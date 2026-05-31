@@ -2176,6 +2176,90 @@ function InlineDiffStatLabel({ stat }: { stat: { additions: number; deletions: n
   );
 }
 
+function WorkEntryPreviewText({ preview }: { preview: string }) {
+  return (
+    <>
+      <span className="shrink-0 px-1 text-muted-foreground/40">-</span>
+      <span className="min-w-0 truncate">{preview}</span>
+    </>
+  );
+}
+
+function WorkEntrySummaryLine({
+  displayText,
+  heading,
+  isRunningTool,
+  preview,
+  rawCommand,
+  tone,
+  visibleDiffStat,
+  className,
+}: {
+  displayText: string;
+  heading: string;
+  isRunningTool: boolean;
+  preview: string | null;
+  rawCommand: string | null;
+  tone: TimelineWorkEntry["tone"];
+  visibleDiffStat: { additions: number; deletions: number } | null;
+  className?: string;
+}) {
+  const previewClassName =
+    "flex min-w-0 flex-1 items-center self-center overflow-hidden leading-5 text-muted-foreground/55 transition-colors hover:text-muted-foreground/75 focus-visible:text-muted-foreground/75";
+
+  return (
+    <p
+      className={cn(
+        "flex min-w-0 items-center overflow-hidden leading-5",
+        workToneClass(tone),
+        preview ? "text-muted-foreground/70" : "",
+        className,
+      )}
+      title={displayText}
+    >
+      {isRunningTool ? <RunningToolIndicator className="mr-1.5 shrink-0" /> : null}
+      <span
+        className={cn(
+          "min-w-0 shrink-0 truncate leading-5 text-foreground/80",
+          workToneClass(tone),
+        )}
+        data-work-entry-heading="true"
+      >
+        {heading}
+        {visibleDiffStat ? <InlineDiffStatLabel stat={visibleDiffStat} /> : null}
+      </span>
+      {preview ? (
+        rawCommand ? (
+          <Tooltip>
+            <TooltipTrigger
+              closeDelay={0}
+              delay={75}
+              render={
+                <span className={previewClassName} data-work-entry-preview="true">
+                  <WorkEntryPreviewText preview={preview} />
+                </span>
+              }
+            />
+            <TooltipPopup
+              align="start"
+              className="max-w-[min(56rem,calc(100vw-2rem))] px-0 py-0"
+              side="top"
+            >
+              <div className="max-w-[min(56rem,calc(100vw-2rem))] overflow-x-auto px-1.5 py-1 font-mono text-[11px] leading-4 whitespace-nowrap">
+                {rawCommand}
+              </div>
+            </TooltipPopup>
+          </Tooltip>
+        ) : (
+          <span className={previewClassName} data-work-entry-preview="true">
+            <WorkEntryPreviewText preview={preview} />
+          </span>
+        )
+      ) : null}
+    </p>
+  );
+}
+
 const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
@@ -2348,48 +2432,16 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
         <div className="min-w-0 flex-1 overflow-hidden">
           {rawCommand ? (
             <div className="max-w-full">
-              <p
-                className={cn(
-                  "truncate text-xs leading-5",
-                  workToneClass(workEntry.tone),
-                  preview ? "text-muted-foreground/70" : "",
-                )}
-                title={displayText}
-              >
-                <span
-                  className={cn(
-                    "inline-flex items-center text-foreground/80",
-                    workToneClass(workEntry.tone),
-                  )}
-                >
-                  {isRunningTool ? <RunningToolIndicator className="mr-1.5" /> : null}
-                  {heading}
-                  {visibleDiffStat ? <InlineDiffStatLabel stat={visibleDiffStat} /> : null}
-                </span>
-                {preview && (
-                  <Tooltip>
-                    <TooltipTrigger
-                      closeDelay={0}
-                      delay={75}
-                      render={
-                        <span className="max-w-full cursor-default text-muted-foreground/55 transition-colors hover:text-muted-foreground/75 focus-visible:text-muted-foreground/75">
-                          {" "}
-                          - {preview}
-                        </span>
-                      }
-                    />
-                    <TooltipPopup
-                      align="start"
-                      className="max-w-[min(56rem,calc(100vw-2rem))] px-0 py-0"
-                      side="top"
-                    >
-                      <div className="max-w-[min(56rem,calc(100vw-2rem))] overflow-x-auto px-1.5 py-1 font-mono text-[11px] leading-4 whitespace-nowrap">
-                        {rawCommand}
-                      </div>
-                    </TooltipPopup>
-                  </Tooltip>
-                )}
-              </p>
+              <WorkEntrySummaryLine
+                className="text-xs"
+                displayText={displayText}
+                heading={heading}
+                isRunningTool={isRunningTool}
+                preview={preview}
+                rawCommand={rawCommand}
+                tone={workEntry.tone}
+                visibleDiffStat={visibleDiffStat}
+              />
             </div>
           ) : (
             <Tooltip>
@@ -2398,25 +2450,16 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                 title={displayText}
                 aria-label={displayText}
               >
-                <p
-                  className={cn(
-                    "truncate text-[11px] leading-5",
-                    workToneClass(workEntry.tone),
-                    preview ? "text-muted-foreground/70" : "",
-                  )}
-                >
-                  <span
-                    className={cn(
-                      "inline-flex items-center text-foreground/80",
-                      workToneClass(workEntry.tone),
-                    )}
-                  >
-                    {isRunningTool ? <RunningToolIndicator className="mr-1.5" /> : null}
-                    {heading}
-                    {visibleDiffStat ? <InlineDiffStatLabel stat={visibleDiffStat} /> : null}
-                  </span>
-                  {preview && <span className="text-muted-foreground/55"> - {preview}</span>}
-                </p>
+                <WorkEntrySummaryLine
+                  className="text-[11px]"
+                  displayText={displayText}
+                  heading={heading}
+                  isRunningTool={isRunningTool}
+                  preview={preview}
+                  rawCommand={null}
+                  tone={workEntry.tone}
+                  visibleDiffStat={visibleDiffStat}
+                />
               </TooltipTrigger>
               <TooltipPopup className="max-w-[min(720px,calc(100vw-2rem))]">
                 <p className="whitespace-pre-wrap wrap-break-word text-xs leading-5">

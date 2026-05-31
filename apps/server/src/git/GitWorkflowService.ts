@@ -347,7 +347,25 @@ export const make = Effect.fn("makeGitWorkflowService")(function* () {
       ),
     mergeRef: (input) =>
       ensureGitCommand("GitWorkflowService.mergeRef", input.cwd).pipe(
-        Effect.andThen(git.mergeRef(input)),
+        Effect.andThen(
+          Effect.gen(function* () {
+            const details = yield* git.statusDetails(input.cwd);
+            if (details.behindCount > 0) {
+              return yield* unsupportedGitCommand(
+                "GitWorkflowService.mergeRef",
+                input.cwd,
+                "Cannot merge and push because the current branch is behind upstream. Pull first.",
+              );
+            }
+            if (!details.hasUpstream) {
+              yield* git.resolvePrimaryRemoteName(input.cwd).pipe(Effect.asVoid);
+            }
+
+            const merged = yield* git.mergeRef(input);
+            const push = yield* git.pushCurrentBranch(input.cwd, merged.refName);
+            return { ...merged, push };
+          }),
+        ),
       ),
     renameBranch: (input) =>
       ensureGit("GitWorkflowService.renameBranch", input.cwd).pipe(

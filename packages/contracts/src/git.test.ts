@@ -9,6 +9,7 @@ import {
   GitRunStackedActionResult,
   GitRunStackedActionInput,
   GitResolvePullRequestResult,
+  VcsMergeRefResult,
 } from "./git.ts";
 
 const decodeCommitGraphInput = Schema.decodeUnknownSync(VcsCommitGraphInput);
@@ -20,6 +21,7 @@ const decodePreparePullRequestThreadInput = Schema.decodeUnknownSync(
 const decodeRunStackedActionInput = Schema.decodeUnknownSync(GitRunStackedActionInput);
 const decodeRunStackedActionResult = Schema.decodeUnknownSync(GitRunStackedActionResult);
 const decodeResolvePullRequestResult = Schema.decodeUnknownSync(GitResolvePullRequestResult);
+const decodeMergeRefResult = Schema.decodeUnknownSync(VcsMergeRefResult);
 
 describe("VcsCreateWorktreeInput", () => {
   it("accepts omitted newRefName for existing-refName worktrees", () => {
@@ -70,6 +72,22 @@ describe("GitPreparePullRequestThreadInput", () => {
 
     expect(parsed.reference).toBe("#42");
     expect(parsed.mode).toBe("worktree");
+  });
+});
+
+describe("VcsMergeRefResult", () => {
+  it("accepts merge results with a follow-up push outcome", () => {
+    const parsed = decodeMergeRefResult({
+      refName: "main",
+      push: {
+        status: "pushed",
+        branch: "main",
+        upstreamBranch: "origin/main",
+        setUpstream: false,
+      },
+    });
+
+    expect(parsed.push?.upstreamBranch).toBe("origin/main");
   });
 });
 

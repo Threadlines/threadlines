@@ -131,7 +131,58 @@ describe("MessagesTimeline", () => {
       await expect
         .element(page.getByText("Send a message to start the conversation."))
         .not.toBeInTheDocument();
-      await expect.element(page.getByText("Thinking - Inspecting repository state")).toBeVisible();
+      await expect
+        .element(page.getByRole("button", { name: "Thinking - Inspecting repository state" }))
+        .toBeVisible();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("keeps live command preview aligned with its activity heading", async () => {
+    const screen = await render(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        timelineEntries={[
+          {
+            id: "entry-command",
+            kind: "work",
+            createdAt: "2026-04-13T12:00:00.000Z",
+            entry: {
+              id: "work-command",
+              createdAt: "2026-04-13T12:00:00.000Z",
+              label: "Ran command",
+              tone: "tool",
+              itemType: "command_execution",
+              command: "bun run test",
+              rawCommand: "powershell -NoProfile -Command bun run test",
+              executionState: "running",
+            },
+          },
+        ]}
+      />,
+    );
+
+    try {
+      await expect.element(page.getByText("Verifying bun test")).toBeVisible();
+
+      const heading = document.querySelector(
+        "[data-work-entry-heading='true']",
+      ) as HTMLElement | null;
+      const preview = document.querySelector(
+        "[data-work-entry-preview='true']",
+      ) as HTMLElement | null;
+
+      expect(heading).not.toBeNull();
+      expect(preview).not.toBeNull();
+
+      const headingRect = heading!.getBoundingClientRect();
+      const previewRect = preview!.getBoundingClientRect();
+      const headingCenterY = headingRect.top + headingRect.height / 2;
+      const previewCenterY = previewRect.top + previewRect.height / 2;
+
+      expect(Math.abs(headingCenterY - previewCenterY)).toBeLessThanOrEqual(1);
     } finally {
       await screen.unmount();
     }
@@ -174,7 +225,9 @@ describe("MessagesTimeline", () => {
         />,
       );
 
-      await expect.element(page.getByText("Thinking - Inspecting repository state")).toBeVisible();
+      await expect
+        .element(page.getByRole("button", { name: "Thinking - Inspecting repository state" }))
+        .toBeVisible();
       expect(props.onIsAtEndChange).toHaveBeenCalledWith(true);
       expect(scrollToEndSpy).toHaveBeenCalledWith({ animated: false });
       expect(requestAnimationFrameSpy).toHaveBeenCalled();

@@ -683,6 +683,12 @@ function getBranchActionDisabledReason(input: {
     if (input.status.hasWorkingTreeChanges) {
       return "Commit or stash changes before merging.";
     }
+    if (input.status.behindCount > 0) {
+      return "Branch is behind upstream.";
+    }
+    if (!input.status.hasUpstream && !input.status.hasPrimaryRemote) {
+      return "No remote configured to push.";
+    }
   }
   return null;
 }
@@ -859,17 +865,27 @@ function SourceControlBranchMenu({
     const promise = mergeMutation.mutateAsync(refName);
     setPendingMergeRef(null);
     void toastManager.promise(promise, {
-      loading: { title: `Merging ${refName}...` },
-      success: () => ({
-        title: "Branch merged",
-        description: currentBranch ? `${refName} merged into ${currentBranch}.` : refName,
-      }),
+      loading: { title: `Merging ${refName} & pushing...` },
+      success: (result) => {
+        const pushTarget = result.push?.upstreamBranch ?? result.push?.branch ?? currentBranch;
+        return {
+          title:
+            result.push?.status === "skipped_up_to_date"
+              ? "Branch already synchronized"
+              : "Branch merged & pushed",
+          description: currentBranch
+            ? `${refName} merged into ${currentBranch}${
+                pushTarget ? ` and pushed to ${pushTarget}` : ""
+              }.`
+            : refName,
+        };
+      },
       error: (error) => ({
-        title: "Merge failed",
+        title: "Merge or push failed",
         description: toGitActionErrorMessage(error),
       }),
     });
-    void promise.then(refreshPanel, () => undefined);
+    void promise.then(refreshPanel, () => refreshPanel());
   }, [currentBranch, mergeMutation, pendingMergeRef, refreshPanel]);
 
   return (
@@ -977,11 +993,12 @@ function SourceControlBranchMenu({
       >
         <DialogPopup className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Merge branch?</DialogTitle>
+            <DialogTitle>Merge & push branch?</DialogTitle>
             <DialogDescription>
               Merge {pendingMergeRef?.name ?? "this branch"} into{" "}
-              {currentBranch ?? "the current branch"}. Your working tree must stay clean before the
-              merge starts.
+              {currentBranch ?? "the current branch"}, then push{" "}
+              {currentBranch ?? "the current branch"} to its remote. Your working tree must stay
+              clean before the merge starts.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -989,7 +1006,7 @@ function SourceControlBranchMenu({
               Cancel
             </Button>
             <Button size="sm" disabled={mergeMutation.isPending} onClick={runMergeRef}>
-              Merge
+              Merge & push
             </Button>
           </DialogFooter>
         </DialogPopup>

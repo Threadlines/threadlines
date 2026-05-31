@@ -1301,7 +1301,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
         [WS_METHODS.vcsMergeRef]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsMergeRef,
-            gitWorkflow.mergeRef(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            gitWorkflow.mergeRef(input).pipe(Effect.ensuring(refreshGitStatus(input.cwd))),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.vcsInit]: (input) =>
