@@ -402,6 +402,66 @@ describe("deriveMessagesTimelineRows", () => {
     expect(userRow?.revertTurnCount).toBe(1);
     expect(assistantRow?.assistantTurnDiffSummary).toBe(assistantTurnDiffSummary);
   });
+
+  it("marks only the latest active-turn work group as live while working", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "work-before-response",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:01Z",
+          entry: {
+            id: "thinking-1",
+            createdAt: "2026-01-01T00:00:01Z",
+            label: "Thinking",
+            detail: "Working through the next step",
+            tone: "thinking",
+            executionState: "running",
+            turnId: "turn-1" as never,
+          },
+        },
+        {
+          id: "assistant-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:02Z",
+          message: {
+            id: "assistant-1" as never,
+            role: "assistant",
+            text: "I am checking that.",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:02Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "work-after-response",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:03Z",
+          entry: {
+            id: "search-1",
+            createdAt: "2026-01-01T00:00:03Z",
+            label: "Searched web",
+            tone: "tool",
+            itemType: "web_search",
+            executionState: "completed",
+            turnId: "turn-1" as never,
+          },
+        },
+      ],
+      completionDividerBeforeEntryId: null,
+      isWorking: true,
+      activeTurnId: "turn-1" as never,
+      activeTurnStartedAt: "2026-01-01T00:00:00Z",
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    const workRows = rows.filter(
+      (row): row is Extract<(typeof rows)[number], { kind: "work" }> => row.kind === "work",
+    );
+
+    expect(workRows.map((row) => row.isLive)).toEqual([false, true]);
+  });
 });
 
 describe("computeStableMessagesTimelineRows", () => {

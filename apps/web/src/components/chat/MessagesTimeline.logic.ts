@@ -18,6 +18,7 @@ export type MessagesTimelineRow =
       id: string;
       createdAt: string;
       groupedEntries: WorkLogEntry[];
+      isLive: boolean;
     }
   | {
       kind: "message";
@@ -148,6 +149,7 @@ export function deriveMessagesTimelineRows(input: {
         id: timelineEntry.id,
         createdAt: timelineEntry.createdAt,
         groupedEntries,
+        isLive: false,
       });
       index = cursor - 1;
       continue;
@@ -198,6 +200,7 @@ export function deriveMessagesTimelineRows(input: {
   }
 
   if (input.isWorking) {
+    markLatestLiveWorkRow(nextRows, input.activeTurnId ?? null);
     nextRows.push({
       kind: "working",
       id: "working-indicator-row",
@@ -207,6 +210,30 @@ export function deriveMessagesTimelineRows(input: {
   }
 
   return nextRows;
+}
+
+function markLatestLiveWorkRow(rows: MessagesTimelineRow[], activeTurnId: TurnId | null) {
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index];
+    if (!row || row.kind !== "work") {
+      continue;
+    }
+    if (!workRowMatchesActiveTurn(row, activeTurnId)) {
+      continue;
+    }
+    rows[index] = { ...row, isLive: true };
+    return;
+  }
+}
+
+function workRowMatchesActiveTurn(
+  row: Extract<MessagesTimelineRow, { kind: "work" }>,
+  activeTurnId: TurnId | null,
+): boolean {
+  if (activeTurnId === null) {
+    return true;
+  }
+  return row.groupedEntries.some((entry) => entry.turnId === activeTurnId);
 }
 
 export function computeStableMessagesTimelineRows(
@@ -241,7 +268,10 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
       return a.proposedPlan === (b as typeof a).proposedPlan;
 
     case "work":
-      return Equal.equals(a.groupedEntries, (b as typeof a).groupedEntries);
+      return (
+        a.isLive === (b as typeof a).isLive &&
+        Equal.equals(a.groupedEntries, (b as typeof a).groupedEntries)
+      );
 
     case "message": {
       const bm = b as typeof a;

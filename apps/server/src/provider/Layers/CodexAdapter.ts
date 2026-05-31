@@ -20,8 +20,10 @@ import {
   type ProviderUserInputAnswers,
   RuntimeItemId,
   RuntimeRequestId,
+  RuntimeTaskId,
   ProviderApprovalDecision,
   ThreadId,
+  TurnId,
   ProviderSendTurnInput,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -284,6 +286,78 @@ function itemDetail(item: CodexLifecycleItem): string | undefined {
   return undefined;
 }
 
+function basenameFromPath(path: string | undefined | null): string | undefined {
+  const trimmed = trimText(path);
+  if (!trimmed) {
+    return undefined;
+  }
+  const parts = trimmed.split(/[\\/]/u);
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    const part = parts[index];
+    if (part) {
+      return part;
+    }
+  }
+  return trimmed;
+}
+
+function hookOutputText(
+  entries: ReadonlyArray<{ readonly kind: string; readonly text: string }> | undefined,
+): string | undefined {
+  const text = entries
+    ?.map((entry) => trimText(entry.text))
+    .filter((entry): entry is string => entry !== undefined)
+    .join("\n");
+  return trimText(text);
+}
+
+function hookOutcomeFromStatus(status: string | undefined): "success" | "error" | "cancelled" {
+  switch (status) {
+    case "completed":
+      return "success";
+    case "stopped":
+      return "cancelled";
+    default:
+      return "error";
+  }
+}
+
+function firstStringField(value: unknown, fields: ReadonlyArray<string>): string | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  for (const field of fields) {
+    const trimmed = trimText(typeof record[field] === "string" ? record[field] : undefined);
+    if (trimmed) {
+      return trimmed;
+    }
+  }
+  return undefined;
+}
+
+function summarizeReviewAction(action: unknown): string | undefined {
+  return firstStringField(action, ["type", "kind", "name", "command", "tool"]);
+}
+
+function summarizePatchChanges(
+  changes: ReadonlyArray<{ readonly kind: unknown; readonly path: string }>,
+): string {
+  if (changes.length === 0) {
+    return "Patch updated";
+  }
+  const [first] = changes;
+  const suffix = changes.length > 1 ? ` +${changes.length - 1} more` : "";
+  return `${String(first?.kind ?? "updated")} ${first?.path ?? "file"}${suffix}`;
+}
+
+function decodeBase64Text(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  return Buffer.from(value, "base64").toString("utf8");
+}
+
 function toRequestTypeFromMethod(method: string): CanonicalRequestType {
   switch (method) {
     case "item/commandExecution/requestApproval":
@@ -298,10 +372,16 @@ function toRequestTypeFromMethod(method: string): CanonicalRequestType {
       return "exec_command_approval";
     case "item/tool/requestUserInput":
       return "tool_user_input";
+    case "mcpServer/elicitation/request":
+      return "mcp_elicitation";
+    case "item/permissions/requestApproval":
+      return "permissions_approval";
     case "item/tool/call":
       return "dynamic_tool_call";
     case "account/chatgptAuthTokens/refresh":
       return "auth_tokens_refresh";
+    case "attestation/generate":
+      return "attestation_generate";
     default:
       return "unknown";
   }
@@ -853,6 +933,100 @@ function mapToRuntimeEvents(
     ];
   }
 
+  if (event.method === "hook/started") {
+    const payload = readPayload(EffectCodexSchema.V2HookStartedNotification, event.payload);
+    if (!payload) {
+      return [];
+    }
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        ...(payload.turnId ? { turnId: TurnId.make(payload.turnId) } : {}),
+        type: "hook.started",
+        payload: {
+          hookId: payload.run.id,
+          hookName: basenameFromPath(payload.run.sourcePath) ?? payload.run.eventName,
+          hookEvent: payload.run.eventName,
+        },
+      },
+    ];
+  }
+
+  if (event.method === "hook/completed") {
+    const payload = readPayload(EffectCodexSchema.V2HookCompletedNotification, event.payload);
+    if (!payload) {
+      return [];
+    }
+    const output = hookOutputText(payload.run.entries);
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        ...(payload.turnId ? { turnId: TurnId.make(payload.turnId) } : {}),
+        type: "hook.completed",
+        payload: {
+          hookId: payload.run.id,
+          outcome: hookOutcomeFromStatus(payload.run.status),
+          ...(output ? { output } : {}),
+          ...(payload.run.statusMessage ? { stderr: payload.run.statusMessage } : {}),
+        },
+      },
+    ];
+  }
+
+  if (event.method === "item/autoApprovalReview/started") {
+    const payload = readPayload(
+      EffectCodexSchema.V2ItemGuardianApprovalReviewStartedNotification,
+      event.payload,
+    );
+    if (!payload) {
+      return [];
+    }
+    const action = summarizeReviewAction(payload.action);
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        turnId: TurnId.make(payload.turnId),
+        ...(payload.targetItemId ? { itemId: RuntimeItemId.make(payload.targetItemId) } : {}),
+        type: "task.started",
+        payload: {
+          taskId: RuntimeTaskId.make(payload.reviewId),
+          taskType: "approval-review",
+          description: action ? `Reviewing ${action}` : "Reviewing approval request",
+        },
+      },
+    ];
+  }
+
+  if (event.method === "item/autoApprovalReview/completed") {
+    const payload = readPayload(
+      EffectCodexSchema.V2ItemGuardianApprovalReviewCompletedNotification,
+      event.payload,
+    );
+    if (!payload) {
+      return [];
+    }
+    const action = summarizeReviewAction(payload.action);
+    const decision =
+      typeof payload.decisionSource === "string"
+        ? payload.decisionSource
+        : firstStringField(payload.decisionSource, ["type", "kind", "decision"]);
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        turnId: TurnId.make(payload.turnId),
+        ...(payload.targetItemId ? { itemId: RuntimeItemId.make(payload.targetItemId) } : {}),
+        type: "task.completed",
+        payload: {
+          taskId: RuntimeTaskId.make(payload.reviewId),
+          status: "completed",
+          summary: action
+            ? `Approval review completed for ${action}${decision ? `: ${decision}` : ""}`
+            : "Approval review completed",
+        },
+      },
+    ];
+  }
+
   if (event.method === "item/started") {
     const started = mapItemLifecycle(event, canonicalThreadId, "item.started");
     return started ? [started] : [];
@@ -896,6 +1070,33 @@ function mapToRuntimeEvents(
           itemType:
             event.method === "item/reasoning/summaryPartAdded" ? "reasoning" : "command_execution",
           ...(event.payload !== undefined ? { data: event.payload } : {}),
+        },
+      },
+    ];
+  }
+
+  if (event.method === "item/fileChange/patchUpdated") {
+    const payload = readPayload(
+      EffectCodexSchema.V2FileChangePatchUpdatedNotification,
+      event.payload,
+    );
+    if (!payload) {
+      return [];
+    }
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        turnId: TurnId.make(payload.turnId),
+        itemId: RuntimeItemId.make(payload.itemId),
+        type: "item.updated",
+        payload: {
+          itemType: "file_change",
+          status: "inProgress",
+          title: "File change",
+          detail: summarizePatchChanges(payload.changes),
+          data: {
+            changes: payload.changes,
+          },
         },
       },
     ];
@@ -948,6 +1149,47 @@ function mapToRuntimeEvents(
     return [
       {
         ...runtimeEventBase(event, canonicalThreadId),
+        type: "content.delta",
+        payload: {
+          streamKind: "command_output",
+          delta,
+        },
+      },
+    ];
+  }
+
+  if (event.method === "command/exec/outputDelta") {
+    const payload = readPayload(
+      EffectCodexSchema.V2CommandExecOutputDeltaNotification,
+      event.payload,
+    );
+    const delta = decodeBase64Text(payload?.deltaBase64);
+    if (!payload || !delta || delta.length === 0) {
+      return [];
+    }
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        itemId: RuntimeItemId.make(payload.processId),
+        type: "content.delta",
+        payload: {
+          streamKind: "command_output",
+          delta,
+        },
+      },
+    ];
+  }
+
+  if (event.method === "process/outputDelta") {
+    const payload = readPayload(EffectCodexSchema.V2ProcessOutputDeltaNotification, event.payload);
+    const delta = decodeBase64Text(payload?.deltaBase64);
+    if (!payload || !delta || delta.length === 0) {
+      return [];
+    }
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        itemId: RuntimeItemId.make(payload.processHandle),
         type: "content.delta",
         payload: {
           streamKind: "command_output",
@@ -1027,8 +1269,11 @@ function mapToRuntimeEvents(
     return [
       {
         ...runtimeEventBase(event, canonicalThreadId),
+        turnId: TurnId.make(payload.turnId),
+        itemId: RuntimeItemId.make(payload.itemId),
         type: "tool.progress",
         payload: {
+          toolUseId: payload.itemId,
           summary: payload.message,
         },
       },
@@ -1085,6 +1330,24 @@ function mapToRuntimeEvents(
           fromModel: payload.fromModel,
           toModel: payload.toModel,
           reason: payload.reason,
+        },
+      },
+    ];
+  }
+
+  if (event.method === "model/verification") {
+    const payload = readPayload(EffectCodexSchema.V2ModelVerificationNotification, event.payload);
+    if (!payload || payload.verifications.length === 0) {
+      return [];
+    }
+    return [
+      {
+        type: "config.warning",
+        ...runtimeEventBase(event, canonicalThreadId),
+        turnId: TurnId.make(payload.turnId),
+        payload: {
+          summary: "Model verification required",
+          details: payload.verifications.join(", "),
         },
       },
     ];
@@ -1158,6 +1421,27 @@ function mapToRuntimeEvents(
     ];
   }
 
+  if (event.method === "account/login/completed") {
+    const payload = readPayload(
+      EffectCodexSchema.V2AccountLoginCompletedNotification,
+      event.payload,
+    );
+    if (!payload) {
+      return [];
+    }
+    return [
+      {
+        type: "auth.status",
+        ...runtimeEventBase(event, canonicalThreadId),
+        payload: {
+          isAuthenticating: false,
+          ...(payload.error ? { error: payload.error } : {}),
+          output: [payload.success ? "Login completed" : "Login failed"],
+        },
+      },
+    ];
+  }
+
   if (event.method === "mcpServer/oauthLogin/completed") {
     const payload = readPayload(
       EffectCodexSchema.V2McpServerOauthLoginCompletedNotification,
@@ -1174,6 +1458,29 @@ function mapToRuntimeEvents(
           success: payload.success,
           name: payload.name,
           ...(trimText(payload.error) ? { error: trimText(payload.error) } : {}),
+        },
+      },
+    ];
+  }
+
+  if (event.method === "mcpServer/startupStatus/updated") {
+    const payload = readPayload(
+      EffectCodexSchema.V2McpServerStatusUpdatedNotification,
+      event.payload,
+    );
+    if (!payload) {
+      return [];
+    }
+    return [
+      {
+        type: "mcp.status.updated",
+        ...runtimeEventBase(event, canonicalThreadId),
+        payload: {
+          status: {
+            name: payload.name,
+            status: payload.status,
+            ...(trimText(payload.error) ? { error: trimText(payload.error) } : {}),
+          },
         },
       },
     ];
@@ -1250,6 +1557,26 @@ function mapToRuntimeEvents(
     ];
   }
 
+  if (event.method === "thread/realtime/transcript/delta") {
+    const payload = readPayload(
+      EffectCodexSchema.V2ThreadRealtimeTranscriptDeltaNotification,
+      event.payload,
+    );
+    if (!payload || payload.delta.length === 0) {
+      return [];
+    }
+    return [
+      {
+        type: "content.delta",
+        ...runtimeEventBase(event, canonicalThreadId),
+        payload: {
+          streamKind: payload.role === "assistant" ? "assistant_text" : "unknown",
+          delta: payload.delta,
+        },
+      },
+    ];
+  }
+
   if (event.method === "thread/realtime/closed") {
     const payload = readPayload(
       EffectCodexSchema.V2ThreadRealtimeClosedNotification,
@@ -1261,6 +1588,36 @@ function mapToRuntimeEvents(
         ...runtimeEventBase(event, canonicalThreadId),
         payload: {
           reason: payload?.reason ?? event.message,
+        },
+      },
+    ];
+  }
+
+  if (event.method === "warning") {
+    const payload = readPayload(EffectCodexSchema.V2WarningNotification, event.payload);
+    const message = payload?.message ?? event.message ?? "Provider warning";
+    return [
+      {
+        type: "runtime.warning",
+        ...runtimeEventBase(event, canonicalThreadId),
+        payload: {
+          message,
+          ...(event.payload !== undefined ? { detail: event.payload } : {}),
+        },
+      },
+    ];
+  }
+
+  if (event.method === "guardianWarning") {
+    const payload = readPayload(EffectCodexSchema.V2GuardianWarningNotification, event.payload);
+    const message = payload?.message ?? event.message ?? "Guardian warning";
+    return [
+      {
+        type: "runtime.warning",
+        ...runtimeEventBase(event, canonicalThreadId),
+        payload: {
+          message,
+          ...(event.payload !== undefined ? { detail: event.payload } : {}),
         },
       },
     ];

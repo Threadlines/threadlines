@@ -54,6 +54,7 @@ import {
   derivePendingUserInputs,
   derivePhase,
   deriveTimelineEntries,
+  deriveActiveStatusLabel,
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
   findSidebarProposedPlan,
@@ -1418,15 +1419,17 @@ export default function ChatView(props: ChatViewProps) {
     isSendBusy ||
     isConnecting ||
     isRevertingCheckpoint;
-  const activeStatusLabel = isRevertingCheckpoint
-    ? "Reverting checkpoint"
-    : isPreparingWorktree
-      ? "Preparing worktree"
-      : phase === "running"
-        ? "Working"
-        : phase === "connecting" || isConnecting || isSendBusy
-          ? "Connecting"
-          : "Working";
+  const activeStatusLabel = deriveActiveStatusLabel({
+    phase,
+    workLogEntries,
+    latestTurnId: activeLatestTurn?.turnId ?? null,
+    isConnecting,
+    isSendBusy,
+    isPreparingWorktree,
+    isRevertingCheckpoint,
+    pendingApprovalCount: pendingApprovals.length,
+    pendingUserInputCount: pendingUserInputs.length,
+  });
   const activeWorkStartedAt = deriveActiveWorkStartedAt(
     activeLatestTurn,
     activeThread?.session ?? null,

@@ -1186,7 +1186,14 @@ export const makeCodexSessionRuntime = (
     );
 
     yield* client.handleUnknownServerRequest((method) =>
-      Effect.fail(CodexErrors.CodexAppServerRequestError.methodNotFound(method)),
+      emitEvent({
+        kind: "error",
+        threadId: options.threadId,
+        method,
+        message: `Unsupported Codex app-server request: ${method}`,
+      }).pipe(
+        Effect.andThen(Effect.fail(CodexErrors.CodexAppServerRequestError.methodNotFound(method))),
+      ),
     );
 
     const registerServerNotification = <M extends CodexRpc.ServerNotificationMethod>(method: M) =>

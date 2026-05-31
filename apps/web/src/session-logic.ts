@@ -74,6 +74,7 @@ interface DerivedWorkLogEntry extends WorkLogEntry {
   activityKind: OrchestrationThreadActivity["kind"];
   collapseKey?: string;
   toolCallId?: string;
+  redactedThinking?: boolean;
 }
 
 export interface PendingApproval {
@@ -186,6 +187,114 @@ export function deriveActiveWorkStartedAt(
     return latestTurn?.startedAt ?? sendStartedAt;
   }
   return sendStartedAt;
+}
+
+export function deriveActiveStatusLabel(input: {
+  phase: SessionPhase;
+  workLogEntries: ReadonlyArray<WorkLogEntry>;
+  latestTurnId?: TurnId | null;
+  isConnecting?: boolean;
+  isSendBusy?: boolean;
+  isPreparingWorktree?: boolean;
+  isRevertingCheckpoint?: boolean;
+  pendingApprovalCount?: number;
+  pendingUserInputCount?: number;
+}): string {
+  if (input.isRevertingCheckpoint) return "Reverting checkpoint";
+  if (input.isPreparingWorktree) return "Preparing worktree";
+  if ((input.pendingUserInputCount ?? 0) > 0) return "Waiting for input";
+  if ((input.pendingApprovalCount ?? 0) > 0) return "Waiting for approval";
+  if (input.phase === "connecting" || input.isConnecting) return "Connecting";
+  if (input.isSendBusy) return "Sending";
+  if (input.phase === "running") {
+    return deriveRunningStatusLabel(input.workLogEntries, input.latestTurnId) ?? "Working";
+  }
+
+  return "Working";
+}
+
+function deriveRunningStatusLabel(
+  workLogEntries: ReadonlyArray<WorkLogEntry>,
+  latestTurnId: TurnId | null | undefined,
+): string | null {
+  const activeEntries = workLogEntries.filter(
+    (entry) => entry.executionState === "running" && workEntryBelongsToTurn(entry, latestTurnId),
+  );
+  const activeTool = findLastWorkEntry(activeEntries, (entry) => entry.tone !== "thinking");
+  if (activeTool) {
+    return activeToolStatusLabel(activeTool);
+  }
+
+  const activeThinking = findLastWorkEntry(activeEntries, (entry) => entry.tone === "thinking");
+  if (activeThinking) {
+    return activeThinkingStatusLabel(activeThinking);
+  }
+
+  return null;
+}
+
+function workEntryBelongsToTurn(
+  entry: Pick<WorkLogEntry, "turnId">,
+  latestTurnId: TurnId | null | undefined,
+): boolean {
+  return latestTurnId == null || entry.turnId == null || entry.turnId === latestTurnId;
+}
+
+function findLastWorkEntry(
+  entries: ReadonlyArray<WorkLogEntry>,
+  predicate: (entry: WorkLogEntry) => boolean,
+): WorkLogEntry | null {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry && predicate(entry)) {
+      return entry;
+    }
+  }
+  return null;
+}
+
+function activeToolStatusLabel(entry: WorkLogEntry): string {
+  if (isCommandWorkLogEntry(entry)) {
+    return "Running command";
+  }
+  if (entry.requestKind === "file-read") {
+    return "Reading file";
+  }
+  if (entry.itemType === "web_search") {
+    return "Searching web";
+  }
+  if (entry.itemType === "file_change" || (entry.changedFiles?.length ?? 0) > 0) {
+    return "Editing files";
+  }
+  if (entry.itemType === "image_view" || (entry.images?.length ?? 0) > 0) {
+    return "Viewing image";
+  }
+  if (entry.itemType === "collab_agent_tool_call") {
+    return "Running subagent";
+  }
+  if (entry.itemType === "mcp_tool_call" || entry.itemType === "dynamic_tool_call") {
+    return "Using tool";
+  }
+  return "Using tool";
+}
+
+function activeThinkingStatusLabel(entry: WorkLogEntry): string {
+  switch (entry.detail?.trim()) {
+    case "Reviewing command output":
+      return "Reviewing output";
+    case "Reviewing search results":
+      return "Reviewing search results";
+    case "Reviewing file changes":
+      return "Reviewing changes";
+    case "Reviewing file contents":
+      return "Reviewing file";
+    case "Reviewing tool result":
+      return "Reviewing tool result";
+    case "Reviewing image":
+      return "Reviewing image";
+    default:
+      return "Thinking";
+  }
 }
 
 function requestKindFromRequestType(requestType: unknown): PendingApproval["requestKind"] | null {
@@ -505,8 +614,15 @@ export function deriveWorkLogEntries(
     .filter((activity) => activity.summary !== "Checkpoint captured")
     .filter((activity) => !isPlanBoundaryToolActivity(activity))
     .map(toDerivedWorkLogEntry);
-  return collapseDerivedWorkLogEntries(entries).map(
-    ({ activityKind: _activityKind, collapseKey: _collapseKey, ...entry }) => entry,
+  return enrichGenericThinkingEntries(
+    collapseDerivedWorkLogEntries(entries).filter(shouldKeepDerivedWorkLogEntry),
+  ).map(
+    ({
+      activityKind: _activityKind,
+      collapseKey: _collapseKey,
+      redactedThinking: _redactedThinking,
+      ...entry
+    }) => entry,
   );
 }
 
@@ -546,13 +662,19 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   const changedFiles = extractChangedFiles(payload);
   const images = extractWorkLogImages(payload);
   const title = extractToolTitle(payload);
-  const isTaskActivity = activity.kind === "task.progress" || activity.kind === "task.completed";
+  const isTaskActivity =
+    activity.kind === "task.progress" ||
+    activity.kind === "task.completed" ||
+    activity.kind === "thinking.progress";
+  const isRedactedThinkingActivity =
+    activity.kind === "thinking.progress" && payload?.redacted === true;
   const taskSummary =
     isTaskActivity && typeof payload?.summary === "string" && payload.summary.length > 0
       ? payload.summary
       : null;
   const taskDetailAsLabel =
     isTaskActivity &&
+    !isRedactedThinkingActivity &&
     !taskSummary &&
     typeof payload?.detail === "string" &&
     payload.detail.length > 0
@@ -576,11 +698,13 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     tone:
       activity.kind === "task.progress"
         ? "thinking"
-        : activity.kind === "runtime.warning"
-          ? "warning"
-          : activity.tone === "approval"
-            ? "info"
-            : activity.tone,
+        : activity.kind === "thinking.progress"
+          ? "thinking"
+          : activity.kind === "runtime.warning"
+            ? "warning"
+            : activity.tone === "approval"
+              ? "info"
+              : activity.tone,
     activityKind: activity.kind,
     turnId: activity.turnId,
   };
@@ -617,7 +741,11 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (executionState) {
     entry.executionState = executionState;
   }
-  const collapseKey = deriveToolLifecycleCollapseKey(entry);
+  if (activity.kind === "thinking.progress") {
+    entry.redactedThinking = isRedactedThinkingActivity;
+  }
+  const collapseKey =
+    deriveThinkingCollapseKey(activity, payload) ?? deriveToolLifecycleCollapseKey(entry);
   if (collapseKey) {
     entry.collapseKey = collapseKey;
   }
@@ -632,15 +760,15 @@ function collapseDerivedWorkLogEntries(
   const activeKeysByIndex = new Map<number, string[]>();
 
   for (const entry of entries) {
-    if (!isToolLifecycleActivityKind(entry.activityKind)) {
+    const keys = deriveCollapsibleWorkLogKeys(entry);
+    if (keys.length === 0) {
       collapsed.push(entry);
       continue;
     }
 
-    const keys = deriveToolLifecycleCollapseKeys(entry);
     const activeIndex = findActiveToolLifecycleIndex(
       activeIndexByKey,
-      toolLifecycleLookupKeys(entry, keys),
+      collapsibleWorkLogLookupKeys(entry, keys),
     );
 
     if (activeIndex !== undefined) {
@@ -655,7 +783,7 @@ function collapseDerivedWorkLogEntries(
       collapsed[activeIndex] = merged;
       deleteActiveToolLifecycleKeys(activeIndexByKey, previousKeys);
 
-      if (merged.activityKind === "tool.completed") {
+      if (!shouldKeepCollapseKeysActive(merged)) {
         activeKeysByIndex.delete(activeIndex);
       } else {
         const mergedKeys = uniqueStrings([
@@ -670,7 +798,7 @@ function collapseDerivedWorkLogEntries(
     }
 
     collapsed.push(entry);
-    if (entry.activityKind !== "tool.completed" && keys.length > 0) {
+    if (shouldKeepCollapseKeysActive(entry)) {
       const entryIndex = collapsed.length - 1;
       activeKeysByIndex.set(entryIndex, keys);
       setActiveToolLifecycleKeys(activeIndexByKey, keys, entryIndex);
@@ -680,7 +808,24 @@ function collapseDerivedWorkLogEntries(
   return collapsed;
 }
 
-function toolLifecycleLookupKeys(
+function shouldKeepDerivedWorkLogEntry(entry: DerivedWorkLogEntry): boolean {
+  if (!entry.redactedThinking) {
+    return true;
+  }
+  return entry.executionState === "running" || entry.executionState === "failed";
+}
+
+function deriveCollapsibleWorkLogKeys(entry: DerivedWorkLogEntry): string[] {
+  if (isToolLifecycleActivityKind(entry.activityKind)) {
+    return deriveToolLifecycleCollapseKeys(entry);
+  }
+  if (entry.activityKind === "thinking.progress" && entry.collapseKey) {
+    return [entry.collapseKey];
+  }
+  return [];
+}
+
+function collapsibleWorkLogLookupKeys(
   entry: DerivedWorkLogEntry,
   keys: ReadonlyArray<string>,
 ): ReadonlyArray<string> {
@@ -690,8 +835,38 @@ function toolLifecycleLookupKeys(
   return keys.filter((key) => !key.startsWith("tool-loose\u001f"));
 }
 
+function shouldKeepCollapseKeysActive(entry: DerivedWorkLogEntry): boolean {
+  if (entry.executionState === "completed" || entry.executionState === "failed") {
+    return false;
+  }
+  return entry.activityKind !== "tool.completed";
+}
+
+function deriveThinkingCollapseKey(
+  activity: OrchestrationThreadActivity,
+  payload: Record<string, unknown> | null,
+): string | undefined {
+  if (activity.kind !== "thinking.progress") {
+    return undefined;
+  }
+  const reasoningItemId = asTrimmedString(payload?.reasoningItemId);
+  if (reasoningItemId) {
+    return `thinking\u001f${reasoningItemId}`;
+  }
+  if (asTrimmedString(payload?.sourceItemType) === "reasoning") {
+    return `thinking-turn\u001f${activity.turnId ?? "thread"}`;
+  }
+  return undefined;
+}
+
 function isToolLifecycleActivityKind(kind: OrchestrationThreadActivity["kind"]): boolean {
-  return kind === "tool.started" || kind === "tool.updated" || kind === "tool.completed";
+  return (
+    kind === "tool.started" ||
+    kind === "tool.updated" ||
+    kind === "tool.output.updated" ||
+    kind === "tool.progress" ||
+    kind === "tool.completed"
+  );
 }
 
 function findActiveToolLifecycleIndex(
@@ -728,6 +903,85 @@ function deleteActiveToolLifecycleKeys(
 
 function uniqueStrings(values: ReadonlyArray<string>): string[] {
   return [...new Set(values.filter((value) => value.length > 0))];
+}
+
+function enrichGenericThinkingEntries(
+  entries: ReadonlyArray<DerivedWorkLogEntry>,
+): DerivedWorkLogEntry[] {
+  const enriched: DerivedWorkLogEntry[] = [];
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    if (!entry) {
+      continue;
+    }
+    if (!isGenericThinkingEntry(entry)) {
+      enriched.push(entry);
+      continue;
+    }
+
+    const previous = findPreviousReviewableWorkEntry(entries, index);
+    const detail = previous ? reviewDetailForPreviousWorkEntry(previous) : null;
+    if (!detail) {
+      enriched.push(entry);
+      continue;
+    }
+
+    enriched.push({
+      ...entry,
+      detail,
+    });
+  }
+  return enriched;
+}
+
+function isGenericThinkingEntry(entry: DerivedWorkLogEntry): boolean {
+  return (
+    entry.tone === "thinking" &&
+    entry.activityKind === "thinking.progress" &&
+    entry.redactedThinking === true &&
+    (!entry.detail || entry.detail === "Working through the next step")
+  );
+}
+
+function findPreviousReviewableWorkEntry(
+  entries: ReadonlyArray<DerivedWorkLogEntry>,
+  beforeIndex: number,
+): DerivedWorkLogEntry | null {
+  for (let index = beforeIndex - 1; index >= 0; index -= 1) {
+    const candidate = entries[index];
+    if (!candidate || candidate.tone === "thinking") {
+      continue;
+    }
+    if (reviewDetailForPreviousWorkEntry(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function reviewDetailForPreviousWorkEntry(entry: DerivedWorkLogEntry): string | null {
+  if (entry.itemType === "web_search") {
+    return "Reviewing search results";
+  }
+  if (entry.itemType === "image_view") {
+    return "Reviewing image";
+  }
+  if (entry.itemType === "file_change" || (entry.changedFiles?.length ?? 0) > 0) {
+    return "Reviewing file changes";
+  }
+  if (entry.requestKind === "file-read") {
+    return "Reviewing file contents";
+  }
+  if (entry.itemType === "mcp_tool_call" || entry.itemType === "dynamic_tool_call") {
+    return "Reviewing tool result";
+  }
+  if (isCommandWorkLogEntry(entry)) {
+    return "Reviewing command output";
+  }
+  if (entry.tone === "tool") {
+    return "Reviewing tool result";
+  }
+  return null;
 }
 
 function mergeDerivedWorkLogEntries(
@@ -791,6 +1045,9 @@ function deriveWorkLogExecutionState(
   entry: Pick<WorkLogEntry, "command" | "itemType" | "requestKind" | "tone">,
   payload: Record<string, unknown> | null,
 ): WorkLogEntry["executionState"] | undefined {
+  if (entry.tone === "thinking") {
+    return normalizeWorkLogExecutionStatus(asTrimmedString(payload?.status));
+  }
   if (!isLifecycleWorkLogEntry(entry)) {
     return undefined;
   }
@@ -845,22 +1102,27 @@ function extractRuntimeActivityDetail(
   activity: OrchestrationThreadActivity,
   payload: Record<string, unknown> | null,
 ): string | null {
-  if (activity.kind !== "runtime.warning" && activity.kind !== "runtime.error") {
-    return null;
-  }
-
   const message = asTrimmedString(payload?.message);
+  const directDetail = asTrimmedString(payload?.detail);
   const detail = asRecord(payload?.detail);
   const detailError = asRecord(detail?.error);
   const detailMessage = asTrimmedString(detail?.message) ?? asTrimmedString(detailError?.message);
   const additionalDetails = asTrimmedString(detailError?.additionalDetails);
-  const primaryMessage = message ?? detailMessage;
+  const primaryMessage = directDetail ?? message ?? detailMessage;
 
   if (primaryMessage && additionalDetails && !primaryMessage.includes(additionalDetails)) {
     return `${primaryMessage} - ${additionalDetails}`;
   }
 
-  return primaryMessage ?? additionalDetails;
+  if (activity.kind === "runtime.warning" || activity.kind === "runtime.error") {
+    return primaryMessage ?? additionalDetails;
+  }
+
+  if (isToolLifecycleActivityKind(activity.kind)) {
+    return null;
+  }
+
+  return directDetail;
 }
 
 function mergeWorkLogImages(
@@ -894,11 +1156,7 @@ function deriveToolLifecycleCollapseKey(entry: DerivedWorkLogEntry): string | un
 }
 
 function deriveToolLifecycleCollapseKeys(entry: DerivedWorkLogEntry): string[] {
-  if (
-    entry.activityKind !== "tool.started" &&
-    entry.activityKind !== "tool.updated" &&
-    entry.activityKind !== "tool.completed"
-  ) {
+  if (!isToolLifecycleActivityKind(entry.activityKind)) {
     return [];
   }
   const keys: string[] = [];

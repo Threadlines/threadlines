@@ -295,8 +295,10 @@ export type OrchestrationCheckpointSummary = typeof OrchestrationCheckpointSumma
 
 export const OrchestrationThreadActivityTone = Schema.Literals([
   "info",
+  "thinking",
   "tool",
   "approval",
+  "warning",
   "error",
 ]);
 export type OrchestrationThreadActivityTone = typeof OrchestrationThreadActivityTone.Type;

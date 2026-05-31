@@ -330,7 +330,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       data-message-id={row.kind === "message" ? row.message.id : undefined}
       data-message-role={row.kind === "message" ? row.message.role : undefined}
     >
-      {row.kind === "work" ? <WorkGroupSection groupedEntries={row.groupedEntries} /> : null}
+      {row.kind === "work" ? <WorkGroupSection row={row} /> : null}
       {row.kind === "message" && row.message.role === "user" ? <UserTimelineRow row={row} /> : null}
       {row.kind === "message" && row.message.role === "assistant" ? (
         <AssistantTimelineRow row={row} />
@@ -561,7 +561,8 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
         <span>
           {row.createdAt ? (
             <>
-              {row.label} for <WorkingTimer createdAt={row.createdAt} />
+              {row.label} <span className="text-muted-foreground/40">·</span>{" "}
+              <WorkingTimer createdAt={row.createdAt} />
             </>
           ) : (
             `${row.label}...`
@@ -577,7 +578,7 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
 // does not create a React commit every second while a response is streaming.
 // ---------------------------------------------------------------------------
 
-/** Live "Working for Xs" label. */
+/** Live elapsed label for the active turn. */
 function WorkingTimer({ createdAt }: { createdAt: string }) {
   const textRef = useRef<HTMLSpanElement>(null);
   const initialText = formatWorkingTimerNow(createdAt);
@@ -638,14 +639,16 @@ function LiveMessageMeta({
 /** Owns its own expand/collapse state so toggling re-renders only this row.
  *  State resets on unmount which is fine — work groups start collapsed. */
 const WorkGroupSection = memo(function WorkGroupSection({
-  groupedEntries,
+  row,
 }: {
-  groupedEntries: Extract<MessagesTimelineRow, { kind: "work" }>["groupedEntries"];
+  row: Extract<MessagesTimelineRow, { kind: "work" }>;
 }) {
   const { workspaceRoot } = use(TimelineRowCtx);
   const { isWorking } = use(TimelineRowActivityCtx);
   const [isExpanded, setIsExpanded] = useState(false);
   const previousIsWorkingRef = useRef(isWorking);
+  const groupedEntries = row.groupedEntries;
+  const isLiveActivity = isWorking && row.isLive;
 
   useEffect(() => {
     const wasWorking = previousIsWorkingRef.current;
@@ -656,59 +659,63 @@ const WorkGroupSection = memo(function WorkGroupSection({
     }
   }, [isWorking]);
 
-  const isShowingLiveHistory = isWorking && isExpanded;
-  const isShowingFullLog = !isWorking && isExpanded;
-  const liveActivityEntries = isWorking ? deriveLiveActivityEntries(groupedEntries) : [];
-  const activityEntries = isWorking
+  const isShowingLiveHistory = isLiveActivity && isExpanded;
+  const isShowingFullLog = !isLiveActivity && isExpanded;
+  const liveActivityEntries = isLiveActivity ? deriveLiveActivityEntries(groupedEntries) : [];
+  const activityEntries = isLiveActivity
     ? isShowingLiveHistory
       ? groupedEntries
       : liveActivityEntries
     : isShowingFullLog
       ? groupedEntries
       : summarizeSemanticActivityEntries(groupedEntries);
-  const visibleLimit = isWorking ? LIVE_WORK_LOG_ENTRY_COUNT : MAX_VISIBLE_WORK_LOG_ENTRIES;
+  const visibleLimit = isLiveActivity ? LIVE_WORK_LOG_ENTRY_COUNT : MAX_VISIBLE_WORK_LOG_ENTRIES;
   const hasOverflow = activityEntries.length > visibleLimit;
   const visibleEntries =
     hasOverflow && !isShowingFullLog && !isShowingLiveHistory
       ? activityEntries.slice(-visibleLimit)
       : activityEntries;
-  const hasCompactedEntries = !isWorking && activityEntries.length < groupedEntries.length;
-  const liveHiddenCount = isWorking
+  const hasCompactedEntries = !isLiveActivity && activityEntries.length < groupedEntries.length;
+  const liveHiddenCount = isLiveActivity
     ? Math.max(0, groupedEntries.length - liveActivityEntries.length)
     : 0;
-  const hiddenCount = isWorking
+  const hiddenCount = isLiveActivity
     ? liveHiddenCount
     : isShowingFullLog
       ? 0
       : Math.max(0, groupedEntries.length - visibleEntries.length);
   const onlyToolEntries = groupedEntries.every((entry) => entry.tone === "tool");
   const hiddenSummary =
-    hasOverflow && !hasCompactedEntries && !isShowingFullLog && !isWorking
+    hasOverflow && !hasCompactedEntries && !isShowingFullLog && !isLiveActivity
       ? summarizeHiddenWorkEntries(groupedEntries.slice(0, hiddenCount))
       : null;
   const liveHiddenSummary =
-    isWorking && !isShowingLiveHistory
+    isLiveActivity && !isShowingLiveHistory
       ? summarizeLiveHiddenWorkEntries(groupedEntries, liveActivityEntries)
       : null;
-  const canToggleLiveHistory = isWorking && liveHiddenCount > 0;
-  const canToggleFullLog = !isWorking && (hasOverflow || hasCompactedEntries);
+  const canToggleLiveHistory = isLiveActivity && liveHiddenCount > 0;
+  const canToggleFullLog = !isLiveActivity && (hasOverflow || hasCompactedEntries);
   const canToggleActivityLog = canToggleLiveHistory || canToggleFullLog;
   const showHeader =
-    isWorking || canToggleActivityLog || hasCompactedEntries || hasOverflow || !onlyToolEntries;
+    isLiveActivity ||
+    canToggleActivityLog ||
+    hasCompactedEntries ||
+    hasOverflow ||
+    !onlyToolEntries;
   const toggleLabel = isExpanded
-    ? isWorking
+    ? isLiveActivity
       ? "Hide previous"
       : "Hide transcript"
-    : isWorking
+    : isLiveActivity
       ? "Show previous"
       : hasCompactedEntries
         ? "View transcript"
         : `Show ${hiddenCount} more`;
   const toggleAriaLabel = isExpanded
-    ? isWorking
+    ? isLiveActivity
       ? "Hide previous activities"
       : "Hide activity transcript"
-    : isWorking
+    : isLiveActivity
       ? `Show ${liveHiddenCount.toLocaleString()} previous ${
           liveHiddenCount === 1 ? "activity" : "activities"
         }`
@@ -720,7 +727,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
         <div className="mb-1.5 flex items-start justify-between gap-2 px-0.5">
           <div className="min-w-0">
             <p className="text-[9px] uppercase tracking-[0.16em] text-muted-foreground/55">
-              {isWorking ? "Current activity" : `Activity (${groupedEntries.length})`}
+              {isLiveActivity ? "Current activity" : `Activity (${groupedEntries.length})`}
             </p>
             {hiddenSummary || liveHiddenSummary ? (
               <p className="mt-0.5 truncate text-[10px] leading-4 text-muted-foreground/45">
@@ -741,10 +748,11 @@ const WorkGroupSection = memo(function WorkGroupSection({
           )}
         </div>
       )}
-      <div className="space-y-0.5" data-live-activity-strip={isWorking ? "true" : undefined}>
+      <div className="space-y-0.5" data-live-activity-strip={isLiveActivity ? "true" : undefined}>
         {visibleEntries.map((workEntry) => (
           <SimpleWorkEntryRow
             key={`work-row:${workEntry.id}`}
+            isLiveActivity={isLiveActivity}
             workEntry={workEntry}
             workspaceRoot={workspaceRoot}
           />
@@ -1711,7 +1719,7 @@ function workToneClass(tone: "thinking" | "tool" | "info" | "warning" | "error")
   if (tone === "error") return "text-rose-300/50 dark:text-rose-300/50";
   if (tone === "warning") return "text-amber-300/60 dark:text-amber-300/60";
   if (tone === "tool") return "text-muted-foreground/70";
-  if (tone === "thinking") return "text-muted-foreground/50";
+  if (tone === "thinking") return "text-muted-foreground/70";
   return "text-muted-foreground/40";
 }
 
@@ -2362,26 +2370,27 @@ const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
 });
 
 const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
+  isLiveActivity: boolean;
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
 }) {
   const { turnDiffSummaryByTurnId } = use(TimelineRowCtx);
-  const { isWorking } = use(TimelineRowActivityCtx);
-  const { workEntry, workspaceRoot } = props;
+  const { isLiveActivity, workspaceRoot } = props;
+  const workEntry = resolveDisplayedWorkEntry(props.workEntry, isLiveActivity);
 
   if (isSubagentWorkEntry(workEntry)) {
     return (
       <SubagentWorkEntryRow
         workEntry={workEntry}
         workspaceRoot={workspaceRoot}
-        compact={isWorking}
+        compact={isLiveActivity}
       />
     );
   }
 
   const iconConfig = workToneIcon(workEntry.tone);
   const EntryIcon = workEntryIcon(workEntry);
-  const isRunningTool = isRunningToolWorkEntry(workEntry);
+  const isRunningTool = isLiveActivity && isRunningToolWorkEntry(workEntry);
   const heading = toolWorkEntryHeading(workEntry, workspaceRoot);
   const rawPreview = workEntryPreview(workEntry, workspaceRoot);
   const preview =
@@ -2501,3 +2510,13 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     </div>
   );
 });
+
+function resolveDisplayedWorkEntry(
+  workEntry: TimelineWorkEntry,
+  isLiveActivity: boolean,
+): TimelineWorkEntry {
+  if (isLiveActivity || workEntry.executionState !== "running") {
+    return workEntry;
+  }
+  return { ...workEntry, executionState: "completed" };
+}

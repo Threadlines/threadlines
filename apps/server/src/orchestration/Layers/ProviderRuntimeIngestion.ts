@@ -1,20 +1,17 @@
 import {
-  ApprovalRequestId,
   type AssistantDeliveryMode,
   CommandId,
+  EventId,
   MessageId,
   type OrchestrationEvent,
   type OrchestrationMessage,
   type OrchestrationProposedPlanId,
   CheckpointRef,
-  isToolLifecycleItemType,
   ThreadId,
-  type ThreadTokenUsageSnapshot,
   TurnId,
   type OrchestrationCheckpointSummary,
   type OrchestrationProposedPlan,
   type OrchestrationThread,
-  type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
@@ -37,6 +34,10 @@ import {
   type ProviderRuntimeIngestionShape,
 } from "../Services/ProviderRuntimeIngestion.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import {
+  projectRuntimeEventToActivities,
+  type ProviderActivityStreamSnapshot,
+} from "./ProviderActivityProjection.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 const providerCommandId = (event: ProviderRuntimeEvent, tag: string): CommandId =>
@@ -54,8 +55,18 @@ const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_CACHE_CAPACITY = 20_000;
 const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_TTL = Duration.minutes(120);
 const BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY = 10_000;
 const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
+const BUFFERED_ACTIVITY_STREAM_BY_KEY_CACHE_CAPACITY = 20_000;
+const BUFFERED_ACTIVITY_STREAM_BY_KEY_TTL = Duration.minutes(120);
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
+const MAX_BUFFERED_ACTIVITY_STREAM_CHARS = 4_000;
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
+
+interface BufferedActivityStream {
+  readonly text: string;
+  readonly byteCount: number;
+  readonly lineCount: number;
+  readonly truncated: boolean;
+}
 
 type TurnStartRequestedDomainEvent = Extract<
   OrchestrationEvent,
@@ -74,10 +85,6 @@ type RuntimeIngestionInput =
 
 function toTurnId(value: TurnId | string | undefined): TurnId | undefined {
   return value === undefined ? undefined : TurnId.make(String(value));
-}
-
-function toApprovalRequestId(value: string | undefined): ApprovalRequestId | undefined {
-  return value === undefined ? undefined : ApprovalRequestId.make(value);
 }
 
 function sameId(left: string | null | undefined, right: string | null | undefined): boolean {
@@ -163,10 +170,6 @@ function maxCheckpointTurnCount(
   return maxTurnCount;
 }
 
-function truncateDetail(value: string, limit = 180): string {
-  return value.length > limit ? `${value.slice(0, limit - 3)}...` : value;
-}
-
 function normalizeProposedPlanMarkdown(planMarkdown: string | undefined): string | undefined {
   const trimmed = planMarkdown?.trim();
   if (!trimmed) {
@@ -203,15 +206,45 @@ function assistantSegmentMessageId(baseKey: string, segmentIndex: number): Messa
     segmentIndex === 0 ? `assistant:${baseKey}` : `assistant:${baseKey}:segment:${segmentIndex}`,
   );
 }
-function buildContextWindowActivityPayload(
-  event: ProviderRuntimeEvent,
-): ThreadTokenUsageSnapshot | undefined {
-  if (event.type !== "thread.token-usage.updated" || event.payload.usage.usedTokens <= 0) {
-    return undefined;
+
+function activityStreamBaseKey(event: ProviderRuntimeEvent): string {
+  if (event.type !== "content.delta") {
+    return `${event.threadId}:${event.turnId ?? "thread"}:${event.itemId ?? event.eventId}`;
   }
-  return event.payload.usage;
+
+  const streamIndex = event.payload.summaryIndex ?? event.payload.contentIndex ?? 0;
+  return [
+    event.threadId,
+    event.turnId ?? "thread",
+    event.itemId ?? event.eventId,
+    event.payload.streamKind,
+    streamIndex,
+  ].join(":");
 }
 
+function activityStreamId(event: ProviderRuntimeEvent): EventId {
+  return EventId.make(`activity:${activityStreamBaseKey(event)}`);
+}
+
+function appendActivityStreamText(
+  previous: BufferedActivityStream | undefined,
+  delta: string,
+): BufferedActivityStream {
+  const nextFullText = `${previous?.text ?? ""}${delta}`;
+  const truncated =
+    (previous?.truncated ?? false) || nextFullText.length > MAX_BUFFERED_ACTIVITY_STREAM_CHARS;
+  const text = truncated
+    ? nextFullText.slice(nextFullText.length - MAX_BUFFERED_ACTIVITY_STREAM_CHARS)
+    : nextFullText;
+  const byteCount = (previous?.byteCount ?? 0) + Buffer.byteLength(delta, "utf8");
+  const lineCount = (previous?.lineCount ?? 0) + (delta.match(/\r\n|\r|\n/gu)?.length ?? 0);
+  return {
+    text,
+    byteCount,
+    lineCount,
+    truncated,
+  };
+}
 function normalizeRuntimeTurnState(
   value: string | undefined,
 ): "completed" | "failed" | "interrupted" | "cancelled" {
@@ -246,377 +279,6 @@ function orchestrationSessionStatusFromRuntimeState(
   }
 }
 
-function requestKindFromCanonicalRequestType(
-  requestType: string | undefined,
-): "command" | "file-read" | "file-change" | undefined {
-  switch (requestType) {
-    case "command_execution_approval":
-    case "exec_command_approval":
-      return "command";
-    case "file_read_approval":
-      return "file-read";
-    case "file_change_approval":
-    case "apply_patch_approval":
-      return "file-change";
-    default:
-      return undefined;
-  }
-}
-
-function runtimeEventToActivities(
-  event: ProviderRuntimeEvent,
-): ReadonlyArray<OrchestrationThreadActivity> {
-  const maybeSequence = (() => {
-    const eventWithSequence = event as ProviderRuntimeEvent & { sessionSequence?: number };
-    return eventWithSequence.sessionSequence !== undefined
-      ? { sequence: eventWithSequence.sessionSequence }
-      : {};
-  })();
-  switch (event.type) {
-    case "request.opened": {
-      if (event.payload.requestType === "tool_user_input") {
-        return [];
-      }
-      const requestKind = requestKindFromCanonicalRequestType(event.payload.requestType);
-      return [
-        {
-          id: event.eventId,
-          createdAt: event.createdAt,
-          tone: "approval",
-          kind: "approval.requested",
-          summary:
-            requestKind === "command"
-              ? "Command approval requested"
-              : requestKind === "file-read"
-                ? "File-read approval requested"
-                : requestKind === "file-change"
-                  ? "File-change approval requested"
-                  : "Approval requested",
-          payload: {
-            requestId: toApprovalRequestId(event.requestId),
-            ...(requestKind ? { requestKind } : {}),
-            requestType: event.payload.requestType,
-            ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
-          },
-          turnId: toTurnId(event.turnId) ?? null,
-          ...maybeSequence,
-        },
-      ];
-    }
-
-    case "request.resolved": {
-      if (event.payload.requestType === "tool_user_input") {
-        return [];
-      }
-      const requestKind = requestKindFromCanonicalRequestType(event.payload.requestType);
-      return [
-        {
-          id: event.eventId,
-          createdAt: event.createdAt,
-          tone: "approval",
-          kind: "approval.resolved",
-          summary: "Approval resolved",
-          payload: {
-            requestId: toApprovalRequestId(event.requestId),
-            ...(requestKind ? { requestKind } : {}),
-            requestType: event.payload.requestType,
-            ...(event.payload.decision ? { decision: event.payload.decision } : {}),
-          },
-          turnId: toTurnId(event.turnId) ?? null,
-          ...maybeSequence,
-        },
-      ];
-    }
-
-    case "runtime.error": {
-      const isAuthenticationError = event.payload.class === "authentication_error";
-      return [
-        {
-          id: event.eventId,
-          createdAt: event.createdAt,
-          tone: "error",
-          kind: "runtime.error",
-          summary: isAuthenticationError ? "Authentication required" : "Runtime error",
-          payload: {
-            message: truncateDetail(event.payload.message),
-            ...(event.payload.class ? { class: event.payload.class } : {}),
-            provider: event.provider,
-          },
-          turnId: toTurnId(event.turnId) ?? null,
-          ...maybeSequence,
-        },
-      ];
-    }
-
-    case "runtime.warning": {
-      return [
-        {
-          id: event.eventId,
-          createdAt: event.createdAt,
-          tone: "info",
-          kind: "runtime.warning",
-          summary: "Runtime warning",
-          payload: {
-            message: truncateDetail(event.payload.message),
-            ...(event.payload.detail !== undefined ? { detail: event.payload.detail } : {}),
-          },
-          turnId: toTurnId(event.turnId) ?? null,
-          ...maybeSequence,
-        },
-      ];
-    }
-
-    case "turn.plan.updated": {
-      return [
-        {
-          id: event.eventId,
-          createdAt: event.createdAt,
-          tone: "info",
-          kind: "turn.plan.updated",
-          summary: "Plan updated",
-          payload: {
-            plan: event.payload.plan,
-            ...(event.payload.explanation !== undefined
-              ? { explanation: event.payload.explanation }
-              : {}),
-          },
-          turnId: toTurnId(event.turnId) ?? null,
-          ...maybeSequence,
-        },
-      ];
-    }
-
-    case "user-input.requested": {
-      return [
-        {
-          id: event.eventId,
-          createdAt: event.createdAt,
-          tone: "info",
-          kind: "user-input.requested",
-          summary: "User input requested",
-          payload: {
-            ...(event.requestId ? { requestId: event.requestId } : {}),
-            questions: event.payload.questions,
-          },
-          turnId: toTurnId(event.turnId) ?? null,
-          ...maybeSequence,
-        },
-      ];
-    }
-
-    case "user-input.resolved": {
-      return [
-        {
-          id: event.eventId,
-          createdAt: event.createdAt,
-          tone: "info",
-          kind: "user-input.resolved",
-          summary: "User input submitted",
-          payload: {
-            ...(event.requestId ? { requestId: event.requestId } : {}),
-            answers: event.payload.answers,
-          },
-          turnId: toTurnId(event.turnId) ?? null,
-          ...maybeSequence,
-        },
-      ];
-    }
-
-    case "task.started": {
-      return [
-        {
-          id: event.eventId,
-          createdAt: event.createdAt,
-          tone: "info",
-          kind: "task.started",
-          summary:
-            event.payload.taskType === "plan"
-              ? "Plan task started"
-              : event.payload.taskType
-                ? `${event.payload.taskType} task started`
-                : "Task started",
-          payload: {
-            taskId: event.payload.taskId,
-            ...(event.payload.taskType ? { taskType: event.payload.taskType } : {}),
-            ...(event.payload.description
-              ? { detail: truncateDetail(event.payload.description) }
-              : {}),
-          },
-          turnId: toTurnId(event.turnId) ?? null,
-          ...maybeSequence,
-        },
-      ];
-    }
-
-    case "task.progress": {
-      return [
-        {
-          id: event.eventId,
-          createdAt: event.createdAt,
-          tone: "info",
-          kind: "task.progress",
-          summary: "Reasoning update",
-          payload: {
-            taskId: event.payload.taskId,
-            detail: truncateDetail(event.payload.summary ?? event.payload.description),
-            ...(event.payload.summary ? { summary: truncateDetail(event.payload.summary) } : {}),
-            ...(event.payload.lastToolName ? { lastToolName: event.payload.lastToolName } : {}),
-            ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),
-          },
-          turnId: toTurnId(event.turnId) ?? null,
-          ...maybeSequence,
-        },
-      ];
-    }
-
-    case "task.completed": {
-      return [
-        {
-          id: event.eventId,
-          createdAt: event.createdAt,
-          tone: event.payload.status === "failed" ? "error" : "info",
-          kind: "task.completed",
-          summary:
-            event.payload.status === "failed"
-              ? "Task failed"
-              : event.payload.status === "stopped"
-                ? "Task stopped"
-                : "Task completed",
-          payload: {
-            taskId: event.payload.taskId,
-            status: event.payload.status,
-            ...(event.payload.summary ? { detail: truncateDetail(event.payload.summary) } : {}),
-            ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),
-          },
-          turnId: toTurnId(event.turnId) ?? null,
-          ...maybeSequence,
-        },
-      ];
-    }
-
-    case "thread.state.changed": {
-      if (event.payload.state !== "compacted") {
-        return [];
-      }
-
-      return [
-        {
-          id: event.eventId,
-          createdAt: event.createdAt,
-          tone: "info",
-          kind: "context-compaction",
-          summary: "Context compacted",
-          payload: {
-            state: event.payload.state,
-            ...(event.payload.detail !== undefined ? { detail: event.payload.detail } : {}),
-          },
-          turnId: toTurnId(event.turnId) ?? null,
-          ...maybeSequence,
-        },
-      ];
-    }
-
-    case "thread.token-usage.updated": {
-      const payload = buildContextWindowActivityPayload(event);
-      if (!payload) {
-        return [];
-      }
-
-      return [
-        {
-          id: event.eventId,
-          createdAt: event.createdAt,
-          tone: "info",
-          kind: "context-window.updated",
-          summary: "Context window updated",
-          payload,
-          turnId: toTurnId(event.turnId) ?? null,
-          ...maybeSequence,
-        },
-      ];
-    }
-
-    case "item.updated": {
-      if (!isToolLifecycleItemType(event.payload.itemType)) {
-        return [];
-      }
-      return [
-        {
-          id: event.eventId,
-          createdAt: event.createdAt,
-          tone: "tool",
-          kind: "tool.updated",
-          summary: event.payload.title ?? "Tool updated",
-          payload: {
-            itemType: event.payload.itemType,
-            ...(event.itemId ? { toolCallId: event.itemId } : {}),
-            ...(event.payload.status ? { status: event.payload.status } : {}),
-            ...(event.payload.title ? { title: event.payload.title } : {}),
-            ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
-            ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
-          },
-          turnId: toTurnId(event.turnId) ?? null,
-          ...maybeSequence,
-        },
-      ];
-    }
-
-    case "item.completed": {
-      if (!isToolLifecycleItemType(event.payload.itemType)) {
-        return [];
-      }
-      return [
-        {
-          id: event.eventId,
-          createdAt: event.createdAt,
-          tone: "tool",
-          kind: "tool.completed",
-          summary: event.payload.title ?? "Tool",
-          payload: {
-            itemType: event.payload.itemType,
-            ...(event.itemId ? { toolCallId: event.itemId } : {}),
-            ...(event.payload.title ? { title: event.payload.title } : {}),
-            ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
-            ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
-          },
-          turnId: toTurnId(event.turnId) ?? null,
-          ...maybeSequence,
-        },
-      ];
-    }
-
-    case "item.started": {
-      if (!isToolLifecycleItemType(event.payload.itemType)) {
-        return [];
-      }
-      return [
-        {
-          id: event.eventId,
-          createdAt: event.createdAt,
-          tone: "tool",
-          kind: "tool.started",
-          summary: `${event.payload.title ?? "Tool"} started`,
-          payload: {
-            itemType: event.payload.itemType,
-            ...(event.itemId ? { toolCallId: event.itemId } : {}),
-            ...(event.payload.status ? { status: event.payload.status } : {}),
-            ...(event.payload.title ? { title: event.payload.title } : {}),
-            ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
-            ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
-          },
-          turnId: toTurnId(event.turnId) ?? null,
-          ...maybeSequence,
-        },
-      ];
-    }
-
-    default:
-      break;
-  }
-
-  return [];
-}
-
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
@@ -649,6 +311,18 @@ const make = Effect.gen(function* () {
     capacity: BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY,
     timeToLive: BUFFERED_PROPOSED_PLAN_BY_ID_TTL,
     lookup: () => Effect.succeed({ text: "", createdAt: "" }),
+  });
+
+  const bufferedActivityStreamByKey = yield* Cache.make<string, BufferedActivityStream>({
+    capacity: BUFFERED_ACTIVITY_STREAM_BY_KEY_CACHE_CAPACITY,
+    timeToLive: BUFFERED_ACTIVITY_STREAM_BY_KEY_TTL,
+    lookup: () =>
+      Effect.succeed({
+        text: "",
+        byteCount: 0,
+        lineCount: 0,
+        truncated: false,
+      }),
   });
 
   const resolveThreadDetail = Effect.fn("resolveThreadDetail")(function* (threadId: ThreadId) {
@@ -839,6 +513,45 @@ const make = Effect.gen(function* () {
 
   const clearBufferedProposedPlan = (planId: string) =>
     Cache.invalidate(bufferedProposedPlanById, planId);
+
+  const appendBufferedActivityStream = (
+    event: ProviderRuntimeEvent,
+  ): Effect.Effect<ProviderActivityStreamSnapshot | undefined> =>
+    Effect.gen(function* () {
+      if (event.type !== "content.delta") {
+        return undefined;
+      }
+      if (
+        event.payload.streamKind !== "reasoning_summary_text" &&
+        event.payload.streamKind !== "reasoning_text" &&
+        event.payload.streamKind !== "command_output" &&
+        event.payload.streamKind !== "file_change_output"
+      ) {
+        return undefined;
+      }
+
+      const streamKey = activityStreamBaseKey(event);
+      const previous = yield* Cache.getOption(bufferedActivityStreamByKey, streamKey).pipe(
+        Effect.map(Option.getOrUndefined),
+      );
+      const next = appendActivityStreamText(previous, event.payload.delta);
+      yield* Cache.set(bufferedActivityStreamByKey, streamKey, next);
+      return {
+        activityId: activityStreamId(event),
+        streamKind: event.payload.streamKind,
+        text: next.text,
+        byteCount: next.byteCount,
+        lineCount: next.lineCount,
+        truncated: next.truncated,
+        ...(event.payload.streamKind === "reasoning_text" ? { redacted: true } : {}),
+      } satisfies ProviderActivityStreamSnapshot;
+    });
+
+  const projectRuntimeActivities = (event: ProviderRuntimeEvent) =>
+    Effect.gen(function* () {
+      const stream = yield* appendBufferedActivityStream(event);
+      return projectRuntimeEventToActivities(event, { stream });
+    });
 
   const clearAssistantMessageState = (messageId: MessageId) =>
     clearBufferedAssistantText(messageId);
@@ -1644,7 +1357,7 @@ const make = Effect.gen(function* () {
         }
       }
 
-      const activities = runtimeEventToActivities(event);
+      const activities = yield* projectRuntimeActivities(event);
       yield* Effect.forEach(activities, (activity) =>
         orchestrationEngine.dispatch({
           type: "thread.activity.append",

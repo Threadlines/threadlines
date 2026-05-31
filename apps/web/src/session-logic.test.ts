@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   deriveCompletionDividerBeforeEntryId,
+  deriveActiveStatusLabel,
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
   derivePendingApprovals,
@@ -634,6 +635,187 @@ describe("deriveWorkLogEntries", () => {
 
     const entries = deriveWorkLogEntries(activities, undefined);
     expect(entries[0]?.label).toBe("Searching for API endpoints");
+  });
+
+  it("shows thinking progress entries from provider reasoning summaries", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "thinking-progress",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "thinking.progress",
+        summary: "Thinking",
+        tone: "thinking",
+        payload: { summary: "Checking the event projection path" },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, undefined);
+    expect(entries[0]?.label).toBe("Checking the event projection path");
+    expect(entries[0]?.tone).toBe("thinking");
+  });
+
+  it("marks reasoning lifecycle activity as active thinking work", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "thinking-started",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "thinking.progress",
+        summary: "Thinking",
+        tone: "thinking",
+        payload: {
+          status: "inProgress",
+          detail: "Working through the next step",
+          redacted: true,
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, undefined);
+    expect(entries[0]?.label).toBe("Thinking");
+    expect(entries[0]?.detail).toBe("Working through the next step");
+    expect(entries[0]?.tone).toBe("thinking");
+    expect(entries[0]?.executionState).toBe("running");
+  });
+
+  it("adds inferred review context to generic thinking after a command", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "tool-completed",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.completed",
+        summary: "Ran command",
+        tone: "tool",
+        payload: {
+          itemType: "command_execution",
+          toolCallId: "cmd-1",
+          title: "Ran command",
+          detail: "bun lint",
+        },
+      }),
+      makeActivity({
+        id: "thinking-started",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "thinking.progress",
+        summary: "Thinking",
+        tone: "thinking",
+        payload: {
+          status: "inProgress",
+          detail: "Working through the next step",
+          redacted: true,
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, undefined);
+    expect(entries[1]?.label).toBe("Thinking");
+    expect(entries[1]?.detail).toBe("Reviewing command output");
+  });
+
+  it("collapses reasoning lifecycle rows and hides completed redacted thinking", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "thinking-started",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "thinking.progress",
+        summary: "Thinking",
+        tone: "thinking",
+        payload: {
+          status: "inProgress",
+          sourceItemType: "reasoning",
+          detail: "Working through the next step",
+          redacted: true,
+        },
+      }),
+      makeActivity({
+        id: "thinking-completed",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "thinking.progress",
+        summary: "Thinking",
+        tone: "thinking",
+        payload: {
+          status: "completed",
+          sourceItemType: "reasoning",
+          detail: "Working through the next step",
+          redacted: true,
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, undefined);
+    expect(entries).toHaveLength(0);
+  });
+
+  it("keeps provider reasoning summary rows after completion", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "thinking-started",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "thinking.progress",
+        summary: "Thinking",
+        tone: "thinking",
+        payload: {
+          status: "inProgress",
+          reasoningItemId: "reasoning-1",
+          detail: "Working through the next step",
+          redacted: true,
+        },
+      }),
+      makeActivity({
+        id: "thinking-completed",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "thinking.progress",
+        summary: "Thinking",
+        tone: "thinking",
+        payload: {
+          status: "completed",
+          reasoningItemId: "reasoning-1",
+          detail: "Checking the event projection path",
+          summary: "Checking the event projection path",
+          redacted: false,
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, undefined);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.label).toBe("Checking the event projection path");
+    expect(entries[0]?.executionState).toBe("completed");
+  });
+
+  it("collapses live command output updates into the active tool row", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "tool-start",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.started",
+        summary: "Ran command started",
+        payload: {
+          itemType: "command_execution",
+          toolCallId: "cmd-1",
+          title: "Ran command",
+          detail: "bun lint",
+        },
+      }),
+      makeActivity({
+        id: "tool-output",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.output.updated",
+        summary: "Command output",
+        payload: {
+          itemType: "command_execution",
+          toolCallId: "cmd-1",
+          status: "inProgress",
+          title: "Command output",
+          detail: "linting files",
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, undefined);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.id).toBe("tool-start");
+    expect(entries[0]?.detail).toBe("linting files");
+    expect(entries[0]?.executionState).toBe("running");
   });
 
   it("uses payload detail as label for task.completed and preserves error tone", () => {
@@ -1975,5 +2157,137 @@ describe("deriveActiveWorkStartedAt", () => {
         "2026-02-27T21:11:00.000Z",
       ),
     ).toBe("2026-02-27T21:11:00.000Z");
+  });
+});
+
+describe("deriveActiveStatusLabel", () => {
+  it("uses a coarse thinking label for active reasoning", () => {
+    expect(
+      deriveActiveStatusLabel({
+        phase: "running",
+        latestTurnId: TurnId.make("turn-1"),
+        workLogEntries: [
+          {
+            id: "thinking",
+            createdAt: "2026-02-23T00:00:02.000Z",
+            label: "Checking event projection",
+            tone: "thinking",
+            executionState: "running",
+            turnId: TurnId.make("turn-1"),
+          },
+        ],
+      }),
+    ).toBe("Thinking");
+  });
+
+  it("uses a coarse review label for redacted thinking after command output", () => {
+    expect(
+      deriveActiveStatusLabel({
+        phase: "running",
+        latestTurnId: TurnId.make("turn-1"),
+        workLogEntries: [
+          {
+            id: "thinking",
+            createdAt: "2026-02-23T00:00:02.000Z",
+            label: "Thinking",
+            detail: "Reviewing command output",
+            tone: "thinking",
+            executionState: "running",
+            turnId: TurnId.make("turn-1"),
+          },
+        ],
+      }),
+    ).toBe("Reviewing output");
+  });
+
+  it("prioritizes active tool work over active thinking in the footer", () => {
+    expect(
+      deriveActiveStatusLabel({
+        phase: "running",
+        latestTurnId: TurnId.make("turn-1"),
+        workLogEntries: [
+          {
+            id: "thinking",
+            createdAt: "2026-02-23T00:00:02.000Z",
+            label: "Thinking",
+            detail: "Working through the next step",
+            tone: "thinking",
+            executionState: "running",
+            turnId: TurnId.make("turn-1"),
+          },
+          {
+            id: "command",
+            createdAt: "2026-02-23T00:00:03.000Z",
+            label: "Running command",
+            command: "bun lint --filter @t3tools/web",
+            tone: "tool",
+            itemType: "command_execution",
+            executionState: "running",
+            turnId: TurnId.make("turn-1"),
+          },
+        ],
+      }),
+    ).toBe("Running command");
+  });
+
+  it("maps active tool categories to footer phase labels", () => {
+    expect(
+      deriveActiveStatusLabel({
+        phase: "running",
+        latestTurnId: TurnId.make("turn-1"),
+        workLogEntries: [
+          {
+            id: "search",
+            createdAt: "2026-02-23T00:00:02.000Z",
+            label: "Searching web",
+            tone: "tool",
+            itemType: "web_search",
+            executionState: "running",
+            turnId: TurnId.make("turn-1"),
+          },
+        ],
+      }),
+    ).toBe("Searching web");
+  });
+
+  it("keeps the generic live footer as working when no visible activity is available", () => {
+    expect(
+      deriveActiveStatusLabel({
+        phase: "running",
+        latestTurnId: TurnId.make("turn-1"),
+        workLogEntries: [],
+      }),
+    ).toBe("Working");
+  });
+
+  it("ignores active-looking activity from a previous turn", () => {
+    expect(
+      deriveActiveStatusLabel({
+        phase: "running",
+        latestTurnId: TurnId.make("turn-2"),
+        workLogEntries: [
+          {
+            id: "old-command",
+            createdAt: "2026-02-23T00:00:02.000Z",
+            label: "Running command",
+            command: "bun lint",
+            tone: "tool",
+            itemType: "command_execution",
+            executionState: "running",
+            turnId: TurnId.make("turn-1"),
+          },
+        ],
+      }),
+    ).toBe("Working");
+  });
+
+  it("prioritizes pending approvals over generic running state", () => {
+    expect(
+      deriveActiveStatusLabel({
+        phase: "running",
+        workLogEntries: [],
+        pendingApprovalCount: 1,
+      }),
+    ).toBe("Waiting for approval");
   });
 });
