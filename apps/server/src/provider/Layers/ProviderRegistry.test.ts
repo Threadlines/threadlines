@@ -1391,7 +1391,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
       );
 
       it.effect(
-        "keeps cursor disabled and skips probing when the provider setting is disabled",
+        "keeps disabled built-in providers disabled and skips probing provider binaries",
         () =>
           Effect.gen(function* () {
             const serverSettings = yield* makeMutableServerSettingsService(
@@ -1401,14 +1401,14 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
                     codex: {
                       enabled: false,
                     },
-                    cursor: {
+                    claudeAgent: {
                       enabled: false,
                     },
                   },
                 }),
               ),
             );
-            let cursorSpawned = false;
+            let providerBinarySpawned = false;
             const scope = yield* Scope.make();
             yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
             const providerRegistryLayer = ProviderRegistryLive.pipe(
@@ -1424,9 +1424,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
               Layer.provideMerge(OpenCodeRuntimeLive),
               Layer.provideMerge(
                 mockCommandSpawnerLayer((command, args) => {
-                  if (command === "agent") {
-                    cursorSpawned = true;
-                  }
+                  providerBinarySpawned = true;
                   const joined = args.join(" ");
                   if (joined === "--version") {
                     return {
@@ -1456,23 +1454,27 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             yield* Effect.gen(function* () {
               const registry = yield* ProviderRegistry;
               const providers = yield* registry.getProviders;
-              const cursorProvider = providers.find(
-                (provider) => provider.instanceId === ProviderInstanceId.make("cursor"),
+              const codexProvider = providers.find(
+                (provider) => provider.instanceId === ProviderInstanceId.make("codex"),
+              );
+              const claudeProvider = providers.find(
+                (provider) => provider.instanceId === ProviderInstanceId.make("claudeAgent"),
               );
 
               assert.deepStrictEqual(providers.map((provider) => provider.instanceId).toSorted(), [
                 "claudeAgent",
                 "codex",
-                "cursor",
-                "opencode",
               ]);
-              assert.strictEqual(cursorProvider?.enabled, false);
-              assert.strictEqual(cursorProvider?.status, "disabled");
+              assert.strictEqual(codexProvider?.enabled, false);
+              assert.strictEqual(codexProvider?.status, "disabled");
+              assert.strictEqual(codexProvider?.message, "Codex is disabled in BadCode settings.");
+              assert.strictEqual(claudeProvider?.enabled, false);
+              assert.strictEqual(claudeProvider?.status, "disabled");
               assert.strictEqual(
-                cursorProvider?.message,
-                "Cursor is disabled in BadCode settings.",
+                claudeProvider?.message,
+                "Claude is disabled in BadCode settings.",
               );
-              assert.strictEqual(cursorSpawned, false);
+              assert.strictEqual(providerBinarySpawned, false);
             }).pipe(Effect.provide(runtimeServices));
           }),
       );

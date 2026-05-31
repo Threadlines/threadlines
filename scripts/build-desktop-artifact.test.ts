@@ -91,14 +91,14 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }),
   );
 
-  it.effect("keeps Windows icon resource editing enabled for unsigned builds", () =>
+  it.effect("skips Windows executable resource editing for unsigned builds", () =>
     Effect.gen(function* () {
       const buildConfig = yield* createBuildConfig("win", "nsis", "0.0.2", false, false, undefined);
       const winConfig = buildConfig.win as Record<string, unknown>;
 
       assert.equal(winConfig.icon, "icon.ico");
       assert.equal(winConfig.signExecutable, undefined);
-      assert.equal(winConfig.signAndEditExecutable, undefined);
+      assert.equal(winConfig.signAndEditExecutable, false);
       assert.deepStrictEqual(buildConfig.extraResources, [
         {
           from: "apps/desktop/resources/icon.ico",

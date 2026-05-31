@@ -708,6 +708,12 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       target: [target],
       icon: "icon.ico",
     };
+    if (!signed) {
+      // Resource editing pulls electron-builder's winCodeSign bundle, whose
+      // archive contains macOS symlinks that fail to extract on locked-down
+      // Windows hosts. Unsigned nightly builds do not need that toolchain.
+      winConfig.signAndEditExecutable = false;
+    }
     if (signed) {
       winConfig.azureSignOptions = yield* AzureTrustedSigningOptionsConfig;
     }
