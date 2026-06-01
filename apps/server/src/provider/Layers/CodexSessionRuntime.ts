@@ -608,6 +608,20 @@ function readNotificationThreadId(notification: CodexServerNotification): string
   }
 }
 
+function readRawResponseItemId(item: unknown): string | undefined {
+  if (!item || typeof item !== "object") {
+    return undefined;
+  }
+  const record = item as Record<string, unknown>;
+  for (const key of ["id", "call_id"]) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
 function readRouteFields(notification: CodexServerNotification): {
   readonly turnId: TurnId | undefined;
   readonly itemId: ProviderItemId | undefined;
@@ -634,6 +648,14 @@ function readRouteFields(notification: CodexServerNotification): {
       return {
         turnId: TurnId.make(notification.params.turnId),
         itemId: undefined,
+      };
+    case "rawResponseItem/completed":
+      return {
+        turnId: TurnId.make(notification.params.turnId),
+        itemId: Option.fromNullishOr(readRawResponseItemId(notification.params.item)).pipe(
+          Option.map(ProviderItemId.make),
+          Option.getOrUndefined,
+        ),
       };
     case "serverRequest/resolved":
       return {

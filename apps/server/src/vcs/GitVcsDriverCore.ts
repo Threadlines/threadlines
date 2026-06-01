@@ -41,9 +41,11 @@ const RANGE_DIFF_SUMMARY_MAX_OUTPUT_BYTES = 19_000;
 const RANGE_DIFF_PATCH_MAX_OUTPUT_BYTES = 59_000;
 const STATUS_UPSTREAM_REFRESH_INTERVAL = Duration.seconds(15);
 const STATUS_UPSTREAM_REFRESH_TIMEOUT = Duration.seconds(5);
-const STATUS_UPSTREAM_REFRESH_FAILURE_COOLDOWN = Duration.seconds(5);
+const STATUS_UPSTREAM_REFRESH_FAILURE_COOLDOWN = Duration.minutes(2);
 const STATUS_UPSTREAM_REFRESH_CACHE_CAPACITY = 2_048;
 const STATUS_UPSTREAM_REFRESH_ENV = Object.freeze({
+  GCM_INTERACTIVE: "Never",
+  GIT_TERMINAL_PROMPT: "0",
   SSH_ASKPASS_REQUIRE: "never",
 } satisfies NodeJS.ProcessEnv);
 const DEFAULT_BASE_BRANCH_CANDIDATES = ["main", "master"] as const;
@@ -74,6 +76,7 @@ type TraceTailState = {
 class StatusRemoteRefreshCacheKey extends Data.Class<{
   gitCommonDir: string;
   remoteName: string;
+  branchName: string;
 }> {}
 
 interface ExecuteGitOptions {
@@ -969,14 +972,23 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
 
   const fetchRemoteForStatus = (
     gitCommonDir: string,
-    remoteName: string,
+    upstream: { readonly remoteName: string; readonly branchName: string },
   ): Effect.Effect<void, GitCommandError> => {
     const fetchCwd =
       path.basename(gitCommonDir) === ".git" ? path.dirname(gitCommonDir) : gitCommonDir;
+    const remoteTrackingRef = `refs/remotes/${upstream.remoteName}/${upstream.branchName}`;
     return executeGit(
       "GitVcsDriver.fetchRemoteForStatus",
       fetchCwd,
-      ["--git-dir", gitCommonDir, "fetch", "--quiet", remoteName],
+      [
+        "--git-dir",
+        gitCommonDir,
+        "fetch",
+        "--quiet",
+        "--no-tags",
+        upstream.remoteName,
+        `+refs/heads/${upstream.branchName}:${remoteTrackingRef}`,
+      ],
       {
         allowNonZeroExit: true,
         env: STATUS_UPSTREAM_REFRESH_ENV,
@@ -996,7 +1008,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const refreshStatusRemoteCacheEntry = Effect.fn("refreshStatusRemoteCacheEntry")(function* (
     cacheKey: StatusRemoteRefreshCacheKey,
   ) {
-    yield* fetchRemoteForStatus(cacheKey.gitCommonDir, cacheKey.remoteName);
+    yield* fetchRemoteForStatus(cacheKey.gitCommonDir, {
+      remoteName: cacheKey.remoteName,
+      branchName: cacheKey.branchName,
+    });
     return true as const;
   });
 
@@ -1020,6 +1035,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       new StatusRemoteRefreshCacheKey({
         gitCommonDir,
         remoteName: upstream.remoteName,
+        branchName: upstream.branchName,
       }),
     );
   });

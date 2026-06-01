@@ -3,7 +3,9 @@ import {
   CommandId,
   EventId,
   MessageId,
+  type OrchestrationCheckpointFile,
   type OrchestrationEvent,
+  type OrchestrationThreadActivity,
   type OrchestrationMessage,
   type OrchestrationProposedPlanId,
   CheckpointRef,
@@ -23,6 +25,7 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
+import { parseTurnDiffFilesFromUnifiedDiff } from "../../checkpointing/Diffs.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
@@ -57,12 +60,38 @@ const BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY = 10_000;
 const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
 const BUFFERED_ACTIVITY_STREAM_BY_KEY_CACHE_CAPACITY = 20_000;
 const BUFFERED_ACTIVITY_STREAM_BY_KEY_TTL = Duration.minutes(120);
+type ContentDeltaStreamKind = Extract<
+  ProviderRuntimeEvent,
+  { type: "content.delta" }
+>["payload"]["streamKind"];
+type ActivityStreamDeltaKind = Extract<
+  ContentDeltaStreamKind,
+  "reasoning_summary_text" | "reasoning_text" | "command_output" | "file_change_output"
+>;
+const ACTIVITY_STREAM_EMIT_BYTE_THRESHOLDS = {
+  reasoning_summary_text: 128,
+  reasoning_text: 4096,
+  command_output: 2048,
+  file_change_output: 2048,
+} as const satisfies Record<ActivityStreamDeltaKind, number>;
+const ACTIVITY_STREAM_EMIT_LINE_THRESHOLDS = {
+  reasoning_summary_text: 2,
+  reasoning_text: 32,
+  command_output: 8,
+  file_change_output: 8,
+} as const satisfies Record<ActivityStreamDeltaKind, number>;
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
 const MAX_BUFFERED_ACTIVITY_STREAM_CHARS = 4_000;
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
 
 interface BufferedActivityStream {
   readonly text: string;
+  readonly byteCount: number;
+  readonly lineCount: number;
+  readonly truncated: boolean;
+}
+
+interface EmittedActivityStreamCursor {
   readonly byteCount: number;
   readonly lineCount: number;
   readonly truncated: boolean;
@@ -170,6 +199,46 @@ function maxCheckpointTurnCount(
   return maxTurnCount;
 }
 
+function checkpointFileChangeActivity(input: {
+  readonly threadId: ThreadId;
+  readonly turnId: TurnId;
+  readonly checkpointTurnCount: number;
+  readonly files: ReadonlyArray<OrchestrationCheckpointFile>;
+  readonly createdAt: string;
+}): OrchestrationThreadActivity | null {
+  if (input.files.length === 0) {
+    return null;
+  }
+
+  return {
+    id: EventId.make(
+      `checkpoint-files:${input.threadId}:${input.turnId}:${input.checkpointTurnCount}`,
+    ),
+    tone: "tool",
+    kind: "tool.completed",
+    summary: "Changed files",
+    payload: {
+      itemType: "file_change",
+      status: "completed",
+      title: "File change",
+      data: {
+        files: input.files.map((file) => ({ ...file })),
+      },
+    },
+    turnId: input.turnId,
+    createdAt: input.createdAt,
+  };
+}
+
+function parseCheckpointFilesFromUnifiedDiff(diff: string): OrchestrationCheckpointFile[] {
+  return parseTurnDiffFilesFromUnifiedDiff(diff).map((file) => ({
+    path: file.path,
+    kind: "modified",
+    additions: file.additions,
+    deletions: file.deletions,
+  }));
+}
+
 function normalizeProposedPlanMarkdown(planMarkdown: string | undefined): string | undefined {
   const trimmed = planMarkdown?.trim();
   if (!trimmed) {
@@ -245,6 +314,46 @@ function appendActivityStreamText(
     truncated,
   };
 }
+
+function shouldEmitActivityStreamSnapshot(input: {
+  readonly streamKind: ActivityStreamDeltaKind;
+  readonly lastEmitted: EmittedActivityStreamCursor | undefined;
+  readonly next: BufferedActivityStream;
+}): boolean {
+  if (!input.lastEmitted) {
+    return input.next.byteCount > 0 || input.next.lineCount > 0 || input.next.truncated;
+  }
+  if (input.next.truncated !== input.lastEmitted.truncated) {
+    return true;
+  }
+
+  const byteDelta = input.next.byteCount - input.lastEmitted.byteCount;
+  const lineDelta = input.next.lineCount - input.lastEmitted.lineCount;
+  return (
+    byteDelta >= ACTIVITY_STREAM_EMIT_BYTE_THRESHOLDS[input.streamKind] ||
+    lineDelta >= ACTIVITY_STREAM_EMIT_LINE_THRESHOLDS[input.streamKind]
+  );
+}
+
+function emittedActivityStreamCursor(stream: BufferedActivityStream): EmittedActivityStreamCursor {
+  return {
+    byteCount: stream.byteCount,
+    lineCount: stream.lineCount,
+    truncated: stream.truncated,
+  };
+}
+
+function isActivityStreamDeltaKind(
+  streamKind: ContentDeltaStreamKind,
+): streamKind is ActivityStreamDeltaKind {
+  return (
+    streamKind === "reasoning_summary_text" ||
+    streamKind === "reasoning_text" ||
+    streamKind === "command_output" ||
+    streamKind === "file_change_output"
+  );
+}
+
 function normalizeRuntimeTurnState(
   value: string | undefined,
 ): "completed" | "failed" | "interrupted" | "cancelled" {
@@ -319,6 +428,16 @@ const make = Effect.gen(function* () {
     lookup: () =>
       Effect.succeed({
         text: "",
+        byteCount: 0,
+        lineCount: 0,
+        truncated: false,
+      }),
+  });
+  const emittedActivityStreamCursorByKey = yield* Cache.make<string, EmittedActivityStreamCursor>({
+    capacity: BUFFERED_ACTIVITY_STREAM_BY_KEY_CACHE_CAPACITY,
+    timeToLive: BUFFERED_ACTIVITY_STREAM_BY_KEY_TTL,
+    lookup: () =>
+      Effect.succeed({
         byteCount: 0,
         lineCount: 0,
         truncated: false,
@@ -521,12 +640,8 @@ const make = Effect.gen(function* () {
       if (event.type !== "content.delta") {
         return undefined;
       }
-      if (
-        event.payload.streamKind !== "reasoning_summary_text" &&
-        event.payload.streamKind !== "reasoning_text" &&
-        event.payload.streamKind !== "command_output" &&
-        event.payload.streamKind !== "file_change_output"
-      ) {
+      const streamKind = event.payload.streamKind;
+      if (!isActivityStreamDeltaKind(streamKind)) {
         return undefined;
       }
 
@@ -536,14 +651,32 @@ const make = Effect.gen(function* () {
       );
       const next = appendActivityStreamText(previous, event.payload.delta);
       yield* Cache.set(bufferedActivityStreamByKey, streamKey, next);
+      const lastEmitted = yield* Cache.getOption(emittedActivityStreamCursorByKey, streamKey).pipe(
+        Effect.map(Option.getOrUndefined),
+      );
+      if (
+        !shouldEmitActivityStreamSnapshot({
+          streamKind,
+          lastEmitted,
+          next,
+        })
+      ) {
+        return undefined;
+      }
+
+      yield* Cache.set(
+        emittedActivityStreamCursorByKey,
+        streamKey,
+        emittedActivityStreamCursor(next),
+      );
       return {
         activityId: activityStreamId(event),
-        streamKind: event.payload.streamKind,
+        streamKind,
         text: next.text,
         byteCount: next.byteCount,
         lineCount: next.lineCount,
         truncated: next.truncated,
-        ...(event.payload.streamKind === "reasoning_text" ? { redacted: true } : {}),
+        ...(streamKind === "reasoning_text" ? { redacted: true } : {}),
       } satisfies ProviderActivityStreamSnapshot;
     });
 
@@ -1340,6 +1473,8 @@ const make = Effect.gen(function* () {
             const assistantMessageId = MessageId.make(
               `assistant:${event.itemId ?? event.turnId ?? event.eventId}`,
             );
+            const files = parseCheckpointFilesFromUnifiedDiff(event.payload.unifiedDiff);
+            const checkpointTurnCount = maxCheckpointTurnCount(checkpointContext.checkpoints) + 1;
             yield* orchestrationEngine.dispatch({
               type: "thread.turn.diff.complete",
               commandId: providerCommandId(event, "thread-turn-diff-complete"),
@@ -1348,11 +1483,27 @@ const make = Effect.gen(function* () {
               completedAt: now,
               checkpointRef: CheckpointRef.make(`provider-diff:${event.eventId}`),
               status: "missing",
-              files: [],
+              files,
               assistantMessageId,
-              checkpointTurnCount: maxCheckpointTurnCount(checkpointContext.checkpoints) + 1,
+              checkpointTurnCount,
               createdAt: now,
             });
+            const activity = checkpointFileChangeActivity({
+              threadId: thread.id,
+              turnId,
+              checkpointTurnCount,
+              files,
+              createdAt: now,
+            });
+            if (activity) {
+              yield* orchestrationEngine.dispatch({
+                type: "thread.activity.append",
+                commandId: providerCommandId(event, "thread-turn-diff-file-change-activity"),
+                threadId: thread.id,
+                activity,
+                createdAt: activity.createdAt,
+              });
+            }
           }
         }
       }

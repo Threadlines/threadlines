@@ -9,7 +9,7 @@ import * as PlatformError from "effect/PlatformError";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 
 const BADCODE_BASE_DIR_NAME = ".badcode";
-const LEGACY_T3CODE_BASE_DIR_NAME = ".t3code";
+const LEGACY_T3CODE_BASE_DIR_NAME = ".t3";
 
 export type DesktopDataMigrationStatus =
   | "migrated"

@@ -577,6 +577,51 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("maps raw response web search completions to canonical completed tool events", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      yield* runtime.emit({
+        id: asEventId("evt-raw-web-search-complete"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "rawResponseItem/completed",
+        threadId: asThreadId("thread-1"),
+        payload: {
+          threadId: "provider-thread-1",
+          turnId: "turn-1",
+          item: {
+            type: "web_search_call",
+            id: "ws_1",
+            status: "completed",
+            action: {
+              type: "search",
+              query: "activity feed stale",
+            },
+          },
+        },
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      assert.equal(firstEvent.value.type, "item.completed");
+      if (firstEvent.value.type !== "item.completed") {
+        return;
+      }
+      assert.equal(firstEvent.value.turnId, "turn-1");
+      assert.equal(firstEvent.value.itemId, "ws_1");
+      assert.equal(firstEvent.value.payload.itemType, "web_search");
+      assert.equal(firstEvent.value.payload.status, "completed");
+      assert.equal(firstEvent.value.payload.detail, "activity feed stale");
+    }),
+  );
+
   it.effect("maps plan deltas to canonical proposed-plan delta events", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();

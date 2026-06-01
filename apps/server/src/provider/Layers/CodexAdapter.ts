@@ -351,6 +351,70 @@ function summarizePatchChanges(
   return `${String(first?.kind ?? "updated")} ${first?.path ?? "file"}${suffix}`;
 }
 
+function rawResponseItemId(item: unknown): string | undefined {
+  if (!item || typeof item !== "object") {
+    return undefined;
+  }
+  const record = item as Record<string, unknown>;
+  for (const key of ["id", "call_id"]) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function rawSearchDetail(
+  item: EffectCodexSchema.V2RawResponseItemCompletedNotification["item"],
+): string | undefined {
+  if (item.type === "tool_search_call") {
+    return trimText(item.execution);
+  }
+  if (item.type === "tool_search_output") {
+    return trimText(item.execution);
+  }
+  if (item.type !== "web_search_call") {
+    return undefined;
+  }
+
+  const action = item.action;
+  if (!action) {
+    return undefined;
+  }
+  switch (action.type) {
+    case "search":
+      return trimText(action.query) ?? trimText(action.queries?.join(", "));
+    case "open_page":
+      return trimText(action.url);
+    case "find_in_page":
+      return trimText(action.pattern) ?? trimText(action.url);
+    case "other":
+      return undefined;
+  }
+}
+
+function rawResponseItemStatus(
+  status: string | null | undefined,
+): "inProgress" | "completed" | "failed" | "declined" | undefined {
+  const normalized = trimText(status)
+    ?.toLowerCase()
+    .replace(/[_\s-]+/g, "");
+  if (!normalized) {
+    return "completed";
+  }
+  if (normalized === "failed" || normalized === "failure" || normalized === "error") {
+    return "failed";
+  }
+  if (normalized === "declined") {
+    return "declined";
+  }
+  if (normalized === "inprogress" || normalized === "running" || normalized === "pending") {
+    return "inProgress";
+  }
+  return "completed";
+}
+
 function decodeBase64Text(value: string | undefined): string | undefined {
   if (!value) {
     return undefined;
@@ -1220,6 +1284,48 @@ function mapToRuntimeEvents(
     ];
   }
 
+  if (event.method === "rawResponseItem/completed") {
+    const payload = readPayload(
+      EffectCodexSchema.V2RawResponseItemCompletedNotification,
+      event.payload,
+    );
+    if (!payload) {
+      return [];
+    }
+
+    const item = payload.item;
+    if (
+      item.type !== "tool_search_call" &&
+      item.type !== "tool_search_output" &&
+      item.type !== "web_search_call"
+    ) {
+      return [];
+    }
+
+    const itemId = rawResponseItemId(item) ?? event.itemId ?? `${payload.turnId}:raw-search`;
+    const status =
+      "status" in item && typeof item.status === "string"
+        ? rawResponseItemStatus(item.status)
+        : "completed";
+    const detail = rawSearchDetail(item);
+
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        turnId: TurnId.make(payload.turnId),
+        itemId: RuntimeItemId.make(itemId),
+        type: "item.completed",
+        payload: {
+          itemType: "web_search",
+          status,
+          title: "Web search",
+          ...(detail ? { detail } : {}),
+          data: event.payload,
+        },
+      },
+    ];
+  }
+
   if (event.method === "item/reasoning/summaryTextDelta") {
     const payload = readPayload(
       EffectCodexSchema.V2ReasoningSummaryTextDeltaNotification,
@@ -2003,11 +2109,11 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       ),
     );
 
-  const writeNativeEvent = Effect.fn("writeNativeEvent")(function* (event: ProviderEvent) {
+  const writeNativeEvent = Effect.fnUntraced(function* (event: ProviderEvent) {
     if (!nativeEventLogger) {
       return;
     }
-    yield* nativeEventLogger.write(event, event.threadId);
+    yield* nativeEventLogger.write(event, event.threadId).pipe(Effect.withTracerEnabled(false));
   });
 
   const stopSessionInternal = Effect.fn("stopSessionInternal")(function* (

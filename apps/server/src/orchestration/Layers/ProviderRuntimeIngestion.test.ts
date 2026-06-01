@@ -2679,7 +2679,8 @@ describe("ProviderRuntimeIngestion", () => {
       turnId: asTurnId("turn-p1"),
       itemId: asItemId("item-p1-assistant"),
       payload: {
-        unifiedDiff: "diff --git a/file.txt b/file.txt\n+hello\n",
+        unifiedDiff:
+          "diff --git a/file.txt b/file.txt\nindex e69de29..ce01362 100644\n--- a/file.txt\n+++ b/file.txt\n@@ -0,0 +1 @@\n+hello\n",
       },
     });
 
@@ -2695,6 +2696,10 @@ describe("ProviderRuntimeIngestion", () => {
         ) &&
         entry.activities.some(
           (activity: ProviderRuntimeTestActivity) => activity.kind === "runtime.warning",
+        ) &&
+        entry.activities.some(
+          (activity: ProviderRuntimeTestActivity) =>
+            activity.kind === "tool.completed" && activity.summary === "Changed files",
         ) &&
         entry.checkpoints.some(
           (checkpoint: ProviderRuntimeTestCheckpoint) => checkpoint.turnId === "turn-p1",
@@ -2740,6 +2745,26 @@ describe("ProviderRuntimeIngestion", () => {
     expect(checkpoint?.status).toBe("missing");
     expect(checkpoint?.assistantMessageId).toBe("assistant:item-p1-assistant");
     expect(checkpoint?.checkpointRef).toBe("provider-diff:evt-turn-diff-updated");
+    expect(checkpoint?.files).toEqual([
+      {
+        path: "file.txt",
+        kind: "modified",
+        additions: 1,
+        deletions: 0,
+      },
+    ]);
+
+    const fileActivity = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) =>
+        activity.kind === "tool.completed" && activity.summary === "Changed files",
+    );
+    const fileActivityPayload =
+      fileActivity?.payload && typeof fileActivity.payload === "object"
+        ? (fileActivity.payload as { itemType?: string; data?: { files?: unknown[] } })
+        : undefined;
+    expect(fileActivity?.id).toBe("checkpoint-files:thread-1:turn-p1:1");
+    expect(fileActivityPayload?.itemType).toBe("file_change");
+    expect(fileActivityPayload?.data?.files).toEqual(checkpoint?.files);
   });
 
   it("projects context window updates into normalized thread activities", async () => {
@@ -3053,7 +3078,7 @@ describe("ProviderRuntimeIngestion", () => {
       itemId: asItemId("item-reasoning"),
       payload: {
         streamKind: "reasoning_summary_text",
-        delta: "the event pipeline",
+        delta: "the event pipeline ".repeat(8),
         summaryIndex: 0,
       },
     });
@@ -3155,6 +3180,83 @@ describe("ProviderRuntimeIngestion", () => {
     expect(payload?.itemType).toBe("command_execution");
     expect(payload?.detail).toBe("linting files");
     expect(payload?.status).toBe("inProgress");
+  });
+
+  it("coalesces tiny command output deltas before appending another activity update", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const baseEvent = {
+      type: "content.delta" as const,
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-command-output-coalesced"),
+      itemId: asItemId("item-command-output-coalesced"),
+      payload: {
+        streamKind: "command_output" as const,
+        delta: "",
+      },
+    };
+
+    harness.emit({
+      ...baseEvent,
+      eventId: asEventId("evt-command-output-coalesced-1"),
+      payload: {
+        ...baseEvent.payload,
+        delta: "a",
+      },
+    });
+    harness.emit({
+      ...baseEvent,
+      eventId: asEventId("evt-command-output-coalesced-2"),
+      payload: {
+        ...baseEvent.payload,
+        delta: "b",
+      },
+    });
+
+    await harness.drain();
+    let thread = await harness.readModel();
+    let activity = thread.threads
+      .find((entry) => entry.id === "thread-1")
+      ?.activities.find(
+        (entry: ProviderRuntimeTestActivity) => entry.kind === "tool.output.updated",
+      );
+    let payload =
+      activity?.payload && typeof activity.payload === "object"
+        ? (activity.payload as Record<string, unknown>)
+        : undefined;
+    expect(payload?.detail).toBe("a");
+
+    harness.emit({
+      ...baseEvent,
+      eventId: asEventId("evt-command-output-coalesced-3"),
+      payload: {
+        ...baseEvent.payload,
+        delta: "c".repeat(2048),
+      },
+    });
+
+    await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some((candidate: ProviderRuntimeTestActivity) => {
+        const candidatePayload =
+          candidate.payload && typeof candidate.payload === "object"
+            ? (candidate.payload as Record<string, unknown>)
+            : undefined;
+        return candidate.kind === "tool.output.updated" && candidatePayload?.byteCount === 2050;
+      }),
+    );
+    thread = await harness.readModel();
+    activity = thread.threads
+      .find((entry) => entry.id === "thread-1")
+      ?.activities.find(
+        (entry: ProviderRuntimeTestActivity) => entry.kind === "tool.output.updated",
+      );
+    payload =
+      activity?.payload && typeof activity.payload === "object"
+        ? (activity.payload as Record<string, unknown>)
+        : undefined;
+    expect(payload?.byteCount).toBe(2050);
   });
 
   it("projects structured user input request and resolution as thread activities", async () => {

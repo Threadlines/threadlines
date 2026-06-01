@@ -151,13 +151,21 @@ async function waitForThread(
       readonly id: ThreadId;
       readonly latestTurn: { readonly turnId: string } | null;
       readonly checkpoints: ReadonlyArray<{ readonly checkpointTurnCount: number }>;
-      readonly activities: ReadonlyArray<{ readonly kind: string }>;
+      readonly activities: ReadonlyArray<{
+        readonly kind: string;
+        readonly summary?: string | undefined;
+        readonly payload?: unknown | undefined;
+      }>;
     }>;
   }>,
   predicate: (thread: {
     latestTurn: { turnId: string } | null;
     checkpoints: ReadonlyArray<{ checkpointTurnCount: number }>;
-    activities: ReadonlyArray<{ kind: string }>;
+    activities: ReadonlyArray<{
+      kind: string;
+      summary?: string | undefined;
+      payload?: unknown | undefined;
+    }>;
   }) => boolean,
   timeoutMs = 15_000,
 ) {
@@ -165,7 +173,11 @@ async function waitForThread(
   const poll = async (): Promise<{
     latestTurn: { turnId: string } | null;
     checkpoints: ReadonlyArray<{ checkpointTurnCount: number }>;
-    activities: ReadonlyArray<{ kind: string }>;
+    activities: ReadonlyArray<{
+      kind: string;
+      summary?: string | undefined;
+      payload?: unknown | undefined;
+    }>;
   }> => {
     const snapshot = await readModel();
     const thread = snapshot.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
@@ -456,6 +468,10 @@ describe("CheckpointReactor", () => {
       harness.cwd,
       checkpointRefForThreadTurn(ThreadId.make("thread-1"), 0),
     );
+    await waitForGitRefExists(
+      harness.cwd,
+      checkpointPreTurnRefForThreadTurn(ThreadId.make("thread-1"), asTurnId("turn-1")),
+    );
 
     fs.writeFileSync(path.join(harness.cwd, "README.md"), "v2\n", "utf8");
     harness.provider.emit({
@@ -472,9 +488,23 @@ describe("CheckpointReactor", () => {
     await waitForEvent(harness.engine, (event) => event.type === "thread.turn-diff-completed");
     const thread = await waitForThread(
       harness.readModel,
-      (entry) => entry.latestTurn?.turnId === "turn-1" && entry.checkpoints.length === 1,
+      (entry) =>
+        entry.latestTurn?.turnId === "turn-1" &&
+        entry.checkpoints.length === 1 &&
+        entry.activities.some((activity) => activity.summary === "Changed files"),
     );
     expect(thread.checkpoints[0]?.checkpointTurnCount).toBe(1);
+    expect(
+      thread.activities.some((activity) => {
+        const payload = activity.payload as { itemType?: string; data?: { files?: unknown[] } };
+        return (
+          activity.kind === "tool.completed" &&
+          payload.itemType === "file_change" &&
+          Array.isArray(payload.data?.files) &&
+          payload.data.files.length === 1
+        );
+      }),
+    ).toBe(true);
     expect(
       gitRefExists(harness.cwd, checkpointRefForThreadTurn(ThreadId.make("thread-1"), 0)),
     ).toBe(true);

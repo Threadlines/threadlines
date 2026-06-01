@@ -2,6 +2,8 @@ import {
   CommandId,
   EventId,
   MessageId,
+  type OrchestrationCheckpointFile,
+  type OrchestrationThreadActivity,
   type ProjectId,
   ThreadId,
   TurnId,
@@ -131,6 +133,46 @@ const make = Effect.gen(function* () {
       },
       createdAt: input.createdAt,
     });
+
+  const appendCheckpointFileChangeActivity = (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+    readonly turnCount: number;
+    readonly files: ReadonlyArray<OrchestrationCheckpointFile>;
+    readonly createdAt: string;
+  }) => {
+    if (input.files.length === 0) {
+      return Effect.void;
+    }
+
+    const activityId = EventId.make(
+      `checkpoint-files:${input.threadId}:${input.turnId}:${input.turnCount}`,
+    );
+    const files = input.files.map((file) => ({ ...file }));
+
+    return orchestrationEngine.dispatch({
+      type: "thread.activity.append",
+      commandId: serverCommandId("checkpoint-file-change-activity"),
+      threadId: input.threadId,
+      activity: {
+        id: activityId,
+        tone: "tool",
+        kind: "tool.completed",
+        summary: "Changed files",
+        payload: {
+          itemType: "file_change",
+          status: "completed",
+          title: "File change",
+          data: {
+            files,
+          },
+        },
+        turnId: input.turnId,
+        createdAt: input.createdAt,
+      } satisfies OrchestrationThreadActivity,
+      createdAt: input.createdAt,
+    });
+  };
 
   const resolveSessionRuntimeForThread = Effect.fn("resolveSessionRuntimeForThread")(function* (
     threadId: ThreadId,
@@ -310,6 +352,13 @@ const make = Effect.gen(function* () {
       files,
       assistantMessageId,
       checkpointTurnCount: input.turnCount,
+      createdAt: input.createdAt,
+    });
+    yield* appendCheckpointFileChangeActivity({
+      threadId: input.threadId,
+      turnId: input.turnId,
+      turnCount: input.turnCount,
+      files,
       createdAt: input.createdAt,
     });
     yield* receiptBus.publish({

@@ -217,7 +217,16 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     Effect.succeed(event).pipe(
       Effect.tap((canonicalEvent) =>
         canonicalEventLogger
-          ? canonicalEventLogger.write(canonicalEvent, canonicalEvent.threadId)
+          ? canonicalEventLogger.write(canonicalEvent, canonicalEvent.threadId).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("provider canonical event log write failed", {
+                  eventId: canonicalEvent.eventId,
+                  eventType: canonicalEvent.type,
+                  threadId: canonicalEvent.threadId,
+                  cause: Cause.pretty(cause),
+                }),
+              ),
+            )
           : Effect.void,
       ),
       Effect.flatMap((canonicalEvent) => PubSub.publish(runtimeEventPubSub, canonicalEvent)),

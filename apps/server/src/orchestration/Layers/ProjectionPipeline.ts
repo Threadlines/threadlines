@@ -82,6 +82,10 @@ interface AttachmentSideEffects {
   readonly prunedThreadRelativePaths: Map<string, Set<string>>;
 }
 
+function hasAttachmentSideEffects(sideEffects: AttachmentSideEffects): boolean {
+  return sideEffects.deletedThreadIds.size > 0 || sideEffects.prunedThreadRelativePaths.size > 0;
+}
+
 const materializeAttachmentsForProjection = Effect.fn("materializeAttachmentsForProjection")(
   (input: { readonly attachments: ReadonlyArray<ChatAttachment> }) =>
     Effect.succeed(input.attachments.length === 0 ? [] : input.attachments),
@@ -148,6 +152,20 @@ function derivePendingUserInputCountFromActivities(
   }
 
   return openRequestIds.size;
+}
+
+function activityMayAffectThreadShellSummary(activity: { readonly kind: string }): boolean {
+  switch (activity.kind) {
+    case "approval.requested":
+    case "approval.resolved":
+    case "provider.approval.respond.failed":
+    case "user-input.requested":
+    case "user-input.resolved":
+    case "provider.user-input.respond.failed":
+      return true;
+    default:
+      return false;
+  }
 }
 
 function deriveHasActionableProposedPlan(input: {
@@ -688,7 +706,6 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
 
         case "thread.message-sent":
         case "thread.proposed-plan-upserted":
-        case "thread.activity-appended":
         case "thread.approval-response-requested":
         case "thread.user-input-response-requested": {
           const existingRow = yield* projectionThreadRepository.getById({
@@ -702,6 +719,23 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             updatedAt: event.occurredAt,
           });
           yield* refreshThreadShellSummary(event.payload.threadId);
+          return;
+        }
+
+        case "thread.activity-appended": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            updatedAt: event.occurredAt,
+          });
+          if (activityMayAffectThreadShellSummary(event.payload.activity)) {
+            yield* refreshThreadShellSummary(event.payload.threadId);
+          }
           return;
         }
 
@@ -1451,16 +1485,18 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         ),
       );
 
-      yield* runAttachmentSideEffects(attachmentSideEffects).pipe(
-        Effect.catch((cause) =>
-          Effect.logWarning("failed to apply projected attachment side-effects", {
-            projector: projector.name,
-            sequence: event.sequence,
-            eventType: event.type,
-            cause,
-          }),
-        ),
-      );
+      if (hasAttachmentSideEffects(attachmentSideEffects)) {
+        yield* runAttachmentSideEffects(attachmentSideEffects).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("failed to apply projected attachment side-effects", {
+              projector: projector.name,
+              sequence: event.sequence,
+              eventType: event.type,
+              cause,
+            }),
+          ),
+        );
+      }
     });
 
     const bootstrapProjector = (projector: ProjectorDefinition) =>

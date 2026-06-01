@@ -39,7 +39,7 @@ const runMigration = (homeDirectory: string, env: Record<string, string | undefi
   );
 
 describe("DesktopDataMigration", () => {
-  it.effect("copies legacy .t3code data into the default .badcode directory", () =>
+  it.effect("copies legacy .t3 data into the default .badcode directory", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -48,7 +48,7 @@ describe("DesktopDataMigration", () => {
       });
       const legacyThreadPath = path.join(
         homeDirectory,
-        ".t3code",
+        ".t3",
         "userdata",
         "threads",
         "thread.json",
@@ -79,11 +79,11 @@ describe("DesktopDataMigration", () => {
       });
 
       yield* fileSystem.makeDirectory(path.join(homeDirectory, ".badcode"), { recursive: true });
-      yield* fileSystem.makeDirectory(path.join(homeDirectory, ".t3code", "userdata"), {
+      yield* fileSystem.makeDirectory(path.join(homeDirectory, ".t3", "userdata"), {
         recursive: true,
       });
       yield* fileSystem.writeFileString(
-        path.join(homeDirectory, ".t3code", "userdata", "settings.json"),
+        path.join(homeDirectory, ".t3", "userdata", "settings.json"),
         "legacy-settings",
       );
 
@@ -107,11 +107,11 @@ describe("DesktopDataMigration", () => {
         prefix: "badcode-existing-target-migration-",
       });
 
-      yield* fileSystem.makeDirectory(path.join(homeDirectory, ".t3code", "userdata"), {
+      yield* fileSystem.makeDirectory(path.join(homeDirectory, ".t3", "userdata"), {
         recursive: true,
       });
       yield* fileSystem.writeFileString(
-        path.join(homeDirectory, ".t3code", "userdata", "settings.json"),
+        path.join(homeDirectory, ".t3", "userdata", "settings.json"),
         "legacy-settings",
       );
       yield* fileSystem.makeDirectory(path.join(homeDirectory, ".badcode", "userdata"), {
@@ -142,11 +142,11 @@ describe("DesktopDataMigration", () => {
         prefix: "badcode-custom-home-migration-",
       });
 
-      yield* fileSystem.makeDirectory(path.join(homeDirectory, ".t3code", "userdata"), {
+      yield* fileSystem.makeDirectory(path.join(homeDirectory, ".t3", "userdata"), {
         recursive: true,
       });
       yield* fileSystem.writeFileString(
-        path.join(homeDirectory, ".t3code", "userdata", "settings.json"),
+        path.join(homeDirectory, ".t3", "userdata", "settings.json"),
         "legacy-settings",
       );
 

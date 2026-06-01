@@ -218,7 +218,7 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
-    it.effect("auto-follows remote tags during background upstream status refreshes", () =>
+    it.effect("skips remote tags during background upstream status refreshes", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
         const remote = yield* makeTmpDir("git-vcs-driver-remote-");
@@ -233,7 +233,7 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
 
         yield* (yield* GitVcsDriver.GitVcsDriver).statusDetails(cwd);
 
-        assert.equal(yield* git(cwd, ["tag", "--list", "v0.0.9"]), "v0.0.9");
+        assert.equal(yield* git(cwd, ["tag", "--list", "v0.0.9"]), "");
       }),
     );
   });

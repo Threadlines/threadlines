@@ -11,9 +11,9 @@ import path from "node:path";
 
 import type { ThreadId } from "@t3tools/contracts";
 import { RotatingFileSink } from "@t3tools/shared/logging";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import * as Logger from "effect/Logger";
 import * as Scope from "effect/Scope";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
@@ -22,6 +22,7 @@ import { toSafeThreadAttachmentSegment } from "../../attachmentStore.ts";
 const DEFAULT_MAX_BYTES = 10 * 1024 * 1024;
 const DEFAULT_MAX_FILES = 10;
 const DEFAULT_BATCH_WINDOW_MS = 200;
+const FLUSH_BUFFER_THRESHOLD = 32;
 const GLOBAL_THREAD_SEGMENT = "_global";
 const LOG_SCOPE = "provider-observability";
 
@@ -59,20 +60,6 @@ function resolveThreadSegment(raw: string | null | undefined): string {
   return normalized ?? GLOBAL_THREAD_SEGMENT;
 }
 
-function formatLoggerMessage(message: unknown): string {
-  if (Array.isArray(message)) {
-    return message.map((part) => (typeof part === "string" ? part : String(part))).join(" ");
-  }
-  return typeof message === "string" ? message : String(message);
-}
-
-function makeLineLogger(streamLabel: string): Logger.Logger<unknown, string> {
-  return Logger.make(
-    ({ date, message }) =>
-      `[${date.toISOString()}] ${streamLabel}: ${formatLoggerMessage(message)}\n`,
-  );
-}
-
 function resolveStreamLabel(stream: EventNdjsonStream): string {
   switch (stream) {
     case "native":
@@ -84,7 +71,11 @@ function resolveStreamLabel(stream: EventNdjsonStream): string {
   }
 }
 
-const toLogMessage = Effect.fn("toLogMessage")(function* (
+function formatLogLine(streamLabel: string, observedAt: string, message: string): string {
+  return `[${observedAt}] ${streamLabel}: ${message}\n`;
+}
+
+const toLogMessage = Effect.fnUntraced(function* (
   event: unknown,
 ): Effect.fn.Return<string | undefined> {
   const serialized = yield* Effect.sync(() => {
@@ -109,7 +100,7 @@ const toLogMessage = Effect.fn("toLogMessage")(function* (
   return serialized.value;
 });
 
-const makeThreadWriter = Effect.fn("makeThreadWriter")(function* (input: {
+const makeThreadWriter = Effect.fnUntraced(function* (input: {
   readonly filePath: string;
   readonly maxBytes: number;
   readonly maxFiles: number;
@@ -142,43 +133,77 @@ const makeThreadWriter = Effect.fn("makeThreadWriter")(function* (input: {
 
   const sink = sinkResult.sink;
   const scope = yield* Scope.make();
-  const lineLogger = makeLineLogger(input.streamLabel);
-  const batchedLogger = yield* Logger.batched(lineLogger, {
-    window: input.batchWindowMs,
-    flush: Effect.fn("makeThreadWriter.flush")(function* (messages) {
-      const flushResult = yield* Effect.sync(() => {
-        try {
-          for (const message of messages) {
-            sink.write(message);
-          }
-          return { ok: true as const };
-        } catch (error) {
-          return { ok: false as const, error };
-        }
-      });
+  let closed = false;
+  let buffer: string[] = [];
 
-      if (!flushResult.ok) {
-        yield* logWarning("provider event log batch flush failed", {
-          filePath: input.filePath,
-          error: flushResult.error,
-        });
+  const flushUnsafe = (): { ok: true } | { ok: false; error: unknown } => {
+    if (buffer.length === 0) {
+      return { ok: true };
+    }
+
+    const messages = buffer;
+    buffer = [];
+
+    try {
+      for (const message of messages) {
+        sink.write(message);
       }
-    }),
-  }).pipe(Effect.provideService(Scope.Scope, scope));
+      return { ok: true };
+    } catch (error) {
+      buffer = [...messages, ...buffer];
+      return { ok: false, error };
+    }
+  };
 
-  const loggerLayer = Logger.layer([batchedLogger], { mergeWithExisting: false });
+  const reportFlushResult = (result: ReturnType<typeof flushUnsafe>) =>
+    result.ok
+      ? Effect.void
+      : logWarning("provider event log batch flush failed", {
+          filePath: input.filePath,
+          error: result.error,
+        });
+
+  const flush = Effect.sync(flushUnsafe).pipe(
+    Effect.flatMap(reportFlushResult),
+    Effect.withTracerEnabled(false),
+  );
+
+  if (input.batchWindowMs > 0) {
+    yield* Effect.sleep(`${input.batchWindowMs} millis`).pipe(
+      Effect.andThen(flush),
+      Effect.forever,
+      Effect.forkIn(scope),
+    );
+  }
+
+  const writeMessage = (message: string) =>
+    Effect.gen(function* () {
+      const observedAt = DateTime.formatIso(yield* DateTime.now);
+
+      return yield* Effect.sync(() => {
+        if (closed) {
+          return { ok: true as const };
+        }
+        buffer.push(formatLogLine(input.streamLabel, observedAt, message));
+        return input.batchWindowMs <= 0 || buffer.length >= FLUSH_BUFFER_THRESHOLD
+          ? flushUnsafe()
+          : { ok: true as const };
+      });
+    }).pipe(Effect.flatMap(reportFlushResult), Effect.withTracerEnabled(false));
+
+  const close = Effect.gen(function* () {
+    closed = true;
+    yield* Scope.close(scope, Exit.void);
+    yield* flush;
+  }).pipe(Effect.withTracerEnabled(false));
 
   return {
-    writeMessage(message: string) {
-      return Effect.log(message).pipe(Effect.provide(loggerLayer));
-    },
-    close() {
-      return Scope.close(scope, Exit.void);
-    },
+    writeMessage,
+    close: () => close,
   } satisfies ThreadWriter;
 });
 
-export const makeEventNdjsonLogger = Effect.fn("makeEventNdjsonLogger")(function* (
+export const makeEventNdjsonLogger = Effect.fnUntraced(function* (
   filePath: string,
   options: EventNdjsonLoggerOptions,
 ): Effect.fn.Return<EventNdjsonLogger | undefined> {
@@ -208,7 +233,7 @@ export const makeEventNdjsonLogger = Effect.fn("makeEventNdjsonLogger")(function
     failedSegments: new Set(),
   });
 
-  const resolveThreadWriter = Effect.fn("resolveThreadWriter")(function* (
+  const resolveThreadWriter = Effect.fnUntraced(function* (
     threadSegment: string,
   ): Effect.fn.Return<ThreadWriter | undefined> {
     return yield* SynchronizedRef.modifyEffect(stateRef, (state) => {
@@ -255,7 +280,7 @@ export const makeEventNdjsonLogger = Effect.fn("makeEventNdjsonLogger")(function
     });
   });
 
-  const write = Effect.fn("write")(function* (event: unknown, threadId: ThreadId | null) {
+  const write = Effect.fnUntraced(function* (event: unknown, threadId: ThreadId | null) {
     const threadSegment = resolveThreadSegment(threadId);
     const message = yield* toLogMessage(event);
     if (!message) {
@@ -270,7 +295,7 @@ export const makeEventNdjsonLogger = Effect.fn("makeEventNdjsonLogger")(function
     yield* writer.writeMessage(message);
   });
 
-  const close = Effect.fn("close")(function* () {
+  const close = Effect.fnUntraced(function* () {
     yield* SynchronizedRef.modifyEffect(stateRef, (state) =>
       Effect.gen(function* () {
         for (const writer of state.threadWriters.values()) {
@@ -290,7 +315,7 @@ export const makeEventNdjsonLogger = Effect.fn("makeEventNdjsonLogger")(function
 
   return {
     filePath,
-    write,
+    write: (event, threadId) => write(event, threadId).pipe(Effect.withTracerEnabled(false)),
     close,
   } satisfies EventNdjsonLogger;
 });

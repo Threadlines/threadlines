@@ -15,6 +15,7 @@ import {
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shared/git";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
@@ -93,6 +94,7 @@ const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 const DEFAULT_THREAD_TITLE = "New thread";
+const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
 export function providerErrorLabel(value: string | undefined): string {
   const normalized = value?.trim();
@@ -283,6 +285,46 @@ const make = Effect.gen(function* () {
         updatedAt: input.createdAt,
       },
       createdAt: input.createdAt,
+    });
+  });
+
+  const markProviderTurnAccepted = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+  }) {
+    const thread = yield* resolveThread(input.threadId);
+    const session = thread?.session;
+    if (!thread || !session) {
+      return;
+    }
+
+    if (
+      session.status === "stopped" ||
+      session.status === "error" ||
+      session.status === "interrupted"
+    ) {
+      return;
+    }
+
+    if (session.activeTurnId !== null && session.activeTurnId !== input.turnId) {
+      return;
+    }
+
+    if (thread.latestTurn?.turnId === input.turnId && thread.latestTurn.state !== "running") {
+      return;
+    }
+
+    const updatedAt = yield* nowIso;
+    yield* setThreadSession({
+      threadId: input.threadId,
+      session: {
+        ...session,
+        status: "running",
+        activeTurnId: input.turnId,
+        lastError: null,
+        updatedAt,
+      },
+      createdAt: updatedAt,
     });
   });
 
@@ -858,9 +900,16 @@ const make = Effect.gen(function* () {
       ),
     );
 
-    yield* providerService
-      .sendTurn(sendTurnRequest.value)
-      .pipe(Effect.catchCause(recoverTurnStartFailure), Effect.forkScoped);
+    yield* providerService.sendTurn(sendTurnRequest.value).pipe(
+      Effect.flatMap((turn) =>
+        markProviderTurnAccepted({
+          threadId: event.payload.threadId,
+          turnId: turn.turnId,
+        }),
+      ),
+      Effect.catchCause(recoverTurnStartFailure),
+      Effect.forkScoped,
+    );
   });
 
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (

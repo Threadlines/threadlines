@@ -12,9 +12,9 @@ import { useCallback } from "react";
 import { ensureLocalApi } from "../localApi";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 
-const PROCESS_DIAGNOSTICS_STALE_TIME_MS = 2_000;
+const PROCESS_DIAGNOSTICS_STALE_TIME_MS = 10_000;
 const PROCESS_DIAGNOSTICS_IDLE_TTL_MS = 5 * 60_000;
-const PROCESS_RESOURCE_HISTORY_STALE_TIME_MS = 5_000;
+const PROCESS_RESOURCE_HISTORY_STALE_TIME_MS = 15_000;
 const PROCESS_RESOURCE_HISTORY_INPUT_SEPARATOR = ":";
 
 const processDiagnosticsAtom = Atom.make(
