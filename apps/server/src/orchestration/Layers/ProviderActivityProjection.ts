@@ -111,6 +111,51 @@ function compactUnknownDetail(value: unknown): string | undefined {
   return undefined;
 }
 
+function readMcpStartupStatus(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return value.trim().toLowerCase();
+  }
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const status = (value as Record<string, unknown>).status;
+  return typeof status === "string" ? status.trim().toLowerCase() : undefined;
+}
+
+function hasMcpStartupError(value: unknown): boolean {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const error = (value as Record<string, unknown>).error;
+  return typeof error === "string" && error.trim().length > 0;
+}
+
+function shouldProjectMcpStatusUpdate(value: unknown): boolean {
+  const status = readMcpStartupStatus(value);
+  if (status === "starting" || status === "ready" || status === "connected") {
+    return hasMcpStartupError(value);
+  }
+  return true;
+}
+
+function mcpStatusTone(value: unknown): OrchestrationThreadActivity["tone"] {
+  const status = readMcpStartupStatus(value);
+  return status === "failed" || status === "cancelled" || hasMcpStartupError(value)
+    ? "warning"
+    : "info";
+}
+
+function mcpStatusSummary(value: unknown): string {
+  switch (readMcpStartupStatus(value)) {
+    case "failed":
+      return "MCP startup failed";
+    case "cancelled":
+      return "MCP startup cancelled";
+    default:
+      return "MCP status updated";
+  }
+}
+
 function extractReasoningSummaryFromUnknown(value: unknown): string | undefined {
   if (typeof value === "string") {
     const trimmed = value.trim();
@@ -753,12 +798,15 @@ export function projectRuntimeEventToActivities(
       ];
 
     case "mcp.status.updated":
+      if (!shouldProjectMcpStatusUpdate(event.payload.status)) {
+        return [];
+      }
       return [
         baseActivity(event, {
           id: event.eventId,
-          tone: "info",
+          tone: mcpStatusTone(event.payload.status),
           kind: "mcp.status.updated",
-          summary: "MCP status updated",
+          summary: mcpStatusSummary(event.payload.status),
           payload: {
             status: event.payload.status,
             ...(compactUnknownDetail(event.payload.status)
