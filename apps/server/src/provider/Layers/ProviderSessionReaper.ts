@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { CommandId } from "@t3tools/contracts";
+import { CommandId, type OrchestrationSession } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -11,7 +11,10 @@ import * as Schedule from "effect/Schedule";
 
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
+import {
+  ProviderSessionDirectory,
+  type ProviderRuntimeBindingWithMetadata,
+} from "../Services/ProviderSessionDirectory.ts";
 import {
   ProviderSessionReaper,
   type ProviderSessionReaperShape,
@@ -20,6 +23,43 @@ import { ProviderService } from "../Services/ProviderService.ts";
 
 const DEFAULT_INACTIVITY_THRESHOLD_MS = 30 * 60 * 1000;
 const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+
+type ThreadShellWithSession = {
+  readonly session?: OrchestrationSession | null;
+};
+
+type StopProjectionReason = "inactivity_threshold" | "startup_binding_stopped" | "startup_orphaned";
+
+const shouldClearProjectedSessionOnStartup = (session: OrchestrationSession) =>
+  session.status === "starting" || session.status === "running";
+
+const buildStoppedProjectionSession = (input: {
+  readonly binding: ProviderRuntimeBindingWithMetadata;
+  readonly thread: ThreadShellWithSession | undefined;
+  readonly nowIso: string;
+}): OrchestrationSession => {
+  const session = input.thread?.session ?? null;
+  return {
+    threadId: input.binding.threadId,
+    status: "stopped",
+    providerName: session?.providerName ?? input.binding.provider,
+    ...(session?.providerInstanceId !== undefined
+      ? { providerInstanceId: session.providerInstanceId }
+      : input.binding.providerInstanceId !== undefined
+        ? { providerInstanceId: input.binding.providerInstanceId }
+        : {}),
+    ...(session?.providerSessionId !== undefined
+      ? { providerSessionId: session.providerSessionId }
+      : {}),
+    ...(session?.providerThreadId !== undefined
+      ? { providerThreadId: session.providerThreadId }
+      : {}),
+    runtimeMode: session?.runtimeMode ?? input.binding.runtimeMode ?? "full-access",
+    activeTurnId: null,
+    lastError: session?.lastError ?? null,
+    updatedAt: input.nowIso,
+  };
+};
 
 export interface ProviderSessionReaperLiveOptions {
   readonly inactivityThresholdMs?: number;
@@ -39,16 +79,115 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
     );
     const sweepIntervalMs = Math.max(1, options?.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS);
 
+    const listActiveProviderThreadIds = providerService.listSessions().pipe(
+      Effect.map((sessions) => new Set(sessions.map((session) => session.threadId))),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("provider.session.reaper.list-sessions-failed", { cause }).pipe(
+          Effect.as(null),
+        ),
+      ),
+    );
+
+    const dispatchStoppedProjection = (input: {
+      readonly binding: ProviderRuntimeBindingWithMetadata;
+      readonly thread: ThreadShellWithSession | undefined;
+      readonly nowIso: string;
+      readonly reason: StopProjectionReason;
+    }) =>
+      Effect.gen(function* () {
+        const session = input.thread?.session ?? null;
+        if (!session || session.status === "stopped") {
+          return false;
+        }
+
+        yield* orchestrationEngine
+          .dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.make(
+              `provider-session-reaper:${input.reason}:${input.binding.threadId}:${randomUUID()}`,
+            ),
+            threadId: input.binding.threadId,
+            session: buildStoppedProjectionSession(input),
+            createdAt: input.nowIso,
+          })
+          .pipe(Effect.asVoid);
+        return true;
+      });
+
+    const reconcileStartup = Effect.gen(function* () {
+      const bindings = yield* directory.listBindings();
+      const activeProviderThreadIds = yield* listActiveProviderThreadIds;
+      const nowIso = DateTime.formatIso(yield* DateTime.now);
+      let reconciledCount = 0;
+      let orphanedCount = 0;
+
+      for (const binding of bindings) {
+        const thread = yield* projectionSnapshotQuery
+          .getThreadShellById(binding.threadId)
+          .pipe(Effect.map(Option.getOrUndefined));
+        const session = thread?.session ?? null;
+        if (!session || session.status === "stopped") {
+          continue;
+        }
+
+        if (binding.status === "stopped") {
+          const reconciled = yield* dispatchStoppedProjection({
+            binding,
+            thread,
+            nowIso,
+            reason: "startup_binding_stopped",
+          });
+          if (reconciled) {
+            reconciledCount += 1;
+          }
+          continue;
+        }
+
+        if (!shouldClearProjectedSessionOnStartup(session)) {
+          continue;
+        }
+        if (activeProviderThreadIds === null || activeProviderThreadIds.has(binding.threadId)) {
+          continue;
+        }
+
+        const stopped = yield* providerService.stopSession({ threadId: binding.threadId }).pipe(
+          Effect.as(true),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("provider.session.reaper.startup-stop-failed", {
+              threadId: binding.threadId,
+              provider: binding.provider,
+              cause,
+            }).pipe(Effect.as(false)),
+          ),
+        );
+        if (!stopped) {
+          continue;
+        }
+
+        const reconciled = yield* dispatchStoppedProjection({
+          binding,
+          thread,
+          nowIso,
+          reason: "startup_orphaned",
+        });
+        if (reconciled) {
+          reconciledCount += 1;
+        }
+        orphanedCount += 1;
+      }
+
+      if (reconciledCount > 0 || orphanedCount > 0) {
+        yield* Effect.logInfo("provider.session.reaper.startup-reconciled", {
+          reconciledCount,
+          orphanedCount,
+          totalBindings: bindings.length,
+        });
+      }
+    });
+
     const sweep = Effect.gen(function* () {
       const bindings = yield* directory.listBindings();
-      const activeProviderThreadIds = yield* providerService.listSessions().pipe(
-        Effect.map((sessions) => new Set(sessions.map((session) => session.threadId))),
-        Effect.catchCause((cause) =>
-          Effect.logWarning("provider.session.reaper.list-sessions-failed", { cause }).pipe(
-            Effect.as(null),
-          ),
-        ),
-      );
+      const activeProviderThreadIds = yield* listActiveProviderThreadIds;
       const now = yield* Clock.currentTimeMillis;
       const nowIso = DateTime.formatIso(yield* DateTime.now);
       let reapedCount = 0;
@@ -107,31 +246,12 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
                 }),
                 !thread?.session || thread.session.status === "stopped"
                   ? Effect.void
-                  : orchestrationEngine
-                      .dispatch({
-                        type: "thread.session.set",
-                        commandId: CommandId.make(
-                          `provider-session-reaper:${binding.threadId}:${randomUUID()}`,
-                        ),
-                        threadId: binding.threadId,
-                        session: {
-                          threadId: binding.threadId,
-                          status: "stopped",
-                          providerName: thread?.session?.providerName ?? binding.provider,
-                          ...(thread?.session?.providerInstanceId !== undefined
-                            ? { providerInstanceId: thread.session.providerInstanceId }
-                            : binding.providerInstanceId !== undefined
-                              ? { providerInstanceId: binding.providerInstanceId }
-                              : {}),
-                          runtimeMode:
-                            thread?.session?.runtimeMode ?? binding.runtimeMode ?? "full-access",
-                          activeTurnId: null,
-                          lastError: thread?.session?.lastError ?? null,
-                          updatedAt: nowIso,
-                        },
-                        createdAt: nowIso,
-                      })
-                      .pipe(Effect.asVoid),
+                  : dispatchStoppedProjection({
+                      binding,
+                      thread,
+                      nowIso,
+                      reason: "inactivity_threshold",
+                    }).pipe(Effect.asVoid),
               ],
               { discard: true },
             );
@@ -162,6 +282,19 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
 
     const start: ProviderSessionReaperShape["start"] = () =>
       Effect.gen(function* () {
+        yield* reconcileStartup.pipe(
+          Effect.catch((error: unknown) =>
+            Effect.logWarning("provider.session.reaper.startup-reconcile-failed", {
+              error,
+            }),
+          ),
+          Effect.catchDefect((defect: unknown) =>
+            Effect.logWarning("provider.session.reaper.startup-reconcile-defect", {
+              defect,
+            }),
+          ),
+        );
+
         yield* Effect.forkScoped(
           sweep.pipe(
             Effect.catch((error: unknown) =>

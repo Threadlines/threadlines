@@ -517,6 +517,102 @@ describe("ProviderSessionReaper", () => {
     expect(Option.isSome(remaining)).toBe(true);
   });
 
+  it("reconciles stopped persisted sessions with stale active projections on startup", async () => {
+    const threadId = ThreadId.make("thread-reaper-stopped-active-projection");
+    const turnId = TurnId.make("turn-reaper-stopped-active-projection");
+    const now = "2026-01-01T00:00:00.000Z";
+    const harness = await createHarness({
+      readModel: makeReadModel([
+        {
+          id: threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "claudeAgent",
+            runtimeMode: "full-access",
+            activeTurnId: turnId,
+            lastError: null,
+            updatedAt: now,
+          },
+        },
+      ]),
+    });
+    const repository = await runtime!.runPromise(Effect.service(ProviderSessionRuntimeRepository));
+
+    await runtime!.runPromise(
+      repository.upsert({
+        threadId,
+        providerName: "claudeAgent",
+        providerInstanceId: null,
+        adapterKey: "claudeAgent",
+        runtimeMode: "full-access",
+        status: "stopped",
+        lastSeenAt: now,
+        resumeCursor: {
+          opaque: "resume-stopped-active-projection",
+        },
+        runtimePayload: null,
+      }),
+    );
+
+    const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
+    scope = await Effect.runPromise(Scope.make("sequential"));
+    await Effect.runPromise(reaper.start().pipe(Scope.provide(scope)));
+
+    await waitFor(() => harness.dispatch.mock.calls.length === 1);
+
+    expect(harness.stopSession).not.toHaveBeenCalled();
+    expectStoppedSessionProjection(harness.dispatch.mock.calls[0]?.[0], threadId);
+  });
+
+  it("stops fresh orphaned active projections on startup without waiting for inactivity", async () => {
+    const threadId = ThreadId.make("thread-reaper-fresh-orphaned-active");
+    const turnId = TurnId.make("turn-reaper-fresh-orphaned-active");
+    const now = DateTime.formatIso(await Effect.runPromise(DateTime.now));
+    const harness = await createHarness({
+      readModel: makeReadModel([
+        {
+          id: threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "claudeAgent",
+            runtimeMode: "full-access",
+            activeTurnId: turnId,
+            lastError: null,
+            updatedAt: now,
+          },
+        },
+      ]),
+    });
+    const repository = await runtime!.runPromise(Effect.service(ProviderSessionRuntimeRepository));
+
+    await runtime!.runPromise(
+      repository.upsert({
+        threadId,
+        providerName: "claudeAgent",
+        providerInstanceId: null,
+        adapterKey: "claudeAgent",
+        runtimeMode: "full-access",
+        status: "running",
+        lastSeenAt: now,
+        resumeCursor: {
+          opaque: "resume-fresh-orphaned-active",
+        },
+        runtimePayload: null,
+      }),
+    );
+
+    const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
+    scope = await Effect.runPromise(Scope.make("sequential"));
+    await Effect.runPromise(reaper.start().pipe(Scope.provide(scope)));
+
+    await waitFor(() => harness.stopSession.mock.calls.length === 1);
+
+    expect(harness.stopSession.mock.calls[0]?.[0]).toEqual({ threadId });
+    expectStoppedSessionProjection(harness.dispatch.mock.calls[0]?.[0], threadId);
+  });
+
   it("continues reaping other sessions when one stop attempt fails", async () => {
     const failedThreadId = ThreadId.make("thread-reaper-stop-failure");
     const reapedThreadId = ThreadId.make("thread-reaper-stop-success");
