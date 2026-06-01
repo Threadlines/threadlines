@@ -17,6 +17,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Tracer from "effect/Tracer";
 import { OtlpSerialization, OtlpTracer } from "effect/unstable/observability";
 
+import * as DesktopDataMigration from "./DesktopDataMigration.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 
 const DESKTOP_LOG_FILE_MAX_BYTES = 10 * 1024 * 1024;
@@ -296,6 +297,7 @@ const writeBackendChildLogRecord = Effect.fn("desktop.observability.writeBackend
 const backendOutputLogLayer = Layer.effect(
   DesktopBackendOutputLog,
   Effect.gen(function* () {
+    yield* DesktopDataMigration.DesktopDataMigration;
     const environment = yield* DesktopEnvironment.DesktopEnvironment;
 
     const writer = yield* makeRotatingLogFileWriter({
@@ -351,6 +353,7 @@ const desktopLoggerLayer = Layer.mergeAll(
 
 const tracerLayer = Layer.unwrap(
   Effect.gen(function* () {
+    yield* DesktopDataMigration.DesktopDataMigration;
     const environment = yield* DesktopEnvironment.DesktopEnvironment;
     const otlpTracesUrl = yield* resolveOtlpTracesUrl;
     const tracePath = environment.path.join(environment.logDir, "desktop.trace.ndjson");

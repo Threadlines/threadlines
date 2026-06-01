@@ -7,6 +7,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 import * as DesktopConfig from "./DesktopConfig.ts";
+import * as DesktopDataMigration from "./DesktopDataMigration.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopObservability from "./DesktopObservability.ts";
 
@@ -62,6 +63,12 @@ const makeEnvironmentLayer = (baseDir: string) =>
     ),
   );
 
+const makeObservabilityLayer = (environmentLayer: ReturnType<typeof makeEnvironmentLayer>) =>
+  DesktopObservability.layer.pipe(
+    Layer.provideMerge(DesktopDataMigration.layer),
+    Layer.provideMerge(environmentLayer),
+  );
+
 describe("DesktopObservability", () => {
   it.effect("persists desktop Effect logs as span events in desktop.trace.ndjson", () =>
     Effect.gen(function* () {
@@ -85,7 +92,7 @@ describe("DesktopObservability", () => {
           yield* Effect.logInfo("desktop trace event");
         }).pipe(
           Effect.withSpan("desktop-observability-test"),
-          Effect.provide(DesktopObservability.layer.pipe(Layer.provideMerge(environmentLayer))),
+          Effect.provide(makeObservabilityLayer(environmentLayer)),
         ),
       );
 
@@ -133,7 +140,7 @@ describe("DesktopObservability", () => {
         yield* outputLog.writeOutputChunk("stdout", new TextEncoder().encode("hello server\n"));
       }).pipe(
         Effect.annotateLogs({ runId: "test-run" }),
-        Effect.provide(DesktopObservability.layer.pipe(Layer.provideMerge(environmentLayer))),
+        Effect.provide(makeObservabilityLayer(environmentLayer)),
       );
 
       const log = yield* fileSystem.readFileString(logPath);
