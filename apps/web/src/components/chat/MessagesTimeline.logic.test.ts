@@ -462,6 +462,100 @@ describe("deriveMessagesTimelineRows", () => {
 
     expect(workRows.map((row) => row.isLive)).toEqual([false, true]);
   });
+
+  it("settles a running command when later same-turn thinking reviews its output", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "command-entry",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:01Z",
+          entry: {
+            id: "command-1",
+            createdAt: "2026-01-01T00:00:01Z",
+            label: "Ran command",
+            tone: "tool",
+            itemType: "command_execution",
+            executionState: "running",
+            turnId: "turn-1" as never,
+          },
+        },
+        {
+          id: "thinking-entry",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:02Z",
+          entry: {
+            id: "thinking-1",
+            createdAt: "2026-01-01T00:00:02Z",
+            label: "Thinking",
+            detail: "Reviewing command output",
+            tone: "thinking",
+            executionState: "running",
+            turnId: "turn-1" as never,
+          },
+        },
+      ],
+      completionDividerBeforeEntryId: null,
+      isWorking: true,
+      activeTurnId: "turn-1" as never,
+      activeTurnStartedAt: "2026-01-01T00:00:00Z",
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    const workRow = rows.find(
+      (row): row is Extract<(typeof rows)[number], { kind: "work" }> => row.kind === "work",
+    );
+
+    expect(workRow?.groupedEntries[0]?.executionState).toBe("completed");
+    expect(workRow?.groupedEntries[1]?.executionState).toBe("running");
+  });
+
+  it("settles a running command when a later same-turn assistant message starts", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "command-entry",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:01Z",
+          entry: {
+            id: "command-1",
+            createdAt: "2026-01-01T00:00:01Z",
+            label: "Ran command",
+            tone: "tool",
+            itemType: "command_execution",
+            executionState: "running",
+            turnId: "turn-1" as never,
+          },
+        },
+        {
+          id: "assistant-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:02Z",
+          message: {
+            id: "assistant-1" as never,
+            role: "assistant",
+            text: "The command finished.",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:02Z",
+            streaming: true,
+          },
+        },
+      ],
+      completionDividerBeforeEntryId: null,
+      isWorking: true,
+      activeTurnId: "turn-1" as never,
+      activeTurnStartedAt: "2026-01-01T00:00:00Z",
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    const workRow = rows.find(
+      (row): row is Extract<(typeof rows)[number], { kind: "work" }> => row.kind === "work",
+    );
+
+    expect(workRow?.groupedEntries[0]?.executionState).toBe("completed");
+  });
 });
 
 describe("computeStableMessagesTimelineRows", () => {

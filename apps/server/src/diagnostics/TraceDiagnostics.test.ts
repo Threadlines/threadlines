@@ -18,6 +18,7 @@ function record(input: {
   readonly spanId: string;
   readonly startMs: number;
   readonly durationMs: number;
+  readonly attributes?: Readonly<Record<string, unknown>>;
   readonly exit?: { readonly _tag: "Success" | "Failure" | "Interrupted"; readonly cause?: string };
   readonly events?: ReadonlyArray<unknown>;
 }) {
@@ -31,7 +32,7 @@ function record(input: {
     startTimeUnixNano: ns(input.startMs),
     endTimeUnixNano: ns(input.startMs + input.durationMs),
     durationMs: input.durationMs,
-    attributes: {},
+    attributes: input.attributes ?? {},
     events: input.events ?? [],
     links: [],
     exit: input.exit ?? { _tag: "Success" },
@@ -228,6 +229,59 @@ describe("TraceDiagnostics", () => {
       assert.equal(
         diagnostics.topSubscriptionSpansByCount?.[0]?.name,
         "ws.rpc.subscribeServerConfig",
+      );
+    }),
+  );
+
+  it.effect("classifies client subscription and websocket upgrade spans as subscriptions", () =>
+    Effect.sync(() => {
+      const diagnostics = TraceDiagnostics.aggregateTraceDiagnostics({
+        traceFilePath: "/tmp/server.trace.ndjson",
+        readAt: DateTime.makeUnsafe("2026-05-05T10:00:00.000Z"),
+        slowSpanThresholdMs: 1_000,
+        files: [
+          {
+            path: "/tmp/server.trace.ndjson",
+            text: [
+              record({
+                name: "RpcClient.subscribeVcsStatus",
+                traceId: "trace-client-subscription",
+                spanId: "span-client-subscription",
+                startMs: 1_000,
+                durationMs: 5_000,
+              }),
+              record({
+                name: "http.server GET",
+                traceId: "trace-websocket",
+                spanId: "span-websocket",
+                startMs: 2_000,
+                durationMs: 6_000,
+                attributes: {
+                  "url.path": "/ws",
+                  "http.request.header.upgrade": "websocket",
+                },
+              }),
+              record({
+                name: "ws.rpc.serverGetConfig",
+                traceId: "trace-slow-request",
+                spanId: "span-slow-request",
+                startMs: 3_000,
+                durationMs: 1_500,
+              }),
+            ].join("\n"),
+          },
+        ],
+      });
+
+      assert.equal(diagnostics.slowSpanCount, 1);
+      assert.equal(diagnostics.subscriptionSpanCount, 2);
+      assert.deepStrictEqual(
+        diagnostics.slowestSpans.map((span) => span.name),
+        ["ws.rpc.serverGetConfig"],
+      );
+      assert.deepStrictEqual(
+        diagnostics.longestSubscriptionSpans?.map((span) => span.name),
+        ["http.server GET", "RpcClient.subscribeVcsStatus"],
       );
     }),
   );

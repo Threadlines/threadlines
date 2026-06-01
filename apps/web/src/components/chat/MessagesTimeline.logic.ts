@@ -85,6 +85,74 @@ export function resolveAssistantMessageCopyState({
   };
 }
 
+const UNKEYED_TURN_SIGNAL = "__unkeyed_turn__";
+
+function turnSignalKey(turnId: TurnId | null | undefined): string {
+  return turnId ?? UNKEYED_TURN_SIGNAL;
+}
+
+function isRunningCommandWorkEntry(entry: WorkLogEntry): boolean {
+  return (
+    entry.executionState === "running" &&
+    (entry.requestKind === "command" ||
+      entry.itemType === "command_execution" ||
+      entry.command !== undefined)
+  );
+}
+
+function isCommandSupersedingWorkEntry(entry: WorkLogEntry): boolean {
+  return entry.tone === "thinking";
+}
+
+function inferSupersededRunningCommandEntryIds(
+  timelineEntries: ReadonlyArray<TimelineEntry>,
+): Set<string> {
+  const supersededEntryIds = new Set<string>();
+  const laterThinkingOrAssistantByTurn = new Set<string>();
+
+  for (let index = timelineEntries.length - 1; index >= 0; index -= 1) {
+    const timelineEntry = timelineEntries[index];
+    if (!timelineEntry) {
+      continue;
+    }
+
+    if (timelineEntry.kind === "message") {
+      if (timelineEntry.message.role === "assistant") {
+        laterThinkingOrAssistantByTurn.add(turnSignalKey(timelineEntry.message.turnId));
+      }
+      continue;
+    }
+
+    if (timelineEntry.kind !== "work") {
+      continue;
+    }
+
+    const { entry } = timelineEntry;
+    if (
+      isRunningCommandWorkEntry(entry) &&
+      laterThinkingOrAssistantByTurn.has(turnSignalKey(entry.turnId))
+    ) {
+      supersededEntryIds.add(entry.id);
+    }
+
+    if (isCommandSupersedingWorkEntry(entry)) {
+      laterThinkingOrAssistantByTurn.add(turnSignalKey(entry.turnId));
+    }
+  }
+
+  return supersededEntryIds;
+}
+
+function settleSupersededRunningCommandEntry(
+  entry: WorkLogEntry,
+  supersededRunningCommandEntryIds: ReadonlySet<string>,
+): WorkLogEntry {
+  if (!supersededRunningCommandEntryIds.has(entry.id)) {
+    return entry;
+  }
+  return { ...entry, executionState: "completed" };
+}
+
 function deriveTerminalAssistantMessageIds(timelineEntries: ReadonlyArray<TimelineEntry>) {
   const lastAssistantMessageIdByResponseKey = new Map<string, string>();
   let nullTurnResponseIndex = 0;
@@ -128,6 +196,9 @@ export function deriveMessagesTimelineRows(input: {
     input.timelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
   );
   const terminalAssistantMessageIds = deriveTerminalAssistantMessageIds(input.timelineEntries);
+  const supersededRunningCommandEntryIds = inferSupersededRunningCommandEntryIds(
+    input.timelineEntries,
+  );
 
   for (let index = 0; index < input.timelineEntries.length; index += 1) {
     const timelineEntry = input.timelineEntries[index];
@@ -136,12 +207,16 @@ export function deriveMessagesTimelineRows(input: {
     }
 
     if (timelineEntry.kind === "work") {
-      const groupedEntries = [timelineEntry.entry];
+      const groupedEntries = [
+        settleSupersededRunningCommandEntry(timelineEntry.entry, supersededRunningCommandEntryIds),
+      ];
       let cursor = index + 1;
       while (cursor < input.timelineEntries.length) {
         const nextEntry = input.timelineEntries[cursor];
         if (!nextEntry || nextEntry.kind !== "work") break;
-        groupedEntries.push(nextEntry.entry);
+        groupedEntries.push(
+          settleSupersededRunningCommandEntry(nextEntry.entry, supersededRunningCommandEntryIds),
+        );
         cursor += 1;
       }
       nextRows.push({

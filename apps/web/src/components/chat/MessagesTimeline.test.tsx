@@ -625,6 +625,52 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("bun run test src/session-logic.test.ts");
   });
 
+  it("does not keep a live command label running after same-turn assistant output starts", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const turnId = TurnId.make("turn-1");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        activeTurnInProgress
+        activeTurnId={turnId}
+        activeTurnStartedAt="2026-03-17T19:12:27.000Z"
+        timelineEntries={[
+          {
+            id: "command-entry",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "command-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Ran command",
+              tone: "tool",
+              itemType: "command_execution",
+              executionState: "running",
+              turnId,
+            },
+          },
+          {
+            id: "assistant-entry",
+            kind: "message",
+            createdAt: "2026-03-17T19:12:29.000Z",
+            message: {
+              id: MessageId.make("assistant-1"),
+              role: "assistant",
+              text: "The command output shows the issue.",
+              turnId,
+              createdAt: "2026-03-17T19:12:29.000Z",
+              streaming: true,
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Ran command");
+    expect(markup).not.toContain("Running command");
+  });
+
   it("shows a live read label while a file-read command is running", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(

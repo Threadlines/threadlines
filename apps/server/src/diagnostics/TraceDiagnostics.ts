@@ -22,6 +22,7 @@ interface TraceRecordLike {
   readonly startTimeUnixNano?: unknown;
   readonly endTimeUnixNano?: unknown;
   readonly durationMs?: unknown;
+  readonly attributes?: unknown;
   readonly exit?: unknown;
   readonly events?: unknown;
 }
@@ -107,12 +108,47 @@ function readExitCause(exit: unknown): string {
   return toStringValue(exit.cause)?.trim() ?? "Failure";
 }
 
-function isSubscriptionSpan(name: string): boolean {
-  return name.startsWith("ws.rpc.subscribe") || name.startsWith("ws.rpc.orchestration.subscribe");
+function readAttributes(attributes: unknown): Readonly<Record<string, unknown>> {
+  return typeof attributes === "object" && attributes !== null
+    ? (attributes as Readonly<Record<string, unknown>>)
+    : {};
+}
+
+function isSubscriptionSpanName(name: string): boolean {
+  return (
+    name.startsWith("ws.rpc.subscribe") ||
+    name.startsWith("ws.rpc.orchestration.subscribe") ||
+    name.startsWith("RpcClient.subscribe") ||
+    name.startsWith("RpcClient.orchestration.subscribe")
+  );
+}
+
+function isWebSocketUpgradeSpan(
+  name: string,
+  attributes: Readonly<Record<string, unknown>>,
+): boolean {
+  if (!name.startsWith("http.server ")) {
+    return false;
+  }
+
+  const path = attributes["url.path"] ?? attributes["http.route"];
+  const upgradeHeader = attributes["http.request.header.upgrade"];
+  return (
+    path === "/ws" &&
+    typeof upgradeHeader === "string" &&
+    upgradeHeader.toLowerCase() === "websocket"
+  );
+}
+
+function isSubscriptionSpan(
+  name: string,
+  attributes: Readonly<Record<string, unknown>> = {},
+): boolean {
+  return isSubscriptionSpanName(name) || isWebSocketUpgradeSpan(name, attributes);
 }
 
 function isExpectedSubscriptionInterruption(name: string, cause: string): boolean {
-  if (!isSubscriptionSpan(name)) {
+  if (!isSubscriptionSpanName(name)) {
     return false;
   }
   const normalizedCause = cause.toLowerCase();
@@ -302,6 +338,7 @@ export function aggregateTraceDiagnostics(
       const durationMs = toNumberValue(parsed.durationMs);
       const endedAt = unixNanoToDateTime(parsed.endTimeUnixNano);
       const startedAt = unixNanoToDateTime(parsed.startTimeUnixNano);
+      const attributes = readAttributes(parsed.attributes);
 
       if (!name || !traceId || !spanId || durationMs === null || !endedAt) {
         parseErrorCount += 1;
@@ -322,7 +359,7 @@ export function aggregateTraceDiagnostics(
         failureCause !== null && isExpectedSubscriptionInterruption(name, failureCause);
       const isFailure = exitTag === "Failure" && !expectedSubscriptionInterruption;
       const isInterrupted = exitTag === "Interrupted" || expectedSubscriptionInterruption;
-      const subscriptionSpan = isSubscriptionSpan(name);
+      const subscriptionSpan = isSubscriptionSpan(name, attributes);
       if (isFailure) failureCount += 1;
       if (isInterrupted) interruptionCount += 1;
 
