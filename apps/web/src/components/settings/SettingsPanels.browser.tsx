@@ -1342,7 +1342,7 @@ describe("SourceControlSettingsPanel discovery states", () => {
           label: "Bitbucket",
           status: "available",
           version: Option.none(),
-          installHint: "Set T3CODE_BITBUCKET_EMAIL and T3CODE_BITBUCKET_API_TOKEN.",
+          installHint: "Set BADCODE_BITBUCKET_EMAIL and BADCODE_BITBUCKET_API_TOKEN.",
           detail: Option.none(),
           auth: {
             status: "unauthenticated",

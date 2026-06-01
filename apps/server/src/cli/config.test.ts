@@ -56,7 +56,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
     otlpTracesUrl: undefined,
     otlpMetricsUrl: undefined,
     otlpExportIntervalMs: 10_000,
-    otlpServiceName: "t3-server",
+    otlpServiceName: "badcode-server",
   } as const;
 
   const openBootstrapFd = Effect.fn(function* (payload: DesktopBackendBootstrapValue) {
@@ -133,6 +133,74 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         desktopBootstrapToken: undefined,
         autoBootstrapProjectFromCwd: false,
         logWebSocketEvents: true,
+        tailscaleServeEnabled: false,
+        tailscaleServePort: 443,
+      });
+    }),
+  );
+
+  it.effect("prefers BADCODE env aliases over legacy T3CODE env values", () =>
+    Effect.gen(function* () {
+      const { join } = yield* Path.Path;
+      const badcodeBaseDir = join(NodeOS.tmpdir(), "badcode-cli-config-env-base");
+      const derivedPaths = yield* deriveServerPaths(badcodeBaseDir, undefined);
+      const resolved = yield* resolveServerConfig(
+        {
+          mode: Option.none(),
+          port: Option.none(),
+          host: Option.none(),
+          baseDir: Option.none(),
+          cwd: Option.none(),
+          devUrl: Option.none(),
+          noBrowser: Option.none(),
+          bootstrapFd: Option.none(),
+          autoBootstrapProjectFromCwd: Option.none(),
+          logWebSocketEvents: Option.none(),
+          tailscaleServeEnabled: Option.none(),
+          tailscaleServePort: Option.none(),
+        },
+        Option.none(),
+      ).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            ConfigProvider.layer(
+              ConfigProvider.fromEnv({
+                env: {
+                  BADCODE_MODE: "desktop",
+                  BADCODE_PORT: "4888",
+                  BADCODE_HOME: badcodeBaseDir,
+                  BADCODE_NO_BROWSER: "true",
+                  BADCODE_OTLP_SERVICE_NAME: "badcode-dev",
+                  T3CODE_MODE: "web",
+                  T3CODE_PORT: "4001",
+                  T3CODE_HOME: join(NodeOS.tmpdir(), "legacy-t3-home"),
+                  T3CODE_NO_BROWSER: "false",
+                  T3CODE_OTLP_SERVICE_NAME: "t3-server",
+                },
+              }),
+            ),
+            NetService.layer,
+          ),
+        ),
+      );
+
+      expect(resolved).toEqual({
+        logLevel: "Info",
+        ...defaultObservabilityConfig,
+        otlpServiceName: "badcode-dev",
+        mode: "desktop",
+        port: 4888,
+        cwd: process.cwd(),
+        baseDir: badcodeBaseDir,
+        ...derivedPaths,
+        host: "127.0.0.1",
+        staticDir: resolved.staticDir,
+        devUrl: undefined,
+        noBrowser: true,
+        startupPresentation: "browser",
+        desktopBootstrapToken: undefined,
+        autoBootstrapProjectFromCwd: false,
+        logWebSocketEvents: false,
         tailscaleServeEnabled: false,
         tailscaleServePort: 443,
       });

@@ -1,7 +1,8 @@
-import { createFileRoute } from "@tanstack/react-router";
-
-import { ConnectionsSettings } from "../components/settings/ConnectionsSettings";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 
 export const Route = createFileRoute("/settings/connections")({
-  component: ConnectionsSettings,
+  beforeLoad: () => {
+    throw redirect({ to: "/settings/general", replace: true });
+  },
+  component: () => null,
 });

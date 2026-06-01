@@ -1,8 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { LinkIcon, PlusIcon } from "lucide-react";
+import { MonitorIcon } from "lucide-react";
 
 import { NoActiveThreadState } from "../components/NoActiveThreadState";
-import { Button } from "../components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
 import { SidebarInset, SidebarTrigger } from "../components/ui/sidebar";
 import { useSavedEnvironmentRegistryStore } from "../environments/runtime";
@@ -42,21 +41,15 @@ function HostedStaticOnboardingState() {
           <div className="w-full max-w-xl rounded-3xl border border-border/55 bg-card/20 px-8 py-12 shadow-sm/5">
             <EmptyHeader className="max-w-none">
               <div className="mx-auto mb-5 flex size-11 items-center justify-center rounded-xl border border-border/70 bg-background/70 text-muted-foreground">
-                <LinkIcon className="size-5" />
+                <MonitorIcon className="size-5" />
               </div>
               <EmptyTitle className="text-foreground text-xl">
-                Connect an environment to get started
+                Open the desktop app to get started
               </EmptyTitle>
               <EmptyDescription className="mt-2 text-sm leading-relaxed text-muted-foreground/78">
-                Open a pairing link from your BadCode desktop app or add a reachable backend
-                manually. Your saved environments stay in this browser.
+                BadCode is focused on the local desktop workflow. Start or resume a session from the
+                desktop app.
               </EmptyDescription>
-              <div className="mt-6 flex justify-center">
-                <Button render={<a href="/settings/connections" />} size="sm">
-                  <PlusIcon className="size-4" />
-                  Add environment
-                </Button>
-              </div>
             </EmptyHeader>
           </div>
         </Empty>

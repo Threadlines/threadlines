@@ -37,7 +37,7 @@ export const ObservabilityLive = Layer.unwrap(
                 resource: {
                   serviceName: config.otlpServiceName,
                   attributes: {
-                    "service.runtime": "t3-server",
+                    "service.runtime": "badcode-server",
                     "service.mode": config.mode,
                   },
                 },
@@ -75,7 +75,7 @@ export const ObservabilityLive = Layer.unwrap(
             resource: {
               serviceName: config.otlpServiceName,
               attributes: {
-                "service.runtime": "t3-server",
+                "service.runtime": "badcode-server",
                 "service.mode": config.mode,
               },
             },

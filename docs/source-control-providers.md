@@ -86,9 +86,11 @@ Bitbucket uses API tokens instead of a CLI tool:
 1. Create an API token in your Atlassian account with read/write access to pull requests and repositories
 2. Add these environment variables to the environment running BadCode:
    ```bash
-   export T3CODE_BITBUCKET_EMAIL="you@example.com"
-   export T3CODE_BITBUCKET_API_TOKEN="your-token"
+   export BADCODE_BITBUCKET_EMAIL="you@example.com"
+   export BADCODE_BITBUCKET_API_TOKEN="your-token"
    ```
+   Legacy `T3CODE_BITBUCKET_*` variables are still accepted, but `BADCODE_*`
+   values take precedence when both are set.
 3. Restart BadCode and verify the connection in **Source Control settings**
 
 ### For Azure DevOps

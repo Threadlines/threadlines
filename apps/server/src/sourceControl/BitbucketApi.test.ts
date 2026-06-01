@@ -54,6 +54,7 @@ const repositoryJson = {
 function makeLayer(input: {
   readonly response: (request: HttpClientRequest.HttpClientRequest) => Response;
   readonly git?: Partial<GitVcsDriver.GitVcsDriverShape>;
+  readonly env?: Record<string, string>;
 }) {
   const execute = vi.fn((request: HttpClientRequest.HttpClientRequest) =>
     Effect.succeed(HttpClientResponse.fromWeb(request, input.response(request))),
@@ -138,7 +139,7 @@ function makeLayer(input: {
     Layer.provide(
       ConfigProvider.layer(
         ConfigProvider.fromEnv({
-          env: {
+          env: input.env ?? {
             T3CODE_BITBUCKET_API_BASE_URL: "https://api.test.local/2.0",
             T3CODE_BITBUCKET_EMAIL: "user@example.com",
             T3CODE_BITBUCKET_API_TOKEN: "token",
@@ -182,6 +183,32 @@ it.effect("parses pull request responses from the Bitbucket REST API", () => {
     assert.strictEqual(
       execute.mock.calls[0]?.[0].url,
       "https://api.test.local/2.0/repositories/pingdotgg/t3code/pullrequests/42",
+    );
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect("prefers BADCODE Bitbucket env aliases over legacy T3CODE values", () => {
+  const { execute, layer } = makeLayer({
+    env: {
+      BADCODE_BITBUCKET_API_BASE_URL: "https://api.badcode.test/2.0",
+      BADCODE_BITBUCKET_EMAIL: "badcode@example.com",
+      BADCODE_BITBUCKET_API_TOKEN: "badcode-token",
+      T3CODE_BITBUCKET_API_BASE_URL: "https://api.legacy.test/2.0",
+      T3CODE_BITBUCKET_EMAIL: "legacy@example.com",
+      T3CODE_BITBUCKET_API_TOKEN: "legacy-token",
+    },
+    response: () => Response.json({ username: "bitbucket-user" }),
+  });
+
+  return Effect.gen(function* () {
+    const bitbucket = yield* BitbucketApi.BitbucketApi;
+    yield* bitbucket.probeAuth;
+
+    const request = execute.mock.calls[0]?.[0];
+    assert.strictEqual(request?.url, "https://api.badcode.test/2.0/user");
+    assert.strictEqual(
+      request?.headers["authorization"],
+      `Basic ${Buffer.from("badcode@example.com:badcode-token").toString("base64")}`,
     );
   }).pipe(Effect.provide(layer));
 });

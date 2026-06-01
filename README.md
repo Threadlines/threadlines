@@ -8,6 +8,21 @@ The maintained provider paths are Codex and Claude. Inherited OpenCode and
 Cursor support is being phased out as BadCode narrows toward a smaller native
 desktop surface.
 
+## Fork Positioning
+
+BadCode does not hide its T3 Code origin, but it now treats BadCode as the
+product identity and compatibility boundary:
+
+- new local configuration should use `BADCODE_*` environment variables;
+- legacy `T3CODE_*` variables remain accepted as compatibility aliases;
+- when both names are set, `BADCODE_*` wins;
+- new installs default to a separate `~/.badcode` data directory;
+- the `badcode` CLI alias is preferred, while `t3` remains available for old
+  scripts during the transition.
+
+See [docs/fork-separation.md](./docs/fork-separation.md) for the current
+branding and compatibility policy.
+
 ## Installation
 
 > [!WARNING]

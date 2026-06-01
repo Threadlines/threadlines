@@ -206,95 +206,9 @@ export function deriveActiveStatusLabel(input: {
   if ((input.pendingApprovalCount ?? 0) > 0) return "Waiting for approval";
   if (input.phase === "connecting" || input.isConnecting) return "Connecting";
   if (input.isSendBusy) return "Sending";
-  if (input.phase === "running") {
-    return deriveRunningStatusLabel(input.workLogEntries, input.latestTurnId) ?? "Working";
-  }
+  if (input.phase === "running") return "Working";
 
   return "Working";
-}
-
-function deriveRunningStatusLabel(
-  workLogEntries: ReadonlyArray<WorkLogEntry>,
-  latestTurnId: TurnId | null | undefined,
-): string | null {
-  const activeEntries = workLogEntries.filter(
-    (entry) => entry.executionState === "running" && workEntryBelongsToTurn(entry, latestTurnId),
-  );
-  const activeTool = findLastWorkEntry(activeEntries, (entry) => entry.tone !== "thinking");
-  if (activeTool) {
-    return activeToolStatusLabel(activeTool);
-  }
-
-  const activeThinking = findLastWorkEntry(activeEntries, (entry) => entry.tone === "thinking");
-  if (activeThinking) {
-    return activeThinkingStatusLabel(activeThinking);
-  }
-
-  return null;
-}
-
-function workEntryBelongsToTurn(
-  entry: Pick<WorkLogEntry, "turnId">,
-  latestTurnId: TurnId | null | undefined,
-): boolean {
-  return latestTurnId == null || entry.turnId == null || entry.turnId === latestTurnId;
-}
-
-function findLastWorkEntry(
-  entries: ReadonlyArray<WorkLogEntry>,
-  predicate: (entry: WorkLogEntry) => boolean,
-): WorkLogEntry | null {
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const entry = entries[index];
-    if (entry && predicate(entry)) {
-      return entry;
-    }
-  }
-  return null;
-}
-
-function activeToolStatusLabel(entry: WorkLogEntry): string {
-  if (isCommandWorkLogEntry(entry)) {
-    return "Running command";
-  }
-  if (entry.requestKind === "file-read") {
-    return "Reading file";
-  }
-  if (entry.itemType === "web_search") {
-    return "Searching web";
-  }
-  if (entry.itemType === "file_change" || (entry.changedFiles?.length ?? 0) > 0) {
-    return "Editing files";
-  }
-  if (entry.itemType === "image_view" || (entry.images?.length ?? 0) > 0) {
-    return "Viewing image";
-  }
-  if (entry.itemType === "collab_agent_tool_call") {
-    return "Running subagent";
-  }
-  if (entry.itemType === "mcp_tool_call" || entry.itemType === "dynamic_tool_call") {
-    return "Using tool";
-  }
-  return "Using tool";
-}
-
-function activeThinkingStatusLabel(entry: WorkLogEntry): string {
-  switch (entry.detail?.trim()) {
-    case "Reviewing command output":
-      return "Reviewing output";
-    case "Reviewing search results":
-      return "Reviewing search results";
-    case "Reviewing file changes":
-      return "Reviewing changes";
-    case "Reviewing file contents":
-      return "Reviewing file";
-    case "Reviewing tool result":
-      return "Reviewing tool result";
-    case "Reviewing image":
-      return "Reviewing image";
-    default:
-      return "Thinking";
-  }
 }
 
 function requestKindFromRequestType(requestType: unknown): PendingApproval["requestKind"] | null {

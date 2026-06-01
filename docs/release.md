@@ -41,9 +41,9 @@ $env:BADCODE_DESKTOP_UPDATE_REPOSITORY = "badcuban/badcode"
 bun run dist:desktop:artifact -- --platform win --target nsis --arch x64 --build-version 0.0.1
 ```
 
-The desktop artifact script still accepts legacy `T3CODE_DESKTOP_*` variables
-for compatibility. When both names are set, `BADCODE_DESKTOP_*` takes
-precedence.
+The desktop artifact script accepts `BADCODE_DESKTOP_*` variables. Legacy
+`T3CODE_DESKTOP_*` variables remain compatibility aliases. When both names are
+set, `BADCODE_DESKTOP_*` takes precedence.
 
 ## GitHub Release
 

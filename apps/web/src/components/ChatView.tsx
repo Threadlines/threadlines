@@ -1271,13 +1271,6 @@ export default function ChatView(props: ChatViewProps) {
                 ? "Reconnecting..."
                 : "Reconnect"}
             </Button>
-            <Button
-              size="xs"
-              variant="outline"
-              onClick={() => void navigate({ to: "/settings/connections" })}
-            >
-              Connections
-            </Button>
           </>
         ),
       });
@@ -1305,7 +1298,6 @@ export default function ChatView(props: ChatViewProps) {
   }, [
     activeEnvironmentUnavailableState,
     handleReconnectActiveEnvironment,
-    navigate,
     reconnectingEnvironmentId,
     showVersionMismatchBanner,
     versionMismatch,

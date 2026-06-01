@@ -120,6 +120,29 @@ describe("DesktopEnvironment", () => {
     }),
   );
 
+  it.effect("uses BadCode data directory defaults and aliases", () =>
+    Effect.gen(function* () {
+      const defaultEnvironment = yield* makeEnvironment();
+      assertPathEqual(defaultEnvironment.baseDir, "/Users/alice/.badcode");
+      assertPathEqual(defaultEnvironment.stateDir, "/Users/alice/.badcode/userdata");
+
+      const aliasedEnvironment = yield* makeEnvironment(
+        {},
+        {
+          BADCODE_HOME: "/tmp/badcode-home",
+          BADCODE_PORT: "5888",
+          BADCODE_COMMIT_HASH: "badcodehash",
+          T3CODE_HOME: "/tmp/legacy-home",
+          T3CODE_PORT: "4888",
+          T3CODE_COMMIT_HASH: "legacyhash",
+        },
+      );
+      assertPathEqual(aliasedEnvironment.baseDir, "/tmp/badcode-home");
+      assert.deepEqual(aliasedEnvironment.configuredBackendPort, Option.some(5888));
+      assert.deepEqual(aliasedEnvironment.commitHashOverride, Option.some("badcodehash"));
+    }),
+  );
+
   it.effect("resolves picker defaults without nullish sentinels", () =>
     Effect.gen(function* () {
       const environment = yield* makeEnvironment();

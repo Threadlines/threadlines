@@ -8,6 +8,7 @@
     "directory": "apps/server"
   },
   "bin": {
+    "badcode": "./dist/bin.mjs",
     "t3": "./dist/bin.mjs"
   },
   "files": [

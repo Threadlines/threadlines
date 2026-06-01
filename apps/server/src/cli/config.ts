@@ -39,7 +39,9 @@ export const hostFlag = Flag.string("host").pipe(
   Flag.optional,
 );
 export const baseDirFlag = Flag.string("base-dir").pipe(
-  Flag.withDescription("Base directory path (equivalent to T3CODE_HOME)."),
+  Flag.withDescription(
+    "Base directory path (equivalent to BADCODE_HOME; legacy T3CODE_HOME is still accepted).",
+  ),
   Flag.optional,
 );
 export const devUrlFlag = Flag.string("dev-url").pipe(
@@ -64,7 +66,7 @@ export const autoBootstrapProjectFromCwdFlag = Flag.boolean("auto-bootstrap-proj
 );
 export const logWebSocketEventsFlag = Flag.boolean("log-websocket-events").pipe(
   Flag.withDescription(
-    "Emit server-side logs for outbound WebSocket push traffic (equivalent to T3CODE_LOG_WS_EVENTS).",
+    "Emit server-side logs for outbound WebSocket push traffic (equivalent to BADCODE_LOG_WS_EVENTS).",
   ),
   Flag.withAlias("log-ws-events"),
   Flag.optional,
@@ -81,60 +83,112 @@ export const tailscaleServePortFlag = Flag.integer("tailscale-serve-port").pipe(
   Flag.optional,
 );
 
+const aliasedConfigOption = <A>(
+  badcodeConfig: Config.Config<A>,
+  legacyT3CodeConfig: Config.Config<A>,
+) =>
+  Config.all({
+    badcode: badcodeConfig.pipe(Config.option),
+    legacyT3Code: legacyT3CodeConfig.pipe(Config.option),
+  }).pipe(
+    Config.map(({ badcode, legacyT3Code }) =>
+      Option.getOrUndefined(Option.isSome(badcode) ? badcode : legacyT3Code),
+    ),
+  );
+
+const aliasedConfigWithDefault = <A>(
+  badcodeConfig: Config.Config<A>,
+  legacyT3CodeConfig: Config.Config<A>,
+  defaultValue: A,
+) =>
+  aliasedConfigOption(badcodeConfig, legacyT3CodeConfig).pipe(
+    Config.map((value) => value ?? defaultValue),
+  );
+
 const EnvServerConfig = Config.all({
-  logLevel: Config.logLevel("T3CODE_LOG_LEVEL").pipe(Config.withDefault("Info")),
-  traceMinLevel: Config.logLevel("T3CODE_TRACE_MIN_LEVEL").pipe(Config.withDefault("Info")),
-  traceTimingEnabled: Config.boolean("T3CODE_TRACE_TIMING_ENABLED").pipe(Config.withDefault(true)),
-  traceFile: Config.string("T3CODE_TRACE_FILE").pipe(
-    Config.option,
-    Config.map(Option.getOrUndefined),
+  logLevel: aliasedConfigWithDefault(
+    Config.logLevel("BADCODE_LOG_LEVEL"),
+    Config.logLevel("T3CODE_LOG_LEVEL"),
+    "Info",
   ),
-  traceMaxBytes: Config.int("T3CODE_TRACE_MAX_BYTES").pipe(Config.withDefault(10 * 1024 * 1024)),
-  traceMaxFiles: Config.int("T3CODE_TRACE_MAX_FILES").pipe(Config.withDefault(10)),
-  traceBatchWindowMs: Config.int("T3CODE_TRACE_BATCH_WINDOW_MS").pipe(Config.withDefault(200)),
-  otlpTracesUrl: Config.string("T3CODE_OTLP_TRACES_URL").pipe(
-    Config.option,
-    Config.map(Option.getOrUndefined),
+  traceMinLevel: aliasedConfigWithDefault(
+    Config.logLevel("BADCODE_TRACE_MIN_LEVEL"),
+    Config.logLevel("T3CODE_TRACE_MIN_LEVEL"),
+    "Info",
   ),
-  otlpMetricsUrl: Config.string("T3CODE_OTLP_METRICS_URL").pipe(
-    Config.option,
-    Config.map(Option.getOrUndefined),
+  traceTimingEnabled: aliasedConfigWithDefault(
+    Config.boolean("BADCODE_TRACE_TIMING_ENABLED"),
+    Config.boolean("T3CODE_TRACE_TIMING_ENABLED"),
+    true,
   ),
-  otlpExportIntervalMs: Config.int("T3CODE_OTLP_EXPORT_INTERVAL_MS").pipe(
-    Config.withDefault(10_000),
+  traceFile: aliasedConfigOption(
+    Config.string("BADCODE_TRACE_FILE"),
+    Config.string("T3CODE_TRACE_FILE"),
   ),
-  otlpServiceName: Config.string("T3CODE_OTLP_SERVICE_NAME").pipe(Config.withDefault("t3-server")),
-  mode: Config.schema(RuntimeMode, "T3CODE_MODE").pipe(
-    Config.option,
-    Config.map(Option.getOrUndefined),
+  traceMaxBytes: aliasedConfigWithDefault(
+    Config.int("BADCODE_TRACE_MAX_BYTES"),
+    Config.int("T3CODE_TRACE_MAX_BYTES"),
+    10 * 1024 * 1024,
   ),
-  port: Config.port("T3CODE_PORT").pipe(Config.option, Config.map(Option.getOrUndefined)),
-  host: Config.string("T3CODE_HOST").pipe(Config.option, Config.map(Option.getOrUndefined)),
-  t3Home: Config.string("T3CODE_HOME").pipe(Config.option, Config.map(Option.getOrUndefined)),
+  traceMaxFiles: aliasedConfigWithDefault(
+    Config.int("BADCODE_TRACE_MAX_FILES"),
+    Config.int("T3CODE_TRACE_MAX_FILES"),
+    10,
+  ),
+  traceBatchWindowMs: aliasedConfigWithDefault(
+    Config.int("BADCODE_TRACE_BATCH_WINDOW_MS"),
+    Config.int("T3CODE_TRACE_BATCH_WINDOW_MS"),
+    200,
+  ),
+  otlpTracesUrl: aliasedConfigOption(
+    Config.string("BADCODE_OTLP_TRACES_URL"),
+    Config.string("T3CODE_OTLP_TRACES_URL"),
+  ),
+  otlpMetricsUrl: aliasedConfigOption(
+    Config.string("BADCODE_OTLP_METRICS_URL"),
+    Config.string("T3CODE_OTLP_METRICS_URL"),
+  ),
+  otlpExportIntervalMs: aliasedConfigWithDefault(
+    Config.int("BADCODE_OTLP_EXPORT_INTERVAL_MS"),
+    Config.int("T3CODE_OTLP_EXPORT_INTERVAL_MS"),
+    10_000,
+  ),
+  otlpServiceName: aliasedConfigWithDefault(
+    Config.string("BADCODE_OTLP_SERVICE_NAME"),
+    Config.string("T3CODE_OTLP_SERVICE_NAME"),
+    "badcode-server",
+  ),
+  mode: aliasedConfigOption(
+    Config.schema(RuntimeMode, "BADCODE_MODE"),
+    Config.schema(RuntimeMode, "T3CODE_MODE"),
+  ),
+  port: aliasedConfigOption(Config.port("BADCODE_PORT"), Config.port("T3CODE_PORT")),
+  host: aliasedConfigOption(Config.string("BADCODE_HOST"), Config.string("T3CODE_HOST")),
+  t3Home: aliasedConfigOption(Config.string("BADCODE_HOME"), Config.string("T3CODE_HOME")),
   devUrl: Config.url("VITE_DEV_SERVER_URL").pipe(Config.option, Config.map(Option.getOrUndefined)),
-  noBrowser: Config.boolean("T3CODE_NO_BROWSER").pipe(
-    Config.option,
-    Config.map(Option.getOrUndefined),
+  noBrowser: aliasedConfigOption(
+    Config.boolean("BADCODE_NO_BROWSER"),
+    Config.boolean("T3CODE_NO_BROWSER"),
   ),
-  bootstrapFd: Config.int("T3CODE_BOOTSTRAP_FD").pipe(
-    Config.option,
-    Config.map(Option.getOrUndefined),
+  bootstrapFd: aliasedConfigOption(
+    Config.int("BADCODE_BOOTSTRAP_FD"),
+    Config.int("T3CODE_BOOTSTRAP_FD"),
   ),
-  autoBootstrapProjectFromCwd: Config.boolean("T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD").pipe(
-    Config.option,
-    Config.map(Option.getOrUndefined),
+  autoBootstrapProjectFromCwd: aliasedConfigOption(
+    Config.boolean("BADCODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD"),
+    Config.boolean("T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD"),
   ),
-  logWebSocketEvents: Config.boolean("T3CODE_LOG_WS_EVENTS").pipe(
-    Config.option,
-    Config.map(Option.getOrUndefined),
+  logWebSocketEvents: aliasedConfigOption(
+    Config.boolean("BADCODE_LOG_WS_EVENTS"),
+    Config.boolean("T3CODE_LOG_WS_EVENTS"),
   ),
-  tailscaleServeEnabled: Config.boolean("T3CODE_TAILSCALE_SERVE").pipe(
-    Config.option,
-    Config.map(Option.getOrUndefined),
+  tailscaleServeEnabled: aliasedConfigOption(
+    Config.boolean("BADCODE_TAILSCALE_SERVE"),
+    Config.boolean("T3CODE_TAILSCALE_SERVE"),
   ),
-  tailscaleServePort: Config.port("T3CODE_TAILSCALE_SERVE_PORT").pipe(
-    Config.option,
-    Config.map(Option.getOrUndefined),
+  tailscaleServePort: aliasedConfigOption(
+    Config.port("BADCODE_TAILSCALE_SERVE_PORT"),
+    Config.port("T3CODE_TAILSCALE_SERVE_PORT"),
   ),
 });
 

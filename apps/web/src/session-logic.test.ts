@@ -2161,7 +2161,7 @@ describe("deriveActiveWorkStartedAt", () => {
 });
 
 describe("deriveActiveStatusLabel", () => {
-  it("uses a coarse thinking label for active reasoning", () => {
+  it("keeps running turn footer text generic while activity rows carry details", () => {
     expect(
       deriveActiveStatusLabel({
         phase: "running",
@@ -2172,82 +2172,11 @@ describe("deriveActiveStatusLabel", () => {
             createdAt: "2026-02-23T00:00:02.000Z",
             label: "Checking event projection",
             tone: "thinking",
-            executionState: "running",
             turnId: TurnId.make("turn-1"),
           },
         ],
       }),
-    ).toBe("Thinking");
-  });
-
-  it("uses a coarse review label for redacted thinking after command output", () => {
-    expect(
-      deriveActiveStatusLabel({
-        phase: "running",
-        latestTurnId: TurnId.make("turn-1"),
-        workLogEntries: [
-          {
-            id: "thinking",
-            createdAt: "2026-02-23T00:00:02.000Z",
-            label: "Thinking",
-            detail: "Reviewing command output",
-            tone: "thinking",
-            executionState: "running",
-            turnId: TurnId.make("turn-1"),
-          },
-        ],
-      }),
-    ).toBe("Reviewing output");
-  });
-
-  it("prioritizes active tool work over active thinking in the footer", () => {
-    expect(
-      deriveActiveStatusLabel({
-        phase: "running",
-        latestTurnId: TurnId.make("turn-1"),
-        workLogEntries: [
-          {
-            id: "thinking",
-            createdAt: "2026-02-23T00:00:02.000Z",
-            label: "Thinking",
-            detail: "Working through the next step",
-            tone: "thinking",
-            executionState: "running",
-            turnId: TurnId.make("turn-1"),
-          },
-          {
-            id: "command",
-            createdAt: "2026-02-23T00:00:03.000Z",
-            label: "Running command",
-            command: "bun lint --filter @t3tools/web",
-            tone: "tool",
-            itemType: "command_execution",
-            executionState: "running",
-            turnId: TurnId.make("turn-1"),
-          },
-        ],
-      }),
-    ).toBe("Running command");
-  });
-
-  it("maps active tool categories to footer phase labels", () => {
-    expect(
-      deriveActiveStatusLabel({
-        phase: "running",
-        latestTurnId: TurnId.make("turn-1"),
-        workLogEntries: [
-          {
-            id: "search",
-            createdAt: "2026-02-23T00:00:02.000Z",
-            label: "Searching web",
-            tone: "tool",
-            itemType: "web_search",
-            executionState: "running",
-            turnId: TurnId.make("turn-1"),
-          },
-        ],
-      }),
-    ).toBe("Searching web");
+    ).toBe("Working");
   });
 
   it("keeps the generic live footer as working when no visible activity is available", () => {
@@ -2256,27 +2185,6 @@ describe("deriveActiveStatusLabel", () => {
         phase: "running",
         latestTurnId: TurnId.make("turn-1"),
         workLogEntries: [],
-      }),
-    ).toBe("Working");
-  });
-
-  it("ignores active-looking activity from a previous turn", () => {
-    expect(
-      deriveActiveStatusLabel({
-        phase: "running",
-        latestTurnId: TurnId.make("turn-2"),
-        workLogEntries: [
-          {
-            id: "old-command",
-            createdAt: "2026-02-23T00:00:02.000Z",
-            label: "Running command",
-            command: "bun lint",
-            tone: "tool",
-            itemType: "command_execution",
-            executionState: "running",
-            turnId: TurnId.make("turn-1"),
-          },
-        ],
       }),
     ).toBe("Working");
   });
