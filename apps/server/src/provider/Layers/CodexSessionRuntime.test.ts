@@ -206,10 +206,13 @@ describe("classifyCodexStderrLine", () => {
       "2026-05-27T03:14:38.810814Z ERROR mcp-transport-worker: worker quit with fatal: Transport channel closed, when attempting to receive initialized notification";
     const currentMcpWorkerClosedWarning =
       '2026-05-29T05:34:54.565773Z ERROR mcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(TokenRefreshFailed("Failed to parse server response"))';
+    const rmcpWorkerClosedWarning =
+      '2026-06-01T18:44:20.841238Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer error=\\"invalid_request\\"", error_description=\\"No access token was provided in this request\\"" })';
 
     assert.equal(classifyCodexStderrLine(modelRefreshWarning), null);
     assert.equal(classifyCodexStderrLine(mcpWorkerClosedWarning), null);
     assert.equal(classifyCodexStderrLine(currentMcpWorkerClosedWarning), null);
+    assert.equal(classifyCodexStderrLine(rmcpWorkerClosedWarning), null);
   });
 
   it("keeps actionable Codex stderr lines visible", () => {

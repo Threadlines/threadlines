@@ -63,6 +63,7 @@ const CODEX_TOOL_ROUTER_LOG_TARGET = "codex_core::tools::router";
 const CODEX_MCP_TRANSPORT_WORKER_LOG_TARGETS = new Set([
   "mcp-transport-worker",
   "mcp::transport::worker",
+  "rmcp::transport::worker",
 ]);
 const CODEX_APP_SERVER_FORCE_KILL_AFTER = "2 seconds" as const;
 const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
