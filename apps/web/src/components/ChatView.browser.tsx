@@ -4372,7 +4372,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
     try {
       const newDraftId = DraftId.make("draft-promoted-switch");
-      const newThreadId = ThreadId.make("thread-promoted-switch");
+      const newThreadId = "thread-promoted-switch" as ThreadId;
       const newThreadPath = `/draft/${newDraftId}`;
       useComposerDraftStore.setState({
         draftThreadsByThreadKey: {
