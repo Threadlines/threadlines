@@ -199,12 +199,14 @@ export function deriveActiveStatusLabel(input: {
   isRevertingCheckpoint?: boolean;
   pendingApprovalCount?: number;
   pendingUserInputCount?: number;
+  isSessionStarting?: boolean;
 }): string {
   if (input.isRevertingCheckpoint) return "Reverting checkpoint";
   if (input.isPreparingWorktree) return "Preparing worktree";
   if ((input.pendingUserInputCount ?? 0) > 0) return "Waiting for input";
   if ((input.pendingApprovalCount ?? 0) > 0) return "Waiting for approval";
   if (input.phase === "connecting" || input.isConnecting) return "Connecting";
+  if (input.isSessionStarting) return "Starting session";
   if (input.isSendBusy) return input.phase === "disconnected" ? "Connecting" : "Sending";
   if (input.phase === "running") return "Working";
 

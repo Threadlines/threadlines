@@ -532,6 +532,25 @@ describe("wsApi", () => {
     expect(rpcClientMock.server.refreshProviders).toHaveBeenCalledWith();
   });
 
+  it("forwards targeted provider refreshes directly to the RPC client", async () => {
+    const nextProviders: ReadonlyArray<ServerProvider> = [
+      {
+        ...defaultProviders[0]!,
+        checkedAt: "2026-01-03T00:00:00.000Z",
+      },
+    ];
+    const instanceId = ProviderInstanceId.make("codex");
+    rpcClientMock.server.refreshProviders.mockResolvedValue({ providers: nextProviders });
+    const { createLocalApi } = await import("./localApi");
+
+    const api = createLocalApi(rpcClientMock as never);
+
+    await expect(api.server.refreshProviders({ instanceId })).resolves.toEqual({
+      providers: nextProviders,
+    });
+    expect(rpcClientMock.server.refreshProviders).toHaveBeenCalledWith({ instanceId });
+  });
+
   it("forwards provider updates directly to the RPC client", async () => {
     const nextProviders: ReadonlyArray<ServerProvider> = [
       {

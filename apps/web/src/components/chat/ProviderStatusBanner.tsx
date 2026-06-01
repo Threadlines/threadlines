@@ -1,14 +1,38 @@
 import { type ServerProvider } from "@t3tools/contracts";
-import { memo } from "react";
-import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
-import { CircleAlertIcon } from "lucide-react";
+import { Link } from "@tanstack/react-router";
+import { memo, useCallback, useState } from "react";
+import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
+import { ActivityIcon, CircleAlertIcon, LoaderIcon, RefreshCwIcon } from "lucide-react";
 import { formatProviderDriverKindLabel } from "../../providerModels";
+import { ensureLocalApi } from "../../localApi";
+import { Button } from "../ui/button";
 
 export const ProviderStatusBanner = memo(function ProviderStatusBanner({
   status,
 }: {
   status: ServerProvider | null;
 }) {
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const refreshProvider = useCallback(() => {
+    if (!status || isRefreshing) {
+      return;
+    }
+
+    setRefreshError(null);
+    setIsRefreshing(true);
+    void ensureLocalApi()
+      .server.refreshProviders({ instanceId: status.instanceId })
+      .catch((error: unknown) => {
+        setRefreshError(
+          error instanceof Error ? error.message : "Provider status could not be refreshed.",
+        );
+      })
+      .finally(() => {
+        setIsRefreshing(false);
+      });
+  }, [isRefreshing, status]);
+
   if (!status || status.status === "ready" || status.status === "disabled") {
     return null;
   }
@@ -25,9 +49,39 @@ export const ProviderStatusBanner = memo(function ProviderStatusBanner({
       <Alert variant={status.status === "error" ? "error" : "warning"}>
         <CircleAlertIcon />
         <AlertTitle>{title}</AlertTitle>
-        <AlertDescription className="line-clamp-3" title={status.message ?? defaultMessage}>
-          {status.message ?? defaultMessage}
+        <AlertDescription title={status.message ?? defaultMessage}>
+          <span className="line-clamp-3">{status.message ?? defaultMessage}</span>
+          {refreshError ? (
+            <span className="text-[11px]" role="status">
+              {refreshError}
+            </span>
+          ) : null}
         </AlertDescription>
+        <AlertAction>
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={refreshProvider}
+            disabled={isRefreshing}
+            aria-label="Refresh provider status"
+          >
+            {isRefreshing ? (
+              <LoaderIcon className="size-3 animate-spin" />
+            ) : (
+              <RefreshCwIcon className="size-3" />
+            )}
+            <span>{isRefreshing ? "Refreshing" : "Refresh"}</span>
+          </Button>
+          <Button
+            size="xs"
+            variant="outline"
+            render={<Link to="/settings/diagnostics" />}
+            aria-label="Open diagnostics"
+          >
+            <ActivityIcon className="size-3" />
+            <span>Diagnostics</span>
+          </Button>
+        </AlertAction>
       </Alert>
     </div>
   );

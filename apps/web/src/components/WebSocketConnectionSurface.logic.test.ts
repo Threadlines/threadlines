@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import type { WsConnectionStatus } from "../rpc/wsConnectionState";
 import {
+  describeSlowRpcAckToast,
+  formatSlowRpcTagLabel,
   shouldAutoReconnect,
   shouldRestartStalledReconnect,
   shouldShowReconnectIssueToast,
@@ -141,5 +143,34 @@ describe("WebSocketConnectionSurface.logic", () => {
         }),
       ),
     ).toBe(true);
+  });
+
+  it("formats slow RPC method tags for user-facing summaries", () => {
+    expect(formatSlowRpcTagLabel("server.refreshProviders")).toBe("Server refresh providers");
+    expect(formatSlowRpcTagLabel("vcs.refreshStatus")).toBe("Source control refresh status");
+    expect(formatSlowRpcTagLabel("git.generateCommitMessage")).toBe("Git generate commit message");
+  });
+
+  it("includes friendly slow RPC labels in the toast description", () => {
+    expect(
+      describeSlowRpcAckToast([
+        {
+          requestId: "request-1",
+          startedAt: "2026-06-01T12:00:00.000Z",
+          startedAtMs: 1,
+          tag: "server.refreshProviders",
+          thresholdMs: 15_000,
+        },
+        {
+          requestId: "request-2",
+          startedAt: "2026-06-01T12:00:01.000Z",
+          startedAtMs: 2,
+          tag: "git.generateCommitMessage",
+          thresholdMs: 15_000,
+        },
+      ]),
+    ).toBe(
+      "2 requests waiting longer than 15s: Server refresh providers, Git generate commit message.",
+    );
   });
 });

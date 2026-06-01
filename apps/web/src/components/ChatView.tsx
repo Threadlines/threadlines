@@ -1317,6 +1317,7 @@ export default function ChatView(props: ChatViewProps) {
   );
   const selectedProvider: ProviderDriverKind = lockedProvider ?? unlockedSelectedProvider;
   const phase = derivePhase(activeThread?.session ?? null);
+  const isSessionStarting = activeThread?.session?.orchestrationStatus === "starting";
   const threadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
   const workLogEntries = useMemo(
     () => deriveWorkLogEntries(threadActivities, activeLatestTurn?.turnId ?? undefined),
@@ -1414,6 +1415,7 @@ export default function ChatView(props: ChatViewProps) {
   const isWorking =
     phase === "running" ||
     phase === "connecting" ||
+    isSessionStarting ||
     isSendBusy ||
     isConnecting ||
     isRevertingCheckpoint;
@@ -1424,6 +1426,7 @@ export default function ChatView(props: ChatViewProps) {
     isConnecting,
     isSendBusy,
     isPreparingWorktree,
+    isSessionStarting,
     isRevertingCheckpoint,
     pendingApprovalCount: pendingApprovals.length,
     pendingUserInputCount: pendingUserInputs.length,

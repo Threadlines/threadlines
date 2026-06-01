@@ -1,4 +1,5 @@
-import { type ReactNode, useEffect, useEffectEvent, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
+import { useNavigate } from "@tanstack/react-router";
 
 import { type SlowRpcAckRequest, useSlowRpcAckRequests } from "../rpc/requestLatencyState";
 import {
@@ -83,12 +84,12 @@ function describeRecoveredToast(
   return "Connection restored.";
 }
 
-function describeSlowRpcAckToast(requests: ReadonlyArray<SlowRpcAckRequest>): string {
+export function describeSlowRpcAckToast(requests: ReadonlyArray<SlowRpcAckRequest>): string {
   const count = requests.length;
   const thresholdSeconds = Math.round((requests[0]?.thresholdMs ?? 0) / 1000);
   const requestLabels = requests
     .slice(0, 2)
-    .map((request) => request.tag)
+    .map((request) => formatSlowRpcTagLabel(request.tag))
     .filter((tag) => tag.trim().length > 0);
   const requestSummary =
     requestLabels.length === 0
@@ -102,6 +103,43 @@ function describeSlowRpcAckToast(requests: ReadonlyArray<SlowRpcAckRequest>): st
   return `${count} request${count === 1 ? "" : "s"} waiting longer than ${thresholdSeconds}s.`;
 }
 
+const SLOW_RPC_AREA_LABELS: Readonly<Record<string, string>> = {
+  filesystem: "Files",
+  git: "Git",
+  orchestration: "Thread",
+  server: "Server",
+  shell: "Shell",
+  vcs: "Source control",
+};
+
+function formatRpcTagSegment(value: string): string {
+  return value
+    .replace(/[-_]+/gu, " ")
+    .replace(/([a-z0-9])([A-Z])/gu, "$1 $2")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .toLowerCase();
+}
+
+export function formatSlowRpcTagLabel(tag: string): string {
+  const parts = tag
+    .split(".")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+  if (parts.length === 0) {
+    return "request";
+  }
+
+  const [area, ...rest] = parts;
+  const areaLabel = area ? SLOW_RPC_AREA_LABELS[area] : undefined;
+  const methodLabel = rest.map(formatRpcTagSegment).filter(Boolean).join(" ");
+  if (areaLabel && methodLabel.length > 0) {
+    return `${areaLabel} ${methodLabel}`;
+  }
+
+  return parts.map(formatRpcTagSegment).filter(Boolean).join(" ") || tag;
+}
+
 function SlowRpcAckRequestDetails({ requests }: { requests: ReadonlyArray<SlowRpcAckRequest> }) {
   return (
     <ul className="space-y-2.5 text-xs text-muted-foreground">
@@ -110,9 +148,11 @@ function SlowRpcAckRequestDetails({ requests }: { requests: ReadonlyArray<SlowRp
           className="min-w-0 border-border/50 border-b pb-2 last:border-b-0 last:pb-0"
           key={req.requestId}
         >
-          <div className="wrap-break-word font-medium text-foreground">{req.tag}</div>
+          <div className="wrap-break-word font-medium text-foreground">
+            {formatSlowRpcTagLabel(req.tag)}
+          </div>
           <div className="mt-0.5 font-mono text-[10px] leading-snug opacity-90">
-            {req.requestId}
+            {req.tag} - {req.requestId}
           </div>
           <div className="mt-0.5 text-[10px] opacity-75">
             Started {formatConnectionMoment(req.startedAt) ?? req.startedAt}
@@ -401,7 +441,11 @@ export function WebSocketConnectionCoordinator() {
 export function SlowRpcAckToastCoordinator() {
   const slowRequests = useSlowRpcAckRequests();
   const status = useWsConnectionStatus();
+  const navigate = useNavigate();
   const toastIdRef = useRef<ReturnType<typeof toastManager.add> | null>(null);
+  const openDiagnostics = useCallback(() => {
+    void navigate({ to: "/settings/diagnostics" });
+  }, [navigate]);
 
   useEffect(() => {
     if (getWsConnectionUiState(status) !== "connected") {
@@ -427,6 +471,10 @@ export function SlowRpcAckToastCoordinator() {
         expandableLabels: { collapse: "Hide requests", expand: "Show requests" },
       },
       description: describeSlowRpcAckToast(slowRequests),
+      actionProps: {
+        children: "Diagnostics",
+        onClick: openDiagnostics,
+      },
       timeout: 0,
       title: "Some requests are slow",
       type: "warning" as const,
@@ -437,7 +485,7 @@ export function SlowRpcAckToastCoordinator() {
     } else {
       toastIdRef.current = toastManager.add(nextToast);
     }
-  }, [slowRequests, status]);
+  }, [openDiagnostics, slowRequests, status]);
 
   return null;
 }

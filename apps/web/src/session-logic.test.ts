@@ -2264,6 +2264,16 @@ describe("deriveActiveStatusLabel", () => {
     ).toBe("Sending");
   });
 
+  it("shows explicit session startup after the server acknowledges a new turn", () => {
+    expect(
+      deriveActiveStatusLabel({
+        phase: "ready",
+        workLogEntries: [],
+        isSessionStarting: true,
+      }),
+    ).toBe("Starting session");
+  });
+
   it("prioritizes pending approvals over generic running state", () => {
     expect(
       deriveActiveStatusLabel({
