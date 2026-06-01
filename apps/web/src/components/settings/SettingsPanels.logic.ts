@@ -5,7 +5,12 @@ import type {
   ServerSettings,
   UnifiedSettings,
 } from "@t3tools/contracts";
+import {
+  defaultInstanceIdForDriver,
+  ProviderDriverKind as ProviderDriverKindValue,
+} from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
+import * as Equal from "effect/Equal";
 
 function collapseOtelSignalsUrl(input: {
   readonly tracesUrl: string;
@@ -53,6 +58,153 @@ export function formatDiagnosticsDescription(input: {
   }
 
   return `${mode}.`;
+}
+
+export const DEPRECATED_LEGACY_PROVIDER_DRIVER_KINDS = [
+  ProviderDriverKindValue.make("cursor"),
+  ProviderDriverKindValue.make("opencode"),
+] as const;
+
+type ProviderSettingsState = Pick<ServerSettings, "providers" | "providerInstances">;
+type LegacyProviderSettings = ServerSettings["providers"][keyof ServerSettings["providers"]];
+
+export interface ProviderSettingsRow {
+  readonly instanceId: ProviderInstanceId;
+  readonly instance: ProviderInstanceConfig;
+  readonly driver: ProviderDriverKind;
+  readonly isDefault: boolean;
+  readonly isDirty?: boolean;
+}
+
+function readLegacyProviderConfig(
+  settings: ProviderSettingsState,
+  driver: ProviderDriverKind,
+): LegacyProviderSettings | undefined {
+  const legacyProviders = settings.providers as Record<string, LegacyProviderSettings | undefined>;
+  return legacyProviders[driver];
+}
+
+function readDefaultLegacyProviderConfig(
+  driver: ProviderDriverKind,
+): LegacyProviderSettings | undefined {
+  const defaultLegacyProviders = DEFAULT_UNIFIED_SETTINGS.providers as Record<
+    string,
+    LegacyProviderSettings | undefined
+  >;
+  return defaultLegacyProviders[driver];
+}
+
+function isLegacyProviderConfigDirty(
+  settings: ProviderSettingsState,
+  driver: ProviderDriverKind,
+): boolean {
+  const legacyConfig = readLegacyProviderConfig(settings, driver);
+  const defaultLegacyConfig = readDefaultLegacyProviderConfig(driver);
+  return (
+    legacyConfig !== undefined &&
+    defaultLegacyConfig !== undefined &&
+    !Equal.equals(legacyConfig, defaultLegacyConfig)
+  );
+}
+
+function shouldShowDeprecatedLegacyProviderDefault(input: {
+  readonly settings: ProviderSettingsState;
+  readonly driver: ProviderDriverKind;
+  readonly liveProviderInstanceIds: ReadonlySet<string>;
+}): boolean {
+  const defaultInstanceId = defaultInstanceIdForDriver(input.driver);
+  return (
+    input.settings.providerInstances?.[defaultInstanceId] !== undefined ||
+    isLegacyProviderConfigDirty(input.settings, input.driver) ||
+    input.liveProviderInstanceIds.has(String(defaultInstanceId))
+  );
+}
+
+export function deriveProviderSettingsRows(input: {
+  readonly settings: ProviderSettingsState;
+  readonly maintainedDriverKinds: ReadonlyArray<ProviderDriverKind>;
+  readonly liveProviderInstanceIds?: ReadonlySet<string>;
+}): ReadonlyArray<ProviderSettingsRow> {
+  const liveProviderInstanceIds = input.liveProviderInstanceIds ?? new Set<string>();
+  const visibleDriverKinds: ProviderDriverKind[] = [
+    ...input.maintainedDriverKinds,
+    ...DEPRECATED_LEGACY_PROVIDER_DRIVER_KINDS.filter((driver) =>
+      shouldShowDeprecatedLegacyProviderDefault({
+        settings: input.settings,
+        driver,
+        liveProviderInstanceIds,
+      }),
+    ),
+  ];
+
+  const instancesByDriver = new Map<
+    ProviderDriverKind,
+    Array<[ProviderInstanceId, ProviderInstanceConfig]>
+  >();
+  for (const [rawId, instance] of Object.entries(input.settings.providerInstances ?? {})) {
+    const driver = instance.driver;
+    const list = instancesByDriver.get(driver) ?? [];
+    list.push([rawId as ProviderInstanceId, instance]);
+    instancesByDriver.set(driver, list);
+  }
+
+  const defaultSlotIdsBySource = new Set<string>(
+    visibleDriverKinds.map((driver) => String(defaultInstanceIdForDriver(driver))),
+  );
+  const visibleDriverKindSet = new Set<ProviderDriverKind>(visibleDriverKinds);
+  const rows: ProviderSettingsRow[] = [];
+
+  for (const driver of visibleDriverKinds) {
+    const defaultInstanceId = defaultInstanceIdForDriver(driver);
+    const explicitInstance = input.settings.providerInstances?.[defaultInstanceId];
+    const legacyConfig = readLegacyProviderConfig(input.settings, driver);
+    const defaultLegacyConfig = readDefaultLegacyProviderConfig(driver);
+
+    const effectiveInstance =
+      explicitInstance ??
+      (legacyConfig !== undefined
+        ? ({
+            driver,
+            enabled: legacyConfig.enabled,
+            config: legacyConfig,
+          } satisfies ProviderInstanceConfig)
+        : undefined);
+    if (effectiveInstance === undefined) {
+      continue;
+    }
+    const isDirty =
+      explicitInstance !== undefined ||
+      (legacyConfig !== undefined &&
+        defaultLegacyConfig !== undefined &&
+        !Equal.equals(legacyConfig, defaultLegacyConfig));
+
+    rows.push({
+      instanceId: defaultInstanceId,
+      instance: effectiveInstance,
+      driver,
+      isDefault: true,
+      isDirty,
+    });
+
+    for (const [id, instance] of instancesByDriver.get(driver) ?? []) {
+      if (id === defaultInstanceId) continue;
+      rows.push({ instanceId: id, instance, driver: instance.driver, isDefault: false });
+    }
+  }
+
+  for (const [driver, list] of instancesByDriver) {
+    if (visibleDriverKindSet.has(driver)) continue;
+    for (const [id, instance] of list) {
+      rows.push({
+        instanceId: id,
+        instance,
+        driver: instance.driver,
+        isDefault: defaultSlotIdsBySource.has(String(id)),
+      });
+    }
+  }
+
+  return rows;
 }
 
 export function buildProviderInstanceUpdatePatch(input: {

@@ -1,5 +1,6 @@
 import {
   DEFAULT_SERVER_SETTINGS,
+  defaultInstanceIdForDriver,
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderInstanceConfig,
@@ -7,8 +8,14 @@ import {
 import { describe, expect, it } from "vitest";
 import {
   buildProviderInstanceUpdatePatch,
+  deriveProviderSettingsRows,
   formatDiagnosticsDescription,
 } from "./SettingsPanels.logic";
+
+const MAINTAINED_DRIVER_KINDS = [
+  ProviderDriverKind.make("codex"),
+  ProviderDriverKind.make("claudeAgent"),
+] as const;
 
 describe("formatDiagnosticsDescription", () => {
   it("collapses trace and metric URLs that share the same OTEL base path", () => {
@@ -100,5 +107,116 @@ describe("buildProviderInstanceUpdatePatch", () => {
 
     expect(patch.providerInstances?.[instanceId]).toEqual(nextInstance);
     expect(patch.providers).toBeUndefined();
+  });
+});
+
+describe("deriveProviderSettingsRows", () => {
+  it("renders maintained provider defaults without advertising deprecated defaults", () => {
+    const rows = deriveProviderSettingsRows({
+      settings: DEFAULT_SERVER_SETTINGS,
+      maintainedDriverKinds: MAINTAINED_DRIVER_KINDS,
+    });
+
+    expect(rows.map((row) => row.instanceId)).toEqual([
+      ProviderInstanceId.make("codex"),
+      ProviderInstanceId.make("claudeAgent"),
+    ]);
+  });
+
+  it("preserves dirty legacy Cursor and OpenCode defaults as deprecated rows", () => {
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providers: {
+        ...DEFAULT_SERVER_SETTINGS.providers,
+        cursor: {
+          ...DEFAULT_SERVER_SETTINGS.providers.cursor,
+          enabled: true,
+        },
+        opencode: {
+          ...DEFAULT_SERVER_SETTINGS.providers.opencode,
+          serverUrl: "http://127.0.0.1:4096",
+        },
+      },
+    };
+
+    const rows = deriveProviderSettingsRows({
+      settings,
+      maintainedDriverKinds: MAINTAINED_DRIVER_KINDS,
+    });
+
+    const cursor = rows.find((row) => row.instanceId === ProviderInstanceId.make("cursor"));
+    const opencode = rows.find((row) => row.instanceId === ProviderInstanceId.make("opencode"));
+
+    expect(rows.map((row) => row.instanceId)).toEqual([
+      ProviderInstanceId.make("codex"),
+      ProviderInstanceId.make("claudeAgent"),
+      ProviderInstanceId.make("cursor"),
+      ProviderInstanceId.make("opencode"),
+    ]);
+    expect(cursor).toMatchObject({
+      driver: ProviderDriverKind.make("cursor"),
+      isDefault: true,
+      isDirty: true,
+      instance: {
+        driver: ProviderDriverKind.make("cursor"),
+        config: { enabled: true },
+      },
+    });
+    expect(opencode).toMatchObject({
+      driver: ProviderDriverKind.make("opencode"),
+      isDefault: true,
+      isDirty: true,
+      instance: {
+        driver: ProviderDriverKind.make("opencode"),
+        config: { serverUrl: "http://127.0.0.1:4096" },
+      },
+    });
+  });
+
+  it("treats explicit deprecated default provider instances as default rows", () => {
+    const cursorId = defaultInstanceIdForDriver(ProviderDriverKind.make("cursor"));
+    const cursorInstance = {
+      driver: ProviderDriverKind.make("cursor"),
+      enabled: false,
+      displayName: "Old Cursor",
+    } satisfies ProviderInstanceConfig;
+
+    const rows = deriveProviderSettingsRows({
+      settings: {
+        ...DEFAULT_SERVER_SETTINGS,
+        providerInstances: {
+          [cursorId]: cursorInstance,
+        },
+      },
+      maintainedDriverKinds: MAINTAINED_DRIVER_KINDS,
+    });
+
+    expect(rows.find((row) => row.instanceId === cursorId)).toMatchObject({
+      instance: cursorInstance,
+      isDefault: true,
+      isDirty: true,
+    });
+  });
+
+  it("keeps custom deprecated instances without adding a default deprecated slot", () => {
+    const cursorWorkId = ProviderInstanceId.make("cursor_work");
+    const rows = deriveProviderSettingsRows({
+      settings: {
+        ...DEFAULT_SERVER_SETTINGS,
+        providerInstances: {
+          [cursorWorkId]: {
+            driver: ProviderDriverKind.make("cursor"),
+            displayName: "Cursor Work",
+          },
+        },
+      },
+      maintainedDriverKinds: MAINTAINED_DRIVER_KINDS,
+    });
+
+    expect(rows.map((row) => row.instanceId)).toEqual([
+      ProviderInstanceId.make("codex"),
+      ProviderInstanceId.make("claudeAgent"),
+      cursorWorkId,
+    ]);
   });
 });

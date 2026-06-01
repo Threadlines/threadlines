@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ProviderDriverKind } from "@t3tools/contracts";
 
-import { DRIVER_OPTION_BY_VALUE } from "./providerDriverMeta";
+import { DRIVER_OPTION_BY_VALUE, DRIVER_OPTIONS } from "./providerDriverMeta";
 import {
   deriveProviderSettingsFields,
   nextProviderConfigWithFieldValue,
@@ -10,6 +10,13 @@ import {
 } from "./ProviderSettingsForm";
 
 describe("ProviderSettingsForm helpers", () => {
+  it("exposes only maintained provider drivers for new settings rows", () => {
+    expect(DRIVER_OPTIONS.map((option) => option.value)).toEqual([
+      ProviderDriverKind.make("codex"),
+      ProviderDriverKind.make("claudeAgent"),
+    ]);
+  });
+
   it("derives visible provider config fields from the client definition schema", () => {
     const codex = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("codex")];
 

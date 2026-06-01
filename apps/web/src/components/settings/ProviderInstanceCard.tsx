@@ -14,6 +14,7 @@ import {
 import { useEffect, useState, type ReactNode } from "react";
 import {
   isProviderDriverKind,
+  PROVIDER_DISPLAY_NAMES,
   type ProviderInstanceConfig,
   type ProviderInstanceEnvironmentVariable,
   type ProviderInstanceId,
@@ -608,9 +609,19 @@ export function ProviderInstanceCard({
   const versionAdvisory = getProviderVersionAdvisoryPresentation(liveProvider?.versionAdvisory);
   const updateCommand = versionAdvisory?.updateCommand ?? null;
   const usagePresentation = deriveProviderAccountUsagePresentation(liveProvider?.accountUsage);
+  // Narrow `instance.driver` for callers that key on the closed
+  // `ProviderDriverKind` union (e.g. `normalizeModelSlug`'s alias table). Custom
+  // fork drivers pass through as `null` and those callers fall back to
+  // verbatim behaviour.
+  const driverKind: ProviderDriverKind | null = isProviderDriverKind(instance.driver)
+    ? instance.driver
+    : null;
   const FallbackIconComponent = driverOption?.icon;
   const displayName =
-    instance.displayName?.trim() || driverOption?.label || String(instance.driver);
+    instance.displayName?.trim() ||
+    driverOption?.label ||
+    (driverKind ? PROVIDER_DISPLAY_NAMES[driverKind] : undefined) ||
+    String(instance.driver);
   const accentColor = normalizeProviderAccentColor(instance.accentColor);
   const { copyToClipboard } = useCopyToClipboard<{ providerName: string }>({
     onCopy: ({ providerName }) => {
@@ -630,14 +641,6 @@ export function ProviderInstanceCard({
       );
     },
   });
-
-  // Narrow `instance.driver` for callers that key on the closed
-  // `ProviderDriverKind` union (e.g. `normalizeModelSlug`'s alias table). Custom
-  // fork drivers pass through as `null` and those callers fall back to
-  // verbatim behaviour.
-  const driverKind: ProviderDriverKind | null = isProviderDriverKind(instance.driver)
-    ? instance.driver
-    : null;
 
   const customModels = readConfigStringArray(instance.config, "customModels");
   // Server-returned models may lag behind settings writes. Treat probe
