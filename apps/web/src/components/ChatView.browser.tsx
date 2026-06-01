@@ -2094,7 +2094,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("opens source control from draft thread routes before first send", async () => {
+  it("defaults source control open from draft thread routes before first send", async () => {
     const draftId = DraftId.make("draft-source-control-before-start");
     useComposerDraftStore.setState({
       draftThreadsByThreadKey: {
@@ -2131,15 +2131,21 @@ describe("ChatView timeline estimator parity (full app)", () => {
         "Unable to find source control toggle.",
       );
       expect(sourceControlToggle.disabled).toBe(false);
+      await expect.element(page.getByRole("heading", { name: "Source Control" })).toBeVisible();
+
       sourceControlToggle.click();
 
       await vi.waitFor(
         () => {
-          expect(mounted.router.state.location.search).toMatchObject({ sourceControl: "1" });
+          expect(mounted.router.state.location.search).toMatchObject({ sourceControl: "0" });
+          expect(
+            Array.from(document.querySelectorAll("h2")).some(
+              (heading) => heading.textContent?.trim() === "Source Control",
+            ),
+          ).toBe(false);
         },
         { timeout: 8_000, interval: 16 },
       );
-      await expect.element(page.getByRole("heading", { name: "Source Control" })).toBeVisible();
     } finally {
       await mounted.cleanup();
     }

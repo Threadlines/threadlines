@@ -1,6 +1,6 @@
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime";
 import { projectScriptCwd } from "@t3tools/shared/projectScripts";
-import { createFileRoute, retainSearchParams, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo } from "react";
 import ChatView from "../components/ChatView";
 import { threadHasPromotableServerActivity } from "../components/ChatView.logic";
@@ -10,7 +10,8 @@ import {
 } from "../components/ChatRightPanelInlineSidebar";
 import { useComposerDraftStore, DraftId } from "../composerDraftStore";
 import {
-  type DiffRouteSearch,
+  closeRightPanelSearchParams,
+  isSourceControlPanelOpen,
   parseDiffRouteSearch,
   stripRightPanelSearchParams,
 } from "../diffRouteSearch";
@@ -59,7 +60,7 @@ function DraftChatThreadRouteView() {
       }),
     [draftSession?.promotedTo, serverThread, serverThreadHasTurnActivity, serverThreadRef],
   );
-  const sourceControlOpen = search.sourceControl === "1";
+  const sourceControlOpen = isSourceControlPanelOpen(search);
   const shouldUseSourceControlSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   const draftProjectRef = draftSession
     ? scopeProjectRef(draftSession.environmentId, draftSession.projectId)
@@ -88,7 +89,7 @@ function DraftChatThreadRouteView() {
     void navigate({
       to: "/draft/$draftId",
       params: buildDraftThreadRouteParams(draftId),
-      search: (previous) => stripRightPanelSearchParams(previous),
+      search: (previous) => closeRightPanelSearchParams(previous),
     });
   }, [draftId, navigate]);
   const openSourceControl = useCallback(() => {
@@ -115,10 +116,10 @@ function DraftChatThreadRouteView() {
     void navigate({
       to: "/$environmentId/$threadId",
       params: buildThreadRouteParams(canonicalThreadRef),
-      search: () => (sourceControlOpen ? { sourceControl: "1" as const } : {}),
+      search: () => (search.sourceControl ? { sourceControl: search.sourceControl } : {}),
       replace: true,
     });
-  }, [canonicalThreadRef, navigate, sourceControlOpen]);
+  }, [canonicalThreadRef, navigate, search.sourceControl]);
 
   useEffect(() => {
     if (draftSession || canonicalThreadRef) {
@@ -193,8 +194,5 @@ function DraftChatThreadRouteView() {
 
 export const Route = createFileRoute("/_chat/draft/$draftId")({
   validateSearch: (search) => parseDiffRouteSearch(search),
-  search: {
-    middlewares: [retainSearchParams<DiffRouteSearch>(["sourceControl"])],
-  },
   component: DraftChatThreadRouteView,
 });

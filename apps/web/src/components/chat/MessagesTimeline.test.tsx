@@ -310,6 +310,36 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("View transcript");
   });
 
+  it("renders output-only command activity as readable progress", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        timelineEntries={[
+          {
+            id: "entry-output-only-command",
+            kind: "work" as const,
+            createdAt: "2026-03-17T19:12:29.000Z",
+            entry: {
+              id: "work-output-only-command",
+              createdAt: "2026-03-17T19:12:29.000Z",
+              label: "Command output",
+              tone: "tool" as const,
+              itemType: "command_execution" as const,
+              executionState: "running" as const,
+              detail: "2 output lines",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Running command");
+    expect(markup).toContain("2 output lines");
+    expect(markup).not.toContain("Command output");
+  });
+
   it("renders verification commands as a semantic activity summary", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(

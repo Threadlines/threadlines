@@ -18,7 +18,9 @@ import {
 } from "../components/DiffPanelShell";
 import { finalizePromotedDraftThreadByRef, useComposerDraftStore } from "../composerDraftStore";
 import {
+  closeRightPanelSearchParams,
   type DiffRouteSearch,
+  isSourceControlPanelOpen,
   parseDiffRouteSearch,
   stripRightPanelSearchParams,
 } from "../diffRouteSearch";
@@ -91,7 +93,7 @@ function ChatThreadRouteView() {
   const serverThreadHasPromotableActivity = threadHasPromotableServerActivity(serverThread);
   const environmentHasAnyThreads = environmentHasServerThreads || environmentHasDraftThreads;
   const diffOpen = search.diff === "1";
-  const sourceControlOpen = search.sourceControl === "1";
+  const sourceControlOpen = isSourceControlPanelOpen(search);
   const rightPanelOpen = diffOpen || sourceControlOpen;
   const sourceControlThread = serverThread ?? draftThread;
   const sourceControlProjectRef = sourceControlThread
@@ -154,7 +156,7 @@ function ChatThreadRouteView() {
     void navigate({
       to: "/$environmentId/$threadId",
       params: buildThreadRouteParams(threadRef),
-      search: (previous) => stripRightPanelSearchParams(previous),
+      search: (previous) => closeRightPanelSearchParams(previous),
     });
   }, [navigate, threadRef]);
   const openSourceControl = useCallback(() => {
@@ -291,7 +293,6 @@ export const Route = createFileRoute("/_chat/$environmentId/$threadId")({
       retainSearchParams<DiffRouteSearch>([
         "diff",
         "diffMode",
-        "sourceControl",
         "sourceControlReturn",
         "diffTurnId",
         "diffFilePath",

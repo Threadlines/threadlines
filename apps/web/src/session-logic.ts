@@ -205,7 +205,7 @@ export function deriveActiveStatusLabel(input: {
   if ((input.pendingUserInputCount ?? 0) > 0) return "Waiting for input";
   if ((input.pendingApprovalCount ?? 0) > 0) return "Waiting for approval";
   if (input.phase === "connecting" || input.isConnecting) return "Connecting";
-  if (input.isSendBusy) return "Sending";
+  if (input.isSendBusy) return input.phase === "disconnected" ? "Connecting" : "Sending";
   if (input.phase === "running") return "Working";
 
   return "Working";
@@ -572,7 +572,9 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     activity.payload && typeof activity.payload === "object"
       ? (activity.payload as Record<string, unknown>)
       : null;
-  const commandPreview = extractToolCommand(payload);
+  const commandPreview = extractToolCommand(payload, {
+    detailMayBeCommand: activity.kind !== "tool.output.updated",
+  });
   const changedFiles = extractChangedFiles(payload);
   const images = extractWorkLogImages(payload);
   const title = extractToolTitle(payload);
@@ -1373,7 +1375,12 @@ function toRawToolCommand(value: unknown, normalizedCommand: string | null): str
   return formatted === normalizedCommand ? null : formatted;
 }
 
-function extractToolCommand(payload: Record<string, unknown> | null): {
+function extractToolCommand(
+  payload: Record<string, unknown> | null,
+  options?: {
+    readonly detailMayBeCommand?: boolean;
+  },
+): {
   command: string | null;
   rawCommand: string | null;
 } {
@@ -1383,12 +1390,15 @@ function extractToolCommand(payload: Record<string, unknown> | null): {
   const itemInput = asRecord(item?.input);
   const itemType = asTrimmedString(payload?.itemType);
   const detail = asTrimmedString(payload?.detail);
+  const detailMayBeCommand = options?.detailMayBeCommand ?? true;
   const candidates: unknown[] = [
     item?.command,
     itemInput?.command,
     itemResult?.command,
     data?.command,
-    itemType === "command_execution" && detail ? stripTrailingExitCode(detail).output : null,
+    detailMayBeCommand && itemType === "command_execution" && detail
+      ? stripTrailingExitCode(detail).output
+      : null,
   ];
 
   for (const candidate of candidates) {
@@ -1533,6 +1543,40 @@ function summarizeToolRawOutput(payload: Record<string, unknown> | null): string
   return null;
 }
 
+function formatOutputByteCount(byteCount: number): string {
+  if (byteCount < 1_024) {
+    return `${byteCount.toLocaleString()} B`;
+  }
+  if (byteCount < 1_024 * 1_024) {
+    return `${(byteCount / 1_024).toLocaleString(undefined, {
+      maximumFractionDigits: 1,
+    })} KB`;
+  }
+  return `${(byteCount / (1_024 * 1_024)).toLocaleString(undefined, {
+    maximumFractionDigits: 1,
+  })} MB`;
+}
+
+function summarizeStreamingToolOutput(payload: Record<string, unknown> | null): string | null {
+  const streamKind = asTrimmedString(payload?.streamKind);
+  if (streamKind !== "command_output" && streamKind !== "file_change_output") {
+    return null;
+  }
+
+  const lineCount = asNumber(payload?.lineCount);
+  const byteCount = asNumber(payload?.byteCount);
+  const truncated = payload?.truncated === true;
+  if (lineCount !== null && lineCount > 0) {
+    const suffix = truncated ? "+" : "";
+    return `${lineCount.toLocaleString()} output line${lineCount === 1 ? "" : "s"}${suffix}`;
+  }
+  if (byteCount !== null && byteCount > 0) {
+    const suffix = truncated ? "+" : "";
+    return `${formatOutputByteCount(byteCount)} output${suffix}`;
+  }
+  return "Output streaming";
+}
+
 function formatToolName(serverOrNamespace: unknown, tool: unknown): string | null {
   const toolName = asTrimmedString(tool);
   if (!toolName) {
@@ -1625,6 +1669,11 @@ function extractToolDetail(
   payload: Record<string, unknown> | null,
   heading: string,
 ): string | null {
+  const streamingOutputSummary = summarizeStreamingToolOutput(payload);
+  if (streamingOutputSummary) {
+    return streamingOutputSummary;
+  }
+
   const rawDetail = asTrimmedString(payload?.detail);
   const detail = rawDetail ? stripTrailingExitCode(rawDetail).output : null;
   const normalizedHeading = normalizePreviewForComparison(heading);

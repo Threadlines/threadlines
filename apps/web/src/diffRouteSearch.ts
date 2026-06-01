@@ -3,7 +3,7 @@ import { TurnId } from "@t3tools/contracts";
 export interface DiffRouteSearch {
   diff?: "1" | undefined;
   diffMode?: "workingTree" | undefined;
-  sourceControl?: "1" | undefined;
+  sourceControl?: "1" | "0" | undefined;
   sourceControlReturn?: "1" | undefined;
   diffTurnId?: TurnId | undefined;
   diffFilePath?: string | undefined;
@@ -11,6 +11,10 @@ export interface DiffRouteSearch {
 
 function isDiffOpenValue(value: unknown): boolean {
   return value === "1" || value === 1 || value === true;
+}
+
+function isExplicitClosedValue(value: unknown): boolean {
+  return value === "0" || value === 0 || value === false;
 }
 
 function normalizeSearchString(value: unknown): string | undefined {
@@ -93,10 +97,26 @@ export function stripRightPanelSearchParams<T extends Record<string, unknown>>(
   };
 }
 
+export function closeRightPanelSearchParams<T extends Record<string, unknown>>(params: T) {
+  return {
+    ...stripRightPanelSearchParams(params),
+    sourceControl: "0" as const,
+  };
+}
+
+export function isSourceControlPanelOpen(search: DiffRouteSearch): boolean {
+  return search.diff !== "1" && search.sourceControl !== "0";
+}
+
 export function parseDiffRouteSearch(search: Record<string, unknown>): DiffRouteSearch {
   const diff = isDiffOpenValue(search.diff) ? "1" : undefined;
   const diffMode = diff && search.diffMode === "workingTree" ? "workingTree" : undefined;
-  const sourceControl = !diff && isDiffOpenValue(search.sourceControl) ? "1" : undefined;
+  const sourceControl =
+    !diff && isDiffOpenValue(search.sourceControl)
+      ? "1"
+      : !diff && isExplicitClosedValue(search.sourceControl)
+        ? "0"
+        : undefined;
   const sourceControlReturn = diff && isDiffOpenValue(search.sourceControlReturn) ? "1" : undefined;
   const diffTurnIdRaw =
     diff && diffMode !== "workingTree" ? normalizeSearchString(search.diffTurnId) : undefined;

@@ -818,6 +818,34 @@ describe("deriveWorkLogEntries", () => {
     expect(entries[0]?.executionState).toBe("running");
   });
 
+  it("does not treat streamed command output as the command preview", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "tool-output",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.output.updated",
+        summary: "Command output",
+        payload: {
+          itemType: "command_execution",
+          toolCallId: "cmd-1",
+          status: "inProgress",
+          title: "Command output",
+          detail: "231: delta: string,\n232: ): BufferedActivityStream {",
+          byteCount: 96,
+          lineCount: 2,
+          truncated: false,
+          streamKind: "command_output",
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, undefined);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.command).toBeUndefined();
+    expect(entries[0]?.detail).toBe("2 output lines");
+    expect(entries[0]?.executionState).toBe("running");
+  });
+
   it("uses payload detail as label for task.completed and preserves error tone", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
@@ -2187,6 +2215,26 @@ describe("deriveActiveStatusLabel", () => {
         workLogEntries: [],
       }),
     ).toBe("Working");
+  });
+
+  it("shows connecting while the first local draft turn is being sent", () => {
+    expect(
+      deriveActiveStatusLabel({
+        phase: "disconnected",
+        workLogEntries: [],
+        isSendBusy: true,
+      }),
+    ).toBe("Connecting");
+  });
+
+  it("keeps sending for an existing ready thread dispatch", () => {
+    expect(
+      deriveActiveStatusLabel({
+        phase: "ready",
+        workLogEntries: [],
+        isSendBusy: true,
+      }),
+    ).toBe("Sending");
   });
 
   it("prioritizes pending approvals over generic running state", () => {

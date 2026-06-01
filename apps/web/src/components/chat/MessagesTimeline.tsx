@@ -1913,6 +1913,10 @@ function workEntryActionHeading(
     return commandActionHeading(workEntry.command, workEntry.executionState, workspaceRoot);
   }
 
+  if (workEntry.itemType === "command_execution") {
+    return formatActionHeading(workEntry.executionState, "Running", "Ran", "command");
+  }
+
   if (isSubagentWorkEntry(workEntry)) {
     return formatActionHeading(
       workEntry.executionState,

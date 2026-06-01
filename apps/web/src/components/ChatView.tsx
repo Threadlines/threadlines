@@ -43,7 +43,12 @@ import { usePrimaryEnvironmentId } from "../environments/primary";
 import { readEnvironmentApi } from "../environmentApi";
 import { isElectron } from "../env";
 import { readLocalApi } from "../localApi";
-import { parseDiffRouteSearch, stripRightPanelSearchParams } from "../diffRouteSearch";
+import {
+  closeRightPanelSearchParams,
+  isSourceControlPanelOpen,
+  parseDiffRouteSearch,
+  stripRightPanelSearchParams,
+} from "../diffRouteSearch";
 import {
   collapseExpandedComposerCursor,
   parseStandaloneComposerSlashCommand,
@@ -868,7 +873,7 @@ export default function ChatView(props: ChatViewProps) {
     composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE;
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
-  const sourceControlOpen = rawSearch.sourceControl === "1";
+  const sourceControlOpen = isSourceControlPanelOpen(rawSearch);
   const activeThreadId = activeThread?.id ?? null;
   const activeThreadRef = useMemo(
     () => (activeThread ? scopeThreadRef(activeThread.environmentId, activeThread.id) : null),
@@ -1826,7 +1831,9 @@ export default function ChatView(props: ChatViewProps) {
         replace: true,
         search: (previous) => {
           const rest = stripRightPanelSearchParams(previous);
-          return sourceControlOpen ? rest : { ...rest, sourceControl: "1" };
+          return sourceControlOpen
+            ? closeRightPanelSearchParams(previous)
+            : { ...rest, sourceControl: "1" };
         },
       });
       return;
@@ -1840,7 +1847,9 @@ export default function ChatView(props: ChatViewProps) {
       replace: true,
       search: (previous) => {
         const rest = stripRightPanelSearchParams(previous);
-        return sourceControlOpen ? rest : { ...rest, sourceControl: "1" };
+        return sourceControlOpen
+          ? closeRightPanelSearchParams(previous)
+          : { ...rest, sourceControl: "1" };
       },
     });
   }, [activeThread, draftId, environmentId, navigate, routeKind, sourceControlOpen, threadId]);

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  closeRightPanelSearchParams,
+  isSourceControlPanelOpen,
   parseDiffRouteSearch,
   stripDiffSearchParams,
   stripRightPanelSearchParams,
@@ -86,6 +88,12 @@ describe("parseDiffRouteSearch", () => {
     });
   });
 
+  it("parses source control closed state", () => {
+    expect(parseDiffRouteSearch({ sourceControl: "0" })).toEqual({
+      sourceControl: "0",
+    });
+  });
+
   it("lets the diff panel win when source control is also present", () => {
     expect(
       parseDiffRouteSearch({
@@ -114,6 +122,18 @@ describe("parseDiffRouteSearch", () => {
   });
 });
 
+describe("isSourceControlPanelOpen", () => {
+  it("defaults source control to open when no right-panel mode is specified", () => {
+    expect(isSourceControlPanelOpen({})).toBe(true);
+    expect(isSourceControlPanelOpen({ sourceControl: "1" })).toBe(true);
+  });
+
+  it("treats explicit close and diff routes as closed", () => {
+    expect(isSourceControlPanelOpen({ sourceControl: "0" })).toBe(false);
+    expect(isSourceControlPanelOpen({ diff: "1", sourceControlReturn: "1" })).toBe(false);
+  });
+});
+
 describe("stripDiffSearchParams", () => {
   it("clears retained diff params explicitly", () => {
     expect(
@@ -128,6 +148,30 @@ describe("stripDiffSearchParams", () => {
       keep: "yes",
       diff: undefined,
       diffMode: undefined,
+      diffTurnId: undefined,
+      diffFilePath: undefined,
+    });
+  });
+});
+
+describe("closeRightPanelSearchParams", () => {
+  it("clears retained right-panel params and marks source control closed", () => {
+    expect(
+      closeRightPanelSearchParams({
+        diff: "1",
+        diffMode: "workingTree",
+        sourceControl: "1",
+        sourceControlReturn: "1",
+        diffTurnId: "turn-1",
+        diffFilePath: "src/app.ts",
+        keep: "yes",
+      }),
+    ).toEqual({
+      keep: "yes",
+      diff: undefined,
+      diffMode: undefined,
+      sourceControl: "0",
+      sourceControlReturn: undefined,
       diffTurnId: undefined,
       diffFilePath: undefined,
     });
