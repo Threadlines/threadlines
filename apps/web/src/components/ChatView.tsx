@@ -192,6 +192,7 @@ import {
   revokeUserMessagePreviewUrls,
   shouldWriteThreadErrorToCurrentServerThread,
   waitForStartedServerThread,
+  mergeLocalDraftThreadWithServerThread,
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { useComposerHandleContext } from "../composerHandleContext";
@@ -679,10 +680,7 @@ export default function ChatView(props: ChatViewProps) {
   const composerDraftTarget: ScopedThreadRef | DraftId =
     routeKind === "server" ? routeThreadRef : props.draftId;
   const serverThread = useStore(
-    useMemo(
-      () => createThreadSelectorByRef(routeKind === "server" ? routeThreadRef : null),
-      [routeKind, routeThreadRef],
-    ),
+    useMemo(() => createThreadSelectorByRef(routeThreadRef), [routeThreadRef]),
   );
   const setStoreThreadError = useStore((store) => store.setError);
   const markThreadVisited = useUiStateStore((store) => store.markThreadVisited);
@@ -867,7 +865,9 @@ export default function ChatView(props: ChatViewProps) {
     [draftThread, fallbackDraftProject?.defaultModelSelection, localDraftError, threadId],
   );
   const isServerThread = routeKind === "server" && serverThread !== undefined;
-  const activeThread = isServerThread ? serverThread : localDraftThread;
+  const activeThread = isServerThread
+    ? serverThread
+    : mergeLocalDraftThreadWithServerThread(localDraftThread, serverThread);
   const runtimeMode = composerRuntimeMode ?? activeThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE;
   const interactionMode =
     composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE;
@@ -921,12 +921,13 @@ export default function ChatView(props: ChatViewProps) {
     useMemo(() => createProjectSelectorByRef(activeProjectRef), [activeProjectRef]),
   );
 
+  const shouldRetainThreadDetailSubscription = routeKind === "server" || serverThread !== undefined;
   useEffect(() => {
-    if (routeKind !== "server") {
+    if (!shouldRetainThreadDetailSubscription) {
       return;
     }
     return retainThreadDetailSubscription(environmentId, threadId);
-  }, [environmentId, routeKind, threadId]);
+  }, [environmentId, shouldRetainThreadDetailSubscription, threadId]);
 
   // Compute the list of environments this logical project spans, used to
   // drive the environment picker in BranchToolbar.

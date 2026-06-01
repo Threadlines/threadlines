@@ -958,13 +958,21 @@ function isLifecycleWorkLogEntry(
 
 function deriveWorkLogExecutionState(
   activity: OrchestrationThreadActivity,
-  entry: Pick<WorkLogEntry, "command" | "itemType" | "requestKind" | "tone">,
+  entry: Pick<DerivedWorkLogEntry, "command" | "itemType" | "requestKind" | "tone" | "toolCallId">,
   payload: Record<string, unknown> | null,
 ): WorkLogEntry["executionState"] | undefined {
   if (entry.tone === "thinking") {
     return normalizeWorkLogExecutionStatus(asTrimmedString(payload?.status));
   }
   if (!isLifecycleWorkLogEntry(entry)) {
+    return undefined;
+  }
+  if (
+    activity.kind === "tool.output.updated" &&
+    entry.itemType === "command_execution" &&
+    !entry.toolCallId &&
+    !entry.command
+  ) {
     return undefined;
   }
   const payloadStatus = normalizeWorkLogExecutionStatus(

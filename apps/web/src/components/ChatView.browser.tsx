@@ -7,6 +7,7 @@ import {
   EnvironmentId,
   type EnvironmentApi,
   type MessageId,
+  type OrchestrationEvent,
   type OrchestrationReadModel,
   type ProjectId,
   ProviderDriverKind,
@@ -607,6 +608,21 @@ async function waitForWsClient(): Promise<void> {
   );
 }
 
+async function waitForThreadDetailSubscription(threadId: ThreadId): Promise<void> {
+  await vi.waitFor(
+    () => {
+      expect(
+        wsRequests.some(
+          (request) =>
+            request._tag === ORCHESTRATION_WS_METHODS.subscribeThread &&
+            request.threadId === threadId,
+        ),
+      ).toBe(true);
+    },
+    { timeout: 8_000, interval: 16 },
+  );
+}
+
 function threadRefFor(threadId: ThreadId) {
   return scopeThreadRef(LOCAL_ENVIRONMENT_ID, threadId);
 }
@@ -676,6 +692,36 @@ async function setPromotedServerThreadRunningViaDomainEvent(threadId: ThreadId):
 async function addPromotedServerUserMessageViaDomainEvent(threadId: ThreadId): Promise<void> {
   fixture.snapshot = addUserMessageToThreadInSnapshot(fixture.snapshot, threadId);
   sendShellThreadUpsert(threadId);
+}
+
+function emitPromotedServerUserMessageDetailEvent(threadId: ThreadId): void {
+  const messageId = `msg-user-promoted-${threadId}` as MessageId;
+  const event: OrchestrationEvent = {
+    sequence: fixture.snapshot.snapshotSequence,
+    eventId: EventId.make(`evt-user-promoted-${threadId}`),
+    aggregateKind: "thread",
+    aggregateId: threadId,
+    occurredAt: NOW_ISO,
+    commandId: null,
+    causationEventId: null,
+    correlationId: null,
+    metadata: {},
+    type: "thread.message-sent",
+    payload: {
+      threadId,
+      messageId,
+      role: "user",
+      text: "promoted draft user message",
+      turnId: null,
+      streaming: false,
+      createdAt: NOW_ISO,
+      updatedAt: NOW_ISO,
+    },
+  };
+  rpcHarness.emitStreamValue(ORCHESTRATION_WS_METHODS.subscribeThread, {
+    kind: "event",
+    event,
+  });
 }
 
 async function startPromotedServerTurnViaDomainEvent(threadId: ThreadId): Promise<void> {
@@ -4310,6 +4356,79 @@ describe("ChatView timeline estimator parity (full app)", () => {
       // whether the promoted thread is still visibly empty or has already
       // entered the running state.
       await expect.element(page.getByTestId("composer-editor")).toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps promoted draft messages visible after switching away before turn activity arrives", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-draft-switch-test" as MessageId,
+        targetText: "draft switch test",
+      }),
+    });
+
+    try {
+      const newDraftId = DraftId.make("draft-promoted-switch");
+      const newThreadId = ThreadId.make("thread-promoted-switch");
+      const newThreadPath = `/draft/${newDraftId}`;
+      useComposerDraftStore.setState({
+        draftThreadsByThreadKey: {
+          [newDraftId]: {
+            threadId: newThreadId,
+            environmentId: LOCAL_ENVIRONMENT_ID,
+            projectId: PROJECT_ID,
+            logicalProjectKey: PROJECT_DRAFT_KEY,
+            createdAt: NOW_ISO,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            envMode: "local",
+          },
+        },
+        logicalProjectDraftThreadKeyByLogicalProjectKey: {
+          [PROJECT_DRAFT_KEY]: newDraftId,
+        },
+      });
+      await mounted.router.navigate({
+        to: "/draft/$draftId",
+        params: { draftId: newDraftId },
+      });
+      await waitForURL(
+        mounted.router,
+        (path) => path === newThreadPath,
+        "Route should have changed to the promoted draft.",
+      );
+
+      await materializePromotedDraftThreadViaDomainEvent(newThreadId);
+      await setPromotedServerThreadRunningViaDomainEvent(newThreadId);
+      await waitForThreadDetailSubscription(newThreadId);
+
+      await mounted.router.navigate({
+        to: "/$environmentId/$threadId",
+        params: {
+          environmentId: LOCAL_ENVIRONMENT_ID,
+          threadId: THREAD_ID,
+        },
+      });
+      await waitForURL(
+        mounted.router,
+        (path) => path === serverThreadPath(THREAD_ID),
+        "Route should have changed to the existing thread.",
+      );
+
+      await addPromotedServerUserMessageViaDomainEvent(newThreadId);
+      emitPromotedServerUserMessageDetailEvent(newThreadId);
+
+      await mounted.router.navigate({
+        to: "/draft/$draftId",
+        params: { draftId: newDraftId },
+      });
+      expect(mounted.router.state.location.pathname).toBe(newThreadPath);
+      await expect.element(page.getByText("promoted draft user message")).toBeVisible();
     } finally {
       await mounted.cleanup();
     }

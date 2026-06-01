@@ -58,6 +58,43 @@ export function buildLocalDraftThread(
   };
 }
 
+export function mergeLocalDraftThreadWithServerThread(
+  localDraftThread: Thread | undefined,
+  serverThread: Thread | undefined,
+): Thread | undefined {
+  if (!localDraftThread || !serverThread) {
+    return localDraftThread;
+  }
+  if (
+    localDraftThread.id !== serverThread.id ||
+    localDraftThread.environmentId !== serverThread.environmentId
+  ) {
+    return localDraftThread;
+  }
+
+  return {
+    ...localDraftThread,
+    codexThreadId: serverThread.codexThreadId,
+    title: serverThread.title,
+    modelSelection: serverThread.modelSelection,
+    runtimeMode: serverThread.runtimeMode,
+    interactionMode: serverThread.interactionMode,
+    session: serverThread.session,
+    messages: serverThread.messages,
+    proposedPlans: serverThread.proposedPlans,
+    error: serverThread.error,
+    createdAt: serverThread.createdAt,
+    archivedAt: serverThread.archivedAt,
+    updatedAt: serverThread.updatedAt,
+    latestTurn: serverThread.latestTurn,
+    pendingSourceProposedPlan: serverThread.pendingSourceProposedPlan,
+    branch: serverThread.branch,
+    worktreePath: serverThread.worktreePath,
+    turnDiffSummaries: serverThread.turnDiffSummaries,
+    activities: serverThread.activities,
+  };
+}
+
 export function shouldWriteThreadErrorToCurrentServerThread(input: {
   serverThread:
     | {

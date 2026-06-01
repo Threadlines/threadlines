@@ -310,7 +310,7 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("View transcript");
   });
 
-  it("renders output-only command activity as readable progress", async () => {
+  it("renders unpaired output-only command activity as inactive progress", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(
       <MessagesTimeline
@@ -327,7 +327,6 @@ describe("MessagesTimeline", () => {
               label: "Command output",
               tone: "tool" as const,
               itemType: "command_execution" as const,
-              executionState: "running" as const,
               detail: "2 output lines",
             },
           },
@@ -335,8 +334,9 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("Running command");
+    expect(markup).toContain("Ran command");
     expect(markup).toContain("2 output lines");
+    expect(markup).not.toContain("Running command");
     expect(markup).not.toContain("Command output");
   });
 

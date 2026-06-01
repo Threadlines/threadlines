@@ -20,6 +20,7 @@ import {
   deriveComposerSendState,
   deriveProviderAuthReconnectPrompt,
   hasServerAcknowledgedLocalDispatch,
+  mergeLocalDraftThreadWithServerThread,
   threadHasPromotableServerActivity,
   reconcileSteeringHandoffStatuses,
   reconcileMountedTerminalThreadIds,
@@ -311,6 +312,61 @@ const makeThread = (input?: {
   worktreePath: null,
   turnDiffSummaries: input?.turnDiffSummaries ?? [],
   activities: input?.activities ?? [],
+});
+
+describe("mergeLocalDraftThreadWithServerThread", () => {
+  it("hydrates a promoted draft from the matching server thread without changing route ownership", () => {
+    const threadId = ThreadId.make("thread-promoted");
+    const localDraftThread = makeThread({
+      id: threadId,
+      messages: [],
+    });
+    const serverThread = makeThread({
+      id: threadId,
+      session: {
+        provider: ProviderDriverKind.make("codex"),
+        status: "connecting",
+        orchestrationStatus: "starting",
+        createdAt: "2026-03-29T00:00:01.000Z",
+        updatedAt: "2026-03-29T00:00:01.000Z",
+      },
+      messages: [
+        {
+          id: "message-promoted" as never,
+          role: "user",
+          text: "keep this visible",
+          createdAt: "2026-03-29T00:00:01.000Z",
+          completedAt: "2026-03-29T00:00:01.000Z",
+          streaming: false,
+        },
+      ],
+    });
+
+    const merged = mergeLocalDraftThreadWithServerThread(localDraftThread, serverThread);
+
+    expect(merged).toMatchObject({
+      id: threadId,
+      session: {
+        status: "connecting",
+        orchestrationStatus: "starting",
+      },
+      messages: [
+        {
+          id: "message-promoted",
+          text: "keep this visible",
+        },
+      ],
+    });
+  });
+
+  it("ignores server state for a different thread", () => {
+    const localDraftThread = makeThread({ id: ThreadId.make("thread-local") });
+    const serverThread = makeThread({ id: ThreadId.make("thread-server") });
+
+    expect(mergeLocalDraftThreadWithServerThread(localDraftThread, serverThread)).toBe(
+      localDraftThread,
+    );
+  });
 });
 
 function setStoreThreads(threads: ReadonlyArray<ReturnType<typeof makeThread>>) {

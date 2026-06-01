@@ -846,6 +846,33 @@ describe("deriveWorkLogEntries", () => {
     expect(entries[0]?.executionState).toBe("running");
   });
 
+  it("does not keep unpaired command output marked as running", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "tool-output-unpaired",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.output.updated",
+        summary: "Command output",
+        payload: {
+          itemType: "command_execution",
+          status: "inProgress",
+          title: "Command output",
+          detail: '"name":"badcode-transition","description":"BadCode fork separation"',
+          byteCount: 128,
+          lineCount: 1,
+          truncated: false,
+          streamKind: "command_output",
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, undefined);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.command).toBeUndefined();
+    expect(entries[0]?.detail).toBe("1 output line");
+    expect(entries[0]?.executionState).toBeUndefined();
+  });
+
   it("uses payload detail as label for task.completed and preserves error tone", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
