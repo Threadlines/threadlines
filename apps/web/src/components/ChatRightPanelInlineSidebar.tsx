@@ -88,7 +88,7 @@ export function ChatRightPanelInlineSidebar(props: {
         side="right"
         collapsible="offcanvas"
         className={cn(
-          "border-l border-border bg-card text-foreground",
+          "border-l border-border bg-rail text-foreground",
           isElectron && "pe-[var(--app-window-resize-edge-inset)]",
         )}
         motion="instant"

@@ -1595,7 +1595,7 @@ export function SourceControlPanel({
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
-      <div className="drag-region flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border px-4 py-1 wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
+      <div className="drag-region flex h-[52px] shrink-0 items-center justify-between gap-2 border-b border-border px-4 py-1 wco:h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-1.5">
             <GitGraphIcon className="size-3.5 shrink-0 text-muted-foreground/70" />

@@ -156,11 +156,13 @@ const buildCmd = Command.make(
 
       yield* Effect.log("[cli] Running tsdown...");
       yield* runCommand(
-        ChildProcess.make(process.execPath, ["--run", "build:bundle"], {
+        ChildProcess.make("bun", ["run", "build:bundle"], {
           cwd: serverDir,
           stdout: config.verbose ? "inherit" : "ignore",
           stderr: "inherit",
-          // Windows needs shell mode to resolve `.cmd` shims on PATH.
+          // Invoke the `bun` shim via PATH (resolved by shell mode on Windows).
+          // Spawning process.execPath directly breaks under shell mode when the
+          // interpreter path contains spaces (e.g. C:\Program Files\nodejs).
           shell: process.platform === "win32",
         }),
       );

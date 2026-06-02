@@ -13,6 +13,7 @@ import { Toggle } from "../ui/toggle";
 import { SidebarTrigger } from "../ui/sidebar";
 import { OpenInPicker } from "./OpenInPicker";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
+import { cn } from "~/lib/utils";
 
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
@@ -80,19 +81,27 @@ export const ChatHeader = memo(function ChatHeader({
 
   return (
     <div className="@container/header-actions flex min-w-0 flex-1 items-center gap-2">
-      <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden sm:gap-3">
+      <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden sm:gap-2">
         <SidebarTrigger className="size-7 shrink-0 md:hidden" />
+        {activeProjectName && (
+          <div className="hidden min-w-0 shrink items-center gap-1.5 sm:flex">
+            <span
+              className="min-w-0 max-w-48 truncate text-sm text-muted-foreground"
+              title={activeProjectName}
+            >
+              {activeProjectName}
+            </span>
+            <span aria-hidden="true" className="select-none text-muted-foreground/40">
+              /
+            </span>
+          </div>
+        )}
         <h2
           className="min-w-0 shrink truncate text-sm font-medium text-foreground"
           title={activeThreadTitle}
         >
           {activeThreadTitle}
         </h2>
-        {activeProjectName && (
-          <Badge variant="outline" className="min-w-0 shrink overflow-hidden">
-            <span className="min-w-0 truncate">{activeProjectName}</span>
-          </Badge>
-        )}
         {activeProjectName && !isGitRepo && (
           <Badge variant="outline" className="shrink-0 text-[10px] text-amber-700">
             No Git
@@ -122,7 +131,10 @@ export const ChatHeader = memo(function ChatHeader({
           <TooltipTrigger
             render={
               <Toggle
-                className="shrink-0"
+                className={cn(
+                  "shrink-0",
+                  terminalOpen && "border-primary/40 bg-primary/15 text-primary",
+                )}
                 pressed={terminalOpen}
                 onPressedChange={onToggleTerminal}
                 aria-label="Toggle terminal drawer"
@@ -146,7 +158,10 @@ export const ChatHeader = memo(function ChatHeader({
           <TooltipTrigger
             render={
               <Toggle
-                className="shrink-0"
+                className={cn(
+                  "shrink-0",
+                  sourceControlOpen && "border-primary/40 bg-primary/15 text-primary",
+                )}
                 pressed={sourceControlOpen}
                 onPressedChange={onToggleSourceControl}
                 aria-label="Toggle source control panel"
