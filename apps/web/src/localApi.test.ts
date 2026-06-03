@@ -78,6 +78,7 @@ const rpcClientMock = {
     createWorktree: vi.fn(),
     removeWorktree: vi.fn(),
     createRef: vi.fn(),
+    deleteBranch: vi.fn(),
     switchRef: vi.fn(),
     mergeRef: vi.fn(),
     init: vi.fn(),

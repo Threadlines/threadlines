@@ -234,6 +234,17 @@ export const VcsCreateTagResult = Schema.Struct({
 });
 export type VcsCreateTagResult = typeof VcsCreateTagResult.Type;
 
+export const VcsDeleteBranchInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  branchName: TrimmedNonEmptyStringSchema,
+});
+export type VcsDeleteBranchInput = typeof VcsDeleteBranchInput.Type;
+
+export const VcsDeleteBranchResult = Schema.Struct({
+  branchName: TrimmedNonEmptyStringSchema,
+});
+export type VcsDeleteBranchResult = typeof VcsDeleteBranchResult.Type;
+
 export const VcsSwitchRefInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
   refName: TrimmedNonEmptyStringSchema,

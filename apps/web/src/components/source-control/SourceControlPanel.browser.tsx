@@ -154,6 +154,9 @@ function makeEnvironmentApi(
         tagName: input.tagName,
         targetSha: input.targetSha,
       })),
+      deleteBranch: vi.fn(async (input: { readonly branchName: string }) => ({
+        branchName: input.branchName,
+      })),
       ...overrides.vcs,
     },
   } as unknown as EnvironmentApi;
@@ -468,6 +471,74 @@ describe("SourceControlPanel commit graph", () => {
           cwd: CWD,
           tagName: "v2.0.0",
           targetSha: "abc1234abc1234abc1234abc1234abc1234abc1234",
+        });
+      });
+      await vi.waitFor(() => {
+        expect(gitStatusMock.refreshGitStatus).toHaveBeenCalledWith({
+          environmentId: ENVIRONMENT_ID,
+          cwd: CWD,
+        });
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("deletes a local branch from the commit graph context menu", async () => {
+    const branchSha = "1234567123456712345671234567123456712345";
+    const graph: VcsCommitGraphResult = {
+      truncated: false,
+      commits: [
+        {
+          sha: branchSha,
+          shortSha: "1234567",
+          parents: ["abc1234abc1234abc1234abc1234abc1234abc1234"],
+          refs: ["feature/remove-me", "origin/feature/remove-me", "refs/tags/v1.0.0"],
+          subject: "Remove temporary branch",
+          authorName: "Ada Lovelace",
+          committedAt: "2026-05-26T12:00:00.000Z",
+        },
+        ...GRAPH.commits,
+      ],
+    };
+    const deleteBranch: EnvironmentApi["vcs"]["deleteBranch"] = vi.fn(async (input) => ({
+      branchName: input.branchName,
+    }));
+    const mounted = await renderPanel({
+      environmentApi: makeEnvironmentApi({
+        vcs: {
+          commitGraph: vi.fn(async () => graph),
+          deleteBranch,
+        },
+      }),
+    });
+
+    try {
+      await expect.element(page.getByText("Remove temporary branch")).toBeVisible();
+      const row = document.querySelector('[aria-label="Commit 1234567: Remove temporary branch"]');
+      expect(row).toBeInstanceOf(HTMLElement);
+
+      row?.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 160,
+          clientY: 180,
+        }),
+      );
+
+      await page.getByText("Delete branch 'feature/remove-me'...").click();
+      await expect.element(page.getByRole("heading", { name: "Delete branch?" })).toBeVisible();
+      await expect
+        .element(page.getByRole("alertdialog").getByText("feature/remove-me"))
+        .toBeVisible();
+
+      await page.getByRole("button", { name: "Delete branch" }).click();
+
+      await vi.waitFor(() => {
+        expect(deleteBranch).toHaveBeenCalledWith({
+          cwd: CWD,
+          branchName: "feature/remove-me",
         });
       });
       await vi.waitFor(() => {

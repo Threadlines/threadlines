@@ -19,6 +19,8 @@ import {
   type VcsCreateRefResult,
   type VcsCreateTagInput,
   type VcsCreateTagResult,
+  type VcsDeleteBranchInput,
+  type VcsDeleteBranchResult,
   type VcsCreateWorktreeInput,
   type VcsCreateWorktreeResult,
   type VcsListRefsInput,
@@ -91,6 +93,9 @@ export interface GitWorkflowServiceShape {
   readonly createTag: (
     input: VcsCreateTagInput,
   ) => Effect.Effect<VcsCreateTagResult, GitCommandError>;
+  readonly deleteBranch: (
+    input: VcsDeleteBranchInput,
+  ) => Effect.Effect<VcsDeleteBranchResult, GitCommandError>;
   readonly switchRef: (
     input: VcsSwitchRefInput,
   ) => Effect.Effect<VcsSwitchRefResult, GitCommandError>;
@@ -358,6 +363,10 @@ export const make = Effect.fn("makeGitWorkflowService")(function* () {
     createTag: (input) =>
       ensureGitCommand("GitWorkflowService.createTag", input.cwd).pipe(
         Effect.andThen(git.createTag(input)),
+      ),
+    deleteBranch: (input) =>
+      ensureGitCommand("GitWorkflowService.deleteBranch", input.cwd).pipe(
+        Effect.andThen(git.deleteBranch(input)),
       ),
     switchRef: (input) =>
       ensureGitCommand("GitWorkflowService.switchRef", input.cwd).pipe(

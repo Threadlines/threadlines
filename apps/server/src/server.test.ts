@@ -2736,6 +2736,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             createRef: (input) => Effect.succeed({ refName: input.refName }),
             createTag: (input) =>
               Effect.succeed({ tagName: input.tagName, targetSha: input.targetSha }),
+            deleteBranch: (input) => Effect.succeed({ branchName: input.branchName }),
             switchRef: (input) => Effect.succeed({ refName: input.refName }),
             mergeRef: (input) => Effect.succeed({ refName: input.refName }),
           },

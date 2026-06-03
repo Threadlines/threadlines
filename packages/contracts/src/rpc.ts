@@ -28,6 +28,8 @@ import {
   VcsCreateRefResult,
   VcsCreateTagInput,
   VcsCreateTagResult,
+  VcsDeleteBranchInput,
+  VcsDeleteBranchResult,
   VcsCreateWorktreeInput,
   VcsCreateWorktreeResult,
   VcsInitInput,
@@ -173,6 +175,7 @@ export const WS_METHODS = {
   vcsRemoveWorktree: "vcs.removeWorktree",
   vcsCreateRef: "vcs.createRef",
   vcsCreateTag: "vcs.createTag",
+  vcsDeleteBranch: "vcs.deleteBranch",
   vcsSwitchRef: "vcs.switchRef",
   vcsMergeRef: "vcs.mergeRef",
   vcsInit: "vcs.init",
@@ -597,6 +600,12 @@ export const WsVcsCreateTagRpc = Rpc.make(WS_METHODS.vcsCreateTag, {
   error: GitCommandError,
 });
 
+export const WsVcsDeleteBranchRpc = Rpc.make(WS_METHODS.vcsDeleteBranch, {
+  payload: VcsDeleteBranchInput,
+  success: VcsDeleteBranchResult,
+  error: GitCommandError,
+});
+
 export const WsVcsSwitchRefRpc = Rpc.make(WS_METHODS.vcsSwitchRef, {
   payload: VcsSwitchRefInput,
   success: VcsSwitchRefResult,
@@ -779,6 +788,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsVcsRemoveWorktreeRpc,
   WsVcsCreateRefRpc,
   WsVcsCreateTagRpc,
+  WsVcsDeleteBranchRpc,
   WsVcsSwitchRefRpc,
   WsVcsMergeRefRpc,
   WsVcsInitRpc,

@@ -643,11 +643,14 @@ const WorkGroupSection = memo(function WorkGroupSection({
 }: {
   row: Extract<MessagesTimelineRow, { kind: "work" }>;
 }) {
-  const { workspaceRoot } = use(TimelineRowCtx);
+  const { workspaceRoot, turnDiffSummaryByTurnId } = use(TimelineRowCtx);
   const { isWorking } = use(TimelineRowActivityCtx);
   const [isExpanded, setIsExpanded] = useState(false);
   const previousIsWorkingRef = useRef(isWorking);
-  const groupedEntries = row.groupedEntries;
+  const groupedEntries = useMemo(
+    () => coalesceFileChangeWorkEntries(row.groupedEntries, turnDiffSummaryByTurnId, workspaceRoot),
+    [row.groupedEntries, turnDiffSummaryByTurnId, workspaceRoot],
+  );
   const isLiveActivity = isWorking && row.isLive;
 
   useEffect(() => {
@@ -761,6 +764,149 @@ const WorkGroupSection = memo(function WorkGroupSection({
     </div>
   );
 });
+
+function coalesceFileChangeWorkEntries(
+  entries: ReadonlyArray<TimelineWorkEntry>,
+  turnDiffSummaryByTurnId: ReadonlyMap<TurnId, TurnDiffSummary>,
+  workspaceRoot: string | undefined,
+): TimelineWorkEntry[] {
+  const coalesced: TimelineWorkEntry[] = [];
+  const indexByKey = new Map<string, number>();
+
+  for (const entry of entries) {
+    const enrichedEntry = withInferredFileChangePaths(entry, turnDiffSummaryByTurnId);
+    const key = fileChangeCoalesceKey(enrichedEntry, turnDiffSummaryByTurnId, workspaceRoot);
+    if (!key) {
+      coalesced.push(enrichedEntry);
+      continue;
+    }
+
+    const existingIndex = indexByKey.get(key);
+    if (existingIndex === undefined) {
+      indexByKey.set(key, coalesced.length);
+      coalesced.push(enrichedEntry);
+      continue;
+    }
+
+    const previous = coalesced[existingIndex];
+    if (!previous) {
+      coalesced.push(enrichedEntry);
+      continue;
+    }
+    coalesced[existingIndex] = mergeFileChangeWorkEntries(previous, enrichedEntry, workspaceRoot);
+  }
+
+  return coalesced;
+}
+
+function withInferredFileChangePaths(
+  entry: TimelineWorkEntry,
+  turnDiffSummaryByTurnId: ReadonlyMap<TurnId, TurnDiffSummary>,
+): TimelineWorkEntry {
+  if (!isFileChangeWorkEntry(entry) || (entry.changedFiles?.length ?? 0) > 0) {
+    return entry;
+  }
+
+  const turnSummary = resolveWorkEntryTurnDiffSummary(entry, turnDiffSummaryByTurnId);
+  if (!turnSummary || turnSummary.files.length === 0) {
+    return entry;
+  }
+
+  return {
+    ...entry,
+    changedFiles: dedupeChangedFilePaths(turnSummary.files.map((file) => file.path)),
+  };
+}
+
+function fileChangeCoalesceKey(
+  entry: TimelineWorkEntry,
+  turnDiffSummaryByTurnId: ReadonlyMap<TurnId, TurnDiffSummary>,
+  workspaceRoot: string | undefined,
+): string | null {
+  if (!isFileChangeWorkEntry(entry)) {
+    return null;
+  }
+  if (entry.executionState === "running" || entry.executionState === "failed") {
+    return null;
+  }
+
+  const changedFiles = dedupeChangedFilePaths(entry.changedFiles, workspaceRoot);
+  if (changedFiles.length === 0) {
+    return null;
+  }
+
+  const turnSummary = resolveWorkEntryTurnDiffSummary(entry, turnDiffSummaryByTurnId);
+  const turnKey = entry.turnId ?? turnSummary?.turnId ?? "unkeyed";
+  const pathKey = changedFiles
+    .map((filePath) => normalizeFileChangeCoalescePath(filePath, workspaceRoot))
+    .filter((filePath) => filePath.length > 0)
+    .toSorted()
+    .join("\u001e");
+  if (!pathKey) {
+    return null;
+  }
+
+  return ["file-change", turnKey, pathKey].join("\u001f");
+}
+
+function normalizeFileChangeCoalescePath(
+  filePath: string,
+  workspaceRoot: string | undefined,
+): string {
+  return normalizeDiffMatchPath(formatWorkspaceRelativePath(filePath, workspaceRoot));
+}
+
+function mergeFileChangeWorkEntries(
+  previous: TimelineWorkEntry,
+  next: TimelineWorkEntry,
+  workspaceRoot: string | undefined,
+): TimelineWorkEntry {
+  const changedFiles = dedupeChangedFilePaths(
+    [...(previous.changedFiles ?? []), ...(next.changedFiles ?? [])],
+    workspaceRoot,
+  );
+  const executionState = next.executionState ?? previous.executionState;
+  return {
+    ...previous,
+    ...next,
+    id: previous.id,
+    createdAt: previous.createdAt,
+    ...(changedFiles.length > 0 ? { changedFiles } : {}),
+    ...(executionState ? { executionState } : {}),
+    ...(previous.turnId && !next.turnId ? { turnId: previous.turnId } : {}),
+  };
+}
+
+function isFileChangeWorkEntry(
+  entry: Pick<TimelineWorkEntry, "changedFiles" | "itemType" | "requestKind">,
+): boolean {
+  return (
+    entry.itemType === "file_change" ||
+    entry.requestKind === "file-change" ||
+    (entry.changedFiles?.length ?? 0) > 0
+  );
+}
+
+function dedupeChangedFilePaths(
+  paths: ReadonlyArray<string> | undefined,
+  workspaceRoot?: string | undefined,
+): string[] {
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const path of paths ?? []) {
+    const trimmedPath = path.trim();
+    const key =
+      workspaceRoot === undefined
+        ? normalizeDiffMatchPath(trimmedPath)
+        : normalizeFileChangeCoalescePath(trimmedPath, workspaceRoot);
+    if (!key || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(trimmedPath);
+  }
+  return deduped;
+}
 
 function deriveLiveActivityEntries(entries: ReadonlyArray<TimelineWorkEntry>): TimelineWorkEntry[] {
   const dedupedEntries = dedupeLiveActivityEntries(entries);
@@ -959,7 +1105,11 @@ function classifySummarizableActivityEntry(
   }
 
   if (entry.itemType === "collab_agent_tool_call") {
-    return { kind: "agent", signal: "agent", commandName: normalizedToolName(entry) };
+    return {
+      kind: "agent",
+      signal: "agent",
+      commandName: normalizedToolName(entry),
+    };
   }
 
   const toolText = `${entry.toolTitle ?? ""} ${entry.label} ${entry.detail ?? ""}`.toLowerCase();
@@ -973,7 +1123,11 @@ function classifySummarizableActivityEntry(
     return { kind: "explore", signal: "list", commandName: null };
   }
   if (entry.tone === "tool") {
-    return { kind: "tool", signal: "tool", commandName: normalizedToolName(entry) };
+    return {
+      kind: "tool",
+      signal: "tool",
+      commandName: normalizedToolName(entry),
+    };
   }
   return null;
 }

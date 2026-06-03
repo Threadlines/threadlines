@@ -2810,6 +2810,76 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     },
   );
 
+  const deleteBranch: GitVcsDriver.GitVcsDriverShape["deleteBranch"] = Effect.fn("deleteBranch")(
+    function* (input) {
+      const operation = "GitVcsDriver.deleteBranch";
+      const branchName = input.branchName.trim();
+      const branchRefName = `refs/heads/${branchName}`;
+
+      if (branchName.length === 0) {
+        return yield* createGitCommandError(
+          operation,
+          input.cwd,
+          ["branch", "--delete", "--", branchName],
+          "Branch name is required.",
+        );
+      }
+
+      const validRefName = yield* executeGit(
+        `${operation}.validateName`,
+        input.cwd,
+        ["check-ref-format", branchRefName],
+        {
+          allowNonZeroExit: true,
+          timeoutMs: 5_000,
+        },
+      ).pipe(Effect.map((result) => result.exitCode === 0));
+      if (!validRefName) {
+        return yield* createGitCommandError(
+          operation,
+          input.cwd,
+          ["check-ref-format", branchRefName],
+          `Invalid branch name: ${branchName}`,
+        );
+      }
+
+      const details = yield* statusDetails(input.cwd);
+      if (!details.isRepo) {
+        return yield* createGitCommandError(
+          operation,
+          input.cwd,
+          ["branch", "--delete", "--", branchName],
+          "Not a git repository.",
+        );
+      }
+      if (details.branch === branchName) {
+        return yield* createGitCommandError(
+          operation,
+          input.cwd,
+          ["branch", "--delete", "--", branchName],
+          `Cannot delete the checked out branch: ${branchName}`,
+        );
+      }
+
+      const exists = yield* branchExists(input.cwd, branchName);
+      if (!exists) {
+        return yield* createGitCommandError(
+          operation,
+          input.cwd,
+          ["show-ref", "--verify", "--quiet", branchRefName],
+          `Branch was not found: ${branchName}`,
+        );
+      }
+
+      yield* executeGit(operation, input.cwd, ["branch", "--delete", "--", branchName], {
+        timeoutMs: 10_000,
+        fallbackErrorMessage: "git branch delete failed",
+      });
+
+      return { branchName };
+    },
+  );
+
   const mergeRef: GitVcsDriver.GitVcsDriverShape["mergeRef"] = Effect.fn("mergeRef")(
     function* (input) {
       const details = yield* statusDetails(input.cwd);
@@ -2895,6 +2965,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     renameBranch,
     createRef,
     createTag,
+    deleteBranch,
     switchRef,
     mergeRef,
     initRepo,

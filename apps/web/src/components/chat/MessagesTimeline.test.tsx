@@ -596,6 +596,124 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("-2");
   });
 
+  it("coalesces duplicate completed file change rows for the same turn and file", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const turnId = TurnId.make("turn-1");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "File change",
+              tone: "tool",
+              itemType: "file_change",
+              executionState: "completed",
+              turnId,
+              changedFiles: ["C:/Users/mike/dev-stuff/t3code/apps/web/src/session-logic.ts"],
+            },
+          },
+          {
+            id: "entry-2",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:29.000Z",
+            entry: {
+              id: "work-2",
+              createdAt: "2026-03-17T19:12:29.000Z",
+              label: "Changed files",
+              tone: "tool",
+              itemType: "file_change",
+              executionState: "completed",
+              turnId,
+              changedFiles: ["apps/web/src/session-logic.ts"],
+            },
+          },
+        ]}
+        turnDiffSummaryByAssistantMessageId={
+          new Map([
+            [
+              MessageId.make("assistant-1"),
+              {
+                turnId,
+                completedAt: "2026-03-17T19:13:28.000Z",
+                files: [
+                  {
+                    path: "apps/web/src/session-logic.ts",
+                    kind: "modified",
+                    additions: 7,
+                    deletions: 2,
+                  },
+                ],
+              },
+            ],
+          ])
+        }
+        workspaceRoot="C:/Users/mike/dev-stuff/t3code"
+      />,
+    );
+
+    const headingMatches =
+      markup.match(/data-work-entry-heading="true">Edited session-logic\.ts/g) ?? [];
+    expect(headingMatches).toHaveLength(1);
+    expect(markup).toContain("+7");
+    expect(markup).toContain("-2");
+  });
+
+  it("infers file change row labels and stats from turn diff data when paths are absent", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const turnId = TurnId.make("turn-1");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "File change",
+              tone: "tool",
+              itemType: "file_change",
+              executionState: "completed",
+              turnId,
+            },
+          },
+        ]}
+        turnDiffSummaryByAssistantMessageId={
+          new Map([
+            [
+              MessageId.make("assistant-1"),
+              {
+                turnId,
+                completedAt: "2026-03-17T19:13:28.000Z",
+                files: [
+                  {
+                    path: "apps/web/src/session-logic.ts",
+                    kind: "modified",
+                    additions: 7,
+                    deletions: 2,
+                  },
+                ],
+              },
+            ],
+          ])
+        }
+        workspaceRoot="C:/Users/mike/dev-stuff/t3code"
+      />,
+    );
+
+    expect(markup).toContain("Edited session-logic.ts");
+    expect(markup).toContain("+7");
+    expect(markup).toContain("-2");
+  });
+
   it("shows a live verification label while a command is running", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(

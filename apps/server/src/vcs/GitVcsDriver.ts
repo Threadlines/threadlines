@@ -24,6 +24,8 @@ import {
   type VcsCreateRefResult,
   type VcsCreateTagInput,
   type VcsCreateTagResult,
+  type VcsDeleteBranchInput,
+  type VcsDeleteBranchResult,
   type VcsCreateWorktreeInput,
   type VcsCreateWorktreeResult,
   type VcsInitInput,
@@ -235,6 +237,9 @@ export interface GitVcsDriverShape {
   readonly createTag: (
     input: VcsCreateTagInput,
   ) => Effect.Effect<VcsCreateTagResult, GitCommandError>;
+  readonly deleteBranch: (
+    input: VcsDeleteBranchInput,
+  ) => Effect.Effect<VcsDeleteBranchResult, GitCommandError>;
   readonly switchRef: (
     input: VcsSwitchRefInput,
   ) => Effect.Effect<VcsSwitchRefResult, GitCommandError>;

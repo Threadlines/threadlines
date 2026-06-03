@@ -49,6 +49,8 @@ export const gitMutationKeys = {
     ["git", "mutation", "switchRef", environmentId ?? null, cwd] as const,
   createTag: (environmentId: EnvironmentId | null, cwd: string | null) =>
     ["git", "mutation", "createTag", environmentId ?? null, cwd] as const,
+  deleteBranch: (environmentId: EnvironmentId | null, cwd: string | null) =>
+    ["git", "mutation", "deleteBranch", environmentId ?? null, cwd] as const,
   mergeRef: (environmentId: EnvironmentId | null, cwd: string | null) =>
     ["git", "mutation", "mergeRef", environmentId ?? null, cwd] as const,
   discardChanges: (environmentId: EnvironmentId | null, cwd: string | null) =>
@@ -285,6 +287,27 @@ export function gitCreateTagMutationOptions(input: {
         cwd: input.cwd,
         tagName: args.tagName,
         targetSha: args.targetSha,
+      });
+    },
+    onSettled: async () => {
+      await input.queryClient.invalidateQueries({ queryKey: gitQueryKeys.all });
+    },
+  });
+}
+
+export function gitDeleteBranchMutationOptions(input: {
+  environmentId: EnvironmentId | null;
+  cwd: string | null;
+  queryClient: QueryClient;
+}) {
+  return mutationOptions({
+    mutationKey: gitMutationKeys.deleteBranch(input.environmentId, input.cwd),
+    mutationFn: async (branchName: string) => {
+      if (!input.cwd || !input.environmentId) throw new Error("Branch deletion is unavailable.");
+      const api = ensureEnvironmentApi(input.environmentId);
+      return api.vcs.deleteBranch({
+        cwd: input.cwd,
+        branchName,
       });
     },
     onSettled: async () => {

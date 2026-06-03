@@ -11,6 +11,8 @@ import type {
   VcsCreateRefResult,
   VcsCreateTagInput,
   VcsCreateTagResult,
+  VcsDeleteBranchInput,
+  VcsDeleteBranchResult,
   GitGenerateCommitMessageInput,
   GitGenerateCommitMessageResult,
   GitPreparePullRequestThreadInput,
@@ -639,6 +641,7 @@ export interface EnvironmentApi {
     removeWorktree: (input: VcsRemoveWorktreeInput) => Promise<void>;
     createRef: (input: VcsCreateRefInput) => Promise<VcsCreateRefResult>;
     createTag: (input: VcsCreateTagInput) => Promise<VcsCreateTagResult>;
+    deleteBranch: (input: VcsDeleteBranchInput) => Promise<VcsDeleteBranchResult>;
     switchRef: (input: VcsSwitchRefInput) => Promise<VcsSwitchRefResult>;
     mergeRef: (input: VcsMergeRefInput) => Promise<VcsMergeRefResult>;
     init: (input: VcsInitInput) => Promise<void>;

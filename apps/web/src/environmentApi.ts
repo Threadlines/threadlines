@@ -42,6 +42,7 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
       removeWorktree: rpcClient.vcs.removeWorktree,
       createRef: rpcClient.vcs.createRef,
       createTag: rpcClient.vcs.createTag,
+      deleteBranch: rpcClient.vcs.deleteBranch,
       switchRef: rpcClient.vcs.switchRef,
       mergeRef: rpcClient.vcs.mergeRef,
       init: rpcClient.vcs.init,
