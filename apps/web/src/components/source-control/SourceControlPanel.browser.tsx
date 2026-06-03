@@ -238,8 +238,15 @@ describe("SourceControlPanel changes", () => {
             insertions: 2,
             deletions: 1,
           },
+          {
+            path: "src/new.ts",
+            indexStatus: null,
+            worktreeStatus: "untracked",
+            insertions: 1,
+            deletions: 0,
+          },
         ],
-        insertions: 2,
+        insertions: 3,
         deletions: 1,
       },
     });
@@ -253,6 +260,9 @@ describe("SourceControlPanel changes", () => {
       const statusBadge = document.querySelector('[title="Working tree: Modified"]');
       expect(statusBadge).toBeInstanceOf(HTMLElement);
       expect(statusBadge?.textContent).toBe("M");
+      const untrackedBadge = document.querySelector('[title="Untracked"]');
+      expect(untrackedBadge).toBeInstanceOf(HTMLElement);
+      expect(untrackedBadge?.textContent).toBe("U");
 
       await page.getByRole("button", { name: "Discard changes to src/app.ts" }).click();
 

@@ -17,6 +17,7 @@ import {
 import {
   ChevronDownIcon,
   CloudUploadIcon,
+  CornerUpLeftIcon,
   CopyIcon,
   ExternalLinkIcon,
   FileTextIcon,
@@ -30,7 +31,6 @@ import {
   RefreshCwIcon,
   SparklesIcon,
   TagIcon,
-  Trash2Icon,
   UploadIcon,
 } from "lucide-react";
 import {
@@ -157,7 +157,7 @@ const WORKING_TREE_CHANGE_STATUS_CODES: Record<VcsWorkingTreeFileChangeKind, str
   renamed: "R",
   copied: "C",
   unmerged: "U",
-  untracked: "?",
+  untracked: "U",
 };
 
 const WORKING_TREE_CHANGE_STATUS_LABELS: Record<VcsWorkingTreeFileChangeKind, string> = {
@@ -193,7 +193,7 @@ function workingTreeChangeStatusCode(kind: VcsWorkingTreeFileChangeKind | null |
 
 function formatWorkingTreeFileStatus(file: WorkingTreeFile): string {
   if (isUntrackedWorkingTreeFile(file)) {
-    return "?";
+    return "U";
   }
   const indexCode = workingTreeChangeStatusCode(file.indexStatus);
   const worktreeCode = workingTreeChangeStatusCode(file.worktreeStatus);
@@ -1881,12 +1881,13 @@ export function SourceControlPanel({
                       aria-label="Discard all changes"
                       variant="ghost"
                       size="icon-xs"
+                      className="text-muted-foreground/70 hover:text-destructive-foreground"
                       disabled={changedFiles.length === 0 || isGitActionRunning}
                       onClick={requestDiscardAllChanges}
                     />
                   }
                 >
-                  <Trash2Icon className="size-3.5 text-destructive-foreground" />
+                  <CornerUpLeftIcon className="size-3.5" />
                 </TooltipTrigger>
                 <TooltipPopup side="top">Discard all changes</TooltipPopup>
               </Tooltip>
@@ -1927,7 +1928,7 @@ export function SourceControlPanel({
                     >
                       <button
                         type="button"
-                        className="min-w-0 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-x-1.5 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
                         onClick={() => {
                           if (onOpenDiff) {
                             onOpenDiff(file.path);
@@ -1936,23 +1937,25 @@ export function SourceControlPanel({
                           openChangedFile(file.path);
                         }}
                       >
-                        <span className="flex min-w-0 items-center gap-1.5 text-xs text-foreground">
-                          <span
-                            className={cn(
-                              "inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded border px-1 font-mono text-[10px] leading-none",
-                              workingTreeFileStatusClassName(file),
-                            )}
-                            title={statusDescription}
-                          >
-                            {statusLabel}
-                          </span>
-                          <span className="truncate">{pathParts.name}</span>
+                        <span
+                          className={cn(
+                            "inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded border px-1 font-mono text-[10px] leading-none",
+                            workingTreeFileStatusClassName(file),
+                          )}
+                          title={statusDescription}
+                        >
+                          {statusLabel}
                         </span>
-                        {pathParts.directory ? (
-                          <span className="block truncate pl-5.5 font-mono text-[10px] text-muted-foreground/55">
-                            {pathParts.directory}
+                        <span className="min-w-0">
+                          <span className="block truncate text-xs text-foreground">
+                            {pathParts.name}
                           </span>
-                        ) : null}
+                          {pathParts.directory ? (
+                            <span className="block truncate font-mono text-[10px] text-muted-foreground/55">
+                              {pathParts.directory}
+                            </span>
+                          ) : null}
+                        </span>
                       </button>
                       <span className="shrink-0 self-center font-mono text-[11px]">
                         <span className="text-success">+{file.insertions}</span>
@@ -1973,7 +1976,7 @@ export function SourceControlPanel({
                             />
                           }
                         >
-                          <Trash2Icon className="size-3" />
+                          <CornerUpLeftIcon className="size-3" />
                         </TooltipTrigger>
                         <TooltipPopup side="top">Discard changes</TooltipPopup>
                       </Tooltip>
