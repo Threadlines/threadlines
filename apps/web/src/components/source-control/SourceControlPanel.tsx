@@ -613,10 +613,15 @@ function CommitGraphGlyph({
             cx={nodeX}
             cy={nodeY}
             r={radius + 1.5}
-            className="fill-background stroke-primary"
+            className="fill-background stroke-primary-graph"
             strokeWidth={COMMIT_GRAPH_STROKE_WIDTH}
           />
-          <circle cx={nodeX} cy={nodeY} r={radius - 1} className="fill-primary" />
+          <circle
+            cx={nodeX}
+            cy={nodeY}
+            r={radius - 1}
+            className={commitGraphLaneFillClass(layout.lane)}
+          />
         </>
       ) : isMergeCommit ? (
         <circle
