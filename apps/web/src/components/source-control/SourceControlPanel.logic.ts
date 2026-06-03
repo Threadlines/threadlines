@@ -362,7 +362,8 @@ export function getCommitGraphRefKind(
   if (
     refName.startsWith("refs/tags/") ||
     refName.startsWith("tags/") ||
-    normalized.startsWith("tag/")
+    normalized.startsWith("tag/") ||
+    /^v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(normalized)
   ) {
     return "tag";
   }

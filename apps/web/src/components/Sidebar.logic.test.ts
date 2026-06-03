@@ -749,8 +749,8 @@ describe("resolveProjectStatusIndicator", () => {
         },
         {
           label: "Working",
-          colorClass: "text-sky-600",
-          dotClass: "bg-sky-500",
+          colorClass: "text-primary-readable",
+          dotClass: "bg-primary",
           pulse: true,
         },
       ]),

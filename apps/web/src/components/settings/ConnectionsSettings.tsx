@@ -1162,7 +1162,7 @@ const AdvertisedEndpointListRow = memo(function AdvertisedEndpointListRow({
         </div>
         <div className="ml-auto flex min-h-6 shrink-0 items-center justify-end gap-2">
           {isDefault ? (
-            <span className="rounded-md border border-primary/30 bg-primary/10 px-1 py-0.5 text-[10px] text-primary">
+            <span className="rounded-md border border-primary/30 bg-primary/10 px-1 py-0.5 text-[10px] text-primary-readable">
               Default
             </span>
           ) : null}
@@ -2141,7 +2141,7 @@ export function ConnectionsSettings() {
             className={cn(
               "mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md border",
               selected
-                ? "border-primary/30 bg-primary/10 text-primary"
+                ? "border-primary/30 bg-primary/10 text-primary-readable"
                 : "border-border/70 bg-background text-muted-foreground group-hover:text-foreground",
             )}
           >

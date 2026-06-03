@@ -12,7 +12,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 const PROVIDER_UPDATE_PILL_STYLES = {
   loading:
-    "bg-primary/15 text-primary group-has-[button.provider-update-main:hover]/provider-update:bg-primary/22",
+    "bg-primary/15 text-primary-readable group-has-[button.provider-update-main:hover]/provider-update:bg-primary/22",
   success:
     "bg-success/12 text-success group-has-[button.provider-update-main:hover]/provider-update:bg-success/18",
   warning:

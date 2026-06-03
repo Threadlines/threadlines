@@ -247,12 +247,12 @@ function SteeringQueueIndicator({
 
   return (
     <div className="mx-auto mb-2 max-w-208 px-1">
-      <div className="flex min-w-0 items-start gap-2 rounded-lg border border-blue-500/20 bg-blue-500/8 px-3 py-2 text-xs shadow-sm">
-        <CornerDownRightIcon className="mt-0.5 size-3.5 shrink-0 text-blue-400" />
+      <div className="flex min-w-0 items-start gap-2 rounded-lg border border-primary/20 bg-primary/8 px-3 py-2 text-xs shadow-sm">
+        <CornerDownRightIcon className="mt-0.5 size-3.5 shrink-0 text-primary-readable" />
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2">
-            <span className="font-medium text-blue-300">Follow-up pending</span>
-            <span className="rounded-full bg-blue-500/12 px-1.5 py-0.5 text-[11px] text-blue-300/80">
+            <span className="font-medium text-primary-readable">Follow-up pending</span>
+            <span className="rounded-full bg-primary/12 px-1.5 py-0.5 text-[11px] text-primary-readable/80">
               {countLabel}
             </span>
           </div>

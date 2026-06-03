@@ -158,6 +158,7 @@ describe("SourceControlPanel.logic", () => {
     expect(getCommitGraphRefKind("origin/main", "main")).toBe("current");
     expect(getCommitGraphRefKind("upstream/release", "main")).toBe("remote");
     expect(getCommitGraphRefKind("refs/tags/v1.0.0", "main")).toBe("tag");
+    expect(getCommitGraphRefKind("v0.0.18-nightly.20260602", "main")).toBe("tag");
     expect(getCommitGraphRefKind("feature/source-control", "main")).toBe("branch");
   });
 

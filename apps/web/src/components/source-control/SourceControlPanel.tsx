@@ -432,15 +432,15 @@ function getDeletableCommitGraphBranchRefs(
 function commitGraphRefClassName(refName: string, currentBranch: string | null | undefined) {
   const kind = getCommitGraphRefKind(refName, currentBranch);
   if (kind === "current") {
-    return "border-primary/60 bg-primary/10 text-primary";
+    return "border-primary-graph/70 bg-primary/16 text-primary-readable";
   }
   if (kind === "remote") {
-    return "border-info/45 bg-info/10 text-info-foreground";
+    return "border-warning/18 bg-warning/5 text-warning-foreground/55";
   }
   if (kind === "tag") {
-    return "border-success/45 bg-success/10 text-success-foreground";
+    return "border-border/55 bg-muted/30 text-muted-foreground";
   }
-  return "border-border/70 bg-background/60 text-muted-foreground";
+  return "border-warning/14 bg-warning/4 text-warning-foreground/45";
 }
 
 function CommitGraphRefChip({
@@ -477,7 +477,7 @@ const COMMIT_GRAPH_STROKE_WIDTH = 2;
 // in typical workflows). Side lanes rotate through distinct hues so adjacent branches
 // stay visually distinguishable without looking decorative.
 const COMMIT_GRAPH_LANE_STROKE = [
-  "stroke-primary",
+  "stroke-primary-graph",
   "stroke-amber-400",
   "stroke-emerald-400",
   "stroke-pink-400",
@@ -487,7 +487,7 @@ const COMMIT_GRAPH_LANE_STROKE = [
 ] as const;
 
 const COMMIT_GRAPH_LANE_FILL = [
-  "fill-primary",
+  "fill-primary-graph",
   "fill-amber-400",
   "fill-emerald-400",
   "fill-pink-400",

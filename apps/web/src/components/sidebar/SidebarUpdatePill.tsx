@@ -45,15 +45,15 @@ export function SidebarUpdatePill() {
   const progressClass = isDownloaded
     ? "bg-emerald-500/20 opacity-100"
     : isDownloading
-      ? "bg-sky-500/16 opacity-100"
+      ? "bg-primary/16 opacity-100"
       : "opacity-0";
   const toneClass = isDownloaded
     ? "border border-emerald-400/30 bg-emerald-500/12 text-emerald-400 shadow-[inset_0_0_0_1px_rgba(52,211,153,0.12)]"
     : isDownloading
-      ? "border border-sky-400/25 bg-sky-500/12 text-sky-400"
+      ? "border border-primary/25 bg-primary/12 text-primary-readable"
       : isError
         ? "border border-rose-400/25 bg-rose-500/12 text-rose-400"
-        : "border border-primary/15 bg-primary/15 text-primary";
+        : "border border-primary/15 bg-primary/15 text-primary-readable";
 
   const showArm64Warning = isElectron && shouldShowArm64IntelBuildWarning(state);
   const arm64Description =

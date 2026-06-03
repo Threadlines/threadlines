@@ -528,7 +528,7 @@ describe("ProviderModelPicker", () => {
         ...buildCodexProvider(defaultCodexModels),
         instanceId: "codex" as ProviderInstanceId,
         displayName: "Codex Work",
-        accentColor: "#2563eb",
+        accentColor: "#00347D",
         continuation: { groupKey: "codex:home:/Users/julius/.codex" },
       },
       {

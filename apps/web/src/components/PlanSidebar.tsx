@@ -39,7 +39,7 @@ function stepStatusIcon(status: string): React.ReactNode {
   }
   if (status === "inProgress") {
     return (
-      <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-blue-500/15 text-blue-400">
+      <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary-readable">
         <LoaderIcon className="size-3 animate-spin" />
       </span>
     );
@@ -140,7 +140,7 @@ const PlanSidebar = memo(function PlanSidebar({
         <div className="flex items-center gap-2">
           <Badge
             variant="secondary"
-            className="rounded-md bg-blue-500/10 px-1.5 py-0 text-[10px] font-semibold tracking-wide text-blue-400 uppercase"
+            className="rounded-md bg-primary/10 px-1.5 py-0 text-[10px] font-semibold tracking-wide text-primary-readable uppercase"
           >
             {label}
           </Badge>
@@ -212,7 +212,7 @@ const PlanSidebar = memo(function PlanSidebar({
                   key={`${step.status}:${step.step}`}
                   className={cn(
                     "flex items-start gap-2.5 rounded-lg px-2.5 py-2 transition-colors duration-200",
-                    step.status === "inProgress" && "bg-blue-500/5",
+                    step.status === "inProgress" && "bg-primary/5",
                     step.status === "completed" && "bg-emerald-500/5",
                   )}
                 >
