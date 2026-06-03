@@ -3,6 +3,8 @@ import type {
   VcsSwitchRefResult,
   VcsCommitGraphInput,
   VcsCommitGraphResult,
+  VcsDiscardChangesInput,
+  VcsDiscardChangesResult,
   VcsWorkingTreeDiffInput,
   VcsWorkingTreeDiffResult,
   VcsCreateRefInput,
@@ -630,6 +632,7 @@ export interface EnvironmentApi {
     listRefs: (input: VcsListRefsInput) => Promise<VcsListRefsResult>;
     commitGraph: (input: VcsCommitGraphInput) => Promise<VcsCommitGraphResult>;
     workingTreeDiff: (input: VcsWorkingTreeDiffInput) => Promise<VcsWorkingTreeDiffResult>;
+    discardChanges: (input: VcsDiscardChangesInput) => Promise<VcsDiscardChangesResult>;
     createWorktree: (input: VcsCreateWorktreeInput) => Promise<VcsCreateWorktreeResult>;
     removeWorktree: (input: VcsRemoveWorktreeInput) => Promise<void>;
     createRef: (input: VcsCreateRefInput) => Promise<VcsCreateRefResult>;

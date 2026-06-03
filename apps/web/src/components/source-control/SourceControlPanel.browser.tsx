@@ -102,8 +102,8 @@ const GRAPH: VcsCommitGraphResult = {
   ],
 };
 
-function makeStatus(): VcsStatusResult {
-  return {
+function makeStatus(overrides: Partial<VcsStatusResult> = {}): VcsStatusResult {
+  const baseStatus: VcsStatusResult = {
     isRepo: true,
     hasPrimaryRemote: true,
     isDefaultRef: false,
@@ -120,9 +120,16 @@ function makeStatus(): VcsStatusResult {
     aheadOfDefaultCount: 0,
     pr: null,
   };
+  return {
+    ...baseStatus,
+    ...overrides,
+    workingTree: overrides.workingTree ?? baseStatus.workingTree,
+  };
 }
 
-function makeEnvironmentApi(): EnvironmentApi {
+function makeEnvironmentApi(
+  overrides: { readonly vcs?: Partial<EnvironmentApi["vcs"]> } = {},
+): EnvironmentApi {
   return {
     vcs: {
       listRefs: vi.fn(async () => ({
@@ -140,6 +147,10 @@ function makeEnvironmentApi(): EnvironmentApi {
         ],
       })),
       commitGraph: vi.fn(async () => GRAPH),
+      discardChanges: vi.fn(async (input: { readonly filePaths: string[] }) => ({
+        discardedPaths: input.filePaths,
+      })),
+      ...overrides.vcs,
     },
   } as unknown as EnvironmentApi;
 }
@@ -158,9 +169,15 @@ function createTestRouter(children: ReactNode) {
   });
 }
 
-async function renderPanel() {
-  gitStatusMock.data = makeStatus();
-  __setEnvironmentApiOverrideForTests(ENVIRONMENT_ID, makeEnvironmentApi());
+async function renderPanel(
+  input: {
+    readonly status?: VcsStatusResult;
+    readonly environmentApi?: EnvironmentApi;
+  } = {},
+) {
+  const environmentApi = input.environmentApi ?? makeEnvironmentApi();
+  gitStatusMock.data = input.status ?? makeStatus();
+  __setEnvironmentApiOverrideForTests(ENVIRONMENT_ID, environmentApi);
 
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -181,6 +198,7 @@ async function renderPanel() {
   const screen = await render(<RouterProvider router={router} />, { container: host });
 
   return {
+    environmentApi,
     async cleanup() {
       await screen.unmount();
       queryClient.clear();
@@ -188,6 +206,73 @@ async function renderPanel() {
     },
   };
 }
+
+describe("SourceControlPanel changes", () => {
+  beforeEach(async () => {
+    gitStatusMock.refreshGitStatus.mockClear();
+    gitStatusMock.refreshLocalGitStatus.mockClear();
+    await __resetLocalApiForTests();
+  });
+
+  afterEach(async () => {
+    __resetEnvironmentApiOverridesForTests();
+    await __resetLocalApiForTests();
+  });
+
+  it("confirms and discards a selected file change", async () => {
+    const discardChanges: EnvironmentApi["vcs"]["discardChanges"] = vi.fn(async (input) => ({
+      discardedPaths: input.filePaths,
+    }));
+    const status = makeStatus({
+      hasWorkingTreeChanges: true,
+      workingTree: {
+        files: [
+          {
+            path: "src/app.ts",
+            indexStatus: null,
+            worktreeStatus: "modified",
+            insertions: 2,
+            deletions: 1,
+          },
+        ],
+        insertions: 2,
+        deletions: 1,
+      },
+    });
+    const mounted = await renderPanel({
+      status,
+      environmentApi: makeEnvironmentApi({ vcs: { discardChanges } }),
+    });
+
+    try {
+      await expect.element(page.getByText("app.ts")).toBeVisible();
+      const statusBadge = document.querySelector('[title="Working tree: Modified"]');
+      expect(statusBadge).toBeInstanceOf(HTMLElement);
+      expect(statusBadge?.textContent).toBe("M");
+
+      await page.getByRole("button", { name: "Discard changes to src/app.ts" }).click();
+
+      await expect.element(page.getByText("Discard changes?")).toBeVisible();
+      await expect
+        .element(page.getByText(/Tracked changes will be restored to HEAD when possible/))
+        .toBeVisible();
+
+      await page.getByRole("button", { name: "Discard" }).click();
+
+      await vi.waitFor(() => {
+        expect(discardChanges).toHaveBeenCalledWith({ cwd: CWD, filePaths: ["src/app.ts"] });
+      });
+      await vi.waitFor(() => {
+        expect(gitStatusMock.refreshGitStatus).toHaveBeenCalledWith({
+          environmentId: ENVIRONMENT_ID,
+          cwd: CWD,
+        });
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+});
 
 describe("SourceControlPanel commit graph", () => {
   let writeText: ReturnType<typeof vi.fn>;

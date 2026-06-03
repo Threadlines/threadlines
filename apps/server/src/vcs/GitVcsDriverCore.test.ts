@@ -130,6 +130,9 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
           status.workingTree.files.map((file) => file.path),
           "feature.ts",
         );
+        const featureFile = status.workingTree.files.find((file) => file.path === "feature.ts");
+        assert.equal(featureFile?.indexStatus, null);
+        assert.equal(featureFile?.worktreeStatus, "untracked");
       }),
     );
 
@@ -364,6 +367,56 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
   });
 
   describe("commit context", () => {
+    it.effect("discards tracked, staged, and untracked file changes", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const pathService = yield* Path.Path;
+
+        yield* writeTextFile(cwd, "README.md", "# test\n\nmodified\n");
+        yield* writeTextFile(cwd, "staged.txt", "staged\n");
+        yield* git(cwd, ["add", "staged.txt"]);
+        yield* writeTextFile(cwd, "untracked.txt", "untracked\n");
+
+        const result = yield* driver.discardChanges({
+          cwd,
+          filePaths: ["README.md", "staged.txt", "untracked.txt"],
+        });
+
+        assert.deepStrictEqual(result.discardedPaths.toSorted(), [
+          "README.md",
+          "staged.txt",
+          "untracked.txt",
+        ]);
+        const restoredReadme = yield* fileSystem.readFileString(pathService.join(cwd, "README.md"));
+        assert.equal(restoredReadme.replaceAll("\r\n", "\n"), "# test\n");
+        assert.equal(yield* fileSystem.exists(pathService.join(cwd, "staged.txt")), false);
+        assert.equal(yield* fileSystem.exists(pathService.join(cwd, "untracked.txt")), false);
+        assert.equal(yield* git(cwd, ["status", "--porcelain"]), "");
+      }),
+    );
+
+    it.effect("discards staged files before the first commit", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const pathService = yield* Path.Path;
+
+        yield* driver.initRepo({ cwd });
+        yield* writeTextFile(cwd, "staged.txt", "staged\n");
+        yield* git(cwd, ["add", "staged.txt"]);
+
+        const result = yield* driver.discardChanges({ cwd, filePaths: ["staged.txt"] });
+
+        assert.deepStrictEqual(result.discardedPaths, ["staged.txt"]);
+        assert.equal(yield* fileSystem.exists(pathService.join(cwd, "staged.txt")), false);
+        assert.equal(yield* git(cwd, ["status", "--porcelain"]), "");
+      }),
+    );
+
     it.effect("stages selected files and commits only those files", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();

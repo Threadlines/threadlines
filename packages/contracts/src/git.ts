@@ -43,6 +43,16 @@ const GitPushStepStatus = Schema.Literals([
 const GitBranchStepStatus = Schema.Literals(["created", "skipped_not_requested"]);
 const GitPrStepStatus = Schema.Literals(["created", "opened_existing", "skipped_not_requested"]);
 const VcsStatusChangeRequestState = Schema.Literals(["open", "closed", "merged"]);
+export const VcsWorkingTreeFileChangeKind = Schema.Literals([
+  "modified",
+  "added",
+  "deleted",
+  "renamed",
+  "copied",
+  "unmerged",
+  "untracked",
+]);
+export type VcsWorkingTreeFileChangeKind = typeof VcsWorkingTreeFileChangeKind.Type;
 const GitPullRequestReference = TrimmedNonEmptyStringSchema;
 const GitPullRequestState = Schema.Literals(["open", "closed", "merged"]);
 const GitPreparePullRequestThreadMode = Schema.Literals(["local", "worktree"]);
@@ -159,6 +169,17 @@ export const VcsWorkingTreeDiffResult = Schema.Struct({
 });
 export type VcsWorkingTreeDiffResult = typeof VcsWorkingTreeDiffResult.Type;
 
+export const VcsDiscardChangesInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  filePaths: Schema.Array(TrimmedNonEmptyStringSchema).check(Schema.isMinLength(1)),
+});
+export type VcsDiscardChangesInput = typeof VcsDiscardChangesInput.Type;
+
+export const VcsDiscardChangesResult = Schema.Struct({
+  discardedPaths: Schema.Array(TrimmedNonEmptyStringSchema),
+});
+export type VcsDiscardChangesResult = typeof VcsDiscardChangesResult.Type;
+
 export const VcsCreateWorktreeInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
   refName: TrimmedNonEmptyStringSchema,
@@ -253,6 +274,9 @@ const VcsStatusLocalShape = {
     files: Schema.Array(
       Schema.Struct({
         path: TrimmedNonEmptyStringSchema,
+        originalPath: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
+        indexStatus: Schema.optional(Schema.NullOr(VcsWorkingTreeFileChangeKind)),
+        worktreeStatus: Schema.optional(Schema.NullOr(VcsWorkingTreeFileChangeKind)),
         insertions: NonNegativeInt,
         deletions: NonNegativeInt,
       }),

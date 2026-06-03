@@ -7,6 +7,8 @@ import {
   GitCommandError,
   type VcsCommitGraphInput,
   type VcsCommitGraphResult,
+  type VcsDiscardChangesInput,
+  type VcsDiscardChangesResult,
   type VcsWorkingTreeDiffInput,
   type VcsWorkingTreeDiffResult,
   type VcsSwitchRefInput,
@@ -74,6 +76,9 @@ export interface GitWorkflowServiceShape {
   readonly workingTreeDiff: (
     input: VcsWorkingTreeDiffInput,
   ) => Effect.Effect<VcsWorkingTreeDiffResult, GitCommandError>;
+  readonly discardChanges: (
+    input: VcsDiscardChangesInput,
+  ) => Effect.Effect<VcsDiscardChangesResult, GitCommandError>;
   readonly createWorktree: (
     input: VcsCreateWorktreeInput,
   ) => Effect.Effect<VcsCreateWorktreeResult, GitCommandError>;
@@ -328,6 +333,10 @@ export const make = Effect.fn("makeGitWorkflowService")(function* () {
     workingTreeDiff: (input) =>
       ensureGitCommand("GitWorkflowService.workingTreeDiff", input.cwd).pipe(
         Effect.andThen(git.workingTreeDiff(input)),
+      ),
+    discardChanges: (input) =>
+      ensureGitCommand("GitWorkflowService.discardChanges", input.cwd).pipe(
+        Effect.andThen(git.discardChanges(input)),
       ),
     createWorktree: (input) =>
       ensureGitCommand("GitWorkflowService.createWorktree", input.cwd).pipe(

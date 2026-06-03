@@ -5,6 +5,7 @@ import {
   type VcsCommitGraphCommit,
   type VcsRef,
   type VcsStatusResult,
+  type VcsWorkingTreeFileChangeKind,
 } from "@t3tools/contracts";
 import {
   useInfiniteQuery,
@@ -28,6 +29,7 @@ import {
   PlusIcon,
   RefreshCwIcon,
   SparklesIcon,
+  Trash2Icon,
   UploadIcon,
 } from "lucide-react";
 import {
@@ -49,6 +51,7 @@ import {
   gitBranchSearchInfiniteQueryOptions,
   gitCheckoutMutationOptions,
   gitCommitGraphQueryOptions,
+  gitDiscardChangesMutationOptions,
   gitGenerateCommitMessageMutationOptions,
   gitInitMutationOptions,
   gitMergeRefMutationOptions,
@@ -70,6 +73,15 @@ import {
   resolveDefaultBranchActionDialogCopy,
   type DefaultBranchConfirmableAction,
 } from "../GitActionsControl.logic";
+import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "../ui/alert-dialog";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -125,6 +137,37 @@ interface SourceControlPanelProps {
   readonly onOpenDiff?: (filePath?: string) => void;
 }
 
+type WorkingTreeFile = VcsStatusResult["workingTree"]["files"][number];
+
+const EMPTY_WORKING_TREE_FILES: readonly WorkingTreeFile[] = [];
+
+interface PendingDiscardChanges {
+  readonly filePaths: string[];
+  readonly label: string;
+  readonly count: number;
+  readonly includesNewFiles: boolean;
+}
+
+const WORKING_TREE_CHANGE_STATUS_CODES: Record<VcsWorkingTreeFileChangeKind, string> = {
+  modified: "M",
+  added: "A",
+  deleted: "D",
+  renamed: "R",
+  copied: "C",
+  unmerged: "U",
+  untracked: "?",
+};
+
+const WORKING_TREE_CHANGE_STATUS_LABELS: Record<VcsWorkingTreeFileChangeKind, string> = {
+  modified: "Modified",
+  added: "Added",
+  deleted: "Deleted",
+  renamed: "Renamed",
+  copied: "Copied",
+  unmerged: "Unmerged",
+  untracked: "Untracked",
+};
+
 function splitPath(filePath: string): { readonly name: string; readonly directory: string } {
   const parts = filePath.split(/[\\/]/g).filter(Boolean);
   const name = parts.at(-1) ?? filePath;
@@ -132,6 +175,70 @@ function splitPath(filePath: string): { readonly name: string; readonly director
     name,
     directory: parts.length > 1 ? parts.slice(0, -1).join("/") : "",
   };
+}
+
+function isUntrackedWorkingTreeFile(file: WorkingTreeFile): boolean {
+  return file.worktreeStatus === "untracked";
+}
+
+function isNewWorkingTreeFile(file: WorkingTreeFile): boolean {
+  return file.indexStatus === "added" || file.worktreeStatus === "untracked";
+}
+
+function workingTreeChangeStatusCode(kind: VcsWorkingTreeFileChangeKind | null | undefined) {
+  return kind ? WORKING_TREE_CHANGE_STATUS_CODES[kind] : null;
+}
+
+function formatWorkingTreeFileStatus(file: WorkingTreeFile): string {
+  if (isUntrackedWorkingTreeFile(file)) {
+    return "?";
+  }
+  const indexCode = workingTreeChangeStatusCode(file.indexStatus);
+  const worktreeCode = workingTreeChangeStatusCode(file.worktreeStatus);
+  if (indexCode && worktreeCode && indexCode !== worktreeCode) {
+    return `${indexCode}${worktreeCode}`;
+  }
+  return worktreeCode ?? indexCode ?? "M";
+}
+
+function describeWorkingTreeFileStatus(file: WorkingTreeFile): string {
+  const parts: string[] = [];
+  if (file.indexStatus) {
+    parts.push(`Index: ${WORKING_TREE_CHANGE_STATUS_LABELS[file.indexStatus]}`);
+  }
+  if (file.worktreeStatus) {
+    parts.push(
+      file.worktreeStatus === "untracked"
+        ? WORKING_TREE_CHANGE_STATUS_LABELS[file.worktreeStatus]
+        : `Working tree: ${WORKING_TREE_CHANGE_STATUS_LABELS[file.worktreeStatus]}`,
+    );
+  }
+  if (file.originalPath) {
+    parts.push(`From ${file.originalPath}`);
+  }
+  return parts.length > 0 ? parts.join(". ") : "Changed";
+}
+
+function workingTreeFileStatusClassName(file: WorkingTreeFile): string {
+  if (file.indexStatus === "unmerged" || file.worktreeStatus === "unmerged") {
+    return "border-warning/25 bg-warning/8 text-warning-foreground";
+  }
+  if (file.indexStatus === "deleted" || file.worktreeStatus === "deleted") {
+    return "border-destructive/25 bg-destructive/8 text-destructive-foreground";
+  }
+  if (file.indexStatus === "added" || file.worktreeStatus === "untracked") {
+    return "border-success/25 bg-success/8 text-success-foreground";
+  }
+  return "border-border/70 bg-muted/50 text-muted-foreground";
+}
+
+function buildDiscardChangesDescription(pending: PendingDiscardChanges): string {
+  const scope =
+    pending.count === 1
+      ? `Discard changes to ${pending.label}.`
+      : `Discard changes in ${pending.count} files.`;
+  const removal = pending.includesNewFiles ? " New or untracked files will be deleted." : "";
+  return `${scope} Tracked changes will be restored to HEAD when possible.${removal} This cannot be undone.`;
 }
 
 function actionDisabledReason(input: {
@@ -1080,6 +1187,9 @@ export function SourceControlPanel({
   const [isPublishDialogOpen, setIsPublishDialogOpen] = useState(false);
   const [pendingDefaultBranchAction, setPendingDefaultBranchAction] =
     useState<DefaultBranchConfirmableAction | null>(null);
+  const [pendingDiscardChanges, setPendingDiscardChanges] = useState<PendingDiscardChanges | null>(
+    null,
+  );
   const [changesPanelRatio, setChangesPanelRatio] = useLocalStorage(
     SOURCE_CONTROL_CHANGES_PANEL_RATIO_STORAGE_KEY,
     DEFAULT_CHANGES_PANEL_RATIO,
@@ -1136,6 +1246,13 @@ export function SourceControlPanel({
       queryClient,
     }),
   );
+  const discardChangesMutation = useMutation(
+    gitDiscardChangesMutationOptions({
+      environmentId,
+      cwd,
+      queryClient,
+    }),
+  );
   const runningStackedActionCount = useIsMutating({
     mutationKey: gitMutationKeys.runStackedAction(environmentId, cwd),
   });
@@ -1147,8 +1264,9 @@ export function SourceControlPanel({
     runningPublishActionCount > 0 ||
     actionMutation.isPending ||
     initMutation.isPending ||
-    pullMutation.isPending;
-  const changedFiles = status?.workingTree.files ?? [];
+    pullMutation.isPending ||
+    discardChangesMutation.isPending;
+  const changedFiles = status?.workingTree.files ?? EMPTY_WORKING_TREE_FILES;
   const changedFileCount = changedFiles.length;
   const canPublishRepository = Boolean(status?.isRepo && !status.hasPrimaryRemote);
   const shouldPublishBranch = Boolean(
@@ -1371,6 +1489,53 @@ export function SourceControlPanel({
     });
     void promise.then(refreshPanel, () => undefined);
   }, [initMutation, refreshPanel, threadToastData]);
+
+  const requestDiscardFileChanges = useCallback((file: WorkingTreeFile) => {
+    setPendingDiscardChanges({
+      filePaths: [file.path],
+      label: file.path,
+      count: 1,
+      includesNewFiles: isNewWorkingTreeFile(file),
+    });
+  }, []);
+
+  const requestDiscardAllChanges = useCallback(() => {
+    if (changedFiles.length === 0) {
+      return;
+    }
+    setPendingDiscardChanges({
+      filePaths: changedFiles.map((file) => file.path),
+      label: "all working tree changes",
+      count: changedFiles.length,
+      includesNewFiles: changedFiles.some(isNewWorkingTreeFile),
+    });
+  }, [changedFiles]);
+
+  const runDiscardChanges = useCallback(() => {
+    if (!pendingDiscardChanges) {
+      return;
+    }
+    const discardRequest = pendingDiscardChanges;
+    const promise = discardChangesMutation.mutateAsync({
+      filePaths: discardRequest.filePaths,
+    });
+    setPendingDiscardChanges(null);
+    void toastManager.promise(promise, {
+      loading: { title: "Discarding changes...", data: threadToastData },
+      success: () => ({
+        title: "Changes discarded",
+        description:
+          discardRequest.count === 1 ? discardRequest.label : `${discardRequest.count} files`,
+        data: threadToastData,
+      }),
+      error: (error) => ({
+        title: "Discard changes failed",
+        description: toGitActionErrorMessage(error),
+        data: threadToastData,
+      }),
+    });
+    void promise.then(refreshPanel, () => refreshPanel());
+  }, [discardChangesMutation, pendingDiscardChanges, refreshPanel, threadToastData]);
 
   const openChangedFile = useCallback(
     (filePath: string) => {
@@ -1654,6 +1819,23 @@ export function SourceControlPanel({
           <div className="flex items-center justify-between gap-2">
             <h3 className="text-xs font-medium text-foreground">Changes</h3>
             <div className="flex shrink-0 items-center gap-2">
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      type="button"
+                      aria-label="Discard all changes"
+                      variant="ghost"
+                      size="icon-xs"
+                      disabled={changedFiles.length === 0 || isGitActionRunning}
+                      onClick={requestDiscardAllChanges}
+                    />
+                  }
+                >
+                  <Trash2Icon className="size-3.5 text-destructive-foreground" />
+                </TooltipTrigger>
+                <TooltipPopup side="top">Discard all changes</TooltipPopup>
+              </Tooltip>
               {onOpenDiff ? (
                 <Button
                   type="button"
@@ -1682,36 +1864,66 @@ export function SourceControlPanel({
               <div className="divide-y divide-border/45">
                 {changedFiles.map((file) => {
                   const pathParts = splitPath(file.path);
+                  const statusLabel = formatWorkingTreeFileStatus(file);
+                  const statusDescription = describeWorkingTreeFileStatus(file);
                   return (
-                    <button
+                    <div
                       key={file.path}
-                      type="button"
-                      className="grid w-full grid-cols-[minmax(0,1fr)_auto] gap-3 px-2.5 py-2 text-left transition-colors hover:bg-accent/60"
-                      onClick={() => {
-                        if (onOpenDiff) {
-                          onOpenDiff(file.path);
-                          return;
-                        }
-                        openChangedFile(file.path);
-                      }}
+                      className="group/change-file grid w-full grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 px-2 py-1.5 transition-colors hover:bg-accent/60"
                     >
-                      <span className="min-w-0">
+                      <button
+                        type="button"
+                        className="min-w-0 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        onClick={() => {
+                          if (onOpenDiff) {
+                            onOpenDiff(file.path);
+                            return;
+                          }
+                          openChangedFile(file.path);
+                        }}
+                      >
                         <span className="flex min-w-0 items-center gap-1.5 text-xs text-foreground">
-                          <FileTextIcon className="size-3 shrink-0 text-muted-foreground/60" />
+                          <span
+                            className={cn(
+                              "inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded border px-1 font-mono text-[10px] leading-none",
+                              workingTreeFileStatusClassName(file),
+                            )}
+                            title={statusDescription}
+                          >
+                            {statusLabel}
+                          </span>
                           <span className="truncate">{pathParts.name}</span>
                         </span>
                         {pathParts.directory ? (
-                          <span className="block truncate pl-4.5 font-mono text-[10px] text-muted-foreground/55">
+                          <span className="block truncate pl-5.5 font-mono text-[10px] text-muted-foreground/55">
                             {pathParts.directory}
                           </span>
                         ) : null}
-                      </span>
+                      </button>
                       <span className="shrink-0 self-center font-mono text-[11px]">
                         <span className="text-success">+{file.insertions}</span>
                         <span className="px-1 text-muted-foreground/60">/</span>
                         <span className="text-destructive">-{file.deletions}</span>
                       </span>
-                    </button>
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <Button
+                              type="button"
+                              aria-label={`Discard changes to ${file.path}`}
+                              variant="ghost"
+                              size="icon-xs"
+                              className="size-6 text-muted-foreground/60 hover:text-destructive-foreground"
+                              disabled={isGitActionRunning}
+                              onClick={() => requestDiscardFileChanges(file)}
+                            />
+                          }
+                        >
+                          <Trash2Icon className="size-3" />
+                        </TooltipTrigger>
+                        <TooltipPopup side="top">Discard changes</TooltipPopup>
+                      </Tooltip>
+                    </div>
                   );
                 })}
               </div>
@@ -1877,6 +2089,38 @@ export function SourceControlPanel({
           </section>
         </div>
       </div>
+      <AlertDialog
+        open={pendingDiscardChanges !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingDiscardChanges(null);
+          }
+        }}
+      >
+        <AlertDialogPopup className="max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Discard changes?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingDiscardChanges
+                ? buildDiscardChangesDescription(pendingDiscardChanges)
+                : "Discard selected working tree changes. This cannot be undone."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" size="sm" />}>
+              Cancel
+            </AlertDialogClose>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={discardChangesMutation.isPending}
+              onClick={runDiscardChanges}
+            >
+              Discard
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
       <Dialog
         open={pendingDefaultBranchAction !== null}
         onOpenChange={(open) => {

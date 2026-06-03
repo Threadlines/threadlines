@@ -99,6 +99,7 @@ export interface WsRpcClient {
     readonly listRefs: RpcUnaryMethod<typeof WS_METHODS.vcsListRefs>;
     readonly commitGraph: RpcUnaryMethod<typeof WS_METHODS.vcsCommitGraph>;
     readonly workingTreeDiff: RpcUnaryMethod<typeof WS_METHODS.vcsWorkingTreeDiff>;
+    readonly discardChanges: RpcUnaryMethod<typeof WS_METHODS.vcsDiscardChanges>;
     readonly createWorktree: RpcUnaryMethod<typeof WS_METHODS.vcsCreateWorktree>;
     readonly removeWorktree: RpcUnaryMethod<typeof WS_METHODS.vcsRemoveWorktree>;
     readonly createRef: RpcUnaryMethod<typeof WS_METHODS.vcsCreateRef>;
@@ -274,6 +275,8 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.vcsCommitGraph](input)),
       workingTreeDiff: (input) =>
         transport.request((client) => client[WS_METHODS.vcsWorkingTreeDiff](input)),
+      discardChanges: (input) =>
+        transport.request((client) => client[WS_METHODS.vcsDiscardChanges](input)),
       createWorktree: (input) =>
         transport.request((client) => client[WS_METHODS.vcsCreateWorktree](input)),
       removeWorktree: (input) =>

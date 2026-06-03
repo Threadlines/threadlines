@@ -13,6 +13,8 @@ import {
   GitActionProgressEvent,
   VcsCommitGraphInput,
   VcsCommitGraphResult,
+  VcsDiscardChangesInput,
+  VcsDiscardChangesResult,
   VcsWorkingTreeDiffInput,
   VcsWorkingTreeDiffResult,
   VcsMergeRefInput,
@@ -164,6 +166,7 @@ export const WS_METHODS = {
   vcsListRefs: "vcs.listRefs",
   vcsCommitGraph: "vcs.commitGraph",
   vcsWorkingTreeDiff: "vcs.workingTreeDiff",
+  vcsDiscardChanges: "vcs.discardChanges",
   vcsCreateWorktree: "vcs.createWorktree",
   vcsRemoveWorktree: "vcs.removeWorktree",
   vcsCreateRef: "vcs.createRef",
@@ -562,6 +565,12 @@ export const WsVcsWorkingTreeDiffRpc = Rpc.make(WS_METHODS.vcsWorkingTreeDiff, {
   error: GitCommandError,
 });
 
+export const WsVcsDiscardChangesRpc = Rpc.make(WS_METHODS.vcsDiscardChanges, {
+  payload: VcsDiscardChangesInput,
+  success: VcsDiscardChangesResult,
+  error: GitCommandError,
+});
+
 export const WsVcsCreateWorktreeRpc = Rpc.make(WS_METHODS.vcsCreateWorktree, {
   payload: VcsCreateWorktreeInput,
   success: VcsCreateWorktreeResult,
@@ -756,6 +765,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsVcsListRefsRpc,
   WsVcsCommitGraphRpc,
   WsVcsWorkingTreeDiffRpc,
+  WsVcsDiscardChangesRpc,
   WsVcsCreateWorktreeRpc,
   WsVcsRemoveWorktreeRpc,
   WsVcsCreateRefRpc,
