@@ -13,6 +13,7 @@ import {
   type PermissionMode,
   type PermissionResult,
   type PermissionUpdate,
+  type SDKControlGetContextUsageResponse,
   type SDKMessage,
   type SDKResultMessage,
   type SettingSource,
@@ -190,6 +191,7 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
   readonly setModel: (model?: string) => Promise<void>;
   readonly setPermissionMode: (mode: PermissionMode) => Promise<void>;
   readonly setMaxThinkingTokens: (maxThinkingTokens: number | null) => Promise<void>;
+  readonly getContextUsage?: () => Promise<SDKControlGetContextUsageResponse>;
   readonly close: () => void;
 }
 
@@ -332,10 +334,33 @@ function maxClaudeContextWindowFromModelUsage(
   return maxContextWindow;
 }
 
-function normalizeClaudeTokenUsage(
-  value: unknown,
-  contextWindow?: number,
-): ThreadTokenUsageSnapshot | undefined {
+interface ClaudeUsageTotals {
+  readonly totalProcessedTokens: number;
+  readonly inputTokens?: number;
+  readonly cachedInputTokens?: number;
+  readonly outputTokens?: number;
+  readonly toolUses?: number;
+  readonly durationMs?: number;
+}
+
+type ClaudeContextUsageReadResult =
+  | {
+      readonly ok: true;
+      readonly value: SDKControlGetContextUsageResponse;
+    }
+  | {
+      readonly ok: false;
+      readonly cause: unknown;
+    };
+
+function asPositiveFiniteInteger(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return undefined;
+  }
+  return Math.round(value);
+}
+
+function readClaudeUsageTotals(value: unknown): ClaudeUsageTotals | undefined {
   if (!value || typeof value !== "object") {
     return undefined;
   }
@@ -369,30 +394,68 @@ function normalizeClaudeTokenUsage(
     return undefined;
   }
 
+  return {
+    totalProcessedTokens: Math.round(totalProcessedTokens),
+    ...(inputTokens > 0 ? { inputTokens: Math.round(inputTokens) } : {}),
+    ...(cachedInputTokens > 0 ? { cachedInputTokens: Math.round(cachedInputTokens) } : {}),
+    ...(outputTokens > 0 ? { outputTokens: Math.round(outputTokens) } : {}),
+    ...(typeof usage.tool_uses === "number" && Number.isFinite(usage.tool_uses)
+      ? { toolUses: Math.round(usage.tool_uses) }
+      : {}),
+    ...(typeof usage.duration_ms === "number" && Number.isFinite(usage.duration_ms)
+      ? { durationMs: Math.round(usage.duration_ms) }
+      : {}),
+  };
+}
+
+function normalizeClaudeContextUsage(
+  value: SDKControlGetContextUsageResponse | undefined,
+): ThreadTokenUsageSnapshot | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const usedTokens = asPositiveFiniteInteger(value.totalTokens);
+  if (usedTokens === undefined) {
+    return undefined;
+  }
+
   const maxTokens =
-    typeof contextWindow === "number" && Number.isFinite(contextWindow) && contextWindow > 0
-      ? contextWindow
-      : undefined;
-  const usedTokens =
-    maxTokens !== undefined ? Math.min(totalProcessedTokens, maxTokens) : totalProcessedTokens;
+    asPositiveFiniteInteger(value.maxTokens) ?? asPositiveFiniteInteger(value.rawMaxTokens);
 
   return {
     usedTokens,
     lastUsedTokens: usedTokens,
-    ...(totalProcessedTokens > usedTokens ? { totalProcessedTokens } : {}),
-    ...(inputTokens > 0 ? { inputTokens } : {}),
-    ...(cachedInputTokens > 0 ? { cachedInputTokens } : {}),
-    ...(outputTokens > 0 ? { outputTokens } : {}),
     ...(maxTokens !== undefined ? { maxTokens } : {}),
-    ...(inputTokens > 0 ? { lastInputTokens: inputTokens } : {}),
-    ...(cachedInputTokens > 0 ? { lastCachedInputTokens: cachedInputTokens } : {}),
-    ...(outputTokens > 0 ? { lastOutputTokens: outputTokens } : {}),
-    ...(typeof usage.tool_uses === "number" && Number.isFinite(usage.tool_uses)
-      ? { toolUses: usage.tool_uses }
+    compactsAutomatically: value.isAutoCompactEnabled,
+  };
+}
+
+function mergeClaudeProcessedUsageTotals(
+  usage: ThreadTokenUsageSnapshot,
+  totals: ClaudeUsageTotals | undefined,
+): ThreadTokenUsageSnapshot {
+  if (!totals) {
+    return usage;
+  }
+
+  return {
+    ...usage,
+    ...(totals.totalProcessedTokens > usage.usedTokens
+      ? { totalProcessedTokens: totals.totalProcessedTokens }
       : {}),
-    ...(typeof usage.duration_ms === "number" && Number.isFinite(usage.duration_ms)
-      ? { durationMs: usage.duration_ms }
+    ...(totals.inputTokens !== undefined ? { inputTokens: totals.inputTokens } : {}),
+    ...(totals.cachedInputTokens !== undefined
+      ? { cachedInputTokens: totals.cachedInputTokens }
       : {}),
+    ...(totals.outputTokens !== undefined ? { outputTokens: totals.outputTokens } : {}),
+    ...(totals.inputTokens !== undefined ? { lastInputTokens: totals.inputTokens } : {}),
+    ...(totals.cachedInputTokens !== undefined
+      ? { lastCachedInputTokens: totals.cachedInputTokens }
+      : {}),
+    ...(totals.outputTokens !== undefined ? { lastOutputTokens: totals.outputTokens } : {}),
+    ...(totals.toolUses !== undefined ? { toolUses: totals.toolUses } : {}),
+    ...(totals.durationMs !== undefined ? { durationMs: totals.durationMs } : {}),
   };
 }
 
@@ -1491,32 +1554,60 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     // The SDK result.usage contains *accumulated* totals across all API calls
     // (input_tokens, cache_read_input_tokens, etc. summed over every request).
     // This does NOT represent the current context window size.
-    // Instead, use the last known context-window-accurate usage from task_progress
-    // events and treat the accumulated total as totalProcessedTokens.
-    const accumulatedSnapshot = normalizeClaudeTokenUsage(
-      result?.usage,
-      resultContextWindow ?? context.lastKnownContextWindow,
-    );
-    const accumulatedTotalProcessedTokens =
-      accumulatedSnapshot?.totalProcessedTokens ?? accumulatedSnapshot?.usedTokens;
-    const lastGoodUsage = context.lastKnownTokenUsage;
-    const maxTokens = resultContextWindow ?? context.lastKnownContextWindow;
+    // Instead, ask the SDK for current context usage when available, then
+    // merge accumulated totals only as processed-token metadata.
+    const currentContextUsage = yield* Effect.suspend(() => {
+      const getContextUsage = context.query.getContextUsage;
+      if (!getContextUsage) {
+        return Effect.sync(() => undefined);
+      }
+
+      return Effect.promise(async (): Promise<ClaudeContextUsageReadResult> => {
+        try {
+          return {
+            ok: true,
+            value: await getContextUsage(),
+          };
+        } catch (cause) {
+          return {
+            ok: false,
+            cause,
+          };
+        }
+      }).pipe(
+        Effect.flatMap((result) =>
+          result.ok
+            ? Effect.succeed(result.value)
+            : Effect.logWarning("claude.context-usage.failed", {
+                threadId: context.session.threadId,
+                cause: result.cause,
+              }).pipe(Effect.as(undefined)),
+        ),
+      );
+    });
+    const currentContextSnapshot = normalizeClaudeContextUsage(currentContextUsage);
+    if (currentContextSnapshot) {
+      context.lastKnownTokenUsage = currentContextSnapshot;
+      if (currentContextSnapshot.maxTokens !== undefined) {
+        context.lastKnownContextWindow = currentContextSnapshot.maxTokens;
+      }
+    }
+
+    const accumulatedTotals = readClaudeUsageTotals(result?.usage);
+    const lastGoodUsage = currentContextSnapshot ?? context.lastKnownTokenUsage;
+    const maxTokens = currentContextSnapshot?.maxTokens ?? lastGoodUsage?.maxTokens;
     const usageSnapshot = applyClaudeThinkingTokenUsage(
       lastGoodUsage
-        ? {
-            ...lastGoodUsage,
-            ...(typeof maxTokens === "number" && Number.isFinite(maxTokens) && maxTokens > 0
-              ? { maxTokens }
-              : {}),
-            ...(typeof accumulatedTotalProcessedTokens === "number" &&
-            Number.isFinite(accumulatedTotalProcessedTokens) &&
-            accumulatedTotalProcessedTokens > lastGoodUsage.usedTokens
-              ? {
-                  totalProcessedTokens: accumulatedTotalProcessedTokens,
-                }
-              : {}),
-          }
-        : accumulatedSnapshot,
+        ? mergeClaudeProcessedUsageTotals(
+            {
+              ...lastGoodUsage,
+              ...(typeof maxTokens === "number" && Number.isFinite(maxTokens) && maxTokens > 0
+                ? { maxTokens }
+                : {}),
+            },
+            accumulatedTotals,
+          )
+        : undefined,
       turnState,
     );
     if (!turnState) {
@@ -2233,25 +2324,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         });
         return;
       case "task_progress":
-        if (message.usage) {
-          const normalizedUsage = normalizeClaudeTokenUsage(
-            message.usage,
-            context.lastKnownContextWindow,
-          );
-          if (normalizedUsage) {
-            context.lastKnownTokenUsage = normalizedUsage;
-            const usageStamp = yield* makeEventStamp();
-            yield* offerRuntimeEvent({
-              ...base,
-              eventId: usageStamp.eventId,
-              createdAt: usageStamp.createdAt,
-              type: "thread.token-usage.updated",
-              payload: {
-                usage: normalizedUsage,
-              },
-            });
-          }
-        }
         yield* offerRuntimeEvent({
           ...base,
           type: "task.progress",
@@ -2265,25 +2337,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         });
         return;
       case "task_notification":
-        if (message.usage) {
-          const normalizedUsage = normalizeClaudeTokenUsage(
-            message.usage,
-            context.lastKnownContextWindow,
-          );
-          if (normalizedUsage) {
-            context.lastKnownTokenUsage = normalizedUsage;
-            const usageStamp = yield* makeEventStamp();
-            yield* offerRuntimeEvent({
-              ...base,
-              eventId: usageStamp.eventId,
-              createdAt: usageStamp.createdAt,
-              type: "thread.token-usage.updated",
-              payload: {
-                usage: normalizedUsage,
-              },
-            });
-          }
-        }
         yield* offerRuntimeEvent({
           ...base,
           type: "task.completed",
