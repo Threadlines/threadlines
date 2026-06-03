@@ -43,7 +43,11 @@ const STATUS_UPSTREAM_REFRESH_INTERVAL = Duration.seconds(15);
 const STATUS_UPSTREAM_REFRESH_TIMEOUT = Duration.seconds(5);
 const STATUS_UPSTREAM_REFRESH_FAILURE_COOLDOWN = Duration.minutes(2);
 const STATUS_UPSTREAM_REFRESH_CACHE_CAPACITY = 2_048;
-const STATUS_UPSTREAM_REFRESH_ENV = Object.freeze({
+const REMOTE_REFS_REFRESH_INTERVAL = Duration.seconds(30);
+const REMOTE_REFS_REFRESH_TIMEOUT = Duration.seconds(8);
+const REMOTE_REFS_REFRESH_FAILURE_COOLDOWN = Duration.minutes(2);
+const REMOTE_REFS_REFRESH_CACHE_CAPACITY = 2_048;
+const BACKGROUND_GIT_FETCH_ENV = Object.freeze({
   GCM_INTERACTIVE: "Never",
   GIT_TERMINAL_PROMPT: "0",
   SSH_ASKPASS_REQUIRE: "never",
@@ -77,6 +81,10 @@ class StatusRemoteRefreshCacheKey extends Data.Class<{
   gitCommonDir: string;
   remoteName: string;
   branchName: string;
+}> {}
+
+class RemoteRefsRefreshCacheKey extends Data.Class<{
+  gitCommonDir: string;
 }> {}
 
 interface ExecuteGitOptions {
@@ -991,7 +999,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       ],
       {
         allowNonZeroExit: true,
-        env: STATUS_UPSTREAM_REFRESH_ENV,
+        env: BACKGROUND_GIT_FETCH_ENV,
         timeoutMs: Duration.toMillis(STATUS_UPSTREAM_REFRESH_TIMEOUT),
       },
     ).pipe(Effect.asVoid);
@@ -1039,6 +1047,108 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       }),
     );
   });
+
+  const fetchRemoteRefsForRemote = Effect.fn("fetchRemoteRefsForRemote")(function* (
+    gitCommonDir: string,
+    remoteName: string,
+  ) {
+    const fetchCwd =
+      path.basename(gitCommonDir) === ".git" ? path.dirname(gitCommonDir) : gitCommonDir;
+    const result = yield* executeGit(
+      "GitVcsDriver.fetchRemoteRefsForRemote",
+      fetchCwd,
+      [
+        "--git-dir",
+        gitCommonDir,
+        "fetch",
+        "--quiet",
+        "--no-tags",
+        "--prune",
+        remoteName,
+        `+refs/heads/*:refs/remotes/${remoteName}/*`,
+      ],
+      {
+        allowNonZeroExit: true,
+        env: BACKGROUND_GIT_FETCH_ENV,
+        timeoutMs: Duration.toMillis(REMOTE_REFS_REFRESH_TIMEOUT),
+      },
+    );
+    if (result.exitCode !== 0) {
+      return yield* createGitCommandError(
+        "GitVcsDriver.fetchRemoteRefsForRemote",
+        fetchCwd,
+        [
+          "--git-dir",
+          gitCommonDir,
+          "fetch",
+          "--quiet",
+          "--no-tags",
+          "--prune",
+          remoteName,
+          `+refs/heads/*:refs/remotes/${remoteName}/*`,
+        ],
+        result.stderr.trim() || "git fetch remote refs failed",
+      );
+    }
+  });
+
+  const refreshRemoteRefsCacheEntry = Effect.fn("refreshRemoteRefsCacheEntry")(function* (
+    cacheKey: RemoteRefsRefreshCacheKey,
+  ) {
+    const fetchCwd =
+      path.basename(cacheKey.gitCommonDir) === ".git"
+        ? path.dirname(cacheKey.gitCommonDir)
+        : cacheKey.gitCommonDir;
+    const remoteNamesResult = yield* executeGit(
+      "GitVcsDriver.refreshRemoteRefs.remoteNames",
+      fetchCwd,
+      ["--git-dir", cacheKey.gitCommonDir, "remote"],
+      {
+        allowNonZeroExit: true,
+        timeoutMs: 5_000,
+      },
+    );
+    if (remoteNamesResult.exitCode !== 0) {
+      return yield* createGitCommandError(
+        "GitVcsDriver.refreshRemoteRefs.remoteNames",
+        fetchCwd,
+        ["--git-dir", cacheKey.gitCommonDir, "remote"],
+        remoteNamesResult.stderr.trim() || "git remote failed",
+      );
+    }
+
+    const remoteNames = parseRemoteNames(remoteNamesResult.stdout);
+    yield* Effect.forEach(
+      remoteNames,
+      (remoteName) => fetchRemoteRefsForRemote(cacheKey.gitCommonDir, remoteName),
+      { discard: true, concurrency: "unbounded" },
+    );
+    return true as const;
+  });
+
+  const remoteRefsRefreshCache = yield* Cache.makeWith(refreshRemoteRefsCacheEntry, {
+    capacity: REMOTE_REFS_REFRESH_CACHE_CAPACITY,
+    timeToLive: (exit) =>
+      Exit.isSuccess(exit) ? REMOTE_REFS_REFRESH_INTERVAL : REMOTE_REFS_REFRESH_FAILURE_COOLDOWN,
+  });
+
+  const refreshRemoteRefsIfStale = Effect.fn("refreshRemoteRefsIfStale")(function* (cwd: string) {
+    const gitCommonDir = yield* resolveGitCommonDir(cwd);
+    yield* Cache.get(
+      remoteRefsRefreshCache,
+      new RemoteRefsRefreshCacheKey({
+        gitCommonDir,
+      }),
+    );
+  });
+
+  const refreshRemoteRefsBestEffort = (operation: string, cwd: string) =>
+    refreshRemoteRefsIfStale(cwd).pipe(
+      Effect.catchIf(isMissingGitCwdError, () => Effect.void),
+      Effect.catch((error) =>
+        Effect.logWarning(`${operation}: remote ref refresh failed for ${cwd}: ${error.message}`),
+      ),
+    );
 
   const resolveDefaultBranchName = (
     cwd: string,
@@ -1847,9 +1957,6 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
 
   const listRefs: GitVcsDriver.GitVcsDriverShape["listRefs"] = Effect.fn("listRefs")(
     function* (input) {
-      const branchRecencyPromise = readBranchRecency(input.cwd).pipe(
-        Effect.catch(() => Effect.succeed(new Map<string, number>())),
-      );
       const localBranchResult = yield* executeGit(
         "GitVcsDriver.listRefs.branchNoColor",
         input.cwd,
@@ -1889,6 +1996,11 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         );
       }
 
+      yield* refreshRemoteRefsBestEffort("GitVcsDriver.listRefs", input.cwd);
+
+      const branchRecencyPromise = readBranchRecency(input.cwd).pipe(
+        Effect.catch(() => Effect.succeed(new Map<string, number>())),
+      );
       const remoteBranchResultEffect = executeGit(
         "GitVcsDriver.listRefs.remoteBranches",
         input.cwd,
@@ -2081,6 +2193,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const commitGraph: GitVcsDriver.GitVcsDriverShape["commitGraph"] = Effect.fn("commitGraph")(
     function* (input) {
       const limit = input.limit ?? GIT_COMMIT_GRAPH_DEFAULT_LIMIT;
+      yield* refreshRemoteRefsBestEffort("GitVcsDriver.commitGraph", input.cwd);
       const result = yield* executeGit(
         "GitVcsDriver.commitGraph",
         input.cwd,

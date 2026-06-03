@@ -83,6 +83,25 @@ function gitCommitDateEnv(isoDate: string): NodeJS.ProcessEnv {
   };
 }
 
+const pushRemoteBranchFromPeer = (input: {
+  readonly remote: string;
+  readonly baseBranch: string;
+  readonly branch: string;
+  readonly subject: string;
+  readonly fileName: string;
+}) =>
+  Effect.gen(function* () {
+    const peer = yield* makeTmpDir("git-vcs-driver-peer-");
+    yield* git(peer, ["clone", "--branch", input.baseBranch, input.remote, "."]);
+    yield* git(peer, ["config", "user.email", "test@test.com"]);
+    yield* git(peer, ["config", "user.name", "Test"]);
+    yield* git(peer, ["checkout", "-b", input.branch]);
+    yield* writeTextFile(peer, input.fileName, `${input.branch}\n`);
+    yield* git(peer, ["add", "."]);
+    yield* git(peer, ["commit", "-m", input.subject]);
+    yield* git(peer, ["push", "origin", input.branch]);
+  });
+
 it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
   describe("repository status", () => {
     it.effect("reports non-repository directories without failing", () =>
@@ -281,6 +300,37 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         assert.equal(result.branch, current);
       }),
     );
+
+    it.effect("refreshes remote refs before listing refs", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const remote = yield* makeTmpDir("git-vcs-driver-remote-");
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        yield* git(remote, ["init", "--bare"]);
+        yield* git(cwd, ["remote", "add", "origin", remote]);
+        yield* git(cwd, ["push", "-u", "origin", initialBranch]);
+        yield* git(remote, ["symbolic-ref", "HEAD", `refs/heads/${initialBranch}`]);
+        yield* pushRemoteBranchFromPeer({
+          remote,
+          baseBranch: initialBranch,
+          branch: "claude-redesign",
+          subject: "remote redesign branch",
+          fileName: "redesign.txt",
+        });
+
+        assert.equal(
+          yield* git(cwd, ["branch", "--remotes", "--list", "origin/claude-redesign"]),
+          "",
+        );
+
+        const refs = yield* driver.listRefs({ cwd, query: "claude-redesign" });
+        const remoteRef = refs.refs.find((refName) => refName.name === "origin/claude-redesign");
+        assert.equal(remoteRef?.isRemote, true);
+        assert.equal(remoteRef?.remoteName, "origin");
+      }),
+    );
   });
 
   describe("worktree operations", () => {
@@ -466,6 +516,38 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
           graph.commits.map((commit) => commit.subject),
           ["main tip", "main parent", "initial commit"],
         );
+      }),
+    );
+
+    it.effect("refreshes remote refs before reading the graph", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const remote = yield* makeTmpDir("git-vcs-driver-remote-");
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        yield* git(remote, ["init", "--bare"]);
+        yield* git(cwd, ["remote", "add", "origin", remote]);
+        yield* git(cwd, ["push", "-u", "origin", initialBranch]);
+        yield* git(remote, ["symbolic-ref", "HEAD", `refs/heads/${initialBranch}`]);
+        yield* pushRemoteBranchFromPeer({
+          remote,
+          baseBranch: initialBranch,
+          branch: "claude-redesign",
+          subject: "remote graph redesign",
+          fileName: "graph-redesign.txt",
+        });
+
+        assert.equal(
+          yield* git(cwd, ["branch", "--remotes", "--list", "origin/claude-redesign"]),
+          "",
+        );
+
+        const graph = yield* driver.commitGraph({ cwd, limit: 5 });
+        const remoteCommit = graph.commits.find(
+          (commit) => commit.subject === "remote graph redesign",
+        );
+        assert.include(remoteCommit?.refs ?? [], "origin/claude-redesign");
       }),
     );
   });
