@@ -9,6 +9,193 @@ export interface SourceControlPrimaryAction {
   readonly icon: SourceControlPrimaryActionIcon;
 }
 
+export interface SourceControlFileTreeFileInput {
+  readonly path: string;
+  readonly insertions: number;
+  readonly deletions: number;
+}
+
+export interface SourceControlFileTreeDirectoryNode<TFile extends SourceControlFileTreeFileInput> {
+  readonly kind: "directory";
+  readonly name: string;
+  readonly path: string;
+  readonly insertions: number;
+  readonly deletions: number;
+  readonly fileCount: number;
+  readonly children: Array<SourceControlFileTreeNode<TFile>>;
+}
+
+export interface SourceControlFileTreeFileNode<TFile extends SourceControlFileTreeFileInput> {
+  readonly kind: "file";
+  readonly name: string;
+  readonly path: string;
+  readonly insertions: number;
+  readonly deletions: number;
+  readonly file: TFile;
+}
+
+export type SourceControlFileTreeNode<TFile extends SourceControlFileTreeFileInput> =
+  | SourceControlFileTreeDirectoryNode<TFile>
+  | SourceControlFileTreeFileNode<TFile>;
+
+interface MutableSourceControlFileTreeDirectory<TFile extends SourceControlFileTreeFileInput> {
+  name: string;
+  path: string;
+  insertions: number;
+  deletions: number;
+  fileCount: number;
+  directories: Map<string, MutableSourceControlFileTreeDirectory<TFile>>;
+  files: Array<SourceControlFileTreeFileNode<TFile>>;
+}
+
+const SORT_LOCALE_OPTIONS: Intl.CollatorOptions = { numeric: true, sensitivity: "base" };
+
+function normalizePathSegments(pathValue: string): string[] {
+  return pathValue
+    .replaceAll("\\", "/")
+    .split("/")
+    .filter((segment) => segment.length > 0);
+}
+
+function compareSourceControlTreeEntries(
+  a: { readonly name: string },
+  b: { readonly name: string },
+) {
+  return a.name.localeCompare(b.name, undefined, SORT_LOCALE_OPTIONS);
+}
+
+function compactSourceControlDirectoryNode<TFile extends SourceControlFileTreeFileInput>(
+  node: SourceControlFileTreeDirectoryNode<TFile>,
+): SourceControlFileTreeDirectoryNode<TFile> {
+  const compactedChildren = node.children.map((child) =>
+    child.kind === "directory" ? compactSourceControlDirectoryNode(child) : child,
+  );
+
+  let compactedNode: SourceControlFileTreeDirectoryNode<TFile> = {
+    kind: "directory",
+    name: node.name,
+    path: node.path,
+    insertions: node.insertions,
+    deletions: node.deletions,
+    fileCount: node.fileCount,
+    children: compactedChildren,
+  };
+
+  while (compactedNode.children.length === 1 && compactedNode.children[0]?.kind === "directory") {
+    const onlyChild = compactedNode.children[0];
+    compactedNode = {
+      kind: "directory",
+      name: `${compactedNode.name}/${onlyChild.name}`,
+      path: onlyChild.path,
+      insertions: onlyChild.insertions,
+      deletions: onlyChild.deletions,
+      fileCount: onlyChild.fileCount,
+      children: onlyChild.children,
+    };
+  }
+
+  return compactedNode;
+}
+
+function toSourceControlFileTreeNodes<TFile extends SourceControlFileTreeFileInput>(
+  directory: MutableSourceControlFileTreeDirectory<TFile>,
+): Array<SourceControlFileTreeNode<TFile>> {
+  const subdirectories = Array.from(directory.directories.values())
+    .toSorted(compareSourceControlTreeEntries)
+    .map<SourceControlFileTreeDirectoryNode<TFile>>((subdirectory) => ({
+      kind: "directory",
+      name: subdirectory.name,
+      path: subdirectory.path,
+      insertions: subdirectory.insertions,
+      deletions: subdirectory.deletions,
+      fileCount: subdirectory.fileCount,
+      children: toSourceControlFileTreeNodes(subdirectory),
+    }))
+    .map((subdirectory) => compactSourceControlDirectoryNode(subdirectory));
+
+  return [...subdirectories, ...directory.files.toSorted(compareSourceControlTreeEntries)];
+}
+
+export function buildSourceControlFileTree<TFile extends SourceControlFileTreeFileInput>(
+  files: readonly TFile[],
+): Array<SourceControlFileTreeNode<TFile>> {
+  const root: MutableSourceControlFileTreeDirectory<TFile> = {
+    name: "",
+    path: "",
+    insertions: 0,
+    deletions: 0,
+    fileCount: 0,
+    directories: new Map(),
+    files: [],
+  };
+
+  for (const file of files) {
+    const segments = normalizePathSegments(file.path);
+    const fileName = segments.at(-1);
+    if (!fileName) {
+      continue;
+    }
+
+    let currentDirectory = root;
+    const ancestors: Array<MutableSourceControlFileTreeDirectory<TFile>> = [root];
+
+    for (const segment of segments.slice(0, -1)) {
+      const nextPath = currentDirectory.path ? `${currentDirectory.path}/${segment}` : segment;
+      const existingDirectory = currentDirectory.directories.get(segment);
+      if (existingDirectory) {
+        currentDirectory = existingDirectory;
+      } else {
+        const createdDirectory: MutableSourceControlFileTreeDirectory<TFile> = {
+          name: segment,
+          path: nextPath,
+          insertions: 0,
+          deletions: 0,
+          fileCount: 0,
+          directories: new Map(),
+          files: [],
+        };
+        currentDirectory.directories.set(segment, createdDirectory);
+        currentDirectory = createdDirectory;
+      }
+      ancestors.push(currentDirectory);
+    }
+
+    const normalizedPath = segments.join("/");
+    currentDirectory.files.push({
+      kind: "file",
+      name: fileName,
+      path: normalizedPath,
+      insertions: file.insertions,
+      deletions: file.deletions,
+      file,
+    });
+
+    for (const ancestor of ancestors) {
+      ancestor.insertions += file.insertions;
+      ancestor.deletions += file.deletions;
+      ancestor.fileCount += 1;
+    }
+  }
+
+  return toSourceControlFileTreeNodes(root);
+}
+
+export function collectSourceControlFileTreeDirectoryPaths<
+  TFile extends SourceControlFileTreeFileInput,
+>(nodes: readonly SourceControlFileTreeNode<TFile>[]): string[] {
+  const paths: string[] = [];
+  for (const node of nodes) {
+    if (node.kind !== "directory") {
+      continue;
+    }
+    paths.push(node.path);
+    for (const childPath of collectSourceControlFileTreeDirectoryPaths(node.children)) {
+      paths.push(childPath);
+    }
+  }
+  return paths;
+}
+
 export function formatCommitCount(count: number): string {
   return count === 1 ? "1 commit" : `${count} commits`;
 }

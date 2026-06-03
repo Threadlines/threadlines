@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildSourceControlFileTree,
   buildCommitGraphRows,
   formatCommitGraphDateTime,
   formatCommitGraphParentSummary,
@@ -78,6 +79,50 @@ describe("SourceControlPanel.logic", () => {
       label: "Publish branch",
       disabledReason: null,
       icon: "upload",
+    });
+  });
+
+  it("builds a compact source-control file tree with directory stats", () => {
+    const tree = buildSourceControlFileTree([
+      {
+        path: "apps/web/src/components/source-control/SourceControlPanel.tsx",
+        insertions: 2,
+        deletions: 1,
+      },
+      {
+        path: "apps/web/src/components/source-control/SourceControlPanel.browser.tsx",
+        insertions: 11,
+        deletions: 1,
+      },
+      { path: "package.json", insertions: 1, deletions: 0 },
+    ]);
+
+    expect(tree).toHaveLength(2);
+    const [directoryNode, fileNode] = tree;
+    expect(directoryNode?.kind).toBe("directory");
+    expect(directoryNode).toMatchObject({
+      name: "apps/web/src/components/source-control",
+      path: "apps/web/src/components/source-control",
+      insertions: 13,
+      deletions: 2,
+      fileCount: 2,
+    });
+    expect(directoryNode?.kind === "directory" ? directoryNode.children : []).toMatchObject([
+      {
+        kind: "file",
+        name: "SourceControlPanel.browser.tsx",
+        path: "apps/web/src/components/source-control/SourceControlPanel.browser.tsx",
+      },
+      {
+        kind: "file",
+        name: "SourceControlPanel.tsx",
+        path: "apps/web/src/components/source-control/SourceControlPanel.tsx",
+      },
+    ]);
+    expect(fileNode).toMatchObject({
+      kind: "file",
+      name: "package.json",
+      path: "package.json",
     });
   });
 

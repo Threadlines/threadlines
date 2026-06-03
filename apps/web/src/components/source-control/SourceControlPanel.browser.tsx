@@ -215,6 +215,7 @@ describe("SourceControlPanel changes", () => {
   beforeEach(async () => {
     gitStatusMock.refreshGitStatus.mockClear();
     gitStatusMock.refreshLocalGitStatus.mockClear();
+    window.localStorage.clear();
     await __resetLocalApiForTests();
   });
 
@@ -282,6 +283,55 @@ describe("SourceControlPanel changes", () => {
           cwd: CWD,
         });
       });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("toggles changed files into a compact tree view", async () => {
+    const status = makeStatus({
+      hasWorkingTreeChanges: true,
+      workingTree: {
+        files: [
+          {
+            path: "apps/web/src/components/source-control/SourceControlPanel.tsx",
+            indexStatus: null,
+            worktreeStatus: "modified",
+            insertions: 2,
+            deletions: 1,
+          },
+          {
+            path: "apps/web/src/components/source-control/SourceControlPanel.browser.tsx",
+            indexStatus: null,
+            worktreeStatus: "modified",
+            insertions: 11,
+            deletions: 1,
+          },
+        ],
+        insertions: 13,
+        deletions: 2,
+      },
+    });
+    const mounted = await renderPanel({ status });
+
+    try {
+      await page.getByRole("button", { name: "View changes as tree" }).click();
+
+      await expect
+        .element(page.getByRole("button", { name: "View changes as list" }))
+        .toBeVisible();
+      await expect.element(page.getByText("apps/web/src/components/source-control")).toBeVisible();
+      await expect.element(page.getByText("SourceControlPanel.tsx")).toBeVisible();
+      await expect.element(page.getByText("SourceControlPanel.browser.tsx")).toBeVisible();
+
+      await page
+        .getByRole("button", { name: "Collapse apps/web/src/components/source-control" })
+        .click();
+
+      await expect.element(page.getByText("SourceControlPanel.tsx")).not.toBeInTheDocument();
+      await expect
+        .element(page.getByText("SourceControlPanel.browser.tsx"))
+        .not.toBeInTheDocument();
     } finally {
       await mounted.cleanup();
     }

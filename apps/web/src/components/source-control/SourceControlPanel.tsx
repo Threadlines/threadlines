@@ -16,19 +16,23 @@ import {
 } from "@tanstack/react-query";
 import {
   ChevronDownIcon,
+  ChevronRightIcon,
   CloudUploadIcon,
   CornerUpLeftIcon,
   CopyIcon,
   ExternalLinkIcon,
   FileTextIcon,
+  FolderClosedIcon,
   GitBranchIcon,
   GitCommitIcon,
   GitGraphIcon,
   GitMergeIcon,
   GitPullRequestIcon,
+  ListTreeIcon,
   DownloadIcon,
   PlusIcon,
   RefreshCwIcon,
+  Rows3Icon,
   SparklesIcon,
   TagIcon,
   UploadIcon,
@@ -111,6 +115,8 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   buildCommitGraphRows,
+  buildSourceControlFileTree,
+  collectSourceControlFileTreeDirectoryPaths,
   type CommitGraphLaneLayout,
   formatCommitCount,
   formatCommitGraphDateTime,
@@ -120,6 +126,7 @@ import {
   getVisibleCommitGraphRefs,
   normalizeCommitGraphRefName,
   resolveSourceControlPrimaryAction,
+  type SourceControlFileTreeNode,
 } from "./SourceControlPanel.logic";
 
 export interface SourceControlProjectTarget {
@@ -746,6 +753,10 @@ const MIN_CHANGES_PANEL_HEIGHT = 96;
 const SOURCE_CONTROL_SPLIT_VERTICAL_CHROME = 28;
 const SOURCE_CONTROL_CHANGES_PANEL_RATIO_STORAGE_KEY =
   "badcode:source-control:changes-panel-ratio:v1";
+const SOURCE_CONTROL_CHANGES_VIEW_MODE_STORAGE_KEY = "badcode:source-control:changes-view-mode:v1";
+const SourceControlChangesViewMode = Schema.Literals(["list", "tree"]);
+type SourceControlChangesViewMode = typeof SourceControlChangesViewMode.Type;
+const EMPTY_DIRECTORY_EXPANSION_OVERRIDES: Record<string, boolean> = {};
 
 function clampNumber(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -1201,7 +1212,15 @@ export function SourceControlPanel({
     DEFAULT_CHANGES_PANEL_RATIO,
     Schema.Finite,
   );
+  const [changesViewMode, setChangesViewMode] = useLocalStorage<
+    SourceControlChangesViewMode,
+    string
+  >(SOURCE_CONTROL_CHANGES_VIEW_MODE_STORAGE_KEY, "list", SourceControlChangesViewMode);
   const [changesPanelHeight, setChangesPanelHeight] = useState(DEFAULT_CHANGES_PANEL_HEIGHT);
+  const [changesTreeExpansionState, setChangesTreeExpansionState] = useState<{
+    readonly key: string;
+    readonly overrides: Record<string, boolean>;
+  }>(() => ({ key: "", overrides: {} }));
   const bodyRef = useRef<HTMLDivElement>(null);
   const changesSectionRef = useRef<HTMLElement>(null);
   const commitControlsRef = useRef<HTMLElement>(null);
@@ -1281,6 +1300,15 @@ export function SourceControlPanel({
     discardChangesMutation.isPending ||
     createTagMutation.isPending;
   const changedFiles = status?.workingTree.files ?? EMPTY_WORKING_TREE_FILES;
+  const changedFileTree = useMemo(() => buildSourceControlFileTree(changedFiles), [changedFiles]);
+  const changedFileTreeExpansionKey = useMemo(
+    () => collectSourceControlFileTreeDirectoryPaths(changedFileTree).join("\u0000"),
+    [changedFileTree],
+  );
+  const changesTreeExpansionOverrides =
+    changesTreeExpansionState.key === changedFileTreeExpansionKey
+      ? changesTreeExpansionState.overrides
+      : EMPTY_DIRECTORY_EXPANSION_OVERRIDES;
   const changedFileCount = changedFiles.length;
   const canPublishRepository = Boolean(status?.isRepo && !status.hasPrimaryRemote);
   const shouldPublishBranch = Boolean(
@@ -1524,6 +1552,28 @@ export function SourceControlPanel({
       includesNewFiles: changedFiles.some(isNewWorkingTreeFile),
     });
   }, [changedFiles]);
+
+  const toggleChangesViewMode = useCallback(() => {
+    setChangesViewMode((current) => (current === "tree" ? "list" : "tree"));
+  }, [setChangesViewMode]);
+
+  const toggleChangesTreeDirectory = useCallback(
+    (directoryPath: string) => {
+      setChangesTreeExpansionState((current) => {
+        const currentOverrides =
+          current.key === changedFileTreeExpansionKey ? current.overrides : {};
+        const isExpanded = currentOverrides[directoryPath] ?? true;
+        return {
+          key: changedFileTreeExpansionKey,
+          overrides: {
+            ...currentOverrides,
+            [directoryPath]: !isExpanded,
+          },
+        };
+      });
+    },
+    [changedFileTreeExpansionKey],
+  );
 
   const runDiscardChanges = useCallback(() => {
     if (!pendingDiscardChanges) {
@@ -1808,6 +1858,126 @@ export function SourceControlPanel({
     [changesPanelHeight, measureSourceControlSplit, setChangesPanelRatio],
   );
 
+  const renderChangedFileRow = (
+    file: WorkingTreeFile,
+    options: { readonly depth?: number; readonly showDirectory?: boolean } = {},
+  ) => {
+    const pathParts = splitPath(file.path);
+    const statusLabel = formatWorkingTreeFileStatus(file);
+    const statusDescription = describeWorkingTreeFileStatus(file);
+    const depth = options.depth;
+    const isTreeRow = depth !== undefined;
+    const showDirectory = options.showDirectory ?? true;
+
+    return (
+      <div
+        key={`file:${file.path}`}
+        className={cn(
+          "group/change-file grid w-full grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 py-1.5 transition-colors hover:bg-accent/60",
+          isTreeRow ? "pr-2" : "px-2",
+        )}
+        style={isTreeRow ? { paddingLeft: `${8 + depth * 14}px` } : undefined}
+      >
+        <button
+          type="button"
+          className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-x-1.5 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onClick={() => {
+            if (onOpenDiff) {
+              onOpenDiff(file.path);
+              return;
+            }
+            openChangedFile(file.path);
+          }}
+        >
+          <span
+            className={cn(
+              "inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded border px-1 font-mono text-[10px] leading-none",
+              workingTreeFileStatusClassName(file),
+            )}
+            title={statusDescription}
+          >
+            {statusLabel}
+          </span>
+          <span className="min-w-0">
+            <span className="block truncate text-xs text-foreground">{pathParts.name}</span>
+            {showDirectory && pathParts.directory ? (
+              <span className="block truncate font-mono text-[10px] text-muted-foreground/55">
+                {pathParts.directory}
+              </span>
+            ) : null}
+          </span>
+        </button>
+        <span className="shrink-0 self-center font-mono text-[11px]">
+          <span className="text-success">+{file.insertions}</span>
+          <span className="px-1 text-muted-foreground/60">/</span>
+          <span className="text-destructive">-{file.deletions}</span>
+        </span>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                type="button"
+                aria-label={`Discard changes to ${file.path}`}
+                variant="ghost"
+                size="icon-xs"
+                className="size-6 text-muted-foreground/60 hover:text-destructive-foreground"
+                disabled={isGitActionRunning}
+                onClick={() => requestDiscardFileChanges(file)}
+              />
+            }
+          >
+            <CornerUpLeftIcon className="size-3" />
+          </TooltipTrigger>
+          <TooltipPopup side="top">Discard changes</TooltipPopup>
+        </Tooltip>
+      </div>
+    );
+  };
+
+  const renderChangedFileTreeNode = (
+    node: SourceControlFileTreeNode<WorkingTreeFile>,
+    depth: number,
+  ): ReactNode => {
+    if (node.kind === "file") {
+      return renderChangedFileRow(node.file, { depth, showDirectory: false });
+    }
+
+    const isExpanded = changesTreeExpansionOverrides[node.path] ?? true;
+    return (
+      <div key={`dir:${node.path}`}>
+        <button
+          type="button"
+          aria-label={`${isExpanded ? "Collapse" : "Expand"} ${node.path}`}
+          aria-expanded={isExpanded}
+          className="group/change-directory grid w-full grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-1.5 py-1.5 pr-2 text-left transition-colors hover:bg-accent/60"
+          style={{ paddingLeft: `${8 + depth * 14}px` }}
+          onClick={() => toggleChangesTreeDirectory(node.path)}
+        >
+          <ChevronRightIcon
+            className={cn(
+              "size-3 shrink-0 text-muted-foreground/60 transition-transform group-hover/change-directory:text-foreground/80",
+              isExpanded && "rotate-90",
+            )}
+          />
+          <FolderClosedIcon className="size-3.5 shrink-0 text-muted-foreground/65" />
+          <span className="truncate font-mono text-[10px] text-muted-foreground/80 group-hover/change-directory:text-foreground/90">
+            {node.name}
+          </span>
+          <span className="shrink-0 self-center font-mono text-[11px]">
+            <span className="text-success">+{node.insertions}</span>
+            <span className="px-1 text-muted-foreground/60">/</span>
+            <span className="text-destructive">-{node.deletions}</span>
+          </span>
+        </button>
+        {isExpanded ? (
+          <div>
+            {node.children.map((childNode) => renderChangedFileTreeNode(childNode, depth + 1))}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
   if (!target) {
     return null;
   }
@@ -1878,6 +2048,35 @@ export function SourceControlPanel({
                   render={
                     <Button
                       type="button"
+                      aria-label={
+                        changesViewMode === "tree" ? "View changes as list" : "View changes as tree"
+                      }
+                      variant="ghost"
+                      size="icon-xs"
+                      className={cn(
+                        "text-muted-foreground/70 hover:text-foreground",
+                        changesViewMode === "tree" && "bg-accent text-foreground",
+                      )}
+                      disabled={changedFiles.length === 0}
+                      onClick={toggleChangesViewMode}
+                    />
+                  }
+                >
+                  {changesViewMode === "tree" ? (
+                    <Rows3Icon className="size-3.5" />
+                  ) : (
+                    <ListTreeIcon className="size-3.5" />
+                  )}
+                </TooltipTrigger>
+                <TooltipPopup side="top">
+                  {changesViewMode === "tree" ? "View as list" : "View as tree"}
+                </TooltipPopup>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      type="button"
                       aria-label="Discard all changes"
                       variant="ghost"
                       size="icon-xs"
@@ -1916,73 +2115,10 @@ export function SourceControlPanel({
             </div>
           ) : (
             <div className="min-h-0 flex-1 overflow-y-auto rounded-md border border-border/70 bg-background/35">
-              <div className="divide-y divide-border/45">
-                {changedFiles.map((file) => {
-                  const pathParts = splitPath(file.path);
-                  const statusLabel = formatWorkingTreeFileStatus(file);
-                  const statusDescription = describeWorkingTreeFileStatus(file);
-                  return (
-                    <div
-                      key={file.path}
-                      className="group/change-file grid w-full grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 px-2 py-1.5 transition-colors hover:bg-accent/60"
-                    >
-                      <button
-                        type="button"
-                        className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-x-1.5 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                        onClick={() => {
-                          if (onOpenDiff) {
-                            onOpenDiff(file.path);
-                            return;
-                          }
-                          openChangedFile(file.path);
-                        }}
-                      >
-                        <span
-                          className={cn(
-                            "inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded border px-1 font-mono text-[10px] leading-none",
-                            workingTreeFileStatusClassName(file),
-                          )}
-                          title={statusDescription}
-                        >
-                          {statusLabel}
-                        </span>
-                        <span className="min-w-0">
-                          <span className="block truncate text-xs text-foreground">
-                            {pathParts.name}
-                          </span>
-                          {pathParts.directory ? (
-                            <span className="block truncate font-mono text-[10px] text-muted-foreground/55">
-                              {pathParts.directory}
-                            </span>
-                          ) : null}
-                        </span>
-                      </button>
-                      <span className="shrink-0 self-center font-mono text-[11px]">
-                        <span className="text-success">+{file.insertions}</span>
-                        <span className="px-1 text-muted-foreground/60">/</span>
-                        <span className="text-destructive">-{file.deletions}</span>
-                      </span>
-                      <Tooltip>
-                        <TooltipTrigger
-                          render={
-                            <Button
-                              type="button"
-                              aria-label={`Discard changes to ${file.path}`}
-                              variant="ghost"
-                              size="icon-xs"
-                              className="size-6 text-muted-foreground/60 hover:text-destructive-foreground"
-                              disabled={isGitActionRunning}
-                              onClick={() => requestDiscardFileChanges(file)}
-                            />
-                          }
-                        >
-                          <CornerUpLeftIcon className="size-3" />
-                        </TooltipTrigger>
-                        <TooltipPopup side="top">Discard changes</TooltipPopup>
-                      </Tooltip>
-                    </div>
-                  );
-                })}
+              <div className={changesViewMode === "list" ? "divide-y divide-border/45" : "py-1"}>
+                {changesViewMode === "list"
+                  ? changedFiles.map((file) => renderChangedFileRow(file))
+                  : changedFileTree.map((node) => renderChangedFileTreeNode(node, 0))}
               </div>
             </div>
           )}
