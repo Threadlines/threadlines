@@ -9,6 +9,10 @@ import {
   type VcsCommitGraphResult,
   type VcsDiscardChangesInput,
   type VcsDiscardChangesResult,
+  type VcsStageChangesInput,
+  type VcsStageChangesResult,
+  type VcsUnstageChangesInput,
+  type VcsUnstageChangesResult,
   type VcsWorkingTreeDiffInput,
   type VcsWorkingTreeDiffResult,
   type VcsSwitchRefInput,
@@ -83,6 +87,12 @@ export interface GitWorkflowServiceShape {
   readonly discardChanges: (
     input: VcsDiscardChangesInput,
   ) => Effect.Effect<VcsDiscardChangesResult, GitCommandError>;
+  readonly stageChanges: (
+    input: VcsStageChangesInput,
+  ) => Effect.Effect<VcsStageChangesResult, GitCommandError>;
+  readonly unstageChanges: (
+    input: VcsUnstageChangesInput,
+  ) => Effect.Effect<VcsUnstageChangesResult, GitCommandError>;
   readonly createWorktree: (
     input: VcsCreateWorktreeInput,
   ) => Effect.Effect<VcsCreateWorktreeResult, GitCommandError>;
@@ -347,6 +357,14 @@ export const make = Effect.fn("makeGitWorkflowService")(function* () {
     discardChanges: (input) =>
       ensureGitCommand("GitWorkflowService.discardChanges", input.cwd).pipe(
         Effect.andThen(git.discardChanges(input)),
+      ),
+    stageChanges: (input) =>
+      ensureGitCommand("GitWorkflowService.stageChanges", input.cwd).pipe(
+        Effect.andThen(git.stageChanges(input)),
+      ),
+    unstageChanges: (input) =>
+      ensureGitCommand("GitWorkflowService.unstageChanges", input.cwd).pipe(
+        Effect.andThen(git.unstageChanges(input)),
       ),
     createWorktree: (input) =>
       ensureGitCommand("GitWorkflowService.createWorktree", input.cwd).pipe(

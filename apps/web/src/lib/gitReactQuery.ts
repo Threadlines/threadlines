@@ -55,6 +55,10 @@ export const gitMutationKeys = {
     ["git", "mutation", "mergeRef", environmentId ?? null, cwd] as const,
   discardChanges: (environmentId: EnvironmentId | null, cwd: string | null) =>
     ["git", "mutation", "discard-changes", environmentId ?? null, cwd] as const,
+  stageChanges: (environmentId: EnvironmentId | null, cwd: string | null) =>
+    ["git", "mutation", "stage-changes", environmentId ?? null, cwd] as const,
+  unstageChanges: (environmentId: EnvironmentId | null, cwd: string | null) =>
+    ["git", "mutation", "unstage-changes", environmentId ?? null, cwd] as const,
   runStackedAction: (environmentId: EnvironmentId | null, cwd: string | null) =>
     ["git", "mutation", "run-stacked-action", environmentId ?? null, cwd] as const,
   generateCommitMessage: (environmentId: EnvironmentId | null, cwd: string | null) =>
@@ -323,10 +327,50 @@ export function gitDiscardChangesMutationOptions(input: {
 }) {
   return mutationOptions({
     mutationKey: gitMutationKeys.discardChanges(input.environmentId, input.cwd),
-    mutationFn: async (args: { filePaths: string[] }) => {
+    mutationFn: async (args: { filePaths: string[]; scope?: "all" | "unstaged" }) => {
       if (!input.cwd || !input.environmentId) throw new Error("Discard changes is unavailable.");
       const api = ensureEnvironmentApi(input.environmentId);
-      return api.vcs.discardChanges({ cwd: input.cwd, filePaths: args.filePaths });
+      return api.vcs.discardChanges({
+        cwd: input.cwd,
+        filePaths: args.filePaths,
+        ...(args.scope ? { scope: args.scope } : {}),
+      });
+    },
+    onSettled: async () => {
+      await input.queryClient.invalidateQueries({ queryKey: gitQueryKeys.all });
+    },
+  });
+}
+
+export function gitStageChangesMutationOptions(input: {
+  environmentId: EnvironmentId | null;
+  cwd: string | null;
+  queryClient: QueryClient;
+}) {
+  return mutationOptions({
+    mutationKey: gitMutationKeys.stageChanges(input.environmentId, input.cwd),
+    mutationFn: async (args: { filePaths: string[] }) => {
+      if (!input.cwd || !input.environmentId) throw new Error("Stage changes is unavailable.");
+      const api = ensureEnvironmentApi(input.environmentId);
+      return api.vcs.stageChanges({ cwd: input.cwd, filePaths: args.filePaths });
+    },
+    onSettled: async () => {
+      await input.queryClient.invalidateQueries({ queryKey: gitQueryKeys.all });
+    },
+  });
+}
+
+export function gitUnstageChangesMutationOptions(input: {
+  environmentId: EnvironmentId | null;
+  cwd: string | null;
+  queryClient: QueryClient;
+}) {
+  return mutationOptions({
+    mutationKey: gitMutationKeys.unstageChanges(input.environmentId, input.cwd),
+    mutationFn: async (args: { filePaths: string[] }) => {
+      if (!input.cwd || !input.environmentId) throw new Error("Unstage changes is unavailable.");
+      const api = ensureEnvironmentApi(input.environmentId);
+      return api.vcs.unstageChanges({ cwd: input.cwd, filePaths: args.filePaths });
     },
     onSettled: async () => {
       await input.queryClient.invalidateQueries({ queryKey: gitQueryKeys.all });

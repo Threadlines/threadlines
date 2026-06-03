@@ -15,6 +15,10 @@ import {
   VcsCommitGraphResult,
   VcsDiscardChangesInput,
   VcsDiscardChangesResult,
+  VcsStageChangesInput,
+  VcsStageChangesResult,
+  VcsUnstageChangesInput,
+  VcsUnstageChangesResult,
   VcsWorkingTreeDiffInput,
   VcsWorkingTreeDiffResult,
   VcsMergeRefInput,
@@ -171,6 +175,8 @@ export const WS_METHODS = {
   vcsCommitGraph: "vcs.commitGraph",
   vcsWorkingTreeDiff: "vcs.workingTreeDiff",
   vcsDiscardChanges: "vcs.discardChanges",
+  vcsStageChanges: "vcs.stageChanges",
+  vcsUnstageChanges: "vcs.unstageChanges",
   vcsCreateWorktree: "vcs.createWorktree",
   vcsRemoveWorktree: "vcs.removeWorktree",
   vcsCreateRef: "vcs.createRef",
@@ -577,6 +583,18 @@ export const WsVcsDiscardChangesRpc = Rpc.make(WS_METHODS.vcsDiscardChanges, {
   error: GitCommandError,
 });
 
+export const WsVcsStageChangesRpc = Rpc.make(WS_METHODS.vcsStageChanges, {
+  payload: VcsStageChangesInput,
+  success: VcsStageChangesResult,
+  error: GitCommandError,
+});
+
+export const WsVcsUnstageChangesRpc = Rpc.make(WS_METHODS.vcsUnstageChanges, {
+  payload: VcsUnstageChangesInput,
+  success: VcsUnstageChangesResult,
+  error: GitCommandError,
+});
+
 export const WsVcsCreateWorktreeRpc = Rpc.make(WS_METHODS.vcsCreateWorktree, {
   payload: VcsCreateWorktreeInput,
   success: VcsCreateWorktreeResult,
@@ -784,6 +802,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsVcsCommitGraphRpc,
   WsVcsWorkingTreeDiffRpc,
   WsVcsDiscardChangesRpc,
+  WsVcsStageChangesRpc,
+  WsVcsUnstageChangesRpc,
   WsVcsCreateWorktreeRpc,
   WsVcsRemoveWorktreeRpc,
   WsVcsCreateRefRpc,

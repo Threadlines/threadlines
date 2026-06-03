@@ -18,6 +18,10 @@ import {
   type VcsCommitGraphResult,
   type VcsDiscardChangesInput,
   type VcsDiscardChangesResult,
+  type VcsStageChangesInput,
+  type VcsStageChangesResult,
+  type VcsUnstageChangesInput,
+  type VcsUnstageChangesResult,
   type VcsWorkingTreeDiffInput,
   type VcsWorkingTreeDiffResult,
   type VcsCreateRefInput,
@@ -209,6 +213,12 @@ export interface GitVcsDriverShape {
   readonly discardChanges: (
     input: VcsDiscardChangesInput,
   ) => Effect.Effect<VcsDiscardChangesResult, GitCommandError>;
+  readonly stageChanges: (
+    input: VcsStageChangesInput,
+  ) => Effect.Effect<VcsStageChangesResult, GitCommandError>;
+  readonly unstageChanges: (
+    input: VcsUnstageChangesInput,
+  ) => Effect.Effect<VcsUnstageChangesResult, GitCommandError>;
   readonly pullCurrentBranch: (cwd: string) => Effect.Effect<VcsPullResult, GitCommandError>;
   readonly createWorktree: (
     input: VcsCreateWorktreeInput,

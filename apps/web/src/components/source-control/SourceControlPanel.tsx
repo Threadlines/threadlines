@@ -18,7 +18,6 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   CloudUploadIcon,
-  CornerUpLeftIcon,
   CopyIcon,
   ExternalLinkIcon,
   FileTextIcon,
@@ -30,11 +29,13 @@ import {
   GitPullRequestIcon,
   ListTreeIcon,
   DownloadIcon,
+  MinusIcon,
   PlusIcon,
   RefreshCwIcon,
   Rows3Icon,
   SparklesIcon,
   TagIcon,
+  Undo2Icon,
   UploadIcon,
 } from "lucide-react";
 import {
@@ -57,6 +58,7 @@ import {
   gitCheckoutMutationOptions,
   gitCommitGraphQueryOptions,
   gitCreateTagMutationOptions,
+  gitDeleteBranchMutationOptions,
   gitDiscardChangesMutationOptions,
   gitGenerateCommitMessageMutationOptions,
   gitInitMutationOptions,
@@ -65,6 +67,8 @@ import {
   gitPullMutationOptions,
   gitQueryKeys,
   gitRunStackedActionMutationOptions,
+  gitStageChangesMutationOptions,
+  gitUnstageChangesMutationOptions,
 } from "~/lib/gitReactQuery";
 import { refreshGitStatus, refreshLocalGitStatus, useGitStatus } from "~/lib/gitStatusState";
 import { cn, newCommandId, randomUUID } from "~/lib/utils";
@@ -147,6 +151,16 @@ interface SourceControlPanelProps {
 }
 
 type WorkingTreeFile = VcsStatusResult["workingTree"]["files"][number];
+type WorkingTreeChangeSection = "staged" | "unstaged";
+
+interface WorkingTreeSectionFile {
+  readonly file: WorkingTreeFile;
+  readonly path: string;
+  readonly section: WorkingTreeChangeSection;
+  readonly status: VcsWorkingTreeFileChangeKind;
+  readonly insertions: number;
+  readonly deletions: number;
+}
 
 const EMPTY_WORKING_TREE_FILES: readonly WorkingTreeFile[] = [];
 
@@ -155,6 +169,12 @@ interface PendingDiscardChanges {
   readonly label: string;
   readonly count: number;
   readonly includesNewFiles: boolean;
+  readonly scope: "all" | "unstaged";
+}
+
+interface PendingDeleteBranch {
+  readonly branchName: string;
+  readonly commit: VcsCommitGraphCommit;
 }
 
 const WORKING_TREE_CHANGE_STATUS_CODES: Record<VcsWorkingTreeFileChangeKind, string> = {
@@ -186,62 +206,91 @@ function splitPath(filePath: string): { readonly name: string; readonly director
   };
 }
 
-function isUntrackedWorkingTreeFile(file: WorkingTreeFile): boolean {
-  return file.worktreeStatus === "untracked";
+function workingTreeFileSectionStats(
+  file: WorkingTreeFile,
+  section: WorkingTreeChangeSection,
+): { readonly insertions: number; readonly deletions: number } {
+  if (section === "staged") {
+    return {
+      insertions: file.stagedInsertions ?? file.insertions,
+      deletions: file.stagedDeletions ?? file.deletions,
+    };
+  }
+  return {
+    insertions: file.unstagedInsertions ?? file.insertions,
+    deletions: file.unstagedDeletions ?? file.deletions,
+  };
 }
 
-function isNewWorkingTreeFile(file: WorkingTreeFile): boolean {
-  return file.indexStatus === "added" || file.worktreeStatus === "untracked";
+function toWorkingTreeSectionFile(
+  file: WorkingTreeFile,
+  section: WorkingTreeChangeSection,
+): WorkingTreeSectionFile | null {
+  const status = section === "staged" ? file.indexStatus : file.worktreeStatus;
+  if (!status) {
+    return null;
+  }
+  const stats = workingTreeFileSectionStats(file, section);
+  return {
+    file,
+    path: file.path,
+    section,
+    status,
+    insertions: stats.insertions,
+    deletions: stats.deletions,
+  };
 }
 
 function workingTreeChangeStatusCode(kind: VcsWorkingTreeFileChangeKind | null | undefined) {
   return kind ? WORKING_TREE_CHANGE_STATUS_CODES[kind] : null;
 }
 
-function formatWorkingTreeFileStatus(file: WorkingTreeFile): string {
-  if (isUntrackedWorkingTreeFile(file)) {
+function formatWorkingTreeFileStatus(entry: WorkingTreeSectionFile): string {
+  if (entry.section === "unstaged" && entry.status === "untracked") {
     return "U";
   }
-  const indexCode = workingTreeChangeStatusCode(file.indexStatus);
-  const worktreeCode = workingTreeChangeStatusCode(file.worktreeStatus);
-  if (indexCode && worktreeCode && indexCode !== worktreeCode) {
-    return `${indexCode}${worktreeCode}`;
-  }
-  return worktreeCode ?? indexCode ?? "M";
+  return workingTreeChangeStatusCode(entry.status) ?? "M";
 }
 
-function describeWorkingTreeFileStatus(file: WorkingTreeFile): string {
+function describeWorkingTreeFileStatus(entry: WorkingTreeSectionFile): string {
   const parts: string[] = [];
-  if (file.indexStatus) {
-    parts.push(`Index: ${WORKING_TREE_CHANGE_STATUS_LABELS[file.indexStatus]}`);
-  }
-  if (file.worktreeStatus) {
+  if (entry.section === "staged") {
+    parts.push(`Index: ${WORKING_TREE_CHANGE_STATUS_LABELS[entry.status]}`);
+  } else {
     parts.push(
-      file.worktreeStatus === "untracked"
-        ? WORKING_TREE_CHANGE_STATUS_LABELS[file.worktreeStatus]
-        : `Working tree: ${WORKING_TREE_CHANGE_STATUS_LABELS[file.worktreeStatus]}`,
+      entry.status === "untracked"
+        ? WORKING_TREE_CHANGE_STATUS_LABELS[entry.status]
+        : `Working tree: ${WORKING_TREE_CHANGE_STATUS_LABELS[entry.status]}`,
     );
   }
-  if (file.originalPath) {
-    parts.push(`From ${file.originalPath}`);
+  if (entry.file.originalPath) {
+    parts.push(`From ${entry.file.originalPath}`);
   }
   return parts.length > 0 ? parts.join(". ") : "Changed";
 }
 
-function workingTreeFileStatusClassName(file: WorkingTreeFile): string {
-  if (file.indexStatus === "unmerged" || file.worktreeStatus === "unmerged") {
+function workingTreeFileStatusClassName(entry: WorkingTreeSectionFile): string {
+  if (entry.status === "unmerged") {
     return "border-warning/25 bg-warning/8 text-warning-foreground";
   }
-  if (file.indexStatus === "deleted" || file.worktreeStatus === "deleted") {
+  if (entry.status === "deleted") {
     return "border-destructive/25 bg-destructive/8 text-destructive-foreground";
   }
-  if (file.indexStatus === "added" || file.worktreeStatus === "untracked") {
+  if (entry.status === "added" || entry.status === "untracked") {
     return "border-success/25 bg-success/8 text-success-foreground";
   }
   return "border-border/70 bg-muted/50 text-muted-foreground";
 }
 
 function buildDiscardChangesDescription(pending: PendingDiscardChanges): string {
+  if (pending.scope === "unstaged") {
+    const scope =
+      pending.count === 1
+        ? `Discard unstaged changes to ${pending.label}.`
+        : `Discard unstaged changes in ${pending.count} files.`;
+    const removal = pending.includesNewFiles ? " Untracked files will be deleted." : "";
+    return `${scope} Staged changes will be preserved.${removal} This cannot be undone.`;
+  }
   const scope =
     pending.count === 1
       ? `Discard changes to ${pending.label}.`
@@ -354,7 +403,31 @@ function ActionButton({
   );
 }
 
-type CommitGraphContextAction = "copy-full-sha" | "copy-subject" | "create-tag";
+type CommitGraphContextAction =
+  | "copy-full-sha"
+  | "copy-subject"
+  | "create-tag"
+  | `delete-branch:${string}`;
+
+function getDeletableCommitGraphBranchRefs(
+  refs: readonly string[],
+  currentBranch: string | null | undefined,
+): string[] {
+  const seen = new Set<string>();
+  const branchNames: string[] = [];
+  for (const refName of getVisibleCommitGraphRefs(refs)) {
+    if (getCommitGraphRefKind(refName, currentBranch) !== "branch") {
+      continue;
+    }
+    const branchName = normalizeCommitGraphRefName(refName);
+    if (branchName === currentBranch || seen.has(branchName)) {
+      continue;
+    }
+    seen.add(branchName);
+    branchNames.push(branchName);
+  }
+  return branchNames;
+}
 
 function commitGraphRefClassName(refName: string, currentBranch: string | null | undefined) {
   const kind = getCommitGraphRefKind(refName, currentBranch);
@@ -1206,6 +1279,7 @@ export function SourceControlPanel({
   const [pendingCreateTagCommit, setPendingCreateTagCommit] = useState<VcsCommitGraphCommit | null>(
     null,
   );
+  const [pendingDeleteBranch, setPendingDeleteBranch] = useState<PendingDeleteBranch | null>(null);
   const [createTagName, setCreateTagName] = useState("");
   const [changesPanelRatio, setChangesPanelRatio] = useLocalStorage(
     SOURCE_CONTROL_CHANGES_PANEL_RATIO_STORAGE_KEY,
@@ -1278,8 +1352,29 @@ export function SourceControlPanel({
       queryClient,
     }),
   );
+  const stageChangesMutation = useMutation(
+    gitStageChangesMutationOptions({
+      environmentId,
+      cwd,
+      queryClient,
+    }),
+  );
+  const unstageChangesMutation = useMutation(
+    gitUnstageChangesMutationOptions({
+      environmentId,
+      cwd,
+      queryClient,
+    }),
+  );
   const createTagMutation = useMutation(
     gitCreateTagMutationOptions({
+      environmentId,
+      cwd,
+      queryClient,
+    }),
+  );
+  const deleteBranchMutation = useMutation(
+    gitDeleteBranchMutationOptions({
       environmentId,
       cwd,
       queryClient,
@@ -1298,12 +1393,44 @@ export function SourceControlPanel({
     initMutation.isPending ||
     pullMutation.isPending ||
     discardChangesMutation.isPending ||
-    createTagMutation.isPending;
+    stageChangesMutation.isPending ||
+    unstageChangesMutation.isPending ||
+    createTagMutation.isPending ||
+    deleteBranchMutation.isPending;
   const changedFiles = status?.workingTree.files ?? EMPTY_WORKING_TREE_FILES;
-  const changedFileTree = useMemo(() => buildSourceControlFileTree(changedFiles), [changedFiles]);
+  const stagedChangeFiles = useMemo(
+    () =>
+      changedFiles
+        .map((file) => toWorkingTreeSectionFile(file, "staged"))
+        .filter((file): file is WorkingTreeSectionFile => file !== null),
+    [changedFiles],
+  );
+  const unstagedChangeFiles = useMemo(
+    () =>
+      changedFiles
+        .map((file) => toWorkingTreeSectionFile(file, "unstaged"))
+        .filter((file): file is WorkingTreeSectionFile => file !== null),
+    [changedFiles],
+  );
+  const stagedChangeFileTree = useMemo(
+    () => buildSourceControlFileTree(stagedChangeFiles),
+    [stagedChangeFiles],
+  );
+  const unstagedChangeFileTree = useMemo(
+    () => buildSourceControlFileTree(unstagedChangeFiles),
+    [unstagedChangeFiles],
+  );
   const changedFileTreeExpansionKey = useMemo(
-    () => collectSourceControlFileTreeDirectoryPaths(changedFileTree).join("\u0000"),
-    [changedFileTree],
+    () =>
+      [
+        ...collectSourceControlFileTreeDirectoryPaths(stagedChangeFileTree).map(
+          (pathValue) => `staged:${pathValue}`,
+        ),
+        ...collectSourceControlFileTreeDirectoryPaths(unstagedChangeFileTree).map(
+          (pathValue) => `unstaged:${pathValue}`,
+        ),
+      ].join("\u0000"),
+    [stagedChangeFileTree, unstagedChangeFileTree],
   );
   const changesTreeExpansionOverrides =
     changesTreeExpansionState.key === changedFileTreeExpansionKey
@@ -1532,26 +1659,106 @@ export function SourceControlPanel({
     void promise.then(refreshPanel, () => undefined);
   }, [initMutation, refreshPanel, threadToastData]);
 
-  const requestDiscardFileChanges = useCallback((file: WorkingTreeFile) => {
+  const runStageChanges = useCallback(
+    (filePaths: string[], label: string, count: number) => {
+      const promise = stageChangesMutation.mutateAsync({ filePaths });
+      void toastManager.promise(promise, {
+        loading: { title: "Staging changes...", data: threadToastData },
+        success: () => ({
+          title: "Changes staged",
+          description: count === 1 ? label : `${count} files`,
+          data: threadToastData,
+        }),
+        error: (error) => ({
+          title: "Stage changes failed",
+          description: toGitActionErrorMessage(error),
+          data: threadToastData,
+        }),
+      });
+      void promise.then(refreshPanel, () => refreshPanel());
+    },
+    [refreshPanel, stageChangesMutation, threadToastData],
+  );
+
+  const runUnstageChanges = useCallback(
+    (filePaths: string[], label: string, count: number) => {
+      const promise = unstageChangesMutation.mutateAsync({ filePaths });
+      void toastManager.promise(promise, {
+        loading: { title: "Unstaging changes...", data: threadToastData },
+        success: () => ({
+          title: "Changes unstaged",
+          description: count === 1 ? label : `${count} files`,
+          data: threadToastData,
+        }),
+        error: (error) => ({
+          title: "Unstage changes failed",
+          description: toGitActionErrorMessage(error),
+          data: threadToastData,
+        }),
+      });
+      void promise.then(refreshPanel, () => refreshPanel());
+    },
+    [refreshPanel, threadToastData, unstageChangesMutation],
+  );
+
+  const stageFileChanges = useCallback(
+    (entry: WorkingTreeSectionFile) => {
+      runStageChanges([entry.path], entry.path, 1);
+    },
+    [runStageChanges],
+  );
+
+  const unstageFileChanges = useCallback(
+    (entry: WorkingTreeSectionFile) => {
+      runUnstageChanges([entry.path], entry.path, 1);
+    },
+    [runUnstageChanges],
+  );
+
+  const stageAllUnstagedChanges = useCallback(() => {
+    if (unstagedChangeFiles.length === 0) {
+      return;
+    }
+    runStageChanges(
+      unstagedChangeFiles.map((entry) => entry.path),
+      "all unstaged changes",
+      unstagedChangeFiles.length,
+    );
+  }, [runStageChanges, unstagedChangeFiles]);
+
+  const unstageAllStagedChanges = useCallback(() => {
+    if (stagedChangeFiles.length === 0) {
+      return;
+    }
+    runUnstageChanges(
+      stagedChangeFiles.map((entry) => entry.path),
+      "all staged changes",
+      stagedChangeFiles.length,
+    );
+  }, [runUnstageChanges, stagedChangeFiles]);
+
+  const requestDiscardFileChanges = useCallback((entry: WorkingTreeSectionFile) => {
     setPendingDiscardChanges({
-      filePaths: [file.path],
-      label: file.path,
+      filePaths: [entry.path],
+      label: entry.path,
       count: 1,
-      includesNewFiles: isNewWorkingTreeFile(file),
+      includesNewFiles: entry.status === "untracked",
+      scope: "unstaged",
     });
   }, []);
 
-  const requestDiscardAllChanges = useCallback(() => {
-    if (changedFiles.length === 0) {
+  const requestDiscardAllUnstagedChanges = useCallback(() => {
+    if (unstagedChangeFiles.length === 0) {
       return;
     }
     setPendingDiscardChanges({
-      filePaths: changedFiles.map((file) => file.path),
-      label: "all working tree changes",
-      count: changedFiles.length,
-      includesNewFiles: changedFiles.some(isNewWorkingTreeFile),
+      filePaths: unstagedChangeFiles.map((entry) => entry.path),
+      label: "all unstaged changes",
+      count: unstagedChangeFiles.length,
+      includesNewFiles: unstagedChangeFiles.some((entry) => entry.status === "untracked"),
+      scope: "unstaged",
     });
-  }, [changedFiles]);
+  }, [unstagedChangeFiles]);
 
   const toggleChangesViewMode = useCallback(() => {
     setChangesViewMode((current) => (current === "tree" ? "list" : "tree"));
@@ -1582,6 +1789,7 @@ export function SourceControlPanel({
     const discardRequest = pendingDiscardChanges;
     const promise = discardChangesMutation.mutateAsync({
       filePaths: discardRequest.filePaths,
+      scope: discardRequest.scope,
     });
     setPendingDiscardChanges(null);
     void toastManager.promise(promise, {
@@ -1683,12 +1891,36 @@ export function SourceControlPanel({
     void promise.then(refreshPanel, () => refreshPanel());
   }, [createTagMutation, createTagName, pendingCreateTagCommit, refreshPanel, threadToastData]);
 
+  const runDeleteBranch = useCallback(() => {
+    if (!pendingDeleteBranch) {
+      return;
+    }
+    const deleteRequest = pendingDeleteBranch;
+    const promise = deleteBranchMutation.mutateAsync(deleteRequest.branchName);
+    setPendingDeleteBranch(null);
+    void toastManager.promise(promise, {
+      loading: { title: `Deleting ${deleteRequest.branchName}...`, data: threadToastData },
+      success: () => ({
+        title: "Branch deleted",
+        description: deleteRequest.branchName,
+        data: threadToastData,
+      }),
+      error: (error) => ({
+        title: "Delete branch failed",
+        description: toGitActionErrorMessage(error),
+        data: threadToastData,
+      }),
+    });
+    void promise.then(refreshPanel, () => refreshPanel());
+  }, [deleteBranchMutation, pendingDeleteBranch, refreshPanel, threadToastData]);
+
   const handleCommitContextMenu = useCallback(
     async (commit: VcsCommitGraphCommit, position: { readonly x: number; readonly y: number }) => {
       const api = readLocalApi();
       if (!api) {
         return;
       }
+      const deletableBranches = getDeletableCommitGraphBranchRefs(commit.refs, status?.refName);
 
       const clicked = await api.contextMenu.show<CommitGraphContextAction>(
         [
@@ -1699,6 +1931,11 @@ export function SourceControlPanel({
             label: "Create tag...",
             disabled: !environmentId || !cwd || createTagMutation.isPending,
           },
+          ...deletableBranches.map((branchName) => ({
+            id: `delete-branch:${branchName}` as const,
+            label: `Delete branch '${branchName}'...`,
+            disabled: !environmentId || !cwd || deleteBranchMutation.isPending,
+          })),
         ],
         position,
       );
@@ -1714,9 +1951,23 @@ export function SourceControlPanel({
       if (clicked === "create-tag") {
         setPendingCreateTagCommit(commit);
         setCreateTagName("");
+        return;
+      }
+      if (clicked?.startsWith("delete-branch:")) {
+        const branchName = clicked.slice("delete-branch:".length);
+        if (branchName.length > 0) {
+          setPendingDeleteBranch({ branchName, commit });
+        }
       }
     },
-    [copyCommitValue, createTagMutation.isPending, cwd, environmentId],
+    [
+      copyCommitValue,
+      createTagMutation.isPending,
+      cwd,
+      deleteBranchMutation.isPending,
+      environmentId,
+      status?.refName,
+    ],
   );
 
   const generateCommitMessage = useCallback(async () => {
@@ -1859,19 +2110,19 @@ export function SourceControlPanel({
   );
 
   const renderChangedFileRow = (
-    file: WorkingTreeFile,
+    entry: WorkingTreeSectionFile,
     options: { readonly depth?: number; readonly showDirectory?: boolean } = {},
   ) => {
-    const pathParts = splitPath(file.path);
-    const statusLabel = formatWorkingTreeFileStatus(file);
-    const statusDescription = describeWorkingTreeFileStatus(file);
+    const pathParts = splitPath(entry.path);
+    const statusLabel = formatWorkingTreeFileStatus(entry);
+    const statusDescription = describeWorkingTreeFileStatus(entry);
     const depth = options.depth;
     const isTreeRow = depth !== undefined;
     const showDirectory = options.showDirectory ?? true;
 
     return (
       <div
-        key={`file:${file.path}`}
+        key={`${entry.section}:file:${entry.path}`}
         className={cn(
           "group/change-file grid w-full grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 py-1.5 transition-colors hover:bg-accent/60",
           isTreeRow ? "pr-2" : "px-2",
@@ -1883,16 +2134,16 @@ export function SourceControlPanel({
           className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-x-1.5 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
           onClick={() => {
             if (onOpenDiff) {
-              onOpenDiff(file.path);
+              onOpenDiff(entry.path);
               return;
             }
-            openChangedFile(file.path);
+            openChangedFile(entry.path);
           }}
         >
           <span
             className={cn(
               "inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded border px-1 font-mono text-[10px] leading-none",
-              workingTreeFileStatusClassName(file),
+              workingTreeFileStatusClassName(entry),
             )}
             title={statusDescription}
           >
@@ -1908,34 +2159,77 @@ export function SourceControlPanel({
           </span>
         </button>
         <span className="shrink-0 self-center font-mono text-[11px]">
-          <span className="text-success">+{file.insertions}</span>
+          <span className="text-success">+{entry.insertions}</span>
           <span className="px-1 text-muted-foreground/60">/</span>
-          <span className="text-destructive">-{file.deletions}</span>
+          <span className="text-destructive">-{entry.deletions}</span>
         </span>
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button
-                type="button"
-                aria-label={`Discard changes to ${file.path}`}
-                variant="ghost"
-                size="icon-xs"
-                className="size-6 text-muted-foreground/60 hover:text-destructive-foreground"
-                disabled={isGitActionRunning}
-                onClick={() => requestDiscardFileChanges(file)}
-              />
-            }
-          >
-            <CornerUpLeftIcon className="size-3" />
-          </TooltipTrigger>
-          <TooltipPopup side="top">Discard changes</TooltipPopup>
-        </Tooltip>
+        <div className="flex shrink-0 items-center gap-0.5">
+          {entry.section === "unstaged" ? (
+            <>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      type="button"
+                      aria-label={`Stage changes to ${entry.path}`}
+                      variant="ghost"
+                      size="icon-xs"
+                      className="size-6 text-muted-foreground/60 hover:text-foreground"
+                      disabled={isGitActionRunning}
+                      onClick={() => stageFileChanges(entry)}
+                    />
+                  }
+                >
+                  <PlusIcon className="size-3" />
+                </TooltipTrigger>
+                <TooltipPopup side="top">Stage changes</TooltipPopup>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      type="button"
+                      aria-label={`Discard changes to ${entry.path}`}
+                      variant="ghost"
+                      size="icon-xs"
+                      className="size-6 text-muted-foreground/60 hover:text-destructive-foreground"
+                      disabled={isGitActionRunning}
+                      onClick={() => requestDiscardFileChanges(entry)}
+                    />
+                  }
+                >
+                  <Undo2Icon className="size-3" />
+                </TooltipTrigger>
+                <TooltipPopup side="top">Discard changes</TooltipPopup>
+              </Tooltip>
+            </>
+          ) : (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    type="button"
+                    aria-label={`Unstage changes to ${entry.path}`}
+                    variant="ghost"
+                    size="icon-xs"
+                    className="size-6 text-muted-foreground/60 hover:text-foreground"
+                    disabled={isGitActionRunning}
+                    onClick={() => unstageFileChanges(entry)}
+                  />
+                }
+              >
+                <MinusIcon className="size-3" />
+              </TooltipTrigger>
+              <TooltipPopup side="top">Unstage changes</TooltipPopup>
+            </Tooltip>
+          )}
+        </div>
       </div>
     );
   };
 
   const renderChangedFileTreeNode = (
-    node: SourceControlFileTreeNode<WorkingTreeFile>,
+    node: SourceControlFileTreeNode<WorkingTreeSectionFile>,
     depth: number,
   ): ReactNode => {
     if (node.kind === "file") {
@@ -1974,6 +2268,59 @@ export function SourceControlPanel({
             {node.children.map((childNode) => renderChangedFileTreeNode(childNode, depth + 1))}
           </div>
         ) : null}
+      </div>
+    );
+  };
+
+  const renderWorkingTreeChangeSection = ({
+    title,
+    entries,
+    tree,
+    emptyMessage,
+    actions,
+  }: {
+    readonly title: string;
+    readonly entries: readonly WorkingTreeSectionFile[];
+    readonly tree: readonly SourceControlFileTreeNode<WorkingTreeSectionFile>[];
+    readonly emptyMessage?: string;
+    readonly actions: ReactNode;
+  }) => {
+    const insertions = entries.reduce((sum, entry) => sum + entry.insertions, 0);
+    const deletions = entries.reduce((sum, entry) => sum + entry.deletions, 0);
+
+    if (entries.length === 0 && !emptyMessage) {
+      return null;
+    }
+
+    return (
+      <div className="border-b border-border/55 last:border-b-0">
+        <div className="flex items-center justify-between gap-2 border-b border-border/35 bg-background/45 px-2 py-1.5">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className="truncate text-[11px] font-medium text-muted-foreground/90">
+              {title}
+            </span>
+            <span className="rounded-full bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+              {entries.length}
+            </span>
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <span className="mr-1 font-mono text-[10px] text-muted-foreground">
+              <span className="text-success">+{insertions}</span>
+              <span className="px-1 text-muted-foreground/60">/</span>
+              <span className="text-destructive">-{deletions}</span>
+            </span>
+            {actions}
+          </div>
+        </div>
+        {entries.length === 0 ? (
+          <div className="px-2.5 py-2 text-xs text-muted-foreground/70">{emptyMessage}</div>
+        ) : (
+          <div className={changesViewMode === "list" ? "divide-y divide-border/45" : "py-1"}>
+            {changesViewMode === "list"
+              ? entries.map((entry) => renderChangedFileRow(entry))
+              : tree.map((node) => renderChangedFileTreeNode(node, 0))}
+          </div>
+        )}
       </div>
     );
   };
@@ -2072,24 +2419,6 @@ export function SourceControlPanel({
                   {changesViewMode === "tree" ? "View as list" : "View as tree"}
                 </TooltipPopup>
               </Tooltip>
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <Button
-                      type="button"
-                      aria-label="Discard all changes"
-                      variant="ghost"
-                      size="icon-xs"
-                      className="text-muted-foreground/70 hover:text-destructive-foreground"
-                      disabled={changedFiles.length === 0 || isGitActionRunning}
-                      onClick={requestDiscardAllChanges}
-                    />
-                  }
-                >
-                  <CornerUpLeftIcon className="size-3.5" />
-                </TooltipTrigger>
-                <TooltipPopup side="top">Discard all changes</TooltipPopup>
-              </Tooltip>
               {onOpenDiff ? (
                 <Button
                   type="button"
@@ -2115,11 +2444,79 @@ export function SourceControlPanel({
             </div>
           ) : (
             <div className="min-h-0 flex-1 overflow-y-auto rounded-md border border-border/70 bg-background/35">
-              <div className={changesViewMode === "list" ? "divide-y divide-border/45" : "py-1"}>
-                {changesViewMode === "list"
-                  ? changedFiles.map((file) => renderChangedFileRow(file))
-                  : changedFileTree.map((node) => renderChangedFileTreeNode(node, 0))}
-              </div>
+              {renderWorkingTreeChangeSection({
+                title: "Staged Changes",
+                entries: stagedChangeFiles,
+                tree: stagedChangeFileTree,
+                actions: (
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <Button
+                          type="button"
+                          aria-label="Unstage all changes"
+                          variant="ghost"
+                          size="icon-xs"
+                          className="text-muted-foreground/70 hover:text-foreground"
+                          disabled={stagedChangeFiles.length === 0 || isGitActionRunning}
+                          onClick={unstageAllStagedChanges}
+                        />
+                      }
+                    >
+                      <MinusIcon className="size-3.5" />
+                    </TooltipTrigger>
+                    <TooltipPopup side="top">Unstage all changes</TooltipPopup>
+                  </Tooltip>
+                ),
+              })}
+              {renderWorkingTreeChangeSection({
+                title: "Changes",
+                entries: unstagedChangeFiles,
+                tree: unstagedChangeFileTree,
+                ...(stagedChangeFiles.length > 0
+                  ? { emptyMessage: "No unstaged working tree changes" }
+                  : {}),
+                actions: (
+                  <>
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <Button
+                            type="button"
+                            aria-label="Stage all changes"
+                            variant="ghost"
+                            size="icon-xs"
+                            className="text-muted-foreground/70 hover:text-foreground"
+                            disabled={unstagedChangeFiles.length === 0 || isGitActionRunning}
+                            onClick={stageAllUnstagedChanges}
+                          />
+                        }
+                      >
+                        <PlusIcon className="size-3.5" />
+                      </TooltipTrigger>
+                      <TooltipPopup side="top">Stage all changes</TooltipPopup>
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <Button
+                            type="button"
+                            aria-label="Discard all changes"
+                            variant="ghost"
+                            size="icon-xs"
+                            className="text-muted-foreground/70 hover:text-destructive-foreground"
+                            disabled={unstagedChangeFiles.length === 0 || isGitActionRunning}
+                            onClick={requestDiscardAllUnstagedChanges}
+                          />
+                        }
+                      >
+                        <Undo2Icon className="size-3.5" />
+                      </TooltipTrigger>
+                      <TooltipPopup side="top">Discard all changes</TooltipPopup>
+                    </Tooltip>
+                  </>
+                ),
+              })}
             </div>
           )}
         </section>
@@ -2309,16 +2706,18 @@ export function SourceControlPanel({
                 {pendingCreateTagCommit ? ` - ${pendingCreateTagCommit.subject}` : ""}.
               </DialogDescription>
             </DialogHeader>
-            <Input
-              autoFocus
-              className="mt-4"
-              nativeInput
-              placeholder="v1.0.0"
-              size="sm"
-              value={createTagName}
-              onChange={(event) => setCreateTagName(event.target.value)}
-            />
-            <DialogFooter className="mt-4">
+            <div className="px-6 pt-1 pb-4">
+              <Input
+                autoFocus
+                className="w-full"
+                nativeInput
+                placeholder="v1.0.0"
+                size="sm"
+                value={createTagName}
+                onChange={(event) => setCreateTagName(event.target.value)}
+              />
+            </div>
+            <DialogFooter>
               <Button
                 variant="outline"
                 size="sm"
@@ -2341,6 +2740,45 @@ export function SourceControlPanel({
           </form>
         </DialogPopup>
       </Dialog>
+      <AlertDialog
+        open={pendingDeleteBranch !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingDeleteBranch(null);
+          }
+        }}
+      >
+        <AlertDialogPopup className="max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete branch?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingDeleteBranch ? (
+                <>
+                  Delete local branch{" "}
+                  <span className="font-mono">{pendingDeleteBranch.branchName}</span> at{" "}
+                  <span className="font-mono">{pendingDeleteBranch.commit.shortSha}</span>. Git will
+                  refuse if the branch is not fully merged.
+                </>
+              ) : (
+                "Delete the selected local branch."
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" size="sm" />}>
+              Cancel
+            </AlertDialogClose>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={deleteBranchMutation.isPending}
+              onClick={runDeleteBranch}
+            >
+              Delete branch
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
       <AlertDialog
         open={pendingDiscardChanges !== null}
         onOpenChange={(open) => {

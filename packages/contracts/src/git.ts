@@ -172,6 +172,7 @@ export type VcsWorkingTreeDiffResult = typeof VcsWorkingTreeDiffResult.Type;
 export const VcsDiscardChangesInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
   filePaths: Schema.Array(TrimmedNonEmptyStringSchema).check(Schema.isMinLength(1)),
+  scope: Schema.optional(Schema.Literals(["all", "unstaged"])),
 });
 export type VcsDiscardChangesInput = typeof VcsDiscardChangesInput.Type;
 
@@ -179,6 +180,28 @@ export const VcsDiscardChangesResult = Schema.Struct({
   discardedPaths: Schema.Array(TrimmedNonEmptyStringSchema),
 });
 export type VcsDiscardChangesResult = typeof VcsDiscardChangesResult.Type;
+
+export const VcsStageChangesInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  filePaths: Schema.Array(TrimmedNonEmptyStringSchema).check(Schema.isMinLength(1)),
+});
+export type VcsStageChangesInput = typeof VcsStageChangesInput.Type;
+
+export const VcsStageChangesResult = Schema.Struct({
+  stagedPaths: Schema.Array(TrimmedNonEmptyStringSchema),
+});
+export type VcsStageChangesResult = typeof VcsStageChangesResult.Type;
+
+export const VcsUnstageChangesInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  filePaths: Schema.Array(TrimmedNonEmptyStringSchema).check(Schema.isMinLength(1)),
+});
+export type VcsUnstageChangesInput = typeof VcsUnstageChangesInput.Type;
+
+export const VcsUnstageChangesResult = Schema.Struct({
+  unstagedPaths: Schema.Array(TrimmedNonEmptyStringSchema),
+});
+export type VcsUnstageChangesResult = typeof VcsUnstageChangesResult.Type;
 
 export const VcsCreateWorktreeInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
@@ -303,6 +326,10 @@ const VcsStatusLocalShape = {
         worktreeStatus: Schema.optional(Schema.NullOr(VcsWorkingTreeFileChangeKind)),
         insertions: NonNegativeInt,
         deletions: NonNegativeInt,
+        stagedInsertions: Schema.optional(NonNegativeInt),
+        stagedDeletions: Schema.optional(NonNegativeInt),
+        unstagedInsertions: Schema.optional(NonNegativeInt),
+        unstagedDeletions: Schema.optional(NonNegativeInt),
       }),
     ),
     insertions: NonNegativeInt,

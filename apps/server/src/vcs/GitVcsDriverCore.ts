@@ -1589,11 +1589,47 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
 
     const stagedEntries = parseNumstatEntries(stagedNumstatStdout);
     const unstagedEntries = parseNumstatEntries(unstagedNumstatStdout);
-    const fileStatMap = new Map<string, { insertions: number; deletions: number }>();
-    for (const entry of [...stagedEntries, ...unstagedEntries]) {
-      const existing = fileStatMap.get(entry.path) ?? { insertions: 0, deletions: 0 };
+    const fileStatMap = new Map<
+      string,
+      {
+        insertions: number;
+        deletions: number;
+        stagedInsertions: number;
+        stagedDeletions: number;
+        unstagedInsertions: number;
+        unstagedDeletions: number;
+      }
+    >();
+    const ensureFileStat = (filePath: string) => {
+      const existing = fileStatMap.get(filePath);
+      if (existing) {
+        return existing;
+      }
+      const stat = {
+        insertions: 0,
+        deletions: 0,
+        stagedInsertions: 0,
+        stagedDeletions: 0,
+        unstagedInsertions: 0,
+        unstagedDeletions: 0,
+      };
+      fileStatMap.set(filePath, stat);
+      return stat;
+    };
+
+    for (const entry of stagedEntries) {
+      const existing = ensureFileStat(entry.path);
       existing.insertions += entry.insertions;
       existing.deletions += entry.deletions;
+      existing.stagedInsertions += entry.insertions;
+      existing.stagedDeletions += entry.deletions;
+    }
+    for (const entry of unstagedEntries) {
+      const existing = ensureFileStat(entry.path);
+      existing.insertions += entry.insertions;
+      existing.deletions += entry.deletions;
+      existing.unstagedInsertions += entry.insertions;
+      existing.unstagedDeletions += entry.deletions;
       fileStatMap.set(entry.path, existing);
     }
 
@@ -1611,10 +1647,18 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           worktreeStatus?: VcsWorkingTreeFileChangeKind | null;
           insertions: number;
           deletions: number;
+          stagedInsertions: number;
+          stagedDeletions: number;
+          unstagedInsertions: number;
+          unstagedDeletions: number;
         } = {
           path: filePath,
           insertions: stat.insertions,
           deletions: stat.deletions,
+          stagedInsertions: stat.stagedInsertions,
+          stagedDeletions: stat.stagedDeletions,
+          unstagedInsertions: stat.unstagedInsertions,
+          unstagedDeletions: stat.unstagedDeletions,
         };
         if (change?.originalPath) {
           file.originalPath = change.originalPath;
@@ -1636,6 +1680,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         worktreeStatus: change.worktreeStatus,
         insertions: 0,
         deletions: 0,
+        stagedInsertions: 0,
+        stagedDeletions: 0,
+        unstagedInsertions: 0,
+        unstagedDeletions: 0,
       });
     }
     files.sort((a, b) => a.path.localeCompare(b.path));
@@ -1752,6 +1800,12 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     "prepareCommitContext",
   )(function* (cwd, filePaths) {
     const operation = "GitVcsDriver.prepareCommitContext";
+    if (!filePaths || filePaths.length === 0) {
+      const existingStagedContext = yield* readStagedCommitContext(operation, cwd);
+      if (existingStagedContext) {
+        return existingStagedContext;
+      }
+    }
     yield* stageCommitContext(operation, cwd, filePaths);
     return yield* readStagedCommitContext(operation, cwd);
   });
@@ -1760,6 +1814,12 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     "previewCommitContext",
   )(function* (cwd, filePaths) {
     const operation = "GitVcsDriver.previewCommitContext";
+    if (!filePaths || filePaths.length === 0) {
+      const existingStagedContext = yield* readStagedCommitContext(operation, cwd);
+      if (existingStagedContext) {
+        return existingStagedContext;
+      }
+    }
     const gitCommonDir = yield* resolveGitCommonDir(cwd);
     const tempIndexPath = path.join(gitCommonDir, `t3-preview-index-${randomUUID()}`);
     const env: NodeJS.ProcessEnv = {
@@ -1827,6 +1887,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     "discardChanges",
   )(function* (input) {
     const operation = "GitVcsDriver.discardChanges";
+    const discardScope = input.scope ?? "all";
     const requestedPaths = [...new Set(input.filePaths.map((filePath) => filePath.trim()))].filter(
       (filePath) => filePath.length > 0,
     );
@@ -1853,13 +1914,18 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const changedFilesByPath = new Map(
       details.workingTree.files.map((file) => [file.path, file] as const),
     );
-    const missingPaths = requestedPaths.filter((filePath) => !changedFilesByPath.has(filePath));
+    const missingPaths = requestedPaths.filter((filePath) => {
+      const file = changedFilesByPath.get(filePath);
+      return !file || (discardScope === "unstaged" && !file.worktreeStatus);
+    });
     if (missingPaths.length > 0) {
       return yield* createGitCommandError(
         operation,
         input.cwd,
         ["status", "--porcelain=2"],
-        `Cannot discard unchanged or unknown files: ${missingPaths.join(", ")}`,
+        discardScope === "unstaged"
+          ? `Cannot discard files without unstaged changes: ${missingPaths.join(", ")}`
+          : `Cannot discard unchanged or unknown files: ${missingPaths.join(", ")}`,
       );
     }
 
@@ -1886,6 +1952,30 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const headExists = yield* hasHeadCommit(input.cwd);
     const uniqueTrackedPathspecs = [...new Set(trackedPathspecs)];
     const pathspecsToClean = [...new Set(untrackedPathspecs)];
+
+    if (discardScope === "unstaged") {
+      if (uniqueTrackedPathspecs.length > 0) {
+        yield* runGit(operation, input.cwd, [
+          "--literal-pathspecs",
+          "restore",
+          "--worktree",
+          "--",
+          ...uniqueTrackedPathspecs,
+        ]);
+      }
+
+      if (pathspecsToClean.length > 0) {
+        yield* runGit(`${operation}.cleanUntracked`, input.cwd, [
+          "--literal-pathspecs",
+          "clean",
+          "-fd",
+          "--",
+          ...pathspecsToClean,
+        ]);
+      }
+
+      return { discardedPaths };
+    }
 
     if (uniqueTrackedPathspecs.length > 0) {
       if (headExists) {
@@ -1921,6 +2011,135 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     }
 
     return { discardedPaths };
+  });
+
+  const stageChanges: GitVcsDriver.GitVcsDriverShape["stageChanges"] = Effect.fn("stageChanges")(
+    function* (input) {
+      const operation = "GitVcsDriver.stageChanges";
+      const requestedPaths = [
+        ...new Set(input.filePaths.map((filePath) => filePath.trim())),
+      ].filter((filePath) => filePath.length > 0);
+
+      if (requestedPaths.length === 0) {
+        return yield* createGitCommandError(
+          operation,
+          input.cwd,
+          ["add"],
+          "No changed files were selected.",
+        );
+      }
+
+      const details = yield* readStatusDetailsLocal(input.cwd);
+      if (!details.isRepo) {
+        return yield* createGitCommandError(
+          operation,
+          input.cwd,
+          ["status", "--porcelain=2"],
+          "No Git repository found.",
+        );
+      }
+
+      const changedFilesByPath = new Map(
+        details.workingTree.files.map((file) => [file.path, file] as const),
+      );
+      const missingPaths = requestedPaths.filter((filePath) => !changedFilesByPath.has(filePath));
+      if (missingPaths.length > 0) {
+        return yield* createGitCommandError(
+          operation,
+          input.cwd,
+          ["status", "--porcelain=2"],
+          `Cannot stage unchanged or unknown files: ${missingPaths.join(", ")}`,
+        );
+      }
+
+      const pathspecs = new Set<string>();
+      for (const filePath of requestedPaths) {
+        const file = changedFilesByPath.get(filePath);
+        if (!file) continue;
+        pathspecs.add(file.path);
+        if (file.originalPath) {
+          pathspecs.add(file.originalPath);
+        }
+      }
+
+      yield* runGit(operation, input.cwd, ["--literal-pathspecs", "add", "-A", "--", ...pathspecs]);
+
+      return { stagedPaths: requestedPaths };
+    },
+  );
+
+  const unstageChanges: GitVcsDriver.GitVcsDriverShape["unstageChanges"] = Effect.fn(
+    "unstageChanges",
+  )(function* (input) {
+    const operation = "GitVcsDriver.unstageChanges";
+    const requestedPaths = [...new Set(input.filePaths.map((filePath) => filePath.trim()))].filter(
+      (filePath) => filePath.length > 0,
+    );
+
+    if (requestedPaths.length === 0) {
+      return yield* createGitCommandError(
+        operation,
+        input.cwd,
+        ["restore", "--staged"],
+        "No staged files were selected.",
+      );
+    }
+
+    const details = yield* readStatusDetailsLocal(input.cwd);
+    if (!details.isRepo) {
+      return yield* createGitCommandError(
+        operation,
+        input.cwd,
+        ["status", "--porcelain=2"],
+        "No Git repository found.",
+      );
+    }
+
+    const changedFilesByPath = new Map(
+      details.workingTree.files.map((file) => [file.path, file] as const),
+    );
+    const missingPaths = requestedPaths.filter((filePath) => {
+      const file = changedFilesByPath.get(filePath);
+      return !file || !file.indexStatus;
+    });
+    if (missingPaths.length > 0) {
+      return yield* createGitCommandError(
+        operation,
+        input.cwd,
+        ["status", "--porcelain=2"],
+        `Cannot unstage files without staged changes: ${missingPaths.join(", ")}`,
+      );
+    }
+
+    const pathspecs = new Set<string>();
+    for (const filePath of requestedPaths) {
+      const file = changedFilesByPath.get(filePath);
+      if (!file) continue;
+      pathspecs.add(file.path);
+      if (file.originalPath) {
+        pathspecs.add(file.originalPath);
+      }
+    }
+
+    const headExists = yield* hasHeadCommit(input.cwd);
+    if (headExists) {
+      yield* runGit(operation, input.cwd, [
+        "--literal-pathspecs",
+        "restore",
+        "--staged",
+        "--",
+        ...pathspecs,
+      ]);
+    } else {
+      yield* runGit(
+        `${operation}.removeFromInitialIndex`,
+        input.cwd,
+        ["--literal-pathspecs", "rm", "--cached", "-f", "--", ...pathspecs],
+        true,
+      );
+    }
+
+    return { unstagedPaths: requestedPaths };
   });
 
   const commit: GitVcsDriver.GitVcsDriverShape["commit"] = Effect.fn("commit")(function* (
@@ -2954,6 +3173,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     commitGraph,
     workingTreeDiff,
     discardChanges,
+    stageChanges,
+    unstageChanges,
     createWorktree,
     fetchPullRequestBranch,
     ensureRemote,

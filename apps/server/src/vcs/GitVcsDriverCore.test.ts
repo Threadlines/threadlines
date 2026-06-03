@@ -441,6 +441,77 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
+    it.effect("discards only unstaged changes when requested", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const pathService = yield* Path.Path;
+
+        yield* writeTextFile(cwd, "README.md", "# test\n\nstaged\n");
+        yield* git(cwd, ["add", "README.md"]);
+        yield* writeTextFile(cwd, "README.md", "# test\n\nstaged\nunstaged\n");
+
+        const result = yield* driver.discardChanges({
+          cwd,
+          filePaths: ["README.md"],
+          scope: "unstaged",
+        });
+
+        assert.deepStrictEqual(result.discardedPaths, ["README.md"]);
+        const restoredReadme = yield* fileSystem.readFileString(pathService.join(cwd, "README.md"));
+        assert.equal(restoredReadme.replaceAll("\r\n", "\n"), "# test\n\nstaged\n");
+        assert.equal(yield* git(cwd, ["diff", "--name-only"]), "");
+        assert.equal(yield* git(cwd, ["diff", "--cached", "--name-only"]), "README.md");
+      }),
+    );
+
+    it.effect("stages and unstages selected working tree files", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        yield* writeTextFile(cwd, "a.txt", "a\n");
+        yield* writeTextFile(cwd, "b.txt", "b\n");
+
+        const staged = yield* driver.stageChanges({ cwd, filePaths: ["a.txt"] });
+        assert.deepStrictEqual(staged.stagedPaths, ["a.txt"]);
+        assert.equal(yield* git(cwd, ["diff", "--cached", "--name-only"]), "a.txt");
+        assert.include(yield* git(cwd, ["status", "--porcelain"]), "?? b.txt");
+
+        const statusAfterStage = yield* driver.status({ cwd });
+        const stagedA = statusAfterStage.workingTree.files.find((file) => file.path === "a.txt");
+        assert.equal(stagedA?.indexStatus, "added");
+        assert.equal(stagedA?.worktreeStatus, null);
+
+        const unstaged = yield* driver.unstageChanges({ cwd, filePaths: ["a.txt"] });
+        assert.deepStrictEqual(unstaged.unstagedPaths, ["a.txt"]);
+        assert.equal(yield* git(cwd, ["diff", "--cached", "--name-only"]), "");
+        assert.include(yield* git(cwd, ["status", "--porcelain"]), "?? a.txt");
+      }),
+    );
+
+    it.effect("uses existing staged changes when preparing a whole-tree commit context", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        yield* writeTextFile(cwd, "a.txt", "a\n");
+        yield* git(cwd, ["add", "a.txt"]);
+        yield* writeTextFile(cwd, "b.txt", "b\n");
+
+        const context = yield* driver.prepareCommitContext(cwd);
+
+        assert.include(context?.stagedSummary ?? "", "a.txt");
+        assert.notInclude(context?.stagedSummary ?? "", "b.txt");
+        assert.equal(yield* git(cwd, ["diff", "--cached", "--name-only"]), "a.txt");
+        assert.include(yield* git(cwd, ["status", "--porcelain"]), "?? b.txt");
+      }),
+    );
+
     it.effect("stages selected files and commits only those files", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();

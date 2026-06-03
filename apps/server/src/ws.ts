@@ -1280,6 +1280,18 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             gitWorkflow.discardChanges(input).pipe(Effect.ensuring(refreshGitStatus(input.cwd))),
             { "rpc.aggregate": "vcs" },
           ),
+        [WS_METHODS.vcsStageChanges]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsStageChanges,
+            gitWorkflow.stageChanges(input).pipe(Effect.ensuring(refreshGitStatus(input.cwd))),
+            { "rpc.aggregate": "vcs" },
+          ),
+        [WS_METHODS.vcsUnstageChanges]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsUnstageChanges,
+            gitWorkflow.unstageChanges(input).pipe(Effect.ensuring(refreshGitStatus(input.cwd))),
+            { "rpc.aggregate": "vcs" },
+          ),
         [WS_METHODS.vcsCreateWorktree]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsCreateWorktree,

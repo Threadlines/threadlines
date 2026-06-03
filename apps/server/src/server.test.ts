@@ -2732,6 +2732,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                 worktree: { path: "/tmp/wt", refName: "feature/demo" },
               }),
             workingTreeDiff: () => Effect.succeed({ diff: "" }),
+            discardChanges: (input) => Effect.succeed({ discardedPaths: [...input.filePaths] }),
+            stageChanges: (input) => Effect.succeed({ stagedPaths: [...input.filePaths] }),
+            unstageChanges: (input) => Effect.succeed({ unstagedPaths: [...input.filePaths] }),
             removeWorktree: () => Effect.void,
             createRef: (input) => Effect.succeed({ refName: input.refName }),
             createTag: (input) =>

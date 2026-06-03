@@ -5,6 +5,10 @@ import type {
   VcsCommitGraphResult,
   VcsDiscardChangesInput,
   VcsDiscardChangesResult,
+  VcsStageChangesInput,
+  VcsStageChangesResult,
+  VcsUnstageChangesInput,
+  VcsUnstageChangesResult,
   VcsWorkingTreeDiffInput,
   VcsWorkingTreeDiffResult,
   VcsCreateRefInput,
@@ -637,6 +641,8 @@ export interface EnvironmentApi {
     commitGraph: (input: VcsCommitGraphInput) => Promise<VcsCommitGraphResult>;
     workingTreeDiff: (input: VcsWorkingTreeDiffInput) => Promise<VcsWorkingTreeDiffResult>;
     discardChanges: (input: VcsDiscardChangesInput) => Promise<VcsDiscardChangesResult>;
+    stageChanges: (input: VcsStageChangesInput) => Promise<VcsStageChangesResult>;
+    unstageChanges: (input: VcsUnstageChangesInput) => Promise<VcsUnstageChangesResult>;
     createWorktree: (input: VcsCreateWorktreeInput) => Promise<VcsCreateWorktreeResult>;
     removeWorktree: (input: VcsRemoveWorktreeInput) => Promise<void>;
     createRef: (input: VcsCreateRefInput) => Promise<VcsCreateRefResult>;

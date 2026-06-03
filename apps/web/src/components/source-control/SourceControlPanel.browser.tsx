@@ -150,6 +150,12 @@ function makeEnvironmentApi(
       discardChanges: vi.fn(async (input: { readonly filePaths: string[] }) => ({
         discardedPaths: input.filePaths,
       })),
+      stageChanges: vi.fn(async (input: { readonly filePaths: string[] }) => ({
+        stagedPaths: input.filePaths,
+      })),
+      unstageChanges: vi.fn(async (input: { readonly filePaths: string[] }) => ({
+        unstagedPaths: input.filePaths,
+      })),
       createTag: vi.fn(async (input: { readonly tagName: string; readonly targetSha: string }) => ({
         tagName: input.tagName,
         targetSha: input.targetSha,
@@ -271,14 +277,16 @@ describe("SourceControlPanel changes", () => {
       await page.getByRole("button", { name: "Discard changes to src/app.ts" }).click();
 
       await expect.element(page.getByText("Discard changes?")).toBeVisible();
-      await expect
-        .element(page.getByText(/Tracked changes will be restored to HEAD when possible/))
-        .toBeVisible();
+      await expect.element(page.getByText(/Staged changes will be preserved/)).toBeVisible();
 
       await page.getByRole("button", { name: "Discard" }).click();
 
       await vi.waitFor(() => {
-        expect(discardChanges).toHaveBeenCalledWith({ cwd: CWD, filePaths: ["src/app.ts"] });
+        expect(discardChanges).toHaveBeenCalledWith({
+          cwd: CWD,
+          filePaths: ["src/app.ts"],
+          scope: "unstaged",
+        });
       });
       await vi.waitFor(() => {
         expect(gitStatusMock.refreshGitStatus).toHaveBeenCalledWith({
@@ -335,6 +343,69 @@ describe("SourceControlPanel changes", () => {
       await expect
         .element(page.getByText("SourceControlPanel.browser.tsx"))
         .not.toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("separates staged and unstaged changes with scoped row actions", async () => {
+    const stageChanges: EnvironmentApi["vcs"]["stageChanges"] = vi.fn(async (input) => ({
+      stagedPaths: input.filePaths,
+    }));
+    const unstageChanges: EnvironmentApi["vcs"]["unstageChanges"] = vi.fn(async (input) => ({
+      unstagedPaths: input.filePaths,
+    }));
+    const status = makeStatus({
+      hasWorkingTreeChanges: true,
+      workingTree: {
+        files: [
+          {
+            path: "README.md",
+            indexStatus: "modified",
+            worktreeStatus: null,
+            insertions: 4,
+            deletions: 1,
+            stagedInsertions: 4,
+            stagedDeletions: 1,
+            unstagedInsertions: 0,
+            unstagedDeletions: 0,
+          },
+          {
+            path: "src/app.ts",
+            indexStatus: null,
+            worktreeStatus: "modified",
+            insertions: 2,
+            deletions: 0,
+            stagedInsertions: 0,
+            stagedDeletions: 0,
+            unstagedInsertions: 2,
+            unstagedDeletions: 0,
+          },
+        ],
+        insertions: 6,
+        deletions: 1,
+      },
+    });
+    const mounted = await renderPanel({
+      status,
+      environmentApi: makeEnvironmentApi({ vcs: { stageChanges, unstageChanges } }),
+    });
+
+    try {
+      await expect.element(page.getByText("Staged Changes")).toBeVisible();
+      await expect
+        .element(page.getByRole("button", { name: "Stage changes to src/app.ts" }))
+        .toBeVisible();
+
+      await page.getByRole("button", { name: "Stage changes to src/app.ts" }).click();
+      await vi.waitFor(() => {
+        expect(stageChanges).toHaveBeenCalledWith({ cwd: CWD, filePaths: ["src/app.ts"] });
+      });
+
+      await page.getByRole("button", { name: "Unstage changes to README.md" }).click();
+      await vi.waitFor(() => {
+        expect(unstageChanges).toHaveBeenCalledWith({ cwd: CWD, filePaths: ["README.md"] });
+      });
     } finally {
       await mounted.cleanup();
     }
@@ -462,6 +533,14 @@ describe("SourceControlPanel commit graph", () => {
 
       await expect.element(page.getByRole("heading", { name: "Create tag" })).toBeVisible();
       await expect.element(page.getByText(/abc1234/)).toBeVisible();
+      const popup = document.querySelector('[data-slot="dialog-popup"]');
+      const input = document.querySelector<HTMLInputElement>('input[placeholder="v1.0.0"]');
+      expect(popup).toBeInstanceOf(HTMLElement);
+      expect(input).toBeInstanceOf(HTMLInputElement);
+      const popupRect = popup!.getBoundingClientRect();
+      const inputRect = input!.getBoundingClientRect();
+      expect(inputRect.left - popupRect.left).toBeGreaterThanOrEqual(20);
+      expect(popupRect.right - inputRect.right).toBeGreaterThanOrEqual(20);
 
       await page.getByPlaceholder("v1.0.0").fill("v2.0.0");
       await page.getByRole("button", { name: "Create tag" }).click();
