@@ -1119,19 +1119,6 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     };
   }, [projectThreads, threadLastVisitedAts, threadSortOrder]);
 
-  const pinnedCollapsedThread = useMemo(() => {
-    const activeThreadKey = activeRouteThreadKey ?? undefined;
-    if (!activeThreadKey || projectExpanded) {
-      return null;
-    }
-    return (
-      visibleProjectThreads.find(
-        (thread) =>
-          scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)) === activeThreadKey,
-      ) ?? null
-    );
-  }, [activeRouteThreadKey, projectExpanded, visibleProjectThreads]);
-
   const {
     hasOverflowingThreads,
     hiddenThreadStatus,
@@ -1162,15 +1149,11 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         ? visibleProjectThreads
         : visibleProjectThreads.slice(0, sidebarThreadPreviewCount);
     const visibleThreadKeys = new Set(
-      [...previewThreads, ...(pinnedCollapsedThread ? [pinnedCollapsedThread] : [])].map((thread) =>
+      previewThreads.map((thread) =>
         scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
       ),
     );
-    const renderedThreads = pinnedCollapsedThread
-      ? [pinnedCollapsedThread]
-      : visibleProjectThreads.filter((thread) =>
-          visibleThreadKeys.has(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))),
-        );
+    const renderedThreads = previewThreads;
     const hiddenThreads = visibleProjectThreads.filter(
       (thread) =>
         !visibleThreadKeys.has(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))),
@@ -1182,11 +1165,10 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       ),
       renderedThreads,
       showEmptyThreadState: projectExpanded && visibleProjectThreads.length === 0,
-      shouldShowThreadPanel: projectExpanded || pinnedCollapsedThread !== null,
+      shouldShowThreadPanel: projectExpanded,
     };
   }, [
     isThreadListExpanded,
-    pinnedCollapsedThread,
     projectExpanded,
     projectThreads,
     sidebarThreadPreviewCount,
@@ -1975,6 +1957,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
           }`}
           {...(isManualProjectSorting && dragHandleProps ? dragHandleProps.attributes : {})}
           {...(isManualProjectSorting && dragHandleProps ? dragHandleProps.listeners : {})}
+          aria-expanded={projectExpanded}
           onPointerDownCapture={handleProjectButtonPointerDownCapture}
           onClick={handleProjectButtonClick}
           onKeyDown={handleProjectButtonKeyDown}
@@ -3017,17 +3000,7 @@ export default function Sidebar() {
           sidebarThreadSortOrder,
         );
         const projectExpanded = projectExpandedById[project.projectKey] ?? true;
-        const activeThreadKey = routeThreadKey ?? undefined;
-        const pinnedCollapsedThread =
-          !projectExpanded && activeThreadKey
-            ? (projectThreads.find(
-                (thread) =>
-                  scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)) ===
-                  activeThreadKey,
-              ) ?? null)
-            : null;
-        const shouldShowThreadPanel = projectExpanded || pinnedCollapsedThread !== null;
-        if (!shouldShowThreadPanel) {
+        if (!projectExpanded) {
           return [];
         }
         const isThreadListExpanded = expandedThreadListsByProject.has(project.projectKey);
@@ -3036,8 +3009,7 @@ export default function Sidebar() {
           isThreadListExpanded || !hasOverflowingThreads
             ? projectThreads
             : projectThreads.slice(0, sidebarThreadPreviewCount);
-        const renderedThreads = pinnedCollapsedThread ? [pinnedCollapsedThread] : previewThreads;
-        return renderedThreads.map((thread) =>
+        return previewThreads.map((thread) =>
           scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
         );
       }),
@@ -3046,7 +3018,6 @@ export default function Sidebar() {
       sidebarThreadPreviewCount,
       expandedThreadListsByProject,
       projectExpandedById,
-      routeThreadKey,
       sortedProjects,
       threadsByProjectKey,
     ],

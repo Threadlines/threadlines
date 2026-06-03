@@ -1298,6 +1298,12 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             gitWorkflow.createRef(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
             { "rpc.aggregate": "vcs" },
           ),
+        [WS_METHODS.vcsCreateTag]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsCreateTag,
+            gitWorkflow.createTag(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            { "rpc.aggregate": "vcs" },
+          ),
         [WS_METHODS.vcsSwitchRef]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsSwitchRef,

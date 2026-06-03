@@ -17,6 +17,8 @@ import {
   type VcsMergeRefResult,
   type VcsCreateRefInput,
   type VcsCreateRefResult,
+  type VcsCreateTagInput,
+  type VcsCreateTagResult,
   type VcsCreateWorktreeInput,
   type VcsCreateWorktreeResult,
   type VcsListRefsInput,
@@ -86,6 +88,9 @@ export interface GitWorkflowServiceShape {
   readonly createRef: (
     input: VcsCreateRefInput,
   ) => Effect.Effect<VcsCreateRefResult, GitCommandError>;
+  readonly createTag: (
+    input: VcsCreateTagInput,
+  ) => Effect.Effect<VcsCreateTagResult, GitCommandError>;
   readonly switchRef: (
     input: VcsSwitchRefInput,
   ) => Effect.Effect<VcsSwitchRefResult, GitCommandError>;
@@ -349,6 +354,10 @@ export const make = Effect.fn("makeGitWorkflowService")(function* () {
     createRef: (input) =>
       ensureGitCommand("GitWorkflowService.createRef", input.cwd).pipe(
         Effect.andThen(git.createRef(input)),
+      ),
+    createTag: (input) =>
+      ensureGitCommand("GitWorkflowService.createTag", input.cwd).pipe(
+        Effect.andThen(git.createTag(input)),
       ),
     switchRef: (input) =>
       ensureGitCommand("GitWorkflowService.switchRef", input.cwd).pipe(

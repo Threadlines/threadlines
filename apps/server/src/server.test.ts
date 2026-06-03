@@ -2734,6 +2734,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             workingTreeDiff: () => Effect.succeed({ diff: "" }),
             removeWorktree: () => Effect.void,
             createRef: (input) => Effect.succeed({ refName: input.refName }),
+            createTag: (input) =>
+              Effect.succeed({ tagName: input.tagName, targetSha: input.targetSha }),
             switchRef: (input) => Effect.succeed({ refName: input.refName }),
             mergeRef: (input) => Effect.succeed({ refName: input.refName }),
           },

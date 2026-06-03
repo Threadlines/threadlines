@@ -103,6 +103,7 @@ export interface WsRpcClient {
     readonly createWorktree: RpcUnaryMethod<typeof WS_METHODS.vcsCreateWorktree>;
     readonly removeWorktree: RpcUnaryMethod<typeof WS_METHODS.vcsRemoveWorktree>;
     readonly createRef: RpcUnaryMethod<typeof WS_METHODS.vcsCreateRef>;
+    readonly createTag: RpcUnaryMethod<typeof WS_METHODS.vcsCreateTag>;
     readonly switchRef: RpcUnaryMethod<typeof WS_METHODS.vcsSwitchRef>;
     readonly mergeRef: RpcUnaryMethod<typeof WS_METHODS.vcsMergeRef>;
     readonly init: RpcUnaryMethod<typeof WS_METHODS.vcsInit>;
@@ -282,6 +283,7 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       removeWorktree: (input) =>
         transport.request((client) => client[WS_METHODS.vcsRemoveWorktree](input)),
       createRef: (input) => transport.request((client) => client[WS_METHODS.vcsCreateRef](input)),
+      createTag: (input) => transport.request((client) => client[WS_METHODS.vcsCreateTag](input)),
       switchRef: (input) => transport.request((client) => client[WS_METHODS.vcsSwitchRef](input)),
       mergeRef: (input) => transport.request((client) => client[WS_METHODS.vcsMergeRef](input)),
       init: (input) => transport.request((client) => client[WS_METHODS.vcsInit](input)),

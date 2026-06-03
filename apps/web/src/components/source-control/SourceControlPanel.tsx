@@ -29,6 +29,7 @@ import {
   PlusIcon,
   RefreshCwIcon,
   SparklesIcon,
+  TagIcon,
   Trash2Icon,
   UploadIcon,
 } from "lucide-react";
@@ -51,6 +52,7 @@ import {
   gitBranchSearchInfiniteQueryOptions,
   gitCheckoutMutationOptions,
   gitCommitGraphQueryOptions,
+  gitCreateTagMutationOptions,
   gitDiscardChangesMutationOptions,
   gitGenerateCommitMessageMutationOptions,
   gitInitMutationOptions,
@@ -1190,6 +1192,10 @@ export function SourceControlPanel({
   const [pendingDiscardChanges, setPendingDiscardChanges] = useState<PendingDiscardChanges | null>(
     null,
   );
+  const [pendingCreateTagCommit, setPendingCreateTagCommit] = useState<VcsCommitGraphCommit | null>(
+    null,
+  );
+  const [createTagName, setCreateTagName] = useState("");
   const [changesPanelRatio, setChangesPanelRatio] = useLocalStorage(
     SOURCE_CONTROL_CHANGES_PANEL_RATIO_STORAGE_KEY,
     DEFAULT_CHANGES_PANEL_RATIO,
@@ -1253,6 +1259,13 @@ export function SourceControlPanel({
       queryClient,
     }),
   );
+  const createTagMutation = useMutation(
+    gitCreateTagMutationOptions({
+      environmentId,
+      cwd,
+      queryClient,
+    }),
+  );
   const runningStackedActionCount = useIsMutating({
     mutationKey: gitMutationKeys.runStackedAction(environmentId, cwd),
   });
@@ -1265,7 +1278,8 @@ export function SourceControlPanel({
     actionMutation.isPending ||
     initMutation.isPending ||
     pullMutation.isPending ||
-    discardChangesMutation.isPending;
+    discardChangesMutation.isPending ||
+    createTagMutation.isPending;
   const changedFiles = status?.workingTree.files ?? EMPTY_WORKING_TREE_FILES;
   const changedFileCount = changedFiles.length;
   const canPublishRepository = Boolean(status?.isRepo && !status.hasPrimaryRemote);
@@ -1588,6 +1602,37 @@ export function SourceControlPanel({
     );
   }, []);
 
+  const runCreateTag = useCallback(() => {
+    if (!pendingCreateTagCommit) {
+      return;
+    }
+    const tagName = createTagName.trim();
+    if (tagName.length === 0) {
+      return;
+    }
+    const commit = pendingCreateTagCommit;
+    const promise = createTagMutation.mutateAsync({
+      tagName,
+      targetSha: commit.sha,
+    });
+    setPendingCreateTagCommit(null);
+    setCreateTagName("");
+    void toastManager.promise(promise, {
+      loading: { title: `Creating tag ${tagName}...`, data: threadToastData },
+      success: (result) => ({
+        title: "Tag created",
+        description: `${result.tagName} at ${commit.shortSha}`,
+        data: threadToastData,
+      }),
+      error: (error) => ({
+        title: "Create tag failed",
+        description: toGitActionErrorMessage(error),
+        data: threadToastData,
+      }),
+    });
+    void promise.then(refreshPanel, () => refreshPanel());
+  }, [createTagMutation, createTagName, pendingCreateTagCommit, refreshPanel, threadToastData]);
+
   const handleCommitContextMenu = useCallback(
     async (commit: VcsCommitGraphCommit, position: { readonly x: number; readonly y: number }) => {
       const api = readLocalApi();
@@ -1599,7 +1644,11 @@ export function SourceControlPanel({
         [
           { id: "copy-full-sha", label: "Copy commit id" },
           { id: "copy-subject", label: "Copy commit message" },
-          { id: "create-tag", label: "Create tag...", disabled: true },
+          {
+            id: "create-tag",
+            label: "Create tag...",
+            disabled: !environmentId || !cwd || createTagMutation.isPending,
+          },
         ],
         position,
       );
@@ -1610,9 +1659,14 @@ export function SourceControlPanel({
       }
       if (clicked === "copy-subject") {
         copyCommitValue(commit.subject, "Commit message");
+        return;
+      }
+      if (clicked === "create-tag") {
+        setPendingCreateTagCommit(commit);
+        setCreateTagName("");
       }
     },
-    [copyCommitValue],
+    [copyCommitValue, createTagMutation.isPending, cwd, environmentId],
   );
 
   const generateCommitMessage = useCallback(async () => {
@@ -2089,6 +2143,65 @@ export function SourceControlPanel({
           </section>
         </div>
       </div>
+      <Dialog
+        open={pendingCreateTagCommit !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingCreateTagCommit(null);
+            setCreateTagName("");
+          }
+        }}
+      >
+        <DialogPopup className="max-w-md">
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              runCreateTag();
+            }}
+          >
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <TagIcon className="size-4 text-muted-foreground" />
+                Create tag
+              </DialogTitle>
+              <DialogDescription>
+                Create a lightweight tag at{" "}
+                <span className="font-mono">{pendingCreateTagCommit?.shortSha ?? "commit"}</span>
+                {pendingCreateTagCommit ? ` - ${pendingCreateTagCommit.subject}` : ""}.
+              </DialogDescription>
+            </DialogHeader>
+            <Input
+              autoFocus
+              className="mt-4"
+              nativeInput
+              placeholder="v1.0.0"
+              size="sm"
+              value={createTagName}
+              onChange={(event) => setCreateTagName(event.target.value)}
+            />
+            <DialogFooter className="mt-4">
+              <Button
+                variant="outline"
+                size="sm"
+                type="button"
+                onClick={() => {
+                  setPendingCreateTagCommit(null);
+                  setCreateTagName("");
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                type="submit"
+                disabled={createTagMutation.isPending || createTagName.trim().length === 0}
+              >
+                Create tag
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogPopup>
+      </Dialog>
       <AlertDialog
         open={pendingDiscardChanges !== null}
         onOpenChange={(open) => {

@@ -2094,6 +2094,34 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("hides the active thread row when collapsing a one-thread project", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-one-thread-collapse-target" as MessageId,
+        targetText: "one thread collapse target",
+      }),
+    });
+
+    try {
+      await expect.element(page.getByTestId(`thread-row-${THREAD_ID}`)).toBeInTheDocument();
+
+      const projectButton = await waitForButtonByText("Project");
+      expect(projectButton.getAttribute("aria-expanded")).toBe("true");
+      projectButton.click();
+
+      await vi.waitFor(
+        () => {
+          expect(projectButton.getAttribute("aria-expanded")).toBe("false");
+          expect(document.querySelector(`[data-testid="thread-row-${THREAD_ID}"]`)).toBeNull();
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("opens the project cwd for draft threads without a worktree path", async () => {
     setDraftThreadWithoutWorktree();
 

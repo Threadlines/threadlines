@@ -304,6 +304,30 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
+    it.effect("creates a tag at a selected commit", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const initialSha = yield* git(cwd, ["rev-parse", "HEAD"]);
+
+        yield* writeTextFile(cwd, "feature.txt", "feature\n");
+        yield* git(cwd, ["add", "feature.txt"]);
+        yield* git(cwd, ["commit", "-m", "feature commit"]);
+
+        const result = yield* driver.createTag({
+          cwd,
+          tagName: "v1.0.0",
+          targetSha: initialSha,
+        });
+
+        assert.equal(result.tagName, "v1.0.0");
+        assert.equal(result.targetSha, initialSha);
+        assert.equal(yield* git(cwd, ["tag", "--list", "v1.0.0"]), "v1.0.0");
+        assert.equal(yield* git(cwd, ["rev-parse", "refs/tags/v1.0.0^{commit}"]), initialSha);
+      }),
+    );
+
     it.effect("refreshes remote refs before listing refs", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();

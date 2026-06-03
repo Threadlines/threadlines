@@ -2726,6 +2726,90 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     },
   );
 
+  const createTag: GitVcsDriver.GitVcsDriverShape["createTag"] = Effect.fn("createTag")(
+    function* (input) {
+      const operation = "GitVcsDriver.createTag";
+      const tagName = input.tagName.trim();
+      const targetSha = input.targetSha.trim();
+      const tagRefName = `refs/tags/${tagName}`;
+
+      if (tagName.length === 0) {
+        return yield* createGitCommandError(
+          operation,
+          input.cwd,
+          ["tag", "--", tagName, targetSha],
+          "Tag name is required.",
+        );
+      }
+
+      const validRefName = yield* executeGit(
+        `${operation}.validateName`,
+        input.cwd,
+        ["check-ref-format", tagRefName],
+        {
+          allowNonZeroExit: true,
+          timeoutMs: 5_000,
+        },
+      ).pipe(Effect.map((result) => result.exitCode === 0));
+      if (!validRefName) {
+        return yield* createGitCommandError(
+          operation,
+          input.cwd,
+          ["check-ref-format", tagRefName],
+          `Invalid tag name: ${tagName}`,
+        );
+      }
+
+      const tagExists = yield* executeGit(
+        `${operation}.tagExists`,
+        input.cwd,
+        ["show-ref", "--verify", "--quiet", tagRefName],
+        {
+          allowNonZeroExit: true,
+          timeoutMs: 5_000,
+        },
+      ).pipe(Effect.map((result) => result.exitCode === 0));
+      if (tagExists) {
+        return yield* createGitCommandError(
+          operation,
+          input.cwd,
+          ["show-ref", "--verify", "--quiet", tagRefName],
+          `Tag already exists: ${tagName}`,
+        );
+      }
+
+      const targetExists = yield* executeGit(
+        `${operation}.verifyTarget`,
+        input.cwd,
+        ["cat-file", "-e", `${targetSha}^{commit}`],
+        {
+          allowNonZeroExit: true,
+          timeoutMs: 5_000,
+        },
+      ).pipe(Effect.map((result) => result.exitCode === 0));
+      if (!targetExists) {
+        return yield* createGitCommandError(
+          operation,
+          input.cwd,
+          ["cat-file", "-e", `${targetSha}^{commit}`],
+          `Target commit was not found: ${targetSha}`,
+        );
+      }
+
+      yield* executeGit(operation, input.cwd, ["tag", "--", tagName, targetSha], {
+        timeoutMs: 10_000,
+        fallbackErrorMessage: "git tag create failed",
+      });
+
+      const resolvedTargetSha = yield* runGitStdout(`${operation}.resolveTarget`, input.cwd, [
+        "rev-parse",
+        `${tagRefName}^{commit}`,
+      ]).pipe(Effect.map((stdout) => stdout.trim()));
+
+      return { tagName, targetSha: resolvedTargetSha };
+    },
+  );
+
   const mergeRef: GitVcsDriver.GitVcsDriverShape["mergeRef"] = Effect.fn("mergeRef")(
     function* (input) {
       const details = yield* statusDetails(input.cwd);
@@ -2810,6 +2894,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     removeWorktree,
     renameBranch,
     createRef,
+    createTag,
     switchRef,
     mergeRef,
     initRepo,

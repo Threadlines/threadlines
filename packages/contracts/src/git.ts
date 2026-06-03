@@ -221,6 +221,19 @@ export const VcsCreateRefResult = Schema.Struct({
 });
 export type VcsCreateRefResult = typeof VcsCreateRefResult.Type;
 
+export const VcsCreateTagInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  tagName: TrimmedNonEmptyStringSchema,
+  targetSha: TrimmedNonEmptyStringSchema,
+});
+export type VcsCreateTagInput = typeof VcsCreateTagInput.Type;
+
+export const VcsCreateTagResult = Schema.Struct({
+  tagName: TrimmedNonEmptyStringSchema,
+  targetSha: TrimmedNonEmptyStringSchema,
+});
+export type VcsCreateTagResult = typeof VcsCreateTagResult.Type;
+
 export const VcsSwitchRefInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
   refName: TrimmedNonEmptyStringSchema,

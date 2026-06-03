@@ -22,6 +22,8 @@ import {
   type VcsWorkingTreeDiffResult,
   type VcsCreateRefInput,
   type VcsCreateRefResult,
+  type VcsCreateTagInput,
+  type VcsCreateTagResult,
   type VcsCreateWorktreeInput,
   type VcsCreateWorktreeResult,
   type VcsInitInput,
@@ -230,6 +232,9 @@ export interface GitVcsDriverShape {
   readonly createRef: (
     input: VcsCreateRefInput,
   ) => Effect.Effect<VcsCreateRefResult, GitCommandError>;
+  readonly createTag: (
+    input: VcsCreateTagInput,
+  ) => Effect.Effect<VcsCreateTagResult, GitCommandError>;
   readonly switchRef: (
     input: VcsSwitchRefInput,
   ) => Effect.Effect<VcsSwitchRefResult, GitCommandError>;

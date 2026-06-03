@@ -47,6 +47,8 @@ export const gitMutationKeys = {
     ["git", "mutation", "init", environmentId ?? null, cwd] as const,
   switchRef: (environmentId: EnvironmentId | null, cwd: string | null) =>
     ["git", "mutation", "switchRef", environmentId ?? null, cwd] as const,
+  createTag: (environmentId: EnvironmentId | null, cwd: string | null) =>
+    ["git", "mutation", "createTag", environmentId ?? null, cwd] as const,
   mergeRef: (environmentId: EnvironmentId | null, cwd: string | null) =>
     ["git", "mutation", "mergeRef", environmentId ?? null, cwd] as const,
   discardChanges: (environmentId: EnvironmentId | null, cwd: string | null) =>
@@ -265,6 +267,28 @@ export function gitMergeRefMutationOptions(input: {
     },
     onSuccess: async () => {
       await invalidateGitBranchQueries(input.queryClient, input.environmentId, input.cwd);
+    },
+  });
+}
+
+export function gitCreateTagMutationOptions(input: {
+  environmentId: EnvironmentId | null;
+  cwd: string | null;
+  queryClient: QueryClient;
+}) {
+  return mutationOptions({
+    mutationKey: gitMutationKeys.createTag(input.environmentId, input.cwd),
+    mutationFn: async (args: { tagName: string; targetSha: string }) => {
+      if (!input.cwd || !input.environmentId) throw new Error("Git tag creation is unavailable.");
+      const api = ensureEnvironmentApi(input.environmentId);
+      return api.vcs.createTag({
+        cwd: input.cwd,
+        tagName: args.tagName,
+        targetSha: args.targetSha,
+      });
+    },
+    onSettled: async () => {
+      await input.queryClient.invalidateQueries({ queryKey: gitQueryKeys.all });
     },
   });
 }

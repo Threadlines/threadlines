@@ -26,6 +26,8 @@ import {
   GitGenerateCommitMessageResult,
   VcsCreateRefInput,
   VcsCreateRefResult,
+  VcsCreateTagInput,
+  VcsCreateTagResult,
   VcsCreateWorktreeInput,
   VcsCreateWorktreeResult,
   VcsInitInput,
@@ -170,6 +172,7 @@ export const WS_METHODS = {
   vcsCreateWorktree: "vcs.createWorktree",
   vcsRemoveWorktree: "vcs.removeWorktree",
   vcsCreateRef: "vcs.createRef",
+  vcsCreateTag: "vcs.createTag",
   vcsSwitchRef: "vcs.switchRef",
   vcsMergeRef: "vcs.mergeRef",
   vcsInit: "vcs.init",
@@ -588,6 +591,12 @@ export const WsVcsCreateRefRpc = Rpc.make(WS_METHODS.vcsCreateRef, {
   error: GitCommandError,
 });
 
+export const WsVcsCreateTagRpc = Rpc.make(WS_METHODS.vcsCreateTag, {
+  payload: VcsCreateTagInput,
+  success: VcsCreateTagResult,
+  error: GitCommandError,
+});
+
 export const WsVcsSwitchRefRpc = Rpc.make(WS_METHODS.vcsSwitchRef, {
   payload: VcsSwitchRefInput,
   success: VcsSwitchRefResult,
@@ -769,6 +778,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsVcsCreateWorktreeRpc,
   WsVcsRemoveWorktreeRpc,
   WsVcsCreateRefRpc,
+  WsVcsCreateTagRpc,
   WsVcsSwitchRefRpc,
   WsVcsMergeRefRpc,
   WsVcsInitRpc,

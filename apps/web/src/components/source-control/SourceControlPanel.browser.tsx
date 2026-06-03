@@ -150,6 +150,10 @@ function makeEnvironmentApi(
       discardChanges: vi.fn(async (input: { readonly filePaths: string[] }) => ({
         discardedPaths: input.filePaths,
       })),
+      createTag: vi.fn(async (input: { readonly tagName: string; readonly targetSha: string }) => ({
+        tagName: input.tagName,
+        targetSha: input.targetSha,
+      })),
       ...overrides.vcs,
     },
   } as unknown as EnvironmentApi;
@@ -360,6 +364,57 @@ describe("SourceControlPanel commit graph", () => {
 
       await vi.waitFor(() => {
         expect(writeText).toHaveBeenCalledWith("abc1234abc1234abc1234abc1234abc1234abc1234");
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("creates a tag from the commit graph context menu", async () => {
+    const createTag: EnvironmentApi["vcs"]["createTag"] = vi.fn(async (input) => ({
+      tagName: input.tagName,
+      targetSha: input.targetSha,
+    }));
+    const mounted = await renderPanel({
+      environmentApi: makeEnvironmentApi({ vcs: { createTag } }),
+    });
+
+    try {
+      await expect.element(page.getByText("Polish source control graph")).toBeVisible();
+      const row = document.querySelector(
+        '[aria-label="Commit abc1234: Polish source control graph"]',
+      );
+      expect(row).toBeInstanceOf(HTMLElement);
+
+      row?.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 160,
+          clientY: 180,
+        }),
+      );
+
+      await page.getByText("Create tag...").click();
+
+      await expect.element(page.getByRole("heading", { name: "Create tag" })).toBeVisible();
+      await expect.element(page.getByText(/abc1234/)).toBeVisible();
+
+      await page.getByPlaceholder("v1.0.0").fill("v2.0.0");
+      await page.getByRole("button", { name: "Create tag" }).click();
+
+      await vi.waitFor(() => {
+        expect(createTag).toHaveBeenCalledWith({
+          cwd: CWD,
+          tagName: "v2.0.0",
+          targetSha: "abc1234abc1234abc1234abc1234abc1234abc1234",
+        });
+      });
+      await vi.waitFor(() => {
+        expect(gitStatusMock.refreshGitStatus).toHaveBeenCalledWith({
+          environmentId: ENVIRONMENT_ID,
+          cwd: CWD,
+        });
       });
     } finally {
       await mounted.cleanup();

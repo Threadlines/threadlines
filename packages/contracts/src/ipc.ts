@@ -8,6 +8,9 @@ import type {
   VcsWorkingTreeDiffInput,
   VcsWorkingTreeDiffResult,
   VcsCreateRefInput,
+  VcsCreateRefResult,
+  VcsCreateTagInput,
+  VcsCreateTagResult,
   GitGenerateCommitMessageInput,
   GitGenerateCommitMessageResult,
   GitPreparePullRequestThreadInput,
@@ -27,7 +30,6 @@ import type {
   VcsStatusInput,
   VcsStatusLocalResult,
   VcsStatusResult,
-  VcsCreateRefResult,
 } from "./git.ts";
 import type { FilesystemBrowseInput, FilesystemBrowseResult } from "./filesystem.ts";
 import type {
@@ -636,6 +638,7 @@ export interface EnvironmentApi {
     createWorktree: (input: VcsCreateWorktreeInput) => Promise<VcsCreateWorktreeResult>;
     removeWorktree: (input: VcsRemoveWorktreeInput) => Promise<void>;
     createRef: (input: VcsCreateRefInput) => Promise<VcsCreateRefResult>;
+    createTag: (input: VcsCreateTagInput) => Promise<VcsCreateTagResult>;
     switchRef: (input: VcsSwitchRefInput) => Promise<VcsSwitchRefResult>;
     mergeRef: (input: VcsMergeRefInput) => Promise<VcsMergeRefResult>;
     init: (input: VcsInitInput) => Promise<void>;
