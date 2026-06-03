@@ -1230,7 +1230,10 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                 })
                 .pipe(
                   Effect.matchCauseEffect({
-                    onFailure: (cause) => Queue.failCause(queue, cause),
+                    onFailure: (cause) =>
+                      refreshGitStatus(input.cwd).pipe(
+                        Effect.andThen(Queue.failCause(queue, cause)),
+                      ),
                     onSuccess: () =>
                       refreshGitStatus(input.cwd).pipe(
                         Effect.andThen(Queue.end(queue).pipe(Effect.asVoid)),

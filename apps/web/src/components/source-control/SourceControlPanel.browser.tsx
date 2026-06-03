@@ -396,6 +396,28 @@ describe("SourceControlPanel changes", () => {
       await expect
         .element(page.getByRole("button", { name: "Stage changes to src/app.ts" }))
         .toBeVisible();
+      const discardFileButton = document.querySelector(
+        'button[aria-label="Discard changes to src/app.ts"]',
+      );
+      const stageFileButton = document.querySelector(
+        'button[aria-label="Stage changes to src/app.ts"]',
+      );
+      const discardAllButton = document.querySelector('button[aria-label="Discard all changes"]');
+      const stageAllButton = document.querySelector('button[aria-label="Stage all changes"]');
+      if (
+        !(discardFileButton instanceof HTMLButtonElement) ||
+        !(stageFileButton instanceof HTMLButtonElement) ||
+        !(discardAllButton instanceof HTMLButtonElement) ||
+        !(stageAllButton instanceof HTMLButtonElement)
+      ) {
+        throw new Error("Expected source control action buttons to render.");
+      }
+      expect(discardFileButton.compareDocumentPosition(stageFileButton)).toBe(
+        Node.DOCUMENT_POSITION_FOLLOWING,
+      );
+      expect(discardAllButton.compareDocumentPosition(stageAllButton)).toBe(
+        Node.DOCUMENT_POSITION_FOLLOWING,
+      );
 
       await page.getByRole("button", { name: "Stage changes to src/app.ts" }).click();
       await vi.waitFor(() => {
@@ -563,31 +585,14 @@ describe("SourceControlPanel commit graph", () => {
     }
   });
 
-  it("creates a tag from the commit graph row action", async () => {
-    const createTag: EnvironmentApi["vcs"]["createTag"] = vi.fn(async (input) => ({
-      tagName: input.tagName,
-      targetSha: input.targetSha,
-    }));
-    const mounted = await renderPanel({
-      environmentApi: makeEnvironmentApi({ vcs: { createTag } }),
-    });
+  it("keeps create tag out of the commit graph row actions", async () => {
+    const mounted = await renderPanel();
 
     try {
-      await page.getByRole("button", { name: "Create tag at abc1234" }).click();
-
-      await expect.element(page.getByRole("heading", { name: "Create tag" })).toBeVisible();
-      await expect.element(page.getByText(/abc1234/)).toBeVisible();
-
-      await page.getByPlaceholder("v1.0.0").fill("v2.1.0");
-      await page.getByRole("button", { name: "Create tag" }).click();
-
-      await vi.waitFor(() => {
-        expect(createTag).toHaveBeenCalledWith({
-          cwd: CWD,
-          tagName: "v2.1.0",
-          targetSha: "abc1234abc1234abc1234abc1234abc1234abc1234",
-        });
-      });
+      await expect.element(page.getByText("Polish source control graph")).toBeVisible();
+      await expect
+        .element(page.getByRole("button", { name: "Create tag at abc1234" }))
+        .not.toBeInTheDocument();
     } finally {
       await mounted.cleanup();
     }

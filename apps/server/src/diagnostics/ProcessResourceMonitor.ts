@@ -20,6 +20,7 @@ import {
 } from "./ProcessDiagnostics.ts";
 
 const SAMPLE_INTERVAL_MS = 5_000;
+const SAMPLE_FAILURE_BACKOFF_MS = 30_000;
 const RETENTION_MS = 60 * 60_000;
 const MAX_RETAINED_SAMPLES = 20_000;
 
@@ -298,6 +299,7 @@ export const make = Effect.fn("makeProcessResourceMonitor")(function* () {
     const sampledAt = yield* DateTime.now;
     const sampledAtMs = DateTime.toEpochMillis(sampledAt);
     const rows = yield* readProcessRows().pipe(
+      Effect.withTracerEnabled(false),
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
     );
     const samples = collectMonitoredSamples({
@@ -310,18 +312,23 @@ export const make = Effect.fn("makeProcessResourceMonitor")(function* () {
       samples: trimSamples([...current.samples, ...samples], sampledAtMs),
       lastError: null,
     }));
+    return true;
   }).pipe(
     Effect.catch((error: unknown) =>
       Ref.update(state, (current) => ({
         ...current,
         lastError: error instanceof Error ? error.message : "Failed to sample process resources.",
-      })),
+      })).pipe(Effect.as(false)),
     ),
   );
 
-  yield* Effect.forever(sampleOnce.pipe(Effect.andThen(Effect.sleep(SAMPLE_INTERVAL_MS)))).pipe(
-    Effect.forkScoped,
-  );
+  yield* Effect.forever(
+    sampleOnce.pipe(
+      Effect.flatMap((succeeded) =>
+        Effect.sleep(succeeded ? SAMPLE_INTERVAL_MS : SAMPLE_FAILURE_BACKOFF_MS),
+      ),
+    ),
+  ).pipe(Effect.forkScoped);
 
   const readHistory: ProcessResourceMonitorShape["readHistory"] = (input) =>
     Effect.gen(function* () {

@@ -731,8 +731,6 @@ function CommitGraphRow({
   layout,
   visibleRefs,
   onCopyCommitValue,
-  onCreateTagCommit,
-  isCreateTagPending,
   onCommitContextMenu,
 }: {
   readonly commit: VcsCommitGraphCommit;
@@ -740,8 +738,6 @@ function CommitGraphRow({
   readonly layout: CommitGraphLaneLayout;
   readonly visibleRefs: readonly string[];
   readonly onCopyCommitValue: (value: string, title: string) => void;
-  readonly onCreateTagCommit: (commit: VcsCommitGraphCommit) => void;
-  readonly isCreateTagPending: boolean;
   readonly onCommitContextMenu: (
     commit: VcsCommitGraphCommit,
     position: { readonly x: number; readonly y: number },
@@ -803,22 +799,6 @@ function CommitGraphRow({
                   ) : null}
                 </span>
               ) : null}
-              <Button
-                type="button"
-                aria-label={`Create tag at ${commit.shortSha}`}
-                title="Create tag"
-                variant="ghost"
-                size="icon-xs"
-                className="size-6 shrink-0 text-muted-foreground/60 hover:text-foreground"
-                disabled={isCreateTagPending}
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  onCreateTagCommit(commit);
-                }}
-              >
-                <TagIcon className="size-3" />
-              </Button>
             </span>
           </div>
         }
@@ -839,6 +819,8 @@ const BRANCH_MENU_REF_LIMIT = 14;
 const SOURCE_CONTROL_STATUS_REFRESH_INTERVAL_MS = 3_000;
 const DEFAULT_CHANGES_PANEL_HEIGHT = 150;
 const DEFAULT_CHANGES_PANEL_RATIO = 0.4;
+const CHANGED_FILE_ACTIONS_VISIBILITY_CLASS_NAME =
+  "pointer-events-none opacity-0 transition-opacity duration-150 group-hover/change-file:pointer-events-auto group-hover/change-file:opacity-100 group-focus-within/change-file:pointer-events-auto group-focus-within/change-file:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100";
 const MIN_CHANGES_PANEL_RATIO = 0.2;
 const MAX_CHANGES_PANEL_RATIO = 0.8;
 const MIN_GRAPH_PANEL_HEIGHT = 120;
@@ -2188,27 +2170,14 @@ export function SourceControlPanel({
           <span className="px-1 text-muted-foreground/60">/</span>
           <span className="text-destructive">-{entry.deletions}</span>
         </span>
-        <div className="flex shrink-0 items-center gap-0.5">
+        <div
+          className={cn(
+            "flex shrink-0 items-center gap-0.5",
+            CHANGED_FILE_ACTIONS_VISIBILITY_CLASS_NAME,
+          )}
+        >
           {entry.section === "unstaged" ? (
             <>
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <Button
-                      type="button"
-                      aria-label={`Stage changes to ${entry.path}`}
-                      variant="ghost"
-                      size="icon-xs"
-                      className="size-6 text-muted-foreground/60 hover:text-foreground"
-                      disabled={isGitActionRunning}
-                      onClick={() => stageFileChanges(entry)}
-                    />
-                  }
-                >
-                  <PlusIcon className="size-3" />
-                </TooltipTrigger>
-                <TooltipPopup side="top">Stage changes</TooltipPopup>
-              </Tooltip>
               <Tooltip>
                 <TooltipTrigger
                   render={
@@ -2226,6 +2195,24 @@ export function SourceControlPanel({
                   <Undo2Icon className="size-3" />
                 </TooltipTrigger>
                 <TooltipPopup side="top">Discard changes</TooltipPopup>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      type="button"
+                      aria-label={`Stage changes to ${entry.path}`}
+                      variant="ghost"
+                      size="icon-xs"
+                      className="size-6 text-muted-foreground/60 hover:text-foreground"
+                      disabled={isGitActionRunning}
+                      onClick={() => stageFileChanges(entry)}
+                    />
+                  }
+                >
+                  <PlusIcon className="size-3" />
+                </TooltipTrigger>
+                <TooltipPopup side="top">Stage changes</TooltipPopup>
               </Tooltip>
             </>
           ) : (
@@ -2508,24 +2495,6 @@ export function SourceControlPanel({
                         render={
                           <Button
                             type="button"
-                            aria-label="Stage all changes"
-                            variant="ghost"
-                            size="icon-xs"
-                            className="text-muted-foreground/70 hover:text-foreground"
-                            disabled={unstagedChangeFiles.length === 0 || isGitActionRunning}
-                            onClick={stageAllUnstagedChanges}
-                          />
-                        }
-                      >
-                        <PlusIcon className="size-3.5" />
-                      </TooltipTrigger>
-                      <TooltipPopup side="top">Stage all changes</TooltipPopup>
-                    </Tooltip>
-                    <Tooltip>
-                      <TooltipTrigger
-                        render={
-                          <Button
-                            type="button"
                             aria-label="Discard all changes"
                             variant="ghost"
                             size="icon-xs"
@@ -2538,6 +2507,24 @@ export function SourceControlPanel({
                         <Undo2Icon className="size-3.5" />
                       </TooltipTrigger>
                       <TooltipPopup side="top">Discard all changes</TooltipPopup>
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <Button
+                            type="button"
+                            aria-label="Stage all changes"
+                            variant="ghost"
+                            size="icon-xs"
+                            className="text-muted-foreground/70 hover:text-foreground"
+                            disabled={unstagedChangeFiles.length === 0 || isGitActionRunning}
+                            onClick={stageAllUnstagedChanges}
+                          />
+                        }
+                      >
+                        <PlusIcon className="size-3.5" />
+                      </TooltipTrigger>
+                      <TooltipPopup side="top">Stage all changes</TooltipPopup>
                     </Tooltip>
                   </>
                 ),
@@ -2695,8 +2682,6 @@ export function SourceControlPanel({
                       layout={row.layout}
                       visibleRefs={row.visibleRefs}
                       onCopyCommitValue={copyCommitValue}
-                      onCreateTagCommit={openCreateTagDialog}
-                      isCreateTagPending={createTagMutation.isPending}
                       onCommitContextMenu={handleCommitContextMenu}
                     />
                   ))}

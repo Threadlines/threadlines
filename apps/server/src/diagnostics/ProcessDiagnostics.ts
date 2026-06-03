@@ -26,7 +26,7 @@ export interface ProcessRow {
   readonly command: string;
 }
 
-const PROCESS_QUERY_TIMEOUT_MS = 5_000;
+const PROCESS_QUERY_TIMEOUT_MS = 15_000;
 const POSIX_PROCESS_QUERY_COMMAND = "pid=,ppid=,pgid=,stat=,pcpu=,rss=,etime=,command=";
 const PROCESS_QUERY_MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
 
@@ -347,19 +347,47 @@ function readPosixProcessRows(): Effect.Effect<
   );
 }
 
-export function buildWindowsProcessQueryCommand(): string {
+export function buildWindowsProcessQueryCommand(serverPid = process.pid): string {
+  const safeServerPid =
+    Number.isInteger(serverPid) && serverPid > 0 ? Math.trunc(serverPid) : process.pid;
   return [
-    "$perfByPid = @{};",
+    `$serverPid = ${safeServerPid};`,
+    "$rowsByPid = @{};",
+    "$visitedParents = [System.Collections.Generic.HashSet[int]]::new();",
+    "$queue = [System.Collections.Generic.Queue[int]]::new();",
+    "$queue.Enqueue($serverPid);",
     "try {",
-    "Get-CimInstance Win32_PerfFormattedData_PerfProc_Process -ErrorAction Stop | ForEach-Object {",
-    "$perfByPid[[int]$_.IDProcess] = $_.PercentProcessorTime",
-    "}",
+    '$root = Get-CimInstance Win32_Process -Filter "ProcessId = $serverPid" -ErrorAction Stop;',
+    "if ($root) { $rowsByPid[[int]$root.ProcessId] = $root }",
     "} catch {",
     "};",
-    "Get-CimInstance Win32_Process | ForEach-Object {",
+    "while ($queue.Count -gt 0) {",
+    "$parentPid = $queue.Dequeue();",
+    "if (-not $visitedParents.Add($parentPid)) { continue }",
+    "try {",
+    '$children = Get-CimInstance Win32_Process -Filter "ParentProcessId = $parentPid" -ErrorAction Stop;',
+    "foreach ($child in $children) {",
+    "$childPid = [int]$child.ProcessId;",
+    "if (-not $rowsByPid.ContainsKey($childPid)) {",
+    "$rowsByPid[$childPid] = $child;",
+    "$queue.Enqueue($childPid)",
+    "}",
+    "}",
+    "} catch {",
+    "}",
+    "};",
+    "$perfByPid = @{};",
+    "foreach ($processId in $rowsByPid.Keys) {",
+    "try {",
+    '$perf = Get-CimInstance Win32_PerfFormattedData_PerfProc_Process -Filter "IDProcess = $processId" -ErrorAction Stop | Select-Object -First 1;',
+    "if ($perf) { $perfByPid[[int]$perf.IDProcess] = $perf.PercentProcessorTime }",
+    "} catch {",
+    "}",
+    "}",
+    "@($rowsByPid.Values | ForEach-Object {",
     "$processId = [int]$_.ProcessId;",
     "[pscustomobject]@{ ProcessId = $_.ProcessId; ParentProcessId = $_.ParentProcessId; Name = $_.Name; CommandLine = $_.CommandLine; Status = $_.Status; WorkingSetSize = $_.WorkingSetSize; PercentProcessorTime = if ($perfByPid.ContainsKey($processId)) { $perfByPid[$processId] } else { 0 } }",
-    "} | ConvertTo-Json -Compress -Depth 3",
+    "}) | ConvertTo-Json -Compress -Depth 3",
   ].join(" ");
 }
 
@@ -424,6 +452,7 @@ export const make = Effect.fn("makeProcessDiagnostics")(function* () {
   const read: ProcessDiagnosticsShape["read"] = Effect.gen(function* () {
     const readAt = yield* DateTime.now;
     const rows = yield* readProcessRows().pipe(
+      Effect.withTracerEnabled(false),
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
     );
     return makeResult({ serverPid: process.pid, rows, readAt });

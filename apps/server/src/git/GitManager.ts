@@ -703,6 +703,84 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
   const canonicalizeExistingPath = (value: string) =>
     fileSystem.realPath(value).pipe(Effect.catch(() => Effect.succeed(value)));
   const normalizeStatusCacheKey = canonicalizeExistingPath;
+
+  const resolveGitIndexPath = Effect.fn("resolveGitIndexPath")(function* (cwd: string) {
+    const result = yield* gitCore.execute({
+      operation: "GitManager.resolveGitIndexPath",
+      cwd,
+      args: ["rev-parse", "--git-path", "index"],
+      timeoutMs: 5_000,
+    });
+    const indexPath = result.stdout.trim();
+    if (indexPath.length === 0) {
+      return yield* gitManagerError("resolveGitIndexPath", "Git returned an empty index path.");
+    }
+    return path.isAbsolute(indexPath) ? indexPath : path.resolve(cwd, indexPath);
+  });
+
+  const captureGitIndexSnapshot = Effect.fn("captureGitIndexSnapshot")(function* (cwd: string) {
+    const indexPath = yield* resolveGitIndexPath(cwd);
+    const backupPath = path.join(tempDir, `badcode-git-index-${process.pid}-${randomUUID()}`);
+    const existed = yield* fileSystem
+      .exists(indexPath)
+      .pipe(Effect.catch(() => Effect.succeed(false)));
+    if (existed) {
+      yield* fileSystem
+        .copyFile(indexPath, backupPath)
+        .pipe(
+          Effect.mapError((cause) =>
+            gitManagerError("captureGitIndexSnapshot", "Failed to snapshot the Git index.", cause),
+          ),
+        );
+    }
+    return {
+      indexPath,
+      backupPath,
+      existed,
+    };
+  });
+
+  const restoreGitIndexSnapshot = Effect.fn("restoreGitIndexSnapshot")(function* (snapshot: {
+    readonly indexPath: string;
+    readonly backupPath: string;
+    readonly existed: boolean;
+  }) {
+    if (snapshot.existed) {
+      yield* fileSystem
+        .copyFile(snapshot.backupPath, snapshot.indexPath)
+        .pipe(
+          Effect.mapError((cause) =>
+            gitManagerError("restoreGitIndexSnapshot", "Failed to restore the Git index.", cause),
+          ),
+        );
+      return;
+    }
+
+    yield* fileSystem
+      .remove(snapshot.indexPath, { force: true })
+      .pipe(
+        Effect.mapError((cause) =>
+          gitManagerError("restoreGitIndexSnapshot", "Failed to remove the Git index.", cause),
+        ),
+      );
+  });
+
+  const cleanupGitIndexSnapshot = (snapshot: { readonly backupPath: string }) =>
+    fileSystem.remove(snapshot.backupPath, { force: true }).pipe(Effect.ignore);
+
+  const restoreGitIndexSnapshotBestEffort = (snapshot: {
+    readonly indexPath: string;
+    readonly backupPath: string;
+    readonly existed: boolean;
+  }) =>
+    restoreGitIndexSnapshot(snapshot).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning(
+          `Failed to restore Git index after stacked action failure: ${error.message}`,
+        ),
+      ),
+    );
+
   const nonRepositoryStatusDetails = {
     isRepo: false,
     hasOriginRemote: false,
@@ -1205,6 +1283,7 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
         branch,
         ...(commitMessage ? { commitMessage } : {}),
         ...(filePaths ? { filePaths } : {}),
+        preview: true,
         modelSelection,
       });
     }
@@ -1212,74 +1291,90 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
       return { status: "skipped_no_changes" as const };
     }
 
-    yield* emit({
-      kind: "phase_started",
-      phase: "commit",
-      label: "Committing...",
-    });
+    const snapshot = yield* captureGitIndexSnapshot(cwd);
+    return yield* Effect.gen(function* () {
+      const preparedContext = yield* gitCore.prepareCommitContext(cwd, filePaths);
+      if (!preparedContext) {
+        return { status: "skipped_no_changes" as const };
+      }
 
-    let currentHookName: string | null = null;
-    const commitProgress =
-      progressReporter && actionId
-        ? {
-            onOutputLine: ({ stream, text }: { stream: "stdout" | "stderr"; text: string }) => {
-              const sanitized = sanitizeProgressText(text);
-              if (!sanitized) {
-                return Effect.void;
-              }
-              return emit({
-                kind: "hook_output",
-                hookName: currentHookName,
-                stream,
-                text: sanitized,
-              });
-            },
-            onHookStarted: (hookName: string) => {
-              currentHookName = hookName;
-              return emit({
-                kind: "hook_started",
-                hookName,
-              });
-            },
-            onHookFinished: ({
-              hookName,
-              exitCode,
-              durationMs,
-            }: {
-              hookName: string;
-              exitCode: number | null;
-              durationMs: number | null;
-            }) => {
-              if (currentHookName === hookName) {
-                currentHookName = null;
-              }
-              return emit({
-                kind: "hook_finished",
+      yield* emit({
+        kind: "phase_started",
+        phase: "commit",
+        label: "Committing...",
+      });
+
+      let currentHookName: string | null = null;
+      const commitProgress =
+        progressReporter && actionId
+          ? {
+              onOutputLine: ({ stream, text }: { stream: "stdout" | "stderr"; text: string }) => {
+                const sanitized = sanitizeProgressText(text);
+                if (!sanitized) {
+                  return Effect.void;
+                }
+                return emit({
+                  kind: "hook_output",
+                  hookName: currentHookName,
+                  stream,
+                  text: sanitized,
+                });
+              },
+              onHookStarted: (hookName: string) => {
+                currentHookName = hookName;
+                return emit({
+                  kind: "hook_started",
+                  hookName,
+                });
+              },
+              onHookFinished: ({
                 hookName,
                 exitCode,
                 durationMs,
-              });
-            },
-          }
-        : null;
-    const { commitSha } = yield* gitCore.commit(cwd, suggestion.subject, suggestion.body, {
-      timeoutMs: COMMIT_TIMEOUT_MS,
-      ...(commitProgress ? { progress: commitProgress } : {}),
-    });
-    if (currentHookName !== null) {
-      yield* emit({
-        kind: "hook_finished",
-        hookName: currentHookName,
-        exitCode: 0,
-        durationMs: null,
+              }: {
+                hookName: string;
+                exitCode: number | null;
+                durationMs: number | null;
+              }) => {
+                if (currentHookName === hookName) {
+                  currentHookName = null;
+                }
+                return emit({
+                  kind: "hook_finished",
+                  hookName,
+                  exitCode,
+                  durationMs,
+                });
+              },
+            }
+          : null;
+      const { commitSha } = yield* gitCore.commit(cwd, suggestion.subject, suggestion.body, {
+        timeoutMs: COMMIT_TIMEOUT_MS,
+        ...(commitProgress ? { progress: commitProgress } : {}),
       });
-      currentHookName = null;
-    }
-    return {
-      status: "created" as const,
-      commitSha,
-      subject: suggestion.subject,
-    };
+      if (currentHookName !== null) {
+        yield* emit({
+          kind: "hook_finished",
+          hookName: currentHookName,
+          exitCode: 0,
+          durationMs: null,
+        });
+        currentHookName = null;
+      }
+      return {
+        status: "created" as const,
+        commitSha,
+        subject: suggestion.subject,
+      };
+    }).pipe(
+      Effect.tap((result) =>
+        result.status === "skipped_no_changes"
+          ? restoreGitIndexSnapshotBestEffort(snapshot)
+          : Effect.void,
+      ),
+      Effect.tapError(() => restoreGitIndexSnapshotBestEffort(snapshot)),
+      Effect.ensuring(cleanupGitIndexSnapshot(snapshot)),
+    );
   });
 
   const runPrStep = Effect.fn("runPrStep")(function* (
@@ -1608,6 +1703,7 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
       ...(commitMessage ? { commitMessage } : {}),
       ...(filePaths ? { filePaths } : {}),
       includeBranch: true,
+      preview: true,
       modelSelection,
     });
     if (!suggestion) {

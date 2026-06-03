@@ -1452,6 +1452,84 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
     }),
   );
 
+  it.effect("does not stage files when generated commit message fails", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      fs.writeFileSync(path.join(repoDir, "staged.txt"), "already staged\n");
+      yield* runGit(repoDir, ["add", "staged.txt"]);
+      fs.writeFileSync(path.join(repoDir, "selected.txt"), "selected\n");
+
+      const { manager } = yield* makeManager({
+        textGeneration: {
+          generateCommitMessage: () =>
+            Effect.fail(
+              new TextGenerationError({
+                operation: "generateCommitMessage",
+                detail: "generation failed",
+              }),
+            ),
+        },
+      });
+
+      const errorMessage = yield* runStackedAction(manager, {
+        cwd: repoDir,
+        action: "commit",
+        filePaths: ["selected.txt"],
+      }).pipe(
+        Effect.flip,
+        Effect.map((error) => error.message),
+      );
+
+      expect(errorMessage.length).toBeGreaterThan(0);
+      const staged = yield* runGit(repoDir, ["diff", "--cached", "--name-only"]).pipe(
+        Effect.map((result) => result.stdout.trim()),
+      );
+      expect(staged).toBe("staged.txt");
+      const status = yield* runGit(repoDir, ["status", "--porcelain"]).pipe(
+        Effect.map((result) => result.stdout),
+      );
+      expect(status).toContain("A  staged.txt");
+      expect(status).toContain("?? selected.txt");
+    }),
+  );
+
+  it.effect("restores the previous index when a selected-file commit hook fails", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      fs.writeFileSync(path.join(repoDir, "staged.txt"), "already staged\n");
+      yield* runGit(repoDir, ["add", "staged.txt"]);
+      fs.writeFileSync(path.join(repoDir, "selected.txt"), "selected\n");
+      fs.writeFileSync(
+        path.join(repoDir, ".git", "hooks", "pre-commit"),
+        '#!/bin/sh\necho "hook: fail" >&2\nexit 1\n',
+        { mode: 0o755 },
+      );
+
+      const { manager } = yield* makeManager();
+      const errorMessage = yield* runStackedAction(manager, {
+        cwd: repoDir,
+        action: "commit",
+        filePaths: ["selected.txt"],
+      }).pipe(
+        Effect.flip,
+        Effect.map((error) => error.message),
+      );
+
+      expect(errorMessage).toContain("hook: fail");
+      const staged = yield* runGit(repoDir, ["diff", "--cached", "--name-only"]).pipe(
+        Effect.map((result) => result.stdout.trim()),
+      );
+      expect(staged).toBe("staged.txt");
+      const status = yield* runGit(repoDir, ["status", "--porcelain"]).pipe(
+        Effect.map((result) => result.stdout),
+      );
+      expect(status).toContain("A  staged.txt");
+      expect(status).toContain("?? selected.txt");
+    }),
+  );
+
   it.effect("creates feature branch, commits, and pushes with featureBranch option", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");
