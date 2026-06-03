@@ -731,6 +731,8 @@ function CommitGraphRow({
   layout,
   visibleRefs,
   onCopyCommitValue,
+  onCreateTagCommit,
+  isCreateTagPending,
   onCommitContextMenu,
 }: {
   readonly commit: VcsCommitGraphCommit;
@@ -738,6 +740,8 @@ function CommitGraphRow({
   readonly layout: CommitGraphLaneLayout;
   readonly visibleRefs: readonly string[];
   readonly onCopyCommitValue: (value: string, title: string) => void;
+  readonly onCreateTagCommit: (commit: VcsCommitGraphCommit) => void;
+  readonly isCreateTagPending: boolean;
   readonly onCommitContextMenu: (
     commit: VcsCommitGraphCommit,
     position: { readonly x: number; readonly y: number },
@@ -799,6 +803,22 @@ function CommitGraphRow({
                   ) : null}
                 </span>
               ) : null}
+              <Button
+                type="button"
+                aria-label={`Create tag at ${commit.shortSha}`}
+                title="Create tag"
+                variant="ghost"
+                size="icon-xs"
+                className="size-6 shrink-0 text-muted-foreground/60 hover:text-foreground"
+                disabled={isCreateTagPending}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onCreateTagCommit(commit);
+                }}
+              >
+                <TagIcon className="size-3" />
+              </Button>
             </span>
           </div>
         }
@@ -1860,6 +1880,11 @@ export function SourceControlPanel({
     );
   }, []);
 
+  const openCreateTagDialog = useCallback((commit: VcsCommitGraphCommit) => {
+    setPendingCreateTagCommit(commit);
+    setCreateTagName("");
+  }, []);
+
   const runCreateTag = useCallback(() => {
     if (!pendingCreateTagCommit) {
       return;
@@ -1929,7 +1954,7 @@ export function SourceControlPanel({
           {
             id: "create-tag",
             label: "Create tag...",
-            disabled: !environmentId || !cwd || createTagMutation.isPending,
+            disabled: createTagMutation.isPending,
           },
           ...deletableBranches.map((branchName) => ({
             id: `delete-branch:${branchName}` as const,
@@ -1949,8 +1974,7 @@ export function SourceControlPanel({
         return;
       }
       if (clicked === "create-tag") {
-        setPendingCreateTagCommit(commit);
-        setCreateTagName("");
+        openCreateTagDialog(commit);
         return;
       }
       if (clicked?.startsWith("delete-branch:")) {
@@ -1966,6 +1990,7 @@ export function SourceControlPanel({
       cwd,
       deleteBranchMutation.isPending,
       environmentId,
+      openCreateTagDialog,
       status?.refName,
     ],
   );
@@ -2670,6 +2695,8 @@ export function SourceControlPanel({
                       layout={row.layout}
                       visibleRefs={row.visibleRefs}
                       onCopyCommitValue={copyCommitValue}
+                      onCreateTagCommit={openCreateTagDialog}
+                      isCreateTagPending={createTagMutation.isPending}
                       onCommitContextMenu={handleCommitContextMenu}
                     />
                   ))}

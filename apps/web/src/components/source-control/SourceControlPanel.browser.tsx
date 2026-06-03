@@ -563,6 +563,36 @@ describe("SourceControlPanel commit graph", () => {
     }
   });
 
+  it("creates a tag from the commit graph row action", async () => {
+    const createTag: EnvironmentApi["vcs"]["createTag"] = vi.fn(async (input) => ({
+      tagName: input.tagName,
+      targetSha: input.targetSha,
+    }));
+    const mounted = await renderPanel({
+      environmentApi: makeEnvironmentApi({ vcs: { createTag } }),
+    });
+
+    try {
+      await page.getByRole("button", { name: "Create tag at abc1234" }).click();
+
+      await expect.element(page.getByRole("heading", { name: "Create tag" })).toBeVisible();
+      await expect.element(page.getByText(/abc1234/)).toBeVisible();
+
+      await page.getByPlaceholder("v1.0.0").fill("v2.1.0");
+      await page.getByRole("button", { name: "Create tag" }).click();
+
+      await vi.waitFor(() => {
+        expect(createTag).toHaveBeenCalledWith({
+          cwd: CWD,
+          tagName: "v2.1.0",
+          targetSha: "abc1234abc1234abc1234abc1234abc1234abc1234",
+        });
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("deletes a local branch from the commit graph context menu", async () => {
     const branchSha = "1234567123456712345671234567123456712345";
     const graph: VcsCommitGraphResult = {
