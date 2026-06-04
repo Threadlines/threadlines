@@ -826,6 +826,7 @@ const DEFAULT_CHANGES_PANEL_HEIGHT = 150;
 const DEFAULT_CHANGES_PANEL_RATIO = 0.4;
 const CHANGED_FILE_ACTIONS_VISIBILITY_CLASS_NAME =
   "pointer-events-none opacity-0 transition-opacity duration-150 group-hover/change-file:pointer-events-auto group-hover/change-file:opacity-100 group-focus-within/change-file:pointer-events-auto group-focus-within/change-file:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100";
+const CHANGED_FILE_ROW_ACTION_BUTTON_CLASS_NAME = "size-[18px] rounded-sm text-muted-foreground/60";
 const MIN_CHANGES_PANEL_RATIO = 0.2;
 const MAX_CHANGES_PANEL_RATIO = 0.8;
 const MIN_GRAPH_PANEL_HEIGHT = 120;
@@ -2136,7 +2137,7 @@ export function SourceControlPanel({
       <div
         key={`${entry.section}:file:${entry.path}`}
         className={cn(
-          "group/change-file grid w-full grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 py-1.5 transition-colors hover:bg-accent/60",
+          "group/change-file grid w-full grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-1.5 py-1.5 transition-colors hover:bg-accent/60",
           isTreeRow ? "pr-2" : "px-2",
         )}
         style={isTreeRow ? { paddingLeft: `${8 + depth * 14}px` } : undefined}
@@ -2177,7 +2178,7 @@ export function SourceControlPanel({
         </span>
         <div
           className={cn(
-            "flex shrink-0 items-center gap-0.5",
+            "flex shrink-0 items-center gap-px",
             CHANGED_FILE_ACTIONS_VISIBILITY_CLASS_NAME,
           )}
         >
@@ -2191,7 +2192,10 @@ export function SourceControlPanel({
                       aria-label={`Discard changes to ${entry.path}`}
                       variant="ghost"
                       size="icon-xs"
-                      className="size-6 text-muted-foreground/60 hover:text-destructive-foreground"
+                      className={cn(
+                        CHANGED_FILE_ROW_ACTION_BUTTON_CLASS_NAME,
+                        "hover:text-destructive-foreground",
+                      )}
                       disabled={isGitActionRunning}
                       onClick={() => requestDiscardFileChanges(entry)}
                     />
@@ -2209,7 +2213,10 @@ export function SourceControlPanel({
                       aria-label={`Stage changes to ${entry.path}`}
                       variant="ghost"
                       size="icon-xs"
-                      className="size-6 text-muted-foreground/60 hover:text-foreground"
+                      className={cn(
+                        CHANGED_FILE_ROW_ACTION_BUTTON_CLASS_NAME,
+                        "hover:text-foreground",
+                      )}
                       disabled={isGitActionRunning}
                       onClick={() => stageFileChanges(entry)}
                     />
@@ -2229,7 +2236,10 @@ export function SourceControlPanel({
                     aria-label={`Unstage changes to ${entry.path}`}
                     variant="ghost"
                     size="icon-xs"
-                    className="size-6 text-muted-foreground/60 hover:text-foreground"
+                    className={cn(
+                      CHANGED_FILE_ROW_ACTION_BUTTON_CLASS_NAME,
+                      "hover:text-foreground",
+                    )}
                     disabled={isGitActionRunning}
                     onClick={() => unstageFileChanges(entry)}
                   />
