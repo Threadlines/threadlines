@@ -64,10 +64,10 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
   public closeCalls = 0;
 
   setContextUsageResponse(response: SDKControlGetContextUsageResponse): void {
-    this.getContextUsage = async () => {
+    this.getContextUsage = async function (this: FakeClaudeQuery) {
       this.getContextUsageCalls.push(undefined);
       return response;
-    };
+    } as () => Promise<SDKControlGetContextUsageResponse>;
   }
 
   emit(message: SDKMessage): void {

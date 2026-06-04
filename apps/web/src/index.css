@@ -5,6 +5,7 @@
 @custom-variant wco (&:is(.wco, .wco *));
 
 @theme inline {
+  --font-sans: "Hanken Grotesk", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --animate-skeleton: skeleton 2s -1s infinite linear;
   --color-warning-foreground: var(--warning-foreground);
   --color-warning: var(--warning);
@@ -16,6 +17,7 @@
   --color-ring: var(--ring);
   --color-input: var(--input);
   --color-border: var(--border);
+  --color-control-active: var(--control-active);
   --color-destructive: var(--destructive);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
@@ -33,6 +35,12 @@
   --color-card: var(--card);
   --color-foreground: var(--foreground);
   --color-background: var(--background);
+  --color-rail: var(--rail);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -97,6 +105,12 @@
   --foreground: var(--color-neutral-800);
   --card: var(--color-white);
   --card-foreground: var(--color-neutral-800);
+  --rail: color-mix(in srgb, var(--color-neutral-100) 58%, var(--color-white));
+  --sidebar: var(--rail);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-border: var(--border);
+  --sidebar-accent: --alpha(var(--color-black) / 6%);
+  --sidebar-accent-foreground: var(--foreground);
   --popover: var(--color-white);
   --popover-foreground: var(--color-neutral-800);
   --primary: var(--app-accent-blue);
@@ -109,6 +123,7 @@
   --muted-foreground: color-mix(in srgb, var(--color-neutral-500) 90%, var(--color-black));
   --accent: --alpha(var(--color-black) / 4%);
   --accent-foreground: var(--color-neutral-800);
+  --control-active: --alpha(var(--color-black) / 9%);
   --destructive: var(--color-red-500);
   --border: --alpha(var(--color-black) / 8%);
   --input: --alpha(var(--color-black) / 10%);
@@ -128,6 +143,12 @@
     --foreground: var(--color-neutral-100);
     --card: color-mix(in srgb, var(--background) 98%, var(--color-white));
     --card-foreground: var(--color-neutral-100);
+    --rail: color-mix(in srgb, var(--background) 88%, var(--color-black));
+    --sidebar: var(--rail);
+    --sidebar-foreground: var(--foreground);
+    --sidebar-border: var(--border);
+    --sidebar-accent: --alpha(var(--color-white) / 7%);
+    --sidebar-accent-foreground: var(--foreground);
     --popover: color-mix(in srgb, var(--background) 98%, var(--color-white));
     --popover-foreground: var(--color-neutral-100);
     --primary: var(--app-accent-blue);
@@ -140,6 +161,7 @@
     --muted-foreground: color-mix(in srgb, var(--color-neutral-500) 90%, var(--color-white));
     --accent: --alpha(var(--color-white) / 4%);
     --accent-foreground: var(--color-neutral-100);
+    --control-active: --alpha(var(--color-white) / 12%);
     --destructive: color-mix(in srgb, var(--color-red-500) 90%, var(--color-white));
     --border: --alpha(var(--color-white) / 6%);
     --input: --alpha(var(--color-white) / 8%);
@@ -161,7 +183,7 @@ html.electron {
 
 body {
   font-family:
-    "DM Sans",
+    "Hanken Grotesk",
     -apple-system,
     BlinkMacSystemFont,
     "Segoe UI",
@@ -221,6 +243,20 @@ code {
 .drag-region select,
 .drag-region a {
   -webkit-app-region: no-drag;
+}
+
+.source-control-title-full {
+  display: none;
+}
+
+@container source-control-title (min-width: 9rem) {
+  .source-control-title-short {
+    display: none;
+  }
+
+  .source-control-title-full {
+    display: inline;
+  }
 }
 
 /* Scrollbar styling */

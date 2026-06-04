@@ -24,7 +24,6 @@ import {
   FolderClosedIcon,
   GitBranchIcon,
   GitCommitIcon,
-  GitGraphIcon,
   GitMergeIcon,
   GitPullRequestIcon,
   ListTreeIcon,
@@ -78,6 +77,7 @@ import { getSourceControlPresentation } from "~/sourceControlPresentation";
 import { useStore } from "~/store";
 import { resolvePathLinkTarget } from "~/terminal-links";
 import { PublishRepositoryDialog } from "../GitActionsControl";
+import { SourceControlIcon } from "../Icons";
 import {
   requiresDefaultBranchConfirmation,
   resolveDefaultBranchActionDialogCopy,
@@ -2346,37 +2346,54 @@ export function SourceControlPanel({
     return null;
   }
 
+  const headerTitle = status?.refName ? `${target.name} - ${status.refName}` : target.name;
+
   return (
-    <div className="flex h-full min-h-0 flex-col bg-background">
-      <div className="drag-region flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border px-4 py-1 wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
-        <div className="min-w-0">
+    <div className="flex h-full min-h-0 flex-col bg-rail">
+      <div className="drag-region shrink-0 border-b border-border">
+        <div className="@container/source-control-title flex h-8 items-center justify-between gap-2 px-3 py-1 wco:h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
           <div className="flex min-w-0 items-center gap-1.5">
-            <GitGraphIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
-            <h2 className="truncate text-xs font-medium uppercase tracking-wider text-muted-foreground/70">
-              Source Control
+            <SourceControlIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+            <h2
+              aria-label="Source Control"
+              className="truncate text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70"
+              title="Source Control"
+            >
+              <span className="source-control-title-short">SC</span>
+              <span className="source-control-title-full">Source Control</span>
             </h2>
           </div>
-          <p className="mt-0.5 truncate text-[11px] text-muted-foreground/60">
-            {target.name}
-            {status?.refName ? ` - ${status.refName}` : ""}
-          </p>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  type="button"
+                  aria-label="Refresh source control"
+                  variant="ghost"
+                  size="icon-xs"
+                  onClick={refreshPanel}
+                />
+              }
+            >
+              <RefreshCwIcon className={cn("size-3.5", gitStatus.isPending && "animate-spin")} />
+            </TooltipTrigger>
+            <TooltipPopup side="top">Refresh</TooltipPopup>
+          </Tooltip>
         </div>
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button
-                type="button"
-                aria-label="Refresh source control"
-                variant="ghost"
-                size="icon-xs"
-                onClick={refreshPanel}
-              />
-            }
-          >
-            <RefreshCwIcon className={cn("size-3.5", gitStatus.isPending && "animate-spin")} />
-          </TooltipTrigger>
-          <TooltipPopup side="top">Refresh</TooltipPopup>
-        </Tooltip>
+        <div className="flex min-w-0 items-center gap-1.5 px-3 pt-0.5 pb-2" title={headerTitle}>
+          <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground/85">
+            {target.name}
+          </span>
+          {status?.refName ? (
+            <span
+              className="inline-flex min-w-0 max-w-[45%] shrink-0 items-center gap-1 rounded-sm border border-border/70 bg-muted/45 px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground/80"
+              title={`Branch: ${status.refName}`}
+            >
+              <GitBranchIcon className="size-3 shrink-0 opacity-70" />
+              <span className="min-w-0 truncate">{status.refName}</span>
+            </span>
+          ) : null}
+        </div>
       </div>
 
       <div ref={bodyRef} className="flex min-h-0 flex-1 flex-col overflow-hidden px-3 py-3">

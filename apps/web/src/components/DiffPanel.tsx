@@ -32,6 +32,7 @@ import { buildThreadRouteParams, resolveThreadRouteRef } from "../threadRoutes";
 import { useSettings } from "../hooks/useSettings";
 import { formatShortTimestamp } from "../timestampFormat";
 import { DiffPanelLoadingState, DiffPanelShell, type DiffPanelMode } from "./DiffPanelShell";
+import { SourceControlIcon } from "./Icons";
 import { Button } from "./ui/button";
 import {
   Menu,
@@ -473,143 +474,145 @@ export default function DiffPanel({
           type="button"
           variant="outline"
           size="xs"
-          className="shrink-0 px-1.5 [-webkit-app-region:no-drag]"
+          className="shrink-0 gap-0.5 px-1.5 [-webkit-app-region:no-drag]"
+          aria-label="Back to source control panel"
           title="Back to source control"
           onClick={onBackToSourceControl}
         >
           <ChevronLeftIcon className="size-3" />
-          <span className="hidden xl:inline">Source Control</span>
-          <span className="xl:hidden">SC</span>
+          <SourceControlIcon className="size-3" />
         </Button>
       ) : null}
       <div className="min-w-0 flex-1 [-webkit-app-region:no-drag]">
         <div className="truncate text-xs font-medium text-foreground">Diff</div>
-        <div className="truncate text-[10px] text-muted-foreground/70">
-          {selectedDiffSourceLabel}
-        </div>
+        <div className="truncate text-[10px] text-muted-foreground/70">Review changes</div>
       </div>
     </>
   );
 
   const toolbarRow = (
-    <div className="flex min-h-10 items-center gap-2 border-b border-border px-2 py-1.5">
-      <Menu>
-        <MenuTrigger
-          render={
-            <Button
-              type="button"
-              variant="outline"
-              size="xs"
-              className="h-8 min-w-0 flex-1 justify-between px-2 py-1 sm:h-8"
-              aria-label="Select diff source"
-            />
-          }
-        >
-          <span className="flex min-w-0 flex-col items-start gap-0.5">
-            <span className="truncate text-xs leading-tight">{selectedDiffSourceLabel}</span>
-            <span className="truncate text-[10px] leading-tight text-muted-foreground/70">
-              {selectedDiffSourceDescription}
-            </span>
-          </span>
-          <ChevronDownIcon className="size-3 shrink-0 opacity-60" />
-        </MenuTrigger>
-        <MenuPopup align="start" className="w-72">
-          <MenuGroup className="pt-1">
-            <MenuGroupLabel>Git changes</MenuGroupLabel>
-            <MenuRadioGroup
-              value={
-                diffMode === "workingTree" ? "workingTree" : selectedTurn ? "" : "checkpoint:all"
-              }
-              onValueChange={(value) => {
-                if (value === "workingTree") {
-                  selectWorkingTree();
-                } else if (value === "checkpoint:all") {
-                  selectWholeConversation();
-                }
-              }}
-            >
-              <MenuRadioItem value="workingTree">Working tree</MenuRadioItem>
-              <MenuRadioItem value="checkpoint:all">All agent turns</MenuRadioItem>
-            </MenuRadioGroup>
-          </MenuGroup>
-          {orderedTurnDiffSummaries.length > 0 ? (
-            <>
-              <MenuSeparator />
-              <MenuGroup>
-                <MenuGroupLabel>Agent turns</MenuGroupLabel>
-                <MenuRadioGroup
-                  value={
-                    diffMode === "checkpoint" && selectedTurn ? `turn:${selectedTurn.turnId}` : ""
-                  }
-                  onValueChange={(value) => {
-                    if (!value.startsWith("turn:")) return;
-                    selectTurn(TurnId.make(value.slice("turn:".length)));
-                  }}
-                >
-                  {orderedTurnDiffSummaries.map((summary) => {
-                    const turnCount =
-                      summary.checkpointTurnCount ??
-                      inferredCheckpointTurnCountByTurnId[summary.turnId] ??
-                      "?";
-                    return (
-                      <MenuRadioItem key={summary.turnId} value={`turn:${summary.turnId}`}>
-                        <span className="min-w-0 truncate">
-                          Turn {turnCount} -{" "}
-                          {formatShortTimestamp(summary.completedAt, settings.timestampFormat)}
-                        </span>
-                      </MenuRadioItem>
-                    );
-                  })}
-                </MenuRadioGroup>
-              </MenuGroup>
-            </>
-          ) : null}
-        </MenuPopup>
-      </Menu>
-      <div className="flex shrink-0 items-center gap-1 [-webkit-app-region:no-drag]">
-        <ToggleGroup
-          className="shrink-0"
-          variant="outline"
-          size="xs"
-          value={[diffRenderMode]}
-          onValueChange={(value) => {
-            const next = value[0];
-            if (next === "stacked" || next === "split") {
-              setDiffRenderMode(next);
+    <div className="@container/diff-toolbar border-b border-border px-2 py-2">
+      <div className="grid min-w-0 grid-cols-1 gap-1.5 @xs/diff-toolbar:grid-cols-[minmax(0,1fr)_auto] @xs/diff-toolbar:items-center">
+        <Menu>
+          <MenuTrigger
+            render={
+              <Button
+                type="button"
+                variant="outline"
+                size="xs"
+                className="h-8 w-full min-w-0 justify-between px-2 py-1 sm:h-8"
+                aria-label="Select diff source"
+              />
             }
-          }}
-        >
-          <Toggle aria-label="Stacked diff view" value="stacked">
-            <Rows3Icon className="size-3" />
+          >
+            <span className="flex min-w-0 flex-col items-start gap-0.5">
+              <span className="truncate text-xs leading-tight">{selectedDiffSourceLabel}</span>
+              <span className="truncate text-[10px] leading-tight text-muted-foreground/70">
+                {selectedDiffSourceDescription}
+              </span>
+            </span>
+            <ChevronDownIcon className="size-3 shrink-0 opacity-60" />
+          </MenuTrigger>
+          <MenuPopup align="start" className="w-72">
+            <MenuGroup className="pt-1">
+              <MenuGroupLabel>Git changes</MenuGroupLabel>
+              <MenuRadioGroup
+                value={
+                  diffMode === "workingTree" ? "workingTree" : selectedTurn ? "" : "checkpoint:all"
+                }
+                onValueChange={(value) => {
+                  if (value === "workingTree") {
+                    selectWorkingTree();
+                  } else if (value === "checkpoint:all") {
+                    selectWholeConversation();
+                  }
+                }}
+              >
+                <MenuRadioItem value="workingTree">Working tree</MenuRadioItem>
+                <MenuRadioItem value="checkpoint:all">All agent turns</MenuRadioItem>
+              </MenuRadioGroup>
+            </MenuGroup>
+            {orderedTurnDiffSummaries.length > 0 ? (
+              <>
+                <MenuSeparator />
+                <MenuGroup>
+                  <MenuGroupLabel>Agent turns</MenuGroupLabel>
+                  <MenuRadioGroup
+                    value={
+                      diffMode === "checkpoint" && selectedTurn ? `turn:${selectedTurn.turnId}` : ""
+                    }
+                    onValueChange={(value) => {
+                      if (!value.startsWith("turn:")) return;
+                      selectTurn(TurnId.make(value.slice("turn:".length)));
+                    }}
+                  >
+                    {orderedTurnDiffSummaries.map((summary) => {
+                      const turnCount =
+                        summary.checkpointTurnCount ??
+                        inferredCheckpointTurnCountByTurnId[summary.turnId] ??
+                        "?";
+                      return (
+                        <MenuRadioItem key={summary.turnId} value={`turn:${summary.turnId}`}>
+                          <span className="min-w-0 truncate">
+                            Turn {turnCount} -{" "}
+                            {formatShortTimestamp(summary.completedAt, settings.timestampFormat)}
+                          </span>
+                        </MenuRadioItem>
+                      );
+                    })}
+                  </MenuRadioGroup>
+                </MenuGroup>
+              </>
+            ) : null}
+          </MenuPopup>
+        </Menu>
+        <div className="flex shrink-0 items-center justify-end gap-1 [-webkit-app-region:no-drag]">
+          <ToggleGroup
+            className="shrink-0"
+            variant="outline"
+            size="xs"
+            value={[diffRenderMode]}
+            onValueChange={(value) => {
+              const next = value[0];
+              if (next === "stacked" || next === "split") {
+                setDiffRenderMode(next);
+              }
+            }}
+          >
+            <Toggle aria-label="Stacked diff view" value="stacked">
+              <Rows3Icon className="size-3" />
+            </Toggle>
+            <Toggle aria-label="Split diff view" value="split">
+              <Columns2Icon className="size-3" />
+            </Toggle>
+          </ToggleGroup>
+          <Toggle
+            aria-label={diffWordWrap ? "Disable diff line wrapping" : "Enable diff line wrapping"}
+            title={diffWordWrap ? "Disable line wrapping" : "Enable line wrapping"}
+            variant="outline"
+            size="xs"
+            pressed={diffWordWrap}
+            onPressedChange={(pressed) => {
+              setDiffWordWrap(Boolean(pressed));
+            }}
+          >
+            <TextWrapIcon className="size-3" />
           </Toggle>
-          <Toggle aria-label="Split diff view" value="split">
-            <Columns2Icon className="size-3" />
+          <Toggle
+            aria-label={
+              diffIgnoreWhitespace ? "Show whitespace changes" : "Hide whitespace changes"
+            }
+            title={diffIgnoreWhitespace ? "Show whitespace changes" : "Hide whitespace changes"}
+            variant="outline"
+            size="xs"
+            pressed={diffIgnoreWhitespace}
+            onPressedChange={(pressed) => {
+              setDiffIgnoreWhitespace(Boolean(pressed));
+            }}
+          >
+            <PilcrowIcon className="size-3" />
           </Toggle>
-        </ToggleGroup>
-        <Toggle
-          aria-label={diffWordWrap ? "Disable diff line wrapping" : "Enable diff line wrapping"}
-          title={diffWordWrap ? "Disable line wrapping" : "Enable line wrapping"}
-          variant="outline"
-          size="xs"
-          pressed={diffWordWrap}
-          onPressedChange={(pressed) => {
-            setDiffWordWrap(Boolean(pressed));
-          }}
-        >
-          <TextWrapIcon className="size-3" />
-        </Toggle>
-        <Toggle
-          aria-label={diffIgnoreWhitespace ? "Show whitespace changes" : "Hide whitespace changes"}
-          title={diffIgnoreWhitespace ? "Show whitespace changes" : "Hide whitespace changes"}
-          variant="outline"
-          size="xs"
-          pressed={diffIgnoreWhitespace}
-          onPressedChange={(pressed) => {
-            setDiffIgnoreWhitespace(Boolean(pressed));
-          }}
-        >
-          <PilcrowIcon className="size-3" />
-        </Toggle>
+        </div>
       </div>
     </div>
   );

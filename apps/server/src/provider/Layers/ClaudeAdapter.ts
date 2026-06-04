@@ -1557,16 +1557,18 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     // Instead, ask the SDK for current context usage when available, then
     // merge accumulated totals only as processed-token metadata.
     const currentContextUsage = yield* Effect.suspend(() => {
-      const getContextUsage = context.query.getContextUsage;
-      if (!getContextUsage) {
+      if (!context.query.getContextUsage) {
         return Effect.sync(() => undefined);
       }
+      const queryWithContextUsage = context.query as ClaudeQueryRuntime & {
+        readonly getContextUsage: () => Promise<SDKControlGetContextUsageResponse>;
+      };
 
       return Effect.promise(async (): Promise<ClaudeContextUsageReadResult> => {
         try {
           return {
             ok: true,
-            value: await getContextUsage(),
+            value: await queryWithContextUsage.getContextUsage(),
           };
         } catch (cause) {
           return {

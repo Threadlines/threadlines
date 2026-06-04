@@ -5,12 +5,13 @@ import {
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
 import { memo } from "react";
-import { GitBranchIcon, TerminalSquareIcon } from "lucide-react";
+import { TerminalSquareIcon } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import ProjectScriptsControl, { type NewProjectScriptInput } from "../ProjectScriptsControl";
 import { Toggle } from "../ui/toggle";
 import { SidebarTrigger } from "../ui/sidebar";
+import { SourceControlIcon } from "../Icons";
 import { OpenInPicker } from "./OpenInPicker";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
 
@@ -80,19 +81,27 @@ export const ChatHeader = memo(function ChatHeader({
 
   return (
     <div className="@container/header-actions flex min-w-0 flex-1 items-center gap-2">
-      <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden sm:gap-3">
+      <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden sm:gap-2">
         <SidebarTrigger className="size-7 shrink-0 md:hidden" />
+        {activeProjectName && (
+          <div className="hidden min-w-0 shrink items-center gap-1.5 sm:flex">
+            <span
+              className="min-w-0 max-w-48 truncate text-sm text-muted-foreground"
+              title={activeProjectName}
+            >
+              {activeProjectName}
+            </span>
+            <span aria-hidden="true" className="select-none text-muted-foreground/40">
+              /
+            </span>
+          </div>
+        )}
         <h2
           className="min-w-0 shrink truncate text-sm font-medium text-foreground"
           title={activeThreadTitle}
         >
           {activeThreadTitle}
         </h2>
-        {activeProjectName && (
-          <Badge variant="outline" className="min-w-0 shrink overflow-hidden">
-            <span className="min-w-0 truncate">{activeProjectName}</span>
-          </Badge>
-        )}
         {activeProjectName && !isGitRepo && (
           <Badge variant="outline" className="shrink-0 text-[10px] text-amber-700">
             No Git
@@ -154,7 +163,7 @@ export const ChatHeader = memo(function ChatHeader({
                 size="xs"
                 disabled={!activeProjectName && !sourceControlOpen}
               >
-                <GitBranchIcon className="size-3" />
+                <SourceControlIcon className="size-3" />
               </Toggle>
             }
           />

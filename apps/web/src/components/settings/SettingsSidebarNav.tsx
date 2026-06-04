@@ -4,7 +4,6 @@ import {
   ArrowLeftIcon,
   BotIcon,
   FileTextIcon,
-  GitBranchIcon,
   KeyboardIcon,
   PlugIcon,
   Settings2Icon,
@@ -21,6 +20,7 @@ import {
   SidebarSeparator,
   useSidebar,
 } from "../ui/sidebar";
+import { SourceControlIcon } from "../Icons";
 
 export type SettingsSectionPath =
   | "/settings/general"
@@ -41,7 +41,7 @@ export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
   { label: "Providers", to: "/settings/providers", icon: BotIcon },
   { label: "Extensions", to: "/settings/extensions", icon: PlugIcon },
   { label: "Instructions", to: "/settings/instructions", icon: FileTextIcon },
-  { label: "Source Control", to: "/settings/source-control", icon: GitBranchIcon },
+  { label: "Source Control", to: "/settings/source-control", icon: SourceControlIcon },
   { label: "Archive", to: "/settings/archived", icon: ArchiveIcon },
 ];
 

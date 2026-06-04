@@ -9,7 +9,7 @@ export { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY };
 
 const RIGHT_PANEL_INLINE_SIDEBAR_WIDTH_STORAGE_KEY = "chat_right_panel_sidebar_width";
 const RIGHT_PANEL_INLINE_DEFAULT_WIDTH = "clamp(24rem,34vw,36rem)";
-const RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH = 20 * 16;
+const RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH = 17 * 16;
 const RIGHT_PANEL_INLINE_SIDEBAR_MAX_WIDTH = 256 * 16;
 const COMPOSER_COMPACT_MIN_LEFT_CONTROLS_WIDTH_PX = 208;
 
@@ -88,7 +88,7 @@ export function ChatRightPanelInlineSidebar(props: {
         side="right"
         collapsible="offcanvas"
         className={cn(
-          "border-l border-border bg-card text-foreground",
+          "border-l border-border bg-rail text-foreground",
           isElectron && "pe-[var(--app-window-resize-edge-inset)]",
         )}
         motion="instant"
