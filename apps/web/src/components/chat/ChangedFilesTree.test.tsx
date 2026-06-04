@@ -113,4 +113,26 @@ describe("ChangedFilesTree", () => {
       }
     },
   );
+
+  it("does not render zero diff stats for files without line changes", () => {
+    const markup = renderToStaticMarkup(
+      <ChangedFilesTree
+        turnId={TurnId.make("turn-1")}
+        files={[
+          { path: "src/renamed.ts", additions: 0, deletions: 0 },
+          { path: "src/changed.ts", additions: 3, deletions: 1 },
+        ]}
+        allDirectoriesExpanded
+        resolvedTheme="light"
+        onOpenTurnDiff={() => {}}
+      />,
+    );
+
+    expect(markup).toContain("renamed.ts");
+    expect(markup).toContain("changed.ts");
+    expect(markup).not.toContain('text-success">+0</span>');
+    expect(markup).not.toContain('text-destructive">-0</span>');
+    expect(markup).toContain("+3");
+    expect(markup).toContain("-1");
+  });
 });

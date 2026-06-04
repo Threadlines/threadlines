@@ -119,7 +119,11 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
         const { initialBranch } = yield* initRepoWithCommit(cwd);
-        yield* writeTextFile(cwd, "feature.ts", "export const value = 1;\n");
+        yield* writeTextFile(
+          cwd,
+          "feature.ts",
+          ["export const value = 1;", "export const next = 2;", ""].join("\n"),
+        );
 
         const status = yield* (yield* GitVcsDriver.GitVcsDriver).statusDetails(cwd);
 
@@ -133,6 +137,12 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         const featureFile = status.workingTree.files.find((file) => file.path === "feature.ts");
         assert.equal(featureFile?.indexStatus, null);
         assert.equal(featureFile?.worktreeStatus, "untracked");
+        assert.equal(featureFile?.insertions, 2);
+        assert.equal(featureFile?.deletions, 0);
+        assert.equal(featureFile?.unstagedInsertions, 2);
+        assert.equal(featureFile?.unstagedDeletions, 0);
+        assert.equal(status.workingTree.insertions, 2);
+        assert.equal(status.workingTree.deletions, 0);
       }),
     );
 

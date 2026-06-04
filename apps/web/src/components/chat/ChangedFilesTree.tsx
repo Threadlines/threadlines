@@ -112,7 +112,7 @@ export const ChangedFilesTree = memo(function ChangedFilesTree(props: {
         <span className="truncate font-mono text-[11px] text-muted-foreground/80 group-hover:text-foreground/90">
           {node.name}
         </span>
-        {node.stat && (
+        {node.stat && hasNonZeroStat(node.stat) && (
           <span className="ml-auto shrink-0 font-mono text-[10px] tabular-nums">
             <DiffStatLabel additions={node.stat.additions} deletions={node.stat.deletions} />
           </span>

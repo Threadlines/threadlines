@@ -61,6 +61,7 @@ const DEFAULT_BASE_BRANCH_CANDIDATES = ["main", "master"] as const;
 const GIT_LIST_BRANCHES_DEFAULT_LIMIT = 100;
 const GIT_COMMIT_GRAPH_DEFAULT_LIMIT = 24;
 const GIT_COMMIT_GRAPH_MAX_OUTPUT_BYTES = 512 * 1024;
+const UNTRACKED_TEXT_STAT_MAX_BYTES = 512 * 1024;
 const GIT_GRAPH_RECORD_SEPARATOR = "\x1e";
 const GIT_GRAPH_FIELD_SEPARATOR = "\x1f";
 const NON_REPOSITORY_STATUS_DETAILS = Object.freeze<GitVcsDriver.GitStatusDetails>({
@@ -134,6 +135,15 @@ function parseNumstatEntries(
     });
   }
   return entries;
+}
+
+function countTextFileLines(contents: string): number {
+  if (contents.includes("\0") || contents.length === 0) {
+    return 0;
+  }
+  const normalized = contents.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const withoutFinalNewline = normalized.endsWith("\n") ? normalized.slice(0, -1) : normalized;
+  return withoutFinalNewline.split("\n").length;
 }
 
 interface ParsedPorcelainChange {
@@ -1616,6 +1626,22 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       fileStatMap.set(filePath, stat);
       return stat;
     };
+    const readUntrackedTextInsertions = Effect.fn("readUntrackedTextInsertions")(function* (
+      filePath: string,
+    ) {
+      const absolutePath = path.resolve(cwd, filePath);
+      const stat = yield* fileSystem
+        .stat(absolutePath)
+        .pipe(Effect.catch(() => Effect.succeed(null)));
+      if (!stat || stat.type !== "File" || Number(stat.size) > UNTRACKED_TEXT_STAT_MAX_BYTES) {
+        return 0;
+      }
+
+      const contents = yield* fileSystem
+        .readFileString(absolutePath)
+        .pipe(Effect.catch(() => Effect.succeed(null)));
+      return contents ? countTextFileLines(contents) : 0;
+    });
 
     for (const entry of stagedEntries) {
       const existing = ensureFileStat(entry.path);
@@ -1631,6 +1657,24 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       existing.unstagedInsertions += entry.insertions;
       existing.unstagedDeletions += entry.deletions;
       fileStatMap.set(entry.path, existing);
+    }
+    for (const [filePath, change] of changedFilesByPath) {
+      if (
+        fileStatMap.has(filePath) ||
+        change.indexStatus !== null ||
+        change.worktreeStatus !== "untracked"
+      ) {
+        continue;
+      }
+
+      const insertionsForUntrackedFile = yield* readUntrackedTextInsertions(filePath);
+      if (insertionsForUntrackedFile <= 0) {
+        continue;
+      }
+
+      const existing = ensureFileStat(filePath);
+      existing.insertions += insertionsForUntrackedFile;
+      existing.unstagedInsertions += insertionsForUntrackedFile;
     }
 
     let insertions = 0;
