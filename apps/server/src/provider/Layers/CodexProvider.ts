@@ -16,6 +16,7 @@ import type {
   CodexSettings,
   ServerProvider,
   ServerProviderAccountUsage,
+  ServerProviderSpendControlLimit,
   ServerProviderUsageCredits,
   ServerProviderUsageLimit,
   ServerProviderUsageWindow,
@@ -145,6 +146,34 @@ function normalizeCodexUsageCredits(
   };
 }
 
+function supportsCodexSpendControlLimit(
+  planType: CodexSchema.V2GetAccountRateLimitsResponse__PlanType | null | undefined,
+): boolean {
+  return (
+    planType === "enterprise" || planType === "enterprise_cbp_usage_based" || planType === "edu"
+  );
+}
+
+function normalizeCodexSpendControlLimit(
+  limit: CodexSchema.V2GetAccountRateLimitsResponse__SpendControlLimitSnapshot | null | undefined,
+): ServerProviderSpendControlLimit | undefined {
+  if (!limit) return undefined;
+
+  const normalizedLimit = optionalString(limit.limit);
+  const used = optionalString(limit.used);
+  if (!normalizedLimit || !used) {
+    return undefined;
+  }
+
+  const resetsAt = optionalNonNegativeInt(limit.resetsAt);
+  return {
+    limit: normalizedLimit,
+    used,
+    remainingPercent: normalizeUsagePercent(limit.remainingPercent),
+    ...(resetsAt !== undefined ? { resetsAt } : {}),
+  };
+}
+
 function normalizeCodexUsageLimit(
   snapshot: CodexSchema.V2GetAccountRateLimitsResponse__RateLimitSnapshot,
   fallbackLimitId?: string,
@@ -154,6 +183,9 @@ function normalizeCodexUsageLimit(
   const planType = optionalString(snapshot.planType);
   const rateLimitReachedType = optionalString(snapshot.rateLimitReachedType);
   const credits = normalizeCodexUsageCredits(snapshot.credits);
+  const individualLimit = supportsCodexSpendControlLimit(snapshot.planType)
+    ? normalizeCodexSpendControlLimit(snapshot.individualLimit)
+    : undefined;
   const primary = normalizeCodexUsageWindow(snapshot.primary);
   const secondary = normalizeCodexUsageWindow(snapshot.secondary);
 
@@ -163,6 +195,7 @@ function normalizeCodexUsageLimit(
     !planType &&
     !rateLimitReachedType &&
     !credits &&
+    !individualLimit &&
     !primary &&
     !secondary
   ) {
@@ -175,6 +208,7 @@ function normalizeCodexUsageLimit(
     ...(planType ? { planType } : {}),
     ...(rateLimitReachedType ? { rateLimitReachedType } : {}),
     ...(credits ? { credits } : {}),
+    ...(individualLimit ? { individualLimit } : {}),
     ...(primary ? { primary } : {}),
     ...(secondary ? { secondary } : {}),
   };

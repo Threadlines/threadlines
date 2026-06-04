@@ -7,6 +7,7 @@ import {
   ApprovalRequestId,
   CodexSettings,
   EventId,
+  MessageId,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderItemId,
@@ -57,6 +58,7 @@ const asThreadId = (value: string): ThreadId => ThreadId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
 const asEventId = (value: string): EventId => EventId.make(value);
 const asItemId = (value: string): ProviderItemId => ProviderItemId.make(value);
+const asMessageId = (value: string): MessageId => MessageId.make(value);
 
 class FakeCodexRuntime implements CodexSessionRuntimeShape {
   private readonly eventQueue = Effect.runSync(Queue.unbounded<ProviderEvent>());
@@ -341,6 +343,7 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
       yield* Effect.ignore(
         adapter.sendTurn({
           threadId: asThreadId("sess-missing"),
+          messageId: asMessageId("message-codex-options"),
           input: "hello",
           modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.3-codex", [
             { id: "reasoningEffort", value: "high" },
@@ -351,6 +354,7 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
       );
 
       assert.deepStrictEqual(runtime.sendTurnImpl.mock.calls[0]?.[0], {
+        clientUserMessageId: "message-codex-options",
         input: "hello",
         model: "gpt-5.3-codex",
         effort: "high",
@@ -864,6 +868,52 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         firstEvent.value.payload.message,
         "Not logged in Run `codex login` in a terminal, then retry.",
       );
+    }),
+  );
+
+  it.effect("preserves Codex permission approval environment identity", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      const event: ProviderEvent = {
+        id: asEventId("evt-permission-request"),
+        kind: "request",
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-06-04T00:00:00.000Z",
+        method: "item/permissions/requestApproval",
+        requestKind: "permissions",
+        requestId: ApprovalRequestId.make("req-permissions-1"),
+        payload: {
+          cwd: "/tmp/project",
+          environmentId: "environment-remote",
+          itemId: "item-permissions-1",
+          permissions: {
+            network: {
+              enabled: true,
+            },
+          },
+          startedAtMs: 1_800_000_000_000,
+          threadId: "provider-thread-1",
+          turnId: "turn-1",
+        },
+      };
+
+      yield* runtime.emit(event);
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      assert.equal(firstEvent.value.type, "request.opened");
+      if (firstEvent.value.type !== "request.opened") {
+        return;
+      }
+      assert.equal(firstEvent.value.payload.requestType, "permissions_approval");
+      assert.equal(firstEvent.value.payload.environmentId, "environment-remote");
+      assert.equal(firstEvent.value.payload.detail, "Requesting network access");
     }),
   );
 

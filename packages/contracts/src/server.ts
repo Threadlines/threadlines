@@ -73,12 +73,21 @@ export const ServerProviderUsageCredits = Schema.Struct({
 });
 export type ServerProviderUsageCredits = typeof ServerProviderUsageCredits.Type;
 
+export const ServerProviderSpendControlLimit = Schema.Struct({
+  limit: TrimmedNonEmptyString,
+  used: TrimmedNonEmptyString,
+  remainingPercent: NonNegativeInt,
+  resetsAt: Schema.optional(NonNegativeInt),
+});
+export type ServerProviderSpendControlLimit = typeof ServerProviderSpendControlLimit.Type;
+
 export const ServerProviderUsageLimit = Schema.Struct({
   limitId: Schema.optional(TrimmedNonEmptyString),
   limitName: Schema.optional(TrimmedNonEmptyString),
   planType: Schema.optional(TrimmedNonEmptyString),
   rateLimitReachedType: Schema.optional(TrimmedNonEmptyString),
   credits: Schema.optional(ServerProviderUsageCredits),
+  individualLimit: Schema.optional(ServerProviderSpendControlLimit),
   primary: Schema.optional(ServerProviderUsageWindow),
   secondary: Schema.optional(ServerProviderUsageWindow),
 });

@@ -12,6 +12,7 @@ import {
   CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
 } from "../CodexDeveloperInstructions.ts";
 import {
+  buildPermissionsApprovalResponse,
   buildTurnStartParams,
   classifyCodexStderrLine,
   isRecoverableThreadResumeError,
@@ -48,6 +49,7 @@ describe("buildTurnStartParams", () => {
     const params = Effect.runSync(
       buildTurnStartParams({
         threadId: "provider-thread-1",
+        clientUserMessageId: "message-user-1",
         runtimeMode: "full-access",
         prompt: "Make a plan",
         model: "gpt-5.3-codex",
@@ -58,6 +60,7 @@ describe("buildTurnStartParams", () => {
 
     assert.deepStrictEqual(params, {
       threadId: "provider-thread-1",
+      clientUserMessageId: "message-user-1",
       approvalPolicy: "never",
       sandboxPolicy: {
         type: "dangerFullAccess",
@@ -147,6 +150,45 @@ describe("buildTurnStartParams", () => {
           text: "Review",
         },
       ],
+    });
+  });
+});
+
+describe("buildPermissionsApprovalResponse", () => {
+  const payload = {
+    cwd: "/tmp/project",
+    itemId: "item-permissions-1",
+    permissions: {
+      network: {
+        enabled: true,
+      },
+      fileSystem: {
+        write: ["/tmp/project"],
+      },
+    },
+    reason: "Need network and write access",
+    startedAtMs: 1_800_000_000_000,
+    threadId: "provider-thread-1",
+    turnId: "turn-1",
+  };
+
+  it("grants requested permissions for the current turn when accepted", () => {
+    assert.deepStrictEqual(buildPermissionsApprovalResponse(payload, "accept"), {
+      permissions: payload.permissions,
+      scope: "turn",
+    });
+  });
+
+  it("grants requested permissions for the session when accepted for session", () => {
+    assert.deepStrictEqual(buildPermissionsApprovalResponse(payload, "acceptForSession"), {
+      permissions: payload.permissions,
+      scope: "session",
+    });
+  });
+
+  it("returns no extra permissions when declined", () => {
+    assert.deepStrictEqual(buildPermissionsApprovalResponse(payload, "decline"), {
+      permissions: {},
     });
   });
 });

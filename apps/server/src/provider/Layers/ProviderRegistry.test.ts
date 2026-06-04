@@ -439,12 +439,18 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
                   rateLimits: {
                     limitId: "codex",
                     limitName: "Codex",
-                    planType: "pro",
+                    planType: "enterprise",
                     rateLimitReachedType: null,
                     credits: {
                       hasCredits: true,
                       unlimited: false,
                       balance: "$5.00",
+                    },
+                    individualLimit: {
+                      limit: "$100.00",
+                      used: "$40.00",
+                      remainingPercent: 60,
+                      resetsAt: 1_800_086_400,
                     },
                     primary: {
                       usedPercent: 42,
@@ -471,11 +477,17 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
               {
                 limitId: "codex",
                 limitName: "Codex",
-                planType: "pro",
+                planType: "enterprise",
                 credits: {
                   hasCredits: true,
                   unlimited: false,
                   balance: "$5.00",
+                },
+                individualLimit: {
+                  limit: "$100.00",
+                  used: "$40.00",
+                  remainingPercent: 60,
+                  resetsAt: 1_800_086_400,
                 },
                 primary: {
                   usedPercent: 42,
@@ -490,6 +502,51 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
                 },
               },
             ],
+          });
+        }),
+      );
+
+      it.effect("does not expose Codex monthly spend controls for non-enterprise plans", () =>
+        Effect.gen(function* () {
+          const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
+            Effect.succeed(
+              makeCodexProbeSnapshot({
+                rateLimits: {
+                  rateLimits: {
+                    limitId: "codex",
+                    limitName: "Codex",
+                    planType: "pro",
+                    rateLimitReachedType: null,
+                    credits: null,
+                    individualLimit: {
+                      limit: "$100.00",
+                      used: "$40.00",
+                      remainingPercent: 60,
+                      resetsAt: 1_800_086_400,
+                    },
+                    primary: {
+                      usedPercent: 42,
+                      resetsAt: 1_800_000_000,
+                      windowDurationMins: 300,
+                    },
+                    secondary: null,
+                  },
+                  rateLimitsByLimitId: null,
+                },
+              }),
+            ),
+          );
+
+          assert.deepStrictEqual(status.accountUsage?.limits[0], {
+            limitId: "codex",
+            limitName: "Codex",
+            planType: "pro",
+            primary: {
+              usedPercent: 42,
+              remainingPercent: 58,
+              resetsAt: 1_800_000_000,
+              windowDurationMins: 300,
+            },
           });
         }),
       );

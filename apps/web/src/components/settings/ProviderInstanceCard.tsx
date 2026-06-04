@@ -22,6 +22,7 @@ import {
   type ServerProvider,
   type ServerProviderAccountUsage,
   type ServerProviderUsageLimit,
+  type ServerProviderSpendControlLimit,
   type ServerProviderUsageWindow,
   type ServerProviderModel,
 } from "@t3tools/contracts";
@@ -142,8 +143,17 @@ export interface ProviderAccountUsageWindowPresentation {
   readonly reachedLimit: boolean;
 }
 
+export interface ProviderAccountUsageSpendControlPresentation {
+  readonly label: string;
+  readonly detail: string;
+  readonly usedPercent: number;
+  readonly remainingPercent: number;
+  readonly reachedLimit: boolean;
+}
+
 export interface ProviderAccountUsagePresentation {
   readonly label: string;
+  readonly spendControl?: ProviderAccountUsageSpendControlPresentation;
   readonly windows: ReadonlyArray<ProviderAccountUsageWindowPresentation>;
   readonly reachedLimit: boolean;
 }
@@ -225,6 +235,29 @@ function formatUsageWindowPresentation(
   };
 }
 
+function formatSpendControlPresentation(
+  limit: ServerProviderSpendControlLimit,
+  reachedLimit: boolean,
+  nowMs: number,
+): ProviderAccountUsageSpendControlPresentation {
+  const remainingPercent = Math.max(0, Math.min(100, limit.remainingPercent));
+  const usedPercent = Math.max(0, 100 - remainingPercent);
+  const resetDetail = formatResetDetail(limit.resetsAt, nowMs);
+  const detailParts = [
+    `${limit.used} used of ${limit.limit}`,
+    reachedLimit ? "limit reached" : `${remainingPercent}% remaining`,
+    resetDetail,
+  ].filter((part): part is string => Boolean(part));
+
+  return {
+    label: "Monthly",
+    detail: detailParts.join(" - "),
+    usedPercent,
+    remainingPercent,
+    reachedLimit,
+  };
+}
+
 export function deriveProviderAccountUsagePresentation(
   usage: ServerProviderAccountUsage | undefined,
   nowMs: number = Date.now(),
@@ -243,12 +276,16 @@ export function deriveProviderAccountUsagePresentation(
       ? [formatUsageWindowPresentation("secondary", limit.secondary, reachedLimit, nowMs)]
       : []),
   ];
-  if (windows.length === 0) return null;
+  const spendControl = limit.individualLimit
+    ? formatSpendControlPresentation(limit.individualLimit, reachedLimit, nowMs)
+    : undefined;
+  if (windows.length === 0 && !spendControl) return null;
 
   return {
     label: limit.limitName ?? "Codex usage",
+    ...(spendControl ? { spendControl } : {}),
     windows,
-    reachedLimit,
+    reachedLimit: reachedLimit || Boolean(spendControl?.reachedLimit),
   };
 }
 
@@ -903,6 +940,35 @@ export function ProviderInstanceCard({
                   <span className="font-medium text-foreground">{usagePresentation.label}</span>
                 </div>
                 <div className="space-y-1.5 pl-5">
+                  {usagePresentation.spendControl ? (
+                    <div className="space-y-1">
+                      <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
+                        <span className="min-w-10 font-medium text-foreground">
+                          {usagePresentation.spendControl.label}
+                        </span>
+                        <span>{usagePresentation.spendControl.detail}</span>
+                      </div>
+                      <div
+                        role="meter"
+                        aria-label={`${usagePresentation.label} ${usagePresentation.spendControl.label} ${usagePresentation.spendControl.usedPercent}% used`}
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-valuenow={usagePresentation.spendControl.usedPercent}
+                        className="h-1.5 overflow-hidden rounded-full bg-muted"
+                      >
+                        <div
+                          className={cn(
+                            "h-full rounded-full transition-[width]",
+                            usagePresentation.spendControl.reachedLimit ||
+                              usagePresentation.spendControl.usedPercent >= 90
+                              ? "bg-warning"
+                              : "bg-primary",
+                          )}
+                          style={{ width: `${usagePresentation.spendControl.usedPercent}%` }}
+                        />
+                      </div>
+                    </div>
+                  ) : null}
                   {usagePresentation.windows.map((window) => (
                     <div key={window.key} className="space-y-1">
                       <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">

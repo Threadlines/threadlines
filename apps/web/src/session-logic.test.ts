@@ -115,6 +115,34 @@ describe("derivePendingApprovals", () => {
     ]);
   });
 
+  it("keeps Codex permission approvals with environment identity", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "approval-open-permissions",
+        createdAt: "2026-06-04T00:00:01.000Z",
+        kind: "approval.requested",
+        summary: "Permissions approval requested",
+        tone: "approval",
+        payload: {
+          requestId: "req-permissions",
+          requestType: "permissions_approval",
+          environmentId: "env-remote",
+          detail: "Requesting network access",
+        },
+      }),
+    ];
+
+    expect(derivePendingApprovals(activities)).toEqual([
+      {
+        requestId: "req-permissions",
+        requestKind: "permissions",
+        createdAt: "2026-06-04T00:00:01.000Z",
+        environmentId: "env-remote",
+        detail: "Requesting network access",
+      },
+    ]);
+  });
+
   it("clears stale pending approvals when provider reports unknown pending request", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

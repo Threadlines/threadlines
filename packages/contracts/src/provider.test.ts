@@ -118,6 +118,7 @@ describe("ProviderSendTurnInput", () => {
   it("accepts codex modelSelection", () => {
     const parsed = decodeProviderSendTurnInput({
       threadId: "thread-1",
+      messageId: "message-1",
       modelSelection: {
         provider: "codex",
         model: "gpt-5.3-codex",
@@ -128,6 +129,7 @@ describe("ProviderSendTurnInput", () => {
       },
     });
 
+    expect(parsed.messageId).toBe("message-1");
     expect(parsed.modelSelection?.instanceId).toBe("codex");
     expect(parsed.modelSelection?.model).toBe("gpt-5.3-codex");
     expect(getOptionValue(parsed.modelSelection?.options, "reasoningEffort")).toBe("xhigh");

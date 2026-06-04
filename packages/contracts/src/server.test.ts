@@ -91,6 +91,12 @@ describe("ServerProvider", () => {
           {
             limitId: "codex",
             limitName: "Codex",
+            individualLimit: {
+              limit: "$100.00",
+              used: "$25.00",
+              remainingPercent: 75,
+              resetsAt: 1_800_086_400,
+            },
             primary: {
               usedPercent: 25,
               remainingPercent: 75,
@@ -105,5 +111,6 @@ describe("ServerProvider", () => {
     });
 
     expect(parsed.accountUsage?.limits[0]?.primary?.remainingPercent).toBe(75);
+    expect(parsed.accountUsage?.limits[0]?.individualLimit?.remainingPercent).toBe(75);
   });
 });

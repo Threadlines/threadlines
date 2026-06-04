@@ -15,15 +15,24 @@ export const ComposerPendingApprovalPanel = memo(function ComposerPendingApprova
       ? "Command approval requested"
       : approval.requestKind === "file-read"
         ? "File-read approval requested"
-        : "File-change approval requested";
+        : approval.requestKind === "file-change"
+          ? "File-change approval requested"
+          : "Permissions approval requested";
 
   return (
     <div className="px-4 py-3.5 sm:px-5 sm:py-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="uppercase text-sm tracking-[0.2em]">PENDING APPROVAL</span>
-        <span className="text-sm font-medium">{approvalSummary}</span>
-        {pendingCount > 1 ? (
-          <span className="text-xs text-muted-foreground">1/{pendingCount}</span>
+      <div className="space-y-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="uppercase text-sm tracking-[0.2em]">PENDING APPROVAL</span>
+          <span className="text-sm font-medium">{approvalSummary}</span>
+          {pendingCount > 1 ? (
+            <span className="text-xs text-muted-foreground">1/{pendingCount}</span>
+          ) : null}
+        </div>
+        {approval.environmentId ? (
+          <p className="truncate text-xs text-muted-foreground">
+            Environment: {approval.environmentId}
+          </p>
         ) : null}
       </div>
     </div>

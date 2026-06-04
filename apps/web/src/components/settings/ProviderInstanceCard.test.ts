@@ -122,6 +122,41 @@ describe("deriveProviderAccountUsagePresentation", () => {
     });
   });
 
+  it("does not add a monthly spend-control row to normal Codex usage windows", () => {
+    const usage: ServerProviderAccountUsage = {
+      source: "codex-rate-limits",
+      checkedAt: "2026-06-04T00:00:00.000Z",
+      limits: [
+        {
+          limitId: "codex",
+          limitName: "Codex",
+          planType: "pro",
+          primary: {
+            usedPercent: 37,
+            remainingPercent: 63,
+            resetsAt: 1_800_003_600,
+            windowDurationMins: 300,
+          },
+        },
+      ],
+    };
+
+    expect(deriveProviderAccountUsagePresentation(usage, 1_800_000_000_000)).toEqual({
+      label: "Codex",
+      reachedLimit: false,
+      windows: [
+        {
+          key: "primary",
+          label: "5h",
+          detail: "63% remaining · resets in 1h",
+          usedPercent: 37,
+          remainingPercent: 63,
+          reachedLimit: false,
+        },
+      ],
+    });
+  });
+
   it("marks reached Codex limits", () => {
     const usage: ServerProviderAccountUsage = {
       source: "codex-rate-limits",
@@ -151,6 +186,39 @@ describe("deriveProviderAccountUsagePresentation", () => {
           reachedLimit: true,
         },
       ],
+    });
+  });
+
+  it("formats Codex monthly spend-control limits", () => {
+    const usage: ServerProviderAccountUsage = {
+      source: "codex-rate-limits",
+      checkedAt: "2026-06-04T00:00:00.000Z",
+      limits: [
+        {
+          limitId: "codex",
+          limitName: "Codex",
+          planType: "enterprise",
+          individualLimit: {
+            limit: "$100.00",
+            used: "$35.00",
+            remainingPercent: 65,
+            resetsAt: 1_800_086_400,
+          },
+        },
+      ],
+    };
+
+    expect(deriveProviderAccountUsagePresentation(usage, 1_800_000_000_000)).toEqual({
+      label: "Codex",
+      reachedLimit: false,
+      spendControl: {
+        label: "Monthly",
+        detail: "$35.00 used of $100.00 - 65% remaining - resets in 1d",
+        usedPercent: 35,
+        remainingPercent: 65,
+        reachedLimit: false,
+      },
+      windows: [],
     });
   });
 });

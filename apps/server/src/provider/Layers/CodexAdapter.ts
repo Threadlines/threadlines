@@ -459,9 +459,43 @@ function toRequestTypeFromKind(kind: ProviderRequestKind | undefined): Canonical
       return "file_read_approval";
     case "file-change":
       return "file_change_approval";
+    case "permissions":
+      return "permissions_approval";
     default:
       return "unknown";
   }
+}
+
+function readPayloadEnvironmentId(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object") {
+    return undefined;
+  }
+  const value = (payload as Record<string, unknown>).environmentId;
+  return typeof value === "string" ? trimText(value) : undefined;
+}
+
+function describePermissionsRequest(
+  permissions:
+    | EffectCodexSchema.PermissionsRequestApprovalParams__RequestPermissionProfile
+    | undefined,
+): string | undefined {
+  if (!permissions) {
+    return undefined;
+  }
+  const parts: string[] = [];
+  if (permissions.network?.enabled === true) {
+    parts.push("network access");
+  }
+  const fileSystem = permissions.fileSystem;
+  const readCount = fileSystem?.read?.length ?? 0;
+  const writeCount = fileSystem?.write?.length ?? 0;
+  const entriesCount = fileSystem?.entries?.length ?? 0;
+  if (writeCount > 0 || entriesCount > 0) {
+    parts.push("filesystem access");
+  } else if (readCount > 0) {
+    parts.push("filesystem read access");
+  }
+  return parts.length > 0 ? `Requesting ${parts.join(", ")}` : undefined;
 }
 
 function toCanonicalUserInputAnswers(
@@ -711,6 +745,13 @@ function mapToRuntimeEvents(
           );
           return payload?.reason ?? undefined;
         }
+        case "item/permissions/requestApproval": {
+          const payload = readPayload(
+            EffectCodexSchema.PermissionsRequestApprovalParams,
+            event.payload,
+          );
+          return payload?.reason ?? describePermissionsRequest(payload?.permissions);
+        }
         case "applyPatchApproval": {
           const payload = readPayload(
             EffectCodexSchema.ServerRequest__ApplyPatchApprovalParams,
@@ -736,6 +777,7 @@ function mapToRuntimeEvents(
           return undefined;
       }
     })();
+    const environmentId = readPayloadEnvironmentId(event.payload);
 
     return [
       {
@@ -743,6 +785,7 @@ function mapToRuntimeEvents(
         type: "request.opened",
         payload: {
           requestType: toRequestTypeFromMethod(event.method),
+          ...(environmentId ? { environmentId } : {}),
           ...(detail ? { detail } : {}),
           ...(event.payload !== undefined ? { args: event.payload } : {}),
         },
@@ -2009,6 +2052,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         : undefined;
     return yield* session.runtime
       .sendTurn({
+        ...(input.messageId !== undefined ? { clientUserMessageId: input.messageId } : {}),
         ...(input.input !== undefined ? { input: input.input } : {}),
         ...(input.modelSelection?.instanceId === boundInstanceId
           ? { model: input.modelSelection.model }
