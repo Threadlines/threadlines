@@ -708,6 +708,29 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         assert.include(remoteCommit?.refs ?? [], "origin/claude-redesign");
       }),
     );
+
+    it.effect("refreshes remote tags before reading graph decorations", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const remote = yield* makeTmpDir("git-vcs-driver-remote-");
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const tagName = "v0.0.19-nightly.20260605.70";
+
+        yield* git(remote, ["init", "--bare"]);
+        yield* git(cwd, ["remote", "add", "origin", remote]);
+        yield* git(cwd, ["push", "-u", "origin", initialBranch]);
+        const initialSha = yield* git(cwd, ["rev-parse", "HEAD"]);
+        yield* git(remote, ["tag", tagName, initialSha]);
+
+        assert.equal(yield* git(cwd, ["tag", "--list", tagName]), "");
+
+        const graph = yield* driver.commitGraph({ cwd, limit: 5 });
+        const initialCommit = graph.commits.find((commit) => commit.subject === "initial commit");
+
+        assert.include(initialCommit?.refs ?? [], tagName);
+      }),
+    );
   });
 
   describe("branch operations", () => {

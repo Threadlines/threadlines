@@ -91,6 +91,7 @@ class StatusRemoteRefreshCacheKey extends Data.Class<{
 
 class RemoteRefsRefreshCacheKey extends Data.Class<{
   gitCommonDir: string;
+  includeTags: boolean;
 }> {}
 
 interface ExecuteGitOptions {
@@ -1147,22 +1148,24 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const fetchRemoteRefsForRemote = Effect.fn("fetchRemoteRefsForRemote")(function* (
     gitCommonDir: string,
     remoteName: string,
+    options?: { readonly includeTags?: boolean },
   ) {
     const fetchCwd =
       path.basename(gitCommonDir) === ".git" ? path.dirname(gitCommonDir) : gitCommonDir;
+    const branchArgs = [
+      "--git-dir",
+      gitCommonDir,
+      "fetch",
+      "--quiet",
+      "--no-tags",
+      "--prune",
+      remoteName,
+      `+refs/heads/*:refs/remotes/${remoteName}/*`,
+    ];
     const result = yield* executeGit(
       "GitVcsDriver.fetchRemoteRefsForRemote",
       fetchCwd,
-      [
-        "--git-dir",
-        gitCommonDir,
-        "fetch",
-        "--quiet",
-        "--no-tags",
-        "--prune",
-        remoteName,
-        `+refs/heads/*:refs/remotes/${remoteName}/*`,
-      ],
+      branchArgs,
       {
         allowNonZeroExit: true,
         env: BACKGROUND_GIT_FETCH_ENV,
@@ -1173,17 +1176,39 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       return yield* createGitCommandError(
         "GitVcsDriver.fetchRemoteRefsForRemote",
         fetchCwd,
-        [
-          "--git-dir",
-          gitCommonDir,
-          "fetch",
-          "--quiet",
-          "--no-tags",
-          "--prune",
-          remoteName,
-          `+refs/heads/*:refs/remotes/${remoteName}/*`,
-        ],
+        branchArgs,
         result.stderr.trim() || "git fetch remote refs failed",
+      );
+    }
+
+    if (options?.includeTags !== true) {
+      return;
+    }
+
+    const tagArgs = [
+      "--git-dir",
+      gitCommonDir,
+      "fetch",
+      "--quiet",
+      "--no-tags",
+      remoteName,
+      "refs/tags/*:refs/tags/*",
+    ];
+    const tagResult = yield* executeGit(
+      "GitVcsDriver.fetchRemoteTagsForRemote",
+      fetchCwd,
+      tagArgs,
+      {
+        allowNonZeroExit: true,
+        env: BACKGROUND_GIT_FETCH_ENV,
+        timeoutMs: Duration.toMillis(REMOTE_REFS_REFRESH_TIMEOUT),
+      },
+    );
+    if (tagResult.exitCode !== 0) {
+      yield* Effect.logWarning(
+        `GitVcsDriver.fetchRemoteTagsForRemote: tag ref refresh failed for ${fetchCwd}: ${
+          tagResult.stderr.trim() || "git fetch remote tags failed"
+        }`,
       );
     }
   });
@@ -1216,7 +1241,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const remoteNames = parseRemoteNames(remoteNamesResult.stdout);
     yield* Effect.forEach(
       remoteNames,
-      (remoteName) => fetchRemoteRefsForRemote(cacheKey.gitCommonDir, remoteName),
+      (remoteName) =>
+        fetchRemoteRefsForRemote(cacheKey.gitCommonDir, remoteName, {
+          includeTags: cacheKey.includeTags,
+        }),
       { discard: true, concurrency: "unbounded" },
     );
     return true as const;
@@ -1228,18 +1256,26 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       Exit.isSuccess(exit) ? REMOTE_REFS_REFRESH_INTERVAL : REMOTE_REFS_REFRESH_FAILURE_COOLDOWN,
   });
 
-  const refreshRemoteRefsIfStale = Effect.fn("refreshRemoteRefsIfStale")(function* (cwd: string) {
+  const refreshRemoteRefsIfStale = Effect.fn("refreshRemoteRefsIfStale")(function* (
+    cwd: string,
+    options?: { readonly includeTags?: boolean },
+  ) {
     const gitCommonDir = yield* resolveGitCommonDir(cwd);
     yield* Cache.get(
       remoteRefsRefreshCache,
       new RemoteRefsRefreshCacheKey({
         gitCommonDir,
+        includeTags: options?.includeTags === true,
       }),
     );
   });
 
-  const refreshRemoteRefsBestEffort = (operation: string, cwd: string) =>
-    refreshRemoteRefsIfStale(cwd).pipe(
+  const refreshRemoteRefsBestEffort = (
+    operation: string,
+    cwd: string,
+    options?: { readonly includeTags?: boolean },
+  ) =>
+    refreshRemoteRefsIfStale(cwd, options).pipe(
       Effect.catchIf(isMissingGitCwdError, () => Effect.void),
       Effect.catch((error) =>
         Effect.logWarning(`${operation}: remote ref refresh failed for ${cwd}: ${error.message}`),
@@ -2671,7 +2707,9 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const commitGraph: GitVcsDriver.GitVcsDriverShape["commitGraph"] = Effect.fn("commitGraph")(
     function* (input) {
       const limit = input.limit ?? GIT_COMMIT_GRAPH_DEFAULT_LIMIT;
-      yield* refreshRemoteRefsBestEffort("GitVcsDriver.commitGraph", input.cwd);
+      yield* refreshRemoteRefsBestEffort("GitVcsDriver.commitGraph", input.cwd, {
+        includeTags: true,
+      });
       const result = yield* executeGit(
         "GitVcsDriver.commitGraph",
         input.cwd,
