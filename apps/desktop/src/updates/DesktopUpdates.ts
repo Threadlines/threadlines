@@ -130,6 +130,38 @@ const {
   logError: logUpdaterError,
 } = DesktopObservability.makeComponentLogger("desktop-updater");
 
+function stringifyUpdaterLogMessage(message: unknown): string {
+  if (message instanceof Error) {
+    return message.stack ?? message.message;
+  }
+  if (typeof message === "string") {
+    return message;
+  }
+  try {
+    return JSON.stringify(message);
+  } catch {
+    return String(message);
+  }
+}
+
+function redactUpdaterLogMessage(message: unknown): string {
+  return stringifyUpdaterLogMessage(message)
+    .replace(
+      /\bauthorization\b\s*[:=]\s*["']?token\s+[^"',\s}]+/gi,
+      "authorization: token [redacted]",
+    )
+    .replace(/\btoken\s+[A-Za-z0-9_]{20,}/gi, "token [redacted]")
+    .replace(/https?:\/\/[^\s"')]+/g, (candidate) => {
+      try {
+        const url = new URL(candidate);
+        url.search = "";
+        return url.toString();
+      } catch {
+        return candidate.replace(/\?.*$/, "?[redacted]");
+      }
+    });
+}
+
 function parseAppUpdateYml(raw: string): Effect.Effect<Option.Option<AppUpdateYmlConfig>> {
   const entries: Record<string, string> = {};
   for (const line of raw.split("\n")) {
@@ -771,6 +803,30 @@ const make = Effect.gen(function* () {
       const runEffect = (effect: Effect.Effect<void>) => {
         void Effect.runPromiseWith(context)(effect);
       };
+
+      yield* electronUpdater.setLogger({
+        info: (message) => {
+          runEffect(
+            logUpdaterInfo("electron updater log", {
+              updaterMessage: redactUpdaterLogMessage(message),
+            }),
+          );
+        },
+        warn: (message) => {
+          runEffect(
+            logUpdaterWarning("electron updater log", {
+              updaterMessage: redactUpdaterLogMessage(message),
+            }),
+          );
+        },
+        error: (message) => {
+          runEffect(
+            logUpdaterError("electron updater log", {
+              updaterMessage: redactUpdaterLogMessage(message),
+            }),
+          );
+        },
+      });
 
       const appUpdateYmlConfig = yield* readAppUpdateYml;
       yield* Ref.set(appUpdateYmlConfigRef, appUpdateYmlConfig);

@@ -9,6 +9,7 @@ import { autoUpdater } from "electron-updater";
 type AutoUpdater = typeof autoUpdater;
 
 export type ElectronUpdaterFeedUrl = Parameters<AutoUpdater["setFeedURL"]>[0];
+export type ElectronUpdaterLogger = NonNullable<AutoUpdater["logger"]>;
 
 export class ElectronUpdaterCheckForUpdatesError extends Data.TaggedError(
   "ElectronUpdaterCheckForUpdatesError",
@@ -46,6 +47,7 @@ export type ElectronUpdaterError =
   | ElectronUpdaterQuitAndInstallError;
 
 export interface ElectronUpdaterShape {
+  readonly setLogger: (logger: ElectronUpdaterLogger | null) => Effect.Effect<void>;
   readonly setFeedURL: (options: ElectronUpdaterFeedUrl) => Effect.Effect<void>;
   readonly setAutoDownload: (value: boolean) => Effect.Effect<void>;
   readonly setAutoInstallOnAppQuit: (value: boolean) => Effect.Effect<void>;
@@ -71,6 +73,11 @@ export class ElectronUpdater extends Context.Service<ElectronUpdater, ElectronUp
 ) {}
 
 export const layer = Layer.succeed(ElectronUpdater, {
+  setLogger: (logger) =>
+    Effect.suspend(() => {
+      autoUpdater.logger = logger;
+      return Effect.void;
+    }),
   setFeedURL: (options) =>
     Effect.suspend(() => {
       autoUpdater.setFeedURL(options);

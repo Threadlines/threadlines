@@ -88,6 +88,7 @@ function makeHarness(options: UpdatesHarnessOptions = {}) {
   };
 
   const updaterLayer = Layer.succeed(ElectronUpdater.ElectronUpdater, {
+    setLogger: () => Effect.void,
     setFeedURL: (options) =>
       Effect.sync(() => {
         feedUrls.push(options);

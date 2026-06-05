@@ -11,6 +11,7 @@ const { autoUpdaterMock } = vi.hoisted(() => ({
     autoInstallOnAppQuit: true,
     channel: "latest",
     disableDifferentialDownload: false,
+    logger: null,
     checkForUpdates: vi.fn(() => Promise.resolve(null)),
     downloadUpdate: vi.fn(() => Promise.resolve([])),
     on: vi.fn(),
@@ -34,6 +35,7 @@ describe("ElectronUpdater", () => {
     autoUpdaterMock.autoInstallOnAppQuit = true;
     autoUpdaterMock.channel = "latest";
     autoUpdaterMock.disableDifferentialDownload = false;
+    autoUpdaterMock.logger = null;
     autoUpdaterMock.checkForUpdates.mockClear();
     autoUpdaterMock.checkForUpdates.mockImplementation(() => Promise.resolve(null));
     autoUpdaterMock.downloadUpdate.mockClear();
@@ -74,6 +76,21 @@ describe("ElectronUpdater", () => {
         assert.instanceOf(error, ElectronUpdater.ElectronUpdaterCheckForUpdatesError);
         assert.equal(error.cause, cause);
       }
+    }).pipe(Effect.provide(ElectronUpdater.layer)),
+  );
+
+  it.effect("sets the updater logger", () =>
+    Effect.gen(function* () {
+      const logger = {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      };
+      const updater = yield* ElectronUpdater.ElectronUpdater;
+
+      yield* updater.setLogger(logger);
+
+      assert.equal(autoUpdaterMock.logger, logger);
     }).pipe(Effect.provide(ElectronUpdater.layer)),
   );
 });
