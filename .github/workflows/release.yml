@@ -1,4 +1,4 @@
-name: Windows Release
+name: Desktop Release
 
 on:
   push:
@@ -23,12 +23,12 @@ permissions:
   contents: write
 
 concurrency:
-  group: windows-release-${{ github.ref }}
+  group: desktop-release-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   preflight:
-    name: Verify release
+    name: Verify desktop release
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
@@ -208,7 +208,7 @@ jobs:
         run: bun run test
 
   windows:
-    name: Build and publish Windows installer
+    name: Build Windows x64 installer
     needs: preflight
     runs-on: windows-latest
     timeout-minutes: 30
@@ -249,19 +249,199 @@ jobs:
           --build-version "${{ needs.preflight.outputs.version }}"
           --verbose
 
-      - name: Ensure private GitHub nightly updater manifest
-        if: needs.preflight.outputs.channel == 'nightly'
-        shell: pwsh
-        run: |
-          if (Test-Path release\nightly.yml) {
-            Copy-Item release\nightly.yml release\latest.yml -Force
-          } elseif (-not (Test-Path release\latest.yml)) {
-            throw "Nightly build did not produce nightly.yml or latest.yml."
-          }
-
       - name: List release assets
         shell: pwsh
         run: Get-ChildItem release | Select-Object Name, Length
+
+      - name: Upload Windows release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-release-windows-x64
+          path: release/*
+          if-no-files-found: error
+
+  macos:
+    name: Build macOS ${{ matrix.arch }} artifact
+    needs: preflight
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x64
+            runner: macos-15-intel
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.preflight.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: package.json
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Ensure Electron binary is installed
+        run: node scripts/ensure-electron-binary.ts
+
+      - name: Align release package versions
+        run: bun scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
+
+      - name: Build macOS artifact
+        env:
+          BADCODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
+          BADCODE_DESKTOP_SIGNED: ${{ vars.BADCODE_MACOS_SIGNED == 'true' && 'true' || 'false' }}
+          CSC_LINK: ${{ secrets.MACOS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CSC_KEY_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: >
+          bun run dist:desktop:artifact --
+          --platform mac
+          --target dmg
+          --arch "${{ matrix.arch }}"
+          --build-version "${{ needs.preflight.outputs.version }}"
+          --verbose
+
+      - name: Normalize macOS updater manifests
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          CHANNEL: ${{ needs.preflight.outputs.channel }}
+        run: |
+          set -euo pipefail
+
+          normalize_manifest() {
+            local source="$1"
+            local target="$2"
+            if [[ -f "release/$source" && ! -f "release/$target" ]]; then
+              cp "release/$source" "release/$target"
+            fi
+          }
+
+          if [[ "$ARCH" == "x64" ]]; then
+            normalize_manifest "latest-mac.yml" "latest-mac-x64.yml"
+            normalize_manifest "nightly-mac.yml" "nightly-mac-x64.yml"
+            rm -f release/latest-mac.yml release/nightly-mac.yml
+          else
+            normalize_manifest "nightly-mac.yml" "latest-mac.yml"
+          fi
+
+          if [[ "$CHANNEL" == "nightly" ]]; then
+            if [[ "$ARCH" == "x64" ]]; then
+              normalize_manifest "latest-mac-x64.yml" "nightly-mac-x64.yml"
+            else
+              normalize_manifest "latest-mac.yml" "nightly-mac.yml"
+            fi
+          fi
+
+      - name: List macOS release assets
+        run: find release -maxdepth 1 -type f -print
+
+      - name: Upload macOS release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-release-macos-${{ matrix.arch }}
+          path: release/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs:
+      - preflight
+      - windows
+      - macos
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.preflight.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: package.json
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-release-*
+          path: release-artifacts
+
+      - name: Stage release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf release
+          mkdir -p release
+          find release-artifacts -type f -exec cp -f {} release/ \;
+          ls -la release
+
+      - name: Normalize updater manifests
+        shell: bash
+        env:
+          CHANNEL: ${{ needs.preflight.outputs.channel }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$CHANNEL" == "nightly" ]]; then
+            if [[ -f release/nightly.yml && ! -f release/latest.yml ]]; then
+              cp release/nightly.yml release/latest.yml
+            fi
+            if [[ -f release/nightly-mac.yml && ! -f release/latest-mac.yml ]]; then
+              cp release/nightly-mac.yml release/latest-mac.yml
+            fi
+            if [[ -f release/nightly-mac-x64.yml && ! -f release/latest-mac-x64.yml ]]; then
+              cp release/nightly-mac-x64.yml release/latest-mac-x64.yml
+            fi
+          fi
+
+          merge_mac_manifest() {
+            local primary="$1"
+            local secondary="$2"
+
+            if [[ -f "release/$primary" && -f "release/$secondary" ]]; then
+              bun scripts/merge-update-manifests.ts \
+                --platform mac \
+                "release/$primary" \
+                "release/$secondary" \
+                "release/$primary"
+              rm -f "release/$secondary"
+            elif [[ ! -f "release/$primary" && -f "release/$secondary" ]]; then
+              mv "release/$secondary" "release/$primary"
+            fi
+          }
+
+          merge_mac_manifest "latest-mac.yml" "latest-mac-x64.yml"
+          if [[ "$CHANNEL" == "nightly" ]]; then
+            merge_mac_manifest "nightly-mac.yml" "nightly-mac-x64.yml"
+          fi
+
+          ls -la release
 
       - name: Generate release notes
         run: >
@@ -284,5 +464,7 @@ jobs:
           files: |
             release/*.exe
             release/*.blockmap
+            release/*.dmg
+            release/*.zip
             release/*.yml
           fail_on_unmatched_files: true

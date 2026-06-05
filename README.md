@@ -1,6 +1,6 @@
 # BadCode
 
-BadCode is a Windows-first desktop GUI for coding agents. It is a fork of
+BadCode is a desktop GUI for coding agents. It is a fork of
 [T3 Code](https://github.com/pingdotgg/t3code), with the upstream Git history
 kept intact so useful changes can still be reviewed and brought forward.
 
@@ -34,7 +34,7 @@ branding and compatibility policy.
 
 ### Desktop app
 
-Install the latest Windows alpha from
+Install the latest desktop alpha from
 [GitHub Releases](https://github.com/badcuban/badcode/releases).
 
 This repository is private, so release downloads require a GitHub account with
@@ -47,22 +47,22 @@ bun install --frozen-lockfile
 bun run dev
 ```
 
-### Local Windows installer
+### Local desktop artifact
 
 ```powershell
 bun install --frozen-lockfile
 bun run dist:desktop:artifact -- --platform win --target nsis --arch x64 --build-version 0.0.1
 ```
 
-The installer is written to `release/`.
+The artifact is written to `release/`.
 
 ## Releases
 
 BadCode keeps the upstream Git history but uses its own app versions starting
 at `0.0.1`.
 
-See [docs/release.md](./docs/release.md) for the Windows-only release workflow,
-private-repo download notes, and auto-update requirements.
+See [docs/release.md](./docs/release.md) for the desktop release workflow,
+private-repo download notes, platform status, and auto-update requirements.
 
 ## Development Notes
 

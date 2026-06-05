@@ -108,6 +108,32 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }),
   );
 
+  it.effect("builds unsigned macOS artifacts without signing identity discovery", () =>
+    Effect.gen(function* () {
+      const buildConfig = yield* createBuildConfig("mac", "dmg", "0.0.19", false, false, undefined);
+      const macConfig = buildConfig.mac as Record<string, unknown>;
+
+      assert.deepStrictEqual(macConfig.target, ["dmg", "zip"]);
+      assert.equal(macConfig.identity, null);
+      assert.equal(macConfig.hardenedRuntime, false);
+      assert.equal(macConfig.gatekeeperAssess, false);
+      assert.equal(macConfig.notarize, undefined);
+    }),
+  );
+
+  it.effect("enables hardened runtime and notarization for signed macOS artifacts", () =>
+    Effect.gen(function* () {
+      const buildConfig = yield* createBuildConfig("mac", "dmg", "0.0.19", true, false, undefined);
+      const macConfig = buildConfig.mac as Record<string, unknown>;
+
+      assert.deepStrictEqual(macConfig.target, ["dmg", "zip"]);
+      assert.equal(macConfig.identity, undefined);
+      assert.equal(macConfig.hardenedRuntime, true);
+      assert.equal(macConfig.gatekeeperAssess, true);
+      assert.equal(macConfig.notarize, true);
+    }),
+  );
+
   it("uses BadCode identity in staged desktop package metadata", () => {
     const stagePackageJson = createStagePackageJson({
       appVersion: "0.0.7",

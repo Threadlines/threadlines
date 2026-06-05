@@ -675,11 +675,21 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   }
 
   if (platform === "mac") {
-    buildConfig.mac = {
+    const macConfig: Record<string, unknown> = {
       target: target === "dmg" ? [target, "zip"] : [target],
       icon: "icon.icns",
       category: "public.app-category.developer-tools",
     };
+    if (signed) {
+      macConfig.hardenedRuntime = true;
+      macConfig.gatekeeperAssess = true;
+      macConfig.notarize = true;
+    } else {
+      macConfig.identity = null;
+      macConfig.hardenedRuntime = false;
+      macConfig.gatekeeperAssess = false;
+    }
+    buildConfig.mac = macConfig;
   }
 
   if (platform === "linux") {
