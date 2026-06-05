@@ -441,6 +441,7 @@ jobs:
             merge_mac_manifest "nightly-mac.yml" "nightly-mac-x64.yml"
           fi
 
+          rm -f release/builder-debug*.yml
           ls -la release
 
       - name: Generate release notes

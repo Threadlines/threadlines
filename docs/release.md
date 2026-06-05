@@ -126,6 +126,9 @@ The release assets should include:
 - `latest.yml`
 - `latest-mac.yml`
 
+Electron Builder also uploads matching `.blockmap` files for differential
+updates.
+
 Nightly releases may also include `nightly.yml` and `nightly-mac.yml`. The
 workflow keeps latest-channel copies on nightly prereleases so private GitHub
 updater checks can read the prerelease manifest.
