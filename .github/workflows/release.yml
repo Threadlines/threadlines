@@ -207,9 +207,71 @@ jobs:
       - name: Test
         run: bun run test
 
+  prepare_release:
+    name: Prepare draft GitHub Release
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.preflight.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: package.json
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Generate release notes
+        run: >
+          bun scripts/generate-release-notes.ts
+          --channel "${{ needs.preflight.outputs.channel }}"
+          --current-tag "${{ needs.preflight.outputs.tag }}"
+          --current-ref "${{ needs.preflight.outputs.ref }}"
+          --repository "${{ github.repository }}"
+          --output release-notes.md
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.preflight.outputs.tag }}
+          TARGET_REF: ${{ needs.preflight.outputs.ref }}
+          RELEASE_NAME: ${{ needs.preflight.outputs.name }}
+          IS_PRERELEASE: ${{ needs.preflight.outputs.is_prerelease }}
+        run: |
+          set -euo pipefail
+
+          args=(
+            release create "$TAG"
+            --target "$TARGET_REF"
+            --title "$RELEASE_NAME"
+            --notes-file release-notes.md
+            --draft
+          )
+
+          if [[ "$IS_PRERELEASE" == "true" ]]; then
+            args+=(--prerelease --latest=false)
+          else
+            args+=(--latest)
+          fi
+
+          gh "${args[@]}"
+
   windows:
     name: Build Windows x64 installer
-    needs: preflight
+    needs:
+      - preflight
+      - prepare_release
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -249,20 +311,44 @@ jobs:
           --build-version "${{ needs.preflight.outputs.version }}"
           --verbose
 
+      - name: Normalize Windows updater manifests
+        if: needs.preflight.outputs.channel == 'nightly'
+        shell: pwsh
+        run: |
+          if (Test-Path release\nightly.yml) {
+            Copy-Item release\nightly.yml release\latest.yml -Force
+          } elseif (-not (Test-Path release\latest.yml)) {
+            throw "Nightly build did not produce nightly.yml or latest.yml."
+          }
+
+      - name: Remove non-release build metadata
+        shell: pwsh
+        run: Remove-Item release\builder-debug*.yml -Force -ErrorAction SilentlyContinue
+
       - name: List release assets
         shell: pwsh
         run: Get-ChildItem release | Select-Object Name, Length
 
-      - name: Upload Windows release assets
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-release-windows-x64
-          path: release/*
-          if-no-files-found: error
+      - name: Upload Windows assets to draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.preflight.outputs.tag }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(release/*.exe release/*.blockmap release/*.yml)
+          if (( ${#assets[@]} == 0 )); then
+            echo "No Windows release assets found." >&2
+            exit 1
+          fi
+          gh release upload "$TAG" "${assets[@]}" --clobber
 
   macos:
     name: Build macOS ${{ matrix.arch }} artifact
-    needs: preflight
+    needs:
+      - preflight
+      - prepare_release
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     strategy:
@@ -348,20 +434,31 @@ jobs:
             fi
           fi
 
+      - name: Remove non-release build metadata
+        run: rm -f release/builder-debug*.yml
+
       - name: List macOS release assets
         run: find release -maxdepth 1 -type f -print
 
-      - name: Upload macOS release assets
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-release-macos-${{ matrix.arch }}
-          path: release/*
-          if-no-files-found: error
+      - name: Upload macOS assets to draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.preflight.outputs.tag }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(release/*.dmg release/*.zip release/*.blockmap release/*mac*.yml)
+          if (( ${#assets[@]} == 0 )); then
+            echo "No macOS release assets found." >&2
+            exit 1
+          fi
+          gh release upload "$TAG" "${assets[@]}" --clobber
 
   publish:
     name: Publish GitHub Release
     needs:
       - preflight
+      - prepare_release
       - windows
       - macos
     runs-on: ubuntu-latest
@@ -386,53 +483,62 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Download release assets
-        uses: actions/download-artifact@v4
-        with:
-          pattern: desktop-release-*
-          path: release-artifacts
-
-      - name: Stage release assets
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf release
-          mkdir -p release
-          find release-artifacts -type f -exec cp -f {} release/ \;
-          ls -la release
-
-      - name: Normalize updater manifests
+      - name: Download updater manifests
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.preflight.outputs.tag }}
+          CHANNEL: ${{ needs.preflight.outputs.channel }}
+        run: |
+          set -euo pipefail
+          rm -rf release-manifests
+          mkdir -p release-manifests
+
+          args=(
+            release download "$TAG"
+            --dir release-manifests
+            --clobber
+            --pattern "latest-mac*.yml"
+          )
+          if [[ "$CHANNEL" == "nightly" ]]; then
+            args+=(--pattern "nightly-mac*.yml")
+          fi
+
+          gh "${args[@]}"
+          ls -la release-manifests
+
+      - name: Merge macOS updater manifests
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.preflight.outputs.tag }}
           CHANNEL: ${{ needs.preflight.outputs.channel }}
         run: |
           set -euo pipefail
 
-          if [[ "$CHANNEL" == "nightly" ]]; then
-            if [[ -f release/nightly.yml && ! -f release/latest.yml ]]; then
-              cp release/nightly.yml release/latest.yml
-            fi
-            if [[ -f release/nightly-mac.yml && ! -f release/latest-mac.yml ]]; then
-              cp release/nightly-mac.yml release/latest-mac.yml
-            fi
-            if [[ -f release/nightly-mac-x64.yml && ! -f release/latest-mac-x64.yml ]]; then
-              cp release/nightly-mac-x64.yml release/latest-mac-x64.yml
-            fi
-          fi
-
           merge_mac_manifest() {
             local primary="$1"
             local secondary="$2"
+            local primary_path="release-manifests/$primary"
+            local secondary_path="release-manifests/$secondary"
 
-            if [[ -f "release/$primary" && -f "release/$secondary" ]]; then
+            if [[ -f "$primary_path" && -f "$secondary_path" ]]; then
               bun scripts/merge-update-manifests.ts \
                 --platform mac \
-                "release/$primary" \
-                "release/$secondary" \
-                "release/$primary"
-              rm -f "release/$secondary"
-            elif [[ ! -f "release/$primary" && -f "release/$secondary" ]]; then
-              mv "release/$secondary" "release/$primary"
+                "$primary_path" \
+                "$secondary_path" \
+                "$primary_path"
+              gh release upload "$TAG" "$primary_path" --clobber
+              gh release delete-asset "$TAG" "$secondary" --yes
+            elif [[ -f "$primary_path" ]]; then
+              gh release upload "$TAG" "$primary_path" --clobber
+            elif [[ -f "$secondary_path" ]]; then
+              mv "$secondary_path" "$primary_path"
+              gh release upload "$TAG" "$primary_path" --clobber
+              gh release delete-asset "$TAG" "$secondary" --yes
+            else
+              echo "Missing macOS updater manifest pair: $primary / $secondary" >&2
+              exit 1
             fi
           }
 
@@ -441,31 +547,51 @@ jobs:
             merge_mac_manifest "nightly-mac.yml" "nightly-mac-x64.yml"
           fi
 
-          rm -f release/builder-debug*.yml
-          ls -la release
+      - name: Publish draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.preflight.outputs.tag }}
+          IS_PRERELEASE: ${{ needs.preflight.outputs.is_prerelease }}
+        run: |
+          set -euo pipefail
 
-      - name: Generate release notes
-        run: >
-          bun scripts/generate-release-notes.ts
-          --channel "${{ needs.preflight.outputs.channel }}"
-          --current-tag "${{ needs.preflight.outputs.tag }}"
-          --current-ref "${{ needs.preflight.outputs.ref }}"
-          --repository "${{ github.repository }}"
-          --output release-notes.md
+          args=(release edit "$TAG" --draft=false)
+          if [[ "$IS_PRERELEASE" == "true" ]]; then
+            args+=(--prerelease)
+          else
+            args+=(--latest)
+          fi
 
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.preflight.outputs.tag }}
-          target_commitish: ${{ needs.preflight.outputs.ref }}
-          name: ${{ needs.preflight.outputs.name }}
-          body_path: release-notes.md
-          prerelease: ${{ needs.preflight.outputs.is_prerelease }}
-          make_latest: ${{ needs.preflight.outputs.make_latest }}
-          files: |
-            release/*.exe
-            release/*.blockmap
-            release/*.dmg
-            release/*.zip
-            release/*.yml
-          fail_on_unmatched_files: true
+          gh "${args[@]}"
+
+  cleanup_failed_release:
+    name: Cleanup failed draft release
+    needs:
+      - preflight
+      - prepare_release
+      - windows
+      - macos
+      - publish
+    if: ${{ always() && needs.prepare_release.result == 'success' && (needs.windows.result != 'success' || needs.macos.result != 'success' || needs.publish.result != 'success') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Delete failed draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.preflight.outputs.tag }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          is_draft="$(gh release view "$TAG" --json isDraft -q .isDraft 2>/dev/null || echo false)"
+          if [[ "$is_draft" != "true" ]]; then
+            echo "Release $TAG is not a draft; leaving it in place."
+            exit 0
+          fi
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            gh release delete "$TAG" --yes --cleanup-tag
+          else
+            gh release delete "$TAG" --yes
+          fi

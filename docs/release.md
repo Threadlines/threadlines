@@ -74,6 +74,10 @@ It runs:
 - macOS updater manifest merging
 - GitHub Release publishing
 
+The platform jobs upload installers directly to a draft GitHub Release with the
+GitHub CLI. Large release binaries are not passed through GitHub Actions
+artifacts, so they do not consume Actions artifact retention/storage quota.
+
 To publish by tag:
 
 ```powershell
