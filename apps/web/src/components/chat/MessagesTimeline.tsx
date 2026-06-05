@@ -1956,21 +1956,7 @@ function resolveWorkEntryTurnDiffSummary(
   if (workEntry.turnId) {
     return turnDiffSummaryByTurnId.get(workEntry.turnId) ?? null;
   }
-  const changedFiles = workEntry.changedFiles ?? [];
-  const matchingSummaries: TurnDiffSummary[] = [];
-  for (const turnSummary of turnDiffSummaryByTurnId.values()) {
-    if (
-      turnSummary.files.some((diffFile) =>
-        changedFiles.some((changedFile) => diffPathsMatch(changedFile, diffFile.path)),
-      )
-    ) {
-      matchingSummaries.push(turnSummary);
-      if (matchingSummaries.length > 1) {
-        return null;
-      }
-    }
-  }
-  return matchingSummaries[0] ?? null;
+  return null;
 }
 
 function workEntryRawCommand(

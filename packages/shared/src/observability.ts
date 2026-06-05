@@ -87,9 +87,12 @@ export interface TraceSink {
   close: () => Effect.Effect<void>;
 }
 
+export type TraceRecordFilter = (record: TraceRecord) => boolean;
+
 export interface LocalFileTracerOptions extends TraceSinkOptions {
   readonly delegate?: Tracer.Tracer;
   readonly sink?: TraceSink;
+  readonly shouldRecord?: TraceRecordFilter;
 }
 
 type OtlpSpan = OtlpTracer.ScopeSpan["spans"][number];
@@ -301,14 +304,17 @@ class LocalFileSpan implements Tracer.Span {
   events: Array<[name: string, startTime: bigint, attributes: Record<string, unknown>]>;
   private readonly delegate: Tracer.Span;
   private readonly push: (record: EffectTraceRecord) => void;
+  private readonly shouldRecord: TraceRecordFilter;
 
   constructor(
     options: Parameters<Tracer.Tracer["span"]>[0],
     delegate: Tracer.Span,
     push: (record: EffectTraceRecord) => void,
+    shouldRecord: TraceRecordFilter,
   ) {
     this.delegate = delegate;
     this.push = push;
+    this.shouldRecord = shouldRecord;
     this.name = delegate.name;
     this.spanId = delegate.spanId;
     this.traceId = delegate.traceId;
@@ -335,7 +341,10 @@ class LocalFileSpan implements Tracer.Span {
     this.delegate.end(endTime, exit);
 
     if (this.sampled) {
-      this.push(spanToTraceRecord(this));
+      const record = spanToTraceRecord(this);
+      if (this.shouldRecord(record)) {
+        this.push(record);
+      }
     }
   }
 
@@ -376,7 +385,12 @@ export const makeLocalFileTracer = Effect.fn("makeLocalFileTracer")(function* (
 
   return Tracer.make({
     span(spanOptions) {
-      return new LocalFileSpan(spanOptions, delegate.span(spanOptions), sink.push);
+      return new LocalFileSpan(
+        spanOptions,
+        delegate.span(spanOptions),
+        sink.push,
+        options.shouldRecord ?? (() => true),
+      );
     },
     ...(delegate.context ? { context: delegate.context } : {}),
   });

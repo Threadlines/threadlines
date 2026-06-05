@@ -302,6 +302,17 @@ export const ServerTraceDiagnosticsSpanOccurrence = Schema.Struct({
 });
 export type ServerTraceDiagnosticsSpanOccurrence = typeof ServerTraceDiagnosticsSpanOccurrence.Type;
 
+export const ServerTraceDiagnosticsTraceSummary = Schema.Struct({
+  traceId: TrimmedNonEmptyString,
+  spanCount: NonNegativeInt,
+  slowSpanCount: NonNegativeInt,
+  totalDurationMs: Schema.Number,
+  maxDurationMs: Schema.Number,
+  startedAt: Schema.DateTimeUtc,
+  endedAt: Schema.DateTimeUtc,
+});
+export type ServerTraceDiagnosticsTraceSummary = typeof ServerTraceDiagnosticsTraceSummary.Type;
+
 export const ServerTraceDiagnosticsLogEvent = Schema.Struct({
   spanName: TrimmedNonEmptyString,
   level: TrimmedNonEmptyString,
@@ -327,6 +338,8 @@ export const ServerTraceDiagnosticsResult = Schema.Struct({
   logLevelCounts: Schema.Record(TrimmedNonEmptyString, NonNegativeInt),
   topSpansByCount: Schema.Array(ServerTraceDiagnosticsSpanSummary),
   slowestSpans: Schema.Array(ServerTraceDiagnosticsSpanOccurrence),
+  slowSpansByName: Schema.optionalKey(Schema.Array(ServerTraceDiagnosticsSpanSummary)),
+  slowTraces: Schema.optionalKey(Schema.Array(ServerTraceDiagnosticsTraceSummary)),
   subscriptionSpanCount: Schema.optionalKey(NonNegativeInt),
   topSubscriptionSpansByCount: Schema.optionalKey(Schema.Array(ServerTraceDiagnosticsSpanSummary)),
   longestSubscriptionSpans: Schema.optionalKey(Schema.Array(ServerTraceDiagnosticsSpanOccurrence)),

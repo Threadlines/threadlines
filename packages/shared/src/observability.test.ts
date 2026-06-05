@@ -149,6 +149,42 @@ describe("observability", () => {
       ),
     );
 
+    it.effect("applies local tracer record filters after a span ends", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-local-tracer-" });
+          const tracePath = path.join(tempDir, "shared.trace.ndjson");
+
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const tracer = yield* makeLocalFileTracer({
+                filePath: tracePath,
+                maxBytes: 1024,
+                maxFiles: 2,
+                batchWindowMs: 10_000,
+                shouldRecord: (record) => record.name !== "filtered-span",
+              });
+              const layer = Layer.mergeAll(
+                Layer.succeed(Tracer.Tracer, tracer),
+                Layer.succeed(References.MinimumLogLevel, "Info"),
+              );
+
+              yield* Effect.void.pipe(Effect.withSpan("kept-span"), Effect.provide(layer));
+              yield* Effect.void.pipe(Effect.withSpan("filtered-span"), Effect.provide(layer));
+            }),
+          );
+
+          const records = yield* readTraceRecords(tracePath);
+          assert.deepStrictEqual(
+            records.map((record) => record.name),
+            ["kept-span"],
+          );
+        }),
+      ),
+    );
+
     it.effect("rotates the trace file when the configured max size is exceeded", () =>
       Effect.scoped(
         Effect.gen(function* () {

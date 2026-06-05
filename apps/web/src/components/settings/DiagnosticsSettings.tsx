@@ -934,6 +934,8 @@ export function DiagnosticsSettingsPanel() {
   const isInitialLoading = isPending && data === null;
   const subscriptionSpanCount = data?.subscriptionSpanCount ?? 0;
   const longestSubscriptionSpans = data?.longestSubscriptionSpans ?? [];
+  const slowSpansByName = data?.slowSpansByName ?? [];
+  const slowTraces = data?.slowTraces ?? [];
   const isProcessInitialLoading = isProcessPending && processData === null;
   const signalProcess = useCallback(
     (pid: number, signal: ServerProcessSignal) => {
@@ -1166,7 +1168,7 @@ export function DiagnosticsSettingsPanel() {
             tone={data && data.slowSpanCount > 0 ? "warning" : "default"}
           />
           <StatBlock
-            label="Subscriptions"
+            label="Ended Subs"
             value={data ? formatCount(subscriptionSpanCount) : "..."}
             tooltip="Long-lived streaming or subscription spans. These are lifetimes, not request latency."
           />
@@ -1262,6 +1264,80 @@ export function DiagnosticsSettingsPanel() {
         ) : (
           <EmptyRows
             label={isInitialLoading ? "Loading failure groups..." : "No repeated failures found."}
+          />
+        )}
+      </SettingsSection>
+
+      <SettingsSection title="Slow Span Groups">
+        {data && slowSpansByName.length > 0 ? (
+          <DiagnosticsTable
+            headers={["Span", "Category", "Count", "Average", "Max", "Total"]}
+            minTableWidth="min-w-[920px]"
+            columnWidths={["w-[42%]", "w-[13%]", "w-[11%]", "w-[11%]", "w-[11%]", "w-[12%]"]}
+          >
+            {slowSpansByName.map((span) => (
+              <tr key={span.name}>
+                <td className="min-w-0 px-4 py-3 align-top text-xs first:sm:pl-5">
+                  <TraceSpanNameCell name={span.name} showCategory={false} />
+                </td>
+                <td className="whitespace-nowrap px-4 py-3 align-top">
+                  <TraceSpanCategoryBadge name={span.name} />
+                </td>
+                <td className="whitespace-nowrap px-4 py-3 align-top font-mono tabular-nums">
+                  {formatCount(span.count)}
+                </td>
+                <td className="whitespace-nowrap px-4 py-3 align-top font-mono tabular-nums">
+                  {formatDuration(span.averageDurationMs)}
+                </td>
+                <td className="whitespace-nowrap px-4 py-3 align-top font-mono tabular-nums">
+                  {formatDuration(span.maxDurationMs)}
+                </td>
+                <td className="whitespace-nowrap px-4 py-3 align-top font-mono tabular-nums last:sm:pr-5">
+                  {formatDuration(span.totalDurationMs)}
+                </td>
+              </tr>
+            ))}
+          </DiagnosticsTable>
+        ) : (
+          <EmptyRows
+            label={isInitialLoading ? "Loading slow span groups..." : "No slow span groups found."}
+          />
+        )}
+      </SettingsSection>
+
+      <SettingsSection title="Slow Traces">
+        {data && slowTraces.length > 0 ? (
+          <DiagnosticsTable
+            headers={["Trace", "Slow Spans", "Spans", "Total", "Max", "Last Seen"]}
+            minTableWidth="min-w-[940px]"
+            columnWidths={["w-[33%]", "w-[13%]", "w-[11%]", "w-[14%]", "w-[13%]", "w-[16%]"]}
+          >
+            {slowTraces.map((trace) => (
+              <tr key={trace.traceId}>
+                <td className="min-w-0 whitespace-nowrap px-4 py-3 align-top text-muted-foreground first:sm:pl-5">
+                  <TraceIdCell traceId={trace.traceId} />
+                </td>
+                <td className="whitespace-nowrap px-4 py-3 align-top font-mono tabular-nums">
+                  {formatCount(trace.slowSpanCount)}
+                </td>
+                <td className="whitespace-nowrap px-4 py-3 align-top font-mono tabular-nums">
+                  {formatCount(trace.spanCount)}
+                </td>
+                <td className="whitespace-nowrap px-4 py-3 align-top font-mono tabular-nums">
+                  {formatDuration(trace.totalDurationMs)}
+                </td>
+                <td className="whitespace-nowrap px-4 py-3 align-top font-mono tabular-nums">
+                  {formatDuration(trace.maxDurationMs)}
+                </td>
+                <td className="whitespace-nowrap px-4 py-3 align-top font-mono tabular-nums text-muted-foreground last:sm:pr-5">
+                  {formatRelativeNoWrap(trace.endedAt)}
+                </td>
+              </tr>
+            ))}
+          </DiagnosticsTable>
+        ) : (
+          <EmptyRows
+            label={isInitialLoading ? "Loading slow traces..." : "No slow traces found."}
           />
         )}
       </SettingsSection>

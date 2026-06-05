@@ -9,7 +9,13 @@ import * as Schema from "effect/Schema";
 import { createModelSelection } from "@t3tools/shared/model";
 import { expect } from "vitest";
 
-import { CodexSettings, ProviderInstanceId, TextGenerationError } from "@t3tools/contracts";
+import {
+  CodexSettings,
+  DEFAULT_GIT_TEXT_GENERATION_MODEL,
+  DEFAULT_MODEL,
+  ProviderInstanceId,
+  TextGenerationError,
+} from "@t3tools/contracts";
 
 import { ServerConfig } from "../config.ts";
 import { type TextGenerationShape } from "./TextGeneration.ts";
@@ -18,7 +24,7 @@ const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
 const DEFAULT_TEST_MODEL_SELECTION = createModelSelection(
   ProviderInstanceId.make("codex"),
-  "gpt-5.4-mini",
+  DEFAULT_GIT_TEXT_GENERATION_MODEL,
 );
 
 const CodexTextGenerationTestLayer = ServerConfig.layerTest(process.cwd(), {
@@ -39,6 +45,10 @@ function makeFakeCodexBinary(
     requireFastServiceTier?: boolean;
     requireReasoningEffort?: string;
     forbidReasoningEffort?: boolean;
+    requireModel?: string;
+    failForModel?: string;
+    failForModelStderr?: string;
+    failForModelExitCode?: number;
     stdinMustContain?: string;
     stdinMustNotContain?: string;
   },
@@ -72,6 +82,10 @@ function makeFakeCodexBinary(
             requireFastServiceTier: input.requireFastServiceTier === true,
             requireReasoningEffort: input.requireReasoningEffort ?? null,
             forbidReasoningEffort: input.forbidReasoningEffort === true,
+            requireModel: input.requireModel ?? null,
+            failForModel: input.failForModel ?? null,
+            failForModelStderr: input.failForModelStderr ?? "",
+            failForModelExitCode: input.failForModelExitCode ?? 1,
             stdinMustContain: input.stdinMustContain ?? null,
             stdinMustNotContain: input.stdinMustNotContain ?? null,
           })};`,
@@ -80,8 +94,14 @@ function makeFakeCodexBinary(
           "let seenImage = false;",
           "let seenFastServiceTier = false;",
           'let seenReasoningEffort = "";',
+          'let seenModel = "";',
           "for (let index = 0; index < argv.length; index += 1) {",
           "  const arg = argv[index];",
+          '  if (arg === "--model") {',
+          "    index += 1;",
+          "    seenModel = argv[index] || '';",
+          "    continue;",
+          "  }",
           '  if (arg === "--image") {',
           "    index += 1;",
           "    if (index < argv.length && argv[index]) {",
@@ -111,6 +131,14 @@ function makeFakeCodexBinary(
           "  }",
           "}",
           'const stdinContent = fs.readFileSync(0, "utf8");',
+          "if (fake.failForModel && seenModel === fake.failForModel) {",
+          "  process.stderr.write(fake.failForModelStderr);",
+          "  process.exit(fake.failForModelExitCode);",
+          "}",
+          "if (fake.requireModel && seenModel !== fake.requireModel) {",
+          "  process.stderr.write(`unexpected model: ${seenModel}\\n`);",
+          "  process.exit(8);",
+          "}",
           ...(input.requireImage === true
             ? [
                 "if (!seenImage) {",
@@ -192,7 +220,14 @@ function makeFakeCodexBinary(
         'seen_image="0"',
         'seen_fast_service_tier="0"',
         'seen_reasoning_effort=""',
+        'seen_model=""',
         "while [ $# -gt 0 ]; do",
+        '  if [ "$1" = "--model" ]; then',
+        "    shift",
+        '    seen_model="$1"',
+        "    shift",
+        "    continue",
+        "  fi",
         '  if [ "$1" = "--image" ]; then',
         "    shift",
         '    if [ -n "$1" ]; then',
@@ -223,6 +258,25 @@ function makeFakeCodexBinary(
         "  shift",
         "done",
         'stdin_content="$(cat)"',
+        ...(input.failForModel !== undefined
+          ? [
+              // @effect-diagnostics-next-line preferSchemaOverJson:off
+              `if [ "$seen_model" = ${JSON.stringify(input.failForModel)} ]; then`,
+              // @effect-diagnostics-next-line preferSchemaOverJson:off
+              `  printf "%s" ${JSON.stringify(input.failForModelStderr ?? "")} >&2`,
+              `  exit ${input.failForModelExitCode ?? 1}`,
+              "fi",
+            ]
+          : []),
+        ...(input.requireModel !== undefined
+          ? [
+              // @effect-diagnostics-next-line preferSchemaOverJson:off
+              `if [ "$seen_model" != ${JSON.stringify(input.requireModel)} ]; then`,
+              '  printf "%s\\n" "unexpected model: $seen_model" >&2',
+              `  exit 8`,
+              "fi",
+            ]
+          : []),
         ...(input.requireImage
           ? [
               'if [ "$seen_image" != "1" ]; then',
@@ -302,6 +356,10 @@ function withFakeCodexEnv<A, E, R>(
     requireFastServiceTier?: boolean;
     requireReasoningEffort?: string;
     forbidReasoningEffort?: boolean;
+    requireModel?: string;
+    failForModel?: string;
+    failForModelStderr?: string;
+    failForModelExitCode?: number;
     stdinMustContain?: string;
     stdinMustNotContain?: string;
   },
@@ -389,6 +447,32 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
           stagedSummary: "M README.md",
           stagedPatch: "diff --git a/README.md b/README.md",
           modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+        }),
+    ),
+  );
+
+  it.effect("retries default mini capacity failures with the standard Codex model", () =>
+    withFakeCodexEnv(
+      {
+        output: JSON.stringify({
+          subject: "Add reliable text generation fallback",
+          body: "",
+        }),
+        failForModel: DEFAULT_GIT_TEXT_GENERATION_MODEL,
+        failForModelStderr: "ERROR: Selected model is at capacity. Please try a different model.",
+        requireModel: DEFAULT_MODEL,
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const generated = yield* textGeneration.generateCommitMessage({
+            cwd: process.cwd(),
+            branch: "feature/codex-fallback",
+            stagedSummary: "M README.md",
+            stagedPatch: "diff --git a/README.md b/README.md",
+            modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+          });
+
+          expect(generated.subject).toBe("Add reliable text generation fallback");
         }),
     ),
   );

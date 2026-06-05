@@ -6,6 +6,7 @@ import type {
   ServerTraceDiagnosticsResult,
   ServerTraceDiagnosticsSpanOccurrence,
   ServerTraceDiagnosticsSpanSummary,
+  ServerTraceDiagnosticsTraceSummary,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -194,6 +195,8 @@ function makeEmptyDiagnostics(input: {
     logLevelCounts: {},
     topSpansByCount: [],
     slowestSpans: [],
+    slowSpansByName: [],
+    slowTraces: [],
     subscriptionSpanCount: 0,
     topSubscriptionSpansByCount: [],
     longestSubscriptionSpans: [],
@@ -308,6 +311,21 @@ export function aggregateTraceDiagnostics(
     string,
     { count: number; failureCount: number; totalDurationMs: number; maxDurationMs: number }
   >();
+  const slowSpansByName = new Map<
+    string,
+    { count: number; failureCount: number; totalDurationMs: number; maxDurationMs: number }
+  >();
+  const tracesById = new Map<
+    string,
+    {
+      spanCount: number;
+      slowSpanCount: number;
+      totalDurationMs: number;
+      maxDurationMs: number;
+      startedAt: DateTime.Utc;
+      endedAt: DateTime.Utc;
+    }
+  >();
   const failuresByKey = new Map<string, ServerTraceDiagnosticsFailureSummary>();
   const latestFailures: ServerTraceDiagnosticsRecentFailure[] = [];
   const slowestSpans: ServerTraceDiagnosticsSpanOccurrence[] = [];
@@ -377,12 +395,45 @@ export function aggregateTraceDiagnostics(
       if (isFailure) spanSummary.failureCount += 1;
       spanSummaryMap.set(name, spanSummary);
 
+      const traceStartedAt = startedAt ?? endedAt;
+      const traceSummary = tracesById.get(traceId) ?? {
+        spanCount: 0,
+        slowSpanCount: 0,
+        totalDurationMs: 0,
+        maxDurationMs: 0,
+        startedAt: traceStartedAt,
+        endedAt,
+      };
+      traceSummary.spanCount += 1;
+      traceSummary.totalDurationMs += durationMs;
+      traceSummary.maxDurationMs = Math.max(traceSummary.maxDurationMs, durationMs);
+      traceSummary.startedAt = DateTime.isLessThan(traceStartedAt, traceSummary.startedAt)
+        ? traceStartedAt
+        : traceSummary.startedAt;
+      traceSummary.endedAt = DateTime.isGreaterThan(endedAt, traceSummary.endedAt)
+        ? endedAt
+        : traceSummary.endedAt;
+      tracesById.set(traceId, traceSummary);
+
       const spanItem = { name, durationMs, endedAt, traceId, spanId };
+      const slowOperationSpan = !subscriptionSpan && durationMs >= slowSpanThresholdMs;
       if (subscriptionSpan) {
         subscriptionSpanCount += 1;
         insertBoundedSlowestSpan(longestSubscriptionSpans, spanItem);
-      } else if (durationMs >= slowSpanThresholdMs) {
+      } else if (slowOperationSpan) {
         slowSpanCount += 1;
+        traceSummary.slowSpanCount += 1;
+        const slowSpanSummary = slowSpansByName.get(name) ?? {
+          count: 0,
+          failureCount: 0,
+          totalDurationMs: 0,
+          maxDurationMs: 0,
+        };
+        slowSpanSummary.count += 1;
+        slowSpanSummary.totalDurationMs += durationMs;
+        slowSpanSummary.maxDurationMs = Math.max(slowSpanSummary.maxDurationMs, durationMs);
+        if (isFailure) slowSpanSummary.failureCount += 1;
+        slowSpansByName.set(name, slowSpanSummary);
       }
       if (!subscriptionSpan) {
         insertBoundedSlowestSpan(slowestSpans, spanItem);
@@ -438,7 +489,31 @@ export function aggregateTraceDiagnostics(
     }
   }
 
-  const topSpansByCount: ServerTraceDiagnosticsSpanSummary[] = [...spansByName.entries()]
+  const toSpanSummaries = (
+    entries: ReadonlyArray<
+      readonly [
+        string,
+        { count: number; failureCount: number; totalDurationMs: number; maxDurationMs: number },
+      ]
+    >,
+  ): ServerTraceDiagnosticsSpanSummary[] =>
+    entries
+      .map(([name, span]) => ({
+        name,
+        count: span.count,
+        failureCount: span.failureCount,
+        totalDurationMs: span.totalDurationMs,
+        averageDurationMs: span.count > 0 ? span.totalDurationMs / span.count : 0,
+        maxDurationMs: span.maxDurationMs,
+      }))
+      .toSorted(
+        (left, right) => right.count - left.count || right.maxDurationMs - left.maxDurationMs,
+      )
+      .slice(0, TOP_LIMIT);
+
+  const topSpansByCount = toSpanSummaries([...spansByName.entries()]);
+  const topSubscriptionSpansByCount = toSpanSummaries([...subscriptionSpansByName.entries()]);
+  const slowSpanGroupsByName = [...slowSpansByName.entries()]
     .map(([name, span]) => ({
       name,
       count: span.count,
@@ -447,20 +522,30 @@ export function aggregateTraceDiagnostics(
       averageDurationMs: span.count > 0 ? span.totalDurationMs / span.count : 0,
       maxDurationMs: span.maxDurationMs,
     }))
-    .toSorted((left, right) => right.count - left.count || right.maxDurationMs - left.maxDurationMs)
+    .toSorted(
+      (left, right) =>
+        right.count - left.count ||
+        right.totalDurationMs - left.totalDurationMs ||
+        right.maxDurationMs - left.maxDurationMs,
+    )
     .slice(0, TOP_LIMIT);
-  const topSubscriptionSpansByCount: ServerTraceDiagnosticsSpanSummary[] = [
-    ...subscriptionSpansByName.entries(),
-  ]
-    .map(([name, span]) => ({
-      name,
-      count: span.count,
-      failureCount: span.failureCount,
-      totalDurationMs: span.totalDurationMs,
-      averageDurationMs: span.count > 0 ? span.totalDurationMs / span.count : 0,
-      maxDurationMs: span.maxDurationMs,
+  const slowTraces: ServerTraceDiagnosticsTraceSummary[] = [...tracesById.entries()]
+    .filter(([, trace]) => trace.slowSpanCount > 0)
+    .map(([traceId, trace]) => ({
+      traceId,
+      spanCount: trace.spanCount,
+      slowSpanCount: trace.slowSpanCount,
+      totalDurationMs: trace.totalDurationMs,
+      maxDurationMs: trace.maxDurationMs,
+      startedAt: trace.startedAt,
+      endedAt: trace.endedAt,
     }))
-    .toSorted((left, right) => right.count - left.count || right.maxDurationMs - left.maxDurationMs)
+    .toSorted(
+      (left, right) =>
+        right.slowSpanCount - left.slowSpanCount ||
+        right.totalDurationMs - left.totalDurationMs ||
+        right.maxDurationMs - left.maxDurationMs,
+    )
     .slice(0, TOP_LIMIT);
 
   return {
@@ -478,6 +563,8 @@ export function aggregateTraceDiagnostics(
     logLevelCounts,
     topSpansByCount,
     slowestSpans,
+    slowSpansByName: slowSpanGroupsByName,
+    slowTraces,
     subscriptionSpanCount,
     topSubscriptionSpansByCount,
     longestSubscriptionSpans,

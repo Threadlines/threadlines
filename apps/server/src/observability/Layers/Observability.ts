@@ -1,4 +1,8 @@
-import { makeLocalFileTracer, makeTraceSink } from "@t3tools/shared/observability";
+import {
+  makeLocalFileTracer,
+  makeTraceSink,
+  type TraceRecord,
+} from "@t3tools/shared/observability";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as References from "effect/References";
@@ -10,6 +14,75 @@ import { ServerLoggerLive } from "../../serverLogger.ts";
 import { BrowserTraceCollector } from "../Services/BrowserTraceCollector.ts";
 
 const otlpSerializationLayer = OtlpSerialization.layerJson;
+const SLOW_TRACE_RECORD_THRESHOLD_MS = 1_000;
+const SQL_TRACE_SAMPLE_MODULO = 100;
+const PROJECTION_TRACE_SAMPLE_MODULO = 20;
+
+const sampledSqlSpanNames = new Set(["sql.execute", "sql.transaction"]);
+const sampledProjectionSpanNames = new Set([
+  "applyPendingApprovalsProjection",
+  "applyProjectsProjection",
+  "applyThreadActivitiesProjection",
+  "applyThreadMessagesProjection",
+  "applyThreadProposedPlansProjection",
+  "applyThreadSessionsProjection",
+  "applyThreadTurnsProjection",
+  "applyThreadsProjection",
+  "decideOrchestrationCommand",
+  "processEvent",
+  "refreshThreadShellSummary",
+  "resolveThreadShell",
+  "runProjectorForEvent",
+]);
+
+function traceSampleHash(input: string): number {
+  let hash = 2_166_136_261;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return hash >>> 0;
+}
+
+function shouldKeepSampledTraceRecord(record: TraceRecord, modulo: number): boolean {
+  return traceSampleHash(`${record.traceId}:${record.spanId}:${record.name}`) % modulo === 0;
+}
+
+function hasWarningOrErrorEvent(record: TraceRecord): boolean {
+  return record.events.some((event) => {
+    const level = event.attributes["effect.logLevel"];
+    if (typeof level !== "string") {
+      return false;
+    }
+    const normalized = level.toLowerCase();
+    return (
+      normalized === "warning" ||
+      normalized === "warn" ||
+      normalized === "error" ||
+      normalized === "fatal"
+    );
+  });
+}
+
+export function shouldRecordServerLocalTrace(record: TraceRecord): boolean {
+  if (record.durationMs >= SLOW_TRACE_RECORD_THRESHOLD_MS || hasWarningOrErrorEvent(record)) {
+    return true;
+  }
+
+  if (record.type === "effect-span" && record.exit._tag !== "Success") {
+    return true;
+  }
+
+  if (sampledSqlSpanNames.has(record.name)) {
+    return shouldKeepSampledTraceRecord(record, SQL_TRACE_SAMPLE_MODULO);
+  }
+
+  if (sampledProjectionSpanNames.has(record.name)) {
+    return shouldKeepSampledTraceRecord(record, PROJECTION_TRACE_SAMPLE_MODULO);
+  }
+
+  return true;
+}
 
 export const ObservabilityLive = Layer.unwrap(
   Effect.gen(function* () {
@@ -49,6 +122,7 @@ export const ObservabilityLive = Layer.unwrap(
           maxFiles: config.traceMaxFiles,
           batchWindowMs: config.traceBatchWindowMs,
           sink,
+          shouldRecord: shouldRecordServerLocalTrace,
           ...(delegate ? { delegate } : {}),
         });
 

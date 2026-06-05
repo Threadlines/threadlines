@@ -60,6 +60,10 @@ function sameId(left: string | null | undefined, right: string | null | undefine
   return left === right;
 }
 
+function normalizeWorkspacePath(value: string): string {
+  return value.replaceAll("\\", "/").replace(/\/+$/u, "").toLowerCase();
+}
+
 function checkpointStatusFromRuntime(status: string | undefined): "ready" | "missing" | "error" {
   switch (status) {
     case "failed":
@@ -184,6 +188,25 @@ const make = Effect.gen(function* () {
       : Option.none();
   });
 
+  const hasConcurrentSessionInWorkspace = Effect.fn("hasConcurrentSessionInWorkspace")(
+    function* (input: {
+      readonly threadId: ThreadId;
+      readonly cwd: string;
+    }): Effect.fn.Return<boolean> {
+      const sessions = yield* providerService.listSessions();
+      const targetCwd = normalizeWorkspacePath(input.cwd);
+      return sessions.some((session) => {
+        if (sameId(session.threadId, input.threadId) || !session.cwd) {
+          return false;
+        }
+        if (session.status !== "running" && !session.activeTurnId) {
+          return false;
+        }
+        return normalizeWorkspacePath(session.cwd) === targetCwd;
+      });
+    },
+  );
+
   const resolveThreadDetail = Effect.fn("resolveThreadDetail")(function* (threadId: ThreadId) {
     return yield* projectionSnapshotQuery
       .getThreadDetailById(threadId)
@@ -254,6 +277,7 @@ const make = Effect.gen(function* () {
     readonly turnCount: number;
     readonly status: "ready" | "missing" | "error";
     readonly assistantMessageId: MessageId | undefined;
+    readonly providerSummaryFiles: ReadonlyArray<OrchestrationCheckpointFile> | undefined;
     readonly createdAt: string;
   }) {
     const fromTurnCount = Math.max(0, input.turnCount - 1);
@@ -299,40 +323,54 @@ const make = Effect.gen(function* () {
       : preTurnCheckpointExists
         ? preTurnCheckpointRef
         : fromCheckpointRef;
-    const files = yield* checkpointStore
-      .diffCheckpoints({
-        cwd: input.cwd,
-        fromCheckpointRef: summaryFromCheckpointRef,
-        toCheckpointRef: targetCheckpointRef,
-        fallbackFromToHead: false,
-        ignoreWhitespace: false,
-      })
-      .pipe(
-        Effect.map((diff) =>
-          parseTurnDiffFilesFromUnifiedDiff(diff).map((file) => ({
-            path: file.path,
-            kind: "modified" as const,
-            additions: file.additions,
-            deletions: file.deletions,
-          })),
-        ),
-        Effect.tapError((error) =>
-          appendCaptureFailureActivity({
-            threadId: input.threadId,
-            turnId: input.turnId,
-            detail: `Checkpoint captured, but turn diff summary is unavailable: ${error.message}`,
-            createdAt: input.createdAt,
-          }),
-        ),
-        Effect.catch((error) =>
-          Effect.logWarning("failed to derive checkpoint file summary", {
-            threadId: input.threadId,
-            turnId: input.turnId,
-            turnCount: input.turnCount,
-            detail: error.message,
-          }).pipe(Effect.as([])),
-        ),
-      );
+    const hasConcurrentSession = yield* hasConcurrentSessionInWorkspace({
+      threadId: input.threadId,
+      cwd: input.cwd,
+    });
+    const files =
+      hasConcurrentSession && input.providerSummaryFiles !== undefined
+        ? input.providerSummaryFiles.map((file) => ({ ...file }))
+        : hasConcurrentSession
+          ? yield* Effect.logWarning("skipping shared-checkout checkpoint file summary", {
+              threadId: input.threadId,
+              turnId: input.turnId,
+              turnCount: input.turnCount,
+              cwd: input.cwd,
+            }).pipe(Effect.as([]))
+          : yield* checkpointStore
+              .diffCheckpoints({
+                cwd: input.cwd,
+                fromCheckpointRef: summaryFromCheckpointRef,
+                toCheckpointRef: targetCheckpointRef,
+                fallbackFromToHead: false,
+                ignoreWhitespace: false,
+              })
+              .pipe(
+                Effect.map((diff) =>
+                  parseTurnDiffFilesFromUnifiedDiff(diff).map((file) => ({
+                    path: file.path,
+                    kind: "modified" as const,
+                    additions: file.additions,
+                    deletions: file.deletions,
+                  })),
+                ),
+                Effect.tapError((error) =>
+                  appendCaptureFailureActivity({
+                    threadId: input.threadId,
+                    turnId: input.turnId,
+                    detail: `Checkpoint captured, but turn diff summary is unavailable: ${error.message}`,
+                    createdAt: input.createdAt,
+                  }),
+                ),
+                Effect.catch((error) =>
+                  Effect.logWarning("failed to derive checkpoint file summary", {
+                    threadId: input.threadId,
+                    turnId: input.turnId,
+                    turnCount: input.turnCount,
+                    detail: error.message,
+                  }).pipe(Effect.as([])),
+                ),
+              );
 
     const assistantMessageId =
       input.assistantMessageId ??
@@ -440,6 +478,8 @@ const make = Effect.gen(function* () {
       const nextTurnCount = existingCheckpoint
         ? existingCheckpoint.checkpointTurnCount
         : currentTurnCount + 1;
+      const providerSummaryFiles =
+        existingCheckpoint?.status === "missing" ? existingCheckpoint.files : undefined;
 
       yield* captureAndDispatchCheckpoint({
         threadId: thread.id,
@@ -449,6 +489,7 @@ const make = Effect.gen(function* () {
         turnCount: nextTurnCount,
         status: checkpointStatusFromRuntime(event.payload.state),
         assistantMessageId: undefined,
+        providerSummaryFiles,
         createdAt: event.createdAt,
       });
     },
@@ -512,6 +553,7 @@ const make = Effect.gen(function* () {
       turnCount: checkpointTurnCount,
       status: "ready",
       assistantMessageId: event.payload.assistantMessageId ?? undefined,
+      providerSummaryFiles: event.payload.files,
       createdAt: event.payload.completedAt,
     });
   });

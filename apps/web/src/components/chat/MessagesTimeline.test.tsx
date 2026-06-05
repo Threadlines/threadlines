@@ -547,7 +547,7 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("-2");
   });
 
-  it("matches inline diff stats by file path when the work row has no turn id", async () => {
+  it("does not borrow inline diff stats when the work row has no turn id", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const turnId = TurnId.make("turn-1");
     const markup = renderToStaticMarkup(
@@ -592,8 +592,7 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain("Edited session-logic.ts");
-    expect(markup).toContain("+7");
-    expect(markup).toContain("-2");
+    expect(markup).not.toContain("+7 / -2");
   });
 
   it("coalesces duplicate completed file change rows for the same turn and file", async () => {

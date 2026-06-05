@@ -16,6 +16,7 @@ import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   EventId,
   MessageId,
+  type OrchestrationCheckpointFile,
   ProjectId,
   ThreadId,
   TurnId,
@@ -85,6 +86,7 @@ function createProviderServiceHarness(
   hasSession = true,
   sessionCwd = cwd,
   providerName: ProviderSession["provider"] = ProviderDriverKind.make("codex"),
+  extraSessions: ReadonlyArray<ProviderSession> = [],
 ) {
   const now = "2026-01-01T00:00:00.000Z";
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
@@ -94,9 +96,9 @@ function createProviderServiceHarness(
 
   const unsupported = <A>() =>
     Effect.die(new Error("Unsupported provider call in test")) as Effect.Effect<A, never>;
-  const listSessions = () =>
-    hasSession
-      ? Effect.succeed([
+  const listSessions = () => {
+    const primarySession: ReadonlyArray<ProviderSession> = hasSession
+      ? [
           {
             provider: providerName,
             status: "ready",
@@ -106,8 +108,13 @@ function createProviderServiceHarness(
             createdAt: now,
             updatedAt: now,
           },
-        ] satisfies ReadonlyArray<ProviderSession>)
-      : Effect.succeed([] as ReadonlyArray<ProviderSession>);
+        ]
+      : [];
+    return Effect.succeed([
+      ...primarySession,
+      ...extraSessions,
+    ] satisfies ReadonlyArray<ProviderSession>);
+  };
   const service: ProviderServiceShape = {
     startSession: () => unsupported(),
     sendTurn: () => unsupported(),
@@ -150,7 +157,11 @@ async function waitForThread(
     readonly threads: ReadonlyArray<{
       readonly id: ThreadId;
       readonly latestTurn: { readonly turnId: string } | null;
-      readonly checkpoints: ReadonlyArray<{ readonly checkpointTurnCount: number }>;
+      readonly checkpoints: ReadonlyArray<{
+        readonly checkpointTurnCount: number;
+        readonly files?: ReadonlyArray<OrchestrationCheckpointFile>;
+        readonly status?: string;
+      }>;
       readonly activities: ReadonlyArray<{
         readonly kind: string;
         readonly summary?: string | undefined;
@@ -160,7 +171,11 @@ async function waitForThread(
   }>,
   predicate: (thread: {
     latestTurn: { turnId: string } | null;
-    checkpoints: ReadonlyArray<{ checkpointTurnCount: number }>;
+    checkpoints: ReadonlyArray<{
+      checkpointTurnCount: number;
+      files?: ReadonlyArray<OrchestrationCheckpointFile>;
+      status?: string;
+    }>;
     activities: ReadonlyArray<{
       kind: string;
       summary?: string | undefined;
@@ -172,7 +187,11 @@ async function waitForThread(
   const deadline = (await Effect.runPromise(Clock.currentTimeMillis)) + timeoutMs;
   const poll = async (): Promise<{
     latestTurn: { turnId: string } | null;
-    checkpoints: ReadonlyArray<{ checkpointTurnCount: number }>;
+    checkpoints: ReadonlyArray<{
+      checkpointTurnCount: number;
+      files?: ReadonlyArray<OrchestrationCheckpointFile>;
+      status?: string;
+    }>;
     activities: ReadonlyArray<{
       kind: string;
       summary?: string | undefined;
@@ -294,15 +313,36 @@ describe("CheckpointReactor", () => {
     readonly threadWorktreePath?: string | null;
     readonly providerSessionCwd?: string;
     readonly providerName?: ProviderDriverKind;
+    readonly includeConcurrentSession?: boolean;
+    readonly extraProviderSessions?: ReadonlyArray<ProviderSession>;
     readonly gitStatusRefreshCalls?: Array<string>;
   }) {
     const cwd = createGitRepository();
     tempDirs.push(cwd);
+    const now = "2026-01-01T00:00:00.000Z";
+    const extraProviderSessions = [
+      ...(options?.includeConcurrentSession
+        ? [
+            {
+              provider: options?.providerName ?? ProviderDriverKind.make("codex"),
+              status: "running" as const,
+              runtimeMode: "full-access" as const,
+              threadId: ThreadId.make("thread-2"),
+              cwd,
+              activeTurnId: asTurnId("turn-other-active"),
+              createdAt: now,
+              updatedAt: now,
+            },
+          ]
+        : []),
+      ...(options?.extraProviderSessions ?? []),
+    ] satisfies ReadonlyArray<ProviderSession>;
     const provider = createProviderServiceHarness(
       cwd,
       options?.hasSession ?? true,
       options?.providerSessionCwd ?? cwd,
       options?.providerName ?? ProviderDriverKind.make("codex"),
+      extraProviderSessions,
     );
     const orchestrationLayer = OrchestrationEngineLive.pipe(
       Layer.provide(OrchestrationProjectionSnapshotQueryLive),
@@ -367,7 +407,7 @@ describe("CheckpointReactor", () => {
     await Effect.runPromise(reactor.start().pipe(Scope.provide(scope)));
     const drain = () => Effect.runPromise(reactor.drain);
 
-    const createdAt = "2026-01-01T00:00:00.000Z";
+    const createdAt = now;
     await Effect.runPromise(
       engine.dispatch({
         type: "project.create",
@@ -531,6 +571,111 @@ describe("CheckpointReactor", () => {
         "README.md",
       ),
     ).toBe("v2\n");
+  });
+
+  it("skips changed-file summaries from a shared checkout while another session is active", async () => {
+    const harness = await createHarness({
+      seedFilesystemCheckpoints: false,
+      includeConcurrentSession: true,
+    });
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const turnId = asTurnId("turn-shared-checkout");
+
+    harness.provider.emit({
+      type: "turn.started",
+      eventId: EventId.make("evt-turn-started-shared-checkout"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId,
+      turnId,
+    });
+    await waitForGitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 0));
+
+    fs.writeFileSync(path.join(harness.cwd, "README.md"), "changed by another session\n", "utf8");
+    harness.provider.emit({
+      type: "turn.completed",
+      eventId: EventId.make("evt-turn-completed-shared-checkout"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId,
+      turnId,
+      payload: { state: "completed" },
+    });
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.latestTurn?.turnId === "turn-shared-checkout" && entry.checkpoints.length === 1,
+    );
+
+    expect(thread.checkpoints[0]?.files).toEqual([]);
+    expect(thread.activities.some((activity) => activity.summary === "Changed files")).toBe(false);
+  });
+
+  it("uses provider-reported changed files for shared-checkout checkpoint summaries", async () => {
+    const harness = await createHarness({
+      seedFilesystemCheckpoints: false,
+      includeConcurrentSession: true,
+    });
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const turnId = asTurnId("turn-shared-provider-summary");
+    const providerFiles: OrchestrationCheckpointFile[] = [
+      {
+        path: "README.md",
+        kind: "modified",
+        additions: 1,
+        deletions: 1,
+      },
+    ];
+
+    harness.provider.emit({
+      type: "turn.started",
+      eventId: EventId.make("evt-turn-started-shared-provider-summary"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId,
+      turnId,
+    });
+    await waitForGitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 0));
+
+    fs.writeFileSync(path.join(harness.cwd, "README.md"), "provider-owned edit\n", "utf8");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.diff.complete",
+        commandId: CommandId.make("cmd-provider-summary-placeholder"),
+        threadId,
+        turnId,
+        completedAt: createdAt,
+        checkpointRef: asCheckpointRef("provider-diff:evt-shared-provider-summary"),
+        status: "missing",
+        files: providerFiles,
+        checkpointTurnCount: 1,
+        createdAt,
+      }),
+    );
+
+    fs.writeFileSync(path.join(harness.cwd, "EXTERNAL.md"), "other session edit\n", "utf8");
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.latestTurn?.turnId === "turn-shared-provider-summary" &&
+        entry.checkpoints.length === 1 &&
+        entry.checkpoints[0]?.status === "ready",
+    );
+
+    expect(thread.checkpoints[0]?.files).toEqual(providerFiles);
+
+    const fileActivity = thread.activities.find(
+      (activity) => activity.kind === "tool.completed" && activity.summary === "Changed files",
+    );
+    const payload =
+      fileActivity?.payload && typeof fileActivity.payload === "object"
+        ? (fileActivity.payload as { data?: { files?: unknown } })
+        : undefined;
+    expect(payload?.data?.files).toEqual(providerFiles);
   });
 
   it("uses the per-turn pre-state for changed-file summaries when the branch advances between turns", async () => {

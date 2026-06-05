@@ -8,7 +8,7 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-import { type CodexSettings, type ModelSelection } from "@t3tools/contracts";
+import { DEFAULT_MODEL, type CodexSettings, type ModelSelection } from "@t3tools/contracts";
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
 
 import { resolveAttachmentPath } from "../attachmentStore.ts";
@@ -39,8 +39,47 @@ import {
 } from "@t3tools/shared/model";
 
 const CODEX_GIT_TEXT_GENERATION_REASONING_EFFORT = "low";
-const CODEX_TIMEOUT_MS = 180_000;
+const CODEX_DEFAULT_TIMEOUT_MS = 180_000;
+const CODEX_THREAD_TITLE_TIMEOUT_MS = 30_000;
 const encodeJsonString = Schema.encodeEffect(Schema.UnknownFromJsonString);
+
+type CodexTextGenerationOperation =
+  | "generateCommitMessage"
+  | "generatePrContent"
+  | "generateBranchName"
+  | "generateThreadTitle";
+
+type RunCodexJsonInput<S extends Schema.Top> = {
+  operation: CodexTextGenerationOperation;
+  cwd: string;
+  prompt: string;
+  outputSchemaJson: S;
+  imagePaths?: ReadonlyArray<string>;
+  cleanupPaths?: ReadonlyArray<string>;
+  modelSelection: ModelSelection;
+};
+
+function isCodexModelCapacityError(error: TextGenerationError): boolean {
+  const detail = error.detail.toLowerCase();
+  return (
+    detail.includes("selected model is at capacity") ||
+    (detail.includes("model is at capacity") && detail.includes("try a different model"))
+  );
+}
+
+function shouldRetryWithDefaultCodexModel(
+  modelSelection: ModelSelection,
+  error: TextGenerationError,
+): boolean {
+  return modelSelection.model !== DEFAULT_MODEL && isCodexModelCapacityError(error);
+}
+
+function withDefaultCodexModel(modelSelection: ModelSelection): ModelSelection {
+  return {
+    ...modelSelection,
+    model: DEFAULT_MODEL,
+  };
+}
 /**
  * Build a Codex text-generation closure bound to a specific `CodexSettings`
  * payload. See `makeCodexAdapter` for the overall per-instance rationale.
@@ -101,11 +140,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     fileSystem.remove(filePath).pipe(Effect.catch(() => Effect.void));
 
   const encodeJsonForOperation = (
-    operation:
-      | "generateCommitMessage"
-      | "generatePrContent"
-      | "generateBranchName"
-      | "generateThreadTitle",
+    operation: CodexTextGenerationOperation,
     value: unknown,
   ): Effect.Effect<string, TextGenerationError> =>
     encodeJsonString(value).pipe(
@@ -120,11 +155,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     );
 
   const materializeImageAttachments = Effect.fn("materializeImageAttachments")(function* (
-    _operation:
-      | "generateCommitMessage"
-      | "generatePrContent"
-      | "generateBranchName"
-      | "generateThreadTitle",
+    _operation: CodexTextGenerationOperation,
     attachments: BranchNameGenerationInput["attachments"],
   ): Effect.fn.Return<MaterializedImageAttachments, TextGenerationError> {
     if (!attachments || attachments.length === 0) {
@@ -163,23 +194,19 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     imagePaths = [],
     cleanupPaths = [],
     modelSelection,
-  }: {
-    operation:
-      | "generateCommitMessage"
-      | "generatePrContent"
-      | "generateBranchName"
-      | "generateThreadTitle";
-    cwd: string;
-    prompt: string;
-    outputSchemaJson: S;
-    imagePaths?: ReadonlyArray<string>;
-    cleanupPaths?: ReadonlyArray<string>;
-    modelSelection: ModelSelection;
-  }): Effect.fn.Return<S["Type"], TextGenerationError, S["DecodingServices"]> {
+  }: RunCodexJsonInput<S>): Effect.fn.Return<
+    S["Type"],
+    TextGenerationError,
+    S["DecodingServices"]
+  > {
     const schemaJson = yield* encodeJsonForOperation(
       operation,
       toJsonSchemaObject(outputSchemaJson),
     );
+    const timeoutMs =
+      operation === "generateThreadTitle"
+        ? CODEX_THREAD_TITLE_TIMEOUT_MS
+        : CODEX_DEFAULT_TIMEOUT_MS;
     const schemaPath = yield* writeTempFile(operation, "codex-schema", schemaJson);
     const outputPath = yield* writeTempFile(operation, "codex-output", "");
 
@@ -267,7 +294,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     return yield* Effect.gen(function* () {
       yield* runCodexCommand().pipe(
         Effect.scoped,
-        Effect.timeoutOption(CODEX_TIMEOUT_MS),
+        Effect.timeoutOption(timeoutMs),
         Effect.flatMap(
           Option.match({
             onNone: () =>
@@ -304,6 +331,31 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     }).pipe(Effect.ensuring(cleanup));
   });
 
+  const runCodexJsonWithCapacityFallback = Effect.fn("runCodexJsonWithCapacityFallback")(function* <
+    S extends Schema.Top,
+  >(
+    input: RunCodexJsonInput<S>,
+  ): Effect.fn.Return<S["Type"], TextGenerationError, S["DecodingServices"]> {
+    return yield* runCodexJson(input).pipe(
+      Effect.catchIf(
+        (error) => shouldRetryWithDefaultCodexModel(input.modelSelection, error),
+        () =>
+          Effect.logWarning("retrying Codex text generation with default model", {
+            operation: input.operation,
+            failedModel: input.modelSelection.model,
+            fallbackModel: DEFAULT_MODEL,
+          }).pipe(
+            Effect.andThen(
+              runCodexJson({
+                ...input,
+                modelSelection: withDefaultCodexModel(input.modelSelection),
+              }),
+            ),
+          ),
+      ),
+    );
+  });
+
   const generateCommitMessage: TextGenerationShape["generateCommitMessage"] = Effect.fn(
     "CodexTextGeneration.generateCommitMessage",
   )(function* (input) {
@@ -314,7 +366,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       includeBranch: input.includeBranch === true,
     });
 
-    const generated = yield* runCodexJson({
+    const generated = yield* runCodexJsonWithCapacityFallback({
       operation: "generateCommitMessage",
       cwd: input.cwd,
       prompt,
@@ -342,7 +394,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       diffPatch: input.diffPatch,
     });
 
-    const generated = yield* runCodexJson({
+    const generated = yield* runCodexJsonWithCapacityFallback({
       operation: "generatePrContent",
       cwd: input.cwd,
       prompt,
@@ -368,7 +420,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       attachments: input.attachments,
     });
 
-    const generated = yield* runCodexJson({
+    const generated = yield* runCodexJsonWithCapacityFallback({
       operation: "generateBranchName",
       cwd: input.cwd,
       prompt,
@@ -394,7 +446,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       attachments: input.attachments,
     });
 
-    const generated = yield* runCodexJson({
+    const generated = yield* runCodexJsonWithCapacityFallback({
       operation: "generateThreadTitle",
       cwd: input.cwd,
       prompt,

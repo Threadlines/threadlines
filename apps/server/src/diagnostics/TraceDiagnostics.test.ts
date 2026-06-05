@@ -134,6 +134,10 @@ describe("TraceDiagnostics", () => {
       assert.equal(diagnostics.commonFailures[0]?.count, 2);
       assert.equal(diagnostics.latestFailures[0]?.traceId, "trace-c");
       assert.equal(diagnostics.slowestSpans[0]?.traceId, "trace-b");
+      assert.equal(diagnostics.slowSpansByName?.[0]?.name, "orchestration.dispatch");
+      assert.equal(diagnostics.slowSpansByName?.[0]?.count, 1);
+      assert.equal(diagnostics.slowTraces?.[0]?.traceId, "trace-b");
+      assert.equal(diagnostics.slowTraces?.[0]?.slowSpanCount, 1);
       assert.equal(diagnostics.latestWarningAndErrorLogs[0]?.message, "status delayed");
       assert.equal(diagnostics.topSpansByCount[0]?.name, "orchestration.dispatch");
     }),
@@ -282,6 +286,14 @@ describe("TraceDiagnostics", () => {
         ["ws.rpc.serverGetConfig"],
       );
       assert.deepStrictEqual(
+        diagnostics.slowSpansByName?.map((span) => span.name),
+        ["ws.rpc.serverGetConfig"],
+      );
+      assert.deepStrictEqual(
+        diagnostics.slowTraces?.map((trace) => trace.traceId),
+        ["trace-slow-request"],
+      );
+      assert.deepStrictEqual(
         diagnostics.longestSubscriptionSpans?.map((span) => span.name),
         ["http.server GET", "RpcClient.subscribeVcsStatus"],
       );
@@ -419,6 +431,8 @@ describe("TraceDiagnostics", () => {
         diagnostics.slowestSpans.map((span) => span.durationMs),
         [24, 23, 22, 21, 20, 19, 18, 17, 16, 15],
       );
+      assert.equal(diagnostics.slowSpansByName?.length, 0);
+      assert.equal(diagnostics.slowTraces?.length, 0);
     }),
   );
 
