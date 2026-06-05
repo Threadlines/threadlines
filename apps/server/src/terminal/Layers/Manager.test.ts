@@ -13,7 +13,6 @@ import * as Encoding from "effect/Encoding";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
-import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import * as Path from "effect/Path";
@@ -21,9 +20,9 @@ import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
 import { TestClock } from "effect/testing";
+import { ChildProcessSpawner } from "effect/unstable/process";
 import { expect } from "vitest";
 
-import * as ProcessRunner from "../../processRunner.ts";
 import type { TerminalManagerShape } from "../Services/Manager.ts";
 import {
   type PtyAdapterShape,
@@ -220,7 +219,7 @@ const createManager = (
 ): Effect.Effect<
   ManagerFixture,
   PlatformError.PlatformError,
-  FileSystem.FileSystem | Path.Path | Scope.Scope | ProcessRunner.ProcessRunner
+  FileSystem.FileSystem | Path.Path | Scope.Scope | ChildProcessSpawner.ChildProcessSpawner
 > =>
   Effect.flatMap(Effect.service(FileSystem.FileSystem), (fs) =>
     Effect.gen(function* () {
@@ -265,10 +264,7 @@ const createManager = (
     }),
   );
 
-it.layer(
-  Layer.merge(NodeServices.layer, ProcessRunner.layer.pipe(Layer.provide(NodeServices.layer))),
-  { excludeTestServices: true },
-)("TerminalManager", (it) => {
+it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (it) => {
   const itEffectSkipOnWindows = process.platform === "win32" ? it.effect.skip : it.effect;
 
   it.effect("spawns lazily and reuses running terminal per thread", () =>

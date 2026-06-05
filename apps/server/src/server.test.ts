@@ -567,6 +567,15 @@ const buildAppUnderTest = (options?: {
       ),
       Layer.provide(
         Layer.mock(ProcessResourceMonitor.ProcessResourceMonitor)({
+          readCurrent: Effect.succeed({
+            serverPid: process.pid,
+            readAt: TEST_EPOCH,
+            processCount: 0,
+            totalRssBytes: 0,
+            totalCpuPercent: 0,
+            processes: [],
+            error: Option.none(),
+          }),
           readHistory: (input) =>
             Effect.succeed({
               readAt: TEST_EPOCH,

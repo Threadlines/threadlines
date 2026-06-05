@@ -421,6 +421,7 @@ export function aggregateProcessDiagnostics(input: {
   readonly serverPid: number;
   readonly rows: ReadonlyArray<ProcessRow>;
   readonly readAt: DateTime.Utc;
+  readonly error?: string;
 }): ServerProcessDiagnosticsResult {
   return makeResult(input);
 }

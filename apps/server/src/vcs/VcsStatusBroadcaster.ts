@@ -1,4 +1,5 @@
 import * as Context from "effect/Context";
+import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -35,6 +36,7 @@ interface VcsStatusChange {
 
 interface CachedValue<T> {
   readonly fingerprint: string;
+  readonly updatedAtMs: number;
   readonly value: T;
 }
 
@@ -132,8 +134,10 @@ export const layer = Layer.effect(
 
     const updateCachedLocalStatus = Effect.fn("VcsStatusBroadcaster.updateCachedLocalStatus")(
       function* (cwd: string, local: VcsStatusLocalResult, options?: { publish?: boolean }) {
+        const updatedAtMs = yield* Clock.currentTimeMillis;
         const nextLocal = {
           fingerprint: fingerprintStatusPart(local),
+          updatedAtMs,
           value: local,
         } satisfies CachedValue<VcsStatusLocalResult>;
         const shouldPublish = yield* Ref.modify(cacheRef, (cache) => {
@@ -166,8 +170,10 @@ export const layer = Layer.effect(
         remote: VcsStatusRemoteResult | null,
         options?: { publish?: boolean },
       ) {
+        const updatedAtMs = yield* Clock.currentTimeMillis;
         const nextRemote = {
           fingerprint: fingerprintStatusPart(remote),
+          updatedAtMs,
           value: remote,
         } satisfies CachedValue<VcsStatusRemoteResult | null>;
         const shouldPublish = yield* Ref.modify(cacheRef, (cache) => {
@@ -286,6 +292,17 @@ export const layer = Layer.effect(
             : configuredInterval;
           if (Duration.isZero(configuredInterval)) {
             return activeInterval;
+          }
+
+          const cached = yield* getCachedStatus(cwd);
+          const cachedRemoteUpdatedAtMs = cached?.remote?.updatedAtMs ?? null;
+          if (cachedRemoteUpdatedAtMs !== null) {
+            const nowMs = yield* Clock.currentTimeMillis;
+            const activeIntervalMs = Duration.toMillis(activeInterval);
+            const cacheAgeMs = Math.max(0, nowMs - cachedRemoteUpdatedAtMs);
+            if (cacheAgeMs < activeIntervalMs) {
+              return Duration.millis(Math.max(1, activeIntervalMs - cacheAgeMs));
+            }
           }
 
           const exit = yield* refreshRemoteStatus(cwd).pipe(Effect.exit);

@@ -1,4 +1,5 @@
 import type {
+  ServerProcessDiagnosticsResult,
   ServerProcessResourceHistoryBucket,
   ServerProcessResourceHistoryInput,
   ServerProcessResourceHistoryResult,
@@ -13,6 +14,7 @@ import * as Ref from "effect/Ref";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import {
+  aggregateProcessDiagnostics,
   buildDescendantEntries,
   isDiagnosticsQueryProcess,
   type ProcessRow,
@@ -40,9 +42,12 @@ export interface ProcessResourceSample {
 interface MonitorState {
   readonly samples: ReadonlyArray<ProcessResourceSample>;
   readonly lastError: string | null;
+  readonly latestRows: ReadonlyArray<ProcessRow> | null;
+  readonly latestSampledAt: DateTime.Utc | null;
 }
 
 export interface ProcessResourceMonitorShape {
+  readonly readCurrent: Effect.Effect<ServerProcessDiagnosticsResult>;
   readonly readHistory: (
     input: ServerProcessResourceHistoryInput,
   ) => Effect.Effect<ServerProcessResourceHistoryResult>;
@@ -293,7 +298,12 @@ export function aggregateProcessResourceHistory(input: {
 
 export const make = Effect.fn("makeProcessResourceMonitor")(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const state = yield* Ref.make<MonitorState>({ samples: [], lastError: null });
+  const state = yield* Ref.make<MonitorState>({
+    samples: [],
+    lastError: null,
+    latestRows: null,
+    latestSampledAt: null,
+  });
 
   const sampleOnce = Effect.gen(function* () {
     const sampledAt = yield* DateTime.now;
@@ -311,6 +321,8 @@ export const make = Effect.fn("makeProcessResourceMonitor")(function* () {
     yield* Ref.update(state, (current) => ({
       samples: trimSamples([...current.samples, ...samples], sampledAtMs),
       lastError: null,
+      latestRows: rows,
+      latestSampledAt: sampledAt,
     }));
     return true;
   }).pipe(
@@ -345,7 +357,22 @@ export const make = Effect.fn("makeProcessResourceMonitor")(function* () {
       });
     });
 
-  return ProcessResourceMonitor.of({ readHistory });
+  const readCurrent: ProcessResourceMonitorShape["readCurrent"] = Effect.gen(function* () {
+    let current = yield* Ref.get(state);
+    if (!current.latestRows) {
+      yield* sampleOnce;
+      current = yield* Ref.get(state);
+    }
+    const readAt = current.latestSampledAt ?? (yield* DateTime.now);
+    return aggregateProcessDiagnostics({
+      serverPid: process.pid,
+      rows: current.latestRows ?? [],
+      readAt,
+      ...(current.lastError ? { error: current.lastError } : {}),
+    });
+  });
+
+  return ProcessResourceMonitor.of({ readCurrent, readHistory });
 });
 
 export const layer = Layer.effect(ProcessResourceMonitor, make());

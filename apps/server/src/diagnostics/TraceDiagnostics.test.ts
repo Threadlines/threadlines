@@ -1,9 +1,11 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 
 import * as TraceDiagnostics from "./TraceDiagnostics.ts";
@@ -326,6 +328,68 @@ describe("TraceDiagnostics", () => {
       assert.equal(Option.getOrUndefined(diagnostics.error)?.kind, "trace-file-read-failed");
       assert.deepStrictEqual(diagnostics.scannedFilePaths, [`${traceFilePath}.1`, traceFilePath]);
     }),
+  );
+
+  it.effect("reuses cached trace diagnostics until a trace file signature changes", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const diagnostics = yield* TraceDiagnostics.TraceDiagnostics;
+      const directory = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-trace-diagnostics-",
+      });
+      const traceFilePath = path.join(directory, "server.trace.ndjson");
+
+      yield* fileSystem.writeFileString(
+        traceFilePath,
+        record({
+          name: "server.getConfig",
+          traceId: "trace-a",
+          spanId: "span-a",
+          startMs: 1_000,
+          durationMs: 50,
+        }),
+      );
+
+      const first = yield* diagnostics.read({ traceFilePath, maxFiles: 0 });
+      const second = yield* diagnostics.read({ traceFilePath, maxFiles: 0 });
+
+      assert.strictEqual(second, first);
+      assert.equal(first.recordCount, 1);
+
+      yield* fileSystem.writeFileString(
+        traceFilePath,
+        [
+          record({
+            name: "server.getConfig",
+            traceId: "trace-a",
+            spanId: "span-a",
+            startMs: 1_000,
+            durationMs: 50,
+          }),
+          record({
+            name: "server.getConfig",
+            traceId: "trace-b",
+            spanId: "span-b",
+            startMs: 2_000,
+            durationMs: 25,
+          }),
+        ].join("\n"),
+      );
+
+      const third = yield* diagnostics.read({ traceFilePath, maxFiles: 0 });
+
+      assert.notStrictEqual(third, first);
+      assert.equal(third.recordCount, 2);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          TraceDiagnostics.layer.pipe(Layer.provide(NodeServices.layer)),
+        ),
+      ),
+    ),
   );
 
   it.effect("keeps only the slowest span occurrences while aggregating large inputs", () =>

@@ -14,6 +14,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
+import * as Ref from "effect/Ref";
 
 interface TraceRecordLike {
   readonly name?: unknown;
@@ -499,6 +500,21 @@ type TraceFileReadResult =
   | { readonly _tag: "Missing"; readonly path: string }
   | { readonly _tag: "Failed"; readonly path: string; readonly message: string };
 
+type TraceFileSignatureResult =
+  | { readonly _tag: "Loaded"; readonly path: string; readonly signature: string }
+  | { readonly _tag: "Missing"; readonly path: string; readonly signature: string }
+  | {
+      readonly _tag: "Failed";
+      readonly path: string;
+      readonly signature: string;
+      readonly message: string;
+    };
+
+interface TraceDiagnosticsCacheEntry {
+  readonly key: string;
+  readonly result: ServerTraceDiagnosticsResult;
+}
+
 function readTraceFile(
   fileSystem: FileSystem.FileSystem,
   path: string,
@@ -515,20 +531,123 @@ function readTraceFile(
   );
 }
 
+function traceFileSignature(input: {
+  readonly path: string;
+  readonly type: FileSystem.File.Type;
+  readonly size: FileSystem.Size;
+  readonly mode: number;
+  readonly mtime: Option.Option<Date>;
+}): string {
+  const mtimeMs = Option.match(input.mtime, {
+    onNone: () => 0,
+    onSome: (mtime) => mtime.getTime(),
+  });
+  return `${input.path}:Loaded:${input.type}:${Number(input.size)}:${input.mode}:${mtimeMs}`;
+}
+
+function readTraceFileSignature(
+  fileSystem: FileSystem.FileSystem,
+  path: string,
+): Effect.Effect<TraceFileSignatureResult> {
+  return fileSystem.stat(path).pipe(
+    Effect.map((stat) =>
+      stat.type === "File"
+        ? ({
+            _tag: "Loaded" as const,
+            path,
+            signature: traceFileSignature({
+              path,
+              type: stat.type,
+              size: stat.size,
+              mode: stat.mode,
+              mtime: stat.mtime,
+            }),
+          } satisfies TraceFileSignatureResult)
+        : ({
+            _tag: "Failed" as const,
+            path,
+            signature: `${path}:Failed:not-file:${stat.type}`,
+            message: `${path} is not a trace file.`,
+          } satisfies TraceFileSignatureResult),
+    ),
+    Effect.catch((error: PlatformError.PlatformError) =>
+      Effect.succeed(
+        isNotFoundError(error)
+          ? {
+              _tag: "Missing" as const,
+              path,
+              signature: `${path}:Missing`,
+            }
+          : {
+              _tag: "Failed" as const,
+              path,
+              signature: `${path}:Failed:${platformErrorMessage(error)}`,
+              message: platformErrorMessage(error),
+            },
+      ),
+    ),
+  );
+}
+
+function traceDiagnosticsCacheKey(input: {
+  readonly traceFilePath: string;
+  readonly slowSpanThresholdMs: number;
+  readonly readAt: DateTime.Utc | null;
+  readonly signatures: ReadonlyArray<TraceFileSignatureResult>;
+}): string {
+  const readAtKey = input.readAt ? DateTime.formatIso(input.readAt) : "auto";
+  return JSON.stringify({
+    traceFilePath: input.traceFilePath,
+    slowSpanThresholdMs: input.slowSpanThresholdMs,
+    readAt: readAtKey,
+    signatures: input.signatures.map((signature) => signature.signature),
+  });
+}
+
 export const make = Effect.fn("makeTraceDiagnostics")(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
+  const cacheRef = yield* Ref.make<TraceDiagnosticsCacheEntry | null>(null);
 
   const read: TraceDiagnosticsShape["read"] = Effect.fn("TraceDiagnostics.read")(
     function* (options) {
       const readAt = options.readAt ?? (yield* DateTime.now);
       const slowSpanThresholdMs = options.slowSpanThresholdMs ?? DEFAULT_SLOW_SPAN_THRESHOLD_MS;
       const paths = toRotatedTracePaths(options.traceFilePath, options.maxFiles);
-      const results = yield* Effect.all(
-        paths.map((path) => readTraceFile(fileSystem, path)),
-        {
-          concurrency: 1,
-        },
+      const signatures = yield* Effect.all(
+        paths.map((path) => readTraceFileSignature(fileSystem, path)),
+        { concurrency: 1 },
       );
+      const hasLoadedSignature = signatures.some((signature) => signature._tag === "Loaded");
+      const cacheKey = hasLoadedSignature
+        ? traceDiagnosticsCacheKey({
+            traceFilePath: options.traceFilePath,
+            slowSpanThresholdMs,
+            readAt: options.readAt ?? null,
+            signatures,
+          })
+        : null;
+      const cached = cacheKey ? yield* Ref.get(cacheRef) : null;
+      if (cached?.key === cacheKey) {
+        return cached.result;
+      }
+
+      const results = hasLoadedSignature
+        ? yield* Effect.all(
+            signatures.map((signature) =>
+              signature._tag === "Loaded"
+                ? readTraceFile(fileSystem, signature.path)
+                : Effect.succeed(signature),
+            ),
+            {
+              concurrency: 1,
+            },
+          )
+        : yield* Effect.all(
+            paths.map((path) => readTraceFile(fileSystem, path)),
+            {
+              concurrency: 1,
+            },
+          );
       const files = results.flatMap((result) =>
         result._tag === "Loaded" ? [{ path: result.path, text: result.text }] : [],
       );
@@ -541,7 +660,7 @@ export const make = Effect.fn("makeTraceDiagnostics")(function* () {
         : undefined;
 
       if (files.length === 0) {
-        return makeEmptyDiagnostics({
+        const diagnostics = makeEmptyDiagnostics({
           traceFilePath: options.traceFilePath,
           scannedFilePaths: paths,
           readAt,
@@ -553,9 +672,13 @@ export const make = Effect.fn("makeTraceDiagnostics")(function* () {
               message: "No local trace files were found.",
             } satisfies TraceDiagnosticsErrorSummary),
         });
+        if (cacheKey && !readFailureError) {
+          yield* Ref.set(cacheRef, { key: cacheKey, result: diagnostics });
+        }
+        return diagnostics;
       }
 
-      return aggregateTraceDiagnostics({
+      const diagnostics = aggregateTraceDiagnostics({
         traceFilePath: options.traceFilePath,
         files,
         scannedFilePaths: paths,
@@ -563,6 +686,10 @@ export const make = Effect.fn("makeTraceDiagnostics")(function* () {
         slowSpanThresholdMs,
         ...(readFailureError ? { partialFailure: true, error: readFailureError } : {}),
       });
+      if (cacheKey && !readFailureError) {
+        yield* Ref.set(cacheRef, { key: cacheKey, result: diagnostics });
+      }
+      return diagnostics;
     },
   );
 

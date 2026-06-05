@@ -70,6 +70,51 @@ function shortenTraceId(traceId: string): string {
   return `${traceId.slice(0, 18)}...${traceId.slice(-10)}`;
 }
 
+function traceSpanCategory(name: string): string {
+  const normalized = name.toLowerCase();
+  if (
+    normalized.startsWith("vcsstatusbroadcaster.") ||
+    normalized.startsWith("gitvcsdriver.") ||
+    normalized.startsWith("vcsprocess.") ||
+    normalized.startsWith("gitmanager.") ||
+    normalized === "remotestatus" ||
+    normalized === "statusdetails" ||
+    normalized.includes("rungitcommand")
+  ) {
+    return "VCS";
+  }
+  if (normalized.startsWith("processrunner.") || normalized.includes("processdiagnostics")) {
+    return "Process";
+  }
+  if (normalized.startsWith("terminal.")) {
+    return "Terminal";
+  }
+  if (normalized.startsWith("ws.rpc.") || normalized.startsWith("rpcclient.")) {
+    return "RPC";
+  }
+  if (normalized.startsWith("http.server ")) {
+    return "HTTP";
+  }
+  if (normalized.startsWith("orchestration.") || normalized.includes("reactor")) {
+    return "Orchestration";
+  }
+  if (
+    normalized.startsWith("provider.") ||
+    normalized.includes("codex") ||
+    normalized.includes("claude") ||
+    normalized.includes("opencode")
+  ) {
+    return "Provider";
+  }
+  if (normalized.startsWith("sql.") || normalized.includes("sqlite")) {
+    return "Storage";
+  }
+  if (normalized.includes("diagnostics")) {
+    return "Diagnostics";
+  }
+  return "Server";
+}
+
 function isStaleProcessSignalMessage(message: string | undefined): boolean {
   return message?.includes("not a live descendant") ?? false;
 }
@@ -282,6 +327,39 @@ function TraceIdCell({ traceId }: { traceId: string }) {
         />
         <TooltipPopup side="top">{copied ? "Copied" : "Copy full trace ID"}</TooltipPopup>
       </Tooltip>
+    </div>
+  );
+}
+
+function TraceSpanCategoryBadge({ name }: { name: string }) {
+  return (
+    <span className="inline-flex shrink-0 rounded-sm border border-border/60 bg-muted/30 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+      {traceSpanCategory(name)}
+    </span>
+  );
+}
+
+function TraceSpanNameCell({
+  name,
+  showCategory = true,
+}: {
+  name: string;
+  showCategory?: boolean;
+}) {
+  return (
+    <div className="flex min-w-0 items-center gap-2">
+      <Tooltip>
+        <TooltipTrigger
+          render={<span className="min-w-0 truncate font-medium text-foreground">{name}</span>}
+        />
+        <TooltipPopup
+          side="top"
+          className="max-w-[min(440px,calc(100vw-2rem))] break-words font-mono text-[11px]"
+        >
+          {name}
+        </TooltipPopup>
+      </Tooltip>
+      {showCategory ? <TraceSpanCategoryBadge name={name} /> : null}
     </div>
   );
 }
@@ -1197,8 +1275,8 @@ export function DiagnosticsSettingsPanel() {
           >
             {data.slowestSpans.map((span) => (
               <tr key={`${span.traceId}:${span.spanId}`}>
-                <td className="px-4 py-3 align-top text-xs font-medium text-foreground first:sm:pl-5">
-                  {span.name}
+                <td className="min-w-0 px-4 py-3 align-top text-xs first:sm:pl-5">
+                  <TraceSpanNameCell name={span.name} />
                 </td>
                 <td className="px-4 py-3 align-top font-mono tabular-nums">
                   {formatDuration(span.durationMs)}
@@ -1226,8 +1304,8 @@ export function DiagnosticsSettingsPanel() {
           >
             {longestSubscriptionSpans.map((span) => (
               <tr key={`${span.traceId}:${span.spanId}`}>
-                <td className="px-4 py-3 align-top text-xs font-medium text-foreground first:sm:pl-5">
-                  {span.name}
+                <td className="min-w-0 px-4 py-3 align-top text-xs first:sm:pl-5">
+                  <TraceSpanNameCell name={span.name} />
                 </td>
                 <td className="px-4 py-3 align-top font-mono tabular-nums">
                   {formatDuration(span.durationMs)}
@@ -1319,14 +1397,17 @@ export function DiagnosticsSettingsPanel() {
       <SettingsSection title="Top Span Names">
         {data && data.topSpansByCount.length > 0 ? (
           <DiagnosticsTable
-            headers={["Span", "Count", "Failures", "Average", "Max"]}
-            minTableWidth="min-w-[760px]"
-            columnWidths={["w-[48%]", "w-[13%]", "w-[13%]", "w-[13%]", "w-[13%]"]}
+            headers={["Span", "Category", "Count", "Failures", "Average", "Max"]}
+            minTableWidth="min-w-[860px]"
+            columnWidths={["w-[42%]", "w-[13%]", "w-[11%]", "w-[12%]", "w-[11%]", "w-[11%]"]}
           >
             {data.topSpansByCount.map((span) => (
               <tr key={span.name}>
-                <td className="px-4 py-3 align-top text-xs font-medium text-foreground first:sm:pl-5">
-                  {span.name}
+                <td className="min-w-0 px-4 py-3 align-top text-xs first:sm:pl-5">
+                  <TraceSpanNameCell name={span.name} showCategory={false} />
+                </td>
+                <td className="whitespace-nowrap px-4 py-3 align-top">
+                  <TraceSpanCategoryBadge name={span.name} />
                 </td>
                 <td className="whitespace-nowrap px-4 py-3 align-top font-mono tabular-nums">
                   {formatCount(span.count)}

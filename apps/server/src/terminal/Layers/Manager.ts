@@ -19,14 +19,15 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as SynchronizedRef from "effect/SynchronizedRef";
+import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { ServerConfig } from "../../config.ts";
+import { readProcessRows } from "../../diagnostics/ProcessDiagnostics.ts";
 import {
   increment,
   terminalRestartsTotal,
   terminalSessionsTotal,
 } from "../../observability/Metrics.ts";
-import * as ProcessRunner from "../../processRunner.ts";
 import {
   TerminalCwdError,
   TerminalHistoryError,
@@ -59,7 +60,6 @@ class TerminalSubprocessCheckError extends Schema.TaggedErrorClass<TerminalSubpr
     message: Schema.String,
     cause: Schema.optional(Schema.Defect),
     terminalPid: Schema.Number,
-    command: Schema.Literals(["powershell", "pgrep", "ps"]),
   },
 ) {}
 
@@ -73,9 +73,7 @@ class TerminalProcessSignalError extends Schema.TaggedErrorClass<TerminalProcess
 ) {}
 
 interface TerminalSubprocessChecker {
-  (
-    terminalPid: number,
-  ): Effect.Effect<boolean, TerminalSubprocessCheckError, ProcessRunner.ProcessRunner>;
+  (terminalPid: number): Effect.Effect<boolean, TerminalSubprocessCheckError>;
 }
 
 interface ShellCandidate {
@@ -364,124 +362,6 @@ function isRetryableShellSpawnError(error: PtySpawnError): boolean {
   );
 }
 
-function checkWindowsSubprocessActivity(
-  terminalPid: number,
-): Effect.Effect<boolean, TerminalSubprocessCheckError, ProcessRunner.ProcessRunner> {
-  const command = [
-    `$children = Get-CimInstance Win32_Process -Filter "ParentProcessId = ${terminalPid}" -ErrorAction SilentlyContinue`,
-    "if ($children) { exit 0 }",
-    "exit 1",
-  ].join("; ");
-  return Effect.gen(function* () {
-    const processRunner = yield* ProcessRunner.ProcessRunner;
-    return yield* processRunner.run({
-      command: "powershell.exe",
-      args: ["-NoProfile", "-NonInteractive", "-Command", command],
-      timeout: "1500 millis",
-      maxOutputBytes: 32_768,
-      outputMode: "truncate",
-      shell: process.platform === "win32",
-      timeoutBehavior: "timedOutResult",
-    });
-  }).pipe(
-    Effect.map((result) => result.code === 0),
-    Effect.mapError(
-      (cause) =>
-        new TerminalSubprocessCheckError({
-          message: "Failed to check Windows terminal subprocess activity.",
-          cause,
-          terminalPid,
-          command: "powershell",
-        }),
-    ),
-  );
-}
-
-const checkPosixSubprocessActivity = Effect.fn("terminal.checkPosixSubprocessActivity")(function* (
-  terminalPid: number,
-): Effect.fn.Return<boolean, TerminalSubprocessCheckError, ProcessRunner.ProcessRunner> {
-  const processRunner = yield* ProcessRunner.ProcessRunner;
-  const runPgrep = processRunner
-    .run({
-      command: "pgrep",
-      args: ["-P", String(terminalPid)],
-      timeout: "1 second",
-      maxOutputBytes: 32_768,
-      outputMode: "truncate",
-      timeoutBehavior: "timedOutResult",
-    })
-    .pipe(
-      Effect.mapError(
-        (cause) =>
-          new TerminalSubprocessCheckError({
-            message: "Failed to inspect terminal subprocesses with pgrep.",
-            cause,
-            terminalPid,
-            command: "pgrep",
-          }),
-      ),
-    );
-
-  const runPs = processRunner
-    .run({
-      command: "ps",
-      args: ["-eo", "pid=,ppid="],
-      timeout: "1 second",
-      maxOutputBytes: 262_144,
-      outputMode: "truncate",
-      timeoutBehavior: "timedOutResult",
-    })
-    .pipe(
-      Effect.mapError(
-        (cause) =>
-          new TerminalSubprocessCheckError({
-            message: "Failed to inspect terminal subprocesses with ps.",
-            cause,
-            terminalPid,
-            command: "ps",
-          }),
-      ),
-    );
-
-  const pgrepResult = yield* Effect.exit(runPgrep);
-  if (pgrepResult._tag === "Success") {
-    if (pgrepResult.value.code === 0) {
-      return pgrepResult.value.stdout.trim().length > 0;
-    }
-    if (pgrepResult.value.code === 1) {
-      return false;
-    }
-  }
-
-  const psResult = yield* Effect.exit(runPs);
-  if (psResult._tag === "Failure" || psResult.value.code !== 0) {
-    return false;
-  }
-
-  for (const line of psResult.value.stdout.split(/\r?\n/g)) {
-    const [pidRaw, ppidRaw] = line.trim().split(/\s+/g);
-    const pid = Number(pidRaw);
-    const ppid = Number(ppidRaw);
-    if (!Number.isInteger(pid) || !Number.isInteger(ppid)) continue;
-    if (ppid === terminalPid) {
-      return true;
-    }
-  }
-  return false;
-});
-
-const defaultSubprocessChecker = Effect.fn("terminal.defaultSubprocessChecker")(function* (
-  terminalPid: number,
-): Effect.fn.Return<boolean, TerminalSubprocessCheckError, ProcessRunner.ProcessRunner> {
-  if (!Number.isInteger(terminalPid) || terminalPid <= 0) {
-    return false;
-  }
-  if (process.platform === "win32") {
-    return yield* checkWindowsSubprocessActivity(terminalPid);
-  }
-  return yield* checkPosixSubprocessActivity(terminalPid);
-});
-
 function capHistory(history: string, maxLines: number): string {
   if (history.length === 0) return history;
   const hasTrailingNewline = history.endsWith("\n");
@@ -756,13 +636,8 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
     const platform = options.platform ?? process.platform;
     const baseEnv = options.env ?? process.env;
     const shellResolver = options.shellResolver ?? (() => defaultShellResolver(platform, baseEnv));
-    const processRunner = yield* ProcessRunner.ProcessRunner;
-    const subprocessChecker =
-      options.subprocessChecker ??
-      ((terminalPid) =>
-        defaultSubprocessChecker(terminalPid).pipe(
-          Effect.provideService(ProcessRunner.ProcessRunner, processRunner),
-        ));
+    const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const subprocessChecker = options.subprocessChecker ?? null;
     const subprocessPollIntervalMs =
       options.subprocessPollIntervalMs ?? DEFAULT_SUBPROCESS_POLL_INTERVAL_MS;
     const processKillGraceMs = options.processKillGraceMs ?? DEFAULT_PROCESS_KILL_GRACE_MS;
@@ -1558,26 +1433,10 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         return;
       }
 
-      const checkSubprocessActivity = Effect.fn("terminal.checkSubprocessActivity")(function* (
-        session: TerminalSessionState & { pid: number },
-      ) {
+      const publishSubprocessActivityIfChanged = Effect.fn(
+        "terminal.publishSubprocessActivityIfChanged",
+      )(function* (session: TerminalSessionState & { pid: number }, hasRunningSubprocess: boolean) {
         const terminalPid = session.pid;
-        const hasRunningSubprocess = yield* subprocessChecker(terminalPid).pipe(
-          Effect.map(Option.some),
-          Effect.catch((reason) =>
-            Effect.logWarning("failed to check terminal subprocess activity", {
-              threadId: session.threadId,
-              terminalId: session.terminalId,
-              terminalPid,
-              reason,
-            }).pipe(Effect.as(Option.none<boolean>())),
-          ),
-        );
-
-        if (Option.isNone(hasRunningSubprocess)) {
-          return;
-        }
-
         const updatedAt = yield* nowIso;
         const createdAt = yield* nowIso;
         const event = yield* modifyManagerState((state) => {
@@ -1588,12 +1447,12 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             Option.isNone(liveSession) ||
             liveSession.value.status !== "running" ||
             liveSession.value.pid !== terminalPid ||
-            liveSession.value.hasRunningSubprocess === hasRunningSubprocess.value
+            liveSession.value.hasRunningSubprocess === hasRunningSubprocess
           ) {
             return [Option.none(), state] as const;
           }
 
-          liveSession.value.hasRunningSubprocess = hasRunningSubprocess.value;
+          liveSession.value.hasRunningSubprocess = hasRunningSubprocess;
           liveSession.value.updatedAt = updatedAt;
 
           return [
@@ -1602,7 +1461,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               threadId: liveSession.value.threadId,
               terminalId: liveSession.value.terminalId,
               createdAt,
-              hasRunningSubprocess: hasRunningSubprocess.value,
+              hasRunningSubprocess,
             }),
             state,
           ] as const;
@@ -1613,10 +1472,72 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         }
       });
 
-      yield* Effect.forEach(runningSessions, checkSubprocessActivity, {
-        concurrency: "unbounded",
-        discard: true,
-      });
+      if (subprocessChecker) {
+        const checkSubprocessActivity = Effect.fn("terminal.checkSubprocessActivity")(function* (
+          session: TerminalSessionState & { pid: number },
+        ) {
+          const terminalPid = session.pid;
+          const hasRunningSubprocess = yield* subprocessChecker(terminalPid).pipe(
+            Effect.map(Option.some),
+            Effect.catch((reason) =>
+              Effect.logWarning("failed to check terminal subprocess activity", {
+                threadId: session.threadId,
+                terminalId: session.terminalId,
+                terminalPid,
+                reason,
+              }).pipe(Effect.as(Option.none<boolean>())),
+            ),
+          );
+
+          if (Option.isSome(hasRunningSubprocess)) {
+            yield* publishSubprocessActivityIfChanged(session, hasRunningSubprocess.value);
+          }
+        });
+
+        yield* Effect.forEach(runningSessions, checkSubprocessActivity, {
+          concurrency: "unbounded",
+          discard: true,
+        });
+        return;
+      }
+
+      const subprocessActivityByPid = yield* readProcessRows(platform).pipe(
+        Effect.withTracerEnabled(false),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+        Effect.map((rows) => {
+          const activeParentPids = new Set<number>();
+          for (const row of rows) {
+            activeParentPids.add(row.ppid);
+          }
+          return new Map(
+            runningSessions.map((session) => [session.pid, activeParentPids.has(session.pid)]),
+          );
+        }),
+        Effect.map(Option.some),
+        Effect.catch((reason) =>
+          Effect.logWarning("failed to check terminal subprocess activity", {
+            terminalCount: runningSessions.length,
+            reason,
+          }).pipe(Effect.as(Option.none<ReadonlyMap<number, boolean>>())),
+        ),
+      );
+
+      if (Option.isNone(subprocessActivityByPid)) {
+        return;
+      }
+
+      yield* Effect.forEach(
+        runningSessions,
+        (session) =>
+          publishSubprocessActivityIfChanged(
+            session,
+            subprocessActivityByPid.value.get(session.pid) ?? false,
+          ),
+        {
+          concurrency: "unbounded",
+          discard: true,
+        },
+      );
     });
 
     const hasRunningSessions = readManagerState.pipe(
@@ -1967,6 +1888,4 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
   },
 );
 
-export const TerminalManagerLive = Layer.effect(TerminalManager, makeTerminalManager()).pipe(
-  Layer.provide(ProcessRunner.layer),
-);
+export const TerminalManagerLive = Layer.effect(TerminalManager, makeTerminalManager());
