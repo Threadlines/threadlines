@@ -704,7 +704,7 @@ export function GeneralSettingsPanel() {
 
         <SettingsRow
           title="Auto-open task panel"
-          description="Open the right-side plan and task panel automatically when steps appear."
+          description="Switch from Source Control to Tasks when running plan steps appear or update."
           resetAction={
             settings.autoOpenPlanSidebar !== DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar ? (
               <SettingResetButton

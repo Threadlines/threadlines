@@ -263,16 +263,6 @@ jobs:
         shell: pwsh
         run: Get-ChildItem release | Select-Object Name, Length
 
-      - name: Upload workflow artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: badcode-windows-x64-${{ needs.preflight.outputs.version }}
-          path: |
-            release/*.exe
-            release/*.blockmap
-            release/*.yml
-          if-no-files-found: error
-
       - name: Generate release notes
         run: >
           bun scripts/generate-release-notes.ts

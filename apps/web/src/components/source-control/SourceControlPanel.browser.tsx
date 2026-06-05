@@ -348,6 +348,43 @@ describe("SourceControlPanel changes", () => {
     }
   });
 
+  it("shows delayed full names for changed file labels", async () => {
+    const longFileName =
+      "SourceControlPanelNameThatShouldNeedHoverToReadInTheChangesList.browser.tsx";
+    const status = makeStatus({
+      hasWorkingTreeChanges: true,
+      workingTree: {
+        files: [
+          {
+            path: `apps/web/src/components/source-control/${longFileName}`,
+            indexStatus: null,
+            worktreeStatus: "modified",
+            insertions: 8,
+            deletions: 2,
+          },
+        ],
+        insertions: 8,
+        deletions: 2,
+      },
+    });
+    const mounted = await renderPanel({ status });
+
+    try {
+      const fileLabel = page.getByText(longFileName);
+      await expect.element(fileLabel).toBeVisible();
+
+      await fileLabel.hover();
+      await new Promise((resolve) => setTimeout(resolve, 1_300));
+
+      await vi.waitFor(() => {
+        const tooltipPopups = Array.from(document.querySelectorAll('[data-slot="tooltip-popup"]'));
+        expect(tooltipPopups.some((popup) => popup.textContent?.includes(longFileName))).toBe(true);
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("separates staged and unstaged changes with scoped row actions", async () => {
     const stageChanges: EnvironmentApi["vcs"]["stageChanges"] = vi.fn(async (input) => ({
       stagedPaths: input.filePaths,
@@ -418,6 +455,11 @@ describe("SourceControlPanel changes", () => {
       expect(discardAllButton.compareDocumentPosition(stageAllButton)).toBe(
         Node.DOCUMENT_POSITION_FOLLOWING,
       );
+      for (const button of [discardFileButton, stageFileButton]) {
+        const bounds = button.getBoundingClientRect();
+        expect(bounds.width).toBeLessThanOrEqual(18);
+        expect(bounds.height).toBeLessThanOrEqual(18);
+      }
 
       await page.getByRole("button", { name: "Stage changes to src/app.ts" }).click();
       await vi.waitFor(() => {

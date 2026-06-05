@@ -1,4 +1,5 @@
 import { scopeProjectRef } from "@t3tools/client-runtime";
+import type { ThreadId } from "@t3tools/contracts";
 import { projectScriptCwd } from "@t3tools/shared/projectScripts";
 import { createFileRoute, retainSearchParams, useNavigate } from "@tanstack/react-router";
 import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
@@ -16,6 +17,8 @@ import {
   DiffPanelShell,
   type DiffPanelMode,
 } from "../components/DiffPanelShell";
+import PlanSidebar from "../components/PlanSidebar";
+import { TaskPanelButton } from "../components/TaskPanelButton";
 import { finalizePromotedDraftThreadByRef, useComposerDraftStore } from "../composerDraftStore";
 import {
   closeRightPanelSearchParams,
@@ -25,6 +28,12 @@ import {
   stripRightPanelSearchParams,
 } from "../diffRouteSearch";
 import { useMediaQuery } from "../hooks/useMediaQuery";
+import { useSettings } from "../hooks/useSettings";
+import {
+  deriveActivePlanState,
+  findSidebarProposedPlan,
+  isLatestTurnSettled,
+} from "../session-logic";
 import { selectEnvironmentState, selectThreadExistsByRef, useStore } from "../store";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
 import { resolveThreadRouteRef, buildThreadRouteParams } from "../threadRoutes";
@@ -34,6 +43,7 @@ import {
   SourceControlPanel,
   type SourceControlProjectTarget,
 } from "../components/source-control/SourceControlPanel";
+import { derivePlanTaskBadge, useThreadPlanCatalog } from "../planPanelState";
 
 const DiffPanel = lazy(() => import("../components/DiffPanel"));
 
@@ -94,7 +104,8 @@ function ChatThreadRouteView() {
   const environmentHasAnyThreads = environmentHasServerThreads || environmentHasDraftThreads;
   const diffOpen = search.diff === "1";
   const sourceControlOpen = isSourceControlPanelOpen(search);
-  const rightPanelOpen = diffOpen || sourceControlOpen;
+  const [planPanelOpen, setPlanPanelOpen] = useState(false);
+  const rightPanelOpen = diffOpen || sourceControlOpen || planPanelOpen;
   const sourceControlThread = serverThread ?? draftThread;
   const sourceControlProjectRef = sourceControlThread
     ? scopeProjectRef(sourceControlThread.environmentId, sourceControlThread.projectId)
@@ -129,6 +140,7 @@ function ChatThreadRouteView() {
     [setDraftThreadContext, threadRef],
   );
   const shouldUseDiffSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
+  const timestampFormat = useSettings((settings) => settings.timestampFormat);
   const currentThreadKey = threadRef ? `${threadRef.environmentId}:${threadRef.threadId}` : null;
   const [diffPanelMountState, setDiffPanelMountState] = useState(() => ({
     threadKey: currentThreadKey,
@@ -153,6 +165,7 @@ function ChatThreadRouteView() {
     if (!threadRef) {
       return;
     }
+    setPlanPanelOpen(false);
     void navigate({
       to: "/$environmentId/$threadId",
       params: buildThreadRouteParams(threadRef),
@@ -163,6 +176,7 @@ function ChatThreadRouteView() {
     if (!threadRef) {
       return;
     }
+    setPlanPanelOpen(false);
     void navigate({
       to: "/$environmentId/$threadId",
       params: buildThreadRouteParams(threadRef),
@@ -172,6 +186,31 @@ function ChatThreadRouteView() {
       }),
     });
   }, [navigate, threadRef]);
+  const openPlanPanel = useCallback(() => {
+    setPlanPanelOpen(true);
+    if (!threadRef || !diffOpen) {
+      return;
+    }
+    void navigate({
+      to: "/$environmentId/$threadId",
+      params: buildThreadRouteParams(threadRef),
+      replace: true,
+      search: (previous) => ({
+        ...stripRightPanelSearchParams(previous),
+        sourceControl: "1",
+      }),
+    });
+  }, [diffOpen, navigate, threadRef]);
+  const closePlanPanel = useCallback(() => {
+    setPlanPanelOpen(false);
+  }, []);
+  const togglePlanPanel = useCallback(() => {
+    if (planPanelOpen) {
+      openSourceControl();
+      return;
+    }
+    openPlanPanel();
+  }, [openPlanPanel, openSourceControl, planPanelOpen]);
   const openDiff = useCallback(
     (options?: {
       readonly filePath?: string;
@@ -181,6 +220,7 @@ function ChatThreadRouteView() {
       if (!threadRef) {
         return;
       }
+      setPlanPanelOpen(false);
       markDiffOpened();
       void navigate({
         to: "/$environmentId/$threadId",
@@ -195,6 +235,51 @@ function ChatThreadRouteView() {
       });
     },
     [markDiffOpened, navigate, threadRef],
+  );
+
+  const activeLatestTurn = serverThread?.latestTurn ?? null;
+  const latestTurnSettled = isLatestTurnSettled(activeLatestTurn, serverThread?.session ?? null);
+  const threadPlanCatalog = useThreadPlanCatalog(
+    useMemo(() => {
+      const threadIds: ThreadId[] = [];
+      if (serverThread?.id) {
+        threadIds.push(serverThread.id);
+      }
+      const sourceThreadId = activeLatestTurn?.sourceProposedPlan?.threadId;
+      if (sourceThreadId && sourceThreadId !== serverThread?.id) {
+        threadIds.push(sourceThreadId);
+      }
+      return threadIds;
+    }, [activeLatestTurn?.sourceProposedPlan?.threadId, serverThread?.id]),
+  );
+  const activePlan = useMemo(
+    () => deriveActivePlanState(serverThread?.activities ?? [], activeLatestTurn?.turnId),
+    [activeLatestTurn?.turnId, serverThread?.activities],
+  );
+  const sidebarProposedPlan = useMemo(
+    () =>
+      findSidebarProposedPlan({
+        threads: threadPlanCatalog,
+        latestTurn: activeLatestTurn,
+        latestTurnSettled,
+        threadId: serverThread?.id ?? null,
+      }),
+    [activeLatestTurn, latestTurnSettled, serverThread?.id, threadPlanCatalog],
+  );
+  const planPanelLabel =
+    sidebarProposedPlan || serverThread?.interactionMode === "plan" ? "Plan" : "Tasks";
+  const planTaskBadge = useMemo(
+    () => derivePlanTaskBadge({ activePlan, activeProposedPlan: sidebarProposedPlan }),
+    [activePlan, sidebarProposedPlan],
+  );
+  const planPanelAvailable = Boolean(activePlan || sidebarProposedPlan || planPanelOpen);
+  const taskPanelButton = (
+    <TaskPanelButton
+      active={planPanelOpen}
+      badge={planTaskBadge}
+      disabled={!planPanelAvailable}
+      onClick={openPlanPanel}
+    />
   );
 
   useEffect(() => {
@@ -219,10 +304,23 @@ function ChatThreadRouteView() {
   }
 
   const shouldRenderDiffContent = diffOpen || hasOpenedDiff;
-  const rightPanelContent = sourceControlOpen ? (
+  const rightPanelContent = planPanelOpen ? (
+    <PlanSidebar
+      activePlan={activePlan}
+      activeProposedPlan={sidebarProposedPlan}
+      environmentId={threadRef.environmentId}
+      label={planPanelLabel}
+      markdownCwd={sourceControlTarget?.cwd}
+      mode="sheet"
+      timestampFormat={timestampFormat}
+      workspaceRoot={sourceControlTarget?.cwd}
+      onClose={openSourceControl}
+    />
+  ) : sourceControlOpen ? (
     <SourceControlPanel
       target={sourceControlTarget}
       activeThreadRef={threadRef}
+      taskPanelButton={taskPanelButton}
       {...(!serverThread && draftThread
         ? { onActiveBranchChange: handleDraftSourceControlBranchChange }
         : {})}
@@ -254,6 +352,10 @@ function ChatThreadRouteView() {
             environmentId={threadRef.environmentId}
             threadId={threadRef.threadId}
             onDiffPanelOpen={markDiffOpened}
+            onClosePlanPanel={closePlanPanel}
+            onOpenPlanPanel={openPlanPanel}
+            onTogglePlanPanel={togglePlanPanel}
+            planPanelOpen={planPanelOpen}
             reserveTitleBarControlInset={!rightPanelOpen}
             routeKind="server"
           />
@@ -276,6 +378,10 @@ function ChatThreadRouteView() {
           environmentId={threadRef.environmentId}
           threadId={threadRef.threadId}
           onDiffPanelOpen={markDiffOpened}
+          onClosePlanPanel={closePlanPanel}
+          onOpenPlanPanel={openPlanPanel}
+          onTogglePlanPanel={togglePlanPanel}
+          planPanelOpen={planPanelOpen}
           routeKind="server"
         />
       </SidebarInset>

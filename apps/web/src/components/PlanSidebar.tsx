@@ -1,17 +1,16 @@
-import { memo, useState, useCallback } from "react";
+import { memo, type ReactNode, useState, useCallback } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
-import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { ScrollArea } from "./ui/scroll-area";
 import ChatMarkdown from "./ChatMarkdown";
 import {
   CheckIcon,
   ChevronDownIcon,
+  ChevronLeftIcon,
   ChevronRightIcon,
   EllipsisIcon,
   LoaderIcon,
-  PanelRightCloseIcon,
 } from "lucide-react";
 import { cn } from "~/lib/utils";
 import type { ActivePlanState } from "../session-logic";
@@ -28,8 +27,9 @@ import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
 import { readEnvironmentApi } from "~/environmentApi";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
+import { SourceControlIcon } from "./Icons";
 
-function stepStatusIcon(status: string): React.ReactNode {
+function stepStatusIcon(status: string): ReactNode {
   if (status === "completed") {
     return (
       <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-500">
@@ -136,59 +136,56 @@ const PlanSidebar = memo(function PlanSidebar({
       )}
     >
       {/* Header */}
-      <div className="flex h-12 shrink-0 items-center justify-between border-b border-border/60 px-3">
-        <div className="flex items-center gap-2">
-          <Badge
-            variant="secondary"
-            className="rounded-md bg-primary/10 px-1.5 py-0 text-[10px] font-semibold tracking-wide text-primary-readable uppercase"
+      <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border/60 px-3">
+        <Button
+          type="button"
+          variant="outline"
+          size="xs"
+          className="shrink-0 gap-0.5 px-1.5 [-webkit-app-region:no-drag]"
+          aria-label="Back to source control panel"
+          title="Back to source control"
+          onClick={onClose}
+        >
+          <ChevronLeftIcon className="size-3" />
+          <SourceControlIcon className="size-3" />
+        </Button>
+        <div className="min-w-0 flex-1 [-webkit-app-region:no-drag]">
+          <div className="truncate text-xs font-medium text-foreground">{label}</div>
+          <div
+            className="truncate text-[10px] text-muted-foreground/70"
+            title={activePlan ? formatTimestamp(activePlan.createdAt, timestampFormat) : undefined}
           >
-            {label}
-          </Badge>
-          {activePlan ? (
-            <span className="text-[11px] text-muted-foreground/60">
-              {formatTimestamp(activePlan.createdAt, timestampFormat)}
-            </span>
-          ) : null}
+            {activePlan ? formatTimestamp(activePlan.createdAt, timestampFormat) : "Review plan"}
+          </div>
         </div>
-        <div className="flex items-center gap-1">
-          {planMarkdown ? (
-            <Menu>
-              <MenuTrigger
-                render={
-                  <Button
-                    size="icon-xs"
-                    variant="ghost"
-                    className="text-muted-foreground/50 hover:text-foreground/70"
-                    aria-label="Plan actions"
-                  />
-                }
+        {planMarkdown ? (
+          <Menu>
+            <MenuTrigger
+              render={
+                <Button
+                  size="icon-xs"
+                  variant="ghost"
+                  className="text-muted-foreground/50 hover:text-foreground/70"
+                  aria-label="Plan actions"
+                />
+              }
+            >
+              <EllipsisIcon className="size-3.5" />
+            </MenuTrigger>
+            <MenuPopup align="end">
+              <MenuItem onClick={handleCopyPlan}>
+                {isCopied ? "Copied!" : "Copy to clipboard"}
+              </MenuItem>
+              <MenuItem onClick={handleDownload}>Download as markdown</MenuItem>
+              <MenuItem
+                onClick={handleSaveToWorkspace}
+                disabled={!workspaceRoot || isSavingToWorkspace}
               >
-                <EllipsisIcon className="size-3.5" />
-              </MenuTrigger>
-              <MenuPopup align="end">
-                <MenuItem onClick={handleCopyPlan}>
-                  {isCopied ? "Copied!" : "Copy to clipboard"}
-                </MenuItem>
-                <MenuItem onClick={handleDownload}>Download as markdown</MenuItem>
-                <MenuItem
-                  onClick={handleSaveToWorkspace}
-                  disabled={!workspaceRoot || isSavingToWorkspace}
-                >
-                  Save to workspace
-                </MenuItem>
-              </MenuPopup>
-            </Menu>
-          ) : null}
-          <Button
-            size="icon-xs"
-            variant="ghost"
-            onClick={onClose}
-            aria-label={`Close ${label.toLowerCase()} sidebar`}
-            className="text-muted-foreground/50 hover:text-foreground/70"
-          >
-            <PanelRightCloseIcon className="size-3.5" />
-          </Button>
-        </div>
+                Save to workspace
+              </MenuItem>
+            </MenuPopup>
+          </Menu>
+        ) : null}
       </div>
 
       {/* Content */}

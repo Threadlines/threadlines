@@ -148,6 +148,7 @@ interface SourceControlPanelProps {
     | ((branch: string | null, worktreePath: string | null) => void)
     | undefined;
   readonly onOpenDiff?: (filePath?: string) => void;
+  readonly taskPanelButton?: ReactNode;
 }
 
 type WorkingTreeFile = VcsStatusResult["workingTree"]["files"][number];
@@ -824,9 +825,11 @@ const BRANCH_MENU_REF_LIMIT = 14;
 const SOURCE_CONTROL_STATUS_REFRESH_INTERVAL_MS = 3_000;
 const DEFAULT_CHANGES_PANEL_HEIGHT = 150;
 const DEFAULT_CHANGES_PANEL_RATIO = 0.4;
+const SOURCE_CONTROL_NAME_TOOLTIP_DELAY_MS = 1_200;
 const CHANGED_FILE_ACTIONS_VISIBILITY_CLASS_NAME =
   "pointer-events-none opacity-0 transition-opacity duration-150 group-hover/change-file:pointer-events-auto group-hover/change-file:opacity-100 group-focus-within/change-file:pointer-events-auto group-focus-within/change-file:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100";
-const CHANGED_FILE_ROW_ACTION_BUTTON_CLASS_NAME = "size-[18px] rounded-sm text-muted-foreground/60";
+const CHANGED_FILE_ROW_ACTION_BUTTON_CLASS_NAME =
+  "size-4 rounded-sm p-0 text-muted-foreground/60 before:rounded-sm sm:size-4 [&_svg]:mx-0";
 const MIN_CHANGES_PANEL_RATIO = 0.2;
 const MAX_CHANGES_PANEL_RATIO = 0.8;
 const MIN_GRAPH_PANEL_HEIGHT = 120;
@@ -848,6 +851,31 @@ function clampChangesPanelRatio(value: number): number {
     return DEFAULT_CHANGES_PANEL_RATIO;
   }
   return clampNumber(value, MIN_CHANGES_PANEL_RATIO, MAX_CHANGES_PANEL_RATIO);
+}
+
+function DelayedSourceControlNameTooltip({
+  label,
+  className,
+}: {
+  readonly label: string;
+  readonly className: string;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        closeDelay={0}
+        delay={SOURCE_CONTROL_NAME_TOOLTIP_DELAY_MS}
+        render={<span className={className}>{label}</span>}
+      />
+      <TooltipPopup
+        align="start"
+        side="top"
+        className="max-w-[min(32rem,calc(100vw-2rem))] whitespace-normal break-all font-mono leading-tight"
+      >
+        {label}
+      </TooltipPopup>
+    </Tooltip>
+  );
 }
 
 function toGitActionErrorMessage(error: unknown): string {
@@ -1274,6 +1302,7 @@ export function SourceControlPanel({
   activeThreadRef,
   onActiveBranchChange,
   onOpenDiff,
+  taskPanelButton,
 }: SourceControlPanelProps) {
   const queryClient = useQueryClient();
   const [commitMessage, setCommitMessage] = useState("");
@@ -2163,11 +2192,15 @@ export function SourceControlPanel({
             {statusLabel}
           </span>
           <span className="min-w-0">
-            <span className="block truncate text-xs text-foreground">{pathParts.name}</span>
+            <DelayedSourceControlNameTooltip
+              label={pathParts.name}
+              className="block truncate text-xs text-foreground"
+            />
             {showDirectory && pathParts.directory ? (
-              <span className="block truncate font-mono text-[10px] text-muted-foreground/55">
-                {pathParts.directory}
-              </span>
+              <DelayedSourceControlNameTooltip
+                label={pathParts.directory}
+                className="block truncate font-mono text-[10px] text-muted-foreground/55"
+              />
             ) : null}
           </span>
         </button>
@@ -2281,9 +2314,10 @@ export function SourceControlPanel({
             )}
           />
           <FolderClosedIcon className="size-3.5 shrink-0 text-muted-foreground/65" />
-          <span className="truncate font-mono text-[10px] text-muted-foreground/80 group-hover/change-directory:text-foreground/90">
-            {node.name}
-          </span>
+          <DelayedSourceControlNameTooltip
+            label={node.name}
+            className="truncate font-mono text-[10px] text-muted-foreground/80 group-hover/change-directory:text-foreground/90"
+          />
           <span className="shrink-0 self-center font-mono text-[11px]">
             <span className="text-success">+{node.insertions}</span>
             <span className="px-1 text-muted-foreground/60">/</span>
@@ -2390,10 +2424,14 @@ export function SourceControlPanel({
             <TooltipPopup side="top">Refresh</TooltipPopup>
           </Tooltip>
         </div>
-        <div className="flex min-w-0 items-center gap-1.5 px-3 pt-0.5 pb-2" title={headerTitle}>
-          <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground/85">
+        <div className="flex min-w-0 items-center gap-1.5 px-3 pt-0.5 pb-2">
+          <span
+            className="min-w-0 flex-1 truncate text-xs font-medium text-foreground/85"
+            title={headerTitle}
+          >
             {target.name}
           </span>
+          {taskPanelButton}
           {status?.refName ? (
             <span
               className="inline-flex min-w-0 max-w-[45%] shrink-0 items-center gap-1 rounded-sm border border-border/70 bg-muted/45 px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground/80"

@@ -104,11 +104,8 @@ import { useTheme } from "../hooks/useTheme";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
-import { useMediaQuery } from "../hooks/useMediaQuery";
-import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
-import PlanSidebar from "./PlanSidebar";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
 import {
   ChevronDownIcon,
@@ -203,7 +200,6 @@ import {
 } from "~/rpc/serverState";
 import { sanitizeThreadErrorMessage } from "~/rpc/transportError";
 import { retainThreadDetailSubscription } from "../environments/runtime/service";
-import { RightPanelSheet } from "./RightPanelSheet";
 import { Button } from "./ui/button";
 import {
   buildVersionMismatchDismissalKey,
@@ -211,11 +207,11 @@ import {
   isVersionMismatchDismissed,
   resolveServerConfigVersionMismatch,
 } from "../versionSkew";
+import { useThreadPlanCatalog } from "../planPanelState";
 
 const IMAGE_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more images without additional text. Respond using the conversation context and the attached image(s).]";
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
-const EMPTY_PROPOSED_PLANS: Thread["proposedPlans"] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
@@ -265,121 +261,6 @@ function SteeringQueueIndicator({
   );
 }
 
-type ThreadPlanCatalogEntry = Pick<Thread, "id" | "proposedPlans">;
-
-function useThreadPlanCatalog(threadIds: readonly ThreadId[]): ThreadPlanCatalogEntry[] {
-  return useStore(
-    useMemo(() => {
-      let previousThreadIds: readonly ThreadId[] = [];
-      let previousResult: ThreadPlanCatalogEntry[] = [];
-      let previousEntries = new Map<
-        ThreadId,
-        {
-          shell: object | null;
-          proposedPlanIds: readonly string[] | undefined;
-          proposedPlansById: Record<string, Thread["proposedPlans"][number]> | undefined;
-          entry: ThreadPlanCatalogEntry;
-        }
-      >();
-
-      return (state) => {
-        const sameThreadIds =
-          previousThreadIds.length === threadIds.length &&
-          previousThreadIds.every((id, index) => id === threadIds[index]);
-        const nextEntries = new Map<
-          ThreadId,
-          {
-            shell: object | null;
-            proposedPlanIds: readonly string[] | undefined;
-            proposedPlansById: Record<string, Thread["proposedPlans"][number]> | undefined;
-            entry: ThreadPlanCatalogEntry;
-          }
-        >();
-        const nextResult: ThreadPlanCatalogEntry[] = [];
-        let changed = !sameThreadIds;
-
-        for (const threadId of threadIds) {
-          let shell: object | undefined;
-          let proposedPlanIds: readonly string[] | undefined;
-          let proposedPlansById: Record<string, Thread["proposedPlans"][number]> | undefined;
-
-          for (const environmentState of Object.values(state.environmentStateById)) {
-            const matchedShell = environmentState.threadShellById[threadId];
-            if (!matchedShell) {
-              continue;
-            }
-            shell = matchedShell;
-            proposedPlanIds = environmentState.proposedPlanIdsByThreadId[threadId];
-            proposedPlansById = environmentState.proposedPlanByThreadId[threadId] as
-              | Record<string, Thread["proposedPlans"][number]>
-              | undefined;
-            break;
-          }
-
-          if (!shell) {
-            const previous = previousEntries.get(threadId);
-            if (
-              previous &&
-              previous.shell === null &&
-              previous.proposedPlanIds === undefined &&
-              previous.proposedPlansById === undefined
-            ) {
-              nextEntries.set(threadId, previous);
-              continue;
-            }
-            changed = true;
-            nextEntries.set(threadId, {
-              shell: null,
-              proposedPlanIds: undefined,
-              proposedPlansById: undefined,
-              entry: { id: threadId, proposedPlans: EMPTY_PROPOSED_PLANS },
-            });
-            continue;
-          }
-
-          const previous = previousEntries.get(threadId);
-          if (
-            previous &&
-            previous.shell === shell &&
-            previous.proposedPlanIds === proposedPlanIds &&
-            previous.proposedPlansById === proposedPlansById
-          ) {
-            nextEntries.set(threadId, previous);
-            nextResult.push(previous.entry);
-            continue;
-          }
-
-          changed = true;
-          const proposedPlans =
-            proposedPlanIds && proposedPlanIds.length > 0 && proposedPlansById
-              ? proposedPlanIds.flatMap((planId) => {
-                  const proposedPlan = proposedPlansById?.[planId];
-                  return proposedPlan ? [proposedPlan] : [];
-                })
-              : EMPTY_PROPOSED_PLANS;
-          const entry = { id: threadId, proposedPlans };
-          nextEntries.set(threadId, {
-            shell,
-            proposedPlanIds,
-            proposedPlansById,
-            entry,
-          });
-          nextResult.push(entry);
-        }
-
-        if (!changed && previousResult.length === nextResult.length) {
-          return previousResult;
-        }
-
-        previousThreadIds = threadIds;
-        previousEntries = nextEntries;
-        previousResult = nextResult;
-        return nextResult;
-      };
-    }, [threadIds]),
-  );
-}
-
 function formatOutgoingPrompt(params: {
   provider: ProviderDriverKind;
   model: string | null;
@@ -399,6 +280,10 @@ type ChatViewProps =
       environmentId: EnvironmentId;
       threadId: ThreadId;
       onDiffPanelOpen?: () => void;
+      onClosePlanPanel?: () => void;
+      onOpenPlanPanel?: () => void;
+      onTogglePlanPanel?: () => void;
+      planPanelOpen?: boolean;
       reserveTitleBarControlInset?: boolean;
       routeKind: "server";
       draftId?: never;
@@ -407,6 +292,10 @@ type ChatViewProps =
       environmentId: EnvironmentId;
       threadId: ThreadId;
       onDiffPanelOpen?: () => void;
+      onClosePlanPanel?: () => void;
+      onOpenPlanPanel?: () => void;
+      onTogglePlanPanel?: () => void;
+      planPanelOpen?: boolean;
       reserveTitleBarControlInset?: boolean;
       routeKind: "draft";
       draftId: DraftId;
@@ -667,8 +556,12 @@ export default function ChatView(props: ChatViewProps) {
   const {
     environmentId,
     threadId,
+    onClosePlanPanel,
     routeKind,
     onDiffPanelOpen,
+    onOpenPlanPanel,
+    onTogglePlanPanel,
+    planPanelOpen = false,
     reserveTitleBarControlInset = true,
   } = props;
   const draftId = routeKind === "draft" ? props.draftId : null;
@@ -762,13 +655,12 @@ export default function ChatView(props: ChatViewProps) {
   >({});
   const [pendingUserInputQuestionIndexByRequestId, setPendingUserInputQuestionIndexByRequestId] =
     useState<Record<string, number>>({});
-  const [planSidebarOpen, setPlanSidebarOpen] = useState(false);
-  const shouldUsePlanSidebarSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
+  const planSidebarOpen = planPanelOpen;
   // Tracks whether the user explicitly dismissed the sidebar for the active turn.
   const planSidebarDismissedForTurnRef = useRef<string | null>(null);
-  // When set, the thread-change reset effect will open the sidebar instead of closing it.
-  // Used by "Implement in a new thread" to carry the sidebar-open intent across navigation.
-  const planSidebarOpenOnNextThreadRef = useRef(false);
+  // Tracks the latest step state that triggered an auto-open so returning to Source Control
+  // doesn't immediately bounce back to Tasks for the same update.
+  const planSidebarLastAutoOpenSignatureRef = useRef<string | null>(null);
   const [terminalFocusRequestId, setTerminalFocusRequestId] = useState(0);
   const [pullRequestDialogState, setPullRequestDialogState] =
     useState<PullRequestDialogState | null>(null);
@@ -2335,22 +2227,14 @@ export default function ChatView(props: ChatViewProps) {
     handleInteractionModeChange(interactionMode === "plan" ? "default" : "plan");
   }, [handleInteractionModeChange, interactionMode]);
   const togglePlanSidebar = useCallback(() => {
-    setPlanSidebarOpen((open) => {
-      if (open) {
-        planSidebarDismissedForTurnRef.current =
-          activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
-      } else {
-        planSidebarDismissedForTurnRef.current = null;
-      }
-      return !open;
-    });
-  }, [activePlan?.turnId, sidebarProposedPlan?.turnId]);
-  const closePlanSidebar = useCallback(() => {
-    setPlanSidebarOpen(false);
-    planSidebarDismissedForTurnRef.current =
-      activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
-  }, [activePlan?.turnId, sidebarProposedPlan?.turnId]);
-
+    if (planSidebarOpen) {
+      planSidebarDismissedForTurnRef.current =
+        activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
+    } else {
+      planSidebarDismissedForTurnRef.current = null;
+    }
+    onTogglePlanPanel?.();
+  }, [activePlan?.turnId, onTogglePlanPanel, planSidebarOpen, sidebarProposedPlan?.turnId]);
   const persistThreadSettingsForNextTurn = useCallback(
     async (input: {
       threadId: ThreadId;
@@ -2432,34 +2316,28 @@ export default function ChatView(props: ChatViewProps) {
     isAtEndRef.current = true;
     showScrollDebouncer.current.cancel();
     setShowScrollToBottom(false);
-    if (planSidebarOpenOnNextThreadRef.current) {
-      planSidebarOpenOnNextThreadRef.current = false;
-      setPlanSidebarOpen(true);
-    } else {
-      planSidebarOpenOnNextThreadRef.current = false;
-      setPlanSidebarOpen(false);
-    }
+    onClosePlanPanel?.();
     planSidebarDismissedForTurnRef.current = null;
-  }, [activeThread?.id]);
+    planSidebarLastAutoOpenSignatureRef.current = null;
+  }, [activeThread?.id, onClosePlanPanel]);
 
-  // Auto-open the plan sidebar when plan/todo steps arrive for the current turn.
-  // Don't auto-open for plans carried over from a previous turn (the user can open manually).
+  // Auto-open Tasks when current-turn step state appears or changes. Proposed plans remain
+  // manually opened so the right panel does not pop in before there is executable step activity.
   useEffect(() => {
     if (!autoOpenPlanSidebar) return;
     if (!activePlan) return;
-    if (planSidebarOpen) return;
     const latestTurnId = activeLatestTurn?.turnId ?? null;
     if (latestTurnId && activePlan.turnId !== latestTurnId) return;
-    const turnKey = activePlan.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
+    const turnKey = activePlan.turnId ?? "__active_plan__";
     if (planSidebarDismissedForTurnRef.current === turnKey) return;
-    setPlanSidebarOpen(true);
-  }, [
-    activePlan,
-    activeLatestTurn?.turnId,
-    autoOpenPlanSidebar,
-    planSidebarOpen,
-    sidebarProposedPlan?.turnId,
-  ]);
+    const signature = `${turnKey}:${activePlan.steps
+      .map((step) => `${step.status}:${step.step}`)
+      .join("|")}`;
+    if (planSidebarLastAutoOpenSignatureRef.current === signature) return;
+    planSidebarLastAutoOpenSignatureRef.current = signature;
+    if (planSidebarOpen) return;
+    onOpenPlanPanel?.();
+  }, [activePlan, activeLatestTurn?.turnId, autoOpenPlanSidebar, onOpenPlanPanel, planSidebarOpen]);
 
   useEffect(() => {
     setIsRevertingCheckpoint(false);
@@ -3426,12 +3304,8 @@ export default function ChatView(props: ChatViewProps) {
             : {}),
           createdAt: messageCreatedAt,
         });
-        // Optimistically open the plan sidebar when implementing (not refining).
-        // "default" mode here means the agent is executing the plan, which produces
-        // step-tracking activities that the sidebar will display.
         if (nextInteractionMode === "default" && autoOpenPlanSidebar) {
           planSidebarDismissedForTurnRef.current = null;
-          setPlanSidebarOpen(true);
         }
         sendInFlightRef.current = false;
       } catch (err) {
@@ -3552,8 +3426,6 @@ export default function ChatView(props: ChatViewProps) {
         return waitForStartedServerThread(scopeThreadRef(activeThread.environmentId, nextThreadId));
       })
       .then(() => {
-        // Signal that the plan sidebar should open on the new thread when enabled.
-        planSidebarOpenOnNextThreadRef.current = autoOpenPlanSidebar;
         return navigate({
           to: "/$environmentId/$threadId",
           params: {
@@ -3595,7 +3467,6 @@ export default function ChatView(props: ChatViewProps) {
     navigate,
     resetLocalDispatch,
     runtimeMode,
-    autoOpenPlanSidebar,
     environmentId,
   ]);
 
@@ -3959,21 +3830,6 @@ export default function ChatView(props: ChatViewProps) {
           ) : null}
         </div>
         {/* end chat column */}
-
-        {/* Plan sidebar */}
-        {planSidebarOpen && !shouldUsePlanSidebarSheet ? (
-          <PlanSidebar
-            activePlan={activePlan}
-            activeProposedPlan={sidebarProposedPlan}
-            label={planSidebarLabel}
-            environmentId={environmentId}
-            markdownCwd={gitCwd ?? undefined}
-            workspaceRoot={activeWorkspaceRoot}
-            timestampFormat={timestampFormat}
-            mode="sidebar"
-            onClose={closePlanSidebar}
-          />
-        ) : null}
       </div>
       {/* end horizontal flex container */}
 
@@ -3994,22 +3850,6 @@ export default function ChatView(props: ChatViewProps) {
           onAddTerminalContext={addTerminalContextToDraft}
         />
       ))}
-      {shouldUsePlanSidebarSheet ? (
-        <RightPanelSheet open={planSidebarOpen} onClose={closePlanSidebar}>
-          <PlanSidebar
-            activePlan={activePlan}
-            activeProposedPlan={sidebarProposedPlan}
-            label={planSidebarLabel}
-            environmentId={environmentId}
-            markdownCwd={gitCwd ?? undefined}
-            workspaceRoot={activeWorkspaceRoot}
-            timestampFormat={timestampFormat}
-            mode="sheet"
-            onClose={closePlanSidebar}
-          />
-        </RightPanelSheet>
-      ) : null}
-
       {expandedImage && (
         <ExpandedImageDialog preview={expandedImage} onClose={closeExpandedImage} />
       )}
