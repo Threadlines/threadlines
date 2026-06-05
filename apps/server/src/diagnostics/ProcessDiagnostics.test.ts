@@ -245,16 +245,21 @@ describe("ProcessDiagnostics", () => {
     }),
   );
 
-  it("builds a scoped Windows process-tree query", () => {
+  it("builds a batched Windows process-tree query", () => {
     const command = ProcessDiagnostics.buildWindowsProcessQueryCommand(1234);
 
     expect(command).toContain("$serverPid = 1234");
-    expect(command).toContain("Win32_Process");
-    expect(command).toContain("Win32_PerfFormattedData_PerfProc_Process");
-    expect(command).toContain("ParentProcessId = $parentPid");
-    expect(command).toContain("IDProcess = $processId");
+    expect(command).toContain(
+      "Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CommandLine,Status,WorkingSetSize",
+    );
+    expect(command).toContain(
+      "Get-CimInstance Win32_PerfFormattedData_PerfProc_Process -Property IDProcess,PercentProcessorTime",
+    );
+    expect(command).toContain("$childrenByParent.ContainsKey($parentPid)");
+    expect(command).toContain("$targetPids.Contains($processId)");
+    expect(command).not.toContain('IDProcess = $processId"');
     expect(command).toContain("$perfByPid");
-    expect(command).not.toContain("Get-CimInstance Win32_Process |");
+    expect(command).not.toContain('ParentProcessId = $parentPid"');
   });
 
   it.effect("does not allow signaling the diagnostics query process", () =>
