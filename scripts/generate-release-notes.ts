@@ -29,6 +29,88 @@ interface ReleaseNoteEntry {
   readonly pullRequestNumber?: number;
 }
 
+type ReleaseNoteCategoryId =
+  | "breaking"
+  | "features"
+  | "fixes"
+  | "performance"
+  | "reliability"
+  | "documentation"
+  | "tests"
+  | "maintenance"
+  | "other";
+
+interface ReleaseNoteCategory {
+  readonly id: ReleaseNoteCategoryId;
+  readonly title: string;
+}
+
+interface ConventionalSubject {
+  readonly type: string;
+  readonly breaking: boolean;
+  readonly title: string;
+}
+
+interface ClassifiedReleaseNoteEntry extends ReleaseNoteEntry {
+  readonly categoryId: ReleaseNoteCategoryId;
+  readonly displayTitle: string;
+}
+
+const releaseNoteCategories: ReadonlyArray<ReleaseNoteCategory> = [
+  { id: "breaking", title: "Breaking changes" },
+  { id: "features", title: "Features" },
+  { id: "fixes", title: "Fixes" },
+  { id: "performance", title: "Performance" },
+  { id: "reliability", title: "Reliability" },
+  { id: "documentation", title: "Documentation" },
+  { id: "tests", title: "Tests" },
+  { id: "maintenance", title: "Maintenance" },
+  { id: "other", title: "Other changes" },
+];
+
+const conventionalTypeCategories = new Map<string, ReleaseNoteCategoryId>([
+  ["feat", "features"],
+  ["feature", "features"],
+  ["fix", "fixes"],
+  ["perf", "performance"],
+  ["performance", "performance"],
+  ["docs", "documentation"],
+  ["doc", "documentation"],
+  ["test", "tests"],
+  ["tests", "tests"],
+  ["refactor", "maintenance"],
+  ["chore", "maintenance"],
+  ["build", "maintenance"],
+  ["ci", "maintenance"],
+  ["style", "maintenance"],
+  ["revert", "maintenance"],
+]);
+
+const keywordCategories: ReadonlyArray<readonly [ReleaseNoteCategoryId, RegExp]> = [
+  [
+    "fixes",
+    /\b(fix|fixed|fixes|repair|repairs|repaired|restore|restores|restored|prevent|prevents|prevented|avoid|avoids|avoided|handle|handles|handled|resolve|resolves|resolved|correct|corrects|corrected|patch|patches|patched)\b/i,
+  ],
+  [
+    "performance",
+    /\b(perf|performance|fast|faster|speed|cache|cached|caching|polling|cpu|batch|batched|latency|memory|optimize|optimized|optimizes|optimizing|optimization|optimise|optimised|optimises|optimising|optimisation|reduce|reduces|reduced|reducing)\b/i,
+  ],
+  [
+    "reliability",
+    /\b(reliability|reliable|retry|retries|retried|recover|recovers|recovered|recovery|reconnect|reconnects|reconnected|restart|restarts|restarted|fallback|failure|failures|error|errors|timeout|timeouts|diagnostic|diagnostics|guard|guards|guarded|resilient|resilience|crash|crashes|crashed|stream|streams|streaming)\b/i,
+  ],
+  ["documentation", /\b(doc|docs|documentation|readme|guide|guides)\b/i],
+  ["tests", /\b(test|tests|tested|vitest|coverage|spec|specs)\b/i],
+  [
+    "features",
+    /\b(add|adds|added|enable|enables|enabled|introduce|introduces|introduced|integrate|integrates|integrated|support|supports|supported|implement|implements|implemented|create|creates|created|new)\b/i,
+  ],
+  [
+    "maintenance",
+    /\b(chore|chores|ci|build|builds|release|releases|publish|publishes|published|dependency|dependencies|lockfile|refactor|refactors|refactored|rename|renames|renamed|migrate|migrates|migrated|move|moves|moved|cleanup|format|formatted|lint|typecheck|configure|configures|configured|configuration|config|workflow|workflows)\b/i,
+  ],
+];
+
 function normalizeRequiredString(value: unknown, name: string): string {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new Error(`Missing required --${name} value.`);
@@ -127,6 +209,55 @@ function cleanPullRequestTitle(title: string): string {
     .trim();
 }
 
+function sentenceCaseTitle(title: string): string {
+  const trimmed = title.trim();
+  if (!/^[a-z][a-z]/.test(trimmed)) return trimmed;
+  return `${trimmed[0]?.toUpperCase() ?? ""}${trimmed.slice(1)}`;
+}
+
+function parseConventionalSubject(subject: string): ConventionalSubject | undefined {
+  const match = /^([a-z][a-z0-9-]*)(?:\([^)]+\))?(!)?:\s+(.+)$/i.exec(subject);
+  const type = match?.[1]?.toLowerCase();
+  const title = match?.[3];
+  if (!type || !title) return undefined;
+
+  const breaking = match[2] === "!";
+  if (!breaking && !conventionalTypeCategories.has(type)) return undefined;
+
+  return {
+    type,
+    breaking,
+    title: sentenceCaseTitle(cleanPullRequestTitle(title)),
+  };
+}
+
+function hasBreakingChangeBody(body: string): boolean {
+  return /^BREAKING[ -]CHANGE:/im.test(body);
+}
+
+function classifyReleaseNoteEntry(entry: ReleaseNoteEntry): ClassifiedReleaseNoteEntry {
+  const conventional = parseConventionalSubject(entry.title);
+  const displayTitle = conventional?.title ?? sentenceCaseTitle(cleanPullRequestTitle(entry.title));
+
+  if (conventional?.breaking === true || hasBreakingChangeBody(entry.commit.body)) {
+    return { ...entry, categoryId: "breaking", displayTitle };
+  }
+
+  const conventionalCategory =
+    conventional === undefined ? undefined : conventionalTypeCategories.get(conventional.type);
+  if (conventionalCategory) {
+    return { ...entry, categoryId: conventionalCategory, displayTitle };
+  }
+
+  for (const [categoryId, pattern] of keywordCategories) {
+    if (pattern.test(displayTitle)) {
+      return { ...entry, categoryId, displayTitle };
+    }
+  }
+
+  return { ...entry, categoryId: "other", displayTitle };
+}
+
 function releaseNoteEntryFromCommit(commit: ReleaseNoteCommit): ReleaseNoteEntry {
   const mergeMatch = /^Merge pull request #(\d+) from .+$/i.exec(commit.subject);
   if (mergeMatch?.[1]) {
@@ -159,7 +290,10 @@ function commitLink(repository: string | undefined, commit: ReleaseNoteCommit): 
   return url ? `[\`${commit.shortHash}\`](${url})` : `\`${commit.shortHash}\``;
 }
 
-function formatPullRequestEntry(repository: string | undefined, entry: ReleaseNoteEntry): string {
+function formatPullRequestEntry(
+  repository: string | undefined,
+  entry: ClassifiedReleaseNoteEntry,
+): string {
   const pullRequestNumber = entry.pullRequestNumber;
   const pullRequest = pullRequestNumber ? pullRequestUrl(repository, pullRequestNumber) : undefined;
   const pullRequestLabel =
@@ -167,21 +301,30 @@ function formatPullRequestEntry(repository: string | undefined, entry: ReleaseNo
       ? `[#${pullRequestNumber}](${pullRequest})`
       : `#${pullRequestNumber}`;
 
-  return `- ${pullRequestLabel} ${entry.title} (${commitLink(repository, entry.commit)})`;
+  return `- ${pullRequestLabel} ${entry.displayTitle} (${commitLink(repository, entry.commit)})`;
 }
 
-function formatCommitEntry(repository: string | undefined, entry: ReleaseNoteEntry): string {
-  return `- ${commitLink(repository, entry.commit)} ${entry.title}`;
+function formatCommitEntry(
+  repository: string | undefined,
+  entry: ClassifiedReleaseNoteEntry,
+): string {
+  return `- ${commitLink(repository, entry.commit)} ${entry.displayTitle}`;
+}
+
+function formatReleaseNoteEntry(
+  repository: string | undefined,
+  entry: ClassifiedReleaseNoteEntry,
+): string {
+  return entry.pullRequestNumber === undefined
+    ? formatCommitEntry(repository, entry)
+    : formatPullRequestEntry(repository, entry);
 }
 
 export function formatReleaseNotes(input: FormatReleaseNotesInput): string {
   const lines: Array<string> = [];
-  const releaseKind = input.channel === "nightly" ? "Nightly" : "Stable";
-  const entries = input.commits.map(releaseNoteEntryFromCommit);
-  const pullRequestEntries = entries.filter((entry) => entry.pullRequestNumber !== undefined);
-  const commitEntries = entries.filter((entry) => entry.pullRequestNumber === undefined);
+  const entries = input.commits.map(releaseNoteEntryFromCommit).map(classifyReleaseNoteEntry);
 
-  lines.push(`## ${releaseKind} changes`, "");
+  lines.push("## What's changed", "");
 
   if (input.previousTag) {
     lines.push(`Changes since \`${input.previousTag}\`.`, "");
@@ -192,20 +335,19 @@ export function formatReleaseNotes(input: FormatReleaseNotesInput): string {
   if (input.commits.length === 0) {
     lines.push("- No commits found in this release range.");
   } else {
-    if (pullRequestEntries.length > 0) {
-      lines.push("### Pull requests", "");
-      for (const entry of pullRequestEntries) {
-        lines.push(formatPullRequestEntry(input.repository, entry));
-      }
-      if (commitEntries.length > 0) {
+    let wroteCategory = false;
+    for (const category of releaseNoteCategories) {
+      const categoryEntries = entries.filter((entry) => entry.categoryId === category.id);
+      if (categoryEntries.length === 0) continue;
+
+      if (wroteCategory) {
         lines.push("");
       }
-    }
+      wroteCategory = true;
 
-    if (commitEntries.length > 0) {
-      lines.push("### Commits", "");
-      for (const entry of commitEntries) {
-        lines.push(formatCommitEntry(input.repository, entry));
+      lines.push(`### ${category.title}`, "");
+      for (const entry of categoryEntries) {
+        lines.push(formatReleaseNoteEntry(input.repository, entry));
       }
     }
   }
