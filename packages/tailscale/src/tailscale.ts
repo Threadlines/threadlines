@@ -10,6 +10,7 @@ export const DEFAULT_TAILSCALE_SERVE_PORT = 443;
 export const TAILSCALE_STATUS_TIMEOUT_MS = 1_500;
 export const TAILSCALE_SERVE_TIMEOUT_MS = 10_000;
 export const TAILSCALE_PROBE_TIMEOUT_MS = 2_500;
+export const TAILSCALE_COMMAND = process.platform === "win32" ? "tailscale.exe" : "tailscale";
 
 export class TailscaleCommandError extends Data.TaggedError("TailscaleCommandError")<{
   readonly command: readonly string[];
@@ -61,7 +62,7 @@ const tailscaleCommandError = (
   stderr = "",
 ): TailscaleCommandError =>
   new TailscaleCommandError({
-    command: ["tailscale", ...args],
+    command: [TAILSCALE_COMMAND, ...args],
     message,
     exitCode,
     stderr,
@@ -133,11 +134,7 @@ export const readTailscaleStatus: Effect.Effect<
   const args = ["status", "--json"];
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const child = yield* spawner
-    .spawn(
-      ChildProcess.make("tailscale", args, {
-        shell: process.platform === "win32",
-      }),
-    )
+    .spawn(ChildProcess.make(TAILSCALE_COMMAND, args))
     .pipe(
       Effect.mapError((cause) =>
         tailscaleCommandError(
@@ -212,11 +209,7 @@ const runTailscaleCommand = (
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const child = yield* spawner
-      .spawn(
-        ChildProcess.make("tailscale", args, {
-          shell: process.platform === "win32",
-        }),
-      )
+      .spawn(ChildProcess.make(TAILSCALE_COMMAND, args))
       .pipe(
         Effect.mapError((cause) =>
           tailscaleCommandError(

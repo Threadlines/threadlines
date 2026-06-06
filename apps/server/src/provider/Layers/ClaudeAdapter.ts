@@ -2372,6 +2372,31 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           },
         });
         return;
+      case "permission_denied": {
+        const denied = message as typeof message & {
+          readonly tool_name?: unknown;
+          readonly decision_reason?: unknown;
+        };
+        const toolName =
+          typeof denied.tool_name === "string" && denied.tool_name.trim().length > 0
+            ? denied.tool_name.trim()
+            : "unknown";
+        const reason =
+          typeof denied.decision_reason === "string" && denied.decision_reason.trim().length > 0
+            ? `: ${denied.decision_reason.trim()}`
+            : "";
+        yield* emitRuntimeWarning(context, `Claude denied tool '${toolName}'${reason}.`, message);
+        return;
+      }
+      case "mirror_error": {
+        const mirrorError = message as typeof message & { readonly error?: unknown };
+        const detail =
+          typeof mirrorError.error === "string" && mirrorError.error.trim().length > 0
+            ? mirrorError.error.trim()
+            : "unknown mirror error";
+        yield* emitRuntimeError(context, `Claude workspace mirror error: ${detail}`, message);
+        return;
+      }
       default:
         yield* emitRuntimeWarning(
           context,

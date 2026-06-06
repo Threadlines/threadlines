@@ -9,10 +9,18 @@ import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as GitHubCli from "./GitHubCli.ts";
 import * as GitHubSourceControlProvider from "./GitHubSourceControlProvider.ts";
 
-const processResult = (stdout: string): VcsProcess.VcsProcessOutput => ({
-  exitCode: ChildProcessSpawner.ExitCode(0),
+import { parseGitHubAuthStatus } from "./gitHubAuthStatus.ts";
+
+const processResult = (
+  stdout: string,
+  options?: {
+    readonly stderr?: string;
+    readonly exitCode?: ChildProcessSpawner.ExitCode;
+  },
+): VcsProcess.VcsProcessOutput => ({
+  exitCode: options?.exitCode ?? ChildProcessSpawner.ExitCode(0),
   stdout,
-  stderr: "",
+  stderr: options?.stderr ?? "",
   stdoutTruncated: false,
   stderrTruncated: false,
 });
@@ -225,3 +233,122 @@ it.effect("scopes GitHub PR creation to the detected repository context", () =>
     });
   }),
 );
+
+it("accepts active authenticated GitHub accounts when another account fails", () => {
+  const auth = GitHubSourceControlProvider.discovery.parseAuth(
+    processResult(
+      JSON.stringify({
+        hosts: {
+          "github.com": [
+            {
+              state: "failure",
+              active: false,
+              host: "github.com",
+              login: "broken-user",
+              error: "token expired",
+            },
+            {
+              state: "success",
+              active: true,
+              host: "github.com",
+              login: "active-user",
+            },
+          ],
+        },
+      }),
+    ),
+  );
+
+  assert.deepStrictEqual(
+    {
+      status: auth.status,
+      account: auth.account,
+      host: auth.host,
+    },
+    {
+      status: "authenticated",
+      account: Option.some("active-user"),
+      host: Option.some("github.com"),
+    },
+  );
+});
+
+it("parses GitHub auth JSON from stdout when stderr has warnings", () => {
+  const auth = GitHubSourceControlProvider.discovery.parseAuth(
+    processResult(
+      JSON.stringify({
+        hosts: {
+          "github.com": [
+            {
+              state: "success",
+              active: true,
+              host: "github.com",
+              login: "active-user",
+              tokenSource: "keyring",
+              gitProtocol: "ssh",
+            },
+          ],
+        },
+      }),
+      { stderr: "warning: ignored diagnostic from gh\n" },
+    ),
+  );
+
+  assert.deepStrictEqual(
+    {
+      status: auth.status,
+      account: auth.account,
+      host: auth.host,
+    },
+    {
+      status: "authenticated",
+      account: Option.some("active-user"),
+      host: Option.some("github.com"),
+    },
+  );
+});
+
+it("parses GitHub auth status accounts by host and active state", () => {
+  assert.deepStrictEqual(
+    parseGitHubAuthStatus(
+      JSON.stringify({
+        hosts: {
+          "github.com": [
+            {
+              state: "failure",
+              active: false,
+              host: "github.com",
+              login: "expired-user",
+              error: "token expired",
+            },
+            {
+              state: "success",
+              active: true,
+              host: "github.com",
+              login: "active-user",
+            },
+          ],
+        },
+      }),
+    ),
+    {
+      parsed: true,
+      accounts: [
+        {
+          host: "github.com",
+          account: "expired-user",
+          authenticated: false,
+          active: false,
+          error: "token expired",
+        },
+        {
+          host: "github.com",
+          account: "active-user",
+          authenticated: true,
+          active: true,
+          error: null,
+        },
+      ],
+    },
+  );
+});
