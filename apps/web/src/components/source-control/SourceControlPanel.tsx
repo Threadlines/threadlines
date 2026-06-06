@@ -1,5 +1,6 @@
 import {
   type EnvironmentId,
+  type GitActionProgressEvent,
   type GitStackedAction,
   type ScopedThreadRef,
   type VcsCommitGraphCommit,
@@ -79,10 +80,19 @@ import { resolvePathLinkTarget } from "~/terminal-links";
 import { PublishRepositoryDialog } from "../GitActionsControl";
 import { SourceControlIcon } from "../Icons";
 import {
+  buildGitActionProgressStages,
   requiresDefaultBranchConfirmation,
   resolveDefaultBranchActionDialogCopy,
   type DefaultBranchConfirmableAction,
 } from "../GitActionsControl.logic";
+import {
+  applyGitActionProgressEvent,
+  createGitActionProgress,
+  getGitActionProgressView,
+  type ActiveGitActionProgress,
+  type GitActionProgressView,
+  updateGitActionProgressToast,
+} from "../gitActionProgressToast";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -1335,6 +1345,9 @@ export function SourceControlPanel({
   const bodyRef = useRef<HTMLDivElement>(null);
   const changesSectionRef = useRef<HTMLElement>(null);
   const commitControlsRef = useRef<HTMLElement>(null);
+  const activeGitActionProgressRef = useRef<ActiveGitActionProgress | null>(null);
+  const [activeGitActionProgressView, setActiveGitActionProgressView] =
+    useState<GitActionProgressView | null>(null);
   const environmentId = target?.environmentId ?? null;
   const cwd = target?.cwd ?? null;
   const threadToastData = useMemo(
@@ -1545,6 +1558,25 @@ export function SourceControlPanel({
     });
   }, [cwd, environmentId, queryClient]);
 
+  const updateActiveProgressPresentation = useCallback(() => {
+    const progress = activeGitActionProgressRef.current;
+    if (!progress) {
+      return;
+    }
+    updateGitActionProgressToast(progress);
+    setActiveGitActionProgressView(getGitActionProgressView(progress));
+  }, []);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      updateActiveProgressPresentation();
+    }, 1000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [updateActiveProgressPresentation]);
+
   useEffect(() => {
     if (!environmentId || !cwd) {
       return;
@@ -1591,21 +1623,44 @@ export function SourceControlPanel({
       }
       const actionId = randomUUID();
       const trimmedMessage = commitMessage.trim();
+      const progressStages = buildGitActionProgressStages({
+        action,
+        hasCustomCommitMessage: trimmedMessage.length > 0,
+        hasWorkingTreeChanges: !!status?.hasWorkingTreeChanges,
+        terminology: sourceControlPresentation.terminology,
+        shouldPushBeforePr:
+          action === "create_pr" && (!status?.hasUpstream || (status?.aheadCount ?? 0) > 0),
+      });
+      const initialTitle = progressStages[0] ?? "Running git action...";
+      const scopedToastData = threadToastData ? { ...threadToastData } : undefined;
       const toastId = toastManager.add({
         type: "loading",
-        title:
-          action === "commit"
-            ? "Committing..."
-            : action === "push"
-              ? "Pushing..."
-              : action === "commit_push"
-                ? "Committing & pushing..."
-                : action === "commit_push_pr"
-                  ? `Committing, pushing & creating ${changeRequestLabel}...`
-                  : `Creating ${changeRequestLabel}...`,
+        title: initialTitle,
+        description: "Waiting for Git...",
         timeout: 0,
-        data: threadToastData,
+        data: scopedToastData,
       });
+      activeGitActionProgressRef.current = createGitActionProgress({
+        toastId,
+        toastData: scopedToastData,
+        actionId,
+        initialTitle,
+      });
+      setActiveGitActionProgressView({
+        title: initialTitle,
+        description: "Waiting for Git...",
+        hookName: null,
+      });
+
+      const applyProgressEvent = (event: GitActionProgressEvent) => {
+        const progress = activeGitActionProgressRef.current;
+        if (!progress) {
+          return;
+        }
+        if (applyGitActionProgressEvent(progress, event, { cwd })) {
+          updateActiveProgressPresentation();
+        }
+      };
 
       try {
         const result = await actionMutation.mutateAsync({
@@ -1615,7 +1670,10 @@ export function SourceControlPanel({
           trimmedMessage.length > 0
             ? { commitMessage: trimmedMessage }
             : {}),
+          onProgress: applyProgressEvent,
         });
+        activeGitActionProgressRef.current = null;
+        setActiveGitActionProgressView(null);
         if (action === "commit" || action === "commit_push" || action === "commit_push_pr") {
           setCommitMessage("");
           setCommitMessageEditorOpen(false);
@@ -1626,7 +1684,7 @@ export function SourceControlPanel({
           description: result.toast.description,
           timeout: 0,
           data: {
-            ...threadToastData,
+            ...scopedToastData,
             dismissAfterVisibleMs: 10_000,
           },
         });
@@ -1635,26 +1693,32 @@ export function SourceControlPanel({
           queryKey: gitQueryKeys.commitGraph(environmentId, cwd, GRAPH_LIMIT),
         });
       } catch (error) {
+        activeGitActionProgressRef.current = null;
+        setActiveGitActionProgressView(null);
         toastManager.update(
           toastId,
           stackedThreadToast({
             type: "error",
             title: "Action failed",
             description: error instanceof Error ? error.message : "An error occurred.",
-            ...(threadToastData !== undefined ? { data: threadToastData } : {}),
+            ...(scopedToastData !== undefined ? { data: scopedToastData } : {}),
           }),
         );
       }
     },
     [
       actionMutation,
-      changeRequestLabel,
       commitMessage,
       cwd,
       environmentId,
       queryClient,
+      sourceControlPresentation.terminology,
+      status?.aheadCount,
+      status?.hasUpstream,
+      status?.hasWorkingTreeChanges,
       status?.isDefaultRef,
       threadToastData,
+      updateActiveProgressPresentation,
     ],
   );
 
@@ -2624,6 +2688,29 @@ export function SourceControlPanel({
                 className="min-h-[4.5rem] resize-none text-xs"
                 autoFocus={commitMessageEditorOpen}
               />
+            ) : null}
+            {activeGitActionProgressView ? (
+              <div
+                role="status"
+                aria-live="polite"
+                className="flex min-w-0 items-start gap-2 rounded-md border border-border/70 bg-muted/35 px-2.5 py-2"
+              >
+                <RefreshCwIcon
+                  aria-hidden
+                  className="mt-0.5 size-3.5 shrink-0 animate-spin text-primary"
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-xs font-medium text-foreground">
+                    {activeGitActionProgressView.title}
+                  </div>
+                  <div
+                    className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground"
+                    title={activeGitActionProgressView.description ?? "Waiting for Git..."}
+                  >
+                    {activeGitActionProgressView.description ?? "Waiting for Git..."}
+                  </div>
+                </div>
+              </div>
             ) : null}
             <div className="grid grid-cols-[minmax(0,1fr)_2rem] gap-1.5">
               <ActionButton

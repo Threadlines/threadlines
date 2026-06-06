@@ -81,6 +81,13 @@ import { readLocalApi } from "~/localApi";
 import { getSourceControlPresentation } from "~/sourceControlPresentation";
 import { useStore } from "~/store";
 import { createThreadSelectorByRef } from "~/storeSelectors";
+import {
+  applyGitActionProgressEvent,
+  createGitActionProgress,
+  type ActiveGitActionProgress,
+  type GitActionToastId,
+  updateGitActionProgressToast,
+} from "./gitActionProgressToast";
 
 interface GitActionsControlProps {
   gitCwd: string | null;
@@ -101,20 +108,6 @@ type PublishProviderKind = Extract<
   SourceControlProviderKind,
   "github" | "gitlab" | "bitbucket" | "azure-devops"
 >;
-
-type GitActionToastId = ReturnType<typeof toastManager.add>;
-
-interface ActiveGitActionProgress {
-  toastId: GitActionToastId;
-  toastData: ThreadToastData | undefined;
-  actionId: string;
-  title: string;
-  phaseStartedAtMs: number | null;
-  hookStartedAtMs: number | null;
-  hookName: string | null;
-  lastOutputLine: string | null;
-  currentPhaseLabel: string | null;
-}
 
 interface RunGitActionWithToastInput {
   action: GitStackedAction;
@@ -209,26 +202,6 @@ function getPublishProviderReadiness(input: {
     };
   }
   return { ready: true, hint: null };
-}
-
-function formatElapsedDescription(startedAtMs: number | null): string | undefined {
-  if (startedAtMs === null) {
-    return undefined;
-  }
-  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000));
-  if (elapsedSeconds < 60) {
-    return `Running for ${elapsedSeconds}s`;
-  }
-  const minutes = Math.floor(elapsedSeconds / 60);
-  const seconds = elapsedSeconds % 60;
-  return `Running for ${minutes}m ${seconds}s`;
-}
-
-function resolveProgressDescription(progress: ActiveGitActionProgress): string | undefined {
-  if (progress.lastOutputLine) {
-    return progress.lastOutputLine;
-  }
-  return formatElapsedDescription(progress.hookStartedAtMs ?? progress.phaseStartedAtMs);
 }
 
 function getMenuActionDisabledReason({
@@ -985,13 +958,7 @@ export default function GitActionsControl({
     if (!progress) {
       return;
     }
-    toastManager.update(progress.toastId, {
-      type: "loading",
-      title: progress.title,
-      description: resolveProgressDescription(progress),
-      timeout: 0,
-      data: progress.toastData,
-    });
+    updateGitActionProgressToast(progress);
   }, []);
 
   const persistThreadBranchSync = useCallback(
@@ -1298,17 +1265,12 @@ export default function GitActionsControl({
           data: scopedToastData,
         });
 
-      activeGitActionProgressRef.current = {
+      activeGitActionProgressRef.current = createGitActionProgress({
         toastId: resolvedProgressToastId,
         toastData: scopedToastData,
         actionId,
-        title: progressStages[0] ?? "Running git action...",
-        phaseStartedAtMs: null,
-        hookStartedAtMs: null,
-        hookName: null,
-        lastOutputLine: null,
-        currentPhaseLabel: progressStages[0] ?? "Running git action...",
-      };
+        initialTitle: progressStages[0] ?? "Running git action...",
+      });
 
       if (progressToastId) {
         toastManager.update(progressToastId, {
@@ -1325,55 +1287,9 @@ export default function GitActionsControl({
         if (!progress) {
           return;
         }
-        if (gitCwd && event.cwd !== gitCwd) {
-          return;
+        if (applyGitActionProgressEvent(progress, event, { cwd: gitCwd })) {
+          updateActiveProgressToast();
         }
-        if (progress.actionId !== event.actionId) {
-          return;
-        }
-
-        const now = Date.now();
-        switch (event.kind) {
-          case "action_started":
-            progress.phaseStartedAtMs = now;
-            progress.hookStartedAtMs = null;
-            progress.hookName = null;
-            progress.lastOutputLine = null;
-            break;
-          case "phase_started":
-            progress.title = event.label;
-            progress.currentPhaseLabel = event.label;
-            progress.phaseStartedAtMs = now;
-            progress.hookStartedAtMs = null;
-            progress.hookName = null;
-            progress.lastOutputLine = null;
-            break;
-          case "hook_started":
-            progress.title = `Running ${event.hookName}...`;
-            progress.hookName = event.hookName;
-            progress.hookStartedAtMs = now;
-            progress.lastOutputLine = null;
-            break;
-          case "hook_output":
-            progress.lastOutputLine = event.text;
-            break;
-          case "hook_finished":
-            progress.title = progress.currentPhaseLabel ?? "Committing...";
-            progress.hookName = null;
-            progress.hookStartedAtMs = null;
-            progress.lastOutputLine = null;
-            break;
-          case "action_finished":
-            // Let the resolved mutation update the toast so we keep the
-            // elapsed description visible until the final success state renders.
-            return;
-          case "action_failed":
-            // Let the rejected mutation publish the error toast to avoid a
-            // transient intermediate state before the final failure message.
-            return;
-        }
-
-        updateActiveProgressToast();
       };
 
       const promise = runImmediateGitActionMutation.mutateAsync({
