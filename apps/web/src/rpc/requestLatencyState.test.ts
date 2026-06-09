@@ -6,6 +6,7 @@ import {
   resetRequestLatencyStateForTests,
   trackRpcRequestSent,
   SLOW_RPC_ACK_THRESHOLD_MS,
+  SLOW_RPC_ACK_THRESHOLD_MS_BY_TAG,
   MAX_TRACKED_RPC_ACK_REQUESTS,
 } from "./requestLatencyState";
 
@@ -41,6 +42,28 @@ describe("requestLatencyState", () => {
 
     acknowledgeRpcRequest("1");
     expect(getSlowRpcAckRequests()).toEqual([]);
+  });
+
+  it("uses a longer slow threshold for commit message generation", () => {
+    const thresholdMs = SLOW_RPC_ACK_THRESHOLD_MS_BY_TAG["git.generateCommitMessage"];
+    expect(thresholdMs).toBeDefined();
+    if (thresholdMs === undefined) {
+      throw new Error("Missing commit message slow request threshold.");
+    }
+    expect(thresholdMs).toBeGreaterThan(SLOW_RPC_ACK_THRESHOLD_MS);
+
+    trackRpcRequestSent("1", "git.generateCommitMessage");
+    vi.advanceTimersByTime(SLOW_RPC_ACK_THRESHOLD_MS);
+    expect(getSlowRpcAckRequests()).toEqual([]);
+
+    vi.advanceTimersByTime(thresholdMs - SLOW_RPC_ACK_THRESHOLD_MS);
+    expect(getSlowRpcAckRequests()).toMatchObject([
+      {
+        requestId: "1",
+        tag: "git.generateCommitMessage",
+        thresholdMs,
+      },
+    ]);
   });
 
   it("ignores long-lived subscribe requests", () => {

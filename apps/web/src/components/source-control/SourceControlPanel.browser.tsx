@@ -207,6 +207,12 @@ function makeStatus(overrides: Partial<VcsStatusResult> = {}): VcsStatusResult {
   };
 }
 
+function getCommitMessageTextarea() {
+  const textarea = document.querySelector('textarea[placeholder="Commit message"]');
+  expect(textarea).toBeInstanceOf(HTMLTextAreaElement);
+  return textarea as HTMLTextAreaElement;
+}
+
 function makeEnvironmentApi(
   overrides: { readonly vcs?: Partial<EnvironmentApi["vcs"]> } = {},
 ): EnvironmentApi {
@@ -469,9 +475,7 @@ describe("SourceControlPanel changes", () => {
       await page.getByText("Generate message").click();
 
       await vi.waitFor(() => {
-        const textarea = document.querySelector('textarea[placeholder="Commit message"]');
-        expect(textarea).toBeInstanceOf(HTMLTextAreaElement);
-        expect((textarea as HTMLTextAreaElement).value).toBe("Update app change");
+        expect(getCommitMessageTextarea().value).toBe("Update app change");
       });
 
       await page.getByRole("button", { name: "Discard changes to src/app.ts" }).click();
@@ -481,6 +485,134 @@ describe("SourceControlPanel changes", () => {
       await vi.waitFor(() => {
         expect(document.querySelector('textarea[placeholder="Commit message"]')).toBeNull();
       });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("hides the commit message editor after a generated draft is cleared and blurred", async () => {
+    const status = makeStatus({
+      hasWorkingTreeChanges: true,
+      workingTree: {
+        files: [
+          {
+            path: "src/app.ts",
+            indexStatus: null,
+            worktreeStatus: "modified",
+            insertions: 2,
+            deletions: 1,
+          },
+        ],
+        insertions: 2,
+        deletions: 1,
+      },
+    });
+    const mounted = await renderPanel({ status });
+
+    try {
+      await page.getByRole("button", { name: "Source control actions" }).click();
+      await page.getByText("Generate message").click();
+
+      await vi.waitFor(() => {
+        expect(getCommitMessageTextarea().value).toBe("Update app change");
+      });
+
+      await page.getByPlaceholder("Commit message").fill("");
+      expect(getCommitMessageTextarea().value).toBe("");
+
+      getCommitMessageTextarea().blur();
+
+      await vi.waitFor(() => {
+        expect(getCommitMessageTextarea().disabled).toBe(true);
+      });
+      await vi.waitFor(() => {
+        expect(document.querySelector('textarea[placeholder="Commit message"]')).toBeNull();
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("closes the empty commit message editor when generation fails without a draft", async () => {
+    gitActionMock.generateCommitMessage.mockRejectedValue(new Error("usage limit reached"));
+    const status = makeStatus({
+      hasWorkingTreeChanges: true,
+      workingTree: {
+        files: [
+          {
+            path: "src/app.ts",
+            indexStatus: null,
+            worktreeStatus: "modified",
+            insertions: 2,
+            deletions: 1,
+          },
+        ],
+        insertions: 2,
+        deletions: 1,
+      },
+    });
+    const mounted = await renderPanel({ status });
+
+    try {
+      await page.getByRole("button", { name: "Source control actions" }).click();
+      await page.getByText("Generate message").click();
+
+      await vi.waitFor(() => {
+        expect(gitActionMock.toastAdd).toHaveBeenCalledWith(
+          expect.objectContaining({
+            title: "Commit message generation failed",
+            description: "usage limit reached",
+          }),
+        );
+      });
+      await vi.waitFor(() => {
+        expect(document.querySelector('textarea[placeholder="Commit message"]')).toBeNull();
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("shows inline progress while generating a commit message from the dropdown", async () => {
+    const deferred = createDeferredPromise<{
+      readonly subject: string;
+      readonly body: string;
+      readonly message: string;
+    }>();
+    gitActionMock.generateCommitMessage.mockImplementation(async () => deferred.promise);
+    const status = makeStatus({
+      hasWorkingTreeChanges: true,
+      workingTree: {
+        files: [
+          {
+            path: "src/app.ts",
+            indexStatus: null,
+            worktreeStatus: "modified",
+            insertions: 2,
+            deletions: 1,
+          },
+        ],
+        insertions: 2,
+        deletions: 1,
+      },
+    });
+    const mounted = await renderPanel({ status });
+
+    try {
+      await page.getByRole("button", { name: "Source control actions" }).click();
+      await page.getByText("Generate message").click();
+
+      await expect.element(page.getByText("Generating commit message...")).toBeVisible();
+      await expect.element(page.getByText("Reading the current Git diff")).toBeVisible();
+      expect(getCommitMessageTextarea().disabled).toBe(true);
+
+      deferred.resolve({
+        subject: "Update app change",
+        body: "",
+        message: "Update app change",
+      });
+
+      await expect.element(page.getByText("Generating commit message...")).not.toBeInTheDocument();
     } finally {
       await mounted.cleanup();
     }
@@ -897,9 +1029,9 @@ describe("SourceControlPanel commit graph", () => {
         (path) => path.getAttribute("d") ?? "",
       );
       expect(crossLanePathData).toEqual(
-        expect.arrayContaining(["M 20 16.5 L 20 23 C 20 28, 8 23, 8 28"]),
+        expect.arrayContaining(["M 8 19 C 8 28, 20 19, 20 28", "M 20 28 C 20 37, 8 28, 8 37"]),
       );
-      expect(document.querySelector("svg circle.fill-amber-400")?.getAttribute("cy")).toBe("11.5");
+      expect(document.querySelector("svg circle.fill-amber-400")?.getAttribute("cy")).toBe("14");
     } finally {
       await mounted.cleanup();
     }

@@ -516,8 +516,8 @@ function commitGraphLaneFillClass(lane: number) {
   return COMMIT_GRAPH_LANE_FILL[lane % COMMIT_GRAPH_LANE_FILL.length];
 }
 
-function commitGraphLaneOpacity(lane: number) {
-  return lane === 0 ? 0.95 : 0.8;
+function commitGraphLaneOpacity(_lane: number) {
+  return 1;
 }
 
 // Cross-lane curves always carry the SIDE lane's identity, regardless of direction.
@@ -542,22 +542,32 @@ function CommitGraphGlyph({
   const width = commitGraphLaneX(layout.laneCount - 1) + COMMIT_GRAPH_LEFT_PADDING;
   const rowHeight = COMMIT_GRAPH_ROW_HEIGHT;
   const rowCenterY = COMMIT_GRAPH_NODE_Y;
-  const nodeY = layout.lane > 0 ? COMMIT_GRAPH_NODE_Y - 2.5 : COMMIT_GRAPH_NODE_Y;
+  const nodeY = rowCenterY;
   const radius = COMMIT_GRAPH_NODE_RADIUS;
   const gap = COMMIT_GRAPH_NODE_GAP;
   const nodeX = commitGraphLaneX(layout.lane);
   const isMergeCommit = layout.parentPaths.length > 1;
-  const sameLaneParent = layout.parentPaths.some(
-    (path) => path.fromLane === layout.lane && path.toLane === layout.lane,
+  const crossLanePaths = layout.parentPaths.filter((path) => path.fromLane !== path.toLane);
+  const deferredClosingPaths = crossLanePaths.filter(
+    (path) => path.fromLane === layout.lane && path.toLane < path.fromLane,
   );
+  const rowCrossLanePaths = crossLanePaths.filter(
+    (path) => !(path.fromLane === layout.lane && path.toLane < path.fromLane),
+  );
+  const hasCurrentLaneBottomSegment =
+    deferredClosingPaths.length > 0 ||
+    layout.parentPaths.some((path) => path.fromLane === layout.lane && path.toLane === layout.lane);
+  const bottomLaneCandidates = new Set(layout.bottomLanes);
+  if (deferredClosingPaths.length > 0) {
+    bottomLaneCandidates.add(layout.lane);
+  }
   const topLaneSet = new Set(layout.topLanes);
-  const visibleBottomLanes = layout.bottomLanes.filter((bottomLane) => {
+  const visibleBottomLanes = Array.from(bottomLaneCandidates).filter((bottomLane) => {
     if (bottomLane === layout.lane) {
-      return sameLaneParent;
+      return hasCurrentLaneBottomSegment;
     }
     return topLaneSet.has(bottomLane);
   });
-  const crossLanePaths = layout.parentPaths.filter((path) => path.fromLane !== path.toLane);
 
   return (
     <svg
@@ -601,16 +611,33 @@ function CommitGraphGlyph({
           />
         );
       })}
-      {crossLanePaths.map((path) => {
+      {rowCrossLanePaths.map((path) => {
         const fromX = commitGraphLaneX(path.fromLane);
         const toX = commitGraphLaneX(path.toLane);
         const startY = nodeY + gap;
-        const stemY = rowHeight - gap;
         const curveLane = commitGraphCurveLane(path.fromLane, path.toLane);
         return (
           <path
             key={`path-${path.fromLane}-${path.toLane}`}
-            d={`M ${fromX} ${startY} L ${fromX} ${stemY} C ${fromX} ${rowHeight}, ${toX} ${stemY}, ${toX} ${rowHeight}`}
+            d={`M ${fromX} ${startY} C ${fromX} ${rowHeight}, ${toX} ${startY}, ${toX} ${rowHeight}`}
+            className={commitGraphLaneStrokeClass(curveLane)}
+            fill="none"
+            strokeWidth={COMMIT_GRAPH_STROKE_WIDTH}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            opacity={commitGraphLaneOpacity(curveLane)}
+          />
+        );
+      })}
+      {deferredClosingPaths.map((path) => {
+        const fromX = commitGraphLaneX(path.fromLane);
+        const toX = commitGraphLaneX(path.toLane);
+        const endY = rowHeight + rowCenterY - gap;
+        const curveLane = commitGraphCurveLane(path.fromLane, path.toLane);
+        return (
+          <path
+            key={`deferred-path-${path.fromLane}-${path.toLane}`}
+            d={`M ${fromX} ${rowHeight} C ${fromX} ${endY}, ${toX} ${rowHeight}, ${toX} ${endY}`}
             className={commitGraphLaneStrokeClass(curveLane)}
             fill="none"
             strokeWidth={COMMIT_GRAPH_STROKE_WIDTH}
@@ -835,6 +862,7 @@ function CommitGraphRow({
 const GRAPH_LIMIT = 24;
 const BRANCH_MENU_REF_LIMIT = 14;
 const SOURCE_CONTROL_STATUS_REFRESH_INTERVAL_MS = 3_000;
+const COMMIT_MESSAGE_EDITOR_TRANSITION_MS = 160;
 const DEFAULT_CHANGES_PANEL_HEIGHT = 150;
 const DEFAULT_CHANGES_PANEL_RATIO = 0.4;
 const SOURCE_CONTROL_NAME_TOOLTIP_DELAY_MS = 1_200;
@@ -1319,6 +1347,7 @@ export function SourceControlPanel({
   const queryClient = useQueryClient();
   const [commitMessage, setCommitMessage] = useState("");
   const [commitMessageEditorOpen, setCommitMessageEditorOpen] = useState(false);
+  const [commitMessageEditorMounted, setCommitMessageEditorMounted] = useState(false);
   const [isPublishDialogOpen, setIsPublishDialogOpen] = useState(false);
   const [pendingDefaultBranchAction, setPendingDefaultBranchAction] =
     useState<DefaultBranchConfirmableAction | null>(null);
@@ -2119,11 +2148,16 @@ export function SourceControlPanel({
       return;
     }
 
+    const hadCommitMessage = commitMessage.trim().length > 0;
     setCommitMessageEditorOpen(true);
     try {
       const result = await generateCommitMessageMutation.mutateAsync({});
       setCommitMessage(result.message);
+      setCommitMessageEditorOpen(result.message.trim().length > 0);
     } catch (error) {
+      if (!hadCommitMessage) {
+        setCommitMessageEditorOpen(false);
+      }
       toastManager.add(
         stackedThreadToast({
           type: "error",
@@ -2135,6 +2169,7 @@ export function SourceControlPanel({
     }
   }, [
     changedFileCount,
+    commitMessage,
     cwd,
     environmentId,
     generateCommitMessageMutation,
@@ -2144,6 +2179,28 @@ export function SourceControlPanel({
 
   const hasCommitMessage = commitMessage.trim().length > 0;
   const showCommitMessageEditor = commitMessageEditorOpen || hasCommitMessage;
+  const renderCommitMessageEditor = showCommitMessageEditor || commitMessageEditorMounted;
+  const closeEmptyCommitMessageEditor = useCallback(() => {
+    if (commitMessage.trim().length === 0) {
+      setCommitMessageEditorOpen(false);
+    }
+  }, [commitMessage]);
+
+  useEffect(() => {
+    if (showCommitMessageEditor) {
+      setCommitMessageEditorMounted(true);
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setCommitMessageEditorMounted(false);
+    }, COMMIT_MESSAGE_EDITOR_TRANSITION_MS);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [showCommitMessageEditor]);
+
   const primaryAction = resolveSourceControlPrimaryAction({
     status,
     hasCommitMessage,
@@ -2724,15 +2781,54 @@ export function SourceControlPanel({
 
         <div className="flex min-h-0 flex-1 flex-col gap-3">
           <section ref={commitControlsRef} className="shrink-0 space-y-2">
-            {showCommitMessageEditor ? (
-              <Textarea
-                value={commitMessage}
-                onChange={(event) => setCommitMessage(event.target.value)}
-                placeholder="Commit message"
-                size="sm"
-                className="min-h-[4.5rem] resize-none text-xs"
-                autoFocus={commitMessageEditorOpen}
-              />
+            {renderCommitMessageEditor ? (
+              <div
+                aria-hidden={!showCommitMessageEditor}
+                className={cn(
+                  "grid transition-[grid-template-rows,opacity] duration-150 ease-out",
+                  showCommitMessageEditor
+                    ? "grid-rows-[1fr] opacity-100"
+                    : "grid-rows-[0fr] opacity-0",
+                )}
+              >
+                <div className="min-h-0 overflow-hidden">
+                  <Textarea
+                    value={commitMessage}
+                    onChange={(event) => setCommitMessage(event.target.value)}
+                    placeholder="Commit message"
+                    size="sm"
+                    className="min-h-[4.5rem] resize-none text-xs"
+                    autoFocus={showCommitMessageEditor && commitMessageEditorOpen}
+                    onBlur={closeEmptyCommitMessageEditor}
+                    disabled={generateCommitMessageMutation.isPending || !showCommitMessageEditor}
+                    aria-busy={generateCommitMessageMutation.isPending}
+                    tabIndex={showCommitMessageEditor ? undefined : -1}
+                  />
+                </div>
+              </div>
+            ) : null}
+            {generateCommitMessageMutation.isPending ? (
+              <div
+                role="status"
+                aria-live="polite"
+                className="flex min-w-0 items-start gap-2 rounded-md border border-border/70 bg-muted/35 px-2.5 py-2"
+              >
+                <RefreshCwIcon
+                  aria-hidden
+                  className="mt-0.5 size-3.5 shrink-0 animate-spin text-primary"
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-xs font-medium text-foreground">
+                    Generating commit message...
+                  </div>
+                  <div
+                    className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground"
+                    title="Reading the current Git diff"
+                  >
+                    Reading the current Git diff
+                  </div>
+                </div>
+              </div>
             ) : null}
             {activeGitActionProgressView ? (
               <div

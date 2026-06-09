@@ -12,6 +12,10 @@ import type { ChatAttachment } from "@t3tools/contracts";
 import { limitSection } from "./TextGenerationUtils.ts";
 import type { TextGenerationPolicy } from "./TextGenerationPolicy.ts";
 
+const COMMIT_MESSAGE_SUMMARY_PROMPT_MAX_CHARS = 4_000;
+const COMMIT_MESSAGE_PATCH_PROMPT_MAX_CHARS = 8_000;
+const PR_CONTEXT_PROMPT_MAX_CHARS = 40_000;
+
 function policyInstruction(instruction: string | undefined): ReadonlyArray<string> {
   const trimmed = instruction?.trim();
   return trimmed ? ["", "Additional instructions:", limitSection(trimmed, 4_000)] : [];
@@ -51,10 +55,10 @@ export function buildCommitMessagePrompt(input: CommitMessagePromptInput) {
     `Branch: ${input.branch ?? "(detached)"}`,
     "",
     "Staged files:",
-    limitSection(input.stagedSummary, 6_000),
+    limitSection(input.stagedSummary, COMMIT_MESSAGE_SUMMARY_PROMPT_MAX_CHARS),
     "",
     "Staged patch:",
-    limitSection(input.stagedPatch, 40_000),
+    limitSection(input.stagedPatch, COMMIT_MESSAGE_PATCH_PROMPT_MAX_CHARS),
   ].join("\n");
 
   if (wantsBranch) {
@@ -111,7 +115,7 @@ export function buildPrContentPrompt(input: PrContentPromptInput) {
     limitSection(input.diffSummary, 12_000),
     "",
     "Diff patch:",
-    limitSection(input.diffPatch, 40_000),
+    limitSection(input.diffPatch, PR_CONTEXT_PROMPT_MAX_CHARS),
   ].join("\n");
 
   const outputSchema = Schema.Struct({

@@ -40,6 +40,7 @@ import {
 
 const CODEX_GIT_TEXT_GENERATION_REASONING_EFFORT = "low";
 const CODEX_DEFAULT_TIMEOUT_MS = 180_000;
+const CODEX_COMMIT_MESSAGE_TIMEOUT_MS = 60_000;
 const CODEX_THREAD_TITLE_TIMEOUT_MS = 30_000;
 const encodeJsonString = Schema.encodeEffect(Schema.UnknownFromJsonString);
 
@@ -80,6 +81,7 @@ function withDefaultCodexModel(modelSelection: ModelSelection): ModelSelection {
     model: DEFAULT_MODEL,
   };
 }
+
 /**
  * Build a Codex text-generation closure bound to a specific `CodexSettings`
  * payload. See `makeCodexAdapter` for the overall per-instance rationale.
@@ -204,9 +206,11 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       toJsonSchemaObject(outputSchemaJson),
     );
     const timeoutMs =
-      operation === "generateThreadTitle"
-        ? CODEX_THREAD_TITLE_TIMEOUT_MS
-        : CODEX_DEFAULT_TIMEOUT_MS;
+      operation === "generateCommitMessage"
+        ? CODEX_COMMIT_MESSAGE_TIMEOUT_MS
+        : operation === "generateThreadTitle"
+          ? CODEX_THREAD_TITLE_TIMEOUT_MS
+          : CODEX_DEFAULT_TIMEOUT_MS;
     const schemaPath = yield* writeTempFile(operation, "codex-schema", schemaJson);
     const outputPath = yield* writeTempFile(operation, "codex-output", "");
 
@@ -220,6 +224,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
           "exec",
           "--ephemeral",
           "--skip-git-repo-check",
+          ...(operation === "generateCommitMessage" ? ["--ignore-rules"] : []),
           "-s",
           "read-only",
           "--model",

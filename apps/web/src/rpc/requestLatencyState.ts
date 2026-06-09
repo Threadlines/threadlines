@@ -4,6 +4,9 @@ import { Atom } from "effect/unstable/reactivity";
 import { appAtomRegistry } from "./atomRegistry";
 
 export const SLOW_RPC_ACK_THRESHOLD_MS = 15_000;
+export const SLOW_RPC_ACK_THRESHOLD_MS_BY_TAG: Readonly<Record<string, number>> = {
+  "git.generateCommitMessage": 30_000,
+};
 export const MAX_TRACKED_RPC_ACK_REQUESTS = 256;
 let slowRpcAckThresholdMs = SLOW_RPC_ACK_THRESHOLD_MS;
 
@@ -39,6 +42,13 @@ function shouldTrackRpcAck(tag: string): boolean {
   return !tag.includes("subscribe");
 }
 
+function resolveSlowRpcAckThresholdMs(tag: string): number {
+  if (slowRpcAckThresholdMs !== SLOW_RPC_ACK_THRESHOLD_MS) {
+    return slowRpcAckThresholdMs;
+  }
+  return SLOW_RPC_ACK_THRESHOLD_MS_BY_TAG[tag] ?? SLOW_RPC_ACK_THRESHOLD_MS;
+}
+
 export function getSlowRpcAckRequests(): ReadonlyArray<SlowRpcAckRequest> {
   return getSlowRpcAckRequestsValue();
 }
@@ -52,17 +62,18 @@ export function trackRpcRequestSent(requestId: string, tag: string): void {
   evictOldestPendingRpcRequestIfNeeded();
 
   const startedAtMs = Date.now();
+  const thresholdMs = resolveSlowRpcAckThresholdMs(tag);
   const request: SlowRpcAckRequest = {
     requestId,
     startedAt: new Date(startedAtMs).toISOString(),
     startedAtMs,
     tag,
-    thresholdMs: slowRpcAckThresholdMs,
+    thresholdMs,
   };
   const timeoutId = setTimeout(() => {
     pendingRpcAckRequests.delete(requestId);
     appendSlowRpcAckRequest(request);
-  }, slowRpcAckThresholdMs);
+  }, thresholdMs);
 
   pendingRpcAckRequests.set(requestId, {
     request,

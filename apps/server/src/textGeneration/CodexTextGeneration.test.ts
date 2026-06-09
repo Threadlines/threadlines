@@ -43,6 +43,9 @@ function makeFakeCodexBinary(
     stderr?: string;
     requireImage?: boolean;
     requireFastServiceTier?: boolean;
+    forbidFastServiceTier?: boolean;
+    requireIgnoreRules?: boolean;
+    forbidIgnoreRules?: boolean;
     requireReasoningEffort?: string;
     forbidReasoningEffort?: boolean;
     requireModel?: string;
@@ -80,6 +83,9 @@ function makeFakeCodexBinary(
             exitCode: input.exitCode ?? 0,
             requireImage: input.requireImage === true,
             requireFastServiceTier: input.requireFastServiceTier === true,
+            forbidFastServiceTier: input.forbidFastServiceTier === true,
+            requireIgnoreRules: input.requireIgnoreRules === true,
+            forbidIgnoreRules: input.forbidIgnoreRules === true,
             requireReasoningEffort: input.requireReasoningEffort ?? null,
             forbidReasoningEffort: input.forbidReasoningEffort === true,
             requireModel: input.requireModel ?? null,
@@ -93,10 +99,15 @@ function makeFakeCodexBinary(
           'let outputPath = "";',
           "let seenImage = false;",
           "let seenFastServiceTier = false;",
+          "let seenIgnoreRules = false;",
           'let seenReasoningEffort = "";',
           'let seenModel = "";',
           "for (let index = 0; index < argv.length; index += 1) {",
           "  const arg = argv[index];",
+          '  if (arg === "--ignore-rules") {',
+          "    seenIgnoreRules = true;",
+          "    continue;",
+          "  }",
           '  if (arg === "--model") {',
           "    index += 1;",
           "    seenModel = argv[index] || '';",
@@ -152,6 +163,30 @@ function makeFakeCodexBinary(
                 "if (!seenFastServiceTier) {",
                 '  process.stderr.write("missing fast service tier config\\n");',
                 "  process.exit(5);",
+                "}",
+              ]
+            : []),
+          ...(input.forbidFastServiceTier === true
+            ? [
+                "if (seenFastServiceTier) {",
+                '  process.stderr.write("fast service tier config should be omitted\\n");',
+                "  process.exit(9);",
+                "}",
+              ]
+            : []),
+          ...(input.requireIgnoreRules === true
+            ? [
+                "if (!seenIgnoreRules) {",
+                '  process.stderr.write("missing --ignore-rules\\n");',
+                "  process.exit(10);",
+                "}",
+              ]
+            : []),
+          ...(input.forbidIgnoreRules === true
+            ? [
+                "if (seenIgnoreRules) {",
+                '  process.stderr.write("--ignore-rules should be omitted\\n");',
+                "  process.exit(11);",
                 "}",
               ]
             : []),
@@ -219,9 +254,15 @@ function makeFakeCodexBinary(
         'output_path=""',
         'seen_image="0"',
         'seen_fast_service_tier="0"',
+        'seen_ignore_rules="0"',
         'seen_reasoning_effort=""',
         'seen_model=""',
         "while [ $# -gt 0 ]; do",
+        '  if [ "$1" = "--ignore-rules" ]; then',
+        '    seen_ignore_rules="1"',
+        "    shift",
+        "    continue",
+        "  fi",
         '  if [ "$1" = "--model" ]; then',
         "    shift",
         '    seen_model="$1"',
@@ -293,6 +334,30 @@ function makeFakeCodexBinary(
               "fi",
             ]
           : []),
+        ...(input.forbidFastServiceTier
+          ? [
+              'if [ "$seen_fast_service_tier" = "1" ]; then',
+              '  printf "%s\\n" "fast service tier config should be omitted" >&2',
+              `  exit 9`,
+              "fi",
+            ]
+          : []),
+        ...(input.requireIgnoreRules
+          ? [
+              'if [ "$seen_ignore_rules" != "1" ]; then',
+              '  printf "%s\\n" "missing --ignore-rules" >&2',
+              `  exit 10`,
+              "fi",
+            ]
+          : []),
+        ...(input.forbidIgnoreRules
+          ? [
+              'if [ "$seen_ignore_rules" = "1" ]; then',
+              '  printf "%s\\n" "--ignore-rules should be omitted" >&2',
+              `  exit 11`,
+              "fi",
+            ]
+          : []),
         ...(input.requireReasoningEffort !== undefined
           ? [
               `if [ "$seen_reasoning_effort" != "model_reasoning_effort=\\"${input.requireReasoningEffort}\\"" ]; then`,
@@ -354,6 +419,9 @@ function withFakeCodexEnv<A, E, R>(
     stderr?: string;
     requireImage?: boolean;
     requireFastServiceTier?: boolean;
+    forbidFastServiceTier?: boolean;
+    requireIgnoreRules?: boolean;
+    forbidIgnoreRules?: boolean;
     requireReasoningEffort?: string;
     forbidReasoningEffort?: boolean;
     requireModel?: string;
@@ -446,6 +514,71 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
           branch: "feature/codex-effect",
           stagedSummary: "M README.md",
           stagedPatch: "diff --git a/README.md b/README.md",
+          modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+        }),
+    ),
+  );
+
+  it.effect("skips rules by default for commit messages", () =>
+    withFakeCodexEnv(
+      {
+        output: JSON.stringify({
+          subject: "Add important change",
+          body: "",
+        }),
+        requireIgnoreRules: true,
+      },
+      (textGeneration) =>
+        textGeneration.generateCommitMessage({
+          cwd: process.cwd(),
+          branch: "feature/codex-effect",
+          stagedSummary: "M README.md",
+          stagedPatch: "diff --git a/README.md b/README.md",
+          modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+        }),
+    ),
+  );
+
+  it.effect("does not use fast service tier unless selected for commit messages", () =>
+    withFakeCodexEnv(
+      {
+        output: JSON.stringify({
+          subject: "Add important change",
+          body: "",
+        }),
+        forbidFastServiceTier: true,
+        requireIgnoreRules: true,
+      },
+      (textGeneration) =>
+        textGeneration.generateCommitMessage({
+          cwd: process.cwd(),
+          branch: "feature/codex-effect",
+          stagedSummary: "M README.md",
+          stagedPatch: "diff --git a/README.md b/README.md",
+          modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4-mini", [
+            { id: "fastMode", value: false },
+          ]),
+        }),
+    ),
+  );
+
+  it.effect("keeps rules enabled for PR content generation", () =>
+    withFakeCodexEnv(
+      {
+        output: JSON.stringify({
+          title: "Improve orchestration flow",
+          body: "## Summary\n- improve flow\n\n## Testing\n- Not run",
+        }),
+        forbidIgnoreRules: true,
+      },
+      (textGeneration) =>
+        textGeneration.generatePrContent({
+          cwd: process.cwd(),
+          baseBranch: "main",
+          headBranch: "feature/codex-effect",
+          commitSummary: "feat: improve orchestration flow",
+          diffSummary: "2 files changed",
+          diffPatch: "diff --git a/a.ts b/a.ts",
           modelSelection: DEFAULT_TEST_MODEL_SELECTION,
         }),
     ),
