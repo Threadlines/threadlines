@@ -92,7 +92,6 @@ import {
   getGitActionProgressView,
   type ActiveGitActionProgress,
   type GitActionProgressView,
-  updateGitActionProgressToast,
 } from "../gitActionProgressToast";
 import {
   AlertDialog,
@@ -542,7 +541,8 @@ function CommitGraphGlyph({
 }) {
   const width = commitGraphLaneX(layout.laneCount - 1) + COMMIT_GRAPH_LEFT_PADDING;
   const rowHeight = COMMIT_GRAPH_ROW_HEIGHT;
-  const nodeY = COMMIT_GRAPH_NODE_Y;
+  const rowCenterY = COMMIT_GRAPH_NODE_Y;
+  const nodeY = layout.lane > 0 ? COMMIT_GRAPH_NODE_Y - 2.5 : COMMIT_GRAPH_NODE_Y;
   const radius = COMMIT_GRAPH_NODE_RADIUS;
   const gap = COMMIT_GRAPH_NODE_GAP;
   const nodeX = commitGraphLaneX(layout.lane);
@@ -569,7 +569,7 @@ function CommitGraphGlyph({
     >
       {layout.topLanes.map((lane) => {
         const x = commitGraphLaneX(lane);
-        const y2 = lane === layout.lane ? nodeY - gap : nodeY;
+        const y2 = lane === layout.lane ? nodeY - gap : rowCenterY;
         return (
           <line
             key={`top-${lane}`}
@@ -586,7 +586,7 @@ function CommitGraphGlyph({
       })}
       {visibleBottomLanes.map((lane) => {
         const x = commitGraphLaneX(lane);
-        const y1 = lane === layout.lane ? nodeY + gap : nodeY;
+        const y1 = lane === layout.lane ? nodeY + gap : rowCenterY;
         return (
           <line
             key={`bottom-${lane}`}
@@ -605,12 +605,12 @@ function CommitGraphGlyph({
         const fromX = commitGraphLaneX(path.fromLane);
         const toX = commitGraphLaneX(path.toLane);
         const startY = nodeY + gap;
-        const midY = (startY + rowHeight) / 2;
+        const stemY = rowHeight - gap;
         const curveLane = commitGraphCurveLane(path.fromLane, path.toLane);
         return (
           <path
             key={`path-${path.fromLane}-${path.toLane}`}
-            d={`M ${fromX} ${startY} C ${fromX} ${midY}, ${toX} ${midY}, ${toX} ${rowHeight}`}
+            d={`M ${fromX} ${startY} L ${fromX} ${stemY} C ${fromX} ${rowHeight}, ${toX} ${stemY}, ${toX} ${rowHeight}`}
             className={commitGraphLaneStrokeClass(curveLane)}
             fill="none"
             strokeWidth={COMMIT_GRAPH_STROKE_WIDTH}
@@ -1565,7 +1565,6 @@ export function SourceControlPanel({
     if (!progress) {
       return;
     }
-    updateGitActionProgressToast(progress);
     setActiveGitActionProgressView(getGitActionProgressView(progress));
   }, []);
 
@@ -1635,15 +1634,7 @@ export function SourceControlPanel({
       });
       const initialTitle = progressStages[0] ?? "Running git action...";
       const scopedToastData = threadToastData ? { ...threadToastData } : undefined;
-      const toastId = toastManager.add({
-        type: "loading",
-        title: initialTitle,
-        description: "Waiting for Git...",
-        timeout: 0,
-        data: scopedToastData,
-      });
       activeGitActionProgressRef.current = createGitActionProgress({
-        toastId,
         toastData: scopedToastData,
         actionId,
         initialTitle,
@@ -1680,7 +1671,7 @@ export function SourceControlPanel({
           setCommitMessage("");
           setCommitMessageEditorOpen(false);
         }
-        toastManager.update(toastId, {
+        toastManager.add({
           type: "success",
           title: result.toast.title,
           description: result.toast.description,
@@ -1697,8 +1688,7 @@ export function SourceControlPanel({
       } catch (error) {
         activeGitActionProgressRef.current = null;
         setActiveGitActionProgressView(null);
-        toastManager.update(
-          toastId,
+        toastManager.add(
           stackedThreadToast({
             type: "error",
             title: "Action failed",

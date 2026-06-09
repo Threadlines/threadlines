@@ -5,7 +5,7 @@ import { toastManager, type ThreadToastData } from "~/components/ui/toast";
 export type GitActionToastId = ReturnType<typeof toastManager.add>;
 
 export interface ActiveGitActionProgress {
-  readonly toastId: GitActionToastId;
+  readonly toastId?: GitActionToastId;
   readonly toastData: ThreadToastData | undefined;
   readonly actionId: string;
   title: string;
@@ -23,13 +23,13 @@ export interface GitActionProgressView {
 }
 
 export function createGitActionProgress(input: {
-  readonly toastId: GitActionToastId;
+  readonly toastId?: GitActionToastId;
   readonly toastData: ThreadToastData | undefined;
   readonly actionId: string;
   readonly initialTitle: string;
 }): ActiveGitActionProgress {
   return {
-    toastId: input.toastId,
+    ...(input.toastId !== undefined ? { toastId: input.toastId } : {}),
     toastData: input.toastData,
     actionId: input.actionId,
     title: input.initialTitle,
@@ -79,6 +79,10 @@ export function getGitActionProgressView(progress: ActiveGitActionProgress): Git
 }
 
 export function updateGitActionProgressToast(progress: ActiveGitActionProgress): void {
+  if (progress.toastId === undefined) {
+    return;
+  }
+
   toastManager.update(progress.toastId, {
     type: "loading",
     title: progress.title,

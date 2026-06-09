@@ -2,6 +2,8 @@ import "../../index.css";
 
 import {
   EnvironmentId,
+  type GitActionProgressEvent,
+  type GitRunStackedActionResult,
   type EnvironmentApi,
   type LocalApi,
   type VcsCommitGraphResult,
@@ -33,6 +35,14 @@ const gitStatusMock = vi.hoisted(() => ({
   refreshLocalGitStatus: vi.fn(async () => null),
 }));
 
+const gitActionMock = vi.hoisted(() => ({
+  runStackedAction: vi.fn(),
+  toastAdd: vi.fn(() => "toast-1"),
+  toastClose: vi.fn(),
+  toastPromise: vi.fn(),
+  toastUpdate: vi.fn(),
+}));
+
 vi.mock("~/lib/gitStatusState", () => ({
   useGitStatus: () => ({
     data: gitStatusMock.data,
@@ -45,6 +55,57 @@ vi.mock("~/lib/gitStatusState", () => ({
   refreshLocalGitStatus: gitStatusMock.refreshLocalGitStatus,
   resetGitStatusStateForTests: () => {
     gitStatusMock.data = null;
+  },
+}));
+
+vi.mock("~/environments/runtime", () => {
+  const connection = {
+    ensureBootstrapped: vi.fn(async () => undefined),
+    reconnect: vi.fn(async () => undefined),
+    dispose: vi.fn(async () => undefined),
+    client: {
+      git: {
+        runStackedAction: gitActionMock.runStackedAction,
+      },
+    },
+  };
+
+  return {
+    addSavedEnvironment: vi.fn(async () => undefined),
+    connectDesktopSshEnvironment: vi.fn(async () => undefined),
+    disconnectSavedEnvironment: vi.fn(async () => undefined),
+    ensureEnvironmentConnectionBootstrapped: vi.fn(async () => undefined),
+    getEnvironmentHttpBaseUrl: vi.fn(() => null),
+    getPrimaryEnvironmentConnection: vi.fn(() => connection),
+    getSavedEnvironmentRecord: vi.fn(() => null),
+    getSavedEnvironmentRuntimeState: vi.fn(() => null),
+    hasSavedEnvironmentRegistryHydrated: vi.fn(() => true),
+    listSavedEnvironmentRecords: vi.fn(() => []),
+    readEnvironmentConnection: vi.fn(() => null),
+    reconnectSavedEnvironment: vi.fn(async () => undefined),
+    removeSavedEnvironment: vi.fn(async () => undefined),
+    requireEnvironmentConnection: vi.fn(() => connection),
+    resetEnvironmentServiceForTests: vi.fn(),
+    resetSavedEnvironmentRegistryStoreForTests: vi.fn(),
+    resetSavedEnvironmentRuntimeStoreForTests: vi.fn(),
+    resolveEnvironmentHttpUrl: vi.fn(() => null),
+    startEnvironmentConnectionService: vi.fn(() => undefined),
+    subscribeEnvironmentConnections: vi.fn(() => () => undefined),
+    useSavedEnvironmentRegistryStore: vi.fn((selector: (state: unknown) => unknown) =>
+      selector({}),
+    ),
+    useSavedEnvironmentRuntimeStore: vi.fn((selector: (state: unknown) => unknown) => selector({})),
+    waitForSavedEnvironmentRegistryHydration: vi.fn(async () => undefined),
+  };
+});
+
+vi.mock("../ui/toast", () => ({
+  stackedThreadToast: vi.fn((options: unknown) => options),
+  toastManager: {
+    add: gitActionMock.toastAdd,
+    close: gitActionMock.toastClose,
+    promise: gitActionMock.toastPromise,
+    update: gitActionMock.toastUpdate,
   },
 }));
 
@@ -102,6 +163,18 @@ const GRAPH: VcsCommitGraphResult = {
     },
   ],
 };
+
+function createDeferredPromise<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+
+  return { promise, resolve, reject };
+}
 
 function makeStatus(overrides: Partial<VcsStatusResult> = {}): VcsStatusResult {
   const baseStatus: VcsStatusResult = {
@@ -230,6 +303,11 @@ describe("SourceControlPanel changes", () => {
   beforeEach(async () => {
     gitStatusMock.refreshGitStatus.mockClear();
     gitStatusMock.refreshLocalGitStatus.mockClear();
+    gitActionMock.runStackedAction.mockReset();
+    gitActionMock.toastAdd.mockClear();
+    gitActionMock.toastClose.mockClear();
+    gitActionMock.toastPromise.mockClear();
+    gitActionMock.toastUpdate.mockClear();
     Reflect.deleteProperty(window, "nativeApi");
     window.localStorage.clear();
     await __resetLocalApiForTests();
@@ -302,6 +380,87 @@ describe("SourceControlPanel changes", () => {
           cwd: CWD,
         });
       });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps stacked git action progress inline and reserves toasts for the final result", async () => {
+    const actionResult: GitRunStackedActionResult = {
+      action: "commit_push",
+      branch: { status: "skipped_not_requested" },
+      commit: {
+        status: "created",
+        commitSha: "abc1234def5678",
+        subject: "feat: keep progress inline",
+      },
+      push: {
+        status: "pushed",
+        branch: "feature/source-control",
+        upstreamBranch: "origin/feature/source-control",
+      },
+      pr: { status: "skipped_not_requested" },
+      toast: {
+        title: "Pushed abc1234 to origin/feature/source-control",
+        description: "feat: keep progress inline",
+        cta: { kind: "none" },
+      },
+    };
+    const deferred = createDeferredPromise<GitRunStackedActionResult>();
+    gitActionMock.runStackedAction.mockImplementation(
+      (
+        input: { readonly actionId: string; readonly action: "commit_push"; readonly cwd: string },
+        options?: { readonly onProgress?: (event: GitActionProgressEvent) => void },
+      ) => {
+        options?.onProgress?.({
+          actionId: input.actionId,
+          action: input.action,
+          cwd: input.cwd,
+          kind: "phase_started",
+          phase: "commit",
+          label: "Committing...",
+        });
+        return deferred.promise;
+      },
+    );
+    const status = makeStatus({
+      refName: "feature/source-control",
+      hasWorkingTreeChanges: true,
+      workingTree: {
+        files: [
+          {
+            path: "src/app.ts",
+            indexStatus: null,
+            worktreeStatus: "modified",
+            insertions: 2,
+            deletions: 1,
+          },
+        ],
+        insertions: 2,
+        deletions: 1,
+      },
+    });
+    const mounted = await renderPanel({ status });
+
+    try {
+      await page.getByRole("button", { name: "Generate, commit & push" }).click();
+
+      await expect.element(page.getByText("Committing...")).toBeVisible();
+      expect(gitActionMock.toastAdd).not.toHaveBeenCalled();
+      expect(gitActionMock.toastUpdate).not.toHaveBeenCalled();
+
+      deferred.resolve(actionResult);
+
+      await vi.waitFor(() => {
+        expect(gitActionMock.toastAdd).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "success",
+            title: "Pushed abc1234 to origin/feature/source-control",
+            description: "feat: keep progress inline",
+          }),
+        );
+      });
+      await expect.element(page.getByText("Committing...")).not.toBeInTheDocument();
     } finally {
       await mounted.cleanup();
     }
@@ -633,6 +792,13 @@ describe("SourceControlPanel commit graph", () => {
 
       const crossLanePaths = document.querySelectorAll('svg path[d^="M "]');
       expect(crossLanePaths.length).toBeGreaterThanOrEqual(2);
+      const crossLanePathData = Array.from(crossLanePaths).map(
+        (path) => path.getAttribute("d") ?? "",
+      );
+      expect(crossLanePathData).toEqual(
+        expect.arrayContaining(["M 20 16.5 L 20 23 C 20 28, 8 23, 8 28"]),
+      );
+      expect(document.querySelector("svg circle.fill-amber-400")?.getAttribute("cy")).toBe("11.5");
     } finally {
       await mounted.cleanup();
     }
