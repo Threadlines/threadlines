@@ -222,3 +222,18 @@ If the preset needs different Claude files, give it a different `Claude HOME pat
 different API keys, base URLs, or router settings, use Environment variables.
 
 Do not put environment variable assignments in `Launch arguments`.
+
+## Claude Fable 5
+
+BadCode shows Claude Fable 5 when the configured Claude Code binary is `2.1.170` or newer.
+Fable is not a default Claude Code model; select `Claude Fable 5` in the model picker when you want
+Anthropic's highest-capability widely available model for long-running or difficult work.
+
+Anthropic's launch note says Fable 5 is included on Pro, Max, Team, and seat-based Enterprise
+subscriptions through June 22, 2026. Starting June 23, 2026, using it on those subscription plans may
+require usage credits unless Anthropic extends the included window. API and consumption-based
+Enterprise access are billed by usage.
+
+Fable has content-based fallback for some cybersecurity, biology, chemistry, and distillation-like
+requests. If a request is flagged, Claude Code may switch that session to Opus and show a transcript
+notice. This can happen from repository context alone in security-heavy or biology-heavy workspaces.

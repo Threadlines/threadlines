@@ -1578,6 +1578,64 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
         ),
       );
 
+      it.effect("includes Claude Fable 5 with launch capabilities on supported versions", () =>
+        Effect.gen(function* () {
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities(),
+          );
+          const fable = status.models.find((model) => model.slug === "claude-fable-5");
+          if (!fable) {
+            assert.fail("Expected Claude Fable 5 to be present for Claude Code v2.1.170.");
+          }
+          if (!fable.capabilities) {
+            assert.fail(
+              "Expected Claude Fable 5 capabilities to be present for Claude Code v2.1.170.",
+            );
+          }
+          assert.strictEqual(fable.name, "Claude Fable 5");
+          assert.strictEqual(
+            fable.description,
+            "Included on subscriptions through Jun 22; usage credits may be required Jun 23.",
+          );
+          const effortDescriptor = fable.capabilities.optionDescriptors?.find(
+            (descriptor) => descriptor.type === "select" && descriptor.id === "effort",
+          );
+          assert.deepStrictEqual(
+            effortDescriptor?.type === "select" ? effortDescriptor.options : undefined,
+            [
+              { id: "low", label: "Low" },
+              { id: "medium", label: "Medium" },
+              { id: "high", label: "High", isDefault: true },
+              { id: "xhigh", label: "Extra High" },
+              { id: "max", label: "Max" },
+              { id: "ultracode", label: "Ultracode" },
+              { id: "ultrathink", label: "Ultrathink" },
+            ],
+          );
+          assert.strictEqual(
+            fable.capabilities.optionDescriptors?.some(
+              (descriptor) => descriptor.type === "boolean" && descriptor.id === "thinking",
+            ),
+            false,
+          );
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.170\n", stderr: "", code: 0 };
+              if (joined === "auth status")
+                return {
+                  stdout: '{"loggedIn":true,"authMethod":"claude.ai"}\n',
+                  stderr: "",
+                  code: 0,
+                };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
       it.effect(
         "includes Claude Opus 4.8 with current launch capabilities on supported versions",
         () =>
@@ -1712,6 +1770,41 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             mockSpawnerLayer((args) => {
               const joined = args.join(" ");
               if (joined === "--version") return { stdout: "2.1.153\n", stderr: "", code: 0 };
+              if (joined === "auth status")
+                return {
+                  stdout: '{"loggedIn":true,"authMethod":"claude.ai"}\n',
+                  stderr: "",
+                  code: 0,
+                };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      it.effect("hides Claude Fable 5 before the Claude Code version that exposes it", () =>
+        Effect.gen(function* () {
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities(),
+          );
+          assert.strictEqual(
+            status.models.some((model) => model.slug === "claude-fable-5"),
+            false,
+          );
+          assert.strictEqual(
+            status.models.some((model) => model.slug === "claude-opus-4-8"),
+            true,
+          );
+          assert.strictEqual(
+            status.message,
+            "Claude Code v2.1.169 is too old for Claude Fable 5. Upgrade to v2.1.170 or newer to access it.",
+          );
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.169\n", stderr: "", code: 0 };
               if (joined === "auth status")
                 return {
                   stdout: '{"loggedIn":true,"authMethod":"claude.ai"}\n',

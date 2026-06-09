@@ -10,6 +10,7 @@ type ModelPickerSearchableModel = {
    */
   providerDisplayName: string;
   name: string;
+  description?: string;
   shortName?: string;
   subProvider?: string;
   isFavorite?: boolean;
@@ -20,6 +21,7 @@ const MODEL_PICKER_FAVORITE_SCORE_BOOST = 24;
 function getModelPickerSearchFields(model: ModelPickerSearchableModel): string[] {
   return [
     normalizeSearchQuery(model.name),
+    ...(model.description ? [normalizeSearchQuery(model.description)] : []),
     ...(model.shortName ? [normalizeSearchQuery(model.shortName)] : []),
     ...(model.subProvider ? [normalizeSearchQuery(model.subProvider)] : []),
     normalizeSearchQuery(model.driverKind),
@@ -46,7 +48,14 @@ function scoreModelPickerSearchToken(
 
 export function buildModelPickerSearchText(model: ModelPickerSearchableModel): string {
   return normalizeSearchQuery(
-    [model.name, model.shortName, model.subProvider, model.driverKind, model.providerDisplayName]
+    [
+      model.name,
+      model.description,
+      model.shortName,
+      model.subProvider,
+      model.driverKind,
+      model.providerDisplayName,
+    ]
       .filter((value): value is string => typeof value === "string" && value.length > 0)
       .join(" "),
   );

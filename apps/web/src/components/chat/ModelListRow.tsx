@@ -102,6 +102,14 @@ export const ModelListRow = memo(function ModelListRow(props: {
             </Kbd>
           ) : null}
         </div>
+        {props.model.description ? (
+          <div
+            className="mt-0.5 truncate text-[11px] font-normal leading-snug text-muted-foreground/75"
+            title={props.model.description}
+          >
+            {props.model.description}
+          </div>
+        ) : null}
         {props.showProvider && (
           <div className="flex items-center gap-1 mt-0.5">
             {ProviderIcon ? <ProviderIcon className="size-3 shrink-0" /> : null}

@@ -548,6 +548,34 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("forwards Claude Fable 5 effort without a thinking toggle", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-fable-5",
+          [
+            { id: "effort", value: "xhigh" },
+            { id: "thinking", value: false },
+          ],
+        ),
+        runtimeMode: "full-access",
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      assert.equal(createInput?.options.model, "claude-fable-5");
+      assert.equal(createInput?.options.effort, "xhigh");
+      assert.equal(createInput?.options.settings, undefined);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("forwards Claude thinking toggle into SDK settings for Haiku 4.5", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

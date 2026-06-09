@@ -27,6 +27,7 @@ import { providerModelKey, sortProviderModelItems } from "../../modelOrdering";
 type ModelPickerItem = {
   slug: string;
   name: string;
+  description?: string;
   shortName?: string;
   subProvider?: string;
   instanceId: ProviderInstanceId;
@@ -196,6 +197,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
         out.push({
           slug: model.slug,
           name: model.name,
+          ...(model.description ? { description: model.description } : {}),
           ...(model.shortName ? { shortName: model.shortName } : {}),
           ...(model.subProvider ? { subProvider: model.subProvider } : {}),
           instanceId,
@@ -240,6 +242,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
           score: scoreModelPickerSearch(
             {
               name: model.name,
+              ...(model.description ? { description: model.description } : {}),
               ...(model.shortName ? { shortName: model.shortName } : {}),
               ...(model.subProvider ? { subProvider: model.subProvider } : {}),
               driverKind: model.driverKind,
@@ -251,6 +254,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
           isFavorite: favoritesSet.has(providerModelKey(model.instanceId, model.slug)),
           tieBreaker: buildModelPickerSearchText({
             name: model.name,
+            ...(model.description ? { description: model.description } : {}),
             ...(model.shortName ? { shortName: model.shortName } : {}),
             ...(model.subProvider ? { subProvider: model.subProvider } : {}),
             driverKind: model.driverKind,

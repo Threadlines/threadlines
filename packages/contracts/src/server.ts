@@ -104,6 +104,7 @@ export type ServerProviderAccountUsage = typeof ServerProviderAccountUsage.Type;
 export const ServerProviderModel = Schema.Struct({
   slug: TrimmedNonEmptyString,
   name: TrimmedNonEmptyString,
+  description: Schema.optional(TrimmedNonEmptyString),
   shortName: Schema.optional(TrimmedNonEmptyString),
   subProvider: Schema.optional(TrimmedNonEmptyString),
   isCustom: Schema.Boolean,

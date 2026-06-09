@@ -72,6 +72,32 @@ describe("ServerProvider", () => {
     expect(parsed.continuation?.groupKey).toBe("codex:home:/Users/julius/.codex");
   });
 
+  it("decodes provider model descriptions", () => {
+    const parsed = decodeServerProvider({
+      instanceId: "claudeAgent",
+      driver: "claudeAgent",
+      enabled: true,
+      installed: true,
+      version: "2.1.170",
+      status: "ready",
+      auth: {
+        status: "authenticated",
+      },
+      checkedAt: "2026-06-09T00:00:00.000Z",
+      models: [
+        {
+          slug: "claude-fable-5",
+          name: "Claude Fable 5",
+          description: "Included on subscriptions through Jun 22.",
+          isCustom: false,
+          capabilities: null,
+        },
+      ],
+    });
+
+    expect(parsed.models[0]?.description).toBe("Included on subscriptions through Jun 22.");
+  });
+
   it("decodes account usage snapshots", () => {
     const parsed = decodeServerProvider({
       instanceId: "codex",
