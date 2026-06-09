@@ -40,7 +40,7 @@ const isGitCommandError = Schema.is(GitCommandError);
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
 const OUTPUT_TRUNCATED_MARKER = "\n\n[truncated]";
-const PREPARED_COMMIT_PATCH_MAX_OUTPUT_BYTES = 49_000;
+const PREPARED_COMMIT_PATCH_MAX_OUTPUT_BYTES = 24_000;
 const RANGE_COMMIT_SUMMARY_MAX_OUTPUT_BYTES = 19_000;
 const RANGE_DIFF_SUMMARY_MAX_OUTPUT_BYTES = 19_000;
 const RANGE_DIFF_PATCH_MAX_OUTPUT_BYTES = 59_000;
@@ -1838,7 +1838,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const stagedPatch = yield* runGitStdoutWithOptions(
       `${operation}.stagedPatch`,
       cwd,
-      ["diff", "--cached", "--patch", "--minimal"],
+      ["diff", "--cached", "--patch"],
       {
         ...(env ? { env } : {}),
         maxOutputBytes: PREPARED_COMMIT_PATCH_MAX_OUTPUT_BYTES,

@@ -1525,8 +1525,9 @@ export function SourceControlPanel({
     action: "create_pr",
     isBusy: isGitActionRunning,
   });
-  const generateCommitMessageDisabledReason =
-    changedFiles.length === 0
+  const generateCommitMessageDisabledReason = isGitActionRunning
+    ? "Git action in progress."
+    : changedFiles.length === 0
       ? "No working tree changes."
       : generateCommitMessageMutation.isPending
         ? "Commit message generation in progress."
@@ -1566,6 +1567,11 @@ export function SourceControlPanel({
       return;
     }
     setActiveGitActionProgressView(getGitActionProgressView(progress));
+  }, []);
+
+  const clearCommitMessageDraft = useCallback(() => {
+    setCommitMessage("");
+    setCommitMessageEditorOpen(false);
   }, []);
 
   useEffect(() => {
@@ -1754,6 +1760,7 @@ export function SourceControlPanel({
 
   const runStageChanges = useCallback(
     (filePaths: string[], label: string, count: number) => {
+      clearCommitMessageDraft();
       const promise = stageChangesMutation.mutateAsync({ filePaths });
       void toastManager.promise(promise, {
         loading: { title: "Staging changes...", data: threadToastData },
@@ -1770,11 +1777,12 @@ export function SourceControlPanel({
       });
       void promise.then(refreshPanel, () => refreshPanel());
     },
-    [refreshPanel, stageChangesMutation, threadToastData],
+    [clearCommitMessageDraft, refreshPanel, stageChangesMutation, threadToastData],
   );
 
   const runUnstageChanges = useCallback(
     (filePaths: string[], label: string, count: number) => {
+      clearCommitMessageDraft();
       const promise = unstageChangesMutation.mutateAsync({ filePaths });
       void toastManager.promise(promise, {
         loading: { title: "Unstaging changes...", data: threadToastData },
@@ -1791,7 +1799,7 @@ export function SourceControlPanel({
       });
       void promise.then(refreshPanel, () => refreshPanel());
     },
-    [refreshPanel, threadToastData, unstageChangesMutation],
+    [clearCommitMessageDraft, refreshPanel, threadToastData, unstageChangesMutation],
   );
 
   const stageFileChanges = useCallback(
@@ -1880,6 +1888,7 @@ export function SourceControlPanel({
       return;
     }
     const discardRequest = pendingDiscardChanges;
+    clearCommitMessageDraft();
     const promise = discardChangesMutation.mutateAsync({
       filePaths: discardRequest.filePaths,
       scope: discardRequest.scope,
@@ -1900,7 +1909,13 @@ export function SourceControlPanel({
       }),
     });
     void promise.then(refreshPanel, () => refreshPanel());
-  }, [discardChangesMutation, pendingDiscardChanges, refreshPanel, threadToastData]);
+  }, [
+    clearCommitMessageDraft,
+    discardChangesMutation,
+    pendingDiscardChanges,
+    refreshPanel,
+    threadToastData,
+  ]);
 
   const openChangedFileDiff = useCallback(
     (filePath: string) => {
@@ -2100,7 +2115,7 @@ export function SourceControlPanel({
   );
 
   const generateCommitMessage = useCallback(async () => {
-    if (!environmentId || !cwd || changedFileCount === 0) {
+    if (!environmentId || !cwd || changedFileCount === 0 || isGitActionRunning) {
       return;
     }
 
@@ -2118,7 +2133,14 @@ export function SourceControlPanel({
         }),
       );
     }
-  }, [changedFileCount, cwd, environmentId, generateCommitMessageMutation, threadToastData]);
+  }, [
+    changedFileCount,
+    cwd,
+    environmentId,
+    generateCommitMessageMutation,
+    isGitActionRunning,
+    threadToastData,
+  ]);
 
   const hasCommitMessage = commitMessage.trim().length > 0;
   const showCommitMessageEditor = commitMessageEditorOpen || hasCommitMessage;

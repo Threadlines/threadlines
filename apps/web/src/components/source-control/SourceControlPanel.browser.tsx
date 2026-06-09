@@ -37,6 +37,11 @@ const gitStatusMock = vi.hoisted(() => ({
 
 const gitActionMock = vi.hoisted(() => ({
   runStackedAction: vi.fn(),
+  generateCommitMessage: vi.fn(async () => ({
+    subject: "Update app change",
+    body: "",
+    message: "Update app change",
+  })),
   toastAdd: vi.fn(() => "toast-1"),
   toastClose: vi.fn(),
   toastPromise: vi.fn(),
@@ -66,6 +71,7 @@ vi.mock("~/environments/runtime", () => {
     client: {
       git: {
         runStackedAction: gitActionMock.runStackedAction,
+        generateCommitMessage: gitActionMock.generateCommitMessage,
       },
     },
   };
@@ -304,6 +310,12 @@ describe("SourceControlPanel changes", () => {
     gitStatusMock.refreshGitStatus.mockClear();
     gitStatusMock.refreshLocalGitStatus.mockClear();
     gitActionMock.runStackedAction.mockReset();
+    gitActionMock.generateCommitMessage.mockReset();
+    gitActionMock.generateCommitMessage.mockResolvedValue({
+      subject: "Update app change",
+      body: "",
+      message: "Update app change",
+    });
     gitActionMock.toastAdd.mockClear();
     gitActionMock.toastClose.mockClear();
     gitActionMock.toastPromise.mockClear();
@@ -379,6 +391,95 @@ describe("SourceControlPanel changes", () => {
           environmentId: ENVIRONMENT_ID,
           cwd: CWD,
         });
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps commit message generation unavailable while discard is pending", async () => {
+    const deferred = createDeferredPromise<{ readonly discardedPaths: readonly string[] }>();
+    const discardChanges: EnvironmentApi["vcs"]["discardChanges"] = vi.fn(async (input) =>
+      deferred.promise.then(() => ({ discardedPaths: input.filePaths })),
+    );
+    const status = makeStatus({
+      hasWorkingTreeChanges: true,
+      workingTree: {
+        files: [
+          {
+            path: "src/app.ts",
+            indexStatus: null,
+            worktreeStatus: "modified",
+            insertions: 2,
+            deletions: 1,
+          },
+        ],
+        insertions: 2,
+        deletions: 1,
+      },
+    });
+    const mounted = await renderPanel({
+      status,
+      environmentApi: makeEnvironmentApi({ vcs: { discardChanges } }),
+    });
+
+    try {
+      await page.getByRole("button", { name: "Discard changes to src/app.ts" }).click();
+      await page.getByRole("button", { name: "Discard" }).click();
+
+      await vi.waitFor(() => expect(discardChanges).toHaveBeenCalled());
+      await expect
+        .element(page.getByRole("button", { name: "Source control actions" }))
+        .toBeDisabled();
+      expect(gitActionMock.generateCommitMessage).not.toHaveBeenCalled();
+
+      deferred.resolve({ discardedPaths: ["src/app.ts"] });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("clears the commit message draft when discarding changes", async () => {
+    const discardChanges: EnvironmentApi["vcs"]["discardChanges"] = vi.fn(async (input) => ({
+      discardedPaths: input.filePaths,
+    }));
+    const status = makeStatus({
+      hasWorkingTreeChanges: true,
+      workingTree: {
+        files: [
+          {
+            path: "src/app.ts",
+            indexStatus: null,
+            worktreeStatus: "modified",
+            insertions: 2,
+            deletions: 1,
+          },
+        ],
+        insertions: 2,
+        deletions: 1,
+      },
+    });
+    const mounted = await renderPanel({
+      status,
+      environmentApi: makeEnvironmentApi({ vcs: { discardChanges } }),
+    });
+
+    try {
+      await page.getByRole("button", { name: "Source control actions" }).click();
+      await page.getByText("Generate message").click();
+
+      await vi.waitFor(() => {
+        const textarea = document.querySelector('textarea[placeholder="Commit message"]');
+        expect(textarea).toBeInstanceOf(HTMLTextAreaElement);
+        expect((textarea as HTMLTextAreaElement).value).toBe("Update app change");
+      });
+
+      await page.getByRole("button", { name: "Discard changes to src/app.ts" }).click();
+      await page.getByRole("button", { name: "Discard" }).click();
+
+      await vi.waitFor(() => expect(discardChanges).toHaveBeenCalled());
+      await vi.waitFor(() => {
+        expect(document.querySelector('textarea[placeholder="Commit message"]')).toBeNull();
       });
     } finally {
       await mounted.cleanup();

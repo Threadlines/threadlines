@@ -96,6 +96,8 @@ export class GitManager extends Context.Service<GitManager, GitManagerShape>()(
 ) {}
 
 const COMMIT_TIMEOUT_MS = 10 * 60_000;
+const COMMIT_MESSAGE_SUMMARY_CONTEXT_MAX_CHARS = 8_000;
+const COMMIT_MESSAGE_PATCH_CONTEXT_MAX_CHARS = 20_000;
 const MAX_PROGRESS_TEXT_LENGTH = 500;
 const SHORT_SHA_LENGTH = 7;
 const TOAST_DESCRIPTION_MAX = 72;
@@ -794,6 +796,24 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
     behindCount: 0,
     aheadOfDefaultCount: 0,
   } satisfies GitStatusDetails;
+  const readBranchOnlyStatus = Effect.fn("readBranchOnlyStatus")(function* (cwd: string) {
+    const result = yield* gitCore.execute({
+      operation: "GitManager.readBranchOnlyStatus",
+      cwd,
+      args: ["branch", "--show-current"],
+      allowNonZeroExit: true,
+      timeoutMs: 5_000,
+    });
+    if (result.exitCode !== 0) {
+      return nonRepositoryStatusDetails;
+    }
+    const branch = result.stdout.trim();
+    return {
+      ...nonRepositoryStatusDetails,
+      isRepo: true,
+      branch: branch.length > 0 ? branch : null,
+    } satisfies GitStatusDetails;
+  });
   const readLocalStatus = Effect.fn("readLocalStatus")(function* (cwd: string) {
     const details = yield* gitCore
       .statusDetailsLocal(cwd)
@@ -1200,8 +1220,11 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
         .generateCommitMessage({
           cwd: input.cwd,
           branch: input.branch,
-          stagedSummary: limitContext(context.stagedSummary, 8_000),
-          stagedPatch: limitContext(context.stagedPatch, 50_000),
+          stagedSummary: limitContext(
+            context.stagedSummary,
+            COMMIT_MESSAGE_SUMMARY_CONTEXT_MAX_CHARS,
+          ),
+          stagedPatch: limitContext(context.stagedPatch, COMMIT_MESSAGE_PATCH_CONTEXT_MAX_CHARS),
           ...(input.includeBranch ? { includeBranch: true } : {}),
           modelSelection: input.modelSelection,
         })
@@ -1219,7 +1242,7 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
   const generateCommitMessage: GitManagerShape["generateCommitMessage"] = Effect.fn(
     "generateCommitMessage",
   )(function* (input) {
-    const status = yield* gitCore.statusDetails(input.cwd);
+    const status = yield* readBranchOnlyStatus(input.cwd);
     const modelSelection = yield* serverSettingsService.getSettings.pipe(
       Effect.map((settings) => settings.textGenerationModelSelection),
       Effect.mapError((cause) =>
@@ -1736,7 +1759,11 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
         GitRunStackedActionResult,
         GitManagerServiceError
       > {
-        const initialStatus = yield* gitCore.statusDetails(input.cwd);
+        const initialStatusEffect =
+          input.action === "create_pr"
+            ? gitCore.statusDetails(input.cwd)
+            : readBranchOnlyStatus(input.cwd);
+        const initialStatus = yield* initialStatusEffect;
         const wantsCommit = isCommitAction(input.action);
         const wantsPush =
           input.action === "push" ||
