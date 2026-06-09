@@ -1,4 +1,5 @@
 import {
+  type ContextMenuItem,
   type EnvironmentId,
   type GitActionProgressEvent,
   type GitStackedAction,
@@ -163,6 +164,7 @@ interface SourceControlPanelProps {
 
 type WorkingTreeFile = VcsStatusResult["workingTree"]["files"][number];
 type WorkingTreeChangeSection = "staged" | "unstaged";
+type ChangedFileContextAction = "open-diff" | "open-editor";
 
 interface WorkingTreeSectionFile {
   readonly file: WorkingTreeFile;
@@ -1910,7 +1912,14 @@ export function SourceControlPanel({
     void promise.then(refreshPanel, () => refreshPanel());
   }, [discardChangesMutation, pendingDiscardChanges, refreshPanel, threadToastData]);
 
-  const openChangedFile = useCallback(
+  const openChangedFileDiff = useCallback(
+    (filePath: string) => {
+      onOpenDiff?.(filePath);
+    },
+    [onOpenDiff],
+  );
+
+  const openChangedFileInEditor = useCallback(
     (filePath: string) => {
       const api = readLocalApi();
       if (!api || !cwd) {
@@ -1919,6 +1928,30 @@ export function SourceControlPanel({
       void openInPreferredEditor(api, resolvePathLinkTarget(filePath, cwd)).catch(() => undefined);
     },
     [cwd],
+  );
+
+  const handleChangedFileContextMenu = useCallback(
+    async (entry: WorkingTreeSectionFile, position: { readonly x: number; readonly y: number }) => {
+      const api = readLocalApi();
+      if (!api) {
+        return;
+      }
+
+      const menuItems: readonly ContextMenuItem<ChangedFileContextAction>[] = [
+        { id: "open-diff", label: "Open diff", disabled: !onOpenDiff },
+        { id: "open-editor", label: "Open in editor" },
+      ];
+      const clicked = await api.contextMenu.show(menuItems, position);
+
+      if (clicked === "open-diff") {
+        openChangedFileDiff(entry.path);
+        return;
+      }
+      if (clicked === "open-editor") {
+        openChangedFileInEditor(entry.path);
+      }
+    },
+    [onOpenDiff, openChangedFileDiff, openChangedFileInEditor],
   );
 
   const openExistingPr = useCallback(() => {
@@ -2229,6 +2262,11 @@ export function SourceControlPanel({
     return (
       <div
         key={`${entry.section}:file:${entry.path}`}
+        onContextMenu={(event: ReactMouseEvent<HTMLDivElement>) => {
+          event.preventDefault();
+          event.stopPropagation();
+          void handleChangedFileContextMenu(entry, { x: event.clientX, y: event.clientY });
+        }}
         className={cn(
           "group/change-file grid w-full grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-1.5 py-1.5 transition-colors hover:bg-accent/60",
           isTreeRow ? "pr-2" : "px-2",
@@ -2237,14 +2275,9 @@ export function SourceControlPanel({
       >
         <button
           type="button"
+          aria-label={`Open diff for ${entry.path}`}
           className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-x-1.5 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          onClick={() => {
-            if (onOpenDiff) {
-              onOpenDiff(entry.path);
-              return;
-            }
-            openChangedFile(entry.path);
-          }}
+          onClick={() => openChangedFileDiff(entry.path)}
         >
           <span
             className={cn(

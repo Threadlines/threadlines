@@ -146,6 +146,57 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
+    it.effect("reports nested untracked files individually with text insertion counts", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        yield* writeTextFile(cwd, "src/screenCapture/DesktopScreenCapture.ts", "one\ntwo\n");
+        yield* writeTextFile(
+          cwd,
+          "src/screenCapture/DesktopScreenCapture.test.ts",
+          "one\ntwo\nthree\n",
+        );
+
+        const status = yield* (yield* GitVcsDriver.GitVcsDriver).statusDetails(cwd);
+
+        assert.equal(status.hasWorkingTreeChanges, true);
+        assert.notInclude(
+          status.workingTree.files.map((file) => file.path),
+          "src/screenCapture/",
+        );
+        assert.deepStrictEqual(
+          status.workingTree.files.map((file) => ({
+            path: file.path,
+            worktreeStatus: file.worktreeStatus,
+            insertions: file.insertions,
+            deletions: file.deletions,
+            unstagedInsertions: file.unstagedInsertions,
+            unstagedDeletions: file.unstagedDeletions,
+          })),
+          [
+            {
+              path: "src/screenCapture/DesktopScreenCapture.test.ts",
+              worktreeStatus: "untracked",
+              insertions: 3,
+              deletions: 0,
+              unstagedInsertions: 3,
+              unstagedDeletions: 0,
+            },
+            {
+              path: "src/screenCapture/DesktopScreenCapture.ts",
+              worktreeStatus: "untracked",
+              insertions: 2,
+              deletions: 0,
+              unstagedInsertions: 2,
+              unstagedDeletions: 0,
+            },
+          ],
+        );
+        assert.equal(status.workingTree.insertions, 5);
+        assert.equal(status.workingTree.deletions, 0);
+      }),
+    );
+
     it.effect("reports default-branch delta separately from upstream delta", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();

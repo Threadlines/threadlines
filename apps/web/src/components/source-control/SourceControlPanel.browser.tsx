@@ -3,6 +3,7 @@ import "../../index.css";
 import {
   EnvironmentId,
   type EnvironmentApi,
+  type LocalApi,
   type VcsCommitGraphResult,
   type VcsStatusResult,
 } from "@t3tools/contracts";
@@ -186,6 +187,7 @@ async function renderPanel(
   input: {
     readonly status?: VcsStatusResult;
     readonly environmentApi?: EnvironmentApi;
+    readonly onOpenDiff?: (filePath?: string) => void;
   } = {},
 ) {
   const environmentApi = input.environmentApi ?? makeEnvironmentApi();
@@ -205,7 +207,11 @@ async function renderPanel(
 
   const router = createTestRouter(
     <QueryClientProvider client={queryClient}>
-      <SourceControlPanel target={TARGET} activeThreadRef={null} />
+      <SourceControlPanel
+        target={TARGET}
+        activeThreadRef={null}
+        {...(input.onOpenDiff ? { onOpenDiff: input.onOpenDiff } : {})}
+      />
     </QueryClientProvider>,
   );
   const screen = await render(<RouterProvider router={router} />, { container: host });
@@ -224,12 +230,14 @@ describe("SourceControlPanel changes", () => {
   beforeEach(async () => {
     gitStatusMock.refreshGitStatus.mockClear();
     gitStatusMock.refreshLocalGitStatus.mockClear();
+    Reflect.deleteProperty(window, "nativeApi");
     window.localStorage.clear();
     await __resetLocalApiForTests();
   });
 
   afterEach(async () => {
     __resetEnvironmentApiOverridesForTests();
+    Reflect.deleteProperty(window, "nativeApi");
     await __resetLocalApiForTests();
   });
 
@@ -293,6 +301,98 @@ describe("SourceControlPanel changes", () => {
           environmentId: ENVIRONMENT_ID,
           cwd: CWD,
         });
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens changed files in the diff panel on left click", async () => {
+    const openInEditor = vi.fn(async () => undefined);
+    const onOpenDiff = vi.fn();
+    window.nativeApi = {
+      shell: { openInEditor, openExternal: vi.fn(async () => undefined) },
+      server: { getConfig: vi.fn(async () => ({ availableEditors: ["cursor"] })) },
+      contextMenu: { show: vi.fn(async () => null) },
+    } as unknown as LocalApi;
+    const status = makeStatus({
+      hasWorkingTreeChanges: true,
+      workingTree: {
+        files: [
+          {
+            path: "src/new.ts",
+            indexStatus: null,
+            worktreeStatus: "untracked",
+            insertions: 246,
+            deletions: 0,
+          },
+        ],
+        insertions: 246,
+        deletions: 0,
+      },
+    });
+    const mounted = await renderPanel({ status, onOpenDiff });
+
+    try {
+      await page.getByRole("button", { name: "Open diff for src/new.ts" }).click();
+
+      expect(onOpenDiff).toHaveBeenCalledWith("src/new.ts");
+      expect(openInEditor).not.toHaveBeenCalled();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens changed files in the preferred editor from the context menu", async () => {
+    const openInEditor = vi.fn(async () => undefined);
+    const showContextMenu = vi.fn(async () => "open-editor" as const);
+    window.nativeApi = {
+      shell: { openInEditor, openExternal: vi.fn(async () => undefined) },
+      server: { getConfig: vi.fn(async () => ({ availableEditors: ["cursor"] })) },
+      contextMenu: { show: showContextMenu },
+    } as unknown as LocalApi;
+    const status = makeStatus({
+      hasWorkingTreeChanges: true,
+      workingTree: {
+        files: [
+          {
+            path: "src/new.ts",
+            indexStatus: null,
+            worktreeStatus: "untracked",
+            insertions: 246,
+            deletions: 0,
+          },
+        ],
+        insertions: 246,
+        deletions: 0,
+      },
+    });
+    const mounted = await renderPanel({ status, onOpenDiff: vi.fn() });
+
+    try {
+      const fileButton = document.querySelector('button[aria-label="Open diff for src/new.ts"]');
+      expect(fileButton).toBeInstanceOf(HTMLButtonElement);
+
+      fileButton?.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 44,
+          clientY: 88,
+        }),
+      );
+
+      await vi.waitFor(() => {
+        expect(showContextMenu).toHaveBeenCalledWith(
+          [
+            { id: "open-diff", label: "Open diff", disabled: false },
+            { id: "open-editor", label: "Open in editor" },
+          ],
+          { x: 44, y: 88 },
+        );
+      });
+      await vi.waitFor(() => {
+        expect(openInEditor).toHaveBeenCalledWith("/repo/project/src/new.ts", "cursor");
       });
     } finally {
       await mounted.cleanup();

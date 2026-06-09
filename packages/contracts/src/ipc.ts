@@ -174,6 +174,10 @@ export type DesktopTheme = "light" | "dark" | "system";
 export type DesktopUpdateChannel = "latest" | "nightly";
 export type DesktopAppStageLabel = "Alpha" | "Dev" | "Nightly";
 export type DesktopTaskbarStatus = "idle" | "working" | "completed";
+export type DesktopCaptureScreenshotMode = "interactive";
+export type DesktopCapturedScreenshotSource =
+  | "macos-screencapture"
+  | "windows-snipping-tool-clipboard";
 
 export const DesktopUpdateStatusSchema = Schema.Literals([
   "disabled",
@@ -190,6 +194,11 @@ export const DesktopThemeSchema = Schema.Literals(["light", "dark", "system"]);
 export const DesktopUpdateChannelSchema = Schema.Literals(["latest", "nightly"]);
 export const DesktopAppStageLabelSchema = Schema.Literals(["Alpha", "Dev", "Nightly"]);
 export const DesktopTaskbarStatusSchema = Schema.Literals(["idle", "working", "completed"]);
+export const DesktopCaptureScreenshotModeSchema = Schema.Literals(["interactive"]);
+export const DesktopCapturedScreenshotSourceSchema = Schema.Literals([
+  "macos-screencapture",
+  "windows-snipping-tool-clipboard",
+]);
 
 export interface DesktopAppBranding {
   baseName: string;
@@ -280,6 +289,43 @@ export const DesktopTaskbarStatusInputSchema = Schema.Struct({
   status: DesktopTaskbarStatusSchema,
   description: Schema.optionalKey(Schema.String),
 });
+
+export const DesktopCaptureScreenshotInputSchema = Schema.Struct({
+  mode: DesktopCaptureScreenshotModeSchema,
+});
+export type DesktopCaptureScreenshotInput = typeof DesktopCaptureScreenshotInputSchema.Type;
+
+export const DesktopCapturedScreenshotSchema = Schema.Struct({
+  name: Schema.String,
+  mimeType: Schema.Literal("image/png"),
+  sizeBytes: Schema.Number,
+  dataUrl: Schema.String,
+  width: Schema.Number,
+  height: Schema.Number,
+  capturedAt: Schema.String,
+  source: DesktopCapturedScreenshotSourceSchema,
+});
+export type DesktopCapturedScreenshot = typeof DesktopCapturedScreenshotSchema.Type;
+
+export const DesktopCaptureScreenshotResultSchema = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("captured"),
+    image: DesktopCapturedScreenshotSchema,
+  }),
+  Schema.Struct({
+    status: Schema.Literal("cancelled"),
+    message: Schema.optionalKey(Schema.String),
+  }),
+  Schema.Struct({
+    status: Schema.Literal("unsupported"),
+    message: Schema.String,
+  }),
+  Schema.Struct({
+    status: Schema.Literal("failed"),
+    message: Schema.String,
+  }),
+]);
+export type DesktopCaptureScreenshotResult = typeof DesktopCaptureScreenshotResultSchema.Type;
 
 export interface DesktopEnvironmentBootstrap {
   label: string;
@@ -473,6 +519,9 @@ export interface DesktopBridge {
   getAdvertisedEndpoints: () => Promise<readonly AdvertisedEndpoint[]>;
   pickFolder: (options?: PickFolderOptions) => Promise<string | null>;
   confirm: (message: string) => Promise<boolean>;
+  captureScreenshot?: (
+    input: DesktopCaptureScreenshotInput,
+  ) => Promise<DesktopCaptureScreenshotResult>;
   setTheme: (theme: DesktopTheme) => Promise<void>;
   showContextMenu: <T extends string>(
     items: readonly ContextMenuItem<T>[],

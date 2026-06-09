@@ -321,19 +321,15 @@ function ChatThreadRouteView() {
       target={sourceControlTarget}
       activeThreadRef={threadRef}
       taskPanelButton={taskPanelButton}
+      onOpenDiff={(filePath?: string) => {
+        openDiff({
+          ...(filePath ? { filePath } : {}),
+          sourceControlReturn: true,
+          workingTree: true,
+        });
+      }}
       {...(!serverThread && draftThread
         ? { onActiveBranchChange: handleDraftSourceControlBranchChange }
-        : {})}
-      {...(serverThread
-        ? {
-            onOpenDiff: (filePath?: string) => {
-              openDiff({
-                ...(filePath ? { filePath } : {}),
-                sourceControlReturn: true,
-                workingTree: true,
-              });
-            },
-          }
         : {})}
     />
   ) : shouldRenderDiffContent ? (

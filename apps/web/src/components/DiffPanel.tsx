@@ -2,8 +2,9 @@ import { parsePatchFiles } from "@pierre/diffs";
 import { FileDiff, type FileDiffMetadata, Virtualizer } from "@pierre/diffs/react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { scopeThreadRef } from "@t3tools/client-runtime";
+import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime";
 import { TurnId } from "@t3tools/contracts";
+import { projectScriptCwd } from "@t3tools/shared/projectScripts";
 import {
   ChevronDownIcon,
   ChevronLeftIcon,
@@ -22,12 +23,13 @@ import { cn } from "~/lib/utils";
 import { readLocalApi } from "../localApi";
 import { resolvePathLinkTarget } from "../terminal-links";
 import { parseDiffRouteSearch, stripDiffSearchParams } from "../diffRouteSearch";
+import { useComposerDraftStore } from "../composerDraftStore";
 import { useTheme } from "../hooks/useTheme";
 import { buildPatchCacheKey } from "../lib/diffRendering";
 import { resolveDiffThemeName } from "../lib/diffRendering";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
-import { selectProjectByRef, useStore } from "../store";
-import { createThreadSelectorByRef } from "../storeSelectors";
+import { useStore } from "../store";
+import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
 import { buildThreadRouteParams, resolveThreadRouteRef } from "../threadRoutes";
 import { useSettings } from "../hooks/useSettings";
 import { formatShortTimestamp } from "../timestampFormat";
@@ -217,18 +219,32 @@ export default function DiffPanel({
   const activeThread = useStore(
     useMemo(() => createThreadSelectorByRef(routeThreadRef), [routeThreadRef]),
   );
-  const activeProjectId = activeThread?.projectId ?? null;
-  const activeProject = useStore((store) =>
-    activeThread && activeProjectId
-      ? selectProjectByRef(store, {
-          environmentId: activeThread.environmentId,
-          projectId: activeProjectId,
-        })
-      : undefined,
+  const draftThread = useComposerDraftStore((store) =>
+    routeThreadRef ? store.getDraftThreadByRef(routeThreadRef) : null,
   );
-  const activeCwd = activeThread?.worktreePath ?? activeProject?.cwd;
+  const activeEnvironmentId = activeThread?.environmentId ?? draftThread?.environmentId ?? null;
+  const activeProjectRef = useMemo(() => {
+    if (activeThread) {
+      return scopeProjectRef(activeThread.environmentId, activeThread.projectId);
+    }
+    if (draftThread) {
+      return scopeProjectRef(draftThread.environmentId, draftThread.projectId);
+    }
+    return null;
+  }, [activeThread, draftThread]);
+  const activeProject = useStore(
+    useMemo(() => createProjectSelectorByRef(activeProjectRef), [activeProjectRef]),
+  );
+  const activeCwd = activeThread
+    ? (activeThread.worktreePath ?? activeProject?.cwd)
+    : draftThread && activeProject
+      ? projectScriptCwd({
+          project: { cwd: activeProject.cwd },
+          worktreePath: draftThread.worktreePath ?? null,
+        })
+      : undefined;
   const gitStatusQuery = useGitStatus({
-    environmentId: activeThread?.environmentId ?? null,
+    environmentId: activeEnvironmentId,
     cwd: activeCwd ?? null,
   });
   const isGitRepo = gitStatusQuery.data?.isRepo ?? true;
@@ -316,7 +332,7 @@ export default function DiffPanel({
   );
   const workingTreeDiffQuery = useQuery(
     gitWorkingTreeDiffQueryOptions({
-      environmentId: activeThread?.environmentId ?? null,
+      environmentId: activeEnvironmentId,
       cwd: activeCwd ?? null,
       filePaths: selectedFilePath ? [selectedFilePath] : null,
       ignoreWhitespace: diffIgnoreWhitespace,
@@ -342,6 +358,8 @@ export default function DiffPanel({
       : workingTreeDiffQuery.error
         ? "Failed to load working tree diff."
         : null;
+  const hasWorkingTreeDiffContext =
+    diffMode === "workingTree" && activeEnvironmentId !== null && activeCwd !== undefined;
 
   const selectedPatch =
     diffMode === "workingTree"
@@ -444,10 +462,13 @@ export default function DiffPanel({
     });
   };
   const selectWorkingTree = () => {
-    if (!activeThread) return;
+    const targetThreadRef = activeThread
+      ? scopeThreadRef(activeThread.environmentId, activeThread.id)
+      : routeThreadRef;
+    if (!targetThreadRef) return;
     void navigate({
       to: "/$environmentId/$threadId",
-      params: buildThreadRouteParams(scopeThreadRef(activeThread.environmentId, activeThread.id)),
+      params: buildThreadRouteParams(targetThreadRef),
       search: (previous) => {
         const rest = stripDiffSearchParams(previous);
         return { ...rest, diff: "1", diffMode: "workingTree" };
@@ -620,7 +641,7 @@ export default function DiffPanel({
   return (
     <DiffPanelShell mode={mode} header={headerRow}>
       {toolbarRow}
-      {!activeThread ? (
+      {!activeThread && !hasWorkingTreeDiffContext ? (
         <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
           Select a thread to inspect turn diffs.
         </div>
