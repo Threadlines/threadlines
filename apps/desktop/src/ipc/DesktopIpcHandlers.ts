@@ -34,6 +34,7 @@ import {
 } from "./methods/updates.ts";
 import {
   confirm,
+  captureScreenshot,
   getAppBranding,
   getLocalEnvironmentBootstrap,
   openExternal,
@@ -73,6 +74,7 @@ export const installDesktopIpcHandlers = Effect.gen(function* () {
 
   yield* ipc.handle(pickFolder);
   yield* ipc.handle(confirm);
+  yield* ipc.handle(captureScreenshot);
   yield* ipc.handle(setTheme);
   yield* ipc.handle(setTaskbarStatus);
   yield* ipc.handle(showContextMenu);

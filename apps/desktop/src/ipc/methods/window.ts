@@ -1,6 +1,8 @@
 import {
   ContextMenuItemSchema,
   DesktopAppBrandingSchema,
+  DesktopCaptureScreenshotInputSchema,
+  DesktopCaptureScreenshotResultSchema,
   DesktopEnvironmentBootstrapSchema,
   DesktopTaskbarStatusInputSchema,
   DesktopThemeSchema,
@@ -14,6 +16,7 @@ import type * as Electron from "electron";
 
 import * as DesktopBackendManager from "../../backend/DesktopBackendManager.ts";
 import * as DesktopEnvironment from "../../app/DesktopEnvironment.ts";
+import * as DesktopScreenCapture from "../../screenCapture/DesktopScreenCapture.ts";
 import * as ElectronDialog from "../../electron/ElectronDialog.ts";
 import * as ElectronMenu from "../../electron/ElectronMenu.ts";
 import * as ElectronShell from "../../electron/ElectronShell.ts";
@@ -106,6 +109,16 @@ export const confirm = makeIpcMethod({
     return yield* electronWindow.focusedMainOrFirst.pipe(
       Effect.flatMap((owner) => dialog.confirm({ owner, message })),
     );
+  }),
+});
+
+export const captureScreenshot = makeIpcMethod({
+  channel: IpcChannels.CAPTURE_SCREENSHOT_CHANNEL,
+  payload: DesktopCaptureScreenshotInputSchema,
+  result: DesktopCaptureScreenshotResultSchema,
+  handler: Effect.fn("desktop.ipc.window.captureScreenshot")(function* (input) {
+    const screenCapture = yield* DesktopScreenCapture.DesktopScreenCapture;
+    return yield* screenCapture.captureScreenshot(input);
   }),
 });
 

@@ -102,6 +102,24 @@ function DraftChatThreadRouteView() {
       }),
     });
   }, [draftId, navigate]);
+  const openDiff = useCallback(
+    (filePath?: string) => {
+      if (!serverThreadRef) {
+        return;
+      }
+      void navigate({
+        to: "/$environmentId/$threadId",
+        params: buildThreadRouteParams(serverThreadRef),
+        search: () => ({
+          diff: "1" as const,
+          diffMode: "workingTree" as const,
+          sourceControlReturn: "1" as const,
+          ...(filePath ? { diffFilePath: filePath } : {}),
+        }),
+      });
+    },
+    [navigate, serverThreadRef],
+  );
   const handleSourceControlBranchChange = useCallback(
     (branch: string | null, worktreePath: string | null) => {
       setDraftThreadContext(draftId, { branch, worktreePath });
@@ -149,6 +167,7 @@ function DraftChatThreadRouteView() {
       target={sourceControlTarget}
       activeThreadRef={draftThreadRef}
       onActiveBranchChange={handleSourceControlBranchChange}
+      onOpenDiff={openDiff}
     />
   ) : null;
 

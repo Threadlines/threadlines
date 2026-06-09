@@ -13,6 +13,7 @@ import {
   isProviderAuthErrorMessage,
   providerAuthReconnectCommand,
 } from "@t3tools/shared/providerAuth";
+import type { DesktopCapturedScreenshot } from "@t3tools/contracts";
 import { type ChatMessage, type SessionPhase, type Thread, type ThreadSession } from "../types";
 import { type ComposerImageAttachment, type DraftThreadState } from "../composerDraftStore";
 import * as Schema from "effect/Schema";
@@ -197,6 +198,34 @@ export function readFileAsDataUrl(file: File): Promise<string> {
     });
     reader.readAsDataURL(file);
   });
+}
+
+export function desktopCapturedScreenshotToFile(
+  screenshot: DesktopCapturedScreenshot,
+): File | null {
+  const commaIndex = screenshot.dataUrl.indexOf(",");
+  if (commaIndex < 0) {
+    return null;
+  }
+
+  const header = screenshot.dataUrl.slice(0, commaIndex).toLowerCase();
+  if (!header.startsWith("data:image/png;") || !header.includes(";base64")) {
+    return null;
+  }
+
+  try {
+    const binary = atob(screenshot.dataUrl.slice(commaIndex + 1));
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return new File([bytes], screenshot.name || "screenshot.png", {
+      type: screenshot.mimeType,
+      lastModified: Date.parse(screenshot.capturedAt) || Date.now(),
+    });
+  } catch {
+    return null;
+  }
 }
 
 export function resolveSendEnvMode(input: {

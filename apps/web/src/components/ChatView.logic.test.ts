@@ -19,6 +19,7 @@ import {
   createLocalDispatchSnapshot,
   deriveComposerSendState,
   deriveProviderAuthReconnectPrompt,
+  desktopCapturedScreenshotToFile,
   hasServerAcknowledgedLocalDispatch,
   mergeLocalDraftThreadWithServerThread,
   threadHasPromotableServerActivity,
@@ -77,6 +78,42 @@ describe("deriveComposerSendState", () => {
     expect(state.trimmedPrompt).toBe("yoo  waddup");
     expect(state.expiredTerminalContextCount).toBe(1);
     expect(state.hasSendableContent).toBe(true);
+  });
+});
+
+describe("desktopCapturedScreenshotToFile", () => {
+  it("converts a desktop-captured PNG data URL into a File", async () => {
+    const file = desktopCapturedScreenshotToFile({
+      name: "screenshot-20260609.png",
+      mimeType: "image/png",
+      sizeBytes: 3,
+      dataUrl: "data:image/png;base64,AQID",
+      width: 1,
+      height: 1,
+      capturedAt: "2026-06-09T12:00:00.000Z",
+      source: "macos-screencapture",
+    });
+
+    expect(file).not.toBeNull();
+    if (!file) return;
+    expect(file?.name).toBe("screenshot-20260609.png");
+    expect(file?.type).toBe("image/png");
+    expect(Array.from(new Uint8Array(await file.arrayBuffer()))).toEqual([1, 2, 3]);
+  });
+
+  it("returns null for non-base64 image data", () => {
+    expect(
+      desktopCapturedScreenshotToFile({
+        name: "bad.png",
+        mimeType: "image/png",
+        sizeBytes: 3,
+        dataUrl: "data:image/png,not-base64",
+        width: 1,
+        height: 1,
+        capturedAt: "2026-06-09T12:00:00.000Z",
+        source: "windows-snipping-tool-clipboard",
+      }),
+    ).toBeNull();
   });
 });
 

@@ -41,7 +41,11 @@ import {
   expandCollapsedComposerCursor,
   replaceTextRange,
 } from "../../composer-logic";
-import { deriveComposerSendState, readFileAsDataUrl } from "../ChatView.logic";
+import {
+  deriveComposerSendState,
+  desktopCapturedScreenshotToFile,
+  readFileAsDataUrl,
+} from "../ChatView.logic";
 import {
   type ComposerImageAttachment,
   type DraftId,
@@ -87,8 +91,10 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
 import {
   BotIcon,
+  CameraIcon,
   CircleAlertIcon,
   ListTodoIcon,
+  LoaderCircleIcon,
   type LucideIcon,
   LockIcon,
   LockOpenIcon,
@@ -177,6 +183,10 @@ const terminalContextIdListsEqual = (
 
 function isInsideComposerFloatingLayer(element: Element): boolean {
   return element.closest(COMPOSER_FLOATING_LAYER_SELECTOR) !== null;
+}
+
+function unknownErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback;
 }
 
 const ComposerFooterModeControls = memo(function ComposerFooterModeControls(props: {
@@ -802,8 +812,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const [isComposerPrimaryActionsCompact, setIsComposerPrimaryActionsCompact] = useState(false);
   const [isComposerModelPickerOpen, setIsComposerModelPickerOpen] = useState(false);
   const [isComposerFocused, setIsComposerFocused] = useState(false);
+  const [isCapturingScreenshot, setIsCapturingScreenshot] = useState(false);
   const isMobileViewport = useMediaQuery("max-sm");
   const isComposerCollapsedMobile = isMobileViewport && !isComposerFocused;
+  const canCaptureScreenshot =
+    typeof window !== "undefined" && typeof window.desktopBridge?.captureScreenshot === "function";
 
   // ------------------------------------------------------------------
   // Refs
@@ -1064,6 +1077,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const collapsedComposerPrimaryActionLabel = "Send message";
   const showMobilePendingAnswerActions =
     isMobileViewport && !isComposerCollapsedMobile && pendingPrimaryAction !== null;
+  const screenshotCaptureDisabled =
+    isCapturingScreenshot || isComposerApprovalState || pendingUserInputs.length > 0;
+  const screenshotCaptureTooltip = isCapturingScreenshot
+    ? "Capturing screenshot..."
+    : isComposerApprovalState || pendingUserInputs.length > 0
+      ? "Finish the pending prompt before attaching screenshots"
+      : "Capture screenshot";
 
   // ------------------------------------------------------------------
   // Prompt helpers
@@ -1738,6 +1758,54 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     setThreadError(activeThreadId, error);
   };
 
+  const onCaptureScreenshot = () => {
+    const captureScreenshot = window.desktopBridge?.captureScreenshot;
+    if (!captureScreenshot || isCapturingScreenshot) return;
+    if (screenshotCaptureDisabled) return;
+
+    setIsCapturingScreenshot(true);
+    void captureScreenshot({ mode: "interactive" })
+      .then((result) => {
+        if (result.status === "cancelled") {
+          return;
+        }
+        if (result.status === "unsupported" || result.status === "failed") {
+          toastManager.add({
+            type: "error",
+            title:
+              result.status === "unsupported"
+                ? "Screenshot capture is not available."
+                : "Screenshot capture failed.",
+            description: result.message,
+          });
+          return;
+        }
+
+        const file = desktopCapturedScreenshotToFile(result.image);
+        if (!file) {
+          toastManager.add({
+            type: "error",
+            title: "Screenshot capture failed.",
+            description: "The captured image could not be read.",
+          });
+          return;
+        }
+
+        addComposerImages([file]);
+        focusComposer();
+      })
+      .catch((error: unknown) => {
+        toastManager.add({
+          type: "error",
+          title: "Screenshot capture failed.",
+          description: unknownErrorMessage(error, "The desktop capture request failed."),
+        });
+      })
+      .finally(() => {
+        setIsCapturingScreenshot(false);
+      });
+  };
+
   const removeComposerImage = (imageId: string) => {
     removeComposerImageFromDraft(imageId);
   };
@@ -2391,6 +2459,30 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 }
                 className="flex shrink-0 flex-nowrap items-center justify-end gap-2"
               >
+                {canCaptureScreenshot ? (
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          className="rounded-full text-muted-foreground/70 hover:text-foreground/80"
+                          aria-label="Capture screenshot"
+                          disabled={screenshotCaptureDisabled}
+                          onClick={onCaptureScreenshot}
+                        />
+                      }
+                    >
+                      {isCapturingScreenshot ? (
+                        <LoaderCircleIcon className="size-4 animate-spin" aria-hidden="true" />
+                      ) : (
+                        <CameraIcon className="size-4" aria-hidden="true" />
+                      )}
+                    </TooltipTrigger>
+                    <TooltipPopup side="top">{screenshotCaptureTooltip}</TooltipPopup>
+                  </Tooltip>
+                ) : null}
                 <ComposerFooterPrimaryActions
                   compact={isComposerPrimaryActionsCompact}
                   activeContextWindow={activeContextWindow}
