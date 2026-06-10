@@ -24,6 +24,42 @@ export const GitIcon: Icon = (props) => (
   </svg>
 );
 
+/** Bare Threadlines brand glyph — matches the marketing nav lockup
+ *  (docs/brand/svg/threadlines-glyph.svg). Structure follows currentColor;
+ *  the live branch and node carry the accent. */
+export const ThreadlinesGlyph: Icon = (props) => {
+  const gradientId = `${useId().replaceAll(":", "")}-threadlines-live`;
+
+  return (
+    <svg {...props} viewBox="36 86 184 100" fill="none">
+      <defs>
+        <linearGradient
+          id={gradientId}
+          gradientUnits="userSpaceOnUse"
+          x1="108"
+          y1="98"
+          x2="194"
+          y2="162"
+        >
+          <stop offset="0" stopColor="currentColor" stopOpacity="0.45" />
+          <stop offset="1" stopColor="var(--primary-graph)" />
+        </linearGradient>
+      </defs>
+      <g strokeLinecap="round" strokeWidth="10">
+        <path d="M 44 98 L 212 98" stroke="currentColor" strokeOpacity="0.35" />
+        <path d="M 108 98 C 134 98 134 162 160 162 L 188 162" stroke={`url(#${gradientId})`} />
+      </g>
+      <g fill="currentColor" fillOpacity="0.5">
+        <circle cx="70" cy="98" r="7" />
+        <circle cx="108" cy="98" r="8.5" />
+        <circle cx="178" cy="98" r="7" />
+      </g>
+      <circle cx="194" cy="162" r="21" fill="var(--primary-graph)" opacity="0.16" />
+      <circle cx="194" cy="162" r="12.5" fill="var(--primary-graph)" />
+    </svg>
+  );
+};
+
 export const SourceControlIcon: Icon = (props) => (
   <svg {...props} viewBox="0 0 12 12" fill="currentColor">
     <path d="M9 2C7.897 2 7 2.897 7 4C7 4.739 7.403 5.385 8 5.731V6.5C8 6.776 7.775 7 7.5 7H4.5C4.325 7 4.156 7.031 4 7.086V3.731C4.597 3.385 5 2.739 5 2C5 0.897 4.103 0 3 0C1.897 0 1 0.897 1 2C1 3.103 1.897 4 3 4V8C1.897 8 1 8.897 1 10C1 11.103 1.897 12 3 12C4.103 12 5 11.103 5 10C5 9.28 4.617 8.647 4.044 8.295C4.122 8.121 4.297 8 4.5 8H7.5C8.327 8 9 7.327 9 6.5V6C10.103 6 11 5.103 11 4C11 2.897 10.103 2 9 2ZM2 2C2 1.449 2.448 1 3 1C3.552 1 4 1.449 4 2C4 2.551 3.552 3 3 3C2.448 3 2 2.551 2 2ZM3 11C2.448 11 2 10.551 2 10C2 9.449 2.448 9 3 9C3.552 9 4 9.449 4 10C4 10.551 3.552 11 3 11ZM9 5C8.448 5 8 4.551 8 4C8 3.449 8.448 3 9 3C9.552 3 10 3.449 10 4C10 4.551 9.552 5 9 5Z" />

@@ -3,6 +3,7 @@ import { type ComponentPropsWithoutRef, type ReactNode, useEffect, useState } fr
 
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
+import { SectionTick } from "../ui/threadline";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 /** Re-render every `intervalMs`; return a stable timestamp snapshot for render-time relative labels. */
@@ -32,7 +33,7 @@ export function SettingsSection({
     <section {...sectionProps} className={cn("space-y-2.5", className)}>
       <div className="flex items-center justify-between px-1">
         <h2 className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-foreground/50">
-          <span className="inline-block h-px w-3 bg-border" aria-hidden />
+          <SectionTick />
           {icon}
           {title}
         </h2>

@@ -125,6 +125,7 @@ import {
   MenuTrigger,
 } from "../ui/menu";
 import { Textarea } from "../ui/textarea";
+import { SectionLabel } from "../ui/threadline";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
@@ -481,9 +482,10 @@ const COMMIT_GRAPH_LANE_GAP = 12;
 const COMMIT_GRAPH_LEFT_PADDING = 8;
 const COMMIT_GRAPH_ROW_HEIGHT = 28;
 const COMMIT_GRAPH_NODE_Y = 14;
-const COMMIT_GRAPH_NODE_RADIUS = 4;
-const COMMIT_GRAPH_NODE_GAP = COMMIT_GRAPH_NODE_RADIUS + 1;
-const COMMIT_GRAPH_STROKE_WIDTH = 2;
+// Line weight matches the brand threadline figure (thin strokes, small nodes).
+const COMMIT_GRAPH_NODE_RADIUS = 3;
+const COMMIT_GRAPH_NODE_GAP = COMMIT_GRAPH_NODE_RADIUS + 1.5;
+const COMMIT_GRAPH_STROKE_WIDTH = 1.5;
 
 // Lane 0 is reserved for the "main line" (the leftmost lane carrying the current branch
 // in typical workflows). Side lanes rotate through distinct hues so adjacent branches
@@ -589,7 +591,7 @@ function CommitGraphGlyph({
             y2={y2}
             className={commitGraphLaneStrokeClass(lane)}
             strokeWidth={COMMIT_GRAPH_STROKE_WIDTH}
-            strokeLinecap="square"
+            strokeLinecap="round"
             opacity={commitGraphLaneOpacity(lane)}
           />
         );
@@ -606,7 +608,7 @@ function CommitGraphGlyph({
             y2={rowHeight}
             className={commitGraphLaneStrokeClass(lane)}
             strokeWidth={COMMIT_GRAPH_STROKE_WIDTH}
-            strokeLinecap="square"
+            strokeLinecap="round"
             opacity={commitGraphLaneOpacity(lane)}
           />
         );
@@ -649,6 +651,13 @@ function CommitGraphGlyph({
       })}
       {highlighted ? (
         <>
+          {/* The panel's one live node: the tip of the branch you are on. */}
+          <circle
+            className="thread-halo fill-primary-graph"
+            cx={nodeX}
+            cy={nodeY}
+            r={radius + 1.5}
+          />
           <circle
             cx={nodeX}
             cy={nodeY}
@@ -2636,7 +2645,7 @@ export function SourceControlPanel({
           style={{ height: changesPanelHeight }}
         >
           <div className="flex items-center justify-between gap-2">
-            <h3 className="text-xs font-medium text-foreground">Changes</h3>
+            <SectionLabel as="h3">Changes</SectionLabel>
             <div className="flex shrink-0 items-center gap-2">
               <Tooltip>
                 <TooltipTrigger
@@ -2962,7 +2971,7 @@ export function SourceControlPanel({
 
           <section className="flex min-h-[7.5rem] flex-1 flex-col space-y-2">
             <div className="flex items-center justify-between gap-2">
-              <h3 className="text-xs font-medium text-foreground">Graph</h3>
+              <SectionLabel as="h3">Graph</SectionLabel>
               <span className="text-[11px] text-muted-foreground/60">
                 {formatCommitCount(graphQuery.data?.commits.length ?? 0)}
               </span>

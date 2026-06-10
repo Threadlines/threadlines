@@ -36,6 +36,7 @@ import {
   ZapIcon,
 } from "lucide-react";
 import { Button } from "../ui/button";
+import { LiveNode, SectionLabel } from "../ui/threadline";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import { ChangedFilesTree } from "./ChangedFilesTree";
@@ -554,11 +555,8 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
   return (
     <div className="py-0.5 pl-1.5">
       <div className="flex items-center gap-2 pt-1 text-[11px] text-muted-foreground/70">
-        <span className="inline-flex items-center gap-[3px]">
-          <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-pulse" />
-          <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-pulse [animation-delay:200ms]" />
-          <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-pulse [animation-delay:400ms]" />
-        </span>
+        {/* The chat surface's one live node: the thread is being worked right now. */}
+        <LiveNode className="size-1.5 [--thread-halo-delay:0.2s]" />
         <span>
           {row.createdAt ? (
             <>
@@ -726,13 +724,19 @@ const WorkGroupSection = memo(function WorkGroupSection({
       : toggleLabel;
 
   return (
-    <div className="rounded-xl border border-border/45 bg-card/25 px-2 py-1.5">
+    <div
+      className={cn(
+        "rounded-xl border border-border/45 bg-card/25 px-2 py-1.5",
+        // Live segments read as "hot" via a heavier accent edge on the thread.
+        isLiveActivity && "border-l-2 border-l-primary-graph/40 pl-[7px]",
+      )}
+    >
       {showHeader && (
         <div className="mb-1.5 flex items-start justify-between gap-2 px-0.5">
           <div className="min-w-0">
-            <p className="text-[9px] uppercase tracking-[0.16em] text-muted-foreground/55">
+            <SectionLabel className="text-[9px] tracking-[0.16em]">
               {isLiveActivity ? "Current activity" : `Activity (${groupedEntries.length})`}
-            </p>
+            </SectionLabel>
             {hiddenSummary || liveHiddenSummary ? (
               <p className="mt-0.5 truncate text-[10px] leading-4 text-muted-foreground/45">
                 {hiddenSummary ?? liveHiddenSummary}
@@ -2310,14 +2314,13 @@ function lastPathSegment(pathValue: string): string | null {
 }
 
 function RunningToolIndicator({ className }: { className?: string }) {
+  // A single accent tick; the halo stays reserved for the working row.
   return (
     <span
-      className={cn("inline-flex items-center gap-[3px]", className)}
+      className={cn("inline-flex items-center", className)}
       aria-label="Tool still running"
     >
-      <span className="size-1 rounded-full bg-current opacity-35 animate-pulse" />
-      <span className="size-1 rounded-full bg-current opacity-35 animate-pulse [animation-delay:180ms]" />
-      <span className="size-1 rounded-full bg-current opacity-35 animate-pulse [animation-delay:360ms]" />
+      <span className="size-1 animate-pulse rounded-full bg-primary-graph/80" />
     </span>
   );
 }

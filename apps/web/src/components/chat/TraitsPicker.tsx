@@ -14,10 +14,11 @@ import {
 } from "@t3tools/shared/model";
 import { memo, useCallback, useState } from "react";
 import type { VariantProps } from "class-variance-authority";
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, SlidersHorizontalIcon } from "lucide-react";
 import { Button, buttonVariants } from "../ui/button";
 import {
   Menu,
+  MenuCheckboxItem,
   MenuGroup,
   MenuPopup,
   MenuRadioGroup,
@@ -25,6 +26,7 @@ import {
   MenuSeparator as MenuDivider,
   MenuTrigger,
 } from "../ui/menu";
+import { SectionLabel } from "../ui/threadline";
 import { useComposerDraftStore, DraftId } from "../../composerDraftStore";
 import { getProviderModelCapabilities } from "../../providerModels";
 import { cn } from "~/lib/utils";
@@ -230,9 +232,7 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
         <div key={descriptor.id}>
           {index > 0 ? <MenuDivider /> : null}
           <MenuGroup>
-            <div className="px-2 pt-1.5 pb-1 font-medium text-muted-foreground text-xs">
-              {descriptor.label}
-            </div>
+            <SectionLabel className="px-2 pt-2 pb-1">{descriptor.label}</SectionLabel>
             <MenuRadioGroup
               value={getDescriptorStringValue(descriptor) ?? ""}
               onValueChange={(value) => handleSelectChange(descriptor, value)}
@@ -240,34 +240,38 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
               {descriptor.options.map((option) => (
                 <MenuRadioItem key={option.id} value={option.id}>
                   {option.label}
-                  {option.isDefault ? " (default)" : ""}
+                  {option.isDefault ? (
+                    <span className="ml-1 text-[10px] text-muted-foreground/60">default</span>
+                  ) : null}
                 </MenuRadioItem>
               ))}
             </MenuRadioGroup>
           </MenuGroup>
         </div>
       ))}
-      {booleanDescriptors.map((descriptor, index) => (
-        <div key={descriptor.id}>
-          {index > 0 || selectDescriptors.length > 0 ? <MenuDivider /> : null}
+      {booleanDescriptors.length > 0 ? (
+        <div>
+          {selectDescriptors.length > 0 ? <MenuDivider /> : null}
           <MenuGroup>
-            <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">
-              {descriptor.label}
-            </div>
-            <MenuRadioGroup
-              value={descriptor.currentValue === true ? "on" : "off"}
-              onValueChange={(value) => {
-                updateDescriptors(
-                  replaceDescriptorCurrentValue(descriptors, descriptor.id, value === "on"),
-                );
-              }}
-            >
-              <MenuRadioItem value="on">On</MenuRadioItem>
-              <MenuRadioItem value="off">Off</MenuRadioItem>
-            </MenuRadioGroup>
+            {/* Toggles stay open on click so several can be adjusted in one visit. */}
+            {booleanDescriptors.map((descriptor) => (
+              <MenuCheckboxItem
+                key={descriptor.id}
+                variant="switch"
+                checked={descriptor.currentValue === true}
+                closeOnClick={false}
+                onCheckedChange={(checked) => {
+                  updateDescriptors(
+                    replaceDescriptorCurrentValue(descriptors, descriptor.id, checked === true),
+                  );
+                }}
+              >
+                {descriptor.label}
+              </MenuCheckboxItem>
+            ))}
           </MenuGroup>
         </div>
-      ))}
+      ) : null}
     </>
   );
 });
@@ -300,21 +304,28 @@ export const TraitsPicker = memo(function TraitsPicker({
     return null;
   }
 
-  const triggerLabel =
-    descriptors
-      .map((descriptor) => {
-        if (descriptor.type === "boolean") {
-          if (descriptor.id === "fastMode") {
-            return descriptor.currentValue === true ? "Fast" : "Normal";
-          }
-          return `${descriptor.label} ${descriptor.currentValue === true ? "On" : "Off"}`;
-        }
-        return getProviderOptionCurrentLabel(descriptor);
-      })
-      .filter((label): label is string => typeof label === "string" && label.length > 0)
-      .join(" · ") || "";
-
-  const isCodexStyle = provider === "codex";
+  // The trigger shows only the primary trait; remaining settings collapse to
+  // a count and live inside the menu, so stacked options never flood the bar.
+  const primarySelectDescriptor =
+    descriptors.find(
+      (descriptor): descriptor is Extract<ProviderOptionDescriptor, { type: "select" }> =>
+        descriptor.type === "select",
+    ) ?? null;
+  const firstBooleanDescriptor =
+    descriptors.find(
+      (descriptor): descriptor is Extract<ProviderOptionDescriptor, { type: "boolean" }> =>
+        descriptor.type === "boolean",
+    ) ?? null;
+  const primaryTriggerLabel = primarySelectDescriptor
+    ? getProviderOptionCurrentLabel(primarySelectDescriptor)
+    : firstBooleanDescriptor
+      ? firstBooleanDescriptor.id === "fastMode"
+        ? firstBooleanDescriptor.currentValue === true
+          ? "Fast"
+          : "Normal"
+        : `${firstBooleanDescriptor.label} ${firstBooleanDescriptor.currentValue === true ? "on" : "off"}`
+      : null;
+  const extraTraitCount = Math.max(0, descriptors.length - 1);
 
   return (
     <Menu
@@ -329,25 +340,24 @@ export const TraitsPicker = memo(function TraitsPicker({
             size="sm"
             variant={triggerVariant ?? "ghost"}
             className={cn(
-              isCodexStyle
-                ? "min-w-0 max-w-40 shrink justify-start overflow-hidden whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 sm:max-w-48 sm:px-3 [&_svg]:mx-0"
-                : "shrink-0 whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 sm:px-3",
+              "min-w-0 max-w-40 shrink justify-start overflow-hidden whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 sm:max-w-48 sm:px-3 [&_svg]:mx-0",
               triggerClassName,
             )}
           />
         }
       >
-        {isCodexStyle ? (
-          <span className="flex min-w-0 w-full items-center gap-2 overflow-hidden">
-            {triggerLabel}
-            <ChevronDownIcon aria-hidden="true" className="size-3 shrink-0 opacity-60" />
-          </span>
-        ) : (
-          <>
-            <span>{triggerLabel}</span>
-            <ChevronDownIcon aria-hidden="true" className="size-3 opacity-60" />
-          </>
-        )}
+        <span className="flex min-w-0 w-full items-center gap-1.5 overflow-hidden">
+          <SlidersHorizontalIcon aria-hidden="true" className="size-3 shrink-0 opacity-70" />
+          {primaryTriggerLabel ? (
+            <span className="min-w-0 truncate">{primaryTriggerLabel}</span>
+          ) : null}
+          {extraTraitCount > 0 ? (
+            <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/60">
+              +{extraTraitCount}
+            </span>
+          ) : null}
+          <ChevronDownIcon aria-hidden="true" className="size-3 shrink-0 opacity-60" />
+        </span>
       </MenuTrigger>
       <MenuPopup align="start">
         <TraitsMenuContent

@@ -9,6 +9,7 @@ import {
 } from "./providerIconUtils";
 import { ComboboxItem } from "../ui/combobox";
 import { Kbd } from "../ui/kbd";
+import { CurrentMarker } from "../ui/threadline";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
 
@@ -30,7 +31,6 @@ export const ModelListRow = memo(function ModelListRow(props: {
   showProvider: boolean;
   preferShortName?: boolean;
   useTriggerLabel?: boolean;
-  showNewBadge?: boolean;
   jumpLabel?: string | null;
   onToggleFavorite: () => void;
 }) {
@@ -46,10 +46,11 @@ export const ModelListRow = memo(function ModelListRow(props: {
       value={`${props.instanceId}:${props.model.slug}`}
       contentClassName="flex w-full items-start gap-2"
       className={cn(
-        "w-full cursor-pointer rounded px-3 py-2 transition-colors group",
+        "group relative w-full cursor-pointer rounded px-3 py-2 transition-colors",
         "data-highlighted:bg-muted data-selected:bg-accent data-selected:text-foreground",
       )}
     >
+      <CurrentMarker className="opacity-0 transition-opacity duration-150 in-data-selected:opacity-100" />
       <Tooltip>
         <TooltipTrigger
           render={
@@ -78,7 +79,10 @@ export const ModelListRow = memo(function ModelListRow(props: {
 
       <div className="min-w-0 flex-1 text-left">
         <div className="flex items-center justify-between gap-2 min-w-0">
-          <div className="text-xs font-medium leading-snug flex items-center gap-2 min-w-0">
+          <div
+            className="text-xs font-medium leading-snug flex items-center gap-2 min-w-0"
+            data-model-picker-model-name
+          >
             <span className="truncate">
               {props.useTriggerLabel
                 ? getTriggerDisplayModelLabel(props.model)
@@ -87,14 +91,6 @@ export const ModelListRow = memo(function ModelListRow(props: {
                     props.preferShortName ? { preferShortName: true } : undefined,
                   )}
             </span>
-            {props.showNewBadge ? (
-              <span
-                className="shrink-0 rounded border border-amber-500/35 bg-amber-500/15 px-0.5 py-px text-[10px] font-bold uppercase leading-none tracking-wide text-amber-800 dark:border-amber-400/30 dark:bg-amber-400/12 dark:text-amber-200"
-                aria-label="New model"
-              >
-                New
-              </span>
-            ) : null}
           </div>
           {props.jumpLabel ? (
             <Kbd className="h-4 min-w-0 shrink-0 rounded-sm px-1.5 text-[10px]">

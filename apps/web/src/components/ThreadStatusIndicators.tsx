@@ -14,6 +14,7 @@ import { useUiStateStore } from "../uiStateStore";
 import { resolveChangeRequestPresentation } from "../sourceControlPresentation";
 import { resolveThreadStatusPill, type ThreadStatusPill } from "./Sidebar.logic";
 import type { SidebarThreadSummary } from "../types";
+import { LiveNode } from "./ui/threadline";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 export interface PrStatusIndicator {
@@ -106,11 +107,11 @@ export function ThreadStatusLabel({
         title={status.label}
         className={`inline-flex size-3.5 shrink-0 items-center justify-center ${status.colorClass}`}
       >
-        <span
-          className={`size-[9px] rounded-full ${status.dotClass} ${
-            status.pulse ? "animate-pulse" : ""
-          }`}
-        />
+        {status.pulse ? (
+          <LiveNode className="size-[9px]" />
+        ) : (
+          <span className={`size-[9px] rounded-full ${status.dotClass}`} />
+        )}
         <span className="sr-only">{status.label}</span>
       </span>
     );
@@ -121,11 +122,11 @@ export function ThreadStatusLabel({
       title={status.label}
       className={`inline-flex items-center gap-1 text-[10px] ${status.colorClass}`}
     >
-      <span
-        className={`h-1.5 w-1.5 rounded-full ${status.dotClass} ${
-          status.pulse ? "animate-pulse" : ""
-        }`}
-      />
+      {status.pulse ? (
+        <LiveNode className="size-1.5" />
+      ) : (
+        <span className={`h-1.5 w-1.5 rounded-full ${status.dotClass}`} />
+      )}
       <span className="hidden md:inline">{status.label}</span>
     </span>
   );
