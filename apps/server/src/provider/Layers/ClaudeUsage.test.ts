@@ -118,6 +118,45 @@ describe("normalizeClaudeAccountUsage", () => {
     });
   });
 
+  it("maps capped endpoint payloads that include unrelated Claude windows", () => {
+    expect(
+      normalizeClaudeAccountUsage(
+        {
+          five_hour: { utilization: 100, resets_at: "2026-06-10T18:30:00.000Z" },
+          seven_day: { utilization: 9, resets_at: "2026-06-12T03:00:00.000Z" },
+          seven_day_sonnet: { utilization: 0, resets_at: "2026-06-12T03:00:00.000Z" },
+          extra_usage: {
+            is_enabled: true,
+            monthly_limit: null,
+            used_credits: 9202,
+          },
+        } as unknown as Parameters<typeof normalizeClaudeAccountUsage>[0],
+        checkedAt,
+      ),
+    ).toEqual({
+      source: "claude-oauth-usage",
+      checkedAt,
+      primaryLimitId: "claude",
+      limits: [
+        {
+          limitId: "claude",
+          primary: {
+            usedPercent: 100,
+            remainingPercent: 0,
+            resetsAt: Date.parse("2026-06-10T18:30:00.000Z"),
+            windowDurationMins: 300,
+          },
+          secondary: {
+            usedPercent: 9,
+            remainingPercent: 91,
+            resetsAt: Date.parse("2026-06-12T03:00:00.000Z"),
+            windowDurationMins: 10_080,
+          },
+        },
+      ],
+    });
+  });
+
   it("returns undefined when no window carries utilization data", () => {
     expect(normalizeClaudeAccountUsage({}, checkedAt)).toBeUndefined();
     expect(

@@ -62,7 +62,6 @@ const CLAUDE_EFFORT_OPTIONS = {
     { value: "xhigh", label: "Extra High" },
     { value: "max", label: "Max" },
     { value: "ultracode", label: "Ultracode" },
-    { value: "ultrathink", label: "Ultrathink" },
   ],
   opus48: [
     { value: "low", label: "Low" },
@@ -71,7 +70,6 @@ const CLAUDE_EFFORT_OPTIONS = {
     { value: "xhigh", label: "Extra High" },
     { value: "max", label: "Max" },
     { value: "ultracode", label: "Ultracode" },
-    { value: "ultrathink", label: "Ultrathink" },
   ],
   opus47: [
     { value: "low", label: "Low" },
@@ -79,14 +77,12 @@ const CLAUDE_EFFORT_OPTIONS = {
     { value: "high", label: "High" },
     { value: "xhigh", label: "Extra High", isDefault: true },
     { value: "max", label: "Max" },
-    { value: "ultrathink", label: "Ultrathink" },
   ],
   opus46: [
     { value: "low", label: "Low" },
     { value: "medium", label: "Medium" },
     { value: "high", label: "High", isDefault: true },
     { value: "max", label: "Max" },
-    { value: "ultrathink", label: "Ultrathink" },
   ],
   opus45: [
     { value: "low", label: "Low" },
@@ -99,7 +95,6 @@ const CLAUDE_EFFORT_OPTIONS = {
     { value: "medium", label: "Medium" },
     { value: "high", label: "High", isDefault: true },
     { value: "max", label: "Max" },
-    { value: "ultrathink", label: "Ultrathink" },
   ],
 } as const;
 
@@ -115,7 +110,6 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
           id: "effort",
           label: "Reasoning",
           options: CLAUDE_EFFORT_OPTIONS.fable5,
-          promptInjectedValues: ["ultrathink"],
         }),
       ],
     }),
@@ -130,7 +124,6 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
           id: "effort",
           label: "Reasoning",
           options: CLAUDE_EFFORT_OPTIONS.opus48,
-          promptInjectedValues: ["ultrathink"],
         }),
         buildBooleanOptionDescriptor({
           id: "fastMode",
@@ -157,7 +150,6 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
           id: "effort",
           label: "Reasoning",
           options: CLAUDE_EFFORT_OPTIONS.opus47,
-          promptInjectedValues: ["ultrathink"],
         }),
         buildSelectOptionDescriptor({
           id: "contextWindow",
@@ -180,7 +172,6 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
           id: "effort",
           label: "Reasoning",
           options: CLAUDE_EFFORT_OPTIONS.opus46,
-          promptInjectedValues: ["ultrathink"],
         }),
         buildBooleanOptionDescriptor({
           id: "fastMode",
@@ -225,7 +216,6 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
           id: "effort",
           label: "Reasoning",
           options: CLAUDE_EFFORT_OPTIONS.sonnet46,
-          promptInjectedValues: ["ultrathink"],
         }),
         buildSelectOptionDescriptor({
           id: "contextWindow",
@@ -342,12 +332,11 @@ export function resolveClaudeEffort(
  * Normalize a resolved Claude effort value into one suitable for the Claude
  * CLI's `--effort` flag.
  *
- * `"ultrathink"` is filtered out because it is a prompt-prefix mode rather
- * than a CLI-effort value. `"ultracode"` is a Claude Code setting that pairs
- * with `xhigh` effort. Returns `undefined` when no flag should be passed.
+ * `"ultracode"` is a Claude Code setting that pairs with `xhigh` effort.
+ * Returns `undefined` when no flag should be passed.
  */
 export function normalizeClaudeCliEffort(effort: string | null | undefined): string | undefined {
-  if (!effort || effort === "ultrathink") {
+  if (!effort) {
     return undefined;
   }
   if (effort === "ultracode") {

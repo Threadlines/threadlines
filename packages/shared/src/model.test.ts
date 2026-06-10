@@ -7,7 +7,6 @@ import {
 } from "@t3tools/contracts";
 
 import {
-  applyClaudePromptEffortPrefix,
   buildProviderOptionSelectionsFromDescriptors,
   createModelCapabilities,
   createModelSelection,
@@ -16,7 +15,6 @@ import {
   getProviderOptionDescriptors,
   getProviderOptionBooleanSelectionValue,
   getProviderOptionStringSelectionValue,
-  isClaudeUltrathinkPrompt,
   normalizeModelSlug,
   resolveModelSlugForProvider,
   resolveSelectableModel,
@@ -52,10 +50,8 @@ const claudeCaps: ModelCapabilities = createModelCapabilities({
       options: [
         { id: "medium", label: "Medium" },
         { id: "high", label: "High", isDefault: true },
-        { id: "ultrathink", label: "Ultrathink" },
       ],
       currentValue: "high",
-      promptInjectedValues: ["ultrathink"],
     },
     {
       id: "contextWindow",
@@ -126,21 +122,6 @@ describe("resolveSelectableModel", () => {
 });
 
 describe("misc helpers", () => {
-  it("detects ultrathink prompts", () => {
-    expect(isClaudeUltrathinkPrompt("Please ultrathink about this")).toBe(true);
-    expect(isClaudeUltrathinkPrompt("Ultrathink:\nInvestigate")).toBe(true);
-    expect(isClaudeUltrathinkPrompt("Investigate")).toBe(false);
-  });
-
-  it("prefixes ultrathink prompts once", () => {
-    expect(applyClaudePromptEffortPrefix("Investigate", "ultrathink")).toBe(
-      "Ultrathink:\nInvestigate",
-    );
-    expect(applyClaudePromptEffortPrefix("Ultrathink:\nInvestigate", "ultrathink")).toBe(
-      "Ultrathink:\nInvestigate",
-    );
-  });
-
   it("trims strings to null", () => {
     expect(trimOrNull("  hi  ")).toBe("hi");
     expect(trimOrNull("   ")).toBeNull();
@@ -165,10 +146,8 @@ describe("descriptor helpers", () => {
         options: [
           { id: "medium", label: "Medium" },
           { id: "high", label: "High", isDefault: true },
-          { id: "ultrathink", label: "Ultrathink" },
         ],
         currentValue: "medium",
-        promptInjectedValues: ["ultrathink"],
       },
       {
         id: "contextWindow",

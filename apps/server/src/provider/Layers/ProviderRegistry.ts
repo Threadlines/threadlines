@@ -117,7 +117,40 @@ export const mergeProviderSnapshot = (
         models: mergeProviderModels(previousProvider.models, nextProvider.models, {
           preserveMissingPreviousModels: nextProvider.driver !== CLAUDE_DRIVER,
         }),
+        ...(shouldPreservePreviousAccountUsage(previousProvider, nextProvider)
+          ? { accountUsage: previousProvider.accountUsage }
+          : {}),
       };
+
+const shouldPreservePreviousAccountUsage = (
+  previousProvider: ServerProvider,
+  nextProvider: ServerProvider,
+): boolean => {
+  if (nextProvider.accountUsage || !previousProvider.accountUsage) return false;
+  if (!nextProvider.enabled) return false;
+  if (
+    previousProvider.auth.status !== "authenticated" ||
+    nextProvider.auth.status !== "authenticated"
+  ) {
+    return false;
+  }
+  if (nextProvider.auth.type === "apiKey") return false;
+  if (
+    previousProvider.auth.email &&
+    nextProvider.auth.email &&
+    previousProvider.auth.email !== nextProvider.auth.email
+  ) {
+    return false;
+  }
+  if (
+    previousProvider.auth.type &&
+    nextProvider.auth.type &&
+    previousProvider.auth.type !== nextProvider.auth.type
+  ) {
+    return false;
+  }
+  return true;
+};
 
 const sanitizeHydratedProviderModels = (
   cachedProvider: ServerProvider,

@@ -683,6 +683,57 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
         ]);
       });
 
+      it("preserves same-account usage when a refresh returns no usage snapshot", () => {
+        const usage: ServerProviderAccountUsage = {
+          source: "claude-oauth-usage",
+          checkedAt: "2026-06-10T15:00:00.000Z",
+          primaryLimitId: "claude",
+          limits: [
+            {
+              limitId: "claude",
+              primary: {
+                usedPercent: 100,
+                remainingPercent: 0,
+                windowDurationMins: 300,
+              },
+              secondary: {
+                usedPercent: 9,
+                remainingPercent: 91,
+                windowDurationMins: 10_080,
+              },
+            },
+          ],
+        };
+        const previousProvider = {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          driver: ProviderDriverKind.make("claudeAgent"),
+          status: "ready",
+          enabled: true,
+          installed: true,
+          auth: {
+            status: "authenticated",
+            email: "same@example.com",
+            type: "pro",
+          },
+          checkedAt: "2026-06-10T15:00:00.000Z",
+          version: "2.1.170",
+          accountUsage: usage,
+          models: [],
+          slashCommands: [],
+          skills: [],
+        } as const satisfies ServerProvider;
+        const { accountUsage: _accountUsage, ...refreshedProviderBase } = previousProvider;
+        const refreshedProvider = {
+          ...refreshedProviderBase,
+          checkedAt: "2026-06-10T15:05:00.000Z",
+        } satisfies ServerProvider;
+
+        assert.deepStrictEqual(
+          mergeProviderSnapshot(previousProvider, refreshedProvider).accountUsage,
+          usage,
+        );
+      });
+
       it("fills missing capabilities from the previous provider snapshot", () => {
         const previousProvider = {
           instanceId: ProviderInstanceId.make("cursor"),
@@ -1674,9 +1725,12 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
               { id: "xhigh", label: "Extra High" },
               { id: "max", label: "Max" },
               { id: "ultracode", label: "Ultracode" },
-              { id: "ultrathink", label: "Ultrathink" },
             ],
           );
+          const contextDescriptor = fable.capabilities.optionDescriptors?.find(
+            (descriptor) => descriptor.type === "select" && descriptor.id === "contextWindow",
+          );
+          assert.strictEqual(contextDescriptor, undefined);
           assert.strictEqual(
             fable.capabilities.optionDescriptors?.some(
               (descriptor) => descriptor.type === "boolean" && descriptor.id === "thinking",
@@ -1730,7 +1784,6 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
                 { id: "xhigh", label: "Extra High" },
                 { id: "max", label: "Max" },
                 { id: "ultracode", label: "Ultracode" },
-                { id: "ultrathink", label: "Ultrathink" },
               ],
             );
             const fastModeDescriptor = opus48.capabilities.optionDescriptors?.find(

@@ -7,9 +7,9 @@ import {
 } from "@t3tools/contracts";
 import {
   buildProviderOptionSelectionsFromDescriptors,
+  getProviderOptionCurrentLabel,
   getProviderOptionCurrentValue,
   getProviderOptionDescriptors,
-  isClaudeUltrathinkPrompt,
 } from "@t3tools/shared/model";
 import type { ReactNode } from "react";
 
@@ -29,6 +29,10 @@ export type ComposerProviderState = {
   provider: ProviderDriverKind;
   promptEffort: string | null;
   modelOptionsForDispatch: ReadonlyArray<ProviderOptionSelection> | undefined;
+  // Display label of the selected `contextWindow` option (e.g. "200k"),
+  // when the model exposes one. Lets the composer show the window size
+  // before the first context-window activity arrives.
+  contextWindowLabel: string | null;
   composerFrameClassName?: string;
   composerSurfaceClassName?: string;
   modelPickerIconClassName?: string;
@@ -42,12 +46,10 @@ type TraitsRenderInput = {
   model: string;
   models: ReadonlyArray<ServerProviderModel>;
   modelOptions: ReadonlyArray<ProviderOptionSelection> | undefined;
-  prompt: string;
-  onPromptChange: (prompt: string) => void;
 };
 
 export function getComposerProviderState(input: ComposerProviderStateInput): ComposerProviderState {
-  const { provider, model, models, prompt, modelOptions } = input;
+  const { provider, model, models, modelOptions } = input;
   const caps = getProviderModelCapabilities(models, model, provider);
   const descriptors = getProviderOptionDescriptors({ caps, selections: modelOptions });
   const primarySelectDescriptor = descriptors.find(
@@ -56,28 +58,24 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
   );
   const primaryValue = getProviderOptionCurrentValue(primarySelectDescriptor ?? null);
   const promptEffort = typeof primaryValue === "string" ? primaryValue : null;
-  const ultrathinkActive =
-    (primarySelectDescriptor?.promptInjectedValues?.length ?? 0) > 0 &&
-    isClaudeUltrathinkPrompt(prompt);
+  const contextWindowDescriptor =
+    descriptors.find(
+      (descriptor) => descriptor.type === "select" && descriptor.id === "contextWindow",
+    ) ?? null;
   const ultracodeActive = promptEffort === "ultracode";
 
   return {
     provider,
     promptEffort,
     modelOptionsForDispatch: buildProviderOptionSelectionsFromDescriptors(descriptors),
-    ...(ultrathinkActive
+    contextWindowLabel: getProviderOptionCurrentLabel(contextWindowDescriptor) ?? null,
+    ...(ultracodeActive
       ? {
-          composerFrameClassName: "ultrathink-frame",
-          composerSurfaceClassName: "shadow-[0_0_0_1px_rgba(255,255,255,0.04)_inset]",
-          modelPickerIconClassName: "ultrathink-chroma",
+          composerFrameClassName: "ultracode-frame",
+          composerSurfaceClassName: "shadow-[0_0_0_1px_rgba(168,85,247,0.18)_inset]",
+          modelPickerIconClassName: "ultracode-chroma",
         }
-      : ultracodeActive
-        ? {
-            composerFrameClassName: "ultracode-frame",
-            composerSurfaceClassName: "shadow-[0_0_0_1px_rgba(168,85,247,0.18)_inset]",
-            modelPickerIconClassName: "ultracode-chroma",
-          }
-        : {}),
+      : {}),
   };
 }
 
@@ -85,22 +83,9 @@ function renderTraitsControl(
   Component: typeof TraitsMenuContent | typeof TraitsPicker,
   input: TraitsRenderInput,
 ): ReactNode {
-  const {
-    provider,
-    instanceId,
-    threadRef,
-    draftId,
-    model,
-    models,
-    modelOptions,
-    prompt,
-    onPromptChange,
-  } = input;
+  const { provider, instanceId, threadRef, draftId, model, models, modelOptions } = input;
   const hasTarget = threadRef !== undefined || draftId !== undefined;
-  if (
-    !hasTarget ||
-    !shouldRenderTraitsControls({ provider, models, model, modelOptions, prompt })
-  ) {
+  if (!hasTarget || !shouldRenderTraitsControls({ provider, models, model, modelOptions })) {
     return null;
   }
   return (
@@ -112,8 +97,6 @@ function renderTraitsControl(
       {...(draftId ? { draftId } : {})}
       model={model}
       modelOptions={modelOptions}
-      prompt={prompt}
-      onPromptChange={onPromptChange}
     />
   );
 }

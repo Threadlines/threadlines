@@ -25,7 +25,6 @@ function selectDescriptor(
   id: string,
   label: string,
   options: ReadonlyArray<{ id: string; label: string; isDefault?: boolean }>,
-  promptInjectedValues?: ReadonlyArray<string>,
 ) {
   return {
     id,
@@ -34,9 +33,6 @@ function selectDescriptor(
     options: [...options],
     ...(options.find((option) => option.isDefault)?.id
       ? { currentValue: options.find((option) => option.isDefault)?.id }
-      : {}),
-    ...(promptInjectedValues && promptInjectedValues.length > 0
-      ? { promptInjectedValues: [...promptInjectedValues] }
       : {}),
   };
 }
@@ -79,7 +75,6 @@ async function mountMenu(props?: { modelSelection?: ModelSelection; prompt?: str
   });
   const host = document.createElement("div");
   document.body.append(host);
-  const onPromptChange = vi.fn();
   const providerOptions = props?.modelSelection?.options;
   const models = [
     {
@@ -88,18 +83,12 @@ async function mountMenu(props?: { modelSelection?: ModelSelection; prompt?: str
       isCustom: false,
       capabilities: createModelCapabilities({
         optionDescriptors: [
-          selectDescriptor(
-            "effort",
-            "Reasoning",
-            [
-              { id: "low", label: "Low" },
-              { id: "medium", label: "Medium" },
-              { id: "high", label: "High", isDefault: true },
-              { id: "max", label: "Max" },
-              { id: "ultrathink", label: "Ultrathink" },
-            ],
-            ["ultrathink"],
-          ),
+          selectDescriptor("effort", "Reasoning", [
+            { id: "low", label: "Low" },
+            { id: "medium", label: "Medium" },
+            { id: "high", label: "High", isDefault: true },
+            { id: "max", label: "Max" },
+          ]),
           booleanDescriptor("fastMode", "Fast Mode"),
         ],
       }),
@@ -118,17 +107,11 @@ async function mountMenu(props?: { modelSelection?: ModelSelection; prompt?: str
       isCustom: false,
       capabilities: createModelCapabilities({
         optionDescriptors: [
-          selectDescriptor(
-            "effort",
-            "Reasoning",
-            [
-              { id: "low", label: "Low" },
-              { id: "medium", label: "Medium" },
-              { id: "high", label: "High", isDefault: true },
-              { id: "ultrathink", label: "Ultrathink" },
-            ],
-            ["ultrathink"],
-          ),
+          selectDescriptor("effort", "Reasoning", [
+            { id: "low", label: "Low" },
+            { id: "medium", label: "Medium" },
+            { id: "high", label: "High", isDefault: true },
+          ]),
         ],
       }),
     },
@@ -147,9 +130,7 @@ async function mountMenu(props?: { modelSelection?: ModelSelection; prompt?: str
           models={models}
           threadRef={threadRef}
           model={model}
-          prompt={props?.prompt ?? ""}
           modelOptions={providerOptions}
-          onPromptChange={onPromptChange}
         />
       }
       onToggleInteractionMode={vi.fn()}
@@ -230,7 +211,6 @@ describe("CompactComposerControlsMenu", () => {
       expect(text).toContain("Medium");
       expect(text).toContain("High");
       expect(text).not.toContain("Max");
-      expect(text).toContain("Ultrathink");
     });
   });
 
@@ -250,45 +230,6 @@ describe("CompactComposerControlsMenu", () => {
       expect(text).toContain("Thinking");
       expect(text).toContain("On");
       expect(text).toContain("Off");
-    });
-  });
-
-  it("shows prompt-controlled Ultrathink state with selectable effort controls", async () => {
-    await using _ = await mountMenu({
-      modelSelection: createModelSelection(
-        ProviderInstanceId.make("claudeAgent"),
-        "claude-opus-4-6",
-        [{ id: "effort", value: "high" }],
-      ),
-      prompt: "Ultrathink:\nInvestigate this",
-    });
-
-    await page.getByLabelText("More composer controls").click();
-
-    await vi.waitFor(() => {
-      const text = document.body.textContent ?? "";
-      expect(text).toContain("Reasoning");
-      expect(text).not.toContain("ultrathink");
-    });
-  });
-
-  it("warns when ultrathink appears in prompt body text", async () => {
-    await using _ = await mountMenu({
-      modelSelection: createModelSelection(
-        ProviderInstanceId.make("claudeAgent"),
-        "claude-opus-4-6",
-        [{ id: "effort", value: "high" }],
-      ),
-      prompt: "Ultrathink:\nplease ultrathink about this problem",
-    });
-
-    await page.getByLabelText("More composer controls").click();
-
-    await vi.waitFor(() => {
-      const text = document.body.textContent ?? "";
-      expect(text).toContain(
-        'Your prompt contains "ultrathink" in the text. Remove it to change this option.',
-      );
     });
   });
 

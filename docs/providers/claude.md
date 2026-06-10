@@ -229,6 +229,10 @@ BadCode shows Claude Fable 5 when the configured Claude Code binary is `2.1.170`
 Fable is not a default Claude Code model; select `Claude Fable 5` in the model picker when you want
 Anthropic's highest-capability widely available model for long-running or difficult work.
 
+Anthropic documents Fable 5 on the Claude API as a 1M-context model where the 1M maximum is also the
+default. BadCode does not expose a 200k Fable selector because the bare `claude-fable-5` model id
+still runs with the 1M window on the Claude API.
+
 Anthropic's launch note says Fable 5 is included on Pro, Max, Team, and seat-based Enterprise
 subscriptions through June 22, 2026. Starting June 23, 2026, using it on those subscription plans may
 require usage credits unless Anthropic extends the included window. API and consumption-based

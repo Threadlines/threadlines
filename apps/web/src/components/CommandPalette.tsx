@@ -13,7 +13,7 @@ import {
 } from "@t3tools/contracts";
 import { deriveRepositoryDirectoryName, normalizeGitRemoteUrl } from "@t3tools/shared/git";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useParams } from "@tanstack/react-router";
+import { useLocation, useNavigate, useParams } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import {
   ArrowDownIcon,
@@ -22,6 +22,7 @@ import {
   CornerLeftUpIcon,
   FolderIcon,
   FolderPlusIcon,
+  HomeIcon,
   LinkIcon,
   MessageSquareIcon,
   SettingsIcon,
@@ -429,6 +430,7 @@ function OpenCommandPaletteDialog() {
   const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
   const threads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
   const keybindings = useServerKeybindings();
+  const isHomeRoute = useLocation({ select: (location) => location.pathname === "/" });
   const [viewStack, setViewStack] = useState<CommandPaletteView[]>([]);
   const currentView = viewStack.at(-1) ?? null;
   const [browseGeneration, setBrowseGeneration] = useState(0);
@@ -1116,6 +1118,19 @@ function OpenCommandPaletteDialog() {
       openAddProjectFlow();
     },
   });
+
+  if (!isHomeRoute) {
+    actionItems.push({
+      kind: "action",
+      value: "action:go-home",
+      searchTerms: ["home", "landing", "start", "threads"],
+      title: "Go to Home",
+      icon: <HomeIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        await navigate({ to: "/" });
+      },
+    });
+  }
 
   actionItems.push({
     kind: "action",

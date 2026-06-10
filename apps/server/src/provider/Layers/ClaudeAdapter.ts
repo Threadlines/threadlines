@@ -46,11 +46,9 @@ import {
   type UserInputQuestion,
 } from "@t3tools/contracts";
 import {
-  applyClaudePromptEffortPrefix,
   getModelSelectionBooleanOptionValue,
   getModelSelectionStringOptionValue,
   getProviderOptionDescriptors,
-  resolvePromptInjectedEffort,
 } from "@t3tools/shared/model";
 import { renderThreadContextSeed, withContextSeedPreamble } from "@t3tools/shared/contextSeed";
 import * as Cause from "effect/Cause";
@@ -163,6 +161,13 @@ interface ToolInFlight {
   readonly lastEmittedInputFingerprint?: string;
 }
 
+type ClaudeTaskStatus = "pending" | "running" | "completed" | "failed" | "killed" | "paused";
+
+interface ClaudeTaskSnapshot {
+  readonly description?: string;
+  readonly status?: ClaudeTaskStatus;
+}
+
 interface ClaudeSessionContext {
   session: ProviderSession;
   readonly promptQueue: Queue.Queue<PromptQueueItem>;
@@ -179,6 +184,7 @@ interface ClaudeSessionContext {
     items: Array<unknown>;
   }>;
   readonly inFlightTools: Map<number, ToolInFlight>;
+  readonly tasks: Map<string, ClaudeTaskSnapshot>;
   turnState: ClaudeTurnState | undefined;
   lastKnownContextWindow: number | undefined;
   lastKnownTokenUsage: ThreadTokenUsageSnapshot | undefined;
@@ -649,6 +655,58 @@ function extractPlanStepsFromTodoInput(input: Record<string, unknown>): PlanStep
     }));
 }
 
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function normalizeClaudeTaskStatus(value: unknown): ClaudeTaskStatus | undefined {
+  switch (value) {
+    case "pending":
+    case "running":
+    case "completed":
+    case "failed":
+    case "killed":
+    case "paused":
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+function completedTaskStatusFromClaudeStatus(
+  status: ClaudeTaskStatus | undefined,
+): "completed" | "failed" | "stopped" | undefined {
+  switch (status) {
+    case "completed":
+      return "completed";
+    case "failed":
+      return "failed";
+    case "killed":
+      return "stopped";
+    default:
+      return undefined;
+  }
+}
+
+function describeClaudeTaskStatus(status: ClaudeTaskStatus | undefined): string {
+  switch (status) {
+    case "pending":
+      return "Task pending";
+    case "paused":
+      return "Task paused";
+    case "running":
+      return "Task running";
+    case "completed":
+      return "Task completed";
+    case "failed":
+      return "Task failed";
+    case "killed":
+      return "Task stopped";
+    default:
+      return "Task updated";
+  }
+}
+
 function summarizeToolRequest(toolName: string, input: Record<string, unknown>): string {
   const commandValue = input.command ?? input.cmd;
   const command = typeof commandValue === "string" ? commandValue : undefined;
@@ -710,20 +768,8 @@ const CLAUDE_SETTING_SOURCES = [
   "local",
 ] as const satisfies ReadonlyArray<SettingSource>;
 
-function buildPromptText(
-  input: ProviderSendTurnInput,
-  boundInstanceId: ProviderInstanceId,
-): string {
-  const rawEffort =
-    input.modelSelection?.instanceId === boundInstanceId
-      ? getModelSelectionStringOptionValue(input.modelSelection, "effort")
-      : null;
-  const claudeModel =
-    input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection.model : undefined;
-  const caps = getClaudeModelCapabilities(claudeModel);
-
-  const promptEffort = resolvePromptInjectedEffort(caps, rawEffort);
-  return applyClaudePromptEffortPrefix(input.input?.trim() ?? "", promptEffort);
+function buildPromptText(input: ProviderSendTurnInput): string {
+  return input.input?.trim() ?? "";
 }
 
 function buildUserMessage(input: {
@@ -759,13 +805,11 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
   dependencies: {
     readonly fileSystem: FileSystem.FileSystem;
     readonly attachmentsDir: string;
-    readonly boundInstanceId: ProviderInstanceId;
     readonly seedPreamble?: string | undefined;
   },
 ) {
-  const promptText = buildPromptText(input, dependencies.boundInstanceId);
-  // Cross-driver handoff: lead the first turn with the rendered seed so the
-  // effort prefix still wraps only the user's own prompt.
+  const promptText = buildPromptText(input);
+  // Cross-driver handoff: lead the first turn with the rendered seed.
   const text = dependencies.seedPreamble
     ? withContextSeedPreamble(dependencies.seedPreamble, promptText)
     : promptText;
@@ -2326,6 +2370,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         });
         return;
       case "task_started":
+        {
+          const description = nonEmptyString(message.description);
+          context.tasks.set(message.task_id, {
+            ...(description ? { description } : {}),
+            status: "running",
+          });
+        }
         yield* offerRuntimeEvent({
           ...base,
           type: "task.started",
@@ -2336,7 +2387,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           },
         });
         return;
-      case "task_progress":
+      case "task_progress": {
+        const description = nonEmptyString(message.description);
+        context.tasks.set(message.task_id, {
+          ...context.tasks.get(message.task_id),
+          ...(description ? { description } : {}),
+          status: "running",
+        });
         yield* offerRuntimeEvent({
           ...base,
           type: "task.progress",
@@ -2349,7 +2406,58 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           },
         });
         return;
+      }
+      case "task_updated": {
+        const patch =
+          message.patch && typeof message.patch === "object"
+            ? (message.patch as Record<string, unknown>)
+            : {};
+        const status = normalizeClaudeTaskStatus(patch.status);
+        const previous = context.tasks.get(message.task_id);
+        const description = nonEmptyString(patch.description) ?? previous?.description;
+        const error = nonEmptyString(patch.error);
+        context.tasks.set(message.task_id, {
+          ...previous,
+          ...(description ? { description } : {}),
+          ...(status ? { status } : {}),
+        });
+
+        const completedStatus = completedTaskStatusFromClaudeStatus(status);
+        if (completedStatus) {
+          const summary = error ?? description;
+          yield* offerRuntimeEvent({
+            ...base,
+            type: "task.completed",
+            payload: {
+              taskId: RuntimeTaskId.make(message.task_id),
+              status: completedStatus,
+              ...(summary ? { summary } : {}),
+            },
+          });
+          return;
+        }
+
+        yield* offerRuntimeEvent({
+          ...base,
+          type: "task.progress",
+          payload: {
+            taskId: RuntimeTaskId.make(message.task_id),
+            description: description ?? describeClaudeTaskStatus(status),
+            ...(error ? { summary: error } : {}),
+          },
+        });
+        return;
+      }
       case "task_notification":
+        context.tasks.set(message.task_id, {
+          ...context.tasks.get(message.task_id),
+          status:
+            message.status === "completed"
+              ? "completed"
+              : message.status === "failed"
+                ? "failed"
+                : "killed",
+        });
         yield* offerRuntimeEvent({
           ...base,
           type: "task.completed",
@@ -3157,6 +3265,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         pendingUserInputs,
         turns: [],
         inFlightTools,
+        tasks: new Map(),
         turnState: undefined,
         lastKnownContextWindow: undefined,
         lastKnownTokenUsage: undefined,
@@ -3323,7 +3432,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const message = yield* buildUserMessageEffect(input, {
       fileSystem,
       attachmentsDir: serverConfig.attachmentsDir,
-      boundInstanceId,
       ...(seedPreamble !== undefined ? { seedPreamble } : {}),
     });
     // Consume the handoff seed once; subsequent turns continue natively.
