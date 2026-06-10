@@ -663,7 +663,10 @@ describe("CheckpointReactor", () => {
       (entry) =>
         entry.latestTurn?.turnId === "turn-shared-provider-summary" &&
         entry.checkpoints.length === 1 &&
-        entry.checkpoints[0]?.status === "ready",
+        entry.checkpoints[0]?.status === "ready" &&
+        entry.activities.some(
+          (activity) => activity.kind === "tool.completed" && activity.summary === "Changed files",
+        ),
     );
 
     expect(thread.checkpoints[0]?.files).toEqual(providerFiles);
