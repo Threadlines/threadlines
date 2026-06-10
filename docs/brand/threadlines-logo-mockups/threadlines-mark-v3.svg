@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 120" fill="none">
+  <!-- Geometry copied from apps/web NoActiveThreadState ThreadlinesFigure.
+       Accent = approx of accent-bright / dark primary-graph (oklch 0.7 0.17 264). -->
+  <defs>
+    <linearGradient id="tl-live" gradientUnits="userSpaceOnUse" x1="150" y1="62" x2="300" y2="90">
+      <stop offset="0" stop-color="#a1a1aa" stop-opacity="0.4"/>
+      <stop offset="1" stop-color="#6e94fa" stop-opacity="0.9"/>
+    </linearGradient>
+  </defs>
+  <g stroke-linecap="round" stroke-width="1.25">
+    <path d="M 16 62 L 344 62" stroke="#ffffff" stroke-opacity="0.30"/>
+    <path d="M 96 62 C 118 62 118 34 140 34 L 224 34 C 246 34 246 62 268 62" stroke="#ffffff" stroke-opacity="0.20"/>
+    <path d="M 150 62 C 172 62 172 90 194 90 L 296 90" stroke="url(#tl-live)"/>
+  </g>
+  <g fill="#ffffff">
+    <circle cx="44" cy="62" r="2" fill-opacity="0.35"/>
+    <circle cx="96" cy="62" r="2.5" fill-opacity="0.5"/>
+    <circle cx="150" cy="62" r="2.5" fill-opacity="0.5"/>
+    <circle cx="182" cy="34" r="2" fill-opacity="0.35"/>
+    <circle cx="322" cy="62" r="2" fill-opacity="0.35"/>
+    <circle cx="268" cy="62" r="2.5" fill-opacity="0.5"/>
+  </g>
+  <circle cx="300" cy="90" r="5" fill="#6e94fa" fill-opacity="0.3"/>
+  <circle cx="300" cy="90" r="3" fill="#6e94fa"/>
+</svg>

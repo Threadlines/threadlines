@@ -6,7 +6,7 @@ interface Props {
 
 const {
   title = "Threadlines",
-  description = "Threadlines — The open-source control plane for coding agents.",
+  description = "Threadlines is a source-control-first desktop workspace for coding agents. Every thread leaves a line. In private development.",
 } = Astro.props;
 ---
 
@@ -15,10 +15,14 @@ const {
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content={description} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta name="theme-color" content="#09090b" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=JetBrains+Mono:wght@400;500&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
       rel="stylesheet"
     />
     <link rel="icon" href="/favicon.ico" sizes="48x48" />
@@ -32,21 +36,48 @@ const {
       <nav class="nav">
         <div class="nav-inner">
           <a href="/" class="nav-brand" aria-label="Threadlines home">
-            <span class="nav-brand-name">Threadlines</span>
+            <svg class="nav-brand-glyph" viewBox="36 86 184 100" fill="none" aria-hidden="true">
+              <defs>
+                <linearGradient
+                  id="nav-glyph-live"
+                  gradientUnits="userSpaceOnUse"
+                  x1="108"
+                  y1="98"
+                  x2="194"
+                  y2="162"
+                >
+                  <stop offset="0" stop-color="#a1a1aa" stop-opacity="0.45"></stop>
+                  <stop offset="1" stop-color="var(--accent-bright)"></stop>
+                </linearGradient>
+              </defs>
+              <g stroke-linecap="round" stroke-width="10">
+                <path d="M 44 98 L 212 98" stroke="rgba(255, 255, 255, 0.32)"></path>
+                <path
+                  d="M 108 98 C 134 98 134 162 160 162 L 188 162"
+                  stroke="url(#nav-glyph-live)"></path>
+              </g>
+              <g fill="rgba(255, 255, 255, 0.45)">
+                <circle cx="70" cy="98" r="7"></circle>
+                <circle cx="108" cy="98" r="8.5"></circle>
+                <circle cx="178" cy="98" r="7"></circle>
+              </g>
+              <circle cx="194" cy="162" r="21" fill="var(--accent-bright)" opacity="0.16"></circle>
+              <circle cx="194" cy="162" r="12.5" fill="var(--accent-bright)"></circle>
+            </svg>
+            <span class="nav-brand-name">threadlines</span>
           </a>
           <div class="nav-right">
             <a
               class="nav-gh"
-              href="https://github.com/Threadlines/threadlines"
+              href="https://github.com/Threadlines"
               target="_blank"
               rel="noopener noreferrer"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                 <path d="M12 .5C5.65.5.5 5.65.5 12a11.5 11.5 0 007.86 10.93c.58.1.79-.25.79-.56v-2c-3.2.69-3.88-1.37-3.88-1.37-.52-1.33-1.27-1.69-1.27-1.69-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.76 2.68 1.25 3.33.96.1-.75.4-1.25.72-1.54-2.55-.29-5.24-1.27-5.24-5.67 0-1.25.45-2.28 1.18-3.08-.12-.29-.51-1.45.11-3.02 0 0 .96-.31 3.15 1.18a10.96 10.96 0 015.74 0c2.19-1.49 3.15-1.18 3.15-1.18.62 1.57.23 2.73.11 3.02.74.8 1.18 1.83 1.18 3.08 0 4.41-2.7 5.38-5.27 5.66.41.36.78 1.06.78 2.13v3.16c0 .31.21.67.8.56A11.5 11.5 0 0023.5 12C23.5 5.65 18.35.5 12 .5z"/>
               </svg>
-              <span>GitHub</span>
+              <span>github.com/threadlines</span>
             </a>
-            <a class="btn btn-primary" href="/#download">Download</a>
           </div>
         </div>
       </nav>
@@ -58,28 +89,14 @@ const {
       <footer class="footer">
         <div class="footer-inner">
           <div class="footer-brand">
-            <img src="/icon.webp" alt="" />
-            <span>&copy; {new Date().getFullYear()} Threadlines · MIT licensed</span>
+            <span>&copy; {new Date().getFullYear()} Threadlines</span>
           </div>
           <div class="footer-links">
-            <a href="https://github.com/Threadlines/threadlines" target="_blank" rel="noopener noreferrer">GitHub</a>
-            <a href="https://discord.gg/jn4EGJjrvv" target="_blank" rel="noopener noreferrer">Discord</a>
-            <a href="/download">Download</a>
+            <a href="https://github.com/Threadlines" target="_blank" rel="noopener noreferrer">GitHub</a>
           </div>
         </div>
       </footer>
     </div>
-
-    <script>
-      const nav = document.querySelector(".nav");
-      const onScroll = () => {
-        if (!nav) return;
-        if (window.scrollY > 12) nav.classList.add("is-scrolled");
-        else nav.classList.remove("is-scrolled");
-      };
-      window.addEventListener("scroll", onScroll, { passive: true });
-      onScroll();
-    </script>
   </body>
 </html>
 
@@ -94,12 +111,13 @@ const {
     --fg-faint: #52525b;
     --border: rgba(255, 255, 255, 0.08);
     --border-strong: rgba(255, 255, 255, 0.14);
-    --accent-h: 250;
-    --accent: oklch(0.68 0.17 var(--accent-h));
-    --accent-dim: oklch(0.68 0.17 var(--accent-h) / 0.15);
+    --accent-h: 264;
+    --accent: oklch(0.62 0.19 var(--accent-h));
+    --accent-bright: oklch(0.7 0.17 var(--accent-h));
+    --accent-dim: oklch(0.62 0.19 var(--accent-h) / 0.14);
     --ok: oklch(0.72 0.16 150);
     --warn: oklch(0.76 0.15 75);
-    --font-sans: "DM Sans", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    --font-sans: "Hanken Grotesk", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
     --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
     --radius: 12px;
     --radius-sm: 8px;
@@ -121,7 +139,6 @@ const {
     background: var(--bg);
     color: var(--fg);
     font-family: var(--font-sans);
-    font-feature-settings: "ss01", "ss02";
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     min-height: 100vh;
@@ -146,14 +163,6 @@ const {
     text-decoration: none;
   }
 
-  button {
-    font-family: inherit;
-    cursor: pointer;
-    border: 0;
-    background: none;
-    color: inherit;
-  }
-
   img,
   svg {
     display: block;
@@ -170,105 +179,22 @@ const {
   }
 
   .display {
-    font-weight: 500;
+    font-weight: 600;
     letter-spacing: -0.035em;
-    line-height: 1.05;
+    line-height: 1.04;
   }
 
   .container {
     width: 100%;
-    max-width: 1240px;
+    max-width: 1100px;
     margin: 0 auto;
     padding: 0 32px;
-  }
-
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    font-weight: 500;
-    font-size: 14px;
-    padding: 10px 18px;
-    border-radius: 8px;
-    transition: transform 0.18s ease, background 0.18s ease,
-      border-color 0.18s ease, color 0.18s ease;
-    white-space: nowrap;
-  }
-
-  .btn-primary {
-    background: var(--fg);
-    color: #09090b;
-    font-weight: 600;
-  }
-
-  .btn-primary:hover {
-    transform: translateY(-1px);
-    background: #fff;
-  }
-
-  .btn-primary:active {
-    transform: translateY(0);
-  }
-
-  .btn-ghost {
-    color: var(--fg-muted);
-    border: 1px solid var(--border);
-    background: transparent;
-  }
-
-  .btn-ghost:hover {
-    color: var(--fg);
-    border-color: var(--border-strong);
-    background: rgba(255, 255, 255, 0.02);
-  }
-
-  .btn-lg {
-    padding: 14px 22px;
-    font-size: 15px;
-    border-radius: 10px;
-  }
-
-  .tile {
-    position: relative;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.015), rgba(255, 255, 255, 0));
-    overflow: hidden;
   }
 
   :focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
     border-radius: 4px;
-  }
-
-  @keyframes fade-in {
-    from {
-      opacity: 0;
-      transform: translateY(8px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
-
-  @keyframes pulse {
-    50% { opacity: 0.4; }
-  }
-
-  @keyframes spin {
-    to { transform: rotate(360deg); }
-  }
-
-  @keyframes floatDrift {
-    0%, 100% { translate: 0 0; }
-    50%      { translate: 0 -10px; }
-  }
-
-  @keyframes blink {
-    50% { opacity: 0; }
   }
 </style>
 
@@ -287,18 +213,12 @@ const {
     backdrop-filter: blur(18px);
     -webkit-backdrop-filter: blur(18px);
     background: color-mix(in srgb, var(--bg) 75%, transparent);
-    border-bottom: 1px solid transparent;
-    transition: border-color 0.3s ease;
-  }
-
-  .nav.is-scrolled {
-    border-bottom-color: var(--border);
   }
 
   .nav-inner {
-    max-width: 1240px;
+    max-width: 1100px;
     margin: 0 auto;
-    padding: 12px 32px;
+    padding: 18px 32px;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -308,6 +228,7 @@ const {
   .nav-brand {
     display: inline-flex;
     align-items: center;
+    gap: 9px;
     color: var(--fg);
     transition: color 0.2s ease;
   }
@@ -316,10 +237,17 @@ const {
     color: #fff;
   }
 
+  /* The glyph's accent node stands in for the wordmark's period — never both. */
+  .nav-brand-glyph {
+    height: 15px;
+    width: auto;
+    display: block;
+  }
+
   .nav-brand-name {
-    font-size: 16px;
+    font-size: 17px;
     font-weight: 650;
-    letter-spacing: -0.025em;
+    letter-spacing: -0.03em;
     line-height: 1;
   }
 
@@ -332,7 +260,7 @@ const {
   .nav-gh {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: 7px;
     padding: 7px 12px;
     border: 1px solid var(--border);
     border-radius: 8px;
@@ -357,32 +285,23 @@ const {
   .footer {
     margin-top: auto;
     border-top: 1px solid var(--border);
-    padding: 40px 0 32px;
+    padding: 28px 0;
   }
 
   .footer-inner {
-    max-width: 1240px;
+    max-width: 1100px;
     margin: 0 auto;
     padding: 0 32px;
     display: flex;
     flex-wrap: wrap;
-    gap: 24px;
+    gap: 16px;
     align-items: center;
     justify-content: space-between;
   }
 
   .footer-brand {
-    display: flex;
-    align-items: center;
-    gap: 10px;
     font-size: 13px;
     color: var(--fg-dim);
-  }
-
-  .footer-brand img {
-    width: 20px;
-    height: 20px;
-    border-radius: 4px;
   }
 
   .footer-links {
@@ -405,6 +324,10 @@ const {
     .footer-inner {
       padding-left: 20px;
       padding-right: 20px;
+    }
+
+    .nav-gh span {
+      display: none;
     }
   }
 </style>

@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Threadlines — pattern-true logo mockups v3</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;650;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #09090b;
+        --card: #111113;
+        --border: rgba(255, 255, 255, 0.08);
+        --fg: #fafafa;
+        --muted: rgba(255, 255, 255, 0.55);
+        --faint: rgba(255, 255, 255, 0.35);
+        --accent: oklch(0.7 0.17 264);
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+      }
+      body {
+        background: var(--bg);
+        color: var(--fg);
+        font-family: "Hanken Grotesk", system-ui, sans-serif;
+        padding: 48px 56px 64px;
+        -webkit-font-smoothing: antialiased;
+      }
+      h1 {
+        font-size: 22px;
+        font-weight: 650;
+        letter-spacing: -0.02em;
+      }
+      .sub {
+        margin-top: 6px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+      section {
+        margin-top: 40px;
+      }
+      .label {
+        font-size: 11px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--faint);
+        margin-bottom: 14px;
+        font-weight: 500;
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 28px;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 36px;
+        flex-wrap: wrap;
+      }
+      .sizes {
+        display: flex;
+        align-items: flex-end;
+        gap: 28px;
+      }
+      .size {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+      }
+      .size span {
+        font-size: 11px;
+        color: var(--faint);
+      }
+      .lockup {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+      }
+      .word {
+        font-size: 34px;
+        font-weight: 650;
+        letter-spacing: -0.03em;
+        line-height: 1;
+      }
+      .word .dot {
+        color: var(--accent);
+        font-weight: 700;
+      }
+      .word.cap {
+        letter-spacing: -0.02em;
+      }
+      /* faux sidebar, matches app top-left */
+      .sidebar {
+        width: 248px;
+        background: #0c0c0e;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        overflow: hidden;
+      }
+      .sidebar-head {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 12px 14px;
+        border-bottom: 1px solid var(--border);
+      }
+      .sidebar-head span {
+        font-size: 13.5px;
+        font-weight: 650;
+        letter-spacing: -0.02em;
+      }
+      .sidebar-rows {
+        padding: 10px 14px 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .srow {
+        height: 8px;
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.06);
+      }
+      .srow.w1 {
+        width: 78%;
+      }
+      .srow.w2 {
+        width: 60%;
+      }
+      .srow.w3 {
+        width: 68%;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Threadlines — pattern-true logo mockups <span style="color: var(--faint)">v3</span></h1>
+    <p class="sub">
+      Geometry lifted directly from the empty-state figure / marketing hero animation: main line ·
+      branch that merges back · live branch ending on the accent node.
+    </p>
+
+    <section>
+      <div class="label">The source pattern (exact empty-state paths)</div>
+      <div class="card" style="display: flex; justify-content: center">
+        <img src="threadlines-mark-v3.svg" width="680" alt="" />
+      </div>
+    </section>
+
+    <section>
+      <div class="label">
+        App icon — A · minimal (live branch only; ≤48 uses the small-size variant)
+      </div>
+      <div class="card sizes">
+        <div class="size">
+          <img src="threadlines-icon-minimal-v3.svg" width="160" alt="" /><span>160</span>
+        </div>
+        <div class="size">
+          <img src="threadlines-icon-minimal-v3.svg" width="96" alt="" /><span>96</span>
+        </div>
+        <div class="size">
+          <img src="threadlines-icon-minimal-small-v3.svg" width="48" alt="" /><span>48</span>
+        </div>
+        <div class="size">
+          <img src="threadlines-icon-minimal-small-v3.svg" width="32" alt="" /><span>32</span>
+        </div>
+        <div class="size">
+          <img src="threadlines-icon-minimal-small-v3.svg" width="16" alt="" /><span>16</span>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="label">App icon — B · full graph (branch + merge + live)</div>
+      <div class="card sizes">
+        <div class="size">
+          <img src="threadlines-icon-full-v3.svg" width="160" alt="" /><span>160</span>
+        </div>
+        <div class="size">
+          <img src="threadlines-icon-full-v3.svg" width="96" alt="" /><span>96</span>
+        </div>
+        <div class="size">
+          <img src="threadlines-icon-full-v3.svg" width="48" alt="" /><span>48</span>
+        </div>
+        <div class="size">
+          <img src="threadlines-icon-full-v3.svg" width="32" alt="" /><span>32</span>
+        </div>
+        <div class="size">
+          <img src="threadlines-icon-full-v3.svg" width="16" alt="" /><span>16</span>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="label">Lockups</div>
+      <div class="card row">
+        <div class="lockup">
+          <img src="threadlines-icon-minimal-v3.svg" width="44" alt="" />
+          <div class="word">threadlines<span class="dot">.</span></div>
+        </div>
+        <div class="lockup">
+          <img src="threadlines-icon-full-v3.svg" width="44" alt="" />
+          <div class="word cap">Threadlines</div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="label">In context — sidebar header</div>
+      <div class="card row">
+        <div class="sidebar">
+          <div class="sidebar-head">
+            <img src="threadlines-icon-minimal-v3.svg" width="20" alt="" />
+            <span>Threadlines</span>
+          </div>
+          <div class="sidebar-rows">
+            <div class="srow w1"></div>
+            <div class="srow w2"></div>
+            <div class="srow w3"></div>
+          </div>
+        </div>
+        <div class="sidebar">
+          <div class="sidebar-head">
+            <img src="threadlines-icon-full-v3.svg" width="20" alt="" />
+            <span>Threadlines</span>
+          </div>
+          <div class="sidebar-rows">
+            <div class="srow w1"></div>
+            <div class="srow w2"></div>
+            <div class="srow w3"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </body>
+</html>

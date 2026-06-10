@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none">
+  <!-- App icon, full pattern: main line, branch that merges back, live branch to accent node.
+       Miniature of the empty-state / marketing-hero figure. -->
+  <defs>
+    <linearGradient id="icon-full-live" gradientUnits="userSpaceOnUse" x1="96" y1="122" x2="196" y2="166">
+      <stop offset="0" stop-color="#a1a1aa" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#6e94fa"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="252" height="252" rx="58" fill="#0d0d10" stroke="#ffffff" stroke-opacity="0.07" stroke-width="3"/>
+  <g stroke-linecap="round" stroke-width="8">
+    <path d="M 36 122 L 220 122" stroke="#ffffff" stroke-opacity="0.30"/>
+    <path d="M 64 122 C 84 122 84 78 104 78 L 138 78 C 158 78 158 122 178 122" stroke="#ffffff" stroke-opacity="0.20"/>
+    <path d="M 96 122 C 116 122 116 166 136 166 L 188 166" stroke="url(#icon-full-live)"/>
+  </g>
+  <g fill="#ffffff">
+    <circle cx="50" cy="122" r="5.5" fill-opacity="0.35"/>
+    <circle cx="96" cy="122" r="7" fill-opacity="0.5"/>
+    <circle cx="121" cy="78" r="5.5" fill-opacity="0.35"/>
+    <circle cx="178" cy="122" r="7" fill-opacity="0.45"/>
+    <circle cx="206" cy="122" r="5.5" fill-opacity="0.35"/>
+  </g>
+  <circle cx="194" cy="166" r="17" fill="#6e94fa" fill-opacity="0.16"/>
+  <circle cx="194" cy="166" r="10.5" fill="#6e94fa"/>
+</svg>

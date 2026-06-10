@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none">
+  <!-- Small-size variant of the minimal icon: same geometry, exaggerated stroke
+       weight and node so the mark survives 16-32px favicon rendering. -->
+  <defs>
+    <linearGradient id="icon-small-live" gradientUnits="userSpaceOnUse" x1="100" y1="96" x2="196" y2="164">
+      <stop offset="0" stop-color="#a1a1aa" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#6e94fa"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="252" height="252" rx="58" fill="#0d0d10" stroke="#ffffff" stroke-opacity="0.07" stroke-width="3"/>
+  <g stroke-linecap="round" stroke-width="18">
+    <path d="M 40 96 L 216 96" stroke="#ffffff" stroke-opacity="0.42"/>
+    <path d="M 100 96 C 128 96 128 164 156 164 L 178 164" stroke="url(#icon-small-live)"/>
+  </g>
+  <circle cx="68" cy="96" r="11" fill="#ffffff" fill-opacity="0.5"/>
+  <circle cx="196" cy="164" r="30" fill="#6e94fa" fill-opacity="0.18"/>
+  <circle cx="196" cy="164" r="21" fill="#6e94fa"/>
+</svg>
