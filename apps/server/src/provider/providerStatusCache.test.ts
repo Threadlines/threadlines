@@ -159,7 +159,7 @@ it.layer(NodeServices.layer)("providerStatusCache", (it) => {
       version: null,
       status: "disabled",
       auth: { status: "unknown" },
-      message: "Codex is disabled in BadCode settings.",
+      message: "Codex is disabled in Threadlines settings.",
     });
 
     assert.deepStrictEqual(

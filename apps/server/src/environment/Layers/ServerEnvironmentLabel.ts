@@ -105,5 +105,5 @@ export const resolveServerEnvironmentLabel = Effect.fn("resolveServerEnvironment
     return hostname;
   }
 
-  return normalizeLabel(input.cwdBaseName) ?? "BadCode environment";
+  return normalizeLabel(input.cwdBaseName) ?? "Threadlines environment";
 });

@@ -81,7 +81,7 @@ export class DesktopEnvironment extends Context.Service<
   DesktopEnvironmentShape
 >()("t3/desktop/Environment") {}
 
-const APP_BASE_NAME = "BadCode";
+const APP_BASE_NAME = "Threadlines";
 
 function resolveDesktopAppStageLabel(input: {
   readonly isDevelopment: boolean;

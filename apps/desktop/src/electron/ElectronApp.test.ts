@@ -47,7 +47,7 @@ vi.mock("electron", () => ({
     getAppPath: getAppPathMock,
     getVersion: getVersionMock,
     isPackaged: true,
-    name: "BadCode",
+    name: "Threadlines",
     on: onMock,
     quit: quitMock,
     relaunch: relaunchMock,

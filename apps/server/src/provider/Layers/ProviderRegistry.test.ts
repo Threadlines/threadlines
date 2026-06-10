@@ -1576,12 +1576,15 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
               ]);
               assert.strictEqual(codexProvider?.enabled, false);
               assert.strictEqual(codexProvider?.status, "disabled");
-              assert.strictEqual(codexProvider?.message, "Codex is disabled in BadCode settings.");
+              assert.strictEqual(
+                codexProvider?.message,
+                "Codex is disabled in Threadlines settings.",
+              );
               assert.strictEqual(claudeProvider?.enabled, false);
               assert.strictEqual(claudeProvider?.status, "disabled");
               assert.strictEqual(
                 claudeProvider?.message,
-                "Claude is disabled in BadCode settings.",
+                "Claude is disabled in Threadlines settings.",
               );
               assert.strictEqual(providerBinarySpawned, false);
             }).pipe(Effect.provide(runtimeServices));
@@ -1596,7 +1599,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
           assert.strictEqual(status.enabled, false);
           assert.strictEqual(status.status, "disabled");
           assert.strictEqual(status.installed, false);
-          assert.strictEqual(status.message, "Codex is disabled in BadCode settings.");
+          assert.strictEqual(status.message, "Codex is disabled in Threadlines settings.");
         }),
       );
     });

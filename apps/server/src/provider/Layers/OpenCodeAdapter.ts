@@ -1046,7 +1046,7 @@ export function makeOpenCodeAdapter(
               });
               const openCodeSession = yield* runOpenCodeSdk("session.create", () =>
                 client.session.create({
-                  title: `BadCode ${input.threadId}`,
+                  title: `Threadlines ${input.threadId}`,
                   permission: buildOpenCodePermissionRules(input.runtimeMode),
                 }),
               );

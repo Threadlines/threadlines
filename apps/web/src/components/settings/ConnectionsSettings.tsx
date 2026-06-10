@@ -2502,8 +2502,8 @@ export function ConnectionsSettings() {
                 </AlertDialogTitle>
                 <AlertDialogDescription>
                   {pendingDesktopServerExposureMode === "network-accessible"
-                    ? "BadCode will restart to expose this environment over the network."
-                    : "BadCode will restart and limit this environment back to this machine."}
+                    ? "Threadlines will restart to expose this environment over the network."
+                    : "Threadlines will restart and limit this environment back to this machine."}
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
@@ -2547,7 +2547,7 @@ export function ConnectionsSettings() {
               <AlertDialogHeader>
                 <AlertDialogTitle>Disable Tailscale HTTPS?</AlertDialogTitle>
                 <AlertDialogDescription>
-                  BadCode will restart the local backend without Tailscale Serve.
+                  Threadlines will restart the local backend without Tailscale Serve.
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
@@ -2585,7 +2585,7 @@ export function ConnectionsSettings() {
               <DialogHeader>
                 <DialogTitle>Set up Tailscale HTTPS?</DialogTitle>
                 <DialogDescription>
-                  BadCode will restart the local backend with Tailscale Serve enabled and ask
+                  Threadlines will restart the local backend with Tailscale Serve enabled and ask
                   Tailscale to proxy HTTPS traffic to this backend.
                 </DialogDescription>
               </DialogHeader>

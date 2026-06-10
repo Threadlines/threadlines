@@ -15,9 +15,9 @@ const defaultInput = {
   platform: "darwin",
   processArch: "arm64",
   appVersion: "0.0.22",
-  appPath: "/Applications/BadCode.app/Contents/Resources/app.asar",
+  appPath: "/Applications/Threadlines.app/Contents/Resources/app.asar",
   isPackaged: false,
-  resourcesPath: "/Applications/BadCode.app/Contents/Resources",
+  resourcesPath: "/Applications/Threadlines.app/Contents/Resources",
   runningUnderArm64Translation: false,
 } satisfies DesktopEnvironment.MakeDesktopEnvironmentInput;
 
@@ -134,7 +134,7 @@ describe("DesktopDataMigration", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("skips migration when the user configured a custom BadCode home", () =>
+  it.effect("skips migration when the user configured a custom Threadlines home", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;

@@ -47,8 +47,8 @@ function HostedStaticOnboardingState() {
                 Open the desktop app to get started
               </EmptyTitle>
               <EmptyDescription className="mt-2 text-sm leading-relaxed text-muted-foreground/78">
-                BadCode is focused on the local desktop workflow. Start or resume a session from the
-                desktop app.
+                Threadlines is focused on the local desktop workflow. Start or resume a session from
+                the desktop app.
               </EmptyDescription>
             </EmptyHeader>
           </div>

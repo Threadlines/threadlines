@@ -430,7 +430,9 @@ function assertDescendantPid(
   pid: number,
 ): Effect.Effect<void, ProcessDiagnosticsError, ChildProcessSpawner.ChildProcessSpawner> {
   if (pid === process.pid) {
-    return Effect.fail(toProcessDiagnosticsError("Refusing to signal the BadCode server process."));
+    return Effect.fail(
+      toProcessDiagnosticsError("Refusing to signal the Threadlines server process."),
+    );
   }
 
   return readProcessRows().pipe(
@@ -443,7 +445,7 @@ function assertDescendantPid(
         ? Effect.void
         : Effect.fail(
             toProcessDiagnosticsError(
-              `Process ${pid} is not a live descendant of the BadCode server.`,
+              `Process ${pid} is not a live descendant of the Threadlines server.`,
             ),
           );
     }),

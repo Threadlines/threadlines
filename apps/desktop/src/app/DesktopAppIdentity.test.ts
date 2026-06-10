@@ -19,9 +19,9 @@ const defaultEnvironmentInput = {
   platform: "darwin",
   processArch: "arm64",
   appVersion: "1.2.3",
-  appPath: "/Applications/BadCode.app/Contents/Resources/app.asar",
+  appPath: "/Applications/Threadlines.app/Contents/Resources/app.asar",
   isPackaged: true,
-  resourcesPath: "/Applications/BadCode.app/Contents/Resources",
+  resourcesPath: "/Applications/Threadlines.app/Contents/Resources",
   runningUnderArm64Translation: false,
 } satisfies DesktopEnvironment.MakeDesktopEnvironmentInput;
 
@@ -38,7 +38,7 @@ interface ElectronAppCalls {
 const makeElectronAppLayer = (calls: ElectronAppCalls) =>
   Layer.succeed(ElectronApp.ElectronApp, {
     metadata: Effect.die("unexpected metadata read"),
-    name: Effect.succeed("BadCode"),
+    name: Effect.succeed("Threadlines"),
     whenReady: Effect.void,
     quit: Effect.void,
     exit: () => Effect.void,
@@ -161,8 +161,8 @@ describe("DesktopAppIdentity", () => {
         const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
         yield* identity.configure;
 
-        assert.deepEqual(calls.setName, ["BadCode (Alpha)"]);
-        assert.equal(calls.setAboutPanelOptions[0]?.applicationName, "BadCode (Alpha)");
+        assert.deepEqual(calls.setName, ["Threadlines (Alpha)"]);
+        assert.equal(calls.setAboutPanelOptions[0]?.applicationName, "Threadlines (Alpha)");
         assert.equal(calls.setAboutPanelOptions[0]?.applicationVersion, "1.2.3");
         assert.equal(calls.setAboutPanelOptions[0]?.version, "0123456789ab");
         assert.deepEqual(calls.setDockIcon, ["/icon.png"]);

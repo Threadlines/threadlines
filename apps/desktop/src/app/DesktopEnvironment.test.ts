@@ -13,9 +13,9 @@ const defaultInput = {
   platform: "darwin",
   processArch: "arm64",
   appVersion: "0.0.22",
-  appPath: "/Applications/BadCode.app/Contents/Resources/app.asar",
+  appPath: "/Applications/Threadlines.app/Contents/Resources/app.asar",
   isPackaged: false,
-  resourcesPath: "/Applications/BadCode.app/Contents/Resources",
+  resourcesPath: "/Applications/Threadlines.app/Contents/Resources",
   runningUnderArm64Translation: false,
 } satisfies DesktopEnvironment.MakeDesktopEnvironmentInput;
 
@@ -120,7 +120,7 @@ describe("DesktopEnvironment", () => {
     }),
   );
 
-  it.effect("uses BadCode data directory defaults and aliases", () =>
+  it.effect("uses Threadlines data directory defaults and aliases", () =>
     Effect.gen(function* () {
       const defaultEnvironment = yield* makeEnvironment();
       assertPathEqual(defaultEnvironment.baseDir, "/Users/alice/.badcode");

@@ -981,7 +981,9 @@ describe("GeneralSettingsPanel observability", () => {
     await networkAccessToggle.click();
     await expect.element(page.getByText("Enable network access?")).toBeInTheDocument();
     await expect
-      .element(page.getByText("BadCode will restart to expose this environment over the network."))
+      .element(
+        page.getByText("Threadlines will restart to expose this environment over the network."),
+      )
       .toBeInTheDocument();
     await page.getByRole("button", { name: "Restart and enable", exact: true }).click();
     await vi.waitFor(() => {

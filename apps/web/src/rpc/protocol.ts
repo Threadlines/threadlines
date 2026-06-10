@@ -190,7 +190,7 @@ export function createWsRpcProtocolLayer(
       socket.addEventListener(
         "error",
         () => {
-          lifecycle.onError("Unable to connect to the BadCode server WebSocket.");
+          lifecycle.onError("Unable to connect to the Threadlines server WebSocket.");
         },
         { once: true },
       );

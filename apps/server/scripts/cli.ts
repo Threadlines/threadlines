@@ -280,7 +280,7 @@ const publishCmd = Command.make(
 // ---------------------------------------------------------------------------
 
 const cli = Command.make("cli").pipe(
-  Command.withDescription("BadCode server build & publish CLI."),
+  Command.withDescription("Threadlines server build & publish CLI."),
   Command.withSubcommands([buildCmd, publishCmd]),
 );
 

@@ -365,9 +365,9 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
                 startedAt,
                 finishedAt,
                 message: couldNotVerify
-                  ? "Update command completed, but BadCode could not verify the provider version."
+                  ? "Update command completed, but Threadlines could not verify the provider version."
                   : stillOutdated
-                    ? "Update command completed, but BadCode still detects an outdated provider version."
+                    ? "Update command completed, but Threadlines still detects an outdated provider version."
                     : "Provider updated.",
                 output: commandOutput(result),
               }),

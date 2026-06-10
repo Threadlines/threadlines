@@ -650,9 +650,9 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       const commitEnv: NodeJS.ProcessEnv = {
         ...process.env,
         GIT_INDEX_FILE: tempIndexPath,
-        GIT_AUTHOR_NAME: "BadCode",
+        GIT_AUTHOR_NAME: "Threadlines",
         GIT_AUTHOR_EMAIL: "badcode@users.noreply.github.com",
-        GIT_COMMITTER_NAME: "BadCode",
+        GIT_COMMITTER_NAME: "Threadlines",
         GIT_COMMITTER_EMAIL: "badcode@users.noreply.github.com",
       };
 

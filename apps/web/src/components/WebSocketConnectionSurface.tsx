@@ -55,7 +55,7 @@ function describeExhaustedToast(): string {
 }
 
 function getConnectionDisplayName(status: WsConnectionStatus): string {
-  return status.connectionLabel?.trim() || "BadCode Server";
+  return status.connectionLabel?.trim() || "Threadlines Server";
 }
 
 function buildReconnectTitle(status: WsConnectionStatus): string {

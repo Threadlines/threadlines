@@ -957,7 +957,7 @@ export function DiagnosticsSettingsPanel() {
                 type: "info",
                 title: "Process already exited",
                 description:
-                  "The process is not a child of the BadCode Server. It might already have exited.",
+                  "The process is not a child of the Threadlines Server. It might already have exited.",
               });
               return;
             }
@@ -1076,7 +1076,7 @@ export function DiagnosticsSettingsPanel() {
           <StatBlock
             label="CPU Time"
             value={resourceData ? formatCpuTime(resourceData.totalCpuSecondsApprox) : "..."}
-            tooltip="Approximate active CPU time for the BadCode server root process and its descendants during the selected window. It grows only while sampled processes use CPU and older samples leave as the window moves."
+            tooltip="Approximate active CPU time for the Threadlines server root process and its descendants during the selected window. It grows only while sampled processes use CPU and older samples leave as the window moves."
           />
           <StatBlock
             label="Samples"

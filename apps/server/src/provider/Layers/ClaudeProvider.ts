@@ -665,7 +665,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         version: null,
         status: "warning",
         auth: { status: "unknown" },
-        message: "Claude is disabled in BadCode settings.",
+        message: "Claude is disabled in Threadlines settings.",
       },
     });
   }
@@ -819,7 +819,7 @@ export const makePendingClaudeProvider = (
           version: null,
           status: "warning",
           auth: { status: "unknown" },
-          message: "Claude is disabled in BadCode settings.",
+          message: "Claude is disabled in Threadlines settings.",
         },
       });
     }
