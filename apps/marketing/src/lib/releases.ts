@@ -1,4 +1,4 @@
-const REPO = "badcuban/badcode";
+const REPO = "Threadlines/threadlines";
 
 export const RELEASES_URL = `https://github.com/${REPO}/releases`;
 

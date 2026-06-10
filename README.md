@@ -35,7 +35,7 @@ branding and compatibility policy.
 ### Desktop app
 
 Install the latest desktop alpha from
-[GitHub Releases](https://github.com/badcuban/badcode/releases).
+[GitHub Releases](https://github.com/Threadlines/threadlines/releases).
 
 This repository is private, so release downloads require a GitHub account with
 access to the repo.
