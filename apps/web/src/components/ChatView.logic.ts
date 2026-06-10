@@ -1,6 +1,5 @@
 import {
   type EnvironmentId,
-  isProviderDriverKind,
   ProjectId,
   type ModelSelection,
   type OrchestrationThreadActivity,
@@ -391,22 +390,12 @@ export function threadHasPromotableServerActivity(thread: Thread | null | undefi
   );
 }
 
-// `threadProvider` is the open branded driver kind carried by the session.
-// Unknown driver kinds degrade to `null` (i.e. "unlocked"), which is the safe
-// rollback / fork behavior — the routing layer is the right place to surface
-// "driver not installed" errors, not the lock state.
-//
-// `selectedProvider` takes the same open-string shape because the composer
-// now tracks the picker selection as a `ProviderInstanceId` (e.g.
-// `codex_personal`). Custom instance ids that don't directly match a
-// registered driver resolve to `null` here, which matches the existing
-// "unknown driver -> unlocked" semantics. Callers that want the lock to track
-// a custom instance's underlying driver kind should resolve the instance id
-// upstream and pass the correlated kind.
+// Callers resolve provider instance ids to driver kinds before invoking this
+// helper, so custom instances like `codex_personal` lock as `codex`.
 export function deriveLockedProvider(input: {
   thread: Thread | null | undefined;
-  selectedProvider: string | null;
-  threadProvider: string | null;
+  selectedProvider: ProviderDriverKind | null;
+  threadProvider: ProviderDriverKind | null;
 }): ProviderDriverKind | null {
   if (!threadHasStarted(input.thread)) {
     return null;
@@ -415,15 +404,47 @@ export function deriveLockedProvider(input: {
   if (sessionProvider) {
     return sessionProvider;
   }
-  const narrowedThreadProvider =
-    input.threadProvider && isProviderDriverKind(input.threadProvider)
-      ? input.threadProvider
-      : null;
-  const narrowedSelectedProvider =
-    input.selectedProvider && isProviderDriverKind(input.selectedProvider)
-      ? input.selectedProvider
-      : null;
-  return narrowedThreadProvider ?? narrowedSelectedProvider ?? null;
+  return input.threadProvider ?? input.selectedProvider ?? null;
+}
+
+export type ModelSwitchClassification =
+  | "apply"
+  | "confirm-cross-driver"
+  | "blocked-incompatible-instance";
+
+/**
+ * Decide what should happen when the user picks `pickedDriverKind` for a thread
+ * currently bound to `boundProvider`.
+ *
+ * - Different driver → `confirm-cross-driver`: allowed, but the server hands off
+ *   by rehydrating the new driver from a transcript recap (not the outgoing
+ *   model's full internal state), so the UI confirms the context-loss first.
+ * - Same driver but a different *known* continuation group →
+ *   `blocked-incompatible-instance`: native resume state cannot be reconciled
+ *   across those instances, and the server rejects it.
+ * - Otherwise (`apply`): a plain in-driver model swap, or the thread has no
+ *   binding yet.
+ */
+export function classifyModelSwitch(input: {
+  boundProvider: ProviderDriverKind | null;
+  pickedDriverKind: ProviderDriverKind | null;
+  boundContinuationGroupKey: string | null;
+  pickedContinuationGroupKey: string | null;
+}): ModelSwitchClassification {
+  if (input.boundProvider === null || input.pickedDriverKind === null) {
+    return "apply";
+  }
+  if (input.pickedDriverKind !== input.boundProvider) {
+    return "confirm-cross-driver";
+  }
+  if (
+    input.boundContinuationGroupKey !== null &&
+    input.pickedContinuationGroupKey !== null &&
+    input.boundContinuationGroupKey !== input.pickedContinuationGroupKey
+  ) {
+    return "blocked-incompatible-instance";
+  }
+  return "apply";
 }
 
 export async function waitForStartedServerThread(

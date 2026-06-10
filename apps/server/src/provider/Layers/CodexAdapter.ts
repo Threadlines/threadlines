@@ -44,6 +44,7 @@ import {
   getModelSelectionBooleanOptionValue,
   getModelSelectionStringOptionValue,
 } from "@t3tools/shared/model";
+import { renderThreadContextSeed, withContextSeedPreamble } from "@t3tools/shared/contextSeed";
 
 import {
   ProviderAdapterRequestError,
@@ -94,6 +95,10 @@ interface CodexAdapterSessionContext {
   readonly scope: Scope.Closeable;
   readonly runtime: CodexSessionRuntimeShape;
   readonly eventFiber: Fiber.Fiber<void, never>;
+  // Rendered cross-driver handoff preamble, prepended to the first turn's input
+  // and cleared once consumed. Set only when a session starts from a context
+  // seed (no native resume).
+  pendingContextSeedText: string | undefined;
   stopped: boolean;
 }
 
@@ -1994,6 +1999,12 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           scope: sessionScope,
           runtime,
           eventFiber,
+          // Render the cross-driver handoff seed once at start; consumed on the
+          // first turn. Only honored when there is no native resume cursor.
+          pendingContextSeedText:
+            input.contextSeed !== undefined && !isCodexResumeCursorSchema(input.resumeCursor)
+              ? renderThreadContextSeed(input.contextSeed)
+              : undefined,
           stopped: false,
         });
         sessionScopeTransferred = true;
@@ -2042,6 +2053,13 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     );
 
     const session = yield* requireSession(input.threadId);
+    // Cross-driver handoff: lead the first turn with the rendered seed, then
+    // continue natively on subsequent turns.
+    const pendingContextSeedText = session.pendingContextSeedText;
+    const seededInput =
+      pendingContextSeedText !== undefined
+        ? withContextSeedPreamble(pendingContextSeedText, input.input)
+        : input.input;
     const reasoningEffort =
       input.modelSelection?.instanceId === boundInstanceId
         ? getModelSelectionStringOptionValue(input.modelSelection, "reasoningEffort")
@@ -2050,10 +2068,10 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       input.modelSelection?.instanceId === boundInstanceId
         ? getModelSelectionBooleanOptionValue(input.modelSelection, "fastMode")
         : undefined;
-    return yield* session.runtime
+    const turn = yield* session.runtime
       .sendTurn({
         ...(input.messageId !== undefined ? { clientUserMessageId: input.messageId } : {}),
-        ...(input.input !== undefined ? { input: input.input } : {}),
+        ...(seededInput !== undefined ? { input: seededInput } : {}),
         ...(input.modelSelection?.instanceId === boundInstanceId
           ? { model: input.modelSelection.model }
           : {}),
@@ -2067,6 +2085,10 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
       })
       .pipe(Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "turn/start", cause)));
+    if (pendingContextSeedText !== undefined) {
+      session.pendingContextSeedText = undefined;
+    }
+    return turn;
   });
 
   const requireSession = Effect.fn("requireSession")(function* (threadId: ThreadId) {

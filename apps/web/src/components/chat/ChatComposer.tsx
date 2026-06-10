@@ -105,6 +105,7 @@ import { proposedPlanTitle } from "../../proposedPlan";
 import { getProviderInteractionModeToggle } from "../../providerModels";
 import {
   deriveProviderInstanceEntries,
+  filterMaintainedProviderInstanceEntries,
   resolveProviderDriverKindForInstanceSelection,
   sortProviderInstanceEntries,
   type ProviderInstanceEntry,
@@ -606,7 +607,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // configured instance (default built-in + any custom `providerInstances.*`),
   // sorted default-first per driver kind for a stable picker order.
   const providerInstanceEntries = useMemo<ReadonlyArray<ProviderInstanceEntry>>(
-    () => sortProviderInstanceEntries(deriveProviderInstanceEntries(providerStatuses)),
+    () =>
+      filterMaintainedProviderInstanceEntries(
+        sortProviderInstanceEntries(deriveProviderInstanceEntries(providerStatuses)),
+      ),
     [providerStatuses],
   );
   const selectedProviderByThreadId = composerDraft.activeProvider ?? null;
@@ -675,9 +679,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         return match.instanceId;
       }
     }
-    if (explicitSelectedInstanceId) {
-      return ProviderInstanceId.make(explicitSelectedInstanceId);
-    }
     const byKind = providerInstanceEntries.find(
       (entry) =>
         entry.enabled &&
@@ -698,7 +699,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeThread?.session?.providerInstanceId,
     activeThreadModelSelection?.instanceId,
     composerDraft.activeProvider,
-    explicitSelectedInstanceId,
     lockedContinuationGroupKey,
     lockedProvider,
     providerInstanceEntries,

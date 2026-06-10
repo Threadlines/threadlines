@@ -258,11 +258,16 @@ function formatSpendControlPresentation(
   };
 }
 
+const PROVIDER_USAGE_SOURCE_LABELS: Record<ServerProviderAccountUsage["source"], string> = {
+  "codex-rate-limits": "Codex usage",
+  "claude-oauth-usage": "Claude usage",
+};
+
 export function deriveProviderAccountUsagePresentation(
   usage: ServerProviderAccountUsage | undefined,
   nowMs: number = Date.now(),
 ): ProviderAccountUsagePresentation | null {
-  if (!usage || usage.source !== "codex-rate-limits") return null;
+  if (!usage || !(usage.source in PROVIDER_USAGE_SOURCE_LABELS)) return null;
 
   const limit = selectProviderUsageLimit(usage);
   if (!limit) return null;
@@ -282,7 +287,7 @@ export function deriveProviderAccountUsagePresentation(
   if (windows.length === 0 && !spendControl) return null;
 
   return {
-    label: limit.limitName ?? "Codex usage",
+    label: limit.limitName ?? PROVIDER_USAGE_SOURCE_LABELS[usage.source],
     ...(spendControl ? { spendControl } : {}),
     windows,
     reachedLimit: reachedLimit || Boolean(spendControl?.reachedLimit),

@@ -76,6 +76,13 @@ export const ClientSettingsSchema = Schema.Struct({
       modelOrder: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
     }),
   ).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  // When true, suppress the one-time confirmation shown before switching a
+  // thread to a different provider mid-conversation (the cross-driver handoff
+  // carries a transcript recap + the working tree, not the outgoing model's
+  // full internal state). Set via the dialog's "Don't ask again" checkbox.
+  suppressCrossProviderSwitchWarning: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
   sidebarProjectGroupingMode: SidebarProjectGroupingMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE)),
   ),
@@ -505,6 +512,7 @@ export const ClientSettingsPatch = Schema.Struct({
       }),
     ),
   ),
+  suppressCrossProviderSwitchWarning: Schema.optionalKey(Schema.Boolean),
   sidebarProjectGroupingMode: Schema.optionalKey(SidebarProjectGroupingMode),
   sidebarProjectGroupingOverrides: Schema.optionalKey(
     Schema.Record(TrimmedNonEmptyString, SidebarProjectGroupingMode),

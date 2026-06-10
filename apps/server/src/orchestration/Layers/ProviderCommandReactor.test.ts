@@ -7,8 +7,10 @@ import {
   ModelSelection,
   ProviderRuntimeEvent,
   ProviderSession,
+  type ProviderSessionStartInput,
   ProviderDriverKind,
   ProviderInstanceId,
+  type ThreadContextSeed,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import {
@@ -25,6 +27,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
+import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -40,6 +43,10 @@ import {
   ProviderService,
   type ProviderServiceShape,
 } from "../../provider/Services/ProviderService.ts";
+import {
+  ThreadContextSeedBuilder,
+  type ThreadContextSeedBuildInput,
+} from "../../provider/contextSeed/ThreadContextSeedBuilder.ts";
 import { TextGeneration, type TextGenerationShape } from "../../textGeneration/TextGeneration.ts";
 import { RepositoryIdentityResolverLive } from "../../project/Layers/RepositoryIdentityResolver.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
@@ -155,6 +162,7 @@ describe("ProviderCommandReactor", () => {
     const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
     let nextSessionIndex = 1;
     const runtimeSessions: Array<ProviderSession> = [];
+    const seedBuildInputs: ThreadContextSeedBuildInput[] = [];
     const modelSelection = input?.threadModelSelection ?? {
       instanceId: ProviderInstanceId.make("codex"),
       model: "gpt-5-codex",
@@ -347,6 +355,23 @@ describe("ProviderCommandReactor", () => {
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(projectionSnapshotLayer),
       Layer.provideMerge(Layer.succeed(ProviderService, service)),
+      // Return a deterministic seed so cross-driver handoff tests can assert it
+      // reaches `startSession`. `build` is only invoked on cross-driver switches,
+      // so same-driver tests are unaffected.
+      Layer.provideMerge(
+        Layer.succeed(ThreadContextSeedBuilder, {
+          build: (seedInput) => {
+            seedBuildInputs.push(seedInput);
+            return Effect.succeed(
+              Option.some({
+                version: 1,
+                fromProvider: seedInput.fromProvider,
+                entries: [{ kind: "message", role: "user", text: "prior context" }],
+              } satisfies ThreadContextSeed),
+            );
+          },
+        }),
+      ),
       Layer.provideMerge(Layer.succeed(CheckpointStore, checkpointStore)),
       Layer.provideMerge(
         Layer.mock(GitWorkflowService)({
@@ -421,6 +446,7 @@ describe("ProviderCommandReactor", () => {
       refreshStatus,
       generateBranchName,
       generateThreadTitle,
+      seedBuildInputs,
       runtimeSessions,
       stateDir,
       drain,
@@ -1404,7 +1430,7 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.runtimeMode).toBe("full-access");
   });
 
-  it("rejects provider changes after a thread is already bound to a session provider", async () => {
+  it("hands off to a cross-driver provider after the thread is bound to a session provider", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
 
@@ -1452,31 +1478,34 @@ describe("ProviderCommandReactor", () => {
     await waitFor(async () => {
       const readModel = await harness.readModel();
       const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
-      return (
-        thread?.activities.some((activity) => activity.kind === "provider.turn.start.failed") ??
-        false
-      );
+      return thread?.session?.providerName === "claudeAgent";
     });
+    await harness.drain();
 
-    expect(harness.startSession.mock.calls.length).toBe(1);
-    expect(harness.sendTurn.mock.calls.length).toBe(1);
-    expect(harness.stopSession.mock.calls.length).toBe(0);
+    // The cross-driver switch starts a fresh Claude session seeded from the
+    // transcript instead of rejecting the turn.
+    expect(harness.startSession.mock.calls.length).toBe(2);
+    const handoffStart = harness.startSession.mock.calls[1]?.[1] as
+      | ProviderSessionStartInput
+      | undefined;
+    expect(handoffStart?.providerInstanceId).toBe(ProviderInstanceId.make("claudeAgent"));
+    expect(handoffStart?.contextSeed).toBeDefined();
+    expect(handoffStart?.contextSeed?.fromProvider).toBe("codex");
+    expect(handoffStart?.resumeCursor).toBeUndefined();
+    expect(harness.seedBuildInputs[0]?.excludeMessageId).toBe(
+      asMessageId("user-message-provider-switch-2"),
+    );
+    expect(harness.sendTurn.mock.calls.length).toBe(2);
 
     const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
-    expect(thread?.session?.threadId).toBe("thread-1");
-    expect(thread?.session?.providerName).toBe("codex");
-    expect(thread?.session?.runtimeMode).toBe("approval-required");
+    expect(thread?.session?.providerName).toBe("claudeAgent");
     expect(
-      thread?.activities.find((activity) => activity.kind === "provider.turn.start.failed"),
-    ).toMatchObject({
-      payload: {
-        detail: expect.stringContaining("cannot switch to 'claudeAgent'"),
-      },
-    });
+      thread?.activities.some((activity) => activity.kind === "provider.turn.start.failed"),
+    ).toBe(false);
   });
 
-  it("rejects cross-driver provider changes after the existing thread session has stopped", async () => {
+  it("hands off to a cross-driver provider after the existing thread session has stopped", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
 
@@ -1523,23 +1552,25 @@ describe("ProviderCommandReactor", () => {
     await waitFor(async () => {
       const readModel = await harness.readModel();
       const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
-      return (
-        thread?.activities.some((activity) => activity.kind === "provider.turn.start.failed") ??
-        false
-      );
+      return thread?.session?.providerName === "claudeAgent";
     });
+    await harness.drain();
 
-    expect(harness.startSession.mock.calls.length).toBe(0);
-    expect(harness.sendTurn.mock.calls.length).toBe(0);
+    // A stopped binding to another driver still hands off (no active session to
+    // resume), starting the new driver seeded from the transcript.
+    expect(harness.startSession.mock.calls.length).toBe(1);
+    const handoffStart = harness.startSession.mock.calls[0]?.[1] as
+      | ProviderSessionStartInput
+      | undefined;
+    expect(handoffStart?.providerInstanceId).toBe(ProviderInstanceId.make("claudeAgent"));
+    expect(handoffStart?.contextSeed).toBeDefined();
+    expect(harness.sendTurn.mock.calls.length).toBe(1);
     const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(thread?.session?.providerName).toBe("claudeAgent");
     expect(
-      thread?.activities.find((activity) => activity.kind === "provider.turn.start.failed"),
-    ).toMatchObject({
-      payload: {
-        detail: expect.stringContaining("cannot switch to 'claudeAgent'"),
-      },
-    });
+      thread?.activities.some((activity) => activity.kind === "provider.turn.start.failed"),
+    ).toBe(false);
   });
 
   it("reacts to thread.turn.interrupt-requested by calling provider interrupt", async () => {

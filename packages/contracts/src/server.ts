@@ -94,7 +94,7 @@ export const ServerProviderUsageLimit = Schema.Struct({
 export type ServerProviderUsageLimit = typeof ServerProviderUsageLimit.Type;
 
 export const ServerProviderAccountUsage = Schema.Struct({
-  source: Schema.Literal("codex-rate-limits"),
+  source: Schema.Literals(["codex-rate-limits", "claude-oauth-usage"]),
   checkedAt: IsoDateTime,
   primaryLimitId: Schema.optional(TrimmedNonEmptyString),
   limits: Schema.Array(ServerProviderUsageLimit),

@@ -363,6 +363,50 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
     }),
   );
 
+  it.effect("retains a cross-driver context seed when the first send fails", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("sess-seed-retry");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+        contextSeed: {
+          version: 1,
+          fromProvider: ProviderDriverKind.make("claudeAgent"),
+          entries: [{ kind: "message", role: "user", text: "prior context" }],
+        },
+      });
+      const runtime = sessionRuntimeFactory.lastRuntime;
+      assert.ok(runtime);
+      runtime.sendTurnImpl.mockRejectedValueOnce(new Error("send failed"));
+
+      const firstExit = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "retry me",
+          attachments: [],
+        })
+        .pipe(Effect.exit);
+      assert.equal(Exit.isFailure(firstExit), true);
+
+      runtime.sendTurnImpl.mockResolvedValueOnce({
+        threadId,
+        turnId: asTurnId("turn-2"),
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "retry me",
+        attachments: [],
+      });
+
+      const retriedInput = runtime.sendTurnImpl.mock.calls[1]?.[0]?.input ?? "";
+      assert.match(retriedInput, /This conversation was started/);
+      assert.match(retriedInput, /prior context/);
+      assert.match(retriedInput, /retry me/);
+    }),
+  );
+
   it.effect("maps codex model options for the adapter's bound custom instance id", () => {
     const customInstanceId = ProviderInstanceId.make("codex_personal");
     const customRuntimeFactory = makeRuntimeFactory();

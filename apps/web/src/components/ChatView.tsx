@@ -129,7 +129,7 @@ import {
   getProviderModelCapabilities,
   resolveSelectableProvider,
 } from "../providerModels";
-import { useSettings } from "../hooks/useSettings";
+import { useSettings, useUpdateSettings } from "../hooks/useSettings";
 import { resolveAppModelSelectionForInstance } from "../modelSelection";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import {
@@ -179,6 +179,7 @@ import {
   LastInvokedScriptByProjectSchema,
   type LocalDispatchSnapshot,
   PullRequestDialogState,
+  classifyModelSwitch,
   cloneComposerImageForRetry,
   deriveLockedProvider,
   readFileAsDataUrl,
@@ -201,6 +202,16 @@ import {
 import { sanitizeThreadErrorMessage } from "~/rpc/transportError";
 import { retainThreadDetailSubscription } from "../environments/runtime/service";
 import { Button } from "./ui/button";
+import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "./ui/alert-dialog";
+import { Checkbox } from "./ui/checkbox";
 import {
   buildVersionMismatchDismissalKey,
   dismissVersionMismatch,
@@ -581,6 +592,15 @@ export default function ChatView(props: ChatViewProps) {
     routeKind === "server" ? store.threadLastVisitedAtById[routeThreadKey] : undefined,
   );
   const settings = useSettings();
+  const { updateSettings } = useUpdateSettings();
+  const suppressCrossProviderWarning = settings.suppressCrossProviderSwitchWarning ?? false;
+  const [pendingCrossProviderSwitch, setPendingCrossProviderSwitch] = useState<{
+    instanceId: ProviderInstanceId;
+    model: string;
+    fromLabel: string;
+    toLabel: string;
+  } | null>(null);
+  const [crossProviderDontAskAgain, setCrossProviderDontAskAgain] = useState(false);
   const setStickyComposerModelSelection = useComposerDraftStore(
     (store) => store.setStickyModelSelection,
   );
@@ -1080,11 +1100,6 @@ export default function ChatView(props: ChatViewProps) {
     activeThread?.modelSelection.instanceId ??
     activeProject?.defaultModelSelection?.instanceId ??
     null;
-  const lockedProvider = deriveLockedProvider({
-    thread: activeThread,
-    selectedProvider: selectedProviderByThreadId,
-    threadProvider,
-  });
   const primaryServerConfig = useServerConfig();
   const activeEnvRuntimeState = useSavedEnvironmentRuntimeStore((s) =>
     activeThread?.environmentId ? s.byId[activeThread.environmentId] : null,
@@ -1203,6 +1218,16 @@ export default function ChatView(props: ChatViewProps) {
     versionMismatchServerLabel,
   ]);
   const providerStatuses = serverConfig?.providers ?? EMPTY_PROVIDERS;
+  const selectedProviderDriver =
+    providerStatuses.find((status) => status.instanceId === selectedProviderByThreadId)?.driver ??
+    null;
+  const threadProviderDriver =
+    providerStatuses.find((status) => status.instanceId === threadProvider)?.driver ?? null;
+  const lockedProvider = deriveLockedProvider({
+    thread: activeThread,
+    selectedProvider: selectedProviderDriver,
+    threadProvider: threadProviderDriver,
+  });
   const unlockedSelectedProvider = resolveSelectableProvider(
     providerStatuses,
     selectedProviderByThreadId ?? threadProvider ?? ProviderDriverKind.make("codex"),
@@ -2240,8 +2265,8 @@ export default function ChatView(props: ChatViewProps) {
       threadId: ThreadId;
       createdAt: string;
       modelSelection?: ModelSelection;
-      runtimeMode: RuntimeMode;
-      interactionMode: ProviderInteractionMode;
+      runtimeMode?: RuntimeMode;
+      interactionMode?: ProviderInteractionMode;
     }) => {
       if (!serverThread) {
         return;
@@ -2266,7 +2291,7 @@ export default function ChatView(props: ChatViewProps) {
         });
       }
 
-      if (input.runtimeMode !== serverThread.runtimeMode) {
+      if (input.runtimeMode !== undefined && input.runtimeMode !== serverThread.runtimeMode) {
         await api.orchestration.dispatchCommand({
           type: "thread.runtime-mode.set",
           commandId: newCommandId(),
@@ -2276,7 +2301,10 @@ export default function ChatView(props: ChatViewProps) {
         });
       }
 
-      if (input.interactionMode !== serverThread.interactionMode) {
+      if (
+        input.interactionMode !== undefined &&
+        input.interactionMode !== serverThread.interactionMode
+      ) {
         await api.orchestration.dispatchCommand({
           type: "thread.interaction-mode.set",
           commandId: newCommandId(),
@@ -2917,7 +2945,6 @@ export default function ChatView(props: ChatViewProps) {
         await persistThreadSettingsForNextTurn({
           threadId: threadIdForSend,
           createdAt: messageCreatedAt,
-          ...(ctxSelectedModel ? { modelSelection: ctxSelectedModelSelection } : {}),
           runtimeMode,
           interactionMode,
         });
@@ -2972,6 +2999,13 @@ export default function ChatView(props: ChatViewProps) {
         createdAt: messageCreatedAt,
       });
       turnStartSucceeded = true;
+      if (isServerThread && ctxSelectedModel) {
+        await persistThreadSettingsForNextTurn({
+          threadId: threadIdForSend,
+          createdAt: messageCreatedAt,
+          modelSelection: ctxSelectedModelSelection,
+        });
+      }
     })().catch(async (err: unknown) => {
       if (
         !turnStartSucceeded &&
@@ -3268,7 +3302,6 @@ export default function ChatView(props: ChatViewProps) {
         await persistThreadSettingsForNextTurn({
           threadId: threadIdForSend,
           createdAt: messageCreatedAt,
-          modelSelection: ctxSelectedModelSelection,
           runtimeMode,
           interactionMode: nextInteractionMode,
         });
@@ -3304,6 +3337,13 @@ export default function ChatView(props: ChatViewProps) {
             : {}),
           createdAt: messageCreatedAt,
         });
+        if (ctxSelectedModel) {
+          await persistThreadSettingsForNextTurn({
+            threadId: threadIdForSend,
+            createdAt: messageCreatedAt,
+            modelSelection: ctxSelectedModelSelection,
+          });
+        }
         if (nextInteractionMode === "default" && autoOpenPlanSidebar) {
           planSidebarDismissedForTurnRef.current = null;
         }
@@ -3470,35 +3510,9 @@ export default function ChatView(props: ChatViewProps) {
     environmentId,
   ]);
 
-  const onProviderModelSelect = useCallback(
+  const applyModelSelection = useCallback(
     (instanceId: ProviderInstanceId, model: string) => {
       if (!activeThread) return;
-      // Look up the configured instance so model normalization and custom
-      // model lookup stay scoped to that exact instance. Unknown instance ids
-      // are rejected by returning early; the server remains authoritative too.
-      const entry = providerStatuses.find((snapshot) => snapshot.instanceId === instanceId);
-      const resolvedDriverKind = entry?.driver ?? null;
-      if (
-        lockedProvider !== null &&
-        resolvedDriverKind !== null &&
-        resolvedDriverKind !== lockedProvider
-      ) {
-        scheduleComposerFocus();
-        return;
-      }
-      if (lockedProvider !== null && activeThread.session?.providerInstanceId) {
-        const currentEntry = providerStatuses.find(
-          (snapshot) => snapshot.instanceId === activeThread.session?.providerInstanceId,
-        );
-        if (
-          currentEntry?.continuation?.groupKey &&
-          entry?.continuation?.groupKey &&
-          currentEntry.continuation.groupKey !== entry.continuation.groupKey
-        ) {
-          scheduleComposerFocus();
-          return;
-        }
-      }
       const resolvedModel = resolveAppModelSelectionForInstance(
         instanceId,
         settings,
@@ -3522,7 +3536,6 @@ export default function ChatView(props: ChatViewProps) {
     },
     [
       activeThread,
-      lockedProvider,
       scheduleComposerFocus,
       setComposerDraftModelSelection,
       setStickyComposerModelSelection,
@@ -3530,6 +3543,62 @@ export default function ChatView(props: ChatViewProps) {
       settings,
     ],
   );
+
+  const onProviderModelSelect = useCallback(
+    (instanceId: ProviderInstanceId, model: string) => {
+      if (!activeThread) return;
+      // Look up the configured instance so model normalization and custom
+      // model lookup stay scoped to that exact instance. Unknown instance ids
+      // are rejected by returning early; the server remains authoritative too.
+      const entry = providerStatuses.find((snapshot) => snapshot.instanceId === instanceId);
+      const pickedDriverKind = entry?.driver ?? null;
+      const currentEntry = providerStatuses.find(
+        (snapshot) => snapshot.instanceId === activeThread.session?.providerInstanceId,
+      );
+      const classification = classifyModelSwitch({
+        boundProvider: lockedProvider,
+        pickedDriverKind,
+        boundContinuationGroupKey: currentEntry?.continuation?.groupKey ?? null,
+        pickedContinuationGroupKey: entry?.continuation?.groupKey ?? null,
+      });
+      // Same driver across incompatible resume state can't be reconciled; the
+      // server rejects it, so keep blocking it in the UI.
+      if (classification === "blocked-incompatible-instance") {
+        scheduleComposerFocus();
+        return;
+      }
+      // Cross-driver is a deliberate, lossy handoff (the new model gets a recap
+      // + the working tree, not the outgoing model's full state): confirm once
+      // unless the user has opted out.
+      if (classification === "confirm-cross-driver" && !suppressCrossProviderWarning) {
+        const toLabel = entry?.displayName ?? (pickedDriverKind ? String(pickedDriverKind) : model);
+        const fromLabel =
+          currentEntry?.displayName ??
+          (lockedProvider ? String(lockedProvider) : "the current provider");
+        setCrossProviderDontAskAgain(false);
+        setPendingCrossProviderSwitch({ instanceId, model, fromLabel, toLabel });
+        return;
+      }
+      applyModelSelection(instanceId, model);
+    },
+    [
+      activeThread,
+      lockedProvider,
+      providerStatuses,
+      suppressCrossProviderWarning,
+      applyModelSelection,
+      scheduleComposerFocus,
+    ],
+  );
+
+  const confirmCrossProviderSwitch = useCallback(() => {
+    if (!pendingCrossProviderSwitch) return;
+    if (crossProviderDontAskAgain) {
+      updateSettings({ suppressCrossProviderSwitchWarning: true });
+    }
+    applyModelSelection(pendingCrossProviderSwitch.instanceId, pendingCrossProviderSwitch.model);
+    setPendingCrossProviderSwitch(null);
+  }, [pendingCrossProviderSwitch, crossProviderDontAskAgain, updateSettings, applyModelSelection]);
   const onEnvModeChange = useCallback(
     (mode: DraftThreadEnvMode) => {
       if (canOverrideServerThreadEnvMode) {
@@ -3749,7 +3818,10 @@ export default function ChatView(props: ChatViewProps) {
                   planSidebarOpen={planSidebarOpen}
                   runtimeMode={runtimeMode}
                   interactionMode={interactionMode}
-                  lockedProvider={lockedProvider}
+                  // Unlocked so any provider's models are selectable;
+                  // `onProviderModelSelect` gates a driver change behind the
+                  // cross-provider handoff confirmation.
+                  lockedProvider={null}
                   providerStatuses={providerStatuses as ServerProvider[]}
                   activeProjectDefaultModelSelection={activeProject?.defaultModelSelection}
                   activeThreadModelSelection={activeThread?.modelSelection}
@@ -3786,6 +3858,45 @@ export default function ChatView(props: ChatViewProps) {
                   setThreadError={setThreadError}
                   onExpandImage={onExpandTimelineImage}
                 />
+                <AlertDialog
+                  open={pendingCrossProviderSwitch !== null}
+                  onOpenChange={(open) => {
+                    if (!open) setPendingCrossProviderSwitch(null);
+                  }}
+                >
+                  <AlertDialogPopup>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>
+                        Switch to {pendingCrossProviderSwitch?.toLabel ?? "another provider"}?
+                      </AlertDialogTitle>
+                      <AlertDialogDescription>
+                        This thread is running on{" "}
+                        {pendingCrossProviderSwitch?.fromLabel ?? "the current provider"}.{" "}
+                        {pendingCrossProviderSwitch?.toLabel ?? "The new provider"} will pick up a
+                        recap of the conversation and your current working tree — but not{" "}
+                        {pendingCrossProviderSwitch?.fromLabel ?? "the current provider"}'s full
+                        internal reasoning.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <label className="flex cursor-pointer items-center gap-2 px-6 pb-4 text-muted-foreground text-sm">
+                      <Checkbox
+                        checked={crossProviderDontAskAgain}
+                        onCheckedChange={(checked) =>
+                          setCrossProviderDontAskAgain(checked === true)
+                        }
+                      />
+                      Don't ask again
+                    </label>
+                    <AlertDialogFooter>
+                      <AlertDialogClose render={<Button variant="outline" />}>
+                        Cancel
+                      </AlertDialogClose>
+                      <Button onClick={confirmCrossProviderSwitch}>
+                        Switch to {pendingCrossProviderSwitch?.toLabel ?? "provider"}
+                      </Button>
+                    </AlertDialogFooter>
+                  </AlertDialogPopup>
+                </AlertDialog>
               </div>
             </div>
             {isGitRepo && (

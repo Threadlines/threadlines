@@ -2,6 +2,7 @@ import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3
 import { describe, expect, it } from "vitest";
 import {
   deriveProviderInstanceEntries,
+  filterMaintainedProviderInstanceEntries,
   resolveSelectableProviderInstance,
   resolveProviderDriverKindForInstanceSelection,
 } from "./providerInstances";
@@ -41,6 +42,20 @@ describe("deriveProviderInstanceEntries", () => {
     expect(entry?.instanceId).toBe("codex_personal");
     expect(entry?.driverKind).toBe("codex");
     expect(entry?.isDefault).toBe(false);
+  });
+});
+
+describe("filterMaintainedProviderInstanceEntries", () => {
+  it("keeps Codex and Claude entries while dropping non-maintained provider snapshots", () => {
+    const entries = deriveProviderInstanceEntries([
+      provider({ provider: ProviderDriverKind.make("codex"), instanceId: "codex" }),
+      provider({ provider: ProviderDriverKind.make("claudeAgent"), instanceId: "claudeAgent" }),
+      provider({ provider: ProviderDriverKind.make("opencode"), instanceId: "opencode" }),
+    ]);
+
+    expect(
+      filterMaintainedProviderInstanceEntries(entries).map((entry) => entry.instanceId),
+    ).toEqual([ProviderInstanceId.make("codex"), ProviderInstanceId.make("claudeAgent")]);
   });
 });
 

@@ -22,6 +22,7 @@ import {
   ProviderInstanceId,
   ServerSettings,
   type ServerProvider,
+  type ServerProviderAccountUsage,
   type ServerProviderSlashCommand,
   type ServerSettings as ContractServerSettings,
 } from "@t3tools/contracts";
@@ -1572,6 +1573,69 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
                   stderr: "",
                   code: 0,
                 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      it.effect("attaches subscription account usage from the usage resolver", () =>
+        Effect.gen(function* () {
+          const usage: ServerProviderAccountUsage = {
+            source: "claude-oauth-usage",
+            checkedAt: "2026-06-10T00:00:00.000Z",
+            primaryLimitId: "claude",
+            limits: [
+              {
+                limitId: "claude",
+                primary: {
+                  usedPercent: 31,
+                  remainingPercent: 69,
+                  windowDurationMins: 300,
+                },
+              },
+            ],
+          };
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities({ subscriptionType: "pro" }),
+            process.env,
+            () => Effect.succeed(usage),
+          );
+          assert.strictEqual(status.status, "ready");
+          assert.deepStrictEqual(status.accountUsage, usage);
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.170\n", stderr: "", code: 0 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      it.effect("does not request account usage for API key auth", () =>
+        Effect.gen(function* () {
+          let usageRequested = false;
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities({ tokenSource: "apiKey" }),
+            process.env,
+            () =>
+              Effect.sync(() => {
+                usageRequested = true;
+                return undefined;
+              }),
+          );
+          assert.strictEqual(status.status, "ready");
+          assert.strictEqual(status.accountUsage, undefined);
+          assert.strictEqual(usageRequested, false);
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.170\n", stderr: "", code: 0 };
               throw new Error(`Unexpected args: ${joined}`);
             }),
           ),

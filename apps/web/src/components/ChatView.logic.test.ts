@@ -16,7 +16,9 @@ import { type Thread } from "../types";
 import {
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
   buildExpiredTerminalContextToastCopy,
+  classifyModelSwitch,
   createLocalDispatchSnapshot,
+  deriveLockedProvider,
   deriveComposerSendState,
   deriveProviderAuthReconnectPrompt,
   desktopCapturedScreenshotToFile,
@@ -31,6 +33,86 @@ import {
 } from "./ChatView.logic";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
+
+describe("classifyModelSwitch", () => {
+  const CODEX = ProviderDriverKind.make("codex");
+  const CLAUDE = ProviderDriverKind.make("claudeAgent");
+
+  it("applies a plain in-driver model swap", () => {
+    expect(
+      classifyModelSwitch({
+        boundProvider: CODEX,
+        pickedDriverKind: CODEX,
+        boundContinuationGroupKey: "codex:home:/a",
+        pickedContinuationGroupKey: "codex:home:/a",
+      }),
+    ).toBe("apply");
+  });
+
+  it("applies when the thread has no binding yet", () => {
+    expect(
+      classifyModelSwitch({
+        boundProvider: null,
+        pickedDriverKind: CLAUDE,
+        boundContinuationGroupKey: null,
+        pickedContinuationGroupKey: null,
+      }),
+    ).toBe("apply");
+  });
+
+  it("confirms a cross-driver switch", () => {
+    expect(
+      classifyModelSwitch({
+        boundProvider: CODEX,
+        pickedDriverKind: CLAUDE,
+        boundContinuationGroupKey: "codex:home:/a",
+        pickedContinuationGroupKey: "claudeAgent:instance:claudeAgent",
+      }),
+    ).toBe("confirm-cross-driver");
+  });
+
+  it("blocks a same-driver switch across an incompatible continuation group", () => {
+    expect(
+      classifyModelSwitch({
+        boundProvider: CODEX,
+        pickedDriverKind: CODEX,
+        boundContinuationGroupKey: "codex:home:/a",
+        pickedContinuationGroupKey: "codex:home:/b",
+      }),
+    ).toBe("blocked-incompatible-instance");
+  });
+
+  it("applies a same-driver switch when a continuation group is unknown", () => {
+    expect(
+      classifyModelSwitch({
+        boundProvider: CODEX,
+        pickedDriverKind: CODEX,
+        boundContinuationGroupKey: null,
+        pickedContinuationGroupKey: "codex:home:/b",
+      }),
+    ).toBe("apply");
+  });
+});
+
+describe("deriveLockedProvider", () => {
+  const CODEX = ProviderDriverKind.make("codex");
+
+  it("locks to the resolved driver for custom provider instances", () => {
+    const startedThread = {
+      latestTurn: null,
+      messages: [{ id: "message-1" }],
+      session: null,
+    } as unknown as Thread;
+
+    expect(
+      deriveLockedProvider({
+        thread: startedThread,
+        selectedProvider: CODEX,
+        threadProvider: null,
+      }),
+    ).toBe(CODEX);
+  });
+});
 
 describe("deriveComposerSendState", () => {
   it("treats expired terminal pills as non-sendable content", () => {

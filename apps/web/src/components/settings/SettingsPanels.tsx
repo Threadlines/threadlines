@@ -41,6 +41,7 @@ import {
 } from "../../modelSelection";
 import {
   deriveProviderInstanceEntries,
+  filterMaintainedProviderInstanceEntries,
   sortProviderInstanceEntries,
 } from "../../providerInstances";
 import { ensureLocalApi, readLocalApi } from "../../localApi";
@@ -501,7 +502,7 @@ export function GeneralSettingsPanel() {
   const textGenModel = textGenerationModelSelection.model;
   const textGenModelOptions = textGenerationModelSelection.options;
   const gitModelInstanceEntries = sortProviderInstanceEntries(
-    deriveProviderInstanceEntries(serverProviders),
+    filterMaintainedProviderInstanceEntries(deriveProviderInstanceEntries(serverProviders)),
   );
   const textGenInstanceEntry = gitModelInstanceEntries.find(
     (entry) => entry.instanceId === textGenInstanceId,
@@ -1040,11 +1041,8 @@ export function ProviderSettingsPanel() {
       deriveProviderSettingsRows({
         settings,
         maintainedDriverKinds: MAINTAINED_PROVIDER_DRIVER_KINDS,
-        liveProviderInstanceIds: new Set(
-          serverProviders.map((provider) => String(provider.instanceId)),
-        ),
       }),
-    [settings, serverProviders],
+    [settings],
   );
 
   const updateProviderInstance = (

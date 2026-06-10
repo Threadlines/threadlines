@@ -15,7 +15,7 @@
 import {
   defaultInstanceIdForDriver,
   PROVIDER_DISPLAY_NAMES,
-  type ProviderDriverKind,
+  ProviderDriverKind,
   type ProviderInstanceId,
   type ServerProvider,
   type ServerProviderModel,
@@ -23,6 +23,19 @@ import {
 } from "@t3tools/contracts";
 
 import { formatProviderDriverKindLabel } from "./providerModels";
+
+export const MAINTAINED_PROVIDER_DRIVER_KINDS = [
+  ProviderDriverKind.make("codex"),
+  ProviderDriverKind.make("claudeAgent"),
+] as const;
+
+const MAINTAINED_PROVIDER_DRIVER_KIND_SET = new Set<string>(
+  MAINTAINED_PROVIDER_DRIVER_KINDS.map(String),
+);
+
+export function isMaintainedProviderDriverKind(driverKind: ProviderDriverKind): boolean {
+  return MAINTAINED_PROVIDER_DRIVER_KIND_SET.has(String(driverKind));
+}
 
 /**
  * UI-facing projection of one configured provider instance. Carries the
@@ -182,6 +195,12 @@ export function sortProviderInstanceEntries(
     sorted.push(...defaults, ...customs);
   }
   return sorted;
+}
+
+export function filterMaintainedProviderInstanceEntries(
+  entries: ReadonlyArray<ProviderInstanceEntry>,
+): ReadonlyArray<ProviderInstanceEntry> {
+  return entries.filter((entry) => isMaintainedProviderDriverKind(entry.driverKind));
 }
 
 /**

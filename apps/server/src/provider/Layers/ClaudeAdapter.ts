@@ -52,6 +52,7 @@ import {
   getProviderOptionDescriptors,
   resolvePromptInjectedEffort,
 } from "@t3tools/shared/model";
+import { renderThreadContextSeed, withContextSeedPreamble } from "@t3tools/shared/contextSeed";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -183,6 +184,10 @@ interface ClaudeSessionContext {
   lastKnownTokenUsage: ThreadTokenUsageSnapshot | undefined;
   lastAssistantUuid: string | undefined;
   lastThreadStartedId: string | undefined;
+  // Rendered cross-driver handoff preamble, injected ahead of the first user
+  // turn and cleared once consumed. Set only when a session starts from a
+  // context seed (no native resume).
+  pendingContextSeedText: string | undefined;
   stopped: boolean;
 }
 
@@ -755,9 +760,15 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
     readonly fileSystem: FileSystem.FileSystem;
     readonly attachmentsDir: string;
     readonly boundInstanceId: ProviderInstanceId;
+    readonly seedPreamble?: string | undefined;
   },
 ) {
-  const text = buildPromptText(input, dependencies.boundInstanceId);
+  const promptText = buildPromptText(input, dependencies.boundInstanceId);
+  // Cross-driver handoff: lead the first turn with the rendered seed so the
+  // effort prefix still wraps only the user's own prompt.
+  const text = dependencies.seedPreamble
+    ? withContextSeedPreamble(dependencies.seedPreamble, promptText)
+    : promptText;
   const sdkContent: Array<Record<string, unknown>> = [];
 
   if (text.length > 0) {
@@ -3151,6 +3162,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         lastKnownTokenUsage: undefined,
         lastAssistantUuid: resumeState?.resumeSessionAt,
         lastThreadStartedId: undefined,
+        // Render the cross-driver handoff seed once at start; consumed on the
+        // first turn. Only honored when there is no native resume to defer to.
+        pendingContextSeedText:
+          input.contextSeed !== undefined && input.resumeCursor === undefined
+            ? renderThreadContextSeed(input.contextSeed)
+            : undefined,
         stopped: false,
       };
       yield* Ref.set(contextRef, context);
@@ -3302,11 +3319,15 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       providerRefs: {},
     });
 
+    const seedPreamble = context.pendingContextSeedText;
     const message = yield* buildUserMessageEffect(input, {
       fileSystem,
       attachmentsDir: serverConfig.attachmentsDir,
       boundInstanceId,
+      ...(seedPreamble !== undefined ? { seedPreamble } : {}),
     });
+    // Consume the handoff seed once; subsequent turns continue natively.
+    context.pendingContextSeedText = undefined;
 
     yield* Queue.offer(context.promptQueue, {
       type: "message",

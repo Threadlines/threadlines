@@ -734,6 +734,75 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("injects a cross-driver context seed ahead of the first turn", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+        contextSeed: {
+          version: 1,
+          fromProvider: ProviderDriverKind.make("codex"),
+          entries: [{ kind: "message", role: "user", text: "Earlier: build a parser" }],
+          workspacePointer: "The repo at /tmp/ws reflects in-progress work.",
+        },
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "now add tests",
+        attachments: [],
+      });
+
+      const promptText = yield* Effect.promise(() =>
+        readFirstPromptText(harness.getLastCreateQueryInput()),
+      );
+      assert.isDefined(promptText);
+      assert.include(promptText!, '<conversation-handoff from="codex">');
+      assert.include(promptText!, "Earlier: build a parser");
+      assert.include(promptText!, "The repo at /tmp/ws reflects in-progress work.");
+      // The user's own prompt follows the seed preamble.
+      assert.include(promptText!, "now add tests");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("ignores a context seed when resuming a native session", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+        resumeCursor: { threadId: RESUME_THREAD_ID, turnCount: 2 },
+        contextSeed: {
+          version: 1,
+          fromProvider: ProviderDriverKind.make("codex"),
+          entries: [{ kind: "message", role: "user", text: "Should not appear" }],
+        },
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "continue",
+        attachments: [],
+      });
+
+      const promptText = yield* Effect.promise(() =>
+        readFirstPromptText(harness.getLastCreateQueryInput()),
+      );
+      assert.equal(promptText, "continue");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("embeds image attachments in Claude user messages", () => {
     const baseDir = mkdtempSync(path.join(os.tmpdir(), "claude-attachments-"));
     const harness = makeHarness({

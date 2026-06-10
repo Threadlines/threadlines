@@ -649,6 +649,7 @@ describe("wsApi", () => {
       diffWordWrap: true,
       favorites: [],
       providerModelPreferences: {},
+      suppressCrossProviderSwitchWarning: false,
       sidebarProjectGroupingMode: "repository_path" as const,
       sidebarProjectGroupingOverrides: {
         "environment-local:/tmp/project": "separate" as const,
@@ -713,6 +714,7 @@ describe("wsApi", () => {
       diffWordWrap: true,
       favorites: [],
       providerModelPreferences: {},
+      suppressCrossProviderSwitchWarning: false,
       sidebarProjectGroupingMode: "repository_path" as const,
       sidebarProjectGroupingOverrides: {
         "environment-local:/tmp/project": "separate" as const,

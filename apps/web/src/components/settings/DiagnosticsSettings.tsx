@@ -101,8 +101,7 @@ function traceSpanCategory(name: string): string {
   if (
     normalized.startsWith("provider.") ||
     normalized.includes("codex") ||
-    normalized.includes("claude") ||
-    normalized.includes("opencode")
+    normalized.includes("claude")
   ) {
     return "Provider";
   }
@@ -374,7 +373,7 @@ function formatProcessName(command: string): string {
 
 function formatProcessType(process: ServerProcessDiagnosticsEntry): string {
   if (process.depth > 0) return "Subprocess";
-  if (/\b(codex|claude|opencode|cursor)\b/i.test(process.command)) return "Agent";
+  if (/\b(codex|claude)\b/i.test(process.command)) return "Agent";
   return "Process";
 }
 

@@ -189,6 +189,54 @@ describe("deriveProviderAccountUsagePresentation", () => {
     });
   });
 
+  it("formats Claude 5h and weekly usage windows from the oauth usage source", () => {
+    const usage: ServerProviderAccountUsage = {
+      source: "claude-oauth-usage",
+      checkedAt: "2026-06-10T00:00:00.000Z",
+      primaryLimitId: "claude",
+      limits: [
+        {
+          limitId: "claude",
+          primary: {
+            usedPercent: 31,
+            remainingPercent: 69,
+            resetsAt: 1_800_009_120_000,
+            windowDurationMins: 300,
+          },
+          secondary: {
+            usedPercent: 69,
+            remainingPercent: 31,
+            resetsAt: 1_800_604_800_000,
+            windowDurationMins: 10_080,
+          },
+        },
+      ],
+    };
+
+    expect(deriveProviderAccountUsagePresentation(usage, 1_800_000_000_000)).toEqual({
+      label: "Claude usage",
+      reachedLimit: false,
+      windows: [
+        {
+          key: "primary",
+          label: "5h",
+          detail: "69% remaining · resets in 2h 32m",
+          usedPercent: 31,
+          remainingPercent: 69,
+          reachedLimit: false,
+        },
+        {
+          key: "secondary",
+          label: "Weekly",
+          detail: "31% remaining · resets in 7d",
+          usedPercent: 69,
+          remainingPercent: 31,
+          reachedLimit: false,
+        },
+      ],
+    });
+  });
+
   it("formats Codex monthly spend-control limits", () => {
     const usage: ServerProviderAccountUsage = {
       source: "codex-rate-limits",

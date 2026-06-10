@@ -4,6 +4,7 @@ import * as Schema from "effect/Schema";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import {
   ClientSettingsSchema,
+  ClientSettingsPatch,
   DEFAULT_CLIENT_SETTINGS,
   DEFAULT_SERVER_SETTINGS,
   ServerSettings,
@@ -11,6 +12,7 @@ import {
 } from "./settings.ts";
 
 const decodeClientSettings = Schema.decodeUnknownSync(ClientSettingsSchema);
+const decodeClientSettingsPatch = Schema.decodeUnknownSync(ClientSettingsPatch);
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
@@ -19,6 +21,11 @@ describe("ClientSettings defaults", () => {
   it("keeps the task panel closed by default", () => {
     expect(DEFAULT_CLIENT_SETTINGS.autoOpenPlanSidebar).toBe(false);
     expect(decodeClientSettings({}).autoOpenPlanSidebar).toBe(false);
+  });
+
+  it("decodes cross-provider warning suppression patches", () => {
+    const patch = decodeClientSettingsPatch({ suppressCrossProviderSwitchWarning: true });
+    expect(patch.suppressCrossProviderSwitchWarning).toBe(true);
   });
 });
 

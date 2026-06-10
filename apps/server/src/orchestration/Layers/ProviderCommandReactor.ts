@@ -11,6 +11,7 @@ import {
   ThreadId,
   type ProviderSession,
   type RuntimeMode,
+  type ThreadContextSeed,
   type TurnId,
 } from "@t3tools/contracts";
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shared/git";
@@ -37,6 +38,7 @@ import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import type { ProviderServiceError } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { ThreadContextSeedBuilder } from "../../provider/contextSeed/ThreadContextSeedBuilder.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
@@ -189,6 +191,7 @@ const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerService = yield* ProviderService;
+  const seedBuilder = yield* ThreadContextSeedBuilder;
   const checkpointStore = yield* CheckpointStore;
   const gitWorkflow = yield* GitWorkflowService;
   const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
@@ -346,6 +349,7 @@ const make = Effect.gen(function* () {
     createdAt: string,
     options?: {
       readonly modelSelection?: ModelSelection;
+      readonly excludeContextSeedMessageId?: MessageId;
     },
   ) {
     const thread = yield* resolveThread(threadId);
@@ -422,28 +426,29 @@ const make = Effect.gen(function* () {
     const preferredProvider: ProviderDriverKind = desiredDriverKind;
     const hasProviderBinding =
       activeThreadSession !== null || thread.session?.providerName !== null;
-    if (
+    const instanceSwitchRequested =
       hasProviderBinding &&
       requestedModelSelection !== undefined &&
-      requestedModelSelection.instanceId !== currentInstanceId
-    ) {
-      if (currentInfo.driverKind !== desiredInfo.driverKind) {
-        return yield* new ProviderAdapterRequestError({
-          provider: preferredProvider,
-          method: "thread.turn.start",
-          detail: `Thread '${threadId}' is bound to driver '${currentInfo.driverKind}' and cannot switch to '${desiredInfo.driverKind}'.`,
-        });
-      }
-      if (
-        currentInfo.continuationIdentity.continuationKey !==
+      requestedModelSelection.instanceId !== currentInstanceId;
+    // Switching to a different *driver* mid-thread is allowed: we hand off by
+    // rehydrating the new driver from a provider-agnostic context seed built
+    // from the orchestration transcript, instead of the outgoing driver's
+    // opaque (and non-portable) resume cursor. A same-driver switch to an
+    // instance with an incompatible continuation key stays blocked — there the
+    // native resume state matters and cannot be reconciled across instances.
+    const isCrossDriverHandoff =
+      instanceSwitchRequested && currentInfo.driverKind !== desiredInfo.driverKind;
+    if (
+      instanceSwitchRequested &&
+      currentInfo.driverKind === desiredInfo.driverKind &&
+      currentInfo.continuationIdentity.continuationKey !==
         desiredInfo.continuationIdentity.continuationKey
-      ) {
-        return yield* new ProviderAdapterRequestError({
-          provider: preferredProvider,
-          method: "thread.turn.start",
-          detail: `Thread '${threadId}' cannot switch from instance '${currentInstanceId}' to '${desiredInstanceId}' because their provider resume state is incompatible.`,
-        });
-      }
+    ) {
+      return yield* new ProviderAdapterRequestError({
+        provider: preferredProvider,
+        method: "thread.turn.start",
+        detail: `Thread '${threadId}' cannot switch from instance '${currentInstanceId}' to '${desiredInstanceId}' because their provider resume state is incompatible.`,
+      });
     }
     const project = yield* resolveProject(thread.projectId);
     const effectiveCwd = resolveThreadWorkspaceCwd({
@@ -454,6 +459,7 @@ const make = Effect.gen(function* () {
     const startProviderSession = (input?: {
       readonly resumeCursor?: unknown;
       readonly provider?: ProviderDriverKind;
+      readonly contextSeed?: ThreadContextSeed;
     }) =>
       providerService.startSession(threadId, {
         threadId,
@@ -462,6 +468,7 @@ const make = Effect.gen(function* () {
         ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
         modelSelection: desiredModelSelection,
         ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
+        ...(input?.contextSeed !== undefined ? { contextSeed: input.contextSeed } : {}),
         runtimeMode: desiredRuntimeMode,
       });
 
@@ -495,6 +502,38 @@ const make = Effect.gen(function* () {
           createdAt,
         });
       });
+
+    // Cross-driver switch: don't reuse the outgoing driver's resume cursor.
+    // Build a provider-agnostic seed from the transcript and start the new
+    // driver seeded. `ProviderService.startSession` stops the stale outgoing
+    // session and won't carry over the old instance's resume cursor, so a
+    // single start both rebinds and tears down the old runtime.
+    if (isCrossDriverHandoff) {
+      const contextSeed = yield* seedBuilder
+        .build({
+          threadId,
+          fromProvider: currentInfo.driverKind,
+          toProvider: desiredDriverKind,
+          ...(options?.excludeContextSeedMessageId !== undefined
+            ? { excludeMessageId: options.excludeContextSeedMessageId }
+            : {}),
+          ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
+        })
+        .pipe(Effect.map(Option.getOrUndefined));
+      yield* Effect.logInfo("provider command reactor cross-driver handoff", {
+        threadId,
+        fromDriver: currentInfo.driverKind,
+        toDriver: desiredDriverKind,
+        fromInstanceId: currentInstanceId,
+        toInstanceId: desiredInstanceId,
+        hasContextSeed: contextSeed !== undefined,
+      });
+      const handoffSession = yield* startProviderSession(
+        contextSeed !== undefined ? { contextSeed } : undefined,
+      );
+      yield* bindSessionToThread(handoffSession);
+      return handoffSession.threadId;
+    }
 
     const existingSessionThreadId =
       thread.session && thread.session.status !== "stopped" && activeSession ? thread.id : null;
@@ -583,11 +622,10 @@ const make = Effect.gen(function* () {
         new Error(`Thread '${input.threadId}' was not found in read model.`),
       );
     }
-    yield* ensureSessionForThread(
-      input.threadId,
-      input.createdAt,
-      input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {},
-    );
+    yield* ensureSessionForThread(input.threadId, input.createdAt, {
+      ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
+      excludeContextSeedMessageId: input.messageId,
+    });
     if (input.modelSelection !== undefined) {
       threadModelSelections.set(input.threadId, input.modelSelection);
     }

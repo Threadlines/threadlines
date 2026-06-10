@@ -123,6 +123,22 @@ function sameId(left: string | null | undefined, right: string | null | undefine
   return left === right;
 }
 
+function runtimeEventMatchesThreadSession(
+  event: ProviderRuntimeEvent,
+  session: OrchestrationThread["session"] | null | undefined,
+): boolean {
+  if (!session || session.providerName === null) {
+    return true;
+  }
+  if (session.providerInstanceId !== undefined && event.providerInstanceId !== undefined) {
+    return sameId(session.providerInstanceId, event.providerInstanceId);
+  }
+  if (session.providerInstanceId !== undefined && event.providerInstanceId === undefined) {
+    return event.provider === session.providerName;
+  }
+  return true;
+}
+
 function hasAssistantMessageForTurn(
   messages: ReadonlyArray<OrchestrationMessage>,
   turnId: TurnId,
@@ -1037,6 +1053,21 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const thread = yield* resolveThreadShell(event.threadId);
       if (!thread) return;
+      if (
+        STRICT_PROVIDER_LIFECYCLE_GUARD &&
+        !runtimeEventMatchesThreadSession(event, thread.session)
+      ) {
+        yield* Effect.logDebug("provider runtime ingestion ignored stale provider event", {
+          eventId: event.eventId,
+          eventType: event.type,
+          eventProvider: event.provider,
+          eventProviderInstanceId: event.providerInstanceId,
+          threadId: thread.id,
+          sessionProvider: thread.session?.providerName,
+          sessionProviderInstanceId: thread.session?.providerInstanceId,
+        });
+        return;
+      }
 
       let loadedThreadDetail: OrchestrationThread | null | undefined;
       const getLoadedThreadDetail = () =>

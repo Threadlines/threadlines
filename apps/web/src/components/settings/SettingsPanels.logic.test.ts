@@ -1,6 +1,5 @@
 import {
   DEFAULT_SERVER_SETTINGS,
-  defaultInstanceIdForDriver,
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderInstanceConfig,
@@ -123,7 +122,7 @@ describe("deriveProviderSettingsRows", () => {
     ]);
   });
 
-  it("preserves dirty legacy Cursor and OpenCode defaults as deprecated rows", () => {
+  it("omits dirty legacy Cursor and OpenCode defaults", () => {
     const settings = {
       ...DEFAULT_SERVER_SETTINGS,
       providers: {
@@ -144,37 +143,14 @@ describe("deriveProviderSettingsRows", () => {
       maintainedDriverKinds: MAINTAINED_DRIVER_KINDS,
     });
 
-    const cursor = rows.find((row) => row.instanceId === ProviderInstanceId.make("cursor"));
-    const opencode = rows.find((row) => row.instanceId === ProviderInstanceId.make("opencode"));
-
     expect(rows.map((row) => row.instanceId)).toEqual([
       ProviderInstanceId.make("codex"),
       ProviderInstanceId.make("claudeAgent"),
-      ProviderInstanceId.make("cursor"),
-      ProviderInstanceId.make("opencode"),
     ]);
-    expect(cursor).toMatchObject({
-      driver: ProviderDriverKind.make("cursor"),
-      isDefault: true,
-      isDirty: true,
-      instance: {
-        driver: ProviderDriverKind.make("cursor"),
-        config: { enabled: true },
-      },
-    });
-    expect(opencode).toMatchObject({
-      driver: ProviderDriverKind.make("opencode"),
-      isDefault: true,
-      isDirty: true,
-      instance: {
-        driver: ProviderDriverKind.make("opencode"),
-        config: { serverUrl: "http://127.0.0.1:4096" },
-      },
-    });
   });
 
-  it("treats explicit deprecated default provider instances as default rows", () => {
-    const cursorId = defaultInstanceIdForDriver(ProviderDriverKind.make("cursor"));
+  it("omits explicit deprecated default provider instances", () => {
+    const cursorId = ProviderInstanceId.make("cursor");
     const cursorInstance = {
       driver: ProviderDriverKind.make("cursor"),
       enabled: false,
@@ -191,14 +167,13 @@ describe("deriveProviderSettingsRows", () => {
       maintainedDriverKinds: MAINTAINED_DRIVER_KINDS,
     });
 
-    expect(rows.find((row) => row.instanceId === cursorId)).toMatchObject({
-      instance: cursorInstance,
-      isDefault: true,
-      isDirty: true,
-    });
+    expect(rows.map((row) => row.instanceId)).toEqual([
+      ProviderInstanceId.make("codex"),
+      ProviderInstanceId.make("claudeAgent"),
+    ]);
   });
 
-  it("keeps custom deprecated instances without adding a default deprecated slot", () => {
+  it("omits custom deprecated instances", () => {
     const cursorWorkId = ProviderInstanceId.make("cursor_work");
     const rows = deriveProviderSettingsRows({
       settings: {
@@ -216,7 +191,6 @@ describe("deriveProviderSettingsRows", () => {
     expect(rows.map((row) => row.instanceId)).toEqual([
       ProviderInstanceId.make("codex"),
       ProviderInstanceId.make("claudeAgent"),
-      cursorWorkId,
     ]);
   });
 });

@@ -6,9 +6,11 @@ import {
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
+  ThreadContextSeed,
 } from "./provider.ts";
 
 const decodeProviderSessionStartInput = Schema.decodeUnknownSync(ProviderSessionStartInput);
+const decodeThreadContextSeed = Schema.decodeUnknownSync(ThreadContextSeed);
 const decodeProviderSendTurnInput = Schema.decodeUnknownSync(ProviderSendTurnInput);
 const decodeProviderSession = Schema.decodeUnknownSync(ProviderSession);
 const decodeProviderEvent = Schema.decodeUnknownSync(ProviderEvent);
@@ -111,6 +113,61 @@ describe("ProviderSessionStartInput", () => {
     expect(parsed.provider).toBe("ollama");
     expect(parsed.providerInstanceId).toBe("ollama_local");
     expect(parsed.modelSelection?.instanceId).toBe("ollama_local");
+  });
+
+  it("decodes without a contextSeed (back-compat)", () => {
+    const parsed = decodeProviderSessionStartInput({
+      threadId: "thread-1",
+      provider: "claudeAgent",
+      runtimeMode: "full-access",
+    });
+    expect(parsed.contextSeed).toBeUndefined();
+  });
+
+  it("accepts a contextSeed for cross-driver handoff", () => {
+    const parsed = decodeProviderSessionStartInput({
+      threadId: "thread-1",
+      provider: "claudeAgent",
+      runtimeMode: "full-access",
+      contextSeed: {
+        version: 1,
+        fromProvider: "codex",
+        olderSummary: "Earlier: scaffolded the auth module.",
+        entries: [
+          { kind: "message", role: "user", text: "Add a login form" },
+          { kind: "tool", text: "Edited src/Login.tsx" },
+          { kind: "message", role: "assistant", text: "Added the form." },
+        ],
+        workspacePointer: "The repo at /tmp/ws reflects in-progress work.",
+      },
+    });
+    expect(parsed.contextSeed?.fromProvider).toBe("codex");
+    expect(parsed.contextSeed?.entries).toHaveLength(3);
+    expect(parsed.contextSeed?.entries[1]?.kind).toBe("tool");
+  });
+});
+
+describe("ThreadContextSeed", () => {
+  it("decodes a minimal seed (no summary, no workspace pointer)", () => {
+    const seed = decodeThreadContextSeed({
+      version: 1,
+      fromProvider: "claudeAgent",
+      entries: [{ kind: "message", role: "assistant", text: "Done." }],
+    });
+    expect(seed.fromProvider).toBe("claudeAgent");
+    expect(seed.olderSummary).toBeUndefined();
+    expect(seed.workspacePointer).toBeUndefined();
+    expect(seed.entries[0]?.role).toBe("assistant");
+  });
+
+  it("rejects an unknown seed version", () => {
+    expect(() =>
+      decodeThreadContextSeed({
+        version: 2,
+        fromProvider: "codex",
+        entries: [],
+      }),
+    ).toThrow();
   });
 });
 

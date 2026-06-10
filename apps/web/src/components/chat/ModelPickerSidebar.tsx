@@ -1,7 +1,6 @@
 import { type ProviderInstanceId } from "@t3tools/contracts";
 import { memo, useMemo } from "react";
-import { Clock3Icon, SparklesIcon, StarIcon } from "lucide-react";
-import { Gemini, GithubCopilotIcon } from "../Icons";
+import { SparklesIcon, StarIcon } from "lucide-react";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { ScrollArea } from "../ui/scroll-area";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -36,7 +35,6 @@ const SELECTED_INDICATOR_CLASS =
 const BADGE_BASE_CLASS =
   "pointer-events-none absolute -right-0.5 top-0.5 z-10 flex size-3.5 items-center justify-center rounded-full bg-transparent shadow-sm ";
 const NEW_BADGE_CLASS = `${BADGE_BASE_CLASS} text-amber-600  dark:text-amber-300 `;
-const SOON_BADGE_CLASS = `${BADGE_BASE_CLASS} text-muted-foreground `;
 
 /** Opens toward the rail so the list stays readable (not over the model names). */
 const PICKER_TOOLTIP_SIDE = "left" as const;
@@ -54,8 +52,6 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
   instanceEntries: ReadonlyArray<ProviderInstanceEntry>;
   /** Render the favorites rail entry. Hidden for locked-provider instance switching. */
   showFavorites?: boolean;
-  /** Render non-configured coming-soon provider entries. Hidden in scoped rails. */
-  showComingSoon?: boolean;
   /**
    * Instance id values that should render the "new" sparkle badge. Callers
    * pass the subset of default built-in ids they want flagged (custom
@@ -67,7 +63,6 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
     props.onSelectInstance(instanceId);
   };
   const showFavorites = props.showFavorites ?? true;
-  const showComingSoon = props.showComingSoon ?? true;
   const duplicateDriverCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const entry of props.instanceEntries) {
@@ -192,71 +187,6 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
             </div>
           );
         })}
-
-        {showComingSoon ? (
-          <>
-            {/* Gemini button (coming soon) */}
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <span className="relative block w-full">
-                    <button
-                      className={cn(
-                        "relative isolate flex w-full aspect-square items-center justify-center rounded opacity-50 cursor-not-allowed transition-colors hover:bg-transparent",
-                      )}
-                      disabled
-                      type="button"
-                      data-model-picker-provider="gemini-coming-soon"
-                      aria-label="Gemini — coming soon"
-                    >
-                      <Gemini className="size-5 text-muted-foreground/85" aria-hidden />
-                      <span className={SOON_BADGE_CLASS} aria-hidden>
-                        <Clock3Icon className="size-2" />
-                      </span>
-                    </button>
-                  </span>
-                }
-              />
-              <TooltipPopup
-                side={PICKER_TOOLTIP_SIDE}
-                align="center"
-                className={PICKER_TOOLTIP_CLASS}
-              >
-                Gemini — Coming soon
-              </TooltipPopup>
-            </Tooltip>
-            {/* Github Copilot button (coming soon) */}
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <span className="relative block w-full">
-                    <button
-                      className={cn(
-                        "relative isolate flex w-full aspect-square items-center justify-center rounded opacity-50 cursor-not-allowed transition-colors hover:bg-transparent",
-                      )}
-                      disabled
-                      type="button"
-                      data-model-picker-provider="github-copilot-coming-soon"
-                      aria-label="Github Copilot — coming soon"
-                    >
-                      <GithubCopilotIcon className="size-5 text-muted-foreground/85" aria-hidden />
-                      <span className={SOON_BADGE_CLASS} aria-hidden>
-                        <Clock3Icon className="size-2" />
-                      </span>
-                    </button>
-                  </span>
-                }
-              />
-              <TooltipPopup
-                side={PICKER_TOOLTIP_SIDE}
-                align="center"
-                className={PICKER_TOOLTIP_CLASS}
-              >
-                Github Copilot — Coming soon
-              </TooltipPopup>
-            </Tooltip>
-          </>
-        ) : null}
       </div>
     </ScrollArea>
   );

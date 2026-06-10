@@ -3,6 +3,7 @@ import {
   type ModelCapabilities,
   type ModelSelection,
   ProviderDriverKind,
+  type ServerProviderAccountUsage,
   type ServerProviderModel,
   type ServerProviderSlashCommand,
 } from "@t3tools/contracts";
@@ -648,6 +649,9 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     claudeSettings: ClaudeSettings,
   ) => Effect.Effect<ClaudeCapabilitiesProbe | undefined>,
   environment: NodeJS.ProcessEnv = process.env,
+  resolveAccountUsage?: (
+    claudeSettings: ClaudeSettings,
+  ) => Effect.Effect<ServerProviderAccountUsage | undefined>,
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
@@ -774,6 +778,12 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     subscriptionType: capabilities.subscriptionType,
     authMethod: capabilities.tokenSource,
   });
+  // Subscription usage comes from the Claude Code OAuth credential, which
+  // does not exist for API-key auth — skip the lookup entirely there.
+  const accountUsage =
+    resolveAccountUsage && authMetadata?.type !== "apiKey"
+      ? yield* resolveAccountUsage(claudeSettings).pipe(Effect.orElseSucceed(() => undefined))
+      : undefined;
   return buildServerProvider({
     presentation: CLAUDE_PRESENTATION,
     enabled: claudeSettings.enabled,
@@ -789,6 +799,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         ...(capabilities.email ? { email: capabilities.email } : {}),
         ...(authMetadata ? authMetadata : {}),
       },
+      ...(accountUsage ? { accountUsage } : {}),
       ...(upgradeMessage ? { message: upgradeMessage } : {}),
     },
   });

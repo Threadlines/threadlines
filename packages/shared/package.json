@@ -55,6 +55,10 @@
       "types": "./src/toolActivity.ts",
       "import": "./src/toolActivity.ts"
     },
+    "./contextSeed": {
+      "types": "./src/contextSeed.ts",
+      "import": "./src/contextSeed.ts"
+    },
     "./Struct": {
       "types": "./src/Struct.ts",
       "import": "./src/Struct.ts"

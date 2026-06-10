@@ -6,12 +6,12 @@ describe("buildModelPickerSearchText", () => {
   it("builds provider-agnostic search text from generic fields", () => {
     expect(
       buildModelPickerSearchText({
-        driverKind: "opencode",
-        providerDisplayName: "opencode",
+        driverKind: "claudeAgent",
+        providerDisplayName: "Claude",
         name: "Claude Opus 4.7",
-        subProvider: "GitHub Copilot",
+        subProvider: "Enterprise",
       }),
-    ).toBe("claude opus 4.7 github copilot opencode opencode");
+    ).toBe("claude opus 4.7 enterprise claudeagent claude");
   });
 });
 
@@ -20,12 +20,12 @@ describe("scoreModelPickerSearch", () => {
     expect(
       scoreModelPickerSearch(
         {
-          driverKind: "opencode",
-          providerDisplayName: "opencode",
+          driverKind: "claudeAgent",
+          providerDisplayName: "Claude",
           name: "Claude Opus 4.7",
-          subProvider: "GitHub Copilot",
+          subProvider: "Enterprise",
         },
-        "coplt op",
+        "entr op",
       ),
     ).not.toBeNull();
   });
@@ -38,7 +38,7 @@ describe("scoreModelPickerSearch", () => {
           providerDisplayName: "codex",
           name: "GPT-5 Codex",
         },
-        "coplt op",
+        "entr op",
       ),
     ).toBeNull();
   });
@@ -46,21 +46,21 @@ describe("scoreModelPickerSearch", () => {
   it("ranks exact token matches ahead of fuzzier matches", () => {
     const exactScore = scoreModelPickerSearch(
       {
-        driverKind: "opencode",
-        providerDisplayName: "opencode",
+        driverKind: "claudeAgent",
+        providerDisplayName: "Claude",
         name: "Claude Opus 4.7",
-        subProvider: "GitHub Copilot",
+        subProvider: "Enterprise",
       },
-      "copilot opus",
+      "enterprise opus",
     );
     const fuzzyScore = scoreModelPickerSearch(
       {
-        driverKind: "opencode",
-        providerDisplayName: "opencode",
+        driverKind: "claudeAgent",
+        providerDisplayName: "Claude",
         name: "Claude Opus 4.7",
-        subProvider: "GitHub Copilot",
+        subProvider: "Enterprise",
       },
-      "coplt op",
+      "entr op",
     );
 
     expect(exactScore).not.toBeNull();
@@ -80,8 +80,8 @@ describe("scoreModelPickerSearch", () => {
     );
     const nonFavoriteScore = scoreModelPickerSearch(
       {
-        driverKind: "cursor",
-        providerDisplayName: "Cursor",
+        driverKind: "codex",
+        providerDisplayName: "Codex",
         name: "Opus 4.5",
       },
       "opu",
@@ -104,8 +104,8 @@ describe("scoreModelPickerSearch", () => {
     );
     const nonFavoriteExactScore = scoreModelPickerSearch(
       {
-        driverKind: "cursor",
-        providerDisplayName: "Cursor",
+        driverKind: "codex",
+        providerDisplayName: "Codex",
         name: "Opus 4.7",
       },
       "opus 4.7",

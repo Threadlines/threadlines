@@ -12,6 +12,7 @@ import {
 import {
   ChatAttachment,
   ModelSelection,
+  OrchestrationMessageRole,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   ProviderApprovalDecision,
@@ -51,6 +52,47 @@ export const ProviderSession = Schema.Struct({
 });
 export type ProviderSession = typeof ProviderSession.Type;
 
+/**
+ * One entry in a {@link ThreadContextSeed} — either a verbatim conversation
+ * message or a compact tool-action summary. Carried oldest-first.
+ */
+export const ThreadContextSeedEntry = Schema.Struct({
+  kind: Schema.Literals(["message", "tool"]),
+  // Present for `kind === "message"`; identifies the speaker.
+  role: Schema.optional(OrchestrationMessageRole),
+  // Verbatim message text, or the tool activity's summary line. May be empty
+  // on decode (the builder filters empties); kept permissive so partial seeds
+  // round-trip without validation churn.
+  text: Schema.String,
+});
+export type ThreadContextSeedEntry = typeof ThreadContextSeedEntry.Type;
+
+/**
+ * `ThreadContextSeed` — provider-agnostic conversation rehydration payload.
+ *
+ * Built from the orchestration transcript (not from any adapter-owned
+ * `resumeCursor`) so a thread can hand off to a *different* driver mid-thread.
+ * The new adapter renders this into a priming preamble when it starts a fresh
+ * session without native resume. See `.plans/18-cross-provider-switching.md`.
+ *
+ * Fidelity is tiered: recent turns are verbatim in `entries`, older history is
+ * optionally compacted into `olderSummary`, and the shared working tree is
+ * referenced (not embedded) via `workspacePointer`.
+ */
+export const ThreadContextSeed = Schema.Struct({
+  version: Schema.Literal(1),
+  // Driver the conversation is being handed off *from*, for orientation copy.
+  fromProvider: ProviderDriverKind,
+  // LLM-compacted (or truncation-marked) summary of older history elided from
+  // `entries`. Absent when the full recent history fit the budget.
+  olderSummary: Schema.optional(TrimmedNonEmptyString),
+  // Recent verbatim entries (messages + tool summaries), oldest-first.
+  entries: Schema.Array(ThreadContextSeedEntry),
+  // One-line orientation pointing the new provider at the shared working tree.
+  workspacePointer: Schema.optional(TrimmedNonEmptyString),
+});
+export type ThreadContextSeed = typeof ThreadContextSeed.Type;
+
 export const ProviderSessionStartInput = Schema.Struct({
   threadId: ThreadId,
   provider: Schema.optional(ProviderDriverKind),
@@ -59,6 +101,10 @@ export const ProviderSessionStartInput = Schema.Struct({
   cwd: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),
   resumeCursor: Schema.optional(Schema.Unknown),
+  // Cross-driver handoff: provider-agnostic conversation rehydration used when
+  // there is no native `resumeCursor` for the target driver. Adapters inject it
+  // as a priming preamble on the first turn.
+  contextSeed: Schema.optional(ThreadContextSeed),
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
   sandboxMode: Schema.optional(ProviderSandboxMode),
   runtimeMode: RuntimeMode,

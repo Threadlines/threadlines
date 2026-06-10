@@ -360,6 +360,52 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.lastError).toBe("turn failed");
   });
 
+  it("ignores stale lifecycle events from a previous provider instance", async () => {
+    const harness = await createHarness();
+    const reboundAt = "2026-01-01T00:00:03.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-rebound-provider-instance"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "ready",
+          providerName: ProviderDriverKind.make("codex"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          updatedAt: reboundAt,
+          lastError: null,
+        },
+        createdAt: reboundAt,
+      }),
+    );
+
+    harness.emit({
+      type: "session.exited",
+      eventId: asEventId("evt-stale-claude-exited"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:04.000Z",
+      payload: {
+        reason: "stale provider stopped after handoff",
+        exitKind: "graceful",
+      },
+    });
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(thread?.session?.providerName).toBe("codex");
+    expect(thread?.session?.providerInstanceId).toBe("codex");
+    expect(thread?.session?.status).toBe("ready");
+    expect(thread?.session?.updatedAt).toBe(reboundAt);
+  });
+
   it("keeps pending turn startup visible until the provider turn starts", async () => {
     const harness = await createHarness();
     const requestedAt = "2026-01-01T00:00:01.000Z";
