@@ -19,8 +19,9 @@
   <body>
     <img id="icon" alt="" />
     <script>
-      const icon = new URLSearchParams(location.search).get("icon") || "minimal";
-      document.getElementById("icon").src = `threadlines-icon-${icon}-v3.svg`;
+      const variant = new URLSearchParams(location.search).get("variant") || "regular";
+      const file = variant === "small" ? "threadlines-icon-small.svg" : "threadlines-icon.svg";
+      document.getElementById("icon").src = `../svg/${file}`;
     </script>
   </body>
 </html>

@@ -6,13 +6,12 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-const root = import.meta.dirname;
-const pngDir = join(root, "png");
-const outDir = join(root, "dist-icons");
+const pngDir = join(import.meta.dirname, "..", "png");
+const outDir = join(import.meta.dirname, "..", "icons");
 mkdirSync(outDir, { recursive: true });
 
 function pngForSize(size: number): Buffer {
-  return readFileSync(join(pngDir, `threadlines-icon-minimal-${size}.png`));
+  return readFileSync(join(pngDir, `threadlines-icon-${size}.png`));
 }
 
 function buildIco(sizes: ReadonlyArray<number>): Buffer {

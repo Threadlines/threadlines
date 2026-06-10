@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="36 86 184 100" fill="none">
+  <!-- Bare nav/lockup glyph: the regular icon art without the squircle tile.
+       Inlined in apps/marketing Layout.astro (where the node uses the site's
+       accent CSS var); this standalone copy hardcodes the accent approximation. -->
+  <defs>
+    <linearGradient id="glyph-live" gradientUnits="userSpaceOnUse" x1="108" y1="98" x2="194" y2="162">
+      <stop offset="0" stop-color="#a1a1aa" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#6e94fa"/>
+    </linearGradient>
+  </defs>
+  <g stroke-linecap="round" stroke-width="10">
+    <path d="M 44 98 L 212 98" stroke="#ffffff" stroke-opacity="0.32"/>
+    <path d="M 108 98 C 134 98 134 162 160 162 L 188 162" stroke="url(#glyph-live)"/>
+  </g>
+  <g fill="#ffffff" fill-opacity="0.45">
+    <circle cx="70" cy="98" r="7"/>
+    <circle cx="108" cy="98" r="8.5"/>
+    <circle cx="178" cy="98" r="7"/>
+  </g>
+  <circle cx="194" cy="162" r="21" fill="#6e94fa" fill-opacity="0.16"/>
+  <circle cx="194" cy="162" r="12.5" fill="#6e94fa"/>
+</svg>

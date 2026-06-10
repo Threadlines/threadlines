@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>Threadlines — pattern-true logo mockups v3</title>
+    <title>Threadlines — brand sheet</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link
       href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;650;700&display=swap"
@@ -59,7 +59,7 @@
       .row {
         display: flex;
         align-items: center;
-        gap: 36px;
+        gap: 44px;
         flex-wrap: wrap;
       }
       .sizes {
@@ -80,10 +80,15 @@
       .lockup {
         display: flex;
         align-items: center;
-        gap: 14px;
+        gap: 11px;
+      }
+      .lockup .glyph {
+        height: 16px;
+        width: auto;
+        display: block;
       }
       .word {
-        font-size: 34px;
+        font-size: 30px;
         font-weight: 650;
         letter-spacing: -0.03em;
         line-height: 1;
@@ -92,10 +97,12 @@
         color: var(--accent);
         font-weight: 700;
       }
-      .word.cap {
-        letter-spacing: -0.02em;
+      .rule {
+        font-size: 12px;
+        color: var(--muted);
+        max-width: 260px;
+        line-height: 1.5;
       }
-      /* faux sidebar, matches app top-left */
       .sidebar {
         width: 248px;
         background: #0c0c0e;
@@ -109,6 +116,10 @@
         gap: 9px;
         padding: 12px 14px;
         border-bottom: 1px solid var(--border);
+      }
+      .sidebar-head img {
+        height: 13px;
+        width: auto;
       }
       .sidebar-head span {
         font-size: 13.5px;
@@ -138,73 +149,51 @@
     </style>
   </head>
   <body>
-    <h1>Threadlines — pattern-true logo mockups <span style="color: var(--faint)">v3</span></h1>
+    <h1>Threadlines — brand sheet</h1>
     <p class="sub">
-      Geometry lifted directly from the empty-state figure / marketing hero animation: main line ·
-      branch that merges back · live branch ending on the accent node.
+      One mark, drawn from the product: the empty-state thread graph. Main line, commit dots, and a
+      live branch ending on the accent node.
     </p>
 
     <section>
-      <div class="label">The source pattern (exact empty-state paths)</div>
+      <div class="label">The mark (exact empty-state paths)</div>
       <div class="card" style="display: flex; justify-content: center">
-        <img src="threadlines-mark-v3.svg" width="680" alt="" />
+        <img src="svg/threadlines-mark.svg" width="680" alt="" />
       </div>
     </section>
 
     <section>
-      <div class="label">
-        App icon — A · minimal (live branch only; ≤48 uses the small-size variant)
-      </div>
+      <div class="label">App icon — regular ≥64 · small variant ≤48</div>
       <div class="card sizes">
         <div class="size">
-          <img src="threadlines-icon-minimal-v3.svg" width="160" alt="" /><span>160</span>
+          <img src="svg/threadlines-icon.svg" width="160" alt="" /><span>160</span>
         </div>
         <div class="size">
-          <img src="threadlines-icon-minimal-v3.svg" width="96" alt="" /><span>96</span>
+          <img src="svg/threadlines-icon.svg" width="96" alt="" /><span>96</span>
         </div>
         <div class="size">
-          <img src="threadlines-icon-minimal-small-v3.svg" width="48" alt="" /><span>48</span>
+          <img src="svg/threadlines-icon-small.svg" width="48" alt="" /><span>48</span>
         </div>
         <div class="size">
-          <img src="threadlines-icon-minimal-small-v3.svg" width="32" alt="" /><span>32</span>
+          <img src="svg/threadlines-icon-small.svg" width="32" alt="" /><span>32</span>
         </div>
         <div class="size">
-          <img src="threadlines-icon-minimal-small-v3.svg" width="16" alt="" /><span>16</span>
+          <img src="svg/threadlines-icon-small.svg" width="16" alt="" /><span>16</span>
         </div>
       </div>
     </section>
 
     <section>
-      <div class="label">App icon — B · full graph (branch + merge + live)</div>
-      <div class="card sizes">
-        <div class="size">
-          <img src="threadlines-icon-full-v3.svg" width="160" alt="" /><span>160</span>
-        </div>
-        <div class="size">
-          <img src="threadlines-icon-full-v3.svg" width="96" alt="" /><span>96</span>
-        </div>
-        <div class="size">
-          <img src="threadlines-icon-full-v3.svg" width="48" alt="" /><span>48</span>
-        </div>
-        <div class="size">
-          <img src="threadlines-icon-full-v3.svg" width="32" alt="" /><span>32</span>
-        </div>
-        <div class="size">
-          <img src="threadlines-icon-full-v3.svg" width="16" alt="" /><span>16</span>
-        </div>
-      </div>
-    </section>
-
-    <section>
-      <div class="label">Lockups</div>
+      <div class="label">Wordmark — glyph or dot, never both</div>
       <div class="card row">
         <div class="lockup">
-          <img src="threadlines-icon-minimal-v3.svg" width="44" alt="" />
-          <div class="word">threadlines<span class="dot">.</span></div>
+          <img class="glyph" src="svg/threadlines-glyph.svg" alt="" />
+          <div class="word">threadlines</div>
         </div>
-        <div class="lockup">
-          <img src="threadlines-icon-full-v3.svg" width="44" alt="" />
-          <div class="word cap">Threadlines</div>
+        <div class="word">threadlines<span class="dot">.</span></div>
+        <div class="rule">
+          With the glyph, its node is the period. Standalone text keeps the accent period. In prose
+          and UI labels the name is capitalized: Threadlines.
         </div>
       </div>
     </section>
@@ -214,18 +203,7 @@
       <div class="card row">
         <div class="sidebar">
           <div class="sidebar-head">
-            <img src="threadlines-icon-minimal-v3.svg" width="20" alt="" />
-            <span>Threadlines</span>
-          </div>
-          <div class="sidebar-rows">
-            <div class="srow w1"></div>
-            <div class="srow w2"></div>
-            <div class="srow w3"></div>
-          </div>
-        </div>
-        <div class="sidebar">
-          <div class="sidebar-head">
-            <img src="threadlines-icon-full-v3.svg" width="20" alt="" />
+            <img src="svg/threadlines-glyph.svg" alt="" />
             <span>Threadlines</span>
           </div>
           <div class="sidebar-rows">

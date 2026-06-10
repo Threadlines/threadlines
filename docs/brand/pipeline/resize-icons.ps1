@@ -1,8 +1,11 @@
-# Downscale the 512px icon masters into the standard icon size set.
-# System.Drawing keeps the alpha channel as long as the target bitmap is 32bppArgb.
+# Downscale the 512/1024px icon masters into the standard icon size set.
+# Masters are produced by screenshotting export-icon.html with headless Edge at
+# 512/1024 (window sizes below ~128px hang or render blank, so never screenshot
+# small sizes directly; pass --force-device-scale-factor=1 or Windows display
+# scaling crops the shot).
 Add-Type -AssemblyName System.Drawing
 
-$dir = "C:\Users\Will\Desktop\Projects\badcode\docs\brand\threadlines-logo-mockups\png"
+$png = Join-Path $PSScriptRoot "..\png"
 
 function Resize-Png([string]$source, [string]$target, [int]$size) {
   $src = [System.Drawing.Image]::FromFile($source)
@@ -31,11 +34,11 @@ function Resize-Png([string]$source, [string]$target, [int]$size) {
 # 64+ keep the regular mark's proportions; 48 and below switch to the
 # small variant so the branch survives taskbar/favicon rendering.
 foreach ($size in 256, 128, 64) {
-  Resize-Png "$dir\threadlines-icon-minimal-512.png" "$dir\threadlines-icon-minimal-$size.png" $size
+  Resize-Png "$png\threadlines-icon-512.png" "$png\threadlines-icon-$size.png" $size
 }
 foreach ($size in 48, 32, 16) {
-  Resize-Png "$dir\threadlines-icon-minimal-small-512.png" "$dir\threadlines-icon-minimal-$size.png" $size
+  Resize-Png "$png\threadlines-icon-small-512.png" "$png\threadlines-icon-$size.png" $size
 }
 
 # Apple touch icon: opaque, 180px, from the opaque 1024 master.
-Resize-Png "$dir\threadlines-icon-minimal-1024-opaque.png" "$dir\threadlines-icon-minimal-apple-touch-180.png" 180
+Resize-Png "$png\threadlines-icon-1024-opaque.png" "$png\threadlines-icon-apple-touch-180.png" 180
