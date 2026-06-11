@@ -14,10 +14,7 @@ import { cn } from "~/lib/utils";
  * is happening right now. Limit to one per visible surface. Size it via
  * `className` (defaults to an 8px dot); the halo scales with the dot.
  */
-function LiveNode({
-  className,
-  ...props
-}: React.ComponentPropsWithoutRef<"span">) {
+function LiveNode({ className, ...props }: React.ComponentPropsWithoutRef<"span">) {
   return (
     <span
       aria-hidden="true"
@@ -72,10 +69,7 @@ function SectionTick({ className }: { className?: string }) {
  * in a list or rail. The parent needs `relative`; override the edge/offsets
  * via `className` (defaults to the left edge, vertically centered).
  */
-function CurrentMarker({
-  className,
-  ...props
-}: React.ComponentPropsWithoutRef<"span">) {
+function CurrentMarker({ className, ...props }: React.ComponentPropsWithoutRef<"span">) {
   return (
     <span
       aria-hidden="true"

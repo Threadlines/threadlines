@@ -361,7 +361,9 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   const orderedModels = useMemo(
     () =>
       listRows
-        .filter((row): row is Extract<ModelPickerListRow, { kind: "model" }> => row.kind === "model")
+        .filter(
+          (row): row is Extract<ModelPickerListRow, { kind: "model" }> => row.kind === "model",
+        )
         .map((row) => row.model),
     [listRows],
   );
@@ -671,7 +673,9 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                         preferShortName={!isLocked}
                         useTriggerLabel={lockedToSingleInstance}
                         jumpLabel={modelJumpLabelByKey.get(modelKey) ?? null}
-                        onToggleFavorite={() => toggleFavorite(row.model.instanceId, row.model.slug)}
+                        onToggleFavorite={() =>
+                          toggleFavorite(row.model.instanceId, row.model.slug)
+                        }
                       />
                     );
                   });
