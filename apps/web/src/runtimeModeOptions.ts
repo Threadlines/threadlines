@@ -25,7 +25,6 @@ interface RuntimeModePresentation {
   // does not), so the menu describes what the active driver will actually do.
   descriptionByDriver?: Partial<Record<string, string>>;
   icon: LucideIcon;
-  accentClassName?: string;
 }
 
 export const runtimeModeConfig: Record<RuntimeMode, RuntimeModePresentation> = {
@@ -56,7 +55,6 @@ export const runtimeModeConfig: Record<RuntimeMode, RuntimeModePresentation> = {
     label: "Full access",
     description: "No prompts or sandbox. Trusted repos only.",
     icon: LockOpenIcon,
-    accentClassName: "text-amber-600 dark:text-amber-400",
   },
 };
 
@@ -65,7 +63,6 @@ export interface RuntimeModeOption {
   label: string;
   description: string;
   icon: LucideIcon;
-  accentClassName?: string;
   disabled?: boolean;
   disabledReason?: string;
 }
@@ -86,18 +83,16 @@ export function deriveRuntimeModeOptions(input: {
   return providerModes.map((mode) => {
     const presentation = runtimeModeConfig[mode];
     const disabled = modelUnsupported.includes(mode);
-    return {
+    const option: RuntimeModeOption = {
       mode,
       label: presentation.label,
       description: presentation.descriptionByDriver?.[input.provider] ?? presentation.description,
       icon: presentation.icon,
-      ...(presentation.accentClassName ? { accentClassName: presentation.accentClassName } : {}),
-      ...(disabled
-        ? {
-            disabled: true,
-            disabledReason: `Not supported by ${input.modelName ?? "this model"}.`,
-          }
-        : {}),
     };
+    if (disabled) {
+      option.disabled = true;
+      option.disabledReason = `Not supported by ${input.modelName ?? "this model"}.`;
+    }
+    return option;
   });
 }
