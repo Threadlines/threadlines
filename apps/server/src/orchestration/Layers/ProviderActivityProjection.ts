@@ -393,6 +393,9 @@ export function projectRuntimeEventToActivities(
           payload: {
             message: truncateDetail(event.payload.message),
             ...(event.payload.detail !== undefined ? { detail: event.payload.detail } : {}),
+            ...(event.payload.warningKind !== undefined
+              ? { warningKind: event.payload.warningKind }
+              : {}),
           },
         }),
       ];

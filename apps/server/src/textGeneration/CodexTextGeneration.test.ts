@@ -46,6 +46,8 @@ function makeFakeCodexBinary(
     forbidFastServiceTier?: boolean;
     requireIgnoreRules?: boolean;
     forbidIgnoreRules?: boolean;
+    requireIgnoreUserConfig?: boolean;
+    rejectIgnoreUserConfigFlag?: boolean;
     requireReasoningEffort?: string;
     forbidReasoningEffort?: boolean;
     requireModel?: string;
@@ -86,6 +88,8 @@ function makeFakeCodexBinary(
             forbidFastServiceTier: input.forbidFastServiceTier === true,
             requireIgnoreRules: input.requireIgnoreRules === true,
             forbidIgnoreRules: input.forbidIgnoreRules === true,
+            requireIgnoreUserConfig: input.requireIgnoreUserConfig === true,
+            rejectIgnoreUserConfigFlag: input.rejectIgnoreUserConfigFlag === true,
             requireReasoningEffort: input.requireReasoningEffort ?? null,
             forbidReasoningEffort: input.forbidReasoningEffort === true,
             requireModel: input.requireModel ?? null,
@@ -100,12 +104,17 @@ function makeFakeCodexBinary(
           "let seenImage = false;",
           "let seenFastServiceTier = false;",
           "let seenIgnoreRules = false;",
+          "let seenIgnoreUserConfig = false;",
           'let seenReasoningEffort = "";',
           'let seenModel = "";',
           "for (let index = 0; index < argv.length; index += 1) {",
           "  const arg = argv[index];",
           '  if (arg === "--ignore-rules") {',
           "    seenIgnoreRules = true;",
+          "    continue;",
+          "  }",
+          '  if (arg === "--ignore-user-config") {',
+          "    seenIgnoreUserConfig = true;",
           "    continue;",
           "  }",
           '  if (arg === "--model") {',
@@ -142,6 +151,14 @@ function makeFakeCodexBinary(
           "  }",
           "}",
           'const stdinContent = fs.readFileSync(0, "utf8");',
+          "if (fake.rejectIgnoreUserConfigFlag && seenIgnoreUserConfig) {",
+          "  process.stderr.write(\"error: unexpected argument '--ignore-user-config' found\\n\");",
+          "  process.exit(2);",
+          "}",
+          "if (fake.requireIgnoreUserConfig && !seenIgnoreUserConfig) {",
+          '  process.stderr.write("missing --ignore-user-config\\n");',
+          "  process.exit(12);",
+          "}",
           "if (fake.failForModel && seenModel === fake.failForModel) {",
           "  process.stderr.write(fake.failForModelStderr);",
           "  process.exit(fake.failForModelExitCode);",
@@ -255,11 +272,17 @@ function makeFakeCodexBinary(
         'seen_image="0"',
         'seen_fast_service_tier="0"',
         'seen_ignore_rules="0"',
+        'seen_ignore_user_config="0"',
         'seen_reasoning_effort=""',
         'seen_model=""',
         "while [ $# -gt 0 ]; do",
         '  if [ "$1" = "--ignore-rules" ]; then',
         '    seen_ignore_rules="1"',
+        "    shift",
+        "    continue",
+        "  fi",
+        '  if [ "$1" = "--ignore-user-config" ]; then',
+        '    seen_ignore_user_config="1"',
         "    shift",
         "    continue",
         "  fi",
@@ -299,6 +322,22 @@ function makeFakeCodexBinary(
         "  shift",
         "done",
         'stdin_content="$(cat)"',
+        ...(input.rejectIgnoreUserConfigFlag
+          ? [
+              'if [ "$seen_ignore_user_config" = "1" ]; then',
+              "  printf \"%s\\n\" \"error: unexpected argument '--ignore-user-config' found\" >&2",
+              "  exit 2",
+              "fi",
+            ]
+          : []),
+        ...(input.requireIgnoreUserConfig
+          ? [
+              'if [ "$seen_ignore_user_config" != "1" ]; then',
+              '  printf "%s\\n" "missing --ignore-user-config" >&2',
+              `  exit 12`,
+              "fi",
+            ]
+          : []),
         ...(input.failForModel !== undefined
           ? [
               // @effect-diagnostics-next-line preferSchemaOverJson:off
@@ -422,6 +461,8 @@ function withFakeCodexEnv<A, E, R>(
     forbidFastServiceTier?: boolean;
     requireIgnoreRules?: boolean;
     forbidIgnoreRules?: boolean;
+    requireIgnoreUserConfig?: boolean;
+    rejectIgnoreUserConfigFlag?: boolean;
     requireReasoningEffort?: string;
     forbidReasoningEffort?: boolean;
     requireModel?: string;
@@ -681,6 +722,48 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
           });
 
           expect(generated.branch).toBe("feat/session");
+        }),
+    ),
+  );
+
+  it.effect("isolates one-shot generation from user config via --ignore-user-config", () =>
+    withFakeCodexEnv(
+      {
+        output: JSON.stringify({
+          title: "Investigate reconnect regressions",
+        }),
+        requireIgnoreUserConfig: true,
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const generated = yield* textGeneration.generateThreadTitle({
+            cwd: process.cwd(),
+            message: "Please investigate websocket reconnect regressions.",
+            modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+          });
+
+          expect(generated.title).toBe("Investigate reconnect regressions");
+        }),
+    ),
+  );
+
+  it.effect("retries without --ignore-user-config when the codex CLI rejects the flag", () =>
+    withFakeCodexEnv(
+      {
+        output: JSON.stringify({
+          title: "Investigate reconnect regressions",
+        }),
+        rejectIgnoreUserConfigFlag: true,
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const generated = yield* textGeneration.generateThreadTitle({
+            cwd: process.cwd(),
+            message: "Please investigate websocket reconnect regressions.",
+            modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+          });
+
+          expect(generated.title).toBe("Investigate reconnect regressions");
         }),
     ),
   );

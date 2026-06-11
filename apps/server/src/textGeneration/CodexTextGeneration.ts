@@ -40,8 +40,12 @@ import {
 
 const CODEX_GIT_TEXT_GENERATION_REASONING_EFFORT = "low";
 const CODEX_DEFAULT_TIMEOUT_MS = 180_000;
-const CODEX_COMMIT_MESSAGE_TIMEOUT_MS = 60_000;
-const CODEX_THREAD_TITLE_TIMEOUT_MS = 30_000;
+// Identical commit prompts have been observed taking 11s-42s wall time
+// (server-side queue variance), so 60s left too little tail headroom.
+const CODEX_COMMIT_MESSAGE_TIMEOUT_MS = 120_000;
+// Codex one-shot responses have been observed to take 15-20s even for tiny
+// prompts (server-side floor), so the title budget needs tail headroom.
+const CODEX_THREAD_TITLE_TIMEOUT_MS = 90_000;
 const encodeJsonString = Schema.encodeEffect(Schema.UnknownFromJsonString);
 
 type CodexTextGenerationOperation =
@@ -65,6 +69,14 @@ function isCodexModelCapacityError(error: TextGenerationError): boolean {
   return (
     detail.includes("selected model is at capacity") ||
     (detail.includes("model is at capacity") && detail.includes("try a different model"))
+  );
+}
+
+function isUnsupportedIgnoreUserConfigFlagError(error: TextGenerationError): boolean {
+  const detail = error.detail.toLowerCase();
+  return (
+    detail.includes("--ignore-user-config") &&
+    (detail.includes("unexpected argument") || detail.includes("wasn't expected"))
   );
 }
 
@@ -214,7 +226,9 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     const schemaPath = yield* writeTempFile(operation, "codex-schema", schemaJson);
     const outputPath = yield* writeTempFile(operation, "codex-output", "");
 
-    const runCodexCommand = Effect.fn("runCodexJson.runCodexCommand")(function* () {
+    const runCodexCommand = Effect.fn("runCodexJson.runCodexCommand")(function* (options: {
+      readonly ignoreUserConfig: boolean;
+    }) {
       const reasoningEffort =
         getModelSelectionStringOptionValue(modelSelection, "reasoningEffort") ??
         CODEX_GIT_TEXT_GENERATION_REASONING_EFFORT;
@@ -223,6 +237,10 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
         [
           "exec",
           "--ephemeral",
+          // One-shot text generation should not inherit agent-oriented user
+          // config (MCP servers, notify hooks, memories) from
+          // $CODEX_HOME/config.toml; auth still uses CODEX_HOME.
+          ...(options.ignoreUserConfig ? ["--ignore-user-config"] : []),
           "--skip-git-repo-check",
           ...(operation === "generateCommitMessage" ? ["--ignore-rules"] : []),
           "-s",
@@ -297,8 +315,16 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     ).pipe(Effect.asVoid);
 
     return yield* Effect.gen(function* () {
-      yield* runCodexCommand().pipe(
+      yield* runCodexCommand({ ignoreUserConfig: true }).pipe(
         Effect.scoped,
+        Effect.catchIf(isUnsupportedIgnoreUserConfigFlagError, () =>
+          Effect.logWarning(
+            "Codex CLI does not support --ignore-user-config; retrying without it",
+            { operation },
+          ).pipe(
+            Effect.andThen(runCodexCommand({ ignoreUserConfig: false }).pipe(Effect.scoped)),
+          ),
+        ),
         Effect.timeoutOption(timeoutMs),
         Effect.flatMap(
           Option.match({

@@ -35,10 +35,12 @@ function SectionLabel({
   as: Comp = "div",
   className,
   children,
+  icon,
   tick = true,
   ...props
 }: React.ComponentPropsWithoutRef<"div"> & {
   as?: "div" | "span" | "h2" | "h3" | "h4";
+  icon?: React.ReactNode;
   tick?: boolean;
 }) {
   return (
@@ -50,6 +52,7 @@ function SectionLabel({
       )}
     >
       {tick ? <SectionTick /> : null}
+      {icon ?? null}
       <span className="min-w-0 truncate">{children}</span>
     </Comp>
   );

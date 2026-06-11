@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { watch } from "node:fs";
+import { unwatchFile, watch, watchFile } from "node:fs";
 import { join } from "node:path";
 
 import { desktopDir, resolveElectronPath } from "./electron-launcher.mjs";
@@ -28,6 +28,7 @@ const watchedDirectories = [
 const forcedShutdownTimeoutMs = 1_500;
 const restartDebounceMs = 120;
 const childTreeGracePeriodMs = 1_200;
+const watchPollIntervalMs = 500;
 
 await waitForResources({
   baseDir: desktopDir,
@@ -45,9 +46,22 @@ let currentApp = null;
 let restartQueue = Promise.resolve();
 const expectedExits = new WeakSet();
 const watchers = [];
+const polledFiles = [];
 
 function killChildTreeByPid(pid, signal) {
-  if (process.platform === "win32" || typeof pid !== "number") {
+  if (typeof pid !== "number") {
+    return;
+  }
+
+  if (process.platform === "win32") {
+    // taskkill /T takes the whole tree (incl. the spawned server); /F is
+    // the force-kill analogue of KILL. Without /T, killing the Electron
+    // main orphans the backend it spawned.
+    spawnSync(
+      "taskkill",
+      signal === "KILL" ? ["/PID", String(pid), "/T", "/F"] : ["/PID", String(pid), "/T"],
+      { stdio: "ignore" },
+    );
     return;
   }
 
@@ -55,11 +69,25 @@ function killChildTreeByPid(pid, signal) {
 }
 
 function cleanupStaleDevApps() {
+  const needle = `--t3code-dev-root=${desktopDir}`;
+
   if (process.platform === "win32") {
+    // Match only Electron mains carrying our dev-root flag, then take each
+    // tree down so their spawned servers go with them.
+    const escapedNeedle = needle.replaceAll("'", "''");
+    spawnSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-Command",
+        `Get-CimInstance Win32_Process -Filter "Name = 'electron.exe'" | Where-Object { $_.CommandLine -like '*${escapedNeedle}*' } | ForEach-Object { taskkill /PID $_.ProcessId /T /F } | Out-Null`,
+      ],
+      { stdio: "ignore" },
+    );
     return;
   }
 
-  spawnSync("pkill", ["-f", "--", `--t3code-dev-root=${desktopDir}`], { stdio: "ignore" });
+  spawnSync("pkill", ["-f", "--", needle], { stdio: "ignore" });
 }
 
 function startApp() {
@@ -123,16 +151,28 @@ async function stopApp() {
     };
 
     app.once("exit", finish);
-    app.kill("SIGTERM");
-    killChildTreeByPid(app.pid, "TERM");
+    if (process.platform === "win32") {
+      // Tree first: once the root is gone, Windows reparents its children
+      // and /T can no longer reach them.
+      killChildTreeByPid(app.pid, "TERM");
+      app.kill("SIGTERM");
+    } else {
+      app.kill("SIGTERM");
+      killChildTreeByPid(app.pid, "TERM");
+    }
 
     setTimeout(() => {
       if (settled) {
         return;
       }
 
-      app.kill("SIGKILL");
-      killChildTreeByPid(app.pid, "KILL");
+      if (process.platform === "win32") {
+        killChildTreeByPid(app.pid, "KILL");
+        app.kill("SIGKILL");
+      } else {
+        app.kill("SIGKILL");
+        killChildTreeByPid(app.pid, "KILL");
+      }
       finish();
     }, forcedShutdownTimeoutMs).unref();
   });
@@ -162,17 +202,39 @@ function scheduleRestart() {
 
 function startWatchers() {
   for (const { directory, files } of watchedDirectories) {
-    const watcher = watch(
-      join(desktopDir, directory),
-      { persistent: true },
-      (_eventType, filename) => {
-        if (typeof filename !== "string" || !files.has(filename)) {
-          return;
-        }
+    const directoryPath = join(desktopDir, directory);
 
-        scheduleRestart();
-      },
-    );
+    if (process.platform === "win32") {
+      // fs.watch on Windows misses atomic-rename bundle writes (events
+      // arrive with a null filename or the directory handle goes stale),
+      // which left rebuilt bundles running stale. Poll the exact files
+      // instead; a restart is heavyweight anyway, so the added latency
+      // is irrelevant.
+      for (const file of files) {
+        const filePath = join(directoryPath, file);
+        watchFile(filePath, { interval: watchPollIntervalMs }, (current, previous) => {
+          const fileMissing = current.mtimeMs === 0;
+          const unchanged =
+            current.mtimeMs === previous.mtimeMs && current.size === previous.size;
+          if (fileMissing || unchanged) {
+            return;
+          }
+          scheduleRestart();
+        });
+        polledFiles.push(filePath);
+      }
+      continue;
+    }
+
+    const watcher = watch(directoryPath, { persistent: true }, (_eventType, filename) => {
+      // A null filename means "something in this directory changed";
+      // restarting spuriously beats running a stale bundle.
+      if (typeof filename === "string" && !files.has(filename)) {
+        return;
+      }
+
+      scheduleRestart();
+    });
 
     watchers.push(watcher);
   }
@@ -198,6 +260,9 @@ async function shutdown(exitCode) {
 
   for (const watcher of watchers) {
     watcher.close();
+  }
+  for (const filePath of polledFiles) {
+    unwatchFile(filePath);
   }
 
   await stopApp();

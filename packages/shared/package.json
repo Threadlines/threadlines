@@ -55,6 +55,10 @@
       "types": "./src/toolActivity.ts",
       "import": "./src/toolActivity.ts"
     },
+    "./diffStats": {
+      "types": "./src/diffStats.ts",
+      "import": "./src/diffStats.ts"
+    },
     "./contextSeed": {
       "types": "./src/contextSeed.ts",
       "import": "./src/contextSeed.ts"

@@ -8,6 +8,7 @@
  */
 import {
   type CanUseTool,
+  type HookCallback,
   query,
   type Options as ClaudeQueryOptions,
   type PermissionMode,
@@ -64,6 +65,8 @@ import * as Random from "effect/Random";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+
+import { countStructuredPatchStats, type FileChangeStat } from "@t3tools/shared/diffStats";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
@@ -184,6 +187,9 @@ interface ClaudeSessionContext {
     items: Array<unknown>;
   }>;
   readonly inFlightTools: Map<number, ToolInFlight>;
+  /** Per-file +/- counts captured by the PostToolUse hook, keyed by tool_use_id.
+   *  Consumed when the matching tool_result is emitted. */
+  readonly fileChangeStatsByToolUseId: Map<string, FileChangeStat>;
   readonly tasks: Map<string, ClaudeTaskSnapshot>;
   turnState: ClaudeTurnState | undefined;
   lastKnownContextWindow: number | undefined;
@@ -558,6 +564,16 @@ function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState | undef
 
 function classifyToolItemType(toolName: string): CanonicalItemType {
   const normalized = toolName.toLowerCase();
+  // MCP tools first: an MCP tool named e.g. `mcp__fs__write_file` must not
+  // fall into the file-change keyword bucket below.
+  if (normalized.startsWith("mcp__") || normalized.includes("mcp")) {
+    return "mcp_tool_call";
+  }
+  // TodoWrite is a planning surface, not a workspace file change, despite
+  // the "write" in its name.
+  if (isTodoTool(normalized)) {
+    return "dynamic_tool_call";
+  }
   if (normalized.includes("agent")) {
     return "collab_agent_tool_call";
   }
@@ -587,9 +603,6 @@ function classifyToolItemType(toolName: string): CanonicalItemType {
     normalized.includes("delete")
   ) {
     return "file_change";
-  }
-  if (normalized.includes("mcp")) {
-    return "mcp_tool_call";
   }
   if (normalized.includes("websearch") || normalized.includes("web search")) {
     return "web_search";
@@ -707,15 +720,177 @@ function describeClaudeTaskStatus(status: ClaudeTaskStatus | undefined): string 
   }
 }
 
-function summarizeToolRequest(toolName: string, input: Record<string, unknown>): string {
-  const commandValue = input.command ?? input.cmd;
-  const command = typeof commandValue === "string" ? commandValue : undefined;
-  if (command && command.trim().length > 0) {
-    return `${toolName}: ${command.trim().slice(0, 400)}`;
+/** Strips the workspace root from absolute paths so activity rows read
+ *  `apps/web/src/...` instead of `C:\Users\...`. Comparison is
+ *  case-insensitive to cover Windows paths. */
+function relativizePathForDisplay(value: string, cwd: string | undefined): string {
+  if (!cwd) {
+    return value;
+  }
+  const normalizedValue = value.replaceAll("\\", "/");
+  const normalizedCwd = cwd.replaceAll("\\", "/").replace(/\/+$/, "");
+  if (
+    normalizedCwd.length > 0 &&
+    normalizedValue.toLowerCase().startsWith(`${normalizedCwd.toLowerCase()}/`)
+  ) {
+    return normalizedValue.slice(normalizedCwd.length + 1);
+  }
+  return value;
+}
+
+function isMcpToolName(toolName: string): boolean {
+  return toolName.toLowerCase().startsWith("mcp__");
+}
+
+/** `mcp__linear__create_issue` → `linear · create_issue`. */
+function formatMcpToolDisplayName(toolName: string): string {
+  const segments = toolName.split("__").filter((segment) => segment.length > 0);
+  if (segments.length >= 3 && segments[0]?.toLowerCase() === "mcp") {
+    return `${segments[1]} · ${segments.slice(2).join("__")}`;
+  }
+  return toolName;
+}
+
+function summarizeTodoInput(input: Record<string, unknown>): string | undefined {
+  const steps = extractPlanStepsFromTodoInput(input);
+  if (!steps || steps.length === 0) {
+    return undefined;
+  }
+  const active = steps.find((step) => step.status === "inProgress");
+  const completed = steps.filter((step) => step.status === "completed").length;
+  const progress = `${completed}/${steps.length}`;
+  return active ? `${progress} · ${active.step}` : `${progress} done`;
+}
+
+/** Compact `key=value` preview for tools without a dedicated summary. */
+function summarizeGenericToolArguments(input: Record<string, unknown>): string | undefined {
+  const parts: string[] = [];
+  for (const key of [
+    "url",
+    "uri",
+    "path",
+    "file_path",
+    "filePath",
+    "query",
+    "pattern",
+    "command",
+    "skill",
+    "name",
+    "id",
+    "task_id",
+    "shell_id",
+    "description",
+    "prompt",
+    "text",
+  ]) {
+    const value = input[key];
+    if (typeof value !== "string" || value.trim().length === 0) {
+      continue;
+    }
+    const compact = value.trim().replace(/\s+/gu, " ");
+    parts.push(`${key}=${compact.length > 64 ? `${compact.slice(0, 63)}…` : compact}`);
+    if (parts.length >= 2) {
+      break;
+    }
+  }
+  return parts.length > 0 ? parts.join(" ") : undefined;
+}
+
+function summarizeToolRequest(
+  toolName: string,
+  input: Record<string, unknown>,
+  options?: { readonly cwd?: string | undefined },
+): string {
+  const cwd = options?.cwd;
+  const text = nonEmptyString;
+  const displayPath = (value: unknown): string | undefined => {
+    const trimmed = text(value);
+    return trimmed ? relativizePathForDisplay(trimmed, cwd) : undefined;
+  };
+
+  const itemType = classifyToolItemType(toolName);
+  const command = text(input.command ?? input.cmd);
+  if (command && itemType === "command_execution") {
+    return command.slice(0, 400);
+  }
+
+  switch (toolName.toLowerCase()) {
+    case "read":
+    case "edit":
+    case "write": {
+      const path = displayPath(input.file_path ?? input.filePath ?? input.path);
+      if (path) {
+        return path;
+      }
+      break;
+    }
+    case "notebookedit": {
+      const path = displayPath(input.notebook_path);
+      if (path) {
+        return path;
+      }
+      break;
+    }
+    case "glob":
+    case "grep": {
+      const pattern = text(input.pattern);
+      const scope = displayPath(input.path) ?? text(input.glob);
+      if (pattern) {
+        return scope ? `${pattern} in ${scope}` : pattern;
+      }
+      break;
+    }
+    case "webfetch": {
+      const url = text(input.url);
+      if (url) {
+        return url;
+      }
+      break;
+    }
+    case "websearch":
+    case "toolsearch": {
+      const query = text(input.query);
+      if (query) {
+        return query;
+      }
+      break;
+    }
+    case "skill": {
+      const skill = text(input.skill);
+      const args = text(input.args);
+      if (skill) {
+        return args ? `${skill}: ${args.slice(0, 200)}` : skill;
+      }
+      break;
+    }
+    case "todowrite": {
+      const todoSummary = summarizeTodoInput(input);
+      if (todoSummary) {
+        return todoSummary;
+      }
+      break;
+    }
+    case "askuserquestion": {
+      const questions = Array.isArray(input.questions) ? input.questions : [];
+      const first = questions[0];
+      const question =
+        first && typeof first === "object"
+          ? text((first as Record<string, unknown>).question)
+          : undefined;
+      if (question) {
+        return question.slice(0, 200);
+      }
+      break;
+    }
+    case "exitplanmode":
+      // The `ExitPlanMode:` prefix is load-bearing: the web client filters
+      // these rows out of the work log by matching it.
+      return "ExitPlanMode: plan proposed";
+    default:
+      break;
   }
 
   // For agent/subagent tools, prefer human-readable description or prompt over raw JSON
-  const itemType = classifyToolItemType(toolName);
   if (itemType === "collab_agent_tool_call") {
     const description =
       typeof input.description === "string" ? input.description.trim() : undefined;
@@ -728,11 +903,26 @@ function summarizeToolRequest(toolName: string, input: Record<string, unknown>):
     }
   }
 
+  if (isMcpToolName(toolName)) {
+    const displayName = formatMcpToolDisplayName(toolName);
+    const argumentSummary = summarizeGenericToolArguments(input);
+    return argumentSummary ? `${displayName}: ${argumentSummary}` : displayName;
+  }
+
+  const argumentSummary = summarizeGenericToolArguments(input);
+  if (argumentSummary) {
+    return `${toolName}: ${argumentSummary}`;
+  }
+
+  if (Object.keys(input).length === 0) {
+    return toolName;
+  }
+
   const serialized = encodeJsonStringForDiagnostics(input) ?? "[unserializable input]";
-  if (serialized.length <= 400) {
+  if (serialized.length <= 200) {
     return `${toolName}: ${serialized}`;
   }
-  return `${toolName}: ${serialized.slice(0, 397)}...`;
+  return `${toolName}: ${serialized.slice(0, 197)}...`;
 }
 
 function titleForTool(itemType: CanonicalItemType): string {
@@ -754,6 +944,128 @@ function titleForTool(itemType: CanonicalItemType): string {
     default:
       return "Item";
   }
+}
+
+/** Friendly titles for Claude Code's built-in tools; the generic item-type
+ *  title is only a fallback. The web client keys row headings off these
+ *  (e.g. "Read file" renders as "Read <basename>"). */
+function titleForToolName(toolName: string, itemType: CanonicalItemType): string {
+  switch (toolName.toLowerCase()) {
+    case "read":
+      return "Read file";
+    case "glob":
+    case "grep":
+      return "Search";
+    case "toolsearch":
+      return "Tool search";
+    case "webfetch":
+      return "Web fetch";
+    case "todowrite":
+      return "Update todos";
+    case "skill":
+      return "Skill";
+    case "askuserquestion":
+      return "Question";
+    case "enterplanmode":
+    case "exitplanmode":
+      return "Plan";
+    default:
+      return titleForTool(itemType);
+  }
+}
+
+/** Renders an SDK `api_retry` system message as a short status line, e.g.
+ *  "Claude API rate limited, retrying in 4s (attempt 2/10)". */
+function describeApiRetry(message: unknown): string {
+  const record =
+    message && typeof message === "object" ? (message as Record<string, unknown>) : {};
+  const status = typeof record.error_status === "number" ? record.error_status : null;
+  const reason =
+    status === 429
+      ? "Claude API rate limited"
+      : status === 529
+        ? "Claude API overloaded"
+        : status !== null
+          ? `Claude API error ${status}`
+          : "Claude API connection issue";
+  const delayMs = typeof record.retry_delay_ms === "number" ? record.retry_delay_ms : undefined;
+  const delay =
+    delayMs !== undefined
+      ? `, retrying in ${Math.max(1, Math.round(delayMs / 1000))}s`
+      : ", retrying";
+  const attempt = typeof record.attempt === "number" ? record.attempt : undefined;
+  const maxRetries = typeof record.max_retries === "number" ? record.max_retries : undefined;
+  const attempts =
+    attempt !== undefined && maxRetries !== undefined ? ` (attempt ${attempt}/${maxRetries})` : "";
+  return `${reason}${delay}${attempts}`;
+}
+
+/**
+ * Derives per-file +/- counts from a PostToolUse hook payload for the
+ * built-in file tools. `structuredPatch` is the exact diff of the single
+ * edit; `gitDiff` (working-tree relative) is only a fallback.
+ */
+function fileChangeStatFromHookInput(hookInput: unknown): FileChangeStat | null {
+  if (!hookInput || typeof hookInput !== "object") {
+    return null;
+  }
+  const record = hookInput as Record<string, unknown>;
+  if (record.hook_event_name !== "PostToolUse") {
+    return null;
+  }
+  const response =
+    record.tool_response && typeof record.tool_response === "object"
+      ? (record.tool_response as Record<string, unknown>)
+      : null;
+  if (!response) {
+    return null;
+  }
+  const toolInput =
+    record.tool_input && typeof record.tool_input === "object"
+      ? (record.tool_input as Record<string, unknown>)
+      : {};
+
+  const pathCandidates = [
+    response.filePath,
+    response.notebook_path,
+    toolInput.file_path,
+    toolInput.notebook_path,
+  ];
+  const path = pathCandidates.find(
+    (candidate): candidate is string => typeof candidate === "string" && candidate.length > 0,
+  );
+  if (!path) {
+    return null;
+  }
+
+  const kind: FileChangeStat["kind"] =
+    response.type === "create" || response.originalFile === null ? "add" : "update";
+
+  const patchStats = countStructuredPatchStats(response.structuredPatch);
+  if (patchStats) {
+    return { path, kind, ...patchStats };
+  }
+
+  const gitDiff =
+    response.gitDiff && typeof response.gitDiff === "object"
+      ? (response.gitDiff as Record<string, unknown>)
+      : null;
+  if (
+    gitDiff &&
+    typeof gitDiff.additions === "number" &&
+    Number.isFinite(gitDiff.additions) &&
+    typeof gitDiff.deletions === "number" &&
+    Number.isFinite(gitDiff.deletions)
+  ) {
+    return {
+      path,
+      kind: gitDiff.status === "added" ? "add" : "update",
+      additions: gitDiff.additions,
+      deletions: gitDiff.deletions,
+    };
+  }
+
+  return null;
 }
 
 const SUPPORTED_CLAUDE_IMAGE_MIME_TYPES = new Set([
@@ -1525,6 +1837,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     context: ClaudeSessionContext,
     message: string,
     detail?: unknown,
+    options?: { readonly warningKind?: string },
   ) {
     const turnState = context.turnState;
     const stamp = yield* makeEventStamp();
@@ -1538,6 +1851,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       payload: {
         message,
         ...(detail !== undefined ? { detail } : {}),
+        ...(options?.warningKind !== undefined ? { warningKind: options.warningKind } : {}),
       },
       providerRefs: nativeProviderRefs(context),
     });
@@ -1707,6 +2021,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
     for (const [index, tool] of context.inFlightTools.entries()) {
       const toolStamp = yield* makeEventStamp();
+      const fileChangeStat = context.fileChangeStatsByToolUseId.get(tool.itemId);
       yield* offerRuntimeEvent({
         type: "item.completed",
         eventId: toolStamp.eventId,
@@ -1723,6 +2038,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           data: {
             toolName: tool.toolName,
             input: tool.input,
+            ...(fileChangeStat ? { changes: [fileChangeStat] } : {}),
           },
         },
         providerRefs: nativeProviderRefs(context, {
@@ -1738,6 +2054,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
     // Clear any remaining stale entries (e.g. from interrupted content blocks)
     context.inFlightTools.clear();
+    context.fileChangeStatsByToolUseId.clear();
 
     for (const block of turnState.assistantTextBlockOrder) {
       yield* completeAssistantTextBlock(context, block, {
@@ -1875,7 +2192,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
         const partialInputJson = tool.partialInputJson + event.delta.partial_json;
         const parsedInput = tryParseJsonRecord(partialInputJson);
-        const detail = parsedInput ? summarizeToolRequest(tool.toolName, parsedInput) : tool.detail;
+        const detail = parsedInput
+          ? summarizeToolRequest(tool.toolName, parsedInput, { cwd: context.session.cwd })
+          : tool.detail;
         let nextTool: ToolInFlight = {
           ...tool,
           partialInputJson,
@@ -1986,7 +2305,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ? (block.input as Record<string, unknown>)
           : {};
       const itemId = block.id;
-      const detail = summarizeToolRequest(toolName, toolInput);
+      const detail = summarizeToolRequest(toolName, toolInput, { cwd: context.session.cwd });
       const inputFingerprint =
         Object.keys(toolInput).length > 0 ? toolInputFingerprint(toolInput) : undefined;
 
@@ -1994,7 +2313,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         itemId,
         itemType,
         toolName,
-        title: titleForTool(itemType),
+        title: titleForToolName(toolName, itemType),
         detail,
         input: toolInput,
         partialInputJson: "",
@@ -2073,10 +2392,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
       const [index, tool] = toolEntry;
       const itemStatus = toolResult.isError ? "failed" : "completed";
+      const fileChangeStat = context.fileChangeStatsByToolUseId.get(toolResult.toolUseId);
+      context.fileChangeStatsByToolUseId.delete(toolResult.toolUseId);
       const toolData = {
         toolName: tool.toolName,
         input: tool.input,
         result: toolResult.block,
+        ...(fileChangeStat ? { changes: [fileChangeStat] } : {}),
       };
 
       const updatedStamp = yield* makeEventStamp();
@@ -2516,10 +2838,34 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         yield* emitRuntimeError(context, `Claude workspace mirror error: ${detail}`, message);
         return;
       }
-      default:
+      case "api_retry": {
+        yield* emitRuntimeWarning(context, describeApiRetry(message), message, {
+          warningKind: "api-retry",
+        });
+        return;
+      }
+      case "model_refusal_fallback":
         yield* emitRuntimeWarning(
           context,
-          `Unhandled Claude system message subtype '${message.subtype}'.`,
+          "Claude substituted a fallback response after a refusal.",
+          message,
+        );
+        return;
+      // SDK bookkeeping with no user-facing activity. Notifications and
+      // elicitations surface through the approval/user-input flows instead.
+      case "commands_changed":
+      case "elicitation_complete":
+      case "local_command_output":
+      case "memory_recall":
+      case "notification":
+      case "plugin_install":
+      case "session_state_changed":
+        return;
+      default:
+        // Exhaustive today; newer SDKs may add subtypes we don't know yet.
+        yield* emitRuntimeWarning(
+          context,
+          `Unhandled Claude system message subtype '${(message as { subtype?: string }).subtype ?? "unknown"}'.`,
           message,
         );
         return;
@@ -2842,6 +3188,22 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const pendingApprovals = new Map<ApprovalRequestId, PendingApproval>();
       const pendingUserInputs = new Map<ApprovalRequestId, PendingUserInput>();
       const inFlightTools = new Map<number, ToolInFlight>();
+      const fileChangeStatsByToolUseId = new Map<string, FileChangeStat>();
+
+      // Capture exact per-edit diff stats from the file tools' structured
+      // output; the hook resolves before the SDK streams the matching
+      // tool_result, so the stats are ready when the item events go out.
+      const recordFileChangeStats: HookCallback = (hookInput, toolUseID) => {
+        const stat = fileChangeStatFromHookInput(hookInput);
+        const toolUseId =
+          typeof (hookInput as { tool_use_id?: unknown }).tool_use_id === "string"
+            ? ((hookInput as { tool_use_id: string }).tool_use_id ?? toolUseID)
+            : toolUseID;
+        if (stat && toolUseId) {
+          fileChangeStatsByToolUseId.set(toolUseId, stat);
+        }
+        return Promise.resolve({});
+      };
 
       const contextRef = yield* Ref.make<ClaudeSessionContext | undefined>(undefined);
 
@@ -3029,7 +3391,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
         const requestId = ApprovalRequestId.make(yield* Random.nextUUIDv4);
         const requestType = classifyRequestType(toolName);
-        const detail = summarizeToolRequest(toolName, toolInput);
+        const detail = summarizeToolRequest(toolName, toolInput, { cwd: input.cwd });
         const decisionDeferred = yield* Deferred.make<ProviderApprovalDecision>();
         const pendingApproval: PendingApproval = {
           requestType,
@@ -3188,6 +3550,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(newSessionId ? { sessionId: newSessionId } : {}),
         includePartialMessages: true,
         canUseTool,
+        hooks: {
+          PostToolUse: [
+            {
+              matcher: "Edit|Write|MultiEdit|NotebookEdit",
+              hooks: [recordFileChangeStats],
+            },
+          ],
+        },
         env: claudeEnvironment,
         ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),
         ...(Object.keys(extraArgs).length > 0 ? { extraArgs } : {}),
@@ -3265,6 +3635,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         pendingUserInputs,
         turns: [],
         inFlightTools,
+        fileChangeStatsByToolUseId,
         tasks: new Map(),
         turnState: undefined,
         lastKnownContextWindow: undefined,

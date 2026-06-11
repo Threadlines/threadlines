@@ -9,7 +9,6 @@ import {
 } from "./providerIconUtils";
 import { ComboboxItem } from "../ui/combobox";
 import { Kbd } from "../ui/kbd";
-import { CurrentMarker } from "../ui/threadline";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
 
@@ -44,39 +43,12 @@ export const ModelListRow = memo(function ModelListRow(props: {
       hideIndicator
       index={props.index}
       value={`${props.instanceId}:${props.model.slug}`}
-      contentClassName="flex w-full items-start gap-2"
+      contentClassName="flex w-full min-w-0"
       className={cn(
-        "group relative w-full cursor-pointer rounded px-3 py-2 transition-colors",
+        "group relative w-full cursor-pointer rounded py-2 pl-4 pr-3 transition-colors",
         "data-highlighted:bg-muted data-selected:bg-accent data-selected:text-foreground",
       )}
     >
-      <CurrentMarker className="opacity-0 transition-opacity duration-150 in-data-selected:opacity-100" />
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <button
-              className="mt-0.5 shrink-0 cursor-pointer opacity-40 transition-opacity group-hover:opacity-100"
-              onClick={(event) => {
-                event.stopPropagation();
-                props.onToggleFavorite();
-              }}
-              onKeyDown={(event) => {
-                event.stopPropagation();
-              }}
-              type="button"
-              aria-label={props.isFavorite ? "Remove from favorites" : "Add to favorites"}
-            >
-              <StarIcon
-                className={cn("size-4", props.isFavorite && "fill-current text-yellow-500")}
-              />
-            </button>
-          }
-        />
-        <TooltipPopup side="top" align="center">
-          {props.isFavorite ? "Remove from favorites" : "Add to favorites"}
-        </TooltipPopup>
-      </Tooltip>
-
       <div className="min-w-0 flex-1 text-left">
         <div className="flex items-center justify-between gap-2 min-w-0">
           <div
@@ -92,11 +64,45 @@ export const ModelListRow = memo(function ModelListRow(props: {
                   )}
             </span>
           </div>
-          {props.jumpLabel ? (
-            <Kbd className="h-4 min-w-0 shrink-0 rounded-sm px-1.5 text-[10px]">
-              {props.jumpLabel}
-            </Kbd>
-          ) : null}
+          <span className="flex shrink-0 items-center gap-1.5">
+            {/* Favorite toggle is hover-revealed: Favorites membership is
+                already visible from the group, so resting rows stay quiet. */}
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <button
+                    className={cn(
+                      "flex shrink-0 cursor-pointer items-center rounded-sm p-0.5 opacity-0 transition-opacity",
+                      "focus-visible:opacity-100 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring",
+                      "group-hover:opacity-100 group-data-highlighted:opacity-100 pointer-coarse:opacity-100",
+                      props.isFavorite
+                        ? "text-yellow-500/80 hover:text-yellow-500"
+                        : "text-muted-foreground/50 hover:text-foreground",
+                    )}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      props.onToggleFavorite();
+                    }}
+                    onKeyDown={(event) => {
+                      event.stopPropagation();
+                    }}
+                    type="button"
+                    aria-label={props.isFavorite ? "Remove from favorites" : "Add to favorites"}
+                  >
+                    <StarIcon className={cn("size-3.5", props.isFavorite && "fill-current")} />
+                  </button>
+                }
+              />
+              <TooltipPopup side="top" align="center">
+                {props.isFavorite ? "Remove from favorites" : "Add to favorites"}
+              </TooltipPopup>
+            </Tooltip>
+            {props.jumpLabel ? (
+              <Kbd className="h-4 min-w-0 shrink-0 rounded-sm px-1.5 text-[10px]">
+                {props.jumpLabel}
+              </Kbd>
+            ) : null}
+          </span>
         </div>
         {props.model.description ? (
           <div

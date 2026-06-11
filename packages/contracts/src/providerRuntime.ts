@@ -597,6 +597,9 @@ export type FilesPersistedPayload = typeof FilesPersistedPayload.Type;
 const RuntimeWarningPayload = Schema.Struct({
   message: TrimmedNonEmptyStringSchema,
   detail: Schema.optional(Schema.Unknown),
+  /** Stable machine-readable category (e.g. "api-retry") so clients can
+   *  group or collapse recurring warnings without parsing the message. */
+  warningKind: Schema.optional(Schema.String),
 });
 export type RuntimeWarningPayload = typeof RuntimeWarningPayload.Type;
 

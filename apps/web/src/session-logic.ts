@@ -12,6 +12,7 @@ import {
   type ThreadId,
   type TurnId,
 } from "@t3tools/contracts";
+import { countUnifiedDiffStats, type FileChangeStat } from "@t3tools/shared/diffStats";
 
 import type {
   ChatMessage,
@@ -48,7 +49,14 @@ export interface WorkLogEntry {
   detail?: string;
   command?: string;
   rawCommand?: string;
+  /** Tail of the streamed command output, retained for inline failure
+   *  context and the expandable output view on command rows. */
+  outputPreview?: string;
+  exitCode?: number;
   changedFiles?: ReadonlyArray<string>;
+  /** Exact per-file +/- counts reported by the provider for this tool call.
+   *  Preferred over checkpoint-derived turn diffs when present. */
+  changedFileStats?: ReadonlyArray<FileChangeStat>;
   images?: ReadonlyArray<WorkLogImagePreview>;
   tone: "thinking" | "tool" | "info" | "warning" | "error";
   toolTitle?: string;
@@ -515,13 +523,13 @@ export function hasActionableProposedPlan(
 
 export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
-  latestTurnId: TurnId | undefined,
 ): WorkLogEntry[] {
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
   const entries = ordered
-    .filter((activity) => shouldIncludeActivityInWorkLog(activity, latestTurnId))
     .filter((activity) => activity.kind !== "task.started")
     .filter((activity) => activity.kind !== "context-window.updated")
+    // Account telemetry; belongs in a usage meter, not the work narrative.
+    .filter((activity) => activity.kind !== "account.rate-limits.updated")
     .filter((activity) => activity.summary !== "Checkpoint captured")
     .filter((activity) => !isPlanBoundaryToolActivity(activity))
     .map(toDerivedWorkLogEntry);
@@ -537,23 +545,12 @@ export function deriveWorkLogEntries(
   );
 }
 
-function shouldIncludeActivityInWorkLog(
-  activity: OrchestrationThreadActivity,
-  latestTurnId: TurnId | undefined,
-): boolean {
-  if (!latestTurnId || activity.turnId === latestTurnId) {
-    return true;
-  }
-
-  const payload =
-    activity.payload && typeof activity.payload === "object"
-      ? (activity.payload as Record<string, unknown>)
-      : null;
-  return extractWorkLogItemType(payload) === "image_view";
-}
-
 function isPlanBoundaryToolActivity(activity: OrchestrationThreadActivity): boolean {
-  if (activity.kind !== "tool.updated" && activity.kind !== "tool.completed") {
+  if (
+    activity.kind !== "tool.started" &&
+    activity.kind !== "tool.updated" &&
+    activity.kind !== "tool.completed"
+  ) {
     return false;
   }
 
@@ -561,7 +558,13 @@ function isPlanBoundaryToolActivity(activity: OrchestrationThreadActivity): bool
     activity.payload && typeof activity.payload === "object"
       ? (activity.payload as Record<string, unknown>)
       : null;
-  return typeof payload?.detail === "string" && payload.detail.startsWith("ExitPlanMode:");
+  if (typeof payload?.detail === "string" && payload.detail.startsWith("ExitPlanMode:")) {
+    return true;
+  }
+  // Todo updates already render through the plan progress UI; the raw tool
+  // call would duplicate them in the work log.
+  const toolName = asRecord(payload?.data)?.toolName;
+  return typeof toolName === "string" && toolName.toLowerCase().includes("todowrite");
 }
 
 function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWorkLogEntry {
@@ -572,7 +575,13 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   const commandPreview = extractToolCommand(payload, {
     detailMayBeCommand: activity.kind !== "tool.output.updated",
   });
-  const changedFiles = extractChangedFiles(payload);
+  const itemType = extractWorkLogItemType(payload);
+  // Read-only tools (Grep/Read/Glob...) carry `path` arguments in their
+  // inputs; only file-change-shaped entries may treat paths as edits.
+  const canCarryChangedFiles =
+    itemType === undefined || itemType === "file_change" || itemType === "collab_agent_tool_call";
+  const changedFiles = canCarryChangedFiles ? extractChangedFiles(payload) : [];
+  const changedFileStats = canCarryChangedFiles ? extractChangedFileStats(payload) : [];
   const images = extractWorkLogImages(payload);
   const title = extractToolTitle(payload);
   const isTaskActivity =
@@ -604,10 +613,16 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     : (extractRuntimeActivityDetail(activity, payload) ??
       extractToolDetail(payload, title ?? activity.summary));
   const toolCallId = isTaskActivity ? null : extractToolCallId(payload);
+  // Recurring transient warnings (API retries) read as a status line: the
+  // message is the label, and repeats collapse into one updating row.
+  const transientWarningLabel =
+    activity.kind === "runtime.warning" && asTrimmedString(payload?.warningKind) === "api-retry"
+      ? asTrimmedString(payload?.message)
+      : undefined;
   const entry: DerivedWorkLogEntry = {
     id: activity.id,
     createdAt: activity.createdAt,
-    label: taskLabel || activity.summary,
+    label: transientWarningLabel ?? (taskLabel || activity.summary),
     tone:
       activity.kind === "task.progress"
         ? "thinking"
@@ -621,7 +636,6 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     activityKind: activity.kind,
     turnId: activity.turnId,
   };
-  const itemType = extractWorkLogItemType(payload);
   const requestKind = extractWorkLogRequestKind(payload);
   if (detail) {
     entry.detail = detail;
@@ -632,8 +646,28 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (commandPreview.rawCommand) {
     entry.rawCommand = commandPreview.rawCommand;
   }
+  if (
+    activity.kind === "tool.output.updated" &&
+    asTrimmedString(payload?.streamKind) === "command_output"
+  ) {
+    const rawOutput = asTrimmedString(payload?.detail);
+    if (rawOutput) {
+      const { output, exitCode } = stripTrailingExitCode(rawOutput);
+      const lifted = output ? liftLeadingExitCode(output) : { output: null };
+      if (lifted.output) {
+        entry.outputPreview = lifted.output;
+      }
+      const resolvedExitCode = exitCode ?? lifted.exitCode;
+      if (resolvedExitCode !== undefined) {
+        entry.exitCode = resolvedExitCode;
+      }
+    }
+  }
   if (changedFiles.length > 0) {
     entry.changedFiles = changedFiles;
+  }
+  if (changedFileStats.length > 0) {
+    entry.changedFileStats = changedFileStats;
   }
   if (images.length > 0) {
     entry.images = images;
@@ -658,11 +692,29 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     entry.redactedThinking = isRedactedThinkingActivity;
   }
   const collapseKey =
-    deriveThinkingCollapseKey(activity, payload) ?? deriveToolLifecycleCollapseKey(entry);
+    deriveThinkingCollapseKey(activity, payload) ??
+    deriveTransientWarningCollapseKey(activity, payload) ??
+    deriveToolLifecycleCollapseKey(entry);
   if (collapseKey) {
     entry.collapseKey = collapseKey;
   }
   return entry;
+}
+
+/** Collapses recurring transient warnings (e.g. API retries) into a single
+ *  per-turn row that updates in place instead of stacking. */
+function deriveTransientWarningCollapseKey(
+  activity: OrchestrationThreadActivity,
+  payload: Record<string, unknown> | null,
+): string | undefined {
+  if (activity.kind !== "runtime.warning") {
+    return undefined;
+  }
+  const warningKind = asTrimmedString(payload?.warningKind);
+  if (warningKind !== "api-retry") {
+    return undefined;
+  }
+  return ["warning", warningKind, activity.turnId ?? "thread"].join("\u001f");
 }
 
 function collapseDerivedWorkLogEntries(
@@ -732,7 +784,10 @@ function deriveCollapsibleWorkLogKeys(entry: DerivedWorkLogEntry): string[] {
   if (isToolLifecycleActivityKind(entry.activityKind)) {
     return deriveToolLifecycleCollapseKeys(entry);
   }
-  if (entry.activityKind === "thinking.progress" && entry.collapseKey) {
+  if (
+    (entry.activityKind === "thinking.progress" || entry.activityKind === "runtime.warning") &&
+    entry.collapseKey
+  ) {
     return [entry.collapseKey];
   }
   return [];
@@ -902,9 +957,12 @@ function mergeDerivedWorkLogEntries(
   next: DerivedWorkLogEntry,
 ): DerivedWorkLogEntry {
   const changedFiles = mergeChangedFiles(previous.changedFiles, next.changedFiles);
+  const changedFileStats = mergeChangedFileStats(previous.changedFileStats, next.changedFileStats);
   const detail = next.detail ?? previous.detail;
   const command = next.command ?? previous.command;
   const rawCommand = next.rawCommand ?? previous.rawCommand;
+  const outputPreview = next.outputPreview ?? previous.outputPreview;
+  const exitCode = next.exitCode ?? previous.exitCode;
   const images = mergeWorkLogImages(previous.images, next.images);
   const toolTitle = next.toolTitle ?? previous.toolTitle;
   const itemType = next.itemType ?? previous.itemType;
@@ -921,7 +979,10 @@ function mergeDerivedWorkLogEntries(
     ...(detail ? { detail } : {}),
     ...(command ? { command } : {}),
     ...(rawCommand ? { rawCommand } : {}),
+    ...(outputPreview ? { outputPreview } : {}),
+    ...(exitCode !== undefined ? { exitCode } : {}),
     ...(changedFiles.length > 0 ? { changedFiles } : {}),
+    ...(changedFileStats.length > 0 ? { changedFileStats } : {}),
     ...(images.length > 0 ? { images } : {}),
     ...(toolTitle ? { toolTitle } : {}),
     ...(itemType ? { itemType } : {}),
@@ -1711,6 +1772,24 @@ function extractToolDetail(
   return null;
 }
 
+/** Claude bash failures lead with a literal "Exit code N" line; lift it into
+ *  the structured field so output previews start at the actual error text. */
+function liftLeadingExitCode(output: string): {
+  output: string | null;
+  exitCode?: number | undefined;
+} {
+  const match = /^exit code (?<code>\d+)[ \t]*(?:\r?\n)?/iu.exec(output);
+  if (!match?.groups) {
+    return { output };
+  }
+  const exitCode = Number.parseInt(match.groups.code ?? "", 10);
+  const rest = output.slice(match[0].length).trim();
+  return {
+    output: rest.length > 0 ? rest : null,
+    ...(Number.isInteger(exitCode) ? { exitCode } : {}),
+  };
+}
+
 function stripTrailingExitCode(value: string): {
   output: string | null;
   exitCode?: number | undefined;
@@ -1785,6 +1864,9 @@ function collectChangedFiles(value: unknown, target: string[], seen: Set<string>
 
   pushChangedFile(target, seen, record.path);
   pushChangedFile(target, seen, record.filePath);
+  // Claude Code tool inputs use snake_case path keys.
+  pushChangedFile(target, seen, record.file_path);
+  pushChangedFile(target, seen, record.notebook_path);
   pushChangedFile(target, seen, record.relativePath);
   pushChangedFile(target, seen, record.filename);
   pushChangedFile(target, seen, record.newPath);
@@ -1817,6 +1899,80 @@ function extractChangedFiles(payload: Record<string, unknown> | null): string[] 
   const seen = new Set<string>();
   collectChangedFiles(asRecord(payload?.data), changedFiles, seen, 0);
   return changedFiles;
+}
+
+function changedFileStatKind(value: unknown): FileChangeStat["kind"] {
+  // Claude emits a plain string; Codex wraps it as `{ type: "add" | ... }`.
+  const kind = typeof value === "string" ? value : asRecord(value)?.type;
+  return kind === "add" || kind === "update" || kind === "delete" ? kind : undefined;
+}
+
+function changedFileStatFromRecord(value: unknown): FileChangeStat | null {
+  const record = asRecord(value);
+  if (!record) {
+    return null;
+  }
+  const path =
+    asTrimmedString(record.path) ??
+    asTrimmedString(record.filePath) ??
+    asTrimmedString(record.file_path);
+  if (!path) {
+    return null;
+  }
+  const kind = changedFileStatKind(record.kind);
+
+  if (
+    typeof record.additions === "number" &&
+    Number.isFinite(record.additions) &&
+    typeof record.deletions === "number" &&
+    Number.isFinite(record.deletions)
+  ) {
+    return { path, kind, additions: record.additions, deletions: record.deletions };
+  }
+
+  const diff = typeof record.diff === "string" ? record.diff : undefined;
+  if (diff !== undefined) {
+    return { path, kind, ...countUnifiedDiffStats(diff) };
+  }
+
+  return null;
+}
+
+/** Reads provider-reported per-file diff stats from a tool payload:
+ *  `data.changes` (Claude file tools, Codex patch updates) or
+ *  `data.item.changes` (Codex item lifecycle). */
+function extractChangedFileStats(payload: Record<string, unknown> | null): FileChangeStat[] {
+  const data = asRecord(payload?.data);
+  const changes = data?.changes ?? asRecord(data?.item)?.changes;
+  if (!Array.isArray(changes)) {
+    return [];
+  }
+
+  const stats: FileChangeStat[] = [];
+  const seenPaths = new Set<string>();
+  for (const change of changes) {
+    const stat = changedFileStatFromRecord(change);
+    if (!stat || seenPaths.has(stat.path)) {
+      continue;
+    }
+    seenPaths.add(stat.path);
+    stats.push(stat);
+    if (stats.length >= 12) {
+      break;
+    }
+  }
+  return stats;
+}
+
+function mergeChangedFileStats(
+  previous: ReadonlyArray<FileChangeStat> | undefined,
+  next: ReadonlyArray<FileChangeStat> | undefined,
+): FileChangeStat[] {
+  const byPath = new Map<string, FileChangeStat>();
+  for (const stat of [...(previous ?? []), ...(next ?? [])]) {
+    byPath.set(stat.path, stat);
+  }
+  return [...byPath.values()];
 }
 
 function compareActivitiesByOrder(

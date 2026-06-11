@@ -317,7 +317,7 @@ describe("ProviderModelPicker", () => {
     await __resetLocalApiForTests();
   });
 
-  it("shows every ready provider's models in one grouped list", async () => {
+  it("expands the active provider group and folds the rest until clicked", async () => {
     const mounted = await mountPicker({
       activeInstanceId: CLAUDE_INSTANCE_ID,
       model: "claude-opus-4-6",
@@ -329,16 +329,23 @@ describe("ProviderModelPicker", () => {
 
       await vi.waitFor(() => {
         const listText = getModelPickerListText();
-        expect(listText).toContain("GPT-5 Codex");
         expect(listText).toContain("Claude Opus 4.6");
+        // Codex is not the active group: header only, models folded away.
+        expect(listText).not.toContain("GPT-5 Codex");
         expect(getModelPickerGroupOrder()).toEqual(["codex", "claudeAgent"]);
+      });
+
+      await page.getByRole("button", { name: /^Codex/ }).click();
+
+      await vi.waitFor(() => {
+        expect(getModelPickerListText()).toContain("GPT-5 Codex");
       });
     } finally {
       await mounted.cleanup();
     }
   });
 
-  it("shows the favorites group before provider groups", async () => {
+  it("expands only the favorites group when the active model is favorited", async () => {
     localStorage.setItem(
       "t3code:client-settings:v1",
       JSON.stringify({
@@ -349,7 +356,7 @@ describe("ProviderModelPicker", () => {
 
     const mounted = await mountPicker({
       activeInstanceId: CLAUDE_INSTANCE_ID,
-      model: "claude-opus-4-6",
+      model: "claude-sonnet-4-6",
       lockedProvider: null,
     });
 
@@ -358,7 +365,8 @@ describe("ProviderModelPicker", () => {
 
       await vi.waitFor(() => {
         expect(getModelPickerGroupOrder()).toEqual(["favorites", "codex", "claudeAgent"]);
-        expect(getVisibleModelNames()[0]).toBe("Claude Sonnet 4.6");
+        // The active model lives in Favorites, so only Favorites opens.
+        expect(getVisibleModelNames()).toEqual(["Claude Sonnet 4.6"]);
       });
     } finally {
       await mounted.cleanup();
@@ -427,12 +435,14 @@ describe("ProviderModelPicker", () => {
 
       await vi.waitFor(() => {
         expect(getModelPickerGroupOrder()).toEqual(["codex", "claudeAgent"]);
-        const visibleNames = getVisibleModelNames();
-        // Codex group renders before the Claude group in one continuous list.
-        expect(visibleNames.indexOf("GPT-5 Codex")).toBeGreaterThanOrEqual(0);
-        expect(visibleNames.indexOf("GPT-5 Codex")).toBeLessThan(
-          visibleNames.indexOf("Claude Opus 4.6"),
-        );
+      });
+
+      await page.getByRole("button", { name: /^Codex/ }).click();
+
+      await vi.waitFor(() => {
+        // Accordion: opening Codex folds the previously open Claude group.
+        expect(getVisibleModelNames()).toContain("GPT-5 Codex");
+        expect(getVisibleModelNames()).not.toContain("Claude Opus 4.6");
       });
     } finally {
       await mounted.cleanup();
@@ -591,7 +601,15 @@ describe("ProviderModelPicker", () => {
         expect(getModelPickerListText()).not.toContain("Codex Isolated");
         expect(getModelPickerListText()).toContain("Codex Work");
         expect(getModelPickerListText()).toContain("Codex Personal");
-        expect(getVisibleModelNames()).toEqual(["GPT Work", "GPT Personal"]);
+        // Active instance group opens; the sibling instance stays folded.
+        expect(getVisibleModelNames()).toEqual(["GPT Work"]);
+      });
+
+      await page.getByRole("button", { name: /^Codex Personal/ }).click();
+
+      await vi.waitFor(() => {
+        // Accordion: the sibling instance group folds when this one opens.
+        expect(getVisibleModelNames()).toEqual(["GPT Personal"]);
       });
     } finally {
       await mounted.cleanup();
@@ -1057,7 +1075,7 @@ describe("ProviderModelPicker", () => {
     );
 
     const mounted = await mountPicker({
-      model: "gpt-5-codex",
+      model: "gpt-5.3-codex",
       lockedProvider: null,
     });
 
@@ -1065,7 +1083,16 @@ describe("ProviderModelPicker", () => {
       await page.getByRole("button").click();
 
       await vi.waitFor(() => {
-        expect(getVisibleModelNames().slice(0, 2)).toEqual(["GPT-5.3 Codex", "GPT-5 Codex"]);
+        // The favorited active model opens the Favorites group first.
+        expect(getModelPickerGroupOrder()[0]).toBe("favorites");
+        expect(getVisibleModelNames()).toEqual(["GPT-5.3 Codex"]);
+      });
+
+      await page.getByRole("button", { name: /^Codex/ }).click();
+
+      await vi.waitFor(() => {
+        // Accordion: Codex opens, Favorites folds.
+        expect(getVisibleModelNames()).toEqual(["GPT-5 Codex"]);
       });
     } finally {
       await mounted.cleanup();

@@ -1260,6 +1260,169 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("summarizes Edit calls with workspace paths and per-file diff stats", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 10).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+        cwd: "/repo",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-edit",
+        uuid: "stream-edit-start",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 1,
+          content_block: {
+            type: "tool_use",
+            id: "tool-edit-1",
+            name: "Edit",
+            input: {
+              file_path: "/repo/src/app.ts",
+              old_string: "a",
+              new_string: "b\nc",
+            },
+          },
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-edit",
+        uuid: "stream-edit-stop",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_stop",
+          index: 1,
+        },
+      } as unknown as SDKMessage);
+
+      // Replay the PostToolUse hook exactly as the SDK fires it after the
+      // tool runs, before the tool_result message reaches the stream.
+      const postToolUse =
+        harness.getLastCreateQueryInput()?.options.hooks?.PostToolUse?.[0]?.hooks[0];
+      assert.notEqual(postToolUse, undefined);
+      if (postToolUse) {
+        yield* Effect.promise(() =>
+          postToolUse(
+            {
+              hook_event_name: "PostToolUse",
+              tool_name: "Edit",
+              tool_input: {
+                file_path: "/repo/src/app.ts",
+                old_string: "a",
+                new_string: "b\nc",
+              },
+              tool_response: {
+                filePath: "/repo/src/app.ts",
+                oldString: "a",
+                newString: "b\nc",
+                originalFile: "a\n",
+                structuredPatch: [
+                  {
+                    oldStart: 1,
+                    oldLines: 1,
+                    newStart: 1,
+                    newLines: 2,
+                    lines: ["-a", "+b", "+c"],
+                  },
+                ],
+                userModified: false,
+                replaceAll: false,
+              },
+              tool_use_id: "tool-edit-1",
+              session_id: "sdk-session-edit",
+              transcript_path: "/tmp/transcript.jsonl",
+              cwd: "/repo",
+            } as unknown as Parameters<NonNullable<typeof postToolUse>>[0],
+            "tool-edit-1",
+            { signal: new AbortController().signal },
+          ),
+        );
+      }
+
+      harness.query.emit({
+        type: "user",
+        session_id: "sdk-session-edit",
+        uuid: "user-edit-result",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool-edit-1",
+              content: "ok",
+            },
+          ],
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-edit",
+        uuid: "result-edit",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      assert.deepEqual(
+        runtimeEvents.map((event) => event.type),
+        [
+          "session.started",
+          "session.configured",
+          "session.state.changed",
+          "turn.started",
+          "thread.started",
+          "item.started",
+          "item.updated",
+          "content.delta",
+          "item.completed",
+          "turn.completed",
+        ],
+      );
+
+      const toolStarted = runtimeEvents.find((event) => event.type === "item.started");
+      assert.equal(toolStarted?.type, "item.started");
+      if (toolStarted?.type === "item.started") {
+        assert.equal(toolStarted.payload.itemType, "file_change");
+        assert.equal(toolStarted.payload.title, "File change");
+        assert.equal(toolStarted.payload.detail, "src/app.ts");
+      }
+
+      const toolCompleted = runtimeEvents.find((event) => event.type === "item.completed");
+      assert.equal(toolCompleted?.type, "item.completed");
+      if (toolCompleted?.type === "item.completed") {
+        assert.deepEqual((toolCompleted.payload.data as { changes?: unknown }).changes, [
+          { path: "/repo/src/app.ts", kind: "update", additions: 2, deletions: 1 },
+        ]);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("falls back to a default plan step label for blank TodoWrite content", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -1964,6 +2127,75 @@ describe("ClaudeAdapterLive", () => {
         });
       }
       assert.equal(harness.query.getContextUsageCalls.length, 1);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("emits a tagged retry status for api_retry system messages", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 7).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "hello",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "api_retry",
+        attempt: 2,
+        max_retries: 10,
+        retry_delay_ms: 4_000,
+        error_status: 429,
+        error: { type: "rate_limit_error" },
+        session_id: "sdk-session-api-retry",
+        uuid: "api-retry-1",
+      } as unknown as SDKMessage);
+
+      // Internal bookkeeping subtypes stay silent.
+      harness.query.emit({
+        type: "system",
+        subtype: "commands_changed",
+        session_id: "sdk-session-api-retry",
+        uuid: "commands-changed-1",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-api-retry",
+        uuid: "result-api-retry",
+      } as unknown as SDKMessage);
+      harness.query.finish();
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const warnings = runtimeEvents.filter((event) => event.type === "runtime.warning");
+      assert.equal(warnings.length, 1);
+      const warning = warnings[0];
+      if (warning?.type === "runtime.warning") {
+        assert.equal(
+          warning.payload.message,
+          "Claude API rate limited, retrying in 4s (attempt 2/10)",
+        );
+        assert.equal(warning.payload.warningKind, "api-retry");
+      }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

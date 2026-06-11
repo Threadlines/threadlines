@@ -13,6 +13,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
@@ -23,11 +24,13 @@ import ChatMarkdown from "../ChatMarkdown";
 import {
   BotIcon,
   CheckIcon,
+  ChevronDownIcon,
   CircleAlertIcon,
   EyeIcon,
   GlobeIcon,
   HammerIcon,
   type LucideIcon,
+  SearchIcon,
   ShieldCheckIcon,
   SquarePenIcon,
   TerminalIcon,
@@ -870,6 +873,7 @@ function mergeFileChangeWorkEntries(
     [...(previous.changedFiles ?? []), ...(next.changedFiles ?? [])],
     workspaceRoot,
   );
+  const changedFileStats = sumChangedFileStats(previous.changedFileStats, next.changedFileStats);
   const executionState = next.executionState ?? previous.executionState;
   return {
     ...previous,
@@ -877,9 +881,38 @@ function mergeFileChangeWorkEntries(
     id: previous.id,
     createdAt: previous.createdAt,
     ...(changedFiles.length > 0 ? { changedFiles } : {}),
+    ...(changedFileStats.length > 0 ? { changedFileStats } : {}),
     ...(executionState ? { executionState } : {}),
     ...(previous.turnId && !next.turnId ? { turnId: previous.turnId } : {}),
   };
+}
+
+/** Distinct edits coalesced into one row are separate diffs against the same
+ *  file, so their +/- counts add up (unlike lifecycle updates of one call,
+ *  which replace each other upstream). */
+function sumChangedFileStats(
+  previous: TimelineWorkEntry["changedFileStats"],
+  next: TimelineWorkEntry["changedFileStats"],
+): NonNullable<TimelineWorkEntry["changedFileStats"]>[number][] {
+  const byPath = new Map<string, NonNullable<TimelineWorkEntry["changedFileStats"]>[number]>();
+  for (const stat of previous ?? []) {
+    byPath.set(normalizeDiffMatchPath(stat.path), stat);
+  }
+  for (const stat of next ?? []) {
+    const key = normalizeDiffMatchPath(stat.path);
+    const existing = byPath.get(key);
+    byPath.set(
+      key,
+      existing
+        ? {
+            ...existing,
+            additions: existing.additions + stat.additions,
+            deletions: existing.deletions + stat.deletions,
+          }
+        : stat,
+    );
+  }
+  return [...byPath.values()];
 }
 
 function isFileChangeWorkEntry(
@@ -1106,7 +1139,14 @@ function classifySummarizableActivityEntry(
   }
 
   if (isCommandWorkEntry(entry) && entry.command) {
-    return classifyCommandActivity(entry.command);
+    const summary = classifyCommandActivity(entry.command);
+    // Consequential commands (anything that isn't routine exploration or
+    // verification) keep their verbatim rows; "Ran 2 commands - rm" hides
+    // exactly the arguments a developer needs to trust the feed.
+    if (summary.kind === "command") {
+      return null;
+    }
+    return summary;
   }
 
   if (entry.itemType === "collab_agent_tool_call") {
@@ -1232,7 +1272,11 @@ function isVerificationCommand(name: string, command: string): boolean {
 function buildSemanticActivitySummaryEntry(
   buffer: SemanticActivityBuffer,
 ): TimelineWorkEntry | null {
-  if ((buffer.kind === "command" || buffer.kind === "agent") && buffer.entries.length < 2) {
+  // A lone entry reads better as itself than as "Used 1 tool".
+  if (
+    (buffer.kind === "command" || buffer.kind === "agent" || buffer.kind === "tool") &&
+    buffer.entries.length < 2
+  ) {
     return null;
   }
 
@@ -1921,9 +1965,22 @@ function diffPathsMatch(left: string, right: string): boolean {
 }
 
 function summarizeWorkEntryDiffStat(
-  workEntry: Pick<TimelineWorkEntry, "changedFiles" | "turnId">,
+  workEntry: Pick<TimelineWorkEntry, "changedFiles" | "changedFileStats" | "turnId">,
   turnDiffSummaryByTurnId: ReadonlyMap<TurnId, TurnDiffSummary>,
 ): { additions: number; deletions: number } | null {
+  // Provider-reported stats are exact for the edits in this entry; the
+  // checkpoint turn diff below is only a fallback (it can lag or be missing).
+  const providerStats = workEntry.changedFileStats ?? [];
+  if (providerStats.length > 0) {
+    let additions = 0;
+    let deletions = 0;
+    for (const stat of providerStats) {
+      additions += stat.additions;
+      deletions += stat.deletions;
+    }
+    return { additions, deletions };
+  }
+
   if ((workEntry.changedFiles?.length ?? 0) === 0) {
     return null;
   }
@@ -1973,6 +2030,29 @@ function workEntryRawCommand(
   return rawCommand === workEntry.command.trim() ? null : rawCommand;
 }
 
+/** First meaningful output line of a failed command, surfaced inline so
+ *  "why did it fail" needs zero clicks. */
+function commandFailureLine(workEntry: TimelineWorkEntry): string | null {
+  if (workEntry.executionState !== "failed" || !isCommandWorkEntry(workEntry)) {
+    return null;
+  }
+  const firstLine = workEntry.outputPreview
+    ?.split(/\r?\n/u)
+    .map((line) => line.trim())
+    .find((line) => line.length > 0 && line !== "...");
+  if (!firstLine) {
+    return workEntry.exitCode !== undefined ? `Exit code ${workEntry.exitCode}` : null;
+  }
+  return firstLine.length > 160 ? `${firstLine.slice(0, 159).trimEnd()}…` : firstLine;
+}
+
+/** Last lines of the retained output, terminal-style. The projection
+ *  upstream already keeps only the tail (~1.2 KB) of long streams. */
+function commandOutputTail(output: string, maxLines = 20): string {
+  const lines = output.replace(/\r\n/gu, "\n").split("\n");
+  return lines.slice(-maxLines).join("\n").trimEnd();
+}
+
 function workEntryIcon(workEntry: TimelineWorkEntry): LucideIcon {
   if (isSubagentWorkEntry(workEntry)) return BotIcon;
   if (workEntry.requestKind === "command") return TerminalIcon;
@@ -1988,6 +2068,11 @@ function workEntryIcon(workEntry: TimelineWorkEntry): LucideIcon {
   }
   if (workEntry.itemType === "web_search") return GlobeIcon;
   if (workEntry.itemType === "image_view") return EyeIcon;
+
+  const normalizedTitle = normalizeCompactToolLabel(workEntry.toolTitle ?? workEntry.label);
+  if (/^read file$/i.test(normalizedTitle)) return EyeIcon;
+  if (/^(?:search|tool search)$/i.test(normalizedTitle)) return SearchIcon;
+  if (/^web fetch$/i.test(normalizedTitle)) return GlobeIcon;
 
   switch (workEntry.itemType) {
     case "mcp_tool_call":
@@ -2098,7 +2183,31 @@ function workEntryActionHeading(
     return formatActionHeading(workEntry.executionState, "Viewing", "Viewed", "image");
   }
 
+  const normalizedTitle = normalizeCompactToolLabel(workEntry.toolTitle ?? workEntry.label);
+  if (/^search$/i.test(normalizedTitle)) {
+    return formatActionHeading(workEntry.executionState, "Searching", "Searched", "code");
+  }
+  if (/^web fetch$/i.test(normalizedTitle)) {
+    return formatActionHeading(
+      workEntry.executionState,
+      "Fetching",
+      "Fetched",
+      urlHostFromDetail(workEntry.detail) ?? "page",
+    );
+  }
+
   return null;
+}
+
+function urlHostFromDetail(detail: string | undefined): string | null {
+  if (!detail) {
+    return null;
+  }
+  try {
+    return new URL(detail.trim()).host || null;
+  } catch {
+    return null;
+  }
 }
 
 function subagentSubjectLabel(workEntry: TimelineWorkEntry): string {
@@ -2521,6 +2630,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   workspaceRoot: string | undefined;
 }) {
   const { turnDiffSummaryByTurnId } = use(TimelineRowCtx);
+  const [isOutputExpanded, setIsOutputExpanded] = useState(false);
   const { isLiveActivity, workspaceRoot } = props;
   const workEntry = resolveDisplayedWorkEntry(props.workEntry, isLiveActivity);
 
@@ -2555,8 +2665,22 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     ? `${heading}${diffStatText} - ${preview}`
     : `${heading}${diffStatText}`;
   const hasChangedFiles = (workEntry.changedFiles?.length ?? 0) > 0;
-  const previewIsChangedFiles = hasChangedFiles && !workEntry.command && !workEntry.detail;
+  // A single-file edit whose detail is already that file's path needs no
+  // chip row repeating it.
+  const detailMatchesSoleChangedFile =
+    hasChangedFiles &&
+    workEntry.changedFiles?.length === 1 &&
+    !workEntry.command &&
+    !!workEntry.detail &&
+    diffPathsMatch(workEntry.detail, workEntry.changedFiles[0] ?? "");
+  const previewIsChangedFiles =
+    hasChangedFiles && !workEntry.command && (!workEntry.detail || detailMatchesSoleChangedFile);
   const imagePreviews = workEntry.images ?? [];
+  // "View into the terminal": command rows with retained output expand in
+  // place on click; failures additionally surface their first error line.
+  const outputPreview = isCommandWorkEntry(workEntry) ? workEntry.outputPreview : undefined;
+  const hasExpandableOutput = Boolean(outputPreview);
+  const failureLine = isOutputExpanded ? null : commandFailureLine(workEntry);
   const isStandaloneImagePreview =
     imagePreviews.length > 0 &&
     workEntry.itemType === "image_view" &&
@@ -2577,7 +2701,24 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   }
 
   return (
-    <div className="rounded-lg px-1 py-1">
+    <div
+      className={cn("rounded-lg px-1 py-1", hasExpandableOutput && "cursor-pointer")}
+      {...(hasExpandableOutput
+        ? {
+            role: "button" as const,
+            tabIndex: 0,
+            "aria-expanded": isOutputExpanded,
+            "aria-label": isOutputExpanded ? "Hide command output" : "Show command output",
+            onClick: () => setIsOutputExpanded((value) => !value),
+            onKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                setIsOutputExpanded((value) => !value);
+              }
+            },
+          }
+        : {})}
+    >
       <div className="flex items-center gap-2 transition-[opacity,translate] duration-200">
         <span
           className={cn("flex size-5 shrink-0 items-center justify-center", iconConfig.className)}
@@ -2624,18 +2765,55 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
             </Tooltip>
           )}
         </div>
+        {hasExpandableOutput ? (
+          <ChevronDownIcon
+            className={cn(
+              "size-3 shrink-0 text-muted-foreground/45 transition-transform duration-150",
+              !isOutputExpanded && "-rotate-90",
+            )}
+          />
+        ) : null}
       </div>
+      {failureLine ? (
+        <p
+          className="mt-0.5 truncate pl-7 font-mono text-[11px] leading-4 text-destructive/85"
+          data-command-failure="true"
+          title={failureLine}
+        >
+          {failureLine}
+        </p>
+      ) : null}
+      {hasExpandableOutput && isOutputExpanded ? (
+        <div className="mt-1 pl-7" data-command-output="true">
+          <pre className="max-h-52 overflow-y-auto rounded-md border border-border/45 bg-background/70 px-2 py-1.5 font-mono text-[11px] leading-4 whitespace-pre-wrap wrap-break-word text-muted-foreground/80">
+            {commandOutputTail(outputPreview ?? "")}
+          </pre>
+          {workEntry.exitCode !== undefined ? (
+            <p className="mt-0.5 text-[10px] tracking-wide text-muted-foreground/55">
+              exit {workEntry.exitCode}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
       {hasChangedFiles && !previewIsChangedFiles && (
         <div className="mt-1 flex flex-wrap gap-1 pl-6">
           {workEntry.changedFiles?.slice(0, 4).map((filePath) => {
             const displayPath = formatWorkspaceRelativePath(filePath, workspaceRoot);
+            const fileStat = workEntry.changedFileStats?.find((stat) =>
+              diffPathsMatch(stat.path, filePath),
+            );
             return (
               <span
                 key={`${workEntry.id}:${filePath}`}
-                className="rounded-md border border-border/55 bg-background/75 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/75"
+                className="inline-flex items-center gap-1 rounded-md border border-border/55 bg-background/75 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/75"
                 title={displayPath}
               >
                 {displayPath}
+                {fileStat && hasNonZeroStat(fileStat) ? (
+                  <span className="shrink-0">
+                    <DiffStatLabel additions={fileStat.additions} deletions={fileStat.deletions} />
+                  </span>
+                ) : null}
               </span>
             );
           })}

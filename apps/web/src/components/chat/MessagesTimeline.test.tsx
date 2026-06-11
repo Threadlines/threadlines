@@ -249,6 +249,71 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("apps/web/src/session-logic.ts");
   });
 
+  it("keeps consequential commands verbatim instead of compacting them", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          'Remove-Item "C:\\repo\\activity-feed-scratch.md"',
+          "rm -rf .tmp-scratch",
+        ].map((command, index) => ({
+          id: `entry-${index}`,
+          kind: "work" as const,
+          createdAt: `2026-03-17T19:12:2${index}.000Z`,
+          entry: {
+            id: `work-${index}`,
+            createdAt: `2026-03-17T19:12:2${index}.000Z`,
+            label: "Ran command",
+            tone: "tool" as const,
+            requestKind: "command" as const,
+            executionState: "completed" as const,
+            command,
+          },
+        }))}
+      />,
+    );
+
+    expect(markup).not.toContain("Ran 2 commands");
+    expect(markup).toContain("Remove-Item");
+    expect(markup).toContain("activity-feed-scratch.md");
+    expect(markup).toContain("rm -rf .tmp-scratch");
+  });
+
+  it("surfaces the first error line and output toggle on failed commands", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Command failed",
+              tone: "tool",
+              requestKind: "command",
+              executionState: "failed",
+              command: 'Remove-Item "C:\\repo\\activity-feed-scratch.md"',
+              outputPreview:
+                "Remove-Item : Cannot find path 'C:\\repo\\activity-feed-scratch.md' because it does not exist.\nAt line:1 char:1",
+              exitCode: 1,
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Command failed");
+    expect(markup).toContain('data-command-failure="true"');
+    expect(markup).toContain("Cannot find path");
+    expect(markup).toContain('aria-label="Show command output"');
+    expect(markup).not.toContain('data-command-output="true"');
+  });
+
   it("keeps live activity compact and height-stable while a turn is working", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(
@@ -593,6 +658,43 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain("Edited session-logic.ts");
     expect(markup).not.toContain("+7 / -2");
+  });
+
+  it("renders provider-reported diff stats without a checkpoint turn diff", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "File change",
+              tone: "tool",
+              itemType: "file_change",
+              changedFiles: ["C:/Users/mike/dev-stuff/t3code/apps/web/src/session-logic.ts"],
+              changedFileStats: [
+                {
+                  path: "C:/Users/mike/dev-stuff/t3code/apps/web/src/session-logic.ts",
+                  kind: "update",
+                  additions: 8,
+                  deletions: 1,
+                },
+              ],
+            },
+          },
+        ]}
+        workspaceRoot="C:/Users/mike/dev-stuff/t3code"
+      />,
+    );
+
+    expect(markup).toContain("Edited session-logic.ts");
+    expect(markup).toContain("+8");
+    expect(markup).toContain("-1");
   });
 
   it("coalesces duplicate completed file change rows for the same turn and file", async () => {

@@ -5,10 +5,11 @@ import {
 } from "@t3tools/contracts";
 import { resolveSelectableModel } from "@t3tools/shared/model";
 import { memo, useMemo, useState, useCallback, useEffect, useLayoutEffect, useRef } from "react";
-import { SearchIcon, StarIcon } from "lucide-react";
+import { ChevronDownIcon, SearchIcon, StarIcon } from "lucide-react";
+import { cn } from "~/lib/utils";
 import { ModelListRow } from "./ModelListRow";
 import { buildModelPickerSearchText, scoreModelPickerSearch } from "./modelPickerSearch";
-import { Combobox, ComboboxEmpty, ComboboxInput, ComboboxList } from "../ui/combobox";
+import { Combobox, ComboboxEmpty, ComboboxInput, ComboboxListVirtualized } from "../ui/combobox";
 import { SectionLabel } from "../ui/threadline";
 import { ModelEsque, PROVIDER_ICON_BY_PROVIDER } from "./providerIconUtils";
 import {
@@ -45,6 +46,8 @@ type ModelPickerListRow =
       label: string;
       driverKind?: ProviderDriverKind;
       accentColor?: string;
+      modelCount: number;
+      collapsed: boolean;
     }
   | { kind: "model"; model: ModelPickerItem };
 
@@ -101,9 +104,12 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   } = props;
   const [searchQuery, setSearchQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const listRegionRef = useRef<HTMLDivElement>(null);
   const highlightedModelKeyRef = useRef<string | null>(null);
   const favorites = useSettings((s) => s.favorites ?? []);
+  // Group expansion. `null` means the smart default: Favorites plus the
+  // group of the currently selected model open, every other group folded
+  // to its header so the list never starts as one long scroll.
+  const [expandedGroupIds, setExpandedGroupIds] = useState<ReadonlySet<string> | null>(null);
   const keybindings = useMemo<ResolvedKeybindingsConfig>(
     () => providedKeybindings ?? [],
     [providedKeybindings],
@@ -281,6 +287,31 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   // Default view: one list grouped by section — Favorites first, then each
   // instance in configured order. A favorited model lives in Favorites only
   // (never duplicated in its provider group) so combobox keys stay unique.
+  // Groups fold to their headers; only the group that holds the active model
+  // starts open: Favorites when the model is favorited, otherwise its
+  // provider group. Searching bypasses grouping (and collapse) entirely.
+  const activeModelIsFavorite =
+    !isLocked && favoritesSet.has(providerModelKey(props.activeInstanceId, props.model));
+  const defaultExpandedGroupIds = useMemo(
+    () => new Set<string>([activeModelIsFavorite ? "favorites" : props.activeInstanceId]),
+    [activeModelIsFavorite, props.activeInstanceId],
+  );
+  const isGroupExpanded = useCallback(
+    (groupId: string) => (expandedGroupIds ?? defaultExpandedGroupIds).has(groupId),
+    [defaultExpandedGroupIds, expandedGroupIds],
+  );
+  // Accordion: one group open at a time. Picking a model is a single-choice
+  // flow, and exclusive expansion keeps every group header in view.
+  const toggleGroup = useCallback(
+    (groupId: string) => {
+      setExpandedGroupIds((previous) => {
+        const current = previous ?? defaultExpandedGroupIds;
+        return current.has(groupId) ? new Set<string>() : new Set<string>([groupId]);
+      });
+    },
+    [defaultExpandedGroupIds],
+  );
+
   const listRows = useMemo((): ModelPickerListRow[] => {
     if (isSearching) {
       return searchedModels.map((model) => ({ kind: "model" as const, model }));
@@ -306,13 +337,22 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     }
 
     if (favoriteModels.length > 0) {
-      rows.push({ kind: "header", id: "favorites", label: "Favorites" });
-      for (const model of sortProviderModelItems(favoriteModels, {
-        favoriteModelKeys: favoritesSet,
-        groupFavorites: false,
-        instanceOrder,
-      })) {
-        rows.push({ kind: "model", model });
+      const favoritesCollapsed = !isGroupExpanded("favorites");
+      rows.push({
+        kind: "header",
+        id: "favorites",
+        label: "Favorites",
+        modelCount: favoriteModels.length,
+        collapsed: favoritesCollapsed,
+      });
+      if (!favoritesCollapsed) {
+        for (const model of sortProviderModelItems(favoriteModels, {
+          favoriteModelKeys: favoritesSet,
+          groupFavorites: false,
+          instanceOrder,
+        })) {
+          rows.push({ kind: "model", model });
+        }
       }
     }
 
@@ -326,6 +366,8 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       if (!models || models.length === 0) {
         continue;
       }
+      // Collapse only applies where a header exists to reopen the group.
+      const collapsed = showGroupHeaders && !isGroupExpanded(entry.instanceId);
       if (showGroupHeaders) {
         rows.push({
           kind: "header",
@@ -333,7 +375,12 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
           label: entry.displayName,
           driverKind: entry.driverKind,
           ...(entry.accentColor ? { accentColor: entry.accentColor } : {}),
+          modelCount: models.length,
+          collapsed,
         });
+      }
+      if (collapsed) {
+        continue;
       }
       // Locked mode has no favorites section, so favorites float within the
       // group instead.
@@ -351,6 +398,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     flatModels,
     instanceEntries,
     instanceOrder,
+    isGroupExpanded,
     isLocked,
     isSearching,
     lockedToSingleInstance,
@@ -507,52 +555,10 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     };
   }, [handleModelSelect, keybindings, modelJumpModelKeys, modelJumpShortcutContext]);
 
-  useLayoutEffect(() => {
-    const listRegion = listRegionRef.current;
-    if (!listRegion) {
-      return;
-    }
-
-    let cancelled = false;
-    let frame = 0;
-    let nestedFrame = 0;
-    let timeout = 0;
-
-    const measureScrollArea = () => {
-      if (cancelled) {
-        return;
-      }
-      const viewport = listRegion.querySelector<HTMLElement>('[data-slot="scroll-area-viewport"]');
-      if (!viewport || viewport.scrollHeight <= viewport.clientHeight) {
-        return;
-      }
-      const originalScrollTop = viewport.scrollTop;
-      const maxScrollTop = viewport.scrollHeight - viewport.clientHeight;
-      if (maxScrollTop <= 0) {
-        return;
-      }
-      viewport.scrollTop = Math.min(originalScrollTop + 1, maxScrollTop);
-      viewport.scrollTop = originalScrollTop;
-    };
-
-    queueMicrotask(measureScrollArea);
-    frame = window.requestAnimationFrame(() => {
-      measureScrollArea();
-      nestedFrame = window.requestAnimationFrame(measureScrollArea);
-    });
-    timeout = window.setTimeout(measureScrollArea, 0);
-
-    return () => {
-      cancelled = true;
-      window.cancelAnimationFrame(frame);
-      window.cancelAnimationFrame(nestedFrame);
-      window.clearTimeout(timeout);
-    };
-  }, [orderedModelKeys]);
-
   return (
     <TooltipProvider delay={0}>
-      <div className="relative flex h-screen max-h-96 w-screen max-w-96 flex-col overflow-hidden rounded-lg border bg-popover not-dark:bg-clip-padding text-popover-foreground shadow-lg/5 before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:before:shadow-[0_-1px_--theme(--color-white/6%)]">
+      {/* Height hugs the visible rows; the list region caps and scrolls itself. */}
+      <div className="relative flex w-screen max-w-96 flex-col overflow-hidden rounded-lg border bg-popover not-dark:bg-clip-padding text-popover-foreground shadow-lg/5 before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:before:shadow-[0_-1px_--theme(--color-white/6%)]">
         {/* Locked provider banner: the turn's driver cannot change */}
         {lockedToSingleInstance && LockedProviderIcon && lockedHeaderLabel && (
           <div className="flex items-center gap-2 border-b px-4 py-3">
@@ -619,12 +625,11 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
               />
             </div>
 
-            {/* Model list: Favorites first, then one section per provider */}
-            <div
-              ref={listRegionRef}
-              className="relative min-h-0 flex-1 before:pointer-events-none before:absolute before:inset-0 before:bg-muted/40"
-            >
-              <ComboboxList className="model-picker-list size-full px-1.5 py-1">
+            {/* Model list: Favorites first, then one section per provider.
+                The region is its own scroller with a cap, so the popup hugs
+                short lists and scrolls long ones (e.g. broad searches). */}
+            <div className="model-picker-list min-h-0 max-h-80 flex-1 overflow-y-auto overscroll-contain bg-muted/40">
+              <ComboboxListVirtualized className="w-full px-1.5 py-1">
                 {(() => {
                   let modelIndex = -1;
                   return listRows.map((row) => {
@@ -633,28 +638,55 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                         ? (PROVIDER_ICON_BY_PROVIDER[row.driverKind] ?? null)
                         : null;
                       return (
-                        <div
+                        <button
                           key={`header:${row.id}`}
-                          role="presentation"
+                          type="button"
                           data-model-picker-group={row.id}
-                          className="flex items-center justify-between gap-2 px-2 pb-1 pt-3 first:pt-1.5"
+                          aria-expanded={!row.collapsed}
+                          className="group/picker-group flex w-full cursor-pointer items-center justify-between gap-2 rounded px-2 pb-1.5 pt-3 text-left transition-colors first:pt-2 hover:bg-muted/60"
+                          onMouseDown={(event) => {
+                            // Keep focus in the search input while toggling.
+                            event.preventDefault();
+                          }}
+                          onClick={() => toggleGroup(row.id)}
                         >
-                          <SectionLabel>{row.label}</SectionLabel>
-                          <span className="flex shrink-0 items-center gap-1">
-                            {row.accentColor ? (
-                              <span
-                                aria-hidden
-                                className="size-1.5 rounded-full"
-                                style={{ backgroundColor: row.accentColor }}
-                              />
+                          <SectionLabel
+                            as="span"
+                            className="min-w-0 flex-1"
+                            icon={
+                              <span className="flex shrink-0 items-center gap-1">
+                                {row.id === "favorites" ? (
+                                  <StarIcon className="size-3 fill-current text-yellow-500/70" />
+                                ) : HeaderIcon ? (
+                                  <HeaderIcon className="size-3 opacity-60" />
+                                ) : null}
+                                {row.accentColor ? (
+                                  <span
+                                    aria-hidden
+                                    className="size-1.5 rounded-full"
+                                    style={{ backgroundColor: row.accentColor }}
+                                  />
+                                ) : null}
+                              </span>
+                            }
+                          >
+                            {row.label}
+                          </SectionLabel>
+                          <span className="flex shrink-0 items-center gap-1.5">
+                            {row.collapsed ? (
+                              <span className="text-[10px] tabular-nums text-muted-foreground/45">
+                                {row.modelCount}
+                              </span>
                             ) : null}
-                            {row.id === "favorites" ? (
-                              <StarIcon className="size-3 fill-current text-yellow-500/70" />
-                            ) : HeaderIcon ? (
-                              <HeaderIcon className="size-3 opacity-50" />
-                            ) : null}
+                            <ChevronDownIcon
+                              aria-hidden
+                              className={cn(
+                                "size-3 text-muted-foreground/40 transition-transform duration-150 group-hover/picker-group:text-muted-foreground/70",
+                                row.collapsed && "-rotate-90",
+                              )}
+                            />
                           </span>
-                        </div>
+                        </button>
                       );
                     }
                     modelIndex += 1;
@@ -680,7 +712,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                     );
                   });
                 })()}
-              </ComboboxList>
+              </ComboboxListVirtualized>
             </div>
             <ComboboxEmpty className="not-empty:py-6 empty:h-0 text-xs font-normal leading-snug">
               No models found
