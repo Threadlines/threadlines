@@ -214,8 +214,7 @@ function startWatchers() {
         const filePath = join(directoryPath, file);
         watchFile(filePath, { interval: watchPollIntervalMs }, (current, previous) => {
           const fileMissing = current.mtimeMs === 0;
-          const unchanged =
-            current.mtimeMs === previous.mtimeMs && current.size === previous.size;
+          const unchanged = current.mtimeMs === previous.mtimeMs && current.size === previous.size;
           if (fileMissing || unchanged) {
             return;
           }

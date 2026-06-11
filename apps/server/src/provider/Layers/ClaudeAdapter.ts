@@ -977,8 +977,7 @@ function titleForToolName(toolName: string, itemType: CanonicalItemType): string
 /** Renders an SDK `api_retry` system message as a short status line, e.g.
  *  "Claude API rate limited, retrying in 4s (attempt 2/10)". */
 function describeApiRetry(message: unknown): string {
-  const record =
-    message && typeof message === "object" ? (message as Record<string, unknown>) : {};
+  const record = message && typeof message === "object" ? (message as Record<string, unknown>) : {};
   const status = typeof record.error_status === "number" ? record.error_status : null;
   const reason =
     status === 429

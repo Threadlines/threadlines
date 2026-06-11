@@ -1058,7 +1058,9 @@ function OpenCommandPaletteDialog() {
     clearOpenIntent();
     const memberProjectKeys = new Set(openIntent.memberProjectKeys);
     const projectThreads = threads.filter((thread) =>
-      memberProjectKeys.has(scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId))),
+      memberProjectKeys.has(
+        scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
+      ),
     );
     pushPaletteView({
       addonIcon: <MessageSquareIcon className={ADDON_ICON_CLASS} />,

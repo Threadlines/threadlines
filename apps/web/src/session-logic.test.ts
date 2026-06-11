@@ -1047,9 +1047,7 @@ describe("deriveWorkLogEntries", () => {
 
     const entries = deriveWorkLogEntries(activities);
     expect(entries).toHaveLength(1);
-    expect(entries[0]?.outputPreview).toBe(
-      "/usr/bin/bash: line 1: Remove-Item: command not found",
-    );
+    expect(entries[0]?.outputPreview).toBe("/usr/bin/bash: line 1: Remove-Item: command not found");
     expect(entries[0]?.exitCode).toBe(127);
   });
 
@@ -1305,9 +1303,7 @@ describe("deriveWorkLogEntries", () => {
     const entries = deriveWorkLogEntries(activities);
     const warningEntries = entries.filter((entry) => entry.tone === "warning");
     expect(warningEntries).toHaveLength(1);
-    expect(warningEntries[0]?.label).toBe(
-      "Claude API rate limited, retrying in 8s (attempt 2/10)",
-    );
+    expect(warningEntries[0]?.label).toBe("Claude API rate limited, retrying in 8s (attempt 2/10)");
   });
 
   it("keeps unrelated runtime warnings as separate rows", () => {
@@ -1760,21 +1756,19 @@ describe("deriveWorkLogEntries", () => {
   });
 
   it("marks command tool updates as running and completed commands as terminal", () => {
-    const runningEntries = deriveWorkLogEntries(
-      [
-        makeActivity({
-          id: "command-started",
-          kind: "tool.started",
-          summary: "Ran command started",
-          payload: {
-            itemType: "command_execution",
-            toolCallId: "command-1",
-            title: "Ran command",
-            detail: "bun test",
-          },
-        }),
-      ],
-    );
+    const runningEntries = deriveWorkLogEntries([
+      makeActivity({
+        id: "command-started",
+        kind: "tool.started",
+        summary: "Ran command started",
+        payload: {
+          itemType: "command_execution",
+          toolCallId: "command-1",
+          title: "Ran command",
+          detail: "bun test",
+        },
+      }),
+    ]);
 
     expect(runningEntries[0]).toMatchObject({
       id: "command-started",
@@ -1783,47 +1777,45 @@ describe("deriveWorkLogEntries", () => {
       executionState: "running",
     });
 
-    const completedEntries = deriveWorkLogEntries(
-      [
-        makeActivity({
-          id: "command-started",
-          kind: "tool.started",
-          summary: "Ran command started",
-          payload: {
-            itemType: "command_execution",
-            toolCallId: "command-1",
-            title: "Ran command",
-            detail: "bun test",
+    const completedEntries = deriveWorkLogEntries([
+      makeActivity({
+        id: "command-started",
+        kind: "tool.started",
+        summary: "Ran command started",
+        payload: {
+          itemType: "command_execution",
+          toolCallId: "command-1",
+          title: "Ran command",
+          detail: "bun test",
+        },
+      }),
+      makeActivity({
+        id: "command-running",
+        kind: "tool.updated",
+        summary: "Ran command",
+        payload: {
+          itemType: "command_execution",
+          toolCallId: "command-1",
+          title: "Ran command",
+          data: {
+            kind: "execute",
           },
-        }),
-        makeActivity({
-          id: "command-running",
-          kind: "tool.updated",
-          summary: "Ran command",
-          payload: {
-            itemType: "command_execution",
-            toolCallId: "command-1",
-            title: "Ran command",
-            data: {
-              kind: "execute",
-            },
+        },
+      }),
+      makeActivity({
+        id: "command-completed",
+        kind: "tool.completed",
+        summary: "Ran command",
+        payload: {
+          itemType: "command_execution",
+          toolCallId: "command-1",
+          title: "Ran command",
+          data: {
+            kind: "execute",
           },
-        }),
-        makeActivity({
-          id: "command-completed",
-          kind: "tool.completed",
-          summary: "Ran command",
-          payload: {
-            itemType: "command_execution",
-            toolCallId: "command-1",
-            title: "Ran command",
-            data: {
-              kind: "execute",
-            },
-          },
-        }),
-      ],
-    );
+        },
+      }),
+    ]);
 
     expect(completedEntries).toHaveLength(1);
     expect(completedEntries[0]).toMatchObject({
@@ -1834,41 +1826,39 @@ describe("deriveWorkLogEntries", () => {
   });
 
   it("collapses command lifecycle events without tool call ids and preserves the command text", () => {
-    const entries = deriveWorkLogEntries(
-      [
-        makeActivity({
-          id: "command-started",
-          createdAt: "2026-02-23T00:00:01.000Z",
-          kind: "tool.started",
-          summary: "Ran command started",
-          payload: {
-            itemType: "command_execution",
-            title: "Ran command",
-            status: "inProgress",
-            data: {
-              item: {
-                command: "bun run test src/session-logic.test.ts",
-              },
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "command-started",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.started",
+        summary: "Ran command started",
+        payload: {
+          itemType: "command_execution",
+          title: "Ran command",
+          status: "inProgress",
+          data: {
+            item: {
+              command: "bun run test src/session-logic.test.ts",
             },
           },
-        }),
-        makeActivity({
-          id: "command-completed",
-          createdAt: "2026-02-23T00:00:02.000Z",
-          kind: "tool.completed",
-          summary: "Ran command",
-          payload: {
-            itemType: "command_execution",
-            title: "Ran command",
-            data: {
-              item: {
-                command: "bun run test src/session-logic.test.ts",
-              },
+        },
+      }),
+      makeActivity({
+        id: "command-completed",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.completed",
+        summary: "Ran command",
+        payload: {
+          itemType: "command_execution",
+          title: "Ran command",
+          data: {
+            item: {
+              command: "bun run test src/session-logic.test.ts",
             },
           },
-        }),
-      ],
-    );
+        },
+      }),
+    ]);
 
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
@@ -1879,74 +1869,72 @@ describe("deriveWorkLogEntries", () => {
   });
 
   it("collapses interleaved parallel command lifecycles by tool call id", () => {
-    const entries = deriveWorkLogEntries(
-      [
-        makeActivity({
-          id: "command-a-started",
-          createdAt: "2026-02-23T00:00:01.000Z",
-          kind: "tool.started",
-          summary: "Ran command started",
-          payload: {
-            itemType: "command_execution",
-            toolCallId: "command-a",
-            title: "Ran command",
-            data: {
-              item: {
-                command: "bun lint",
-              },
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "command-a-started",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.started",
+        summary: "Ran command started",
+        payload: {
+          itemType: "command_execution",
+          toolCallId: "command-a",
+          title: "Ran command",
+          data: {
+            item: {
+              command: "bun lint",
             },
           },
-        }),
-        makeActivity({
-          id: "command-b-started",
-          createdAt: "2026-02-23T00:00:02.000Z",
-          kind: "tool.started",
-          summary: "Ran command started",
-          payload: {
-            itemType: "command_execution",
-            toolCallId: "command-b",
-            title: "Ran command",
-            data: {
-              item: {
-                command: "bun typecheck",
-              },
+        },
+      }),
+      makeActivity({
+        id: "command-b-started",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.started",
+        summary: "Ran command started",
+        payload: {
+          itemType: "command_execution",
+          toolCallId: "command-b",
+          title: "Ran command",
+          data: {
+            item: {
+              command: "bun typecheck",
             },
           },
-        }),
-        makeActivity({
-          id: "command-b-completed",
-          createdAt: "2026-02-23T00:00:03.000Z",
-          kind: "tool.completed",
-          summary: "Ran command",
-          payload: {
-            itemType: "command_execution",
-            toolCallId: "command-b",
-            title: "Ran command",
-            data: {
-              item: {
-                command: "bun typecheck",
-              },
+        },
+      }),
+      makeActivity({
+        id: "command-b-completed",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "tool.completed",
+        summary: "Ran command",
+        payload: {
+          itemType: "command_execution",
+          toolCallId: "command-b",
+          title: "Ran command",
+          data: {
+            item: {
+              command: "bun typecheck",
             },
           },
-        }),
-        makeActivity({
-          id: "command-a-completed",
-          createdAt: "2026-02-23T00:00:04.000Z",
-          kind: "tool.completed",
-          summary: "Ran command",
-          payload: {
-            itemType: "command_execution",
-            toolCallId: "command-a",
-            title: "Ran command",
-            data: {
-              item: {
-                command: "bun lint",
-              },
+        },
+      }),
+      makeActivity({
+        id: "command-a-completed",
+        createdAt: "2026-02-23T00:00:04.000Z",
+        kind: "tool.completed",
+        summary: "Ran command",
+        payload: {
+          itemType: "command_execution",
+          toolCallId: "command-a",
+          title: "Ran command",
+          data: {
+            item: {
+              command: "bun lint",
             },
           },
-        }),
-      ],
-    );
+        },
+      }),
+    ]);
 
     expect(entries).toHaveLength(2);
     expect(entries).toMatchObject([
@@ -1964,49 +1952,47 @@ describe("deriveWorkLogEntries", () => {
   });
 
   it("shows running browser-style tool lifecycle rows with compact tool input", () => {
-    const entries = deriveWorkLogEntries(
-      [
-        makeActivity({
-          id: "browser-started",
-          createdAt: "2026-02-23T00:00:01.000Z",
-          kind: "tool.started",
-          summary: "Tool call started",
-          payload: {
-            itemType: "dynamic_tool_call",
-            title: "Tool call",
-            status: "inProgress",
-            data: {
-              item: {
-                namespace: "browser",
-                tool: "open",
-                arguments: {
-                  url: "http://localhost:3000",
-                },
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "browser-started",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.started",
+        summary: "Tool call started",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "Tool call",
+          status: "inProgress",
+          data: {
+            item: {
+              namespace: "browser",
+              tool: "open",
+              arguments: {
+                url: "http://localhost:3000",
               },
             },
           },
-        }),
-        makeActivity({
-          id: "browser-completed",
-          createdAt: "2026-02-23T00:00:02.000Z",
-          kind: "tool.completed",
-          summary: "Tool call",
-          payload: {
-            itemType: "dynamic_tool_call",
-            title: "Tool call",
-            data: {
-              item: {
-                namespace: "browser",
-                tool: "open",
-                arguments: {
-                  url: "http://localhost:3000",
-                },
+        },
+      }),
+      makeActivity({
+        id: "browser-completed",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.completed",
+        summary: "Tool call",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "Tool call",
+          data: {
+            item: {
+              namespace: "browser",
+              tool: "open",
+              arguments: {
+                url: "http://localhost:3000",
               },
             },
           },
-        }),
-      ],
-    );
+        },
+      }),
+    ]);
 
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
@@ -2017,27 +2003,25 @@ describe("deriveWorkLogEntries", () => {
   });
 
   it("surfaces runtime warning messages as warning work-log details", () => {
-    const [entry] = deriveWorkLogEntries(
-      [
-        makeActivity({
-          id: "runtime-warning",
-          kind: "runtime.warning",
-          summary: "Runtime warning",
-          tone: "info",
-          payload: {
-            message: "Reconnecting... 5/5",
-            detail: {
-              error: {
-                message: "Reconnecting... 5/5",
-                additionalDetails:
-                  "stream disconnected before completion: websocket closed by server before response.completed",
-              },
-              willRetry: true,
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "runtime-warning",
+        kind: "runtime.warning",
+        summary: "Runtime warning",
+        tone: "info",
+        payload: {
+          message: "Reconnecting... 5/5",
+          detail: {
+            error: {
+              message: "Reconnecting... 5/5",
+              additionalDetails:
+                "stream disconnected before completion: websocket closed by server before response.completed",
             },
+            willRetry: true,
           },
-        }),
-      ],
-    );
+        },
+      }),
+    ]);
 
     expect(entry).toMatchObject({
       id: "runtime-warning",
@@ -2049,24 +2033,22 @@ describe("deriveWorkLogEntries", () => {
   });
 
   it("marks failed command executions distinctly", () => {
-    const [entry] = deriveWorkLogEntries(
-      [
-        makeActivity({
-          id: "command-failed",
-          kind: "tool.completed",
-          summary: "Ran command",
-          tone: "error",
-          payload: {
-            itemType: "command_execution",
-            title: "Ran command",
-            data: {
-              toolCallId: "command-1",
-              kind: "execute",
-            },
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "command-failed",
+        kind: "tool.completed",
+        summary: "Ran command",
+        tone: "error",
+        payload: {
+          itemType: "command_execution",
+          title: "Ran command",
+          data: {
+            toolCallId: "command-1",
+            kind: "execute",
           },
-        }),
-      ],
-    );
+        },
+      }),
+    ]);
 
     expect(entry).toMatchObject({
       id: "command-failed",
@@ -2347,41 +2329,37 @@ describe("deriveTimelineEntries", () => {
 
 describe("deriveWorkLogEntries context window handling", () => {
   it("excludes context window updates from the work log", () => {
-    const entries = deriveWorkLogEntries(
-      [
-        makeActivity({
-          id: "context-1",
-          turnId: "turn-1",
-          kind: "context-window.updated",
-          summary: "Context window updated",
-          tone: "info",
-        }),
-        makeActivity({
-          id: "tool-1",
-          turnId: "turn-1",
-          kind: "tool.completed",
-          summary: "Ran command",
-          tone: "tool",
-        }),
-      ],
-    );
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "context-1",
+        turnId: "turn-1",
+        kind: "context-window.updated",
+        summary: "Context window updated",
+        tone: "info",
+      }),
+      makeActivity({
+        id: "tool-1",
+        turnId: "turn-1",
+        kind: "tool.completed",
+        summary: "Ran command",
+        tone: "tool",
+      }),
+    ]);
 
     expect(entries).toHaveLength(1);
     expect(entries[0]?.label).toBe("Ran command");
   });
 
   it("keeps context compaction activities as normal work log entries", () => {
-    const entries = deriveWorkLogEntries(
-      [
-        makeActivity({
-          id: "compaction-1",
-          turnId: "turn-1",
-          kind: "context-compaction",
-          summary: "Context compacted",
-          tone: "info",
-        }),
-      ],
-    );
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "compaction-1",
+        turnId: "turn-1",
+        kind: "context-compaction",
+        summary: "Context compacted",
+        tone: "info",
+      }),
+    ]);
 
     expect(entries).toHaveLength(1);
     expect(entries[0]?.label).toBe("Context compacted");

@@ -325,7 +325,7 @@ function makeFakeCodexBinary(
         ...(input.rejectIgnoreUserConfigFlag
           ? [
               'if [ "$seen_ignore_user_config" = "1" ]; then',
-              "  printf \"%s\\n\" \"error: unexpected argument '--ignore-user-config' found\" >&2",
+              '  printf "%s\\n" "error: unexpected argument \'--ignore-user-config\' found" >&2',
               "  exit 2",
               "fi",
             ]

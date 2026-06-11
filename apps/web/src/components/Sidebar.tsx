@@ -3079,7 +3079,8 @@ export default function Sidebar() {
         // thread traversal line up with the rows that are actually visible.
         const { visibleThreads } = getSidebarThreadWindow({
           threads: projectThreads,
-          getThreadKey: (thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+          getThreadKey: (thread) =>
+            scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
           activeThreadKey: project.projectKey === activeRouteProjectKey ? routeThreadKey : null,
           previewLimit: sidebarThreadPreviewCount,
           revealedCount: revealedThreadCountsByProject.get(project.projectKey) ?? 0,
@@ -3290,10 +3291,7 @@ export default function Sidebar() {
   useEffect(() => {
     if (!activeRouteProjectKey) return;
     setRevealedThreadCountsByProject((current) => {
-      if (
-        current.size === 0 ||
-        (current.size === 1 && current.has(activeRouteProjectKey))
-      ) {
+      if (current.size === 0 || (current.size === 1 && current.has(activeRouteProjectKey))) {
         return current;
       }
       const kept = current.get(activeRouteProjectKey);

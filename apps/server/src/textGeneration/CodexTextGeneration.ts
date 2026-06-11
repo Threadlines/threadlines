@@ -321,9 +321,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
           Effect.logWarning(
             "Codex CLI does not support --ignore-user-config; retrying without it",
             { operation },
-          ).pipe(
-            Effect.andThen(runCodexCommand({ ignoreUserConfig: false }).pipe(Effect.scoped)),
-          ),
+          ).pipe(Effect.andThen(runCodexCommand({ ignoreUserConfig: false }).pipe(Effect.scoped))),
         ),
         Effect.timeoutOption(timeoutMs),
         Effect.flatMap(
