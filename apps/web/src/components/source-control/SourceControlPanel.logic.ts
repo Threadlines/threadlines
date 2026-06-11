@@ -389,7 +389,7 @@ export function buildCommitGraphRows<TCommit extends CommitGraphTopologyCommit>(
     const isNewTip = lane < 0;
     if (isNewTip) {
       lane = activeLanes.length;
-      activeLanes = [...activeLanes, commit.sha];
+      activeLanes.push(commit.sha);
     }
 
     const topLanes = activeLanes
@@ -410,6 +410,9 @@ export function buildCommitGraphRows<TCommit extends CommitGraphTopologyCommit>(
           const toLane = lane < existingParentLane ? existingParentLane - 1 : existingParentLane;
           nextLanes.splice(lane, 1);
           parentPaths.push({ fromLane: lane, toLane });
+          if (lane < existingParentLane) {
+            parentPaths.push({ fromLane: existingParentLane, toLane });
+          }
         } else {
           nextLanes[lane] = firstParent;
           parentPaths.push({ fromLane: lane, toLane: lane });
@@ -456,11 +459,11 @@ export function buildCommitGraphRows<TCommit extends CommitGraphTopologyCommit>(
   }
 
   const laneCount = Math.max(1, ...rows.map((row) => row.layout.laneCount));
-  return rows.map((row) => ({
-    ...row,
-    layout: {
-      ...row.layout,
-      laneCount,
-    },
-  }));
+  return rows.map((row) =>
+    Object.assign({}, row, {
+      layout: Object.assign({}, row.layout, {
+        laneCount,
+      }),
+    }),
+  );
 }

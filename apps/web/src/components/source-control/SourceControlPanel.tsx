@@ -537,9 +537,11 @@ function commitGraphLaneX(lane: number) {
 function CommitGraphGlyph({
   layout,
   highlighted,
+  mergeCommit,
 }: {
   readonly layout: CommitGraphLaneLayout;
   readonly highlighted: boolean;
+  readonly mergeCommit: boolean;
 }) {
   const width = commitGraphLaneX(layout.laneCount - 1) + COMMIT_GRAPH_LEFT_PADDING;
   const rowHeight = COMMIT_GRAPH_ROW_HEIGHT;
@@ -548,25 +550,24 @@ function CommitGraphGlyph({
   const radius = COMMIT_GRAPH_NODE_RADIUS;
   const gap = COMMIT_GRAPH_NODE_GAP;
   const nodeX = commitGraphLaneX(layout.lane);
-  const isMergeCommit = layout.parentPaths.length > 1;
   const crossLanePaths = layout.parentPaths.filter((path) => path.fromLane !== path.toLane);
-  const deferredClosingPaths = crossLanePaths.filter(
-    (path) => path.fromLane === layout.lane && path.toLane < path.fromLane,
-  );
-  const rowCrossLanePaths = crossLanePaths.filter(
-    (path) => !(path.fromLane === layout.lane && path.toLane < path.fromLane),
-  );
+  const deferredClosingPaths = crossLanePaths.filter((path) => path.toLane < path.fromLane);
+  const rowCrossLanePaths = crossLanePaths.filter((path) => path.toLane >= path.fromLane);
+  const deferredClosingLanes = new Set(deferredClosingPaths.map((path) => path.fromLane));
   const hasCurrentLaneBottomSegment =
-    deferredClosingPaths.length > 0 ||
+    deferredClosingLanes.has(layout.lane) ||
     layout.parentPaths.some((path) => path.fromLane === layout.lane && path.toLane === layout.lane);
   const bottomLaneCandidates = new Set(layout.bottomLanes);
-  if (deferredClosingPaths.length > 0) {
-    bottomLaneCandidates.add(layout.lane);
+  for (const path of deferredClosingPaths) {
+    bottomLaneCandidates.add(path.fromLane);
   }
   const topLaneSet = new Set(layout.topLanes);
   const visibleBottomLanes = Array.from(bottomLaneCandidates).filter((bottomLane) => {
     if (bottomLane === layout.lane) {
       return hasCurrentLaneBottomSegment;
+    }
+    if (deferredClosingLanes.has(bottomLane)) {
+      return true;
     }
     return topLaneSet.has(bottomLane);
   });
@@ -672,7 +673,7 @@ function CommitGraphGlyph({
             className={commitGraphLaneFillClass(layout.lane)}
           />
         </>
-      ) : isMergeCommit ? (
+      ) : mergeCommit ? (
         <circle
           cx={nodeX}
           cy={nodeY}
@@ -826,7 +827,11 @@ function CommitGraphRow({
               height: COMMIT_GRAPH_ROW_HEIGHT,
             }}
           >
-            <CommitGraphGlyph layout={layout} highlighted={isCurrentBranchCommit} />
+            <CommitGraphGlyph
+              layout={layout}
+              highlighted={isCurrentBranchCommit}
+              mergeCommit={commit.parents.length > 1}
+            />
             <span className="flex min-w-0 items-center gap-2">
               <span
                 className={cn(

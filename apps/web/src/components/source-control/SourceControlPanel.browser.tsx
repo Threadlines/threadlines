@@ -1029,9 +1029,86 @@ describe("SourceControlPanel commit graph", () => {
         (path) => path.getAttribute("d") ?? "",
       );
       expect(crossLanePathData).toEqual(
-        expect.arrayContaining(["M 8 19 C 8 28, 20 19, 20 28", "M 20 28 C 20 37, 8 28, 8 37"]),
+        expect.arrayContaining([
+          "M 8 18.5 C 8 28, 20 18.5, 20 28",
+          "M 20 28 C 20 37.5, 8 28, 8 37.5",
+        ]),
       );
       expect(document.querySelector("svg circle.fill-amber-400")?.getAttribute("cy")).toBe("14");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("draws an interleaved side branch lane until the shared base commit", async () => {
+    const graph: VcsCommitGraphResult = {
+      truncated: false,
+      commits: [
+        {
+          sha: "1111111111111111111111111111111111111111",
+          shortSha: "1111111",
+          parents: [
+            "2222222222222222222222222222222222222222",
+            "3333333333333333333333333333333333333333",
+          ],
+          refs: ["origin/main"],
+          subject: "Merge feature branch",
+          authorName: "Ada Lovelace",
+          committedAt: "2026-05-27T12:00:00.000Z",
+        },
+        {
+          sha: "3333333333333333333333333333333333333333",
+          shortSha: "3333333",
+          parents: ["4444444444444444444444444444444444444444"],
+          refs: ["feature/visual-graph"],
+          subject: "Polish graph side branch",
+          authorName: "Grace Hopper",
+          committedAt: "2026-05-27T11:00:00.000Z",
+        },
+        {
+          sha: "2222222222222222222222222222222222222222",
+          shortSha: "2222222",
+          parents: ["4444444444444444444444444444444444444444"],
+          refs: [],
+          subject: "Advance main line",
+          authorName: "Grace Hopper",
+          committedAt: "2026-05-27T10:00:00.000Z",
+        },
+        {
+          sha: "4444444444444444444444444444444444444444",
+          shortSha: "4444444",
+          parents: [],
+          refs: ["main"],
+          subject: "Shared base",
+          authorName: "Grace Hopper",
+          committedAt: "2026-05-27T09:00:00.000Z",
+        },
+      ],
+    };
+    const mounted = await renderPanel({
+      status: makeStatus({ refName: "ui-polish" }),
+      environmentApi: makeEnvironmentApi({
+        vcs: {
+          commitGraph: vi.fn(async () => graph),
+        },
+      }),
+    });
+
+    try {
+      await expect.element(page.getByText("Merge feature branch")).toBeVisible();
+
+      const crossLanePathData = Array.from(document.querySelectorAll('svg path[d^="M "]')).map(
+        (path) => path.getAttribute("d") ?? "",
+      );
+      expect(crossLanePathData).toEqual(
+        expect.arrayContaining([
+          "M 8 18.5 C 8 28, 20 18.5, 20 28",
+          "M 20 28 C 20 37.5, 8 28, 8 37.5",
+        ]),
+      );
+      expect(
+        document.querySelectorAll("svg circle.fill-background.stroke-primary-graph"),
+      ).toHaveLength(1);
     } finally {
       await mounted.cleanup();
     }

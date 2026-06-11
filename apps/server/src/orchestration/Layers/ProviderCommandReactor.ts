@@ -714,10 +714,20 @@ const make = Effect.gen(function* () {
         });
       }
 
-      yield* checkpointStore.captureCheckpoint({
+      const preTurnCountCheckpointRef = checkpointPreTurnRefForThreadTurnCount(
+        input.threadId,
+        currentTurnCount + 1,
+      );
+      const preTurnCountCheckpointExists = yield* checkpointStore.hasCheckpointRef({
         cwd,
-        checkpointRef: checkpointPreTurnRefForThreadTurnCount(input.threadId, currentTurnCount + 1),
+        checkpointRef: preTurnCountCheckpointRef,
       });
+      if (!preTurnCountCheckpointExists) {
+        yield* checkpointStore.captureCheckpoint({
+          cwd,
+          checkpointRef: preTurnCountCheckpointRef,
+        });
+      }
     },
   );
 

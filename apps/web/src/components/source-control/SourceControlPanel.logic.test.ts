@@ -192,6 +192,30 @@ describe("SourceControlPanel.logic", () => {
     expect(baseRow?.layout.lane).toBe(0);
   });
 
+  it("keeps side-branch lanes alive when a merge side parent is interleaved before the first parent", () => {
+    const [mergeRow, sideParentRow, firstParentRow, baseRow] = buildCommitGraphRows([
+      { sha: "merge", parents: ["main-parent", "side-parent"], refs: ["origin/main"] },
+      { sha: "side-parent", parents: ["base"], refs: ["feature"] },
+      { sha: "main-parent", parents: ["base"], refs: [] },
+      { sha: "base", parents: [], refs: ["main"] },
+    ]);
+
+    expect(mergeRow?.layout.parentPaths).toEqual([
+      { fromLane: 0, toLane: 0 },
+      { fromLane: 0, toLane: 1 },
+    ]);
+    expect(sideParentRow?.layout.lane).toBe(1);
+    expect(sideParentRow?.layout.parentPaths).toEqual([{ fromLane: 1, toLane: 1 }]);
+    expect(sideParentRow?.layout.bottomLanes).toEqual([0, 1]);
+    expect(firstParentRow?.layout.topLanes).toEqual([0, 1]);
+    expect(firstParentRow?.layout.parentPaths).toEqual([
+      { fromLane: 0, toLane: 0 },
+      { fromLane: 1, toLane: 0 },
+    ]);
+    expect(firstParentRow?.layout.bottomLanes).toEqual([0]);
+    expect(baseRow?.layout.lane).toBe(0);
+  });
+
   it("keeps a single lane for linear history", () => {
     const rows = buildCommitGraphRows([
       { sha: "c3", parents: ["c2"], refs: ["main"] },
