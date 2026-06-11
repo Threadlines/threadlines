@@ -488,6 +488,7 @@ describe("resolveThreadStatusPill", () => {
       createdAt: "2026-03-09T10:00:00.000Z",
       updatedAt: "2026-03-09T10:00:00.000Z",
       orchestrationStatus: "running" as const,
+      pendingBackgroundTaskCount: 0,
     },
   };
 
@@ -684,6 +685,41 @@ describe("resolveThreadStatusPill", () => {
         },
       }),
     ).toMatchObject({ label: "Completed", pulse: false });
+  });
+
+  it("shows background when a settled turn still has provider tasks running", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          latestTurn: makeLatestTurn(),
+          session: {
+            ...baseThread.session,
+            status: "ready",
+            orchestrationStatus: "ready",
+            pendingBackgroundTaskCount: 1,
+          },
+        },
+      }),
+    ).toMatchObject({ label: "Background", pulse: true });
+  });
+
+  it("keeps active background-tracked turns in the working state", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          latestTurn: makeLatestTurn({ completedAt: null }),
+          session: {
+            ...baseThread.session,
+            status: "running",
+            orchestrationStatus: "running",
+            activeTurnId: "turn-1" as never,
+            pendingBackgroundTaskCount: 1,
+          },
+        },
+      }),
+    ).toMatchObject({ label: "Working", pulse: true });
   });
 
   it("shows completed when there is an unseen completion and no active blocker", () => {

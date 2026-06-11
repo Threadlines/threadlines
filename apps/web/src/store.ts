@@ -161,6 +161,7 @@ function mapSession(session: OrchestrationSession): ThreadSession {
     status: toLegacySessionStatus(session.status),
     orchestrationStatus: session.status,
     activeTurnId: session.activeTurnId ?? undefined,
+    pendingBackgroundTaskCount: session.pendingBackgroundTaskCount ?? 0,
     createdAt: session.updatedAt,
     updatedAt: session.updatedAt,
     ...(session.lastError ? { lastError: session.lastError } : {}),

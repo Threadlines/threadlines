@@ -4016,13 +4016,15 @@ describe("ChatView timeline estimator parity (full app)", () => {
       runtimeModeSelect.click();
 
       expect((await waitForSelectItemContainingText("Supervised")).textContent).toContain(
-        "Ask before commands and file changes",
+        "Asks before commands and file changes",
       );
 
+      // The draft uses the default codex driver, so the menu shows the
+      // codex-specific blast-radius copy for the middle tier.
       const autoAcceptItem = await waitForSelectItemContainingText("Auto-accept edits");
-      expect(autoAcceptItem.textContent).toContain("Auto-approve edits");
+      expect(autoAcceptItem.textContent).toContain("workspace commands run");
       expect((await waitForSelectItemContainingText("Full access")).textContent).toContain(
-        "Allow commands and edits without prompts",
+        "No prompts or sandbox",
       );
     } finally {
       await mounted.cleanup();

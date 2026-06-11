@@ -561,10 +561,20 @@ function isPlanBoundaryToolActivity(activity: OrchestrationThreadActivity): bool
   if (typeof payload?.detail === "string" && payload.detail.startsWith("ExitPlanMode:")) {
     return true;
   }
-  // Todo updates already render through the plan progress UI; the raw tool
-  // call would duplicate them in the work log.
+  // Todo/task-tracker updates already render through the plan progress UI;
+  // the raw tool calls would duplicate them in the work log.
   const toolName = asRecord(payload?.data)?.toolName;
-  return typeof toolName === "string" && toolName.toLowerCase().includes("todowrite");
+  if (typeof toolName !== "string") {
+    return false;
+  }
+  const normalized = toolName.toLowerCase();
+  return (
+    normalized.includes("todowrite") ||
+    normalized === "taskcreate" ||
+    normalized === "taskupdate" ||
+    normalized === "taskget" ||
+    normalized === "tasklist"
+  );
 }
 
 function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWorkLogEntry {

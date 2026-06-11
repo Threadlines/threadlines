@@ -218,6 +218,7 @@ function mapSessionRow(
     providerThreadId: row.providerThreadId,
     runtimeMode: row.runtimeMode,
     activeTurnId: row.activeTurnId,
+    pendingBackgroundTaskCount: row.pendingBackgroundTaskCount,
     lastError: row.lastError,
     updatedAt: row.updatedAt,
   };
@@ -480,6 +481,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           provider_thread_id AS "providerThreadId",
           runtime_mode AS "runtimeMode",
           active_turn_id AS "activeTurnId",
+          pending_background_task_count AS "pendingBackgroundTaskCount",
           last_error AS "lastError",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
@@ -501,6 +503,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.provider_thread_id AS "providerThreadId",
           sessions.runtime_mode AS "runtimeMode",
           sessions.active_turn_id AS "activeTurnId",
+          sessions.pending_background_task_count AS "pendingBackgroundTaskCount",
           sessions.last_error AS "lastError",
           sessions.updated_at AS "updatedAt"
         FROM projection_thread_sessions sessions
@@ -526,6 +529,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.provider_thread_id AS "providerThreadId",
           sessions.runtime_mode AS "runtimeMode",
           sessions.active_turn_id AS "activeTurnId",
+          sessions.pending_background_task_count AS "pendingBackgroundTaskCount",
           sessions.last_error AS "lastError",
           sessions.updated_at AS "updatedAt"
         FROM projection_thread_sessions sessions
@@ -845,6 +849,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           provider_thread_id AS "providerThreadId",
           runtime_mode AS "runtimeMode",
           active_turn_id AS "activeTurnId",
+          pending_background_task_count AS "pendingBackgroundTaskCount",
           last_error AS "lastError",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
@@ -1154,6 +1159,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   providerThreadId: row.providerThreadId,
                   runtimeMode: row.runtimeMode,
                   activeTurnId: row.activeTurnId,
+                  pendingBackgroundTaskCount: row.pendingBackgroundTaskCount,
                   lastError: row.lastError,
                   updatedAt: row.updatedAt,
                 });

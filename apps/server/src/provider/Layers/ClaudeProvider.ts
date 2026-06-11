@@ -1,8 +1,10 @@
 import {
   type ClaudeSettings,
+  LEGACY_RUNTIME_MODES,
   type ModelCapabilities,
   type ModelSelection,
   ProviderDriverKind,
+  RUNTIME_MODES,
   type ServerProviderAccountUsage,
   type ServerProviderModel,
   type ServerProviderSlashCommand,
@@ -47,7 +49,23 @@ const PROVIDER = ProviderDriverKind.make("claudeAgent");
 const CLAUDE_PRESENTATION = {
   displayName: "Claude",
   showInteractionModeToggle: true,
+  supportedRuntimeModes: RUNTIME_MODES,
 } as const;
+
+/**
+ * Models that predate the auto permission mode classifier. Auto mode needs
+ * Opus 4.6+ or Sonnet 4.6-class models; the adapter clamps these to
+ * acceptEdits and the UI hides the Auto option for them.
+ * https://code.claude.com/docs/en/permission-modes#eliminate-prompts-with-auto-mode
+ */
+const CLAUDE_AUTO_MODE_UNSUPPORTED_SLUGS: ReadonlySet<string> = new Set([
+  "claude-opus-4-5",
+  "claude-haiku-4-5",
+]);
+
+export function claudeModelSupportsAutoRuntimeMode(modelSlug: string | null | undefined): boolean {
+  return modelSlug ? !CLAUDE_AUTO_MODE_UNSUPPORTED_SLUGS.has(modelSlug) : true;
+}
 const MINIMUM_CLAUDE_FABLE_5_VERSION = "2.1.170";
 const MINIMUM_CLAUDE_OPUS_4_8_VERSION = "2.1.154";
 const MINIMUM_CLAUDE_OPUS_4_7_VERSION = "2.1.111";
@@ -98,7 +116,7 @@ const CLAUDE_EFFORT_OPTIONS = {
   ],
 } as const;
 
-const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
+const BUILT_IN_MODEL_DEFINITIONS: ReadonlyArray<ServerProviderModel> = [
   {
     slug: "claude-fable-5",
     name: "Claude Fable 5",
@@ -242,6 +260,13 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
     }),
   },
 ];
+
+const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = BUILT_IN_MODEL_DEFINITIONS.map(
+  (model) =>
+    claudeModelSupportsAutoRuntimeMode(model.slug)
+      ? model
+      : { ...model, supportedRuntimeModes: LEGACY_RUNTIME_MODES },
+);
 
 function supportsClaudeOpus48(version: string | null | undefined): boolean {
   return version ? compareSemverVersions(version, MINIMUM_CLAUDE_OPUS_4_8_VERSION) >= 0 : false;

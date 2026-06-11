@@ -165,6 +165,7 @@ export interface ThreadSession {
   providerThreadId?: string | undefined;
   status: SessionPhase | "error" | "closed";
   activeTurnId?: TurnId | undefined;
+  pendingBackgroundTaskCount?: number | undefined;
   createdAt: string;
   updatedAt: string;
   lastError?: string;

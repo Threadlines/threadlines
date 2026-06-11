@@ -1,6 +1,7 @@
 import type {
   ProviderDriverKind,
   ModelCapabilities,
+  RuntimeMode,
   ServerProvider,
   ServerProviderAccountUsage,
   ServerProviderAuth,
@@ -47,6 +48,9 @@ export interface ServerProviderPresentation {
   readonly displayName: string;
   readonly badgeLabel?: string;
   readonly showInteractionModeToggle?: boolean;
+  // Runtime modes this driver honors natively; absent means the legacy
+  // three-mode set. See `ServerProvider.supportedRuntimeModes`.
+  readonly supportedRuntimeModes?: ReadonlyArray<RuntimeMode>;
 }
 
 export type ServerProviderDraft = Omit<ServerProvider, "instanceId" | "driver">;
@@ -211,6 +215,9 @@ export function buildServerProvider(input: {
     ...(input.presentation.badgeLabel ? { badgeLabel: input.presentation.badgeLabel } : {}),
     ...(typeof input.presentation.showInteractionModeToggle === "boolean"
       ? { showInteractionModeToggle: input.presentation.showInteractionModeToggle }
+      : {}),
+    ...(input.presentation.supportedRuntimeModes
+      ? { supportedRuntimeModes: input.presentation.supportedRuntimeModes }
       : {}),
     enabled: input.enabled,
     installed: input.probe.installed,

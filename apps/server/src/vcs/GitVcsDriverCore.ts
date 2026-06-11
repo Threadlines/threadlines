@@ -81,6 +81,16 @@ const NON_REPOSITORY_STATUS_DETAILS = Object.freeze<GitVcsDriver.GitStatusDetail
   behindCount: 0,
   aheadOfDefaultCount: 0,
 });
+const NON_REPOSITORY_REMOTE_STATUS_DETAILS = Object.freeze<GitVcsDriver.GitRemoteStatusDetails>({
+  isRepo: false,
+  isDefaultBranch: false,
+  branch: null,
+  upstreamRef: null,
+  hasUpstream: false,
+  aheadCount: 0,
+  behindCount: 0,
+  aheadOfDefaultCount: 0,
+});
 
 type TraceTailState = {
   processedChars: number;
@@ -1490,6 +1500,85 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
   });
 
+  // Remote-only status for background pollers: branch identity and upstream /
+  // default-branch divergence via rev-parse + rev-list, never `git status` or
+  // numstat working-tree scans.
+  const readStatusDetailsRemote = Effect.fn("readStatusDetailsRemote")(function* (cwd: string) {
+    const branchResult = yield* executeGit(
+      "GitVcsDriver.statusDetailsRemote.branch",
+      cwd,
+      ["rev-parse", "--abbrev-ref", "HEAD"],
+      { allowNonZeroExit: true },
+    ).pipe(Effect.catchIf(isMissingGitCwdError, () => Effect.succeed(null)));
+
+    if (branchResult === null) {
+      return NON_REPOSITORY_REMOTE_STATUS_DETAILS;
+    }
+    if (branchResult.exitCode !== 0) {
+      const stderr = branchResult.stderr.trim();
+      return yield* createGitCommandError(
+        "GitVcsDriver.statusDetailsRemote.branch",
+        cwd,
+        ["rev-parse", "--abbrev-ref", "HEAD"],
+        stderr || "git branch lookup failed",
+      );
+    }
+
+    const branchValue = branchResult.stdout.trim();
+    const branch = branchValue.length > 0 && branchValue !== "HEAD" ? branchValue : null;
+    const upstream = yield* resolveCurrentUpstream(cwd);
+    const upstreamRef = upstream?.upstreamRef ?? null;
+    let aheadCount = 0;
+    let behindCount = 0;
+
+    if (upstreamRef) {
+      const divergence = yield* executeGit(
+        "GitVcsDriver.statusDetailsRemote.divergence",
+        cwd,
+        ["rev-list", "--left-right", "--count", `HEAD...${upstreamRef}`],
+        { allowNonZeroExit: true },
+      );
+      if (divergence.exitCode === 0) {
+        const [aheadRaw, behindRaw] = divergence.stdout.trim().split(/\s+/);
+        const parsedAhead = Number.parseInt(aheadRaw ?? "0", 10);
+        const parsedBehind = Number.parseInt(behindRaw ?? "0", 10);
+        aheadCount = Number.isFinite(parsedAhead) ? Math.max(0, parsedAhead) : 0;
+        behindCount = Number.isFinite(parsedBehind) ? Math.max(0, parsedBehind) : 0;
+      }
+    } else if (branch) {
+      aheadCount = yield* computeAheadCountAgainstBase(cwd, branch).pipe(
+        Effect.catch(() => Effect.succeed(0)),
+      );
+    }
+
+    const defaultBranch = yield* resolveDefaultBranchName(cwd, "origin").pipe(
+      Effect.catch(() => Effect.succeed(null)),
+    );
+    const isDefaultBranch =
+      branch !== null &&
+      (branch === defaultBranch ||
+        (defaultBranch === null && (branch === "main" || branch === "master")));
+    const aheadOfDefaultCount =
+      branch && !isDefaultBranch
+        ? upstreamRef === null
+          ? aheadCount
+          : yield* computeAheadCountAgainstBase(cwd, branch).pipe(
+              Effect.catch(() => Effect.succeed(0)),
+            )
+        : 0;
+
+    return {
+      isRepo: true,
+      isDefaultBranch,
+      branch,
+      upstreamRef,
+      hasUpstream: upstreamRef !== null,
+      aheadCount,
+      behindCount,
+      aheadOfDefaultCount,
+    } satisfies GitVcsDriver.GitRemoteStatusDetails;
+  });
+
   const readBranchRecency = Effect.fn("readBranchRecency")(function* (cwd: string) {
     const branchRecency = yield* executeGit(
       "GitVcsDriver.readBranchRecency",
@@ -1806,6 +1895,16 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       return yield* readStatusDetailsLocal(cwd);
     },
   );
+
+  const statusDetailsRemote: GitVcsDriver.GitVcsDriverShape["statusDetailsRemote"] = Effect.fn(
+    "statusDetailsRemote",
+  )(function* (cwd) {
+    yield* refreshStatusUpstreamIfStale(cwd).pipe(
+      Effect.catchIf(isMissingGitCwdError, () => Effect.void),
+      Effect.ignoreCause({ log: true }),
+    );
+    return yield* readStatusDetailsRemote(cwd);
+  });
 
   const status: GitVcsDriver.GitVcsDriverShape["status"] = (input) =>
     statusDetails(input.cwd).pipe(
@@ -3248,6 +3347,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     status,
     statusDetails,
     statusDetailsLocal,
+    statusDetailsRemote,
     prepareCommitContext,
     previewCommitContext,
     commit,

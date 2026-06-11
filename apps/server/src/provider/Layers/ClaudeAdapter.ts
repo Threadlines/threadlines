@@ -31,6 +31,7 @@ import {
   type ProviderApprovalDecision,
   ProviderDriverKind,
   ProviderInstanceId,
+  type ProviderInteractionMode,
   ProviderItemId,
   type ProviderRuntimeEvent,
   type ProviderRuntimeTurnStatus,
@@ -73,6 +74,7 @@ import { ServerConfig } from "../../config.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import { addProviderAuthHint, isProviderAuthErrorMessage } from "../providerAuthHints.ts";
 import {
+  claudeModelSupportsAutoRuntimeMode,
   getClaudeModelCapabilities,
   isClaudeUltracodeEffort,
   normalizeClaudeCliEffort,
@@ -178,6 +180,9 @@ interface ClaudeSessionContext {
   streamFiber: Fiber.Fiber<void, Error> | undefined;
   readonly startedAt: string;
   readonly basePermissionMode: PermissionMode | undefined;
+  // Interaction mode of the most recent turn. canUseTool consults it so plan
+  // turns never inherit the auto-allow of permissive runtime modes.
+  currentInteractionMode: ProviderInteractionMode | undefined;
   currentApiModelId: string | undefined;
   resumeSessionId: string | undefined;
   readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
@@ -191,6 +196,11 @@ interface ClaudeSessionContext {
    *  Consumed when the matching tool_result is emitted. */
   readonly fileChangeStatsByToolUseId: Map<string, FileChangeStat>;
   readonly tasks: Map<string, ClaudeTaskSnapshot>;
+  /** Mirror of the SDK task tracker (TaskCreate/TaskUpdate/TaskList), keyed
+   *  by task id once the create result reveals it. Session-scoped because the
+   *  tracker list persists across turns. */
+  readonly planTracker: Map<string, PlanTrackerTask>;
+  lastEmittedPlanTrackerFingerprint: string | undefined;
   turnState: ClaudeTurnState | undefined;
   lastKnownContextWindow: number | undefined;
   lastKnownTokenUsage: ThreadTokenUsageSnapshot | undefined;
@@ -574,6 +584,11 @@ function classifyToolItemType(toolName: string): CanonicalItemType {
   if (isTodoTool(normalized)) {
     return "dynamic_tool_call";
   }
+  // Task tracker tools are a planning surface too; "TaskCreate" must not
+  // fall into the file-change "create" keyword bucket below.
+  if (taskTrackerToolKind(normalized) !== undefined) {
+    return "dynamic_tool_call";
+  }
   if (normalized.includes("agent")) {
     return "collab_agent_tool_call";
   }
@@ -670,6 +685,173 @@ function extractPlanStepsFromTodoInput(input: Record<string, unknown>): PlanStep
 
 function nonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+type PlanTrackerTask = {
+  readonly subject: string;
+  readonly status: "pending" | "inProgress" | "completed";
+};
+
+type TaskTrackerToolKind = "create" | "update" | "get" | "list";
+
+/** Newer Claude Code builds track plans with the incremental task tools
+ *  (TaskCreate/TaskUpdate/TaskGet/TaskList) instead of TodoWrite; both must
+ *  drive the same plan UI. */
+function taskTrackerToolKind(toolName: string): TaskTrackerToolKind | undefined {
+  switch (toolName.toLowerCase()) {
+    case "taskcreate":
+      return "create";
+    case "taskupdate":
+      return "update";
+    case "taskget":
+      return "get";
+    case "tasklist":
+      return "list";
+    default:
+      return undefined;
+  }
+}
+
+function planTrackerStatus(value: unknown): PlanTrackerTask["status"] | undefined {
+  switch (value) {
+    case "pending":
+      return "pending";
+    case "in_progress":
+      return "inProgress";
+    case "completed":
+      return "completed";
+    default:
+      return undefined;
+  }
+}
+
+function planStepsFromPlanTracker(planTracker: ReadonlyMap<string, PlanTrackerTask>): PlanStep[] {
+  return [...planTracker.values()].map((task) => ({
+    step: task.subject,
+    status: task.status,
+  }));
+}
+
+/** TaskCreate inputs carry no task id; the id only arrives in the tool
+ *  result, so fresh tasks are keyed provisionally by tool_use id until the
+ *  result rebinds them. */
+const PROVISIONAL_PLAN_TASK_KEY_PREFIX = "toolUse:";
+
+function applyPlanTrackerToolInput(
+  planTracker: Map<string, PlanTrackerTask>,
+  kind: TaskTrackerToolKind,
+  toolUseId: string,
+  input: Record<string, unknown>,
+): boolean {
+  if (kind === "create") {
+    const key = `${PROVISIONAL_PLAN_TASK_KEY_PREFIX}${toolUseId}`;
+    const subject = nonEmptyString(input.subject) ?? "Task";
+    const existing = planTracker.get(key);
+    if (existing?.subject === subject) {
+      return false;
+    }
+    planTracker.set(key, { subject, status: existing?.status ?? "pending" });
+    return true;
+  }
+  if (kind !== "update") {
+    return false;
+  }
+  const taskId = nonEmptyString(input.taskId);
+  if (!taskId) {
+    return false;
+  }
+  if (input.status === "deleted") {
+    return planTracker.delete(taskId);
+  }
+  const status = planTrackerStatus(input.status);
+  const subject = nonEmptyString(input.subject);
+  const existing = planTracker.get(taskId);
+  if (!existing) {
+    // Updates can reference tasks created before this process attached
+    // (resumed session); render a placeholder so progress still shows until
+    // a TaskList result resyncs the real subjects.
+    planTracker.set(taskId, {
+      subject: subject ?? `Task #${taskId}`,
+      status: status ?? "pending",
+    });
+    return true;
+  }
+  const next = { subject: subject ?? existing.subject, status: status ?? existing.status };
+  if (next.subject === existing.subject && next.status === existing.status) {
+    return false;
+  }
+  planTracker.set(taskId, next);
+  return true;
+}
+
+const TASK_CREATE_RESULT_PATTERN = /^Task #(\S+) created successfully(?::\s*(.*))?$/;
+const TASK_LIST_RESULT_LINE_PATTERN = /^#(\S+) \[(pending|in_progress|completed)\] (.+)$/;
+
+function applyPlanTrackerToolResult(
+  planTracker: Map<string, PlanTrackerTask>,
+  kind: TaskTrackerToolKind,
+  toolUseId: string,
+  result: { readonly text: string; readonly isError: boolean },
+): boolean {
+  if (kind === "create") {
+    const provisionalKey = `${PROVISIONAL_PLAN_TASK_KEY_PREFIX}${toolUseId}`;
+    if (result.isError) {
+      return planTracker.delete(provisionalKey);
+    }
+    const match = TASK_CREATE_RESULT_PATTERN.exec(result.text.trim().split("\n")[0] ?? "");
+    const taskId = match?.[1];
+    if (!taskId) {
+      return false;
+    }
+    const provisional = planTracker.get(provisionalKey);
+    if (!provisional) {
+      // Input was never observed (e.g. replayed history): insert from the result.
+      if (planTracker.has(taskId)) {
+        return false;
+      }
+      planTracker.set(taskId, {
+        subject: nonEmptyString(match?.[2]) ?? `Task #${taskId}`,
+        status: "pending",
+      });
+      return true;
+    }
+    // Re-key provisional → real id, preserving creation order. The rendered
+    // plan is unchanged, so no emission is needed.
+    const rebuilt = [...planTracker.entries()].map(
+      ([key, task]) => [key === provisionalKey ? taskId : key, task] as const,
+    );
+    planTracker.clear();
+    for (const [key, task] of rebuilt) {
+      planTracker.set(key, task);
+    }
+    return false;
+  }
+  if (kind !== "list" || result.isError) {
+    return false;
+  }
+  const parsed: Array<readonly [string, PlanTrackerTask]> = [];
+  for (const line of result.text.split("\n")) {
+    const match = TASK_LIST_RESULT_LINE_PATTERN.exec(line.trim());
+    if (!match) {
+      continue;
+    }
+    parsed.push([
+      match[1] as string,
+      {
+        subject: nonEmptyString(match[3]) ?? `Task #${match[1]}`,
+        status: planTrackerStatus(match[2]) ?? "pending",
+      },
+    ]);
+  }
+  if (parsed.length === 0) {
+    return false;
+  }
+  // TaskList output is the authoritative snapshot: resync the local mirror.
+  planTracker.clear();
+  for (const [key, task] of parsed) {
+    planTracker.set(key, task);
+  }
+  return true;
 }
 
 function normalizeClaudeTaskStatus(value: unknown): ClaudeTaskStatus | undefined {
@@ -870,6 +1052,43 @@ function summarizeToolRequest(
       }
       break;
     }
+    case "taskcreate": {
+      const subject = text(input.subject);
+      if (subject) {
+        return `Add task: ${subject.slice(0, 200)}`;
+      }
+      break;
+    }
+    case "taskupdate": {
+      const taskId = text(input.taskId);
+      if (taskId) {
+        if (input.status === "deleted") {
+          return `Task #${taskId} removed`;
+        }
+        const status = planTrackerStatus(input.status);
+        if (status === "completed") {
+          return `Task #${taskId} completed`;
+        }
+        if (status === "inProgress") {
+          return `Task #${taskId} started`;
+        }
+        const subject = text(input.subject);
+        if (subject) {
+          return `Task #${taskId}: ${subject.slice(0, 200)}`;
+        }
+        return `Task #${taskId} updated`;
+      }
+      break;
+    }
+    case "taskget": {
+      const taskId = text(input.taskId);
+      if (taskId) {
+        return `Task #${taskId}`;
+      }
+      break;
+    }
+    case "tasklist":
+      return "Task list";
     case "askuserquestion": {
       const questions = Array.isArray(input.questions) ? input.questions : [];
       const first = questions[0];
@@ -962,6 +1181,12 @@ function titleForToolName(toolName: string, itemType: CanonicalItemType): string
       return "Web fetch";
     case "todowrite":
       return "Update todos";
+    case "taskcreate":
+    case "taskupdate":
+      return "Update tasks";
+    case "taskget":
+    case "tasklist":
+      return "Tasks";
     case "skill":
       return "Skill";
     case "askuserquestion":
@@ -2277,6 +2502,23 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             });
           }
         }
+
+        // The newer SDK task tracker drives the same plan UI: mirror
+        // TaskCreate/TaskUpdate inputs into the session task list.
+        if (parsedInput) {
+          const trackerKind = taskTrackerToolKind(nextTool.toolName);
+          if (
+            trackerKind &&
+            applyPlanTrackerToolInput(
+              context.planTracker,
+              trackerKind,
+              nextTool.itemId,
+              parsedInput,
+            )
+          ) {
+            yield* emitPlanTrackerUpdated(context);
+          }
+        }
       }
       return;
     }
@@ -2348,6 +2590,18 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           payload: message,
         },
       });
+
+      // Task tracker calls that arrive with their full input up front (no
+      // streaming deltas) must still drive the plan UI.
+      if (Object.keys(toolInput).length > 0) {
+        const trackerKind = taskTrackerToolKind(toolName);
+        if (
+          trackerKind &&
+          applyPlanTrackerToolInput(context.planTracker, trackerKind, itemId, toolInput)
+        ) {
+          yield* emitPlanTrackerUpdated(context);
+        }
+      }
       return;
     }
 
@@ -2367,6 +2621,36 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         return;
       }
     }
+  });
+
+  /** Emits the current task-tracker mirror as a `turn.plan.updated` event so
+   *  TaskCreate/TaskUpdate drive the plan UI exactly like TodoWrite lists. */
+  const emitPlanTrackerUpdated = Effect.fn("emitPlanTrackerUpdated")(function* (
+    context: ClaudeSessionContext,
+  ) {
+    const planSteps = planStepsFromPlanTracker(context.planTracker);
+    const fingerprint = encodeJsonStringForDiagnostics(planSteps) ?? "";
+    if (fingerprint === context.lastEmittedPlanTrackerFingerprint) {
+      return;
+    }
+    context.lastEmittedPlanTrackerFingerprint = fingerprint;
+    const stamp = yield* makeEventStamp();
+    yield* offerRuntimeEvent({
+      type: "turn.plan.updated",
+      eventId: stamp.eventId,
+      provider: PROVIDER,
+      createdAt: stamp.createdAt,
+      threadId: context.session.threadId,
+      ...(context.turnState
+        ? {
+            turnId: asCanonicalTurnId(context.turnState.turnId),
+          }
+        : {}),
+      payload: {
+        plan: planSteps,
+      },
+      providerRefs: nativeProviderRefs(context),
+    });
   });
 
   const handleUserMessage = Effect.fn("handleUserMessage")(function* (
@@ -2477,6 +2761,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           payload: message,
         },
       });
+
+      // TaskCreate results reveal the assigned task id; TaskList results are
+      // an authoritative snapshot. Both keep the plan mirror in sync.
+      const trackerKind = taskTrackerToolKind(tool.toolName);
+      if (
+        trackerKind &&
+        applyPlanTrackerToolResult(context.planTracker, trackerKind, tool.itemId, toolResult)
+      ) {
+        yield* emitPlanTrackerUpdated(context);
+      }
 
       context.inFlightTools.delete(index);
     }
@@ -3380,8 +3674,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           } satisfies PermissionResult;
         }
 
+        // Plan turns route write tools here regardless of allow rules; never
+        // inherit full-access auto-allow while planning, so a plan turn cannot
+        // silently edit files. In "auto" mode the SDK classifier handles
+        // approvals upstream and only fallback prompts reach this callback,
+        // so those fall through to the in-app approval flow below.
         const runtimeMode = input.runtimeMode ?? "full-access";
-        if (runtimeMode === "full-access") {
+        if (runtimeMode === "full-access" && context.currentInteractionMode !== "plan") {
           return {
             behavior: "allow",
             updatedInput: toolInput,
@@ -3521,9 +3820,17 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const effectiveEffort = getEffectiveClaudeAgentEffort(effort);
       const runtimeModeToPermission: Record<string, PermissionMode> = {
         "auto-accept-edits": "acceptEdits",
+        auto: "auto",
         "full-access": "bypassPermissions",
       };
-      const permissionMode = runtimeModeToPermission[input.runtimeMode];
+      const requestedPermissionMode = runtimeModeToPermission[input.runtimeMode];
+      // Auto mode needs a classifier-capable model (Opus 4.6+/Sonnet 4.6+).
+      // Older models clamp to acceptEdits: edits keep flowing and everything
+      // else falls back to in-app approval prompts instead of erroring.
+      const autoModeClamped =
+        requestedPermissionMode === "auto" &&
+        !claudeModelSupportsAutoRuntimeMode(modelSelection?.model);
+      const permissionMode = autoModeClamped ? "acceptEdits" : requestedPermissionMode;
       const settings = {
         ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
         ...(fastMode ? { fastMode: true } : {}),
@@ -3576,6 +3883,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         "claude.query.model": apiModelId ?? "",
         "claude.query.effort": effectiveEffort ?? "",
         "claude.query.permission_mode": permissionMode ?? "",
+        "claude.query.auto_mode_clamped": autoModeClamped,
         "claude.query.allow_dangerously_skip_permissions": permissionMode === "bypassPermissions",
         "claude.query.resume": existingResumeSessionId ?? "",
         "claude.query.session_id": newSessionId ?? "",
@@ -3628,6 +3936,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         streamFiber: undefined,
         startedAt,
         basePermissionMode: permissionMode,
+        currentInteractionMode: undefined,
         currentApiModelId: apiModelId,
         resumeSessionId: sessionId,
         pendingApprovals,
@@ -3636,6 +3945,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         inFlightTools,
         fileChangeStatsByToolUseId,
         tasks: new Map(),
+        planTracker: new Map(),
+        lastEmittedPlanTrackerFingerprint: undefined,
         turnState: undefined,
         lastKnownContextWindow: undefined,
         lastKnownTokenUsage: undefined,
@@ -3759,11 +4070,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         try: () => context.query.setPermissionMode("plan"),
         catch: (cause) => toRequestError(input.threadId, "turn/setPermissionMode", cause),
       });
+      context.currentInteractionMode = "plan";
     } else if (input.interactionMode === "default") {
       yield* Effect.tryPromise({
         try: () => context.query.setPermissionMode(context.basePermissionMode ?? "default"),
         catch: (cause) => toRequestError(input.threadId, "turn/setPermissionMode", cause),
       });
+      context.currentInteractionMode = "default";
     }
 
     const turnId = TurnId.make(yield* Random.nextUUIDv4);

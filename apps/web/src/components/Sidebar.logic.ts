@@ -32,7 +32,8 @@ export interface ThreadStatusPill {
     | "Completed"
     | "Pending Approval"
     | "Awaiting Input"
-    | "Plan Ready";
+    | "Plan Ready"
+    | "Background";
   colorClass: string;
   dotClass: string;
   pulse: boolean;
@@ -44,6 +45,7 @@ const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
   Working: 3,
   Connecting: 3,
   "Plan Ready": 2,
+  Background: 2,
   Completed: 1,
 };
 
@@ -381,6 +383,18 @@ export function resolveThreadStatusPill(input: {
       colorClass: "text-violet-600 dark:text-violet-300/90",
       dotClass: "bg-violet-500 dark:bg-violet-300/90",
       pulse: false,
+    };
+  }
+
+  // Settled turn with provider tasks still running: the provider will start
+  // the thread back up on its own when they finish.
+  const pendingBackgroundTaskCount = thread.session?.pendingBackgroundTaskCount ?? 0;
+  if (pendingBackgroundTaskCount > 0 && isLatestTurnSettled(thread.latestTurn, thread.session)) {
+    return {
+      label: "Background",
+      colorClass: "text-amber-600 dark:text-amber-300/90",
+      dotClass: "bg-amber-500 dark:bg-amber-300/90",
+      pulse: true,
     };
   }
 

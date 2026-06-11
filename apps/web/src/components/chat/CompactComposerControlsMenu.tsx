@@ -11,6 +11,7 @@ import {
   MenuSeparator as MenuDivider,
   MenuTrigger,
 } from "../ui/menu";
+import type { RuntimeModeOption } from "../../runtimeModeOptions";
 
 export const CompactComposerControlsMenu = memo(function CompactComposerControlsMenu(props: {
   activePlan: boolean;
@@ -18,6 +19,7 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
   planSidebarLabel: string;
   planSidebarOpen: boolean;
   runtimeMode: RuntimeMode;
+  runtimeModeOptions: ReadonlyArray<RuntimeModeOption>;
   showInteractionModeToggle: boolean;
   traitsMenuContent?: ReactNode;
   onToggleInteractionMode: () => void;
@@ -69,9 +71,16 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
             props.onRuntimeModeChange(value as RuntimeMode);
           }}
         >
-          <MenuRadioItem value="approval-required">Supervised</MenuRadioItem>
-          <MenuRadioItem value="auto-accept-edits">Auto-accept edits</MenuRadioItem>
-          <MenuRadioItem value="full-access">Full access</MenuRadioItem>
+          {props.runtimeModeOptions.map((option) => (
+            <MenuRadioItem
+              key={option.mode}
+              value={option.mode}
+              disabled={option.disabled === true}
+              title={option.disabled && option.disabledReason ? option.disabledReason : undefined}
+            >
+              {option.label}
+            </MenuRadioItem>
+          ))}
         </MenuRadioGroup>
         {props.activePlan ? (
           <>

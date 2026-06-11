@@ -1,5 +1,6 @@
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime";
 import { projectScriptCwd } from "@t3tools/shared/projectScripts";
+import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo } from "react";
 import ChatView from "../components/ChatView";
@@ -15,7 +16,10 @@ import {
   parseDiffRouteSearch,
   stripRightPanelSearchParams,
 } from "../diffRouteSearch";
+import { preloadDiffPanel, schedulePreloadDiffPanel } from "../diffPanelPreload";
 import { useMediaQuery } from "../hooks/useMediaQuery";
+import { useSettings } from "../hooks/useSettings";
+import { gitWorkingTreeDiffQueryOptions } from "../lib/gitReactQuery";
 import { SidebarInset } from "../components/ui/sidebar";
 import { RightPanelSheet } from "../components/RightPanelSheet";
 import {
@@ -126,6 +130,28 @@ function DraftChatThreadRouteView() {
     },
     [draftId, setDraftThreadContext],
   );
+  const diffIgnoreWhitespace = useSettings((settings) => settings.diffIgnoreWhitespace);
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    if (!sourceControlOpen) {
+      return;
+    }
+    return schedulePreloadDiffPanel();
+  }, [sourceControlOpen]);
+  const prefetchWorkingTreeDiff = useCallback(() => {
+    preloadDiffPanel();
+    if (!sourceControlTarget) {
+      return;
+    }
+    void queryClient.prefetchQuery(
+      gitWorkingTreeDiffQueryOptions({
+        environmentId: sourceControlTarget.environmentId,
+        cwd: sourceControlTarget.cwd,
+        filePaths: null,
+        ignoreWhitespace: diffIgnoreWhitespace,
+      }),
+    );
+  }, [diffIgnoreWhitespace, queryClient, sourceControlTarget]);
 
   useEffect(() => {
     if (!canonicalThreadRef) {
@@ -168,6 +194,7 @@ function DraftChatThreadRouteView() {
       activeThreadRef={draftThreadRef}
       onActiveBranchChange={handleSourceControlBranchChange}
       onOpenDiff={openDiff}
+      onPrefetchDiff={prefetchWorkingTreeDiff}
     />
   ) : null;
 

@@ -1,8 +1,18 @@
 import { memo, type PointerEventHandler } from "react";
+import type { RuntimeMode } from "@t3tools/contracts";
 import { ChevronDownIcon, ChevronLeftIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
-import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
+import {
+  Menu,
+  MenuItem,
+  MenuPopup,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuSeparator,
+  MenuTrigger,
+} from "../ui/menu";
+import type { RuntimeModeOption } from "../../runtimeModeOptions";
 
 interface PendingActionState {
   questionIndex: number;
@@ -24,6 +34,9 @@ interface ComposerPrimaryActionsProps {
   isPreparingWorktree: boolean;
   hasSendableContent: boolean;
   preserveComposerFocusOnPointerDown?: boolean;
+  runtimeMode: RuntimeMode;
+  runtimeModeOptions: ReadonlyArray<RuntimeModeOption>;
+  onRuntimeModeChange: (mode: RuntimeMode) => void;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
@@ -63,6 +76,9 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   isPreparingWorktree,
   hasSendableContent,
   preserveComposerFocusOnPointerDown = false,
+  runtimeMode,
+  runtimeModeOptions,
+  onRuntimeModeChange,
   onPreviousPendingQuestion,
   onInterrupt,
   onImplementPlanInNewThread,
@@ -186,6 +202,36 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
             >
               Implement in a new thread
             </MenuItem>
+            {runtimeModeOptions.length > 1 ? (
+              <>
+                <MenuSeparator />
+                <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">
+                  Implement using
+                </div>
+                <MenuRadioGroup
+                  value={runtimeMode}
+                  onValueChange={(value) => {
+                    if (!value || value === runtimeMode) return;
+                    onRuntimeModeChange(value as RuntimeMode);
+                  }}
+                >
+                  {runtimeModeOptions.map((option) => (
+                    <MenuRadioItem
+                      key={option.mode}
+                      value={option.mode}
+                      disabled={option.disabled === true}
+                      title={
+                        option.disabled && option.disabledReason
+                          ? option.disabledReason
+                          : option.description
+                      }
+                    >
+                      {option.label}
+                    </MenuRadioItem>
+                  ))}
+                </MenuRadioGroup>
+              </>
+            ) : null}
           </MenuPopup>
         </Menu>
       </div>

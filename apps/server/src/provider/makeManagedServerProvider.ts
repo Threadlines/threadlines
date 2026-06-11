@@ -152,11 +152,9 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
 
   return {
     maintenanceCapabilities: input.maintenanceCapabilities,
-    getSnapshot: input.getSettings.pipe(
-      Effect.flatMap(applySnapshot),
-      Effect.tapError(Effect.logError),
-      Effect.orDie,
-    ),
+    // Reads the cached snapshot without probing or queueing behind the
+    // refresh semaphore — startup paths must never wait on a slow probe.
+    getSnapshot: Ref.get(snapshotStateRef).pipe(Effect.map((state) => state.snapshot)),
     refresh: refreshSnapshot().pipe(Effect.tapError(Effect.logError), Effect.orDie),
     get streamChanges() {
       return Stream.fromPubSub(changesPubSub);

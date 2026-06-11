@@ -1,28 +1,28 @@
-import type { ReactNode } from "react";
+import type { KeyboardEvent, ReactNode } from "react";
 
-import { isElectron } from "~/env";
 import { cn } from "~/lib/utils";
 
 import { Skeleton } from "./ui/skeleton";
 
 export type DiffPanelMode = "inline" | "sheet" | "sidebar";
 
-function getDiffPanelHeaderRowClassName(mode: DiffPanelMode) {
-  const shouldUseDragRegion = isElectron && mode !== "sheet";
-  return cn(
-    "flex items-center gap-2 px-3",
-    shouldUseDragRegion
-      ? "drag-region h-[52px] border-b border-border wco:h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]"
-      : "h-12 wco:max-h-[env(titlebar-area-height)]",
-  );
-}
-
 export function DiffPanelShell(props: {
   mode: DiffPanelMode;
   header: ReactNode;
   children: ReactNode;
+  onEscape?: (() => void) | undefined;
 }) {
-  const shouldUseDragRegion = isElectron && props.mode !== "sheet";
+  const { onEscape } = props;
+  const handleKeyDown =
+    onEscape && props.mode !== "sheet"
+      ? (event: KeyboardEvent<HTMLDivElement>) => {
+          if (event.key !== "Escape" || event.defaultPrevented) {
+            return;
+          }
+          event.preventDefault();
+          onEscape();
+        }
+      : undefined;
 
   return (
     <div
@@ -32,14 +32,13 @@ export function DiffPanelShell(props: {
           ? "w-[42vw] min-w-[360px] max-w-[560px] shrink-0 border-l border-border"
           : "w-full",
       )}
+      onKeyDown={handleKeyDown}
     >
-      {shouldUseDragRegion ? (
-        <div className={getDiffPanelHeaderRowClassName(props.mode)}>{props.header}</div>
-      ) : (
-        <div className="border-b border-border">
-          <div className={getDiffPanelHeaderRowClassName(props.mode)}>{props.header}</div>
+      <div className="drag-region shrink-0 border-b border-border">
+        <div className="@container/source-control-title flex h-8 items-center justify-between gap-2 px-3 py-1 wco:h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
+          {props.header}
         </div>
-      )}
+      </div>
       {props.children}
     </div>
   );
@@ -47,21 +46,10 @@ export function DiffPanelShell(props: {
 
 export function DiffPanelHeaderSkeleton() {
   return (
-    <>
-      <div className="relative min-w-0 flex-1">
-        <Skeleton className="absolute left-0 top-1/2 size-6 -translate-y-1/2 rounded-md border border-border/50" />
-        <Skeleton className="absolute right-0 top-1/2 size-6 -translate-y-1/2 rounded-md border border-border/50" />
-        <div className="flex gap-1 overflow-hidden px-8 py-0.5">
-          <Skeleton className="h-6 w-16 shrink-0 rounded-md" />
-          <Skeleton className="h-6 w-24 shrink-0 rounded-md" />
-          <Skeleton className="h-6 w-24 shrink-0 rounded-md max-sm:hidden" />
-        </div>
-      </div>
-      <div className="flex shrink-0 gap-1">
-        <Skeleton className="size-7 rounded-md" />
-        <Skeleton className="size-7 rounded-md" />
-      </div>
-    </>
+    <div className="flex min-w-0 flex-1 items-center gap-1.5">
+      <Skeleton className="size-3.5 shrink-0 rounded-sm" />
+      <Skeleton className="h-3 w-32 rounded-full" />
+    </div>
   );
 }
 

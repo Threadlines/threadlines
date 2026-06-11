@@ -360,6 +360,113 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.lastError).toBe("turn failed");
   });
 
+  it("tracks pending provider tasks on the thread session", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await waitForThread(harness.readModel, (thread) => thread.session?.status === "ready");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-claude-background-task"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "ready",
+          providerName: ProviderDriverKind.make("claudeAgent"),
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          pendingBackgroundTaskCount: 0,
+          updatedAt: now,
+          lastError: null,
+        },
+        createdAt: now,
+      }),
+    );
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.providerName === ProviderDriverKind.make("claudeAgent") &&
+        thread.session.pendingBackgroundTaskCount === 0,
+    );
+
+    harness.emit({
+      type: "task.started",
+      eventId: asEventId("evt-background-task-started"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      payload: {
+        taskId: "background-task-1",
+        description: "Running background command",
+      },
+    });
+
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.pendingBackgroundTaskCount === 1,
+    );
+
+    harness.emit({
+      type: "task.completed",
+      eventId: asEventId("evt-background-task-completed"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      payload: {
+        taskId: "background-task-1",
+        status: "completed",
+      },
+    });
+
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.pendingBackgroundTaskCount === 0,
+    );
+
+    harness.emit({
+      type: "task.started",
+      eventId: asEventId("evt-background-task-started-before-exit"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      payload: {
+        taskId: "background-task-2",
+        description: "Running another background command",
+      },
+    });
+
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.pendingBackgroundTaskCount === 1,
+    );
+
+    harness.emit({
+      type: "session.exited",
+      eventId: asEventId("evt-session-exited-clears-background-task"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      payload: {
+        reason: "provider exited",
+        exitKind: "graceful",
+      },
+    });
+
+    const stoppedThread = await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.status === "stopped" && thread.session.pendingBackgroundTaskCount === 0,
+    );
+    expect(stoppedThread.session?.pendingBackgroundTaskCount).toBe(0);
+  });
+
   it("ignores stale lifecycle events from a previous provider instance", async () => {
     const harness = await createHarness();
     const reboundAt = "2026-01-01T00:00:03.000Z";

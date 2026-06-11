@@ -220,6 +220,99 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
+    it.effect("reports remote divergence without reading working-tree details", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const remote = yield* makeTmpDir("git-vcs-driver-remote-");
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        yield* git(remote, ["init", "--bare"]);
+        yield* git(cwd, ["remote", "add", "origin", remote]);
+        yield* git(cwd, ["push", "-u", "origin", initialBranch]);
+        yield* git(cwd, ["checkout", "-b", "feature/remote-status"]);
+        yield* writeTextFile(cwd, "feature.txt", "feature\n");
+        yield* git(cwd, ["add", "feature.txt"]);
+        yield* git(cwd, ["commit", "-m", "feature commit"]);
+        yield* git(cwd, ["push", "-u", "origin", "feature/remote-status"]);
+        yield* writeTextFile(cwd, "untracked.txt", "local-only\n");
+
+        const status = yield* (yield* GitVcsDriver.GitVcsDriver).statusDetailsRemote(cwd);
+
+        assert.equal(status.isRepo, true);
+        assert.equal(status.branch, "feature/remote-status");
+        assert.equal(status.hasUpstream, true);
+        assert.equal(status.aheadCount, 0);
+        assert.equal(status.behindCount, 0);
+        assert.equal(status.aheadOfDefaultCount, 1);
+        assert.notProperty(status, "workingTree");
+        assert.notProperty(status, "hasWorkingTreeChanges");
+      }),
+    );
+
+    it.effect("reports remote ahead and behind divergence against the upstream", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const remote = yield* makeTmpDir("git-vcs-driver-remote-");
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        yield* git(remote, ["init", "--bare"]);
+        yield* git(cwd, ["remote", "add", "origin", remote]);
+        yield* git(cwd, ["push", "-u", "origin", initialBranch]);
+
+        // A peer clone advances the remote branch while the local repo commits
+        // independently, leaving the branch ahead 1 / behind 1.
+        const peer = yield* makeTmpDir("git-vcs-driver-peer-");
+        yield* git(peer, ["clone", "--branch", initialBranch, remote, "."]);
+        yield* git(peer, ["config", "user.email", "test@test.com"]);
+        yield* git(peer, ["config", "user.name", "Test"]);
+        yield* writeTextFile(peer, "peer.txt", "peer\n");
+        yield* git(peer, ["add", "."]);
+        yield* git(peer, ["commit", "-m", "peer commit"]);
+        yield* git(peer, ["push", "origin", initialBranch]);
+
+        yield* writeTextFile(cwd, "local.txt", "local\n");
+        yield* git(cwd, ["add", "local.txt"]);
+        yield* git(cwd, ["commit", "-m", "local commit"]);
+
+        const status = yield* (yield* GitVcsDriver.GitVcsDriver).statusDetailsRemote(cwd);
+
+        assert.equal(status.hasUpstream, true);
+        assert.equal(status.aheadCount, 1);
+        assert.equal(status.behindCount, 1);
+      }),
+    );
+
+    it.effect("uses origin HEAD for default-branch detection with a non-origin upstream", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const origin = yield* makeTmpDir("git-vcs-driver-origin-");
+        const upstream = yield* makeTmpDir("git-vcs-driver-upstream-");
+        yield* initRepoWithCommit(cwd);
+        yield* git(origin, ["init", "--bare"]);
+        yield* git(upstream, ["init", "--bare"]);
+        yield* git(cwd, ["branch", "-M", "main"]);
+        yield* git(cwd, ["remote", "add", "origin", origin]);
+        yield* git(cwd, ["remote", "add", "upstream", upstream]);
+        yield* git(cwd, ["push", "origin", "main"]);
+        yield* git(cwd, ["push", "upstream", "main"]);
+        yield* git(cwd, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+        yield* git(cwd, ["checkout", "-b", "release"]);
+        yield* writeTextFile(cwd, "release.txt", "release\n");
+        yield* git(cwd, ["add", "release.txt"]);
+        yield* git(cwd, ["commit", "-m", "release commit"]);
+        yield* git(cwd, ["push", "-u", "upstream", "release"]);
+        yield* git(cwd, [
+          "symbolic-ref",
+          "refs/remotes/upstream/HEAD",
+          "refs/remotes/upstream/release",
+        ]);
+
+        const status = yield* (yield* GitVcsDriver.GitVcsDriver).statusDetailsRemote(cwd);
+
+        assert.equal(status.branch, "release");
+        assert.equal(status.upstreamRef, "upstream/release");
+        assert.equal(status.isDefaultBranch, false);
+      }),
+    );
+
     it.effect("disables SSH askpass for background upstream status fetches", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();

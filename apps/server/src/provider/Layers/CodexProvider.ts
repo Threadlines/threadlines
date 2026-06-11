@@ -25,7 +25,7 @@ import type {
   ServerProviderModel,
   ServerProviderSkill,
 } from "@t3tools/contracts";
-import { ServerSettingsError } from "@t3tools/contracts";
+import { RUNTIME_MODES, ServerSettingsError } from "@t3tools/contracts";
 
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { isCommandAvailable } from "@t3tools/shared/shell";
@@ -41,6 +41,7 @@ const isCodexAppServerSpawnError = Schema.is(CodexErrors.CodexAppServerSpawnErro
 const CODEX_PRESENTATION = {
   displayName: "Codex",
   showInteractionModeToggle: true,
+  supportedRuntimeModes: RUNTIME_MODES,
 } as const;
 
 export interface CodexAppServerProviderSnapshot {

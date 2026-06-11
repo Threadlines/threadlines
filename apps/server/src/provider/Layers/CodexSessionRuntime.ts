@@ -274,6 +274,7 @@ function readResumeCursorThreadId(
 function runtimeModeToThreadConfig(input: RuntimeMode): {
   readonly approvalPolicy: EffectCodexSchema.V2ThreadStartParams__AskForApproval;
   readonly sandbox: EffectCodexSchema.V2ThreadStartParams__SandboxMode;
+  readonly approvalsReviewer?: EffectCodexSchema.V2ThreadStartParams__ApprovalsReviewer;
 } {
   switch (input) {
     case "approval-required":
@@ -285,6 +286,16 @@ function runtimeModeToThreadConfig(input: RuntimeMode): {
       return {
         approvalPolicy: "on-request",
         sandbox: "workspace-write",
+      };
+    // Codex auto-review: same sandbox/approval surface as auto-accept-edits,
+    // but escalation requests route to the reviewer subagent instead of the
+    // user. Approvals the reviewer declines still fall back to the agent
+    // (deny-and-continue), so no in-app prompt storm.
+    case "auto":
+      return {
+        approvalPolicy: "on-request",
+        sandbox: "workspace-write",
+        approvalsReviewer: "auto_review",
       };
     case "full-access":
     default:
@@ -306,6 +317,7 @@ function buildThreadStartParams(input: {
     cwd: input.cwd,
     approvalPolicy: config.approvalPolicy,
     sandbox: config.sandbox,
+    ...(config.approvalsReviewer ? { approvalsReviewer: config.approvalsReviewer } : {}),
     ...(input.model ? { model: input.model } : {}),
     ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
   };
@@ -320,6 +332,7 @@ function runtimeModeToTurnSandboxPolicy(
         type: "readOnly",
       };
     case "auto-accept-edits":
+    case "auto":
       return {
         type: "workspaceWrite",
       };
@@ -393,6 +406,7 @@ export function buildTurnStartParams(input: {
     input: turnInput,
     ...(input.clientUserMessageId ? { clientUserMessageId: input.clientUserMessageId } : {}),
     approvalPolicy: config.approvalPolicy,
+    ...(config.approvalsReviewer ? { approvalsReviewer: config.approvalsReviewer } : {}),
     sandboxPolicy: runtimeModeToTurnSandboxPolicy(input.runtimeMode),
     ...(input.model ? { model: input.model } : {}),
     ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),

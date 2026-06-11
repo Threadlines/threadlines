@@ -29,6 +29,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           provider_thread_id,
           runtime_mode,
           active_turn_id,
+          pending_background_task_count,
           last_error,
           updated_at
         )
@@ -41,6 +42,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           ${row.providerThreadId},
           ${row.runtimeMode},
           ${row.activeTurnId},
+          ${row.pendingBackgroundTaskCount},
           ${row.lastError},
           ${row.updatedAt}
         )
@@ -53,6 +55,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           provider_thread_id = excluded.provider_thread_id,
           runtime_mode = excluded.runtime_mode,
           active_turn_id = excluded.active_turn_id,
+          pending_background_task_count = excluded.pending_background_task_count,
           last_error = excluded.last_error,
           updated_at = excluded.updated_at
       `,
@@ -72,6 +75,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           provider_thread_id AS "providerThreadId",
           runtime_mode AS "runtimeMode",
           active_turn_id AS "activeTurnId",
+          pending_background_task_count AS "pendingBackgroundTaskCount",
           last_error AS "lastError",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions

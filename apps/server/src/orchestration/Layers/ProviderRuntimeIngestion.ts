@@ -1217,8 +1217,40 @@ const make = Effect.gen(function* () {
                   : (thread.session?.providerThreadId ?? null),
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
               activeTurnId: nextActiveTurnId,
+              pendingBackgroundTaskCount:
+                event.type === "session.exited"
+                  ? 0
+                  : (thread.session?.pendingBackgroundTaskCount ?? 0),
               lastError,
               updatedAt: sessionUpdatedAt,
+            },
+            createdAt: now,
+          });
+        }
+      }
+
+      // Track provider tasks (e.g. backgrounded shell commands) on the session
+      // so the UI can show a settled thread as waiting on background work. The
+      // provider self-wakes with a fresh turn when a task settles; this count
+      // only mirrors what is still running.
+      if (
+        (event.type === "task.started" || event.type === "task.completed") &&
+        thread.session != null
+      ) {
+        const currentPendingCount = thread.session.pendingBackgroundTaskCount ?? 0;
+        const nextPendingCount =
+          event.type === "task.started"
+            ? currentPendingCount + 1
+            : Math.max(0, currentPendingCount - 1);
+        if (nextPendingCount !== currentPendingCount) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: providerCommandId(event, "task-pending-session-set"),
+            threadId: thread.id,
+            session: {
+              ...thread.session,
+              pendingBackgroundTaskCount: nextPendingCount,
+              updatedAt: now,
             },
             createdAt: now,
           });
@@ -1467,6 +1499,7 @@ const make = Effect.gen(function* () {
                 : {}),
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
               activeTurnId: eventTurnId ?? null,
+              pendingBackgroundTaskCount: thread.session?.pendingBackgroundTaskCount ?? 0,
               lastError: runtimeErrorMessage,
               updatedAt: now,
             },

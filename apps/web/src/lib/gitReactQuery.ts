@@ -24,6 +24,8 @@ export const gitQueryKeys = {
     ["git", "refs", environmentId ?? null, cwd] as const,
   commitGraph: (environmentId: EnvironmentId | null, cwd: string | null, limit: number) =>
     ["git", "commit-graph", environmentId ?? null, cwd, limit] as const,
+  workingTreeDiffPrefix: (environmentId: EnvironmentId | null, cwd: string | null) =>
+    ["git", "working-tree-diff", environmentId ?? null, cwd] as const,
   workingTreeDiff: (
     environmentId: EnvironmentId | null,
     cwd: string | null,

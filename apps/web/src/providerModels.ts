@@ -2,9 +2,12 @@ import {
   DEFAULT_MODEL,
   DEFAULT_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
+  LEGACY_RUNTIME_MODES,
   ProviderDriverKind,
+  RUNTIME_MODES,
   type ModelCapabilities,
   type ProviderInstanceId,
+  type RuntimeMode,
   type ServerProvider,
   type ServerProviderModel,
 } from "@t3tools/contracts";
@@ -51,6 +54,34 @@ export function getProviderInteractionModeToggle(
   provider: ProviderDriverKind,
 ): boolean {
   return getProviderSnapshot(providers, provider)?.showInteractionModeToggle ?? true;
+}
+
+/**
+ * Runtime modes the driver can honor natively. Absent on the snapshot means
+ * the legacy three-mode set (drivers without a native auto tier).
+ */
+export function getProviderSupportedRuntimeModes(
+  providers: ReadonlyArray<ServerProvider>,
+  provider: ProviderDriverKind,
+): ReadonlyArray<RuntimeMode> {
+  return getProviderSnapshot(providers, provider)?.supportedRuntimeModes ?? LEGACY_RUNTIME_MODES;
+}
+
+/**
+ * Per-model restriction on the provider-level runtime modes. Returns the
+ * modes the selected model cannot honor (for disabling, not hiding).
+ */
+export function getModelUnsupportedRuntimeModes(
+  models: ReadonlyArray<ServerProviderModel>,
+  model: string | null | undefined,
+  provider: ProviderDriverKind,
+): ReadonlyArray<RuntimeMode> {
+  const slug = normalizeModelSlug(model, provider);
+  const supported = models.find((candidate) => candidate.slug === slug)?.supportedRuntimeModes;
+  if (!supported) {
+    return [];
+  }
+  return RUNTIME_MODES.filter((mode) => !supported.includes(mode));
 }
 
 export function isProviderEnabled(

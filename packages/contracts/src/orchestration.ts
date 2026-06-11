@@ -117,10 +117,28 @@ export type ModelSelection = typeof ModelSelection.Type;
 export const RuntimeMode = Schema.Literals([
   "approval-required",
   "auto-accept-edits",
+  "auto",
   "full-access",
 ]);
 export type RuntimeMode = typeof RuntimeMode.Type;
 export const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
+/** Every runtime mode, ordered from most supervised to most permissive. */
+export const RUNTIME_MODES: ReadonlyArray<RuntimeMode> = [
+  "approval-required",
+  "auto-accept-edits",
+  "auto",
+  "full-access",
+];
+/**
+ * Runtime modes every driver supported before per-provider gating existed.
+ * Used as the fallback when a provider snapshot does not advertise
+ * `supportedRuntimeModes` (older servers, drivers without native auto).
+ */
+export const LEGACY_RUNTIME_MODES: ReadonlyArray<RuntimeMode> = [
+  "approval-required",
+  "auto-accept-edits",
+  "full-access",
+];
 export const ProviderInteractionMode = Schema.Literals(["default", "plan"]);
 export type ProviderInteractionMode = typeof ProviderInteractionMode.Type;
 export const DEFAULT_PROVIDER_INTERACTION_MODE: ProviderInteractionMode = "default";
@@ -271,6 +289,10 @@ export const OrchestrationSession = Schema.Struct({
   providerThreadId: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
   activeTurnId: Schema.NullOr(TurnId),
+  // Provider-reported tasks (e.g. backgrounded shell commands) still running.
+  // Non-zero after a turn settles means the provider will self-wake when they
+  // finish; the UI surfaces this as a pending-background state.
+  pendingBackgroundTaskCount: Schema.optional(NonNegativeInt),
   lastError: Schema.NullOr(TrimmedNonEmptyString),
   updatedAt: IsoDateTime,
 });

@@ -562,8 +562,14 @@ export const make = Effect.fn("effect-acp/AcpClient.make")(function* (
 export const layerChildProcess = (
   handle: ChildProcessSpawner.ChildProcessHandle,
   options: AcpClientOptions = {},
-): Layer.Layer<AcpClient> => {
-  const stdio = makeChildStdio(handle);
-  const terminationError = makeTerminationError(handle);
-  return Layer.effect(AcpClient, make(stdio, options, terminationError));
-};
+): Layer.Layer<AcpClient> =>
+  Layer.effect(
+    AcpClient,
+    Effect.gen(function* () {
+      // Agent CLI diagnostics can exceed the child stderr pipe capacity;
+      // without a reader the child blocks mid-write and JSON-RPC responses
+      // never arrive.
+      yield* Stream.runDrain(handle.stderr).pipe(Effect.ignore, Effect.forkScoped);
+      return yield* make(makeChildStdio(handle), options, makeTerminationError(handle));
+    }),
+  );

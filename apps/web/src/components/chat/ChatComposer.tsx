@@ -95,14 +95,15 @@ import {
   CircleAlertIcon,
   ListTodoIcon,
   LoaderCircleIcon,
-  type LucideIcon,
-  LockIcon,
-  LockOpenIcon,
-  PenLineIcon,
   XIcon,
 } from "lucide-react";
 import { proposedPlanTitle } from "../../proposedPlan";
 import { getProviderInteractionModeToggle } from "../../providerModels";
+import {
+  deriveRuntimeModeOptions,
+  runtimeModeConfig,
+  type RuntimeModeOption,
+} from "../../runtimeModeOptions";
 import {
   deriveProviderInstanceEntries,
   filterMaintainedProviderInstanceEntries,
@@ -126,28 +127,6 @@ import { useMediaQuery } from "../../hooks/useMediaQuery";
 
 const IMAGE_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES / (1024 * 1024))}MB`;
 
-const runtimeModeConfig: Record<
-  RuntimeMode,
-  { label: string; description: string; icon: LucideIcon }
-> = {
-  "approval-required": {
-    label: "Supervised",
-    description: "Ask before commands and file changes.",
-    icon: LockIcon,
-  },
-  "auto-accept-edits": {
-    label: "Auto-accept edits",
-    description: "Auto-approve edits, ask before other actions.",
-    icon: PenLineIcon,
-  },
-  "full-access": {
-    label: "Full access",
-    description: "Allow commands and edits without prompts.",
-    icon: LockOpenIcon,
-  },
-};
-
-const runtimeModeOptions = Object.keys(runtimeModeConfig) as RuntimeMode[];
 const COMPOSER_PATH_QUERY_DEBOUNCE_MS = 120;
 const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
 const COMPOSER_FLOATING_LAYER_SELECTOR = [
@@ -198,6 +177,7 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
   showInteractionModeToggle: boolean;
   interactionMode: ProviderInteractionMode;
   runtimeMode: RuntimeMode;
+  runtimeModeOptions: ReadonlyArray<RuntimeModeOption>;
   showPlanToggle: boolean;
   planSidebarLabel: string;
   planSidebarOpen: boolean;
@@ -205,8 +185,14 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
   onRuntimeModeChange: (mode: RuntimeMode) => void;
   onTogglePlanSidebar: () => void;
 }) {
-  const runtimeModeOption = runtimeModeConfig[props.runtimeMode];
-  const RuntimeModeIcon = runtimeModeOption.icon;
+  const isPlanInteraction = props.interactionMode === "plan";
+  const currentRuntimeModeOption = props.runtimeModeOptions.find(
+    (option) => option.mode === props.runtimeMode,
+  ) ?? {
+    mode: props.runtimeMode,
+    ...runtimeModeConfig[props.runtimeMode],
+  };
+  const RuntimeModeIcon = currentRuntimeModeOption.icon;
 
   return (
     <>
@@ -243,26 +229,41 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
         <SelectTrigger
           variant="ghost"
           size="sm"
-          className="font-medium"
+          className={cn("font-medium", isPlanInteraction && "opacity-65")}
           aria-label="Runtime mode"
-          title={runtimeModeOption.description}
+          title={
+            isPlanInteraction
+              ? "Plan turns don't edit files. This access level applies when you build."
+              : currentRuntimeModeOption.description
+          }
         >
-          <RuntimeModeIcon className="size-4" />
-          <SelectValue>{runtimeModeOption.label}</SelectValue>
+          <RuntimeModeIcon className={cn("size-4", currentRuntimeModeOption.accentClassName)} />
+          <SelectValue>{currentRuntimeModeOption.label}</SelectValue>
         </SelectTrigger>
         <SelectPopup alignItemWithTrigger={false}>
-          {runtimeModeOptions.map((mode) => {
-            const option = runtimeModeConfig[mode];
+          {props.runtimeModeOptions.map((option) => {
             const OptionIcon = option.icon;
             return (
-              <SelectItem key={mode} value={mode} className="min-w-64 py-2">
+              <SelectItem
+                key={option.mode}
+                value={option.mode}
+                disabled={option.disabled === true}
+                className="min-w-64 py-2"
+              >
                 <div className="grid min-w-0 gap-0.5">
                   <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
-                    <OptionIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                    <OptionIcon
+                      className={cn(
+                        "size-3.5 shrink-0 text-muted-foreground",
+                        option.accentClassName,
+                      )}
+                    />
                     {option.label}
                   </span>
                   <span className="text-muted-foreground text-xs leading-4">
-                    {option.description}
+                    {option.disabled && option.disabledReason
+                      ? option.disabledReason
+                      : option.description}
                   </span>
                 </div>
               </SelectItem>
@@ -321,6 +322,9 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   isEnvironmentUnavailable: boolean;
   hasSendableContent: boolean;
   preserveComposerFocusOnPointerDown?: boolean;
+  runtimeMode: RuntimeMode;
+  runtimeModeOptions: ReadonlyArray<RuntimeModeOption>;
+  onRuntimeModeChange: (mode: RuntimeMode) => void;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
@@ -347,6 +351,9 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         isPreparingWorktree={props.isPreparingWorktree}
         hasSendableContent={props.hasSendableContent}
         preserveComposerFocusOnPointerDown={props.preserveComposerFocusOnPointerDown ?? false}
+        runtimeMode={props.runtimeMode}
+        runtimeModeOptions={props.runtimeModeOptions}
+        onRuntimeModeChange={props.onRuntimeModeChange}
         onPreviousPendingQuestion={props.onPreviousPendingQuestion}
         onInterrupt={props.onInterrupt}
         onImplementPlanInNewThread={props.onImplementPlanInNewThread}
@@ -766,15 +773,24 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
   const selectedPromptEffort = composerProviderState.promptEffort;
   const selectedModelOptionsForDispatch = composerProviderState.modelOptionsForDispatch;
-  const composerProviderControls = useMemo(
-    () => ({
+  const composerProviderControls = useMemo(() => {
+    const selectedModelName = selectedProviderModels.find(
+      (candidate) => candidate.slug === selectedModel,
+    )?.name;
+    return {
       showInteractionModeToggle: getProviderInteractionModeToggle(
         providerStatuses,
         selectedProvider,
       ),
-    }),
-    [providerStatuses, selectedProvider],
-  );
+      runtimeModeOptions: deriveRuntimeModeOptions({
+        providers: providerStatuses,
+        provider: selectedProvider,
+        models: selectedProviderModels,
+        model: selectedModel,
+        ...(selectedModelName ? { modelName: selectedModelName } : {}),
+      }),
+    };
+  }, [providerStatuses, selectedProvider, selectedProviderModels, selectedModel]);
   const selectedModelSelection = useMemo<ModelSelection>(
     () => createModelSelection(selectedInstanceId, selectedModel, selectedModelOptionsForDispatch),
     [selectedInstanceId, selectedModel, selectedModelOptionsForDispatch],
@@ -2149,6 +2165,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       isPreparingWorktree={false}
                       hasSendableContent={false}
                       preserveComposerFocusOnPointerDown
+                      runtimeMode={runtimeMode}
+                      runtimeModeOptions={composerProviderControls.runtimeModeOptions}
+                      onRuntimeModeChange={handleRuntimeModeChange}
                       onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
                       onInterrupt={handleInterruptPrimaryAction}
                       onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryAction}
@@ -2358,6 +2377,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     isPreparingWorktree={false}
                     hasSendableContent={false}
                     preserveComposerFocusOnPointerDown
+                    runtimeMode={runtimeMode}
+                    runtimeModeOptions={composerProviderControls.runtimeModeOptions}
+                    onRuntimeModeChange={handleRuntimeModeChange}
                     onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
                     onInterrupt={handleInterruptPrimaryAction}
                     onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryAction}
@@ -2416,6 +2438,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     planSidebarLabel={planSidebarLabel}
                     planSidebarOpen={planSidebarOpen}
                     runtimeMode={runtimeMode}
+                    runtimeModeOptions={composerProviderControls.runtimeModeOptions}
                     showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
                     traitsMenuContent={providerTraitsMenuContent}
                     onToggleInteractionMode={toggleInteractionMode}
@@ -2434,6 +2457,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
                       interactionMode={interactionMode}
                       runtimeMode={runtimeMode}
+                      runtimeModeOptions={composerProviderControls.runtimeModeOptions}
                       showPlanToggle={showPlanSidebarToggle}
                       planSidebarLabel={planSidebarLabel}
                       planSidebarOpen={planSidebarOpen}
@@ -2492,6 +2516,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   isPreparingWorktree={isPreparingWorktree}
                   hasSendableContent={composerSendState.hasSendableContent}
                   preserveComposerFocusOnPointerDown={isMobileViewport}
+                  runtimeMode={runtimeMode}
+                  runtimeModeOptions={composerProviderControls.runtimeModeOptions}
+                  onRuntimeModeChange={handleRuntimeModeChange}
                   onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
                   onInterrupt={handleInterruptPrimaryAction}
                   onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryAction}

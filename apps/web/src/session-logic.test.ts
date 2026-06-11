@@ -1160,6 +1160,60 @@ describe("deriveWorkLogEntries", () => {
     expect(entries.map((entry) => entry.id)).toEqual(["real-work-log"]);
   });
 
+  it("omits task tracker tool entries covered by the plan progress UI", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "task-create",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.completed",
+        summary: "Update tasks",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "Update tasks",
+          detail: "Add task: Wire stats into rows",
+          data: { toolName: "TaskCreate", input: { subject: "Wire stats into rows" } },
+        },
+      }),
+      makeActivity({
+        id: "task-update",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.completed",
+        summary: "Update tasks",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "Update tasks",
+          detail: "Task #1 completed",
+          data: { toolName: "TaskUpdate", input: { taskId: "1", status: "completed" } },
+        },
+      }),
+      makeActivity({
+        id: "task-list",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "tool.completed",
+        summary: "Tasks",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "Tasks",
+          detail: "Task list",
+          data: { toolName: "TaskList", input: {} },
+        },
+      }),
+      makeActivity({
+        id: "real-work-log",
+        createdAt: "2026-02-23T00:00:04.000Z",
+        kind: "tool.completed",
+        summary: "Ran command",
+        payload: {
+          itemType: "command_execution",
+          detail: "bun test",
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities);
+    expect(entries.map((entry) => entry.id)).toEqual(["real-work-log"]);
+  });
+
   it("collects Claude snake_case file paths and provider diff stats", () => {
     const filePath = "C:\\Users\\Will\\Desktop\\Projects\\badcode\\apps\\web\\src\\store.ts";
     const activities: OrchestrationThreadActivity[] = [

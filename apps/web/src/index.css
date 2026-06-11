@@ -711,6 +711,40 @@ label:has(> select#reasoning-effort) select {
   border-radius: 0.5rem;
   overflow: clip;
   background: color-mix(in srgb, var(--card) 92%, var(--background));
+  scroll-margin-top: 0.5rem;
+}
+
+/* One-time emphasis on the file card the diff panel just scrolled to. */
+@keyframes diff-file-flash {
+  0% {
+    box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--primary) 55%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 1.5px transparent;
+  }
+}
+
+.diff-file-flash {
+  animation: diff-file-flash 1.1s ease-out 150ms both;
+}
+
+/* Drill-in entrance for the diff panel body when it replaces source control. */
+@keyframes diff-panel-enter {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+}
+
+.diff-panel-enter {
+  animation: diff-panel-enter 150ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .diff-file-flash,
+  .diff-panel-enter {
+    animation: none;
+  }
 }
 
 @keyframes ultracode-flow {

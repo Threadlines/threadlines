@@ -1514,6 +1514,315 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("mirrors task tracker tool calls into plan updates", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 21).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-task-tracker",
+        uuid: "stream-task-create-start",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 1,
+          content_block: {
+            type: "tool_use",
+            id: "tool-task-create-1",
+            name: "TaskCreate",
+            input: {},
+          },
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-task-tracker",
+        uuid: "stream-task-create-input",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_delta",
+          index: 1,
+          delta: {
+            type: "input_json_delta",
+            partial_json:
+              '{"subject":"Investigate flaky login test","description":"Find the race in the login spec"}',
+          },
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-task-tracker",
+        uuid: "stream-task-create-stop",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_stop",
+          index: 1,
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "user",
+        session_id: "sdk-session-task-tracker",
+        uuid: "user-task-create-result",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool-task-create-1",
+              content: "Task #1 created successfully: Investigate flaky login test",
+            },
+          ],
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-task-tracker",
+        uuid: "stream-task-update-start",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 2,
+          content_block: {
+            type: "tool_use",
+            id: "tool-task-update-1",
+            name: "TaskUpdate",
+            input: {},
+          },
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-task-tracker",
+        uuid: "stream-task-update-input",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_delta",
+          index: 2,
+          delta: {
+            type: "input_json_delta",
+            partial_json: '{"taskId":"1","status":"in_progress"}',
+          },
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "user",
+        session_id: "sdk-session-task-tracker",
+        uuid: "user-task-update-result",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool-task-update-1",
+              content: "Updated task #1 status",
+            },
+          ],
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-task-tracker",
+        uuid: "stream-task-complete-start",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 3,
+          content_block: {
+            type: "tool_use",
+            id: "tool-task-update-2",
+            name: "TaskUpdate",
+            input: {},
+          },
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-task-tracker",
+        uuid: "stream-task-complete-input",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_delta",
+          index: 3,
+          delta: {
+            type: "input_json_delta",
+            partial_json: '{"taskId":"1","status":"completed"}',
+          },
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "user",
+        session_id: "sdk-session-task-tracker",
+        uuid: "user-task-complete-result",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool-task-update-2",
+              content: "Updated task #1 status",
+            },
+          ],
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-task-tracker",
+        uuid: "result-task-tracker",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+
+      const toolStarted = runtimeEvents.find((event) => event.type === "item.started");
+      assert.equal(toolStarted?.type, "item.started");
+      if (toolStarted?.type === "item.started") {
+        assert.equal(toolStarted.payload.itemType, "dynamic_tool_call");
+        assert.equal(toolStarted.payload.title, "Update tasks");
+      }
+
+      const planUpdates = runtimeEvents.filter((event) => event.type === "turn.plan.updated");
+      assert.equal(planUpdates.length, 3);
+      const [created, started, completed] = planUpdates;
+      assert.equal(created?.type, "turn.plan.updated");
+      if (created?.type === "turn.plan.updated") {
+        assert.equal(String(created.turnId), String(turn.turnId));
+        assert.deepEqual(created.payload.plan, [
+          { step: "Investigate flaky login test", status: "pending" },
+        ]);
+      }
+      assert.equal(started?.type, "turn.plan.updated");
+      if (started?.type === "turn.plan.updated") {
+        assert.deepEqual(started.payload.plan, [
+          { step: "Investigate flaky login test", status: "inProgress" },
+        ]);
+      }
+      assert.equal(completed?.type, "turn.plan.updated");
+      if (completed?.type === "turn.plan.updated") {
+        assert.deepEqual(completed.payload.plan, [
+          { step: "Investigate flaky login test", status: "completed" },
+        ]);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("resyncs the plan from TaskList results", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 10).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "where are we?",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-task-list",
+        uuid: "stream-task-list-start",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 1,
+          content_block: {
+            type: "tool_use",
+            id: "tool-task-list-1",
+            name: "TaskList",
+            input: {},
+          },
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "user",
+        session_id: "sdk-session-task-list",
+        uuid: "user-task-list-result",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool-task-list-1",
+              content:
+                "#1 [completed] Wire the adapter\n#2 [in_progress] Add the tests\n#3 [pending] Update the docs",
+            },
+          ],
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-task-list",
+        uuid: "result-task-list",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const planUpdated = runtimeEvents.find((event) => event.type === "turn.plan.updated");
+      assert.equal(planUpdated?.type, "turn.plan.updated");
+      if (planUpdated?.type === "turn.plan.updated") {
+        assert.deepEqual(planUpdated.payload.plan, [
+          { step: "Wire the adapter", status: "completed" },
+          { step: "Add the tests", status: "inProgress" },
+          { step: "Update the docs", status: "pending" },
+        ]);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("classifies Claude Task tool invocations as collaboration agent work", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

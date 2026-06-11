@@ -1,23 +1,33 @@
 import { parsePatchFiles } from "@pierre/diffs";
 import { FileDiff, type FileDiffMetadata, Virtualizer } from "@pierre/diffs/react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime";
-import { TurnId } from "@t3tools/contracts";
+import { type ContextMenuItem, TurnId } from "@t3tools/contracts";
+import type { DiffRenderMode } from "@t3tools/contracts/settings";
 import { projectScriptCwd } from "@t3tools/shared/projectScripts";
 import {
   ChevronDownIcon,
-  ChevronLeftIcon,
   ChevronRightIcon,
+  ChevronUpIcon,
+  ChevronsDownUpIcon,
+  ChevronsUpDownIcon,
   Columns2Icon,
   PilcrowIcon,
   Rows3Icon,
+  SquareArrowOutUpRightIcon,
   TextWrapIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { openInPreferredEditor } from "../editorPreferences";
-import { gitWorkingTreeDiffQueryOptions } from "~/lib/gitReactQuery";
-import { useGitStatus } from "~/lib/gitStatusState";
+import {
+  gitDiscardChangesMutationOptions,
+  gitQueryKeys,
+  gitStageChangesMutationOptions,
+  gitUnstageChangesMutationOptions,
+  gitWorkingTreeDiffQueryOptions,
+} from "~/lib/gitReactQuery";
+import { refreshGitStatus, useGitStatus } from "~/lib/gitStatusState";
 import { checkpointDiffQueryOptions } from "~/lib/providerReactQuery";
 import { cn } from "~/lib/utils";
 import { readLocalApi } from "../localApi";
@@ -31,24 +41,44 @@ import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { useStore } from "../store";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
 import { buildThreadRouteParams, resolveThreadRouteRef } from "../threadRoutes";
-import { useSettings } from "../hooks/useSettings";
+import { useSettings, useUpdateSettings } from "../hooks/useSettings";
 import { formatShortTimestamp } from "../timestampFormat";
+import {
+  buildWorkingTreeStatusDigest,
+  computeFileDiffStat,
+  type DiffFileStat,
+  formatDiffFileCount,
+  resolveActiveDiffFileIndex,
+  resolveTurnDiffSummaryStats,
+  sumDiffFileStats,
+} from "./DiffPanel.logic";
 import { DiffPanelLoadingState, DiffPanelShell, type DiffPanelMode } from "./DiffPanelShell";
+import { DiffStatLabel } from "./chat/DiffStatLabel";
 import { SourceControlIcon } from "./Icons";
+import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "./ui/alert-dialog";
 import { Button } from "./ui/button";
 import {
   Menu,
   MenuGroup,
   MenuGroupLabel,
+  MenuItem,
   MenuPopup,
   MenuRadioGroup,
   MenuRadioItem,
   MenuSeparator,
   MenuTrigger,
 } from "./ui/menu";
+import { toastManager } from "./ui/toast";
 import { ToggleGroup, Toggle } from "./ui/toggle-group";
 
-type DiffRenderMode = "stacked" | "split";
 type DiffThemeType = "light" | "dark";
 
 const DIFF_PANEL_UNSAFE_CSS = `
@@ -185,30 +215,87 @@ function getDiffCollapseIconClassName(fileDiff: FileDiffMetadata): string {
   }
 }
 
+function getFileDiffStatusBadge(fileDiff: FileDiffMetadata): {
+  readonly label: string;
+  readonly className: string;
+} {
+  switch (fileDiff.type) {
+    case "new":
+      return { label: "A", className: "border-success/25 bg-success/8 text-success-foreground" };
+    case "deleted":
+      return {
+        label: "D",
+        className: "border-destructive/25 bg-destructive/8 text-destructive-foreground",
+      };
+    case "rename-pure":
+    case "rename-changed":
+      return { label: "R", className: "border-border/70 bg-muted/50 text-muted-foreground" };
+    default:
+      return { label: "M", className: "border-border/70 bg-muted/50 text-muted-foreground" };
+  }
+}
+
+/**
+ * The panel unmounts whenever the rail swaps back to source control, so the
+ * collapse choices live here, keyed by thread + diff source, to survive the
+ * round trip.
+ */
+const COLLAPSED_DIFF_FILE_CACHE_LIMIT = 24;
+const collapsedDiffFileKeysByScope = new Map<string, ReadonlySet<string>>();
+
+function readCollapsedDiffFileKeys(scope: string): ReadonlySet<string> {
+  return collapsedDiffFileKeysByScope.get(scope) ?? new Set<string>();
+}
+
+function writeCollapsedDiffFileKeys(scope: string, keys: ReadonlySet<string>): void {
+  collapsedDiffFileKeysByScope.delete(scope);
+  collapsedDiffFileKeysByScope.set(scope, keys);
+  while (collapsedDiffFileKeysByScope.size > COLLAPSED_DIFF_FILE_CACHE_LIMIT) {
+    const oldestScope = collapsedDiffFileKeysByScope.keys().next().value;
+    if (oldestScope === undefined) {
+      break;
+    }
+    collapsedDiffFileKeysByScope.delete(oldestScope);
+  }
+}
+
+/** Sticky file headers cover the top of the scroller; read "active" below them. */
+const ACTIVE_FILE_READING_OFFSET_PX = 48;
+/** Below this toolbar width a split diff degrades to two unreadable columns. */
+const NARROW_DIFF_PANEL_WIDTH_PX = 420;
+
+type DiffFileContextAction = "open-editor" | "copy-path" | "stage" | "unstage" | "discard";
+
+interface PendingDiscardDiffFile {
+  readonly filePath: string;
+  readonly isUntracked: boolean;
+}
+
 interface DiffPanelProps {
   mode?: DiffPanelMode;
-  showBackToSourceControl?: boolean;
   onBackToSourceControl?: () => void;
 }
 
 export { DiffWorkerPoolProvider } from "./DiffWorkerPoolProvider";
 
-export default function DiffPanel({
-  mode = "inline",
-  showBackToSourceControl = false,
-  onBackToSourceControl,
-}: DiffPanelProps) {
+export default function DiffPanel({ mode = "inline", onBackToSourceControl }: DiffPanelProps) {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { resolvedTheme } = useTheme();
   const settings = useSettings();
-  const [diffRenderMode, setDiffRenderMode] = useState<DiffRenderMode>("stacked");
+  const { updateSettings } = useUpdateSettings();
   const [diffWordWrap, setDiffWordWrap] = useState(settings.diffWordWrap);
   const [diffIgnoreWhitespace, setDiffIgnoreWhitespace] = useState(settings.diffIgnoreWhitespace);
-  const [collapsedDiffFileKeys, setCollapsedDiffFileKeys] = useState<ReadonlySet<string>>(
-    () => new Set(),
-  );
+  const [panelNarrow, setPanelNarrow] = useState(false);
+  const [activeFilePath, setActiveFilePath] = useState<string | null>(null);
+  const [flashFilePath, setFlashFilePath] = useState<string | null>(null);
+  const [pendingDiscardDiffFile, setPendingDiscardDiffFile] =
+    useState<PendingDiscardDiffFile | null>(null);
   const patchViewportRef = useRef<HTMLDivElement>(null);
+  const toolbarRef = useRef<HTMLDivElement>(null);
   const previousDiffOpenRef = useRef(false);
+  const lastScrolledFilePathRef = useRef<string | null>(null);
+  const workingTreeDigestRef = useRef<string | null>(null);
   const routeThreadRef = useParams({
     strict: false,
     select: (params) => resolveThreadRouteRef(params),
@@ -271,8 +358,9 @@ export default function DiffPanel({
   const selectedTurn =
     diffMode === "workingTree" || selectedTurnId === null
       ? undefined
-      : (orderedTurnDiffSummaries.find((summary) => summary.turnId === selectedTurnId) ??
-        orderedTurnDiffSummaries[0]);
+      : orderedTurnDiffSummaries.find((summary) => summary.turnId === selectedTurnId);
+  const selectedTurnMissing =
+    diffMode === "checkpoint" && selectedTurnId !== null && selectedTurn === undefined;
   const selectedCheckpointTurnCount =
     selectedTurn &&
     (selectedTurn.checkpointTurnCount ?? inferredCheckpointTurnCountByTurnId[selectedTurn.turnId]);
@@ -301,23 +389,23 @@ export default function DiffPanel({
   }, [inferredCheckpointTurnCountByTurnId, orderedTurnDiffSummaries]);
   const conversationCheckpointRange = useMemo(
     () =>
-      !selectedTurn && typeof conversationCheckpointTurnCount === "number"
+      !selectedTurn && !selectedTurnMissing && typeof conversationCheckpointTurnCount === "number"
         ? {
             fromTurnCount: 0,
             toTurnCount: conversationCheckpointTurnCount,
           }
         : null,
-    [conversationCheckpointTurnCount, selectedTurn],
+    [conversationCheckpointTurnCount, selectedTurn, selectedTurnMissing],
   );
   const activeCheckpointRange = selectedTurn
     ? selectedCheckpointRange
     : conversationCheckpointRange;
   const conversationCacheScope = useMemo(() => {
-    if (selectedTurn || orderedTurnDiffSummaries.length === 0) {
+    if (selectedTurn || selectedTurnMissing || orderedTurnDiffSummaries.length === 0) {
       return null;
     }
     return `conversation:${orderedTurnDiffSummaries.map((summary) => summary.turnId).join(",")}`;
-  }, [orderedTurnDiffSummaries, selectedTurn]);
+  }, [orderedTurnDiffSummaries, selectedTurn, selectedTurnMissing]);
   const activeCheckpointDiffQuery = useQuery(
     checkpointDiffQueryOptions({
       environmentId: activeThread?.environmentId ?? null,
@@ -327,14 +415,14 @@ export default function DiffPanel({
       ignoreWhitespace: diffIgnoreWhitespace,
       rangeKind: selectedTurn ? "turn" : "fullThread",
       cacheScope: selectedTurn ? `turn:${selectedTurn.turnId}` : conversationCacheScope,
-      enabled: isGitRepo && diffMode === "checkpoint",
+      enabled: isGitRepo && diffMode === "checkpoint" && !selectedTurnMissing,
     }),
   );
   const workingTreeDiffQuery = useQuery(
     gitWorkingTreeDiffQueryOptions({
       environmentId: activeEnvironmentId,
       cwd: activeCwd ?? null,
-      filePaths: selectedFilePath ? [selectedFilePath] : null,
+      filePaths: null,
       ignoreWhitespace: diffIgnoreWhitespace,
       enabled: isGitRepo && diffMode === "workingTree",
     }),
@@ -384,38 +472,246 @@ export default function DiffPanel({
       }),
     );
   }, [renderablePatch]);
+  const orderedFilePaths = useMemo(
+    () => renderableFiles.map(resolveFileDiffPath),
+    [renderableFiles],
+  );
+  const fileStatByKey = useMemo(() => {
+    const stats = new Map<string, DiffFileStat>();
+    for (const fileDiff of renderableFiles) {
+      stats.set(buildFileDiffRenderKey(fileDiff), computeFileDiffStat(fileDiff));
+    }
+    return stats;
+  }, [renderableFiles]);
+  const totalDiffStat = useMemo(
+    () => sumDiffFileStats([...fileStatByKey.values()]),
+    [fileStatByKey],
+  );
+
+  // ── Collapse state (cached across panel remounts) ──────────────────
+  const collapseScope = `${activeThreadId ?? "no-thread"}:${diffMode}:${selectedTurnId ?? "all"}`;
+  const collapseScopeRef = useRef(collapseScope);
+  const [collapsedDiffFileKeys, setCollapsedDiffFileKeysState] = useState<ReadonlySet<string>>(() =>
+    readCollapsedDiffFileKeys(collapseScope),
+  );
+  useEffect(() => {
+    if (collapseScopeRef.current === collapseScope) {
+      return;
+    }
+    collapseScopeRef.current = collapseScope;
+    setCollapsedDiffFileKeysState(readCollapsedDiffFileKeys(collapseScope));
+  }, [collapseScope]);
+  const setCollapsedDiffFileKeys = useCallback(
+    (updater: (current: ReadonlySet<string>) => ReadonlySet<string>) => {
+      setCollapsedDiffFileKeysState((current) => {
+        const next = updater(current);
+        if (next !== current) {
+          writeCollapsedDiffFileKeys(collapseScopeRef.current, next);
+        }
+        return next;
+      });
+    },
+    [],
+  );
 
   useEffect(() => {
     if (renderableFiles.length === 0) {
-      setCollapsedDiffFileKeys((current) => (current.size === 0 ? current : new Set()));
       return;
     }
-
     const visibleFileKeys = new Set(renderableFiles.map(buildFileDiffRenderKey));
     setCollapsedDiffFileKeys((current) => {
       const next = new Set([...current].filter((fileKey) => visibleFileKeys.has(fileKey)));
       return next.size === current.size ? current : next;
     });
-  }, [renderableFiles]);
+  }, [renderableFiles, setCollapsedDiffFileKeys]);
+
+  const toggleDiffFileCollapsed = useCallback(
+    (fileKey: string) => {
+      setCollapsedDiffFileKeys((current) => {
+        const next = new Set(current);
+        if (next.has(fileKey)) {
+          next.delete(fileKey);
+        } else {
+          next.add(fileKey);
+        }
+        return next;
+      });
+    },
+    [setCollapsedDiffFileKeys],
+  );
+  const allDiffFilesCollapsed =
+    renderableFiles.length > 0 &&
+    renderableFiles.every((fileDiff) =>
+      collapsedDiffFileKeys.has(buildFileDiffRenderKey(fileDiff)),
+    );
+  const toggleAllDiffFilesCollapsed = useCallback(() => {
+    setCollapsedDiffFileKeys((current) => {
+      if (renderableFiles.length === 0) {
+        return current;
+      }
+      const fileKeys = renderableFiles.map(buildFileDiffRenderKey);
+      return fileKeys.every((fileKey) => current.has(fileKey))
+        ? new Set<string>()
+        : new Set(fileKeys);
+    });
+  }, [renderableFiles, setCollapsedDiffFileKeys]);
+
+  // ── View settings ──────────────────────────────────────────────────
+  const effectiveDiffRenderMode: DiffRenderMode = panelNarrow ? "stacked" : settings.diffRenderMode;
+  const setDiffRenderMode = useCallback(
+    (nextMode: DiffRenderMode) => {
+      updateSettings({ diffRenderMode: nextMode });
+    },
+    [updateSettings],
+  );
 
   useEffect(() => {
     if (diffOpen && !previousDiffOpenRef.current) {
       setDiffWordWrap(settings.diffWordWrap);
       setDiffIgnoreWhitespace(settings.diffIgnoreWhitespace);
+      lastScrolledFilePathRef.current = null;
     }
     previousDiffOpenRef.current = diffOpen;
   }, [diffOpen, settings.diffIgnoreWhitespace, settings.diffWordWrap]);
 
   useEffect(() => {
-    if (!selectedFilePath || !patchViewportRef.current) {
+    const node = toolbarRef.current;
+    if (!node || typeof ResizeObserver === "undefined") {
       return;
     }
-    const target = Array.from(
-      patchViewportRef.current.querySelectorAll<HTMLElement>("[data-diff-file-path]"),
-    ).find((element) => element.dataset.diffFilePath === selectedFilePath);
-    target?.scrollIntoView({ block: "nearest" });
-  }, [selectedFilePath, renderableFiles]);
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width ?? 0;
+      setPanelNarrow(width > 0 && width < NARROW_DIFF_PANEL_WIDTH_PX);
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
 
+  // ── File navigation ────────────────────────────────────────────────
+  const scrollToDiffFile = useCallback((filePath: string) => {
+    const viewport = patchViewportRef.current;
+    if (!viewport) {
+      return;
+    }
+    const target = Array.from(viewport.querySelectorAll<HTMLElement>("[data-diff-file-path]")).find(
+      (element) => element.dataset.diffFilePath === filePath,
+    );
+    if (!target) {
+      return;
+    }
+    target.scrollIntoView({ block: "start" });
+    setFlashFilePath(filePath);
+  }, []);
+
+  useEffect(() => {
+    if (!flashFilePath) {
+      return;
+    }
+    const timeoutId = window.setTimeout(() => setFlashFilePath(null), 1400);
+    return () => window.clearTimeout(timeoutId);
+  }, [flashFilePath]);
+
+  useEffect(() => {
+    if (!selectedFilePath || renderableFiles.length === 0) {
+      return;
+    }
+    if (lastScrolledFilePathRef.current === selectedFilePath) {
+      return;
+    }
+    if (!orderedFilePaths.includes(selectedFilePath)) {
+      return;
+    }
+    lastScrolledFilePathRef.current = selectedFilePath;
+    scrollToDiffFile(selectedFilePath);
+  }, [orderedFilePaths, renderableFiles.length, scrollToDiffFile, selectedFilePath]);
+
+  useEffect(() => {
+    const viewport = patchViewportRef.current;
+    if (
+      !viewport ||
+      !renderablePatch ||
+      renderablePatch.kind !== "files" ||
+      renderableFiles.length === 0
+    ) {
+      setActiveFilePath(null);
+      return;
+    }
+    const scroller = viewport.querySelector<HTMLElement>(".diff-render-surface");
+    if (!scroller) {
+      return;
+    }
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      const scrollerTop = scroller.getBoundingClientRect().top;
+      const wrappers = Array.from(scroller.querySelectorAll<HTMLElement>("[data-diff-file-path]"));
+      const fileTops = wrappers.map(
+        (element) => element.getBoundingClientRect().top - scrollerTop + scroller.scrollTop,
+      );
+      const index = resolveActiveDiffFileIndex(
+        fileTops,
+        scroller.scrollTop,
+        ACTIVE_FILE_READING_OFFSET_PX,
+      );
+      setActiveFilePath(index >= 0 ? (wrappers[index]?.dataset.diffFilePath ?? null) : null);
+    };
+    update();
+    const onScroll = () => {
+      if (frame !== 0) {
+        return;
+      }
+      frame = window.requestAnimationFrame(update);
+    };
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      scroller.removeEventListener("scroll", onScroll);
+      if (frame !== 0) {
+        window.cancelAnimationFrame(frame);
+      }
+    };
+  }, [renderablePatch, renderableFiles]);
+
+  const activeFileIndex = activeFilePath ? orderedFilePaths.indexOf(activeFilePath) : -1;
+  const goToAdjacentFile = useCallback(
+    (delta: number) => {
+      if (orderedFilePaths.length === 0) {
+        return;
+      }
+      const currentIndex = activeFilePath ? orderedFilePaths.indexOf(activeFilePath) : -1;
+      const nextIndex = Math.min(
+        orderedFilePaths.length - 1,
+        Math.max(0, (currentIndex === -1 ? 0 : currentIndex) + delta),
+      );
+      const nextPath = orderedFilePaths[nextIndex];
+      if (nextPath && nextPath !== activeFilePath) {
+        scrollToDiffFile(nextPath);
+      }
+    },
+    [activeFilePath, orderedFilePaths, scrollToDiffFile],
+  );
+
+  // ── Freshness: refetch the open diff when the working tree moves ───
+  const workingTreeStatusDigest = useMemo(
+    () => buildWorkingTreeStatusDigest(gitStatusQuery.data ?? null),
+    [gitStatusQuery.data],
+  );
+  useEffect(() => {
+    const previousDigest = workingTreeDigestRef.current;
+    workingTreeDigestRef.current = workingTreeStatusDigest;
+    if (
+      diffMode !== "workingTree" ||
+      workingTreeStatusDigest === null ||
+      previousDigest === null ||
+      previousDigest === workingTreeStatusDigest
+    ) {
+      return;
+    }
+    void queryClient.invalidateQueries({
+      queryKey: gitQueryKeys.workingTreeDiffPrefix(activeEnvironmentId, activeCwd ?? null),
+    });
+  }, [activeCwd, activeEnvironmentId, diffMode, queryClient, workingTreeStatusDigest]);
+
+  // ── Per-file actions ───────────────────────────────────────────────
   const openDiffFileInEditor = useCallback(
     (filePath: string) => {
       const api = readLocalApi();
@@ -427,23 +723,179 @@ export default function DiffPanel({
     },
     [activeCwd],
   );
-  const toggleDiffFileCollapsed = useCallback((fileKey: string) => {
-    setCollapsedDiffFileKeys((current) => {
-      const next = new Set(current);
-      if (next.has(fileKey)) {
-        next.delete(fileKey);
-      } else {
-        next.add(fileKey);
-      }
-      return next;
-    });
+  const copyDiffFilePath = useCallback((filePath: string) => {
+    if (typeof window === "undefined" || !navigator.clipboard?.writeText) {
+      toastManager.add({
+        type: "error",
+        title: "Failed to copy path",
+        description: "Clipboard API unavailable.",
+      });
+      return;
+    }
+    void navigator.clipboard.writeText(filePath).then(
+      () => {
+        toastManager.add({ type: "success", title: "Path copied", description: filePath });
+      },
+      () => {
+        toastManager.add({ type: "error", title: "Failed to copy path" });
+      },
+    );
   }, []);
 
+  const stageChangesMutation = useMutation(
+    gitStageChangesMutationOptions({
+      environmentId: activeEnvironmentId,
+      cwd: activeCwd ?? null,
+      queryClient,
+    }),
+  );
+  const unstageChangesMutation = useMutation(
+    gitUnstageChangesMutationOptions({
+      environmentId: activeEnvironmentId,
+      cwd: activeCwd ?? null,
+      queryClient,
+    }),
+  );
+  const discardChangesMutation = useMutation(
+    gitDiscardChangesMutationOptions({
+      environmentId: activeEnvironmentId,
+      cwd: activeCwd ?? null,
+      queryClient,
+    }),
+  );
+  const refreshDiffGitStatus = useCallback(() => {
+    void refreshGitStatus({
+      environmentId: activeEnvironmentId,
+      cwd: activeCwd ?? null,
+    }).catch(() => undefined);
+  }, [activeCwd, activeEnvironmentId]);
+  const runStageDiffFile = useCallback(
+    (filePath: string) => {
+      stageChangesMutation.mutateAsync({ filePaths: [filePath] }).then(
+        () => refreshDiffGitStatus(),
+        (error: unknown) => {
+          refreshDiffGitStatus();
+          toastManager.add({
+            type: "error",
+            title: "Stage changes failed",
+            description: error instanceof Error ? error.message : "An error occurred.",
+          });
+        },
+      );
+    },
+    [refreshDiffGitStatus, stageChangesMutation],
+  );
+  const runUnstageDiffFile = useCallback(
+    (filePath: string) => {
+      unstageChangesMutation.mutateAsync({ filePaths: [filePath] }).then(
+        () => refreshDiffGitStatus(),
+        (error: unknown) => {
+          refreshDiffGitStatus();
+          toastManager.add({
+            type: "error",
+            title: "Unstage changes failed",
+            description: error instanceof Error ? error.message : "An error occurred.",
+          });
+        },
+      );
+    },
+    [refreshDiffGitStatus, unstageChangesMutation],
+  );
+  const runDiscardDiffFile = useCallback(() => {
+    if (!pendingDiscardDiffFile) {
+      return;
+    }
+    const request = pendingDiscardDiffFile;
+    setPendingDiscardDiffFile(null);
+    const promise = discardChangesMutation.mutateAsync({
+      filePaths: [request.filePath],
+      scope: "unstaged",
+    });
+    void toastManager.promise(promise, {
+      loading: { title: "Discarding changes..." },
+      success: () => ({ title: "Changes discarded", description: request.filePath }),
+      error: (error: unknown) => ({
+        title: "Discard changes failed",
+        description: error instanceof Error ? error.message : "An error occurred.",
+      }),
+    });
+    void promise.then(
+      () => refreshDiffGitStatus(),
+      () => refreshDiffGitStatus(),
+    );
+  }, [discardChangesMutation, pendingDiscardDiffFile, refreshDiffGitStatus]);
+
+  const isFileMutationRunning =
+    stageChangesMutation.isPending ||
+    unstageChangesMutation.isPending ||
+    discardChangesMutation.isPending;
+  const handleDiffFileContextMenu = useCallback(
+    async (filePath: string, position: { readonly x: number; readonly y: number }) => {
+      const api = readLocalApi();
+      if (!api) {
+        return;
+      }
+      const statusFile =
+        diffMode === "workingTree"
+          ? gitStatusQuery.data?.workingTree.files.find((file) => file.path === filePath)
+          : undefined;
+      const canMutate =
+        diffMode === "workingTree" && activeEnvironmentId !== null && activeCwd !== undefined;
+      const menuItems: ContextMenuItem<DiffFileContextAction>[] = [
+        { id: "open-editor", label: "Open in editor" },
+        { id: "copy-path", label: "Copy path" },
+        ...(canMutate && statusFile?.worktreeStatus
+          ? [{ id: "stage" as const, label: "Stage changes", disabled: isFileMutationRunning }]
+          : []),
+        ...(canMutate && statusFile?.indexStatus
+          ? [{ id: "unstage" as const, label: "Unstage changes", disabled: isFileMutationRunning }]
+          : []),
+        ...(canMutate && statusFile?.worktreeStatus
+          ? [
+              {
+                id: "discard" as const,
+                label: "Discard changes...",
+                disabled: isFileMutationRunning,
+              },
+            ]
+          : []),
+      ];
+      const clicked = await api.contextMenu.show(menuItems, position);
+      if (clicked === "open-editor") {
+        openDiffFileInEditor(filePath);
+      } else if (clicked === "copy-path") {
+        copyDiffFilePath(filePath);
+      } else if (clicked === "stage") {
+        runStageDiffFile(filePath);
+      } else if (clicked === "unstage") {
+        runUnstageDiffFile(filePath);
+      } else if (clicked === "discard") {
+        setPendingDiscardDiffFile({
+          filePath,
+          isUntracked: statusFile?.worktreeStatus === "untracked",
+        });
+      }
+    },
+    [
+      activeCwd,
+      activeEnvironmentId,
+      copyDiffFilePath,
+      diffMode,
+      gitStatusQuery.data,
+      isFileMutationRunning,
+      openDiffFileInEditor,
+      runStageDiffFile,
+      runUnstageDiffFile,
+    ],
+  );
+
+  // ── Source selection ───────────────────────────────────────────────
   const selectTurn = (turnId: TurnId) => {
     if (!activeThread) return;
     void navigate({
       to: "/$environmentId/$threadId",
       params: buildThreadRouteParams(scopeThreadRef(activeThread.environmentId, activeThread.id)),
+      replace: true,
       search: (previous) => {
         const rest = stripDiffSearchParams(previous);
         return { ...rest, diff: "1", diffTurnId: turnId };
@@ -455,6 +907,7 @@ export default function DiffPanel({
     void navigate({
       to: "/$environmentId/$threadId",
       params: buildThreadRouteParams(scopeThreadRef(activeThread.environmentId, activeThread.id)),
+      replace: true,
       search: (previous) => {
         const rest = stripDiffSearchParams(previous);
         return { ...rest, diff: "1" };
@@ -469,50 +922,102 @@ export default function DiffPanel({
     void navigate({
       to: "/$environmentId/$threadId",
       params: buildThreadRouteParams(targetThreadRef),
+      replace: true,
       search: (previous) => {
         const rest = stripDiffSearchParams(previous);
         return { ...rest, diff: "1", diffMode: "workingTree" };
       },
     });
   };
+
+  const hasRenderableFiles = renderablePatch?.kind === "files" && renderableFiles.length > 0;
+  const diffStatsSummary = hasRenderableFiles ? (
+    <>
+      {formatDiffFileCount(renderableFiles.length)}
+      <span aria-hidden="true"> · </span>
+      <span className="font-mono">
+        <DiffStatLabel additions={totalDiffStat.additions} deletions={totalDiffStat.deletions} />
+      </span>
+    </>
+  ) : null;
+  const selectedTurnStats = selectedTurn ? resolveTurnDiffSummaryStats(selectedTurn) : null;
   const selectedDiffSourceLabel =
     diffMode === "workingTree"
-      ? "Working tree"
-      : selectedTurn
-        ? `Turn ${selectedCheckpointTurnCount ?? "?"}`
-        : "All agent turns";
+      ? "Uncommitted changes"
+      : selectedTurnMissing
+        ? "Turn unavailable"
+        : selectedTurn
+          ? `Turn ${selectedCheckpointTurnCount ?? "?"}`
+          : "All agent turns";
   const selectedDiffSourceDescription =
-    diffMode === "workingTree"
-      ? "Current uncommitted Git changes"
-      : selectedTurn
-        ? formatShortTimestamp(selectedTurn.completedAt, settings.timestampFormat)
-        : "All checkpointed changes from this chat";
+    diffMode === "workingTree" ? (
+      (diffStatsSummary ?? "Current uncommitted Git changes")
+    ) : selectedTurnMissing ? (
+      "This turn has no checkpoint in this thread"
+    ) : selectedTurn ? (
+      <>
+        {formatShortTimestamp(selectedTurn.completedAt, settings.timestampFormat)}
+        {selectedTurnStats && selectedTurnStats.fileCount > 0 ? (
+          <>
+            <span aria-hidden="true"> · </span>
+            {formatDiffFileCount(selectedTurnStats.fileCount)}
+            {selectedTurnStats.lineStats ? (
+              <>
+                <span aria-hidden="true"> · </span>
+                <span className="font-mono">
+                  <DiffStatLabel
+                    additions={selectedTurnStats.lineStats.additions}
+                    deletions={selectedTurnStats.lineStats.deletions}
+                  />
+                </span>
+              </>
+            ) : null}
+          </>
+        ) : null}
+      </>
+    ) : (
+      (diffStatsSummary ?? "All checkpointed changes from this chat")
+    );
 
   const headerRow = (
-    <>
-      {showBackToSourceControl && onBackToSourceControl ? (
-        <Button
+    <div className="flex min-w-0 flex-1 items-center gap-1.5">
+      <SourceControlIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+      {onBackToSourceControl ? (
+        <button
           type="button"
-          variant="outline"
-          size="xs"
-          className="shrink-0 gap-0.5 px-1.5 [-webkit-app-region:no-drag]"
-          aria-label="Back to source control panel"
-          title="Back to source control"
+          aria-label="Back to source control"
+          title="Back to source control (Esc)"
+          className="min-w-0 cursor-pointer truncate border-0 bg-transparent p-0 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:rounded-sm focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
           onClick={onBackToSourceControl}
         >
-          <ChevronLeftIcon className="size-3" />
-          <SourceControlIcon className="size-3" />
-        </Button>
-      ) : null}
-      <div className="min-w-0 flex-1 [-webkit-app-region:no-drag]">
-        <div className="truncate text-xs font-medium text-foreground">Diff</div>
-        <div className="truncate text-[10px] text-muted-foreground/70">Review changes</div>
-      </div>
-    </>
+          <span className="source-control-title-short">SC</span>
+          <span className="source-control-title-full">Source Control</span>
+        </button>
+      ) : (
+        <span className="min-w-0 truncate text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70">
+          <span className="source-control-title-short">SC</span>
+          <span className="source-control-title-full">Source Control</span>
+        </span>
+      )}
+      <span aria-hidden="true" className="shrink-0 text-[11px] text-muted-foreground/40">
+        /
+      </span>
+      <h2 className="shrink-0 text-[11px] font-medium uppercase tracking-wider text-foreground/85">
+        Diff
+      </h2>
+    </div>
   );
 
+  const fileStripVisible = hasRenderableFiles && renderableFiles.length > 1;
+  const activeFileName = activeFilePath
+    ? (activeFilePath.split("/").at(-1) ?? activeFilePath)
+    : null;
+
   const toolbarRow = (
-    <div className="@container/diff-toolbar border-b border-border px-2 py-2">
+    <div
+      ref={toolbarRef}
+      className="@container/diff-toolbar space-y-1.5 border-b border-border px-2 py-2"
+    >
       <div className="grid min-w-0 grid-cols-1 gap-1.5 @xs/diff-toolbar:grid-cols-[minmax(0,1fr)_auto] @xs/diff-toolbar:items-center">
         <Menu>
           <MenuTrigger
@@ -549,7 +1054,7 @@ export default function DiffPanel({
                   }
                 }}
               >
-                <MenuRadioItem value="workingTree">Working tree</MenuRadioItem>
+                <MenuRadioItem value="workingTree">Uncommitted changes</MenuRadioItem>
                 <MenuRadioItem value="checkpoint:all">All agent turns</MenuRadioItem>
               </MenuRadioGroup>
             </MenuGroup>
@@ -572,11 +1077,22 @@ export default function DiffPanel({
                         summary.checkpointTurnCount ??
                         inferredCheckpointTurnCountByTurnId[summary.turnId] ??
                         "?";
+                      const turnStats = resolveTurnDiffSummaryStats(summary);
                       return (
                         <MenuRadioItem key={summary.turnId} value={`turn:${summary.turnId}`}>
-                          <span className="min-w-0 truncate">
-                            Turn {turnCount} -{" "}
-                            {formatShortTimestamp(summary.completedAt, settings.timestampFormat)}
+                          <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
+                            <span className="min-w-0 truncate">
+                              Turn {turnCount} ·{" "}
+                              {formatShortTimestamp(summary.completedAt, settings.timestampFormat)}
+                            </span>
+                            {turnStats.lineStats ? (
+                              <span className="shrink-0 font-mono text-[10px]">
+                                <DiffStatLabel
+                                  additions={turnStats.lineStats.additions}
+                                  deletions={turnStats.lineStats.deletions}
+                                />
+                              </span>
+                            ) : null}
                           </span>
                         </MenuRadioItem>
                       );
@@ -588,25 +1104,27 @@ export default function DiffPanel({
           </MenuPopup>
         </Menu>
         <div className="flex shrink-0 items-center justify-end gap-1 [-webkit-app-region:no-drag]">
-          <ToggleGroup
-            className="shrink-0"
-            variant="outline"
-            size="xs"
-            value={[diffRenderMode]}
-            onValueChange={(value) => {
-              const next = value[0];
-              if (next === "stacked" || next === "split") {
-                setDiffRenderMode(next);
-              }
-            }}
-          >
-            <Toggle aria-label="Stacked diff view" value="stacked">
-              <Rows3Icon className="size-3" />
-            </Toggle>
-            <Toggle aria-label="Split diff view" value="split">
-              <Columns2Icon className="size-3" />
-            </Toggle>
-          </ToggleGroup>
+          {panelNarrow ? null : (
+            <ToggleGroup
+              className="shrink-0"
+              variant="outline"
+              size="xs"
+              value={[effectiveDiffRenderMode]}
+              onValueChange={(value) => {
+                const next = value[0];
+                if (next === "stacked" || next === "split") {
+                  setDiffRenderMode(next);
+                }
+              }}
+            >
+              <Toggle aria-label="Stacked diff view" value="stacked">
+                <Rows3Icon className="size-3" />
+              </Toggle>
+              <Toggle aria-label="Split diff view" value="split">
+                <Columns2Icon className="size-3" />
+              </Toggle>
+            </ToggleGroup>
+          )}
           <Toggle
             aria-label={diffWordWrap ? "Disable diff line wrapping" : "Enable diff line wrapping"}
             title={diffWordWrap ? "Disable line wrapping" : "Enable line wrapping"}
@@ -635,38 +1153,188 @@ export default function DiffPanel({
           </Toggle>
         </div>
       </div>
+      {fileStripVisible ? (
+        <div className="flex min-w-0 items-center gap-0.5">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            aria-label="Previous file"
+            title="Previous file"
+            className="text-muted-foreground/70 hover:text-foreground"
+            disabled={activeFileIndex <= 0}
+            onClick={() => goToAdjacentFile(-1)}
+          >
+            <ChevronUpIcon className="size-3.5" />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            aria-label="Next file"
+            title="Next file"
+            className="text-muted-foreground/70 hover:text-foreground"
+            disabled={activeFileIndex >= renderableFiles.length - 1}
+            onClick={() => goToAdjacentFile(1)}
+          >
+            <ChevronDownIcon className="size-3.5" />
+          </Button>
+          <Menu>
+            <MenuTrigger
+              render={
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="xs"
+                  className="h-6 min-w-0 flex-1 justify-start gap-1.5 px-1.5"
+                  aria-label="Jump to file"
+                />
+              }
+            >
+              <span className="shrink-0 font-mono text-[10px] text-muted-foreground/70">
+                {(activeFileIndex >= 0 ? activeFileIndex : 0) + 1}/{renderableFiles.length}
+              </span>
+              <span className="min-w-0 truncate text-xs text-foreground/90">
+                {activeFileName ?? ""}
+              </span>
+              <ChevronDownIcon className="ml-auto size-3 shrink-0 opacity-60" />
+            </MenuTrigger>
+            <MenuPopup align="start" className="max-h-80 w-80 overflow-y-auto">
+              <MenuGroup>
+                <MenuGroupLabel>
+                  {formatDiffFileCount(renderableFiles.length)}
+                  <span aria-hidden="true"> · </span>
+                  <span className="font-mono">
+                    <DiffStatLabel
+                      additions={totalDiffStat.additions}
+                      deletions={totalDiffStat.deletions}
+                    />
+                  </span>
+                </MenuGroupLabel>
+                {renderableFiles.map((fileDiff) => {
+                  const filePath = resolveFileDiffPath(fileDiff);
+                  const fileKey = buildFileDiffRenderKey(fileDiff);
+                  const fileStat = fileStatByKey.get(fileKey);
+                  const badge = getFileDiffStatusBadge(fileDiff);
+                  const isActive = filePath === activeFilePath;
+                  const pathSegments = filePath.split("/");
+                  const fileName = pathSegments.at(-1) ?? filePath;
+                  const fileDirectory = pathSegments.slice(0, -1).join("/");
+                  return (
+                    <MenuItem
+                      key={fileKey}
+                      className={cn("gap-1.5", isActive && "bg-accent/45")}
+                      onClick={() => scrollToDiffFile(filePath)}
+                    >
+                      <span
+                        className={cn(
+                          "inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded border px-1 font-mono text-[10px] leading-none",
+                          badge.className,
+                        )}
+                      >
+                        {badge.label}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate text-xs">
+                        {fileName}
+                        {fileDirectory ? (
+                          <span className="ml-1.5 font-mono text-[10px] text-muted-foreground/55">
+                            {fileDirectory}
+                          </span>
+                        ) : null}
+                      </span>
+                      {fileStat ? (
+                        <span className="shrink-0 font-mono text-[10px]">
+                          <DiffStatLabel
+                            additions={fileStat.additions}
+                            deletions={fileStat.deletions}
+                          />
+                        </span>
+                      ) : null}
+                    </MenuItem>
+                  );
+                })}
+              </MenuGroup>
+            </MenuPopup>
+          </Menu>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            aria-label={allDiffFilesCollapsed ? "Expand all files" : "Collapse all files"}
+            title={allDiffFilesCollapsed ? "Expand all files" : "Collapse all files"}
+            className="text-muted-foreground/70 hover:text-foreground"
+            onClick={toggleAllDiffFilesCollapsed}
+          >
+            {allDiffFilesCollapsed ? (
+              <ChevronsUpDownIcon className="size-3.5" />
+            ) : (
+              <ChevronsDownUpIcon className="size-3.5" />
+            )}
+          </Button>
+        </div>
+      ) : null}
     </div>
   );
 
   return (
-    <DiffPanelShell mode={mode} header={headerRow}>
-      {toolbarRow}
-      {!activeThread && !hasWorkingTreeDiffContext ? (
-        <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
-          Select a thread to inspect turn diffs.
-        </div>
-      ) : !isGitRepo ? (
-        <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
-          Turn diffs are unavailable because this project is not a git repository.
-        </div>
-      ) : diffMode !== "workingTree" && orderedTurnDiffSummaries.length === 0 ? (
-        <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
-          No completed turns yet.
-        </div>
-      ) : (
-        <>
+    <DiffPanelShell mode={mode} header={headerRow} onEscape={onBackToSourceControl}>
+      <div
+        className={cn(
+          "flex min-h-0 min-w-0 flex-1 flex-col",
+          mode !== "sheet" && "diff-panel-enter",
+        )}
+      >
+        {toolbarRow}
+        {!activeThread && !hasWorkingTreeDiffContext ? (
+          <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
+            Select a thread to inspect turn diffs.
+          </div>
+        ) : !isGitRepo ? (
+          <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
+            Turn diffs are unavailable because this project is not a git repository.
+          </div>
+        ) : selectedTurnMissing ? (
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 px-5 text-center">
+            <p className="text-xs text-muted-foreground/70">
+              This turn has no checkpoint in this thread.
+            </p>
+            <Button type="button" variant="outline" size="xs" onClick={selectWholeConversation}>
+              Show all turns
+            </Button>
+          </div>
+        ) : diffMode !== "workingTree" && orderedTurnDiffSummaries.length === 0 ? (
+          <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
+            No completed turns yet.
+          </div>
+        ) : (
           <div
             ref={patchViewportRef}
             className="diff-panel-viewport min-h-0 min-w-0 flex-1 overflow-hidden"
           >
             {diffMode === "checkpoint" && checkpointDiffError && !renderablePatch && (
-              <div className="px-3">
-                <p className="mb-2 text-[11px] text-red-500/80">{checkpointDiffError}</p>
+              <div className="flex items-center justify-between gap-2 px-3 py-2">
+                <p className="min-w-0 flex-1 text-[11px] text-red-500/80">{checkpointDiffError}</p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="xs"
+                  onClick={() => void activeCheckpointDiffQuery.refetch()}
+                >
+                  Retry
+                </Button>
               </div>
             )}
             {diffMode === "workingTree" && workingTreeDiffError && !renderablePatch && (
-              <div className="px-3">
-                <p className="mb-2 text-[11px] text-red-500/80">{workingTreeDiffError}</p>
+              <div className="flex items-center justify-between gap-2 px-3 py-2">
+                <p className="min-w-0 flex-1 text-[11px] text-red-500/80">{workingTreeDiffError}</p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="xs"
+                  onClick={() => void workingTreeDiffQuery.refetch()}
+                >
+                  Retry
+                </Button>
               </div>
             )}
             {!renderablePatch ? (
@@ -683,7 +1351,7 @@ export default function DiffPanel({
                   <p>
                     {hasNoNetChanges
                       ? diffMode === "workingTree"
-                        ? "No working tree changes in this selection."
+                        ? "No uncommitted changes in this selection."
                         : "No net changes in this selection."
                       : "No patch available for this selection."}
                   </p>
@@ -702,11 +1370,23 @@ export default function DiffPanel({
                   const fileKey = buildFileDiffRenderKey(fileDiff);
                   const themedFileKey = `${fileKey}:${resolvedTheme}`;
                   const collapsed = collapsedDiffFileKeys.has(fileKey);
+                  const fileStat = fileStatByKey.get(fileKey);
                   return (
                     <div
                       key={themedFileKey}
                       data-diff-file-path={filePath}
-                      className="diff-render-file group/diff-file mb-2 rounded-md first:mt-2 last:mb-0"
+                      className={cn(
+                        "diff-render-file group/diff-file mb-2 rounded-md first:mt-2 last:mb-0",
+                        flashFilePath === filePath && "diff-file-flash",
+                      )}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        void handleDiffFileContextMenu(filePath, {
+                          x: event.clientX,
+                          y: event.clientY,
+                        });
+                      }}
                       onClickCapture={(event) => {
                         const nativeEvent = event.nativeEvent as MouseEvent;
                         const composedPath = nativeEvent.composedPath?.() ?? [];
@@ -742,9 +1422,33 @@ export default function DiffPanel({
                             )}
                           </button>
                         )}
+                        renderHeaderMetadata={() => (
+                          <span className="flex items-center gap-1.5 pl-2">
+                            {fileStat ? (
+                              <span className="font-mono text-[10px] leading-none">
+                                <DiffStatLabel
+                                  additions={fileStat.additions}
+                                  deletions={fileStat.deletions}
+                                />
+                              </span>
+                            ) : null}
+                            <button
+                              type="button"
+                              aria-label={`Open ${filePath} in editor`}
+                              title="Open in editor"
+                              className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0 text-muted-foreground/70 transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:outline-hidden"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openDiffFileInEditor(filePath);
+                              }}
+                            >
+                              <SquareArrowOutUpRightIcon className="size-3" />
+                            </button>
+                          </span>
+                        )}
                         options={{
                           collapsed,
-                          diffStyle: diffRenderMode === "split" ? "split" : "unified",
+                          diffStyle: effectiveDiffRenderMode === "split" ? "split" : "unified",
                           lineDiffType: "none",
                           overflow: diffWordWrap ? "wrap" : "scroll",
                           theme: resolveDiffThemeName(resolvedTheme),
@@ -774,8 +1478,40 @@ export default function DiffPanel({
               </div>
             )}
           </div>
-        </>
-      )}
+        )}
+      </div>
+      <AlertDialog
+        open={pendingDiscardDiffFile !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingDiscardDiffFile(null);
+          }
+        }}
+      >
+        <AlertDialogPopup className="max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Discard changes?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingDiscardDiffFile
+                ? `Discard unstaged changes to ${pendingDiscardDiffFile.filePath}. Staged changes will be preserved.${pendingDiscardDiffFile.isUntracked ? " Untracked files will be deleted." : ""} This cannot be undone.`
+                : "Discard selected working tree changes. This cannot be undone."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" size="sm" />}>
+              Cancel
+            </AlertDialogClose>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={discardChangesMutation.isPending}
+              onClick={runDiscardDiffFile}
+            >
+              Discard
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
     </DiffPanelShell>
   );
 }

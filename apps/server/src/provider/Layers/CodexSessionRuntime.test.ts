@@ -152,6 +152,31 @@ describe("buildTurnStartParams", () => {
       ],
     });
   });
+
+  it("routes approvals to the auto reviewer in auto runtime mode", () => {
+    const params = Effect.runSync(
+      buildTurnStartParams({
+        threadId: "provider-thread-1",
+        runtimeMode: "auto",
+        prompt: "Ship it",
+      }),
+    );
+
+    assert.deepStrictEqual(params, {
+      threadId: "provider-thread-1",
+      approvalPolicy: "on-request",
+      approvalsReviewer: "auto_review",
+      sandboxPolicy: {
+        type: "workspaceWrite",
+      },
+      input: [
+        {
+          type: "text",
+          text: "Ship it",
+        },
+      ],
+    });
+  });
 });
 
 describe("buildPermissionsApprovalResponse", () => {

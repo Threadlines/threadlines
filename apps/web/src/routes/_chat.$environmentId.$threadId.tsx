@@ -1,6 +1,7 @@
 import { scopeProjectRef } from "@t3tools/client-runtime";
 import type { ThreadId } from "@t3tools/contracts";
 import { projectScriptCwd } from "@t3tools/shared/projectScripts";
+import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, retainSearchParams, useNavigate } from "@tanstack/react-router";
 import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
 
@@ -27,8 +28,10 @@ import {
   parseDiffRouteSearch,
   stripRightPanelSearchParams,
 } from "../diffRouteSearch";
+import { preloadDiffPanel, schedulePreloadDiffPanel } from "../diffPanelPreload";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useSettings } from "../hooks/useSettings";
+import { gitWorkingTreeDiffQueryOptions } from "../lib/gitReactQuery";
 import {
   deriveActivePlanState,
   findSidebarProposedPlan,
@@ -57,17 +60,12 @@ const DiffLoadingFallback = (props: { mode: DiffPanelMode }) => {
 
 const LazyDiffPanelWithBack = (props: {
   mode: DiffPanelMode;
-  showBackToSourceControl: boolean;
   onBackToSourceControl: () => void;
 }) => {
   return (
     <DiffWorkerPoolProvider>
       <Suspense fallback={<DiffLoadingFallback mode={props.mode} />}>
-        <DiffPanel
-          mode={props.mode}
-          showBackToSourceControl={props.showBackToSourceControl}
-          onBackToSourceControl={props.onBackToSourceControl}
-        />
+        <DiffPanel mode={props.mode} onBackToSourceControl={props.onBackToSourceControl} />
       </Suspense>
     </DiffWorkerPoolProvider>
   );
@@ -141,6 +139,8 @@ function ChatThreadRouteView() {
   );
   const shouldUseDiffSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   const timestampFormat = useSettings((settings) => settings.timestampFormat);
+  const diffIgnoreWhitespace = useSettings((settings) => settings.diffIgnoreWhitespace);
+  const queryClient = useQueryClient();
   const currentThreadKey = threadRef ? `${threadRef.environmentId}:${threadRef.threadId}` : null;
   const [diffPanelMountState, setDiffPanelMountState] = useState(() => ({
     threadKey: currentThreadKey,
@@ -237,6 +237,29 @@ function ChatThreadRouteView() {
     [markDiffOpened, navigate, threadRef],
   );
 
+  // Warm the lazy diff chunk while source control is open: a file click is
+  // the most likely next action, and the Suspense skeleton reads as jank.
+  useEffect(() => {
+    if (!sourceControlOpen) {
+      return;
+    }
+    return schedulePreloadDiffPanel();
+  }, [sourceControlOpen]);
+  const prefetchWorkingTreeDiff = useCallback(() => {
+    preloadDiffPanel();
+    if (!sourceControlTarget) {
+      return;
+    }
+    void queryClient.prefetchQuery(
+      gitWorkingTreeDiffQueryOptions({
+        environmentId: sourceControlTarget.environmentId,
+        cwd: sourceControlTarget.cwd,
+        filePaths: null,
+        ignoreWhitespace: diffIgnoreWhitespace,
+      }),
+    );
+  }, [diffIgnoreWhitespace, queryClient, sourceControlTarget]);
+
   const activeLatestTurn = serverThread?.latestTurn ?? null;
   const latestTurnSettled = isLatestTurnSettled(activeLatestTurn, serverThread?.session ?? null);
   const threadPlanCatalog = useThreadPlanCatalog(
@@ -321,6 +344,7 @@ function ChatThreadRouteView() {
       target={sourceControlTarget}
       activeThreadRef={threadRef}
       taskPanelButton={taskPanelButton}
+      onPrefetchDiff={prefetchWorkingTreeDiff}
       onOpenDiff={(filePath?: string) => {
         openDiff({
           ...(filePath ? { filePath } : {}),
@@ -335,7 +359,6 @@ function ChatThreadRouteView() {
   ) : shouldRenderDiffContent ? (
     <LazyDiffPanelWithBack
       mode={shouldUseDiffSheet ? "sheet" : "sidebar"}
-      showBackToSourceControl={search.sourceControlReturn === "1"}
       onBackToSourceControl={openSourceControl}
     />
   ) : null;

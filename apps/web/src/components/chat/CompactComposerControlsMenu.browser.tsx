@@ -18,8 +18,18 @@ import { createModelCapabilities, createModelSelection } from "@t3tools/shared/m
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
 import { TraitsMenuContent } from "./TraitsPicker";
 import { useComposerDraftStore } from "../../composerDraftStore";
+import { runtimeModeConfig, type RuntimeModeOption } from "../../runtimeModeOptions";
 
 const LOCAL_ENVIRONMENT_ID = EnvironmentId.make("environment-local");
+
+const TEST_RUNTIME_MODE_OPTIONS: ReadonlyArray<RuntimeModeOption> = (
+  ["approval-required", "auto-accept-edits", "full-access"] as const
+).map((mode) => ({
+  mode,
+  label: runtimeModeConfig[mode].label,
+  description: runtimeModeConfig[mode].description,
+  icon: runtimeModeConfig[mode].icon,
+}));
 
 function selectDescriptor(
   id: string,
@@ -123,6 +133,7 @@ async function mountMenu(props?: { modelSelection?: ModelSelection; prompt?: str
       planSidebarLabel="Plan"
       planSidebarOpen={false}
       runtimeMode="approval-required"
+      runtimeModeOptions={TEST_RUNTIME_MODE_OPTIONS}
       showInteractionModeToggle
       traitsMenuContent={
         <TraitsMenuContent
@@ -243,6 +254,7 @@ describe("CompactComposerControlsMenu", () => {
         planSidebarLabel="Plan"
         planSidebarOpen={false}
         runtimeMode="approval-required"
+        runtimeModeOptions={TEST_RUNTIME_MODE_OPTIONS}
         showInteractionModeToggle={false}
         onToggleInteractionMode={vi.fn()}
         onTogglePlanSidebar={vi.fn()}

@@ -159,6 +159,8 @@ interface SourceControlPanelProps {
     | ((branch: string | null, worktreePath: string | null) => void)
     | undefined;
   readonly onOpenDiff?: (filePath?: string) => void;
+  /** Warm the diff chunk + working tree diff query before a likely diff open. */
+  readonly onPrefetchDiff?: () => void;
   readonly taskPanelButton?: ReactNode;
 }
 
@@ -1375,6 +1377,7 @@ export function SourceControlPanel({
   activeThreadRef,
   onActiveBranchChange,
   onOpenDiff,
+  onPrefetchDiff,
   taskPanelButton,
 }: SourceControlPanelProps) {
   const queryClient = useQueryClient();
@@ -2374,6 +2377,7 @@ export function SourceControlPanel({
           isTreeRow ? "pr-2" : "px-2",
         )}
         style={isTreeRow ? { paddingLeft: `${8 + depth * 14}px` } : undefined}
+        onPointerEnter={onPrefetchDiff}
       >
         <button
           type="button"
@@ -2706,6 +2710,7 @@ export function SourceControlPanel({
                   variant="ghost"
                   size="xs"
                   disabled={changedFiles.length === 0}
+                  onPointerEnter={onPrefetchDiff}
                   onClick={() => onOpenDiff()}
                 >
                   <FileTextIcon className="size-3" />
