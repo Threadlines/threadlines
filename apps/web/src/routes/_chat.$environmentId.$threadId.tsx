@@ -42,6 +42,7 @@ import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeS
 import { resolveThreadRouteRef, buildThreadRouteParams } from "../threadRoutes";
 import { RightPanelSheet } from "../components/RightPanelSheet";
 import { SidebarInset } from "~/components/ui/sidebar";
+import { cn } from "~/lib/utils";
 import {
   SourceControlPanel,
   type SourceControlProjectTarget,
@@ -145,11 +146,14 @@ function ChatThreadRouteView() {
   const [diffPanelMountState, setDiffPanelMountState] = useState(() => ({
     threadKey: currentThreadKey,
     hasOpenedDiff: diffOpen,
+    warm: false,
   }));
   const hasOpenedDiff =
     diffPanelMountState.threadKey === currentThreadKey
       ? diffPanelMountState.hasOpenedDiff
       : diffOpen;
+  const diffPanelWarm =
+    diffPanelMountState.threadKey === currentThreadKey ? diffPanelMountState.warm : false;
   const markDiffOpened = useCallback(() => {
     setDiffPanelMountState((previous) => {
       if (previous.threadKey === currentThreadKey && previous.hasOpenedDiff) {
@@ -158,6 +162,21 @@ function ChatThreadRouteView() {
       return {
         threadKey: currentThreadKey,
         hasOpenedDiff: true,
+        warm: previous.threadKey === currentThreadKey ? previous.warm : false,
+      };
+    });
+  }, [currentThreadKey]);
+  // Hover intent on a source control file row: mount the diff panel hidden so
+  // the chunk, query, and highlighting are warm before the click lands.
+  const markDiffWarm = useCallback(() => {
+    setDiffPanelMountState((previous) => {
+      if (previous.threadKey === currentThreadKey && previous.warm) {
+        return previous;
+      }
+      return {
+        threadKey: currentThreadKey,
+        hasOpenedDiff: previous.threadKey === currentThreadKey ? previous.hasOpenedDiff : false,
+        warm: true,
       };
     });
   }, [currentThreadKey]);
@@ -247,6 +266,7 @@ function ChatThreadRouteView() {
   }, [sourceControlOpen]);
   const prefetchWorkingTreeDiff = useCallback(() => {
     preloadDiffPanel();
+    markDiffWarm();
     if (!sourceControlTarget) {
       return;
     }
@@ -258,7 +278,7 @@ function ChatThreadRouteView() {
         ignoreWhitespace: diffIgnoreWhitespace,
       }),
     );
-  }, [diffIgnoreWhitespace, queryClient, sourceControlTarget]);
+  }, [diffIgnoreWhitespace, markDiffWarm, queryClient, sourceControlTarget]);
 
   const activeLatestTurn = serverThread?.latestTurn ?? null;
   const latestTurnSettled = isLatestTurnSettled(activeLatestTurn, serverThread?.session ?? null);
@@ -326,7 +346,10 @@ function ChatThreadRouteView() {
     return null;
   }
 
-  const shouldRenderDiffContent = diffOpen || hasOpenedDiff;
+  const shouldRenderDiffContent = diffOpen || hasOpenedDiff || diffPanelWarm;
+  // Source control and the diff stay mounted side by side (display-toggled)
+  // so swapping between them never drops worker pools, highlight caches, or
+  // scroll state, and the return trip is instant.
   const rightPanelContent = planPanelOpen ? (
     <PlanSidebar
       activePlan={activePlan}
@@ -339,28 +362,40 @@ function ChatThreadRouteView() {
       workspaceRoot={sourceControlTarget?.cwd}
       onClose={openSourceControl}
     />
-  ) : sourceControlOpen ? (
-    <SourceControlPanel
-      target={sourceControlTarget}
-      activeThreadRef={threadRef}
-      taskPanelButton={taskPanelButton}
-      onPrefetchDiff={prefetchWorkingTreeDiff}
-      onOpenDiff={(filePath?: string) => {
-        openDiff({
-          ...(filePath ? { filePath } : {}),
-          sourceControlReturn: true,
-          workingTree: true,
-        });
-      }}
-      {...(!serverThread && draftThread
-        ? { onActiveBranchChange: handleDraftSourceControlBranchChange }
-        : {})}
-    />
-  ) : shouldRenderDiffContent ? (
-    <LazyDiffPanelWithBack
-      mode={shouldUseDiffSheet ? "sheet" : "sidebar"}
-      onBackToSourceControl={openSourceControl}
-    />
+  ) : sourceControlOpen || diffOpen ? (
+    <>
+      <div
+        className={cn(
+          "h-full w-full min-w-0 flex-col",
+          sourceControlOpen && !diffOpen ? "flex" : "hidden",
+        )}
+      >
+        <SourceControlPanel
+          target={sourceControlTarget}
+          activeThreadRef={threadRef}
+          taskPanelButton={taskPanelButton}
+          onPrefetchDiff={prefetchWorkingTreeDiff}
+          onOpenDiff={(filePath?: string) => {
+            openDiff({
+              ...(filePath ? { filePath } : {}),
+              sourceControlReturn: true,
+              workingTree: true,
+            });
+          }}
+          {...(!serverThread && draftThread
+            ? { onActiveBranchChange: handleDraftSourceControlBranchChange }
+            : {})}
+        />
+      </div>
+      {shouldRenderDiffContent ? (
+        <div className={cn("h-full w-full min-w-0 flex-col", diffOpen ? "flex" : "hidden")}>
+          <LazyDiffPanelWithBack
+            mode={shouldUseDiffSheet ? "sheet" : "sidebar"}
+            onBackToSourceControl={openSourceControl}
+          />
+        </div>
+      ) : null}
+    </>
   ) : null;
 
   if (!shouldUseDiffSheet) {

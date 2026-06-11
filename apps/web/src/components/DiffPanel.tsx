@@ -8,6 +8,7 @@ import type { DiffRenderMode } from "@t3tools/contracts/settings";
 import { projectScriptCwd } from "@t3tools/shared/projectScripts";
 import {
   ChevronDownIcon,
+  ChevronLeftIcon,
   ChevronRightIcon,
   ChevronUpIcon,
   ChevronsDownUpIcon,
@@ -17,6 +18,7 @@ import {
   Rows3Icon,
   SquareArrowOutUpRightIcon,
   TextWrapIcon,
+  XIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { openInPreferredEditor } from "../editorPreferences";
@@ -294,7 +296,7 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
   const patchViewportRef = useRef<HTMLDivElement>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const previousDiffOpenRef = useRef(false);
-  const lastScrolledFilePathRef = useRef<string | null>(null);
+  const pendingScrollFilePathRef = useRef<string | null>(null);
   const workingTreeDigestRef = useRef<string | null>(null);
   const routeThreadRef = useParams({
     strict: false,
@@ -353,7 +355,13 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
   );
 
   const selectedTurnId = diffSearch.diffTurnId ?? null;
-  const diffMode = diffSearch.diffMode === "workingTree" ? "workingTree" : "checkpoint";
+  // While pre-mounted hidden (no diff search params), warm the working-tree
+  // view: that is what a source control file click opens.
+  const diffMode = !diffOpen
+    ? "workingTree"
+    : diffSearch.diffMode === "workingTree"
+      ? "workingTree"
+      : "checkpoint";
   const selectedFilePath = diffSearch.diffFilePath ?? null;
   const selectedTurn =
     diffMode === "workingTree" || selectedTurnId === null
@@ -487,6 +495,16 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
     () => sumDiffFileStats([...fileStatByKey.values()]),
     [fileStatByKey],
   );
+  // `diffFilePath` acts as an explicit single-file filter: entering from a
+  // file row shows just that file, with the strip switching or clearing it.
+  const fileFilterActive = selectedFilePath !== null;
+  const displayedFiles = useMemo(
+    () =>
+      fileFilterActive
+        ? renderableFiles.filter((fileDiff) => resolveFileDiffPath(fileDiff) === selectedFilePath)
+        : renderableFiles,
+    [fileFilterActive, renderableFiles, selectedFilePath],
+  );
 
   // ── Collapse state (cached across panel remounts) ──────────────────
   const collapseScope = `${activeThreadId ?? "no-thread"}:${diffMode}:${selectedTurnId ?? "all"}`;
@@ -540,21 +558,27 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
     [setCollapsedDiffFileKeys],
   );
   const allDiffFilesCollapsed =
-    renderableFiles.length > 0 &&
-    renderableFiles.every((fileDiff) =>
-      collapsedDiffFileKeys.has(buildFileDiffRenderKey(fileDiff)),
-    );
+    displayedFiles.length > 0 &&
+    displayedFiles.every((fileDiff) => collapsedDiffFileKeys.has(buildFileDiffRenderKey(fileDiff)));
   const toggleAllDiffFilesCollapsed = useCallback(() => {
     setCollapsedDiffFileKeys((current) => {
-      if (renderableFiles.length === 0) {
+      if (displayedFiles.length === 0) {
         return current;
       }
-      const fileKeys = renderableFiles.map(buildFileDiffRenderKey);
-      return fileKeys.every((fileKey) => current.has(fileKey))
-        ? new Set<string>()
-        : new Set(fileKeys);
+      const fileKeys = displayedFiles.map(buildFileDiffRenderKey);
+      const next = new Set(current);
+      if (fileKeys.every((fileKey) => current.has(fileKey))) {
+        for (const fileKey of fileKeys) {
+          next.delete(fileKey);
+        }
+      } else {
+        for (const fileKey of fileKeys) {
+          next.add(fileKey);
+        }
+      }
+      return next;
     });
-  }, [renderableFiles, setCollapsedDiffFileKeys]);
+  }, [displayedFiles, setCollapsedDiffFileKeys]);
 
   // ── View settings ──────────────────────────────────────────────────
   const effectiveDiffRenderMode: DiffRenderMode = panelNarrow ? "stacked" : settings.diffRenderMode;
@@ -569,7 +593,6 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
     if (diffOpen && !previousDiffOpenRef.current) {
       setDiffWordWrap(settings.diffWordWrap);
       setDiffIgnoreWhitespace(settings.diffIgnoreWhitespace);
-      lastScrolledFilePathRef.current = null;
     }
     previousDiffOpenRef.current = diffOpen;
   }, [diffOpen, settings.diffIgnoreWhitespace, settings.diffWordWrap]);
@@ -611,24 +634,46 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
     return () => window.clearTimeout(timeoutId);
   }, [flashFilePath]);
 
+  const setFileFilterPath = useCallback(
+    (filePath: string | null) => {
+      const targetThreadRef = activeThread
+        ? scopeThreadRef(activeThread.environmentId, activeThread.id)
+        : routeThreadRef;
+      if (!targetThreadRef) {
+        return;
+      }
+      void navigate({
+        to: "/$environmentId/$threadId",
+        params: buildThreadRouteParams(targetThreadRef),
+        replace: true,
+        search: (previous) => ({ ...previous, diffFilePath: filePath ?? undefined }),
+      });
+    },
+    [activeThread, navigate, routeThreadRef],
+  );
+  const clearFileFilter = useCallback(() => {
+    pendingScrollFilePathRef.current = selectedFilePath;
+    setFileFilterPath(null);
+  }, [selectedFilePath, setFileFilterPath]);
+
+  // After clearing the filter, land on the file the user was reading.
   useEffect(() => {
-    if (!selectedFilePath || renderableFiles.length === 0) {
+    const pending = pendingScrollFilePathRef.current;
+    if (!pending || fileFilterActive || renderableFiles.length === 0) {
       return;
     }
-    if (lastScrolledFilePathRef.current === selectedFilePath) {
+    pendingScrollFilePathRef.current = null;
+    if (!orderedFilePaths.includes(pending)) {
       return;
     }
-    if (!orderedFilePaths.includes(selectedFilePath)) {
-      return;
-    }
-    lastScrolledFilePathRef.current = selectedFilePath;
-    scrollToDiffFile(selectedFilePath);
-  }, [orderedFilePaths, renderableFiles.length, scrollToDiffFile, selectedFilePath]);
+    scrollToDiffFile(pending);
+  }, [fileFilterActive, orderedFilePaths, renderableFiles.length, scrollToDiffFile]);
 
   useEffect(() => {
     const viewport = patchViewportRef.current;
     if (
       !viewport ||
+      fileFilterActive ||
       !renderablePatch ||
       renderablePatch.kind !== "files" ||
       renderableFiles.length === 0
@@ -669,25 +714,32 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
         window.cancelAnimationFrame(frame);
       }
     };
-  }, [renderablePatch, renderableFiles]);
+  }, [fileFilterActive, renderablePatch, renderableFiles]);
 
-  const activeFileIndex = activeFilePath ? orderedFilePaths.indexOf(activeFilePath) : -1;
+  // The file the strip considers "current": the filtered file, or the one in view.
+  const activeListPath = fileFilterActive ? selectedFilePath : activeFilePath;
+  const activeFileIndex = activeListPath ? orderedFilePaths.indexOf(activeListPath) : -1;
   const goToAdjacentFile = useCallback(
     (delta: number) => {
       if (orderedFilePaths.length === 0) {
         return;
       }
-      const currentIndex = activeFilePath ? orderedFilePaths.indexOf(activeFilePath) : -1;
+      const currentIndex = activeListPath ? orderedFilePaths.indexOf(activeListPath) : -1;
       const nextIndex = Math.min(
         orderedFilePaths.length - 1,
         Math.max(0, (currentIndex === -1 ? 0 : currentIndex) + delta),
       );
       const nextPath = orderedFilePaths[nextIndex];
-      if (nextPath && nextPath !== activeFilePath) {
+      if (!nextPath || nextPath === activeListPath) {
+        return;
+      }
+      if (fileFilterActive) {
+        setFileFilterPath(nextPath);
+      } else {
         scrollToDiffFile(nextPath);
       }
     },
-    [activeFilePath, orderedFilePaths, scrollToDiffFile],
+    [activeListPath, fileFilterActive, orderedFilePaths, scrollToDiffFile, setFileFilterPath],
   );
 
   // ── Freshness: refetch the open diff when the working tree moves ───
@@ -980,23 +1032,29 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
     );
 
   const headerRow = (
-    <div className="flex min-w-0 flex-1 items-center gap-1.5">
-      <SourceControlIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+    <div className="flex min-w-0 flex-1 items-center gap-1">
       {onBackToSourceControl ? (
         <button
           type="button"
           aria-label="Back to source control"
           title="Back to source control (Esc)"
-          className="min-w-0 cursor-pointer truncate border-0 bg-transparent p-0 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:rounded-sm focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+          className="-ml-1.5 flex min-w-0 cursor-pointer items-center gap-1 rounded-sm border-0 bg-transparent py-0.5 pl-0.5 pr-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70 transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
           onClick={onBackToSourceControl}
         >
-          <span className="source-control-title-short">SC</span>
-          <span className="source-control-title-full">Source Control</span>
+          <ChevronLeftIcon className="size-3.5 shrink-0 opacity-80" />
+          <SourceControlIcon className="size-3.5 shrink-0 opacity-70" />
+          <span className="min-w-0 truncate">
+            <span className="source-control-title-short">SC</span>
+            <span className="source-control-title-full">Source Control</span>
+          </span>
         </button>
       ) : (
-        <span className="min-w-0 truncate text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70">
-          <span className="source-control-title-short">SC</span>
-          <span className="source-control-title-full">Source Control</span>
+        <span className="flex min-w-0 items-center gap-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70">
+          <SourceControlIcon className="size-3.5 shrink-0 opacity-70" />
+          <span className="min-w-0 truncate">
+            <span className="source-control-title-short">SC</span>
+            <span className="source-control-title-full">Source Control</span>
+          </span>
         </span>
       )}
       <span aria-hidden="true" className="shrink-0 text-[11px] text-muted-foreground/40">
@@ -1009,8 +1067,8 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
   );
 
   const fileStripVisible = hasRenderableFiles && renderableFiles.length > 1;
-  const activeFileName = activeFilePath
-    ? (activeFilePath.split("/").at(-1) ?? activeFilePath)
+  const activeFileName = activeListPath
+    ? (activeListPath.split("/").at(-1) ?? activeListPath)
     : null;
 
   const toolbarRow = (
@@ -1200,6 +1258,18 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
               <ChevronDownIcon className="ml-auto size-3 shrink-0 opacity-60" />
             </MenuTrigger>
             <MenuPopup align="start" className="max-h-80 w-80 overflow-y-auto">
+              {fileFilterActive ? (
+                <>
+                  <MenuItem className="gap-1.5" onClick={clearFileFilter}>
+                    <ChevronsUpDownIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+                    <span className="min-w-0 flex-1 truncate text-xs">Show all files</span>
+                    <span className="shrink-0 font-mono text-[10px] text-muted-foreground/70">
+                      {renderableFiles.length}
+                    </span>
+                  </MenuItem>
+                  <MenuSeparator />
+                </>
+              ) : null}
               <MenuGroup>
                 <MenuGroupLabel>
                   {formatDiffFileCount(renderableFiles.length)}
@@ -1216,7 +1286,7 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
                   const fileKey = buildFileDiffRenderKey(fileDiff);
                   const fileStat = fileStatByKey.get(fileKey);
                   const badge = getFileDiffStatusBadge(fileDiff);
-                  const isActive = filePath === activeFilePath;
+                  const isActive = filePath === activeListPath;
                   const pathSegments = filePath.split("/");
                   const fileName = pathSegments.at(-1) ?? filePath;
                   const fileDirectory = pathSegments.slice(0, -1).join("/");
@@ -1224,7 +1294,9 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
                     <MenuItem
                       key={fileKey}
                       className={cn("gap-1.5", isActive && "bg-accent/45")}
-                      onClick={() => scrollToDiffFile(filePath)}
+                      onClick={() =>
+                        fileFilterActive ? setFileFilterPath(filePath) : scrollToDiffFile(filePath)
+                      }
                     >
                       <span
                         className={cn(
@@ -1256,6 +1328,19 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
               </MenuGroup>
             </MenuPopup>
           </Menu>
+          {fileFilterActive ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              aria-label="Show all files"
+              title={`Show all ${renderableFiles.length} files`}
+              className="text-muted-foreground/70 hover:text-foreground"
+              onClick={clearFileFilter}
+            >
+              <XIcon className="size-3.5" />
+            </Button>
+          ) : null}
           <Button
             type="button"
             variant="ghost"
@@ -1358,108 +1443,110 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
                 </div>
               )
             ) : renderablePatch.kind === "files" ? (
-              <Virtualizer
-                className="diff-render-surface h-full min-h-0 overflow-auto px-2 pb-2"
-                config={{
-                  overscrollSize: 600,
-                  intersectionObserverMargin: 1200,
-                }}
-              >
-                {renderableFiles.map((fileDiff) => {
-                  const filePath = resolveFileDiffPath(fileDiff);
-                  const fileKey = buildFileDiffRenderKey(fileDiff);
-                  const themedFileKey = `${fileKey}:${resolvedTheme}`;
-                  const collapsed = collapsedDiffFileKeys.has(fileKey);
-                  const fileStat = fileStatByKey.get(fileKey);
-                  return (
-                    <div
-                      key={themedFileKey}
-                      data-diff-file-path={filePath}
-                      className={cn(
-                        "diff-render-file group/diff-file mb-2 rounded-md first:mt-2 last:mb-0",
-                        flashFilePath === filePath && "diff-file-flash",
-                      )}
-                      onContextMenu={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        void handleDiffFileContextMenu(filePath, {
-                          x: event.clientX,
-                          y: event.clientY,
-                        });
-                      }}
-                      onClickCapture={(event) => {
-                        const nativeEvent = event.nativeEvent as MouseEvent;
-                        const composedPath = nativeEvent.composedPath?.() ?? [];
-                        const clickedHeader = composedPath.some((node) => {
-                          if (!(node instanceof Element)) return false;
-                          return node.hasAttribute("data-title");
-                        });
-                        if (!clickedHeader) return;
-                        openDiffFileInEditor(filePath);
-                      }}
-                    >
-                      <FileDiff
-                        fileDiff={fileDiff}
-                        renderHeaderPrefix={() => (
-                          <button
-                            type="button"
-                            className={cn(
-                              "inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0 transition-colors hover:bg-foreground/10 focus-visible:outline-hidden",
-                              getDiffCollapseIconClassName(fileDiff),
-                            )}
-                            aria-label={collapsed ? `Expand ${filePath}` : `Collapse ${filePath}`}
-                            aria-expanded={!collapsed}
-                            title={collapsed ? "Expand diff" : "Collapse diff"}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              toggleDiffFileCollapsed(fileKey);
-                            }}
-                          >
-                            {collapsed ? (
-                              <ChevronRightIcon className="size-4" />
-                            ) : (
-                              <ChevronDownIcon className="size-4" />
-                            )}
-                          </button>
+              fileFilterActive && displayedFiles.length === 0 ? (
+                <div className="flex h-full flex-col items-center justify-center gap-3 px-5 text-center">
+                  <p className="text-xs text-muted-foreground/70">
+                    No changes in {selectedFilePath} anymore.
+                  </p>
+                  <Button type="button" variant="outline" size="xs" onClick={clearFileFilter}>
+                    Show all files
+                  </Button>
+                </div>
+              ) : (
+                <Virtualizer
+                  className="diff-render-surface h-full min-h-0 overflow-auto px-2 pb-2"
+                  config={{
+                    overscrollSize: 600,
+                    intersectionObserverMargin: 1200,
+                  }}
+                >
+                  {displayedFiles.map((fileDiff) => {
+                    const filePath = resolveFileDiffPath(fileDiff);
+                    const fileKey = buildFileDiffRenderKey(fileDiff);
+                    const themedFileKey = `${fileKey}:${resolvedTheme}`;
+                    const collapsed = collapsedDiffFileKeys.has(fileKey);
+                    return (
+                      <div
+                        key={themedFileKey}
+                        data-diff-file-path={filePath}
+                        className={cn(
+                          "diff-render-file group/diff-file mb-2 rounded-md first:mt-2 last:mb-0",
+                          flashFilePath === filePath && "diff-file-flash",
                         )}
-                        renderHeaderMetadata={() => (
-                          <span className="flex items-center gap-1.5 pl-2">
-                            {fileStat ? (
-                              <span className="font-mono text-[10px] leading-none">
-                                <DiffStatLabel
-                                  additions={fileStat.additions}
-                                  deletions={fileStat.deletions}
-                                />
-                              </span>
-                            ) : null}
+                        onContextMenu={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          void handleDiffFileContextMenu(filePath, {
+                            x: event.clientX,
+                            y: event.clientY,
+                          });
+                        }}
+                        onClickCapture={(event) => {
+                          const nativeEvent = event.nativeEvent as MouseEvent;
+                          const composedPath = nativeEvent.composedPath?.() ?? [];
+                          const clickedHeader = composedPath.some((node) => {
+                            if (!(node instanceof Element)) return false;
+                            return node.hasAttribute("data-title");
+                          });
+                          if (!clickedHeader) return;
+                          openDiffFileInEditor(filePath);
+                        }}
+                      >
+                        <FileDiff
+                          fileDiff={fileDiff}
+                          renderHeaderPrefix={() => (
                             <button
                               type="button"
-                              aria-label={`Open ${filePath} in editor`}
-                              title="Open in editor"
-                              className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0 text-muted-foreground/70 transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:outline-hidden"
+                              className={cn(
+                                "inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0 transition-colors hover:bg-foreground/10 focus-visible:outline-hidden",
+                                getDiffCollapseIconClassName(fileDiff),
+                              )}
+                              aria-label={collapsed ? `Expand ${filePath}` : `Collapse ${filePath}`}
+                              aria-expanded={!collapsed}
+                              title={collapsed ? "Expand diff" : "Collapse diff"}
                               onClick={(event) => {
                                 event.stopPropagation();
-                                openDiffFileInEditor(filePath);
+                                toggleDiffFileCollapsed(fileKey);
                               }}
                             >
-                              <SquareArrowOutUpRightIcon className="size-3" />
+                              {collapsed ? (
+                                <ChevronRightIcon className="size-4" />
+                              ) : (
+                                <ChevronDownIcon className="size-4" />
+                              )}
                             </button>
-                          </span>
-                        )}
-                        options={{
-                          collapsed,
-                          diffStyle: effectiveDiffRenderMode === "split" ? "split" : "unified",
-                          lineDiffType: "none",
-                          overflow: diffWordWrap ? "wrap" : "scroll",
-                          theme: resolveDiffThemeName(resolvedTheme),
-                          themeType: resolvedTheme as DiffThemeType,
-                          unsafeCSS: DIFF_PANEL_UNSAFE_CSS,
-                        }}
-                      />
-                    </div>
-                  );
-                })}
-              </Virtualizer>
+                          )}
+                          renderHeaderMetadata={() => (
+                            <span className="flex items-center pl-1.5">
+                              <button
+                                type="button"
+                                aria-label={`Open ${filePath} in editor`}
+                                title="Open in editor"
+                                className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0 text-muted-foreground/70 transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:outline-hidden"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  openDiffFileInEditor(filePath);
+                                }}
+                              >
+                                <SquareArrowOutUpRightIcon className="size-3" />
+                              </button>
+                            </span>
+                          )}
+                          options={{
+                            collapsed,
+                            diffStyle: effectiveDiffRenderMode === "split" ? "split" : "unified",
+                            lineDiffType: "none",
+                            overflow: diffWordWrap ? "wrap" : "scroll",
+                            theme: resolveDiffThemeName(resolvedTheme),
+                            themeType: resolvedTheme as DiffThemeType,
+                            unsafeCSS: DIFF_PANEL_UNSAFE_CSS,
+                          }}
+                        />
+                      </div>
+                    );
+                  })}
+                </Virtualizer>
+              )
             ) : (
               <div className="h-full overflow-auto p-2">
                 <div className="space-y-2">
