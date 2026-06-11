@@ -866,7 +866,7 @@ describe("SourceControlPanel changes", () => {
       await expect.element(fileLabel).toBeVisible();
 
       await fileLabel.hover();
-      await new Promise((resolve) => setTimeout(resolve, 1_300));
+      await new Promise((resolve) => setTimeout(resolve, 600));
 
       await vi.waitFor(() => {
         const tooltipPopups = Array.from(document.querySelectorAll('[data-slot="tooltip-popup"]'));

@@ -373,7 +373,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
                 )}
                 {canRevertAgentWork && <RevertUserMessageButton messageId={row.message.id} />}
               </div>
-              <p className="text-right text-xs text-muted-foreground/50">
+              <p className="text-right text-xs tracking-tight tabular-nums text-muted-foreground/50">
                 {formatTimestamp(row.message.createdAt, ctx.timestampFormat)}
               </p>
             </>
@@ -478,7 +478,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
           onOpenTurnDiff={ctx.onOpenTurnDiff}
         />
         <div className="mt-1.5 flex items-center gap-2">
-          <p className="text-[10px] text-muted-foreground/30">
+          <p className="text-[10px] tracking-tight tabular-nums text-muted-foreground/30">
             {row.message.streaming ? (
               <LiveMessageMeta
                 createdAt={row.message.createdAt}

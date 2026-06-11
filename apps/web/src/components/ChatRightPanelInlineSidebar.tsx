@@ -8,8 +8,10 @@ import { Sidebar, SidebarProvider, SidebarRail } from "./ui/sidebar";
 export { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY };
 
 const RIGHT_PANEL_INLINE_SIDEBAR_WIDTH_STORAGE_KEY = "chat_right_panel_sidebar_width";
-const RIGHT_PANEL_INLINE_DEFAULT_WIDTH = "clamp(24rem,34vw,36rem)";
 const RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH = 17 * 16;
+// Chat is the main focus: the panel starts at its minimum width and only
+// grows if the user drags it wider (which is then persisted).
+const RIGHT_PANEL_INLINE_DEFAULT_WIDTH = `${RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH}px`;
 const RIGHT_PANEL_INLINE_SIDEBAR_MAX_WIDTH = 256 * 16;
 const COMPOSER_COMPACT_MIN_LEFT_CONTROLS_WIDTH_PX = 208;
 

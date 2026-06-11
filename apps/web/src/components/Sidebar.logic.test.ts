@@ -7,8 +7,10 @@ import {
   getVisibleSidebarThreadIds,
   resolveAdjacentThreadId,
   getFallbackThreadIdAfterDelete,
-  getVisibleThreadsForProject,
+  getSidebarThreadWindow,
   getProjectSortTimestamp,
+  SIDEBAR_THREAD_REVEAL_ALL_SLACK,
+  SIDEBAR_THREAD_REVEAL_CHUNK_SIZE,
   hasUnseenCompletion,
   isContextMenuPointerDown,
   orderItemsByPreferredIds,
@@ -777,54 +779,108 @@ describe("resolveProjectStatusIndicator", () => {
   });
 });
 
-describe("getVisibleThreadsForProject", () => {
-  it("includes the active thread even when it falls below the folded preview", () => {
-    const threads = Array.from({ length: 8 }, (_, index) =>
-      makeThread({
-        id: ThreadId.make(`thread-${index + 1}`),
-        title: `Thread ${index + 1}`,
-      }),
-    );
+const makeKeys = (count: number) => Array.from({ length: count }, (_, index) => `t-${index + 1}`);
+const getThreadKey = (key: string) => key;
 
-    const result = getVisibleThreadsForProject({
-      threads,
-      activeThreadId: ThreadId.make("thread-8"),
-      isThreadListExpanded: false,
+describe("getSidebarThreadWindow", () => {
+  it("includes the active thread even when it falls below the folded preview", () => {
+    const window = getSidebarThreadWindow({
+      threads: makeKeys(8),
+      getThreadKey,
+      activeThreadKey: "t-8",
       previewLimit: 6,
+      revealedCount: 0,
     });
 
-    expect(result.hasHiddenThreads).toBe(true);
-    expect(result.visibleThreads.map((thread) => thread.id)).toEqual([
-      ThreadId.make("thread-1"),
-      ThreadId.make("thread-2"),
-      ThreadId.make("thread-3"),
-      ThreadId.make("thread-4"),
-      ThreadId.make("thread-5"),
-      ThreadId.make("thread-6"),
-      ThreadId.make("thread-8"),
-    ]);
-    expect(result.hiddenThreads.map((thread) => thread.id)).toEqual([ThreadId.make("thread-7")]);
+    expect(window.visibleThreads).toEqual(["t-1", "t-2", "t-3", "t-4", "t-5", "t-6", "t-8"]);
+    expect(window.hiddenThreads).toEqual(["t-7"]);
+    expect(window.isRevealed).toBe(false);
   });
 
-  it("returns all threads when the list is expanded", () => {
-    const threads = Array.from({ length: 8 }, (_, index) =>
-      makeThread({
-        id: ThreadId.make(`thread-${index + 1}`),
-      }),
-    );
-
-    const result = getVisibleThreadsForProject({
-      threads,
-      activeThreadId: ThreadId.make("thread-8"),
-      isThreadListExpanded: true,
+  it("offers the whole tail when it fits within one chunk plus slack", () => {
+    const window = getSidebarThreadWindow({
+      threads: makeKeys(6 + SIDEBAR_THREAD_REVEAL_CHUNK_SIZE + SIDEBAR_THREAD_REVEAL_ALL_SLACK),
+      getThreadKey,
+      activeThreadKey: null,
       previewLimit: 6,
+      revealedCount: 0,
     });
 
-    expect(result.hasHiddenThreads).toBe(true);
-    expect(result.visibleThreads.map((thread) => thread.id)).toEqual(
-      threads.map((thread) => thread.id),
+    expect(window.nextRevealCount).toBe(
+      SIDEBAR_THREAD_REVEAL_CHUNK_SIZE + SIDEBAR_THREAD_REVEAL_ALL_SLACK,
     );
-    expect(result.hiddenThreads).toEqual([]);
+    expect(window.searchHandoffThreadCount).toBeNull();
+  });
+
+  it("offers a single chunk when the tail is larger than chunk plus slack", () => {
+    const window = getSidebarThreadWindow({
+      threads: makeKeys(40),
+      getThreadKey,
+      activeThreadKey: null,
+      previewLimit: 6,
+      revealedCount: 0,
+    });
+
+    expect(window.visibleThreads).toHaveLength(6);
+    expect(window.nextRevealCount).toBe(SIDEBAR_THREAD_REVEAL_CHUNK_SIZE);
+    expect(window.searchHandoffThreadCount).toBeNull();
+  });
+
+  it("hands off to search instead of revealing further once expanded", () => {
+    const window = getSidebarThreadWindow({
+      threads: makeKeys(40),
+      getThreadKey,
+      activeThreadKey: null,
+      previewLimit: 6,
+      revealedCount: SIDEBAR_THREAD_REVEAL_CHUNK_SIZE,
+    });
+
+    expect(window.visibleThreads).toHaveLength(6 + SIDEBAR_THREAD_REVEAL_CHUNK_SIZE);
+    expect(window.nextRevealCount).toBe(0);
+    expect(window.searchHandoffThreadCount).toBe(40);
+    expect(window.isRevealed).toBe(true);
+  });
+
+  it("keeps Show less without further rows when everything is revealed", () => {
+    const window = getSidebarThreadWindow({
+      threads: makeKeys(10),
+      getThreadKey,
+      activeThreadKey: null,
+      previewLimit: 6,
+      revealedCount: 4,
+    });
+
+    expect(window.visibleThreads).toHaveLength(10);
+    expect(window.hiddenThreads).toEqual([]);
+    expect(window.nextRevealCount).toBe(0);
+    expect(window.searchHandoffThreadCount).toBeNull();
+    expect(window.isRevealed).toBe(true);
+  });
+
+  it("does not duplicate an active thread already inside the window", () => {
+    const window = getSidebarThreadWindow({
+      threads: makeKeys(8),
+      getThreadKey,
+      activeThreadKey: "t-2",
+      previewLimit: 6,
+      revealedCount: 0,
+    });
+
+    expect(window.visibleThreads).toEqual(["t-1", "t-2", "t-3", "t-4", "t-5", "t-6"]);
+    expect(window.hiddenThreads).toEqual(["t-7", "t-8"]);
+  });
+
+  it("ignores an active thread that belongs to another project", () => {
+    const window = getSidebarThreadWindow({
+      threads: makeKeys(8),
+      getThreadKey,
+      activeThreadKey: "other-project-thread",
+      previewLimit: 6,
+      revealedCount: 0,
+    });
+
+    expect(window.visibleThreads).toEqual(["t-1", "t-2", "t-3", "t-4", "t-5", "t-6"]);
+    expect(window.hiddenThreads).toEqual(["t-7", "t-8"]);
   });
 });
 

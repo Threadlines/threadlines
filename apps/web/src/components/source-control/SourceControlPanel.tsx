@@ -873,8 +873,10 @@ const BRANCH_MENU_REF_LIMIT = 14;
 const SOURCE_CONTROL_STATUS_REFRESH_INTERVAL_MS = 3_000;
 const COMMIT_MESSAGE_EDITOR_TRANSITION_MS = 160;
 const DEFAULT_CHANGES_PANEL_HEIGHT = 150;
-const DEFAULT_CHANGES_PANEL_RATIO = 0.4;
-const SOURCE_CONTROL_NAME_TOOLTIP_DELAY_MS = 1_200;
+// Changes is the actionable half of the split, so it gets the larger share
+// by default; the divider remains draggable (and persisted) either way.
+const DEFAULT_CHANGES_PANEL_RATIO = 0.6;
+const SOURCE_CONTROL_NAME_TOOLTIP_DELAY_MS = 500;
 const CHANGED_FILE_ACTIONS_VISIBILITY_CLASS_NAME =
   "pointer-events-none opacity-0 transition-opacity duration-150 group-hover/change-file:pointer-events-auto group-hover/change-file:opacity-100 group-focus-within/change-file:pointer-events-auto group-focus-within/change-file:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100";
 const CHANGED_FILE_ROW_ACTION_BUTTON_CLASS_NAME =
@@ -909,12 +911,29 @@ function DelayedSourceControlNameTooltip({
   readonly label: string;
   readonly className: string;
 }) {
+  const labelRef = useRef<HTMLSpanElement>(null);
+  const [open, setOpen] = useState(false);
+
   return (
-    <Tooltip>
+    <Tooltip
+      open={open}
+      onOpenChange={(nextOpen) => {
+        // Only reveal the full name when the inline label is actually clipped.
+        const element = labelRef.current;
+        if (nextOpen && element && element.scrollWidth <= element.clientWidth) {
+          return;
+        }
+        setOpen(nextOpen);
+      }}
+    >
       <TooltipTrigger
         closeDelay={0}
         delay={SOURCE_CONTROL_NAME_TOOLTIP_DELAY_MS}
-        render={<span className={className}>{label}</span>}
+        render={
+          <span ref={labelRef} className={className}>
+            {label}
+          </span>
+        }
       />
       <TooltipPopup
         align="start"
@@ -2379,9 +2398,9 @@ export function SourceControlPanel({
             ) : null}
           </span>
         </button>
-        <span className="shrink-0 self-center font-mono text-[11px]">
+        <span className="shrink-0 self-center font-mono text-[10px]">
           <span className="text-success">+{entry.insertions}</span>
-          <span className="px-1 text-muted-foreground/60">/</span>
+          <span className="px-0.5 text-muted-foreground/60">/</span>
           <span className="text-destructive">-{entry.deletions}</span>
         </span>
         <div
@@ -2493,9 +2512,9 @@ export function SourceControlPanel({
             label={node.name}
             className="truncate font-mono text-[10px] text-muted-foreground/80 group-hover/change-directory:text-foreground/90"
           />
-          <span className="shrink-0 self-center font-mono text-[11px]">
+          <span className="shrink-0 self-center font-mono text-[10px]">
             <span className="text-success">+{node.insertions}</span>
-            <span className="px-1 text-muted-foreground/60">/</span>
+            <span className="px-0.5 text-muted-foreground/60">/</span>
             <span className="text-destructive">-{node.deletions}</span>
           </span>
         </button>
@@ -2542,7 +2561,7 @@ export function SourceControlPanel({
           <div className="flex shrink-0 items-center gap-1">
             <span className="mr-1 font-mono text-[10px] text-muted-foreground">
               <span className="text-success">+{insertions}</span>
-              <span className="px-1 text-muted-foreground/60">/</span>
+              <span className="px-0.5 text-muted-foreground/60">/</span>
               <span className="text-destructive">-{deletions}</span>
             </span>
             {actions}
@@ -2690,7 +2709,7 @@ export function SourceControlPanel({
               ) : null}
               <span className="font-mono text-[11px] text-muted-foreground">
                 <span className="text-success">+{status?.workingTree.insertions ?? 0}</span>
-                <span className="px-1 text-muted-foreground/60">/</span>
+                <span className="px-0.5 text-muted-foreground/60">/</span>
                 <span className="text-destructive">-{status?.workingTree.deletions ?? 0}</span>
               </span>
             </div>

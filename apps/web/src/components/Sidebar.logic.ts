@@ -414,51 +414,74 @@ export function resolveProjectStatusIndicator(
   return highestPriorityStatus;
 }
 
-export function getVisibleThreadsForProject<T extends Pick<Thread, "id">>(input: {
-  threads: readonly T[];
-  activeThreadId: T["id"] | undefined;
-  isThreadListExpanded: boolean;
-  previewLimit: number;
-}): {
-  hasHiddenThreads: boolean;
+export const SIDEBAR_THREAD_REVEAL_CHUNK_SIZE = 15;
+// One click reveals the whole tail when it is at most a chunk plus this
+// slack, so a couple of stragglers never hide behind the search handoff.
+export const SIDEBAR_THREAD_REVEAL_ALL_SLACK = 5;
+
+export interface SidebarThreadWindow<T> {
   visibleThreads: T[];
   hiddenThreads: T[];
-} {
-  const { activeThreadId, isThreadListExpanded, previewLimit, threads } = input;
-  const hasHiddenThreads = threads.length > previewLimit;
+  /** How many threads the next "Show more" click reveals (0 = no row). */
+  nextRevealCount: number;
+  /** Total thread count for the "Search all N threads" row (null = no row). */
+  searchHandoffThreadCount: number | null;
+  /** True once the user revealed beyond the preview (shows "Show less"). */
+  isRevealed: boolean;
+}
 
-  if (!hasHiddenThreads || isThreadListExpanded) {
+export function getSidebarThreadWindow<T>(input: {
+  threads: readonly T[];
+  getThreadKey: (thread: T) => string;
+  activeThreadKey: string | null;
+  previewLimit: number;
+  revealedCount: number;
+}): SidebarThreadWindow<T> {
+  const { activeThreadKey, getThreadKey, previewLimit, revealedCount, threads } = input;
+  const isRevealed = revealedCount > 0;
+  const windowSize = previewLimit + Math.max(0, revealedCount);
+
+  if (threads.length <= windowSize) {
     return {
-      hasHiddenThreads,
-      hiddenThreads: [],
       visibleThreads: [...threads],
+      hiddenThreads: [],
+      nextRevealCount: 0,
+      searchHandoffThreadCount: null,
+      isRevealed,
     };
   }
 
-  const previewThreads = threads.slice(0, previewLimit);
-  if (!activeThreadId || previewThreads.some((thread) => thread.id === activeThreadId)) {
-    return {
-      hasHiddenThreads: true,
-      hiddenThreads: threads.slice(previewLimit),
-      visibleThreads: previewThreads,
-    };
+  const windowThreads = threads.slice(0, windowSize);
+  // The active thread always stays visible, even when it falls in the hidden
+  // tail, so the current-thread marker never disappears from the sidebar.
+  const visibleThreadKeys = new Set(windowThreads.map(getThreadKey));
+  const includeActiveThread =
+    activeThreadKey !== null &&
+    !visibleThreadKeys.has(activeThreadKey) &&
+    threads.some((thread) => getThreadKey(thread) === activeThreadKey);
+  if (includeActiveThread) {
+    visibleThreadKeys.add(activeThreadKey);
   }
 
-  const activeThread = threads.find((thread) => thread.id === activeThreadId);
-  if (!activeThread) {
-    return {
-      hasHiddenThreads: true,
-      hiddenThreads: threads.slice(previewLimit),
-      visibleThreads: previewThreads,
-    };
-  }
+  const visibleThreads = includeActiveThread
+    ? threads.filter((thread) => visibleThreadKeys.has(getThreadKey(thread)))
+    : windowThreads;
+  const hiddenThreads = threads.filter((thread) => !visibleThreadKeys.has(getThreadKey(thread)));
 
-  const visibleThreadIds = new Set([...previewThreads, activeThread].map((thread) => thread.id));
+  // Inline expansion is capped at one reveal step; past that the tail stays
+  // reachable through search so huge projects cannot flood the sidebar.
+  const nextRevealCount = isRevealed
+    ? 0
+    : hiddenThreads.length <= SIDEBAR_THREAD_REVEAL_CHUNK_SIZE + SIDEBAR_THREAD_REVEAL_ALL_SLACK
+      ? hiddenThreads.length
+      : SIDEBAR_THREAD_REVEAL_CHUNK_SIZE;
 
   return {
-    hasHiddenThreads: true,
-    hiddenThreads: threads.filter((thread) => !visibleThreadIds.has(thread.id)),
-    visibleThreads: threads.filter((thread) => visibleThreadIds.has(thread.id)),
+    visibleThreads,
+    hiddenThreads,
+    nextRevealCount,
+    searchHandoffThreadCount: isRevealed && hiddenThreads.length > 0 ? threads.length : null,
+    isRevealed,
   };
 }
 

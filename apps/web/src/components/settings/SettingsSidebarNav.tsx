@@ -22,6 +22,7 @@ import {
 } from "../ui/sidebar";
 import { CurrentMarker } from "../ui/threadline";
 import { SourceControlIcon } from "../Icons";
+import { SidebarVersionTag } from "../SidebarVersionTag";
 
 export type SettingsSectionPath =
   | "/settings/general"
@@ -110,15 +111,16 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
       <SidebarSeparator />
       <SidebarFooter className="p-2">
         <SidebarMenu>
-          <SidebarMenuItem>
+          <SidebarMenuItem className="flex items-center gap-1.5">
             <SidebarMenuButton
               size="sm"
-              className="gap-2 px-2 py-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="flex-1 gap-2 px-2 py-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
               onClick={handleBackClick}
             >
               <ArrowLeftIcon className="size-4" />
               <span>Back</span>
             </SidebarMenuButton>
+            <SidebarVersionTag />
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>

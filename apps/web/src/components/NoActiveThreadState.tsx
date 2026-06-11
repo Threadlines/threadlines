@@ -23,7 +23,7 @@ import { Button } from "./ui/button";
 import { Empty, EmptyDescription, EmptyTitle } from "./ui/empty";
 import { Group } from "./ui/group";
 import { Menu, MenuGroup, MenuGroupLabel, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
-import { SidebarInset, SidebarTrigger } from "./ui/sidebar";
+import { SidebarInset, SidebarOpenTrigger } from "./ui/sidebar";
 import { useSettings } from "~/hooks/useSettings";
 import { cn } from "~/lib/utils";
 
@@ -202,12 +202,15 @@ export function NoActiveThreadState() {
           )}
         >
           {isElectron ? (
-            <span className="text-xs text-muted-foreground/50 wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
-              No active thread
-            </span>
+            <div className="flex items-center gap-2">
+              <SidebarOpenTrigger className="size-7 shrink-0" />
+              <span className="text-xs text-muted-foreground/50 wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
+                No active thread
+              </span>
+            </div>
           ) : (
             <div className="flex items-center gap-2">
-              <SidebarTrigger className="size-7 shrink-0 md:hidden" />
+              <SidebarOpenTrigger className="size-7 shrink-0" />
               <span className="text-sm font-medium text-foreground md:text-muted-foreground/60">
                 No active thread
               </span>

@@ -5,7 +5,12 @@
 @custom-variant wco (&:is(.wco, .wco *));
 
 @theme inline {
-  --font-sans: "Hanken Grotesk", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-sans:
+    "Schibsted Grotesk Variable", "Schibsted Grotesk", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", sans-serif;
+  --font-mono:
+    "Cascadia Mono Variable", "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo,
+    monospace;
   --animate-skeleton: skeleton 2s -1s infinite linear;
   --color-warning-foreground: var(--warning-foreground);
   --color-warning: var(--warning);
@@ -140,12 +145,12 @@
 
   @variant dark {
     color-scheme: dark;
-    --background: oklch(0.2 0.008 var(--app-tint-hue));
+    --background: oklch(0.2 0.006 var(--app-tint-hue));
     --app-chrome-background: var(--background);
-    --foreground: oklch(0.965 0.004 var(--app-tint-hue));
+    --foreground: oklch(0.92 0 0);
     --card: color-mix(in srgb, var(--background) 98%, var(--color-white));
     --card-foreground: var(--foreground);
-    --rail: color-mix(in srgb, var(--background) 88%, var(--color-black));
+    --rail: oklch(0.175 0.008 var(--app-tint-hue));
     --sidebar: var(--rail);
     --sidebar-foreground: var(--foreground);
     --sidebar-border: var(--border);
@@ -160,7 +165,7 @@
     --secondary: --alpha(var(--color-white) / 4%);
     --secondary-foreground: var(--foreground);
     --muted: --alpha(var(--color-white) / 4%);
-    --muted-foreground: oklch(0.6 0.016 var(--app-tint-hue));
+    --muted-foreground: oklch(0.6 0.006 var(--app-tint-hue));
     --accent: --alpha(var(--color-white) / 4%);
     --accent-foreground: var(--foreground);
     --control-active: --alpha(var(--color-white) / 12%);
@@ -184,13 +189,7 @@ html.electron {
 }
 
 body {
-  font-family:
-    "Hanken Grotesk",
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    system-ui,
-    sans-serif;
+  font-family: var(--font-sans);
   margin: 0;
   padding: 0;
 }
@@ -229,9 +228,26 @@ body::after {
   background-size: 256px 256px;
 }
 
+/* Light specks from the grain sit on glyph edges in dark mode; keep the texture but quieter. */
+.dark body::after {
+  opacity: 0.015;
+}
+
 pre,
 code {
-  font-family: "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-family: var(--font-mono);
+}
+
+/* Pin the small data chips (diff stats, tags, SHAs — all `font-mono` utility
+   users) to a Consolas-like x-height aspect so the bundled mono renders at the
+   visual density these 10–11px chips were designed around. Code blocks keep the
+   font's natural size for readability. */
+.font-mono {
+  font-size-adjust: 0.5;
+}
+pre,
+code {
+  font-size-adjust: none;
 }
 
 /* Window drag region (frameless titlebar) */
