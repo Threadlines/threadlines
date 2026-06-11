@@ -315,7 +315,8 @@ function Sidebar({
 }
 
 function SidebarTrigger({ className, onClick, ...props }: React.ComponentProps<typeof Button>) {
-  const { toggleSidebar, openMobile } = useSidebar();
+  const { toggleSidebar, openMobile, open, isMobile } = useSidebar();
+  const isOpen = isMobile ? openMobile : open;
 
   return (
     <Button
@@ -330,10 +331,21 @@ function SidebarTrigger({ className, onClick, ...props }: React.ComponentProps<t
       variant="ghost"
       {...props}
     >
-      {openMobile ? <PanelLeftCloseIcon /> : <PanelLeftIcon />}
+      {isOpen ? <PanelLeftCloseIcon /> : <PanelLeftIcon />}
       <span className="sr-only">Toggle Sidebar</span>
     </Button>
   );
+}
+
+/**
+ * Sidebar trigger for headers outside the sidebar: always available on
+ * mobile, and on desktop only while the sidebar is collapsed (it is the only
+ * way back once an offcanvas sidebar is hidden).
+ */
+function SidebarOpenTrigger({ className, ...props }: React.ComponentProps<typeof Button>) {
+  const { open } = useSidebar();
+
+  return <SidebarTrigger className={cn(className, open && "md:hidden")} {...props} />;
 }
 
 function clampSidebarWidth(width: number, options: SidebarResolvedResizableOptions): number {
@@ -664,8 +676,10 @@ function SidebarSeparator({ className, ...props }: React.ComponentProps<typeof S
 }
 
 function SidebarContent({ className, ...props }: React.ComponentProps<"div">) {
+  // No scrollFade: its edge masks would dim sticky rows (project headers,
+  // "Show less") pinned to the viewport edges while a long list scrolls.
   return (
-    <ScrollArea hideScrollbars scrollFade className="h-auto min-h-0 flex-1">
+    <ScrollArea hideScrollbars className="h-auto min-h-0 flex-1">
       <div
         className={cn(
           "flex w-full min-w-0 flex-col gap-2 group-data-[collapsible=icon]:overflow-hidden",
@@ -998,6 +1012,7 @@ export {
   SidebarMenuSub,
   SidebarMenuSubButton,
   SidebarMenuSubItem,
+  SidebarOpenTrigger,
   SidebarProvider,
   SidebarRail,
   SidebarSeparator,

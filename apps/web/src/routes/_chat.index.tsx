@@ -3,7 +3,7 @@ import { MonitorIcon } from "lucide-react";
 
 import { NoActiveThreadState } from "../components/NoActiveThreadState";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
-import { SidebarInset, SidebarTrigger } from "../components/ui/sidebar";
+import { SidebarInset, SidebarOpenTrigger } from "../components/ui/sidebar";
 import { useSavedEnvironmentRegistryStore } from "../environments/runtime";
 import { APP_DISPLAY_NAME } from "~/branding";
 
@@ -30,7 +30,7 @@ function HostedStaticOnboardingState() {
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background">
         <header className="border-b border-border px-3 py-2 sm:px-5 sm:py-3">
           <div className="flex items-center gap-2">
-            <SidebarTrigger className="size-7 shrink-0 md:hidden" />
+            <SidebarOpenTrigger className="size-7 shrink-0" />
             <span className="text-sm font-medium text-foreground md:text-muted-foreground/60">
               {APP_DISPLAY_NAME}
             </span>

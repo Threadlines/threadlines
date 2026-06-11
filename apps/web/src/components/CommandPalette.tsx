@@ -1,6 +1,6 @@
 "use client";
 
-import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime";
+import { scopedProjectKey, scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime";
 import {
   DEFAULT_MODEL,
   type EnvironmentId,
@@ -788,6 +788,7 @@ function OpenCommandPaletteDialog() {
         addonIcon: view.addonIcon,
         groups: view.groups,
         ...(view.initialQuery ? { initialQuery: view.initialQuery } : {}),
+        ...(view.inputPlaceholder ? { inputPlaceholder: view.inputPlaceholder } : {}),
       },
     ]);
     setHighlightedItemValue(null);
@@ -1047,6 +1048,52 @@ function OpenCommandPaletteDialog() {
     clearOpenIntent();
     openAddProjectFlow();
   }, [clearOpenIntent, openAddProjectFlow, openIntent]);
+
+  // Sidebar "Search all N threads" hands off here: a submenu view scoped to
+  // one logical project's threads, searchable with the usual palette ranking.
+  useLayoutEffect(() => {
+    if (openIntent?.kind !== "search-threads") {
+      return;
+    }
+    clearOpenIntent();
+    const memberProjectKeys = new Set(openIntent.memberProjectKeys);
+    const projectThreads = threads.filter((thread) =>
+      memberProjectKeys.has(scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId))),
+    );
+    pushPaletteView({
+      addonIcon: <MessageSquareIcon className={ADDON_ICON_CLASS} />,
+      inputPlaceholder: `Search threads in ${openIntent.projectName}...`,
+      groups: [
+        {
+          value: "project-threads",
+          label: `Threads in ${openIntent.projectName}`,
+          items: buildThreadActionItems({
+            threads: projectThreads,
+            ...(activeThreadId ? { activeThreadId } : {}),
+            projectTitleById,
+            sortOrder: settings.sidebarThreadSortOrder,
+            icon: <MessageSquareIcon className={ITEM_ICON_CLASS} />,
+            renderLeadingContent: (thread) => <ThreadRowLeadingStatus thread={thread} />,
+            renderTrailingContent: (thread) => <ThreadRowTrailingStatus thread={thread} />,
+            runThread: async (thread) => {
+              await navigate({
+                to: "/$environmentId/$threadId",
+                params: buildThreadRouteParams(scopeThreadRef(thread.environmentId, thread.id)),
+              });
+            },
+          }),
+        },
+      ],
+    });
+  }, [
+    activeThreadId,
+    clearOpenIntent,
+    navigate,
+    openIntent,
+    projectTitleById,
+    settings.sidebarThreadSortOrder,
+    threads,
+  ]);
 
   const actionItems: Array<CommandPaletteActionItem | CommandPaletteSubmenuItem> = [];
 
@@ -1520,6 +1567,7 @@ function OpenCommandPaletteDialog() {
 
   const inputPlaceholder =
     remoteProjectInputPlaceholder(addProjectCloneFlow) ??
+    currentView?.inputPlaceholder ??
     getCommandPaletteInputPlaceholder(paletteMode);
   const isSubmenu = paletteMode === "submenu" || paletteMode === "submenu-browse";
   const hasHighlightedBrowseItem = highlightedItemValue?.startsWith("browse:") ?? false;

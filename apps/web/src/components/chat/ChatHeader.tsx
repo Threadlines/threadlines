@@ -10,7 +10,7 @@ import { Badge } from "../ui/badge";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import ProjectScriptsControl, { type NewProjectScriptInput } from "../ProjectScriptsControl";
 import { Toggle } from "../ui/toggle";
-import { SidebarTrigger } from "../ui/sidebar";
+import { SidebarOpenTrigger } from "../ui/sidebar";
 import { SourceControlIcon } from "../Icons";
 import { OpenInPicker } from "./OpenInPicker";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
@@ -82,7 +82,7 @@ export const ChatHeader = memo(function ChatHeader({
   return (
     <div className="@container/header-actions flex min-w-0 flex-1 items-center gap-2">
       <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden sm:gap-2">
-        <SidebarTrigger className="size-7 shrink-0 md:hidden" />
+        <SidebarOpenTrigger className="size-7 shrink-0" />
         {activeProjectName && (
           <div className="hidden min-w-0 shrink items-center gap-1.5 sm:flex">
             <span

@@ -52,7 +52,9 @@ its rendered copy).
   `scripts/apply-web-brand-assets.ts` (filenames keep the `badcode-` prefix until the identity
   rename phase). All three channels currently share the same artwork.
 - `apps/desktop/resources/icon.{ico,icns,png}` — desktop dev-runtime icons.
-- `apps/web/public/` and `apps/marketing/public/` — favicons and apple-touch icons (the web
-  app's boot shell logo is `/apple-touch-icon.png`).
+- `apps/web/public/` and `apps/marketing/public/` — favicons and apple-touch icons. The web
+  app's boot shell logo is `/splash-icon.png`, a copy of the transparent
+  `png/threadlines-icon-256.png` (the apple-touch icon is opaque and would show square
+  corners against the page background).
 - macOS installer `.icns` is regenerated on the Mac builder from the 1024 PNG by
   `build-desktop-artifact.ts`; the checked-in `resources/icon.icns` is for dev runs.

@@ -5,7 +5,7 @@ export function SplashScreen() {
         className="flex size-24 items-center justify-center"
         aria-label="Threadlines splash screen"
       >
-        <img alt="Threadlines" className="size-16 object-contain" src="/apple-touch-icon.png" />
+        <img alt="Threadlines" className="size-16 object-contain" src="/splash-icon.png" />
       </div>
     </div>
   );

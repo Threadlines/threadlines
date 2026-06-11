@@ -93,6 +93,8 @@
         "@dnd-kit/sortable": "^10.0.0",
         "@dnd-kit/utilities": "^3.2.2",
         "@effect/atom-react": "catalog:",
+        "@fontsource-variable/cascadia-mono": "^5.2.2",
+        "@fontsource-variable/schibsted-grotesk": "^5.2.8",
         "@formkit/auto-animate": "^0.9.0",
         "@legendapp/list": "3.0.0-beta.44",
         "@lexical/react": "^0.41.0",
@@ -502,6 +504,10 @@
     "@floating-ui/react-dom": ["@floating-ui/react-dom@2.1.8", "", { "dependencies": { "@floating-ui/dom": "^1.7.6" }, "peerDependencies": { "react": ">=16.8.0", "react-dom": ">=16.8.0" } }, "sha512-cC52bHwM/n/CxS87FH0yWdngEZrjdtLW/qVruo68qg+prK7ZQ4YGdut2GyDVpoGeAYe/h899rVeOVm6Oi40k2A=="],
 
     "@floating-ui/utils": ["@floating-ui/utils@0.2.11", "", {}, "sha512-RiB/yIh78pcIxl6lLMG0CgBXAZ2Y0eVHqMPYugu+9U0AeT6YBeiJpf7lbdJNIugFP5SIjwNRgo4DhR1Qxi26Gg=="],
+
+    "@fontsource-variable/cascadia-mono": ["@fontsource-variable/cascadia-mono@5.2.2", "", {}, "sha512-IjtyQuB9IiV8O/q2WWh+aZaRP8Q8rKl3d7J4aw1jUOt0BRjIQu1uSufUw0W5pZr6gpgGcol+Yjq6zWP8GM0auQ=="],
+
+    "@fontsource-variable/schibsted-grotesk": ["@fontsource-variable/schibsted-grotesk@5.2.8", "", {}, "sha512-nZAorDrFue4dXZbI613WdvAhu5DPH1UJYNn5fWl7Poa+nl/s9o3VUcQImIiVZpQnYG/jkPVzHsTE7WZbSDvvkw=="],
 
     "@formkit/auto-animate": ["@formkit/auto-animate@0.9.0", "", {}, "sha512-VhP4zEAacXS3dfTpJpJ88QdLqMTcabMg0jwpOSxZ/VzfQVfl3GkZSCZThhGC5uhq/TxPHPzW0dzr4H9Bb1OgKA=="],
 
