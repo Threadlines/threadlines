@@ -180,6 +180,7 @@ import {
   resolveSendEnvMode,
   revokeBlobPreviewUrl,
   revokeUserMessagePreviewUrls,
+  shouldConfirmTerminalKill,
   shouldWriteThreadErrorToCurrentServerThread,
   waitForStartedServerThread,
   mergeLocalDraftThreadWithServerThread,
@@ -380,8 +381,16 @@ interface PersistentThreadTerminalDrawerProps {
   splitShortcutLabel: string | undefined;
   newShortcutLabel: string | undefined;
   closeShortcutLabel: string | undefined;
+  hideShortcutLabel: string | undefined;
   keybindings: ResolvedKeybindingsConfig;
   onAddTerminalContext: (selection: TerminalContextSelection) => void;
+  onCloseTerminal: (
+    threadRef: { environmentId: EnvironmentId; threadId: ThreadId },
+    threadId: ThreadId,
+    terminalId: string,
+    options?: { sessionExited?: boolean },
+  ) => void;
+  onHideTerminal: () => void;
 }
 
 const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDrawer({
@@ -393,8 +402,11 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
   splitShortcutLabel,
   newShortcutLabel,
   closeShortcutLabel,
+  hideShortcutLabel,
   keybindings,
   onAddTerminalContext,
+  onCloseTerminal,
+  onHideTerminal,
 }: PersistentThreadTerminalDrawerProps) {
   const serverThread = useStore(useMemo(() => createThreadSelectorByRef(threadRef), [threadRef]));
   const draftThread = useComposerDraftStore((store) => store.getDraftThreadByRef(threadRef));
@@ -411,7 +423,6 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
   const storeSplitTerminal = useTerminalStateStore((state) => state.splitTerminal);
   const storeNewTerminal = useTerminalStateStore((state) => state.newTerminal);
   const storeSetActiveTerminal = useTerminalStateStore((state) => state.setActiveTerminal);
-  const storeCloseTerminal = useTerminalStateStore((state) => state.closeTerminal);
   const [localFocusRequestId, setLocalFocusRequestId] = useState(0);
   const worktreePath = serverThread?.worktreePath ?? draftThread?.worktreePath ?? null;
   const effectiveWorktreePath = useMemo(() => {
@@ -475,32 +486,11 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
   );
 
   const closeTerminal = useCallback(
-    (terminalId: string) => {
-      const api = readEnvironmentApi(threadRef.environmentId);
-      if (!api) return;
-      const isFinalTerminal = terminalState.terminalIds.length <= 1;
-      const fallbackExitWrite = () =>
-        api.terminal.write({ threadId, terminalId, data: "exit\n" }).catch(() => undefined);
-
-      if ("close" in api.terminal && typeof api.terminal.close === "function") {
-        void (async () => {
-          if (isFinalTerminal) {
-            await api.terminal.clear({ threadId, terminalId }).catch(() => undefined);
-          }
-          await api.terminal.close({
-            threadId,
-            terminalId,
-            deleteHistory: true,
-          });
-        })().catch(() => fallbackExitWrite());
-      } else {
-        void fallbackExitWrite();
-      }
-
-      storeCloseTerminal(threadRef, terminalId);
+    (terminalId: string, options?: { sessionExited?: boolean }) => {
+      onCloseTerminal(threadRef, threadId, terminalId, options);
       bumpFocusRequestId();
     },
-    [bumpFocusRequestId, storeCloseTerminal, terminalState.terminalIds.length, threadId, threadRef],
+    [bumpFocusRequestId, onCloseTerminal, threadId, threadRef],
   );
 
   const handleAddTerminalContext = useCallback(
@@ -534,9 +524,11 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
         focusRequestId={focusRequestId + localFocusRequestId + (visible ? 1 : 0)}
         onSplitTerminal={splitTerminal}
         onNewTerminal={createNewTerminal}
+        onHideTerminal={onHideTerminal}
         splitShortcutLabel={visible ? splitShortcutLabel : undefined}
         newShortcutLabel={visible ? newShortcutLabel : undefined}
         closeShortcutLabel={visible ? closeShortcutLabel : undefined}
+        hideShortcutLabel={visible ? hideShortcutLabel : undefined}
         keybindings={keybindings}
         onActiveTerminalChange={activateTerminal}
         onCloseTerminal={closeTerminal}
@@ -1850,24 +1842,32 @@ export default function ChatView(props: ChatViewProps) {
     storeNewTerminal(activeThreadRef, terminalId);
     setTerminalFocusRequestId((value) => value + 1);
   }, [activeThreadRef, storeNewTerminal]);
-  const closeTerminal = useCallback(
-    (terminalId: string) => {
-      const api = readEnvironmentApi(environmentId);
-      if (!activeThreadId || !api) return;
-      const isFinalTerminal = terminalState.terminalIds.length <= 1;
+  const performCloseTerminal = useCallback(
+    (
+      targetThreadRef: { environmentId: EnvironmentId; threadId: ThreadId },
+      targetThreadId: ThreadId,
+      terminalId: string,
+    ) => {
+      const api = readEnvironmentApi(targetThreadRef.environmentId);
+      if (!api) return;
+      const targetTerminalState = selectThreadTerminalState(
+        useTerminalStateStore.getState().terminalStateByThreadKey,
+        targetThreadRef,
+      );
+      const isFinalTerminal = targetTerminalState.terminalIds.length <= 1;
       const fallbackExitWrite = () =>
         api.terminal
-          .write({ threadId: activeThreadId, terminalId, data: "exit\n" })
+          .write({ threadId: targetThreadId, terminalId, data: "exit\n" })
           .catch(() => undefined);
       if ("close" in api.terminal && typeof api.terminal.close === "function") {
         void (async () => {
           if (isFinalTerminal) {
             await api.terminal
-              .clear({ threadId: activeThreadId, terminalId })
+              .clear({ threadId: targetThreadId, terminalId })
               .catch(() => undefined);
           }
           await api.terminal.close({
-            threadId: activeThreadId,
+            threadId: targetThreadId,
             terminalId,
             deleteHistory: true,
           });
@@ -1875,19 +1875,54 @@ export default function ChatView(props: ChatViewProps) {
       } else {
         void fallbackExitWrite();
       }
-      if (activeThreadRef) {
-        storeCloseTerminal(activeThreadRef, terminalId);
-      }
+      storeCloseTerminal(targetThreadRef, terminalId);
       setTerminalFocusRequestId((value) => value + 1);
     },
-    [
-      activeThreadId,
-      activeThreadRef,
-      environmentId,
-      storeCloseTerminal,
-      terminalState.terminalIds.length,
-    ],
+    [storeCloseTerminal],
   );
+  const [pendingTerminalKill, setPendingTerminalKill] = useState<{
+    threadRef: { environmentId: EnvironmentId; threadId: ThreadId };
+    threadId: ThreadId;
+    terminalId: string;
+  } | null>(null);
+  const requestCloseTerminal = useCallback(
+    (
+      targetThreadRef: { environmentId: EnvironmentId; threadId: ThreadId },
+      targetThreadId: ThreadId,
+      terminalId: string,
+      options?: { sessionExited?: boolean },
+    ) => {
+      const targetTerminalState = selectThreadTerminalState(
+        useTerminalStateStore.getState().terminalStateByThreadKey,
+        targetThreadRef,
+      );
+      if (
+        shouldConfirmTerminalKill({
+          runningTerminalIds: targetTerminalState.runningTerminalIds,
+          terminalId,
+          sessionExited: options?.sessionExited === true,
+        })
+      ) {
+        setPendingTerminalKill({
+          threadRef: targetThreadRef,
+          threadId: targetThreadId,
+          terminalId,
+        });
+        return;
+      }
+      performCloseTerminal(targetThreadRef, targetThreadId, terminalId);
+    },
+    [performCloseTerminal],
+  );
+  const confirmPendingTerminalKill = useCallback(() => {
+    if (!pendingTerminalKill) return;
+    performCloseTerminal(
+      pendingTerminalKill.threadRef,
+      pendingTerminalKill.threadId,
+      pendingTerminalKill.terminalId,
+    );
+    setPendingTerminalKill(null);
+  }, [pendingTerminalKill, performCloseTerminal]);
   const runProjectScript = useCallback(
     async (
       script: ProjectScript,
@@ -2586,7 +2621,9 @@ export default function ChatView(props: ChatViewProps) {
         event.preventDefault();
         event.stopPropagation();
         if (!terminalState.terminalOpen) return;
-        closeTerminal(terminalState.activeTerminalId);
+        if (activeThreadRef && activeThreadId) {
+          requestCloseTerminal(activeThreadRef, activeThreadId, terminalState.activeTerminalId);
+        }
         return;
       }
 
@@ -2629,7 +2666,8 @@ export default function ChatView(props: ChatViewProps) {
     terminalState.terminalOpen,
     terminalState.activeTerminalId,
     activeThreadId,
-    closeTerminal,
+    activeThreadRef,
+    requestCloseTerminal,
     createNewTerminal,
     setTerminalOpen,
     runProjectScript,
@@ -3907,10 +3945,35 @@ export default function ChatView(props: ChatViewProps) {
           splitShortcutLabel={splitTerminalShortcutLabel ?? undefined}
           newShortcutLabel={newTerminalShortcutLabel ?? undefined}
           closeShortcutLabel={closeTerminalShortcutLabel ?? undefined}
+          hideShortcutLabel={terminalToggleShortcutLabel ?? undefined}
           keybindings={keybindings}
           onAddTerminalContext={addTerminalContextToDraft}
+          onCloseTerminal={requestCloseTerminal}
+          onHideTerminal={toggleTerminalVisibility}
         />
       ))}
+      <AlertDialog
+        open={pendingTerminalKill !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingTerminalKill(null);
+        }}
+      >
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Kill terminal?</AlertDialogTitle>
+            <AlertDialogDescription>
+              A process is still running in this terminal. Killing the terminal stops the process
+              and discards the terminal history. To keep it running, hide the terminal instead.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
+            <Button variant="destructive" onClick={confirmPendingTerminalKill}>
+              Kill terminal
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
       {expandedImage && (
         <ExpandedImageDialog preview={expandedImage} onClose={closeExpandedImage} />
       )}

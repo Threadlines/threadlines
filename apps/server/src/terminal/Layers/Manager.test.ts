@@ -831,7 +831,10 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
 
   it.effect("escalates terminal shutdown to SIGKILL when process does not exit in time", () =>
     Effect.gen(function* () {
-      const { manager, ptyAdapter } = yield* createManager(5, { processKillGraceMs: 10 });
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        platform: "linux",
+        processKillGraceMs: 10,
+      });
       yield* manager.open(openInput());
       const process = ptyAdapter.processes[0];
       expect(process).toBeDefined();
@@ -845,6 +848,24 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       assert.equal(process.killSignals[0], "SIGTERM");
       expect(process.killSignals).toContain("SIGKILL");
     }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("kills the terminal without a signal on Windows", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        platform: "win32",
+        subprocessChecker: () => Effect.succeed(false),
+      });
+      yield* manager.open(openInput());
+      const process = ptyAdapter.processes[0];
+      expect(process).toBeDefined();
+      if (!process) return;
+
+      yield* manager.close({ threadId: "thread-1" });
+      yield* waitFor(Effect.sync(() => process.killed));
+
+      expect(process.killSignals).toEqual([undefined]);
+    }),
   );
 
   it.effect("evicts oldest inactive terminal sessions when retention limit is exceeded", () =>
@@ -1169,6 +1190,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
     Effect.gen(function* () {
       const scope = yield* Scope.make("sequential");
       const { manager, ptyAdapter } = yield* createManager(5, {
+        platform: "linux",
         processKillGraceMs: 10,
       }).pipe(Effect.provideService(Scope.Scope, scope));
       yield* manager.open(openInput());

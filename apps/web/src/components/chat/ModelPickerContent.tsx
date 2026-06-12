@@ -557,8 +557,11 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
 
   return (
     <TooltipProvider delay={0}>
-      {/* Height hugs the visible rows; the list region caps and scrolls itself. */}
-      <div className="relative flex w-screen max-w-96 flex-col overflow-hidden rounded-lg border bg-popover not-dark:bg-clip-padding text-popover-foreground shadow-lg/5 before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:before:shadow-[0_-1px_--theme(--color-white/6%)]">
+      {/* Height hugs the visible rows; the list region caps and scrolls itself.
+          The card also clamps to the positioner's --available-height so rows
+          can't extend past the window edge, where the inner scroller (with
+          overscroll-contain) would leave them unreachable. */}
+      <div className="relative flex max-h-(--available-height) w-screen max-w-96 flex-col overflow-hidden rounded-lg border bg-popover not-dark:bg-clip-padding text-popover-foreground shadow-lg/5 before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:before:shadow-[0_-1px_--theme(--color-white/6%)]">
         {/* Locked provider banner: the turn's driver cannot change */}
         {lockedToSingleInstance && LockedProviderIcon && lockedHeaderLabel && (
           <div className="flex items-center gap-2 border-b px-4 py-3">

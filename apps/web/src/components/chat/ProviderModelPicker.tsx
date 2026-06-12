@@ -38,6 +38,12 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   disabled?: boolean;
   terminalOpen?: boolean;
   open?: boolean;
+  /**
+   * Preferred popup side. The composer passes "top" so the picker opens into
+   * the conversation area rather than downward over the terminal panel, where
+   * it would not fit. Base UI still flips to the other side when out of room.
+   */
+  side?: "top" | "bottom";
   triggerVariant?: VariantProps<typeof buttonVariants>["variant"];
   triggerClassName?: string;
   onOpenChange?: (open: boolean) => void;
@@ -167,6 +173,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       </PopoverTrigger>
       <PopoverPopup
         align="start"
+        side={props.side}
         className="border-0 bg-transparent p-0 shadow-none before:hidden [--viewport-inline-padding:0] *:data-[slot=popover-viewport]:p-0"
       >
         <ModelPickerContent

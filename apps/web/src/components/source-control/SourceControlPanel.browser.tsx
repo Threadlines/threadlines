@@ -27,6 +27,7 @@ import {
   __setEnvironmentApiOverrideForTests,
 } from "../../environmentApi";
 import { __resetLocalApiForTests } from "../../localApi";
+import { resetGitActionProgressStateForTests } from "../gitActionProgressState";
 import { SourceControlPanel, type SourceControlProjectTarget } from "./SourceControlPanel";
 
 const gitStatusMock = vi.hoisted(() => ({
@@ -328,6 +329,7 @@ describe("SourceControlPanel changes", () => {
     gitActionMock.toastUpdate.mockClear();
     Reflect.deleteProperty(window, "nativeApi");
     window.localStorage.clear();
+    resetGitActionProgressStateForTests();
     await __resetLocalApiForTests();
   });
 
@@ -696,6 +698,117 @@ describe("SourceControlPanel changes", () => {
       await expect.element(page.getByText("Committing...")).not.toBeInTheDocument();
     } finally {
       await mounted.cleanup();
+    }
+  });
+
+  it("restores inline stacked git action progress when the panel remounts mid-action", async () => {
+    const actionResult: GitRunStackedActionResult = {
+      action: "commit_push",
+      branch: { status: "skipped_not_requested" },
+      commit: {
+        status: "created",
+        commitSha: "abc1234def5678",
+        subject: "feat: survive remounts",
+      },
+      push: {
+        status: "pushed",
+        branch: "feature/source-control",
+        upstreamBranch: "origin/feature/source-control",
+      },
+      pr: { status: "skipped_not_requested" },
+      toast: {
+        title: "Pushed abc1234 to origin/feature/source-control",
+        description: "feat: survive remounts",
+        cta: { kind: "none" },
+      },
+    };
+    const deferred = createDeferredPromise<GitRunStackedActionResult>();
+    gitActionMock.runStackedAction.mockImplementation(
+      (
+        input: { readonly actionId: string; readonly action: "commit_push"; readonly cwd: string },
+        options?: { readonly onProgress?: (event: GitActionProgressEvent) => void },
+      ) => {
+        options?.onProgress?.({
+          actionId: input.actionId,
+          action: input.action,
+          cwd: input.cwd,
+          kind: "phase_started",
+          phase: "commit",
+          label: "Committing...",
+        });
+        return deferred.promise;
+      },
+    );
+    gitStatusMock.data = makeStatus({
+      refName: "feature/source-control",
+      hasWorkingTreeChanges: true,
+      workingTree: {
+        files: [
+          {
+            path: "src/app.ts",
+            indexStatus: null,
+            worktreeStatus: "modified",
+            insertions: 2,
+            deletions: 1,
+          },
+        ],
+        insertions: 2,
+        deletions: 1,
+      },
+    });
+    __setEnvironmentApiOverrideForTests(ENVIRONMENT_ID, makeEnvironmentApi());
+
+    // One query client across both mounts: the mutation keeps running in its
+    // cache while the panel is unmounted, mirroring the diff viewer round trip.
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+    const mountPanel = async () => {
+      const host = document.createElement("div");
+      host.style.width = "420px";
+      host.style.height = "720px";
+      document.body.append(host);
+      const router = createTestRouter(
+        <QueryClientProvider client={queryClient}>
+          <SourceControlPanel target={TARGET} activeThreadRef={null} />
+        </QueryClientProvider>,
+      );
+      const screen = await render(<RouterProvider router={router} />, { container: host });
+      return {
+        async unmount() {
+          await screen.unmount();
+          host.remove();
+        },
+      };
+    };
+
+    let mounted = await mountPanel();
+    try {
+      await page.getByRole("button", { name: "Generate, commit & push" }).click();
+      await expect.element(page.getByText("Committing...")).toBeVisible();
+
+      await mounted.unmount();
+      expect(document.body.textContent ?? "").not.toContain("Committing...");
+
+      mounted = await mountPanel();
+      await expect.element(page.getByText("Committing...")).toBeVisible();
+
+      deferred.resolve(actionResult);
+      await expect.element(page.getByText("Committing...")).not.toBeInTheDocument();
+      await vi.waitFor(() => {
+        expect(gitActionMock.toastAdd).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "success",
+            title: "Pushed abc1234 to origin/feature/source-control",
+          }),
+        );
+      });
+    } finally {
+      await mounted.unmount();
+      queryClient.clear();
     }
   });
 

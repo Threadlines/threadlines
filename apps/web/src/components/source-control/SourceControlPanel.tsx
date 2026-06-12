@@ -87,12 +87,11 @@ import {
   type DefaultBranchConfirmableAction,
 } from "../GitActionsControl.logic";
 import {
-  applyGitActionProgressEvent,
-  createGitActionProgress,
-  getGitActionProgressView,
-  type ActiveGitActionProgress,
-  type GitActionProgressView,
-} from "../gitActionProgressToast";
+  dispatchGitActionProgressEvent,
+  finishGitActionProgress,
+  startGitActionProgress,
+  useGitActionProgressView,
+} from "../gitActionProgressState";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -284,9 +283,11 @@ function describeWorkingTreeFileStatus(entry: WorkingTreeSectionFile): string {
   return parts.length > 0 ? parts.join(". ") : "Changed";
 }
 
+/** One color language with the diff panel cards: green new, red deleted or
+ * conflicted, amber modified. */
 function workingTreeFileStatusClassName(entry: WorkingTreeSectionFile): string {
   if (entry.status === "unmerged") {
-    return "border-warning/25 bg-warning/8 text-warning-foreground";
+    return "border-destructive/25 bg-destructive/8 text-destructive-foreground";
   }
   if (entry.status === "deleted") {
     return "border-destructive/25 bg-destructive/8 text-destructive-foreground";
@@ -294,7 +295,7 @@ function workingTreeFileStatusClassName(entry: WorkingTreeSectionFile): string {
   if (entry.status === "added" || entry.status === "untracked") {
     return "border-success/25 bg-success/8 text-success-foreground";
   }
-  return "border-border/70 bg-muted/50 text-muted-foreground";
+  return "border-warning/25 bg-warning/8 text-warning-foreground";
 }
 
 function buildDiscardChangesDescription(pending: PendingDiscardChanges): string {
@@ -1412,11 +1413,9 @@ export function SourceControlPanel({
   const bodyRef = useRef<HTMLDivElement>(null);
   const changesSectionRef = useRef<HTMLElement>(null);
   const commitControlsRef = useRef<HTMLElement>(null);
-  const activeGitActionProgressRef = useRef<ActiveGitActionProgress | null>(null);
-  const [activeGitActionProgressView, setActiveGitActionProgressView] =
-    useState<GitActionProgressView | null>(null);
   const environmentId = target?.environmentId ?? null;
   const cwd = target?.cwd ?? null;
+  const activeGitActionProgressView = useGitActionProgressView({ environmentId, cwd });
   const threadToastData = useMemo(
     () => (activeThreadRef ? { threadRef: activeThreadRef } : undefined),
     [activeThreadRef],
@@ -1626,28 +1625,10 @@ export function SourceControlPanel({
     });
   }, [cwd, environmentId, queryClient]);
 
-  const updateActiveProgressPresentation = useCallback(() => {
-    const progress = activeGitActionProgressRef.current;
-    if (!progress) {
-      return;
-    }
-    setActiveGitActionProgressView(getGitActionProgressView(progress));
-  }, []);
-
   const clearCommitMessageDraft = useCallback(() => {
     setCommitMessage("");
     setCommitMessageEditorOpen(false);
   }, []);
-
-  useEffect(() => {
-    const intervalId = window.setInterval(() => {
-      updateActiveProgressPresentation();
-    }, 1000);
-
-    return () => {
-      window.clearInterval(intervalId);
-    };
-  }, [updateActiveProgressPresentation]);
 
   useEffect(() => {
     if (!environmentId || !cwd) {
@@ -1705,25 +1686,13 @@ export function SourceControlPanel({
       });
       const initialTitle = progressStages[0] ?? "Running git action...";
       const scopedToastData = threadToastData ? { ...threadToastData } : undefined;
-      activeGitActionProgressRef.current = createGitActionProgress({
-        toastData: scopedToastData,
-        actionId,
-        initialTitle,
-      });
-      setActiveGitActionProgressView({
-        title: initialTitle,
-        description: "Waiting for Git...",
-        hookName: null,
-      });
+      // Progress lives in the module store keyed by environment + cwd so it
+      // survives this panel unmounting (diff viewer, route swaps) mid-action.
+      const progressTarget = { environmentId, cwd };
+      startGitActionProgress(progressTarget, { actionId, initialTitle });
 
       const applyProgressEvent = (event: GitActionProgressEvent) => {
-        const progress = activeGitActionProgressRef.current;
-        if (!progress) {
-          return;
-        }
-        if (applyGitActionProgressEvent(progress, event, { cwd })) {
-          updateActiveProgressPresentation();
-        }
+        dispatchGitActionProgressEvent(progressTarget, event);
       };
 
       try {
@@ -1736,8 +1705,7 @@ export function SourceControlPanel({
             : {}),
           onProgress: applyProgressEvent,
         });
-        activeGitActionProgressRef.current = null;
-        setActiveGitActionProgressView(null);
+        finishGitActionProgress(progressTarget, actionId);
         if (action === "commit" || action === "commit_push" || action === "commit_push_pr") {
           setCommitMessage("");
           setCommitMessageEditorOpen(false);
@@ -1757,8 +1725,7 @@ export function SourceControlPanel({
           queryKey: gitQueryKeys.commitGraph(environmentId, cwd, GRAPH_LIMIT),
         });
       } catch (error) {
-        activeGitActionProgressRef.current = null;
-        setActiveGitActionProgressView(null);
+        finishGitActionProgress(progressTarget, actionId);
         toastManager.add(
           stackedThreadToast({
             type: "error",
@@ -1781,7 +1748,6 @@ export function SourceControlPanel({
       status?.hasWorkingTreeChanges,
       status?.isDefaultRef,
       threadToastData,
-      updateActiveProgressPresentation,
     ],
   );
 

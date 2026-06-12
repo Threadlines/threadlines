@@ -1,5 +1,5 @@
 import { parsePatchFiles } from "@pierre/diffs";
-import { FileDiff, type FileDiffMetadata, Virtualizer } from "@pierre/diffs/react";
+import { FileDiff, type FileDiffMetadata, Virtualizer, useVirtualizer } from "@pierre/diffs/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime";
@@ -14,6 +14,7 @@ import {
   ChevronsDownUpIcon,
   ChevronsUpDownIcon,
   Columns2Icon,
+  FoldVerticalIcon,
   PilcrowIcon,
   Rows3Icon,
   SquareArrowOutUpRightIcon,
@@ -52,6 +53,7 @@ import {
   formatDiffFileCount,
   resolveActiveDiffFileIndex,
   resolveTurnDiffSummaryStats,
+  stripPatchContextLines,
   sumDiffFileStats,
 } from "./DiffPanel.logic";
 import { DiffPanelLoadingState, DiffPanelShell, type DiffPanelMode } from "./DiffPanelShell";
@@ -100,19 +102,23 @@ const DIFF_PANEL_UNSAFE_CSS = `
   --diffs-bg-separator-override: color-mix(in srgb, var(--background) 95%, var(--foreground));
   --diffs-bg-buffer-override: color-mix(in srgb, var(--background) 90%, var(--foreground));
 
+  /* Number column matches the row tint so each line reads as one flat band. */
   --diffs-bg-addition-override: color-mix(in srgb, var(--background) 92%, var(--success));
-  --diffs-bg-addition-number-override: color-mix(in srgb, var(--background) 88%, var(--success));
+  --diffs-bg-addition-number-override: color-mix(in srgb, var(--background) 92%, var(--success));
   --diffs-bg-addition-hover-override: color-mix(in srgb, var(--background) 85%, var(--success));
   --diffs-bg-addition-emphasis-override: color-mix(in srgb, var(--background) 80%, var(--success));
 
   --diffs-bg-deletion-override: color-mix(in srgb, var(--background) 92%, var(--destructive));
-  --diffs-bg-deletion-number-override: color-mix(in srgb, var(--background) 88%, var(--destructive));
+  --diffs-bg-deletion-number-override: color-mix(in srgb, var(--background) 92%, var(--destructive));
   --diffs-bg-deletion-hover-override: color-mix(in srgb, var(--background) 85%, var(--destructive));
   --diffs-bg-deletion-emphasis-override: color-mix(
     in srgb,
     var(--background) 80%,
     var(--destructive)
   );
+
+  --diffs-font-size: 12px;
+  --diffs-line-height: 20px;
 
   background-color: var(--diffs-bg) !important;
 }
@@ -131,19 +137,19 @@ const DIFF_PANEL_UNSAFE_CSS = `
   border-bottom: 1px solid var(--border) !important;
 }
 
-[data-title] {
-  cursor: pointer;
-  transition:
-    color 120ms ease,
-    text-decoration-color 120ms ease;
-  text-decoration: underline;
-  text-decoration-color: transparent;
-  text-underline-offset: 2px;
+/* The header row is fully app-rendered (renderCustomHeader); the container
+   only provides the sticky shell. */
+[data-diffs-header="custom"] {
+  display: block !important;
+  padding: 0 !important;
 }
 
-[data-title]:hover {
-  color: color-mix(in srgb, var(--foreground) 84%, var(--primary)) !important;
-  text-decoration-color: currentColor;
+[data-line-number-content] {
+  opacity: 0.55;
+}
+
+[data-diff] {
+  padding-bottom: 6px;
 }
 `;
 
@@ -202,21 +208,17 @@ function buildFileDiffRenderKey(fileDiff: FileDiffMetadata): string {
   return fileDiff.cacheKey ?? `${fileDiff.prevName ?? "none"}:${fileDiff.name}`;
 }
 
-function getDiffCollapseIconClassName(fileDiff: FileDiffMetadata): string {
-  switch (fileDiff.type) {
-    case "new":
-      return "text-[var(--diffs-addition-base)]";
-    case "deleted":
-      return "text-[var(--diffs-deletion-base)]";
-    case "change":
-    case "rename-pure":
-    case "rename-changed":
-      return "text-[var(--diffs-modified-base)]";
-    default:
-      return "text-muted-foreground/80";
-  }
+/** Rename source path, only when it differs from the displayed path. */
+function resolveFileDiffPrevPath(fileDiff: FileDiffMetadata): string | null {
+  const raw = fileDiff.prevName;
+  if (!raw) return null;
+  const stripped = raw.startsWith("a/") || raw.startsWith("b/") ? raw.slice(2) : raw;
+  return stripped === resolveFileDiffPath(fileDiff) ? null : stripped;
 }
 
+/** Matches workingTreeFileStatusClassName in SourceControlPanel: green added,
+ * red deleted, amber modified, so the tree and the diff cards speak one
+ * color language. */
 function getFileDiffStatusBadge(fileDiff: FileDiffMetadata): {
   readonly label: string;
   readonly className: string;
@@ -231,9 +233,9 @@ function getFileDiffStatusBadge(fileDiff: FileDiffMetadata): {
       };
     case "rename-pure":
     case "rename-changed":
-      return { label: "R", className: "border-border/70 bg-muted/50 text-muted-foreground" };
+      return { label: "R", className: "border-warning/25 bg-warning/8 text-warning-foreground" };
     default:
-      return { label: "M", className: "border-border/70 bg-muted/50 text-muted-foreground" };
+      return { label: "M", className: "border-warning/25 bg-warning/8 text-warning-foreground" };
   }
 }
 
@@ -263,6 +265,98 @@ function writeCollapsedDiffFileKeys(scope: string, keys: ReadonlySet<string>): v
 
 /** Sticky file headers cover the top of the scroller; read "active" below them. */
 const ACTIVE_FILE_READING_OFFSET_PX = 48;
+/** Frames to supervise a programmatic file jump while virtualized heights settle. */
+const JUMP_SETTLE_FRAMES = 90;
+/** Consecutive in-place-and-hydrated frames before a jump counts as landed. */
+const JUMP_SETTLED_FRAME_TARGET = 8;
+
+interface VirtualizedDiffInstanceInternals {
+  top: number;
+  renderRange: unknown;
+  setVisibility(visible: boolean): void;
+}
+
+interface VirtualizerInternals {
+  markDOMDirty(): void;
+  getOffsetInScrollContainer(element: Element): number;
+  isInstanceVisible(elementTop: number, elementHeight: number): boolean;
+  instanceChanged(instance: VirtualizedDiffInstanceInternals): void;
+  observers: Map<HTMLElement, VirtualizedDiffInstanceInternals>;
+  visibleInstances: Map<HTMLElement, VirtualizedDiffInstanceInternals>;
+  visibleInstancesDirty: boolean;
+  windowSpecs: { top: number; bottom: number };
+}
+
+/** Exposes the pierre Virtualizer instance to the panel (context is only
+ * readable from inside the Virtualizer subtree). */
+function VirtualizerJumpBridge({
+  handleRef,
+}: {
+  handleRef: { current: VirtualizerInternals | null };
+}) {
+  const instance = useVirtualizer();
+  useEffect(() => {
+    handleRef.current = (instance as unknown as VirtualizerInternals | undefined) ?? null;
+    return () => {
+      handleRef.current = null;
+    };
+  }, [handleRef, instance]);
+  return null;
+}
+
+/**
+ * The virtualizer anchors scroll correction to whichever file instances were
+ * visible before a jump, each instance windows its lines from a `top`
+ * captured when it last became visible, and rapid jumps can leave stale
+ * intersection entries that mark an on-screen file invisible with no further
+ * transition to correct it. All three strand file jumps on blank cards.
+ * There is no public re-sync API, so reconcile visibility for every observed
+ * instance against current geometry: track and refresh the ones inside the
+ * observation margin, untrack the ones outside it (fields verified against
+ * @pierre/diffs 1.1.20).
+ */
+function resyncVirtualizerAfterJump(virtualizer: VirtualizerInternals | null): void {
+  if (!virtualizer) {
+    return;
+  }
+  virtualizer.markDOMDirty();
+  // {0,0} is the lib's own sentinel: the next getWindowSpecs() recomputes
+  // from the current scroll position. Without this, render passes triggered
+  // by instance changes reuse specs cached at the pre-jump position and
+  // window newly visible files down to zero lines.
+  virtualizer.windowSpecs = { top: 0, bottom: 0 };
+  for (const [element, instance] of Array.from(virtualizer.observers.entries())) {
+    const elementTop = virtualizer.getOffsetInScrollContainer(element);
+    const visible = virtualizer.isInstanceVisible(
+      elementTop,
+      element.getBoundingClientRect().height,
+    );
+    if (visible) {
+      if (!virtualizer.visibleInstances.has(element)) {
+        instance.setVisibility(true);
+        virtualizer.visibleInstances.set(element, instance);
+        virtualizer.visibleInstancesDirty = true;
+        virtualizer.instanceChanged(instance);
+        continue;
+      }
+      const renderRange = instance.renderRange as { totalLines?: number } | null | undefined;
+      // Only correct instances whose stored state is actually wrong (stale
+      // top, or an empty window despite sitting inside the margin);
+      // resetting renderRange on a healthy instance cancels its in-flight
+      // hydration and can livelock repeated reconciles.
+      if (Math.abs(instance.top - elementTop) > 1 || renderRange?.totalLines === 0) {
+        instance.top = elementTop;
+        instance.renderRange = undefined;
+        virtualizer.instanceChanged(instance);
+      }
+    } else if (virtualizer.visibleInstances.has(element)) {
+      instance.setVisibility(false);
+      virtualizer.visibleInstances.delete(element);
+      virtualizer.visibleInstancesDirty = true;
+      virtualizer.instanceChanged(instance);
+    }
+  }
+}
 /** Below this toolbar width a split diff degrades to two unreadable columns. */
 const NARROW_DIFF_PANEL_WIDTH_PX = 420;
 
@@ -294,6 +388,8 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
   const [pendingDiscardDiffFile, setPendingDiscardDiffFile] =
     useState<PendingDiscardDiffFile | null>(null);
   const patchViewportRef = useRef<HTMLDivElement>(null);
+  const virtualizerInternalsRef = useRef<VirtualizerInternals | null>(null);
+  const jumpTokenRef = useRef(0);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const previousDiffOpenRef = useRef(false);
   const pendingScrollFilePathRef = useRef<string | null>(null);
@@ -543,8 +639,17 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
     });
   }, [renderableFiles, setCollapsedDiffFileKeys]);
 
+  // The one card the last navigation auto-expanded. Stepping on opens the
+  // next target and re-collapses this one, so walking a collapsed working
+  // set shows a single open file at a time. Cards the user opened (or that
+  // were open by default) are never auto-collapsed.
+  const navExpandedFileKeyRef = useRef<string | null>(null);
   const toggleDiffFileCollapsed = useCallback(
     (fileKey: string) => {
+      if (navExpandedFileKeyRef.current === fileKey) {
+        // The user took over this card; navigation no longer owns it.
+        navExpandedFileKeyRef.current = null;
+      }
       setCollapsedDiffFileKeys((current) => {
         const next = new Set(current);
         if (next.has(fileKey)) {
@@ -557,10 +662,77 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
     },
     [setCollapsedDiffFileKeys],
   );
+  // Navigating to a file means "show me this diff": expand the target,
+  // give back the card the previous navigation opened, and leave every
+  // other file's collapse state alone. State updaters run deferred, so the
+  // ownership bookkeeping reads the committed state synchronously.
+  const expandDiffFile = useCallback(
+    (filePath: string) => {
+      const fileDiff = renderableFiles.find(
+        (candidate) => resolveFileDiffPath(candidate) === filePath,
+      );
+      if (!fileDiff) {
+        return;
+      }
+      const fileKey = buildFileDiffRenderKey(fileDiff);
+      const previousNavKey = navExpandedFileKeyRef.current;
+      const targetCollapsed = collapsedDiffFileKeys.has(fileKey);
+      if (targetCollapsed) {
+        navExpandedFileKeyRef.current = fileKey;
+      } else if (previousNavKey !== fileKey) {
+        // Landing on a card the user (or the default) already opened:
+        // navigation does not own it.
+        navExpandedFileKeyRef.current = null;
+      }
+      setCollapsedDiffFileKeys((current) => {
+        const next = new Set(current);
+        let changed = false;
+        if (previousNavKey && previousNavKey !== fileKey && !current.has(previousNavKey)) {
+          next.add(previousNavKey);
+          changed = true;
+        }
+        if (current.has(fileKey)) {
+          next.delete(fileKey);
+          changed = true;
+        }
+        return changed ? next : current;
+      });
+    },
+    [collapsedDiffFileKeys, renderableFiles, setCollapsedDiffFileKeys],
+  );
+
+  // "Changes only" view mode: expanded files render a zero-context cut of
+  // the same patch. Persisted like the stacked/split choice.
+  const diffChangesOnly = settings.diffChangesOnly;
+  const setDiffChangesOnly = useCallback(
+    (next: boolean) => {
+      updateSettings({ diffChangesOnly: next });
+    },
+    [updateSettings],
+  );
+  const previewRenderablePatch = useMemo(() => {
+    if (!diffChangesOnly || typeof selectedPatch !== "string" || selectedPatch.trim().length === 0) {
+      return null;
+    }
+    return getRenderablePatch(
+      stripPatchContextLines(selectedPatch),
+      `diff-panel-preview:${diffMode}:${resolvedTheme}`,
+    );
+  }, [diffChangesOnly, diffMode, resolvedTheme, selectedPatch]);
+  const previewFileByPath = useMemo(() => {
+    const previews = new Map<string, FileDiffMetadata>();
+    if (previewRenderablePatch?.kind === "files") {
+      for (const fileDiff of previewRenderablePatch.files) {
+        previews.set(resolveFileDiffPath(fileDiff), fileDiff);
+      }
+    }
+    return previews;
+  }, [previewRenderablePatch]);
   const allDiffFilesCollapsed =
     displayedFiles.length > 0 &&
     displayedFiles.every((fileDiff) => collapsedDiffFileKeys.has(buildFileDiffRenderKey(fileDiff)));
   const toggleAllDiffFilesCollapsed = useCallback(() => {
+    navExpandedFileKeyRef.current = null;
     setCollapsedDiffFileKeys((current) => {
       if (displayedFiles.length === 0) {
         return current;
@@ -616,13 +788,91 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
     if (!viewport) {
       return;
     }
-    const target = Array.from(viewport.querySelectorAll<HTMLElement>("[data-diff-file-path]")).find(
-      (element) => element.dataset.diffFilePath === filePath,
-    );
+    const findTarget = () =>
+      Array.from(viewport.querySelectorAll<HTMLElement>("[data-diff-file-path]")).find(
+        (element) => element.dataset.diffFilePath === filePath,
+      ) ?? null;
+    let target = findTarget();
     if (!target) {
       return;
     }
+    const scroller = viewport.querySelector<HTMLElement>(".diff-render-surface");
     target.scrollIntoView({ block: "start" });
+    resyncVirtualizerAfterJump(virtualizerInternalsRef.current);
+    // Heights above the target still settle as estimates hydrate into real
+    // content. Supervise the landing: re-pin the target to the top every
+    // frame until its position holds for two consecutive frames.
+    if (scroller) {
+      const desiredTop =
+        Number.parseFloat(window.getComputedStyle(target).scrollMarginTop) || 0;
+      // A newer jump supersedes this one; rapid next-file clicks must not
+      // leave competing settle loops pinning different files.
+      const jumpToken = ++jumpTokenRef.current;
+      let aborted = false;
+      const abort = () => {
+        aborted = true;
+      };
+      scroller.addEventListener("wheel", abort, { passive: true });
+      scroller.addEventListener("touchstart", abort, { passive: true });
+      window.addEventListener("keydown", abort, { passive: true });
+      const removeAbortListeners = () => {
+        scroller.removeEventListener("wheel", abort);
+        scroller.removeEventListener("touchstart", abort);
+        window.removeEventListener("keydown", abort);
+      };
+      let settledFrames = 0;
+      let frame = 0;
+      const settle = () => {
+        if (aborted || jumpTokenRef.current !== jumpToken) {
+          removeAbortListeners();
+          return;
+        }
+        // Expanding a collapsed file mid-jump can remount its card (the
+        // changes-only variant keys on render mode); re-acquire rather than
+        // abandoning supervision.
+        if (!target || !target.isConnected) {
+          target = findTarget();
+          if (!target) {
+            removeAbortListeners();
+            return;
+          }
+        }
+        // A dehydration buffer where diff lines should be means the instance
+        // is windowing lines from stale geometry (or a stale intersection
+        // entry untracked it); reconcile until content lands. Late
+        // dehydrations can also arrive after the first paint, so keep
+        // watching for the full window instead of exiting on stability.
+        const shadow = target.querySelector("*")?.shadowRoot ?? null;
+        const pendingHydration =
+          shadow != null &&
+          shadow.querySelector("[data-line]") == null &&
+          shadow.querySelector("[data-virtualizer-buffer], [data-dehydrated]") != null;
+        if (pendingHydration) {
+          // Reconcile periodically rather than per frame so in-flight worker
+          // hydration gets time to commit between passes.
+          if (frame % 6 === 0) {
+            resyncVirtualizerAfterJump(virtualizerInternalsRef.current);
+          }
+          settledFrames = 0;
+        }
+        const delta =
+          target.getBoundingClientRect().top - scroller.getBoundingClientRect().top - desiredTop;
+        if (Math.abs(delta) > 1 && settledFrames < JUMP_SETTLED_FRAME_TARGET) {
+          // Pin only while landing; once settled, position drift is the
+          // user's scrolling or the lib's own anchoring, not ours to fight.
+          scroller.scrollTop += delta;
+        } else if (!pendingHydration && Math.abs(delta) <= 1) {
+          settledFrames += 1;
+        }
+        frame += 1;
+        if (frame < JUMP_SETTLE_FRAMES) {
+          window.requestAnimationFrame(settle);
+        } else {
+          removeAbortListeners();
+        }
+      };
+      window.requestAnimationFrame(settle);
+    }
     setFlashFilePath(filePath);
   }, []);
 
@@ -666,8 +916,9 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
     if (!orderedFilePaths.includes(pending)) {
       return;
     }
+    expandDiffFile(pending);
     scrollToDiffFile(pending);
-  }, [fileFilterActive, orderedFilePaths, renderableFiles.length, scrollToDiffFile]);
+  }, [expandDiffFile, fileFilterActive, orderedFilePaths, renderableFiles.length, scrollToDiffFile]);
 
   useEffect(() => {
     const viewport = patchViewportRef.current;
@@ -733,13 +984,21 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
       if (!nextPath || nextPath === activeListPath) {
         return;
       }
+      expandDiffFile(nextPath);
       if (fileFilterActive) {
         setFileFilterPath(nextPath);
       } else {
         scrollToDiffFile(nextPath);
       }
     },
-    [activeListPath, fileFilterActive, orderedFilePaths, scrollToDiffFile, setFileFilterPath],
+    [
+      activeListPath,
+      expandDiffFile,
+      fileFilterActive,
+      orderedFilePaths,
+      scrollToDiffFile,
+      setFileFilterPath,
+    ],
   );
 
   // ── Freshness: refetch the open diff when the working tree moves ───
@@ -1184,6 +1443,18 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
             </ToggleGroup>
           )}
           <Toggle
+            aria-label={diffChangesOnly ? "Show context lines" : "Show changes only"}
+            title={diffChangesOnly ? "Show context lines" : "Show changes only"}
+            variant="outline"
+            size="xs"
+            pressed={diffChangesOnly}
+            onPressedChange={(pressed) => {
+              setDiffChangesOnly(Boolean(pressed));
+            }}
+          >
+            <FoldVerticalIcon className="size-3" />
+          </Toggle>
+          <Toggle
             aria-label={diffWordWrap ? "Disable diff line wrapping" : "Enable diff line wrapping"}
             title={diffWordWrap ? "Disable line wrapping" : "Enable line wrapping"}
             variant="outline"
@@ -1294,9 +1565,14 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
                     <MenuItem
                       key={fileKey}
                       className={cn("gap-1.5", isActive && "bg-accent/45")}
-                      onClick={() =>
-                        fileFilterActive ? setFileFilterPath(filePath) : scrollToDiffFile(filePath)
-                      }
+                      onClick={() => {
+                        expandDiffFile(filePath);
+                        if (fileFilterActive) {
+                          setFileFilterPath(filePath);
+                        } else {
+                          scrollToDiffFile(filePath);
+                        }
+                      }}
                     >
                       <span
                         className={cn(
@@ -1460,14 +1736,21 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
                     intersectionObserverMargin: 1200,
                   }}
                 >
+                  <VirtualizerJumpBridge handleRef={virtualizerInternalsRef} />
                   {displayedFiles.map((fileDiff) => {
                     const filePath = resolveFileDiffPath(fileDiff);
                     const fileKey = buildFileDiffRenderKey(fileDiff);
                     const themedFileKey = `${fileKey}:${resolvedTheme}`;
                     const collapsed = collapsedDiffFileKeys.has(fileKey);
+                    const previewFileDiff =
+                      diffChangesOnly && !collapsed ? previewFileByPath.get(filePath) : undefined;
+                    const showPreview = previewFileDiff != null && previewFileDiff.hunks.length > 0;
                     return (
                       <div
-                        key={themedFileKey}
+                        // The diff instance hydrates once per mount and skips
+                        // fileDiff swaps unless options change, so the
+                        // changes-only variant must remount.
+                        key={`${themedFileKey}:${showPreview ? "changes" : "full"}`}
                         data-diff-file-path={filePath}
                         className={cn(
                           "diff-render-file group/diff-file mb-2 rounded-md first:mt-2 last:mb-0",
@@ -1493,45 +1776,88 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
                         }}
                       >
                         <FileDiff
-                          fileDiff={fileDiff}
-                          renderHeaderPrefix={() => (
-                            <button
-                              type="button"
-                              className={cn(
-                                "inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0 transition-colors hover:bg-foreground/10 focus-visible:outline-hidden",
-                                getDiffCollapseIconClassName(fileDiff),
-                              )}
-                              aria-label={collapsed ? `Expand ${filePath}` : `Collapse ${filePath}`}
-                              aria-expanded={!collapsed}
-                              title={collapsed ? "Expand diff" : "Collapse diff"}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                toggleDiffFileCollapsed(fileKey);
-                              }}
-                            >
-                              {collapsed ? (
-                                <ChevronRightIcon className="size-4" />
-                              ) : (
-                                <ChevronDownIcon className="size-4" />
-                              )}
-                            </button>
-                          )}
-                          renderHeaderMetadata={() => (
-                            <span className="flex items-center pl-1.5">
-                              <button
-                                type="button"
-                                aria-label={`Open ${filePath} in editor`}
-                                title="Open in editor"
-                                className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0 text-muted-foreground/70 transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:outline-hidden"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  openDiffFileInEditor(filePath);
-                                }}
-                              >
-                                <SquareArrowOutUpRightIcon className="size-3" />
-                              </button>
-                            </span>
-                          )}
+                          fileDiff={showPreview ? previewFileDiff : fileDiff}
+                          renderCustomHeader={() => {
+                            const badge = getFileDiffStatusBadge(fileDiff);
+                            const fileStat = fileStatByKey.get(fileKey);
+                            const pathSegments = filePath.split("/");
+                            const fileName = pathSegments.at(-1) ?? filePath;
+                            const fileDirectory = pathSegments.slice(0, -1).join("/");
+                            const prevPath = resolveFileDiffPrevPath(fileDiff);
+                            const prevFileName = prevPath
+                              ? (prevPath.split("/").at(-1) ?? prevPath)
+                              : null;
+                            return (
+                              <div className="flex h-9 min-w-0 items-center gap-1.5 pl-1.5 pr-2">
+                                <button
+                                  type="button"
+                                  className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0 text-muted-foreground/60 transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:outline-hidden"
+                                  aria-label={
+                                    collapsed ? `Expand ${filePath}` : `Collapse ${filePath}`
+                                  }
+                                  aria-expanded={!collapsed}
+                                  title={collapsed ? "Expand diff" : "Collapse diff"}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    toggleDiffFileCollapsed(fileKey);
+                                  }}
+                                >
+                                  {collapsed ? (
+                                    <ChevronRightIcon className="size-4" />
+                                  ) : (
+                                    <ChevronDownIcon className="size-4" />
+                                  )}
+                                </button>
+                                <span
+                                  className={cn(
+                                    "inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded border px-1 font-mono text-[10px] leading-none",
+                                    badge.className,
+                                  )}
+                                >
+                                  {badge.label}
+                                </span>
+                                <span
+                                  data-title=""
+                                  title={prevPath ? `${prevPath} → ${filePath}` : filePath}
+                                  className="group/diff-title flex min-w-0 flex-1 cursor-pointer items-baseline font-mono text-[11px] leading-none text-foreground/90"
+                                >
+                                  {prevFileName && prevFileName !== fileName ? (
+                                    <span className="mr-1.5 min-w-0 shrink-[99] truncate text-muted-foreground/55">
+                                      {prevFileName} →
+                                    </span>
+                                  ) : null}
+                                  {fileDirectory ? (
+                                    <span className="min-w-0 shrink-[99] truncate text-muted-foreground/55 transition-colors group-hover/diff-title:text-muted-foreground/80">
+                                      {fileDirectory}/
+                                    </span>
+                                  ) : null}
+                                  <span className="min-w-0 max-w-full shrink-0 truncate [direction:rtl] underline-offset-2 transition-colors group-hover/diff-title:text-foreground group-hover/diff-title:underline group-hover/diff-title:decoration-foreground/35">
+                                    <bdi>{fileName}</bdi>
+                                  </span>
+                                </span>
+                                {fileStat ? (
+                                  <span className="shrink-0 pl-1 font-mono text-[10px] leading-none">
+                                    <DiffStatLabel
+                                      additions={fileStat.additions}
+                                      deletions={fileStat.deletions}
+                                    />
+                                  </span>
+                                ) : null}
+                                <button
+                                  type="button"
+                                  aria-label={`Open ${filePath} in editor`}
+                                  title="Open in editor"
+                                  className="inline-flex h-5 shrink-0 cursor-pointer items-center justify-center rounded-md border border-border/70 bg-transparent px-1.5 text-muted-foreground/70 transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-hidden"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    openDiffFileInEditor(filePath);
+                                  }}
+                                >
+                                  <SquareArrowOutUpRightIcon className="size-3" />
+                                </button>
+                              </div>
+                            );
+                          }}
                           options={{
                             collapsed,
                             diffStyle: effectiveDiffRenderMode === "split" ? "split" : "unified",

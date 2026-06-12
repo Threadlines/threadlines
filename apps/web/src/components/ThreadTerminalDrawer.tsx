@@ -1,5 +1,12 @@
 import { FitAddon } from "@xterm/addon-fit";
-import { Plus, SquareSplitHorizontal, TerminalSquare, Trash2, XIcon } from "lucide-react";
+import {
+  ChevronDown,
+  Plus,
+  SquareSplitHorizontal,
+  TerminalSquare,
+  Trash2,
+  XIcon,
+} from "lucide-react";
 import {
   type ResolvedKeybindingsConfig,
   type ScopedThreadRef,
@@ -814,11 +821,13 @@ interface ThreadTerminalDrawerProps {
   focusRequestId: number;
   onSplitTerminal: () => void;
   onNewTerminal: () => void;
+  onHideTerminal: () => void;
   splitShortcutLabel?: string | undefined;
   newShortcutLabel?: string | undefined;
   closeShortcutLabel?: string | undefined;
+  hideShortcutLabel?: string | undefined;
   onActiveTerminalChange: (terminalId: string) => void;
-  onCloseTerminal: (terminalId: string) => void;
+  onCloseTerminal: (terminalId: string, options?: { sessionExited?: boolean }) => void;
   onHeightChange: (height: number) => void;
   onAddTerminalContext: (selection: TerminalContextSelection) => void;
   keybindings: ResolvedKeybindingsConfig;
@@ -868,9 +877,11 @@ export default function ThreadTerminalDrawer({
   focusRequestId,
   onSplitTerminal,
   onNewTerminal,
+  onHideTerminal,
   splitShortcutLabel,
   newShortcutLabel,
   closeShortcutLabel,
+  hideShortcutLabel,
   onActiveTerminalChange,
   onCloseTerminal,
   onHeightChange,
@@ -998,8 +1009,11 @@ export default function ThreadTerminalDrawer({
     ? `New Terminal (${newShortcutLabel})`
     : "New Terminal";
   const closeTerminalActionLabel = closeShortcutLabel
-    ? `Close Terminal (${closeShortcutLabel})`
-    : "Close Terminal";
+    ? `Kill Terminal (${closeShortcutLabel})`
+    : "Kill Terminal";
+  const hideTerminalActionLabel = hideShortcutLabel
+    ? `Hide Terminal (${hideShortcutLabel})`
+    : "Hide Terminal";
   const onSplitTerminalAction = useCallback(() => {
     if (hasReachedSplitLimit) return;
     onSplitTerminal();
@@ -1148,6 +1162,14 @@ export default function ThreadTerminalDrawer({
             <div className="h-4 w-px bg-border/80" />
             <TerminalActionButton
               className="p-1 text-foreground/90 transition-colors hover:bg-accent"
+              onClick={onHideTerminal}
+              label={hideTerminalActionLabel}
+            >
+              <ChevronDown className="size-3.25" />
+            </TerminalActionButton>
+            <div className="h-4 w-px bg-border/80" />
+            <TerminalActionButton
+              className="p-1 text-foreground/90 transition-colors hover:bg-accent"
               onClick={() => onCloseTerminal(resolvedActiveTerminalId)}
               label={closeTerminalActionLabel}
             >
@@ -1188,7 +1210,7 @@ export default function ThreadTerminalDrawer({
                         cwd={cwd}
                         {...(worktreePath !== undefined ? { worktreePath } : {})}
                         {...(runtimeEnv ? { runtimeEnv } : {})}
-                        onSessionExited={() => onCloseTerminal(terminalId)}
+                        onSessionExited={() => onCloseTerminal(terminalId, { sessionExited: true })}
                         onAddTerminalContext={onAddTerminalContext}
                         focusRequestId={focusRequestId}
                         autoFocus={terminalId === resolvedActiveTerminalId}
@@ -1211,7 +1233,9 @@ export default function ThreadTerminalDrawer({
                   cwd={cwd}
                   {...(worktreePath !== undefined ? { worktreePath } : {})}
                   {...(runtimeEnv ? { runtimeEnv } : {})}
-                  onSessionExited={() => onCloseTerminal(resolvedActiveTerminalId)}
+                  onSessionExited={() =>
+                    onCloseTerminal(resolvedActiveTerminalId, { sessionExited: true })
+                  }
                   onAddTerminalContext={onAddTerminalContext}
                   focusRequestId={focusRequestId}
                   autoFocus
@@ -1244,6 +1268,13 @@ export default function ThreadTerminalDrawer({
                     label={newTerminalActionLabel}
                   >
                     <Plus className="size-3.25" />
+                  </TerminalActionButton>
+                  <TerminalActionButton
+                    className="inline-flex h-full items-center border-l border-border/70 px-1 text-foreground/90 transition-colors hover:bg-accent/70"
+                    onClick={onHideTerminal}
+                    label={hideTerminalActionLabel}
+                  >
+                    <ChevronDown className="size-3.25" />
                   </TerminalActionButton>
                   <TerminalActionButton
                     className="inline-flex h-full items-center border-l border-border/70 px-1 text-foreground/90 transition-colors hover:bg-accent/70"
@@ -1286,7 +1317,7 @@ export default function ThreadTerminalDrawer({
                       >
                         {terminalGroup.terminalIds.map((terminalId) => {
                           const isActive = terminalId === resolvedActiveTerminalId;
-                          const closeTerminalLabel = `Close ${
+                          const closeTerminalLabel = `Kill ${
                             terminalLabelById.get(terminalId) ?? "terminal"
                           }${isActive && closeShortcutLabel ? ` (${closeShortcutLabel})` : ""}`;
                           return (

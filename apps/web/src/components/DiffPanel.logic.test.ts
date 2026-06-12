@@ -8,6 +8,7 @@ import {
   formatDiffFileCount,
   resolveActiveDiffFileIndex,
   resolveTurnDiffSummaryStats,
+  stripPatchContextLines,
   sumDiffFileStats,
 } from "./DiffPanel.logic";
 
@@ -64,6 +65,130 @@ describe("formatDiffFileCount", () => {
   it("pluralizes", () => {
     expect(formatDiffFileCount(1)).toBe("1 file");
     expect(formatDiffFileCount(3)).toBe("3 files");
+  });
+});
+
+describe("stripPatchContextLines", () => {
+  it("drops context lines and splits change runs into zero-context hunks", () => {
+    const patch = [
+      "diff --git a/foo.txt b/foo.txt",
+      "index 1111111..2222222 100644",
+      "--- a/foo.txt",
+      "+++ b/foo.txt",
+      "@@ -1,7 +1,7 @@",
+      " ctx1",
+      " ctx2",
+      "-old3",
+      "+new3",
+      " ctx4",
+      " ctx5",
+      "-old6",
+      "+new6",
+      " ctx7",
+    ].join("\n");
+
+    expect(stripPatchContextLines(patch)).toBe(
+      [
+        "diff --git a/foo.txt b/foo.txt",
+        "index 1111111..2222222 100644",
+        "--- a/foo.txt",
+        "+++ b/foo.txt",
+        "@@ -3,1 +3,1 @@",
+        "-old3",
+        "+new3",
+        "@@ -6,1 +6,1 @@",
+        "-old6",
+        "+new6",
+      ].join("\n"),
+    );
+  });
+
+  it("uses the line-before convention for pure insertions and deletions", () => {
+    const patch = [
+      "--- a/foo.txt",
+      "+++ b/foo.txt",
+      "@@ -10,3 +10,4 @@",
+      " a",
+      "+inserted",
+      " b",
+      " c",
+      "@@ -20,3 +21,2 @@",
+      " d",
+      "-gone",
+      " e",
+    ].join("\n");
+
+    expect(stripPatchContextLines(patch)).toBe(
+      [
+        "--- a/foo.txt",
+        "+++ b/foo.txt",
+        "@@ -10,0 +11,1 @@",
+        "+inserted",
+        "@@ -21,1 +21,0 @@",
+        "-gone",
+      ].join("\n"),
+    );
+  });
+
+  it("keeps no-newline markers attached to change runs and drops them with context", () => {
+    const patch = [
+      "--- a/foo.txt",
+      "+++ b/foo.txt",
+      "@@ -1,2 +1,2 @@",
+      " ctx",
+      "-old",
+      "+new",
+      "\\ No newline at end of file",
+    ].join("\n");
+
+    expect(stripPatchContextLines(patch)).toBe(
+      [
+        "--- a/foo.txt",
+        "+++ b/foo.txt",
+        "@@ -2,1 +2,1 @@",
+        "-old",
+        "+new",
+        "\\ No newline at end of file",
+      ].join("\n"),
+    );
+  });
+
+  it("passes through file boundaries and binary notices between hunks", () => {
+    const patch = [
+      "diff --git a/bin.png b/bin.png",
+      "Binary files a/bin.png and b/bin.png differ",
+      "diff --git a/foo.txt b/foo.txt",
+      "--- a/foo.txt",
+      "+++ b/foo.txt",
+      "@@ -1,2 +1,2 @@",
+      "-old",
+      "+new",
+      " ctx",
+      "diff --git a/bar.txt b/bar.txt",
+      "--- a/bar.txt",
+      "+++ b/bar.txt",
+      "@@ -1,1 +1,2 @@",
+      " keep",
+      "+added",
+    ].join("\n");
+
+    expect(stripPatchContextLines(patch)).toBe(
+      [
+        "diff --git a/bin.png b/bin.png",
+        "Binary files a/bin.png and b/bin.png differ",
+        "diff --git a/foo.txt b/foo.txt",
+        "--- a/foo.txt",
+        "+++ b/foo.txt",
+        "@@ -1,1 +1,1 @@",
+        "-old",
+        "+new",
+        "diff --git a/bar.txt b/bar.txt",
+        "--- a/bar.txt",
+        "+++ b/bar.txt",
+        "@@ -1,0 +2,1 @@",
+        "+added",
+      ].join("\n"),
+    );
   });
 });
 

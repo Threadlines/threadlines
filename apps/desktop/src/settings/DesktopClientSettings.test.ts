@@ -17,6 +17,7 @@ const clientSettings: ClientSettings = {
   confirmThreadArchive: true,
   confirmThreadDelete: false,
   dismissedProviderUpdateNotificationKeys: [],
+  diffChangesOnly: false,
   diffIgnoreWhitespace: true,
   diffRenderMode: "stacked",
   diffWordWrap: true,

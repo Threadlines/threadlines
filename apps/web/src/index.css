@@ -708,7 +708,7 @@ label:has(> select#reasoning-effort) select {
 
 .diff-render-file {
   border: 1px solid var(--border);
-  border-radius: 0.5rem;
+  border-radius: 0.625rem;
   overflow: clip;
   background: color-mix(in srgb, var(--card) 92%, var(--background));
   scroll-margin-top: 0.5rem;

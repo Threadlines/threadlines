@@ -145,6 +145,17 @@ export function reconcileMountedTerminalThreadIds(input: {
   return nextThreadIds;
 }
 
+export function shouldConfirmTerminalKill(input: {
+  runningTerminalIds: ReadonlyArray<string>;
+  terminalId: string;
+  sessionExited: boolean;
+}): boolean {
+  if (input.sessionExited) {
+    return false;
+  }
+  return input.runningTerminalIds.includes(input.terminalId);
+}
+
 export function revokeBlobPreviewUrl(previewUrl: string | undefined): void {
   if (!previewUrl || typeof URL === "undefined" || !previewUrl.startsWith("blob:")) {
     return;

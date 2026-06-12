@@ -53,6 +53,8 @@ export const ClientSettingsSchema = Schema.Struct({
   dismissedProviderUpdateNotificationKeys: Schema.Array(TrimmedNonEmptyString).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
+  // When true, expanded diff files render only changed lines (zero context).
+  diffChangesOnly: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   diffIgnoreWhitespace: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   diffRenderMode: DiffRenderMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_DIFF_RENDER_MODE)),
@@ -496,6 +498,7 @@ export const ClientSettingsPatch = Schema.Struct({
   chatChangedFilesDefaultExpanded: Schema.optionalKey(Schema.Boolean),
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
+  diffChangesOnly: Schema.optionalKey(Schema.Boolean),
   diffIgnoreWhitespace: Schema.optionalKey(Schema.Boolean),
   diffRenderMode: Schema.optionalKey(DiffRenderMode),
   diffWordWrap: Schema.optionalKey(Schema.Boolean),

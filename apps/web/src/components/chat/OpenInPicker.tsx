@@ -5,7 +5,15 @@ import { usePreferredEditor } from "../../editorPreferences";
 import { ChevronDownIcon, FolderClosedIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import { Group, GroupSeparator } from "../ui/group";
-import { Menu, MenuItem, MenuPopup, MenuShortcut, MenuTrigger } from "../ui/menu";
+import {
+  Menu,
+  MenuItem,
+  MenuPopup,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuShortcut,
+  MenuTrigger,
+} from "../ui/menu";
 import {
   AntigravityIcon,
   CursorIcon,
@@ -165,17 +173,11 @@ export const OpenInPicker = memo(function OpenInPicker({
   );
   const primaryOption = options.find(({ value }) => value === preferredEditor) ?? null;
 
-  const openInEditor = useCallback(
-    (editorId: EditorId | null) => {
-      const api = readLocalApi();
-      if (!api || !openInCwd) return;
-      const editor = editorId ?? preferredEditor;
-      if (!editor) return;
-      void api.shell.openInEditor(openInCwd, editor);
-      setPreferredEditor(editor);
-    },
-    [preferredEditor, openInCwd, setPreferredEditor],
-  );
+  const openPreferredEditor = useCallback(() => {
+    const api = readLocalApi();
+    if (!api || !openInCwd || !preferredEditor) return;
+    void api.shell.openInEditor(openInCwd, preferredEditor);
+  }, [preferredEditor, openInCwd]);
 
   const openFavoriteEditorShortcutLabel = useMemo(
     () => shortcutLabelForCommand(keybindings, "editor.openFavorite"),
@@ -197,12 +199,13 @@ export const OpenInPicker = memo(function OpenInPicker({
   }, [preferredEditor, keybindings, openInCwd]);
 
   return (
-    <Group aria-label="Subscription actions">
+    <Group aria-label="Open project in editor">
       <Button
         size="xs"
         variant="outline"
         disabled={!preferredEditor || !openInCwd}
-        onClick={() => openInEditor(preferredEditor)}
+        onClick={openPreferredEditor}
+        title={primaryOption ? `Open in ${primaryOption.label}` : "Open"}
       >
         {primaryOption?.Icon && <primaryOption.Icon aria-hidden="true" className="size-3.5" />}
         <span className="sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5">
@@ -211,20 +214,32 @@ export const OpenInPicker = memo(function OpenInPicker({
       </Button>
       <GroupSeparator className="hidden @3xl/header-actions:block" />
       <Menu>
-        <MenuTrigger render={<Button aria-label="Copy options" size="icon-xs" variant="outline" />}>
+        <MenuTrigger
+          render={<Button aria-label="Choose editor" size="icon-xs" variant="outline" />}
+        >
           <ChevronDownIcon aria-hidden="true" className="size-4" />
         </MenuTrigger>
         <MenuPopup align="end">
           {options.length === 0 && <MenuItem disabled>No installed editors found</MenuItem>}
-          {options.map(({ label, Icon, value }) => (
-            <MenuItem key={value} onClick={() => openInEditor(value)}>
-              <Icon aria-hidden="true" className="text-muted-foreground" />
-              {label}
-              {value === preferredEditor && openFavoriteEditorShortcutLabel && (
-                <MenuShortcut>{openFavoriteEditorShortcutLabel}</MenuShortcut>
-              )}
-            </MenuItem>
-          ))}
+          <MenuRadioGroup
+            value={preferredEditor}
+            onValueChange={(value) => {
+              const next = options.find((option) => option.value === value);
+              if (next) setPreferredEditor(next.value);
+            }}
+          >
+            {options.map(({ label, Icon, value }) => (
+              <MenuRadioItem key={value} value={value} closeOnClick>
+                <span className="flex items-center gap-2">
+                  <Icon aria-hidden="true" className="text-muted-foreground" />
+                  {label}
+                  {value === preferredEditor && openFavoriteEditorShortcutLabel && (
+                    <MenuShortcut>{openFavoriteEditorShortcutLabel}</MenuShortcut>
+                  )}
+                </span>
+              </MenuRadioItem>
+            ))}
+          </MenuRadioGroup>
         </MenuPopup>
       </Menu>
     </Group>

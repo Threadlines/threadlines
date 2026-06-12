@@ -83,6 +83,92 @@ export function buildWorkingTreeStatusDigest(status: VcsStatusResult | null): st
   return [status.refName ?? "", ...fileParts].join("\n");
 }
 
+const HUNK_HEADER_PATTERN = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
+
+/**
+ * Re-emits a unified diff with zero context: every run of consecutive +/-
+ * lines becomes its own hunk with recomputed ranges, and context lines are
+ * dropped. Line numbers are preserved, so the result renders a "changes only"
+ * view of the same patch. Non-hunk content (file headers, binary notices)
+ * passes through untouched.
+ */
+export function stripPatchContextLines(patch: string): string {
+  const lines = patch.split("\n");
+  const out: string[] = [];
+  let inHunk = false;
+  let oldLine = 0;
+  let newLine = 0;
+  let run: string[] = [];
+  let runOldStart = 0;
+  let runNewStart = 0;
+  let runOldCount = 0;
+  let runNewCount = 0;
+
+  const flushRun = () => {
+    if (run.length === 0) {
+      return;
+    }
+    // Git's convention for empty ranges: the position is the line *before*
+    // the change, e.g. `@@ -10,0 +11,3 @@` for a pure insertion.
+    const oldStart = runOldCount === 0 ? runOldStart - 1 : runOldStart;
+    const newStart = runNewCount === 0 ? runNewStart - 1 : runNewStart;
+    out.push(`@@ -${oldStart},${runOldCount} +${newStart},${runNewCount} @@`);
+    out.push(...run);
+    run = [];
+    runOldCount = 0;
+    runNewCount = 0;
+  };
+
+  for (const line of lines) {
+    const hunkHeader = HUNK_HEADER_PATTERN.exec(line);
+    if (hunkHeader) {
+      flushRun();
+      inHunk = true;
+      oldLine = Number.parseInt(hunkHeader[1] ?? "0", 10);
+      newLine = Number.parseInt(hunkHeader[3] ?? "0", 10);
+      continue;
+    }
+    if (!inHunk) {
+      out.push(line);
+      continue;
+    }
+    if (line.startsWith("+")) {
+      if (run.length === 0) {
+        runOldStart = oldLine;
+        runNewStart = newLine;
+      }
+      run.push(line);
+      newLine += 1;
+      runNewCount += 1;
+    } else if (line.startsWith("-")) {
+      if (run.length === 0) {
+        runOldStart = oldLine;
+        runNewStart = newLine;
+      }
+      run.push(line);
+      oldLine += 1;
+      runOldCount += 1;
+    } else if (line.startsWith("\\")) {
+      // "\ No newline at end of file" belongs to the preceding line; keep it
+      // only when that line is part of the current run.
+      if (run.length > 0) {
+        run.push(line);
+      }
+    } else if (line === "" || line.startsWith(" ")) {
+      flushRun();
+      oldLine += 1;
+      newLine += 1;
+    } else {
+      // Start of the next file's headers (or trailing content).
+      flushRun();
+      inHunk = false;
+      out.push(line);
+    }
+  }
+  flushRun();
+  return out.join("\n");
+}
+
 /**
  * Index of the file the viewport is "on": the last file whose top edge sits
  * at or above the reading line (scrollTop + offset). Clamps to the first file

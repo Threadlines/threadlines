@@ -28,6 +28,7 @@ import {
   reconcileSteeringHandoffStatuses,
   reconcileMountedTerminalThreadIds,
   resolveSendEnvMode,
+  shouldConfirmTerminalKill,
   shouldWriteThreadErrorToCurrentServerThread,
   waitForStartedServerThread,
 } from "./ChatView.logic";
@@ -276,6 +277,38 @@ describe("resolveSendEnvMode", () => {
   it("forces local mode for non-git repositories", () => {
     expect(resolveSendEnvMode({ requestedEnvMode: "worktree", isGitRepo: false })).toBe("local");
     expect(resolveSendEnvMode({ requestedEnvMode: "local", isGitRepo: false })).toBe("local");
+  });
+});
+
+describe("shouldConfirmTerminalKill", () => {
+  it("confirms when the terminal still has a running subprocess", () => {
+    expect(
+      shouldConfirmTerminalKill({
+        runningTerminalIds: ["default", "terminal-2"],
+        terminalId: "terminal-2",
+        sessionExited: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not confirm when no subprocess is running in the terminal", () => {
+    expect(
+      shouldConfirmTerminalKill({
+        runningTerminalIds: ["terminal-2"],
+        terminalId: "default",
+        sessionExited: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not confirm when the close follows a session exit", () => {
+    expect(
+      shouldConfirmTerminalKill({
+        runningTerminalIds: ["default"],
+        terminalId: "default",
+        sessionExited: true,
+      }),
+    ).toBe(false);
   });
 });
 
