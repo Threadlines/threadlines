@@ -1941,7 +1941,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const stagedPatch = yield* runGitStdoutWithOptions(
       `${operation}.stagedPatch`,
       cwd,
-      ["diff", "--cached", "--patch"],
+      ["diff", "--no-ext-diff", "--cached", "--patch"],
       {
         ...(env ? { env } : {}),
         maxOutputBytes: PREPARED_COMMIT_PATCH_MAX_OUTPUT_BYTES,
@@ -2052,6 +2052,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       yield* stageCommitContext(operation, input.cwd, input.filePaths, env);
       const diffArgs = [
         "diff",
+        "--no-ext-diff",
         "--cached",
         "--patch",
         "--minimal",
@@ -2549,7 +2550,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         runGitStdoutWithOptions(
           "GitVcsDriver.readRangeContext.diffPatch",
           cwd,
-          ["diff", "--patch", "--minimal", range],
+          ["diff", "--no-ext-diff", "--patch", "--minimal", range],
           {
             maxOutputBytes: RANGE_DIFF_PATCH_MAX_OUTPUT_BYTES,
             appendTruncationMarker: true,

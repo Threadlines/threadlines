@@ -22,8 +22,11 @@ its rendered copy).
 
 ## Usage rules
 
-- Glyph or dot, never both: with the glyph, lowercase `threadlines` and no period (the node is
-  the period). Standalone text wordmark is `threadlines.` In prose and UI labels: `Threadlines`.
+- Use `Threadlines` as the visible product wordmark in prose, UI labels, navigation, and
+  marketing copy. Keep `threadlines` lowercase only where the medium requires it, such as
+  domains, URLs, handles, package names, filenames, CSS identifiers, and generated asset paths.
+- Glyph or dot, never both: with the glyph, use `Threadlines` and no period. Standalone text
+  wordmark may use `Threadlines.` when the mark needs the terminal dot.
 - Small variant only exists for rasterization; vector contexts (nav, in-app) use the regular
   mark at any size.
 

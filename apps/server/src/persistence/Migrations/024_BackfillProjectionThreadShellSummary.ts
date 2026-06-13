@@ -161,6 +161,8 @@ export default Effect.gen(function* () {
             OR lower(COALESCE(json_extract(payload_json, '$.detail'), ''))
               LIKE '%unknown pending approval request%'
             OR lower(COALESCE(json_extract(payload_json, '$.detail'), ''))
+              LIKE '%unknown pending codex approval request%'
+            OR lower(COALESCE(json_extract(payload_json, '$.detail'), ''))
               LIKE '%unknown pending permission request%'
           )
       ) AS failure
@@ -231,6 +233,8 @@ export default Effect.gen(function* () {
             latest_user_input_states.kind = 'provider.user-input.respond.failed'
             AND latest_user_input_states.detail NOT LIKE '%stale pending user-input request%'
             AND latest_user_input_states.detail NOT LIKE '%unknown pending user-input request%'
+            AND latest_user_input_states.detail NOT LIKE '%unknown pending user input request%'
+            AND latest_user_input_states.detail NOT LIKE '%unknown pending codex user input request%'
           )
       ), 0),
       has_actionable_proposed_plan = COALESCE((

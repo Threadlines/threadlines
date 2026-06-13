@@ -164,7 +164,7 @@ describe("derivePendingApprovals", () => {
         tone: "error",
         payload: {
           requestId: "req-stale-1",
-          detail: "Unknown pending permission request: req-stale-1",
+          detail: "Unknown pending Codex approval request: req-stale-1",
         },
       }),
     ];
@@ -325,8 +325,7 @@ describe("derivePendingUserInputs", () => {
         tone: "error",
         payload: {
           requestId: "req-user-input-stale-1",
-          detail:
-            "Stale pending user-input request: req-user-input-stale-1. Provider callback state does not survive app restarts or recovered sessions. Restart the turn to continue.",
+          detail: "Unknown pending Codex user input request: req-user-input-stale-1",
         },
       }),
     ];

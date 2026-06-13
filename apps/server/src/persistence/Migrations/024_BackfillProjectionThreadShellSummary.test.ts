@@ -9,7 +9,7 @@ import * as NodeSqliteClient from "../NodeSqliteClient.ts";
 const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
 
 layer("024_BackfillProjectionThreadShellSummary", (it) => {
-  it.effect("backfills thread shell summary fields and clears stale projected approvals", () =>
+  it.effect("backfills shell summaries and clears stale pending request counts", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
 
@@ -112,7 +112,7 @@ layer("024_BackfillProjectionThreadShellSummary", (it) => {
             'error',
             'provider.approval.respond.failed',
             'Provider approval response failed',
-            '{"requestId":"approval-1","detail":"Unknown pending permission request: approval-1"}',
+            '{"requestId":"approval-1","detail":"Unknown pending Codex approval request: approval-1"}',
             NULL,
             '2026-02-24T00:03:00.000Z'
           ),
@@ -126,6 +126,17 @@ layer("024_BackfillProjectionThreadShellSummary", (it) => {
             '{"requestId":"input-1","questions":[{"id":"area","header":"Area","question":"Which repo area should I inspect next?","options":[{"label":"Server","description":"Server orchestration."}]}]}',
             NULL,
             '2026-02-24T00:04:00.000Z'
+          ),
+          (
+            'activity-user-input-stale',
+            'thread-1',
+            'turn-1',
+            'error',
+            'provider.user-input.respond.failed',
+            'Provider user input response failed',
+            '{"requestId":"input-1","detail":"Unknown pending Codex user input request: input-1"}',
+            NULL,
+            '2026-02-24T00:04:30.000Z'
           )
       `;
 
@@ -193,7 +204,7 @@ layer("024_BackfillProjectionThreadShellSummary", (it) => {
         {
           latestUserMessageAt: "2026-02-24T00:01:00.000Z",
           pendingApprovalCount: 0,
-          pendingUserInputCount: 1,
+          pendingUserInputCount: 0,
           hasActionableProposedPlan: 1,
         },
       ]);
