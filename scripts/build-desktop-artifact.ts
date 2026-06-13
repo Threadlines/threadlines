@@ -168,28 +168,30 @@ const resolvePythonForNodeGyp = Effect.fn("resolvePythonForNodeGyp")(function* (
     }
   }
 
-  const probe = yield* spawnAndCollectOutput(
-    ChildProcess.make("python", ["-c", "import sys;print(sys.executable)"]),
-  ).pipe(
-    Effect.catch(() =>
-      Effect.succeed({
-        stdout: "",
-        stderr: "",
-        exitCode: 1,
-      }),
-    ),
-  );
+  for (const command of ["python", "python3"]) {
+    const probe = yield* spawnAndCollectOutput(
+      ChildProcess.make(command, ["-c", "import sys;print(sys.executable)"]),
+    ).pipe(
+      Effect.catch(() =>
+        Effect.succeed({
+          stdout: "",
+          stderr: "",
+          exitCode: 1,
+        }),
+      ),
+    );
 
-  if (probe.exitCode !== 0) {
-    return undefined;
+    if (probe.exitCode !== 0) {
+      continue;
+    }
+
+    const executable = probe.stdout.trim();
+    if (executable && (yield* fs.exists(executable))) {
+      return executable;
+    }
   }
 
-  const executable = probe.stdout.trim();
-  if (!executable || !(yield* fs.exists(executable))) {
-    return undefined;
-  }
-
-  return executable;
+  return undefined;
 });
 
 interface ResolvedBuildOptions {
@@ -954,12 +956,19 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     delete buildEnv.APPLE_API_ISSUER;
   }
 
+  const python = yield* resolvePythonForNodeGyp();
+  if (!python) {
+    return yield* new BuildScriptError({
+      message:
+        "Could not find a usable Python executable for node-gyp. On macOS, make sure the Xcode license has been accepted (`sudo xcodebuild -license`) and rerun the desktop artifact build.",
+    });
+  }
+  buildEnv.PYTHON = python;
+  buildEnv.npm_config_python = python;
+  buildEnv.NPM_CONFIG_PYTHON = python;
+  buildEnv.NODE_GYP_FORCE_PYTHON = python;
+
   if (process.platform === "win32") {
-    const python = yield* resolvePythonForNodeGyp();
-    if (python) {
-      buildEnv.PYTHON = python;
-      buildEnv.npm_config_python = python;
-    }
     buildEnv.npm_config_msvs_version = buildEnv.npm_config_msvs_version ?? "2022";
     buildEnv.GYP_MSVS_VERSION = buildEnv.GYP_MSVS_VERSION ?? "2022";
   }

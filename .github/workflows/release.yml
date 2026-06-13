@@ -18,6 +18,10 @@ on:
         description: "Optional. Stable target version. Blank uses the next patch after the latest stable tag; nightly appends -nightly.YYYYMMDD.RUN."
         required: false
         type: string
+      update_repository:
+        description: "Optional owner/repo for the updater feed embedded in desktop apps. Defaults to this repository."
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -38,6 +42,7 @@ jobs:
       channel: ${{ steps.release_meta.outputs.channel }}
       is_prerelease: ${{ steps.release_meta.outputs.is_prerelease }}
       make_latest: ${{ steps.release_meta.outputs.make_latest }}
+      update_repository: ${{ steps.release_meta.outputs.update_repository }}
       ref: ${{ github.sha }}
     steps:
       - name: Checkout
@@ -67,9 +72,12 @@ jobs:
         env:
           DISPATCH_CHANNEL: ${{ inputs.channel }}
           DISPATCH_VERSION: ${{ inputs.version }}
+          DISPATCH_UPDATE_REPOSITORY: ${{ inputs.update_repository }}
         run: |
           plain_stable_pattern='^[0-9]+\.[0-9]+\.[0-9]+$'
           nightly_pattern='^[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9]{8}\.[0-9]+$'
+          repository_pattern='^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
+          update_repository="${DISPATCH_UPDATE_REPOSITORY:-$GITHUB_REPOSITORY}"
 
           resolve_next_stable_version() {
             git fetch --force --tags origin "refs/tags/*:refs/tags/*"
@@ -111,12 +119,12 @@ jobs:
             version="${GITHUB_REF_NAME#v}"
             if [[ "$version" =~ $nightly_pattern ]]; then
               channel="nightly"
-              name="BadCode Nightly $version (${GITHUB_SHA:0:12})"
+              name="Threadlines Nightly $version (${GITHUB_SHA:0:12})"
               is_prerelease=true
               make_latest=false
             elif [[ "$version" =~ $plain_stable_pattern ]]; then
               channel="stable"
-              name="BadCode v$version"
+              name="Threadlines v$version"
               is_prerelease=false
               make_latest=true
             else
@@ -148,7 +156,7 @@ jobs:
                 exit 1
               fi
 
-              name="BadCode v$version"
+              name="Threadlines v$version"
               is_prerelease=false
               make_latest=true
             else
@@ -158,7 +166,7 @@ jobs:
                 nightly_metadata="$(resolve_nightly_metadata "$raw")"
               elif [[ "$raw" =~ $nightly_pattern ]]; then
                 version="$raw"
-                name="BadCode Nightly $version (${GITHUB_SHA:0:12})"
+                name="Threadlines Nightly $version (${GITHUB_SHA:0:12})"
               else
                 echo "Nightly releases require a blank version, a plain target version, or a full nightly version. Got: ${raw:-<blank>}" >&2
                 exit 1
@@ -183,6 +191,11 @@ jobs:
             exit 1
           fi
 
+          if [[ ! "$update_repository" =~ $repository_pattern ]]; then
+            echo "Invalid update repository: ${update_repository:-<blank>}. Expected owner/repo." >&2
+            exit 1
+          fi
+
           if [[ "${GITHUB_REF_TYPE}" != "tag" ]] && git rev-parse --verify --quiet "refs/tags/v$version" >/dev/null; then
             echo "Release tag already exists: v$version" >&2
             exit 1
@@ -194,6 +207,7 @@ jobs:
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
           echo "is_prerelease=$is_prerelease" >> "$GITHUB_OUTPUT"
           echo "make_latest=$make_latest" >> "$GITHUB_OUTPUT"
+          echo "update_repository=$update_repository" >> "$GITHUB_OUTPUT"
 
       - name: Format check
         run: bun run fmt:check
@@ -302,7 +316,7 @@ jobs:
 
       - name: Build Windows installer
         env:
-          THREADLINES_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
+          THREADLINES_DESKTOP_UPDATE_REPOSITORY: ${{ needs.preflight.outputs.update_repository }}
         run: >
           bun run dist:desktop:artifact --
           --platform win
@@ -387,7 +401,7 @@ jobs:
 
       - name: Build macOS artifact
         env:
-          THREADLINES_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
+          THREADLINES_DESKTOP_UPDATE_REPOSITORY: ${{ needs.preflight.outputs.update_repository }}
           THREADLINES_DESKTOP_SIGNED: ${{ (vars.THREADLINES_MACOS_SIGNED == 'true' || vars.BADCODE_MACOS_SIGNED == 'true') && 'true' || 'false' }}
           CSC_LINK: ${{ secrets.MACOS_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.MACOS_CSC_KEY_PASSWORD }}
