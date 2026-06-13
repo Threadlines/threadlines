@@ -236,6 +236,48 @@ describe("MessagesTimeline", () => {
     }
   });
 
+  it("settles populated timelines at the bottom on initial mount", async () => {
+    const requestAnimationFrameSpy = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((callback: FrameRequestCallback) => {
+        callback(0);
+        return 1;
+      });
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
+
+    const props = buildProps();
+    const screen = await render(
+      <MessagesTimeline
+        {...props}
+        timelineEntries={[
+          {
+            id: "work-1",
+            kind: "work",
+            createdAt: "2026-04-13T12:00:00.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-04-13T12:00:00.000Z",
+              label: "thinking",
+              detail: "Inspecting repository state",
+              tone: "thinking",
+            },
+          },
+        ]}
+      />,
+    );
+
+    try {
+      await expect
+        .element(page.getByRole("button", { name: "Thinking - Inspecting repository state" }))
+        .toBeVisible();
+      expect(props.onIsAtEndChange).toHaveBeenCalledWith(true);
+      expect(scrollToEndSpy).toHaveBeenCalledWith({ animated: false });
+      expect(requestAnimationFrameSpy).toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("starts long user messages collapsed by default", async () => {
     const screen = await render(
       <MessagesTimeline

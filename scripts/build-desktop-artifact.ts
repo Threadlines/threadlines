@@ -641,8 +641,8 @@ export function resolveMockUpdateServerUrl(mockUpdateServerPort: number | undefi
 
 export function resolveDesktopProductName(version: string): string {
   return resolveDesktopUpdateChannel(version) === "nightly"
-    ? "BadCode (Nightly)"
-    : (desktopPackageJson.productName ?? "BadCode");
+    ? "Threadlines (Nightly)"
+    : (desktopPackageJson.productName ?? "Threadlines");
 }
 
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
@@ -656,7 +656,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   const buildConfig: Record<string, unknown> = {
     appId: "com.badcuban.badcode",
     productName: resolveDesktopProductName(version),
-    artifactName: "BadCode-${version}-${arch}.${ext}",
+    artifactName: "Threadlines-${version}-${arch}.${ext}",
     directories: {
       buildResources: "apps/desktop/resources",
     },
@@ -734,8 +734,8 @@ export function createStagePackageJson(input: StagePackageJsonInput): StagePacka
     buildVersion: input.appVersion,
     badcodeCommitHash: input.commitHash,
     private: true,
-    description: "BadCode desktop build",
-    author: "BadCode",
+    description: "Threadlines desktop build",
+    author: "Threadlines",
     main: "apps/desktop/dist-electron/main.cjs",
     build: input.build,
     dependencies: input.dependencies,
@@ -1070,7 +1070,7 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
     Flag.optional,
   ),
 }).pipe(
-  Command.withDescription("Build a desktop artifact for BadCode."),
+  Command.withDescription("Build a desktop artifact for Threadlines."),
   Command.withHandler((input) => Effect.flatMap(resolveBuildOptions(input), buildDesktopArtifact)),
 );
 

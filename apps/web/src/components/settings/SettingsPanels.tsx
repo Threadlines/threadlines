@@ -402,6 +402,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.diffIgnoreWhitespace !== DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace
         ? ["Diff whitespace changes"]
         : []),
+      ...(settings.diffChangesOnly !== DEFAULT_UNIFIED_SETTINGS.diffChangesOnly
+        ? ["Diff changes-only view"]
+        : []),
       ...(settings.chatChangedFilesDefaultExpanded !==
       DEFAULT_UNIFIED_SETTINGS.chatChangedFilesDefaultExpanded
         ? ["Changed files chat block"]
@@ -438,6 +441,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.confirmThreadDelete,
       settings.addProjectBaseDirectory,
       settings.defaultThreadEnvMode,
+      settings.diffChangesOnly,
       settings.diffIgnoreWhitespace,
       settings.diffWordWrap,
       settings.automaticGitFetchInterval,
@@ -461,6 +465,7 @@ export function useSettingsRestore(onRestored?: () => void) {
     setTheme("system");
     updateSettings({
       timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
+      diffChangesOnly: DEFAULT_UNIFIED_SETTINGS.diffChangesOnly,
       diffWordWrap: DEFAULT_UNIFIED_SETTINGS.diffWordWrap,
       diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
       chatChangedFilesDefaultExpanded: DEFAULT_UNIFIED_SETTINGS.chatChangedFilesDefaultExpanded,

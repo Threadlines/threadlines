@@ -1,6 +1,6 @@
 # Claude
 
-This guide is for people who want to use more than one Claude setup in BadCode.
+This guide is for people who want to use more than one Claude setup in Threadlines.
 
 Common reasons:
 
@@ -19,7 +19,7 @@ Log in with Claude Code normally:
 claude auth login
 ```
 
-In BadCode Settings, your Claude provider can stay like this:
+In Threadlines Settings, your Claude provider can stay like this:
 
 ```text
 Display name: Claude
@@ -27,7 +27,7 @@ Binary path: claude
 Claude HOME path: empty
 ```
 
-An empty `Claude HOME path` means BadCode uses your normal home directory.
+An empty `Claude HOME path` means Threadlines uses your normal home directory.
 
 ## I Want Work And Personal Claude Accounts
 
@@ -48,7 +48,7 @@ Log in normally:
 claude auth login
 ```
 
-In BadCode Settings:
+In Threadlines Settings:
 
 ```text
 Display name: Claude Work
@@ -65,7 +65,7 @@ mkdir -p ~/.claude_personal_home
 HOME=~/.claude_personal_home claude auth login
 ```
 
-Then add another Claude provider in BadCode:
+Then add another Claude provider in Threadlines:
 
 ```text
 Display name: Claude Personal
@@ -80,11 +80,11 @@ blurred by default; click the blurred email to reveal it.
 
 Usually, no.
 
-BadCode only offers Claude providers that use the same Claude home for an existing thread. A
+Threadlines only offers Claude providers that use the same Claude home for an existing thread. A
 different Claude home is treated as a different Claude environment.
 
 This is different from the recommended Codex setup. Claude Code keeps account and local state across
-multiple files under its home directory, so BadCode keeps separate Claude homes isolated instead of
+multiple files under its home directory, so Threadlines keeps separate Claude homes isolated instead of
 trying to share part of the state.
 
 ## I Want To Use OpenRouter
@@ -97,7 +97,7 @@ variables.
 
 ### Configure A Claude OpenRouter Provider
 
-Add or edit a Claude provider in BadCode Settings:
+Add or edit a Claude provider in Threadlines Settings:
 
 ```text
 Display name: Claude OpenRouter
@@ -113,7 +113,7 @@ ANTHROPIC_AUTH_TOKEN sk-or-...                Sensitive
 ANTHROPIC_API_KEY                              Empty value
 ```
 
-Mark `ANTHROPIC_AUTH_TOKEN` as sensitive. BadCode stores the value as a server secret and does not
+Mark `ANTHROPIC_AUTH_TOKEN` as sensitive. Threadlines stores the value as a server secret and does not
 send it back to the app after saving.
 
 If you want this setup isolated from your normal Claude account, create that home first:
@@ -172,7 +172,7 @@ OpenRouter's setup can change over time. Use its upstream Claude Code guide for 
 Claude Code Router is useful when you want a local routing layer with more control than a direct
 OpenRouter setup.
 
-BadCode does not need a special Claude Code Router provider. Treat the router as a Claude
+Threadlines does not need a special Claude Code Router provider. Treat the router as a Claude
 environment.
 
 Use this when you want Claude Code Router to decide which upstream model or provider handles Claude
@@ -181,7 +181,7 @@ requests.
 High-level flow:
 
 1. Start Claude Code Router.
-2. Add or configure a Claude provider in BadCode.
+2. Add or configure a Claude provider in Threadlines.
 3. Put the router's required variables on that provider instance.
 
 Configure a Claude provider:
@@ -225,12 +225,12 @@ Do not put environment variable assignments in `Launch arguments`.
 
 ## Claude Fable 5
 
-BadCode shows Claude Fable 5 when the configured Claude Code binary is `2.1.170` or newer.
+Threadlines shows Claude Fable 5 when the configured Claude Code binary is `2.1.170` or newer.
 Fable is not a default Claude Code model; select `Claude Fable 5` in the model picker when you want
 Anthropic's highest-capability widely available model for long-running or difficult work.
 
 Anthropic documents Fable 5 on the Claude API as a 1M-context model where the 1M maximum is also the
-default. BadCode does not expose a 200k Fable selector because the bare `claude-fable-5` model id
+default. Threadlines does not expose a 200k Fable selector because the bare `claude-fable-5` model id
 still runs with the 1M window on the Claude API.
 
 Anthropic's launch note says Fable 5 is included on Pro, Max, Team, and seat-based Enterprise

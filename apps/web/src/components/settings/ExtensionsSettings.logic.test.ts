@@ -4,6 +4,9 @@ import {
   buildExtensionJsonSchemaFormArguments,
   deriveDetectedProviderThreadId,
   deriveExtensionJsonSchemaFormFields,
+  extensionMcpNeedsAuthStatus,
+  extensionMcpOAuthActionIntent,
+  extensionMcpOAuthActionLabel,
   extensionTextMatchesFilter,
   extensionProviderDriverSortRank,
   isLikelyLocalPath,
@@ -35,6 +38,45 @@ describe("ExtensionsSettings logic", () => {
     );
 
     expect(providers).toEqual(["codex", "claudeAgent", "other"]);
+  });
+
+  it("treats OAuth as an auth mechanism instead of a missing-auth state", () => {
+    const readyOAuthServer = {
+      authStatus: "OAuth",
+      status: "Ready",
+    };
+
+    expect(extensionMcpNeedsAuthStatus(readyOAuthServer)).toBe(false);
+    expect(extensionMcpOAuthActionIntent(readyOAuthServer)).toBe("reauth");
+    expect(extensionMcpOAuthActionLabel(extensionMcpOAuthActionIntent(readyOAuthServer))).toBe(
+      "Re-auth",
+    );
+  });
+
+  it("marks missing or expired MCP auth as an authorize action", () => {
+    for (const server of [
+      { authStatus: "Not logged in", status: "Needs auth" },
+      { authStatus: "OAuth", detail: "Token expired" },
+    ]) {
+      expect(extensionMcpNeedsAuthStatus(server)).toBe(true);
+      expect(extensionMcpOAuthActionIntent(server)).toBe("authorize");
+      expect(extensionMcpOAuthActionLabel(extensionMcpOAuthActionIntent(server))).toBe("Authorize");
+    }
+  });
+
+  it("hides OAuth actions for MCP servers that do not support OAuth login", () => {
+    expect(
+      extensionMcpOAuthActionIntent({
+        authStatus: "No auth required",
+        status: "Ready",
+      }),
+    ).toBeNull();
+    expect(
+      extensionMcpOAuthActionIntent({
+        authStatus: "Bearer token",
+        status: "Ready",
+      }),
+    ).toBeNull();
   });
 
   it("detects the most recently visited matching provider thread", () => {

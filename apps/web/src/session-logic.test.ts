@@ -884,7 +884,7 @@ describe("deriveWorkLogEntries", () => {
           itemType: "command_execution",
           status: "inProgress",
           title: "Command output",
-          detail: '"name":"badcode-transition","description":"BadCode fork separation"',
+          detail: '"name":"threadlines-transition","description":"Threadlines fork separation"',
           byteCount: 128,
           lineCount: 1,
           truncated: false,

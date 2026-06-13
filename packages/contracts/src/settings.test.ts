@@ -23,6 +23,11 @@ describe("ClientSettings defaults", () => {
     expect(decodeClientSettings({}).autoOpenPlanSidebar).toBe(false);
   });
 
+  it("shows diff changes only by default", () => {
+    expect(DEFAULT_CLIENT_SETTINGS.diffChangesOnly).toBe(true);
+    expect(decodeClientSettings({}).diffChangesOnly).toBe(true);
+  });
+
   it("decodes cross-provider warning suppression patches", () => {
     const patch = decodeClientSettingsPatch({ suppressCrossProviderSwitchWarning: true });
     expect(patch.suppressCrossProviderSwitchWarning).toBe(true);

@@ -50,7 +50,7 @@ describe("VcsCommitGraph", () => {
           parents: ["0123456789abcdef0123456789abcdef01234567"],
           refs: ["source-control-panel", "origin/source-control-panel"],
           subject: "Add source control panel",
-          authorName: "BadCode",
+          authorName: "Threadlines",
           committedAt: "2026-05-25T12:00:00.000Z",
         },
       ],

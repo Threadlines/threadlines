@@ -1,6 +1,6 @@
 # Keybindings
 
-BadCode reads keybindings from:
+Threadlines reads keybindings from:
 
 - `~/.t3/keybindings.json`
 

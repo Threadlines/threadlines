@@ -7,7 +7,7 @@
 
 ## Project Snapshot
 
-BadCode is a minimal web GUI for using coding agents like Codex and Claude.
+Threadlines is a minimal web GUI for using coding agents like Codex and Claude.
 
 This repository is a VERY EARLY WIP. Proposing sweeping changes that improve long-term maintainability is encouraged.
 
@@ -32,7 +32,7 @@ Long term maintainability is a core priority. If you add new functionality, firs
 
 ## Codex App Server (Important)
 
-BadCode is currently Codex-first. The server starts `codex app-server` (JSON-RPC over stdio) per provider session, then streams structured events to the browser through WebSocket push messages.
+Threadlines is currently Codex-first. The server starts `codex app-server` (JSON-RPC over stdio) per provider session, then streams structured events to the browser through WebSocket push messages.
 
 How we use it in this codebase:
 

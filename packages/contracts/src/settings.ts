@@ -54,7 +54,7 @@ export const ClientSettingsSchema = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
   // When true, expanded diff files render only changed lines (zero context).
-  diffChangesOnly: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  diffChangesOnly: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   diffIgnoreWhitespace: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   diffRenderMode: DiffRenderMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_DIFF_RENDER_MODE)),

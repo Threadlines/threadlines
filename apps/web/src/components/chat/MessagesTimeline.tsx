@@ -106,6 +106,7 @@ const TIMELINE_LIST_HEADER = <div className="h-3 sm:h-4" />;
 const TIMELINE_LIST_FOOTER = <div className="h-3 sm:h-4" />;
 const EMPTY_TIMELINE_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
 const LIVE_WORK_LOG_ENTRY_COUNT = 2;
+const INITIAL_STICK_TO_BOTTOM_FRAME_COUNT = 3;
 
 // ---------------------------------------------------------------------------
 // Props (public API)
@@ -209,23 +210,35 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     }
   }, [listRef, onIsAtEndChange]);
 
-  const previousRowCountRef = useRef(rows.length);
+  const hasRows = rows.length > 0;
   useEffect(() => {
-    const previousRowCount = previousRowCountRef.current;
-    previousRowCountRef.current = rows.length;
-
-    if (previousRowCount > 0 || rows.length === 0) {
+    if (!hasRows) {
       return;
     }
 
-    onIsAtEndChange(true);
-    const frameId = window.requestAnimationFrame(() => {
+    const frameIds: number[] = [];
+    const stickToBottom = () => {
+      onIsAtEndChange(true);
       void listRef.current?.scrollToEnd?.({ animated: false });
-    });
-    return () => {
-      window.cancelAnimationFrame(frameId);
     };
-  }, [listRef, onIsAtEndChange, rows.length]);
+    const scheduleFrame = (remainingFrames: number) => {
+      const frameId = window.requestAnimationFrame(() => {
+        stickToBottom();
+        if (remainingFrames > 1) {
+          scheduleFrame(remainingFrames - 1);
+        }
+      });
+      frameIds.push(frameId);
+    };
+
+    scheduleFrame(INITIAL_STICK_TO_BOTTOM_FRAME_COUNT);
+
+    return () => {
+      for (const frameId of frameIds) {
+        window.cancelAnimationFrame(frameId);
+      }
+    };
+  }, [hasRows, listRef, onIsAtEndChange, routeThreadKey]);
 
   const sharedState = useMemo<TimelineRowSharedState>(
     () => ({
@@ -1571,12 +1584,17 @@ function AssistantChangedFilesSectionInner({
   return (
     <div className="mt-2 rounded-lg border border-border/80 bg-card/45 p-2.5">
       <div className="sticky top-2 z-10 mb-1.5 flex items-center justify-between gap-2 bg-[color-mix(in_srgb,var(--card)_45%,var(--background))] before:absolute before:inset-x-0 before:-top-2 before:h-2 before:bg-[color-mix(in_srgb,var(--card)_45%,var(--background))] before:content-['']">
-        <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground/65">
+        <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/55">
           <span>Changed files ({changedFileCountLabel})</span>
           {hasNonZeroStat(summaryStat) && (
             <>
               <span className="mx-1">/</span>
-              <DiffStatLabel additions={summaryStat.additions} deletions={summaryStat.deletions} />
+              <span className="font-mono font-normal tabular-nums tracking-normal">
+                <DiffStatLabel
+                  additions={summaryStat.additions}
+                  deletions={summaryStat.deletions}
+                />
+              </span>
             </>
           )}
         </p>

@@ -47,6 +47,9 @@ import {
   buildExtensionJsonSchemaFormArguments,
   deriveDetectedProviderThreadId,
   deriveExtensionJsonSchemaFormFields,
+  extensionMcpNeedsAuthStatus,
+  extensionMcpOAuthActionIntent,
+  extensionMcpOAuthActionLabel,
   extensionTextMatchesFilter,
   extensionProviderDriverSortRank,
   isLikelyLocalPath,
@@ -407,19 +410,7 @@ function extensionItemInstalled(item: ExtensionItem): boolean {
 
 function extensionItemNeedsAuth(item: ExtensionItem): boolean {
   if (item.kind === "mcp") {
-    const authStatus = item.server.authStatus?.toLowerCase() ?? "";
-    const status = item.server.status?.toLowerCase() ?? "";
-    const detail = item.server.detail?.toLowerCase() ?? "";
-    return [authStatus, status, detail].some(
-      (value) =>
-        value.includes("unauth") ||
-        value.includes("not logged in") ||
-        value.includes("notloggedin") ||
-        value.includes("not authenticated") ||
-        value.includes("needs auth") ||
-        value.includes("login required") ||
-        value.includes("expired"),
-    );
+    return extensionMcpNeedsAuthStatus(item.server);
   }
 
   if (item.kind === "plugin") {
@@ -582,15 +573,9 @@ function extensionItemMatchesBrowserFilter(
   }
 }
 
-function codexMcpSupportsLoginAction(item: ExtensionItem): boolean {
-  if (item.kind !== "mcp") return false;
-  const authStatus = item.server.authStatus?.toLowerCase() ?? "";
-  return (
-    authStatus.includes("oauth") ||
-    authStatus.includes("not logged in") ||
-    authStatus.includes("notloggedin") ||
-    authStatus.includes("needs auth")
-  );
+function codexMcpOAuthActionIntent(item: ExtensionItem) {
+  if (item.kind !== "mcp") return null;
+  return extensionMcpOAuthActionIntent(item.server);
 }
 
 function ExtensionItemBadges({ item }: { item: ExtensionItem }) {
@@ -1177,9 +1162,13 @@ function ExtensionDetailDialog({
     [item, onActionHistoryChange],
   );
 
+  const mcpOAuthActionIntent = item ? codexMcpOAuthActionIntent(item) : null;
+  const mcpOAuthActionLabel = extensionMcpOAuthActionLabel(mcpOAuthActionIntent);
+  const codexMcpOAuthActionAvailable = mcpOAuthActionIntent !== null;
+
   const startMcpOAuth = useCallback(() => {
     if (!item || item.kind !== "mcp") return;
-    void runDialogAction("OAuth", async () => {
+    void runDialogAction(mcpOAuthActionLabel, async () => {
       const api = ensureLocalApi();
       const result = await api.server.startProviderExtensionMcpOAuth({
         ...actionBaseInput(item, cwd),
@@ -1219,7 +1208,7 @@ function ExtensionDetailDialog({
       }
       return `OAuth timed out.\n\nFallback:\n${result.terminalCommand}`;
     });
-  }, [cwd, item, onInventoryMutated, runDialogAction]);
+  }, [cwd, item, mcpOAuthActionLabel, onInventoryMutated, runDialogAction]);
 
   const reloadMcp = useCallback(() => {
     if (!item) return;
@@ -1410,7 +1399,6 @@ function ExtensionDetailDialog({
 
   const codexActionsAvailable = item ? isCodexProvider(item.provider) : false;
   const claudeActionsAvailable = item ? isClaudeProvider(item.provider) : false;
-  const codexMcpLoginAvailable = item ? codexMcpSupportsLoginAction(item) : false;
   const mcpTools =
     item?.kind === "mcp"
       ? (item.server.toolDefinitions ??
@@ -1711,19 +1699,19 @@ function ExtensionDetailDialog({
           <DialogFooter>
             {codexActionsAvailable && item.kind === "mcp" ? (
               <>
-                {codexMcpLoginAvailable ? (
+                {codexMcpOAuthActionAvailable ? (
                   <Button
                     size="xs"
                     variant="outline"
                     disabled={busyAction !== null}
                     onClick={startMcpOAuth}
                   >
-                    {busyAction === "OAuth" ? (
+                    {busyAction === mcpOAuthActionLabel ? (
                       <LoaderIcon className="size-3.5 animate-spin" />
                     ) : (
                       <KeyRoundIcon className="size-3.5" />
                     )}
-                    OAuth
+                    {mcpOAuthActionLabel}
                   </Button>
                 ) : null}
                 <Button
@@ -1739,7 +1727,7 @@ function ExtensionDetailDialog({
                   )}
                   Reload MCP
                 </Button>
-                {codexMcpLoginAvailable ? (
+                {codexMcpOAuthActionAvailable ? (
                   <Button
                     size="xs"
                     variant="outline"

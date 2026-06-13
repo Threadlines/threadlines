@@ -7,7 +7,7 @@ it("builds a prerelease Discord announcement for nightly subscribers", () => {
     buildDiscordReleaseAnnouncement({
       target: "prerelease",
       roleId: "111111111111111111",
-      releaseName: "BadCode Nightly 1.2.4-nightly.20260501.17 (abcdef123456)",
+      releaseName: "Threadlines Nightly 1.2.4-nightly.20260501.17 (abcdef123456)",
       version: "1.2.4-nightly.20260501.17",
       tag: "v1.2.4-nightly.20260501.17",
       releaseUrl: new URL(
@@ -17,15 +17,15 @@ it("builds a prerelease Discord announcement for nightly subscribers", () => {
     }),
     {
       content:
-        "<@&111111111111111111> Prerelease published: BadCode Nightly 1.2.4-nightly.20260501.17 (abcdef123456)",
+        "<@&111111111111111111> Prerelease published: Threadlines Nightly 1.2.4-nightly.20260501.17 (abcdef123456)",
       allowed_mentions: {
         roles: ["111111111111111111"],
       },
       embeds: [
         {
-          title: "BadCode Nightly 1.2.4-nightly.20260501.17 (abcdef123456)",
+          title: "Threadlines Nightly 1.2.4-nightly.20260501.17 (abcdef123456)",
           url: "https://github.com/badcuban/badcode/releases/tag/v1.2.4-nightly.20260501.17",
-          description: "A new BadCode prerelease is available for nightly testers.",
+          description: "A new Threadlines prerelease is available for nightly testers.",
           color: 0x5865f2,
           fields: [
             {
@@ -51,22 +51,22 @@ it("builds a latest Discord announcement for stable subscribers", () => {
     buildDiscordReleaseAnnouncement({
       target: "latest",
       roleId: "222222222222222222",
-      releaseName: "BadCode v1.2.3",
+      releaseName: "Threadlines v1.2.3",
       version: "1.2.3",
       tag: "v1.2.3",
       releaseUrl: new URL("https://github.com/badcuban/badcode/releases/tag/v1.2.3"),
       timestamp: "2026-05-01T01:41:00.000Z",
     }),
     {
-      content: "<@&222222222222222222> Latest published: BadCode v1.2.3",
+      content: "<@&222222222222222222> Latest published: Threadlines v1.2.3",
       allowed_mentions: {
         roles: ["222222222222222222"],
       },
       embeds: [
         {
-          title: "BadCode v1.2.3",
+          title: "Threadlines v1.2.3",
           url: "https://github.com/badcuban/badcode/releases/tag/v1.2.3",
-          description: "A new BadCode latest release is available.",
+          description: "A new Threadlines latest release is available.",
           color: 0x2ecc71,
           fields: [
             {

@@ -1,6 +1,6 @@
 # Security Guardrails
 
-BadCode may become public later, so treat the repository as public-safe from the start.
+Threadlines may become public later, so treat the repository as public-safe from the start.
 
 ## Before pushing
 
@@ -30,6 +30,6 @@ Before making the repository public:
 
 - Run a full secret scan.
 - Review git history for accidental secrets or personal data.
-- Confirm the app name, icons, and README clearly distinguish BadCode from upstream T3Code.
+- Confirm the app name, icons, and README clearly distinguish Threadlines from upstream T3Code.
 - Keep the upstream MIT license notice intact.
-- Add BadCode-specific documentation only after checking it contains no local machine details.
+- Add Threadlines-specific documentation only after checking it contains no local machine details.

@@ -97,8 +97,8 @@ export const buildDiscordReleaseAnnouncement = (
       url: options.releaseUrl.href,
       description:
         options.target === "prerelease"
-          ? "A new BadCode prerelease is available for nightly testers."
-          : "A new BadCode latest release is available.",
+          ? "A new Threadlines prerelease is available for nightly testers."
+          : "A new Threadlines latest release is available.",
       color: targetColors[options.target],
       fields: [
         {
@@ -224,7 +224,7 @@ export const notifyDiscordReleaseCommand = Command.make(
       yield* postDiscordWebhook(webhookUrl, payload);
       yield* Effect.logInfo("discord release announcement completed");
     }),
-).pipe(Command.withDescription("Post a BadCode release announcement to Discord."));
+).pipe(Command.withDescription("Post a Threadlines release announcement to Discord."));
 
 if (import.meta.main) {
   Command.run(notifyDiscordReleaseCommand, { version: "0.0.0" }).pipe(

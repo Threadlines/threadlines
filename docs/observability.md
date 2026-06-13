@@ -1,6 +1,6 @@
 # Observability
 
-BadCode has one server-side observability model:
+Threadlines has one server-side observability model:
 
 - pretty logs go to stdout for humans
 - completed spans go to a local NDJSON trace file
@@ -141,7 +141,7 @@ macOS app bundle example:
 BADCODE_OTLP_TRACES_URL=http://localhost:4318/v1/traces \
 BADCODE_OTLP_METRICS_URL=http://localhost:4318/v1/metrics \
 BADCODE_OTLP_SERVICE_NAME=badcode-desktop \
-"/Applications/BadCode.app/Contents/MacOS/BadCode"
+"/Applications/Threadlines.app/Contents/MacOS/Threadlines"
 ```
 
 Direct binary example:

@@ -93,7 +93,7 @@ export const resolveNightlyReleaseMetadata = (
     baseVersion,
     version,
     tag: `v${version}`,
-    name: `BadCode Nightly ${version} (${shortSha})`,
+    name: `Threadlines Nightly ${version} (${shortSha})`,
     shortSha,
   };
 };

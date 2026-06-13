@@ -121,7 +121,7 @@ const CWD = "/repo/project";
 const TARGET: SourceControlProjectTarget = {
   environmentId: ENVIRONMENT_ID,
   cwd: CWD,
-  name: "BadCode",
+  name: "Threadlines",
   environmentLabel: null,
   worktreePath: null,
 };

@@ -25,8 +25,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   });
 
   it("switches desktop packaging product names to nightly for nightly builds", () => {
-    assert.equal(resolveDesktopProductName("0.0.17"), "BadCode (Alpha)");
-    assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "BadCode (Nightly)");
+    assert.equal(resolveDesktopProductName("0.0.17"), "Threadlines (Alpha)");
+    assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "Threadlines (Nightly)");
   });
 
   it("switches desktop packaging icons to the nightly artwork for nightly versions", () => {
@@ -134,7 +134,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }),
   );
 
-  it("uses BadCode identity in staged desktop package metadata", () => {
+  it("uses Threadlines identity in staged desktop package metadata", () => {
     const stagePackageJson = createStagePackageJson({
       appVersion: "0.0.7",
       commitHash: "abcdef123456",
@@ -147,7 +147,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.equal(stagePackageJson.name, "badcode");
     assert.equal(stagePackageJson.badcodeCommitHash, "abcdef123456");
     assert.equal("t3codeCommitHash" in stagePackageJson, false);
-    assert.equal(stagePackageJson.author, "BadCode");
+    assert.equal(stagePackageJson.author, "Threadlines");
   });
 
   it("prefers the BadCode update repository env var over legacy and GitHub defaults", () => {

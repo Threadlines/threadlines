@@ -1,6 +1,6 @@
-# BadCode Desktop Release Notes
+# Threadlines Desktop Release Notes
 
-BadCode currently ships desktop release artifacts through GitHub Releases. The
+Threadlines currently ships desktop release artifacts through GitHub Releases. The
 release pipeline builds a Windows x64 NSIS `.exe` installer plus macOS arm64 and
 x64 `.dmg`/`.zip` artifacts, then publishes them together with Electron updater
 metadata.
@@ -10,9 +10,9 @@ normal release workflow yet because there is no tested Linux install/update path
 
 ## Versioning
 
-BadCode keeps the fork's Git history, but uses its own app versions.
+Threadlines keeps the fork's Git history, but uses its own app versions.
 
-- First BadCode alpha: `0.0.1`
+- First Threadlines alpha: `0.0.1`
 - Stable tags: `v0.0.1`, `v0.0.2`, `v0.1.0`
 - Nightly tags: `v0.0.18-nightly.20260529.123`
 
@@ -23,7 +23,7 @@ For example, if the latest stable tag is `v0.0.17`, a nightly dispatch from
 `main` produces `0.0.18-nightly.<YYYYMMDD>.<run-number>`.
 
 If you previously installed a local build that reported an upstream-style
-`0.0.24` version, uninstall it before installing the first `0.0.1` BadCode
+`0.0.24` version, uninstall it before installing the first `0.0.1` Threadlines
 build. Auto-updaters normally treat `0.0.1` as older than `0.0.24`.
 
 ## Local Desktop Artifacts
@@ -121,12 +121,12 @@ of those commits already appeared in nightly notes.
 
 The release assets should include:
 
-- `BadCode-<version>-x64.exe`
-- `BadCode-<version>-x64.exe.blockmap`
-- `BadCode-<version>-arm64.dmg`
-- `BadCode-<version>-arm64.zip`
-- `BadCode-<version>-x64.dmg`
-- `BadCode-<version>-x64.zip`
+- `Threadlines-<version>-x64.exe`
+- `Threadlines-<version>-x64.exe.blockmap`
+- `Threadlines-<version>-arm64.dmg`
+- `Threadlines-<version>-arm64.zip`
+- `Threadlines-<version>-x64.dmg`
+- `Threadlines-<version>-x64.zip`
 - `latest.yml`
 - `latest-mac.yml`
 
@@ -147,9 +147,9 @@ For another machine:
 1. Sign into GitHub with an account that can access `badcuban/badcode`.
 2. Open the release page.
 3. Download the matching asset for the machine:
-   - Windows: `BadCode-<version>-x64.exe`
-   - Apple Silicon macOS: `BadCode-<version>-arm64.dmg`
-   - Intel macOS: `BadCode-<version>-x64.dmg`
+   - Windows: `Threadlines-<version>-x64.exe`
+   - Apple Silicon macOS: `Threadlines-<version>-arm64.dmg`
+   - Intel macOS: `Threadlines-<version>-x64.dmg`
 4. Run the installer or open the DMG.
 
 Unsigned alpha builds may show Windows SmartScreen or "unknown publisher"
@@ -161,13 +161,13 @@ changing the basic release flow.
 
 There are two different Windows publisher surfaces:
 
-- Installed app metadata can be set by the installer package. BadCode's desktop
-  artifact script stages the package author as `BadCode`, so newly built
+- Installed app metadata can be set by the installer package. Threadlines'
+  desktop artifact script stages the package author as `Threadlines`, so newly built
   unsigned installers should not inherit the upstream app metadata.
 - UAC, SmartScreen, and Authenticode publisher identity come from the signing
   certificate. If an `.exe` is signed by an upstream certificate, Windows will
   show that upstream identity. To make those verified publisher prompts say
-  BadCode, sign the installer with a BadCode-owned code-signing certificate or
+  Threadlines, sign the installer with a Threadlines-owned code-signing certificate or
   Azure Trusted Signing identity. Without signing, Windows will show an unknown
   publisher.
 
@@ -190,20 +190,20 @@ When the packaged app sees a private GitHub update feed, it checks
 the signed-in GitHub CLI token and passes that token directly to the updater for
 the update check or download.
 
-If GitHub CLI is not installed or is not visible on `PATH`, launch BadCode from a
+If GitHub CLI is not installed or is not visible on `PATH`, launch Threadlines from a
 shell with a token that can read releases from this private repo. Windows
 example:
 
 ```powershell
 $env:GH_TOKEN = "github_pat_or_classic_token_here"
-& "$env:LOCALAPPDATA\Programs\BadCode (Alpha)\BadCode (Alpha).exe"
+& "$env:LOCALAPPDATA\Programs\Threadlines (Alpha)\Threadlines (Alpha).exe"
 ```
 
 `GITHUB_TOKEN` also works. Do not commit tokens, screenshots containing tokens,
 or local token setup scripts. Prefer `gh auth login` for personal testing;
 environment tokens are inherited by the Electron process for that launch.
 
-If BadCode becomes public later, or if release assets move to public hosting,
+If Threadlines becomes public later, or if release assets move to public hosting,
 users will not need a private-repo token for updates.
 
 ## macOS Signing And Notarization

@@ -532,7 +532,7 @@ const devRunnerCli = Command.make("dev-runner", {
   ),
   t3Home: Flag.string("home-dir").pipe(
     Flag.withDescription(
-      "Base directory for all BadCode data (equivalent to BADCODE_HOME; legacy T3CODE_HOME is still accepted).",
+      "Base directory for all Threadlines data (equivalent to BADCODE_HOME; legacy T3CODE_HOME is still accepted).",
     ),
     Flag.withFallbackConfig(
       resolveAliasedConfig(
