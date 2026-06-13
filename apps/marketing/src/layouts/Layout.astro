@@ -1,13 +1,36 @@
 ---
+import Analytics from "@vercel/analytics/astro";
+import {
+  absoluteSiteUrl,
+  DEFAULT_SITE_DESCRIPTION,
+  SITE_NAME,
+  SITE_SOCIAL_IMAGE,
+} from "../lib/site";
+
 interface Props {
   title?: string;
   description?: string;
+  canonicalPath?: string;
+  noindex?: boolean;
 }
 
 const {
-  title = "Threadlines",
-  description = "Threadlines is a source-control-first desktop workspace for coding agents. Every thread leaves a line. In private development.",
+  title = SITE_NAME,
+  description = DEFAULT_SITE_DESCRIPTION,
+  canonicalPath = Astro.url.pathname,
+  noindex = false,
 } = Astro.props;
+
+const canonicalUrl = absoluteSiteUrl(canonicalPath);
+const socialImageUrl = absoluteSiteUrl(SITE_SOCIAL_IMAGE);
+const robotsContent = noindex ? "noindex,follow" : "index,follow";
+const websiteStructuredData = {
+  "@context": "https://schema.org",
+  "@type": "WebSite",
+  name: SITE_NAME,
+  url: absoluteSiteUrl("/"),
+  description: DEFAULT_SITE_DESCRIPTION,
+};
 ---
 
 <html lang="en">
@@ -15,10 +38,24 @@ const {
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content={description} />
+    <meta name="robots" content={robotsContent} />
+    <meta name="application-name" content={SITE_NAME} />
+    <meta name="apple-mobile-web-app-title" content={SITE_NAME} />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <meta property="og:type" content="website" />
+    <meta property="og:url" content={canonicalUrl} />
+    <meta property="og:site_name" content={SITE_NAME} />
+    <meta property="og:image" content={socialImageUrl} />
+    <meta property="og:image:alt" content="Threadlines app icon" />
+    <meta property="og:image:width" content="1024" />
+    <meta property="og:image:height" content="1024" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={socialImageUrl} />
     <meta name="theme-color" content="#09090b" />
+    <link rel="canonical" href={canonicalUrl} />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -30,6 +67,8 @@ const {
     <link rel="icon" type="image/png" href="/favicon-16x16.png" sizes="16x16" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>{title}</title>
+    <script is:inline type="application/ld+json" set:html={JSON.stringify(websiteStructuredData)} />
+    <Analytics />
   </head>
   <body>
     <div class="page">

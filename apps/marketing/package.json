@@ -10,6 +10,7 @@
     "typecheck": "astro check"
   },
   "dependencies": {
+    "@vercel/analytics": "^2.0.1",
     "astro": "^6.0.4"
   },
   "devDependencies": {
