@@ -68,11 +68,21 @@ describe("gitActionProgressState", () => {
 
     dispatchGitActionProgressEvent(
       TARGET,
-      progressEvent({ kind: "phase_started", phase: "push", label: "Pushing...", actionId: "action-2" }),
+      progressEvent({
+        kind: "phase_started",
+        phase: "push",
+        label: "Pushing...",
+        actionId: "action-2",
+      }),
     );
     dispatchGitActionProgressEvent(
       TARGET,
-      progressEvent({ kind: "phase_started", phase: "push", label: "Pushing...", cwd: "/repo/other" }),
+      progressEvent({
+        kind: "phase_started",
+        phase: "push",
+        label: "Pushing...",
+        cwd: "/repo/other",
+      }),
     );
 
     expect(getGitActionProgressViewSnapshot(TARGET)?.title).toBe("Committing...");

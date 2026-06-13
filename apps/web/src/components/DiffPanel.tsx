@@ -711,7 +711,11 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
     [updateSettings],
   );
   const previewRenderablePatch = useMemo(() => {
-    if (!diffChangesOnly || typeof selectedPatch !== "string" || selectedPatch.trim().length === 0) {
+    if (
+      !diffChangesOnly ||
+      typeof selectedPatch !== "string" ||
+      selectedPatch.trim().length === 0
+    ) {
       return null;
     }
     return getRenderablePatch(
@@ -803,8 +807,7 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
     // content. Supervise the landing: re-pin the target to the top every
     // frame until its position holds for two consecutive frames.
     if (scroller) {
-      const desiredTop =
-        Number.parseFloat(window.getComputedStyle(target).scrollMarginTop) || 0;
+      const desiredTop = Number.parseFloat(window.getComputedStyle(target).scrollMarginTop) || 0;
       // A newer jump supersedes this one; rapid next-file clicks must not
       // leave competing settle loops pinning different files.
       const jumpToken = ++jumpTokenRef.current;
@@ -918,7 +921,13 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
     }
     expandDiffFile(pending);
     scrollToDiffFile(pending);
-  }, [expandDiffFile, fileFilterActive, orderedFilePaths, renderableFiles.length, scrollToDiffFile]);
+  }, [
+    expandDiffFile,
+    fileFilterActive,
+    orderedFilePaths,
+    renderableFiles.length,
+    scrollToDiffFile,
+  ]);
 
   useEffect(() => {
     const viewport = patchViewportRef.current;
