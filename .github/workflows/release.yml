@@ -399,6 +399,15 @@ jobs:
       - name: Align release package versions
         run: bun scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
 
+      - name: Require macOS signing for updater releases
+        env:
+          THREADLINES_DESKTOP_SIGNED: ${{ (vars.THREADLINES_MACOS_SIGNED == 'true' || vars.BADCODE_MACOS_SIGNED == 'true') && 'true' || 'false' }}
+        run: |
+          if [[ "$THREADLINES_DESKTOP_SIGNED" != "true" ]]; then
+            echo "::error::macOS desktop releases must be Developer ID signed for Squirrel.Mac updates. Configure THREADLINES_MACOS_SIGNED=true and the macOS signing/notarization secrets before publishing."
+            exit 1
+          fi
+
       - name: Build macOS artifact
         env:
           THREADLINES_DESKTOP_UPDATE_REPOSITORY: ${{ needs.preflight.outputs.update_repository }}
