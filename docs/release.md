@@ -50,13 +50,13 @@ Use `--arch x64` on an Intel Mac runner. The macOS build uses `sips` and
 For a private-repo update feed, set the update repository while building:
 
 ```powershell
-$env:BADCODE_DESKTOP_UPDATE_REPOSITORY = "badcuban/badcode"
+$env:THREADLINES_DESKTOP_UPDATE_REPOSITORY = "Threadlines/threadlines"
 bun run dist:desktop:artifact -- --platform win --target nsis --arch x64 --build-version 0.0.1
 ```
 
-The desktop artifact script accepts `BADCODE_DESKTOP_*` variables. Legacy
-`T3CODE_DESKTOP_*` variables remain compatibility aliases. When both names are
-set, `BADCODE_DESKTOP_*` takes precedence.
+The desktop artifact script accepts `THREADLINES_DESKTOP_*` variables. Legacy
+`BADCODE_DESKTOP_*` and `T3CODE_DESKTOP_*` variables remain compatibility aliases.
+When multiple aliases are set, `THREADLINES_DESKTOP_*` takes precedence.
 
 ## GitHub Release
 
@@ -153,9 +153,10 @@ For another machine:
 4. Run the installer or open the DMG.
 
 Unsigned alpha builds may show Windows SmartScreen or "unknown publisher"
-warnings. Unsigned macOS builds will also show Gatekeeper friction and may
-require manual approval in System Settings. Signing can be added without
-changing the basic release flow.
+warnings. macOS alpha builds are ad-hoc signed so Squirrel.Mac can validate and
+apply ZIP updates, but they are not Developer ID signed or notarized unless
+`THREADLINES_MACOS_SIGNED=true` is configured. They will still show Gatekeeper
+friction and may require manual approval in System Settings.
 
 ## Windows Publisher Name
 
@@ -196,7 +197,7 @@ example:
 
 ```powershell
 $env:GH_TOKEN = "github_pat_or_classic_token_here"
-& "$env:LOCALAPPDATA\Programs\Threadlines (Alpha)\Threadlines (Alpha).exe"
+& "$env:LOCALAPPDATA\Programs\Threadlines\Threadlines.exe"
 ```
 
 `GITHUB_TOKEN` also works. Do not commit tokens, screenshots containing tokens,
@@ -212,7 +213,7 @@ The workflow can build unsigned macOS artifacts now. For a clean public macOS
 release, enroll in the Apple Developer Program, create a Developer ID
 Application certificate, and configure notarization credentials.
 
-Set repository variable `BADCODE_MACOS_SIGNED=true`, then add these GitHub
+Set repository variable `THREADLINES_MACOS_SIGNED=true`, then add these GitHub
 secrets:
 
 - `MACOS_CSC_LINK`: base64-encoded `.p12` certificate or a secure certificate
@@ -223,7 +224,11 @@ secrets:
 - `APPLE_API_ISSUER`: App Store Connect issuer ID
 
 When signing is enabled, the artifact script enables hardened runtime and
-Electron Builder notarization for macOS.
+Electron Builder notarization for macOS. When signing is not enabled, the script
+uses Electron Builder's ad-hoc signing identity (`mac.identity: "-"`) instead of
+skipping signing entirely. That keeps private alpha/nightly auto-updates
+installable while preserving the expected Gatekeeper friction for non-notarized
+builds.
 
 ## Windows Signing Later
 

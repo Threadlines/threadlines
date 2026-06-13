@@ -24,7 +24,7 @@ const MAX_PORT = 65535;
 const DESKTOP_DEV_LOOPBACK_HOST = "127.0.0.1";
 const DEV_PORT_PROBE_HOSTS = ["127.0.0.1", "0.0.0.0", "::1", "::"] as const;
 
-export const DEFAULT_BADCODE_HOME = Effect.map(Effect.service(Path.Path), (path) =>
+export const DEFAULT_THREADLINES_HOME = Effect.map(Effect.service(Path.Path), (path) =>
   path.join(NodeOS.homedir(), ".badcode"),
 );
 
@@ -79,26 +79,38 @@ const optionalUrlConfig = (name: string): Config.Config<URL | undefined> =>
     Config.map((value) => Option.getOrUndefined(value)),
   );
 
+type AliasedConfigSource = "threadlines" | "badcode" | "legacy" | null;
+
 const resolveAliasedConfig = <A>(
+  threadlinesConfig: Config.Config<A | undefined>,
   badcodeConfig: Config.Config<A | undefined>,
   legacyT3CodeConfig: Config.Config<A | undefined>,
 ) =>
   Config.all({
+    threadlines: threadlinesConfig,
     badcode: badcodeConfig,
     legacyT3Code: legacyT3CodeConfig,
   }).pipe(
-    Config.map(({ badcode, legacyT3Code }) => ({
-      value: badcode ?? legacyT3Code,
-      source: badcode !== undefined ? "badcode" : legacyT3Code !== undefined ? "legacy" : null,
+    Config.map(({ threadlines, badcode, legacyT3Code }) => ({
+      value: threadlines ?? badcode ?? legacyT3Code,
+      source: (threadlines !== undefined
+        ? "threadlines"
+        : badcode !== undefined
+          ? "badcode"
+          : legacyT3Code !== undefined
+            ? "legacy"
+            : null) satisfies AliasedConfigSource,
     })),
   );
 
 const OffsetConfig = Config.all({
   portOffset: resolveAliasedConfig(
+    optionalIntegerConfig("THREADLINES_PORT_OFFSET"),
     optionalIntegerConfig("BADCODE_PORT_OFFSET"),
     optionalIntegerConfig("T3CODE_PORT_OFFSET"),
   ),
   devInstance: resolveAliasedConfig(
+    optionalStringConfig("THREADLINES_DEV_INSTANCE"),
     optionalStringConfig("BADCODE_DEV_INSTANCE"),
     optionalStringConfig("T3CODE_DEV_INSTANCE"),
   ),
@@ -110,8 +122,8 @@ export function resolveOffset(config: {
   readonly portOffsetName?: string;
   readonly devInstanceName?: string;
 }): { readonly offset: number; readonly source: string } {
-  const portOffsetName = config.portOffsetName ?? "T3CODE_PORT_OFFSET";
-  const devInstanceName = config.devInstanceName ?? "T3CODE_DEV_INSTANCE";
+  const portOffsetName = config.portOffsetName ?? "THREADLINES_PORT_OFFSET";
+  const devInstanceName = config.devInstanceName ?? "THREADLINES_DEV_INSTANCE";
 
   if (config.portOffset !== undefined) {
     if (config.portOffset < 0) {
@@ -145,7 +157,7 @@ function resolveBaseDir(baseDir: string | undefined): Effect.Effect<string, neve
       return path.resolve(configured);
     }
 
-    return yield* DEFAULT_BADCODE_HOME;
+    return yield* DEFAULT_THREADLINES_HOME;
   });
 }
 
@@ -162,6 +174,27 @@ interface CreateDevRunnerEnvInput {
   readonly port: number | undefined;
   readonly devUrl: URL | undefined;
 }
+
+const setThreadlinesEnvAlias = (
+  env: NodeJS.ProcessEnv,
+  suffix: string,
+  value: string | undefined,
+) => {
+  if (value === undefined) {
+    deleteThreadlinesEnvAlias(env, suffix);
+    return;
+  }
+
+  env[`THREADLINES_${suffix}`] = value;
+  env[`BADCODE_${suffix}`] = value;
+  env[`T3CODE_${suffix}`] = value;
+};
+
+const deleteThreadlinesEnvAlias = (env: NodeJS.ProcessEnv, suffix: string) => {
+  delete env[`THREADLINES_${suffix}`];
+  delete env[`BADCODE_${suffix}`];
+  delete env[`T3CODE_${suffix}`];
+};
 
 export function createDevRunnerEnv({
   mode,
@@ -188,75 +221,61 @@ export function createDevRunnerEnv({
       VITE_DEV_SERVER_URL:
         devUrl?.toString() ??
         `http://${isDesktopMode ? DESKTOP_DEV_LOOPBACK_HOST : "localhost"}:${webPort}`,
-      BADCODE_HOME: resolvedBaseDir,
-      T3CODE_HOME: resolvedBaseDir,
     };
+    setThreadlinesEnvAlias(output, "HOME", resolvedBaseDir);
 
     if (!isDesktopMode) {
-      output.BADCODE_PORT = String(serverPort);
-      output.T3CODE_PORT = String(serverPort);
+      setThreadlinesEnvAlias(output, "PORT", String(serverPort));
       output.VITE_HTTP_URL = `http://localhost:${serverPort}`;
       output.VITE_WS_URL = `ws://localhost:${serverPort}`;
     } else {
-      output.BADCODE_PORT = String(serverPort);
-      output.T3CODE_PORT = String(serverPort);
+      setThreadlinesEnvAlias(output, "PORT", String(serverPort));
       output.VITE_HTTP_URL = `http://${DESKTOP_DEV_LOOPBACK_HOST}:${serverPort}`;
       output.VITE_WS_URL = `ws://${DESKTOP_DEV_LOOPBACK_HOST}:${serverPort}`;
-      delete output.BADCODE_MODE;
-      delete output.BADCODE_NO_BROWSER;
-      delete output.BADCODE_HOST;
-      delete output.T3CODE_MODE;
-      delete output.T3CODE_NO_BROWSER;
-      delete output.T3CODE_HOST;
+      deleteThreadlinesEnvAlias(output, "MODE");
+      deleteThreadlinesEnvAlias(output, "NO_BROWSER");
+      deleteThreadlinesEnvAlias(output, "HOST");
     }
 
     if (!isDesktopMode && host !== undefined) {
-      output.BADCODE_HOST = host;
-      output.T3CODE_HOST = host;
+      setThreadlinesEnvAlias(output, "HOST", host);
     }
 
     if (!isDesktopMode && noBrowser !== undefined) {
-      output.BADCODE_NO_BROWSER = noBrowser ? "1" : "0";
-      output.T3CODE_NO_BROWSER = noBrowser ? "1" : "0";
+      setThreadlinesEnvAlias(output, "NO_BROWSER", noBrowser ? "1" : "0");
     } else if (!isDesktopMode) {
-      delete output.BADCODE_NO_BROWSER;
-      delete output.T3CODE_NO_BROWSER;
+      deleteThreadlinesEnvAlias(output, "NO_BROWSER");
     }
 
     if (autoBootstrapProjectFromCwd !== undefined) {
-      output.BADCODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD = autoBootstrapProjectFromCwd ? "1" : "0";
-      output.T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD = autoBootstrapProjectFromCwd ? "1" : "0";
+      setThreadlinesEnvAlias(
+        output,
+        "AUTO_BOOTSTRAP_PROJECT_FROM_CWD",
+        autoBootstrapProjectFromCwd ? "1" : "0",
+      );
     } else {
-      delete output.BADCODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD;
-      delete output.T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD;
+      deleteThreadlinesEnvAlias(output, "AUTO_BOOTSTRAP_PROJECT_FROM_CWD");
     }
 
     if (logWebSocketEvents !== undefined) {
-      output.BADCODE_LOG_WS_EVENTS = logWebSocketEvents ? "1" : "0";
-      output.T3CODE_LOG_WS_EVENTS = logWebSocketEvents ? "1" : "0";
+      setThreadlinesEnvAlias(output, "LOG_WS_EVENTS", logWebSocketEvents ? "1" : "0");
     } else {
-      delete output.BADCODE_LOG_WS_EVENTS;
-      delete output.T3CODE_LOG_WS_EVENTS;
+      deleteThreadlinesEnvAlias(output, "LOG_WS_EVENTS");
     }
 
     if (mode === "dev") {
-      output.BADCODE_MODE = "web";
-      delete output.BADCODE_DESKTOP_WS_URL;
-      output.T3CODE_MODE = "web";
-      delete output.T3CODE_DESKTOP_WS_URL;
+      setThreadlinesEnvAlias(output, "MODE", "web");
+      deleteThreadlinesEnvAlias(output, "DESKTOP_WS_URL");
     }
 
     if (mode === "dev:server" || mode === "dev:web") {
-      output.BADCODE_MODE = "web";
-      delete output.BADCODE_DESKTOP_WS_URL;
-      output.T3CODE_MODE = "web";
-      delete output.T3CODE_DESKTOP_WS_URL;
+      setThreadlinesEnvAlias(output, "MODE", "web");
+      deleteThreadlinesEnvAlias(output, "DESKTOP_WS_URL");
     }
 
     if (isDesktopMode) {
       output.HOST = DESKTOP_DEV_LOOPBACK_HOST;
-      delete output.BADCODE_DESKTOP_WS_URL;
-      delete output.T3CODE_DESKTOP_WS_URL;
+      deleteThreadlinesEnvAlias(output, "DESKTOP_WS_URL");
     }
 
     return output;
@@ -432,7 +451,8 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
       Effect.mapError(
         (cause) =>
           new DevRunnerError({
-            message: "Failed to read BADCODE_PORT_OFFSET/BADCODE_DEV_INSTANCE configuration.",
+            message:
+              "Failed to read THREADLINES_PORT_OFFSET/THREADLINES_DEV_INSTANCE configuration.",
             cause,
           }),
       ),
@@ -444,9 +464,17 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
           portOffset: portOffset.value,
           devInstance: devInstance.value,
           portOffsetName:
-            portOffset.source === "badcode" ? "BADCODE_PORT_OFFSET" : "T3CODE_PORT_OFFSET",
+            portOffset.source === "threadlines"
+              ? "THREADLINES_PORT_OFFSET"
+              : portOffset.source === "badcode"
+                ? "BADCODE_PORT_OFFSET"
+                : "T3CODE_PORT_OFFSET",
           devInstanceName:
-            devInstance.source === "badcode" ? "BADCODE_DEV_INSTANCE" : "T3CODE_DEV_INSTANCE",
+            devInstance.source === "threadlines"
+              ? "THREADLINES_DEV_INSTANCE"
+              : devInstance.source === "badcode"
+                ? "BADCODE_DEV_INSTANCE"
+                : "T3CODE_DEV_INSTANCE",
         }),
       catch: (cause) =>
         new DevRunnerError({
@@ -482,7 +510,7 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
         : "";
 
     yield* Effect.logInfo(
-      `[dev-runner] mode=${input.mode} source=${source}${selectionSuffix} serverPort=${String(env.BADCODE_PORT)} webPort=${String(env.PORT)} baseDir=${String(env.BADCODE_HOME)}`,
+      `[dev-runner] mode=${input.mode} source=${source}${selectionSuffix} serverPort=${String(env.THREADLINES_PORT)} webPort=${String(env.PORT)} baseDir=${String(env.THREADLINES_HOME)}`,
     );
 
     if (input.dryRun) {
@@ -532,19 +560,21 @@ const devRunnerCli = Command.make("dev-runner", {
   ),
   t3Home: Flag.string("home-dir").pipe(
     Flag.withDescription(
-      "Base directory for all Threadlines data (equivalent to BADCODE_HOME; legacy T3CODE_HOME is still accepted).",
+      "Base directory for all Threadlines data (equivalent to THREADLINES_HOME; legacy BADCODE_HOME and T3CODE_HOME are still accepted).",
     ),
     Flag.withFallbackConfig(
       resolveAliasedConfig(
+        optionalStringConfig("THREADLINES_HOME"),
         optionalStringConfig("BADCODE_HOME"),
         optionalStringConfig("T3CODE_HOME"),
       ).pipe(Config.map(({ value }) => value)),
     ),
   ),
   noBrowser: Flag.boolean("no-browser").pipe(
-    Flag.withDescription("Browser auto-open toggle (equivalent to BADCODE_NO_BROWSER)."),
+    Flag.withDescription("Browser auto-open toggle (equivalent to THREADLINES_NO_BROWSER)."),
     Flag.withFallbackConfig(
       resolveAliasedConfig(
+        optionalBooleanConfig("THREADLINES_NO_BROWSER"),
         optionalBooleanConfig("BADCODE_NO_BROWSER"),
         optionalBooleanConfig("T3CODE_NO_BROWSER"),
       ).pipe(Config.map(({ value }) => value)),
@@ -552,29 +582,34 @@ const devRunnerCli = Command.make("dev-runner", {
   ),
   autoBootstrapProjectFromCwd: Flag.boolean("auto-bootstrap-project-from-cwd").pipe(
     Flag.withDescription(
-      "Auto-bootstrap toggle (equivalent to BADCODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD).",
+      "Auto-bootstrap toggle (equivalent to THREADLINES_AUTO_BOOTSTRAP_PROJECT_FROM_CWD).",
     ),
     Flag.withFallbackConfig(
       resolveAliasedConfig(
+        optionalBooleanConfig("THREADLINES_AUTO_BOOTSTRAP_PROJECT_FROM_CWD"),
         optionalBooleanConfig("BADCODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD"),
         optionalBooleanConfig("T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD"),
       ).pipe(Config.map(({ value }) => value)),
     ),
   ),
   logWebSocketEvents: Flag.boolean("log-websocket-events").pipe(
-    Flag.withDescription("WebSocket event logging toggle (equivalent to BADCODE_LOG_WS_EVENTS)."),
+    Flag.withDescription(
+      "WebSocket event logging toggle (equivalent to THREADLINES_LOG_WS_EVENTS).",
+    ),
     Flag.withAlias("log-ws-events"),
     Flag.withFallbackConfig(
       resolveAliasedConfig(
+        optionalBooleanConfig("THREADLINES_LOG_WS_EVENTS"),
         optionalBooleanConfig("BADCODE_LOG_WS_EVENTS"),
         optionalBooleanConfig("T3CODE_LOG_WS_EVENTS"),
       ).pipe(Config.map(({ value }) => value)),
     ),
   ),
   host: Flag.string("host").pipe(
-    Flag.withDescription("Server host/interface override (forwards to BADCODE_HOST)."),
+    Flag.withDescription("Server host/interface override (forwards to THREADLINES_HOST)."),
     Flag.withFallbackConfig(
       resolveAliasedConfig(
+        optionalStringConfig("THREADLINES_HOST"),
         optionalStringConfig("BADCODE_HOST"),
         optionalStringConfig("T3CODE_HOST"),
       ).pipe(Config.map(({ value }) => value)),
@@ -582,9 +617,10 @@ const devRunnerCli = Command.make("dev-runner", {
   ),
   port: Flag.integer("port").pipe(
     Flag.withSchema(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }))),
-    Flag.withDescription("Server port override (forwards to BADCODE_PORT)."),
+    Flag.withDescription("Server port override (forwards to THREADLINES_PORT)."),
     Flag.withFallbackConfig(
       resolveAliasedConfig(
+        optionalPortConfig("THREADLINES_PORT"),
         optionalPortConfig("BADCODE_PORT"),
         optionalPortConfig("T3CODE_PORT"),
       ).pipe(Config.map(({ value }) => value)),

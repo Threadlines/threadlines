@@ -24,12 +24,12 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.equal(resolveDesktopUpdateChannel("0.0.17"), "latest");
   });
 
-  it("switches desktop packaging product names to nightly for nightly builds", () => {
-    assert.equal(resolveDesktopProductName("0.0.17"), "Threadlines (Alpha)");
-    assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "Threadlines (Nightly)");
+  it("uses one desktop packaging product name across release channels", () => {
+    assert.equal(resolveDesktopProductName("0.0.17"), "Threadlines");
+    assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "Threadlines");
   });
 
-  it("switches desktop packaging icons to the nightly artwork for nightly versions", () => {
+  it("uses one desktop packaging icon set across release channels", () => {
     assert.deepStrictEqual(resolveDesktopBuildIconAssets("0.0.17"), {
       macIconPng: BRAND_ASSET_PATHS.productionMacIconPng,
       linuxIconPng: BRAND_ASSET_PATHS.productionLinuxIconPng,
@@ -37,9 +37,9 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     });
 
     assert.deepStrictEqual(resolveDesktopBuildIconAssets("0.0.17-nightly.20260413.42"), {
-      macIconPng: BRAND_ASSET_PATHS.nightlyMacIconPng,
-      linuxIconPng: BRAND_ASSET_PATHS.nightlyLinuxIconPng,
-      windowsIconIco: BRAND_ASSET_PATHS.nightlyWindowsIconIco,
+      macIconPng: BRAND_ASSET_PATHS.productionMacIconPng,
+      linuxIconPng: BRAND_ASSET_PATHS.productionLinuxIconPng,
+      windowsIconIco: BRAND_ASSET_PATHS.productionWindowsIconIco,
     });
   });
 
@@ -108,13 +108,13 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }),
   );
 
-  it.effect("builds unsigned macOS artifacts without signing identity discovery", () =>
+  it.effect("ad-hoc signs unsigned macOS artifacts for Squirrel updater validation", () =>
     Effect.gen(function* () {
       const buildConfig = yield* createBuildConfig("mac", "dmg", "0.0.19", false, false, undefined);
       const macConfig = buildConfig.mac as Record<string, unknown>;
 
       assert.deepStrictEqual(macConfig.target, ["dmg", "zip"]);
-      assert.equal(macConfig.identity, null);
+      assert.equal(macConfig.identity, "-");
       assert.equal(macConfig.hardenedRuntime, false);
       assert.equal(macConfig.gatekeeperAssess, false);
       assert.equal(macConfig.notarize, undefined);
@@ -144,13 +144,32 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       overrides: { vite: "^8.0.0" },
     });
 
-    assert.equal(stagePackageJson.name, "badcode");
-    assert.equal(stagePackageJson.badcodeCommitHash, "abcdef123456");
+    assert.equal(stagePackageJson.name, "threadlines");
+    assert.equal(stagePackageJson.threadlinesCommitHash, "abcdef123456");
+    assert.equal("badcodeCommitHash" in stagePackageJson, false);
     assert.equal("t3codeCommitHash" in stagePackageJson, false);
     assert.equal(stagePackageJson.author, "Threadlines");
   });
 
-  it("prefers the BadCode update repository env var over legacy and GitHub defaults", () => {
+  it("prefers the Threadlines update repository env var over legacy and GitHub defaults", () => {
+    assert.deepStrictEqual(
+      resolveGitHubPublishConfig("latest", {
+        THREADLINES_DESKTOP_UPDATE_REPOSITORY: "threadlines/app",
+        BADCODE_DESKTOP_UPDATE_REPOSITORY: "badcuban/badcode",
+        T3CODE_DESKTOP_UPDATE_REPOSITORY: "legacy/t3code",
+        GITHUB_REPOSITORY: "fallback/repo",
+      }),
+      {
+        provider: "github",
+        owner: "threadlines",
+        repo: "app",
+        private: true,
+        releaseType: "release",
+      },
+    );
+  });
+
+  it("falls back to the BadCode update repository env var before T3Code and GitHub defaults", () => {
     assert.deepStrictEqual(
       resolveGitHubPublishConfig("latest", {
         BADCODE_DESKTOP_UPDATE_REPOSITORY: "badcuban/badcode",
@@ -184,7 +203,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     );
   });
 
-  it.effect("prefers BadCode desktop env aliases over legacy T3Code aliases", () =>
+  it.effect("prefers Threadlines desktop env aliases over BadCode and legacy T3Code aliases", () =>
     Effect.gen(function* () {
       const resolved = yield* resolveBuildOptions({
         platform: Option.none(),
@@ -203,16 +222,22 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           ConfigProvider.layer(
             ConfigProvider.fromEnv({
               env: {
+                THREADLINES_DESKTOP_PLATFORM: "linux",
                 BADCODE_DESKTOP_PLATFORM: "win",
                 T3CODE_DESKTOP_PLATFORM: "mac",
+                THREADLINES_DESKTOP_TARGET: "AppImage",
                 BADCODE_DESKTOP_TARGET: "nsis",
                 T3CODE_DESKTOP_TARGET: "dmg",
+                THREADLINES_DESKTOP_ARCH: "arm64",
                 BADCODE_DESKTOP_ARCH: "x64",
                 T3CODE_DESKTOP_ARCH: "arm64",
+                THREADLINES_DESKTOP_VERSION: "0.0.8",
                 BADCODE_DESKTOP_VERSION: "0.0.7",
                 T3CODE_DESKTOP_VERSION: "0.0.6",
+                THREADLINES_DESKTOP_OUTPUT_DIR: "threadlines-release",
                 BADCODE_DESKTOP_OUTPUT_DIR: "badcode-release",
                 T3CODE_DESKTOP_OUTPUT_DIR: "legacy-release",
+                THREADLINES_DESKTOP_SKIP_BUILD: "false",
                 BADCODE_DESKTOP_SKIP_BUILD: "true",
                 T3CODE_DESKTOP_SKIP_BUILD: "false",
               },
@@ -221,12 +246,12 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         ),
       );
 
-      assert.equal(resolved.platform, "win");
-      assert.equal(resolved.target, "nsis");
-      assert.equal(resolved.arch, "x64");
-      assert.equal(resolved.version, "0.0.7");
-      assert.equal(resolved.outputDir.endsWith("badcode-release"), true);
-      assert.equal(resolved.skipBuild, true);
+      assert.equal(resolved.platform, "linux");
+      assert.equal(resolved.target, "AppImage");
+      assert.equal(resolved.arch, "arm64");
+      assert.equal(resolved.version, "0.0.8");
+      assert.equal(resolved.outputDir.endsWith("threadlines-release"), true);
+      assert.equal(resolved.skipBuild, false);
     }),
   );
 

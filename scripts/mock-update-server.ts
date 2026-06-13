@@ -8,6 +8,7 @@ import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
@@ -19,11 +20,19 @@ interface MockUpdateServerConfig {
 const resolveMockUpdateServerConfig = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const firstSome = <A>(values: ReadonlyArray<Option.Option<A>>) =>
+    Option.getOrUndefined(values.find(Option.isSome) ?? Option.none<A>());
   const config = yield* Config.all({
-    port: Config.port("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT").pipe(Config.withDefault(3000)),
-    root: Config.string("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_ROOT").pipe(
-      Config.withDefault("../release-mock"),
-    ),
+    port: Config.all([
+      Config.port("THREADLINES_DESKTOP_MOCK_UPDATE_SERVER_PORT").pipe(Config.option),
+      Config.port("BADCODE_DESKTOP_MOCK_UPDATE_SERVER_PORT").pipe(Config.option),
+      Config.port("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT").pipe(Config.option),
+    ]).pipe(Config.map((values) => firstSome(values) ?? 3000)),
+    root: Config.all([
+      Config.string("THREADLINES_DESKTOP_MOCK_UPDATE_SERVER_ROOT").pipe(Config.option),
+      Config.string("BADCODE_DESKTOP_MOCK_UPDATE_SERVER_ROOT").pipe(Config.option),
+      Config.string("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_ROOT").pipe(Config.option),
+    ]).pipe(Config.map((values) => firstSome(values) ?? "../release-mock")),
   }).asEffect();
 
   const resolvedRoot = path.resolve(import.meta.dirname, config.root);

@@ -120,7 +120,7 @@ it.effect("reports implemented tools separately from locally available executabl
             account: Option.none(),
             host: Option.some("bitbucket.org"),
             detail: Option.some(
-              "Set BADCODE_BITBUCKET_EMAIL and BADCODE_BITBUCKET_API_TOKEN, or BADCODE_BITBUCKET_ACCESS_TOKEN.",
+              "Set THREADLINES_BITBUCKET_EMAIL and THREADLINES_BITBUCKET_API_TOKEN, or THREADLINES_BITBUCKET_ACCESS_TOKEN.",
             ),
           }),
         },

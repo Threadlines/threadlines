@@ -56,7 +56,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
     otlpTracesUrl: undefined,
     otlpMetricsUrl: undefined,
     otlpExportIntervalMs: 10_000,
-    otlpServiceName: "badcode-server",
+    otlpServiceName: "threadlines-server",
   } as const;
 
   const openBootstrapFd = Effect.fn(function* (payload: DesktopBackendBootstrapValue) {
@@ -139,11 +139,11 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
     }),
   );
 
-  it.effect("prefers BADCODE env aliases over legacy T3CODE env values", () =>
+  it.effect("prefers THREADLINES env aliases over BadCode and legacy T3Code env values", () =>
     Effect.gen(function* () {
       const { join } = yield* Path.Path;
-      const badcodeBaseDir = join(NodeOS.tmpdir(), "badcode-cli-config-env-base");
-      const derivedPaths = yield* deriveServerPaths(badcodeBaseDir, undefined);
+      const threadlinesBaseDir = join(NodeOS.tmpdir(), "threadlines-cli-config-env-base");
+      const derivedPaths = yield* deriveServerPaths(threadlinesBaseDir, undefined);
       const resolved = yield* resolveServerConfig(
         {
           mode: Option.none(),
@@ -166,9 +166,14 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
             ConfigProvider.layer(
               ConfigProvider.fromEnv({
                 env: {
+                  THREADLINES_MODE: "desktop",
+                  THREADLINES_PORT: "5888",
+                  THREADLINES_HOME: threadlinesBaseDir,
+                  THREADLINES_NO_BROWSER: "true",
+                  THREADLINES_OTLP_SERVICE_NAME: "threadlines-dev",
                   BADCODE_MODE: "desktop",
                   BADCODE_PORT: "4888",
-                  BADCODE_HOME: badcodeBaseDir,
+                  BADCODE_HOME: join(NodeOS.tmpdir(), "badcode-cli-config-env-base"),
                   BADCODE_NO_BROWSER: "true",
                   BADCODE_OTLP_SERVICE_NAME: "badcode-dev",
                   T3CODE_MODE: "web",
@@ -187,11 +192,11 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
       expect(resolved).toEqual({
         logLevel: "Info",
         ...defaultObservabilityConfig,
-        otlpServiceName: "badcode-dev",
+        otlpServiceName: "threadlines-dev",
         mode: "desktop",
-        port: 4888,
+        port: 5888,
         cwd: process.cwd(),
-        baseDir: badcodeBaseDir,
+        baseDir: threadlinesBaseDir,
         ...derivedPaths,
         host: "127.0.0.1",
         staticDir: resolved.staticDir,

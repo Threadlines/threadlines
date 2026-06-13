@@ -160,13 +160,13 @@ function extractArchive(zipPath: string): void {
         "-ExecutionPolicy",
         "Bypass",
         "-Command",
-        "Expand-Archive -LiteralPath $env:BADCODE_ELECTRON_ZIP -DestinationPath $env:BADCODE_ELECTRON_DIST -Force",
+        "Expand-Archive -LiteralPath $env:THREADLINES_ELECTRON_ZIP -DestinationPath $env:THREADLINES_ELECTRON_DIST -Force",
       ],
       {
         env: {
           ...process.env,
-          BADCODE_ELECTRON_DIST: distPath,
-          BADCODE_ELECTRON_ZIP: zipPath,
+          THREADLINES_ELECTRON_DIST: distPath,
+          THREADLINES_ELECTRON_ZIP: zipPath,
         },
         stdio: "inherit",
       },

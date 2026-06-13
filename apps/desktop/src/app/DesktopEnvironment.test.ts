@@ -73,7 +73,8 @@ describe("DesktopEnvironment", () => {
       assertPathEqual(environment.backendEntryPath, "/repo/apps/server/dist/bin.mjs");
       assertPathEqual(environment.backendCwd, "/repo");
       assert.equal(environment.appUserModelId, "com.badcuban.badcode.dev");
-      assert.equal(environment.linuxWmClass, "badcode-dev");
+      assert.equal(environment.linuxWmClass, "threadlines-dev");
+      assert.equal(environment.displayName, "Threadlines (Dev)");
       assert.deepEqual(
         Option.map(environment.devServerUrl, (url) => url.href),
         Option.some("http://localhost:5173/"),
@@ -114,6 +115,7 @@ describe("DesktopEnvironment", () => {
       );
 
       assert.equal(environment.isDevelopment, false);
+      assert.equal(environment.displayName, "Threadlines");
       assertPathEqual(environment.stateDir, "/tmp/t3/userdata");
       assertPathEqual(environment.logDir, "/tmp/t3/userdata/logs");
       assertPathEqual(environment.serverSettingsPath, "/tmp/t3/userdata/settings.json");
@@ -129,6 +131,9 @@ describe("DesktopEnvironment", () => {
       const aliasedEnvironment = yield* makeEnvironment(
         {},
         {
+          THREADLINES_HOME: "/tmp/threadlines-home",
+          THREADLINES_PORT: "6888",
+          THREADLINES_COMMIT_HASH: "threadlineshash",
           BADCODE_HOME: "/tmp/badcode-home",
           BADCODE_PORT: "5888",
           BADCODE_COMMIT_HASH: "badcodehash",
@@ -137,9 +142,9 @@ describe("DesktopEnvironment", () => {
           T3CODE_COMMIT_HASH: "legacyhash",
         },
       );
-      assertPathEqual(aliasedEnvironment.baseDir, "/tmp/badcode-home");
-      assert.deepEqual(aliasedEnvironment.configuredBackendPort, Option.some(5888));
-      assert.deepEqual(aliasedEnvironment.commitHashOverride, Option.some("badcodehash"));
+      assertPathEqual(aliasedEnvironment.baseDir, "/tmp/threadlines-home");
+      assert.deepEqual(aliasedEnvironment.configuredBackendPort, Option.some(6888));
+      assert.deepEqual(aliasedEnvironment.commitHashOverride, Option.some("threadlineshash"));
     }),
   );
 

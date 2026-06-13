@@ -10,42 +10,55 @@ const trimNonEmptyOption = (value: string): Option.Option<string> => {
 const trimmedString = (name: string) =>
   Config.string(name).pipe(Config.option, Config.map(Option.flatMap(trimNonEmptyOption)));
 
-const preferredOption = <A>(
-  preferred: Config.Config<Option.Option<A>>,
-  legacy: Config.Config<Option.Option<A>>,
+const firstSomeOption = <A>(
+  configs: ReadonlyArray<Config.Config<Option.Option<A>>>,
+): Config.Config<Option.Option<A>> =>
+  Config.all(configs).pipe(Config.map((values) => values.find(Option.isSome) ?? Option.none<A>()));
+
+const trimmedStringAlias = (
+  threadlinesName: string,
+  badcodeName: string,
+  legacyT3CodeName: string,
 ) =>
-  Config.all({ preferred, legacy }).pipe(
-    Config.map(({ preferred, legacy }) => (Option.isSome(preferred) ? preferred : legacy)),
-  );
+  firstSomeOption([
+    trimmedString(threadlinesName),
+    trimmedString(badcodeName),
+    trimmedString(legacyT3CodeName),
+  ]);
 
-const trimmedStringAlias = (preferredName: string, legacyName: string) =>
-  preferredOption(trimmedString(preferredName), trimmedString(legacyName));
+const optionalBooleanAlias = (
+  threadlinesName: string,
+  badcodeName: string,
+  legacyT3CodeName: string,
+) =>
+  firstSomeOption([
+    Config.boolean(threadlinesName).pipe(Config.option),
+    Config.boolean(badcodeName).pipe(Config.option),
+    Config.boolean(legacyT3CodeName).pipe(Config.option),
+  ]).pipe(Config.map((value) => Option.getOrElse(value, () => false)));
 
-const optionalBooleanAlias = (preferredName: string, legacyName: string) =>
-  Config.all({
-    preferred: Config.boolean(preferredName).pipe(Config.option),
-    legacy: Config.boolean(legacyName).pipe(Config.option),
-  }).pipe(
-    Config.map(({ preferred, legacy }) =>
-      Option.getOrElse(Option.isSome(preferred) ? preferred : legacy, () => false),
-    ),
-  );
+const optionalPortAlias = (
+  threadlinesName: string,
+  badcodeName: string,
+  legacyT3CodeName: string,
+) =>
+  firstSomeOption([
+    Config.port(threadlinesName).pipe(Config.option),
+    Config.port(badcodeName).pipe(Config.option),
+    Config.port(legacyT3CodeName).pipe(Config.option),
+  ]);
 
-const optionalPortAlias = (preferredName: string, legacyName: string) =>
-  Config.all({
-    preferred: Config.port(preferredName).pipe(Config.option),
-    legacy: Config.port(legacyName).pipe(Config.option),
-  }).pipe(Config.map(({ preferred, legacy }) => (Option.isSome(preferred) ? preferred : legacy)));
-
-const intAliasWithDefault = (preferredName: string, legacyName: string, defaultValue: number) =>
-  Config.all({
-    preferred: Config.int(preferredName).pipe(Config.option),
-    legacy: Config.int(legacyName).pipe(Config.option),
-  }).pipe(
-    Config.map(({ preferred, legacy }) =>
-      Option.getOrElse(Option.isSome(preferred) ? preferred : legacy, () => defaultValue),
-    ),
-  );
+const intAliasWithDefault = (
+  threadlinesName: string,
+  badcodeName: string,
+  legacyT3CodeName: string,
+  defaultValue: number,
+) =>
+  firstSomeOption([
+    Config.int(threadlinesName).pipe(Config.option),
+    Config.int(badcodeName).pipe(Config.option),
+    Config.int(legacyT3CodeName).pipe(Config.option),
+  ]).pipe(Config.map((value) => Option.getOrElse(value, () => defaultValue)));
 
 const commaSeparatedStringsOption = (name: string) =>
   trimmedString(name).pipe(
@@ -59,11 +72,26 @@ const commaSeparatedStringsOption = (name: string) =>
     ),
   );
 
-const commaSeparatedStringsAlias = (preferredName: string, legacyName: string) =>
-  preferredOption(
-    commaSeparatedStringsOption(preferredName),
-    commaSeparatedStringsOption(legacyName),
-  ).pipe(Config.map(Option.getOrElse(() => [])));
+const commaSeparatedStringsAlias = (
+  threadlinesName: string,
+  badcodeName: string,
+  legacyT3CodeName: string,
+) =>
+  firstSomeOption([
+    commaSeparatedStringsOption(threadlinesName),
+    commaSeparatedStringsOption(badcodeName),
+    commaSeparatedStringsOption(legacyT3CodeName),
+  ]).pipe(Config.map(Option.getOrElse(() => [])));
+
+const portAliasWithDefault = (
+  threadlinesName: string,
+  badcodeName: string,
+  legacyT3CodeName: string,
+  defaultValue: number,
+) =>
+  optionalPortAlias(threadlinesName, badcodeName, legacyT3CodeName).pipe(
+    Config.map((value) => Option.getOrElse(value, () => defaultValue)),
+  );
 
 const compactEnv = (env: Readonly<Record<string, string | undefined>>): Record<string, string> =>
   Object.fromEntries(
@@ -73,42 +101,61 @@ const compactEnv = (env: Readonly<Record<string, string | undefined>>): Record<s
 export const DesktopConfig = Config.all({
   appDataDirectory: trimmedString("APPDATA"),
   xdgConfigHome: trimmedString("XDG_CONFIG_HOME"),
-  t3Home: trimmedStringAlias("BADCODE_HOME", "T3CODE_HOME"),
+  t3Home: trimmedStringAlias("THREADLINES_HOME", "BADCODE_HOME", "T3CODE_HOME"),
   devServerUrl: Config.url("VITE_DEV_SERVER_URL").pipe(Config.option),
   devRemoteT3ServerEntryPath: trimmedStringAlias(
+    "THREADLINES_DEV_REMOTE_T3_SERVER_ENTRY_PATH",
     "BADCODE_DEV_REMOTE_T3_SERVER_ENTRY_PATH",
     "T3CODE_DEV_REMOTE_T3_SERVER_ENTRY_PATH",
   ),
-  configuredBackendPort: optionalPortAlias("BADCODE_PORT", "T3CODE_PORT"),
-  commitHashOverride: trimmedStringAlias("BADCODE_COMMIT_HASH", "T3CODE_COMMIT_HASH"),
-  desktopLanHostOverride: trimmedStringAlias("BADCODE_DESKTOP_LAN_HOST", "T3CODE_DESKTOP_LAN_HOST"),
+  configuredBackendPort: optionalPortAlias("THREADLINES_PORT", "BADCODE_PORT", "T3CODE_PORT"),
+  commitHashOverride: trimmedStringAlias(
+    "THREADLINES_COMMIT_HASH",
+    "BADCODE_COMMIT_HASH",
+    "T3CODE_COMMIT_HASH",
+  ),
+  desktopLanHostOverride: trimmedStringAlias(
+    "THREADLINES_DESKTOP_LAN_HOST",
+    "BADCODE_DESKTOP_LAN_HOST",
+    "T3CODE_DESKTOP_LAN_HOST",
+  ),
   desktopHttpsEndpointUrls: commaSeparatedStringsAlias(
+    "THREADLINES_DESKTOP_HTTPS_ENDPOINTS",
     "BADCODE_DESKTOP_HTTPS_ENDPOINTS",
     "T3CODE_DESKTOP_HTTPS_ENDPOINTS",
   ),
-  otlpTracesUrl: trimmedStringAlias("BADCODE_OTLP_TRACES_URL", "T3CODE_OTLP_TRACES_URL"),
+  otlpTracesUrl: trimmedStringAlias(
+    "THREADLINES_OTLP_TRACES_URL",
+    "BADCODE_OTLP_TRACES_URL",
+    "T3CODE_OTLP_TRACES_URL",
+  ),
   otlpExportIntervalMs: intAliasWithDefault(
+    "THREADLINES_OTLP_EXPORT_INTERVAL_MS",
     "BADCODE_OTLP_EXPORT_INTERVAL_MS",
     "T3CODE_OTLP_EXPORT_INTERVAL_MS",
     10_000,
   ),
   appImagePath: trimmedString("APPIMAGE"),
   disableAutoUpdate: optionalBooleanAlias(
+    "THREADLINES_DISABLE_AUTO_UPDATE",
     "BADCODE_DISABLE_AUTO_UPDATE",
     "T3CODE_DISABLE_AUTO_UPDATE",
   ),
   openDevToolsInDevelopment: optionalBooleanAlias(
+    "THREADLINES_DESKTOP_OPEN_DEVTOOLS",
     "BADCODE_DESKTOP_OPEN_DEVTOOLS",
     "T3CODE_DESKTOP_OPEN_DEVTOOLS",
   ),
-  mockUpdates: optionalBooleanAlias("BADCODE_DESKTOP_MOCK_UPDATES", "T3CODE_DESKTOP_MOCK_UPDATES"),
-  mockUpdateServerPort: Config.all({
-    preferred: Config.port("BADCODE_DESKTOP_MOCK_UPDATE_SERVER_PORT").pipe(Config.option),
-    legacy: Config.port("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT").pipe(Config.option),
-  }).pipe(
-    Config.map(({ preferred, legacy }) =>
-      Option.getOrElse(Option.isSome(preferred) ? preferred : legacy, () => 3000),
-    ),
+  mockUpdates: optionalBooleanAlias(
+    "THREADLINES_DESKTOP_MOCK_UPDATES",
+    "BADCODE_DESKTOP_MOCK_UPDATES",
+    "T3CODE_DESKTOP_MOCK_UPDATES",
+  ),
+  mockUpdateServerPort: portAliasWithDefault(
+    "THREADLINES_DESKTOP_MOCK_UPDATE_SERVER_PORT",
+    "BADCODE_DESKTOP_MOCK_UPDATE_SERVER_PORT",
+    "T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT",
+    3000,
   ),
 });
 

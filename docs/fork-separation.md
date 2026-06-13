@@ -15,25 +15,23 @@ direction, visible app identity, release lane, and compatibility policy.
 
 ## Identifier Policy
 
-Keep the existing BadCode identifiers for configuration, storage, and commands
-until a dedicated identity-rename phase migrates them:
+Use Threadlines names for new configuration, release, and observability surfaces:
 
-- `BADCODE_HOME`
-- `BADCODE_PORT`
-- `BADCODE_HOST`
-- `BADCODE_NO_BROWSER`
-- `BADCODE_LOG_WS_EVENTS`
-- `BADCODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD`
-- `BADCODE_*` observability and release variables
-- `badcode` CLI command
+- `THREADLINES_HOME`
+- `THREADLINES_PORT`
+- `THREADLINES_HOST`
+- `THREADLINES_NO_BROWSER`
+- `THREADLINES_LOG_WS_EVENTS`
+- `THREADLINES_AUTO_BOOTSTRAP_PROJECT_FROM_CWD`
+- `THREADLINES_*` observability, telemetry, source-control, and release variables
 
-Legacy `T3CODE_*` variables and the `t3` command are compatibility aliases.
-When a `BADCODE_*` alias and a legacy alias are both present, the `BADCODE_*` alias
-wins.
+Legacy `BADCODE_*` and `T3CODE_*` variables remain compatibility aliases. When
+multiple aliases are present, `THREADLINES_*` wins, then `BADCODE_*`, then
+`T3CODE_*`.
 
-New default local data lives under `~/.badcode`. Threadlines does not automatically
-migrate data from `~/.t3`; users can opt into an old data directory by setting
-`BADCODE_HOME` or `T3CODE_HOME` explicitly.
+Keep bundle IDs, app IDs, and existing local data paths stable unless a dedicated
+identity-migration release handles the data movement. New setup instructions
+should still use Threadlines environment names.
 
 ## Attribution Policy
 

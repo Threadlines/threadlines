@@ -140,9 +140,9 @@ function makeLayer(input: {
       ConfigProvider.layer(
         ConfigProvider.fromEnv({
           env: input.env ?? {
-            T3CODE_BITBUCKET_API_BASE_URL: "https://api.test.local/2.0",
-            T3CODE_BITBUCKET_EMAIL: "user@example.com",
-            T3CODE_BITBUCKET_API_TOKEN: "token",
+            THREADLINES_BITBUCKET_API_BASE_URL: "https://api.test.local/2.0",
+            THREADLINES_BITBUCKET_EMAIL: "user@example.com",
+            THREADLINES_BITBUCKET_API_TOKEN: "token",
           },
         }),
       ),
@@ -187,9 +187,12 @@ it.effect("parses pull request responses from the Bitbucket REST API", () => {
   }).pipe(Effect.provide(layer));
 });
 
-it.effect("prefers BADCODE Bitbucket env aliases over legacy T3CODE values", () => {
+it.effect("prefers THREADLINES Bitbucket env aliases over BadCode and legacy T3Code values", () => {
   const { execute, layer } = makeLayer({
     env: {
+      THREADLINES_BITBUCKET_API_BASE_URL: "https://api.threadlines.test/2.0",
+      THREADLINES_BITBUCKET_EMAIL: "threadlines@example.com",
+      THREADLINES_BITBUCKET_API_TOKEN: "threadlines-token",
       BADCODE_BITBUCKET_API_BASE_URL: "https://api.badcode.test/2.0",
       BADCODE_BITBUCKET_EMAIL: "badcode@example.com",
       BADCODE_BITBUCKET_API_TOKEN: "badcode-token",
@@ -205,10 +208,10 @@ it.effect("prefers BADCODE Bitbucket env aliases over legacy T3CODE values", () 
     yield* bitbucket.probeAuth;
 
     const request = execute.mock.calls[0]?.[0];
-    assert.strictEqual(request?.url, "https://api.badcode.test/2.0/user");
+    assert.strictEqual(request?.url, "https://api.threadlines.test/2.0/user");
     assert.strictEqual(
       request?.headers["authorization"],
-      `Basic ${Buffer.from("badcode@example.com:badcode-token").toString("base64")}`,
+      `Basic ${Buffer.from("threadlines@example.com:threadlines-token").toString("base64")}`,
     );
   }).pipe(Effect.provide(layer));
 });

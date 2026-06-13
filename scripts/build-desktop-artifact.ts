@@ -210,7 +210,7 @@ interface StagePackageJson {
   readonly name: string;
   readonly version: string;
   readonly buildVersion: string;
-  readonly badcodeCommitHash: string;
+  readonly threadlinesCommitHash: string;
   readonly private: true;
   readonly description: string;
   readonly author: string;
@@ -233,21 +233,27 @@ interface StagePackageJsonInput {
 }
 
 interface EnvAlias<A> {
+  readonly threadlines: Option.Option<A>;
   readonly badcode: Option.Option<A>;
   readonly legacyT3Code: Option.Option<A>;
 }
 
 const desktopEnvAlias = <A>(
+  threadlinesConfig: Config.Config<A>,
   badcodeConfig: Config.Config<A>,
   legacyT3CodeConfig: Config.Config<A>,
 ): Config.Config<EnvAlias<A>> =>
   Config.all({
+    threadlines: threadlinesConfig.pipe(Config.option),
     badcode: badcodeConfig.pipe(Config.option),
     legacyT3Code: legacyT3CodeConfig.pipe(Config.option),
   });
 
 const resolveEnvAlias = <A>(alias: EnvAlias<A>): Option.Option<A> =>
-  alias.badcode.pipe(Option.orElse(() => alias.legacyT3Code));
+  alias.threadlines.pipe(
+    Option.orElse(() => alias.badcode),
+    Option.orElse(() => alias.legacyT3Code),
+  );
 
 const resolveEnvAliasWithDefault = <A>(alias: EnvAlias<A>, defaultValue: A): A =>
   Option.getOrElse(resolveEnvAlias(alias), () => defaultValue);
@@ -268,46 +274,57 @@ const AzureTrustedSigningOptionsConfig = Config.all({
 
 const BuildEnvConfig = Config.all({
   platform: desktopEnvAlias(
+    Config.schema(BuildPlatform, "THREADLINES_DESKTOP_PLATFORM"),
     Config.schema(BuildPlatform, "BADCODE_DESKTOP_PLATFORM"),
     Config.schema(BuildPlatform, "T3CODE_DESKTOP_PLATFORM"),
   ),
   target: desktopEnvAlias(
+    Config.string("THREADLINES_DESKTOP_TARGET"),
     Config.string("BADCODE_DESKTOP_TARGET"),
     Config.string("T3CODE_DESKTOP_TARGET"),
   ),
   arch: desktopEnvAlias(
+    Config.schema(BuildArch, "THREADLINES_DESKTOP_ARCH"),
     Config.schema(BuildArch, "BADCODE_DESKTOP_ARCH"),
     Config.schema(BuildArch, "T3CODE_DESKTOP_ARCH"),
   ),
   version: desktopEnvAlias(
+    Config.string("THREADLINES_DESKTOP_VERSION"),
     Config.string("BADCODE_DESKTOP_VERSION"),
     Config.string("T3CODE_DESKTOP_VERSION"),
   ),
   outputDir: desktopEnvAlias(
+    Config.string("THREADLINES_DESKTOP_OUTPUT_DIR"),
     Config.string("BADCODE_DESKTOP_OUTPUT_DIR"),
     Config.string("T3CODE_DESKTOP_OUTPUT_DIR"),
   ),
   skipBuild: desktopEnvAlias(
+    Config.boolean("THREADLINES_DESKTOP_SKIP_BUILD"),
     Config.boolean("BADCODE_DESKTOP_SKIP_BUILD"),
     Config.boolean("T3CODE_DESKTOP_SKIP_BUILD"),
   ),
   keepStage: desktopEnvAlias(
+    Config.boolean("THREADLINES_DESKTOP_KEEP_STAGE"),
     Config.boolean("BADCODE_DESKTOP_KEEP_STAGE"),
     Config.boolean("T3CODE_DESKTOP_KEEP_STAGE"),
   ),
   signed: desktopEnvAlias(
+    Config.boolean("THREADLINES_DESKTOP_SIGNED"),
     Config.boolean("BADCODE_DESKTOP_SIGNED"),
     Config.boolean("T3CODE_DESKTOP_SIGNED"),
   ),
   verbose: desktopEnvAlias(
+    Config.boolean("THREADLINES_DESKTOP_VERBOSE"),
     Config.boolean("BADCODE_DESKTOP_VERBOSE"),
     Config.boolean("T3CODE_DESKTOP_VERBOSE"),
   ),
   mockUpdates: desktopEnvAlias(
+    Config.boolean("THREADLINES_DESKTOP_MOCK_UPDATES"),
     Config.boolean("BADCODE_DESKTOP_MOCK_UPDATES"),
     Config.boolean("T3CODE_DESKTOP_MOCK_UPDATES"),
   ),
   mockUpdateServerPort: desktopEnvAlias(
+    Config.string("THREADLINES_DESKTOP_MOCK_UPDATE_SERVER_PORT"),
     Config.string("BADCODE_DESKTOP_MOCK_UPDATE_SERVER_PORT"),
     Config.string("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT"),
   ),
@@ -596,6 +613,7 @@ export function resolveGitHubPublishConfig(
     }
   | undefined {
   const rawRepo =
+    env.THREADLINES_DESKTOP_UPDATE_REPOSITORY?.trim() ||
     env.BADCODE_DESKTOP_UPDATE_REPOSITORY?.trim() ||
     env.T3CODE_DESKTOP_UPDATE_REPOSITORY?.trim() ||
     env.GITHUB_REPOSITORY?.trim() ||
@@ -619,15 +637,7 @@ export function resolveDesktopUpdateChannel(version: string): "latest" | "nightl
   return /-nightly\.\d{8}\.\d+$/.test(version) ? "nightly" : "latest";
 }
 
-export function resolveDesktopBuildIconAssets(version: string): DesktopBuildIconAssets {
-  if (resolveDesktopUpdateChannel(version) === "nightly") {
-    return {
-      macIconPng: BRAND_ASSET_PATHS.nightlyMacIconPng,
-      linuxIconPng: BRAND_ASSET_PATHS.nightlyLinuxIconPng,
-      windowsIconIco: BRAND_ASSET_PATHS.nightlyWindowsIconIco,
-    };
-  }
-
+export function resolveDesktopBuildIconAssets(_version: string): DesktopBuildIconAssets {
   return {
     macIconPng: BRAND_ASSET_PATHS.productionMacIconPng,
     linuxIconPng: BRAND_ASSET_PATHS.productionLinuxIconPng,
@@ -639,10 +649,8 @@ export function resolveMockUpdateServerUrl(mockUpdateServerPort: number | undefi
   return `http://localhost:${mockUpdateServerPort ?? 3000}`;
 }
 
-export function resolveDesktopProductName(version: string): string {
-  return resolveDesktopUpdateChannel(version) === "nightly"
-    ? "Threadlines (Nightly)"
-    : (desktopPackageJson.productName ?? "Threadlines");
+export function resolveDesktopProductName(_version: string): string {
+  return desktopPackageJson.productName ?? "Threadlines";
 }
 
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
@@ -685,7 +693,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       macConfig.gatekeeperAssess = true;
       macConfig.notarize = true;
     } else {
-      macConfig.identity = null;
+      macConfig.identity = "-";
       macConfig.hardenedRuntime = false;
       macConfig.gatekeeperAssess = false;
     }
@@ -695,12 +703,12 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   if (platform === "linux") {
     buildConfig.linux = {
       target: [target],
-      executableName: "badcode",
+      executableName: "threadlines",
       icon: "icon.png",
       category: "Development",
       desktop: {
         entry: {
-          StartupWMClass: "badcode",
+          StartupWMClass: "threadlines",
         },
       },
     };
@@ -729,10 +737,10 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
 
 export function createStagePackageJson(input: StagePackageJsonInput): StagePackageJson {
   return {
-    name: "badcode",
+    name: "threadlines",
     version: input.appVersion,
     buildVersion: input.appVersion,
-    badcodeCommitHash: input.commitHash,
+    threadlinesCommitHash: input.commitHash,
     private: true,
     description: "Threadlines desktop build",
     author: "Threadlines",
@@ -1004,68 +1012,68 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
 const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
   platform: Flag.choice("platform", BuildPlatform.literals).pipe(
     Flag.withDescription(
-      "Build platform (env: BADCODE_DESKTOP_PLATFORM, legacy: T3CODE_DESKTOP_PLATFORM).",
+      "Build platform (env: THREADLINES_DESKTOP_PLATFORM; legacy: BADCODE_DESKTOP_PLATFORM, T3CODE_DESKTOP_PLATFORM).",
     ),
     Flag.optional,
   ),
   target: Flag.string("target").pipe(
     Flag.withDescription(
-      "Artifact target, for example dmg/AppImage/nsis (env: BADCODE_DESKTOP_TARGET, legacy: T3CODE_DESKTOP_TARGET).",
+      "Artifact target, for example dmg/AppImage/nsis (env: THREADLINES_DESKTOP_TARGET; legacy: BADCODE_DESKTOP_TARGET, T3CODE_DESKTOP_TARGET).",
     ),
     Flag.optional,
   ),
   arch: Flag.choice("arch", BuildArch.literals).pipe(
     Flag.withDescription(
-      "Build arch, for example arm64/x64/universal (env: BADCODE_DESKTOP_ARCH, legacy: T3CODE_DESKTOP_ARCH).",
+      "Build arch, for example arm64/x64/universal (env: THREADLINES_DESKTOP_ARCH; legacy: BADCODE_DESKTOP_ARCH, T3CODE_DESKTOP_ARCH).",
     ),
     Flag.optional,
   ),
   buildVersion: Flag.string("build-version").pipe(
     Flag.withDescription(
-      "Artifact version metadata (env: BADCODE_DESKTOP_VERSION, legacy: T3CODE_DESKTOP_VERSION).",
+      "Artifact version metadata (env: THREADLINES_DESKTOP_VERSION; legacy: BADCODE_DESKTOP_VERSION, T3CODE_DESKTOP_VERSION).",
     ),
     Flag.optional,
   ),
   outputDir: Flag.string("output-dir").pipe(
     Flag.withDescription(
-      "Output directory for artifacts (env: BADCODE_DESKTOP_OUTPUT_DIR, legacy: T3CODE_DESKTOP_OUTPUT_DIR).",
+      "Output directory for artifacts (env: THREADLINES_DESKTOP_OUTPUT_DIR; legacy: BADCODE_DESKTOP_OUTPUT_DIR, T3CODE_DESKTOP_OUTPUT_DIR).",
     ),
     Flag.optional,
   ),
   skipBuild: Flag.boolean("skip-build").pipe(
     Flag.withDescription(
-      "Skip `bun run build:desktop` and use existing dist artifacts (env: BADCODE_DESKTOP_SKIP_BUILD, legacy: T3CODE_DESKTOP_SKIP_BUILD).",
+      "Skip `bun run build:desktop` and use existing dist artifacts (env: THREADLINES_DESKTOP_SKIP_BUILD; legacy: BADCODE_DESKTOP_SKIP_BUILD, T3CODE_DESKTOP_SKIP_BUILD).",
     ),
     Flag.optional,
   ),
   keepStage: Flag.boolean("keep-stage").pipe(
     Flag.withDescription(
-      "Keep temporary staging files (env: BADCODE_DESKTOP_KEEP_STAGE, legacy: T3CODE_DESKTOP_KEEP_STAGE).",
+      "Keep temporary staging files (env: THREADLINES_DESKTOP_KEEP_STAGE; legacy: BADCODE_DESKTOP_KEEP_STAGE, T3CODE_DESKTOP_KEEP_STAGE).",
     ),
     Flag.optional,
   ),
   signed: Flag.boolean("signed").pipe(
     Flag.withDescription(
-      "Enable signing/notarization discovery; Windows uses Azure Trusted Signing (env: BADCODE_DESKTOP_SIGNED, legacy: T3CODE_DESKTOP_SIGNED).",
+      "Enable signing/notarization discovery; Windows uses Azure Trusted Signing (env: THREADLINES_DESKTOP_SIGNED; legacy: BADCODE_DESKTOP_SIGNED, T3CODE_DESKTOP_SIGNED).",
     ),
     Flag.optional,
   ),
   verbose: Flag.boolean("verbose").pipe(
     Flag.withDescription(
-      "Stream subprocess stdout (env: BADCODE_DESKTOP_VERBOSE, legacy: T3CODE_DESKTOP_VERBOSE).",
+      "Stream subprocess stdout (env: THREADLINES_DESKTOP_VERBOSE; legacy: BADCODE_DESKTOP_VERBOSE, T3CODE_DESKTOP_VERBOSE).",
     ),
     Flag.optional,
   ),
   mockUpdates: Flag.boolean("mock-updates").pipe(
     Flag.withDescription(
-      "Enable mock updates (env: BADCODE_DESKTOP_MOCK_UPDATES, legacy: T3CODE_DESKTOP_MOCK_UPDATES).",
+      "Enable mock updates (env: THREADLINES_DESKTOP_MOCK_UPDATES; legacy: BADCODE_DESKTOP_MOCK_UPDATES, T3CODE_DESKTOP_MOCK_UPDATES).",
     ),
     Flag.optional,
   ),
   mockUpdateServerPort: Flag.integer("mock-update-server-port").pipe(
     Flag.withSchema(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }))),
     Flag.withDescription(
-      "Mock update server port (env: BADCODE_DESKTOP_MOCK_UPDATE_SERVER_PORT, legacy: T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT).",
+      "Mock update server port (env: THREADLINES_DESKTOP_MOCK_UPDATE_SERVER_PORT; legacy: BADCODE_DESKTOP_MOCK_UPDATE_SERVER_PORT, T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT).",
     ),
     Flag.optional,
   ),

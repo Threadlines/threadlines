@@ -13,9 +13,9 @@ desktop surface.
 Threadlines does not hide its T3 Code or BadCode origin, but it now treats
 Threadlines as the visible product identity:
 
-- existing local configuration still uses `BADCODE_*` environment variables;
-- legacy `T3CODE_*` variables remain accepted as compatibility aliases;
-- when both names are set, `BADCODE_*` wins;
+- new local configuration should use `THREADLINES_*` environment variables;
+- legacy `BADCODE_*` and `T3CODE_*` variables remain accepted as compatibility aliases;
+- when multiple aliases are set, `THREADLINES_*` wins, then `BADCODE_*`, then `T3CODE_*`;
 - new installs default to a separate `~/.badcode` data directory;
 - the `badcode` CLI alias remains the supported command name for now, while `t3`
   remains available for old scripts during the transition.

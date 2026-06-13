@@ -99,16 +99,16 @@ Default Grafana login:
 #### 2. Export OTLP env vars
 
 ```bash
-export BADCODE_OTLP_TRACES_URL=http://localhost:4318/v1/traces
-export BADCODE_OTLP_METRICS_URL=http://localhost:4318/v1/metrics
-export BADCODE_OTLP_SERVICE_NAME=badcode-local
+export THREADLINES_OTLP_TRACES_URL=http://localhost:4318/v1/traces
+export THREADLINES_OTLP_METRICS_URL=http://localhost:4318/v1/metrics
+export THREADLINES_OTLP_SERVICE_NAME=threadlines-local
 ```
 
 Optional:
 
 ```bash
-export BADCODE_TRACE_MIN_LEVEL=Info
-export BADCODE_TRACE_TIMING_ENABLED=true
+export THREADLINES_TRACE_MIN_LEVEL=Info
+export THREADLINES_TRACE_TIMING_ENABLED=true
 ```
 
 #### 3. Launch the app from that same shell
@@ -133,23 +133,23 @@ node --run dev:desktop
 
 Packaged desktop app:
 
-Launch the actual app executable from the same shell so the desktop app and embedded backend inherit `BADCODE_OTLP_*`.
+Launch the actual app executable from the same shell so the desktop app and embedded backend inherit `THREADLINES_OTLP_*`.
 
 macOS app bundle example:
 
 ```bash
-BADCODE_OTLP_TRACES_URL=http://localhost:4318/v1/traces \
-BADCODE_OTLP_METRICS_URL=http://localhost:4318/v1/metrics \
-BADCODE_OTLP_SERVICE_NAME=badcode-desktop \
+THREADLINES_OTLP_TRACES_URL=http://localhost:4318/v1/traces \
+THREADLINES_OTLP_METRICS_URL=http://localhost:4318/v1/metrics \
+THREADLINES_OTLP_SERVICE_NAME=threadlines-desktop \
 "/Applications/Threadlines.app/Contents/MacOS/Threadlines"
 ```
 
 Direct binary example:
 
 ```bash
-BADCODE_OTLP_TRACES_URL=http://localhost:4318/v1/traces \
-BADCODE_OTLP_METRICS_URL=http://localhost:4318/v1/metrics \
-BADCODE_OTLP_SERVICE_NAME=badcode-desktop \
+THREADLINES_OTLP_TRACES_URL=http://localhost:4318/v1/traces \
+THREADLINES_OTLP_METRICS_URL=http://localhost:4318/v1/metrics \
+THREADLINES_OTLP_SERVICE_NAME=threadlines-desktop \
 ./path/to/your/desktop-app-binary
 ```
 
@@ -168,7 +168,7 @@ The trace file is the fastest way to inspect raw span data.
 Tail it:
 
 ```bash
-tail -f "$BADCODE_HOME/userdata/logs/server.trace.ndjson"
+tail -f "$THREADLINES_HOME/userdata/logs/server.trace.ndjson"
 ```
 
 In monorepo dev, use:
@@ -185,7 +185,7 @@ jq -c 'select(.exit._tag != "Success") | {
   durationMs,
   exit,
   attributes
-}' "$BADCODE_HOME/userdata/logs/server.trace.ndjson"
+}' "$THREADLINES_HOME/userdata/logs/server.trace.ndjson"
 ```
 
 Show slow spans:
@@ -196,7 +196,7 @@ jq -c 'select(.durationMs > 1000) | {
   durationMs,
   traceId,
   spanId
-}' "$BADCODE_HOME/userdata/logs/server.trace.ndjson"
+}' "$THREADLINES_HOME/userdata/logs/server.trace.ndjson"
 ```
 
 Inspect embedded log events:
@@ -213,7 +213,7 @@ jq -c 'select(any(.events[]?; .attributes["effect.logLevel"] != null)) | {
         level: .attributes["effect.logLevel"]
       }
   ]
-}' "$BADCODE_HOME/userdata/logs/server.trace.ndjson"
+}' "$THREADLINES_HOME/userdata/logs/server.trace.ndjson"
 ```
 
 Follow one trace:
@@ -224,7 +224,7 @@ jq -r 'select(.traceId == "TRACE_ID_HERE") | [
   .spanId,
   (.parentSpanId // "-"),
   .durationMs
-] | @tsv' "$BADCODE_HOME/userdata/logs/server.trace.ndjson"
+] | @tsv' "$THREADLINES_HOME/userdata/logs/server.trace.ndjson"
 ```
 
 Filter orchestration commands:
@@ -235,7 +235,7 @@ jq -c 'select(.attributes["orchestration.command_type"] != null) | {
   durationMs,
   commandType: .attributes["orchestration.command_type"],
   aggregateKind: .attributes["orchestration.aggregate_kind"]
-}' "$BADCODE_HOME/userdata/logs/server.trace.ndjson"
+}' "$THREADLINES_HOME/userdata/logs/server.trace.ndjson"
 ```
 
 Filter git activity:
@@ -250,7 +250,7 @@ jq -c 'select(.attributes["git.operation"] != null) | {
     .events[]
     | select(.name == "git.hook.started" or .name == "git.hook.finished")
   ]
-}' "$BADCODE_HOME/userdata/logs/server.trace.ndjson"
+}' "$THREADLINES_HOME/userdata/logs/server.trace.ndjson"
 ```
 
 ### Use Tempo When You Need A Real Trace Viewer
@@ -272,7 +272,7 @@ Recommended flow in Grafana:
 
 Good first searches:
 
-- service name such as `badcode-local`, `badcode-dev`, or `badcode-desktop`
+- service name such as `threadlines-local`, `threadlines-dev`, or `threadlines-desktop`
 - span names like `sql.execute`, `git.runCommand`, `provider.sendTurn`
 - orchestration spans with attributes like `orchestration.command_type`
 
@@ -358,7 +358,7 @@ If you need those later, add client-side instrumentation or a dedicated server f
 
 Usually one of these is true:
 
-- `BADCODE_OTLP_TRACES_URL` was not set
+- `THREADLINES_OTLP_TRACES_URL` was not set
 - the app was launched from a different environment than the one where you exported the vars
 - the app was not fully restarted after changing env
 - Grafana is looking at the wrong time range or service name
@@ -482,19 +482,19 @@ It provides:
 
 Local trace file:
 
-- `BADCODE_TRACE_FILE`: override trace file path
-- `BADCODE_TRACE_MAX_BYTES`: per-file rotation size, default `10485760`
-- `BADCODE_TRACE_MAX_FILES`: rotated file count, default `10`
-- `BADCODE_TRACE_BATCH_WINDOW_MS`: flush window, default `200`
-- `BADCODE_TRACE_MIN_LEVEL`: minimum trace level, default `Info`
-- `BADCODE_TRACE_TIMING_ENABLED`: enable timing metadata, default `true`
+- `THREADLINES_TRACE_FILE`: override trace file path
+- `THREADLINES_TRACE_MAX_BYTES`: per-file rotation size, default `10485760`
+- `THREADLINES_TRACE_MAX_FILES`: rotated file count, default `10`
+- `THREADLINES_TRACE_BATCH_WINDOW_MS`: flush window, default `200`
+- `THREADLINES_TRACE_MIN_LEVEL`: minimum trace level, default `Info`
+- `THREADLINES_TRACE_TIMING_ENABLED`: enable timing metadata, default `true`
 
 OTLP export:
 
-- `BADCODE_OTLP_TRACES_URL`: OTLP trace endpoint
-- `BADCODE_OTLP_METRICS_URL`: OTLP metric endpoint
-- `BADCODE_OTLP_EXPORT_INTERVAL_MS`: export interval, default `10000`
-- `BADCODE_OTLP_SERVICE_NAME`: service name, default `badcode-server`
+- `THREADLINES_OTLP_TRACES_URL`: OTLP trace endpoint
+- `THREADLINES_OTLP_METRICS_URL`: OTLP metric endpoint
+- `THREADLINES_OTLP_EXPORT_INTERVAL_MS`: export interval, default `10000`
+- `THREADLINES_OTLP_SERVICE_NAME`: service name, default `threadlines-server`
 
 If the OTLP URLs are unset, local tracing still works and metrics stay in-process only.
 

@@ -23,30 +23,38 @@ import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 const DEFAULT_API_BASE_URL = "https://api.bitbucket.org/2.0";
 
 const aliasedConfigOption = <A>(
+  threadlinesConfig: Config.Config<A>,
   badcodeConfig: Config.Config<A>,
   legacyT3CodeConfig: Config.Config<A>,
 ) =>
   Config.all({
+    threadlines: threadlinesConfig.pipe(Config.option),
     badcode: badcodeConfig.pipe(Config.option),
     legacyT3Code: legacyT3CodeConfig.pipe(Config.option),
   }).pipe(
-    Config.map(({ badcode, legacyT3Code }) => (Option.isSome(badcode) ? badcode : legacyT3Code)),
+    Config.map(({ threadlines, badcode, legacyT3Code }) =>
+      Option.isSome(threadlines) ? threadlines : Option.isSome(badcode) ? badcode : legacyT3Code,
+    ),
   );
 
 const BitbucketApiEnvConfig = Config.all({
   baseUrl: aliasedConfigOption(
+    Config.string("THREADLINES_BITBUCKET_API_BASE_URL"),
     Config.string("BADCODE_BITBUCKET_API_BASE_URL"),
     Config.string("T3CODE_BITBUCKET_API_BASE_URL"),
   ).pipe(Config.map((value) => Option.getOrElse(value, () => DEFAULT_API_BASE_URL))),
   accessToken: aliasedConfigOption(
+    Config.string("THREADLINES_BITBUCKET_ACCESS_TOKEN"),
     Config.string("BADCODE_BITBUCKET_ACCESS_TOKEN"),
     Config.string("T3CODE_BITBUCKET_ACCESS_TOKEN"),
   ),
   email: aliasedConfigOption(
+    Config.string("THREADLINES_BITBUCKET_EMAIL"),
     Config.string("BADCODE_BITBUCKET_EMAIL"),
     Config.string("T3CODE_BITBUCKET_EMAIL"),
   ),
   apiToken: aliasedConfigOption(
+    Config.string("THREADLINES_BITBUCKET_API_TOKEN"),
     Config.string("BADCODE_BITBUCKET_API_TOKEN"),
     Config.string("T3CODE_BITBUCKET_API_TOKEN"),
   ),
@@ -358,7 +366,7 @@ function authFromConfig(
     account: Option.none(),
     host: Option.some("bitbucket.org"),
     detail: Option.some(
-      "Set BADCODE_BITBUCKET_EMAIL and BADCODE_BITBUCKET_API_TOKEN, or BADCODE_BITBUCKET_ACCESS_TOKEN.",
+      "Set THREADLINES_BITBUCKET_EMAIL and THREADLINES_BITBUCKET_API_TOKEN, or THREADLINES_BITBUCKET_ACCESS_TOKEN.",
     ),
   };
 }

@@ -43,7 +43,7 @@ describe("branding", () => {
     expect(branding.HOSTED_APP_CHANNEL).toBe("nightly");
     expect(branding.HOSTED_APP_CHANNEL_LABEL).toBe("Nightly");
     expect(branding.APP_STAGE_LABEL).toBe("Nightly");
-    expect(branding.APP_DISPLAY_NAME).toBe("Threadlines (Nightly)");
+    expect(branding.APP_DISPLAY_NAME).toBe("Threadlines");
   });
 
   it("ignores unknown hosted app channels", async () => {

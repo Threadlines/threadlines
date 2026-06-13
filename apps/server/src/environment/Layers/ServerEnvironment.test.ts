@@ -29,7 +29,7 @@ const makeServerConfig = Effect.fn(function* (baseDir: string) {
     otlpTracesUrl: undefined,
     otlpMetricsUrl: undefined,
     otlpExportIntervalMs: 10_000,
-    otlpServiceName: "badcode-server",
+    otlpServiceName: "threadlines-server",
     cwd: process.cwd(),
     baseDir,
     mode: "web",

@@ -302,7 +302,7 @@ jobs:
 
       - name: Build Windows installer
         env:
-          BADCODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
+          THREADLINES_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
         run: >
           bun run dist:desktop:artifact --
           --platform win
@@ -387,8 +387,8 @@ jobs:
 
       - name: Build macOS artifact
         env:
-          BADCODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
-          BADCODE_DESKTOP_SIGNED: ${{ vars.BADCODE_MACOS_SIGNED == 'true' && 'true' || 'false' }}
+          THREADLINES_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
+          THREADLINES_DESKTOP_SIGNED: ${{ (vars.THREADLINES_MACOS_SIGNED == 'true' || vars.BADCODE_MACOS_SIGNED == 'true') && 'true' || 'false' }}
           CSC_LINK: ${{ secrets.MACOS_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.MACOS_CSC_KEY_PASSWORD }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}

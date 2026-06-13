@@ -357,7 +357,7 @@ const buildAppUnderTest = (options?: {
       otlpTracesUrl: undefined,
       otlpMetricsUrl: undefined,
       otlpExportIntervalMs: 10_000,
-      otlpServiceName: "badcode-server",
+      otlpServiceName: "threadlines-server",
       mode: "desktop",
       port: 0,
       host: "127.0.0.1",

@@ -11,6 +11,7 @@ import * as Config from "effect/Config";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
 
@@ -25,17 +26,55 @@ interface BufferedAnalyticsEvent {
   readonly capturedAt: string;
 }
 
+const aliasedTelemetryConfig = <A>(
+  threadlinesConfig: Config.Config<A>,
+  badcodeConfig: Config.Config<A>,
+  legacyT3CodeConfig: Config.Config<A>,
+  defaultValue: A,
+) =>
+  Config.all({
+    threadlines: threadlinesConfig.pipe(Config.option),
+    badcode: badcodeConfig.pipe(Config.option),
+    legacyT3Code: legacyT3CodeConfig.pipe(Config.option),
+  }).pipe(
+    Config.map(({ threadlines, badcode, legacyT3Code }) =>
+      Option.getOrElse(
+        Option.isSome(threadlines) ? threadlines : Option.isSome(badcode) ? badcode : legacyT3Code,
+        () => defaultValue,
+      ),
+    ),
+  );
+
 const TelemetryEnvConfig = Config.all({
-  posthogKey: Config.string("T3CODE_POSTHOG_KEY").pipe(
-    Config.withDefault("phc_XOWci4oZP4VvLiEyrFqkFjP4CZn55mjYYBMREK5Wd6m"),
+  posthogKey: aliasedTelemetryConfig(
+    Config.string("THREADLINES_POSTHOG_KEY"),
+    Config.string("BADCODE_POSTHOG_KEY"),
+    Config.string("T3CODE_POSTHOG_KEY"),
+    "phc_XOWci4oZP4VvLiEyrFqkFjP4CZn55mjYYBMREK5Wd6m",
   ),
-  posthogHost: Config.string("T3CODE_POSTHOG_HOST").pipe(
-    Config.withDefault("https://us.i.posthog.com"),
+  posthogHost: aliasedTelemetryConfig(
+    Config.string("THREADLINES_POSTHOG_HOST"),
+    Config.string("BADCODE_POSTHOG_HOST"),
+    Config.string("T3CODE_POSTHOG_HOST"),
+    "https://us.i.posthog.com",
   ),
-  enabled: Config.boolean("T3CODE_TELEMETRY_ENABLED").pipe(Config.withDefault(true)),
-  flushBatchSize: Config.number("T3CODE_TELEMETRY_FLUSH_BATCH_SIZE").pipe(Config.withDefault(20)),
-  maxBufferedEvents: Config.number("T3CODE_TELEMETRY_MAX_BUFFERED_EVENTS").pipe(
-    Config.withDefault(1_000),
+  enabled: aliasedTelemetryConfig(
+    Config.boolean("THREADLINES_TELEMETRY_ENABLED"),
+    Config.boolean("BADCODE_TELEMETRY_ENABLED"),
+    Config.boolean("T3CODE_TELEMETRY_ENABLED"),
+    true,
+  ),
+  flushBatchSize: aliasedTelemetryConfig(
+    Config.number("THREADLINES_TELEMETRY_FLUSH_BATCH_SIZE"),
+    Config.number("BADCODE_TELEMETRY_FLUSH_BATCH_SIZE"),
+    Config.number("T3CODE_TELEMETRY_FLUSH_BATCH_SIZE"),
+    20,
+  ),
+  maxBufferedEvents: aliasedTelemetryConfig(
+    Config.number("THREADLINES_TELEMETRY_MAX_BUFFERED_EVENTS"),
+    Config.number("BADCODE_TELEMETRY_MAX_BUFFERED_EVENTS"),
+    Config.number("T3CODE_TELEMETRY_MAX_BUFFERED_EVENTS"),
+    1_000,
   ),
 });
 

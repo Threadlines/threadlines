@@ -102,7 +102,7 @@ function resolveDesktopAppBranding(input: {
   return {
     baseName: APP_BASE_NAME,
     stageLabel,
-    displayName: `${APP_BASE_NAME} (${stageLabel})`,
+    displayName: input.isDevelopment ? `${APP_BASE_NAME} (${stageLabel})` : APP_BASE_NAME,
   };
 }
 
@@ -161,8 +161,8 @@ const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
   });
   const displayName = branding.displayName;
   const stateDir = path.join(baseDir, isDevelopment ? "dev" : "userdata");
-  const userDataDirName = isDevelopment ? "badcode-dev" : "badcode";
-  const legacyUserDataDirName = userDataDirName;
+  const userDataDirName = isDevelopment ? "threadlines-dev" : "threadlines";
+  const legacyUserDataDirName = isDevelopment ? "badcode-dev" : "badcode";
   const resourcesPath = input.resourcesPath;
 
   return DesktopEnvironment.of({
@@ -202,8 +202,8 @@ const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
     branding,
     displayName,
     appUserModelId: isDevelopment ? "com.badcuban.badcode.dev" : "com.badcuban.badcode",
-    linuxDesktopEntryName: isDevelopment ? "badcode-dev.desktop" : "badcode.desktop",
-    linuxWmClass: isDevelopment ? "badcode-dev" : "badcode",
+    linuxDesktopEntryName: isDevelopment ? "threadlines-dev.desktop" : "threadlines.desktop",
+    linuxWmClass: isDevelopment ? "threadlines-dev" : "threadlines",
     userDataDirName,
     legacyUserDataDirName,
     defaultDesktopSettings: resolveDefaultDesktopSettings(input.appVersion),
