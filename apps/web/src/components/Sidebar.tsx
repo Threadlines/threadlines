@@ -4,6 +4,8 @@ import {
   ChevronRightIcon,
   CloudIcon,
   FolderPlusIcon,
+  PinIcon,
+  PinOffIcon,
   SearchIcon,
   SettingsIcon,
   SquarePenIcon,
@@ -301,6 +303,7 @@ interface SidebarThreadRowProps {
     originalTitle: string,
   ) => Promise<void>;
   cancelRename: () => void;
+  attemptTogglePinThread: (threadRef: ScopedThreadRef, shouldPin: boolean) => Promise<void>;
   attemptArchiveThread: (threadRef: ScopedThreadRef) => Promise<void>;
   openPrLink: (event: React.MouseEvent<HTMLElement>, prUrl: string) => void;
 }
@@ -326,6 +329,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     clearSelection,
     commitRename,
     cancelRename,
+    attemptTogglePinThread,
     attemptArchiveThread,
     openPrLink,
     thread,
@@ -369,6 +373,13 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   const isHighlighted = isActive || isSelected;
   const isThreadRunning =
     thread.session?.status === "running" && thread.session.activeTurnId != null;
+  const archiveUnavailableReason =
+    thread.session?.status === "connecting" || thread.session?.orchestrationStatus === "starting"
+      ? "connecting"
+      : isThreadRunning
+        ? "running"
+        : null;
+  const isThreadArchiveDisabled = archiveUnavailableReason !== null;
   const threadStatus = resolveThreadStatusPill({
     thread: {
       ...thread,
@@ -378,12 +389,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   const pr = resolveThreadPr(thread.branch, gitStatus.data);
   const prStatus = prStatusIndicator(pr, gitStatus.data?.sourceControlProvider);
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
-  const isConfirmingArchive = confirmingArchiveThreadKey === threadKey && !isThreadRunning;
+  const isConfirmingArchive = confirmingArchiveThreadKey === threadKey && !isThreadArchiveDisabled;
+  const isPinned = thread.pinnedAt !== null;
   const threadMetaClassName = isConfirmingArchive
     ? "pointer-events-none opacity-0"
-    : !isThreadRunning
-      ? "pointer-events-none transition-opacity duration-150 max-sm:pr-6 group-hover/menu-sub-item:opacity-0 group-focus-within/menu-sub-item:opacity-0"
-      : "pointer-events-none";
+    : "pointer-events-none transition-opacity duration-150 max-sm:pr-6 group-hover/menu-sub-item:opacity-0 group-focus-within/menu-sub-item:opacity-0";
   const clearConfirmingArchive = useCallback(() => {
     setConfirmingArchiveThreadKey((current) => (current === threadKey ? null : current));
   }, [setConfirmingArchiveThreadKey, threadKey]);
@@ -528,6 +538,17 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     },
     [attemptArchiveThread, threadRef],
   );
+  const handleTogglePinClick = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.detail > 0) {
+        event.currentTarget.blur();
+      }
+      void attemptTogglePinThread(threadRef, !isPinned);
+    },
+    [attemptTogglePinThread, isPinned, threadRef],
+  );
   const rowButtonRender = useMemo(() => <div role="button" tabIndex={0} />, []);
 
   return (
@@ -567,6 +588,21 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 }
               />
               <TooltipPopup side="top">{prStatus.tooltip}</TooltipPopup>
+            </Tooltip>
+          )}
+          {isPinned && (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <span
+                    aria-label="Pinned thread"
+                    className="inline-flex h-4 shrink-0 items-center justify-center text-primary-readable"
+                  >
+                    <PinIcon className="size-3" />
+                  </span>
+                }
+              />
+              <TooltipPopup side="top">Pinned</TooltipPopup>
             </Tooltip>
           )}
           {threadStatus && <ThreadStatusLabel status={threadStatus} />}
@@ -627,9 +663,36 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               >
                 Confirm
               </button>
-            ) : !isThreadRunning ? (
-              appSettingsConfirmThreadArchive ? (
-                <div className="pointer-events-none absolute top-1/2 right-1 -translate-y-1/2 opacity-0 transition-opacity duration-150 max-sm:pointer-events-auto max-sm:opacity-100 group-hover/menu-sub-item:pointer-events-auto group-hover/menu-sub-item:opacity-100 group-focus-within/menu-sub-item:pointer-events-auto group-focus-within/menu-sub-item:opacity-100">
+            ) : (
+              <div className="pointer-events-none absolute top-1/2 right-1 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity duration-150 max-sm:pointer-events-auto max-sm:opacity-100 group-hover/menu-sub-item:pointer-events-auto group-hover/menu-sub-item:opacity-100 group-focus-within/menu-sub-item:pointer-events-auto group-focus-within/menu-sub-item:opacity-100">
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <button
+                        type="button"
+                        data-thread-selection-safe
+                        data-testid={`thread-pin-${thread.id}`}
+                        aria-label={`${isPinned ? "Unpin" : "Pin"} ${thread.title}`}
+                        aria-pressed={isPinned}
+                        className={`inline-flex size-5 cursor-pointer items-center justify-center transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring ${
+                          isPinned
+                            ? "text-primary-readable hover:text-primary"
+                            : "text-muted-foreground/60 hover:text-foreground"
+                        }`}
+                        onPointerDown={stopPropagationOnPointerDown}
+                        onClick={handleTogglePinClick}
+                      >
+                        {isPinned ? (
+                          <PinOffIcon className="size-3.5" />
+                        ) : (
+                          <PinIcon className="size-3.5" />
+                        )}
+                      </button>
+                    }
+                  />
+                  <TooltipPopup side="top">{isPinned ? "Unpin" : "Pin"}</TooltipPopup>
+                </Tooltip>
+                {!isThreadArchiveDisabled && appSettingsConfirmThreadArchive ? (
                   <button
                     type="button"
                     data-thread-selection-safe
@@ -641,12 +704,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                   >
                     <ArchiveIcon className="size-3.5" />
                   </button>
-                </div>
-              ) : (
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <div className="pointer-events-none absolute top-1/2 right-1 -translate-y-1/2 opacity-0 transition-opacity duration-150 max-sm:pointer-events-auto max-sm:opacity-100 group-hover/menu-sub-item:pointer-events-auto group-hover/menu-sub-item:opacity-100 group-focus-within/menu-sub-item:pointer-events-auto group-focus-within/menu-sub-item:opacity-100">
+                ) : !isThreadArchiveDisabled ? (
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
                         <button
                           type="button"
                           data-thread-selection-safe
@@ -658,13 +719,25 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                         >
                           <ArchiveIcon className="size-3.5" />
                         </button>
-                      </div>
-                    }
-                  />
-                  <TooltipPopup side="top">Archive</TooltipPopup>
-                </Tooltip>
-              )
-            ) : null}
+                      }
+                    />
+                    <TooltipPopup side="top">Archive</TooltipPopup>
+                  </Tooltip>
+                ) : (
+                  <button
+                    type="button"
+                    data-thread-selection-safe
+                    data-testid={`thread-archive-${thread.id}`}
+                    aria-label={`Archive ${thread.title} unavailable while thread is ${archiveUnavailableReason}`}
+                    title={`Archive unavailable while thread is ${archiveUnavailableReason}`}
+                    disabled
+                    className="inline-flex size-5 cursor-default items-center justify-center text-muted-foreground/25"
+                  >
+                    <ArchiveIcon className="size-3.5" />
+                  </button>
+                )}
+              </div>
+            )}
             <span className={threadMetaClassName}>
               <span className="inline-flex items-center gap-1">
                 {isRemoteThread && (
@@ -753,6 +826,7 @@ interface SidebarProjectThreadListProps {
     originalTitle: string,
   ) => Promise<void>;
   cancelRename: () => void;
+  attemptTogglePinThread: (threadRef: ScopedThreadRef, shouldPin: boolean) => Promise<void>;
   attemptArchiveThread: (threadRef: ScopedThreadRef) => Promise<void>;
   openPrLink: (event: React.MouseEvent<HTMLElement>, prUrl: string) => void;
   expandThreadListForProject: (projectKey: string, additionalCount: number) => void;
@@ -793,6 +867,7 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
     clearSelection,
     commitRename,
     cancelRename,
+    attemptTogglePinThread,
     attemptArchiveThread,
     openPrLink,
     expandThreadListForProject,
@@ -847,6 +922,7 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
               clearSelection={clearSelection}
               commitRename={commitRename}
               cancelRename={cancelRename}
+              attemptTogglePinThread={attemptTogglePinThread}
               attemptArchiveThread={attemptArchiveThread}
               openPrLink={openPrLink}
             />
@@ -918,6 +994,8 @@ interface SidebarProjectItemProps {
   newThreadShortcutLabel: string | null;
   handleNewThread: ReturnType<typeof useNewThreadHandler>["handleNewThread"];
   archiveThread: ReturnType<typeof useThreadActions>["archiveThread"];
+  pinThread: ReturnType<typeof useThreadActions>["pinThread"];
+  unpinThread: ReturnType<typeof useThreadActions>["unpinThread"];
   deleteThread: ReturnType<typeof useThreadActions>["deleteThread"];
   threadJumpLabelByKey: ReadonlyMap<string, string>;
   attachThreadListAutoAnimateRef: (node: HTMLElement | null) => void;
@@ -938,6 +1016,8 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     newThreadShortcutLabel,
     handleNewThread,
     archiveThread,
+    pinThread,
+    unpinThread,
     deleteThread,
     threadJumpLabelByKey,
     attachThreadListAutoAnimateRef,
@@ -1780,6 +1860,26 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     },
     [archiveThread],
   );
+  const attemptTogglePinThread = useCallback(
+    async (threadRef: ScopedThreadRef, shouldPin: boolean) => {
+      try {
+        if (shouldPin) {
+          await pinThread(threadRef);
+        } else {
+          await unpinThread(threadRef);
+        }
+      } catch (error) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: shouldPin ? "Failed to pin thread" : "Failed to unpin thread",
+            description: error instanceof Error ? error.message : "An error occurred.",
+          }),
+        );
+      }
+    },
+    [pinThread, unpinThread],
+  );
 
   const cancelRename = useCallback(() => {
     setRenamingThreadKey(null);
@@ -1936,6 +2036,10 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       const clicked = await api.contextMenu.show(
         [
           { id: "rename", label: "Rename thread" },
+          {
+            id: thread.pinnedAt === null ? "pin" : "unpin",
+            label: thread.pinnedAt === null ? "Pin" : "Unpin",
+          },
           { id: "mark-unread", label: "Mark unread" },
           { id: "copy-path", label: "Copy Path" },
           { id: "copy-thread-id", label: "Copy Thread ID" },
@@ -1948,6 +2052,11 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         setRenamingThreadKey(threadKey);
         setRenamingTitle(thread.title);
         renamingCommittedRef.current = false;
+        return;
+      }
+
+      if (clicked === "pin" || clicked === "unpin") {
+        await attemptTogglePinThread(threadRef, clicked === "pin");
         return;
       }
 
@@ -1989,6 +2098,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     },
     [
       appSettingsConfirmThreadDelete,
+      attemptTogglePinThread,
       copyPathToClipboard,
       copyThreadIdToClipboard,
       deleteThread,
@@ -2134,6 +2244,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         clearSelection={clearSelection}
         commitRename={commitRename}
         cancelRename={cancelRename}
+        attemptTogglePinThread={attemptTogglePinThread}
         attemptArchiveThread={attemptArchiveThread}
         openPrLink={openPrLink}
         expandThreadListForProject={expandThreadListForProject}
@@ -2556,6 +2667,8 @@ interface SidebarProjectsContentProps {
   handleProjectDragCancel: (event: DragCancelEvent) => void;
   handleNewThread: ReturnType<typeof useNewThreadHandler>["handleNewThread"];
   archiveThread: ReturnType<typeof useThreadActions>["archiveThread"];
+  pinThread: ReturnType<typeof useThreadActions>["pinThread"];
+  unpinThread: ReturnType<typeof useThreadActions>["unpinThread"];
   deleteThread: ReturnType<typeof useThreadActions>["deleteThread"];
   sortedProjects: readonly SidebarProjectSnapshot[];
   revealedThreadCountsByProject: ReadonlyMap<string, number>;
@@ -2592,6 +2705,8 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     handleProjectDragCancel,
     handleNewThread,
     archiveThread,
+    pinThread,
+    unpinThread,
     deleteThread,
     sortedProjects,
     revealedThreadCountsByProject,
@@ -2721,6 +2836,8 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                         newThreadShortcutLabel={newThreadShortcutLabel}
                         handleNewThread={handleNewThread}
                         archiveThread={archiveThread}
+                        pinThread={pinThread}
+                        unpinThread={unpinThread}
                         deleteThread={deleteThread}
                         threadJumpLabelByKey={threadJumpLabelByKey}
                         attachThreadListAutoAnimateRef={attachThreadListAutoAnimateRef}
@@ -2753,6 +2870,8 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                 newThreadShortcutLabel={newThreadShortcutLabel}
                 handleNewThread={handleNewThread}
                 archiveThread={archiveThread}
+                pinThread={pinThread}
+                unpinThread={unpinThread}
                 deleteThread={deleteThread}
                 threadJumpLabelByKey={threadJumpLabelByKey}
                 attachThreadListAutoAnimateRef={attachThreadListAutoAnimateRef}
@@ -2794,7 +2913,7 @@ export default function Sidebar() {
   const sidebarThreadPreviewCount = useSettings((s) => s.sidebarThreadPreviewCount);
   const { updateSettings } = useUpdateSettings();
   const { handleNewThread } = useNewThreadHandler();
-  const { archiveThread, deleteThread } = useThreadActions();
+  const { archiveThread, deleteThread, pinThread, unpinThread } = useThreadActions();
   const { isMobile, setOpenMobile } = useSidebar();
   const routeThreadRef = useParams({
     strict: false,
@@ -3324,6 +3443,8 @@ export default function Sidebar() {
             handleProjectDragCancel={handleProjectDragCancel}
             handleNewThread={handleNewThread}
             archiveThread={archiveThread}
+            pinThread={pinThread}
+            unpinThread={unpinThread}
             deleteThread={deleteThread}
             sortedProjects={sortedProjects}
             revealedThreadCountsByProject={revealedThreadCountsByProject}

@@ -540,6 +540,28 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
       ),
   );
 
+  it.effect("maps Codex priority service tier selections to CLI fast mode config", () =>
+    withFakeCodexEnv(
+      {
+        output: JSON.stringify({
+          subject: "Add important change",
+          body: "",
+        }),
+        requireFastServiceTier: true,
+      },
+      (textGeneration) =>
+        textGeneration.generateCommitMessage({
+          cwd: process.cwd(),
+          branch: "feature/codex-effect",
+          stagedSummary: "M README.md",
+          stagedPatch: "diff --git a/README.md b/README.md",
+          modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.5", [
+            { id: "serviceTier", value: "priority" },
+          ]),
+        }),
+    ),
+  );
+
   it.effect("defaults git text generation codex effort to low", () =>
     withFakeCodexEnv(
       {

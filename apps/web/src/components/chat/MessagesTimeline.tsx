@@ -486,6 +486,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
         </div>
         <AssistantChangedFilesSection
           turnSummary={row.assistantTurnDiffSummary}
+          isTurnInProgress={row.assistantTurnInProgress}
           routeThreadKey={ctx.routeThreadKey}
           resolvedTheme={ctx.resolvedTheme}
           onOpenTurnDiff={ctx.onOpenTurnDiff}
@@ -1532,16 +1533,19 @@ function formatHiddenSummaryPart(
  *  so toggling re-renders only this component — not the entire list. */
 const AssistantChangedFilesSection = memo(function AssistantChangedFilesSection({
   turnSummary,
+  isTurnInProgress,
   routeThreadKey,
   resolvedTheme,
   onOpenTurnDiff,
 }: {
   turnSummary: TurnDiffSummary | undefined;
+  isTurnInProgress: boolean;
   routeThreadKey: string;
   resolvedTheme: "light" | "dark";
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
 }) {
   if (!turnSummary) return null;
+  if (isTurnInProgress) return null;
   const checkpointFiles = turnSummary.files;
   if (checkpointFiles.length === 0) return null;
 
@@ -1585,7 +1589,7 @@ function AssistantChangedFilesSectionInner({
     <div className="mt-2 rounded-lg border border-border/80 bg-card/45 p-2.5">
       <div className="sticky top-2 z-10 mb-1.5 flex items-center justify-between gap-2 bg-[color-mix(in_srgb,var(--card)_45%,var(--background))] before:absolute before:inset-x-0 before:-top-2 before:h-2 before:bg-[color-mix(in_srgb,var(--card)_45%,var(--background))] before:content-['']">
         <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/55">
-          <span>Changed files ({changedFileCountLabel})</span>
+          <span>Turn changes ({changedFileCountLabel})</span>
           {hasNonZeroStat(summaryStat) && (
             <>
               <span className="mx-1">/</span>
@@ -1622,7 +1626,7 @@ function AssistantChangedFilesSectionInner({
             data-scroll-anchor-ignore
             onClick={() => onOpenTurnDiff(turnSummary.turnId, checkpointFiles[0]?.path)}
           >
-            View diff
+            View turn diff
           </Button>
         </div>
       </div>

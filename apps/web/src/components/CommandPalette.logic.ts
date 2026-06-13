@@ -110,7 +110,14 @@ export function buildProjectActionItems(input: {
 
 export type BuildThreadActionItemsThread = Pick<
   SidebarThreadSummary,
-  "archivedAt" | "branch" | "createdAt" | "environmentId" | "id" | "projectId" | "title"
+  | "archivedAt"
+  | "branch"
+  | "createdAt"
+  | "environmentId"
+  | "id"
+  | "pinnedAt"
+  | "projectId"
+  | "title"
 > & {
   updatedAt?: string | undefined;
   latestUserMessageAt?: string | null;

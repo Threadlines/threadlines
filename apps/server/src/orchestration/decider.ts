@@ -15,6 +15,8 @@ import {
   requireThreadArchived,
   requireThreadAbsent,
   requireThreadNotArchived,
+  requireThreadNotPinned,
+  requireThreadPinned,
 } from "./commandInvariants.ts";
 import { projectEvent } from "./projector.ts";
 
@@ -284,6 +286,51 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           commandId: command.commandId,
         }),
         type: "thread.unarchived",
+        payload: {
+          threadId: command.threadId,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "thread.pin": {
+      yield* requireThreadNotPinned({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const occurredAt = yield* nowIso;
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.pinned",
+        payload: {
+          threadId: command.threadId,
+          pinnedAt: occurredAt,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "thread.unpin": {
+      yield* requireThreadPinned({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const occurredAt = yield* nowIso;
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.unpinned",
         payload: {
           threadId: command.threadId,
           updatedAt: occurredAt,

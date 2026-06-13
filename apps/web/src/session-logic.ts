@@ -1498,7 +1498,7 @@ function extractToolCommand(
 }
 
 function extractToolTitle(payload: Record<string, unknown> | null): string | null {
-  return asTrimmedString(payload?.title);
+  return semanticToolPresentation(payload)?.title ?? asTrimmedString(payload?.title);
 }
 
 function extractWorkLogImages(payload: Record<string, unknown> | null): WorkLogImagePreview[] {
@@ -1560,6 +1560,275 @@ function isImagePreviewPayload(payload: Record<string, unknown> | null): boolean
 function extractToolCallId(payload: Record<string, unknown> | null): string | null {
   const data = asRecord(payload?.data);
   return asTrimmedString(payload?.toolCallId) ?? asTrimmedString(data?.toolCallId);
+}
+
+interface ToolCallIdentity {
+  readonly itemType: ToolLifecycleItemType | undefined;
+  readonly serverOrNamespace: string | null;
+  readonly tool: string | null;
+  readonly input: unknown;
+}
+
+interface SemanticToolPresentation {
+  readonly title: string;
+  readonly detail?: string;
+}
+
+function extractToolCallIdentity(payload: Record<string, unknown> | null): ToolCallIdentity | null {
+  const data = asRecord(payload?.data);
+  const item = asRecord(data?.item);
+  const itemType = extractWorkLogItemType(payload);
+  if (
+    itemType !== "mcp_tool_call" &&
+    itemType !== "dynamic_tool_call" &&
+    itemType !== "collab_agent_tool_call" &&
+    itemType !== "web_search"
+  ) {
+    return null;
+  }
+
+  const serverOrNamespace = asTrimmedString(
+    item?.server ?? data?.server ?? item?.namespace ?? data?.namespace,
+  );
+  const tool = asTrimmedString(item?.tool ?? data?.tool);
+  const input =
+    item && Object.prototype.hasOwnProperty.call(item, "arguments")
+      ? item.arguments
+      : data && Object.prototype.hasOwnProperty.call(data, "arguments")
+        ? data.arguments
+        : undefined;
+
+  if (!serverOrNamespace && !tool) {
+    return null;
+  }
+
+  return {
+    itemType,
+    serverOrNamespace,
+    tool,
+    input,
+  };
+}
+
+function semanticToolPresentation(
+  payload: Record<string, unknown> | null,
+): SemanticToolPresentation | null {
+  const identity = extractToolCallIdentity(payload);
+  if (!identity) {
+    return null;
+  }
+
+  if (isBrowserAutomationTool(identity)) {
+    return {
+      title: "Browser control",
+      detail: browserAutomationDetail(identity),
+    };
+  }
+
+  if (isNodeReplJsTool(identity)) {
+    return {
+      title: "JavaScript REPL",
+      detail: "Running JavaScript",
+    };
+  }
+
+  if (toolNamespaceMatches(identity.serverOrNamespace, "tool_search")) {
+    return {
+      title: "Tool discovery",
+      detail: toolSearchDetail(identity.input),
+    };
+  }
+
+  if (toolNamespaceMatches(identity.serverOrNamespace, "multi_tool_use")) {
+    return {
+      title: "Parallel tools",
+      detail: "Running tools in parallel",
+    };
+  }
+
+  if (toolNamespaceMatches(identity.serverOrNamespace, "image_gen", "imagegen")) {
+    return {
+      title: "Image generation",
+      detail: summarizeNamedToolDetail(identity),
+    };
+  }
+
+  if (toolNamespaceMatches(identity.serverOrNamespace, "computer_use", "computer-use")) {
+    return {
+      title: "Computer use",
+      detail: summarizeNamedToolDetail(identity),
+    };
+  }
+
+  const providerTitle = knownProviderToolTitle(identity.serverOrNamespace);
+  if (providerTitle) {
+    return {
+      title: providerTitle,
+      detail: summarizeNamedToolDetail(identity),
+    };
+  }
+
+  return null;
+}
+
+function toolNamespaceMatches(value: string | null, ...candidates: ReadonlyArray<string>): boolean {
+  const raw = value?.trim().toLowerCase();
+  if (!raw) {
+    return false;
+  }
+
+  const tokenSet = new Set(raw.split(/[^a-z0-9]+/u).filter((token) => token.length > 0));
+  const compact = raw.replace(/[^a-z0-9]+/gu, "");
+  return candidates.some((candidate) => {
+    const normalizedCandidate = candidate.trim().toLowerCase();
+    const candidateTokens = normalizedCandidate
+      .split(/[^a-z0-9]+/u)
+      .filter((token) => token.length > 0);
+    const candidateCompact = normalizedCandidate.replace(/[^a-z0-9]+/gu, "");
+    return (
+      raw === normalizedCandidate ||
+      compact === candidateCompact ||
+      tokenSet.has(normalizedCandidate) ||
+      candidateTokens.every((token) => tokenSet.has(token))
+    );
+  });
+}
+
+function toolNameMatches(value: string | null, ...candidates: ReadonlyArray<string>): boolean {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return candidates.some((candidate) => normalized === candidate.trim().toLowerCase());
+}
+
+function isNodeReplJsTool(identity: ToolCallIdentity): boolean {
+  return (
+    toolNamespaceMatches(identity.serverOrNamespace, "node_repl", "node-repl") &&
+    toolNameMatches(identity.tool, "js")
+  );
+}
+
+function isBrowserAutomationTool(identity: ToolCallIdentity): boolean {
+  if (toolNamespaceMatches(identity.serverOrNamespace, "browser", "browser_use", "browser-use")) {
+    return true;
+  }
+
+  if (!isNodeReplJsTool(identity)) {
+    return false;
+  }
+
+  const code = extractToolInputText(identity.input);
+  return (
+    code !== null &&
+    /\b(?:agent\.browsers|setupBrowserRuntime|browser\.(?:tabs|capabilities|nameSession)|globalThis\.browser|tab\.(?:playwright|goto|reload|screenshot|cua|dom_cua|dev|clipboard)|nodeRepl\.emitImage)\b/u.test(
+      code,
+    )
+  );
+}
+
+function extractToolInputText(value: unknown): string | null {
+  const direct = asTrimmedString(value);
+  if (direct) {
+    return direct;
+  }
+
+  const record = asRecord(value);
+  if (!record) {
+    return null;
+  }
+
+  for (const key of ["code", "script", "javascript", "js", "input", "command", "text", "prompt"]) {
+    const candidate = asTrimmedString(record[key]);
+    if (candidate) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function browserAutomationDetail(identity: ToolCallIdentity): string {
+  const directUrl = argumentValue(identity.input, "url", "href", "target");
+  const code = extractToolInputText(identity.input);
+  const codeUrl = code ? extractBrowserUrlFromCode(code) : null;
+  const url = directUrl ?? codeUrl;
+  const tool = identity.tool?.trim().toLowerCase();
+
+  if (tool && /^(?:open|goto|navigate|new_tab)$/u.test(tool)) {
+    return url ? `Opening ${truncateInlinePreview(url, 72)}` : "Opening browser page";
+  }
+
+  if (code && /\.goto\(/u.test(code) && url) {
+    return `Opening ${truncateInlinePreview(url, 72)}`;
+  }
+  if (code && /\b(?:domSnapshot|get_visible_dom|evaluate|dev\.logs)\b/u.test(code)) {
+    return "Inspecting page";
+  }
+  if (code && /\b(?:screenshot|emitImage)\b/u.test(code)) {
+    return "Capturing browser screenshot";
+  }
+  if (
+    code &&
+    /\b(?:click|dblclick|fill|type|press|selectOption|setChecked|check|uncheck)\b/u.test(code)
+  ) {
+    return "Interacting with page";
+  }
+  if (code && /\breload\(/u.test(code)) {
+    return "Reloading page";
+  }
+  if (code && /\bsetupBrowserRuntime\b/u.test(code)) {
+    return "Connecting to browser";
+  }
+
+  return "Running browser automation";
+}
+
+function extractBrowserUrlFromCode(value: string): string | null {
+  const match = /\.(?:goto|open)\(\s*["'`]([^"'`]+)["'`]/u.exec(value);
+  return match?.[1]?.trim() || null;
+}
+
+function argumentValue(value: unknown, ...keys: ReadonlyArray<string>): string | null {
+  const record = asRecord(value);
+  if (!record) {
+    return null;
+  }
+
+  for (const key of keys) {
+    const candidate = asTrimmedString(record[key]);
+    if (candidate) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function toolSearchDetail(input: unknown): string {
+  const query = argumentValue(input, "query", "q");
+  return query
+    ? `Searching tools: ${truncateInlinePreview(query, 72)}`
+    : "Searching available tools";
+}
+
+function knownProviderToolTitle(serverOrNamespace: string | null): string | null {
+  if (toolNamespaceMatches(serverOrNamespace, "supabase")) return "Supabase";
+  if (toolNamespaceMatches(serverOrNamespace, "github")) return "GitHub";
+  if (toolNamespaceMatches(serverOrNamespace, "vercel")) return "Vercel";
+  if (toolNamespaceMatches(serverOrNamespace, "alpaca")) return "Market data";
+  return null;
+}
+
+function summarizeNamedToolDetail(identity: ToolCallIdentity): string {
+  const tool = prettifyToolAction(identity.tool) ?? "Running tool";
+  const argumentSummary = summarizeToolArguments(identity.input);
+  return argumentSummary ? `${tool}: ${argumentSummary}` : tool;
+}
+
+function prettifyToolAction(value: string | null): string | null {
+  const normalized = value?.replace(/[_-]+/gu, " ").replace(/\s+/gu, " ").trim();
+  return normalized && normalized.length > 0 ? normalized : null;
 }
 
 function normalizeInlinePreview(value: string): string {
@@ -1753,9 +2022,15 @@ function extractToolDetail(
     return streamingOutputSummary;
   }
 
+  const semanticDetail = semanticToolPresentation(payload)?.detail;
+  const normalizedHeading = normalizePreviewForComparison(heading);
+  const normalizedSemanticDetail = normalizePreviewForComparison(semanticDetail);
+  if (semanticDetail && normalizedSemanticDetail !== normalizedHeading) {
+    return semanticDetail;
+  }
+
   const rawDetail = asTrimmedString(payload?.detail);
   const detail = rawDetail ? stripTrailingExitCode(rawDetail).output : null;
-  const normalizedHeading = normalizePreviewForComparison(heading);
   const normalizedDetail = normalizePreviewForComparison(detail);
 
   if (detail && normalizedHeading !== normalizedDetail) {

@@ -131,7 +131,7 @@ const CLAUDE_DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
 const CURSOR_DRIVER_KIND = ProviderDriverKind.make("cursor");
 const OPENCODE_DRIVER_KIND = ProviderDriverKind.make("opencode");
 
-export const DEFAULT_MODEL = "gpt-5.4";
+export const DEFAULT_MODEL = "gpt-5.5";
 export const DEFAULT_GIT_TEXT_GENERATION_MODEL = "gpt-5.4-mini";
 
 export const DEFAULT_MODEL_BY_PROVIDER: Partial<Record<ProviderDriverKind, string>> = {
@@ -155,7 +155,9 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
   Record<ProviderDriverKind, Record<string, string>>
 > = {
   [CODEX_DRIVER_KIND]: {
-    "gpt-5-codex": "gpt-5.4",
+    "gpt-5-codex": "gpt-5.5",
+    "5.5": "gpt-5.5",
+    "gpt-5.5-codex": "gpt-5.5",
     "5.4": "gpt-5.4",
     "5.3": "gpt-5.3-codex",
     "gpt-5.3": "gpt-5.3-codex",

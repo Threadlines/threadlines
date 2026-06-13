@@ -40,11 +40,9 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
-import {
-  getModelSelectionBooleanOptionValue,
-  getModelSelectionStringOptionValue,
-} from "@t3tools/shared/model";
+import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { renderThreadContextSeed, withContextSeedPreamble } from "@t3tools/shared/contextSeed";
+import { resolveCodexServiceTier } from "../../codexServiceTier.ts";
 
 import {
   ProviderAdapterRequestError,
@@ -1919,6 +1917,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           yield* Effect.suspend(() => stopSessionInternal(existing));
         }
 
+        const serviceTier = resolveCodexServiceTier(input.modelSelection, {
+          instanceId: boundInstanceId,
+        });
         const runtimeInput: CodexSessionRuntimeOptions = {
           threadId: input.threadId,
           providerInstanceId: boundInstanceId,
@@ -1933,10 +1934,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ...(input.modelSelection?.instanceId === boundInstanceId
             ? { model: input.modelSelection.model }
             : {}),
-          ...(input.modelSelection?.instanceId === boundInstanceId &&
-          getModelSelectionBooleanOptionValue(input.modelSelection, "fastMode") === true
-            ? { serviceTier: "fast" }
-            : {}),
+          ...(serviceTier ? { serviceTier } : {}),
         };
         const sessionScope = yield* Scope.make("sequential");
         let sessionScopeTransferred = false;
@@ -2064,10 +2062,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       input.modelSelection?.instanceId === boundInstanceId
         ? getModelSelectionStringOptionValue(input.modelSelection, "reasoningEffort")
         : undefined;
-    const fastMode =
-      input.modelSelection?.instanceId === boundInstanceId
-        ? getModelSelectionBooleanOptionValue(input.modelSelection, "fastMode")
-        : undefined;
+    const serviceTier = resolveCodexServiceTier(input.modelSelection, {
+      instanceId: boundInstanceId,
+    });
     const turn = yield* session.runtime
       .sendTurn({
         ...(input.messageId !== undefined ? { clientUserMessageId: input.messageId } : {}),
@@ -2080,7 +2077,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               effort: reasoningEffort as EffectCodexSchema.V2TurnStartParams__ReasoningEffort,
             }
           : {}),
-        ...(fastMode === true ? { serviceTier: "fast" } : {}),
+        ...(serviceTier ? { serviceTier } : {}),
         ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
         ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
       })

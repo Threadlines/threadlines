@@ -921,7 +921,7 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Get-Content -Path");
   });
 
-  it("renders assistant changed files as a collapsed tree by default", async () => {
+  it("renders assistant turn changes as a collapsed tree by default", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const turnId = TurnId.make("turn-1");
     const assistantMessageId = MessageId.make("assistant-1");
@@ -966,10 +966,61 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("Changed files (1)");
+    expect(markup).toContain("Turn changes (1)");
     expect(markup).toContain("Expand tree");
-    expect(markup).toContain("View diff");
+    expect(markup).toContain("View turn diff");
     expect(markup).not.toContain("src/example.ts");
     expect(markup).not.toContain("Hide files");
+  });
+
+  it("does not render the persistent turn changes card while that turn is active", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const turnId = TurnId.make("turn-1");
+    const assistantMessageId = MessageId.make("assistant-1");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        activeTurnInProgress
+        activeTurnId={turnId}
+        timelineEntries={[
+          {
+            id: "assistant-entry",
+            kind: "message",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            message: {
+              id: assistantMessageId,
+              role: "assistant",
+              text: "Still working",
+              turnId,
+              createdAt: "2026-03-17T19:12:28.000Z",
+              streaming: false,
+            },
+          },
+        ]}
+        turnDiffSummaryByAssistantMessageId={
+          new Map([
+            [
+              assistantMessageId,
+              {
+                turnId,
+                completedAt: "2026-03-17T19:13:28.000Z",
+                files: [
+                  {
+                    path: "src/example.ts",
+                    kind: "modified",
+                    additions: 3,
+                    deletions: 1,
+                  },
+                ],
+              },
+            ],
+          ])
+        }
+      />,
+    );
+
+    expect(markup).not.toContain("Turn changes (1)");
+    expect(markup).not.toContain("View turn diff");
   });
 });

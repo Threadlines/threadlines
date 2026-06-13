@@ -2050,8 +2050,128 @@ describe("deriveWorkLogEntries", () => {
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
       id: "browser-started",
-      detail: "browser.open: url=http://localhost:3000",
+      toolTitle: "Browser control",
+      detail: "Opening http://localhost:3000",
       executionState: "completed",
+    });
+  });
+
+  it("labels Browser skill activity that is routed through node_repl.js", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "browser-node-started",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.started",
+        summary: "MCP tool call started",
+        payload: {
+          itemType: "mcp_tool_call",
+          title: "MCP tool call",
+          status: "inProgress",
+          data: {
+            item: {
+              server: "node_repl",
+              tool: "js",
+              arguments: {
+                code: [
+                  "const { setupBrowserRuntime } = await import('browser-client.mjs');",
+                  "await setupBrowserRuntime({ globals: globalThis });",
+                  "globalThis.browser = await agent.browsers.get('iab');",
+                  "await tab.playwright.domSnapshot();",
+                ].join("\n"),
+              },
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "browser-node-completed",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.completed",
+        summary: "MCP tool call",
+        payload: {
+          itemType: "mcp_tool_call",
+          title: "MCP tool call",
+          data: {
+            item: {
+              server: "node_repl",
+              tool: "js",
+              arguments: {
+                code: "await tab.playwright.domSnapshot();",
+              },
+            },
+          },
+        },
+      }),
+    ]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      id: "browser-node-started",
+      toolTitle: "Browser control",
+      detail: "Inspecting page",
+      executionState: "completed",
+    });
+  });
+
+  it("labels non-browser node_repl.js calls as JavaScript REPL activity", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "node-repl-started",
+        kind: "tool.started",
+        summary: "MCP tool call started",
+        payload: {
+          itemType: "mcp_tool_call",
+          title: "MCP tool call",
+          status: "inProgress",
+          data: {
+            item: {
+              server: "node_repl",
+              tool: "js",
+              arguments: {
+                code: "console.log(process.version);",
+              },
+            },
+          },
+        },
+      }),
+    ]);
+
+    expect(entry).toMatchObject({
+      id: "node-repl-started",
+      toolTitle: "JavaScript REPL",
+      detail: "Running JavaScript",
+      executionState: "running",
+    });
+  });
+
+  it("uses app-oriented labels for known MCP-backed providers", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "supabase-started",
+        kind: "tool.started",
+        summary: "MCP tool call started",
+        payload: {
+          itemType: "mcp_tool_call",
+          title: "MCP tool call",
+          status: "inProgress",
+          data: {
+            item: {
+              server: "plugin:supabase:supabase",
+              tool: "execute_sql",
+              arguments: {
+                query: "select 1",
+              },
+            },
+          },
+        },
+      }),
+    ]);
+
+    expect(entry).toMatchObject({
+      id: "supabase-started",
+      toolTitle: "Supabase",
+      detail: "execute sql: query=select 1",
+      executionState: "running",
     });
   });
 

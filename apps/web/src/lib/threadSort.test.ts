@@ -28,6 +28,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     error: null,
     createdAt: "2026-03-09T10:00:00.000Z",
     archivedAt: null,
+    pinnedAt: null,
     updatedAt: "2026-03-09T10:00:00.000Z",
     latestTurn: null,
     branch: null,
@@ -159,6 +160,48 @@ describe("sortThreads", () => {
     expect(sorted.map((thread) => thread.id)).toEqual([
       ThreadId.make("thread-1"),
       ThreadId.make("thread-2"),
+    ]);
+  });
+
+  it("keeps pinned threads ahead of unpinned threads", () => {
+    const sorted = sortThreads(
+      [
+        makeThread({
+          id: ThreadId.make("thread-recent-unpinned"),
+          updatedAt: "2026-03-09T10:10:00.000Z",
+          messages: [
+            {
+              id: "message-recent-unpinned" as never,
+              role: "user",
+              text: "recent",
+              createdAt: "2026-03-09T10:10:00.000Z",
+              streaming: false,
+              completedAt: "2026-03-09T10:10:00.000Z",
+            },
+          ],
+        }),
+        makeThread({
+          id: ThreadId.make("thread-older-pinned"),
+          updatedAt: "2026-03-09T10:00:00.000Z",
+          messages: [
+            {
+              id: "message-older-pinned" as never,
+              role: "user",
+              text: "older",
+              createdAt: "2026-03-09T10:00:00.000Z",
+              streaming: false,
+              completedAt: "2026-03-09T10:00:00.000Z",
+            },
+          ],
+          pinnedAt: "2026-03-09T10:11:00.000Z",
+        }),
+      ],
+      "updated_at",
+    );
+
+    expect(sorted.map((thread) => thread.id)).toEqual([
+      ThreadId.make("thread-older-pinned"),
+      ThreadId.make("thread-recent-unpinned"),
     ]);
   });
 

@@ -20,9 +20,11 @@ import {
   ThreadDeletedPayload,
   ThreadInteractionModeSetPayload,
   ThreadMetaUpdatedPayload,
+  ThreadPinnedPayload,
   ThreadProposedPlanUpsertedPayload,
   ThreadRuntimeModeSetPayload,
   ThreadUnarchivedPayload,
+  ThreadUnpinnedPayload,
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
   ThreadTurnDiffCompletedPayload,
@@ -263,6 +265,7 @@ export function projectEvent(
             createdAt: payload.createdAt,
             updatedAt: payload.updatedAt,
             archivedAt: null,
+            pinnedAt: null,
             deletedAt: null,
             messages: [],
             activities: [],
@@ -309,6 +312,28 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             archivedAt: null,
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "thread.pinned":
+      return decodeForEvent(ThreadPinnedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            pinnedAt: payload.pinnedAt,
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "thread.unpinned":
+      return decodeForEvent(ThreadUnpinnedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            pinnedAt: null,
             updatedAt: payload.updatedAt,
           }),
         })),

@@ -655,7 +655,7 @@ export function GeneralSettingsPanel() {
 
         <SettingsRow
           title="Changed files in chat"
-          description="Expand the changed-files tree in agent responses by default."
+          description="Expand the per-turn changes tree in agent responses by default."
           resetAction={
             settings.chatChangedFilesDefaultExpanded !==
             DEFAULT_UNIFIED_SETTINGS.chatChangedFilesDefaultExpanded ? (

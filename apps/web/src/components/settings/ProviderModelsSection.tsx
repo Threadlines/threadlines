@@ -201,7 +201,9 @@ export function ProviderModelsSection({
           const canMoveDown =
             nextModel !== undefined && favoriteModelSet.has(nextModel.slug) === isFavorite;
           const descriptors = caps?.optionDescriptors ?? [];
-          if (descriptors.some((descriptor) => descriptor.id === "fastMode")) {
+          if (descriptors.some((descriptor) => descriptor.id === "serviceTier")) {
+            capLabels.push("Service tiers");
+          } else if (descriptors.some((descriptor) => descriptor.id === "fastMode")) {
             capLabels.push("Fast mode");
           }
           if (descriptors.some((descriptor) => descriptor.id === "thinking")) {

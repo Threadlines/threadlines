@@ -325,7 +325,7 @@ it.effect("decodes thread.meta-updated payloads with explicit provider", () =>
   }),
 );
 
-it.effect("decodes thread archive and unarchive commands", () =>
+it.effect("decodes thread archive, unarchive, pin, and unpin commands", () =>
   Effect.gen(function* () {
     const archive = yield* decodeOrchestrationCommand({
       type: "thread.archive",
@@ -337,13 +337,25 @@ it.effect("decodes thread archive and unarchive commands", () =>
       commandId: "cmd-unarchive-1",
       threadId: "thread-1",
     });
+    const pin = yield* decodeOrchestrationCommand({
+      type: "thread.pin",
+      commandId: "cmd-pin-1",
+      threadId: "thread-1",
+    });
+    const unpin = yield* decodeOrchestrationCommand({
+      type: "thread.unpin",
+      commandId: "cmd-unpin-1",
+      threadId: "thread-1",
+    });
 
     assert.strictEqual(archive.type, "thread.archive");
     assert.strictEqual(unarchive.type, "thread.unarchive");
+    assert.strictEqual(pin.type, "thread.pin");
+    assert.strictEqual(unpin.type, "thread.unpin");
   }),
 );
 
-it.effect("decodes thread archived and unarchived events", () =>
+it.effect("decodes thread archived, unarchived, pinned, and unpinned events", () =>
   Effect.gen(function* () {
     const archived = yield* decodeOrchestrationEvent({
       sequence: 1,
@@ -378,10 +390,46 @@ it.effect("decodes thread archived and unarchived events", () =>
         updatedAt: "2026-01-02T00:00:00.000Z",
       },
     });
+    const pinned = yield* decodeOrchestrationEvent({
+      sequence: 3,
+      eventId: "event-pin-1",
+      aggregateKind: "thread",
+      aggregateId: "thread-1",
+      type: "thread.pinned",
+      occurredAt: "2026-01-03T00:00:00.000Z",
+      commandId: "cmd-pin-1",
+      causationEventId: null,
+      correlationId: "cmd-pin-1",
+      metadata: {},
+      payload: {
+        threadId: "thread-1",
+        pinnedAt: "2026-01-03T00:00:00.000Z",
+        updatedAt: "2026-01-03T00:00:00.000Z",
+      },
+    });
+    const unpinned = yield* decodeOrchestrationEvent({
+      sequence: 4,
+      eventId: "event-unpin-1",
+      aggregateKind: "thread",
+      aggregateId: "thread-1",
+      type: "thread.unpinned",
+      occurredAt: "2026-01-04T00:00:00.000Z",
+      commandId: "cmd-unpin-1",
+      causationEventId: null,
+      correlationId: "cmd-unpin-1",
+      metadata: {},
+      payload: {
+        threadId: "thread-1",
+        updatedAt: "2026-01-04T00:00:00.000Z",
+      },
+    });
 
     assert.strictEqual(archived.type, "thread.archived");
     assert.strictEqual(archived.payload.archivedAt, "2026-01-01T00:00:00.000Z");
     assert.strictEqual(unarchived.type, "thread.unarchived");
+    assert.strictEqual(pinned.type, "thread.pinned");
+    assert.strictEqual(pinned.payload.pinnedAt, "2026-01-03T00:00:00.000Z");
+    assert.strictEqual(unpinned.type, "thread.unpinned");
   }),
 );
 

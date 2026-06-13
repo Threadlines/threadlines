@@ -1268,7 +1268,7 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
         ? "Turn unavailable"
         : selectedTurn
           ? `Turn ${selectedCheckpointTurnCount ?? "?"}`
-          : "All agent turns";
+          : "All chat changes";
   const selectedDiffSourceDescription =
     diffMode === "workingTree" ? (
       (diffStatsSummary ?? "Current uncommitted Git changes")
@@ -1381,7 +1381,7 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
                 }}
               >
                 <MenuRadioItem value="workingTree">Uncommitted changes</MenuRadioItem>
-                <MenuRadioItem value="checkpoint:all">All agent turns</MenuRadioItem>
+                <MenuRadioItem value="checkpoint:all">All chat changes</MenuRadioItem>
               </MenuRadioGroup>
             </MenuGroup>
             {orderedTurnDiffSummaries.length > 0 ? (

@@ -293,6 +293,8 @@ function createSnapshotForTargetUser(options: {
   targetMessageId: MessageId;
   targetText: string;
   targetAttachmentCount?: number;
+  threadPinnedAt?: string | null;
+  sessionActiveTurnId?: TurnId | null;
   sessionStatus?: OrchestrationSessionStatus;
 }): OrchestrationReadModel {
   const messages: Array<OrchestrationReadModel["threads"][number]["messages"][number]> = [];
@@ -364,6 +366,7 @@ function createSnapshotForTargetUser(options: {
         createdAt: NOW_ISO,
         updatedAt: NOW_ISO,
         archivedAt: null,
+        pinnedAt: options.threadPinnedAt ?? null,
         deletedAt: null,
         messages,
         activities: [],
@@ -376,7 +379,7 @@ function createSnapshotForTargetUser(options: {
           status: options.sessionStatus ?? "ready",
           providerName: "codex",
           runtimeMode: "full-access",
-          activeTurnId: null,
+          activeTurnId: options.sessionActiveTurnId ?? null,
           lastError: null,
           updatedAt: NOW_ISO,
         },
@@ -431,6 +434,7 @@ function addThreadToSnapshot(
         createdAt: NOW_ISO,
         updatedAt: NOW_ISO,
         archivedAt: null,
+        pinnedAt: null,
         deletedAt: null,
         messages: [],
         activities: [],
@@ -466,6 +470,7 @@ function toShellThread(thread: OrchestrationReadModel["threads"][number]) {
     createdAt: thread.createdAt,
     updatedAt: thread.updatedAt,
     archivedAt: thread.archivedAt,
+    pinnedAt: thread.pinnedAt,
     session: thread.session,
     latestUserMessageAt:
       thread.messages.findLast((message) => message.role === "user")?.createdAt ?? null,
@@ -957,6 +962,7 @@ function createSnapshotWithSecondaryProject(options?: {
           createdAt: isoAt(30),
           updatedAt: isoAt(31),
           deletedAt: null,
+          pinnedAt: null,
           messages: [],
           activities: [],
           proposedPlans: [],
@@ -991,6 +997,7 @@ function createSnapshotWithSecondaryProject(options?: {
           createdAt: isoAt(24),
           updatedAt: isoAt(25),
           deletedAt: null,
+          pinnedAt: null,
           messages: [],
           activities: [],
           proposedPlans: [],
@@ -2248,8 +2255,15 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     try {
-      await expect.element(page.getByText("Changed files (1)")).toBeVisible();
-      await page.getByText("View diff").click();
+      await expect.element(page.getByText("Turn changes (1)")).toBeVisible();
+      const viewTurnDiffButton = await waitForElement(
+        () =>
+          Array.from(document.querySelectorAll("button")).find(
+            (button) => button.textContent?.trim() === "View turn diff",
+          ) ?? null,
+        "View turn diff button should render.",
+      );
+      viewTurnDiffButton.click();
 
       await vi.waitFor(
         () => {
@@ -4209,46 +4223,135 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("hides the archive action when the pointer leaves a thread row", async () => {
+  it("renders compact thread actions in the shared thread-row hover group", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
         targetMessageId: "msg-user-archive-hover-test" as MessageId,
         targetText: "archive hover target",
+        threadPinnedAt: NOW_ISO,
       }),
     });
 
     try {
-      const threadRow = page.getByTestId(`thread-row-${THREAD_ID}`);
-
-      await expect.element(threadRow).toBeInTheDocument();
+      await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${THREAD_ID}"]`),
+        "Unable to find thread row.",
+      );
       const archiveButton = await waitForElement(
         () =>
           document.querySelector<HTMLButtonElement>(`[data-testid="thread-archive-${THREAD_ID}"]`),
         "Unable to find archive button.",
       );
-      const archiveAction = archiveButton.parentElement;
+      const pinButton = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>(`[data-testid="thread-pin-${THREAD_ID}"]`),
+        "Unable to find pin button.",
+      );
+      const compactActions = archiveButton.parentElement;
       expect(
-        archiveAction,
-        "Archive button should render inside a visibility wrapper.",
+        compactActions,
+        "Thread actions should render inside a shared visibility wrapper.",
       ).not.toBeNull();
-      expect(getComputedStyle(archiveAction!).opacity).toBe("0");
+      const threadItem = archiveButton.closest("li");
+      expect(threadItem?.className).toContain("group/menu-sub-item");
+      expect(compactActions?.className).toContain("group-hover/menu-sub-item:opacity-100");
+      expect(compactActions?.className).toContain("group-focus-within/menu-sub-item:opacity-100");
+      const pinnedMarker = await waitForElement(
+        () => document.querySelector<HTMLElement>('[aria-label="Pinned thread"]'),
+        "Unable to find pinned status marker.",
+      );
+      expect(pinnedMarker.className).not.toContain("group-hover/menu-sub-item:opacity-0");
+      expect(pinnedMarker.className).not.toContain("group-focus-within/menu-sub-item:opacity-0");
+      expect(pinButton.getAttribute("aria-label")).toBe(`Unpin ${THREAD_TITLE}`);
+      expect(pinButton.getAttribute("aria-pressed")).toBe("true");
+      expect(pinButton.querySelector("svg")?.classList.contains("lucide-pin-off")).toBe(true);
+      expect(
+        pinButton.compareDocumentPosition(archiveButton) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(getComputedStyle(compactActions!).opacity).toBe("0");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
 
-      await threadRow.hover();
-      await vi.waitFor(
-        () => {
-          expect(getComputedStyle(archiveAction!).opacity).toBe("1");
-        },
-        { timeout: 4_000, interval: 16 },
+  it("keeps pin actions available while a thread is running without showing archive", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-running-pin-test" as MessageId,
+        targetText: "running pin target",
+        threadPinnedAt: NOW_ISO,
+        sessionStatus: "running",
+        sessionActiveTurnId: "turn-running-pin-test" as TurnId,
+      }),
+    });
+
+    try {
+      await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${THREAD_ID}"]`),
+        "Unable to find running thread row.",
+      );
+      const pinButton = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>(`[data-testid="thread-pin-${THREAD_ID}"]`),
+        "Unable to find running thread pin button.",
+      );
+      const archiveButton = await waitForElement(
+        () =>
+          document.querySelector<HTMLButtonElement>(`[data-testid="thread-archive-${THREAD_ID}"]`),
+        "Unable to find disabled running thread archive button.",
+      );
+      const compactActions = pinButton.parentElement;
+
+      expect(compactActions?.className).toContain("group-hover/menu-sub-item:opacity-100");
+      expect(pinButton.getAttribute("aria-label")).toBe(`Unpin ${THREAD_TITLE}`);
+      expect(pinButton.getAttribute("aria-pressed")).toBe("true");
+      expect(pinButton.querySelector("svg")?.classList.contains("lucide-pin-off")).toBe(true);
+      expect(
+        pinButton.compareDocumentPosition(archiveButton) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(archiveButton.disabled).toBe(true);
+      expect(archiveButton.getAttribute("aria-label")).toBe(
+        `Archive ${THREAD_TITLE} unavailable while thread is running`,
+      );
+      expect(getComputedStyle(archiveButton).width).toBe("20px");
+      expect(getComputedStyle(archiveButton).cursor).toBe("default");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps archive disabled while a thread is connecting", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-connecting-pin-test" as MessageId,
+        targetText: "connecting pin target",
+        threadPinnedAt: NOW_ISO,
+        sessionStatus: "starting",
+      }),
+    });
+
+    try {
+      await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${THREAD_ID}"]`),
+        "Unable to find connecting thread row.",
+      );
+      const pinButton = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>(`[data-testid="thread-pin-${THREAD_ID}"]`),
+        "Unable to find connecting thread pin button.",
+      );
+      const archiveButton = await waitForElement(
+        () =>
+          document.querySelector<HTMLButtonElement>(`[data-testid="thread-archive-${THREAD_ID}"]`),
+        "Unable to find disabled connecting thread archive button.",
       );
 
-      await page.getByTestId("composer-editor").hover();
-      await vi.waitFor(
-        () => {
-          expect(getComputedStyle(archiveAction!).opacity).toBe("0");
-        },
-        { timeout: 4_000, interval: 16 },
+      expect(pinButton.getAttribute("aria-label")).toBe(`Unpin ${THREAD_TITLE}`);
+      expect(archiveButton.disabled).toBe(true);
+      expect(archiveButton.getAttribute("aria-label")).toBe(
+        `Archive ${THREAD_TITLE} unavailable while thread is connecting`,
       );
+      expect(getComputedStyle(archiveButton).cursor).toBe("default");
     } finally {
       await mounted.cleanup();
     }

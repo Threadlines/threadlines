@@ -146,6 +146,7 @@ describe("OrchestrationEngine", () => {
           createdAt: "2026-03-03T00:00:02.000Z",
           updatedAt: "2026-03-03T00:00:03.000Z",
           archivedAt: null,
+          pinnedAt: null,
           deletedAt: null,
           messages: [],
           proposedPlans: [],
@@ -351,6 +352,69 @@ describe("OrchestrationEngine", () => {
     expect(
       (await system.readModel()).threads.find((thread) => thread.id === "thread-archive")
         ?.archivedAt,
+    ).toBeNull();
+
+    await system.dispose();
+  });
+
+  it("pins and unpins threads through orchestration commands", async () => {
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+    const createdAt = now();
+
+    await system.run(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-project-pin-create"),
+        projectId: asProjectId("project-pin"),
+        title: "Project Pin",
+        workspaceRoot: "/tmp/project-pin",
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        createdAt,
+      }),
+    );
+    await system.run(
+      engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-thread-pin-create"),
+        threadId: ThreadId.make("thread-pin"),
+        projectId: asProjectId("project-pin"),
+        title: "Pin me",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "full-access",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      }),
+    );
+
+    await system.run(
+      engine.dispatch({
+        type: "thread.pin",
+        commandId: CommandId.make("cmd-thread-pin"),
+        threadId: ThreadId.make("thread-pin"),
+      }),
+    );
+    expect(
+      (await system.readModel()).threads.find((thread) => thread.id === "thread-pin")?.pinnedAt,
+    ).not.toBeNull();
+
+    await system.run(
+      engine.dispatch({
+        type: "thread.unpin",
+        commandId: CommandId.make("cmd-thread-unpin"),
+        threadId: ThreadId.make("thread-pin"),
+      }),
+    );
+    expect(
+      (await system.readModel()).threads.find((thread) => thread.id === "thread-pin")?.pinnedAt,
     ).toBeNull();
 
     await system.dispose();

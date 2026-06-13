@@ -126,6 +126,44 @@ export function requireThreadNotArchived(input: {
   );
 }
 
+export function requireThreadPinned(input: {
+  readonly readModel: OrchestrationReadModel;
+  readonly command: OrchestrationCommand;
+  readonly threadId: ThreadId;
+}): Effect.Effect<OrchestrationThread, OrchestrationCommandInvariantError> {
+  return requireThread(input).pipe(
+    Effect.flatMap((thread) =>
+      thread.pinnedAt !== null
+        ? Effect.succeed(thread)
+        : Effect.fail(
+            invariantError(
+              input.command.type,
+              `Thread '${input.threadId}' is not pinned for command '${input.command.type}'.`,
+            ),
+          ),
+    ),
+  );
+}
+
+export function requireThreadNotPinned(input: {
+  readonly readModel: OrchestrationReadModel;
+  readonly command: OrchestrationCommand;
+  readonly threadId: ThreadId;
+}): Effect.Effect<OrchestrationThread, OrchestrationCommandInvariantError> {
+  return requireThread(input).pipe(
+    Effect.flatMap((thread) =>
+      thread.pinnedAt === null
+        ? Effect.succeed(thread)
+        : Effect.fail(
+            invariantError(
+              input.command.type,
+              `Thread '${input.threadId}' is already pinned and cannot handle command '${input.command.type}'.`,
+            ),
+          ),
+    ),
+  );
+}
+
 export function requireThreadAbsent(input: {
   readonly readModel: OrchestrationReadModel;
   readonly command: OrchestrationCommand;

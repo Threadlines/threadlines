@@ -5,6 +5,7 @@ import type { Thread } from "../types";
 export type ThreadSortInput = Pick<Thread, "createdAt" | "updatedAt"> & {
   latestUserMessageAt?: string | null;
   messages?: Pick<Thread["messages"][number], "createdAt" | "role">[];
+  pinnedAt?: string | null;
 };
 
 export function toSortableTimestamp(iso: string | undefined): number | null {
@@ -52,6 +53,12 @@ export function sortThreads<T extends Pick<Thread, "id"> & ThreadSortInput>(
   sortOrder: SidebarThreadSortOrder,
 ): T[] {
   return threads.toSorted((left, right) => {
+    const rightPinned = right.pinnedAt !== null && right.pinnedAt !== undefined;
+    const leftPinned = left.pinnedAt !== null && left.pinnedAt !== undefined;
+    if (rightPinned !== leftPinned) {
+      return rightPinned ? 1 : -1;
+    }
+
     const rightTimestamp = getThreadSortTimestamp(right, sortOrder);
     const leftTimestamp = getThreadSortTimestamp(left, sortOrder);
     const byTimestamp =

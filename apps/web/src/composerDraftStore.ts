@@ -668,9 +668,12 @@ function normalizeProviderModelOptions(
     if (typeof legacy.effort === "string" && legacy.effort.length > 0) {
       codexExtras.push({ id: "reasoningEffort", value: legacy.effort });
     }
-    const fastMode =
-      legacy.codexFastMode === true ||
-      (typeof legacy.serviceTier === "string" && legacy.serviceTier === "fast");
+    const serviceTier =
+      typeof legacy.serviceTier === "string" ? legacy.serviceTier.trim() : undefined;
+    if (serviceTier && serviceTier !== "fast") {
+      codexExtras.push({ id: "serviceTier", value: serviceTier });
+    }
+    const fastMode = legacy.codexFastMode === true || serviceTier === "fast";
     if (fastMode) {
       codexExtras.push({ id: "fastMode", value: true });
     }

@@ -29,6 +29,7 @@ import { RUNTIME_MODES, ServerSettingsError } from "@t3tools/contracts";
 
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { isCommandAvailable } from "@t3tools/shared/shell";
+import { DEFAULT_CODEX_SERVICE_TIER_SELECTION } from "../../codexServiceTier.ts";
 import {
   AUTH_PROBE_TIMEOUT_MS,
   buildServerProvider,
@@ -60,6 +61,8 @@ const REASONING_EFFORT_LABELS: Record<CodexSchema.V2ModelListResponse__Reasoning
   high: "High",
   xhigh: "Extra High",
 };
+
+const DEFAULT_CODEX_SERVICE_TIER_LABEL = "Standard";
 
 function codexAccountAuthLabel(account: CodexSchema.V2GetAccountResponse["account"]) {
   if (!account) return undefined;
@@ -270,7 +273,10 @@ function mapCodexModelCapabilities(
         },
   );
   const defaultReasoning = reasoningOptions.find((option) => option.isDefault)?.id;
-  const supportsFastMode = (model.additionalSpeedTiers ?? []).includes("fast");
+  const serviceTierOptions = mapCodexServiceTierOptions(model);
+  const defaultServiceTier = serviceTierOptions.find((option) => option.isDefault)?.id;
+  const supportsLegacyFastMode =
+    serviceTierOptions.length === 0 && (model.additionalSpeedTiers ?? []).includes("fast");
   return createModelCapabilities({
     optionDescriptors: [
       ...(reasoningOptions.length > 0
@@ -284,7 +290,18 @@ function mapCodexModelCapabilities(
             },
           ]
         : []),
-      ...(supportsFastMode
+      ...(serviceTierOptions.length > 0
+        ? [
+            {
+              id: "serviceTier",
+              label: "Speed",
+              type: "select" as const,
+              options: serviceTierOptions,
+              ...(defaultServiceTier ? { currentValue: defaultServiceTier } : {}),
+            },
+          ]
+        : []),
+      ...(supportsLegacyFastMode
         ? [
             {
               id: "fastMode",
@@ -295,6 +312,52 @@ function mapCodexModelCapabilities(
         : []),
     ],
   });
+}
+
+function mapCodexServiceTierOptions(model: CodexSchema.V2ModelListResponse__Model) {
+  const serviceTiers = model.serviceTiers ?? [];
+  if (serviceTiers.length === 0) {
+    return [];
+  }
+
+  const configuredDefaultServiceTier = optionalString(model.defaultServiceTier);
+  const hasConfiguredDefaultServiceTier =
+    configuredDefaultServiceTier !== undefined &&
+    serviceTiers.some((tier) => tier.id === configuredDefaultServiceTier);
+  const defaultOption: {
+    id: string;
+    label: string;
+    isDefault?: true;
+  } = {
+    id: DEFAULT_CODEX_SERVICE_TIER_SELECTION,
+    label: DEFAULT_CODEX_SERVICE_TIER_LABEL,
+  };
+  if (!hasConfiguredDefaultServiceTier) {
+    defaultOption.isDefault = true;
+  }
+
+  return [
+    defaultOption,
+    ...serviceTiers.map((tier) => {
+      const description = optionalString(tier.description);
+      const option: {
+        id: string;
+        label: string;
+        description?: string;
+        isDefault?: true;
+      } = {
+        id: tier.id,
+        label: tier.name,
+      };
+      if (description) {
+        option.description = description;
+      }
+      if (tier.id === configuredDefaultServiceTier) {
+        option.isDefault = true;
+      }
+      return option;
+    }),
+  ];
 }
 
 const toDisplayName = (model: CodexSchema.V2ModelListResponse__Model): string => {
