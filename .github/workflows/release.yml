@@ -29,6 +29,7 @@ on:
         type: choice
         options:
           - mac-arm64
+          - mac-arm64-windows
           - mac-all
           - all
 
@@ -213,6 +214,10 @@ jobs:
           case "$build_scope" in
             mac-arm64)
               build_windows=false
+              macos_matrix='{"include":[{"arch":"arm64","runner":"macos-15"}]}'
+              ;;
+            mac-arm64-windows)
+              build_windows=true
               macos_matrix='{"include":[{"arch":"arm64","runner":"macos-15"}]}'
               ;;
             mac-all)
