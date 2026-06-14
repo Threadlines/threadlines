@@ -693,8 +693,8 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     if (signed) {
       macConfig.hardenedRuntime = true;
       macConfig.gatekeeperAssess = true;
-      macConfig.entitlements = "entitlements.mac.plist";
-      macConfig.entitlementsInherit = "entitlements.mac.inherit.plist";
+      macConfig.entitlements = "apps/desktop/resources/entitlements.mac.plist";
+      macConfig.entitlementsInherit = "apps/desktop/resources/entitlements.mac.inherit.plist";
       macConfig.notarize = false;
       buildConfig.afterSign = "apps/desktop/resources/notarize-after-sign.cjs";
     } else {
