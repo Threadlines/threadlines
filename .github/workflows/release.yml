@@ -368,13 +368,28 @@ jobs:
           --verbose
 
       - name: Normalize Windows updater manifests
-        if: needs.preflight.outputs.channel == 'nightly'
         shell: pwsh
+        env:
+          CHANNEL: ${{ needs.preflight.outputs.channel }}
         run: |
-          if (Test-Path release\nightly.yml) {
-            Copy-Item release\nightly.yml release\latest.yml -Force
-          } elseif (-not (Test-Path release\latest.yml)) {
-            throw "Nightly build did not produce nightly.yml or latest.yml."
+          if ($env:CHANNEL -eq "nightly") {
+            if (-not (Test-Path release\nightly.yml)) {
+              if (Test-Path release\latest.yml) {
+                Move-Item release\latest.yml release\nightly.yml -Force
+              } else {
+                throw "Nightly build did not produce nightly.yml or latest.yml."
+              }
+            }
+            Remove-Item release\latest.yml -Force -ErrorAction SilentlyContinue
+          } else {
+            if (-not (Test-Path release\latest.yml)) {
+              if (Test-Path release\nightly.yml) {
+                Move-Item release\nightly.yml release\latest.yml -Force
+              } else {
+                throw "Stable build did not produce latest.yml or nightly.yml."
+              }
+            }
+            Remove-Item release\nightly.yml -Force -ErrorAction SilentlyContinue
           }
 
       - name: Remove non-release build metadata
@@ -501,25 +516,44 @@ jobs:
           normalize_manifest() {
             local source="$1"
             local target="$2"
-            if [[ -f "release/$source" && ! -f "release/$target" ]]; then
-              cp "release/$source" "release/$target"
+            if [[ -f "release/$source" ]]; then
+              if [[ "$source" != "$target" ]]; then
+                mv -f "release/$source" "release/$target"
+              fi
             fi
           }
 
-          if [[ "$ARCH" == "x64" ]]; then
-            normalize_manifest "latest-mac.yml" "latest-mac-x64.yml"
-            normalize_manifest "nightly-mac.yml" "nightly-mac-x64.yml"
-            rm -f release/latest-mac.yml release/nightly-mac.yml
+          if [[ "$CHANNEL" == "nightly" ]]; then
+            target_manifest="nightly-mac.yml"
+            fallback_manifest="latest-mac.yml"
           else
-            normalize_manifest "nightly-mac.yml" "latest-mac.yml"
+            target_manifest="latest-mac.yml"
+            fallback_manifest="nightly-mac.yml"
           fi
 
-          if [[ "$CHANNEL" == "nightly" ]]; then
-            if [[ "$ARCH" == "x64" ]]; then
-              normalize_manifest "latest-mac-x64.yml" "nightly-mac-x64.yml"
-            else
-              normalize_manifest "latest-mac.yml" "nightly-mac.yml"
+          if [[ "$ARCH" == "x64" ]]; then
+            arch_target_manifest="${target_manifest%.yml}-x64.yml"
+          else
+            arch_target_manifest="$target_manifest"
+          fi
+
+          if [[ -f "release/$target_manifest" ]]; then
+            normalize_manifest "$target_manifest" "$arch_target_manifest"
+          elif [[ -f "release/$fallback_manifest" ]]; then
+            normalize_manifest "$fallback_manifest" "$arch_target_manifest"
+          else
+            echo "Build did not produce $target_manifest or $fallback_manifest." >&2
+            exit 1
+          fi
+
+          for manifest in latest-mac.yml latest-mac-x64.yml nightly-mac.yml nightly-mac-x64.yml; do
+            if [[ "$manifest" != "$arch_target_manifest" ]]; then
+              rm -f "release/$manifest"
             fi
+          done
+          if [[ ! -f "release/$arch_target_manifest" ]]; then
+            echo "Normalized macOS manifest is missing: $arch_target_manifest" >&2
+            exit 1
           fi
 
       - name: Remove non-release build metadata
@@ -535,7 +569,7 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          assets=(release/*.dmg release/*.zip release/*.blockmap release/*mac*.yml)
+          assets=(release/*.dmg release/*.zip release/*.zip.blockmap release/*mac*.yml)
           if (( ${#assets[@]} == 0 )); then
             echo "No macOS release assets found." >&2
             exit 1
@@ -587,10 +621,11 @@ jobs:
             release download "$TAG"
             --dir release-manifests
             --clobber
-            --pattern "latest-mac*.yml"
           )
           if [[ "$CHANNEL" == "nightly" ]]; then
             args+=(--pattern "nightly-mac*.yml")
+          else
+            args+=(--pattern "latest-mac*.yml")
           fi
 
           gh "${args[@]}"
@@ -631,9 +666,10 @@ jobs:
             fi
           }
 
-          merge_mac_manifest "latest-mac.yml" "latest-mac-x64.yml"
           if [[ "$CHANNEL" == "nightly" ]]; then
             merge_mac_manifest "nightly-mac.yml" "nightly-mac-x64.yml"
+          else
+            merge_mac_manifest "latest-mac.yml" "latest-mac-x64.yml"
           fi
 
       - name: Publish draft release

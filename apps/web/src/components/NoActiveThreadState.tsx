@@ -6,6 +6,11 @@ import { useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { useCommandPaletteStore } from "../commandPaletteStore";
+import {
+  ELECTRON_HEADER_HEIGHT_CLASS,
+  MAC_TRAFFIC_LIGHT_CLEARANCE_HEADER_CLASS,
+  needsMacTrafficLightClearance,
+} from "../desktopChrome";
 import { isElectron } from "../env";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import {
@@ -23,7 +28,7 @@ import { Button } from "./ui/button";
 import { Empty, EmptyDescription, EmptyTitle } from "./ui/empty";
 import { Group } from "./ui/group";
 import { Menu, MenuGroup, MenuGroupLabel, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
-import { SidebarInset, SidebarOpenTrigger } from "./ui/sidebar";
+import { SidebarInset, SidebarOpenTrigger, useSidebar } from "./ui/sidebar";
 import { useSettings } from "~/hooks/useSettings";
 import { cn } from "~/lib/utils";
 
@@ -189,6 +194,8 @@ export function NoActiveThreadState() {
       params: buildThreadRouteParams(scopeThreadRef(thread.environmentId, thread.id)),
     });
   };
+  const { open: sidebarOpen } = useSidebar();
+  const useMacTitlebarClearance = needsMacTrafficLightClearance(sidebarOpen);
 
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
@@ -197,7 +204,12 @@ export function NoActiveThreadState() {
           className={cn(
             "border-b border-border px-3 sm:px-5",
             isElectron
-              ? "drag-region flex h-[52px] items-center wco:h-[env(titlebar-area-height)]"
+              ? cn(
+                  "drag-region flex items-center wco:h-[env(titlebar-area-height)]",
+                  useMacTitlebarClearance
+                    ? MAC_TRAFFIC_LIGHT_CLEARANCE_HEADER_CLASS
+                    : ELECTRON_HEADER_HEIGHT_CLASS,
+                )
               : "py-2 sm:py-3",
           )}
         >

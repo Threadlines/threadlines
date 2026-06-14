@@ -37,6 +37,11 @@ import { useShallow } from "zustand/react/shallow";
 import { useGitStatus } from "~/lib/gitStatusState";
 import { usePrimaryEnvironmentId } from "../environments/primary";
 import { readEnvironmentApi } from "../environmentApi";
+import {
+  ELECTRON_HEADER_HEIGHT_CLASS,
+  MAC_TRAFFIC_LIGHT_CLEARANCE_HEADER_CLASS,
+  needsMacTrafficLightClearance,
+} from "../desktopChrome";
 import { isElectron } from "../env";
 import { readLocalApi } from "../localApi";
 import {
@@ -152,6 +157,7 @@ import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
 import { ChatHeader } from "./chat/ChatHeader";
+import { useSidebar } from "./ui/sidebar";
 import { type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import { NoActiveThreadState } from "./NoActiveThreadState";
 import { resolveEffectiveEnvMode, resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
@@ -551,6 +557,8 @@ export default function ChatView(props: ChatViewProps) {
     planPanelOpen = false,
     reserveTitleBarControlInset = true,
   } = props;
+  const { open: sidebarOpen } = useSidebar();
+  const useMacTitlebarClearance = needsMacTrafficLightClearance(sidebarOpen);
   const draftId = routeKind === "draft" ? props.draftId : null;
   const routeThreadRef = useMemo(
     () => scopeThreadRef(environmentId, threadId),
@@ -3672,7 +3680,10 @@ export default function ChatView(props: ChatViewProps) {
           "border-b border-border",
           isElectron
             ? cn(
-                "drag-region flex h-[52px] items-center px-3 sm:px-5 wco:h-[env(titlebar-area-height)]",
+                "drag-region flex items-center px-3 sm:px-5 wco:h-[env(titlebar-area-height)]",
+                useMacTitlebarClearance
+                  ? MAC_TRAFFIC_LIGHT_CLEARANCE_HEADER_CLASS
+                  : ELECTRON_HEADER_HEIGHT_CLASS,
                 reserveTitleBarControlInset &&
                   "wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]",
               )

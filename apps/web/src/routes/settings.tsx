@@ -11,8 +11,14 @@ import { useCallback, useEffect, useState } from "react";
 
 import { useSettingsRestore } from "../components/settings/SettingsPanels";
 import { Button } from "../components/ui/button";
-import { SidebarInset, SidebarOpenTrigger } from "../components/ui/sidebar";
+import { SidebarInset, SidebarOpenTrigger, useSidebar } from "../components/ui/sidebar";
+import {
+  ELECTRON_HEADER_HEIGHT_CLASS,
+  MAC_TRAFFIC_LIGHT_CLEARANCE_HEADER_CLASS,
+  needsMacTrafficLightClearance,
+} from "../desktopChrome";
 import { isElectron } from "../env";
+import { cn } from "../lib/utils";
 
 function RestoreDefaultsButton({ onRestored }: { onRestored: () => void }) {
   const { changedSettingLabels, restoreDefaults } = useSettingsRestore(onRestored);
@@ -34,6 +40,8 @@ function SettingsContentLayout() {
   const location = useLocation();
   const navigate = useNavigate();
   const canGoBack = useCanGoBack();
+  const { open: sidebarOpen } = useSidebar();
+  const useMacTitlebarClearance = needsMacTrafficLightClearance(sidebarOpen);
   const [restoreSignal, setRestoreSignal] = useState(0);
   const showRestoreDefaults = location.pathname === "/settings/general";
   const handleRestored = () => setRestoreSignal((value) => value + 1);
@@ -78,7 +86,14 @@ function SettingsContentLayout() {
         )}
 
         {isElectron && (
-          <div className="drag-region flex h-[52px] shrink-0 items-center gap-2 border-b border-border px-5 wco:h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
+          <div
+            className={cn(
+              "drag-region flex shrink-0 items-center gap-2 border-b border-border px-5 wco:h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]",
+              useMacTitlebarClearance
+                ? MAC_TRAFFIC_LIGHT_CLEARANCE_HEADER_CLASS
+                : ELECTRON_HEADER_HEIGHT_CLASS,
+            )}
+          >
             <SidebarOpenTrigger className="size-7 shrink-0" />
             <span className="text-xs font-medium tracking-wide text-muted-foreground/70">
               Settings

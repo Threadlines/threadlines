@@ -63,10 +63,15 @@ import {
   type SidebarThreadSortOrder,
 } from "@t3tools/contracts/settings";
 import { usePrimaryEnvironmentId } from "../environments/primary";
+import {
+  ELECTRON_HEADER_HEIGHT_CLASS,
+  MAC_TRAFFIC_LIGHT_CLEARANCE_HEADER_CLASS,
+  isMacElectron,
+} from "../desktopChrome";
 import { isElectron } from "../env";
 import { APP_BASE_NAME, APP_STAGE_LABEL, APP_VERSION } from "../branding";
 import { isTerminalFocused } from "../lib/terminalFocus";
-import { isMacPlatform, newCommandId } from "../lib/utils";
+import { cn, isMacPlatform, newCommandId } from "../lib/utils";
 import {
   selectProjectByRef,
   selectProjectsAcrossEnvironments,
@@ -2613,7 +2618,17 @@ const SidebarChromeHeader = memo(function SidebarChromeHeader({
   );
 
   return isElectron ? (
-    <SidebarHeader className="drag-region h-[52px] flex-row items-center gap-2 px-4 py-0 pl-[90px] wco:h-[env(titlebar-area-height)] wco:pl-[calc(env(titlebar-area-x)+1em)]">
+    <SidebarHeader
+      className={cn(
+        "drag-region flex-row gap-2 px-4",
+        isMacElectron
+          ? MAC_TRAFFIC_LIGHT_CLEARANCE_HEADER_CLASS
+          : cn(
+              ELECTRON_HEADER_HEIGHT_CLASS,
+              "items-center py-0 pl-[90px] wco:h-[env(titlebar-area-height)] wco:pl-[calc(env(titlebar-area-x)+1em)]",
+            ),
+      )}
+    >
       {wordmark}
     </SidebarHeader>
   ) : (

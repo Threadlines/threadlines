@@ -453,6 +453,33 @@ const runCommand = Effect.fn("runCommand")(function* (command: ChildProcess.Comm
   }
 });
 
+const MAC_ICON_CANVAS_SIZE = 1024;
+const MAC_ICON_VISIBLE_SIZE = 824;
+
+function generatePaddedMacIconSource(
+  sourcePng: string,
+  targetPng: string,
+  tmpRoot: string,
+  path: Path.Path,
+  verbose: boolean,
+) {
+  return Effect.gen(function* () {
+    const scaledIconPath = path.join(tmpRoot, "icon-content.png");
+
+    yield* runCommand(
+      ChildProcess.make({
+        ...commandOutputOptions(verbose),
+      })`sips -z ${MAC_ICON_VISIBLE_SIZE} ${MAC_ICON_VISIBLE_SIZE} ${sourcePng} --out ${scaledIconPath}`,
+    );
+
+    yield* runCommand(
+      ChildProcess.make({
+        ...commandOutputOptions(verbose),
+      })`sips -p ${MAC_ICON_CANVAS_SIZE} ${MAC_ICON_CANVAS_SIZE} ${scaledIconPath} --out ${targetPng}`,
+    );
+  });
+}
+
 function generateMacIconSet(
   sourcePng: string,
   targetIcns: string,
@@ -505,14 +532,16 @@ function stageMacIcons(stageResourcesDir: string, sourcePng: string, verbose: bo
 
     const iconPngPath = path.join(stageResourcesDir, "icon.png");
     const iconIcnsPath = path.join(stageResourcesDir, "icon.icns");
+    const paddedSourcePng = path.join(tmpRoot, "icon-padded.png");
 
+    yield* generatePaddedMacIconSource(sourcePng, paddedSourcePng, tmpRoot, path, verbose);
     yield* runCommand(
       ChildProcess.make({
         ...commandOutputOptions(verbose),
-      })`sips -z 512 512 ${sourcePng} --out ${iconPngPath}`,
+      })`sips -z 512 512 ${paddedSourcePng} --out ${iconPngPath}`,
     );
 
-    yield* generateMacIconSet(sourcePng, iconIcnsPath, tmpRoot, path, verbose);
+    yield* generateMacIconSet(paddedSourcePng, iconIcnsPath, tmpRoot, path, verbose);
   });
 }
 
