@@ -130,6 +130,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(macConfig.identity, undefined);
       assert.equal(macConfig.hardenedRuntime, true);
       assert.equal(macConfig.gatekeeperAssess, true);
+      assert.equal(macConfig.entitlements, "entitlements.mac.plist");
+      assert.equal(macConfig.entitlementsInherit, "entitlements.mac.inherit.plist");
       assert.equal(macConfig.notarize, true);
     }),
   );

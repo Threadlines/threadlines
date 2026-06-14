@@ -693,6 +693,8 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     if (signed) {
       macConfig.hardenedRuntime = true;
       macConfig.gatekeeperAssess = true;
+      macConfig.entitlements = "entitlements.mac.plist";
+      macConfig.entitlementsInherit = "entitlements.mac.inherit.plist";
       macConfig.notarize = true;
     } else {
       macConfig.identity = "-";
