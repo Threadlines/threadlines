@@ -364,8 +364,9 @@ jobs:
       - preflight
       - prepare_release
     runs-on: ${{ matrix.runner }}
-    # Apple notarization can occasionally sit in queue for well over 45 minutes.
-    timeout-minutes: 120
+    # Apple notarization can occasionally sit in queue for well over 45 minutes,
+    # and GitHub-hosted macOS runners can hit transient notarytool network errors.
+    timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:
@@ -431,12 +432,29 @@ jobs:
           chmod 600 "$apple_api_key_path"
           unset APPLE_API_KEY_CONTENT
 
-          APPLE_API_KEY="$apple_api_key_path" bun run dist:desktop:artifact -- \
-            --platform mac \
-            --target dmg \
-            --arch "${{ matrix.arch }}" \
-            --build-version "${{ needs.preflight.outputs.version }}" \
-            --verbose
+          run_macos_build() {
+            APPLE_API_KEY="$apple_api_key_path" bun run dist:desktop:artifact -- \
+              --platform mac \
+              --target dmg \
+              --arch "${{ matrix.arch }}" \
+              --build-version "${{ needs.preflight.outputs.version }}" \
+              --verbose
+          }
+
+          max_attempts=2
+          for attempt in $(seq 1 "$max_attempts"); do
+            if run_macos_build; then
+              exit 0
+            fi
+
+            status=$?
+            if [[ "$attempt" == "$max_attempts" ]]; then
+              exit "$status"
+            fi
+
+            echo "::warning::macOS artifact build failed on attempt $attempt/$max_attempts; retrying after 120 seconds."
+            sleep 120
+          done
 
       - name: Normalize macOS updater manifests
         shell: bash
