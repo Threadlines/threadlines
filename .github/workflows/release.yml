@@ -414,16 +414,28 @@ jobs:
           THREADLINES_DESKTOP_SIGNED: ${{ (vars.THREADLINES_MACOS_SIGNED == 'true' || vars.BADCODE_MACOS_SIGNED == 'true') && 'true' || 'false' }}
           CSC_LINK: ${{ secrets.MACOS_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.MACOS_CSC_KEY_PASSWORD }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: >
-          bun run dist:desktop:artifact --
-          --platform mac
-          --target dmg
-          --arch "${{ matrix.arch }}"
-          --build-version "${{ needs.preflight.outputs.version }}"
-          --verbose
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$APPLE_API_KEY_CONTENT" || -z "$APPLE_API_KEY_ID" || -z "$APPLE_API_ISSUER" ]]; then
+            echo "::error::macOS notarization requires APPLE_API_KEY, APPLE_API_KEY_ID, and APPLE_API_ISSUER secrets."
+            exit 1
+          fi
+
+          apple_api_key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          printf "%s" "$APPLE_API_KEY_CONTENT" > "$apple_api_key_path"
+          chmod 600 "$apple_api_key_path"
+          unset APPLE_API_KEY_CONTENT
+
+          APPLE_API_KEY="$apple_api_key_path" bun run dist:desktop:artifact -- \
+            --platform mac \
+            --target dmg \
+            --arch "${{ matrix.arch }}" \
+            --build-version "${{ needs.preflight.outputs.version }}" \
+            --verbose
 
       - name: Normalize macOS updater manifests
         shell: bash
