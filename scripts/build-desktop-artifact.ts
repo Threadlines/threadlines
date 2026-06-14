@@ -695,7 +695,8 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       macConfig.gatekeeperAssess = true;
       macConfig.entitlements = "entitlements.mac.plist";
       macConfig.entitlementsInherit = "entitlements.mac.inherit.plist";
-      macConfig.notarize = true;
+      macConfig.notarize = false;
+      buildConfig.afterSign = "apps/desktop/resources/notarize-after-sign.cjs";
     } else {
       macConfig.identity = "-";
       macConfig.hardenedRuntime = false;
@@ -956,6 +957,9 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     delete buildEnv.APPLE_API_KEY;
     delete buildEnv.APPLE_API_KEY_ID;
     delete buildEnv.APPLE_API_ISSUER;
+    delete buildEnv.THREADLINES_NOTARY_TIMEOUT_SECONDS;
+    delete buildEnv.THREADLINES_NOTARY_POLL_SECONDS;
+    delete buildEnv.THREADLINES_NOTARY_SUBMIT_ATTEMPTS;
   }
 
   const python = yield* resolvePythonForNodeGyp();

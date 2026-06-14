@@ -22,6 +22,15 @@ on:
         description: "Optional owner/repo for the updater feed embedded in desktop apps. Defaults to this repository."
         required: false
         type: string
+      build_scope:
+        description: "Artifacts to build. Use mac-arm64 for low-cost signing/updater proof runs."
+        required: false
+        default: mac-arm64
+        type: choice
+        options:
+          - mac-arm64
+          - mac-all
+          - all
 
 permissions:
   contents: write
@@ -43,6 +52,9 @@ jobs:
       is_prerelease: ${{ steps.release_meta.outputs.is_prerelease }}
       make_latest: ${{ steps.release_meta.outputs.make_latest }}
       update_repository: ${{ steps.release_meta.outputs.update_repository }}
+      build_scope: ${{ steps.release_meta.outputs.build_scope }}
+      build_windows: ${{ steps.release_meta.outputs.build_windows }}
+      macos_matrix: ${{ steps.release_meta.outputs.macos_matrix }}
       ref: ${{ github.sha }}
     steps:
       - name: Checkout
@@ -73,11 +85,13 @@ jobs:
           DISPATCH_CHANNEL: ${{ inputs.channel }}
           DISPATCH_VERSION: ${{ inputs.version }}
           DISPATCH_UPDATE_REPOSITORY: ${{ inputs.update_repository }}
+          DISPATCH_BUILD_SCOPE: ${{ inputs.build_scope }}
         run: |
           plain_stable_pattern='^[0-9]+\.[0-9]+\.[0-9]+$'
           nightly_pattern='^[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9]{8}\.[0-9]+$'
           repository_pattern='^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
           update_repository="${DISPATCH_UPDATE_REPOSITORY:-$GITHUB_REPOSITORY}"
+          build_scope="${DISPATCH_BUILD_SCOPE:-all}"
 
           resolve_next_stable_version() {
             git fetch --force --tags origin "refs/tags/*:refs/tags/*"
@@ -196,6 +210,25 @@ jobs:
             exit 1
           fi
 
+          case "$build_scope" in
+            mac-arm64)
+              build_windows=false
+              macos_matrix='{"include":[{"arch":"arm64","runner":"macos-15"}]}'
+              ;;
+            mac-all)
+              build_windows=false
+              macos_matrix='{"include":[{"arch":"arm64","runner":"macos-15"},{"arch":"x64","runner":"macos-15-intel"}]}'
+              ;;
+            all)
+              build_windows=true
+              macos_matrix='{"include":[{"arch":"arm64","runner":"macos-15"},{"arch":"x64","runner":"macos-15-intel"}]}'
+              ;;
+            *)
+              echo "Invalid build scope: ${build_scope:-<blank>}" >&2
+              exit 1
+              ;;
+          esac
+
           if [[ "${GITHUB_REF_TYPE}" != "tag" ]] && git rev-parse --verify --quiet "refs/tags/v$version" >/dev/null; then
             echo "Release tag already exists: v$version" >&2
             exit 1
@@ -208,6 +241,9 @@ jobs:
           echo "is_prerelease=$is_prerelease" >> "$GITHUB_OUTPUT"
           echo "make_latest=$make_latest" >> "$GITHUB_OUTPUT"
           echo "update_repository=$update_repository" >> "$GITHUB_OUTPUT"
+          echo "build_scope=$build_scope" >> "$GITHUB_OUTPUT"
+          echo "build_windows=$build_windows" >> "$GITHUB_OUTPUT"
+          echo "macos_matrix=$macos_matrix" >> "$GITHUB_OUTPUT"
 
       - name: Format check
         run: bun run fmt:check
@@ -286,6 +322,7 @@ jobs:
     needs:
       - preflight
       - prepare_release
+    if: ${{ needs.preflight.outputs.build_windows == 'true' }}
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -364,17 +401,11 @@ jobs:
       - preflight
       - prepare_release
     runs-on: ${{ matrix.runner }}
-    # Apple notarization can occasionally sit in queue for well over 45 minutes,
-    # and GitHub-hosted macOS runners can hit transient notarytool network errors.
-    timeout-minutes: 240
+    timeout-minutes: 50
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - arch: arm64
-            runner: macos-15
-          - arch: x64
-            runner: macos-15-intel
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.preflight.outputs.macos_matrix) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -391,6 +422,18 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version-file: package.json
+
+      - name: Cache desktop build downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.bun/install/cache
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+          key: macos-${{ matrix.arch }}-desktop-${{ hashFiles('bun.lock', 'package.json', 'apps/desktop/package.json') }}
+          restore-keys: |
+            macos-${{ matrix.arch }}-desktop-
+            macos-desktop-
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -419,6 +462,9 @@ jobs:
           APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          THREADLINES_NOTARY_TIMEOUT_SECONDS: "900"
+          THREADLINES_NOTARY_POLL_SECONDS: "30"
+          THREADLINES_NOTARY_SUBMIT_ATTEMPTS: "3"
         run: |
           set -euo pipefail
 
@@ -432,29 +478,12 @@ jobs:
           chmod 600 "$apple_api_key_path"
           unset APPLE_API_KEY_CONTENT
 
-          run_macos_build() {
-            APPLE_API_KEY="$apple_api_key_path" bun run dist:desktop:artifact -- \
-              --platform mac \
-              --target dmg \
-              --arch "${{ matrix.arch }}" \
-              --build-version "${{ needs.preflight.outputs.version }}" \
-              --verbose
-          }
-
-          max_attempts=2
-          for attempt in $(seq 1 "$max_attempts"); do
-            if run_macos_build; then
-              exit 0
-            fi
-
-            status=$?
-            if [[ "$attempt" == "$max_attempts" ]]; then
-              exit "$status"
-            fi
-
-            echo "::warning::macOS artifact build failed on attempt $attempt/$max_attempts; retrying after 120 seconds."
-            sleep 120
-          done
+          APPLE_API_KEY="$apple_api_key_path" bun run dist:desktop:artifact -- \
+            --platform mac \
+            --target dmg \
+            --arch "${{ matrix.arch }}" \
+            --build-version "${{ needs.preflight.outputs.version }}" \
+            --verbose
 
       - name: Normalize macOS updater manifests
         shell: bash
@@ -515,6 +544,7 @@ jobs:
       - prepare_release
       - windows
       - macos
+    if: ${{ always() && needs.prepare_release.result == 'success' && needs.macos.result == 'success' && (needs.windows.result == 'success' || needs.windows.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -626,7 +656,7 @@ jobs:
       - windows
       - macos
       - publish
-    if: ${{ always() && needs.prepare_release.result == 'success' && (needs.windows.result != 'success' || needs.macos.result != 'success' || needs.publish.result != 'success') }}
+    if: ${{ always() && needs.prepare_release.result == 'success' && ((needs.windows.result != 'success' && needs.windows.result != 'skipped') || needs.macos.result != 'success' || needs.publish.result != 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

@@ -132,7 +132,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(macConfig.gatekeeperAssess, true);
       assert.equal(macConfig.entitlements, "entitlements.mac.plist");
       assert.equal(macConfig.entitlementsInherit, "entitlements.mac.inherit.plist");
-      assert.equal(macConfig.notarize, true);
+      assert.equal(macConfig.notarize, false);
+      assert.equal(buildConfig.afterSign, "apps/desktop/resources/notarize-after-sign.cjs");
     }),
   );
 
