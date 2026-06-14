@@ -17,7 +17,8 @@ import {
   createRoute,
   createRouter,
 } from "@tanstack/react-router";
-import type { ReactNode } from "react";
+import { flushSync } from "react-dom";
+import { type ReactNode, useEffect, useState } from "react";
 import { page } from "vitest/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
@@ -1118,6 +1119,101 @@ describe("SourceControlPanel commit graph", () => {
       });
     } finally {
       await mounted.cleanup();
+    }
+  });
+
+  it("refreshes the graph when remote status shows the branch fell behind", async () => {
+    const initialGraph: VcsCommitGraphResult = {
+      truncated: false,
+      commits: [
+        {
+          sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          shortSha: "aaaaaaa",
+          parents: [],
+          refs: ["main", "origin/main"],
+          subject: "Local main tip",
+          authorName: "Ada Lovelace",
+          committedAt: "2026-05-25T12:00:00.000Z",
+        },
+      ],
+    };
+    const updatedGraph: VcsCommitGraphResult = {
+      truncated: false,
+      commits: [
+        {
+          sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          shortSha: "bbbbbbb",
+          parents: ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+          refs: ["origin/main"],
+          subject: "Remote main advanced",
+          authorName: "Grace Hopper",
+          committedAt: "2026-05-25T12:05:00.000Z",
+        },
+        ...initialGraph.commits,
+      ],
+    };
+    let commitGraphCalls = 0;
+    const commitGraph: EnvironmentApi["vcs"]["commitGraph"] = vi.fn(async () => {
+      commitGraphCalls += 1;
+      return commitGraphCalls === 1 ? initialGraph : updatedGraph;
+    });
+    const environmentApi = makeEnvironmentApi({ vcs: { commitGraph } });
+    gitStatusMock.data = makeStatus({ behindCount: 0 });
+    __setEnvironmentApiOverrideForTests(ENVIRONMENT_ID, environmentApi);
+
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+    const host = document.createElement("div");
+    host.style.width = "420px";
+    host.style.height = "720px";
+    document.body.append(host);
+
+    let forcePanelRender: (() => void) | null = null;
+    function PanelHarness() {
+      const [renderVersion, setRenderVersion] = useState(0);
+      useEffect(() => {
+        forcePanelRender = () => setRenderVersion((version) => version + 1);
+        return () => {
+          forcePanelRender = null;
+        };
+      }, []);
+
+      return (
+        <QueryClientProvider client={queryClient}>
+          <SourceControlPanel
+            target={TARGET}
+            activeThreadRef={null}
+            taskPanelButton={<span hidden data-version={renderVersion} />}
+          />
+        </QueryClientProvider>
+      );
+    }
+
+    const router = createTestRouter(<PanelHarness />);
+    const screen = await render(<RouterProvider router={router} />, { container: host });
+
+    try {
+      await expect.element(page.getByText("Local main tip")).toBeVisible();
+      expect(commitGraph).toHaveBeenCalledTimes(1);
+      expect(forcePanelRender).not.toBeNull();
+
+      gitStatusMock.data = makeStatus({ behindCount: 1 });
+      flushSync(() => {
+        forcePanelRender?.();
+      });
+
+      await vi.waitFor(() => {
+        expect(commitGraph).toHaveBeenCalledTimes(2);
+      });
+      await expect.element(page.getByText("Remote main advanced")).toBeVisible();
+    } finally {
+      await screen.unmount();
+      queryClient.clear();
+      host.remove();
     }
   });
 

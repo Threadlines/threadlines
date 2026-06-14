@@ -445,6 +445,22 @@ function getDeletableCommitGraphBranchRefs(
   return branchNames;
 }
 
+function getCommitGraphStatusRefreshKey(status: VcsStatusResult | null | undefined): string | null {
+  if (!status?.isRepo) {
+    return null;
+  }
+
+  return [
+    status.refName ?? "",
+    status.hasPrimaryRemote ? "1" : "0",
+    status.isDefaultRef ? "1" : "0",
+    status.hasUpstream ? "1" : "0",
+    String(status.aheadCount),
+    String(status.behindCount),
+    String(status.aheadOfDefaultCount ?? 0),
+  ].join("\0");
+}
+
 function commitGraphRefClassName(refName: string, currentBranch: string | null | undefined) {
   const kind = getCommitGraphRefKind(refName, currentBranch);
   if (kind === "current") {
@@ -1413,6 +1429,10 @@ export function SourceControlPanel({
   const bodyRef = useRef<HTMLDivElement>(null);
   const changesSectionRef = useRef<HTMLElement>(null);
   const commitControlsRef = useRef<HTMLElement>(null);
+  const commitGraphStatusRefreshRef = useRef<{
+    readonly targetKey: string;
+    readonly statusKey: string | null;
+  } | null>(null);
   const environmentId = target?.environmentId ?? null;
   const cwd = target?.cwd ?? null;
   const activeGitActionProgressView = useGitActionProgressView({ environmentId, cwd });
@@ -1422,6 +1442,7 @@ export function SourceControlPanel({
   );
   const gitStatus = useGitStatus({ environmentId, cwd });
   const status = gitStatus.data;
+  const commitGraphStatusRefreshKey = getCommitGraphStatusRefreshKey(status);
   const graphQuery = useQuery(
     gitCommitGraphQueryOptions({
       environmentId,
@@ -1430,6 +1451,7 @@ export function SourceControlPanel({
       enabled: Boolean(status?.isRepo),
     }),
   );
+  const refetchCommitGraph = graphQuery.refetch;
   const commitGraphRows = useMemo(
     () => buildCommitGraphRows(graphQuery.data?.commits ?? []),
     [graphQuery.data?.commits],
@@ -1624,6 +1646,32 @@ export function SourceControlPanel({
       queryKey: gitQueryKeys.commitGraph(environmentId, cwd, GRAPH_LIMIT),
     });
   }, [cwd, environmentId, queryClient]);
+
+  useEffect(() => {
+    const targetKey = environmentId && cwd ? `${environmentId}\0${cwd}` : null;
+    if (targetKey === null) {
+      commitGraphStatusRefreshRef.current = null;
+      return;
+    }
+
+    const previous = commitGraphStatusRefreshRef.current;
+    commitGraphStatusRefreshRef.current = {
+      targetKey,
+      statusKey: commitGraphStatusRefreshKey,
+    };
+
+    if (
+      !previous ||
+      previous.targetKey !== targetKey ||
+      previous.statusKey === null ||
+      commitGraphStatusRefreshKey === null ||
+      previous.statusKey === commitGraphStatusRefreshKey
+    ) {
+      return;
+    }
+
+    void refetchCommitGraph();
+  }, [commitGraphStatusRefreshKey, cwd, environmentId, refetchCommitGraph]);
 
   const clearCommitMessageDraft = useCallback(() => {
     setCommitMessage("");
