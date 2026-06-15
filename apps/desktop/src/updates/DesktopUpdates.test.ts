@@ -19,6 +19,11 @@ import * as ElectronUpdater from "../electron/ElectronUpdater.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopState from "../app/DesktopState.ts";
+import {
+  selectPrivateGitHubUpdateRelease,
+  SortedPrivateGitHubProvider,
+  type PrivateGitHubUpdateRelease,
+} from "./PrivateGitHubUpdateProvider.ts";
 import * as DesktopUpdates from "./DesktopUpdates.ts";
 
 interface UpdatesHarnessOptions {
@@ -31,6 +36,19 @@ interface UpdatesHarnessOptions {
 }
 
 const flushCallbacks = Effect.yieldNow;
+
+function makeRelease(
+  input: Partial<PrivateGitHubUpdateRelease> & Pick<PrivateGitHubUpdateRelease, "tag_name">,
+): PrivateGitHubUpdateRelease {
+  return {
+    draft: false,
+    prerelease: false,
+    created_at: "2026-06-15T00:00:00Z",
+    published_at: "2026-06-15T00:00:00Z",
+    assets: [{ name: "latest.yml", url: "https://api.github.com/assets/latest" }],
+    ...input,
+  };
+}
 
 function withProcessEnvPatch<A, E, R>(
   patch: Record<string, string | undefined>,
@@ -271,6 +289,94 @@ describe("resolvePrivateGitHubUpdateAuthToken", () => {
   });
 });
 
+describe("selectPrivateGitHubUpdateRelease", () => {
+  it("selects the newest nightly by semver while skipping drafts and GitHub API ordering", () => {
+    const release = selectPrivateGitHubUpdateRelease({
+      channel: "nightly",
+      releaseType: "prerelease",
+      channelFile: "latest.yml",
+      releases: [
+        makeRelease({
+          tag_name: "v0.0.21-nightly.20260615.100",
+          draft: true,
+          prerelease: true,
+          published_at: null,
+        }),
+        makeRelease({
+          tag_name: "v0.0.21-nightly.20260615.99",
+          prerelease: true,
+          published_at: "2026-06-15T04:44:57Z",
+        }),
+        makeRelease({
+          tag_name: "v0.0.21-nightly.20260615.98",
+          prerelease: true,
+          published_at: "2026-06-15T00:39:57Z",
+        }),
+        makeRelease({
+          tag_name: "v0.0.21-nightly.20260615.101",
+          prerelease: true,
+          published_at: "2026-06-15T08:40:23Z",
+        }),
+      ],
+    });
+
+    assert.equal(release?.tag_name, "v0.0.21-nightly.20260615.101");
+  });
+
+  it("keeps stable updates on stable releases even when newer prereleases exist", () => {
+    const release = selectPrivateGitHubUpdateRelease({
+      channel: "latest",
+      releaseType: "release",
+      channelFile: "latest.yml",
+      releases: [
+        makeRelease({
+          tag_name: "v1.2.4-nightly.20260615.101",
+          prerelease: true,
+          published_at: "2026-06-15T08:40:23Z",
+        }),
+        makeRelease({
+          tag_name: "v1.2.4",
+          draft: true,
+          published_at: null,
+        }),
+        makeRelease({
+          tag_name: "v1.2.3",
+          published_at: "2026-06-14T12:00:00Z",
+        }),
+        makeRelease({
+          tag_name: "v1.2.2",
+          published_at: "2026-06-13T12:00:00Z",
+        }),
+      ],
+    });
+
+    assert.equal(release?.tag_name, "v1.2.3");
+  });
+
+  it("skips releases that are missing the required platform manifest", () => {
+    const release = selectPrivateGitHubUpdateRelease({
+      channel: "nightly",
+      releaseType: "prerelease",
+      channelFile: "latest.yml",
+      releases: [
+        makeRelease({
+          tag_name: "v0.0.21-nightly.20260615.102",
+          prerelease: true,
+          assets: [{ name: "latest-mac.yml", url: "https://api.github.com/assets/latest-mac" }],
+          published_at: "2026-06-15T09:00:00Z",
+        }),
+        makeRelease({
+          tag_name: "v0.0.21-nightly.20260615.101",
+          prerelease: true,
+          published_at: "2026-06-15T08:40:23Z",
+        }),
+      ],
+    });
+
+    assert.equal(release?.tag_name, "v0.0.21-nightly.20260615.101");
+  });
+});
+
 describe("DesktopUpdates", () => {
   it.effect("configures the updater and runs startup checks on the test clock", () => {
     const harness = makeHarness();
@@ -309,7 +415,15 @@ describe("DesktopUpdates", () => {
         });
         yield* fileSystem.writeFileString(
           path.join(resourcesPath, "app-update.yml"),
-          ["provider: github", "owner: badcuban", "repo: badcode", "private: true", ""].join("\n"),
+          [
+            "provider: github",
+            "owner: badcuban",
+            "repo: badcode",
+            "private: true",
+            "releaseType: prerelease",
+            "channel: nightly",
+            "",
+          ].join("\n"),
         );
 
         const harness = makeHarness({
@@ -329,15 +443,15 @@ describe("DesktopUpdates", () => {
 
               assert.equal(result.checked, true);
               assert.equal(harness.checkCount(), 1);
-              assert.deepEqual(harness.feedUrls(), [
-                {
-                  provider: "github",
-                  owner: "badcuban",
-                  repo: "badcode",
-                  private: true,
-                  token: "env-token",
-                },
-              ]);
+              const feedUrl = harness.feedUrls()[0] as Record<string, unknown> | undefined;
+              assert.equal(feedUrl?.provider, "custom");
+              assert.equal(feedUrl?.owner, "badcuban");
+              assert.equal(feedUrl?.repo, "badcode");
+              assert.equal(feedUrl?.private, true);
+              assert.equal(feedUrl?.token, "env-token");
+              assert.equal(feedUrl?.releaseType, "prerelease");
+              assert.equal(feedUrl?.channel, "nightly");
+              assert.equal(feedUrl?.updateProvider, SortedPrivateGitHubProvider);
             }),
           ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer))),
         );

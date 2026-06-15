@@ -28,6 +28,10 @@ import * as ElectronUpdater from "../electron/ElectronUpdater.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as IpcChannels from "../ipc/channels.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
+import {
+  SortedPrivateGitHubProvider,
+  type SortedPrivateGitHubProviderOptions,
+} from "./PrivateGitHubUpdateProvider.ts";
 import { resolveDefaultDesktopUpdateChannel } from "./updateChannels.ts";
 import {
   createInitialDesktopUpdateState,
@@ -555,10 +559,18 @@ const make = Effect.gen(function* () {
       return false;
     }
 
-    yield* electronUpdater.setFeedURL({
-      ...privateFeedConfig.value,
+    const feedConfig = privateFeedConfig.value;
+    const feedUrl = {
+      provider: "custom",
+      updateProvider: SortedPrivateGitHubProvider,
+      owner: feedConfig.owner,
+      repo: feedConfig.repo,
+      private: true,
+      ...(feedConfig.channel ? { channel: feedConfig.channel } : {}),
+      ...(feedConfig.releaseType ? { releaseType: feedConfig.releaseType } : {}),
       token: authToken.value.token,
-    } satisfies ElectronUpdater.ElectronUpdaterFeedUrl);
+    } satisfies SortedPrivateGitHubProviderOptions;
+    yield* electronUpdater.setFeedURL(feedUrl as ElectronUpdater.ElectronUpdaterFeedUrl);
 
     if (
       authToken.value.source === "github-cli" &&

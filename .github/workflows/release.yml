@@ -711,14 +711,16 @@ jobs:
         run: |
           set -euo pipefail
 
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            echo "Deleting failed workflow-dispatch release $TAG and its generated tag."
+            gh release delete "$TAG" --yes --cleanup-tag
+            exit 0
+          fi
+
           is_draft="$(gh release view "$TAG" --json isDraft -q .isDraft 2>/dev/null || echo false)"
           if [[ "$is_draft" != "true" ]]; then
             echo "Release $TAG is not a draft; leaving it in place."
             exit 0
           fi
 
-          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            gh release delete "$TAG" --yes --cleanup-tag
-          else
-            gh release delete "$TAG" --yes
-          fi
+          gh release delete "$TAG" --yes
