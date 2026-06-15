@@ -23,9 +23,9 @@ on:
         required: false
         type: string
       build_scope:
-        description: "Artifacts to build. Use mac-arm64 for low-cost signing/updater proof runs."
+        description: "Artifacts to build. Defaults to all; use mac-arm64 for low-cost signing/updater proof runs."
         required: false
-        default: mac-arm64
+        default: all
         type: choice
         options:
           - mac-arm64
