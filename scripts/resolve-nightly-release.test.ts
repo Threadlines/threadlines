@@ -33,6 +33,20 @@ it("resolves the latest plain stable tag before deriving nightly versions", () =
   assert.equal(resolveNightlyTargetVersionFromTags(tags), "0.0.18");
 });
 
+it("does not regress below the highest existing nightly base version", () => {
+  const tags = ["v0.0.19", "v0.0.21-nightly.20260614.96"];
+
+  assert.equal(resolveLatestStableTag(tags), "v0.0.19");
+  assert.equal(resolveNightlyTargetVersionFromTags(tags), "0.0.21");
+});
+
+it("still advances past the latest stable version when stable catches up", () => {
+  const tags = ["v0.0.21", "v0.0.21-nightly.20260614.96"];
+
+  assert.equal(resolveLatestStableTag(tags), "v0.0.21");
+  assert.equal(resolveNightlyTargetVersionFromTags(tags), "0.0.22");
+});
+
 it("defaults the first nightly series to 0.0.1 when no stable tag exists", () => {
   assert.equal(resolveLatestStableTag(["v0.0.1-nightly.20260413.321"]), undefined);
   assert.equal(resolveNightlyTargetVersionFromTags(["v0.0.1-nightly.20260413.321"]), "0.0.1");

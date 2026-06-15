@@ -63,10 +63,35 @@ function parseStableTag(tag: string): StableVersion | undefined {
   };
 }
 
+function parseNightlyTagBaseVersion(tag: string): StableVersion | undefined {
+  const match = /^v(\d+)\.(\d+)\.(\d+)-nightly\.\d{8}\.\d+$/.exec(tag);
+  if (!match) return undefined;
+
+  const [, major, minor, patch] = match;
+  if (!major || !minor || !patch) return undefined;
+
+  return {
+    major: Number(major),
+    minor: Number(minor),
+    patch: Number(patch),
+  };
+}
+
 function compareStableVersions(left: StableVersion, right: StableVersion): number {
   if (left.major !== right.major) return left.major - right.major;
   if (left.minor !== right.minor) return left.minor - right.minor;
   return left.patch - right.patch;
+}
+
+function formatStableVersion(version: StableVersion): string {
+  return `${version.major}.${version.minor}.${version.patch}`;
+}
+
+function bumpPatchVersion(version: StableVersion): StableVersion {
+  return {
+    ...version,
+    patch: version.patch + 1,
+  };
 }
 
 export function resolveLatestStableTag(tags: ReadonlyArray<string>): string | undefined {
@@ -77,8 +102,20 @@ export function resolveLatestStableTag(tags: ReadonlyArray<string>): string | un
 }
 
 export function resolveNightlyTargetVersionFromTags(tags: ReadonlyArray<string>): string {
-  const latestStableTag = resolveLatestStableTag(tags);
-  return latestStableTag ? resolveNightlyTargetVersion(latestStableTag.slice(1)) : "0.0.1";
+  const latestStableVersion = tags
+    .map(parseStableTag)
+    .filter((version): version is StableVersion => version !== undefined)
+    .toSorted((left, right) => compareStableVersions(right, left))[0];
+  const stableCandidate = latestStableVersion ? bumpPatchVersion(latestStableVersion) : undefined;
+  const nightlyCandidate = tags
+    .map(parseNightlyTagBaseVersion)
+    .filter((version): version is StableVersion => version !== undefined)
+    .toSorted((left, right) => compareStableVersions(right, left))[0];
+  const target = [stableCandidate, nightlyCandidate]
+    .filter((version): version is StableVersion => version !== undefined)
+    .toSorted((left, right) => compareStableVersions(right, left))[0];
+
+  return target ? formatStableVersion(target) : "0.0.1";
 }
 
 export const resolveNightlyReleaseMetadata = (
