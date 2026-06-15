@@ -24,7 +24,8 @@ import * as DesktopUpdates from "../updates/DesktopUpdates.ts";
 
 const DEFAULT_DESKTOP_BACKEND_PORT = 3773;
 const MAX_TCP_PORT = 65_535;
-const DESKTOP_BACKEND_PORT_PROBE_HOSTS = ["127.0.0.1", "0.0.0.0", "::"] as const;
+const DESKTOP_LOCAL_ONLY_PORT_PROBE_HOSTS = ["127.0.0.1"] as const;
+const DESKTOP_NETWORK_ACCESSIBLE_PORT_PROBE_HOSTS = ["0.0.0.0"] as const;
 
 const makeDesktopRunId = Random.nextUUIDv4.pipe(
   Effect.map((value) => value.replaceAll("-", "").slice(0, 12)),
@@ -56,12 +57,13 @@ const { logInfo: logBootstrapInfo, logWarning: logBootstrapWarning } =
 const { logInfo: logStartupInfo, logError: logStartupError } =
   DesktopObservability.makeComponentLogger("desktop-startup");
 
-const resolveDesktopBackendPort = Effect.fn("resolveDesktopBackendPort")(function* (
-  configuredPort: Option.Option<number>,
-) {
-  if (Option.isSome(configuredPort)) {
+const resolveDesktopBackendPort = Effect.fn("resolveDesktopBackendPort")(function* (input: {
+  readonly configuredPort: Option.Option<number>;
+  readonly probeHosts: readonly string[];
+}) {
+  if (Option.isSome(input.configuredPort)) {
     return {
-      port: configuredPort.value,
+      port: input.configuredPort.value,
       selectedByScan: false,
     } as const;
   }
@@ -70,7 +72,7 @@ const resolveDesktopBackendPort = Effect.fn("resolveDesktopBackendPort")(functio
   for (let port = DEFAULT_DESKTOP_BACKEND_PORT; port <= MAX_TCP_PORT; port += 1) {
     let availableOnEveryHost = true;
 
-    for (const host of DESKTOP_BACKEND_PORT_PROBE_HOSTS) {
+    for (const host of input.probeHosts) {
       if (!(yield* net.canListenOnHost(port, host))) {
         availableOnEveryHost = false;
         break;
@@ -88,7 +90,7 @@ const resolveDesktopBackendPort = Effect.fn("resolveDesktopBackendPort")(functio
   return yield* new DesktopBackendPortUnavailableError({
     startPort: DEFAULT_DESKTOP_BACKEND_PORT,
     maxPort: MAX_TCP_PORT,
-    hosts: DESKTOP_BACKEND_PORT_PROBE_HOSTS,
+    hosts: input.probeHosts,
   });
 });
 
@@ -141,7 +143,15 @@ const bootstrap = Effect.gen(function* () {
     return yield* new DesktopDevelopmentBackendPortRequiredError();
   }
 
-  const backendPortSelection = yield* resolveDesktopBackendPort(environment.configuredBackendPort);
+  const settings = yield* desktopSettings.get;
+  const probeHosts =
+    settings.serverExposureMode === "network-accessible"
+      ? DESKTOP_NETWORK_ACCESSIBLE_PORT_PROBE_HOSTS
+      : DESKTOP_LOCAL_ONLY_PORT_PROBE_HOSTS;
+  const backendPortSelection = yield* resolveDesktopBackendPort({
+    configuredPort: environment.configuredBackendPort,
+    probeHosts,
+  });
   const backendPort = backendPortSelection.port;
   yield* logBootstrapInfo(
     backendPortSelection.selectedByScan
@@ -153,7 +163,6 @@ const bootstrap = Effect.gen(function* () {
     },
   );
 
-  const settings = yield* desktopSettings.get;
   if (settings.serverExposureMode !== environment.defaultDesktopSettings.serverExposureMode) {
     yield* logBootstrapInfo("bootstrap restoring persisted server exposure mode", {
       mode: settings.serverExposureMode,

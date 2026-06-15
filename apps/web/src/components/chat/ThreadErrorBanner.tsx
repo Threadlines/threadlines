@@ -1,15 +1,65 @@
 import { memo } from "react";
-import { Alert, AlertAction, AlertDescription } from "../ui/alert";
-import { CircleAlertIcon, XIcon } from "lucide-react";
+import type { ProviderAuthReconnectAction } from "../../session-logic";
+import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
+import { Button } from "../ui/button";
+import { CircleAlertIcon, TerminalIcon, XIcon } from "lucide-react";
 
 export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   error,
+  authReconnect,
+  providerLabel,
+  onRunAuthReconnect,
   onDismiss,
 }: {
   error: string | null;
+  authReconnect?: ProviderAuthReconnectAction | null;
+  providerLabel?: string;
+  onRunAuthReconnect?: (action: ProviderAuthReconnectAction) => void;
   onDismiss?: () => void;
 }) {
   if (!error) return null;
+
+  if (authReconnect) {
+    const label = providerLabel?.trim() || "Provider";
+    return (
+      <div className="pt-3 mx-auto max-w-3xl">
+        <Alert variant="error">
+          <CircleAlertIcon />
+          <AlertTitle>{label} sign-in required</AlertTitle>
+          <AlertDescription>
+            <p>
+              Run <code className="font-mono text-foreground/85">{authReconnect.command}</code>,
+              complete the browser sign-in, then retry this message.
+            </p>
+            <p className="line-clamp-2 text-[11px] text-muted-foreground/60" title={error}>
+              Last error: {error}
+            </p>
+          </AlertDescription>
+          <AlertAction>
+            <Button
+              size="xs"
+              disabled={!onRunAuthReconnect}
+              onClick={() => onRunAuthReconnect?.(authReconnect)}
+            >
+              <TerminalIcon className="size-3" />
+              Sign in in terminal
+            </Button>
+            {onDismiss && (
+              <button
+                type="button"
+                aria-label="Dismiss error"
+                className="inline-flex size-6 items-center justify-center rounded-md text-destructive/60 transition-colors hover:text-destructive"
+                onClick={onDismiss}
+              >
+                <XIcon className="size-3.5" />
+              </button>
+            )}
+          </AlertAction>
+        </Alert>
+      </div>
+    );
+  }
+
   return (
     <div className="pt-3 mx-auto max-w-3xl">
       <Alert variant="error">

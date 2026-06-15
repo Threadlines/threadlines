@@ -118,7 +118,7 @@ import type { PendingUserInputDraftAnswer } from "../../pendingUserInput";
 import type { PendingApproval, PendingUserInput } from "../../session-logic";
 import { deriveLatestContextWindowSnapshot } from "../../lib/contextWindow";
 import {
-  deriveProviderAccountUsagePresentation,
+  deriveProviderAccountUsagePresentationForProvider,
   type ProviderAccountUsagePresentation,
 } from "../../lib/providerUsage";
 import { formatProviderSkillDisplayName } from "../../providerSkillPresentation";
@@ -739,7 +739,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // Account-level usage (5h/weekly windows) for the instance the composer
   // is targeting — surfaced in the context window meter's hover card.
   const selectedProviderAccountUsage = useMemo(
-    () => deriveProviderAccountUsagePresentation(selectedProviderStatus?.accountUsage),
+    () => deriveProviderAccountUsagePresentationForProvider(selectedProviderStatus),
     [selectedProviderStatus],
   );
   const selectedProviderModels = useMemo<ReadonlyArray<ServerProvider["models"][number]>>(

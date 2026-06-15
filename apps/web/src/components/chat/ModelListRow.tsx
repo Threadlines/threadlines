@@ -49,6 +49,16 @@ export const ModelListRow = memo(function ModelListRow(props: {
         "data-highlighted:bg-muted data-selected:bg-accent data-selected:text-foreground",
       )}
     >
+      <span
+        aria-hidden
+        className={cn(
+          "pointer-events-none absolute inset-y-2 left-1.5 w-0.5 rounded-full opacity-0 transition-opacity group-data-selected:opacity-100",
+          props.providerAccentColor ? undefined : "bg-primary/80",
+        )}
+        style={
+          props.providerAccentColor ? { backgroundColor: props.providerAccentColor } : undefined
+        }
+      />
       <div className="min-w-0 flex-1 text-left">
         <div className="flex items-center justify-between gap-2 min-w-0">
           <div

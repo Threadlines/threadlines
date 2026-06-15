@@ -1,6 +1,6 @@
 import { CheckIcon, DownloadIcon, RotateCwIcon } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useCallback } from "react";
+import { useCallback, useId } from "react";
 
 import { APP_STAGE_LABEL, APP_VERSION } from "../branding";
 import { isElectron } from "../env";
@@ -15,7 +15,6 @@ import {
   useDesktopUpdateState,
 } from "../lib/desktopUpdateReactQuery";
 import { cn } from "../lib/utils";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 
 // The chip shows only the release triple ("0.0.19"); prerelease/build tails
@@ -32,13 +31,14 @@ function getUpdateIcon(tone: ReturnType<typeof getSidebarDesktopUpdateTagPresent
 
 /** Faded compact version chip for sidebar footers; hover reveals stage + full version. */
 export function SidebarVersionTag() {
+  const tooltipId = useId();
   const queryClient = useQueryClient();
   const state = useDesktopUpdateState().data ?? null;
   const presentation = getSidebarDesktopUpdateTagPresentation(
     isElectron ? state : null,
     COMPACT_APP_VERSION,
   );
-  const Icon = getUpdateIcon(presentation.tone);
+  const Icon = presentation.indicatorLabel ? null : getUpdateIcon(presentation.tone);
   const canRunAction =
     isElectron && state !== null && presentation.action !== "none" && !presentation.disabled;
 
@@ -105,7 +105,7 @@ export function SidebarVersionTag() {
   }, [presentation.action, presentation.disabled, queryClient, state]);
 
   const tagClassName = cn(
-    "relative inline-flex h-7 w-[3.25rem] shrink-0 items-center justify-center overflow-hidden rounded-md border px-1 text-[9px] font-medium leading-none tracking-tight tabular-nums transition-[background-color,border-color,color,box-shadow,opacity] duration-300",
+    "relative inline-flex h-7 w-[4.25rem] shrink-0 items-center justify-center overflow-hidden rounded-md border px-1.5 text-[9px] font-medium leading-none tracking-tight tabular-nums transition-[background-color,border-color,color,box-shadow,opacity] duration-300",
     presentation.tone === "idle" &&
       "cursor-default border-transparent bg-transparent text-muted-foreground/40",
     presentation.tone === "available" &&
@@ -124,7 +124,6 @@ export function SidebarVersionTag() {
         className={cn(
           "pointer-events-none absolute inset-y-0 left-0 opacity-0 transition-[width,opacity] duration-500 ease-out",
           presentation.tone === "downloading" && "bg-primary/16 opacity-100",
-          presentation.tone === "downloaded" && "bg-emerald-500/20 opacity-100",
         )}
         style={{ width: `${presentation.progressPercent}%` }}
       />
@@ -134,54 +133,57 @@ export function SidebarVersionTag() {
           presentation.tone === "downloading" && "motion-safe:animate-pulse",
         )}
       >
+        <span className="min-w-0 truncate">{presentation.label}</span>
         {Icon ? (
           <Icon
             className={cn(
-              "size-3 shrink-0",
+              "shrink-0 -translate-y-px",
+              presentation.tone === "error" ? "size-2.5" : "size-3",
               presentation.tone === "available" && "motion-safe:animate-pulse",
             )}
           />
         ) : null}
-        <span className="min-w-0 truncate">{presentation.label}</span>
+        {presentation.indicatorLabel ? (
+          <span className="shrink-0 translate-y-[-0.5px] text-[8px] font-semibold">
+            {presentation.indicatorLabel}
+          </span>
+        ) : null}
       </span>
-      {presentation.tone === "downloading" || presentation.tone === "downloaded" ? (
-        <span className="pointer-events-none absolute inset-x-1 bottom-1 h-px overflow-hidden rounded-full bg-current/15">
-          <span
-            className="block h-full rounded-full bg-current/55 transition-[width] duration-500 ease-out"
-            style={{ width: `${presentation.progressPercent}%` }}
-          />
-        </span>
-      ) : null}
     </>
+  );
+  const tooltipText =
+    presentation.tone === "idle"
+      ? `${APP_STAGE_LABEL} · Version ${APP_VERSION}`
+      : presentation.tooltip;
+
+  const trigger = canRunAction ? (
+    <button
+      type="button"
+      className={tagClassName}
+      aria-describedby={tooltipId}
+      aria-label={presentation.tooltip}
+      onClick={handleAction}
+    >
+      {contents}
+    </button>
+  ) : (
+    // h-7 matches the size="sm" footer buttons so both texts center
+    // within the same box height instead of drifting apart.
+    <span className={tagClassName} aria-describedby={tooltipId} aria-label={presentation.tooltip}>
+      {contents}
+    </span>
   );
 
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          canRunAction ? (
-            <button
-              type="button"
-              className={tagClassName}
-              aria-label={presentation.tooltip}
-              onClick={handleAction}
-            >
-              {contents}
-            </button>
-          ) : (
-            // h-7 matches the size="sm" footer buttons so both texts center
-            // within the same box height instead of drifting apart.
-            <span className={tagClassName} aria-label={presentation.tooltip}>
-              {contents}
-            </span>
-          )
-        }
-      />
-      <TooltipPopup side="top">
-        {presentation.tone === "idle"
-          ? `${APP_STAGE_LABEL} · Version ${APP_VERSION}`
-          : presentation.tooltip}
-      </TooltipPopup>
-    </Tooltip>
+    <span className="group/version-tag relative inline-flex shrink-0">
+      {trigger}
+      <span
+        className="pointer-events-none absolute right-0 bottom-full z-50 mb-2 w-max max-w-[9rem] translate-y-1 rounded-md border border-border bg-popover px-2 py-1 text-center text-xs leading-tight text-popover-foreground opacity-0 shadow-md transition-[opacity,transform] duration-150 group-focus-within/version-tag:translate-y-0 group-focus-within/version-tag:opacity-100 group-hover/version-tag:translate-y-0 group-hover/version-tag:opacity-100"
+        id={tooltipId}
+        role="tooltip"
+      >
+        {tooltipText}
+      </span>
+    </span>
   );
 }

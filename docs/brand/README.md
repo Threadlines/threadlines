@@ -54,7 +54,9 @@ its rendered copy).
   `scripts/lib/brand-assets.ts`, `scripts/build-desktop-artifact.ts`, and
   `scripts/apply-web-brand-assets.ts` (filenames keep the `badcode-` prefix until the identity
   rename phase). All three channels currently share the same artwork.
-- `apps/desktop/resources/icon.{ico,icns,png}` — desktop dev-runtime icons.
+- `apps/desktop/resources/icon.{ico,icns,png}` — desktop dev-runtime icons. The macOS
+  `icon.png` and `icon.icns` are padded for Dock display; keep the raw 1024px channel masters in
+  `assets/{dev,nightly,prod}/`.
 - `apps/web/public/` and `apps/marketing/public/` — favicons and apple-touch icons. The web
   app's boot shell logo is `/splash-icon.png`, a copy of the transparent
   `png/threadlines-icon-256.png` (the apple-touch icon is opaque and would show square

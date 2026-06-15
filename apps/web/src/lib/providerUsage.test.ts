@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
-import type { ServerProviderAccountUsage } from "@t3tools/contracts";
+import {
+  ProviderDriverKind,
+  type ServerProvider,
+  type ServerProviderAccountUsage,
+} from "@t3tools/contracts";
 
-import { deriveProviderAccountUsagePresentation, isProviderUsageNearLimit } from "./providerUsage";
+import {
+  deriveProviderAccountUsagePresentation,
+  deriveProviderAccountUsagePresentationForProvider,
+  isProviderUsageNearLimit,
+} from "./providerUsage";
 
 describe("deriveProviderAccountUsagePresentation", () => {
   it("formats Codex rate limit usage with remaining percent and reset time", () => {
@@ -281,6 +289,55 @@ describe("deriveProviderAccountUsagePresentation", () => {
       },
       windows: [],
     });
+  });
+});
+
+describe("deriveProviderAccountUsagePresentationForProvider", () => {
+  it("shows empty Claude usage windows when authenticated usage is unavailable", () => {
+    const provider = {
+      driver: ProviderDriverKind.make("claudeAgent"),
+      auth: {
+        status: "authenticated",
+        type: "maxplan",
+        label: "Claude Max Subscription",
+      },
+    } satisfies Pick<ServerProvider, "accountUsage" | "auth" | "driver">;
+
+    expect(deriveProviderAccountUsagePresentationForProvider(provider)).toEqual({
+      label: "Claude usage",
+      reachedLimit: false,
+      windows: [
+        {
+          key: "primary",
+          label: "5h",
+          detail: "usage unavailable",
+          usedPercent: 0,
+          remainingPercent: 100,
+          reachedLimit: false,
+        },
+        {
+          key: "secondary",
+          label: "Weekly",
+          detail: "usage unavailable",
+          usedPercent: 0,
+          remainingPercent: 100,
+          reachedLimit: false,
+        },
+      ],
+    });
+  });
+
+  it("does not show Claude subscription usage placeholders for API-key auth", () => {
+    const provider = {
+      driver: ProviderDriverKind.make("claudeAgent"),
+      auth: {
+        status: "authenticated",
+        type: "apiKey",
+        label: "Claude API Key",
+      },
+    } satisfies Pick<ServerProvider, "accountUsage" | "auth" | "driver">;
+
+    expect(deriveProviderAccountUsagePresentationForProvider(provider)).toBeNull();
   });
 });
 

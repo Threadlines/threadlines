@@ -57,6 +57,20 @@ describe("desktop update button state", () => {
     expect(getDesktopUpdateButtonTooltip(state)).toContain("Click to retry");
   });
 
+  it("keeps retry copy when a failed download returns to available state", () => {
+    const state: DesktopUpdateState = {
+      ...baseState,
+      status: "available",
+      availableVersion: "1.1.0",
+      message: "network timeout",
+      errorContext: "download",
+      canRetry: true,
+    };
+    expect(shouldShowDesktopUpdateButton(state)).toBe(true);
+    expect(resolveDesktopUpdateButtonAction(state)).toBe("download");
+    expect(getDesktopUpdateButtonTooltip(state)).toBe("Download failed for 1.1.0. Click to retry.");
+  });
+
   it("keeps install action available after an install error", () => {
     const state: DesktopUpdateState = {
       ...baseState,
@@ -70,6 +84,21 @@ describe("desktop update button state", () => {
     expect(shouldShowDesktopUpdateButton(state)).toBe(true);
     expect(resolveDesktopUpdateButtonAction(state)).toBe("install");
     expect(getDesktopUpdateButtonTooltip(state)).toContain("Click to retry");
+  });
+
+  it("keeps retry copy when a failed install returns to downloaded state", () => {
+    const state: DesktopUpdateState = {
+      ...baseState,
+      status: "downloaded",
+      downloadedVersion: "1.1.0",
+      availableVersion: "1.1.0",
+      message: "shutdown timeout",
+      errorContext: "install",
+      canRetry: true,
+    };
+    expect(shouldShowDesktopUpdateButton(state)).toBe(true);
+    expect(resolveDesktopUpdateButtonAction(state)).toBe("install");
+    expect(getDesktopUpdateButtonTooltip(state)).toBe("Install failed for 1.1.0. Click to retry.");
   });
 
   it("prefers install when a downloaded version already exists", () => {
@@ -232,6 +261,7 @@ describe("getSidebarDesktopUpdateTagPresentation", () => {
     expect(getSidebarDesktopUpdateTagPresentation(baseState, "1.0.0")).toEqual({
       action: "none",
       disabled: true,
+      indicatorLabel: null,
       label: "v1.0.0",
       progressPercent: 0,
       tone: "idle",
@@ -249,9 +279,32 @@ describe("getSidebarDesktopUpdateTagPresentation", () => {
     expect(getSidebarDesktopUpdateTagPresentation(state, "1.0.0")).toMatchObject({
       action: "download",
       disabled: false,
-      label: "Update",
+      indicatorLabel: null,
+      label: "v1.0.0",
       progressPercent: 0,
       tone: "available",
+      tooltip: "Update available",
+    });
+  });
+
+  it("shows download failures as a retry prompt in the compact tag", () => {
+    const state: DesktopUpdateState = {
+      ...baseState,
+      status: "available",
+      availableVersion: "1.1.0",
+      message: "network timeout",
+      errorContext: "download",
+      canRetry: true,
+    };
+
+    expect(getSidebarDesktopUpdateTagPresentation(state, "1.0.0")).toMatchObject({
+      action: "download",
+      disabled: false,
+      indicatorLabel: null,
+      label: "v1.0.0",
+      progressPercent: 0,
+      tone: "error",
+      tooltip: "Retry download",
     });
   });
 
@@ -266,9 +319,33 @@ describe("getSidebarDesktopUpdateTagPresentation", () => {
     expect(getSidebarDesktopUpdateTagPresentation(state, "1.0.0")).toMatchObject({
       action: "none",
       disabled: true,
-      label: "100%",
+      indicatorLabel: "100%",
+      label: "v1.0.0",
       progressPercent: 100,
       tone: "downloading",
+      tooltip: "Downloading 100%",
+    });
+  });
+
+  it("shows install failures as a retry prompt in the compact tag", () => {
+    const state: DesktopUpdateState = {
+      ...baseState,
+      status: "downloaded",
+      availableVersion: "1.1.0",
+      downloadedVersion: "1.1.0",
+      message: "shutdown timeout",
+      errorContext: "install",
+      canRetry: true,
+    };
+
+    expect(getSidebarDesktopUpdateTagPresentation(state, "1.0.0")).toMatchObject({
+      action: "install",
+      disabled: false,
+      indicatorLabel: null,
+      label: "v1.0.0",
+      progressPercent: 100,
+      tone: "error",
+      tooltip: "Retry install",
     });
   });
 
@@ -284,9 +361,11 @@ describe("getSidebarDesktopUpdateTagPresentation", () => {
     expect(getSidebarDesktopUpdateTagPresentation(state, "1.0.0")).toMatchObject({
       action: "install",
       disabled: false,
-      label: "Ready",
+      indicatorLabel: null,
+      label: "v1.0.0",
       progressPercent: 100,
       tone: "downloaded",
+      tooltip: "Restart to install",
     });
   });
 });

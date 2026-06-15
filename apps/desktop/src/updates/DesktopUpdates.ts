@@ -47,11 +47,20 @@ const AUTO_UPDATE_POLL_INTERVAL = "4 minutes";
 const GITHUB_CLI_AUTH_TIMEOUT = Duration.seconds(3);
 const PROCESS_TERMINATE_GRACE = Duration.seconds(1);
 const GITHUB_AUTH_TOKEN_ENV_NAMES = ["GH_TOKEN", "GITHUB_TOKEN"] as const;
+const DESKTOP_UPDATE_PREVIEW_STATES = [
+  "available",
+  "downloading",
+  "downloaded",
+  "download-error",
+] as const;
+const DEFAULT_PREVIEW_UPDATE_VERSION = "99.99.99";
+const DEFAULT_PREVIEW_DOWNLOAD_PERCENT = 42;
 const PRIVATE_GITHUB_AUTH_REQUIRED_MESSAGE =
   "Private GitHub update feed requires authentication. Run gh auth login or set GH_TOKEN/GITHUB_TOKEN before checking for updates.";
 
 const AppUpdateYmlConfig = Schema.Record(Schema.String, Schema.String);
 type AppUpdateYmlConfig = typeof AppUpdateYmlConfig.Type;
+type DesktopUpdatePreviewState = (typeof DESKTOP_UPDATE_PREVIEW_STATES)[number];
 
 interface PrivateGitHubUpdateFeedConfig {
   readonly provider: "github";
@@ -323,6 +332,52 @@ function shouldBroadcastDownloadProgress(
   const previousStep = Math.floor(currentPercent / 10);
   const nextStep = Math.floor(nextPercent / 10);
   return nextStep !== previousStep || nextPercent === 100;
+}
+
+function normalizeDesktopUpdatePreviewState(
+  value: Option.Option<string>,
+): Option.Option<DesktopUpdatePreviewState> {
+  return Option.flatMap(value, (rawValue) => {
+    const normalized = rawValue.trim().toLowerCase();
+    if (normalized === "error") {
+      return Option.some("download-error");
+    }
+    if ((DESKTOP_UPDATE_PREVIEW_STATES as ReadonlyArray<string>).includes(normalized)) {
+      return Option.some(normalized as DesktopUpdatePreviewState);
+    }
+    return Option.none();
+  });
+}
+
+function createDesktopUpdatePreviewState(input: {
+  readonly mode: DesktopUpdatePreviewState;
+  readonly channel: DesktopUpdateChannel;
+  readonly environment: DesktopEnvironment.DesktopEnvironmentShape;
+  readonly version: string;
+  readonly checkedAt: string;
+}): DesktopUpdateState {
+  const availableState = reduceDesktopUpdateStateOnUpdateAvailable(
+    createBaseUpdateState(input.channel, true, input.environment),
+    input.version,
+    input.checkedAt,
+  );
+
+  switch (input.mode) {
+    case "available":
+      return availableState;
+    case "downloading":
+      return reduceDesktopUpdateStateOnDownloadProgress(
+        reduceDesktopUpdateStateOnDownloadStart(availableState),
+        DEFAULT_PREVIEW_DOWNLOAD_PERCENT,
+      );
+    case "downloaded":
+      return reduceDesktopUpdateStateOnDownloadComplete(availableState, input.version);
+    case "download-error":
+      return reduceDesktopUpdateStateOnDownloadFailure(
+        reduceDesktopUpdateStateOnDownloadStart(availableState),
+        "Preview update download failed.",
+      );
+  }
 }
 
 function getAutoUpdateDisabledReason(args: {
@@ -831,6 +886,37 @@ const make = Effect.gen(function* () {
       const appUpdateYmlConfig = yield* readAppUpdateYml;
       yield* Ref.set(appUpdateYmlConfigRef, appUpdateYmlConfig);
 
+      const settings = yield* desktopSettings.get;
+      const previewUpdateState = normalizeDesktopUpdatePreviewState(config.previewUpdateState);
+      if (Option.isSome(previewUpdateState)) {
+        if (environment.isDevelopment) {
+          const checkedAt = yield* currentIsoTimestamp;
+          const version = Option.getOrElse(
+            config.previewUpdateVersion,
+            () => DEFAULT_PREVIEW_UPDATE_VERSION,
+          );
+          yield* setState(
+            createDesktopUpdatePreviewState({
+              mode: previewUpdateState.value,
+              channel: settings.updateChannel,
+              environment,
+              version,
+              checkedAt,
+            }),
+          );
+          yield* logUpdaterInfo("using desktop update preview state", {
+            state: previewUpdateState.value,
+            version,
+          });
+          return;
+        }
+
+        yield* logUpdaterWarning(
+          "ignoring desktop update preview state outside development builds",
+          { state: previewUpdateState.value },
+        );
+      }
+
       if (config.mockUpdates) {
         yield* electronUpdater.setFeedURL({
           provider: "generic",
@@ -838,7 +924,6 @@ const make = Effect.gen(function* () {
         } as ElectronUpdater.ElectronUpdaterFeedUrl);
       }
 
-      const settings = yield* desktopSettings.get;
       const enabled = yield* shouldEnableAutoUpdates;
       yield* setState(createBaseUpdateState(settings.updateChannel, enabled, environment));
       if (!enabled) {

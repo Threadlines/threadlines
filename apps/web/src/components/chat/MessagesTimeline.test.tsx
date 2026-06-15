@@ -1,4 +1,4 @@
-import { EnvironmentId, MessageId, TurnId } from "@t3tools/contracts";
+import { EnvironmentId, MessageId, ProviderDriverKind, TurnId } from "@t3tools/contracts";
 import { createRef, type ReactNode, type Ref } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vitest";
@@ -312,6 +312,163 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Cannot find path");
     expect(markup).toContain('aria-label="Show command output"');
     expect(markup).not.toContain('data-command-output="true"');
+  });
+
+  it("renders provider authentication errors with terminal sign-in guidance", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        onRunProviderAuthReconnect={() => {}}
+        timelineEntries={[
+          {
+            id: "entry-auth",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-auth",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Authentication required",
+              detail: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+              tone: "error",
+              authReconnect: {
+                provider: ProviderDriverKind.make("claudeAgent"),
+                command: "claude auth login",
+                message:
+                  "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+              },
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('data-provider-auth-reconnect="true"');
+    expect(markup).toContain("Claude needs sign in");
+    expect(markup).toContain("claude auth login");
+    expect(markup).toContain("Sign in in terminal");
+    expect(markup).toContain("complete the browser sign-in");
+  });
+
+  it("marks provider authentication errors resolved after a later assistant response succeeds", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        onRunProviderAuthReconnect={() => {}}
+        timelineEntries={[
+          {
+            id: "entry-auth",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-auth",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Authentication required",
+              detail: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+              tone: "error",
+              authReconnect: {
+                provider: ProviderDriverKind.make("claudeAgent"),
+                command: "claude auth login",
+                message:
+                  "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+              },
+            },
+          },
+          {
+            id: "entry-success-message",
+            kind: "message",
+            createdAt: "2026-03-17T19:13:28.000Z",
+            message: {
+              id: MessageId.make("message-success"),
+              role: "assistant",
+              text: "Hi! I'm here and working.",
+              createdAt: "2026-03-17T19:13:28.000Z",
+              completedAt: "2026-03-17T19:13:30.000Z",
+              streaming: false,
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('data-provider-auth-reconnect="true"');
+    expect(markup).toContain('data-provider-auth-reconnect-resolved="true"');
+    expect(markup).toContain("Claude sign-in refreshed");
+    expect(markup).toContain("A later response succeeded");
+    expect(markup).toContain("Resolved");
+    expect(markup).not.toContain("Sign in in terminal");
+  });
+
+  it("renders assistant authentication messages as provider sign-in guidance", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        providerAuthReconnect={{
+          provider: ProviderDriverKind.make("claudeAgent"),
+          command: "claude auth login",
+          message: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+        }}
+        onRunProviderAuthReconnect={() => {}}
+        timelineEntries={[
+          {
+            id: "entry-auth-message",
+            kind: "message",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            message: {
+              id: MessageId.make("message-auth"),
+              role: "assistant",
+              text: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              completedAt: "2026-03-17T19:12:30.000Z",
+              streaming: false,
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('data-provider-auth-reconnect="true"');
+    expect(markup).toContain("Claude needs sign in");
+    expect(markup).toContain("claude auth login");
+    expect(markup).not.toContain('data-agent-response-body="true"');
+  });
+
+  it("renders Codex authentication messages with the Codex sign-in command", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        providerAuthReconnect={{
+          provider: ProviderDriverKind.make("codex"),
+          command: "codex login",
+          message: "Not logged in",
+        }}
+        onRunProviderAuthReconnect={() => {}}
+        timelineEntries={[
+          {
+            id: "entry-codex-auth-message",
+            kind: "message",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            message: {
+              id: MessageId.make("message-codex-auth"),
+              role: "assistant",
+              text: "Not logged in",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              completedAt: "2026-03-17T19:12:30.000Z",
+              streaming: false,
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('data-provider-auth-reconnect="true"');
+    expect(markup).toContain("Codex needs sign in");
+    expect(markup).toContain("codex login");
+    expect(markup).toContain("Sign in in terminal");
+    expect(markup).not.toContain('data-agent-response-body="true"');
   });
 
   it("keeps live activity compact and height-stable while a turn is working", async () => {

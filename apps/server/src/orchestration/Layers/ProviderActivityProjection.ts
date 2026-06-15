@@ -134,7 +134,12 @@ function hasMcpStartupError(value: unknown): boolean {
 
 function shouldProjectMcpStatusUpdate(value: unknown): boolean {
   const status = readMcpStartupStatus(value);
-  if (status === "starting" || status === "ready" || status === "connected") {
+  if (
+    status === "starting" ||
+    status === "ready" ||
+    status === "connected" ||
+    status === "cancelled"
+  ) {
     return hasMcpStartupError(value);
   }
   return true;

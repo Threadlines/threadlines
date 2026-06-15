@@ -70,6 +70,7 @@ describe("DesktopEnvironment", () => {
       assertPathEqual(environment.logDir, "/tmp/t3/dev/logs");
       assertPathEqual(environment.rootDir, "/repo");
       assertPathEqual(environment.appRoot, "/repo");
+      assertPathEqual(environment.developmentDockIconPath, "/repo/apps/desktop/resources/icon.png");
       assertPathEqual(environment.backendEntryPath, "/repo/apps/server/dist/bin.mjs");
       assertPathEqual(environment.backendCwd, "/repo");
       assert.equal(environment.appUserModelId, "com.badcuban.badcode.dev");

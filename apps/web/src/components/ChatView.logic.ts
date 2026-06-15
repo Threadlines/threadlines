@@ -320,6 +320,7 @@ export function deriveProviderAuthReconnectPrompt(input: {
   readonly provider: ProviderDriverKind | null | undefined;
   readonly threadError?: string | null | undefined;
   readonly activities?: ReadonlyArray<OrchestrationThreadActivity> | null | undefined;
+  readonly messages?: ReadonlyArray<Pick<ChatMessage, "role" | "text">> | null | undefined;
 }): ProviderAuthReconnectPrompt | null {
   const provider = input.provider ?? null;
   if (!provider) {
@@ -354,6 +355,23 @@ export function deriveProviderAuthReconnectPrompt(input: {
         message: authMessage,
       };
     }
+  }
+
+  const messages = input.messages ?? [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message || message.role !== "assistant") {
+      continue;
+    }
+    const text = message.text.trim();
+    if (!isProviderAuthErrorMessage(text)) {
+      continue;
+    }
+    return {
+      provider,
+      command,
+      message: text,
+    };
   }
 
   return null;

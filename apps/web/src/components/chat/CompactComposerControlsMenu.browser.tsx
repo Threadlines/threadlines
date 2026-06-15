@@ -5,6 +5,7 @@ import {
   ModelSelection,
   ProviderInstanceId,
   ProviderDriverKind,
+  type ServerProviderModel,
   ThreadId,
 } from "@t3tools/contracts";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime";
@@ -16,7 +17,7 @@ import { render } from "vitest-browser-react";
 import { createModelCapabilities, createModelSelection } from "@t3tools/shared/model";
 
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
-import { TraitsMenuContent } from "./TraitsPicker";
+import { TraitsMenuContent, TraitsPicker } from "./TraitsPicker";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { runtimeModeConfig, type RuntimeModeOption } from "../../runtimeModeOptions";
 
@@ -162,6 +163,39 @@ async function mountMenu(props?: { modelSelection?: ModelSelection; prompt?: str
   };
 }
 
+async function mountTraitsPicker(props: {
+  provider: ProviderDriverKind;
+  model: string;
+  models: ReadonlyArray<ServerProviderModel>;
+}) {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const changes: Array<ReadonlyArray<{ id: string; value: string | boolean }> | undefined> = [];
+  const screen = await render(
+    <TraitsPicker
+      provider={props.provider}
+      models={props.models}
+      model={props.model}
+      modelOptions={undefined}
+      onModelOptionsChange={(nextOptions) => {
+        changes.push(nextOptions);
+      }}
+    />,
+    { container: host },
+  );
+
+  const cleanup = async () => {
+    await screen.unmount();
+    host.remove();
+  };
+
+  return {
+    [Symbol.asyncDispose]: cleanup,
+    changes,
+    cleanup,
+  };
+}
+
 describe("CompactComposerControlsMenu", () => {
   afterEach(() => {
     document.body.innerHTML = "";
@@ -188,6 +222,51 @@ describe("CompactComposerControlsMenu", () => {
     await expect.element(fastModeToggle).toHaveAttribute("aria-checked", "false");
     await expect.element(page.getByRole("menuitemradio", { name: "On" })).not.toBeInTheDocument();
     await expect.element(page.getByRole("menuitemradio", { name: "Off" })).not.toBeInTheDocument();
+  });
+
+  it("shows Codex binary service tiers as a fast mode switch", async () => {
+    const provider = ProviderDriverKind.make("codex");
+    const model = "gpt-5.5";
+    await using mounted = await mountTraitsPicker({
+      provider,
+      model,
+      models: [
+        {
+          slug: model,
+          name: "GPT-5.5",
+          isCustom: false,
+          capabilities: createModelCapabilities({
+            optionDescriptors: [
+              selectDescriptor("reasoningEffort", "Reasoning", [
+                { id: "low", label: "Low" },
+                { id: "medium", label: "Medium", isDefault: true },
+                { id: "high", label: "High" },
+              ]),
+              selectDescriptor("serviceTier", "Speed", [
+                { id: "default", label: "Standard", isDefault: true },
+                { id: "priority", label: "Fast" },
+              ]),
+            ],
+          }),
+        },
+      ],
+    });
+
+    await page.getByRole("button", { name: /Medium/ }).click();
+
+    const fastModeToggle = page.getByRole("menuitemcheckbox", { name: "Fast Mode" });
+    await expect.element(fastModeToggle).toBeInTheDocument();
+    await expect.element(fastModeToggle).toHaveAttribute("aria-checked", "false");
+    await expect
+      .element(page.getByRole("menuitemradio", { name: "Standard default" }))
+      .not.toBeInTheDocument();
+    expect(document.body.textContent ?? "").not.toContain("Speed");
+
+    await fastModeToggle.click();
+
+    await vi.waitFor(() => {
+      expect(mounted.changes.at(-1)).toContainEqual({ id: "serviceTier", value: "priority" });
+    });
   });
 
   it("hides fast mode controls for non-Opus Claude models", async () => {

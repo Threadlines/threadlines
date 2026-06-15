@@ -29,6 +29,14 @@ const forcedShutdownTimeoutMs = 1_500;
 const restartDebounceMs = 120;
 const childTreeGracePeriodMs = 1_200;
 const watchPollIntervalMs = 500;
+const restartOnRebuild = readBooleanEnv(
+  [
+    "THREADLINES_DESKTOP_RESTART_ON_REBUILD",
+    "BADCODE_DESKTOP_RESTART_ON_REBUILD",
+    "T3CODE_DESKTOP_RESTART_ON_REBUILD",
+  ],
+  true,
+);
 
 await waitForResources({
   baseDir: desktopDir,
@@ -47,6 +55,28 @@ let restartQueue = Promise.resolve();
 const expectedExits = new WeakSet();
 const watchers = [];
 const polledFiles = [];
+
+function readBooleanEnv(names, defaultValue) {
+  const entry = names
+    .map((name) => [name, process.env[name]?.trim()])
+    .find(([, value]) => value !== undefined && value.length > 0);
+
+  if (!entry) {
+    return defaultValue;
+  }
+
+  const [name, rawValue] = entry;
+  const value = rawValue.toLowerCase();
+  if (["1", "true", "yes", "on"].includes(value)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(value)) {
+    return false;
+  }
+
+  console.warn(`[desktop-dev] Ignoring invalid ${name}=${rawValue}; expected true/false or 1/0.`);
+  return defaultValue;
+}
 
 function killChildTreeByPid(pid, signal) {
   if (typeof pid !== "number") {
@@ -201,6 +231,13 @@ function scheduleRestart() {
 }
 
 function startWatchers() {
+  if (!restartOnRebuild) {
+    console.warn(
+      "[desktop-dev] Electron auto-restart on rebuilt main/preload/server bundles is disabled.",
+    );
+    return;
+  }
+
   for (const { directory, files } of watchedDirectories) {
     const directoryPath = join(desktopDir, directory);
 

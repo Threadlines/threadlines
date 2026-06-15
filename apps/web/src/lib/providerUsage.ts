@@ -1,4 +1,5 @@
 import type {
+  ServerProvider,
   ServerProviderAccountUsage,
   ServerProviderSpendControlLimit,
   ServerProviderUsageLimit,
@@ -28,6 +29,11 @@ export interface ProviderAccountUsagePresentation {
   readonly windows: ReadonlyArray<ProviderAccountUsageWindowPresentation>;
   readonly reachedLimit: boolean;
 }
+
+type ProviderAccountUsagePresentationProvider = Pick<
+  ServerProvider,
+  "accountUsage" | "auth" | "driver"
+>;
 
 function normalizeResetTimestampMs(resetsAt: number | undefined): number | null {
   if (!Number.isFinite(resetsAt) || resetsAt === undefined || resetsAt <= 0) return null;
@@ -168,6 +174,53 @@ export function deriveProviderAccountUsagePresentation(
       Boolean(spendControl?.reachedLimit) ||
       windows.some((window) => window.reachedLimit),
   };
+}
+
+function shouldShowClaudeUsageUnavailablePlaceholder(
+  provider: ProviderAccountUsagePresentationProvider,
+): boolean {
+  return (
+    provider.driver === "claudeAgent" &&
+    provider.auth.status === "authenticated" &&
+    provider.auth.type?.toLowerCase() !== "apikey"
+  );
+}
+
+function makeClaudeUsageUnavailablePresentation(): ProviderAccountUsagePresentation {
+  return {
+    label: PROVIDER_USAGE_SOURCE_LABELS["claude-oauth-usage"],
+    reachedLimit: false,
+    windows: [
+      {
+        key: "primary",
+        label: "5h",
+        detail: "usage unavailable",
+        usedPercent: 0,
+        remainingPercent: 100,
+        reachedLimit: false,
+      },
+      {
+        key: "secondary",
+        label: "Weekly",
+        detail: "usage unavailable",
+        usedPercent: 0,
+        remainingPercent: 100,
+        reachedLimit: false,
+      },
+    ],
+  };
+}
+
+export function deriveProviderAccountUsagePresentationForProvider(
+  provider: ProviderAccountUsagePresentationProvider | null | undefined,
+  nowMs: number = Date.now(),
+): ProviderAccountUsagePresentation | null {
+  const presentation = deriveProviderAccountUsagePresentation(provider?.accountUsage, nowMs);
+  if (presentation || !provider) return presentation;
+  if (shouldShowClaudeUsageUnavailablePlaceholder(provider)) {
+    return makeClaudeUsageUnavailablePresentation();
+  }
+  return null;
 }
 
 /**

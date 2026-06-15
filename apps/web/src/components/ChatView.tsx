@@ -70,6 +70,7 @@ import {
   hasToolActivityForTurn,
   isLatestTurnSettled,
   formatElapsed,
+  type ProviderAuthReconnectAction,
 } from "../session-logic";
 import { type LegendListRef } from "@legendapp/list/react";
 import {
@@ -108,13 +109,7 @@ import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
 import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
-import {
-  ChevronDownIcon,
-  CornerDownRightIcon,
-  LogInIcon,
-  TriangleAlertIcon,
-  WifiOffIcon,
-} from "lucide-react";
+import { ChevronDownIcon, CornerDownRightIcon, TriangleAlertIcon, WifiOffIcon } from "lucide-react";
 import { cn, randomUUID } from "~/lib/utils";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
@@ -1672,8 +1667,15 @@ export default function ChatView(props: ChatViewProps) {
         provider: activeProviderDriver,
         threadError: activeThread?.error ?? activeThread?.session?.lastError ?? null,
         activities: threadActivities,
+        messages: timelineMessages,
       }),
-    [activeProviderDriver, activeThread?.error, activeThread?.session?.lastError, threadActivities],
+    [
+      activeProviderDriver,
+      activeThread?.error,
+      activeThread?.session?.lastError,
+      threadActivities,
+      timelineMessages,
+    ],
   );
   const activeProjectCwd = activeProject?.cwd ?? null;
   const activeThreadWorktreePath = activeThread?.worktreePath ?? null;
@@ -2035,70 +2037,33 @@ export default function ChatView(props: ChatViewProps) {
       terminalState.terminalIds,
     ],
   );
-  const runProviderAuthReconnect = useCallback(async () => {
-    if (!providerAuthReconnectPrompt) {
-      return;
-    }
-    await runProjectScript(
-      {
-        id: `provider-auth:${providerAuthReconnectPrompt.provider}`,
-        name: `${activeProviderLabel} login`,
-        command: providerAuthReconnectPrompt.command,
-        icon: "configure",
-        runOnWorktreeCreate: false,
-      },
-      {
-        preferNewTerminal: true,
-        rememberAsLastInvoked: false,
-      },
-    );
-  }, [activeProviderLabel, providerAuthReconnectPrompt, runProjectScript]);
-  const composerBannerItems = useMemo<ComposerBannerStackItem[]>(() => {
-    if (!providerAuthReconnectPrompt) {
-      return infrastructureComposerBannerItems;
-    }
+  const runProviderAuthReconnect = useCallback(
+    async (action?: ProviderAuthReconnectAction) => {
+      const reconnectAction = action ?? providerAuthReconnectPrompt;
+      if (!reconnectAction) {
+        return;
+      }
+      const providerLabel =
+        reconnectAction.provider === activeProviderDriver
+          ? activeProviderLabel
+          : formatProviderDriverKindLabel(reconnectAction.provider);
+      await runProjectScript(
+        {
+          id: `provider-auth:${reconnectAction.provider}`,
+          name: `${providerLabel} login`,
+          command: reconnectAction.command,
+          icon: "configure",
+          runOnWorktreeCreate: false,
+        },
+        {
+          rememberAsLastInvoked: false,
+        },
+      );
+    },
+    [activeProviderDriver, activeProviderLabel, providerAuthReconnectPrompt, runProjectScript],
+  );
 
-    return [
-      {
-        id: `provider-auth:${providerAuthReconnectPrompt.provider}`,
-        variant: "error",
-        icon: <LogInIcon />,
-        title: `${activeProviderLabel} needs sign in`,
-        description: (
-          <>
-            Run <code className="font-mono">{providerAuthReconnectPrompt.command}</code> in a
-            terminal, then retry this message.
-          </>
-        ),
-        actions: (
-          <>
-            <Button
-              size="xs"
-              disabled={!activeProject}
-              onClick={() => void runProviderAuthReconnect()}
-            >
-              Sign in
-            </Button>
-            <Button
-              size="xs"
-              variant="outline"
-              onClick={() => void navigate({ to: "/settings/providers" })}
-            >
-              Providers
-            </Button>
-          </>
-        ),
-      },
-      ...infrastructureComposerBannerItems,
-    ];
-  }, [
-    activeProject,
-    activeProviderLabel,
-    infrastructureComposerBannerItems,
-    navigate,
-    providerAuthReconnectPrompt,
-    runProviderAuthReconnect,
-  ]);
+  const composerBannerItems = infrastructureComposerBannerItems;
 
   const persistProjectScripts = useCallback(
     async (input: {
@@ -3720,6 +3685,9 @@ export default function ChatView(props: ChatViewProps) {
       <ProviderStatusBanner status={activeProviderStatus} />
       <ThreadErrorBanner
         error={activeThread.error}
+        authReconnect={providerAuthReconnectPrompt}
+        providerLabel={activeProviderLabel}
+        onRunAuthReconnect={runProviderAuthReconnect}
         onDismiss={() => setThreadError(activeThread.id, null)}
       />
       {/* Main content area with optional plan sidebar */}
@@ -3753,6 +3721,8 @@ export default function ChatView(props: ChatViewProps) {
               timestampFormat={timestampFormat}
               workspaceRoot={activeWorkspaceRoot}
               skills={activeProviderStatus?.skills ?? EMPTY_PROVIDER_SKILLS}
+              providerAuthReconnect={providerAuthReconnectPrompt}
+              onRunProviderAuthReconnect={runProviderAuthReconnect}
               onIsAtEndChange={onIsAtEndChange}
             />
 

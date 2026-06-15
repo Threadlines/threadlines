@@ -23,7 +23,7 @@ function mcpStatusEvent(status: unknown): ProviderRuntimeEvent {
 
 describe("ProviderActivityProjection", () => {
   it("suppresses routine MCP startup status updates", () => {
-    for (const status of ["starting", "ready", "connected"]) {
+    for (const status of ["starting", "ready", "connected", "cancelled"]) {
       expect(
         projectRuntimeEventToActivities(
           mcpStatusEvent({
@@ -35,6 +35,7 @@ describe("ProviderActivityProjection", () => {
     }
 
     expect(projectRuntimeEventToActivities(mcpStatusEvent("ready"))).toEqual([]);
+    expect(projectRuntimeEventToActivities(mcpStatusEvent("cancelled"))).toEqual([]);
   });
 
   it("keeps MCP startup failures visible", () => {
@@ -56,6 +57,31 @@ describe("ProviderActivityProjection", () => {
         status: {
           name: "github",
           status: "failed",
+          error: "OAuth token expired",
+        },
+      },
+    });
+  });
+
+  it("keeps cancelled MCP startup updates visible when an error is present", () => {
+    const activities = projectRuntimeEventToActivities(
+      mcpStatusEvent({
+        name: "github",
+        status: "cancelled",
+        error: "OAuth token expired",
+      }),
+    );
+
+    expect(activities).toHaveLength(1);
+    expect(activities[0]).toMatchObject({
+      tone: "warning",
+      kind: "mcp.status.updated",
+      summary: "MCP startup cancelled",
+      payload: {
+        detail: "OAuth token expired",
+        status: {
+          name: "github",
+          status: "cancelled",
           error: "OAuth token expired",
         },
       },

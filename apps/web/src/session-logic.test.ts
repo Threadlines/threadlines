@@ -1359,6 +1359,54 @@ describe("deriveWorkLogEntries", () => {
     expect(warningEntries[0]?.label).toBe("Claude API rate limited, retrying in 8s (attempt 2/10)");
   });
 
+  it("attaches a provider auth reconnect action to authentication runtime errors", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "claude-auth-error",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "runtime.error",
+        summary: "Authentication required",
+        tone: "error",
+        turnId: "turn-1",
+        payload: {
+          provider: "claudeAgent",
+          class: "authentication_error",
+          message: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+        },
+      }),
+    ]);
+
+    expect(entry?.authReconnect).toEqual({
+      provider: "claudeAgent",
+      command: "claude auth login",
+      message: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+    });
+  });
+
+  it("attaches a Codex auth reconnect action to unauthenticated runtime errors", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "codex-auth-error",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "runtime.error",
+        summary: "Runtime error",
+        tone: "error",
+        turnId: "turn-1",
+        payload: {
+          provider: "codex",
+          class: "provider_error",
+          message: "Not logged in Run `codex login` in a terminal, then retry.",
+        },
+      }),
+    ]);
+
+    expect(entry?.authReconnect).toEqual({
+      provider: "codex",
+      command: "codex login",
+      message: "Not logged in Run `codex login` in a terminal, then retry.",
+    });
+  });
+
   it("renders tagged Codex stream retries without repeating the reconnect label", () => {
     const [entry] = deriveWorkLogEntries([
       makeActivity({

@@ -32,6 +32,31 @@ import { getProviderModelCapabilities } from "../../providerModels";
 import { cn } from "~/lib/utils";
 
 type ProviderOptions = ReadonlyArray<ProviderOptionSelection>;
+type SelectProviderOptionDescriptor = Extract<ProviderOptionDescriptor, { type: "select" }>;
+type BooleanProviderOptionDescriptor = Extract<ProviderOptionDescriptor, { type: "boolean" }>;
+
+type BinaryServiceTierToggle = {
+  descriptor: SelectProviderOptionDescriptor;
+  standardValue: string;
+  fastValue: string;
+  checked: boolean;
+};
+
+type TraitSwitchControl =
+  | {
+      type: "boolean";
+      descriptor: BooleanProviderOptionDescriptor;
+      label: string;
+      checked: boolean;
+      nextValue: (checked: boolean) => boolean;
+    }
+  | {
+      type: "serviceTier";
+      descriptor: SelectProviderOptionDescriptor;
+      label: string;
+      checked: boolean;
+      nextValue: (checked: boolean) => string;
+    };
 
 type TraitsPersistence =
   | {
@@ -65,13 +90,96 @@ function replaceDescriptorCurrentValue(
 }
 
 function getDescriptorStringValue(
-  descriptor: Extract<ProviderOptionDescriptor, { type: "select" }> | null,
+  descriptor: SelectProviderOptionDescriptor | null,
 ): string | null {
   if (!descriptor) {
     return null;
   }
   const value = getProviderOptionCurrentValue(descriptor);
   return typeof value === "string" ? value : null;
+}
+
+function optionLooksLikeFastTier(option: SelectProviderOptionDescriptor["options"][number]) {
+  const searchable = `${option.id} ${option.label}`.toLowerCase();
+  return /\bfast\b/u.test(searchable) || /\bpriority\b/u.test(searchable);
+}
+
+function getBinaryServiceTierToggle(
+  descriptor: SelectProviderOptionDescriptor,
+): BinaryServiceTierToggle | null {
+  if (descriptor.id !== "serviceTier" || descriptor.options.length !== 2) {
+    return null;
+  }
+
+  const standardOption =
+    descriptor.options.find((option) => option.id === "default") ??
+    descriptor.options.find((option) => option.label.toLowerCase() === "standard") ??
+    descriptor.options.find((option) => option.isDefault);
+  if (!standardOption) {
+    return null;
+  }
+
+  const fastOption = descriptor.options.find((option) => option.id !== standardOption.id);
+  if (!fastOption || !optionLooksLikeFastTier(fastOption)) {
+    return null;
+  }
+
+  return {
+    descriptor,
+    standardValue: standardOption.id,
+    fastValue: fastOption.id,
+    checked: getDescriptorStringValue(descriptor) === fastOption.id,
+  };
+}
+
+function getRenderedSelectDescriptors(
+  descriptors: ReadonlyArray<ProviderOptionDescriptor>,
+): ReadonlyArray<SelectProviderOptionDescriptor> {
+  return descriptors.filter(
+    (descriptor): descriptor is SelectProviderOptionDescriptor =>
+      descriptor.type === "select" && getBinaryServiceTierToggle(descriptor) === null,
+  );
+}
+
+function getTraitSwitchControls(
+  descriptors: ReadonlyArray<ProviderOptionDescriptor>,
+): ReadonlyArray<TraitSwitchControl> {
+  return descriptors.flatMap((descriptor): ReadonlyArray<TraitSwitchControl> => {
+    if (descriptor.type === "boolean") {
+      return [
+        {
+          type: "boolean",
+          descriptor,
+          label: descriptor.label,
+          checked: descriptor.currentValue === true,
+          nextValue: (checked) => checked,
+        },
+      ];
+    }
+
+    const serviceTierToggle = getBinaryServiceTierToggle(descriptor);
+    if (!serviceTierToggle) {
+      return [];
+    }
+
+    return [
+      {
+        type: "serviceTier",
+        descriptor,
+        label: "Fast Mode",
+        checked: serviceTierToggle.checked,
+        nextValue: (checked) =>
+          checked ? serviceTierToggle.fastValue : serviceTierToggle.standardValue,
+      },
+    ];
+  });
+}
+
+function getSwitchControlLabel(control: TraitSwitchControl): string {
+  if (control.type === "serviceTier" || control.descriptor.id === "fastMode") {
+    return control.checked ? "Fast" : "Normal";
+  }
+  return `${control.label} ${control.checked ? "on" : "off"}`;
 }
 
 function getSelectedTraits(
@@ -85,13 +193,9 @@ function getSelectedTraits(
     caps,
     selections: modelOptions,
   });
-  const selectDescriptors = descriptors.filter(
-    (descriptor): descriptor is Extract<ProviderOptionDescriptor, { type: "select" }> =>
-      descriptor.type === "select",
-  );
+  const selectDescriptors = getRenderedSelectDescriptors(descriptors);
   const booleanDescriptors = descriptors.filter(
-    (descriptor): descriptor is Extract<ProviderOptionDescriptor, { type: "boolean" }> =>
-      descriptor.type === "boolean",
+    (descriptor): descriptor is BooleanProviderOptionDescriptor => descriptor.type === "boolean",
   );
   const primarySelectDescriptor = selectDescriptors[0] ?? null;
   const contextWindowDescriptor =
@@ -99,6 +203,13 @@ function getSelectedTraits(
   const agentDescriptor = selectDescriptors.find((descriptor) => descriptor.id === "agent") ?? null;
   const fastModeDescriptor =
     booleanDescriptors.find((descriptor) => descriptor.id === "fastMode") ?? null;
+  const serviceTierToggle =
+    descriptors
+      .filter(
+        (descriptor): descriptor is SelectProviderOptionDescriptor => descriptor.type === "select",
+      )
+      .map(getBinaryServiceTierToggle)
+      .find((toggle) => toggle !== null) ?? null;
   const thinkingDescriptor =
     booleanDescriptors.find((descriptor) => descriptor.id === "thinking") ?? null;
 
@@ -122,6 +233,7 @@ function getSelectedTraits(
     contextWindowDescriptor,
     agentDescriptor,
     fastModeDescriptor,
+    serviceTierToggle,
     thinkingDescriptor,
     effort,
     thinkingEnabled,
@@ -142,7 +254,7 @@ function getTraitsSectionVisibility(input: {
 
   const showEffort = selected.primarySelectDescriptor !== null;
   const showThinking = selected.thinkingDescriptor !== null;
-  const showFastMode = selected.fastModeDescriptor !== null;
+  const showFastMode = selected.fastModeDescriptor !== null || selected.serviceTierToggle !== null;
   const showContextWindow = selected.contextWindowDescriptor !== null;
   const showAgent = selected.agentDescriptor !== null;
 
@@ -203,13 +315,13 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
     },
     [instanceId, model, persistence, provider, setProviderModelOptions],
   );
-  const { descriptors, selectDescriptors, booleanDescriptors, hasAnyControls } =
-    getTraitsSectionVisibility({
-      provider,
-      models,
-      model,
-      modelOptions,
-    });
+  const { descriptors, selectDescriptors, hasAnyControls } = getTraitsSectionVisibility({
+    provider,
+    models,
+    model,
+    modelOptions,
+  });
+  const switchControls = getTraitSwitchControls(descriptors);
   const updateDescriptors = (nextDescriptors: ReadonlyArray<ProviderOptionDescriptor>) => {
     updateModelOptions(buildProviderOptionSelectionsFromDescriptors(nextDescriptors));
   };
@@ -249,24 +361,28 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
           </MenuGroup>
         </div>
       ))}
-      {booleanDescriptors.length > 0 ? (
+      {switchControls.length > 0 ? (
         <div>
           {selectDescriptors.length > 0 ? <MenuDivider /> : null}
           <MenuGroup>
             {/* Toggles stay open on click so several can be adjusted in one visit. */}
-            {booleanDescriptors.map((descriptor) => (
+            {switchControls.map((control) => (
               <MenuCheckboxItem
-                key={descriptor.id}
+                key={control.descriptor.id}
                 variant="switch"
-                checked={descriptor.currentValue === true}
+                checked={control.checked}
                 closeOnClick={false}
                 onCheckedChange={(checked) => {
                   updateDescriptors(
-                    replaceDescriptorCurrentValue(descriptors, descriptor.id, checked === true),
+                    replaceDescriptorCurrentValue(
+                      descriptors,
+                      control.descriptor.id,
+                      control.nextValue(checked === true),
+                    ),
                   );
                 }}
               >
-                {descriptor.label}
+                {control.label}
               </MenuCheckboxItem>
             ))}
           </MenuGroup>
@@ -306,26 +422,16 @@ export const TraitsPicker = memo(function TraitsPicker({
 
   // The trigger shows only the primary trait; remaining settings collapse to
   // a count and live inside the menu, so stacked options never flood the bar.
-  const primarySelectDescriptor =
-    descriptors.find(
-      (descriptor): descriptor is Extract<ProviderOptionDescriptor, { type: "select" }> =>
-        descriptor.type === "select",
-    ) ?? null;
-  const firstBooleanDescriptor =
-    descriptors.find(
-      (descriptor): descriptor is Extract<ProviderOptionDescriptor, { type: "boolean" }> =>
-        descriptor.type === "boolean",
-    ) ?? null;
+  const selectDescriptors = getRenderedSelectDescriptors(descriptors);
+  const primarySelectDescriptor = selectDescriptors[0] ?? null;
+  const firstSwitchControl = getTraitSwitchControls(descriptors)[0] ?? null;
   const primaryTriggerLabel = primarySelectDescriptor
     ? getProviderOptionCurrentLabel(primarySelectDescriptor)
-    : firstBooleanDescriptor
-      ? firstBooleanDescriptor.id === "fastMode"
-        ? firstBooleanDescriptor.currentValue === true
-          ? "Fast"
-          : "Normal"
-        : `${firstBooleanDescriptor.label} ${firstBooleanDescriptor.currentValue === true ? "on" : "off"}`
+    : firstSwitchControl
+      ? getSwitchControlLabel(firstSwitchControl)
       : null;
-  const extraTraitCount = Math.max(0, descriptors.length - 1);
+  const renderedTraitCount = selectDescriptors.length + getTraitSwitchControls(descriptors).length;
+  const extraTraitCount = Math.max(0, renderedTraitCount - 1);
 
   return (
     <Menu

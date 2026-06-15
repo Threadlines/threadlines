@@ -6,12 +6,13 @@
  * Code's `/usage` screen is served by Anthropic's OAuth usage endpoint, which
  * the wider Claude Code tooling ecosystem (statusline plugins, usage
  * monitors) reads with the same OAuth access token Claude Code maintains in
- * `<home>/.claude/.credentials.json`.
+ * `<home>/.claude/.credentials.json` or macOS Keychain.
  *
  * The endpoint is unofficial, so every step here degrades to `undefined`
- * rather than failing the provider probe: missing/expired credentials (API
- * key auth, macOS keychain storage, logged out), non-2xx responses, and
- * unexpected payload shapes all simply omit the usage section from the card.
+ * rather than failing the provider probe: missing credentials (API key auth,
+ * logged out), non-2xx responses, and unexpected payload shapes all simply omit
+ * the usage section from the card. We still log redacted diagnostics and honor
+ * Retry-After so a rate-limited usage check doesn't keep hammering the endpoint.
  *
  * @module provider/Layers/ClaudeUsage
  */
@@ -20,6 +21,7 @@ import type {
   ServerProviderAccountUsage,
   ServerProviderUsageWindow,
 } from "@t3tools/contracts";
+import * as NodeOS from "node:os";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -38,6 +40,8 @@ const USAGE_FETCH_TIMEOUT_MS = 4_000;
 const KEYCHAIN_READ_TIMEOUT_MS = 1_500;
 const FIVE_HOUR_WINDOW_MINS = 300;
 const SEVEN_DAY_WINDOW_MINS = 10_080;
+const CLAUDE_USAGE_BACKOFF_MAX_MS = 60 * 60 * 1000;
+const claudeUsageBackoffUntilMsByCredential = new Map<string, number>();
 
 const ClaudeCredentialsPayload = Schema.Struct({
   claudeAiOauth: Schema.optional(
@@ -65,6 +69,16 @@ const ClaudeOAuthUsageResponse = Schema.Struct({
 });
 export type ClaudeOAuthUsageResponse = typeof ClaudeOAuthUsageResponse.Type;
 const decodeClaudeOAuthUsageResponse = Schema.decodeUnknownEffect(ClaudeOAuthUsageResponse);
+
+const KNOWN_CLAUDE_USAGE_FIELDS = [
+  "five_hour",
+  "seven_day",
+  "seven_day_oauth_apps",
+  "seven_day_opus",
+  "seven_day_sonnet",
+  "cinder_cove",
+  "extra_usage",
+] as const;
 
 function normalizeUsagePercent(value: number): number {
   if (!Number.isFinite(value)) return 0;
@@ -132,6 +146,57 @@ export interface ClaudeOAuthCredential {
   readonly organizationUuid?: string;
 }
 
+function claudeUsageBackoffKey(credential: ClaudeOAuthCredential): string {
+  return credential.organizationUuid ?? "default";
+}
+
+function readHeaderValue(headers: unknown, headerName: string): string | undefined {
+  const get = headers && typeof headers === "object" ? (headers as { get?: unknown }).get : null;
+  if (typeof get === "function") {
+    const value = get.call(headers, headerName);
+    return typeof value === "string" ? value : undefined;
+  }
+
+  if (!headers || typeof headers !== "object") return undefined;
+  const record = headers as Record<string, unknown>;
+  const exact = record[headerName];
+  if (typeof exact === "string") return exact;
+
+  const lower = record[headerName.toLowerCase()];
+  return typeof lower === "string" ? lower : undefined;
+}
+
+export function parseClaudeUsageRetryAfter(
+  value: string | undefined,
+  nowMs: number,
+): number | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+
+  const seconds = Number(trimmed);
+  if (Number.isFinite(seconds) && seconds > 0) {
+    return nowMs + Math.min(seconds * 1000, CLAUDE_USAGE_BACKOFF_MAX_MS);
+  }
+
+  const parsedDate = Date.parse(trimmed);
+  if (!Number.isFinite(parsedDate) || parsedDate <= nowMs) return undefined;
+  return Math.min(parsedDate, nowMs + CLAUDE_USAGE_BACKOFF_MAX_MS);
+}
+
+function readClaudeUsageErrorType(body: unknown): string | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const error = (body as Record<string, unknown>).error;
+  if (!error || typeof error !== "object") return undefined;
+  const type = (error as Record<string, unknown>).type;
+  return typeof type === "string" && type.trim() ? type : undefined;
+}
+
+function hasKnownClaudeUsageField(body: unknown): boolean {
+  if (!body || typeof body !== "object") return false;
+  const record = body as Record<string, unknown>;
+  return KNOWN_CLAUDE_USAGE_FIELDS.some((field) => field in record);
+}
+
 function normalizeCredentialString(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
@@ -186,18 +251,32 @@ const readClaudeMacOSKeychainCredentials = Effect.fn("readClaudeMacOSKeychainCre
   > {
     if (platform !== "darwin") return undefined;
 
-    const command = ChildProcess.make(
-      "security",
-      ["find-generic-password", "-w", "-s", CLAUDE_MACOS_KEYCHAIN_SERVICE],
-      { shell: false },
-    );
-    const result = yield* spawnAndCollect("security", command).pipe(
-      Effect.timeoutOption(KEYCHAIN_READ_TIMEOUT_MS),
-      Effect.catch(() => Effect.succeed(Option.none())),
-    );
-    if (Option.isNone(result)) return undefined;
+    const readSecret = (args: ReadonlyArray<string>) =>
+      Effect.gen(function* () {
+        const command = ChildProcess.make("security", args, { shell: false });
+        const result = yield* spawnAndCollect("security", command).pipe(
+          Effect.timeoutOption(KEYCHAIN_READ_TIMEOUT_MS),
+          Effect.catch(() => Effect.succeed(Option.none())),
+        );
+        if (Option.isNone(result)) return undefined;
+        return result.value.code === 0 ? result.value.stdout.trim() : undefined;
+      });
 
-    const secret = result.value.code === 0 ? result.value.stdout.trim() : "";
+    const accountScopedArgs = [
+      "find-generic-password",
+      "-a",
+      NodeOS.userInfo().username,
+      "-w",
+      "-s",
+      CLAUDE_MACOS_KEYCHAIN_SERVICE,
+    ] as const;
+    const serviceScopedArgs = [
+      "find-generic-password",
+      "-w",
+      "-s",
+      CLAUDE_MACOS_KEYCHAIN_SERVICE,
+    ] as const;
+    const secret = (yield* readSecret(accountScopedArgs)) ?? (yield* readSecret(serviceScopedArgs));
     if (!secret) return undefined;
 
     return yield* decodeClaudeCredentialsFile(secret).pipe(Effect.orElseSucceed(() => undefined));
@@ -236,7 +315,21 @@ export const fetchClaudeAccountUsage = Effect.fn("fetchClaudeAccountUsage")(func
   | ChildProcessSpawner.ChildProcessSpawner
 > {
   const credential = yield* readClaudeOAuthCredential(claudeSettings);
-  if (!credential) return undefined;
+  if (!credential) {
+    yield* Effect.logDebug("claude.usage.fetch.skipped", { reason: "missing-oauth-credential" });
+    return undefined;
+  }
+
+  const backoffKey = claudeUsageBackoffKey(credential);
+  const backoffUntilMs = claudeUsageBackoffUntilMsByCredential.get(backoffKey);
+  const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+  if (backoffUntilMs !== undefined && backoffUntilMs > nowMs) {
+    yield* Effect.logDebug("claude.usage.fetch.skipped", {
+      reason: "retry-after-backoff",
+      retryAfterMs: backoffUntilMs - nowMs,
+    });
+    return undefined;
+  }
 
   const client = yield* HttpClient.HttpClient;
   const request = HttpClientRequest.get(CLAUDE_OAUTH_USAGE_URL).pipe(
@@ -256,7 +349,26 @@ export const fetchClaudeAccountUsage = Effect.fn("fetchClaudeAccountUsage")(func
   if (Option.isNone(response)) return undefined;
 
   const httpResponse = response.value;
-  if (httpResponse.status < 200 || httpResponse.status >= 300) return undefined;
+  if (httpResponse.status < 200 || httpResponse.status >= 300) {
+    const responseBody = yield* httpResponse.json.pipe(Effect.orElseSucceed(() => undefined));
+    const retryAfterReferenceMs = DateTime.toEpochMillis(yield* DateTime.now);
+    const retryAfterMs = parseClaudeUsageRetryAfter(
+      readHeaderValue(httpResponse.headers, "retry-after"),
+      retryAfterReferenceMs,
+    );
+    if (httpResponse.status === 429 && retryAfterMs !== undefined) {
+      claudeUsageBackoffUntilMsByCredential.set(backoffKey, retryAfterMs);
+    }
+
+    yield* Effect.logWarning("claude.usage.fetch.unavailable", {
+      status: httpResponse.status,
+      retryAfterMs:
+        retryAfterMs !== undefined ? Math.max(0, retryAfterMs - retryAfterReferenceMs) : undefined,
+      errorType: readClaudeUsageErrorType(responseBody),
+      hasUsageFields: hasKnownClaudeUsageField(responseBody),
+    });
+    return undefined;
+  }
 
   const payload = yield* httpResponse.json.pipe(
     Effect.flatMap((body) => decodeClaudeOAuthUsageResponse(body)),

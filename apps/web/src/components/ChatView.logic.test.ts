@@ -202,6 +202,7 @@ describe("desktopCapturedScreenshotToFile", () => {
 
 describe("deriveProviderAuthReconnectPrompt", () => {
   const claudeProvider = ProviderDriverKind.make("claudeAgent");
+  const codexProvider = ProviderDriverKind.make("codex");
 
   it("detects Claude authentication failures from the thread error", () => {
     expect(
@@ -240,6 +241,42 @@ describe("deriveProviderAuthReconnectPrompt", () => {
       provider: claudeProvider,
       command: "claude auth login",
       message: "Failed to authenticate.",
+    });
+  });
+
+  it("detects authentication failures from assistant messages", () => {
+    expect(
+      deriveProviderAuthReconnectPrompt({
+        provider: claudeProvider,
+        messages: [
+          {
+            role: "assistant",
+            text: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+          },
+        ],
+      }),
+    ).toEqual({
+      provider: claudeProvider,
+      command: "claude auth login",
+      message: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+    });
+  });
+
+  it("detects Codex authentication failures with the Codex login command", () => {
+    expect(
+      deriveProviderAuthReconnectPrompt({
+        provider: codexProvider,
+        messages: [
+          {
+            role: "assistant",
+            text: "Not logged in. Run `codex login` in a terminal, then retry.",
+          },
+        ],
+      }),
+    ).toEqual({
+      provider: codexProvider,
+      command: "codex login",
+      message: "Not logged in. Run `codex login` in a terminal, then retry.",
     });
   });
 

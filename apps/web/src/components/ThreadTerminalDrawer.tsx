@@ -56,7 +56,7 @@ import { readEnvironmentApi } from "~/environmentApi";
 import { readLocalApi } from "~/localApi";
 import { selectTerminalEventEntries, useTerminalStateStore } from "../terminalStateStore";
 
-const MIN_DRAWER_HEIGHT = 180;
+const MIN_DRAWER_HEIGHT = DEFAULT_THREAD_TERMINAL_HEIGHT;
 const MAX_DRAWER_HEIGHT_RATIO = 0.75;
 const MULTI_CLICK_SELECTION_ACTION_DELAY_MS = 260;
 
@@ -1127,7 +1127,7 @@ export default function ThreadTerminalDrawer({
   return (
     <aside
       className="thread-terminal-drawer relative flex min-w-0 shrink-0 flex-col overflow-hidden border-t border-border/80 bg-background"
-      style={{ height: `${drawerHeight}px` }}
+      style={{ height: `${drawerHeight}px`, minHeight: `${MIN_DRAWER_HEIGHT}px` }}
     >
       <div
         className="absolute inset-x-0 top-0 z-20 h-1.5 cursor-row-resize"

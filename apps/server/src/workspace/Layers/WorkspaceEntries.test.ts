@@ -13,7 +13,11 @@ import { ServerConfig } from "../../config.ts";
 import * as VcsDriverRegistry from "../../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import { WorkspaceEntries } from "../Services/WorkspaceEntries.ts";
-import { expandHomePathForBrowse, WorkspaceEntriesLive } from "./WorkspaceEntries.ts";
+import {
+  expandHomePathForBrowse,
+  isProtectedMacosHomeDirectoryScan,
+  WorkspaceEntriesLive,
+} from "./WorkspaceEntries.ts";
 import { WorkspacePathsLive } from "./WorkspacePaths.ts";
 
 const TestLayer = Layer.empty.pipe(
@@ -85,6 +89,49 @@ it.layer(TestLayer)("WorkspaceEntriesLive", (it) => {
   });
 
   describe("search", () => {
+    it("identifies protected macOS home folders only for broad home scans", () => {
+      expect(
+        isProtectedMacosHomeDirectoryScan({
+          platform: "darwin",
+          cwd: "/Users/alice",
+          homeDirectory: "/Users/alice",
+          relativePath: "Music",
+        }),
+      ).toBe(true);
+      expect(
+        isProtectedMacosHomeDirectoryScan({
+          platform: "darwin",
+          cwd: "/Users/alice",
+          homeDirectory: "/Users/alice",
+          relativePath: "Documents/client-app",
+        }),
+      ).toBe(true);
+      expect(
+        isProtectedMacosHomeDirectoryScan({
+          platform: "darwin",
+          cwd: "/Users/alice/Documents/client-app",
+          homeDirectory: "/Users/alice",
+          relativePath: "src",
+        }),
+      ).toBe(false);
+      expect(
+        isProtectedMacosHomeDirectoryScan({
+          platform: "linux",
+          cwd: "/Users/alice",
+          homeDirectory: "/Users/alice",
+          relativePath: "Music",
+        }),
+      ).toBe(false);
+      expect(
+        isProtectedMacosHomeDirectoryScan({
+          platform: "darwin",
+          cwd: "/Users/alice",
+          homeDirectory: "/Users/alice",
+          relativePath: "Projects",
+        }),
+      ).toBe(false);
+    });
+
     it.effect("returns files and directories relative to cwd", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTempDir();

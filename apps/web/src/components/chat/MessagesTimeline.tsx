@@ -1,6 +1,8 @@
 import {
   type EnvironmentId,
   type MessageId,
+  type ProviderDriverKind,
+  PROVIDER_DISPLAY_NAMES,
   type ServerProviderSkill,
   type TurnId,
 } from "@t3tools/contracts";
@@ -17,7 +19,12 @@ import {
   type ReactNode,
 } from "react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
-import { deriveTimelineEntries, formatElapsed } from "../../session-logic";
+import { isProviderAuthErrorMessage } from "@t3tools/shared/providerAuth";
+import {
+  deriveTimelineEntries,
+  formatElapsed,
+  type ProviderAuthReconnectAction,
+} from "../../session-logic";
 import { type TurnDiffSummary } from "../../types";
 import { summarizeTurnDiffStats } from "../../lib/turnDiffTree";
 import ChatMarkdown from "../ChatMarkdown";
@@ -30,6 +37,7 @@ import {
   GlobeIcon,
   HammerIcon,
   type LucideIcon,
+  LogInIcon,
   SearchIcon,
   ShieldCheckIcon,
   SquarePenIcon,
@@ -73,6 +81,7 @@ import {
 } from "./userMessageTerminalContexts";
 import { SkillInlineText } from "./SkillInlineText";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
+import { formatProviderDriverKindLabel } from "../../providerModels";
 
 // ---------------------------------------------------------------------------
 // Context — shared state consumed by every row component via Context.
@@ -90,9 +99,12 @@ interface TimelineRowSharedState {
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   activeThreadEnvironmentId: EnvironmentId;
   turnDiffSummaryByTurnId: ReadonlyMap<TurnId, TurnDiffSummary>;
+  providerAuthReconnect: ProviderAuthReconnectAction | null;
+  resolvedProviderAuthReconnectIds: ReadonlySet<string>;
   onRevertUserMessage: (messageId: MessageId) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
+  onRunProviderAuthReconnect?: (action: ProviderAuthReconnectAction) => void;
 }
 
 interface TimelineRowActivityState {
@@ -135,6 +147,8 @@ interface MessagesTimelineProps {
   timestampFormat: TimestampFormat;
   workspaceRoot: string | undefined;
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
+  providerAuthReconnect?: ProviderAuthReconnectAction | null;
+  onRunProviderAuthReconnect?: (action: ProviderAuthReconnectAction) => void;
   onIsAtEndChange: (isAtEnd: boolean) => void;
 }
 
@@ -165,6 +179,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   timestampFormat,
   workspaceRoot,
   skills = EMPTY_TIMELINE_SKILLS,
+  providerAuthReconnect = null,
+  onRunProviderAuthReconnect,
   onIsAtEndChange,
 }: MessagesTimelineProps) {
   const rawRows = useMemo(
@@ -195,6 +211,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     ],
   );
   const rows = useStableRows(rawRows);
+  const resolvedProviderAuthReconnectIds = useMemo(
+    () => deriveResolvedProviderAuthReconnectIds(rows),
+    [rows],
+  );
   const turnDiffSummaryByTurnId = useMemo(() => {
     const next = new Map<TurnId, TurnDiffSummary>();
     for (const summary of turnDiffSummaryByAssistantMessageId.values()) {
@@ -250,9 +270,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       skills,
       activeThreadEnvironmentId,
       turnDiffSummaryByTurnId,
+      providerAuthReconnect,
+      resolvedProviderAuthReconnectIds,
       onRevertUserMessage,
       onImageExpand,
       onOpenTurnDiff,
+      ...(onRunProviderAuthReconnect ? { onRunProviderAuthReconnect } : {}),
     }),
     [
       timestampFormat,
@@ -263,9 +286,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       skills,
       activeThreadEnvironmentId,
       turnDiffSummaryByTurnId,
+      providerAuthReconnect,
+      resolvedProviderAuthReconnectIds,
       onRevertUserMessage,
       onImageExpand,
       onOpenTurnDiff,
+      onRunProviderAuthReconnect,
     ],
   );
   const activityState = useMemo<TimelineRowActivityState>(
@@ -322,6 +348,55 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
 function keyExtractor(item: MessagesTimelineRow) {
   return item.id;
+}
+
+function isResolvedProviderAuthRecoverySignal(row: MessagesTimelineRow): boolean {
+  if (row.kind !== "message" || row.message.role !== "assistant" || row.message.streaming) {
+    return false;
+  }
+  const text = row.message.text.trim();
+  return Boolean(text && !isProviderAuthErrorMessage(text));
+}
+
+function deriveResolvedProviderAuthReconnectIds(
+  rows: ReadonlyArray<MessagesTimelineRow>,
+): ReadonlySet<string> {
+  const resolvedIds = new Set<string>();
+  let hasLaterAssistantSuccess = false;
+
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index];
+    if (!row) {
+      continue;
+    }
+
+    if (isResolvedProviderAuthRecoverySignal(row)) {
+      hasLaterAssistantSuccess = true;
+      continue;
+    }
+
+    if (!hasLaterAssistantSuccess) {
+      continue;
+    }
+
+    if (row.kind === "message" && row.message.role === "assistant") {
+      const text = row.message.text.trim();
+      if (isProviderAuthErrorMessage(text)) {
+        resolvedIds.add(row.id);
+      }
+      continue;
+    }
+
+    if (row.kind === "work") {
+      for (const entry of row.groupedEntries) {
+        if (entry.authReconnect) {
+          resolvedIds.add(entry.id);
+        }
+      }
+    }
+  }
+
+  return resolvedIds;
 }
 
 // ---------------------------------------------------------------------------
@@ -469,6 +544,10 @@ function RevertUserMessageButton({ messageId }: { messageId: MessageId }) {
 function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
+  const authReconnect =
+    ctx.providerAuthReconnect && isProviderAuthErrorMessage(messageText)
+      ? ctx.providerAuthReconnect
+      : null;
 
   return (
     <>
@@ -476,14 +555,23 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
         <AssistantCompletionDivider completionSummary={row.completionSummary} />
       )}
       <div className="min-w-0 px-1 py-0.5">
-        <div data-agent-response-body="true" data-assistant-message-body="true">
-          <ChatMarkdown
-            text={messageText}
-            cwd={ctx.markdownCwd}
-            isStreaming={Boolean(row.message.streaming)}
-            skills={ctx.skills}
+        {authReconnect ? (
+          <ProviderAuthReconnectCard
+            action={authReconnect}
+            className="max-w-2xl"
+            resolved={ctx.resolvedProviderAuthReconnectIds.has(row.id)}
+            {...(ctx.onRunProviderAuthReconnect ? { onRun: ctx.onRunProviderAuthReconnect } : {})}
           />
-        </div>
+        ) : (
+          <div data-agent-response-body="true" data-assistant-message-body="true">
+            <ChatMarkdown
+              text={messageText}
+              cwd={ctx.markdownCwd}
+              isStreaming={Boolean(row.message.streaming)}
+              skills={ctx.skills}
+            />
+          </div>
+        )}
         <AssistantChangedFilesSection
           turnSummary={row.assistantTurnDiffSummary}
           isTurnInProgress={row.assistantTurnInProgress}
@@ -2646,12 +2734,96 @@ const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
   );
 });
 
+function providerAuthReconnectProviderLabel(provider: ProviderDriverKind): string {
+  return PROVIDER_DISPLAY_NAMES[provider] ?? formatProviderDriverKindLabel(provider);
+}
+
+const ProviderAuthReconnectCard = memo(function ProviderAuthReconnectCard({
+  action,
+  onRun,
+  className,
+  resolved = false,
+}: {
+  action: ProviderAuthReconnectAction;
+  onRun?: (action: ProviderAuthReconnectAction) => void;
+  className?: string;
+  resolved?: boolean;
+}) {
+  const providerLabel = providerAuthReconnectProviderLabel(action.provider);
+
+  return (
+    <div
+      className={cn(
+        "rounded-md border px-2.5 py-2",
+        resolved ? "border-success/25 bg-success/5" : "border-destructive/25 bg-destructive/5",
+        className,
+      )}
+      data-provider-auth-reconnect="true"
+      data-provider-auth-reconnect-resolved={resolved ? "true" : "false"}
+    >
+      <div className="flex min-w-0 items-start gap-2">
+        <span
+          className={cn(
+            "mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-sm",
+            resolved ? "bg-success/10 text-success" : "bg-destructive/10 text-destructive",
+          )}
+        >
+          {resolved ? (
+            <CheckIcon className="size-3.5" aria-hidden />
+          ) : (
+            <LogInIcon className="size-3.5" aria-hidden />
+          )}
+        </span>
+        <div className="min-w-0 flex-1 space-y-1">
+          <p className="text-xs font-medium leading-5 text-foreground">
+            {resolved ? `${providerLabel} sign-in refreshed` : `${providerLabel} needs sign in`}
+          </p>
+          <p className="text-[11px] leading-5 text-muted-foreground/80">
+            {resolved ? (
+              <>A later response succeeded. Retry the failed message if you still need it.</>
+            ) : (
+              <>
+                Run <code className="font-mono text-foreground/85">{action.command}</code>, complete
+                the browser sign-in, then retry this message.
+              </>
+            )}
+          </p>
+          <p className="line-clamp-2 text-[10px] leading-4 text-muted-foreground/55">
+            Last error: {action.message}
+          </p>
+        </div>
+        {resolved ? (
+          <span className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-success/20 bg-success/5 px-2 text-xs font-medium text-success">
+            <CheckIcon className="size-3" aria-hidden />
+            Resolved
+          </span>
+        ) : (
+          <Button
+            type="button"
+            size="xs"
+            className="shrink-0"
+            disabled={!onRun}
+            onClick={(event) => {
+              event.stopPropagation();
+              onRun?.(action);
+            }}
+          >
+            <TerminalIcon className="size-3" />
+            Sign in in terminal
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+});
+
 const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   isLiveActivity: boolean;
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
 }) {
-  const { turnDiffSummaryByTurnId } = use(TimelineRowCtx);
+  const { turnDiffSummaryByTurnId, onRunProviderAuthReconnect, resolvedProviderAuthReconnectIds } =
+    use(TimelineRowCtx);
   const [isOutputExpanded, setIsOutputExpanded] = useState(false);
   const { isLiveActivity, workspaceRoot } = props;
   const workEntry = resolveDisplayedWorkEntry(props.workEntry, isLiveActivity);
@@ -2670,7 +2842,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const EntryIcon = workEntryIcon(workEntry);
   const isRunningTool = isLiveActivity && isRunningToolWorkEntry(workEntry);
   const heading = toolWorkEntryHeading(workEntry, workspaceRoot);
-  const rawPreview = workEntryPreview(workEntry, workspaceRoot);
+  const rawPreview = workEntry.authReconnect ? null : workEntryPreview(workEntry, workspaceRoot);
   const preview =
     rawPreview &&
     normalizeCompactToolLabel(rawPreview).toLowerCase() ===
@@ -2804,6 +2976,14 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
         >
           {failureLine}
         </p>
+      ) : null}
+      {workEntry.authReconnect ? (
+        <ProviderAuthReconnectCard
+          action={workEntry.authReconnect}
+          className="mt-1.5 ml-7"
+          resolved={resolvedProviderAuthReconnectIds.has(workEntry.id)}
+          {...(onRunProviderAuthReconnect ? { onRun: onRunProviderAuthReconnect } : {})}
+        />
       ) : null}
       {hasExpandableOutput && isOutputExpanded ? (
         <div className="mt-1 pl-7" data-command-output="true">

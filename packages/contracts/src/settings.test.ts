@@ -28,6 +28,11 @@ describe("ClientSettings defaults", () => {
     expect(decodeClientSettings({}).diffChangesOnly).toBe(true);
   });
 
+  it("wraps diff lines by default", () => {
+    expect(DEFAULT_CLIENT_SETTINGS.diffWordWrap).toBe(true);
+    expect(decodeClientSettings({}).diffWordWrap).toBe(true);
+  });
+
   it("decodes cross-provider warning suppression patches", () => {
     const patch = decodeClientSettingsPatch({ suppressCrossProviderSwitchWarning: true });
     expect(patch.suppressCrossProviderSwitchWarning).toBe(true);

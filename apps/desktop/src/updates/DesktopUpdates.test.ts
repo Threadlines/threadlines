@@ -365,6 +365,34 @@ describe("DesktopUpdates", () => {
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });
 
+  it.effect("uses a dev-only preview update state without configuring the updater", () => {
+    const harness = makeHarness({
+      env: {
+        VITE_DEV_SERVER_URL: "http://127.0.0.1:5733",
+        THREADLINES_DESKTOP_PREVIEW_UPDATE_STATE: "available",
+        THREADLINES_DESKTOP_PREVIEW_UPDATE_VERSION: "9.9.9",
+      },
+    });
+
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+
+        const state = yield* updates.getState;
+        assert.equal(state.enabled, true);
+        assert.equal(state.status, "available");
+        assert.equal(state.availableVersion, "9.9.9");
+        assert.equal(state.currentVersion, "1.2.3");
+        assert.isNotNull(state.checkedAt);
+        assert.deepEqual(harness.feedUrls(), []);
+        assert.equal(harness.listenerCount(), 0);
+        assert.equal(harness.checkCount(), 0);
+        assert.equal(harness.sentStates.at(-1)?.status, "available");
+      }),
+    ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+  });
+
   it.effect("persists channel changes through the settings service", () => {
     const harness = makeHarness();
 

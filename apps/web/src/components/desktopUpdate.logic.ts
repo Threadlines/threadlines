@@ -11,6 +11,7 @@ export type SidebarDesktopUpdateTagTone =
 export interface SidebarDesktopUpdateTagPresentation {
   readonly action: DesktopUpdateButtonAction;
   readonly disabled: boolean;
+  readonly indicatorLabel: string | null;
   readonly label: string;
   readonly progressPercent: number;
   readonly tone: SidebarDesktopUpdateTagTone;
@@ -68,6 +69,12 @@ export function getArm64IntelBuildWarningDescription(state: DesktopUpdateState):
 }
 
 export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string {
+  if (state.errorContext === "download" && state.availableVersion) {
+    return `Download failed for ${state.availableVersion}. Click to retry.`;
+  }
+  if (state.errorContext === "install" && state.downloadedVersion) {
+    return `Install failed for ${state.downloadedVersion}. Click to retry.`;
+  }
   if (state.status === "available") {
     return `Update ${state.availableVersion ?? "available"} ready to download`;
   }
@@ -80,12 +87,6 @@ export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string
     return `Update ${state.downloadedVersion ?? state.availableVersion ?? "ready"} downloaded. Click to restart and install.`;
   }
   if (state.status === "error") {
-    if (state.errorContext === "download" && state.availableVersion) {
-      return `Download failed for ${state.availableVersion}. Click to retry.`;
-    }
-    if (state.errorContext === "install" && state.downloadedVersion) {
-      return `Install failed for ${state.downloadedVersion}. Click to retry.`;
-    }
     return state.message ?? "Update failed";
   }
   return "Up to date";
@@ -110,7 +111,7 @@ export function shouldToastDesktopUpdateActionResult(result: DesktopUpdateAction
 }
 
 export function shouldHighlightDesktopUpdateError(state: DesktopUpdateState | null): boolean {
-  if (!state || state.status !== "error") return false;
+  if (!state) return false;
   return state.errorContext === "download" || state.errorContext === "install";
 }
 
@@ -121,6 +122,7 @@ export function getSidebarDesktopUpdateTagPresentation(
   const idlePresentation = {
     action: "none",
     disabled: true,
+    indicatorLabel: null,
     label: `v${compactAppVersion}`,
     progressPercent: 0,
     tone: "idle",
@@ -141,28 +143,33 @@ export function getSidebarDesktopUpdateTagPresentation(
     : isDownloading && downloadPercent !== null
       ? Math.max(0, Math.min(100, downloadPercent))
       : 0;
+  const tooltip = isDownloading
+    ? downloadPercent !== null
+      ? `Downloading ${Math.floor(progressPercent)}%`
+      : "Downloading"
+    : isError
+      ? action === "install"
+        ? "Retry install"
+        : "Retry download"
+      : action === "install"
+        ? "Restart to install"
+        : "Update available";
 
   return {
     action,
     disabled: isDesktopUpdateButtonDisabled(state),
-    label: isDownloaded
-      ? "Ready"
-      : isDownloading
-        ? downloadPercent !== null
-          ? `${Math.floor(progressPercent)}%`
-          : "..."
-        : isError
-          ? "Retry"
-          : "Update",
+    indicatorLabel:
+      isDownloading && downloadPercent !== null ? `${Math.floor(progressPercent)}%` : null,
+    label: `v${compactAppVersion}`,
     progressPercent,
-    tone: isDownloaded
-      ? "downloaded"
-      : isDownloading
-        ? "downloading"
-        : isError
-          ? "error"
+    tone: isError
+      ? "error"
+      : isDownloaded
+        ? "downloaded"
+        : isDownloading
+          ? "downloading"
           : "available",
-    tooltip: getDesktopUpdateButtonTooltip(state),
+    tooltip,
   };
 }
 

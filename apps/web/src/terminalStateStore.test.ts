@@ -8,6 +8,7 @@ import {
   selectThreadTerminalState,
   useTerminalStateStore,
 } from "./terminalStateStore";
+import { DEFAULT_THREAD_TERMINAL_HEIGHT } from "./types";
 
 const THREAD_ID = ThreadId.make("thread-1");
 const THREAD_REF = scopeThreadRef("environment-a" as never, THREAD_ID);
@@ -74,7 +75,7 @@ describe("terminalStateStore actions", () => {
     );
     expect(terminalState).toEqual({
       terminalOpen: false,
-      terminalHeight: 280,
+      terminalHeight: DEFAULT_THREAD_TERMINAL_HEIGHT,
       terminalIds: ["default"],
       runningTerminalIds: [],
       activeTerminalId: "default",

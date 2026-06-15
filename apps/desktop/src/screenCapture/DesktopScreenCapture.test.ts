@@ -11,10 +11,11 @@ import * as Path from "effect/Path";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
-import { vi } from "vitest";
+import { beforeEach, vi } from "vitest";
 
-const { createFromBufferMock, readImageMock } = vi.hoisted(() => ({
+const { createFromBufferMock, getMediaAccessStatusMock, readImageMock } = vi.hoisted(() => ({
   createFromBufferMock: vi.fn(),
+  getMediaAccessStatusMock: vi.fn(() => "granted"),
   readImageMock: vi.fn(),
 }));
 
@@ -24,6 +25,9 @@ vi.mock("electron", () => ({
   },
   nativeImage: {
     createFromBuffer: createFromBufferMock,
+  },
+  systemPreferences: {
+    getMediaAccessStatus: getMediaAccessStatusMock,
   },
 }));
 
@@ -83,7 +87,11 @@ function makeProcess(options?: {
   });
 }
 
-function environmentLayer(input: { readonly platform: NodeJS.Platform; readonly baseDir: string }) {
+function environmentLayer(input: {
+  readonly platform: NodeJS.Platform;
+  readonly baseDir: string;
+  readonly isDevelopment?: boolean;
+}) {
   return DesktopEnvironment.layer({ ...environmentInput, platform: input.platform }).pipe(
     Layer.provide(
       Layer.mergeAll(
@@ -91,7 +99,7 @@ function environmentLayer(input: { readonly platform: NodeJS.Platform; readonly 
         DesktopConfig.layerTest({
           T3CODE_HOME: input.baseDir,
           T3CODE_PORT: "3773",
-          VITE_DEV_SERVER_URL: "http://127.0.0.1:5733",
+          VITE_DEV_SERVER_URL: input.isDevelopment === false ? undefined : "http://127.0.0.1:5733",
         }),
       ),
     ),
@@ -101,12 +109,14 @@ function environmentLayer(input: { readonly platform: NodeJS.Platform; readonly 
 function screenCaptureLayer(input: {
   readonly platform: NodeJS.Platform;
   readonly baseDir: string;
+  readonly isDevelopment?: boolean;
+  readonly openExternal?: ElectronShell.ElectronShellShape["openExternal"];
   readonly openScreenClip?: ElectronShell.ElectronShellShape["openScreenClip"];
   readonly spawnerLayer?: Layer.Layer<ChildProcessSpawner.ChildProcessSpawner>;
   readonly captureOptions?: DesktopScreenCapture.DesktopScreenCaptureOptions;
 }) {
   const shellLayer = Layer.succeed(ElectronShell.ElectronShell, {
-    openExternal: () => Effect.succeed(true),
+    openExternal: input.openExternal ?? (() => Effect.succeed(true)),
     openScreenClip: input.openScreenClip ?? (() => Effect.succeed(true)),
     copyText: () => Effect.void,
   } satisfies ElectronShell.ElectronShellShape);
@@ -126,11 +136,24 @@ function screenCaptureLayer(input: {
     Layer.provideMerge(NodePath.layer),
     Layer.provideMerge(shellLayer),
     Layer.provideMerge(spawnerLayer),
-    Layer.provideMerge(environmentLayer({ platform: input.platform, baseDir: input.baseDir })),
+    Layer.provideMerge(
+      environmentLayer({
+        platform: input.platform,
+        baseDir: input.baseDir,
+        ...(input.isDevelopment === undefined ? {} : { isDevelopment: input.isDevelopment }),
+      }),
+    ),
   );
 }
 
 describe("DesktopScreenCapture", () => {
+  beforeEach(() => {
+    createFromBufferMock.mockReset();
+    getMediaAccessStatusMock.mockReset();
+    getMediaAccessStatusMock.mockReturnValue("granted");
+    readImageMock.mockReset();
+  });
+
   it.effect("captures a new Windows clipboard image after opening screen clip", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -139,7 +162,6 @@ describe("DesktopScreenCapture", () => {
       });
       const oldImage = makeNativeImage({ png: Buffer.from("old"), width: 12, height: 8 });
       const newImage = makeNativeImage({ png: Buffer.from("new"), width: 640, height: 480 });
-      readImageMock.mockReset();
       readImageMock.mockReturnValueOnce(oldImage).mockReturnValueOnce(newImage);
       const openScreenClip = vi.fn(() => Effect.succeed(true));
 
@@ -173,7 +195,6 @@ describe("DesktopScreenCapture", () => {
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "badcode-capture-macos-",
       });
-      createFromBufferMock.mockReset();
       createFromBufferMock.mockReturnValue(
         makeNativeImage({ png: PNG_BYTES, width: 800, height: 500 }),
       );
@@ -226,6 +247,135 @@ describe("DesktopScreenCapture", () => {
     }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
   );
 
+  it.effect("does not preflight-block macOS development capture on a denied Electron status", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "badcode-capture-macos-dev-permission-",
+      });
+      getMediaAccessStatusMock.mockReturnValue("denied");
+      createFromBufferMock.mockReturnValue(
+        makeNativeImage({ png: PNG_BYTES, width: 800, height: 500 }),
+      );
+      const spawn = vi.fn((command) =>
+        Effect.gen(function* () {
+          if (command._tag === "StandardCommand") {
+            const outputPath = command.args.at(-1);
+            if (outputPath) {
+              yield* fileSystem.writeFile(outputPath, PNG_BYTES);
+            }
+          }
+          return makeProcess();
+        }),
+      );
+      const spawnerLayer = Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(spawn),
+      );
+
+      const result = yield* Effect.gen(function* () {
+        const screenCapture = yield* DesktopScreenCapture.DesktopScreenCapture;
+        return yield* screenCapture.captureScreenshot({ mode: "interactive" });
+      }).pipe(
+        Effect.provide(
+          screenCaptureLayer({
+            platform: "darwin",
+            baseDir,
+            spawnerLayer,
+          }),
+        ),
+      );
+
+      assert.equal(result.status, "captured");
+      assert.equal(spawn.mock.calls.length, 1);
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  );
+
+  it.effect("does not start macOS capture while screen recording permission is denied", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "badcode-capture-macos-permission-",
+      });
+      getMediaAccessStatusMock.mockReturnValue("denied");
+      const openExternal = vi.fn(() => Effect.succeed(true));
+      const spawn = vi.fn(() => Effect.succeed(makeProcess()));
+      const spawnerLayer = Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(spawn),
+      );
+
+      const result = yield* Effect.gen(function* () {
+        const screenCapture = yield* DesktopScreenCapture.DesktopScreenCapture;
+        return yield* screenCapture.captureScreenshot({ mode: "interactive" });
+      }).pipe(
+        Effect.provide(
+          screenCaptureLayer({
+            platform: "darwin",
+            baseDir,
+            isDevelopment: false,
+            openExternal,
+            spawnerLayer,
+          }),
+        ),
+      );
+
+      assert.equal(result.status, "failed");
+      if (result.status !== "failed") return;
+      assert.include(result.message, "Threadlines screen recording permission as denied");
+      assert.include(result.message, "Screen & System Audio Recording");
+      assert.include(result.message, "quit and reopen Threadlines");
+      assert.equal(spawn.mock.calls.length, 0);
+      assert.deepEqual(openExternal.mock.calls, [
+        ["x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"],
+      ]);
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  );
+
+  it.effect("reports macOS permission loss when screencapture exits without a PNG", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "badcode-capture-macos-permission-lost-",
+      });
+      getMediaAccessStatusMock.mockReturnValue("denied");
+      const openExternal = vi.fn(() => Effect.succeed(true));
+      const spawnerLayer = Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(() =>
+          Effect.succeed(
+            makeProcess({ exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(1)) }),
+          ),
+        ),
+      );
+
+      const result = yield* Effect.gen(function* () {
+        const screenCapture = yield* DesktopScreenCapture.DesktopScreenCapture;
+        return yield* screenCapture.captureScreenshot({ mode: "interactive" });
+      }).pipe(
+        Effect.provide(
+          screenCaptureLayer({
+            platform: "darwin",
+            baseDir,
+            openExternal,
+            spawnerLayer,
+          }),
+        ),
+      );
+
+      assert.equal(result.status, "failed");
+      if (result.status !== "failed") return;
+      assert.include(
+        result.message,
+        "macOS reports Electron.app screen recording permission as denied",
+      );
+      assert.include(result.message, "System Settings may not show Threadlines (Dev)");
+      assert.deepEqual(openExternal.mock.calls, [
+        ["x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"],
+      ]);
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  );
+
   it.effect("cleans up stale macOS temporary capture files before capturing", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -250,7 +400,6 @@ describe("DesktopScreenCapture", () => {
       yield* fileSystem.utimes(freshPath, futureMtime, futureMtime);
       yield* fileSystem.utimes(unrelatedPath, 0, 0);
 
-      createFromBufferMock.mockReset();
       createFromBufferMock.mockReturnValue(
         makeNativeImage({ png: PNG_BYTES, width: 800, height: 500 }),
       );

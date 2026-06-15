@@ -13,6 +13,10 @@ import {
   type TurnId,
 } from "@t3tools/contracts";
 import { countUnifiedDiffStats, type FileChangeStat } from "@t3tools/shared/diffStats";
+import {
+  isProviderAuthErrorMessage,
+  providerAuthReconnectCommand,
+} from "@t3tools/shared/providerAuth";
 
 import type {
   ChatMessage,
@@ -42,6 +46,12 @@ export interface WorkLogImagePreview {
   previewUrl: string;
 }
 
+export interface ProviderAuthReconnectAction {
+  provider: ProviderDriverKind;
+  command: string;
+  message: string;
+}
+
 export interface WorkLogEntry {
   id: string;
   createdAt: string;
@@ -63,6 +73,7 @@ export interface WorkLogEntry {
   itemType?: ToolLifecycleItemType;
   requestKind?: PendingApproval["requestKind"];
   executionState?: "running" | "completed" | "failed";
+  authReconnect?: ProviderAuthReconnectAction;
   turnId?: TurnId | null;
 }
 
@@ -649,6 +660,10 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     activityKind: activity.kind,
     turnId: activity.turnId,
   };
+  const authReconnect = deriveAuthReconnectAction(activity, payload);
+  if (authReconnect) {
+    entry.authReconnect = authReconnect;
+  }
   const requestKind = extractWorkLogRequestKind(payload);
   if (detail) {
     entry.detail = detail;
@@ -981,6 +996,7 @@ function mergeDerivedWorkLogEntries(
   const itemType = next.itemType ?? previous.itemType;
   const requestKind = next.requestKind ?? previous.requestKind;
   const executionState = next.executionState ?? previous.executionState;
+  const authReconnect = next.authReconnect ?? previous.authReconnect;
   const collapseKey = next.collapseKey ?? previous.collapseKey;
   const toolCallId = next.toolCallId ?? previous.toolCallId;
   const turnId = next.turnId ?? previous.turnId;
@@ -1001,9 +1017,42 @@ function mergeDerivedWorkLogEntries(
     ...(itemType ? { itemType } : {}),
     ...(requestKind ? { requestKind } : {}),
     ...(executionState ? { executionState } : {}),
+    ...(authReconnect ? { authReconnect } : {}),
     ...(collapseKey ? { collapseKey } : {}),
     ...(toolCallId ? { toolCallId } : {}),
     ...(turnId !== undefined ? { turnId } : {}),
+  };
+}
+
+function deriveAuthReconnectAction(
+  activity: OrchestrationThreadActivity,
+  payload: Record<string, unknown> | null,
+): ProviderAuthReconnectAction | undefined {
+  if (activity.kind !== "runtime.error") {
+    return undefined;
+  }
+
+  const message = asTrimmedString(payload?.message) ?? activity.summary;
+  const errorClass = asTrimmedString(payload?.class);
+  if (errorClass !== "authentication_error" && !isProviderAuthErrorMessage(message)) {
+    return undefined;
+  }
+
+  const providerValue = asTrimmedString(payload?.provider);
+  if (!providerValue) {
+    return undefined;
+  }
+
+  const provider = ProviderDriverKind.make(providerValue);
+  const command = providerAuthReconnectCommand(provider);
+  if (!command) {
+    return undefined;
+  }
+
+  return {
+    provider,
+    command,
+    message,
   };
 }
 

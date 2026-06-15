@@ -14,6 +14,7 @@ import {
   normalizeClaudeAccountUsage,
   normalizeClaudeUsageResetsAt,
   normalizeClaudeUsageWindow,
+  parseClaudeUsageRetryAfter,
   readClaudeOAuthCredential,
 } from "./ClaudeUsage.ts";
 
@@ -146,6 +147,8 @@ describe("readClaudeOAuthCredential", () => {
             mockSpawnerLayer((args) => {
               expect(args).toEqual([
                 "find-generic-password",
+                "-a",
+                expect.any(String),
                 "-w",
                 "-s",
                 CLAUDE_MACOS_KEYCHAIN_SERVICE,
@@ -163,6 +166,50 @@ describe("readClaudeOAuthCredential", () => {
     expect(credential).toEqual({
       accessToken: "keychain-token",
       organizationUuid: "keychain-org",
+    });
+  });
+
+  it("retries the macOS keychain lookup without account scoping", async () => {
+    const seenArgs: Array<ReadonlyArray<string>> = [];
+    const credential = await Effect.runPromise(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const homePath = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "threadlines-claude-usage-",
+        });
+        return yield* readClaudeOAuthCredential({ homePath }, { platform: "darwin" });
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(
+            NodeServices.layer,
+            mockSpawnerLayer((args) => {
+              seenArgs.push(args);
+              if (seenArgs.length === 1) return { code: 44 };
+              return {
+                stdout:
+                  '{"claudeAiOauth":{"accessToken":"service-token"},"organizationUuid":"service-org"}',
+              };
+            }),
+          ),
+        ),
+      ),
+    );
+
+    expect(seenArgs).toEqual([
+      [
+        "find-generic-password",
+        "-a",
+        expect.any(String),
+        "-w",
+        "-s",
+        CLAUDE_MACOS_KEYCHAIN_SERVICE,
+      ],
+      ["find-generic-password", "-w", "-s", CLAUDE_MACOS_KEYCHAIN_SERVICE],
+    ]);
+    expect(credential).toEqual({
+      accessToken: "service-token",
+      organizationUuid: "service-org",
     });
   });
 
@@ -188,6 +235,28 @@ describe("readClaudeOAuthCredential", () => {
     );
 
     expect(credential).toBeUndefined();
+  });
+});
+
+describe("parseClaudeUsageRetryAfter", () => {
+  it("parses delta seconds as an absolute retry timestamp", () => {
+    expect(parseClaudeUsageRetryAfter("45", 1_000)).toBe(46_000);
+  });
+
+  it("parses HTTP dates and caps excessive retry windows", () => {
+    const nowMs = Date.parse("2026-06-10T00:00:00.000Z");
+    expect(parseClaudeUsageRetryAfter("Wed, 10 Jun 2026 00:02:00 GMT", nowMs)).toBe(
+      Date.parse("2026-06-10T00:02:00.000Z"),
+    );
+    expect(parseClaudeUsageRetryAfter("7200", nowMs)).toBe(nowMs + 60 * 60 * 1000);
+  });
+
+  it("ignores missing, invalid, and past values", () => {
+    const nowMs = Date.parse("2026-06-10T00:00:00.000Z");
+    expect(parseClaudeUsageRetryAfter(undefined, nowMs)).toBeUndefined();
+    expect(parseClaudeUsageRetryAfter("nope", nowMs)).toBeUndefined();
+    expect(parseClaudeUsageRetryAfter("0", nowMs)).toBeUndefined();
+    expect(parseClaudeUsageRetryAfter("Wed, 09 Jun 2026 00:00:00 GMT", nowMs)).toBeUndefined();
   });
 });
 

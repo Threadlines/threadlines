@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as OS from "node:os";
+import * as NodePath from "node:path";
 import fsPromises from "node:fs/promises";
 import type { Dirent } from "node:fs";
 
@@ -47,6 +48,15 @@ const IGNORED_DIRECTORY_NAMES = new Set([
   "build",
   "out",
   ".cache",
+]);
+const MACOS_PROTECTED_HOME_DIRECTORY_NAMES = new Set([
+  "Desktop",
+  "Documents",
+  "Downloads",
+  "Library",
+  "Movies",
+  "Music",
+  "Pictures",
 ]);
 const WINDOWS_KNOWN_HOME_FOLDER_NAMES = [
   "Desktop",
@@ -360,6 +370,27 @@ function isPathInIgnoredDirectory(relativePath: string): boolean {
   return IGNORED_DIRECTORY_NAMES.has(firstSegment);
 }
 
+export function isProtectedMacosHomeDirectoryScan(input: {
+  readonly cwd: string;
+  readonly relativePath: string;
+  readonly homeDirectory?: string;
+  readonly platform?: NodeJS.Platform;
+  readonly path?: Pick<Path.Path, "resolve">;
+}): boolean {
+  if ((input.platform ?? process.platform) !== "darwin") {
+    return false;
+  }
+
+  const firstSegment = input.relativePath.split("/")[0];
+  if (!firstSegment || !MACOS_PROTECTED_HOME_DIRECTORY_NAMES.has(firstSegment)) {
+    return false;
+  }
+
+  const pathService = input.path ?? NodePath;
+  const homeDirectory = input.homeDirectory ?? OS.homedir();
+  return pathService.resolve(input.cwd) === pathService.resolve(homeDirectory);
+}
+
 function directoryAncestorsOf(relativePath: string): string[] {
   const segments = relativePath.split("/").filter((segment) => segment.length > 0);
   if (segments.length <= 1) return [];
@@ -581,7 +612,10 @@ export const makeWorkspaceEntries = Effect.gen(function* () {
           const relativePath = toPosixPath(
             relativeDir ? path.join(relativeDir, dirent.name) : dirent.name,
           );
-          if (isPathInIgnoredDirectory(relativePath)) {
+          if (
+            isPathInIgnoredDirectory(relativePath) ||
+            isProtectedMacosHomeDirectoryScan({ cwd, relativePath, path })
+          ) {
             continue;
           }
           candidates.push({ dirent, relativePath });

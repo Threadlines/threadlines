@@ -15,7 +15,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { clipboard, nativeImage } from "electron";
+import { clipboard, nativeImage, systemPreferences } from "electron";
 import type * as Electron from "electron";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
@@ -26,11 +26,22 @@ const WINDOWS_CLIPBOARD_TIMEOUT = Duration.seconds(60);
 const WINDOWS_CLIPBOARD_POLL_INTERVAL = Duration.millis(350);
 const MACOS_CAPTURE_TIMEOUT = Duration.minutes(5);
 const MACOS_STALE_CAPTURE_MAX_AGE = Duration.minutes(15);
+const MACOS_SCREEN_CAPTURE_PRIVACY_SETTINGS_URL =
+  "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
 const PROCESS_TERMINATE_GRACE = Duration.seconds(1);
 const currentEpochMillis = DateTime.now.pipe(Effect.map(DateTime.toEpochMillis));
 const currentIsoTimestamp = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 
 type ChildProcessSpawnerService = ChildProcessSpawner.ChildProcessSpawner["Service"];
+type MacosMediaAccessStatus = ReturnType<Electron.SystemPreferences["getMediaAccessStatus"]>;
+const UNKNOWN_MACOS_MEDIA_ACCESS_STATUS: MacosMediaAccessStatus = "unknown";
+const MACOS_MEDIA_ACCESS_STATUSES = new Set<string>([
+  "not-determined",
+  "granted",
+  "denied",
+  "restricted",
+  "unknown",
+]);
 
 interface ClipboardPngSnapshot {
   readonly png: Buffer;
@@ -150,6 +161,74 @@ const cancelled = (message?: string): DesktopCaptureScreenshotResult => ({
 const failed = (message: string): DesktopCaptureScreenshotResult => ({
   status: "failed",
   message,
+});
+
+function toMacosMediaAccessStatus(value: unknown): MacosMediaAccessStatus {
+  if (typeof value === "string" && MACOS_MEDIA_ACCESS_STATUSES.has(value)) {
+    return value as MacosMediaAccessStatus;
+  }
+  return UNKNOWN_MACOS_MEDIA_ACCESS_STATUS;
+}
+
+const readMacosScreenCapturePermissionStatus: Effect.Effect<MacosMediaAccessStatus> = Effect.sync(
+  () => {
+    try {
+      return toMacosMediaAccessStatus(systemPreferences.getMediaAccessStatus("screen"));
+    } catch {
+      return UNKNOWN_MACOS_MEDIA_ACCESS_STATUS;
+    }
+  },
+);
+
+function isMacosScreenCapturePermissionBlocked(status: MacosMediaAccessStatus): boolean {
+  return status === "denied" || status === "restricted";
+}
+
+function isMacosScreenCapturePermissionInactiveAfterAttempt(
+  status: MacosMediaAccessStatus,
+): boolean {
+  return status !== "granted" && status !== UNKNOWN_MACOS_MEDIA_ACCESS_STATUS;
+}
+
+function macosScreenCapturePermissionMessage(input: {
+  readonly appName: string;
+  readonly isDevelopment: boolean;
+  readonly status: MacosMediaAccessStatus;
+}): string {
+  if (input.isDevelopment) {
+    return (
+      `macOS reports Electron.app screen recording permission as ${input.status}. ` +
+      "Development builds run under Electron.app, so System Settings may not show Threadlines (Dev). " +
+      "Enable Electron.app in Screen & System Audio Recording, using the + button if it is missing, then restart the dev app."
+    );
+  }
+
+  return (
+    `macOS reports ${input.appName} screen recording permission as ${input.status}. ` +
+    `Enable ${input.appName} in System Settings > Privacy & Security > Screen & System Audio Recording, ` +
+    `then quit and reopen ${input.appName}. If it is already enabled, turn it off and back on before reopening.`
+  );
+}
+
+const openMacosScreenCapturePrivacySettings = Effect.fn(
+  "desktop.screenCapture.openMacosScreenCapturePrivacySettings",
+)(function* (shell: ElectronShell.ElectronShellShape): Effect.fn.Return<void> {
+  yield* shell.openExternal(MACOS_SCREEN_CAPTURE_PRIVACY_SETTINGS_URL).pipe(Effect.ignore);
+});
+
+const macosPermissionFailed = Effect.fn("desktop.screenCapture.macosPermissionFailed")(function* (
+  shell: ElectronShell.ElectronShellShape,
+  status: MacosMediaAccessStatus,
+  environment: DesktopEnvironment.DesktopEnvironmentShape,
+): Effect.fn.Return<DesktopCaptureScreenshotResult> {
+  yield* openMacosScreenCapturePrivacySettings(shell);
+  return failed(
+    macosScreenCapturePermissionMessage({
+      appName: environment.displayName,
+      isDevelopment: environment.isDevelopment,
+      status,
+    }),
+  );
 });
 
 const pollWindowsClipboardForCapture = Effect.fn("desktop.screenCapture.pollWindowsClipboard")(
@@ -316,6 +395,7 @@ const captureMacosInteractive = Effect.fn("desktop.screenCapture.macosInteractiv
     readonly environment: DesktopEnvironment.DesktopEnvironmentShape;
     readonly fileSystem: FileSystem.FileSystem;
     readonly path: Path.Path;
+    readonly shell: ElectronShell.ElectronShellShape;
     readonly spawner: ChildProcessSpawnerService;
   },
   timeout: Duration.Duration,
@@ -337,6 +417,13 @@ const captureMacosInteractive = Effect.fn("desktop.screenCapture.macosInteractiv
     staleCaptureMaxAge,
   );
 
+  if (!input.environment.isDevelopment) {
+    const permissionStatus = yield* readMacosScreenCapturePermissionStatus;
+    if (isMacosScreenCapturePermissionBlocked(permissionStatus)) {
+      return yield* macosPermissionFailed(input.shell, permissionStatus, input.environment);
+    }
+  }
+
   const result = yield* runMacosScreencapture(input.spawner, capturePath, timeout);
   const cleanup = input.fileSystem.remove(capturePath, { force: true }).pipe(Effect.ignore);
 
@@ -354,6 +441,12 @@ const captureMacosInteractive = Effect.fn("desktop.screenCapture.macosInteractiv
   if (!maybePng || maybePng.byteLength === 0) {
     if (result.exitCode === null) {
       return failed("macOS screen capture could not be started.");
+    }
+    if (result.exitCode !== 0) {
+      const statusAfterCapture = yield* readMacosScreenCapturePermissionStatus;
+      if (isMacosScreenCapturePermissionInactiveAfterAttempt(statusAfterCapture)) {
+        return yield* macosPermissionFailed(input.shell, statusAfterCapture, input.environment);
+      }
     }
     return cancelled("Screen capture was cancelled.");
   }
@@ -410,6 +503,7 @@ const make = Effect.fn("desktop.screenCapture.make")(function* (
                 environment,
                 fileSystem,
                 path,
+                shell,
                 spawner,
               },
               macosCaptureTimeout,

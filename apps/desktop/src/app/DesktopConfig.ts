@@ -157,6 +157,16 @@ export const DesktopConfig = Config.all({
     "T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT",
     3000,
   ),
+  previewUpdateState: trimmedStringAlias(
+    "THREADLINES_DESKTOP_PREVIEW_UPDATE_STATE",
+    "BADCODE_DESKTOP_PREVIEW_UPDATE_STATE",
+    "T3CODE_DESKTOP_PREVIEW_UPDATE_STATE",
+  ),
+  previewUpdateVersion: trimmedStringAlias(
+    "THREADLINES_DESKTOP_PREVIEW_UPDATE_VERSION",
+    "BADCODE_DESKTOP_PREVIEW_UPDATE_VERSION",
+    "T3CODE_DESKTOP_PREVIEW_UPDATE_VERSION",
+  ),
 });
 
 export const layerTest = (env: Readonly<Record<string, string | undefined>>) =>

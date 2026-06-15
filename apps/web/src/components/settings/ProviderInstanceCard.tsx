@@ -24,7 +24,7 @@ import {
 } from "@t3tools/contracts";
 
 import { cn } from "../../lib/utils";
-import { deriveProviderAccountUsagePresentation } from "../../lib/providerUsage";
+import { deriveProviderAccountUsagePresentationForProvider } from "../../lib/providerUsage";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { normalizeProviderAccentColor } from "../../providerInstances";
 import { Badge } from "../ui/badge";
@@ -480,7 +480,7 @@ export function ProviderInstanceCard({
   const versionLabel = getProviderVersionLabel(liveProvider?.version);
   const versionAdvisory = getProviderVersionAdvisoryPresentation(liveProvider?.versionAdvisory);
   const updateCommand = versionAdvisory?.updateCommand ?? null;
-  const usagePresentation = deriveProviderAccountUsagePresentation(liveProvider?.accountUsage);
+  const usagePresentation = deriveProviderAccountUsagePresentationForProvider(liveProvider);
   // Narrow `instance.driver` for callers that key on the closed
   // `ProviderDriverKind` union (e.g. `normalizeModelSlug`'s alias table). Custom
   // fork drivers pass through as `null` and those callers fall back to

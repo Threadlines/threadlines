@@ -243,7 +243,7 @@ const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
       path.join(resourcesPath, "resources", fileName),
       path.join(resourcesPath, fileName),
     ],
-    developmentDockIconPath: path.join(rootDir, "assets", "dev", "badcode-dev-macos-1024.png"),
+    developmentDockIconPath: path.join(rootDir, "apps", "desktop", "resources", "icon.png"),
   });
 });
 
