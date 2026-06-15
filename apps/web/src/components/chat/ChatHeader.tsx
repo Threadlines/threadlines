@@ -163,7 +163,7 @@ export const ChatHeader = memo(function ChatHeader({
                 size="xs"
                 disabled={!activeProjectName && !sourceControlOpen}
               >
-                <SourceControlIcon className="size-3" />
+                <SourceControlIcon className="size-[11px]" />
               </Toggle>
             }
           />

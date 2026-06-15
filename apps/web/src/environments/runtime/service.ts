@@ -73,6 +73,7 @@ import {
   derivePhysicalProjectKey,
 } from "../../logicalProject";
 import { getClientSettings } from "~/hooks/useSettings";
+import { useOptimisticThreadMessagesStore } from "~/optimisticThreadMessages";
 
 type EnvironmentServiceState = {
   readonly queryClient: QueryClient;
@@ -1007,10 +1008,10 @@ function applyRecoveredEventBatch(
     markPromotedDraftThreadByRef(scopeThreadRef(environmentId, threadId));
   }
   for (const threadId of batchEffects.clearDeletedThreadIds) {
-    draftStore.clearDraftThread(scopeThreadRef(environmentId, threadId));
-    useUiStateStore
-      .getState()
-      .clearThreadUi(scopedThreadKey(scopeThreadRef(environmentId, threadId)));
+    const threadRef = scopeThreadRef(environmentId, threadId);
+    useOptimisticThreadMessagesStore.getState().clearThread(threadRef);
+    draftStore.clearDraftThread(threadRef);
+    useUiStateStore.getState().clearThreadUi(scopedThreadKey(threadRef));
   }
   for (const event of events) {
     if (event.type === "project.deleted") {
@@ -1072,6 +1073,7 @@ function applyShellEvent(event: OrchestrationShellStreamEvent, environmentId: En
     case "thread-removed":
       if (threadRef) {
         disposeThreadDetailSubscriptionByKey(scopedThreadKey(threadRef));
+        useOptimisticThreadMessagesStore.getState().clearThread(threadRef);
         useComposerDraftStore.getState().clearDraftThread(threadRef);
         useUiStateStore.getState().clearThreadUi(scopedThreadKey(threadRef));
         useTerminalStateStore.getState().removeTerminalState(threadRef);

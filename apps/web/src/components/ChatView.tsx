@@ -193,6 +193,10 @@ import {
   useServerConfig,
   useServerKeybindings,
 } from "~/rpc/serverState";
+import {
+  selectOptimisticThreadMessages,
+  useOptimisticThreadMessagesStore,
+} from "../optimisticThreadMessages";
 import { sanitizeThreadErrorMessage } from "~/rpc/transportError";
 import { retainThreadDetailSubscription } from "../environments/runtime/service";
 import { Button } from "./ui/button";
@@ -634,12 +638,9 @@ export default function ChatView(props: ChatViewProps) {
   const composerRef = useComposerHandleContext() ?? localComposerRef;
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
-  const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatMessage[]>([]);
   const [steeringMessagesById, setSteeringMessagesById] = useState<
     Record<string, SteeringMessageHandoff>
   >({});
-  const optimisticUserMessagesRef = useRef(optimisticUserMessages);
-  optimisticUserMessagesRef.current = optimisticUserMessages;
   const [localDraftErrorsByDraftId, setLocalDraftErrorsByDraftId] = useState<
     Record<string, string | null>
   >({});
@@ -713,6 +714,13 @@ export default function ChatView(props: ChatViewProps) {
     (s) => s.clearTerminalLaunchContext,
   );
   const draftThreadsByThreadKey = useComposerDraftStore((store) => store.draftThreadsByThreadKey);
+  const optimisticUserMessages = useOptimisticThreadMessagesStore(
+    useShallow((store) => selectOptimisticThreadMessages(store, routeThreadRef)),
+  );
+  const addOptimisticThreadMessage = useOptimisticThreadMessagesStore((store) => store.addMessage);
+  const removeOptimisticThreadMessages = useOptimisticThreadMessagesStore(
+    (store) => store.removeMessages,
+  );
   const draftThreadKeys = useMemo(
     () =>
       Object.values(draftThreadsByThreadKey).map((draftThread) =>
@@ -1365,9 +1373,6 @@ export default function ChatView(props: ChatViewProps) {
   useEffect(() => {
     return () => {
       clearAttachmentPreviewHandoffs();
-      for (const message of optimisticUserMessagesRef.current) {
-        revokeUserMessagePreviewUrls(message);
-      }
     };
   }, [clearAttachmentPreviewHandoffs]);
   const handoffAttachmentPreviews = useCallback((messageId: MessageId, previewUrls: string[]) => {
@@ -2381,9 +2386,7 @@ export default function ChatView(props: ChatViewProps) {
       return;
     }
     const timer = window.setTimeout(() => {
-      setOptimisticUserMessages((existing) =>
-        existing.filter((message) => !serverIds.has(message.id)),
-      );
+      removeOptimisticThreadMessages(routeThreadRef, serverIds);
     }, 0);
     for (const removedMessage of removedMessages) {
       const previewUrls = collectUserMessageBlobPreviewUrls(removedMessage);
@@ -2396,15 +2399,16 @@ export default function ChatView(props: ChatViewProps) {
     return () => {
       window.clearTimeout(timer);
     };
-  }, [activeThread?.id, activeThread?.messages, handoffAttachmentPreviews, optimisticUserMessages]);
+  }, [
+    activeThread?.id,
+    activeThread?.messages,
+    handoffAttachmentPreviews,
+    optimisticUserMessages,
+    removeOptimisticThreadMessages,
+    routeThreadRef,
+  ]);
 
   useEffect(() => {
-    setOptimisticUserMessages((existing) => {
-      for (const message of existing) {
-        revokeUserMessagePreviewUrls(message);
-      }
-      return [];
-    });
     resetLocalDispatch();
     setExpandedImage(null);
   }, [draftId, resetLocalDispatch, threadId]);
@@ -2839,6 +2843,15 @@ export default function ChatView(props: ChatViewProps) {
       sizeBytes: image.sizeBytes,
       previewUrl: image.previewUrl,
     }));
+    const threadRefForSend = scopeThreadRef(environmentId, threadIdForSend);
+    const optimisticMessage: ChatMessage = {
+      id: messageIdForSend,
+      role: "user",
+      text: outgoingMessageText,
+      ...(optimisticAttachments.length > 0 ? { attachments: optimisticAttachments } : {}),
+      createdAt: messageCreatedAt,
+      streaming: false,
+    };
     if (isSteeringFollowUp) {
       setSteeringMessagesById((existing) => ({
         ...existing,
@@ -2859,17 +2872,7 @@ export default function ChatView(props: ChatViewProps) {
       setShowScrollToBottom(false);
       await legendListRef.current?.scrollToEnd?.({ animated: false });
 
-      setOptimisticUserMessages((existing) => [
-        ...existing,
-        {
-          id: messageIdForSend,
-          role: "user",
-          text: outgoingMessageText,
-          ...(optimisticAttachments.length > 0 ? { attachments: optimisticAttachments } : {}),
-          createdAt: messageCreatedAt,
-          streaming: false,
-        },
-      ]);
+      addOptimisticThreadMessage(threadRefForSend, optimisticMessage);
     }
 
     setThreadError(threadIdForSend, null);
@@ -3008,14 +3011,8 @@ export default function ChatView(props: ChatViewProps) {
             return next;
           });
         } else {
-          setOptimisticUserMessages((existing) => {
-            const removed = existing.filter((message) => message.id === messageIdForSend);
-            for (const message of removed) {
-              revokeUserMessagePreviewUrls(message);
-            }
-            const next = existing.filter((message) => message.id !== messageIdForSend);
-            return next.length === existing.length ? existing : next;
-          });
+          removeOptimisticThreadMessages(threadRefForSend, new Set([messageIdForSend]));
+          revokeUserMessagePreviewUrls(optimisticMessage);
         }
         promptRef.current = promptForSend;
         const retryComposerImages = composerImagesSnapshot.map(cloneComposerImageForRetry);
@@ -3261,16 +3258,15 @@ export default function ChatView(props: ChatViewProps) {
       setShowScrollToBottom(false);
       await legendListRef.current?.scrollToEnd?.({ animated: false });
 
-      setOptimisticUserMessages((existing) => [
-        ...existing,
-        {
-          id: messageIdForSend,
-          role: "user",
-          text: outgoingMessageText,
-          createdAt: messageCreatedAt,
-          streaming: false,
-        },
-      ]);
+      const optimisticMessage: ChatMessage = {
+        id: messageIdForSend,
+        role: "user",
+        text: outgoingMessageText,
+        createdAt: messageCreatedAt,
+        streaming: false,
+      };
+      const threadRefForSend = scopeThreadRef(activeThread.environmentId, threadIdForSend);
+      addOptimisticThreadMessage(threadRefForSend, optimisticMessage);
 
       try {
         await persistThreadSettingsForNextTurn({
@@ -3323,9 +3319,8 @@ export default function ChatView(props: ChatViewProps) {
         }
         sendInFlightRef.current = false;
       } catch (err) {
-        setOptimisticUserMessages((existing) =>
-          existing.filter((message) => message.id !== messageIdForSend),
-        );
+        removeOptimisticThreadMessages(threadRefForSend, new Set([messageIdForSend]));
+        revokeUserMessagePreviewUrls(optimisticMessage);
         setThreadError(
           threadIdForSend,
           err instanceof Error ? err.message : "Failed to send plan follow-up.",
@@ -3337,12 +3332,14 @@ export default function ChatView(props: ChatViewProps) {
     [
       activeThread,
       activeProposedPlan,
+      addOptimisticThreadMessage,
       beginLocalDispatch,
       isConnecting,
       isSendBusy,
       isServerThread,
       persistThreadSettingsForNextTurn,
       resetLocalDispatch,
+      removeOptimisticThreadMessages,
       runtimeMode,
       setComposerDraftInteractionMode,
       setThreadError,
