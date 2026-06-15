@@ -1,10 +1,60 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
+import * as Sink from "effect/Sink";
+import * as Stream from "effect/Stream";
+import { ChildProcessSpawner } from "effect/unstable/process";
 import { describe, expect, it } from "vitest";
 
 import {
+  CLAUDE_MACOS_KEYCHAIN_SERVICE,
+  extractClaudeOAuthCredential,
   normalizeClaudeAccountUsage,
   normalizeClaudeUsageResetsAt,
   normalizeClaudeUsageWindow,
+  readClaudeOAuthCredential,
 } from "./ClaudeUsage.ts";
+
+const encoder = new TextEncoder();
+
+function mockHandle(result: {
+  readonly stdout?: string;
+  readonly stderr?: string;
+  readonly code?: number;
+}) {
+  return ChildProcessSpawner.makeHandle({
+    pid: ChildProcessSpawner.ProcessId(1),
+    exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(result.code ?? 0)),
+    isRunning: Effect.succeed(false),
+    kill: () => Effect.void,
+    unref: Effect.succeed(Effect.void),
+    stdin: Sink.drain,
+    stdout: Stream.make(encoder.encode(result.stdout ?? "")),
+    stderr: Stream.make(encoder.encode(result.stderr ?? "")),
+    all: Stream.empty,
+    getInputFd: () => Sink.drain,
+    getOutputFd: () => Stream.empty,
+  });
+}
+
+function mockSpawnerLayer(
+  handler: (args: ReadonlyArray<string>) => {
+    readonly stdout?: string;
+    readonly stderr?: string;
+    readonly code?: number;
+  },
+) {
+  return Layer.succeed(
+    ChildProcessSpawner.ChildProcessSpawner,
+    ChildProcessSpawner.make((command) => {
+      const cmd = command as unknown as { readonly args: ReadonlyArray<string> };
+      const args = Array.isArray(cmd.args) ? cmd.args : [];
+      return Effect.succeed(mockHandle(handler(args)));
+    }),
+  );
+}
 
 describe("normalizeClaudeUsageResetsAt", () => {
   it("parses ISO 8601 strings to epoch milliseconds", () => {
@@ -23,6 +73,121 @@ describe("normalizeClaudeUsageResetsAt", () => {
     expect(normalizeClaudeUsageResetsAt("not-a-date")).toBeUndefined();
     expect(normalizeClaudeUsageResetsAt(0)).toBeUndefined();
     expect(normalizeClaudeUsageResetsAt(-5)).toBeUndefined();
+  });
+});
+
+describe("extractClaudeOAuthCredential", () => {
+  it("uses the access token even when expiresAt is stale", () => {
+    expect(
+      extractClaudeOAuthCredential({
+        claudeAiOauth: {
+          accessToken: " token ",
+          expiresAt: 1,
+        },
+        organizationUuid: " org-1 ",
+      }),
+    ).toEqual({
+      accessToken: "token",
+      organizationUuid: "org-1",
+    });
+  });
+
+  it("returns undefined when the token is missing", () => {
+    expect(extractClaudeOAuthCredential({ claudeAiOauth: { accessToken: " " } })).toBeUndefined();
+    expect(extractClaudeOAuthCredential(undefined)).toBeUndefined();
+  });
+});
+
+describe("readClaudeOAuthCredential", () => {
+  it("reads file-backed Claude credentials before consulting keychain", async () => {
+    const credential = await Effect.runPromise(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const homePath = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "threadlines-claude-usage-",
+        });
+        yield* fileSystem.makeDirectory(path.join(homePath, ".claude"));
+        yield* fileSystem.writeFileString(
+          path.join(homePath, ".claude", ".credentials.json"),
+          '{"claudeAiOauth":{"accessToken":"file-token","expiresAt":1},"organizationUuid":"file-org"}',
+        );
+
+        return yield* readClaudeOAuthCredential({ homePath }, { platform: "darwin" });
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(
+            NodeServices.layer,
+            mockSpawnerLayer(() => {
+              throw new Error("keychain should not be queried");
+            }),
+          ),
+        ),
+      ),
+    );
+
+    expect(credential).toEqual({ accessToken: "file-token", organizationUuid: "file-org" });
+  });
+
+  it("falls back to the Claude Code keychain item on macOS", async () => {
+    const credential = await Effect.runPromise(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const homePath = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "threadlines-claude-usage-",
+        });
+        return yield* readClaudeOAuthCredential({ homePath }, { platform: "darwin" });
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(
+            NodeServices.layer,
+            mockSpawnerLayer((args) => {
+              expect(args).toEqual([
+                "find-generic-password",
+                "-w",
+                "-s",
+                CLAUDE_MACOS_KEYCHAIN_SERVICE,
+              ]);
+              return {
+                stdout:
+                  '{"claudeAiOauth":{"accessToken":"keychain-token","expiresAt":1},"organizationUuid":"keychain-org"}',
+              };
+            }),
+          ),
+        ),
+      ),
+    );
+
+    expect(credential).toEqual({
+      accessToken: "keychain-token",
+      organizationUuid: "keychain-org",
+    });
+  });
+
+  it("does not query keychain on non-macOS platforms", async () => {
+    const credential = await Effect.runPromise(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const homePath = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "threadlines-claude-usage-",
+        });
+        return yield* readClaudeOAuthCredential({ homePath }, { platform: "linux" });
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(
+            NodeServices.layer,
+            mockSpawnerLayer(() => {
+              throw new Error("keychain should not be queried");
+            }),
+          ),
+        ),
+      ),
+    );
+
+    expect(credential).toBeUndefined();
   });
 });
 

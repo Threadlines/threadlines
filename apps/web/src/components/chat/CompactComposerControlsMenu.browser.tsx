@@ -173,7 +173,7 @@ describe("CompactComposerControlsMenu", () => {
     });
   });
 
-  it("shows fast mode controls for Opus", async () => {
+  it("shows fast mode as a single switch for Opus", async () => {
     await using _ = await mountMenu({
       modelSelection: createModelSelection(
         ProviderInstanceId.make("claudeAgent"),
@@ -183,12 +183,11 @@ describe("CompactComposerControlsMenu", () => {
 
     await page.getByLabelText("More composer controls").click();
 
-    await vi.waitFor(() => {
-      const text = document.body.textContent ?? "";
-      expect(text).toContain("Fast Mode");
-      expect(text).toContain("On");
-      expect(text).toContain("Off");
-    });
+    const fastModeToggle = page.getByRole("menuitemcheckbox", { name: "Fast Mode" });
+    await expect.element(fastModeToggle).toBeInTheDocument();
+    await expect.element(fastModeToggle).toHaveAttribute("aria-checked", "false");
+    await expect.element(page.getByRole("menuitemradio", { name: "On" })).not.toBeInTheDocument();
+    await expect.element(page.getByRole("menuitemradio", { name: "Off" })).not.toBeInTheDocument();
   });
 
   it("hides fast mode controls for non-Opus Claude models", async () => {
@@ -225,7 +224,7 @@ describe("CompactComposerControlsMenu", () => {
     });
   });
 
-  it("shows a Claude thinking on/off section for Haiku", async () => {
+  it("shows Claude thinking as a single switch for Haiku", async () => {
     await using _ = await mountMenu({
       modelSelection: createModelSelection(
         ProviderInstanceId.make("claudeAgent"),
@@ -236,12 +235,11 @@ describe("CompactComposerControlsMenu", () => {
 
     await page.getByLabelText("More composer controls").click();
 
-    await vi.waitFor(() => {
-      const text = document.body.textContent ?? "";
-      expect(text).toContain("Thinking");
-      expect(text).toContain("On");
-      expect(text).toContain("Off");
-    });
+    const thinkingToggle = page.getByRole("menuitemcheckbox", { name: "Thinking" });
+    await expect.element(thinkingToggle).toBeInTheDocument();
+    await expect.element(thinkingToggle).toHaveAttribute("aria-checked", "true");
+    await expect.element(page.getByRole("menuitemradio", { name: "On" })).not.toBeInTheDocument();
+    await expect.element(page.getByRole("menuitemradio", { name: "Off" })).not.toBeInTheDocument();
   });
 
   it("can hide the interaction mode section", async () => {

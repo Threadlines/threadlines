@@ -159,6 +159,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         processEnv,
         (settings) =>
           fetchClaudeAccountUsage(settings).pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
             Effect.provideService(FileSystem.FileSystem, fileSystem),
             Effect.provideService(HttpClient.HttpClient, httpClient),
             Effect.provideService(Path.Path, path),

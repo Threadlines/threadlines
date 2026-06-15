@@ -1786,6 +1786,7 @@ function mapToRuntimeEvents(
         payload: {
           message: addProviderAuthHint(PROVIDER, message),
           ...(!willRetry ? { class: "provider_error" as const } : {}),
+          ...(willRetry ? { warningKind: "api-retry" } : {}),
           ...(event.payload !== undefined ? { detail: event.payload } : {}),
         },
       },

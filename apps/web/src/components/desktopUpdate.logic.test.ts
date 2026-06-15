@@ -7,6 +7,7 @@ import {
   getDesktopUpdateActionError,
   getDesktopUpdateButtonTooltip,
   getDesktopUpdateInstallConfirmationMessage,
+  getSidebarDesktopUpdateTagPresentation,
   isDesktopUpdateButtonDisabled,
   resolveDesktopUpdateButtonAction,
   shouldShowArm64IntelBuildWarning,
@@ -223,6 +224,70 @@ describe("desktop update UI helpers", () => {
         downloadedVersion: null,
       }),
     ).toContain("Install update and restart Threadlines?");
+  });
+});
+
+describe("getSidebarDesktopUpdateTagPresentation", () => {
+  it("shows the compact app version when no update action is available", () => {
+    expect(getSidebarDesktopUpdateTagPresentation(baseState, "1.0.0")).toEqual({
+      action: "none",
+      disabled: true,
+      label: "v1.0.0",
+      progressPercent: 0,
+      tone: "idle",
+      tooltip: "Up to date",
+    });
+  });
+
+  it("turns the version tag into an update prompt", () => {
+    const state: DesktopUpdateState = {
+      ...baseState,
+      status: "available",
+      availableVersion: "1.1.0",
+    };
+
+    expect(getSidebarDesktopUpdateTagPresentation(state, "1.0.0")).toMatchObject({
+      action: "download",
+      disabled: false,
+      label: "Update",
+      progressPercent: 0,
+      tone: "available",
+    });
+  });
+
+  it("renders bounded download progress in the compact tag", () => {
+    const state: DesktopUpdateState = {
+      ...baseState,
+      status: "downloading",
+      availableVersion: "1.1.0",
+      downloadPercent: 142.2,
+    };
+
+    expect(getSidebarDesktopUpdateTagPresentation(state, "1.0.0")).toMatchObject({
+      action: "none",
+      disabled: true,
+      label: "100%",
+      progressPercent: 100,
+      tone: "downloading",
+    });
+  });
+
+  it("marks downloaded updates as ready to restart", () => {
+    const state: DesktopUpdateState = {
+      ...baseState,
+      status: "downloaded",
+      availableVersion: "1.1.0",
+      downloadedVersion: "1.1.0",
+      downloadPercent: 100,
+    };
+
+    expect(getSidebarDesktopUpdateTagPresentation(state, "1.0.0")).toMatchObject({
+      action: "install",
+      disabled: false,
+      label: "Ready",
+      progressPercent: 100,
+      tone: "downloaded",
+    });
   });
 });
 

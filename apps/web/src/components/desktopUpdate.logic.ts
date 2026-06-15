@@ -1,6 +1,21 @@
 import type { DesktopUpdateActionResult, DesktopUpdateState } from "@t3tools/contracts";
 
 export type DesktopUpdateButtonAction = "download" | "install" | "none";
+export type SidebarDesktopUpdateTagTone =
+  | "idle"
+  | "available"
+  | "downloading"
+  | "downloaded"
+  | "error";
+
+export interface SidebarDesktopUpdateTagPresentation {
+  readonly action: DesktopUpdateButtonAction;
+  readonly disabled: boolean;
+  readonly label: string;
+  readonly progressPercent: number;
+  readonly tone: SidebarDesktopUpdateTagTone;
+  readonly tooltip: string;
+}
 
 export function resolveDesktopUpdateButtonAction(
   state: DesktopUpdateState,
@@ -97,6 +112,58 @@ export function shouldToastDesktopUpdateActionResult(result: DesktopUpdateAction
 export function shouldHighlightDesktopUpdateError(state: DesktopUpdateState | null): boolean {
   if (!state || state.status !== "error") return false;
   return state.errorContext === "download" || state.errorContext === "install";
+}
+
+export function getSidebarDesktopUpdateTagPresentation(
+  state: DesktopUpdateState | null,
+  compactAppVersion: string,
+): SidebarDesktopUpdateTagPresentation {
+  const idlePresentation = {
+    action: "none",
+    disabled: true,
+    label: `v${compactAppVersion}`,
+    progressPercent: 0,
+    tone: "idle",
+    tooltip: "Up to date",
+  } satisfies SidebarDesktopUpdateTagPresentation;
+
+  if (!state || !shouldShowDesktopUpdateButton(state)) {
+    return idlePresentation;
+  }
+
+  const action = resolveDesktopUpdateButtonAction(state);
+  const isDownloaded = action === "install" || state.status === "downloaded";
+  const isDownloading = state.status === "downloading";
+  const isError = shouldHighlightDesktopUpdateError(state);
+  const downloadPercent = typeof state.downloadPercent === "number" ? state.downloadPercent : null;
+  const progressPercent = isDownloaded
+    ? 100
+    : isDownloading && downloadPercent !== null
+      ? Math.max(0, Math.min(100, downloadPercent))
+      : 0;
+
+  return {
+    action,
+    disabled: isDesktopUpdateButtonDisabled(state),
+    label: isDownloaded
+      ? "Ready"
+      : isDownloading
+        ? downloadPercent !== null
+          ? `${Math.floor(progressPercent)}%`
+          : "..."
+        : isError
+          ? "Retry"
+          : "Update",
+    progressPercent,
+    tone: isDownloaded
+      ? "downloaded"
+      : isDownloading
+        ? "downloading"
+        : isError
+          ? "error"
+          : "available",
+    tooltip: getDesktopUpdateButtonTooltip(state),
+  };
 }
 
 export function canCheckForUpdate(state: DesktopUpdateState | null): boolean {

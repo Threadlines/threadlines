@@ -25,6 +25,95 @@ export interface ExtensionProviderThreadCandidate {
   readonly sessionUpdatedAt?: string | undefined;
 }
 
+export interface ExtensionInventoryCacheKeyInput {
+  readonly cwd: string;
+  readonly providerInstanceId: string;
+  readonly providerThreadId?: string | undefined;
+}
+
+export interface ExtensionInventoryMemoryCacheEntry<T> {
+  readonly value: T;
+  readonly cachedAtMs: number;
+  readonly loadDurationMs: number | null;
+}
+
+export interface ExtensionInventoryMemoryCacheOptions {
+  readonly maxEntries: number;
+  readonly ttlMs: number;
+  readonly nowMs?: () => number;
+}
+
+export function makeExtensionInventoryCacheKey({
+  cwd,
+  providerInstanceId,
+  providerThreadId,
+}: ExtensionInventoryCacheKeyInput): string | null {
+  const cwdKey = normalizedCwdKey(cwd);
+  const providerKey = providerInstanceId.trim();
+  if (!cwdKey || !providerKey) return null;
+
+  return JSON.stringify([cwdKey, providerKey, providerThreadId?.trim() ?? ""]);
+}
+
+export function createExtensionInventoryMemoryCache<T>({
+  maxEntries,
+  ttlMs,
+  nowMs = () => Date.now(),
+}: ExtensionInventoryMemoryCacheOptions) {
+  const entries = new Map<string, ExtensionInventoryMemoryCacheEntry<T>>();
+  const isFresh = (entry: ExtensionInventoryMemoryCacheEntry<T>) =>
+    nowMs() - entry.cachedAtMs <= ttlMs;
+
+  const peek = (key: string): ExtensionInventoryMemoryCacheEntry<T> | null => {
+    const entry = entries.get(key);
+    return entry && isFresh(entry) ? entry : null;
+  };
+
+  const get = (key: string): ExtensionInventoryMemoryCacheEntry<T> | null => {
+    const entry = entries.get(key);
+    if (!entry) return null;
+    if (!isFresh(entry)) {
+      entries.delete(key);
+      return null;
+    }
+
+    entries.delete(key);
+    entries.set(key, entry);
+    return entry;
+  };
+
+  const set = (
+    key: string,
+    value: T,
+    loadDurationMs: number | null,
+  ): ExtensionInventoryMemoryCacheEntry<T> => {
+    const entry = {
+      value,
+      cachedAtMs: nowMs(),
+      loadDurationMs,
+    };
+    entries.delete(key);
+    entries.set(key, entry);
+
+    while (entries.size > Math.max(0, maxEntries)) {
+      const oldestKey = entries.keys().next().value;
+      if (oldestKey === undefined) break;
+      entries.delete(oldestKey);
+    }
+
+    return entry;
+  };
+
+  return {
+    get,
+    peek,
+    set,
+    delete: (key: string) => entries.delete(key),
+    clear: () => entries.clear(),
+    size: () => entries.size,
+  };
+}
+
 export function extensionTextMatchesFilter(
   values: ReadonlyArray<string | null | undefined>,
   filterText: string,

@@ -1359,6 +1359,38 @@ describe("deriveWorkLogEntries", () => {
     expect(warningEntries[0]?.label).toBe("Claude API rate limited, retrying in 8s (attempt 2/10)");
   });
 
+  it("renders tagged Codex stream retries without repeating the reconnect label", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "codex-retry",
+        kind: "runtime.warning",
+        summary: "Runtime warning",
+        tone: "warning",
+        turnId: "turn-1",
+        payload: {
+          message: "Reconnecting... 1/5",
+          warningKind: "api-retry",
+          detail: {
+            error: {
+              message: "Reconnecting... 1/5",
+              additionalDetails:
+                "stream disconnected before completion: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
+            },
+            willRetry: true,
+          },
+        },
+      }),
+    ]);
+
+    expect(entry).toMatchObject({
+      id: "codex-retry",
+      label: "Reconnecting... 1/5",
+      detail:
+        "stream disconnected before completion: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
+      tone: "warning",
+    });
+  });
+
   it("keeps unrelated runtime warnings as separate rows", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

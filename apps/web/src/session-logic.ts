@@ -1105,6 +1105,13 @@ function extractRuntimeActivityDetail(
   const additionalDetails = asTrimmedString(detailError?.additionalDetails);
   const primaryMessage = directDetail ?? message ?? detailMessage;
 
+  if (
+    activity.kind === "runtime.warning" &&
+    asTrimmedString(payload?.warningKind) === "api-retry"
+  ) {
+    return additionalDetails ?? (primaryMessage !== message ? primaryMessage : null);
+  }
+
   if (primaryMessage && additionalDetails && !primaryMessage.includes(additionalDetails)) {
     return `${primaryMessage} - ${additionalDetails}`;
   }

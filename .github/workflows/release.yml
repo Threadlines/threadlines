@@ -375,12 +375,14 @@ jobs:
           if ($env:CHANNEL -eq "nightly") {
             if (-not (Test-Path release\nightly.yml)) {
               if (Test-Path release\latest.yml) {
-                Move-Item release\latest.yml release\nightly.yml -Force
+                Copy-Item release\latest.yml release\nightly.yml -Force
               } else {
                 throw "Nightly build did not produce nightly.yml or latest.yml."
               }
             }
-            Remove-Item release\latest.yml -Force -ErrorAction SilentlyContinue
+            if (-not (Test-Path release\latest.yml)) {
+              Copy-Item release\nightly.yml release\latest.yml -Force
+            }
           } else {
             if (-not (Test-Path release\latest.yml)) {
               if (Test-Path release\nightly.yml) {
@@ -526,15 +528,23 @@ jobs:
           if [[ "$CHANNEL" == "nightly" ]]; then
             target_manifest="nightly-mac.yml"
             fallback_manifest="latest-mac.yml"
+            alias_manifest="latest-mac.yml"
           else
             target_manifest="latest-mac.yml"
             fallback_manifest="nightly-mac.yml"
+            alias_manifest=""
           fi
 
           if [[ "$ARCH" == "x64" ]]; then
             arch_target_manifest="${target_manifest%.yml}-x64.yml"
+            if [[ -n "$alias_manifest" ]]; then
+              arch_alias_manifest="${alias_manifest%.yml}-x64.yml"
+            else
+              arch_alias_manifest=""
+            fi
           else
             arch_target_manifest="$target_manifest"
+            arch_alias_manifest="$alias_manifest"
           fi
 
           if [[ -f "release/$target_manifest" ]]; then
@@ -546,13 +556,21 @@ jobs:
             exit 1
           fi
 
+          if [[ -n "$arch_alias_manifest" ]]; then
+            cp -f "release/$arch_target_manifest" "release/$arch_alias_manifest"
+          fi
+
           for manifest in latest-mac.yml latest-mac-x64.yml nightly-mac.yml nightly-mac-x64.yml; do
-            if [[ "$manifest" != "$arch_target_manifest" ]]; then
+            if [[ "$manifest" != "$arch_target_manifest" && "$manifest" != "${arch_alias_manifest:-}" ]]; then
               rm -f "release/$manifest"
             fi
           done
           if [[ ! -f "release/$arch_target_manifest" ]]; then
             echo "Normalized macOS manifest is missing: $arch_target_manifest" >&2
+            exit 1
+          fi
+          if [[ -n "$arch_alias_manifest" && ! -f "release/$arch_alias_manifest" ]]; then
+            echo "Normalized macOS alias manifest is missing: $arch_alias_manifest" >&2
             exit 1
           fi
 
@@ -622,11 +640,7 @@ jobs:
             --dir release-manifests
             --clobber
           )
-          if [[ "$CHANNEL" == "nightly" ]]; then
-            args+=(--pattern "nightly-mac*.yml")
-          else
-            args+=(--pattern "latest-mac*.yml")
-          fi
+          args+=(--pattern "*mac*.yml")
 
           gh "${args[@]}"
           ls -la release-manifests
@@ -668,8 +682,13 @@ jobs:
 
           if [[ "$CHANNEL" == "nightly" ]]; then
             merge_mac_manifest "nightly-mac.yml" "nightly-mac-x64.yml"
+            cp -f release-manifests/nightly-mac.yml release-manifests/latest-mac.yml
+            gh release upload "$TAG" release-manifests/latest-mac.yml --clobber
+            gh release delete-asset "$TAG" "latest-mac-x64.yml" --yes || true
           else
             merge_mac_manifest "latest-mac.yml" "latest-mac-x64.yml"
+            gh release delete-asset "$TAG" "nightly-mac.yml" --yes || true
+            gh release delete-asset "$TAG" "nightly-mac-x64.yml" --yes || true
           fi
 
       - name: Publish draft release

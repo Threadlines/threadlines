@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildExtensionJsonSchemaFormArguments,
+  createExtensionInventoryMemoryCache,
   deriveDetectedProviderThreadId,
   deriveExtensionJsonSchemaFormFields,
   extensionMcpNeedsAuthStatus,
@@ -10,6 +11,7 @@ import {
   extensionTextMatchesFilter,
   extensionProviderDriverSortRank,
   isLikelyLocalPath,
+  makeExtensionInventoryCacheKey,
   makeExtensionJsonSchemaFormDefaults,
 } from "./ExtensionsSettings.logic";
 
@@ -38,6 +40,65 @@ describe("ExtensionsSettings logic", () => {
     );
 
     expect(providers).toEqual(["codex", "claudeAgent", "other"]);
+  });
+
+  it("builds stable extension inventory cache keys from project, provider, and context", () => {
+    expect(
+      makeExtensionInventoryCacheKey({
+        cwd: "C:\\Repo\\BadCode",
+        providerInstanceId: "codex",
+        providerThreadId: "thread-1",
+      }),
+    ).toBe(
+      makeExtensionInventoryCacheKey({
+        cwd: "c:/repo/badcode",
+        providerInstanceId: "codex",
+        providerThreadId: "thread-1",
+      }),
+    );
+
+    expect(
+      makeExtensionInventoryCacheKey({
+        cwd: "/Users/will/badcode",
+        providerInstanceId: "",
+      }),
+    ).toBeNull();
+  });
+
+  it("keeps extension inventory cache entries fresh by ttl", () => {
+    let nowMs = 1_000;
+    const cache = createExtensionInventoryMemoryCache<string>({
+      maxEntries: 2,
+      ttlMs: 500,
+      nowMs: () => nowMs,
+    });
+
+    cache.set("codex", "inventory", 10);
+    expect(cache.get("codex")?.value).toBe("inventory");
+
+    nowMs = 1_501;
+    expect(cache.get("codex")).toBeNull();
+    expect(cache.size()).toBe(0);
+  });
+
+  it("evicts least recently used extension inventory cache entries", () => {
+    let nowMs = 1_000;
+    const cache = createExtensionInventoryMemoryCache<string>({
+      maxEntries: 2,
+      ttlMs: 10_000,
+      nowMs: () => nowMs,
+    });
+
+    cache.set("first", "one", 1);
+    nowMs += 1;
+    cache.set("second", "two", 2);
+    expect(cache.get("first")?.value).toBe("one");
+    nowMs += 1;
+    cache.set("third", "three", 3);
+
+    expect(cache.get("first")?.value).toBe("one");
+    expect(cache.get("second")).toBeNull();
+    expect(cache.get("third")?.value).toBe("three");
   });
 
   it("treats OAuth as an auth mechanism instead of a missing-auth state", () => {

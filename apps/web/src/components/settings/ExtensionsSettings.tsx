@@ -45,6 +45,7 @@ import { openInPreferredEditor } from "../../editorPreferences";
 import { ensureLocalApi } from "../../localApi";
 import {
   buildExtensionJsonSchemaFormArguments,
+  createExtensionInventoryMemoryCache,
   deriveDetectedProviderThreadId,
   deriveExtensionJsonSchemaFormFields,
   extensionMcpNeedsAuthStatus,
@@ -53,6 +54,7 @@ import {
   extensionTextMatchesFilter,
   extensionProviderDriverSortRank,
   isLikelyLocalPath,
+  makeExtensionInventoryCacheKey,
   makeExtensionJsonSchemaFormDefaults,
   type ExtensionItemKind,
 } from "./ExtensionsSettings.logic";
@@ -60,7 +62,7 @@ import {
   deriveProviderInstanceEntries,
   sortProviderInstanceEntries,
 } from "../../providerInstances";
-import { useServerProviders } from "../../rpc/serverState";
+import { useServerConfig, useServerProviders } from "../../rpc/serverState";
 import {
   selectProjectsAcrossEnvironments,
   selectThreadsAcrossEnvironments,
@@ -90,6 +92,8 @@ import { cn } from "../../lib/utils";
 
 const EXTENSION_SECTION_PREVIEW_LIMIT = 10;
 const EXTENSION_BROWSER_PAGE_SIZE = 80;
+const EXTENSION_INVENTORY_CACHE_MAX_ENTRIES = 5;
+const EXTENSION_INVENTORY_CACHE_TTL_MS = 10 * 60 * 1_000;
 const EXTENSIONS_CODEX_DRIVER = ProviderDriverKind.make("codex");
 const EXTENSIONS_CLAUDE_DRIVER = ProviderDriverKind.make("claudeAgent");
 type ExtensionSectionKey = "plugins" | "skills" | "mcpServers" | "apps";
@@ -165,6 +169,21 @@ interface ExtensionActionHistoryEntry {
   readonly durationMs?: number | undefined;
   readonly output?: string | undefined;
 }
+
+interface ExtensionsSettingsPanelMemoryState {
+  cwd?: string | undefined;
+  providerInstanceId?: string | undefined;
+  manualProviderThreadId?: string | undefined;
+  showAdvancedContext?: boolean | undefined;
+}
+
+const extensionInventoryCache =
+  createExtensionInventoryMemoryCache<ProviderExtensionsInventoryResult>({
+    maxEntries: EXTENSION_INVENTORY_CACHE_MAX_ENTRIES,
+    ttlMs: EXTENSION_INVENTORY_CACHE_TTL_MS,
+  });
+
+const extensionsSettingsPanelMemoryState: ExtensionsSettingsPanelMemoryState = {};
 
 function extensionItemActionKey(item: ExtensionItem): string {
   return `${item.provider.instanceId}:${item.kind}:${item.id}`;
@@ -2345,11 +2364,9 @@ function ExtensionBrowserDialog({
 
 function ProviderInventoryRow({
   provider,
-  filterText,
   onSelectItem,
 }: {
   provider: ProviderExtensionProviderInventory;
-  filterText: string;
   onSelectItem: (item: ExtensionItem) => void;
 }) {
   const [activeSection, setActiveSection] = useState<ExtensionSectionKey>("plugins");
@@ -2368,8 +2385,8 @@ function ProviderInventoryRow({
   );
   const filterProviderItems = useCallback(
     (items: ReadonlyArray<ExtensionItem>) =>
-      filterExtensionItems(filterExtensionItems(items, filterText), deferredProviderFilterText),
-    [deferredProviderFilterText, filterText],
+      filterExtensionItems(items, deferredProviderFilterText),
+    [deferredProviderFilterText],
   );
   const filteredItems = useMemo(
     () => ({
@@ -2511,7 +2528,7 @@ function ProviderInventoryRow({
             items={activeSectionConfig.items}
             totalCount={activeSectionConfig.totalCount}
             emptyLabel={activeSectionConfig.emptyLabel}
-            filterText={filterText}
+            filterText={deferredProviderFilterText}
             onSelect={onSelectItem}
             panelId={`${panelIdBase}-${activeSectionConfig.key}`}
             browseLabel={activeSectionConfig.browseLabel}
@@ -2530,97 +2547,11 @@ function ProviderInventoryRow({
   );
 }
 
-function countProviderExtensions(provider: ProviderExtensionProviderInventory): number {
-  return (
-    provider.plugins.length +
-    provider.skills.length +
-    provider.mcpServers.length +
-    provider.apps.length
-  );
-}
-
-function countProviderMatches(
-  provider: ProviderExtensionProviderInventory,
-  filterText: string,
-): number {
-  if (filterText.trim().length === 0) return countProviderExtensions(provider);
-  return (
-    provider.plugins.filter((plugin) =>
-      extensionTextMatchesFilter(
-        [
-          plugin.id,
-          plugin.name,
-          plugin.displayName,
-          plugin.description,
-          plugin.scope,
-          plugin.source,
-          plugin.version,
-          plugin.installPath,
-          plugin.projectPath,
-          plugin.authPolicy,
-          plugin.installPolicy,
-          plugin.availability,
-          plugin.marketplaceName,
-          plugin.marketplacePath,
-          plugin.remoteMarketplaceName,
-        ],
-        filterText,
-      ),
-    ).length +
-    provider.skills.filter((skill) =>
-      extensionTextMatchesFilter(
-        [
-          skill.name,
-          skill.displayName,
-          skill.description,
-          skill.shortDescription,
-          skill.scope,
-          skill.source,
-          skill.path,
-        ],
-        filterText,
-      ),
-    ).length +
-    provider.mcpServers.filter((server) =>
-      extensionTextMatchesFilter(
-        [
-          server.name,
-          server.authStatus,
-          server.status,
-          server.transport,
-          server.detail,
-          ...(server.tools ?? []),
-          ...(server.toolDefinitions ?? []).flatMap((tool) => [
-            tool.name,
-            tool.title,
-            tool.description,
-          ]),
-          ...(server.resources ?? []).flatMap((resource) => [
-            resource.name,
-            resource.title,
-            resource.description,
-            resource.uri,
-          ]),
-          ...(server.resourceTemplates ?? []).flatMap((resource) => [
-            resource.name,
-            resource.title,
-            resource.description,
-            resource.uriTemplate,
-          ]),
-        ],
-        filterText,
-      ),
-    ).length +
-    provider.apps.filter((app) =>
-      extensionTextMatchesFilter([app.id, app.name, app.displayName, app.description], filterText),
-    ).length
-  );
-}
-
 export function ExtensionsSettingsPanel() {
   const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
   const threads = useStore(useShallow(selectThreadsAcrossEnvironments));
   const threadLastVisitedAtById = useUiStateStore((state) => state.threadLastVisitedAtById);
+  const serverConfig = useServerConfig();
   const serverProviders = useServerProviders();
   const projectOptions = useMemo(() => deriveSettingsProjectOptions(projects), [projects]);
   const providerEntries = useMemo(
@@ -2648,22 +2579,20 @@ export function ExtensionsSettingsPanel() {
       })),
     [providerEntries],
   );
-  const [cwd, setCwd] = useState(() => projectOptions[0]?.value ?? "");
-  const [providerInstanceId, setProviderInstanceId] = useState("");
-  const [manualProviderThreadId, setManualProviderThreadId] = useState("");
-  const [showAdvancedContext, setShowAdvancedContext] = useState(false);
-  const [inventory, setInventory] = useState<ProviderExtensionsInventoryResult | null>(null);
-  const [filterText, setFilterText] = useState("");
-  const deferredFilterText = useDeferredValue(filterText);
-  const [selectedItem, setSelectedItem] = useState<ExtensionItem | null>(null);
-  const [actionHistoryByItem, setActionHistoryByItem] = useState<
-    Record<string, ExtensionActionHistoryEntry>
-  >({});
-  const [isLoading, setIsLoading] = useState(false);
-  const [isRefreshingMarketplaces, setIsRefreshingMarketplaces] = useState(false);
-  const [lastInventoryLoadMs, setLastInventoryLoadMs] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [cwd, setCwd] = useState(
+    () => extensionsSettingsPanelMemoryState.cwd ?? projectOptions[0]?.value ?? "",
+  );
+  const [providerInstanceId, setProviderInstanceId] = useState(
+    () => extensionsSettingsPanelMemoryState.providerInstanceId ?? "",
+  );
+  const [manualProviderThreadId, setManualProviderThreadId] = useState(
+    () => extensionsSettingsPanelMemoryState.manualProviderThreadId ?? "",
+  );
+  const [showAdvancedContext, setShowAdvancedContext] = useState(
+    () => extensionsSettingsPanelMemoryState.showAdvancedContext ?? false,
+  );
   const refreshRequestRef = useRef(0);
+  const inventoryRequestKeyRef = useRef("");
   const selectedProviderEntry = useMemo(
     () => providerEntries.find((provider) => String(provider.instanceId) === providerInstanceId),
     [providerEntries, providerInstanceId],
@@ -2709,17 +2638,64 @@ export function ExtensionsSettingsPanel() {
       : providerThreadContextSource === "auto"
         ? "Using the active Codex session for MCP tool calls and thread-scoped inventory."
         : "OAuth, reload, plugins, and skills work without this. Running MCP tools needs an active Codex thread.";
+  const inventoryRequestKey = useMemo(
+    () =>
+      makeExtensionInventoryCacheKey({
+        cwd,
+        providerInstanceId,
+        providerThreadId: effectiveProviderThreadId,
+      }) ?? "",
+    [cwd, effectiveProviderThreadId, providerInstanceId],
+  );
+  inventoryRequestKeyRef.current = inventoryRequestKey;
+  const initialCachedInventory = inventoryRequestKey
+    ? extensionInventoryCache.peek(inventoryRequestKey)
+    : null;
+  const [inventory, setInventory] = useState<ProviderExtensionsInventoryResult | null>(
+    () => initialCachedInventory?.value ?? null,
+  );
+  const [selectedItem, setSelectedItem] = useState<ExtensionItem | null>(null);
+  const [actionHistoryByItem, setActionHistoryByItem] = useState<
+    Record<string, ExtensionActionHistoryEntry>
+  >({});
+  const [isLoading, setIsLoading] = useState(false);
+  const [isRefreshingMarketplaces, setIsRefreshingMarketplaces] = useState(false);
+  const [lastInventoryLoadMs, setLastInventoryLoadMs] = useState<number | null>(
+    () => initialCachedInventory?.loadDurationMs ?? null,
+  );
+  const [error, setError] = useState<string | null>(null);
+  const projectProviderRef = useRef({ cwd, providerInstanceId });
 
-  const extensionTotals = useMemo(() => {
-    if (!inventory) return { total: 0, matching: 0 };
-    return inventory.providers.reduce(
-      (acc, provider) => ({
-        total: acc.total + countProviderExtensions(provider),
-        matching: acc.matching + countProviderMatches(provider, deferredFilterText),
-      }),
-      { total: 0, matching: 0 },
-    );
-  }, [deferredFilterText, inventory]);
+  const clearInventory = useCallback((options?: { readonly loading?: boolean }) => {
+    refreshRequestRef.current += 1;
+    setInventory(null);
+    setLastInventoryLoadMs(null);
+    setError(null);
+    setSelectedItem(null);
+    setIsLoading(options?.loading ?? false);
+  }, []);
+
+  const invalidateInventoryRefresh = useCallback(() => {
+    refreshRequestRef.current += 1;
+    setError(null);
+    setSelectedItem(null);
+  }, []);
+
+  useEffect(() => {
+    extensionsSettingsPanelMemoryState.cwd = cwd;
+  }, [cwd]);
+
+  useEffect(() => {
+    extensionsSettingsPanelMemoryState.providerInstanceId = providerInstanceId;
+  }, [providerInstanceId]);
+
+  useEffect(() => {
+    extensionsSettingsPanelMemoryState.manualProviderThreadId = manualProviderThreadId;
+  }, [manualProviderThreadId]);
+
+  useEffect(() => {
+    extensionsSettingsPanelMemoryState.showAdvancedContext = showAdvancedContext;
+  }, [showAdvancedContext]);
 
   useEffect(() => {
     if (!cwd && projectOptions[0]?.value) {
@@ -2729,7 +2705,10 @@ export function ExtensionsSettingsPanel() {
 
   useEffect(() => {
     if (providerOptions.length === 0) {
-      if (providerInstanceId) setProviderInstanceId("");
+      if (serverConfig && providerInstanceId) {
+        setProviderInstanceId("");
+        clearInventory();
+      }
       return;
     }
     if (
@@ -2737,38 +2716,56 @@ export function ExtensionsSettingsPanel() {
       !providerOptions.some((provider) => provider.value === providerInstanceId)
     ) {
       setProviderInstanceId("");
-      setInventory(null);
-      setError(null);
-      setSelectedItem(null);
+      clearInventory();
     }
-  }, [providerInstanceId, providerOptions]);
+  }, [clearInventory, providerInstanceId, providerOptions, serverConfig]);
 
   useEffect(() => {
     setSelectedItem(null);
   }, [cwd, providerInstanceId]);
 
   useEffect(() => {
+    const previous = projectProviderRef.current;
+    projectProviderRef.current = { cwd, providerInstanceId };
+    if (previous.cwd === cwd && previous.providerInstanceId === providerInstanceId) {
+      return;
+    }
+
     setManualProviderThreadId("");
     setShowAdvancedContext(false);
   }, [cwd, providerInstanceId]);
 
   useEffect(() => {
-    setInventory(null);
+    invalidateInventoryRefresh();
+  }, [effectiveProviderThreadId, invalidateInventoryRefresh]);
+
+  useEffect(() => {
+    if (!inventoryRequestKey) {
+      clearInventory();
+      return;
+    }
+
+    const cachedInventory = extensionInventoryCache.get(inventoryRequestKey);
+    if (!cachedInventory) return;
+
+    setInventory(cachedInventory.value);
+    setLastInventoryLoadMs(cachedInventory.loadDurationMs);
     setError(null);
-    setSelectedItem(null);
-  }, [effectiveProviderThreadId]);
+  }, [clearInventory, inventoryRequestKey]);
 
   const refresh = useCallback(async () => {
+    const requestId = refreshRequestRef.current + 1;
+    refreshRequestRef.current = requestId;
+    const requestKey = inventoryRequestKey;
     const requestCwd = cwd.trim();
     if (!requestCwd || !providerInstanceId) {
       setInventory(null);
+      setLastInventoryLoadMs(null);
       setError(null);
       setIsLoading(false);
       return;
     }
 
-    const requestId = refreshRequestRef.current + 1;
-    refreshRequestRef.current = requestId;
     setIsLoading(true);
     setError(null);
     const startedMs = performance.now();
@@ -2778,28 +2775,47 @@ export function ExtensionsSettingsPanel() {
         providerInstanceId: providerInstanceId as ProviderInstanceId,
         ...(effectiveProviderThreadId ? { providerThreadId: effectiveProviderThreadId } : {}),
       });
-      if (refreshRequestRef.current === requestId) {
+      if (
+        refreshRequestRef.current === requestId &&
+        inventoryRequestKeyRef.current === requestKey
+      ) {
+        const loadDurationMs = performance.now() - startedMs;
+        if (requestKey) {
+          extensionInventoryCache.set(requestKey, result, loadDurationMs);
+        }
         setInventory(result);
-        setLastInventoryLoadMs(performance.now() - startedMs);
+        setLastInventoryLoadMs(loadDurationMs);
       }
     } catch (refreshError) {
-      if (refreshRequestRef.current === requestId) {
+      if (
+        refreshRequestRef.current === requestId &&
+        inventoryRequestKeyRef.current === requestKey
+      ) {
         setError(
           refreshError instanceof Error ? refreshError.message : "Extension inventory failed.",
         );
         setLastInventoryLoadMs(null);
       }
     } finally {
-      if (refreshRequestRef.current === requestId) {
+      if (
+        refreshRequestRef.current === requestId &&
+        inventoryRequestKeyRef.current === requestKey
+      ) {
         setIsLoading(false);
       }
     }
-  }, [cwd, effectiveProviderThreadId, providerInstanceId]);
+  }, [cwd, effectiveProviderThreadId, inventoryRequestKey, providerInstanceId]);
 
-  const canLoadInventory = cwd.trim().length > 0 && providerInstanceId.length > 0;
+  useEffect(() => {
+    const loadDelayMs = manualProviderThreadId.trim().length > 0 ? 350 : 0;
+    const timeoutId = window.setTimeout(() => void refresh(), loadDelayMs);
+    return () => window.clearTimeout(timeoutId);
+  }, [manualProviderThreadId, refresh]);
+
+  const canReadInventory = cwd.trim().length > 0 && providerInstanceId.length > 0;
   const hasInventory = inventory !== null;
   const canRefreshCodexMarketplaces =
-    canLoadInventory && selectedProviderEntry?.driverKind === EXTENSIONS_CODEX_DRIVER;
+    canReadInventory && selectedProviderEntry?.driverKind === EXTENSIONS_CODEX_DRIVER;
   const refreshCodexMarketplaces = useCallback(async () => {
     const requestCwd = cwd.trim();
     if (!requestCwd || !providerInstanceId) return;
@@ -2851,7 +2867,6 @@ export function ExtensionsSettingsPanel() {
                 }.`
               : "Pick the project context used for project skills and MCP status."
           }
-          status={error}
           control={
             projectOptions.length > 0 ? (
               <Select
@@ -2859,9 +2874,7 @@ export function ExtensionsSettingsPanel() {
                 onValueChange={(value) => {
                   if (!value) return;
                   setCwd(value);
-                  setInventory(null);
-                  setError(null);
-                  setSelectedItem(null);
+                  clearInventory({ loading: providerInstanceId.length > 0 });
                 }}
               >
                 <SelectTrigger className="w-full sm:w-56" aria-label="Project">
@@ -2882,58 +2895,41 @@ export function ExtensionsSettingsPanel() {
         />
         <SettingsRow
           title="Provider"
-          description="Choose a supported provider, then load its extension inventory when needed."
+          description="Choose a supported provider to load plugins, skills, MCP servers, and apps."
+          status={error}
           control={
             providerOptions.length > 0 ? (
-              <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center sm:justify-end">
-                <div className="order-2 flex w-full items-center gap-1.5 sm:order-1 sm:w-auto">
-                  {canRefreshCodexMarketplaces ? (
-                    <Tooltip>
-                      <TooltipTrigger
-                        render={
-                          <Button
-                            className="size-7 shrink-0 rounded-sm"
-                            size="icon-xs"
-                            variant="outline"
-                            disabled={isLoading || isRefreshingMarketplaces}
-                            onClick={() => void refreshCodexMarketplaces()}
-                            aria-label="Refresh Codex plugin marketplace"
-                          >
-                            {isRefreshingMarketplaces ? (
-                              <LoaderIcon className="size-3.5 animate-spin" />
-                            ) : (
-                              <PackagePlusIcon className="size-3.5" />
-                            )}
-                          </Button>
-                        }
-                      />
-                      <TooltipPopup side="top">Refresh Codex marketplace</TooltipPopup>
-                    </Tooltip>
-                  ) : null}
-                  <Button
-                    className="flex-1 sm:flex-none"
-                    size="xs"
-                    variant={hasInventory ? "outline" : "default"}
-                    disabled={!canLoadInventory || isLoading || isRefreshingMarketplaces}
-                    onClick={() => void refresh()}
-                  >
-                    {isLoading ? (
-                      <LoaderIcon className="size-3.5 animate-spin" />
-                    ) : (
-                      <RefreshCwIcon className="size-3.5" />
-                    )}
-                    {hasInventory ? "Reload" : "Load"}
-                  </Button>
-                </div>
-                <div className="order-1 min-w-0 sm:order-2">
+              <div className="flex w-full items-center gap-1.5 sm:w-auto">
+                {canRefreshCodexMarketplaces ? (
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <Button
+                          className="size-7 shrink-0 rounded-sm"
+                          size="icon-xs"
+                          variant="outline"
+                          disabled={isLoading || isRefreshingMarketplaces}
+                          onClick={() => void refreshCodexMarketplaces()}
+                          aria-label="Refresh Codex plugin marketplace"
+                        >
+                          {isRefreshingMarketplaces ? (
+                            <LoaderIcon className="size-3.5 animate-spin" />
+                          ) : (
+                            <PackagePlusIcon className="size-3.5" />
+                          )}
+                        </Button>
+                      }
+                    />
+                    <TooltipPopup side="top">Refresh Codex marketplace</TooltipPopup>
+                  </Tooltip>
+                ) : null}
+                <div className="min-w-0 flex-1 sm:w-56 sm:flex-none">
                   <Select
                     value={providerInstanceId}
                     onValueChange={(value) => {
                       if (!value) return;
                       setProviderInstanceId(value);
-                      setInventory(null);
-                      setError(null);
-                      setSelectedItem(null);
+                      clearInventory({ loading: cwd.trim().length > 0 });
                     }}
                   >
                     <SelectTrigger className="w-full sm:w-56" aria-label="Provider">
@@ -2953,31 +2949,6 @@ export function ExtensionsSettingsPanel() {
                 </div>
               </div>
             ) : null
-          }
-        />
-        <SettingsRow
-          title="Filter"
-          description={
-            inventory
-              ? filterText.trim().length > 0
-                ? `Showing ${extensionTotals.matching} of ${extensionTotals.total} extension records.`
-                : "Search plugins, skills, MCP servers, apps, paths, and tool names."
-              : "Load an extension inventory to filter it."
-          }
-          control={
-            <div className="relative w-full sm:w-64">
-              <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground/60" />
-              <Input
-                nativeInput
-                type="search"
-                value={filterText}
-                onChange={(event) => setFilterText(event.currentTarget.value)}
-                placeholder="Search extensions"
-                className="w-full [&_[data-slot=input]]:pl-8"
-                disabled={!inventory}
-                aria-label="Search extensions"
-              />
-            </div>
           }
         />
         <SettingsRow
@@ -3030,9 +3001,7 @@ export function ExtensionsSettingsPanel() {
                 value={manualProviderThreadId}
                 onChange={(event) => {
                   setManualProviderThreadId(event.currentTarget.value);
-                  setInventory(null);
-                  setError(null);
-                  setSelectedItem(null);
+                  invalidateInventoryRefresh();
                 }}
                 placeholder="override provider thread id"
                 className="w-full"
@@ -3043,35 +3012,58 @@ export function ExtensionsSettingsPanel() {
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title="Providers" icon={<BotIcon className="size-3.5" />}>
+      <SettingsSection
+        title="Providers"
+        icon={<BotIcon className="size-3.5" />}
+        headerAction={
+          hasInventory && isLoading ? (
+            <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              <LoaderIcon className="size-3 animate-spin" />
+              Refreshing
+            </span>
+          ) : null
+        }
+      >
         {inventory?.providers.length ? (
           inventory.providers.map((provider) => (
             <ProviderInventoryRow
               key={provider.instanceId}
               provider={provider}
-              filterText={deferredFilterText}
               onSelectItem={setSelectedItem}
             />
           ))
         ) : (
           <SettingsRow
             title={
-              !cwd
-                ? "No project selected"
-                : !providerInstanceId
-                  ? "No provider selected"
-                  : isLoading
-                    ? "Loading inventory"
-                    : "Inventory not loaded"
+              !cwd ? (
+                "No project selected"
+              ) : !providerInstanceId ? (
+                "No provider selected"
+              ) : isLoading ? (
+                <span className="inline-flex items-center gap-2">
+                  <LoaderIcon className="size-3.5 animate-spin" />
+                  Loading extensions
+                </span>
+              ) : error ? (
+                "Inventory failed to load"
+              ) : hasInventory ? (
+                "No extension providers found"
+              ) : (
+                "No extension inventory"
+              )
             }
             description={
               !cwd
                 ? "Choose a project to inspect extension surfaces."
                 : !providerInstanceId
-                  ? "Choose Codex or Claude before loading extensions."
+                  ? "Choose Codex or Claude to load plugins, skills, MCP servers, and apps."
                   : isLoading
-                    ? "Checking the selected provider extension surfaces."
-                    : "Click Load after choosing a provider."
+                    ? "Loading plugins, skills, MCP servers, and apps for the selected provider."
+                    : error
+                      ? "The selected provider inventory could not be loaded. Details are shown above."
+                      : hasInventory
+                        ? "The selected provider returned no extension records."
+                        : "Choose a provider to load its extension inventory."
             }
           />
         )}

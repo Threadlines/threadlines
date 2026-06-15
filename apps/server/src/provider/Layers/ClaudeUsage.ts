@@ -27,24 +27,30 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { resolveClaudeHomePath } from "../Drivers/ClaudeHome.ts";
+import { spawnAndCollect } from "../providerSnapshot.ts";
 
 export const CLAUDE_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+export const CLAUDE_MACOS_KEYCHAIN_SERVICE = "Claude Code-credentials";
 const USAGE_FETCH_TIMEOUT_MS = 4_000;
+const KEYCHAIN_READ_TIMEOUT_MS = 1_500;
 const FIVE_HOUR_WINDOW_MINS = 300;
 const SEVEN_DAY_WINDOW_MINS = 10_080;
 
-const ClaudeCredentialsFile = Schema.fromJsonString(
-  Schema.Struct({
-    claudeAiOauth: Schema.optional(
-      Schema.Struct({
-        accessToken: Schema.optional(Schema.String),
-        expiresAt: Schema.optional(Schema.NullOr(Schema.Number)),
-      }),
-    ),
-  }),
-);
+const ClaudeCredentialsPayload = Schema.Struct({
+  claudeAiOauth: Schema.optional(
+    Schema.Struct({
+      accessToken: Schema.optional(Schema.String),
+      expiresAt: Schema.optional(Schema.NullOr(Schema.Number)),
+    }),
+  ),
+  organizationUuid: Schema.optional(Schema.String),
+});
+type ClaudeCredentialsPayload = typeof ClaudeCredentialsPayload.Type;
+
+const ClaudeCredentialsFile = Schema.fromJsonString(ClaudeCredentialsPayload);
 const decodeClaudeCredentialsFile = Schema.decodeUnknownEffect(ClaudeCredentialsFile);
 
 const ClaudeUsageWindow = Schema.Struct({
@@ -121,16 +127,43 @@ export function normalizeClaudeAccountUsage(
   };
 }
 
+export interface ClaudeOAuthCredential {
+  readonly accessToken: string;
+  readonly organizationUuid?: string;
+}
+
+function normalizeCredentialString(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+export function extractClaudeOAuthCredential(
+  credentials: ClaudeCredentialsPayload | undefined,
+): ClaudeOAuthCredential | undefined {
+  const accessToken = normalizeCredentialString(credentials?.claudeAiOauth?.accessToken);
+  if (!accessToken) return undefined;
+
+  // Claude Code may leave `expiresAt` stale when secure storage/keychain is the
+  // source of truth. Treat it as advisory and let the usage endpoint decide.
+  const organizationUuid = normalizeCredentialString(credentials?.organizationUuid);
+  return {
+    accessToken,
+    ...(organizationUuid ? { organizationUuid } : {}),
+  };
+}
+
 /**
- * Read the OAuth access token Claude Code maintains in
+ * Read the OAuth credentials Claude Code maintains in
  * `<home>/.claude/.credentials.json`. Returns `undefined` when the file is
- * missing (API-key auth, keychain-backed storage), unparseable, or the token
- * is already expired — we never refresh tokens ourselves; Claude Code does
- * that whenever it runs (including this provider's capabilities probe).
+ * missing (API-key auth, keychain-backed storage) or unparseable.
  */
-const readClaudeOAuthAccessToken = Effect.fn("readClaudeOAuthAccessToken")(function* (
+const readClaudeCredentialsFile = Effect.fn("readClaudeCredentialsFile")(function* (
   claudeSettings: Pick<ClaudeSettings, "homePath">,
-): Effect.fn.Return<string | undefined, never, FileSystem.FileSystem | Path.Path> {
+): Effect.fn.Return<
+  ClaudeCredentialsPayload | undefined,
+  never,
+  FileSystem.FileSystem | Path.Path
+> {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const homePath = yield* resolveClaudeHomePath(claudeSettings);
@@ -140,15 +173,51 @@ const readClaudeOAuthAccessToken = Effect.fn("readClaudeOAuthAccessToken")(funct
     Effect.flatMap((content) => decodeClaudeCredentialsFile(content)),
     Effect.orElseSucceed(() => undefined),
   );
-  const accessToken = credentials?.claudeAiOauth?.accessToken?.trim();
-  if (!accessToken) return undefined;
+  return credentials;
+});
 
-  const expiresAt = credentials?.claudeAiOauth?.expiresAt;
-  if (typeof expiresAt === "number") {
-    const now = DateTime.toEpochMillis(yield* DateTime.now);
-    if (expiresAt <= now) return undefined;
-  }
-  return accessToken;
+const readClaudeMacOSKeychainCredentials = Effect.fn("readClaudeMacOSKeychainCredentials")(
+  function* (
+    platform: NodeJS.Platform = process.platform,
+  ): Effect.fn.Return<
+    ClaudeCredentialsPayload | undefined,
+    never,
+    ChildProcessSpawner.ChildProcessSpawner
+  > {
+    if (platform !== "darwin") return undefined;
+
+    const command = ChildProcess.make(
+      "security",
+      ["find-generic-password", "-w", "-s", CLAUDE_MACOS_KEYCHAIN_SERVICE],
+      { shell: false },
+    );
+    const result = yield* spawnAndCollect("security", command).pipe(
+      Effect.timeoutOption(KEYCHAIN_READ_TIMEOUT_MS),
+      Effect.catch(() => Effect.succeed(Option.none())),
+    );
+    if (Option.isNone(result)) return undefined;
+
+    const secret = result.value.code === 0 ? result.value.stdout.trim() : "";
+    if (!secret) return undefined;
+
+    return yield* decodeClaudeCredentialsFile(secret).pipe(Effect.orElseSucceed(() => undefined));
+  },
+);
+
+export const readClaudeOAuthCredential = Effect.fn("readClaudeOAuthCredential")(function* (
+  claudeSettings: Pick<ClaudeSettings, "homePath">,
+  options: { readonly platform?: NodeJS.Platform } = {},
+): Effect.fn.Return<
+  ClaudeOAuthCredential | undefined,
+  never,
+  FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
+> {
+  const fileCredentials = yield* readClaudeCredentialsFile(claudeSettings);
+  const fileCredential = extractClaudeOAuthCredential(fileCredentials);
+  if (fileCredential) return fileCredential;
+
+  const keychainCredentials = yield* readClaudeMacOSKeychainCredentials(options.platform);
+  return extractClaudeOAuthCredential(keychainCredentials);
 });
 
 /**
@@ -161,17 +230,23 @@ export const fetchClaudeAccountUsage = Effect.fn("fetchClaudeAccountUsage")(func
 ): Effect.fn.Return<
   ServerProviderAccountUsage | undefined,
   never,
-  FileSystem.FileSystem | HttpClient.HttpClient | Path.Path
+  | FileSystem.FileSystem
+  | HttpClient.HttpClient
+  | Path.Path
+  | ChildProcessSpawner.ChildProcessSpawner
 > {
-  const accessToken = yield* readClaudeOAuthAccessToken(claudeSettings);
-  if (!accessToken) return undefined;
+  const credential = yield* readClaudeOAuthCredential(claudeSettings);
+  if (!credential) return undefined;
 
   const client = yield* HttpClient.HttpClient;
   const request = HttpClientRequest.get(CLAUDE_OAUTH_USAGE_URL).pipe(
     HttpClientRequest.setHeaders({
-      authorization: `Bearer ${accessToken}`,
+      authorization: `Bearer ${credential.accessToken}`,
       "anthropic-beta": "oauth-2025-04-20",
       accept: "application/json",
+      ...(credential.organizationUuid
+        ? { "x-organization-uuid": credential.organizationUuid }
+        : {}),
     }),
   );
   const response = yield* client.execute(request).pipe(

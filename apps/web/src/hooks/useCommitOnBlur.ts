@@ -1,9 +1,16 @@
-import { type ChangeEvent, type KeyboardEvent, useEffect, useRef, useState } from "react";
+import {
+  type ChangeEvent,
+  type KeyboardEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 /**
  * Buffer text input locally so keystrokes don't cause a settings-wide
  * re-render (and optionally a server RPC round-trip) on every character.
- * `onCommit` fires on blur and on Enter.
+ * `onCommit` fires on blur, Enter, and focused unmount.
  *
  * The draft resynchronizes from the upstream `value` only when the input
  * is not focused, so an external push (e.g. an optimistic settings
@@ -18,26 +25,59 @@ import { type ChangeEvent, type KeyboardEvent, useEffect, useRef, useState } fro
 export function useCommitOnBlur(value: string, onCommit: (next: string) => void) {
   const [draft, setDraft] = useState(value);
   const focusedRef = useRef(false);
+  const draftRef = useRef(draft);
+  const valueRef = useRef(value);
+  const onCommitRef = useRef(onCommit);
+  const lastCommitRef = useRef<{ readonly value: string; readonly draft: string } | null>(null);
+
+  draftRef.current = draft;
+  valueRef.current = value;
+  onCommitRef.current = onCommit;
+
+  const commitDraft = useCallback(() => {
+    const nextDraft = draftRef.current;
+    const currentValue = valueRef.current;
+    if (nextDraft === currentValue) {
+      return;
+    }
+
+    const lastCommit = lastCommitRef.current;
+    if (lastCommit?.value === currentValue && lastCommit.draft === nextDraft) {
+      return;
+    }
+
+    lastCommitRef.current = { value: currentValue, draft: nextDraft };
+    onCommitRef.current(nextDraft);
+  }, []);
 
   useEffect(() => {
     if (!focusedRef.current) {
+      draftRef.current = value;
       setDraft(value);
     }
   }, [value]);
 
+  useEffect(() => {
+    return () => {
+      if (focusedRef.current) {
+        commitDraft();
+      }
+    };
+  }, [commitDraft]);
+
   return {
     value: draft,
     onChange: (event: ChangeEvent<HTMLInputElement>) => {
-      setDraft(event.target.value);
+      const nextDraft = event.target.value;
+      draftRef.current = nextDraft;
+      setDraft(nextDraft);
     },
     onFocus: () => {
       focusedRef.current = true;
     },
     onBlur: () => {
       focusedRef.current = false;
-      if (draft !== value) {
-        onCommit(draft);
-      }
+      commitDraft();
     },
     onKeyDown: (event: KeyboardEvent<HTMLInputElement>) => {
       if (event.key === "Enter") {

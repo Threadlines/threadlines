@@ -804,6 +804,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       }
       assert.equal(firstEvent.value.turnId, "turn-1");
       assert.equal(firstEvent.value.payload.message, "Reconnecting... 2/5");
+      assert.equal(firstEvent.value.payload.warningKind, "api-retry");
     }),
   );
 

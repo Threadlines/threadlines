@@ -23,15 +23,7 @@ import {
 import { CurrentMarker } from "../ui/threadline";
 import { SourceControlIcon } from "../Icons";
 import { SidebarVersionTag } from "../SidebarVersionTag";
-
-export type SettingsSectionPath =
-  | "/settings/general"
-  | "/settings/keybindings"
-  | "/settings/providers"
-  | "/settings/extensions"
-  | "/settings/instructions"
-  | "/settings/source-control"
-  | "/settings/archived";
+import type { SettingsSectionPath } from "./settingsNavigation";
 
 export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
   label: string;

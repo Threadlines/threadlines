@@ -10,6 +10,11 @@ import {
 import { useCallback, useEffect, useState } from "react";
 
 import { useSettingsRestore } from "../components/settings/SettingsPanels";
+import {
+  isVisibleSettingsSectionPath,
+  rememberVisibleSettingsSection,
+  resolveSettingsEntryPath,
+} from "../components/settings/settingsNavigation";
 import { Button } from "../components/ui/button";
 import { SidebarInset, SidebarOpenTrigger, useSidebar } from "../components/ui/sidebar";
 import {
@@ -19,6 +24,12 @@ import {
 } from "../desktopChrome";
 import { isElectron } from "../env";
 import { cn } from "../lib/utils";
+
+function isEditableElementTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  return target.closest("input, textarea, select, [contenteditable='true']") !== null;
+}
 
 function RestoreDefaultsButton({ onRestored }: { onRestored: () => void }) {
   const { changedSettingLabels, restoreDefaults } = useSettingsRestore(onRestored);
@@ -54,9 +65,16 @@ function SettingsContentLayout() {
   }, [canGoBack, navigate]);
 
   useEffect(() => {
+    rememberVisibleSettingsSection(location.pathname);
+  }, [location.pathname]);
+
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
       if (event.key === "Escape") {
+        if (isEditableElementTarget(event.target)) {
+          return;
+        }
         event.preventDefault();
         navigateBackWithinApp();
       }
@@ -127,8 +145,12 @@ export const Route = createFileRoute("/settings")({
       throw redirect({ to: "/pair", replace: true });
     }
 
+    if (isVisibleSettingsSectionPath(location.pathname)) {
+      rememberVisibleSettingsSection(location.pathname);
+    }
+
     if (location.pathname === "/settings") {
-      throw redirect({ to: "/settings/general", replace: true });
+      throw redirect({ to: resolveSettingsEntryPath(), replace: true });
     }
   },
   component: SettingsRouteLayout,
