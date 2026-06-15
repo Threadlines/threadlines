@@ -1296,6 +1296,12 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       ),
     );
 
+  const refreshRemoteRefsInBackgroundBestEffort = (
+    operation: string,
+    cwd: string,
+    options?: { readonly includeTags?: boolean },
+  ) => refreshRemoteRefsBestEffort(operation, cwd, options).pipe(Effect.forkDetach, Effect.asVoid);
+
   const resolveDefaultBranchName = (
     cwd: string,
     remoteName: string,
@@ -2614,7 +2620,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         );
       }
 
-      yield* refreshRemoteRefsBestEffort("GitVcsDriver.listRefs", input.cwd);
+      yield* refreshRemoteRefsInBackgroundBestEffort("GitVcsDriver.listRefs", input.cwd);
 
       const branchRecencyPromise = readBranchRecency(input.cwd).pipe(
         Effect.catch(() => Effect.succeed(new Map<string, number>())),
@@ -2811,7 +2817,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const commitGraph: GitVcsDriver.GitVcsDriverShape["commitGraph"] = Effect.fn("commitGraph")(
     function* (input) {
       const limit = input.limit ?? GIT_COMMIT_GRAPH_DEFAULT_LIMIT;
-      yield* refreshRemoteRefsBestEffort("GitVcsDriver.commitGraph", input.cwd, {
+      yield* refreshRemoteRefsInBackgroundBestEffort("GitVcsDriver.commitGraph", input.cwd, {
         includeTags: true,
       });
       const result = yield* executeGit(

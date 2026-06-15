@@ -123,6 +123,7 @@ import {
   MenuSubTrigger,
   MenuTrigger,
 } from "../ui/menu";
+import { Skeleton } from "../ui/skeleton";
 import { Textarea } from "../ui/textarea";
 import { SectionLabel } from "../ui/threadline";
 import { stackedThreadToast, toastManager } from "../ui/toast";
@@ -177,6 +178,7 @@ interface WorkingTreeSectionFile {
 }
 
 const EMPTY_WORKING_TREE_FILES: readonly WorkingTreeFile[] = [];
+const EMPTY_COMMIT_GRAPH_COMMITS: readonly VcsCommitGraphCommit[] = [];
 
 interface PendingDiscardChanges {
   readonly filePaths: string[];
@@ -892,6 +894,50 @@ function CommitGraphRow({
   );
 }
 
+function CommitGraphSkeleton() {
+  const rows = [
+    { id: "latest", width: "70%" },
+    { id: "parent", width: "58%" },
+    { id: "branch", width: "82%" },
+    { id: "base", width: "64%" },
+  ] as const;
+  return (
+    <div role="status" aria-label="Loading commit graph" className="space-y-0.5 px-2.5 py-2">
+      {rows.map((row) => (
+        <div
+          key={row.id}
+          className="grid items-center gap-2"
+          style={{
+            gridTemplateColumns: `${COMMIT_GRAPH_LEFT_PADDING}px minmax(0, 1fr)`,
+            height: COMMIT_GRAPH_ROW_HEIGHT,
+          }}
+        >
+          <div className="relative h-full">
+            <Skeleton className="absolute top-1/2 left-1/2 h-full w-px -translate-x-1/2 -translate-y-1/2" />
+            <Skeleton className="absolute top-1/2 left-1/2 size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full" />
+          </div>
+          <Skeleton className="h-3" style={{ width: row.width }} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CommitGraphMessage({
+  children,
+  action,
+}: {
+  readonly children: ReactNode;
+  readonly action?: ReactNode;
+}) {
+  return (
+    <div className="flex min-h-20 flex-col items-start justify-center gap-2 px-2.5 py-2 text-xs text-muted-foreground/70">
+      <div>{children}</div>
+      {action}
+    </div>
+  );
+}
+
 const GRAPH_LIMIT = 24;
 const BRANCH_MENU_REF_LIMIT = 14;
 const SOURCE_CONTROL_STATUS_REFRESH_INTERVAL_MS = 3_000;
@@ -1443,19 +1489,24 @@ export function SourceControlPanel({
   const gitStatus = useGitStatus({ environmentId, cwd });
   const status = gitStatus.data;
   const commitGraphStatusRefreshKey = getCommitGraphStatusRefreshKey(status);
+  const graphQueryEnabled = Boolean(status?.isRepo);
   const graphQuery = useQuery(
     gitCommitGraphQueryOptions({
       environmentId,
       cwd,
       limit: GRAPH_LIMIT,
-      enabled: Boolean(status?.isRepo),
+      enabled: graphQueryEnabled,
     }),
   );
   const refetchCommitGraph = graphQuery.refetch;
-  const commitGraphRows = useMemo(
-    () => buildCommitGraphRows(graphQuery.data?.commits ?? []),
-    [graphQuery.data?.commits],
-  );
+  const graphCommits = graphQuery.data?.commits ?? EMPTY_COMMIT_GRAPH_COMMITS;
+  const commitGraphRows = useMemo(() => buildCommitGraphRows(graphCommits), [graphCommits]);
+  const graphHasData = graphQuery.data !== undefined;
+  const isCommitGraphInitialLoading = graphQueryEnabled && !graphHasData && graphQuery.isPending;
+  const isCommitGraphRefreshing = graphHasData && graphQuery.isFetching;
+  const commitGraphCountLabel = `${formatCommitCount(graphCommits.length)}${
+    graphQuery.data?.truncated ? "+" : ""
+  }`;
   const actionMutation = useMutation(
     gitRunStackedActionMutationOptions({
       environmentId,
@@ -1643,7 +1694,7 @@ export function SourceControlPanel({
     }
     void refreshGitStatus({ environmentId, cwd }).catch(() => undefined);
     void queryClient.invalidateQueries({
-      queryKey: gitQueryKeys.commitGraph(environmentId, cwd, GRAPH_LIMIT),
+      queryKey: gitQueryKeys.commitGraphPrefix(environmentId, cwd),
     });
   }, [cwd, environmentId, queryClient]);
 
@@ -1770,7 +1821,7 @@ export function SourceControlPanel({
         });
         void refreshGitStatus({ environmentId, cwd }).catch(() => undefined);
         void queryClient.invalidateQueries({
-          queryKey: gitQueryKeys.commitGraph(environmentId, cwd, GRAPH_LIMIT),
+          queryKey: gitQueryKeys.commitGraphPrefix(environmentId, cwd),
         });
       } catch (error) {
         finishGitActionProgress(progressTarget, actionId);
@@ -3015,13 +3066,38 @@ export function SourceControlPanel({
           <section className="flex min-h-[7.5rem] flex-1 flex-col space-y-2">
             <div className="flex items-center justify-between gap-2">
               <SectionLabel as="h3">Graph</SectionLabel>
-              <span className="text-[11px] text-muted-foreground/60">
-                {formatCommitCount(graphQuery.data?.commits.length ?? 0)}
+              <span className="flex items-center gap-1 text-[11px] text-muted-foreground/60">
+                {isCommitGraphRefreshing ? (
+                  <RefreshCwIcon className="size-3 animate-spin" aria-label="Refreshing graph" />
+                ) : null}
+                {commitGraphCountLabel}
               </span>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto rounded-md border border-border/70 bg-background/35">
-              {commitGraphRows.length === 0 ? (
-                <div className="px-2.5 py-2 text-xs text-muted-foreground/70">No commits yet</div>
+              {status === null ? (
+                <CommitGraphSkeleton />
+              ) : !status.isRepo ? (
+                <CommitGraphMessage>No Git repository</CommitGraphMessage>
+              ) : isCommitGraphInitialLoading ? (
+                <CommitGraphSkeleton />
+              ) : graphQuery.isError && !graphHasData ? (
+                <CommitGraphMessage
+                  action={
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      onClick={() => void refetchCommitGraph()}
+                    >
+                      <RefreshCwIcon className="size-3" />
+                      <span>Retry</span>
+                    </Button>
+                  }
+                >
+                  Graph failed to load
+                </CommitGraphMessage>
+              ) : commitGraphRows.length === 0 ? (
+                <CommitGraphMessage>No commits yet</CommitGraphMessage>
               ) : (
                 <div role="list">
                   {commitGraphRows.map((row) => (

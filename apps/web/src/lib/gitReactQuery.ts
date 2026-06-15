@@ -22,6 +22,8 @@ export const gitQueryKeys = {
   all: ["git"] as const,
   refs: (environmentId: EnvironmentId | null, cwd: string | null) =>
     ["git", "refs", environmentId ?? null, cwd] as const,
+  commitGraphPrefix: (environmentId: EnvironmentId | null, cwd: string | null) =>
+    ["git", "commit-graph", environmentId ?? null, cwd] as const,
   commitGraph: (environmentId: EnvironmentId | null, cwd: string | null, limit: number) =>
     ["git", "commit-graph", environmentId ?? null, cwd, limit] as const,
   workingTreeDiffPrefix: (environmentId: EnvironmentId | null, cwd: string | null) =>
@@ -80,7 +82,12 @@ export function invalidateGitQueries(
   const environmentId = input?.environmentId ?? null;
   const cwd = input?.cwd ?? null;
   if (cwd !== null) {
-    return queryClient.invalidateQueries({ queryKey: gitQueryKeys.refs(environmentId, cwd) });
+    return Promise.all([
+      queryClient.invalidateQueries({ queryKey: gitQueryKeys.refs(environmentId, cwd) }),
+      queryClient.invalidateQueries({
+        queryKey: gitQueryKeys.commitGraphPrefix(environmentId, cwd),
+      }),
+    ]).then(() => undefined);
   }
 
   return queryClient.invalidateQueries({ queryKey: gitQueryKeys.all });
@@ -95,7 +102,12 @@ function invalidateGitBranchQueries(
     return Promise.resolve();
   }
 
-  return queryClient.invalidateQueries({ queryKey: gitQueryKeys.refs(environmentId, cwd) });
+  return Promise.all([
+    queryClient.invalidateQueries({ queryKey: gitQueryKeys.refs(environmentId, cwd) }),
+    queryClient.invalidateQueries({
+      queryKey: gitQueryKeys.commitGraphPrefix(environmentId, cwd),
+    }),
+  ]).then(() => undefined);
 }
 
 /**

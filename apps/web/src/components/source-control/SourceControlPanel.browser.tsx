@@ -1099,6 +1099,69 @@ describe("SourceControlPanel commit graph", () => {
     await __resetLocalApiForTests();
   });
 
+  it("shows a loading state while the commit graph is loading", async () => {
+    const graphDeferred = createDeferredPromise<VcsCommitGraphResult>();
+    const commitGraph = vi.fn(() => graphDeferred.promise);
+    const mounted = await renderPanel({
+      environmentApi: makeEnvironmentApi({ vcs: { commitGraph } }),
+    });
+
+    try {
+      await expect
+        .element(page.getByRole("status", { name: "Loading commit graph" }))
+        .toBeVisible();
+      expect(document.body.textContent).not.toContain("No commits yet");
+
+      graphDeferred.resolve(GRAPH);
+
+      await expect.element(page.getByText("Polish source control graph")).toBeVisible();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("shows a retry state when the commit graph fails before data loads", async () => {
+    let commitGraphCalls = 0;
+    const commitGraph: EnvironmentApi["vcs"]["commitGraph"] = vi.fn(async () => {
+      commitGraphCalls += 1;
+      if (commitGraphCalls === 1) {
+        throw new Error("graph unavailable");
+      }
+      return GRAPH;
+    });
+    const mounted = await renderPanel({
+      environmentApi: makeEnvironmentApi({ vcs: { commitGraph } }),
+    });
+
+    try {
+      await expect.element(page.getByText("Graph failed to load")).toBeVisible();
+
+      await page.getByRole("button", { name: "Retry" }).click();
+
+      await expect.element(page.getByText("Polish source control graph")).toBeVisible();
+      expect(commitGraph).toHaveBeenCalledTimes(2);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("marks truncated commit graph counts", async () => {
+    const mounted = await renderPanel({
+      environmentApi: makeEnvironmentApi({
+        vcs: {
+          commitGraph: vi.fn(async () => ({ ...GRAPH, truncated: true })),
+        },
+      }),
+    });
+
+    try {
+      await expect.element(page.getByText("Polish source control graph")).toBeVisible();
+      await expect.element(page.getByText(`${GRAPH.commits.length}+`)).toBeVisible();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("shows commit details on hover without dense inline sha metadata", async () => {
     const mounted = await renderPanel();
 

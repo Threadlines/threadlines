@@ -1,11 +1,14 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it, describe } from "@effect/vitest";
+import * as Clock from "effect/Clock";
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Scope from "effect/Scope";
+import { TestClock } from "effect/testing";
 
 import { GitCommandError } from "@t3tools/contracts";
 import { ServerConfig } from "../config.ts";
@@ -55,6 +58,30 @@ const git = (
       timeoutMs: 10_000,
     });
     return result.stdout.trim();
+  });
+
+class WaitForGitOutputError extends Data.TaggedError("WaitForGitOutputError")<{
+  readonly message: string;
+}> {}
+
+const waitForGitOutput = (
+  cwd: string,
+  args: ReadonlyArray<string>,
+  predicate: (output: string) => boolean,
+): Effect.Effect<void, GitCommandError | WaitForGitOutputError, GitVcsDriver.GitVcsDriver> =>
+  Effect.gen(function* () {
+    const startedAtMs = yield* Clock.currentTimeMillis;
+    let output = "";
+    do {
+      output = yield* git(cwd, args);
+      if (predicate(output)) {
+        return;
+      }
+      yield* TestClock.adjust("50 millis");
+    } while ((yield* Clock.currentTimeMillis) - startedAtMs < 5_000);
+    return yield* new WaitForGitOutputError({
+      message: `Timed out waiting for git ${args.join(" ")}.`,
+    });
   });
 
 const initRepoWithCommit = (
@@ -482,35 +509,47 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
-    it.effect("refreshes remote refs before listing refs", () =>
-      Effect.gen(function* () {
-        const cwd = yield* makeTmpDir();
-        const remote = yield* makeTmpDir("git-vcs-driver-remote-");
-        const { initialBranch } = yield* initRepoWithCommit(cwd);
-        const driver = yield* GitVcsDriver.GitVcsDriver;
+    it.effect(
+      "lists existing refs immediately while refreshing remote refs in the background",
+      () =>
+        Effect.gen(function* () {
+          const cwd = yield* makeTmpDir();
+          const remote = yield* makeTmpDir("git-vcs-driver-remote-");
+          const { initialBranch } = yield* initRepoWithCommit(cwd);
+          const driver = yield* GitVcsDriver.GitVcsDriver;
 
-        yield* git(remote, ["init", "--bare"]);
-        yield* git(cwd, ["remote", "add", "origin", remote]);
-        yield* git(cwd, ["push", "-u", "origin", initialBranch]);
-        yield* git(remote, ["symbolic-ref", "HEAD", `refs/heads/${initialBranch}`]);
-        yield* pushRemoteBranchFromPeer({
-          remote,
-          baseBranch: initialBranch,
-          branch: "claude-redesign",
-          subject: "remote redesign branch",
-          fileName: "redesign.txt",
-        });
+          yield* git(remote, ["init", "--bare"]);
+          yield* git(cwd, ["remote", "add", "origin", remote]);
+          yield* git(cwd, ["push", "-u", "origin", initialBranch]);
+          yield* git(remote, ["symbolic-ref", "HEAD", `refs/heads/${initialBranch}`]);
+          yield* pushRemoteBranchFromPeer({
+            remote,
+            baseBranch: initialBranch,
+            branch: "claude-redesign",
+            subject: "remote redesign branch",
+            fileName: "redesign.txt",
+          });
 
-        assert.equal(
-          yield* git(cwd, ["branch", "--remotes", "--list", "origin/claude-redesign"]),
-          "",
-        );
+          assert.equal(
+            yield* git(cwd, ["branch", "--remotes", "--list", "origin/claude-redesign"]),
+            "",
+          );
 
-        const refs = yield* driver.listRefs({ cwd, query: "claude-redesign" });
-        const remoteRef = refs.refs.find((refName) => refName.name === "origin/claude-redesign");
-        assert.equal(remoteRef?.isRemote, true);
-        assert.equal(remoteRef?.remoteName, "origin");
-      }),
+          const initialRefs = yield* driver.listRefs({ cwd, query: "claude-redesign" });
+
+          assert.deepStrictEqual(initialRefs.refs, []);
+
+          yield* waitForGitOutput(
+            cwd,
+            ["branch", "--remotes", "--list", "origin/claude-redesign"],
+            (output) => output.trim().length > 0,
+          );
+
+          const refs = yield* driver.listRefs({ cwd, query: "claude-redesign" });
+          const remoteRef = refs.refs.find((refName) => refName.name === "origin/claude-redesign");
+          assert.equal(remoteRef?.isRemote, true);
+          assert.equal(remoteRef?.remoteName, "origin");
+        }),
     );
   });
 
@@ -821,7 +860,7 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
-    it.effect("refreshes remote refs before reading the graph", () =>
+    it.effect("reads the graph immediately while refreshing remote refs in the background", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
         const remote = yield* makeTmpDir("git-vcs-driver-remote-");
@@ -832,6 +871,9 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         yield* git(cwd, ["remote", "add", "origin", remote]);
         yield* git(cwd, ["push", "-u", "origin", initialBranch]);
         yield* git(remote, ["symbolic-ref", "HEAD", `refs/heads/${initialBranch}`]);
+        const refreshTagName = "graph-background-refresh-marker";
+        const initialSha = yield* git(cwd, ["rev-parse", "HEAD"]);
+        yield* git(remote, ["tag", refreshTagName, initialSha]);
         yield* pushRemoteBranchFromPeer({
           remote,
           baseBranch: initialBranch,
@@ -845,6 +887,17 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
           "",
         );
 
+        const initialGraph = yield* driver.commitGraph({ cwd, limit: 5 });
+
+        assert.equal(
+          initialGraph.commits.some((commit) => commit.subject === "remote graph redesign"),
+          false,
+        );
+
+        yield* waitForGitOutput(cwd, ["tag", "--list", refreshTagName], (output) =>
+          output.trim().includes(refreshTagName),
+        );
+
         const graph = yield* driver.commitGraph({ cwd, limit: 5 });
         const remoteCommit = graph.commits.find(
           (commit) => commit.subject === "remote graph redesign",
@@ -853,27 +906,42 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
-    it.effect("refreshes remote tags before reading graph decorations", () =>
-      Effect.gen(function* () {
-        const cwd = yield* makeTmpDir();
-        const remote = yield* makeTmpDir("git-vcs-driver-remote-");
-        const { initialBranch } = yield* initRepoWithCommit(cwd);
-        const driver = yield* GitVcsDriver.GitVcsDriver;
-        const tagName = "v0.0.19-nightly.20260605.70";
+    it.effect(
+      "reads graph decorations immediately while refreshing remote tags in the background",
+      () =>
+        Effect.gen(function* () {
+          const cwd = yield* makeTmpDir();
+          const remote = yield* makeTmpDir("git-vcs-driver-remote-");
+          const { initialBranch } = yield* initRepoWithCommit(cwd);
+          const driver = yield* GitVcsDriver.GitVcsDriver;
+          const tagName = "v0.0.19-nightly.20260605.70";
 
-        yield* git(remote, ["init", "--bare"]);
-        yield* git(cwd, ["remote", "add", "origin", remote]);
-        yield* git(cwd, ["push", "-u", "origin", initialBranch]);
-        const initialSha = yield* git(cwd, ["rev-parse", "HEAD"]);
-        yield* git(remote, ["tag", tagName, initialSha]);
+          yield* git(remote, ["init", "--bare"]);
+          yield* git(cwd, ["remote", "add", "origin", remote]);
+          yield* git(cwd, ["push", "-u", "origin", initialBranch]);
+          const initialSha = yield* git(cwd, ["rev-parse", "HEAD"]);
+          yield* git(remote, ["tag", tagName, initialSha]);
 
-        assert.equal(yield* git(cwd, ["tag", "--list", tagName]), "");
+          assert.equal(yield* git(cwd, ["tag", "--list", tagName]), "");
 
-        const graph = yield* driver.commitGraph({ cwd, limit: 5 });
-        const initialCommit = graph.commits.find((commit) => commit.subject === "initial commit");
+          const initialGraph = yield* driver.commitGraph({ cwd, limit: 5 });
+          const initialCommit = initialGraph.commits.find(
+            (commit) => commit.subject === "initial commit",
+          );
 
-        assert.include(initialCommit?.refs ?? [], tagName);
-      }),
+          assert.notInclude(initialCommit?.refs ?? [], tagName);
+
+          yield* waitForGitOutput(cwd, ["tag", "--list", tagName], (output) =>
+            output.trim().includes(tagName),
+          );
+
+          const graph = yield* driver.commitGraph({ cwd, limit: 5 });
+          const refreshedInitialCommit = graph.commits.find(
+            (commit) => commit.subject === "initial commit",
+          );
+
+          assert.include(refreshedInitialCommit?.refs ?? [], tagName);
+        }),
     );
   });
 

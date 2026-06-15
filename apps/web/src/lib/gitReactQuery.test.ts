@@ -11,10 +11,15 @@ vi.mock("../wsRpcClient", () => ({
 }));
 
 import type { InfiniteData } from "@tanstack/react-query";
-import { EnvironmentId, type VcsListRefsResult } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  type VcsCommitGraphResult,
+  type VcsListRefsResult,
+} from "@t3tools/contracts";
 
 import {
   gitBranchSearchInfiniteQueryOptions,
+  gitCommitGraphQueryOptions,
   gitMutationKeys,
   gitPreparePullRequestThreadMutationOptions,
   gitPullMutationOptions,
@@ -33,6 +38,10 @@ const BRANCH_QUERY_RESULT: VcsListRefsResult = {
 const BRANCH_SEARCH_RESULT: InfiniteData<VcsListRefsResult, number> = {
   pages: [BRANCH_QUERY_RESULT],
   pageParams: [0],
+};
+const COMMIT_GRAPH_RESULT: VcsCommitGraphResult = {
+  commits: [],
+  truncated: false,
 };
 const ENVIRONMENT_A = EnvironmentId.make("environment-a");
 const ENVIRONMENT_B = EnvironmentId.make("environment-b");
@@ -110,6 +119,20 @@ describe("invalidateGitQueries", () => {
       }).queryKey,
       BRANCH_SEARCH_RESULT,
     );
+    queryClient.setQueryData(
+      gitCommitGraphQueryOptions({
+        environmentId: ENVIRONMENT_A,
+        cwd: "/repo/a",
+      }).queryKey,
+      COMMIT_GRAPH_RESULT,
+    );
+    queryClient.setQueryData(
+      gitCommitGraphQueryOptions({
+        environmentId: ENVIRONMENT_B,
+        cwd: "/repo/b",
+      }).queryKey,
+      COMMIT_GRAPH_RESULT,
+    );
 
     await invalidateGitQueries(queryClient, { environmentId: ENVIRONMENT_A, cwd: "/repo/a" });
 
@@ -128,6 +151,22 @@ describe("invalidateGitQueries", () => {
           environmentId: ENVIRONMENT_B,
           cwd: "/repo/b",
           query: "feature",
+        }).queryKey,
+      )?.isInvalidated,
+    ).toBe(false);
+    expect(
+      queryClient.getQueryState(
+        gitCommitGraphQueryOptions({
+          environmentId: ENVIRONMENT_A,
+          cwd: "/repo/a",
+        }).queryKey,
+      )?.isInvalidated,
+    ).toBe(true);
+    expect(
+      queryClient.getQueryState(
+        gitCommitGraphQueryOptions({
+          environmentId: ENVIRONMENT_B,
+          cwd: "/repo/b",
         }).queryKey,
       )?.isInvalidated,
     ).toBe(false);
