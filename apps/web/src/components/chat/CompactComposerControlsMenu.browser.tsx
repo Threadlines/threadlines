@@ -5,6 +5,7 @@ import {
   ModelSelection,
   ProviderInstanceId,
   ProviderDriverKind,
+  type ProviderOptionSelection,
   type ServerProviderModel,
   ThreadId,
 } from "@t3tools/contracts";
@@ -167,6 +168,7 @@ async function mountTraitsPicker(props: {
   provider: ProviderDriverKind;
   model: string;
   models: ReadonlyArray<ServerProviderModel>;
+  modelOptions?: ReadonlyArray<ProviderOptionSelection>;
 }) {
   const host = document.createElement("div");
   document.body.append(host);
@@ -176,7 +178,7 @@ async function mountTraitsPicker(props: {
       provider={props.provider}
       models={props.models}
       model={props.model}
-      modelOptions={undefined}
+      modelOptions={props.modelOptions}
       onModelOptionsChange={(nextOptions) => {
         changes.push(nextOptions);
       }}
@@ -267,6 +269,46 @@ describe("CompactComposerControlsMenu", () => {
     await vi.waitFor(() => {
       expect(mounted.changes.at(-1)).toContainEqual({ id: "serviceTier", value: "priority" });
     });
+  });
+
+  it("shows active fast mode as a compact accent zap in the traits trigger", async () => {
+    const provider = ProviderDriverKind.make("codex");
+    const model = "gpt-5.5";
+    await using _ = await mountTraitsPicker({
+      provider,
+      model,
+      modelOptions: [
+        { id: "reasoningEffort", value: "high" },
+        { id: "fastMode", value: true },
+      ],
+      models: [
+        {
+          slug: model,
+          name: "GPT-5.5",
+          isCustom: false,
+          capabilities: createModelCapabilities({
+            optionDescriptors: [
+              selectDescriptor("reasoningEffort", "Reasoning", [
+                { id: "low", label: "Low" },
+                { id: "medium", label: "Medium", isDefault: true },
+                { id: "high", label: "High" },
+              ]),
+              booleanDescriptor("fastMode", "Fast Mode"),
+            ],
+          }),
+        },
+      ],
+    });
+
+    const trigger = page.getByRole("button", { name: /High/ });
+    await expect.element(trigger).toBeInTheDocument();
+
+    const triggerElement = trigger.element();
+    expect(triggerElement.textContent ?? "").toContain("Fast Mode enabled");
+    expect(triggerElement.textContent ?? "").not.toContain("+1");
+    const zapIcon = triggerElement.querySelector("svg.lucide-zap");
+    expect(zapIcon).not.toBeNull();
+    expect(zapIcon?.getAttribute("class") ?? "").toContain("text-primary-readable");
   });
 
   it("hides fast mode controls for non-Opus Claude models", async () => {

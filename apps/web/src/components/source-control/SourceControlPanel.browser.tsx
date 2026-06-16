@@ -1166,6 +1166,41 @@ describe("SourceControlPanel commit graph", () => {
     }
   });
 
+  it("loads older commits from the truncated graph footer", async () => {
+    const olderCommit: VcsCommitGraphResult["commits"][number] = {
+      sha: "9999999999999999999999999999999999999999",
+      shortSha: "9999999",
+      parents: [],
+      refs: [],
+      subject: "Historical cleanup",
+      authorName: "Margaret Hamilton",
+      committedAt: "2026-05-22T12:00:00.000Z",
+    };
+    const commitGraph: EnvironmentApi["vcs"]["commitGraph"] = vi.fn(async (input) =>
+      input.limit === 24
+        ? { ...GRAPH, truncated: true }
+        : { commits: [...GRAPH.commits, olderCommit], truncated: false },
+    );
+    const mounted = await renderPanel({
+      environmentApi: makeEnvironmentApi({ vcs: { commitGraph } }),
+    });
+
+    try {
+      await expect.element(page.getByText("Polish source control graph")).toBeVisible();
+      await expect.element(page.getByRole("button", { name: "Load older commits" })).toBeVisible();
+
+      await page.getByRole("button", { name: "Load older commits" }).click();
+
+      await vi.waitFor(() => {
+        expect(commitGraph).toHaveBeenLastCalledWith({ cwd: CWD, limit: 48 });
+      });
+      await expect.element(page.getByText("Historical cleanup")).toBeVisible();
+      expect(document.body.textContent).not.toContain("Load older commits");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("shows commit details on hover without dense inline sha metadata", async () => {
     const mounted = await renderPanel();
 

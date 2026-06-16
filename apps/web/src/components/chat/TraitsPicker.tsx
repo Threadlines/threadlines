@@ -14,7 +14,7 @@ import {
 } from "@t3tools/shared/model";
 import { memo, useCallback, useState } from "react";
 import type { VariantProps } from "class-variance-authority";
-import { ChevronDownIcon, SlidersHorizontalIcon } from "lucide-react";
+import { ChevronDownIcon, SlidersHorizontalIcon, ZapIcon } from "lucide-react";
 import { Button, buttonVariants } from "../ui/button";
 import {
   Menu,
@@ -180,6 +180,10 @@ function getSwitchControlLabel(control: TraitSwitchControl): string {
     return control.checked ? "Fast" : "Normal";
   }
   return `${control.label} ${control.checked ? "on" : "off"}`;
+}
+
+function isFastModeControl(control: TraitSwitchControl): boolean {
+  return control.type === "serviceTier" || control.descriptor.id === "fastMode";
 }
 
 function getSelectedTraits(
@@ -424,14 +428,22 @@ export const TraitsPicker = memo(function TraitsPicker({
   // a count and live inside the menu, so stacked options never flood the bar.
   const selectDescriptors = getRenderedSelectDescriptors(descriptors);
   const primarySelectDescriptor = selectDescriptors[0] ?? null;
-  const firstSwitchControl = getTraitSwitchControls(descriptors)[0] ?? null;
+  const switchControls = getTraitSwitchControls(descriptors);
+  const firstSwitchControl = switchControls[0] ?? null;
+  const activeFastModeControl = switchControls.find(
+    (control) => isFastModeControl(control) && control.checked,
+  );
   const primaryTriggerLabel = primarySelectDescriptor
     ? getProviderOptionCurrentLabel(primarySelectDescriptor)
     : firstSwitchControl
       ? getSwitchControlLabel(firstSwitchControl)
       : null;
-  const renderedTraitCount = selectDescriptors.length + getTraitSwitchControls(descriptors).length;
-  const extraTraitCount = Math.max(0, renderedTraitCount - 1);
+  const renderedTraitCount = selectDescriptors.length + switchControls.length;
+  const fastModeRepresentedByPrimaryLabel =
+    primarySelectDescriptor === null && activeFastModeControl === firstSwitchControl;
+  const representedTraitCount =
+    1 + (activeFastModeControl && !fastModeRepresentedByPrimaryLabel ? 1 : 0);
+  const extraTraitCount = Math.max(0, renderedTraitCount - representedTraitCount);
 
   return (
     <Menu
@@ -456,6 +468,12 @@ export const TraitsPicker = memo(function TraitsPicker({
           <SlidersHorizontalIcon aria-hidden="true" className="size-3 shrink-0 opacity-70" />
           {primaryTriggerLabel ? (
             <span className="min-w-0 truncate">{primaryTriggerLabel}</span>
+          ) : null}
+          {activeFastModeControl ? (
+            <>
+              <ZapIcon aria-hidden="true" className="size-3 shrink-0 text-primary-readable" />
+              <span className="sr-only">Fast Mode enabled</span>
+            </>
           ) : null}
           {extraTraitCount > 0 ? (
             <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground/60">

@@ -6,6 +6,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import {
+  keepPreviousData,
   infiniteQueryOptions,
   mutationOptions,
   queryOptions,
@@ -188,6 +189,7 @@ export function gitCommitGraphQueryOptions(input: {
       return api.vcs.commitGraph({ cwd: input.cwd, limit });
     },
     enabled: input.environmentId !== null && input.cwd !== null && (input.enabled ?? true),
+    placeholderData: keepPreviousData,
     staleTime: 10_000,
     refetchOnWindowFocus: true,
     refetchOnReconnect: true,

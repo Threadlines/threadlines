@@ -938,7 +938,8 @@ function CommitGraphMessage({
   );
 }
 
-const GRAPH_LIMIT = 24;
+const GRAPH_INITIAL_LIMIT = 24;
+const GRAPH_LOAD_MORE_INCREMENT = 24;
 const BRANCH_MENU_REF_LIMIT = 14;
 const SOURCE_CONTROL_STATUS_REFRESH_INTERVAL_MS = 3_000;
 const COMMIT_MESSAGE_EDITOR_TRANSITION_MS = 160;
@@ -1472,6 +1473,7 @@ export function SourceControlPanel({
     readonly key: string;
     readonly overrides: Record<string, boolean>;
   }>(() => ({ key: "", overrides: {} }));
+  const [commitGraphLimit, setCommitGraphLimit] = useState(GRAPH_INITIAL_LIMIT);
   const bodyRef = useRef<HTMLDivElement>(null);
   const changesSectionRef = useRef<HTMLElement>(null);
   const commitControlsRef = useRef<HTMLElement>(null);
@@ -1489,12 +1491,15 @@ export function SourceControlPanel({
   const gitStatus = useGitStatus({ environmentId, cwd });
   const status = gitStatus.data;
   const commitGraphStatusRefreshKey = getCommitGraphStatusRefreshKey(status);
+  useEffect(() => {
+    setCommitGraphLimit(GRAPH_INITIAL_LIMIT);
+  }, [cwd, environmentId]);
   const graphQueryEnabled = Boolean(status?.isRepo);
   const graphQuery = useQuery(
     gitCommitGraphQueryOptions({
       environmentId,
       cwd,
-      limit: GRAPH_LIMIT,
+      limit: commitGraphLimit,
       enabled: graphQueryEnabled,
     }),
   );
@@ -1504,9 +1509,31 @@ export function SourceControlPanel({
   const graphHasData = graphQuery.data !== undefined;
   const isCommitGraphInitialLoading = graphQueryEnabled && !graphHasData && graphQuery.isPending;
   const isCommitGraphRefreshing = graphHasData && graphQuery.isFetching;
+  const isCommitGraphLoadingMore =
+    graphQuery.isFetching &&
+    graphQuery.data?.truncated === true &&
+    commitGraphLimit > graphCommits.length;
+  const hasCommitGraphLoadMoreError = graphHasData && graphQuery.isError;
+  const shouldShowCommitGraphLoadMore =
+    graphQuery.data?.truncated === true || hasCommitGraphLoadMoreError;
   const commitGraphCountLabel = `${formatCommitCount(graphCommits.length)}${
     graphQuery.data?.truncated ? "+" : ""
   }`;
+  const commitGraphLoadMoreDescription = hasCommitGraphLoadMoreError
+    ? "Could not load older commits."
+    : `Showing latest ${formatCommitCount(graphCommits.length)}.`;
+  const commitGraphLoadMoreButtonLabel = hasCommitGraphLoadMoreError
+    ? "Retry"
+    : isCommitGraphLoadingMore
+      ? "Loading older commits"
+      : "Load older commits";
+  const loadOlderCommitGraph = useCallback(() => {
+    if (hasCommitGraphLoadMoreError) {
+      void refetchCommitGraph();
+      return;
+    }
+    setCommitGraphLimit((limit) => limit + GRAPH_LOAD_MORE_INCREMENT);
+  }, [hasCommitGraphLoadMoreError, refetchCommitGraph]);
   const actionMutation = useMutation(
     gitRunStackedActionMutationOptions({
       environmentId,
@@ -3099,18 +3126,40 @@ export function SourceControlPanel({
               ) : commitGraphRows.length === 0 ? (
                 <CommitGraphMessage>No commits yet</CommitGraphMessage>
               ) : (
-                <div role="list">
-                  {commitGraphRows.map((row) => (
-                    <CommitGraphRow
-                      key={row.commit.sha}
-                      commit={row.commit}
-                      currentBranch={status?.refName}
-                      layout={row.layout}
-                      visibleRefs={row.visibleRefs}
-                      onCopyCommitValue={copyCommitValue}
-                      onCommitContextMenu={handleCommitContextMenu}
-                    />
-                  ))}
+                <div>
+                  <div role="list">
+                    {commitGraphRows.map((row) => (
+                      <CommitGraphRow
+                        key={row.commit.sha}
+                        commit={row.commit}
+                        currentBranch={status?.refName}
+                        layout={row.layout}
+                        visibleRefs={row.visibleRefs}
+                        onCopyCommitValue={copyCommitValue}
+                        onCommitContextMenu={handleCommitContextMenu}
+                      />
+                    ))}
+                  </div>
+                  {shouldShowCommitGraphLoadMore ? (
+                    <div className="flex items-center justify-between gap-2 border-t border-border/60 px-2.5 py-2 text-xs text-muted-foreground/70">
+                      <span className="min-w-0 truncate">{commitGraphLoadMoreDescription}</span>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="xs"
+                        className="shrink-0"
+                        disabled={graphQuery.isFetching && !hasCommitGraphLoadMoreError}
+                        onClick={loadOlderCommitGraph}
+                      >
+                        {isCommitGraphLoadingMore ? (
+                          <RefreshCwIcon className="size-3 animate-spin" />
+                        ) : hasCommitGraphLoadMoreError ? (
+                          <RefreshCwIcon className="size-3" />
+                        ) : null}
+                        <span>{commitGraphLoadMoreButtonLabel}</span>
+                      </Button>
+                    </div>
+                  ) : null}
                 </div>
               )}
             </div>
