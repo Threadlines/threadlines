@@ -23,6 +23,7 @@ import { isProviderAuthErrorMessage } from "@t3tools/shared/providerAuth";
 import {
   deriveTimelineEntries,
   formatElapsed,
+  type McpAuthReconnectAction,
   type ProviderAuthReconnectAction,
 } from "../../session-logic";
 import { type TurnDiffSummary } from "../../types";
@@ -36,7 +37,9 @@ import {
   EyeIcon,
   GlobeIcon,
   HammerIcon,
+  KeyRoundIcon,
   type LucideIcon,
+  LoaderIcon,
   LogInIcon,
   SearchIcon,
   ShieldCheckIcon,
@@ -101,10 +104,12 @@ interface TimelineRowSharedState {
   turnDiffSummaryByTurnId: ReadonlyMap<TurnId, TurnDiffSummary>;
   providerAuthReconnect: ProviderAuthReconnectAction | null;
   resolvedProviderAuthReconnectIds: ReadonlySet<string>;
+  mcpAuthReconnectStatusByServerName: ReadonlyMap<string, McpAuthReconnectStatus>;
   onRevertUserMessage: (messageId: MessageId) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   onRunProviderAuthReconnect?: (action: ProviderAuthReconnectAction) => void;
+  onRunMcpAuthReconnect?: (action: McpAuthReconnectAction) => void;
 }
 
 interface TimelineRowActivityState {
@@ -117,6 +122,8 @@ const TimelineRowActivityCtx = createContext<TimelineRowActivityState>(null!);
 const TIMELINE_LIST_HEADER = <div className="h-3 sm:h-4" />;
 const TIMELINE_LIST_FOOTER = <div className="h-3 sm:h-4" />;
 const EMPTY_TIMELINE_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
+type McpAuthReconnectStatus = "running" | "completed";
+const EMPTY_MCP_AUTH_RECONNECT_STATUS: ReadonlyMap<string, McpAuthReconnectStatus> = new Map();
 const LIVE_WORK_LOG_ENTRY_COUNT = 2;
 const INITIAL_STICK_TO_BOTTOM_FRAME_COUNT = 3;
 
@@ -149,6 +156,8 @@ interface MessagesTimelineProps {
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   providerAuthReconnect?: ProviderAuthReconnectAction | null;
   onRunProviderAuthReconnect?: (action: ProviderAuthReconnectAction) => void;
+  mcpAuthReconnectStatusByServerName?: ReadonlyMap<string, McpAuthReconnectStatus>;
+  onRunMcpAuthReconnect?: (action: McpAuthReconnectAction) => void;
   onIsAtEndChange: (isAtEnd: boolean) => void;
 }
 
@@ -181,6 +190,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   skills = EMPTY_TIMELINE_SKILLS,
   providerAuthReconnect = null,
   onRunProviderAuthReconnect,
+  mcpAuthReconnectStatusByServerName = EMPTY_MCP_AUTH_RECONNECT_STATUS,
+  onRunMcpAuthReconnect,
   onIsAtEndChange,
 }: MessagesTimelineProps) {
   const rawRows = useMemo(
@@ -272,10 +283,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       turnDiffSummaryByTurnId,
       providerAuthReconnect,
       resolvedProviderAuthReconnectIds,
+      mcpAuthReconnectStatusByServerName,
       onRevertUserMessage,
       onImageExpand,
       onOpenTurnDiff,
       ...(onRunProviderAuthReconnect ? { onRunProviderAuthReconnect } : {}),
+      ...(onRunMcpAuthReconnect ? { onRunMcpAuthReconnect } : {}),
     }),
     [
       timestampFormat,
@@ -288,10 +301,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       turnDiffSummaryByTurnId,
       providerAuthReconnect,
       resolvedProviderAuthReconnectIds,
+      mcpAuthReconnectStatusByServerName,
       onRevertUserMessage,
       onImageExpand,
       onOpenTurnDiff,
       onRunProviderAuthReconnect,
+      onRunMcpAuthReconnect,
     ],
   );
   const activityState = useMemo<TimelineRowActivityState>(
@@ -2817,13 +2832,101 @@ const ProviderAuthReconnectCard = memo(function ProviderAuthReconnectCard({
   );
 });
 
+const McpAuthReconnectCard = memo(function McpAuthReconnectCard({
+  action,
+  onRun,
+  className,
+  status,
+}: {
+  action: McpAuthReconnectAction;
+  onRun?: (action: McpAuthReconnectAction) => void;
+  className?: string;
+  status?: McpAuthReconnectStatus | undefined;
+}) {
+  const resolved = status === "completed";
+  const running = status === "running";
+
+  return (
+    <div
+      className={cn(
+        "rounded-md border px-2.5 py-2",
+        resolved ? "border-success/25 bg-success/5" : "border-warning/25 bg-warning/5",
+        className,
+      )}
+      data-mcp-auth-reconnect="true"
+      data-mcp-auth-reconnect-status={status ?? "idle"}
+    >
+      <div className="flex min-w-0 items-start gap-2">
+        <span
+          className={cn(
+            "mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-sm",
+            resolved ? "bg-success/10 text-success" : "bg-warning/10 text-warning",
+          )}
+        >
+          {resolved ? (
+            <CheckIcon className="size-3.5" aria-hidden />
+          ) : running ? (
+            <LoaderIcon className="size-3.5 animate-spin" aria-hidden />
+          ) : (
+            <KeyRoundIcon className="size-3.5" aria-hidden />
+          )}
+        </span>
+        <div className="min-w-0 flex-1 space-y-1">
+          <p className="text-xs font-medium leading-5 text-foreground">
+            {resolved
+              ? `${action.serverLabel} MCP authorized`
+              : `${action.serverLabel} MCP needs login`}
+          </p>
+          <p className="text-[11px] leading-5 text-muted-foreground/80">
+            {resolved
+              ? "Authorization completed. Retry the failed message if this turn needed the MCP server."
+              : "This MCP server did not start for this thread. Authorize it, then retry if this turn needed it."}
+          </p>
+          <p className="line-clamp-2 text-[10px] leading-4 text-muted-foreground/55">
+            Last error: {action.message}
+          </p>
+        </div>
+        {resolved ? (
+          <span className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-success/20 bg-success/5 px-2 text-xs font-medium text-success">
+            <CheckIcon className="size-3" aria-hidden />
+            Authorized
+          </span>
+        ) : (
+          <Button
+            type="button"
+            size="xs"
+            className="shrink-0"
+            disabled={!onRun || running}
+            onClick={(event) => {
+              event.stopPropagation();
+              onRun?.(action);
+            }}
+          >
+            {running ? (
+              <LoaderIcon className="size-3 animate-spin" />
+            ) : (
+              <KeyRoundIcon className="size-3" />
+            )}
+            {running ? "Authorizing..." : action.actionLabel}
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+});
+
 const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   isLiveActivity: boolean;
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
 }) {
-  const { turnDiffSummaryByTurnId, onRunProviderAuthReconnect, resolvedProviderAuthReconnectIds } =
-    use(TimelineRowCtx);
+  const {
+    turnDiffSummaryByTurnId,
+    onRunProviderAuthReconnect,
+    resolvedProviderAuthReconnectIds,
+    mcpAuthReconnectStatusByServerName,
+    onRunMcpAuthReconnect,
+  } = use(TimelineRowCtx);
   const [isOutputExpanded, setIsOutputExpanded] = useState(false);
   const { isLiveActivity, workspaceRoot } = props;
   const workEntry = resolveDisplayedWorkEntry(props.workEntry, isLiveActivity);
@@ -2842,7 +2945,10 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const EntryIcon = workEntryIcon(workEntry);
   const isRunningTool = isLiveActivity && isRunningToolWorkEntry(workEntry);
   const heading = toolWorkEntryHeading(workEntry, workspaceRoot);
-  const rawPreview = workEntry.authReconnect ? null : workEntryPreview(workEntry, workspaceRoot);
+  const rawPreview =
+    workEntry.authReconnect || workEntry.mcpAuthReconnect
+      ? null
+      : workEntryPreview(workEntry, workspaceRoot);
   const preview =
     rawPreview &&
     normalizeCompactToolLabel(rawPreview).toLowerCase() ===
@@ -2983,6 +3089,14 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           className="mt-1.5 ml-7"
           resolved={resolvedProviderAuthReconnectIds.has(workEntry.id)}
           {...(onRunProviderAuthReconnect ? { onRun: onRunProviderAuthReconnect } : {})}
+        />
+      ) : null}
+      {workEntry.mcpAuthReconnect ? (
+        <McpAuthReconnectCard
+          action={workEntry.mcpAuthReconnect}
+          className="mt-1.5 ml-7"
+          status={mcpAuthReconnectStatusByServerName.get(workEntry.mcpAuthReconnect.serverName)}
+          {...(onRunMcpAuthReconnect ? { onRun: onRunMcpAuthReconnect } : {})}
         />
       ) : null}
       {hasExpandableOutput && isOutputExpanded ? (

@@ -840,6 +840,10 @@ describe("SourceControlPanel changes", () => {
     const mounted = await renderPanel({ status, onOpenDiff });
 
     try {
+      const diffButton = document.querySelector('button[aria-label="Open diff for src/new.ts"]');
+      expect(diffButton).toBeInstanceOf(HTMLButtonElement);
+      expect(getComputedStyle(diffButton as HTMLButtonElement).cursor).toBe("pointer");
+
       await page.getByRole("button", { name: "Open diff for src/new.ts" }).click();
 
       expect(onOpenDiff).toHaveBeenCalledWith("src/new.ts");

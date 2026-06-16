@@ -2447,7 +2447,7 @@ export function SourceControlPanel({
         <button
           type="button"
           aria-label={`Open diff for ${entry.path}`}
-          className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-x-1.5 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="grid min-w-0 cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-center gap-x-1.5 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
           onClick={() => openChangedFileDiff(entry.path)}
         >
           <span
@@ -2571,7 +2571,7 @@ export function SourceControlPanel({
           type="button"
           aria-label={`${isExpanded ? "Collapse" : "Expand"} ${node.path}`}
           aria-expanded={isExpanded}
-          className="group/change-directory grid w-full grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-1.5 py-1.5 pr-2 text-left transition-colors hover:bg-accent/60"
+          className="group/change-directory grid w-full cursor-pointer grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-1.5 py-1.5 pr-2 text-left transition-colors hover:bg-accent/60"
           style={{ paddingLeft: `${8 + depth * 14}px` }}
           onClick={() => toggleChangesTreeDirectory(node.path)}
         >

@@ -1,5 +1,13 @@
 export type ExtensionItemKind = "plugin" | "skill" | "mcp" | "app";
 
+export {
+  extensionMcpNeedsAuthStatus,
+  extensionMcpOAuthActionIntent,
+  extensionMcpOAuthActionLabel,
+  type ExtensionMcpAuthStatusInput,
+  type ExtensionMcpOAuthActionIntent,
+} from "../../mcpAuthStatus";
+
 export function extensionProviderDriverSortRank(driverKind: string): number {
   if (driverKind === "codex") return 0;
   if (driverKind === "claudeAgent") return 1;
@@ -128,55 +136,6 @@ export function isLikelyLocalPath(value: string | null | undefined): boolean {
   const trimmed = value?.trim();
   if (!trimmed) return false;
   return /^(?:[a-zA-Z]:[\\/]|\\\\|\/)/.test(trimmed);
-}
-
-export interface ExtensionMcpAuthStatusInput {
-  readonly authStatus?: string | null | undefined;
-  readonly status?: string | null | undefined;
-  readonly detail?: string | null | undefined;
-}
-
-export type ExtensionMcpOAuthActionIntent = "authorize" | "reauth";
-
-const MCP_AUTH_REQUIRED_MARKERS = [
-  "unauth",
-  "not logged in",
-  "notloggedin",
-  "not authenticated",
-  "needs auth",
-  "login required",
-  "expired",
-] as const;
-
-function normalizedMcpAuthStatusValues(input: ExtensionMcpAuthStatusInput): ReadonlyArray<string> {
-  return [input.authStatus, input.status, input.detail].map(
-    (value) => value?.trim().toLowerCase() ?? "",
-  );
-}
-
-export function extensionMcpNeedsAuthStatus(input: ExtensionMcpAuthStatusInput): boolean {
-  return normalizedMcpAuthStatusValues(input).some((value) =>
-    MCP_AUTH_REQUIRED_MARKERS.some((marker) => value.includes(marker)),
-  );
-}
-
-export function extensionMcpOAuthActionIntent(
-  input: ExtensionMcpAuthStatusInput,
-): ExtensionMcpOAuthActionIntent | null {
-  const values = normalizedMcpAuthStatusValues(input);
-  const supportsOAuthAction = values.some(
-    (value) =>
-      value.includes("oauth") ||
-      value.includes("not logged in") ||
-      value.includes("notloggedin") ||
-      value.includes("needs auth"),
-  );
-  if (!supportsOAuthAction) return null;
-  return extensionMcpNeedsAuthStatus(input) ? "authorize" : "reauth";
-}
-
-export function extensionMcpOAuthActionLabel(intent: ExtensionMcpOAuthActionIntent | null): string {
-  return intent === "reauth" ? "Re-auth" : "Authorize";
 }
 
 export type ExtensionJsonSchemaFieldType = "string" | "number" | "boolean" | "json";

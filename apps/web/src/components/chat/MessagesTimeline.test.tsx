@@ -350,6 +350,83 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("complete the browser sign-in");
   });
 
+  it("renders MCP startup auth warnings with an inline authorize action", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        onRunMcpAuthReconnect={() => {}}
+        timelineEntries={[
+          {
+            id: "entry-mcp-auth",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-mcp-auth",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "MCP startup failed",
+              detail: "The supabase MCP server is not logged in.",
+              tone: "warning",
+              mcpAuthReconnect: {
+                serverName: "supabase",
+                serverLabel: "Supabase",
+                intent: "authorize",
+                actionLabel: "Authorize",
+                message: "The supabase MCP server is not logged in.",
+                terminalCommand: "codex mcp login supabase",
+              },
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('data-mcp-auth-reconnect="true"');
+    expect(markup).toContain('data-mcp-auth-reconnect-status="idle"');
+    expect(markup).toContain("Supabase MCP needs login");
+    expect(markup).toContain("Authorize");
+    expect(markup).not.toContain("codex mcp login supabase");
+  });
+
+  it("marks MCP startup auth warnings authorized after OAuth completes", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        onRunMcpAuthReconnect={() => {}}
+        mcpAuthReconnectStatusByServerName={new Map([["supabase", "completed"]])}
+        timelineEntries={[
+          {
+            id: "entry-mcp-auth",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-mcp-auth",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "MCP startup failed",
+              detail: "The supabase MCP server is not logged in.",
+              tone: "warning",
+              mcpAuthReconnect: {
+                serverName: "supabase",
+                serverLabel: "Supabase",
+                intent: "authorize",
+                actionLabel: "Authorize",
+                message: "The supabase MCP server is not logged in.",
+                terminalCommand: "codex mcp login supabase",
+              },
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('data-mcp-auth-reconnect="true"');
+    expect(markup).toContain('data-mcp-auth-reconnect-status="completed"');
+    expect(markup).toContain("Supabase MCP authorized");
+    expect(markup).toContain("Authorized");
+    expect(markup).not.toContain(">Authorize<");
+  });
+
   it("marks provider authentication errors resolved after a later assistant response succeeds", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(

@@ -117,6 +117,7 @@ describe("ExtensionsSettings logic", () => {
   it("marks missing or expired MCP auth as an authorize action", () => {
     for (const server of [
       { authStatus: "Not logged in", status: "Needs auth" },
+      { authStatus: "Not authenticated", status: "Failed" },
       { authStatus: "OAuth", detail: "Token expired" },
     ]) {
       expect(extensionMcpNeedsAuthStatus(server)).toBe(true);

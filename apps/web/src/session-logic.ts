@@ -17,6 +17,12 @@ import {
   isProviderAuthErrorMessage,
   providerAuthReconnectCommand,
 } from "@t3tools/shared/providerAuth";
+import {
+  codexMcpLoginCommand,
+  extensionMcpOAuthActionIntent,
+  extensionMcpOAuthActionLabel,
+  type ExtensionMcpOAuthActionIntent,
+} from "./mcpAuthStatus";
 
 import type {
   ChatMessage,
@@ -52,6 +58,15 @@ export interface ProviderAuthReconnectAction {
   message: string;
 }
 
+export interface McpAuthReconnectAction {
+  serverName: string;
+  serverLabel: string;
+  intent: ExtensionMcpOAuthActionIntent;
+  actionLabel: string;
+  message: string;
+  terminalCommand: string;
+}
+
 export interface WorkLogEntry {
   id: string;
   createdAt: string;
@@ -74,6 +89,7 @@ export interface WorkLogEntry {
   requestKind?: PendingApproval["requestKind"];
   executionState?: "running" | "completed" | "failed";
   authReconnect?: ProviderAuthReconnectAction;
+  mcpAuthReconnect?: McpAuthReconnectAction;
   turnId?: TurnId | null;
 }
 
@@ -664,6 +680,10 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (authReconnect) {
     entry.authReconnect = authReconnect;
   }
+  const mcpAuthReconnect = deriveMcpAuthReconnectAction(activity, payload);
+  if (mcpAuthReconnect) {
+    entry.mcpAuthReconnect = mcpAuthReconnect;
+  }
   const requestKind = extractWorkLogRequestKind(payload);
   if (detail) {
     entry.detail = detail;
@@ -997,6 +1017,7 @@ function mergeDerivedWorkLogEntries(
   const requestKind = next.requestKind ?? previous.requestKind;
   const executionState = next.executionState ?? previous.executionState;
   const authReconnect = next.authReconnect ?? previous.authReconnect;
+  const mcpAuthReconnect = next.mcpAuthReconnect ?? previous.mcpAuthReconnect;
   const collapseKey = next.collapseKey ?? previous.collapseKey;
   const toolCallId = next.toolCallId ?? previous.toolCallId;
   const turnId = next.turnId ?? previous.turnId;
@@ -1018,6 +1039,7 @@ function mergeDerivedWorkLogEntries(
     ...(requestKind ? { requestKind } : {}),
     ...(executionState ? { executionState } : {}),
     ...(authReconnect ? { authReconnect } : {}),
+    ...(mcpAuthReconnect ? { mcpAuthReconnect } : {}),
     ...(collapseKey ? { collapseKey } : {}),
     ...(toolCallId ? { toolCallId } : {}),
     ...(turnId !== undefined ? { turnId } : {}),
@@ -1053,6 +1075,40 @@ function deriveAuthReconnectAction(
     provider,
     command,
     message,
+  };
+}
+
+function deriveMcpAuthReconnectAction(
+  activity: OrchestrationThreadActivity,
+  payload: Record<string, unknown> | null,
+): McpAuthReconnectAction | undefined {
+  if (activity.kind !== "mcp.status.updated") {
+    return undefined;
+  }
+
+  const status = asRecord(payload?.status);
+  const serverName = asTrimmedString(status?.name);
+  if (!serverName) {
+    return undefined;
+  }
+
+  const statusValue = asTrimmedString(status?.status);
+  const error = asTrimmedString(status?.error) ?? asTrimmedString(payload?.detail);
+  const intent = extensionMcpOAuthActionIntent({
+    status: statusValue,
+    detail: error,
+  });
+  if (!intent) {
+    return undefined;
+  }
+
+  return {
+    serverName,
+    serverLabel: mcpServerDisplayName(serverName),
+    intent,
+    actionLabel: extensionMcpOAuthActionLabel(intent),
+    message: error ?? "This MCP server needs authorization.",
+    terminalCommand: codexMcpLoginCommand(serverName),
   };
 }
 
@@ -1874,6 +1930,22 @@ function knownProviderToolTitle(serverOrNamespace: string | null): string | null
   if (toolNamespaceMatches(serverOrNamespace, "vercel")) return "Vercel";
   if (toolNamespaceMatches(serverOrNamespace, "alpaca")) return "Market data";
   return null;
+}
+
+function mcpServerDisplayName(serverName: string): string {
+  const known = knownProviderToolTitle(serverName);
+  if (known) return known;
+  let lastSegment = serverName;
+  const segments = serverName.split(":");
+  for (let index = segments.length - 1; index >= 0; index -= 1) {
+    const segment = segments[index]?.trim();
+    if (segment) {
+      lastSegment = segment;
+      break;
+    }
+  }
+  const pretty = prettifyToolAction(lastSegment) ?? serverName;
+  return pretty.charAt(0).toUpperCase() + pretty.slice(1);
 }
 
 function summarizeNamedToolDetail(identity: ToolCallIdentity): string {

@@ -70,6 +70,7 @@ import {
   hasToolActivityForTurn,
   isLatestTurnSettled,
   formatElapsed,
+  type McpAuthReconnectAction,
   type ProviderAuthReconnectAction,
 } from "../session-logic";
 import { type LegendListRef } from "@legendapp/list/react";
@@ -224,6 +225,16 @@ const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
+const CODEX_PROVIDER_DRIVER = ProviderDriverKind.make("codex");
+type McpAuthReconnectStatus = "running" | "completed";
+
+function mcpAuthReconnectStateKey(providerInstanceId: ProviderInstanceId, serverName: string) {
+  return `${providerInstanceId}\u001f${serverName}`;
+}
+
+function wait(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
 type EnvironmentUnavailableState = {
   readonly environmentId: EnvironmentId;
   readonly label: string;
@@ -1685,6 +1696,27 @@ export default function ChatView(props: ChatViewProps) {
   const activeProjectCwd = activeProject?.cwd ?? null;
   const activeThreadWorktreePath = activeThread?.worktreePath ?? null;
   const activeWorkspaceRoot = activeThreadWorktreePath ?? activeProjectCwd ?? undefined;
+  const activeMcpAuthProviderInstanceId =
+    activeProviderInstanceId ??
+    (activeProviderDriver === CODEX_PROVIDER_DRIVER
+      ? defaultInstanceIdForDriver(CODEX_PROVIDER_DRIVER)
+      : null);
+  const [mcpAuthReconnectStatusByKey, setMcpAuthReconnectStatusByKey] = useState<
+    Record<string, McpAuthReconnectStatus>
+  >({});
+  const activeMcpAuthReconnectStatusByServerName = useMemo(() => {
+    const statuses = new Map<string, McpAuthReconnectStatus>();
+    if (!activeMcpAuthProviderInstanceId) {
+      return statuses;
+    }
+    const keyPrefix = `${activeMcpAuthProviderInstanceId}\u001f`;
+    for (const [key, status] of Object.entries(mcpAuthReconnectStatusByKey)) {
+      if (key.startsWith(keyPrefix)) {
+        statuses.set(key.slice(keyPrefix.length), status);
+      }
+    }
+    return statuses;
+  }, [activeMcpAuthProviderInstanceId, mcpAuthReconnectStatusByKey]);
   const activeTerminalLaunchContext =
     terminalLaunchContext?.threadId === activeThreadId
       ? terminalLaunchContext
@@ -2066,6 +2098,125 @@ export default function ChatView(props: ChatViewProps) {
       );
     },
     [activeProviderDriver, activeProviderLabel, providerAuthReconnectPrompt, runProjectScript],
+  );
+
+  const runMcpAuthReconnect = useCallback(
+    async (action: McpAuthReconnectAction) => {
+      if (activeProviderDriver !== CODEX_PROVIDER_DRIVER) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "MCP authorization is unavailable",
+            description: "Inline MCP OAuth is currently available for Codex providers only.",
+          }),
+        );
+        return;
+      }
+
+      const api = readLocalApi();
+      if (!api) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not start MCP authorization",
+            description: "Local API unavailable.",
+          }),
+        );
+        return;
+      }
+
+      const providerInstanceId =
+        activeProviderInstanceId ?? defaultInstanceIdForDriver(CODEX_PROVIDER_DRIVER);
+      const statusKey = mcpAuthReconnectStateKey(providerInstanceId, action.serverName);
+      let fallbackCommand = action.terminalCommand;
+
+      setMcpAuthReconnectStatusByKey((current) => ({
+        ...current,
+        [statusKey]: "running",
+      }));
+
+      try {
+        const baseInput = {
+          providerInstanceId,
+          ...(activeWorkspaceRoot ? { cwd: activeWorkspaceRoot } : {}),
+        };
+        const result = await api.server.startProviderExtensionMcpOAuth({
+          ...baseInput,
+          serverName: action.serverName,
+          timeoutSecs: 300,
+        });
+        fallbackCommand = result.terminalCommand || fallbackCommand;
+        await api.shell.openExternal(result.authorizationUrl);
+
+        const expiresAtMs = Date.parse(result.expiresAt);
+        const deadlineMs =
+          Number.isFinite(expiresAtMs) && expiresAtMs > 0
+            ? expiresAtMs + 15_000
+            : Date.now() + 315_000;
+
+        while (Date.now() < deadlineMs) {
+          await wait(1_500);
+          const status = await api.server.getProviderExtensionOperationStatus({
+            operationId: result.operationId,
+          });
+
+          if (status.status === "running") {
+            continue;
+          }
+
+          if (status.status === "completed") {
+            setMcpAuthReconnectStatusByKey((current) => ({
+              ...current,
+              [statusKey]: "completed",
+            }));
+            try {
+              await api.server.reloadProviderExtensionMcpServers(baseInput);
+              toastManager.add({
+                type: "success",
+                title: `${action.serverLabel} MCP authorized`,
+                description: "MCP servers reloaded.",
+              });
+            } catch (reloadError) {
+              console.warn("Failed to reload MCP servers after OAuth completion.", reloadError);
+              toastManager.add(
+                stackedThreadToast({
+                  type: "warning",
+                  title: `${action.serverLabel} MCP authorized`,
+                  description:
+                    reloadError instanceof Error
+                      ? `Authorization completed, but MCP reload failed: ${reloadError.message}`
+                      : "Authorization completed, but MCP reload failed.",
+                }),
+              );
+            }
+            return;
+          }
+
+          throw new Error(
+            status.error
+              ? `${status.message ?? status.status}\n\n${status.error}`
+              : (status.message ?? status.status),
+          );
+        }
+
+        throw new Error("OAuth timed out.");
+      } catch (error) {
+        setMcpAuthReconnectStatusByKey((current) => {
+          const next = { ...current };
+          delete next[statusKey];
+          return next;
+        });
+        const message = error instanceof Error ? error.message : "MCP authorization failed.";
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: `Could not authorize ${action.serverLabel} MCP`,
+            description: `${message}\n\nFallback: ${fallbackCommand}`,
+          }),
+        );
+      }
+    },
+    [activeProviderDriver, activeProviderInstanceId, activeWorkspaceRoot],
   );
 
   const composerBannerItems = infrastructureComposerBannerItems;
@@ -3720,6 +3871,8 @@ export default function ChatView(props: ChatViewProps) {
               skills={activeProviderStatus?.skills ?? EMPTY_PROVIDER_SKILLS}
               providerAuthReconnect={providerAuthReconnectPrompt}
               onRunProviderAuthReconnect={runProviderAuthReconnect}
+              mcpAuthReconnectStatusByServerName={activeMcpAuthReconnectStatusByServerName}
+              onRunMcpAuthReconnect={runMcpAuthReconnect}
               onIsAtEndChange={onIsAtEndChange}
             />
 

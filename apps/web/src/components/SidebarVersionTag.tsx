@@ -38,7 +38,9 @@ export function SidebarVersionTag() {
     isElectron ? state : null,
     COMPACT_APP_VERSION,
   );
-  const Icon = presentation.indicatorLabel ? null : getUpdateIcon(presentation.tone);
+  const showProgressIndicator =
+    presentation.tone === "downloading" && presentation.indicatorLabel !== null;
+  const Icon = showProgressIndicator ? null : getUpdateIcon(presentation.tone);
   const canRunAction =
     isElectron && state !== null && presentation.action !== "none" && !presentation.disabled;
 
@@ -106,6 +108,7 @@ export function SidebarVersionTag() {
 
   const tagClassName = cn(
     "relative inline-flex h-7 w-[4.25rem] shrink-0 items-center justify-center overflow-hidden rounded-md border px-1.5 text-[9px] font-medium leading-none tracking-tight tabular-nums transition-[background-color,border-color,color,box-shadow,opacity] duration-300",
+    showProgressIndicator && "w-[4.75rem]",
     presentation.tone === "idle" &&
       "cursor-default border-transparent bg-transparent text-muted-foreground/40",
     presentation.tone === "available" &&

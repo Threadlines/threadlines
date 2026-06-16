@@ -69,6 +69,7 @@ import {
   useStore,
 } from "../../store";
 import { useUiStateStore } from "../../uiStateStore";
+import { codexMcpLoginCommand } from "../../mcpAuthStatus";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import {
@@ -790,14 +791,6 @@ function pluginSelectorInput(plugin: ProviderExtensionPlugin) {
       : {}),
     ...(plugin.scope ? { scope: plugin.scope } : {}),
   };
-}
-
-function commandArg(value: string): string {
-  return /^[A-Za-z0-9._:/?=&,-]+$/.test(value) ? value : `"${value.replaceAll('"', '\\"')}"`;
-}
-
-function codexMcpLoginCommand(serverName: string): string {
-  return ["codex", "mcp", "login", serverName].map(commandArg).join(" ");
 }
 
 function isCodexProvider(provider: ProviderExtensionProviderInventory): boolean {

@@ -619,6 +619,38 @@ describe("deriveWorkLogEntries", () => {
     expect(entries.map((entry) => entry.id)).toEqual(["tool-start"]);
   });
 
+  it("adds MCP auth reconnect actions to auth-related startup failures", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "mcp-startup-failed",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "mcp.status.updated",
+        summary: "MCP startup failed",
+        tone: "warning",
+        payload: {
+          status: {
+            name: "supabase",
+            status: "failed",
+            error: "The supabase MCP server is not logged in. Run `codex mcp login supabase`.",
+          },
+        },
+      }),
+    ]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      id: "mcp-startup-failed",
+      tone: "warning",
+      mcpAuthReconnect: {
+        serverName: "supabase",
+        serverLabel: "Supabase",
+        intent: "authorize",
+        actionLabel: "Authorize",
+        terminalCommand: "codex mcp login supabase",
+      },
+    });
+  });
+
   it("omits task.started but shows task.progress and task.completed", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
