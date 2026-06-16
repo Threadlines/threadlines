@@ -4217,7 +4217,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("cleans up created bootstrap threads when worktree creation defects", () =>
+  it.effect("keeps created bootstrap threads when worktree creation defects", () =>
     Effect.gen(function* () {
       const dispatchedCommands: Array<OrchestrationCommand> = [];
       const createWorktree = vi.fn(
@@ -4286,8 +4286,27 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.include(result.failure.message, "worktree exploded");
       assert.deepEqual(
         dispatchedCommands.map((command) => command.type),
-        ["thread.create", "thread.delete"],
+        ["thread.create", "thread.activity.append", "thread.session.set"],
       );
+      assertTrue(dispatchedCommands.every((command) => command.type !== "thread.delete"));
+      const failureActivity = dispatchedCommands.find(
+        (command): command is Extract<OrchestrationCommand, { type: "thread.activity.append" }> =>
+          command.type === "thread.activity.append",
+      );
+      assertTrue(failureActivity !== undefined);
+      assert.equal(failureActivity.activity.kind, "bootstrap.turn-start.failed");
+      assert.equal(failureActivity.activity.summary, "Thread bootstrap failed");
+      const failurePayload = failureActivity.activity.payload as {
+        message?: { text?: string };
+      };
+      assert.equal(failurePayload.message?.text, "hello");
+      const sessionSet = dispatchedCommands.find(
+        (command): command is Extract<OrchestrationCommand, { type: "thread.session.set" }> =>
+          command.type === "thread.session.set",
+      );
+      assertTrue(sessionSet !== undefined);
+      assert.equal(sessionSet.session.status, "error");
+      assert.include(sessionSet.session.lastError ?? "", "worktree exploded");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

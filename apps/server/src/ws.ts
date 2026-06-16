@@ -222,9 +222,9 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           clientSessions: serverAuth.listClientSessions(currentSessionId).pipe(Effect.orDie),
         });
 
-      const appendSetupScriptActivity = (input: {
+      const appendThreadActivity = (input: {
         readonly threadId: ThreadId;
-        readonly kind: "setup-script.requested" | "setup-script.started" | "setup-script.failed";
+        readonly kind: string;
         readonly summary: string;
         readonly createdAt: string;
         readonly payload: Record<string, unknown>;
@@ -245,6 +245,15 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           },
           createdAt: input.createdAt,
         });
+
+      const appendSetupScriptActivity = (input: {
+        readonly threadId: ThreadId;
+        readonly kind: "setup-script.requested" | "setup-script.started" | "setup-script.failed";
+        readonly summary: string;
+        readonly createdAt: string;
+        readonly payload: Record<string, unknown>;
+        readonly tone: "info" | "error";
+      }) => appendThreadActivity(input);
 
       const toDispatchCommandError = (cause: unknown, fallbackMessage: string) =>
         isOrchestrationDispatchCommandError(cause)
@@ -386,16 +395,54 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           let targetProjectCwd = bootstrap?.prepareWorktree?.projectCwd;
           let targetWorktreePath = bootstrap?.createThread?.worktreePath ?? null;
 
-          const cleanupCreatedThread = () =>
-            createdThread
-              ? orchestrationEngine
-                  .dispatch({
-                    type: "thread.delete",
-                    commandId: serverCommandId("bootstrap-thread-delete"),
+          const recordBootstrapFailure = (dispatchError: OrchestrationDispatchCommandError) =>
+            Effect.gen(function* () {
+              const failedAt = yield* nowIso;
+              const detail = dispatchError.message.trim() || "Failed to bootstrap thread turn.";
+              const requestedModelSelection =
+                finalTurnStartCommand.modelSelection ?? bootstrap?.createThread?.modelSelection;
+
+              yield* appendThreadActivity({
+                threadId: command.threadId,
+                kind: "bootstrap.turn-start.failed",
+                summary: "Thread bootstrap failed",
+                createdAt: failedAt,
+                payload: {
+                  detail,
+                  message: finalTurnStartCommand.message,
+                  modelSelection: requestedModelSelection ?? null,
+                  runtimeMode: finalTurnStartCommand.runtimeMode,
+                  interactionMode: finalTurnStartCommand.interactionMode,
+                  prepareWorktree: bootstrap?.prepareWorktree ?? null,
+                  worktreePath: targetWorktreePath,
+                },
+                tone: "error",
+              }).pipe(Effect.ignoreCause({ log: true }));
+
+              yield* orchestrationEngine
+                .dispatch({
+                  type: "thread.session.set",
+                  commandId: serverCommandId("bootstrap-session-error"),
+                  threadId: command.threadId,
+                  session: {
                     threadId: command.threadId,
-                  })
-                  .pipe(Effect.ignoreCause({ log: true }))
-              : Effect.void;
+                    status: "error",
+                    providerName: null,
+                    ...(requestedModelSelection
+                      ? { providerInstanceId: requestedModelSelection.instanceId }
+                      : {}),
+                    providerSessionId: null,
+                    providerThreadId: null,
+                    runtimeMode: finalTurnStartCommand.runtimeMode,
+                    activeTurnId: null,
+                    pendingBackgroundTaskCount: 0,
+                    lastError: detail,
+                    updatedAt: failedAt,
+                  },
+                  createdAt: failedAt,
+                })
+                .pipe(Effect.ignoreCause({ log: true }));
+            });
 
           const recordSetupScriptLaunchFailure = (input: {
             readonly error: unknown;
@@ -560,7 +607,9 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               if (Cause.hasInterruptsOnly(cause)) {
                 return Effect.fail(dispatchError);
               }
-              return cleanupCreatedThread().pipe(Effect.flatMap(() => Effect.fail(dispatchError)));
+              return (createdThread ? recordBootstrapFailure(dispatchError) : Effect.void).pipe(
+                Effect.flatMap(() => Effect.fail(dispatchError)),
+              );
             }),
           );
         });

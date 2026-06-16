@@ -1,0 +1,1803 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Threadlines Context Preview Mockups</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --page: #080a0d;
+        --app: #0b0d10;
+        --rail: #0d1014;
+        --panel: #11151a;
+        --panel-2: #151a20;
+        --panel-3: #1b222b;
+        --line: #242b34;
+        --line-soft: rgba(148, 163, 184, 0.16);
+        --text: #e6edf4;
+        --muted: #8f9ba8;
+        --muted-2: #66717e;
+        --blue: #2f81f7;
+        --blue-2: #0e4496;
+        --green: #48d597;
+        --red: #ff6b7a;
+        --amber: #f0bc5e;
+        --shadow: 0 24px 90px rgba(0, 0, 0, 0.46);
+        font-family:
+          Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at 18% -10%, rgba(47, 129, 247, 0.2), transparent 34rem),
+          linear-gradient(180deg, #0a0d11 0%, #07080b 100%);
+        color: var(--text);
+      }
+
+      button,
+      input {
+        font: inherit;
+      }
+
+      button {
+        color: inherit;
+      }
+
+      .mock-page {
+        min-height: 100vh;
+        padding: 18px;
+      }
+
+      .mock-controls {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 16px;
+        align-items: center;
+        max-width: 1600px;
+        margin: 0 auto 14px;
+      }
+
+      .mock-title {
+        display: flex;
+        min-width: 0;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .mock-title h1 {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 700;
+        letter-spacing: 0;
+      }
+
+      .mock-title p {
+        margin: 2px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .threadlines-mark {
+        display: grid;
+        width: 32px;
+        height: 32px;
+        place-items: center;
+        border: 1px solid rgba(83, 153, 255, 0.35);
+        border-radius: 8px;
+        background: linear-gradient(145deg, rgba(47, 129, 247, 0.22), rgba(13, 16, 20, 0.8));
+        color: #9dc4ff;
+        font-weight: 800;
+      }
+
+      .mode-tabs {
+        display: flex;
+        gap: 8px;
+        padding: 4px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: rgba(13, 16, 20, 0.82);
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+      }
+
+      .mode-tab {
+        min-height: 32px;
+        border: 0;
+        border-radius: 7px;
+        background: transparent;
+        color: var(--muted);
+        cursor: pointer;
+        padding: 0 10px;
+        font-size: 12px;
+        font-weight: 650;
+      }
+
+      .mode-tab:hover {
+        color: var(--text);
+        background: rgba(148, 163, 184, 0.08);
+      }
+
+      .mode-tab.active {
+        color: #f6fbff;
+        background: linear-gradient(180deg, rgba(47, 129, 247, 0.95), rgba(24, 93, 190, 0.88));
+      }
+
+      .concept-showcase {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 330px;
+        gap: 14px;
+        max-width: 1600px;
+        margin: 0 auto 14px;
+      }
+
+      .concept-stage,
+      .concept-detail {
+        border: 1px solid #202832;
+        background: rgba(11, 14, 18, 0.92);
+        box-shadow: 0 18px 70px rgba(0, 0, 0, 0.3);
+      }
+
+      .concept-stage {
+        display: grid;
+        min-height: 0;
+        overflow: hidden;
+        border-radius: 14px;
+      }
+
+      .concept-image {
+        display: block;
+        width: 100%;
+        aspect-ratio: 16 / 10;
+        background: #05070a;
+        object-fit: contain;
+      }
+
+      .concept-detail {
+        display: flex;
+        flex-direction: column;
+        border-radius: 12px;
+        padding: 14px;
+      }
+
+      .concept-kicker {
+        margin: 0 0 7px;
+        color: #79adff;
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .concept-detail h2 {
+        margin: 0;
+        font-size: 18px;
+        line-height: 1.2;
+      }
+
+      .concept-detail p {
+        margin: 9px 0 0;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      .concept-options {
+        display: grid;
+        gap: 8px;
+        margin-top: 15px;
+      }
+
+      .concept-option {
+        display: grid;
+        grid-template-columns: 74px minmax(0, 1fr);
+        gap: 10px;
+        align-items: center;
+        min-height: 58px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #0e1217;
+        color: inherit;
+        cursor: pointer;
+        padding: 7px;
+        text-align: left;
+      }
+
+      .concept-option:hover {
+        border-color: rgba(47, 129, 247, 0.5);
+        background: #111821;
+      }
+
+      .concept-option.active {
+        border-color: rgba(47, 129, 247, 0.78);
+        background: rgba(47, 129, 247, 0.14);
+      }
+
+      .concept-thumb {
+        width: 74px;
+        aspect-ratio: 16 / 10;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: #05070a;
+      }
+
+      .concept-thumb img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+
+      .concept-option strong {
+        display: block;
+        overflow: hidden;
+        font-size: 12px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .concept-option span {
+        display: block;
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.25;
+      }
+
+      .app-window {
+        position: relative;
+        display: grid;
+        grid-template-columns: 260px minmax(420px, 1fr) 336px;
+        height: min(900px, calc(100vh - 96px));
+        min-height: 680px;
+        max-width: 1600px;
+        margin: 0 auto;
+        overflow: hidden;
+        border: 1px solid #202832;
+        border-radius: 14px;
+        background: var(--app);
+        box-shadow: var(--shadow);
+      }
+
+      .app-window.preview-focus {
+        grid-template-columns: 260px minmax(460px, 0.72fr) minmax(520px, 1.08fr) 68px;
+      }
+
+      .app-window.context-tray,
+      .app-window.files-peek {
+        grid-template-columns: 260px minmax(420px, 1fr) 336px;
+      }
+
+      .left-sidebar,
+      .source-panel,
+      .source-rail,
+      .browser-panel,
+      .chat-shell {
+        min-width: 0;
+        min-height: 0;
+      }
+
+      .left-sidebar {
+        display: flex;
+        flex-direction: column;
+        border-right: 1px solid var(--line);
+        background: #0a0d11;
+      }
+
+      .brand-row,
+      .chat-topbar,
+      .source-topbar,
+      .browser-topbar,
+      .rail-top {
+        height: 50px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .brand-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 14px;
+        font-size: 17px;
+        font-weight: 760;
+      }
+
+      .brand-line {
+        position: relative;
+        width: 38px;
+        height: 16px;
+      }
+
+      .brand-line::before,
+      .brand-line::after {
+        position: absolute;
+        content: "";
+        border-radius: 99px;
+        background: #87b8ff;
+      }
+
+      .brand-line::before {
+        left: 0;
+        top: 7px;
+        width: 30px;
+        height: 2px;
+        transform: rotate(8deg);
+      }
+
+      .brand-line::after {
+        right: 0;
+        top: 9px;
+        width: 6px;
+        height: 6px;
+        box-shadow: -18px -5px 0 -2px #87b8ff;
+      }
+
+      .search {
+        margin: 10px 10px 12px;
+        display: flex;
+        height: 34px;
+        align-items: center;
+        gap: 8px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #0d1117;
+        color: var(--muted-2);
+        padding: 0 10px;
+        font-size: 13px;
+      }
+
+      .project-list {
+        min-height: 0;
+        overflow: hidden auto;
+        padding: 4px 12px 16px;
+      }
+
+      .project-label {
+        display: flex;
+        justify-content: space-between;
+        margin: 10px 8px 8px;
+        color: var(--muted-2);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .project-name {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 8px;
+        color: var(--text);
+        font-size: 14px;
+        font-weight: 740;
+      }
+
+      .chevron {
+        color: var(--muted-2);
+      }
+
+      .thread-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: center;
+        min-height: 36px;
+        border-radius: 10px;
+        color: var(--muted);
+        padding: 0 10px;
+        font-size: 13px;
+      }
+
+      .thread-row.active {
+        background: #141922;
+        color: #f3f7fb;
+        font-weight: 720;
+      }
+
+      .thread-row span:first-child {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .thread-row span:last-child {
+        color: var(--muted-2);
+        font-size: 11px;
+      }
+
+      .settings-row {
+        margin-top: auto;
+        display: flex;
+        height: 54px;
+        align-items: center;
+        justify-content: space-between;
+        border-top: 1px solid var(--line);
+        color: var(--muted);
+        padding: 0 18px;
+        font-size: 13px;
+      }
+
+      .chat-shell {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        background:
+          linear-gradient(90deg, rgba(10, 13, 17, 0.92), rgba(10, 13, 17, 0.66)),
+          radial-gradient(circle at 80% 10%, rgba(47, 129, 247, 0.08), transparent 24rem);
+      }
+
+      .chat-topbar {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 14px;
+        padding: 0 26px;
+      }
+
+      .crumb {
+        display: flex;
+        min-width: 0;
+        align-items: center;
+        gap: 9px;
+        color: var(--muted-2);
+        font-size: 15px;
+      }
+
+      .crumb strong {
+        overflow: hidden;
+        color: var(--text);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .top-actions {
+        display: flex;
+        gap: 8px;
+      }
+
+      .pill,
+      .icon-btn,
+      .tiny-btn,
+      .primary-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid var(--line);
+        background: #11151b;
+        color: var(--text);
+        cursor: pointer;
+      }
+
+      .pill {
+        height: 31px;
+        gap: 7px;
+        border-radius: 9px;
+        padding: 0 10px;
+        font-size: 13px;
+        font-weight: 650;
+      }
+
+      .icon-btn {
+        width: 31px;
+        height: 31px;
+        border-radius: 9px;
+      }
+
+      .tiny-btn {
+        height: 26px;
+        gap: 6px;
+        border-radius: 7px;
+        padding: 0 9px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 650;
+      }
+
+      .primary-btn {
+        height: 32px;
+        gap: 8px;
+        border-color: rgba(47, 129, 247, 0.5);
+        border-radius: 9px;
+        background: linear-gradient(180deg, #0f4fa7, #0b3d82);
+        color: #dcecff;
+        padding: 0 12px;
+        font-size: 12px;
+        font-weight: 760;
+      }
+
+      .messages {
+        min-height: 0;
+        overflow: hidden auto;
+        padding: 18px 28px 22px;
+      }
+
+      .message {
+        max-width: 920px;
+        margin: 0 auto 18px;
+        color: #d7e0e9;
+        font-size: 15px;
+        line-height: 1.55;
+      }
+
+      .message h2 {
+        margin: 0 0 10px;
+        font-size: 17px;
+        letter-spacing: 0;
+      }
+
+      .message ol {
+        margin: 0;
+        padding-left: 23px;
+      }
+
+      .message li {
+        margin: 0 0 12px;
+      }
+
+      .code-chip {
+        display: inline-flex;
+        align-items: center;
+        height: 21px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: #111821;
+        color: #dce6ef;
+        padding: 0 6px;
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .composer-wrap {
+        border-top: 1px solid rgba(36, 43, 52, 0.8);
+        padding: 14px 28px 16px;
+      }
+
+      .composer {
+        max-width: 970px;
+        margin: 0 auto;
+        overflow: hidden;
+        border: 1px solid rgba(47, 129, 247, 0.5);
+        border-radius: 20px;
+        background: linear-gradient(180deg, rgba(15, 19, 24, 0.98), rgba(12, 15, 20, 0.98));
+        box-shadow: 0 20px 70px rgba(0, 0, 0, 0.28);
+      }
+
+      .context-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+        min-height: 0;
+        border-bottom: 1px solid transparent;
+        padding: 0 14px;
+        transition:
+          min-height 160ms ease,
+          padding 160ms ease,
+          border-color 160ms ease;
+      }
+
+      .has-context .context-chips {
+        min-height: 38px;
+        border-color: var(--line-soft);
+        padding: 10px 14px 0;
+      }
+
+      .context-chip {
+        display: none;
+        align-items: center;
+        gap: 7px;
+        height: 25px;
+        border: 1px solid rgba(80, 144, 244, 0.34);
+        border-radius: 99px;
+        background: rgba(16, 66, 136, 0.36);
+        color: #c9dcff;
+        padding: 0 9px;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .has-context .context-chip {
+        display: inline-flex;
+      }
+
+      .composer textarea {
+        display: block;
+        width: 100%;
+        height: 82px;
+        resize: none;
+        border: 0;
+        outline: 0;
+        background: transparent;
+        color: var(--text);
+        padding: 18px 20px 8px;
+        font-size: 15px;
+      }
+
+      .composer textarea::placeholder {
+        color: #e7eef6;
+      }
+
+      .composer-footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 0 12px 12px;
+      }
+
+      .model-controls,
+      .send-controls {
+        display: flex;
+        min-width: 0;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .send-circle {
+        display: inline-grid;
+        width: 39px;
+        height: 39px;
+        place-items: center;
+        border: 0;
+        border-radius: 999px;
+        background: #155ac7;
+        color: white;
+        cursor: pointer;
+        font-size: 18px;
+        font-weight: 800;
+      }
+
+      .source-panel {
+        display: flex;
+        flex-direction: column;
+        border-left: 1px solid var(--line);
+        background: #090c10;
+      }
+
+      .source-topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 18px 0 16px;
+      }
+
+      .source-title {
+        display: flex;
+        min-width: 0;
+        flex-direction: column;
+        gap: 3px;
+      }
+
+      .source-title strong {
+        font-size: 13px;
+      }
+
+      .source-title span {
+        color: var(--muted-2);
+        font-size: 11px;
+      }
+
+      .source-actions {
+        display: flex;
+        gap: 8px;
+      }
+
+      .source-body {
+        min-height: 0;
+        overflow: hidden auto;
+        padding: 17px 14px;
+      }
+
+      .section-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin: 6px 0 10px;
+        color: var(--muted-2);
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .empty-box,
+      .branch-select {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #0f1318;
+      }
+
+      .empty-box {
+        display: flex;
+        min-height: 42px;
+        align-items: center;
+        padding: 0 12px;
+        color: var(--muted-2);
+        font-size: 13px;
+      }
+
+      .git-buttons {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        margin: 17px 0 10px;
+      }
+
+      .branch-select {
+        display: flex;
+        height: 34px;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 10px;
+        color: #dce5ef;
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .graph {
+        position: relative;
+        margin-top: 13px;
+        padding: 0 0 0 36px;
+      }
+
+      .graph::before {
+        position: absolute;
+        top: 7px;
+        bottom: 7px;
+        left: 22px;
+        width: 2px;
+        content: "";
+        background: #5b8ff5;
+      }
+
+      .commit {
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        min-height: 35px;
+        color: #d5dde6;
+        font-size: 13px;
+        font-weight: 650;
+      }
+
+      .commit::before {
+        position: absolute;
+        top: 14px;
+        left: -18px;
+        width: 8px;
+        height: 8px;
+        border: 2px solid #68a0ff;
+        border-radius: 99px;
+        background: #0a0d11;
+        content: "";
+      }
+
+      .commit span:first-child {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .tag {
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        color: #98a6b5;
+        padding: 2px 6px;
+        font-size: 10px;
+        font-weight: 700;
+      }
+
+      .browser-panel {
+        display: none;
+        flex-direction: column;
+        border-left: 1px solid var(--line);
+        background: #080b0f;
+      }
+
+      .preview-focus .browser-panel {
+        display: flex;
+      }
+
+      .browser-topbar {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 10px;
+        padding: 0 12px;
+      }
+
+      .browser-nav {
+        display: flex;
+        gap: 6px;
+      }
+
+      .url-bar {
+        display: flex;
+        min-width: 0;
+        height: 31px;
+        align-items: center;
+        gap: 8px;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        background: #10151b;
+        color: #d7e6f8;
+        padding: 0 11px;
+        font-size: 12px;
+      }
+
+      .url-bar span:last-child {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .preview-body {
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr) auto;
+        min-height: 0;
+        flex: 1;
+      }
+
+      .preview-status {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 1px solid var(--line-soft);
+        padding: 9px 12px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .annotation-tools {
+        display: flex;
+        gap: 7px;
+      }
+
+      .web-page {
+        position: relative;
+        min-height: 0;
+        overflow: hidden;
+        margin: 12px;
+        border: 1px solid #26303b;
+        border-radius: 12px;
+        background: #f7f8fb;
+        color: #12161c;
+      }
+
+      .web-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 1px solid #e3e7ed;
+        padding: 16px 20px;
+      }
+
+      .web-brand {
+        font-size: 15px;
+        font-weight: 800;
+      }
+
+      .web-menu {
+        display: flex;
+        gap: 14px;
+        color: #5c6672;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .web-content {
+        display: grid;
+        grid-template-columns: 1.1fr 0.9fr;
+        gap: 24px;
+        padding: 28px 28px 34px;
+      }
+
+      .web-copy h3 {
+        margin: 0 0 12px;
+        font-size: 34px;
+        line-height: 1.04;
+        letter-spacing: -0.03em;
+      }
+
+      .web-copy p {
+        margin: 0 0 18px;
+        color: #647181;
+        font-size: 14px;
+        line-height: 1.45;
+      }
+
+      .web-cta {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 128px;
+        height: 38px;
+        border-radius: 10px;
+        background: #151a22;
+        color: white;
+        font-size: 13px;
+        font-weight: 800;
+      }
+
+      .web-card {
+        border: 1px solid #dde3ea;
+        border-radius: 14px;
+        background: white;
+        box-shadow: 0 16px 44px rgba(15, 23, 42, 0.08);
+        padding: 14px;
+      }
+
+      .metric-row {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 8px;
+        align-items: center;
+        border-bottom: 1px solid #edf0f4;
+        padding: 11px 0;
+        color: #4c5968;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .metric-row:last-child {
+        border-bottom: 0;
+      }
+
+      .metric-row strong {
+        color: #10151c;
+      }
+
+      .selected-element {
+        position: absolute;
+        left: 28px;
+        top: 183px;
+        width: 128px;
+        height: 38px;
+        border: 2px solid var(--blue);
+        border-radius: 10px;
+        pointer-events: none;
+        box-shadow:
+          0 0 0 999px rgba(47, 129, 247, 0.08),
+          0 0 0 4px rgba(47, 129, 247, 0.14);
+      }
+
+      .annotation-popover {
+        position: absolute;
+        left: 165px;
+        top: 164px;
+        width: 242px;
+        border: 1px solid rgba(47, 129, 247, 0.45);
+        border-radius: 12px;
+        background: #0d1218;
+        color: var(--text);
+        box-shadow: 0 18px 60px rgba(0, 0, 0, 0.28);
+        padding: 10px;
+      }
+
+      .annotation-popover strong {
+        display: block;
+        margin-bottom: 5px;
+        font-size: 12px;
+      }
+
+      .annotation-popover p {
+        margin: 0 0 9px;
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.35;
+      }
+
+      .preview-footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-top: 1px solid var(--line-soft);
+        padding: 9px 12px;
+      }
+
+      .artifact-strip {
+        display: flex;
+        min-width: 0;
+        gap: 7px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .source-rail {
+        display: none;
+        flex-direction: column;
+        border-left: 1px solid var(--line);
+        background: #090c10;
+      }
+
+      .preview-focus .source-panel {
+        display: none;
+      }
+
+      .preview-focus .source-rail {
+        display: flex;
+      }
+
+      .rail-top {
+        display: grid;
+        place-items: center;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 900;
+      }
+
+      .rail-body {
+        display: flex;
+        flex: 1;
+        flex-direction: column;
+        align-items: center;
+        gap: 12px;
+        padding: 14px 8px;
+      }
+
+      .rail-dot {
+        display: grid;
+        width: 36px;
+        height: 36px;
+        place-items: center;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #10151b;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .rail-dot.active {
+        border-color: rgba(47, 129, 247, 0.5);
+        background: rgba(47, 129, 247, 0.14);
+        color: #bdd7ff;
+      }
+
+      .mini-graph {
+        position: relative;
+        width: 18px;
+        flex: 1;
+        margin-top: 10px;
+      }
+
+      .mini-graph::before {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 8px;
+        width: 2px;
+        content: "";
+        background: #5b8ff5;
+      }
+
+      .mini-graph span {
+        position: absolute;
+        left: 4px;
+        width: 10px;
+        height: 10px;
+        border: 2px solid #68a0ff;
+        border-radius: 99px;
+        background: #090c10;
+      }
+
+      .mini-graph span:nth-child(1) {
+        top: 4%;
+      }
+
+      .mini-graph span:nth-child(2) {
+        top: 21%;
+      }
+
+      .mini-graph span:nth-child(3) {
+        top: 39%;
+      }
+
+      .mini-graph span:nth-child(4) {
+        top: 58%;
+      }
+
+      .mini-graph span:nth-child(5) {
+        top: 78%;
+      }
+
+      .context-tray-layer,
+      .files-peek-layer {
+        position: absolute;
+        inset: 50px 336px 0 260px;
+        display: none;
+        pointer-events: none;
+      }
+
+      .context-tray .context-tray-layer,
+      .files-peek .files-peek-layer {
+        display: block;
+      }
+
+      .context-tray-card {
+        position: absolute;
+        right: 18px;
+        bottom: 142px;
+        width: min(690px, calc(100% - 36px));
+        overflow: hidden;
+        border: 1px solid rgba(47, 129, 247, 0.46);
+        border-radius: 16px;
+        background: #0b0f14;
+        box-shadow: 0 24px 86px rgba(0, 0, 0, 0.48);
+        pointer-events: auto;
+      }
+
+      .context-tray-head,
+      .files-peek-head {
+        display: flex;
+        height: 42px;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 1px solid var(--line);
+        padding: 0 12px;
+      }
+
+      .context-tray-head strong,
+      .files-peek-head strong {
+        font-size: 13px;
+      }
+
+      .tray-preview {
+        position: relative;
+        height: 300px;
+        background: #f7f8fb;
+        color: #141a21;
+        padding: 20px;
+      }
+
+      .tray-preview .web-copy h3 {
+        font-size: 26px;
+      }
+
+      .tray-mini-select {
+        position: absolute;
+        left: 20px;
+        top: 158px;
+        width: 118px;
+        height: 36px;
+        border: 2px solid var(--blue);
+        border-radius: 10px;
+      }
+
+      .tray-context-panel {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 14px;
+        align-items: center;
+        border-top: 1px solid var(--line);
+        padding: 11px 12px;
+      }
+
+      .tray-context-panel p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .files-peek-card {
+        position: absolute;
+        top: 14px;
+        right: 18px;
+        bottom: 128px;
+        display: grid;
+        grid-template-columns: 280px minmax(260px, 1fr);
+        grid-template-rows: 42px minmax(0, 1fr);
+        width: min(840px, calc(100% - 36px));
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: #0b0f14;
+        box-shadow: 0 24px 86px rgba(0, 0, 0, 0.48);
+        pointer-events: auto;
+      }
+
+      .files-tree {
+        min-height: 0;
+        grid-column: 1;
+        grid-row: 2;
+        border-right: 1px solid var(--line);
+        background: #0c1015;
+      }
+
+      .files-peek-head {
+        grid-column: 1 / -1;
+        grid-row: 1;
+      }
+
+      .file-search {
+        margin: 10px;
+        display: flex;
+        height: 31px;
+        align-items: center;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        color: var(--muted-2);
+        padding: 0 10px;
+        font-size: 12px;
+      }
+
+      .file-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 29px;
+        margin: 0 8px;
+        border-radius: 7px;
+        color: var(--muted);
+        padding: 0 8px;
+        font-size: 12px;
+      }
+
+      .file-row.active {
+        background: rgba(47, 129, 247, 0.18);
+        color: #d8e8ff;
+      }
+
+      .file-preview {
+        min-width: 0;
+        min-height: 0;
+        grid-column: 2;
+        grid-row: 2;
+        overflow: hidden;
+        background: #0a0d11;
+      }
+
+      .file-breadcrumb {
+        display: flex;
+        height: 38px;
+        align-items: center;
+        border-bottom: 1px solid var(--line);
+        color: var(--muted);
+        padding: 0 13px;
+        font-size: 12px;
+      }
+
+      pre {
+        margin: 0;
+        overflow: hidden;
+        padding: 16px;
+        color: #dbe7f3;
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-size: 12px;
+        line-height: 1.65;
+      }
+
+      .annotation-mode .selected-element,
+      .annotation-mode .annotation-popover,
+      .annotation-mode .tray-mini-select {
+        border-color: var(--green);
+        box-shadow:
+          0 0 0 999px rgba(72, 213, 151, 0.06),
+          0 0 0 4px rgba(72, 213, 151, 0.12);
+      }
+
+      .annotation-mode .annotation-popover {
+        border-color: rgba(72, 213, 151, 0.44);
+      }
+
+      @media (max-width: 1180px) {
+        .mock-controls {
+          grid-template-columns: 1fr;
+        }
+
+        .concept-showcase {
+          grid-template-columns: 1fr;
+        }
+
+        .concept-detail {
+          order: -1;
+        }
+
+        .app-window,
+        .app-window.context-tray,
+        .app-window.files-peek {
+          grid-template-columns: 220px minmax(380px, 1fr);
+        }
+
+        .source-panel {
+          display: none;
+        }
+
+        .context-tray-layer,
+        .files-peek-layer {
+          inset: 50px 0 0 220px;
+        }
+
+        .app-window.preview-focus {
+          grid-template-columns: 220px minmax(440px, 1fr) 58px;
+        }
+
+        .preview-focus .browser-panel {
+          grid-column: 2;
+          grid-row: 1;
+        }
+
+        .preview-focus .chat-shell {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="mock-page">
+      <div class="mock-controls" aria-label="Mockup controls">
+        <div class="mock-title">
+          <div class="threadlines-mark">T</div>
+          <div>
+            <h1>Threadlines context preview layout mockups</h1>
+            <p>
+              Click the modes and preview controls to compare source-control-first alternatives.
+            </p>
+          </div>
+        </div>
+        <div class="mode-tabs" role="tablist" aria-label="Mockup modes">
+          <button class="mode-tab active" type="button" data-mode="normal">Current</button>
+          <button class="mode-tab" type="button" data-mode="preview-focus">Preview Focus</button>
+          <button class="mode-tab" type="button" data-mode="context-tray">Context Tray</button>
+          <button class="mode-tab" type="button" data-mode="files-peek">Files Peek</button>
+        </div>
+      </div>
+
+      <section class="concept-showcase" aria-label="Generated concept mockups">
+        <div class="concept-stage">
+          <img
+            id="conceptImage"
+            class="concept-image"
+            src="./threadlines-context-preview-current.png"
+            alt="Current Threadlines layout baseline"
+          />
+        </div>
+        <aside class="concept-detail">
+          <p class="concept-kicker">Generated raster concepts</p>
+          <h2 id="conceptTitle">Current baseline</h2>
+          <p id="conceptDescription">
+            The day-to-day layout keeps source control as a fixed right-side command surface. This
+            is the baseline the browser/file context ideas need to respect.
+          </p>
+          <div class="concept-options" aria-label="Concept selector">
+            <button class="concept-option active" type="button" data-mode="normal">
+              <span class="concept-thumb">
+                <img src="./threadlines-context-preview-current.png" alt="" />
+              </span>
+              <span>
+                <strong>Current</strong>
+                <span>Baseline source-control-first layout.</span>
+              </span>
+            </button>
+            <button class="concept-option" type="button" data-mode="preview-focus">
+              <span class="concept-thumb">
+                <img src="./threadlines-ai-preview-focus.png" alt="" />
+              </span>
+              <span>
+                <strong>Preview Focus</strong>
+                <span>Browser gets width; source control becomes a rail.</span>
+              </span>
+            </button>
+            <button class="concept-option" type="button" data-mode="context-tray">
+              <span class="concept-thumb">
+                <img src="./threadlines-ai-context-tray.png" alt="" />
+              </span>
+              <span>
+                <strong>Context Tray</strong>
+                <span>Temporary browser capture without hiding source control.</span>
+              </span>
+            </button>
+            <button class="concept-option" type="button" data-mode="files-peek">
+              <span class="concept-thumb">
+                <img src="./threadlines-ai-files-peek.png" alt="" />
+              </span>
+              <span>
+                <strong>Files Peek</strong>
+                <span>Read-only file context, not an editor replacement.</span>
+              </span>
+            </button>
+          </div>
+        </aside>
+      </section>
+
+      <section id="appWindow" class="app-window normal">
+        <aside class="left-sidebar" aria-label="Thread sidebar">
+          <div class="brand-row">
+            <span class="brand-line" aria-hidden="true"></span>
+            <span>Threadlines</span>
+          </div>
+          <div class="search">Search <span style="margin-left: auto">Ctrl+K</span></div>
+          <div class="project-list">
+            <div class="project-label"><span>Projects</span><span>+ </span></div>
+            <div class="project-name"><span class="chevron">v</span><span>Threadlines</span></div>
+            <div class="thread-row active">
+              <span>Threadlines multi-panel ideas</span><span>45m</span>
+            </div>
+            <div class="thread-row"><span>Git graph performance</span><span>19h</span></div>
+            <div class="thread-row"><span>Nightly release workflow</span><span>19h</span></div>
+            <div class="thread-row"><span>Terminal close behavior</span><span>3d</span></div>
+            <div class="thread-row"><span>Fix model picker copy</span><span>3d</span></div>
+            <div class="project-name" style="margin-top: 24px">
+              <span class="chevron">v</span><span>facpmanuals-next</span>
+            </div>
+            <div class="thread-row"><span>Investigate web upload</span><span>34m</span></div>
+            <div class="thread-row"><span>Fix AI extraction titles</span><span>4d</span></div>
+            <div class="thread-row"><span>Troubleshoot Vercel</span><span>5d</span></div>
+            <div class="project-name" style="margin-top: 24px">
+              <span class="chevron">v</span><span>OneTradeBot</span>
+            </div>
+            <div class="thread-row"><span>V5 Telemetry pass</span><span>3d</span></div>
+            <div class="thread-row"><span>Fix Claude continuity</span><span>6d</span></div>
+          </div>
+          <div class="settings-row"><span>Settings</span><span>v0.0.21</span></div>
+        </aside>
+
+        <section class="chat-shell" aria-label="Chat">
+          <div class="chat-topbar">
+            <div class="crumb">
+              <span>Threadlines</span><span>/</span
+              ><strong>Threadlines multi-panel sidebar ideas</strong>
+            </div>
+            <div class="top-actions">
+              <button class="pill" type="button">Desktop Env</button>
+              <button class="pill" type="button">Open</button>
+              <button class="icon-btn" type="button" aria-label="Terminal">T</button>
+              <button class="icon-btn" id="openPreviewFromTop" type="button" aria-label="Preview">
+                P
+              </button>
+            </div>
+          </div>
+
+          <div class="messages">
+            <article class="message">
+              <h2>Recommendation</h2>
+              <ol>
+                <li>
+                  <strong>Browser context capture first.</strong> Open a localhost URL, select an
+                  element or region, annotate it, and attach it to the composer.
+                </li>
+                <li>
+                  <strong>Use a temporary focus surface.</strong> Browser previews need width. Keep
+                  source control anchored as a compact repo strip while the preview is active.
+                </li>
+                <li>
+                  <strong>Do not move terminal into the right panel yet.</strong> The bottom drawer
+                  is still a better shell surface than another permanent column.
+                </li>
+                <li>
+                  <strong>Treat file browsing as context.</strong> File preview should help
+                  attach/read context, not become a full in-app editor.
+                </li>
+                <li>
+                  <strong>Defer full browser automation.</strong> Start with
+                  <span class="code-chip">snapshot + screenshot + selected context</span>.
+                </li>
+              </ol>
+            </article>
+          </div>
+
+          <div class="composer-wrap">
+            <div id="composer" class="composer">
+              <div class="context-chips">
+                <span class="context-chip">Preview: localhost:5173</span>
+                <span class="context-chip">Element: &lt;button.primary&gt;</span>
+                <span class="context-chip">Screenshot crop</span>
+              </div>
+              <textarea
+                placeholder="Ask anything, @tag files/folders, $use skills, or / for commands"
+              ></textarea>
+              <div class="composer-footer">
+                <div class="model-controls">
+                  <button class="tiny-btn" type="button">GPT-5.5</button>
+                  <button class="tiny-btn" type="button">Build</button>
+                  <button class="tiny-btn" type="button">Full access</button>
+                </div>
+                <div class="send-controls">
+                  <button id="captureContext" class="tiny-btn" type="button">
+                    Attach preview context
+                  </button>
+                  <button class="send-circle" type="button" aria-label="Send">^</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="browser-panel" aria-label="Browser preview">
+          <div class="browser-topbar">
+            <div class="browser-nav">
+              <button class="icon-btn" type="button" aria-label="Back">&lt;</button>
+              <button class="icon-btn" type="button" aria-label="Forward">&gt;</button>
+              <button class="icon-btn" type="button" aria-label="Refresh">R</button>
+            </div>
+            <div class="url-bar"><span>secure</span><span>http://localhost:5173/pricing</span></div>
+            <div class="browser-nav">
+              <button id="annotateBrowser" class="tiny-btn" type="button">Annotate</button>
+              <button id="sendBrowserContext" class="primary-btn" type="button">
+                Send to agent
+              </button>
+            </div>
+          </div>
+          <div class="preview-body">
+            <div class="preview-status">
+              <span>Preview Focus</span>
+              <div class="annotation-tools">
+                <button class="tiny-btn" type="button">Element</button>
+                <button class="tiny-btn" type="button">Region</button>
+                <button class="tiny-btn" type="button">Draw</button>
+              </div>
+            </div>
+            <div class="web-page">
+              <div class="web-header">
+                <div class="web-brand">Acme Launch</div>
+                <div class="web-menu">
+                  <span>Product</span><span>Pricing</span><span>Docs</span>
+                </div>
+              </div>
+              <div class="web-content">
+                <div class="web-copy">
+                  <h3>Ship cleaner workflows</h3>
+                  <p>
+                    Teams can review changes, run checks, and publish updates from a focused
+                    workspace.
+                  </p>
+                  <div class="web-cta">Start trial</div>
+                </div>
+                <div class="web-card">
+                  <div class="metric-row"><span>Build status</span><strong>Passing</strong></div>
+                  <div class="metric-row"><span>Open tasks</span><strong>7</strong></div>
+                  <div class="metric-row"><span>Preview health</span><strong>Good</strong></div>
+                  <div class="metric-row"><span>Conversion</span><strong>12.4%</strong></div>
+                </div>
+              </div>
+              <div class="selected-element"></div>
+              <div class="annotation-popover">
+                <strong>&lt;PrimaryCta&gt; selected</strong>
+                <p>Button has enough DOM context, source location, and a crop for the agent.</p>
+                <button id="attachFromPopover" class="primary-btn" type="button">
+                  Attach context
+                </button>
+              </div>
+            </div>
+            <div class="preview-footer">
+              <div class="artifact-strip">
+                <span>1 element</span><span>1 crop</span><span>DOM summary</span>
+              </div>
+              <button class="tiny-btn" type="button">Open external</button>
+            </div>
+          </div>
+        </section>
+
+        <aside class="source-panel" aria-label="Source control">
+          <div class="source-topbar">
+            <div class="source-title"><strong>Threadlines</strong><span>Source control</span></div>
+            <div class="source-actions">
+              <button class="icon-btn" type="button" aria-label="Changes">C</button>
+              <button class="icon-btn" type="button" aria-label="Refresh">R</button>
+            </div>
+          </div>
+          <div class="source-body">
+            <div class="section-head"><span>Changes</span><span>Diff +0 / -0</span></div>
+            <div class="empty-box">No working tree changes</div>
+            <div class="git-buttons">
+              <button class="primary-btn" type="button">Generate, commit & push</button>
+              <button class="tiny-btn" type="button">More</button>
+              <button class="tiny-btn" type="button">Pull</button>
+              <button class="tiny-btn" type="button">New PR</button>
+            </div>
+            <div class="branch-select"><span>main</span><span>v</span></div>
+            <div class="section-head" style="margin-top: 18px">
+              <span>Graph</span><span>24 commits+</span>
+            </div>
+            <div class="graph">
+              <div class="commit">
+                <span>Add context preview mockups</span><span class="tag">main</span>
+              </div>
+              <div class="commit">
+                <span>Refresh git refs safely</span><span class="tag">v0.0.21</span>
+              </div>
+              <div class="commit">
+                <span>Fix private GitHub release</span><span class="tag">+1</span>
+              </div>
+              <div class="commit">
+                <span>Persist optimistic source state</span><span class="tag">nightly</span>
+              </div>
+              <div class="commit"><span>Default release workflow builds</span><span></span></div>
+              <div class="commit"><span>Refine desktop bootstrap</span><span></span></div>
+              <div class="commit"><span>Preserve update manifests</span><span></span></div>
+              <div class="commit"><span>Prevent stale nightly assets</span><span></span></div>
+            </div>
+          </div>
+        </aside>
+
+        <aside class="source-rail" aria-label="Collapsed source control">
+          <div class="rail-top">SC</div>
+          <div class="rail-body">
+            <div class="rail-dot active">Git</div>
+            <div class="rail-dot">+0</div>
+            <div class="rail-dot">Diff</div>
+            <div class="mini-graph" aria-hidden="true">
+              <span></span><span></span><span></span><span></span><span></span>
+            </div>
+            <div class="rail-dot">main</div>
+          </div>
+        </aside>
+
+        <div class="context-tray-layer" aria-hidden="true">
+          <div class="context-tray-card">
+            <div class="context-tray-head">
+              <strong>Preview capture</strong>
+              <div class="browser-nav">
+                <button class="tiny-btn" type="button">Element</button>
+                <button class="tiny-btn" type="button">Region</button>
+                <button id="attachFromTray" class="primary-btn" type="button">Attach</button>
+              </div>
+            </div>
+            <div class="tray-preview">
+              <div class="web-copy">
+                <h3>Ship cleaner workflows</h3>
+                <p>Review changes, run checks, and publish updates without losing repo context.</p>
+                <div class="web-cta">Start trial</div>
+              </div>
+              <div class="tray-mini-select"></div>
+            </div>
+            <div class="tray-context-panel">
+              <p>Captured: button selector, source hint, visible text, and screenshot crop.</p>
+              <button class="tiny-btn" type="button">Keep source control open</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="files-peek-layer" aria-hidden="true">
+          <div class="files-peek-card">
+            <div class="files-peek-head">
+              <strong>Files peek</strong>
+              <div class="browser-nav">
+                <button class="tiny-btn" type="button">@ Tag</button>
+                <button id="attachFileContext" class="primary-btn" type="button">
+                  Attach file context
+                </button>
+              </div>
+            </div>
+            <div class="files-tree">
+              <div class="file-search">Search files</div>
+              <div class="file-row">src</div>
+              <div class="file-row">components</div>
+              <div class="file-row active">PreviewCapturePanel.tsx</div>
+              <div class="file-row">SourceControlPanel.tsx</div>
+              <div class="file-row">ChatComposer.tsx</div>
+              <div class="file-row">lib</div>
+              <div class="file-row">previewContext.ts</div>
+            </div>
+            <div class="file-preview">
+              <div class="file-breadcrumb">apps/web/src/components/PreviewCapturePanel.tsx</div>
+              <pre>
+type PreviewContext = {
+  url: string;
+  title: string;
+  screenshotId: string;
+  selectedElements: SelectedElement[];
+};
+
+export function attachPreviewContext(input: PreviewContext) {
+  return buildComposerContextBlock({
+    kind: "preview",
+    source: input.url,
+    elements: input.selectedElements,
+  });
+}</pre
+              >
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const appWindow = document.getElementById("appWindow");
+      const composer = document.getElementById("composer");
+      const tabs = Array.from(document.querySelectorAll(".mode-tab"));
+      const conceptButtons = Array.from(document.querySelectorAll(".concept-option"));
+      const conceptImage = document.getElementById("conceptImage");
+      const conceptTitle = document.getElementById("conceptTitle");
+      const conceptDescription = document.getElementById("conceptDescription");
+
+      const supportedModes = new Set(["normal", "preview-focus", "context-tray", "files-peek"]);
+      const conceptMap = {
+        normal: {
+          title: "Current baseline",
+          description:
+            "The day-to-day layout keeps source control as a fixed right-side command surface. This is the baseline the browser/file context ideas need to respect.",
+          image: "./threadlines-context-preview-current.png",
+          alt: "Current Threadlines layout baseline",
+        },
+        "preview-focus": {
+          title: "Preview Focus",
+          description:
+            "Best browser shape: the preview gets real width, while source control collapses into a slim repo rail instead of disappearing completely.",
+          image: "./threadlines-ai-preview-focus.png",
+          alt: "Generated Preview Focus Threadlines concept",
+        },
+        "context-tray": {
+          title: "Context Tray",
+          description:
+            "Lowest-disruption option: keep the right source-control panel intact and float browser capture only when the user is selecting context.",
+          image: "./threadlines-ai-context-tray.png",
+          alt: "Generated Context Tray Threadlines concept",
+        },
+        "files-peek": {
+          title: "Files Peek",
+          description:
+            "Use files as attachable context, not as a second editor. This keeps the feature useful without turning Threadlines into a cramped IDE clone.",
+          image: "./threadlines-ai-files-peek.png",
+          alt: "Generated Files Peek Threadlines concept",
+        },
+      };
+
+      function setMode(mode, options = {}) {
+        appWindow.className = `app-window ${mode}`;
+        tabs.forEach((tab) => tab.classList.toggle("active", tab.dataset.mode === mode));
+        conceptButtons.forEach((button) =>
+          button.classList.toggle("active", button.dataset.mode === mode),
+        );
+        const concept = conceptMap[mode] ?? conceptMap.normal;
+        conceptImage.src = concept.image;
+        conceptImage.alt = concept.alt;
+        conceptTitle.textContent = concept.title;
+        conceptDescription.textContent = concept.description;
+        if (options.updateHash !== false) {
+          const nextHash = mode === "normal" ? "" : `#${mode}`;
+          if (window.location.hash !== nextHash) {
+            history.replaceState(null, "", `${window.location.pathname}${nextHash}`);
+          }
+        }
+      }
+
+      function attachContext() {
+        composer.classList.add("has-context");
+      }
+
+      function toggleAnnotation() {
+        appWindow.classList.toggle("annotation-mode");
+      }
+
+      tabs.forEach((tab) => {
+        tab.addEventListener("click", () => setMode(tab.dataset.mode));
+      });
+
+      conceptButtons.forEach((button) => {
+        button.addEventListener("click", () => setMode(button.dataset.mode));
+      });
+
+      const initialMode = window.location.hash.replace("#", "");
+      if (supportedModes.has(initialMode)) {
+        setMode(initialMode, { updateHash: false });
+      }
+
+      document
+        .getElementById("openPreviewFromTop")
+        .addEventListener("click", () => setMode("preview-focus"));
+      document.getElementById("captureContext").addEventListener("click", attachContext);
+      document.getElementById("sendBrowserContext").addEventListener("click", attachContext);
+      document.getElementById("attachFromPopover").addEventListener("click", attachContext);
+      document.getElementById("attachFromTray").addEventListener("click", attachContext);
+      document.getElementById("attachFileContext").addEventListener("click", attachContext);
+      document.getElementById("annotateBrowser").addEventListener("click", toggleAnnotation);
+    </script>
+  </body>
+</html>
