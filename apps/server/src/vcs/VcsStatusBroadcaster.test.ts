@@ -398,15 +398,15 @@ describe("VcsStatusBroadcaster", () => {
   it("backs off remote refresh failures exponentially and honors larger configured intervals", () => {
     assert.equal(
       Duration.toMillis(VcsStatusBroadcaster.remoteRefreshFailureDelay(1, Duration.seconds(1))),
-      30_000,
+      120_000,
     );
     assert.equal(
       Duration.toMillis(VcsStatusBroadcaster.remoteRefreshFailureDelay(2, Duration.seconds(1))),
-      60_000,
+      240_000,
     );
     assert.equal(
       Duration.toMillis(VcsStatusBroadcaster.remoteRefreshFailureDelay(3, Duration.seconds(1))),
-      120_000,
+      480_000,
     );
     assert.equal(
       Duration.toMillis(VcsStatusBroadcaster.remoteRefreshFailureDelay(1, Duration.minutes(5))),
@@ -418,30 +418,30 @@ describe("VcsStatusBroadcaster", () => {
     );
   });
 
-  it("backs off unchanged successful remote refreshes up to five minutes", () => {
+  it("backs off unchanged successful remote refreshes up to ten minutes", () => {
     assert.equal(
-      Duration.toMillis(VcsStatusBroadcaster.remoteRefreshSuccessDelay(0, Duration.seconds(30))),
-      30_000,
+      Duration.toMillis(VcsStatusBroadcaster.remoteRefreshSuccessDelay(0, Duration.minutes(2))),
+      120_000,
     );
     assert.equal(
-      Duration.toMillis(VcsStatusBroadcaster.remoteRefreshSuccessDelay(1, Duration.seconds(30))),
-      30_000,
+      Duration.toMillis(VcsStatusBroadcaster.remoteRefreshSuccessDelay(1, Duration.minutes(2))),
+      120_000,
     );
     assert.equal(
-      Duration.toMillis(VcsStatusBroadcaster.remoteRefreshSuccessDelay(2, Duration.seconds(30))),
-      60_000,
-    );
-    assert.equal(
-      Duration.toMillis(VcsStatusBroadcaster.remoteRefreshSuccessDelay(4, Duration.seconds(30))),
+      Duration.toMillis(VcsStatusBroadcaster.remoteRefreshSuccessDelay(2, Duration.minutes(2))),
       240_000,
     );
     assert.equal(
-      Duration.toMillis(VcsStatusBroadcaster.remoteRefreshSuccessDelay(5, Duration.seconds(30))),
-      300_000,
+      Duration.toMillis(VcsStatusBroadcaster.remoteRefreshSuccessDelay(3, Duration.minutes(2))),
+      480_000,
     );
     assert.equal(
-      Duration.toMillis(VcsStatusBroadcaster.remoteRefreshSuccessDelay(12, Duration.seconds(30))),
-      300_000,
+      Duration.toMillis(VcsStatusBroadcaster.remoteRefreshSuccessDelay(4, Duration.minutes(2))),
+      600_000,
+    );
+    assert.equal(
+      Duration.toMillis(VcsStatusBroadcaster.remoteRefreshSuccessDelay(12, Duration.minutes(2))),
+      600_000,
     );
   });
 

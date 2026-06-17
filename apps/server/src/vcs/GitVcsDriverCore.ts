@@ -44,17 +44,17 @@ const PREPARED_COMMIT_PATCH_MAX_OUTPUT_BYTES = 12_000;
 const RANGE_COMMIT_SUMMARY_MAX_OUTPUT_BYTES = 19_000;
 const RANGE_DIFF_SUMMARY_MAX_OUTPUT_BYTES = 19_000;
 const RANGE_DIFF_PATCH_MAX_OUTPUT_BYTES = 59_000;
-const STATUS_UPSTREAM_REFRESH_INTERVAL = Duration.seconds(15);
+const STATUS_UPSTREAM_REFRESH_INTERVAL = Duration.minutes(2);
 // Healthy single-branch fetches have been observed taking up to ~6s on
 // Windows (credential helper + network jitter), so 5s produced recurring
 // false timeouts; refreshes run on background pollers, so a longer bound
 // does not block interactive status reads once the cache is warm.
 const STATUS_UPSTREAM_REFRESH_TIMEOUT = Duration.seconds(15);
-const STATUS_UPSTREAM_REFRESH_FAILURE_COOLDOWN = Duration.minutes(2);
+const STATUS_UPSTREAM_REFRESH_FAILURE_COOLDOWN = Duration.minutes(10);
 const STATUS_UPSTREAM_REFRESH_CACHE_CAPACITY = 2_048;
-const REMOTE_REFS_REFRESH_INTERVAL = Duration.seconds(30);
-const REMOTE_REFS_REFRESH_TIMEOUT = Duration.seconds(8);
-const REMOTE_REFS_REFRESH_FAILURE_COOLDOWN = Duration.minutes(2);
+const REMOTE_REFS_REFRESH_INTERVAL = Duration.minutes(2);
+const REMOTE_REFS_REFRESH_TIMEOUT = Duration.seconds(15);
+const REMOTE_REFS_REFRESH_FAILURE_COOLDOWN = Duration.minutes(10);
 const REMOTE_REFS_REFRESH_CACHE_CAPACITY = 2_048;
 const BACKGROUND_GIT_FETCH_ENV = Object.freeze({
   GCM_INTERACTIVE: "Never",
@@ -1159,6 +1159,17 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     );
   });
 
+  const refreshStatusUpstreamInBackgroundBestEffort = Effect.fn(
+    "refreshStatusUpstreamInBackgroundBestEffort",
+  )(function* (cwd: string) {
+    yield* refreshStatusUpstreamIfStale(cwd).pipe(
+      Effect.catchIf(isMissingGitCwdError, () => Effect.void),
+      Effect.ignoreCause({ log: true }),
+      Effect.forkDetach,
+      Effect.asVoid,
+    );
+  });
+
   const fetchRemoteRefsForRemote = Effect.fn("fetchRemoteRefsForRemote")(function* (
     gitCommonDir: string,
     remoteName: string,
@@ -1894,10 +1905,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
 
   const statusDetails: GitVcsDriver.GitVcsDriverShape["statusDetails"] = Effect.fn("statusDetails")(
     function* (cwd) {
-      yield* refreshStatusUpstreamIfStale(cwd).pipe(
-        Effect.catchIf(isMissingGitCwdError, () => Effect.void),
-        Effect.ignoreCause({ log: true }),
-      );
+      yield* refreshStatusUpstreamInBackgroundBestEffort(cwd);
       return yield* readStatusDetailsLocal(cwd);
     },
   );

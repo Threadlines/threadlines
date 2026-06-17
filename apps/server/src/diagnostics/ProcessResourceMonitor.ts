@@ -8,9 +8,11 @@ import type {
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Scope from "effect/Scope";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import {
@@ -23,6 +25,7 @@ import {
 
 const SAMPLE_INTERVAL_MS = 5_000;
 const SAMPLE_FAILURE_BACKOFF_MS = 30_000;
+const SAMPLER_ACTIVE_WINDOW_MS = 2 * 60_000;
 const RETENTION_MS = 60 * 60_000;
 const MAX_RETAINED_SAMPLES = 20_000;
 
@@ -44,6 +47,8 @@ interface MonitorState {
   readonly lastError: string | null;
   readonly latestRows: ReadonlyArray<ProcessRow> | null;
   readonly latestSampledAt: DateTime.Utc | null;
+  readonly samplerRequestedAtMs: number | null;
+  readonly samplerRunning: boolean;
 }
 
 export interface ProcessResourceMonitorShape {
@@ -298,11 +303,16 @@ export function aggregateProcessResourceHistory(input: {
 
 export const make = Effect.fn("makeProcessResourceMonitor")(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const monitorScope = yield* Effect.acquireRelease(Scope.make(), (scope) =>
+    Scope.close(scope, Exit.void),
+  );
   const state = yield* Ref.make<MonitorState>({
     samples: [],
     lastError: null,
     latestRows: null,
     latestSampledAt: null,
+    samplerRequestedAtMs: null,
+    samplerRunning: false,
   });
 
   const sampleOnce = Effect.gen(function* () {
@@ -319,6 +329,7 @@ export const make = Effect.fn("makeProcessResourceMonitor")(function* () {
       sampledAtMs,
     });
     yield* Ref.update(state, (current) => ({
+      ...current,
       samples: trimSamples([...current.samples, ...samples], sampledAtMs),
       lastError: null,
       latestRows: rows,
@@ -334,19 +345,60 @@ export const make = Effect.fn("makeProcessResourceMonitor")(function* () {
     ),
   );
 
-  yield* Effect.forever(
-    sampleOnce.pipe(
-      Effect.flatMap((succeeded) =>
-        Effect.sleep(succeeded ? SAMPLE_INTERVAL_MS : SAMPLE_FAILURE_BACKOFF_MS),
-      ),
+  const shouldKeepSamplerRunning = Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const nowMs = DateTime.toEpochMillis(now);
+    const current = yield* Ref.get(state);
+    return (
+      current.samplerRequestedAtMs !== null &&
+      nowMs - current.samplerRequestedAtMs <= SAMPLER_ACTIVE_WINDOW_MS
+    );
+  });
+
+  const runSamplerLoop = Effect.gen(function* () {
+    let delayMs = SAMPLE_INTERVAL_MS;
+    while (yield* shouldKeepSamplerRunning) {
+      yield* Effect.sleep(delayMs);
+      if (!(yield* shouldKeepSamplerRunning)) {
+        break;
+      }
+      delayMs = (yield* sampleOnce) ? SAMPLE_INTERVAL_MS : SAMPLE_FAILURE_BACKOFF_MS;
+    }
+  }).pipe(
+    Effect.ensuring(
+      Ref.update(state, (current) => ({
+        ...current,
+        samplerRunning: false,
+      })),
     ),
-  ).pipe(Effect.forkScoped);
+  );
+
+  const ensureSamplerRunning = Effect.gen(function* () {
+    const requestedAt = yield* DateTime.now;
+    const requestedAtMs = DateTime.toEpochMillis(requestedAt);
+    const shouldStart = yield* Ref.modify(state, (current) => [
+      !current.samplerRunning,
+      {
+        ...current,
+        samplerRequestedAtMs: requestedAtMs,
+        samplerRunning: true,
+      },
+    ]);
+    if (shouldStart) {
+      yield* runSamplerLoop.pipe(Effect.forkIn(monitorScope), Effect.asVoid);
+    }
+  });
 
   const readHistory: ProcessResourceMonitorShape["readHistory"] = (input) =>
     Effect.gen(function* () {
+      yield* ensureSamplerRunning;
+      let current = yield* Ref.get(state);
+      if (!current.latestRows) {
+        yield* sampleOnce;
+        current = yield* Ref.get(state);
+      }
       const readAt = yield* DateTime.now;
       const readAtMs = DateTime.toEpochMillis(readAt);
-      const current = yield* Ref.get(state);
       return aggregateProcessResourceHistory({
         samples: current.samples,
         readAt,

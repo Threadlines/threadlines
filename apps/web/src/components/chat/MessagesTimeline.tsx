@@ -716,6 +716,24 @@ function WorkingTimer({ createdAt }: { createdAt: string }) {
   return <span ref={textRef}>{initialText}</span>;
 }
 
+function RunningCommandTimer({ createdAt }: { createdAt: string }) {
+  const textRef = useRef<HTMLSpanElement>(null);
+  const initialText = formatWorkingTimerNow(createdAt);
+
+  useEffect(() => {
+    const updateText = () => {
+      if (textRef.current) {
+        textRef.current.textContent = formatWorkingTimerNow(createdAt);
+      }
+    };
+    updateText();
+    const id = setInterval(updateText, 1000);
+    return () => clearInterval(id);
+  }, [createdAt]);
+
+  return <span ref={textRef}>{initialText}</span>;
+}
+
 /** Live timestamp + elapsed duration for a streaming assistant message. */
 function LiveMessageMeta({
   createdAt,
@@ -2579,6 +2597,7 @@ function WorkEntrySummaryLine({
   isRunningTool,
   preview,
   rawCommand,
+  runningStartedAt,
   tone,
   visibleDiffStat,
   className,
@@ -2588,6 +2607,7 @@ function WorkEntrySummaryLine({
   isRunningTool: boolean;
   preview: string | null;
   rawCommand: string | null;
+  runningStartedAt?: string | null;
   tone: TimelineWorkEntry["tone"];
   visibleDiffStat: { additions: number; deletions: number } | null;
   className?: string;
@@ -2616,6 +2636,12 @@ function WorkEntrySummaryLine({
         {heading}
         {visibleDiffStat ? <InlineDiffStatLabel stat={visibleDiffStat} /> : null}
       </span>
+      {runningStartedAt ? (
+        <span className="ml-1.5 shrink-0 text-[10px] leading-5 text-muted-foreground/45">
+          <span aria-hidden>· </span>
+          <RunningCommandTimer createdAt={runningStartedAt} />
+        </span>
+      ) : null}
       {preview ? (
         rawCommand ? (
           <Tooltip>
@@ -3035,6 +3061,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                 isRunningTool={isRunningTool}
                 preview={preview}
                 rawCommand={rawCommand}
+                runningStartedAt={isRunningTool ? workEntry.createdAt : null}
                 tone={workEntry.tone}
                 visibleDiffStat={visibleDiffStat}
               />
@@ -3053,6 +3080,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                   isRunningTool={isRunningTool}
                   preview={preview}
                   rawCommand={null}
+                  runningStartedAt={isRunningTool ? workEntry.createdAt : null}
                   tone={workEntry.tone}
                   visibleDiffStat={visibleDiffStat}
                 />

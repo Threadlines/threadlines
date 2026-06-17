@@ -24,10 +24,10 @@ import { mergeGitStatusParts } from "@t3tools/shared/git";
 
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 
-const DEFAULT_VCS_STATUS_REFRESH_INTERVAL = Duration.seconds(30);
-const VCS_STATUS_REFRESH_FAILURE_BASE_DELAY = Duration.seconds(30);
+const DEFAULT_VCS_STATUS_REFRESH_INTERVAL = Duration.minutes(2);
+const VCS_STATUS_REFRESH_FAILURE_BASE_DELAY = Duration.minutes(2);
 const VCS_STATUS_REFRESH_FAILURE_MAX_DELAY = Duration.minutes(15);
-const VCS_STATUS_REFRESH_UNCHANGED_MAX_DELAY = Duration.minutes(5);
+const VCS_STATUS_REFRESH_UNCHANGED_MAX_DELAY = Duration.minutes(10);
 
 interface VcsStatusChange {
   readonly cwd: string;

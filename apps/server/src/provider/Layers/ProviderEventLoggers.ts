@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off
 /**
  * ProviderEventLoggers — single observability service that owns the two
  * shared NDJSON streams the provider runtime writes:
@@ -27,12 +28,18 @@
  *
  * @module provider/Layers/ProviderEventLoggers
  */
+import path from "node:path";
+
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import { ServerConfig } from "../../config.ts";
-import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import {
+  cleanupProviderEventLogDirectory,
+  type EventNdjsonLogger,
+  makeEventNdjsonLogger,
+} from "./EventNdjsonLogger.ts";
 
 export interface ProviderEventLoggersShape {
   readonly native: EventNdjsonLogger | undefined;
@@ -71,6 +78,16 @@ export const ProviderEventLoggersLive = Layer.effect(
   ProviderEventLoggers,
   Effect.gen(function* () {
     const { providerEventLogPath } = yield* ServerConfig;
+    const cleanup = yield* cleanupProviderEventLogDirectory(path.dirname(providerEventLogPath));
+    if (cleanup.deletedFiles > 0 || cleanup.errorCount > 0) {
+      const logCleanupResult = cleanup.errorCount > 0 ? Effect.logWarning : Effect.logInfo;
+      yield* logCleanupResult("provider event log cleanup completed", {
+        deletedFiles: cleanup.deletedFiles,
+        deletedBytes: cleanup.deletedBytes,
+        retainedBytes: cleanup.retainedBytes,
+        errorCount: cleanup.errorCount,
+      });
+    }
     const native = yield* makeEventNdjsonLogger(providerEventLogPath, {
       stream: "native",
     });

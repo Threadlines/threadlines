@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import * as Duration from "effect/Duration";
 import * as Schema from "effect/Schema";
 
 import { ProviderInstanceId } from "./providerInstance.ts";
@@ -47,6 +48,11 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
   it("streams agent responses by default so chat output appears progressively", () => {
     expect(DEFAULT_SERVER_SETTINGS.enableAssistantStreaming).toBe(true);
     expect(decodeServerSettings({}).enableAssistantStreaming).toBe(true);
+  });
+
+  it("uses a slower automatic Git fetch default for background remote freshness", () => {
+    expect(Duration.toMillis(DEFAULT_SERVER_SETTINGS.automaticGitFetchInterval)).toBe(120_000);
+    expect(Duration.toMillis(decodeServerSettings({}).automaticGitFetchInterval)).toBe(120_000);
   });
 
   it("decodes a fully empty config (legacy on-disk shape) without complaint", () => {

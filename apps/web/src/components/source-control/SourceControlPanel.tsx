@@ -941,7 +941,7 @@ function CommitGraphMessage({
 const GRAPH_INITIAL_LIMIT = 24;
 const GRAPH_LOAD_MORE_INCREMENT = 24;
 const BRANCH_MENU_REF_LIMIT = 14;
-const SOURCE_CONTROL_STATUS_REFRESH_INTERVAL_MS = 3_000;
+const SOURCE_CONTROL_STATUS_REFRESH_INTERVAL_MS = 5_000;
 const COMMIT_MESSAGE_EDITOR_TRANSITION_MS = 160;
 const DEFAULT_CHANGES_PANEL_HEIGHT = 150;
 // Changes is the actionable half of the split, so it gets the larger share

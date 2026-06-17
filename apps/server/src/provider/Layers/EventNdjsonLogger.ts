@@ -25,6 +25,10 @@ const DEFAULT_BATCH_WINDOW_MS = 200;
 const FLUSH_BUFFER_THRESHOLD = 32;
 const GLOBAL_THREAD_SEGMENT = "_global";
 const LOG_SCOPE = "provider-observability";
+const DEFAULT_LOG_CLEANUP_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1_000;
+const DEFAULT_LOG_CLEANUP_MAX_TOTAL_BYTES = 1024 * 1024 * 1024;
+const DEFAULT_LOG_CLEANUP_PROTECT_RECENT_MS = 24 * 60 * 60 * 1_000;
+const PROVIDER_LOG_FILE_NAME_PATTERN = /\.log(?:\.\d+)?$/;
 
 export type EventNdjsonStream = "native" | "canonical" | "orchestration";
 
@@ -41,6 +45,21 @@ export interface EventNdjsonLoggerOptions {
   readonly batchWindowMs?: number;
 }
 
+export interface ProviderEventLogCleanupOptions {
+  readonly nowMs?: number;
+  readonly maxAgeMs?: number;
+  readonly maxTotalBytes?: number;
+  readonly protectRecentMs?: number;
+}
+
+export interface ProviderEventLogCleanupResult {
+  readonly scannedFiles: number;
+  readonly deletedFiles: number;
+  readonly deletedBytes: number;
+  readonly retainedBytes: number;
+  readonly errorCount: number;
+}
+
 interface ThreadWriter {
   writeMessage: (message: string) => Effect.Effect<void>;
   close: () => Effect.Effect<void>;
@@ -53,6 +72,130 @@ interface LoggerState {
 
 function logWarning(message: string, context: Record<string, unknown>): Effect.Effect<void> {
   return Effect.logWarning(message, context).pipe(Effect.annotateLogs({ scope: LOG_SCOPE }));
+}
+
+interface LogCleanupCandidate {
+  readonly filePath: string;
+  readonly size: number;
+  readonly mtimeMs: number;
+}
+
+function isFileNotFoundError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { readonly code?: unknown }).code === "ENOENT"
+  );
+}
+
+function isProviderLogFileName(fileName: string): boolean {
+  return PROVIDER_LOG_FILE_NAME_PATTERN.test(fileName);
+}
+
+export function cleanupProviderEventLogDirectory(
+  directory: string,
+  options: ProviderEventLogCleanupOptions = {},
+): Effect.Effect<ProviderEventLogCleanupResult> {
+  return Effect.gen(function* () {
+    const readAt = yield* DateTime.now;
+    const nowMs = options.nowMs ?? DateTime.toEpochMillis(readAt);
+    const maxAgeMs = options.maxAgeMs ?? DEFAULT_LOG_CLEANUP_MAX_AGE_MS;
+    const maxTotalBytes = options.maxTotalBytes ?? DEFAULT_LOG_CLEANUP_MAX_TOTAL_BYTES;
+    const protectRecentMs = options.protectRecentMs ?? DEFAULT_LOG_CLEANUP_PROTECT_RECENT_MS;
+    return yield* Effect.sync(() => {
+      let scannedFiles = 0;
+      let deletedFiles = 0;
+      let deletedBytes = 0;
+      let errorCount = 0;
+      let entries: fs.Dirent[];
+
+      try {
+        entries = fs.readdirSync(directory, { withFileTypes: true });
+      } catch (error) {
+        return {
+          scannedFiles: 0,
+          deletedFiles: 0,
+          deletedBytes: 0,
+          retainedBytes: 0,
+          errorCount: isFileNotFoundError(error) ? 0 : 1,
+        } satisfies ProviderEventLogCleanupResult;
+      }
+
+      const remaining: LogCleanupCandidate[] = [];
+      const deleteCandidate = (candidate: LogCleanupCandidate): boolean => {
+        try {
+          fs.unlinkSync(candidate.filePath);
+          deletedFiles += 1;
+          deletedBytes += candidate.size;
+          return true;
+        } catch {
+          errorCount += 1;
+          return false;
+        }
+      };
+
+      for (const entry of entries) {
+        if (!entry.isFile() || !isProviderLogFileName(entry.name)) {
+          continue;
+        }
+
+        const filePath = path.join(directory, entry.name);
+        let stat: fs.Stats;
+        try {
+          stat = fs.statSync(filePath);
+        } catch {
+          errorCount += 1;
+          continue;
+        }
+
+        if (!stat.isFile()) {
+          continue;
+        }
+
+        scannedFiles += 1;
+        const candidate = {
+          filePath,
+          size: stat.size,
+          mtimeMs: stat.mtimeMs,
+        } satisfies LogCleanupCandidate;
+
+        if (maxAgeMs >= 0 && nowMs - candidate.mtimeMs > maxAgeMs) {
+          if (!deleteCandidate(candidate)) {
+            remaining.push(candidate);
+          }
+          continue;
+        }
+
+        remaining.push(candidate);
+      }
+
+      let retainedBytes = remaining.reduce((total, candidate) => total + candidate.size, 0);
+      if (retainedBytes > maxTotalBytes) {
+        const protectedAfterMs = nowMs - protectRecentMs;
+        const sizeCleanupCandidates = remaining
+          .filter((candidate) => candidate.mtimeMs < protectedAfterMs)
+          .toSorted((left, right) => left.mtimeMs - right.mtimeMs);
+
+        for (const candidate of sizeCleanupCandidates) {
+          if (retainedBytes <= maxTotalBytes) {
+            break;
+          }
+          if (deleteCandidate(candidate)) {
+            retainedBytes -= candidate.size;
+          }
+        }
+      }
+
+      return {
+        scannedFiles,
+        deletedFiles,
+        deletedBytes,
+        retainedBytes,
+        errorCount,
+      } satisfies ProviderEventLogCleanupResult;
+    });
+  });
 }
 
 function resolveThreadSegment(raw: string | null | undefined): string {

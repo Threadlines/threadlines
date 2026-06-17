@@ -7,7 +7,7 @@ import { ThreadId } from "@t3tools/contracts";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
-import { makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import { cleanupProviderEventLogDirectory, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 
 function parseLogLine(line: string) {
   const match = /^\[([^\]]+)\] ([A-Z]+): (.+)$/.exec(line);
@@ -29,6 +29,78 @@ function parseLogLine(line: string) {
 }
 
 describe("EventNdjsonLogger", () => {
+  it.effect("removes old provider log files without touching unrelated files", () =>
+    Effect.gen(function* () {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-log-cleanup-"));
+      const nowMs = Date.parse("2026-06-17T12:00:00.000Z");
+      const oldLogPath = path.join(tempDir, "thread-old.log");
+      const recentLogPath = path.join(tempDir, "thread-recent.log");
+      const unrelatedPath = path.join(tempDir, "state.sqlite");
+
+      try {
+        fs.writeFileSync(oldLogPath, "old");
+        fs.writeFileSync(recentLogPath, "recent");
+        fs.writeFileSync(unrelatedPath, "database");
+        const oldTimeSeconds = (nowMs - 31 * 24 * 60 * 60 * 1_000) / 1_000;
+        const recentTimeSeconds = (nowMs - 60_000) / 1_000;
+        fs.utimesSync(oldLogPath, oldTimeSeconds, oldTimeSeconds);
+        fs.utimesSync(recentLogPath, recentTimeSeconds, recentTimeSeconds);
+        fs.utimesSync(unrelatedPath, oldTimeSeconds, oldTimeSeconds);
+
+        const result = yield* cleanupProviderEventLogDirectory(tempDir, {
+          nowMs,
+          maxAgeMs: 30 * 24 * 60 * 60 * 1_000,
+          maxTotalBytes: 1_000,
+        });
+
+        assert.equal(result.scannedFiles, 2);
+        assert.equal(result.deletedFiles, 1);
+        assert.equal(fs.existsSync(oldLogPath), false);
+        assert.equal(fs.existsSync(recentLogPath), true);
+        assert.equal(fs.existsSync(unrelatedPath), true);
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }),
+  );
+
+  it.effect("shrinks provider logs by deleting older unprotected files first", () =>
+    Effect.gen(function* () {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-log-cleanup-"));
+      const nowMs = Date.parse("2026-06-17T12:00:00.000Z");
+      const oldestLogPath = path.join(tempDir, "thread-oldest.log");
+      const olderLogPath = path.join(tempDir, "thread-older.log.1");
+      const recentLogPath = path.join(tempDir, "thread-recent.log");
+
+      try {
+        fs.writeFileSync(oldestLogPath, "x".repeat(80));
+        fs.writeFileSync(olderLogPath, "y".repeat(80));
+        fs.writeFileSync(recentLogPath, "z".repeat(80));
+        const oldestTimeSeconds = (nowMs - 7 * 24 * 60 * 60 * 1_000) / 1_000;
+        const olderTimeSeconds = (nowMs - 6 * 24 * 60 * 60 * 1_000) / 1_000;
+        const recentTimeSeconds = (nowMs - 60_000) / 1_000;
+        fs.utimesSync(oldestLogPath, oldestTimeSeconds, oldestTimeSeconds);
+        fs.utimesSync(olderLogPath, olderTimeSeconds, olderTimeSeconds);
+        fs.utimesSync(recentLogPath, recentTimeSeconds, recentTimeSeconds);
+
+        const result = yield* cleanupProviderEventLogDirectory(tempDir, {
+          nowMs,
+          maxAgeMs: 30 * 24 * 60 * 60 * 1_000,
+          maxTotalBytes: 120,
+          protectRecentMs: 24 * 60 * 60 * 1_000,
+        });
+
+        assert.equal(result.scannedFiles, 3);
+        assert.equal(result.deletedFiles, 2);
+        assert.equal(fs.existsSync(oldestLogPath), false);
+        assert.equal(fs.existsSync(olderLogPath), false);
+        assert.equal(fs.existsSync(recentLogPath), true);
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }),
+  );
+
   it.effect("writes effect-style lines to thread-scoped files", () =>
     Effect.gen(function* () {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-log-"));
