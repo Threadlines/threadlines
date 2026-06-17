@@ -35,7 +35,11 @@ import { makeCodexTextGeneration } from "../../textGeneration/CodexTextGeneratio
 import { ServerConfig } from "../../config.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeCodexAdapter } from "../Layers/CodexAdapter.ts";
-import { checkCodexProviderStatus, makePendingCodexProvider } from "../Layers/CodexProvider.ts";
+import {
+  checkCodexProviderStatus,
+  consumeCodexRateLimitResetCredit,
+  makePendingCodexProvider,
+} from "../Layers/CodexProvider.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import type { ProviderDriver, ProviderInstance } from "../ProviderDriver.ts";
@@ -197,6 +201,19 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         snapshot,
         adapter,
         textGeneration,
+        accountUsage: {
+          consumeRateLimitResetCredit: (input) =>
+            consumeCodexRateLimitResetCredit({
+              binaryPath: effectiveConfig.binaryPath,
+              homePath: effectiveConfig.homePath,
+              cwd: process.cwd(),
+              idempotencyKey: input.idempotencyKey,
+              environment: processEnv,
+            }).pipe(
+              Effect.scoped,
+              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            ),
+        },
       } satisfies ProviderInstance;
     }),
 };

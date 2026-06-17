@@ -72,6 +72,7 @@ export const CLIENT_REQUEST_METHODS = {
   "account/login/cancel": "account/login/cancel",
   "account/logout": "account/logout",
   "account/rateLimits/read": "account/rateLimits/read",
+  "account/rateLimitResetCredit/consume": "account/rateLimitResetCredit/consume",
   "account/sendAddCreditsNudgeEmail": "account/sendAddCreditsNudgeEmail",
   "feedback/upload": "feedback/upload",
   "command/exec": "command/exec",
@@ -250,6 +251,7 @@ export interface ClientRequestParamsByMethod {
   readonly "account/login/cancel": typeof CodexSchema.V2CancelLoginAccountParams.Type;
   readonly "account/logout": undefined;
   readonly "account/rateLimits/read": undefined;
+  readonly "account/rateLimitResetCredit/consume": typeof CodexSchema.V2ConsumeAccountRateLimitResetCreditParams.Type;
   readonly "account/sendAddCreditsNudgeEmail": typeof CodexSchema.V2SendAddCreditsNudgeEmailParams.Type;
   readonly "feedback/upload": typeof CodexSchema.V2FeedbackUploadParams.Type;
   readonly "command/exec": typeof CodexSchema.V2CommandExecParams.Type;
@@ -338,6 +340,7 @@ export interface ClientRequestResponsesByMethod {
   readonly "account/login/cancel": typeof CodexSchema.V2CancelLoginAccountResponse.Type;
   readonly "account/logout": typeof CodexSchema.V2LogoutAccountResponse.Type;
   readonly "account/rateLimits/read": typeof CodexSchema.V2GetAccountRateLimitsResponse.Type;
+  readonly "account/rateLimitResetCredit/consume": typeof CodexSchema.V2ConsumeAccountRateLimitResetCreditResponse.Type;
   readonly "account/sendAddCreditsNudgeEmail": typeof CodexSchema.V2SendAddCreditsNudgeEmailResponse.Type;
   readonly "feedback/upload": typeof CodexSchema.V2FeedbackUploadResponse.Type;
   readonly "command/exec": typeof CodexSchema.V2CommandExecResponse.Type;
@@ -524,6 +527,7 @@ export const CLIENT_REQUEST_PARAMS = {
   "account/login/cancel": CodexSchema.V2CancelLoginAccountParams,
   "account/logout": undefined,
   "account/rateLimits/read": undefined,
+  "account/rateLimitResetCredit/consume": CodexSchema.V2ConsumeAccountRateLimitResetCreditParams,
   "account/sendAddCreditsNudgeEmail": CodexSchema.V2SendAddCreditsNudgeEmailParams,
   "feedback/upload": CodexSchema.V2FeedbackUploadParams,
   "command/exec": CodexSchema.V2CommandExecParams,
@@ -612,6 +616,7 @@ export const CLIENT_REQUEST_RESPONSES = {
   "account/login/cancel": CodexSchema.V2CancelLoginAccountResponse,
   "account/logout": CodexSchema.V2LogoutAccountResponse,
   "account/rateLimits/read": CodexSchema.V2GetAccountRateLimitsResponse,
+  "account/rateLimitResetCredit/consume": CodexSchema.V2ConsumeAccountRateLimitResetCreditResponse,
   "account/sendAddCreditsNudgeEmail": CodexSchema.V2SendAddCreditsNudgeEmailResponse,
   "feedback/upload": CodexSchema.V2FeedbackUploadResponse,
   "command/exec": CodexSchema.V2CommandExecResponse,

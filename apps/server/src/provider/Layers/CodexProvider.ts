@@ -161,7 +161,7 @@ function normalizeCodexRateLimitResetCredits(
   if (!credits) return undefined;
 
   const availableCount = Number(credits.availableCount);
-  if (!Number.isInteger(availableCount) || availableCount <= 0) {
+  if (!Number.isInteger(availableCount) || availableCount < 0) {
     return undefined;
   }
   return { availableCount };
@@ -528,11 +528,10 @@ export function buildCodexInitializeParams(): CodexSchema.V1InitializeParams {
   };
 }
 
-const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(function* (input: {
+const makeCodexAppServerClient = Effect.fn("makeCodexAppServerClient")(function* (input: {
   readonly binaryPath: string;
   readonly homePath?: string;
   readonly cwd: string;
-  readonly customModels?: ReadonlyArray<string>;
   readonly environment?: NodeJS.ProcessEnv;
 }) {
   if (!isCommandAvailable(input.binaryPath, { env: input.environment ?? process.env })) {
@@ -558,21 +557,28 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
       },
     }),
   );
-  const client = yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
+  return yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
     Effect.provide(clientContext),
   );
+});
 
-  const initialize = yield* client.request("initialize", {
-    clientInfo: {
-      name: "t3code_desktop",
-      title: "Threadlines Desktop",
-      version: "0.1.0",
-    },
-    capabilities: {
-      experimentalApi: true,
-    },
-  });
+const initializeCodexAppServerClient = Effect.fn("initializeCodexAppServerClient")(function* (
+  client: CodexClient.CodexAppServerClientShape,
+) {
+  const initialize = yield* client.request("initialize", buildCodexInitializeParams());
   yield* client.notify("initialized", undefined);
+  return initialize;
+});
+
+const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(function* (input: {
+  readonly binaryPath: string;
+  readonly homePath?: string;
+  readonly cwd: string;
+  readonly customModels?: ReadonlyArray<string>;
+  readonly environment?: NodeJS.ProcessEnv;
+}) {
+  const client = yield* makeCodexAppServerClient(input);
+  const initialize = yield* initializeCodexAppServerClient(client);
 
   // Extract the version string after the first '/' in userAgent, up to the next space or the end
   const versionMatch = initialize.userAgent.match(/\/([^\s]+)/);
@@ -609,6 +615,22 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     skills: parseCodexSkillsListResponse(skillsResponse, input.cwd),
   } satisfies CodexAppServerProviderSnapshot;
 });
+
+export const consumeCodexRateLimitResetCredit = Effect.fn("consumeCodexRateLimitResetCredit")(
+  function* (input: {
+    readonly binaryPath: string;
+    readonly homePath?: string;
+    readonly cwd: string;
+    readonly idempotencyKey: string;
+    readonly environment?: NodeJS.ProcessEnv;
+  }) {
+    const client = yield* makeCodexAppServerClient(input);
+    yield* initializeCodexAppServerClient(client);
+    return yield* client.request("account/rateLimitResetCredit/consume", {
+      idempotencyKey: input.idempotencyKey,
+    });
+  },
+);
 
 const emptyCodexModelsFromSettings = (codexSettings: CodexSettings): ServerProvider["models"] =>
   codexSettings.customModels

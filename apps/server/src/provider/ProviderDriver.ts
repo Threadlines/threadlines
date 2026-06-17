@@ -25,6 +25,7 @@ import type {
   ProviderDriverKind,
   ProviderInstanceEnvironment,
   ProviderInstanceId,
+  ServerProviderRateLimitResetCreditOutcome,
 } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
@@ -71,6 +72,18 @@ export interface ProviderInstance {
   readonly snapshot: ServerProviderShape;
   readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
   readonly textGeneration: TextGenerationShape;
+  readonly accountUsage?: ProviderAccountUsageActions | undefined;
+}
+
+export interface ProviderAccountUsageActions {
+  readonly consumeRateLimitResetCredit?: (input: {
+    readonly idempotencyKey: string;
+  }) => Effect.Effect<
+    {
+      readonly outcome: ServerProviderRateLimitResetCreditOutcome;
+    },
+    Error
+  >;
 }
 
 export interface ProviderContinuationIdentity {

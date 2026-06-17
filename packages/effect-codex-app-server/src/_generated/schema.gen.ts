@@ -244,6 +244,35 @@ export const ClientRequest__ConfigReadParams = Schema.Struct({
   includeLayers: Schema.optionalKey(Schema.Boolean),
 });
 
+export type ClientRequest__ConsumeAccountRateLimitResetCreditOutcome =
+  | "reset"
+  | "nothingToReset"
+  | "noCredit"
+  | "alreadyRedeemed";
+export const ClientRequest__ConsumeAccountRateLimitResetCreditOutcome = Schema.Literals([
+  "reset",
+  "nothingToReset",
+  "noCredit",
+  "alreadyRedeemed",
+]);
+
+export type ClientRequest__ConsumeAccountRateLimitResetCreditParams = {
+  readonly idempotencyKey: string;
+};
+export const ClientRequest__ConsumeAccountRateLimitResetCreditParams = Schema.Struct({
+  idempotencyKey: Schema.String.annotate({
+    description:
+      "Identifies one logical reset attempt. A UUID is recommended; reuse the same value when retrying that attempt.",
+  }),
+});
+
+export type ClientRequest__ConsumeAccountRateLimitResetCreditResponse = {
+  readonly outcome: ClientRequest__ConsumeAccountRateLimitResetCreditOutcome;
+};
+export const ClientRequest__ConsumeAccountRateLimitResetCreditResponse = Schema.Struct({
+  outcome: ClientRequest__ConsumeAccountRateLimitResetCreditOutcome,
+});
+
 export type ClientRequest__ExperimentalFeatureEnablementSetParams = {
   readonly enablement: { readonly [x: string]: boolean };
 };
@@ -29577,6 +29606,11 @@ export type ClientRequest =
     }
   | {
       readonly id: ClientRequest__RequestId;
+      readonly method: "account/rateLimitResetCredit/consume";
+      readonly params: ClientRequest__ConsumeAccountRateLimitResetCreditParams;
+    }
+  | {
+      readonly id: ClientRequest__RequestId;
       readonly method: "account/sendAddCreditsNudgeEmail";
       readonly params: ClientRequest__SendAddCreditsNudgeEmailParams;
     }
@@ -30065,6 +30099,13 @@ export const ClientRequest = Schema.Union(
       }),
       params: Schema.optionalKey(Schema.Null),
     }).annotate({ title: "Account/rateLimits/readRequest" }),
+    Schema.Struct({
+      id: ClientRequest__RequestId,
+      method: Schema.Literal("account/rateLimitResetCredit/consume").annotate({
+        title: "Account/rateLimitResetCredit/consumeRequestMethod",
+      }),
+      params: ClientRequest__ConsumeAccountRateLimitResetCreditParams,
+    }).annotate({ title: "Account/rateLimitResetCredit/consumeRequest" }),
     Schema.Struct({
       id: ClientRequest__RequestId,
       method: Schema.Literal("account/sendAddCreditsNudgeEmail").annotate({
@@ -32631,6 +32672,35 @@ export const V2ConfigReadParams = Schema.Struct({
   ),
   includeLayers: Schema.optionalKey(Schema.Boolean),
 }).annotate({ title: "ConfigReadParams" });
+
+export type V2ConsumeAccountRateLimitResetCreditOutcome =
+  | "reset"
+  | "nothingToReset"
+  | "noCredit"
+  | "alreadyRedeemed";
+export const V2ConsumeAccountRateLimitResetCreditOutcome = Schema.Literals([
+  "reset",
+  "nothingToReset",
+  "noCredit",
+  "alreadyRedeemed",
+]).annotate({ title: "ConsumeAccountRateLimitResetCreditOutcome" });
+
+export type V2ConsumeAccountRateLimitResetCreditParams = {
+  readonly idempotencyKey: string;
+};
+export const V2ConsumeAccountRateLimitResetCreditParams = Schema.Struct({
+  idempotencyKey: Schema.String.annotate({
+    description:
+      "Identifies one logical reset attempt. A UUID is recommended; reuse the same value when retrying that attempt.",
+  }),
+}).annotate({ title: "ConsumeAccountRateLimitResetCreditParams" });
+
+export type V2ConsumeAccountRateLimitResetCreditResponse = {
+  readonly outcome: V2ConsumeAccountRateLimitResetCreditOutcome;
+};
+export const V2ConsumeAccountRateLimitResetCreditResponse = Schema.Struct({
+  outcome: V2ConsumeAccountRateLimitResetCreditOutcome,
+}).annotate({ title: "ConsumeAccountRateLimitResetCreditResponse" });
 
 export type V2ConfigReadResponse = {
   readonly config: V2ConfigReadResponse__Config;

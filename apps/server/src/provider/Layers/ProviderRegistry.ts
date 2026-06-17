@@ -27,8 +27,10 @@ import {
   ProviderDriverKind,
   type ProviderInstanceId,
   type ServerProvider,
+  ServerProviderRateLimitResetCreditError,
   type ServerProviderUpdateState,
 } from "@t3tools/contracts";
+import { randomUUID } from "node:crypto";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
@@ -542,6 +544,43 @@ export const ProviderRegistryLive = Layer.effect(
       return yield* refreshOneSource(providerSource);
     });
 
+    const consumeRateLimitResetCredit = Effect.fn("consumeRateLimitResetCredit")(function* (input: {
+      readonly instanceId: ProviderInstanceId;
+      readonly idempotencyKey?: string;
+    }) {
+      const instance = yield* instanceRegistry.getInstance(input.instanceId);
+      if (!instance) {
+        return yield* new ServerProviderRateLimitResetCreditError({
+          instanceId: input.instanceId,
+          reason: "Provider instance was not found.",
+        });
+      }
+
+      const consume = instance.accountUsage?.consumeRateLimitResetCredit;
+      if (!consume) {
+        return yield* new ServerProviderRateLimitResetCreditError({
+          instanceId: input.instanceId,
+          reason: "Provider does not support usage reset credits.",
+        });
+      }
+
+      const outcome = yield* consume({
+        idempotencyKey: input.idempotencyKey ?? randomUUID(),
+      }).pipe(
+        Effect.map((result) => result.outcome),
+        Effect.mapError(
+          (cause) =>
+            new ServerProviderRateLimitResetCreditError({
+              instanceId: input.instanceId,
+              reason: cause instanceof Error && cause.message ? cause.message : "Reset failed.",
+              cause,
+            }),
+        ),
+      );
+      const providers = yield* refreshInstance(input.instanceId);
+      return { outcome, providers };
+    });
+
     const getProviderMaintenanceCapabilitiesForInstance = Effect.fn(
       "getProviderMaintenanceCapabilitiesForInstance",
     )(function* (instanceId: ProviderInstanceId, provider: ProviderDriverKind) {
@@ -743,6 +782,7 @@ export const ProviderRegistryLive = Layer.effect(
         refresh(provider).pipe(Effect.catchCause(recoverRefreshFailure)),
       refreshInstance: (instanceId: ProviderInstanceId) =>
         refreshInstance(instanceId).pipe(Effect.catchCause(recoverRefreshFailure)),
+      consumeRateLimitResetCredit,
       getProviderMaintenanceCapabilitiesForInstance,
       setProviderMaintenanceActionState,
       get streamChanges() {

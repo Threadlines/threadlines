@@ -618,11 +618,47 @@ export const ServerProviderUpdatedPayload = Schema.Struct({
 });
 export type ServerProviderUpdatedPayload = typeof ServerProviderUpdatedPayload.Type;
 
+export const ServerProviderRateLimitResetCreditOutcome = Schema.Literals([
+  "reset",
+  "nothingToReset",
+  "noCredit",
+  "alreadyRedeemed",
+]);
+export type ServerProviderRateLimitResetCreditOutcome =
+  typeof ServerProviderRateLimitResetCreditOutcome.Type;
+
+export const ServerProviderRateLimitResetCreditConsumeInput = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  idempotencyKey: Schema.optionalKey(TrimmedNonEmptyString),
+});
+export type ServerProviderRateLimitResetCreditConsumeInput =
+  typeof ServerProviderRateLimitResetCreditConsumeInput.Type;
+
+export const ServerProviderRateLimitResetCreditConsumeResult = Schema.Struct({
+  outcome: ServerProviderRateLimitResetCreditOutcome,
+  providers: ServerProviders,
+});
+export type ServerProviderRateLimitResetCreditConsumeResult =
+  typeof ServerProviderRateLimitResetCreditConsumeResult.Type;
+
 export const ServerProviderUpdateInput = Schema.Struct({
   provider: ProviderDriverKind,
   instanceId: Schema.optionalKey(ProviderInstanceId),
 });
 export type ServerProviderUpdateInput = typeof ServerProviderUpdateInput.Type;
+
+export class ServerProviderRateLimitResetCreditError extends Schema.TaggedErrorClass<ServerProviderRateLimitResetCreditError>()(
+  "ServerProviderRateLimitResetCreditError",
+  {
+    instanceId: ProviderInstanceId,
+    reason: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect),
+  },
+) {
+  override get message(): string {
+    return `Provider usage reset failed for ${this.instanceId}: ${this.reason}`;
+  }
+}
 
 export class ServerProviderUpdateError extends Schema.TaggedErrorClass<ServerProviderUpdateError>()(
   "ServerProviderUpdateError",

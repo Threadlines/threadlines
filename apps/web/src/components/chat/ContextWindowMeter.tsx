@@ -53,6 +53,8 @@ export function ContextWindowMeter(props: {
   usage: ContextWindowSnapshot | null;
   accountUsage?: ProviderAccountUsagePresentation | null;
   contextWindowLabel?: string | null;
+  onResetAccountUsage?: (() => void) | undefined;
+  accountUsageResetInFlight?: boolean | undefined;
 }) {
   const { usage, contextWindowLabel } = props;
   const accountUsage = props.accountUsage ?? null;
@@ -187,8 +189,20 @@ export function ContextWindowMeter(props: {
               {accountUsage.resetCredits ? (
                 <div className="flex items-baseline justify-between gap-4 whitespace-nowrap text-xs">
                   <span className="font-medium text-foreground">Reset</span>
-                  <span className="text-muted-foreground">
-                    {accountUsage.resetCredits.label} - {accountUsage.resetCredits.detail}
+                  <span className="inline-flex items-center gap-2 text-muted-foreground">
+                    <span>
+                      {accountUsage.resetCredits.label} - {accountUsage.resetCredits.detail}
+                    </span>
+                    {props.onResetAccountUsage && accountUsage.resetCredits.availableCount > 0 ? (
+                      <button
+                        type="button"
+                        disabled={props.accountUsageResetInFlight === true}
+                        onClick={props.onResetAccountUsage}
+                        className="rounded-sm border border-border/70 px-1.5 py-0.5 font-medium text-[11px] text-foreground transition-colors hover:border-border hover:bg-muted disabled:pointer-events-none disabled:opacity-55"
+                      >
+                        {props.accountUsageResetInFlight ? "Resetting" : "Reset"}
+                      </button>
+                    ) : null}
                   </span>
                 </div>
               ) : null}

@@ -608,6 +608,41 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
         }),
       );
 
+      it.effect("preserves zero Codex rate-limit reset credits when app-server reports them", () =>
+        Effect.gen(function* () {
+          const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
+            Effect.succeed(
+              makeCodexProbeSnapshot({
+                rateLimits: {
+                  rateLimits: {
+                    limitId: "codex",
+                    limitName: "Codex",
+                    planType: "pro",
+                    rateLimitReachedType: null,
+                    credits: null,
+                    individualLimit: null,
+                    primary: {
+                      usedPercent: 42,
+                      resetsAt: 1_800_000_000,
+                      windowDurationMins: 300,
+                    },
+                    secondary: null,
+                  },
+                  rateLimitsByLimitId: null,
+                  rateLimitResetCredits: {
+                    availableCount: 0,
+                  },
+                },
+              }),
+            ),
+          );
+
+          assert.deepStrictEqual(status.accountUsage?.rateLimitResetCredits, {
+            availableCount: 0,
+          });
+        }),
+      );
+
       it.effect("does not expose Codex monthly spend controls for non-enterprise plans", () =>
         Effect.gen(function* () {
           const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
@@ -1114,6 +1149,108 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             const registry = yield* ProviderRegistry;
             assert.deepStrictEqual(yield* registry.getProviders, [initialProvider]);
             assert.strictEqual(yield* Ref.get(refreshCalls), 0);
+          }).pipe(Effect.provide(runtimeServices));
+        }),
+      );
+
+      it.effect("consumes provider rate-limit reset credits and refreshes the instance", () =>
+        Effect.gen(function* () {
+          const codexDriver = ProviderDriverKind.make("codex");
+          const codexInstanceId = ProviderInstanceId.make("codex");
+          const beforeProvider = {
+            instanceId: codexInstanceId,
+            driver: codexDriver,
+            status: "ready",
+            enabled: true,
+            installed: true,
+            auth: { status: "authenticated" },
+            checkedAt: "2026-06-17T10:00:00.000Z",
+            version: "0.141.0-alpha.5",
+            models: [],
+            slashCommands: [],
+            skills: [],
+            accountUsage: {
+              source: "codex-rate-limits",
+              checkedAt: "2026-06-17T10:00:00.000Z",
+              rateLimitResetCredits: { availableCount: 1 },
+              limits: [],
+            },
+          } as const satisfies ServerProvider;
+          const afterProvider = {
+            ...beforeProvider,
+            checkedAt: "2026-06-17T10:01:00.000Z",
+            accountUsage: {
+              ...beforeProvider.accountUsage,
+              checkedAt: "2026-06-17T10:01:00.000Z",
+              rateLimitResetCredits: { availableCount: 0 },
+            },
+          } as const satisfies ServerProvider;
+          const consumedKeysRef = yield* Ref.make<ReadonlyArray<string>>([]);
+          const refreshCallsRef = yield* Ref.make(0);
+          const instance = {
+            instanceId: codexInstanceId,
+            driverKind: codexDriver,
+            continuationIdentity: {
+              driverKind: codexDriver,
+              continuationKey: "codex:instance:codex",
+            },
+            displayName: undefined,
+            enabled: true,
+            snapshot: {
+              maintenanceCapabilities: makeManualOnlyProviderMaintenanceCapabilities({
+                provider: codexDriver,
+                packageName: null,
+              }),
+              getSnapshot: Effect.succeed(beforeProvider),
+              refresh: Ref.update(refreshCallsRef, (count) => count + 1).pipe(
+                Effect.as(afterProvider),
+              ),
+              streamChanges: Stream.empty,
+            },
+            adapter: {} as ProviderInstance["adapter"],
+            textGeneration: {} as ProviderInstance["textGeneration"],
+            accountUsage: {
+              consumeRateLimitResetCredit: ({ idempotencyKey }) =>
+                Ref.update(consumedKeysRef, (keys) => [...keys, idempotencyKey]).pipe(
+                  Effect.as({ outcome: "reset" as const }),
+                ),
+            },
+          } satisfies ProviderInstance;
+          const instanceRegistryLayer = Layer.succeed(ProviderInstanceRegistry, {
+            getInstance: (instanceId) =>
+              Effect.succeed(instanceId === codexInstanceId ? instance : undefined),
+            listInstances: Effect.succeed([instance]),
+            listUnavailable: Effect.succeed([]),
+            streamChanges: Stream.empty,
+            subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), (pubsub) =>
+              PubSub.subscribe(pubsub),
+            ),
+          });
+          const scope = yield* Scope.make();
+          yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+          const runtimeServices = yield* Layer.build(
+            ProviderRegistryLive.pipe(
+              Layer.provideMerge(instanceRegistryLayer),
+              Layer.provideMerge(
+                ServerConfig.layerTest(process.cwd(), {
+                  prefix: "t3-provider-registry-reset-credit-",
+                }),
+              ),
+              Layer.provideMerge(NodeServices.layer),
+            ),
+          ).pipe(Scope.provide(scope));
+
+          yield* Effect.gen(function* () {
+            const registry = yield* ProviderRegistry;
+            const result = yield* registry.consumeRateLimitResetCredit({
+              instanceId: codexInstanceId,
+              idempotencyKey: "reset-attempt-1",
+            });
+
+            assert.strictEqual(result.outcome, "reset");
+            assert.deepStrictEqual(result.providers, [afterProvider]);
+            assert.deepStrictEqual(yield* Ref.get(consumedKeysRef), ["reset-attempt-1"]);
+            assert.strictEqual(yield* Ref.get(refreshCallsRef), 1);
           }).pipe(Effect.provide(runtimeServices));
         }),
       );

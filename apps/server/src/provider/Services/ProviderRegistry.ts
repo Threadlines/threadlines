@@ -10,6 +10,9 @@ import type {
   ProviderInstanceId,
   ProviderDriverKind,
   ServerProvider,
+  ServerProviderRateLimitResetCreditConsumeInput,
+  ServerProviderRateLimitResetCreditConsumeResult,
+  ServerProviderRateLimitResetCreditError,
   ServerProviderUpdateState,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -47,6 +50,17 @@ export interface ProviderRegistryShape {
   readonly refreshInstance: (
     instanceId: ProviderInstanceId,
   ) => Effect.Effect<ReadonlyArray<ServerProvider>>;
+
+  /**
+   * Consume one provider-managed reset credit for the configured instance,
+   * then refresh that instance snapshot so callers receive current usage.
+   */
+  readonly consumeRateLimitResetCredit: (
+    input: ServerProviderRateLimitResetCreditConsumeInput,
+  ) => Effect.Effect<
+    ServerProviderRateLimitResetCreditConsumeResult,
+    ServerProviderRateLimitResetCreditError
+  >;
 
   /**
    * Resolve the maintenance capabilities owned by one live provider instance.

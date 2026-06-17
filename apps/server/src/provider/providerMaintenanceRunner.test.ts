@@ -209,6 +209,10 @@ function makeRegistry(
       getProviders: Ref.get(providersRef),
       refresh: () => Ref.get(providersRef),
       refreshInstance: () => Ref.get(providersRef),
+      consumeRateLimitResetCredit: () =>
+        Ref.get(providersRef).pipe(
+          Effect.map((providers) => ({ outcome: "nothingToReset" as const, providers })),
+        ),
       getProviderMaintenanceCapabilitiesForInstance: (_instanceId, provider) =>
         Effect.succeed(lifecycleFor(provider)),
       setProviderMaintenanceActionState,

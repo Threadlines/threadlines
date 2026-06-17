@@ -123,6 +123,9 @@ import {
 import {
   ServerConfigStreamEvent,
   ServerConfig,
+  ServerProviderRateLimitResetCreditConsumeInput,
+  ServerProviderRateLimitResetCreditConsumeResult,
+  ServerProviderRateLimitResetCreditError,
   ServerProviderUpdateError,
   ServerProviderUpdateInput,
   ServerLifecycleStreamEvent,
@@ -203,6 +206,7 @@ export const WS_METHODS = {
   // Server meta
   serverGetConfig: "server.getConfig",
   serverRefreshProviders: "server.refreshProviders",
+  serverConsumeProviderRateLimitResetCredit: "server.consumeProviderRateLimitResetCredit",
   serverUpdateProvider: "server.updateProvider",
   serverUpsertKeybinding: "server.upsertKeybinding",
   serverRemoveKeybinding: "server.removeKeybinding",
@@ -274,6 +278,15 @@ export const WsServerRefreshProvidersRpc = Rpc.make(WS_METHODS.serverRefreshProv
   }),
   success: ServerProviderUpdatedPayload,
 });
+
+export const WsServerConsumeProviderRateLimitResetCreditRpc = Rpc.make(
+  WS_METHODS.serverConsumeProviderRateLimitResetCredit,
+  {
+    payload: ServerProviderRateLimitResetCreditConsumeInput,
+    success: ServerProviderRateLimitResetCreditConsumeResult,
+    error: ServerProviderRateLimitResetCreditError,
+  },
+);
 
 export const WsServerUpdateProviderRpc = Rpc.make(WS_METHODS.serverUpdateProvider, {
   payload: ServerProviderUpdateInput,
@@ -757,6 +770,7 @@ export const WsSubscribeAuthAccessRpc = Rpc.make(WS_METHODS.subscribeAuthAccess,
 export const WsRpcGroup = RpcGroup.make(
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
+  WsServerConsumeProviderRateLimitResetCreditRpc,
   WsServerUpdateProviderRpc,
   WsServerUpsertKeybindingRpc,
   WsServerRemoveKeybindingRpc,

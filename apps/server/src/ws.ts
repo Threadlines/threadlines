@@ -923,6 +923,14 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             ).pipe(Effect.map((providers) => ({ providers }))),
             { "rpc.aggregate": "server" },
           ),
+        [WS_METHODS.serverConsumeProviderRateLimitResetCredit]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverConsumeProviderRateLimitResetCredit,
+            providerRegistry.consumeRateLimitResetCredit(input),
+            {
+              "rpc.aggregate": "server",
+            },
+          ),
         [WS_METHODS.serverUpdateProvider]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverUpdateProvider,

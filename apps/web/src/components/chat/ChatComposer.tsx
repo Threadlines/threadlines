@@ -9,6 +9,7 @@ import type {
   RuntimeMode,
   ScopedThreadRef,
   ServerProvider,
+  ServerProviderRateLimitResetCreditOutcome,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -86,9 +87,19 @@ import { basenameOfPath } from "../../vscode-icons";
 import { cn, randomUUID } from "~/lib/utils";
 import { Separator } from "../ui/separator";
 import { Button } from "../ui/button";
+import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "../ui/alert-dialog";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
+import { ensureLocalApi } from "~/localApi";
 import {
   BotIcon,
   CameraIcon,
@@ -139,6 +150,43 @@ const COMPOSER_FLOATING_LAYER_SELECTOR = [
   '[data-slot="combobox-popup"]',
   '[data-slot="autocomplete-popup"]',
 ].join(",");
+const CODEX_PROVIDER_DRIVER = ProviderDriverKind.make("codex");
+
+type AccountUsageResetDialogState = {
+  readonly instanceId: ProviderInstanceId;
+  readonly availableCount: number;
+};
+
+function toastForAccountUsageResetOutcome(outcome: ServerProviderRateLimitResetCreditOutcome): {
+  readonly type: "success" | "info" | "warning";
+  readonly title: string;
+  readonly description?: string;
+} {
+  switch (outcome) {
+    case "reset":
+      return {
+        type: "success",
+        title: "Codex usage reset",
+        description: "Your Codex rate-limit windows were refreshed.",
+      };
+    case "nothingToReset":
+      return {
+        type: "info",
+        title: "Nothing to reset",
+        description: "Codex did not find an active usage limit to reset.",
+      };
+    case "noCredit":
+      return {
+        type: "warning",
+        title: "No reset credit available",
+      };
+    case "alreadyRedeemed":
+      return {
+        type: "info",
+        title: "Reset already applied",
+      };
+  }
+}
 
 const extendReplacementRangeForTrailingSpace = (
   text: string,
@@ -326,6 +374,8 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
+  onResetAccountUsage?: (() => void) | undefined;
+  accountUsageResetInFlight?: boolean | undefined;
 }) {
   return (
     <>
@@ -333,6 +383,8 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         usage={props.activeContextWindow}
         accountUsage={props.providerAccountUsage}
         contextWindowLabel={props.contextWindowLabel}
+        onResetAccountUsage={props.onResetAccountUsage}
+        accountUsageResetInFlight={props.accountUsageResetInFlight}
       />
       {props.isPreparingWorktree ? (
         <span className="text-muted-foreground/70 text-xs">Preparing worktree...</span>
@@ -745,6 +797,42 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     () => deriveProviderAccountUsagePresentationForProvider(selectedProviderStatus),
     [selectedProviderStatus],
   );
+  const [pendingAccountUsageReset, setPendingAccountUsageReset] =
+    useState<AccountUsageResetDialogState | null>(null);
+  const [isResettingAccountUsage, setIsResettingAccountUsage] = useState(false);
+  const selectedProviderResetCredits = selectedProviderAccountUsage?.resetCredits ?? null;
+  const canResetSelectedProviderUsage =
+    selectedProviderStatus?.driver === CODEX_PROVIDER_DRIVER &&
+    (selectedProviderResetCredits?.availableCount ?? 0) > 0;
+  const requestSelectedProviderUsageReset = useCallback(() => {
+    if (!canResetSelectedProviderUsage || !selectedProviderResetCredits) return;
+    setPendingAccountUsageReset({
+      instanceId: selectedInstanceId,
+      availableCount: selectedProviderResetCredits.availableCount,
+    });
+  }, [canResetSelectedProviderUsage, selectedInstanceId, selectedProviderResetCredits]);
+  const confirmSelectedProviderUsageReset = useCallback(async () => {
+    const pendingReset = pendingAccountUsageReset;
+    if (!pendingReset || isResettingAccountUsage) return;
+
+    setIsResettingAccountUsage(true);
+    try {
+      const result = await ensureLocalApi().server.consumeProviderRateLimitResetCredit({
+        instanceId: pendingReset.instanceId,
+        idempotencyKey: randomUUID(),
+      });
+      toastManager.add(toastForAccountUsageResetOutcome(result.outcome));
+      setPendingAccountUsageReset(null);
+    } catch (error: unknown) {
+      toastManager.add({
+        type: "error",
+        title: "Usage reset failed",
+        description: unknownErrorMessage(error, "Codex could not reset usage right now."),
+      });
+    } finally {
+      setIsResettingAccountUsage(false);
+    }
+  }, [isResettingAccountUsage, pendingAccountUsageReset]);
   const selectedProviderModels = useMemo<ReadonlyArray<ServerProvider["models"][number]>>(
     () => selectedProviderEntry?.models ?? [],
     [selectedProviderEntry],
@@ -2557,12 +2645,52 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
                   onInterrupt={handleInterruptPrimaryAction}
                   onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryAction}
+                  onResetAccountUsage={
+                    canResetSelectedProviderUsage ? requestSelectedProviderUsageReset : undefined
+                  }
+                  accountUsageResetInFlight={isResettingAccountUsage}
                 />
               </div>
             </div>
           )}
         </div>
       </div>
+      <AlertDialog
+        open={pendingAccountUsageReset !== null}
+        onOpenChange={(open) => {
+          if (!open && !isResettingAccountUsage) {
+            setPendingAccountUsageReset(null);
+          }
+        }}
+      >
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reset Codex usage?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This spends{" "}
+              {pendingAccountUsageReset?.availableCount === 1
+                ? "your reset credit"
+                : `1 of your ${pendingAccountUsageReset?.availableCount ?? 0} reset credits`}{" "}
+              and refreshes your current Codex rate-limit windows so you can keep working. This
+              cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose
+              render={<Button type="button" variant="outline" disabled={isResettingAccountUsage} />}
+            >
+              Cancel
+            </AlertDialogClose>
+            <Button
+              type="button"
+              onClick={confirmSelectedProviderUsageReset}
+              disabled={isResettingAccountUsage}
+            >
+              {isResettingAccountUsage ? "Resetting" : "Reset usage"}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
     </form>
   );
 });
