@@ -43,7 +43,7 @@
     "build:desktop": "turbo run build --filter=@t3tools/desktop --filter=t3",
     "typecheck": "turbo run typecheck",
     "lint": "NODE_OPTIONS=--experimental-strip-types oxlint --report-unused-disable-directives",
-    "test": "turbo run test",
+    "test": "turbo run test --concurrency=4",
     "test:desktop-smoke": "turbo run smoke-test --filter=@t3tools/desktop",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",

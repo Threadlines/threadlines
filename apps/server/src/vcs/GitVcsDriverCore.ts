@@ -831,6 +831,9 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const path = yield* Path.Path;
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const { worktreesDir } = yield* ServerConfig;
+  const backgroundScope = yield* Effect.acquireRelease(Scope.make(), (scope) =>
+    Scope.close(scope, Exit.void),
+  );
 
   const executeRaw: GitVcsDriver.GitVcsDriverShape["execute"] = Effect.fnUntraced(
     function* (input) {
@@ -1124,6 +1127,11 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     return path.isAbsolute(gitCommonDir) ? gitCommonDir : path.resolve(cwd, gitCommonDir);
   });
 
+  const gitCommonDirMetadataCwd = (gitCommonDir: string): string =>
+    path.basename(gitCommonDir) === ".git"
+      ? path.dirname(path.dirname(gitCommonDir))
+      : path.dirname(gitCommonDir);
+
   const refreshStatusRemoteCacheEntry = Effect.fn("refreshStatusRemoteCacheEntry")(function* (
     cacheKey: StatusRemoteRefreshCacheKey,
   ) {
@@ -1165,7 +1173,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     yield* refreshStatusUpstreamIfStale(cwd).pipe(
       Effect.catchIf(isMissingGitCwdError, () => Effect.void),
       Effect.ignoreCause({ log: true }),
-      Effect.forkDetach,
+      Effect.forkIn(backgroundScope),
       Effect.asVoid,
     );
   });
@@ -1241,13 +1249,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const refreshRemoteRefsCacheEntry = Effect.fn("refreshRemoteRefsCacheEntry")(function* (
     cacheKey: RemoteRefsRefreshCacheKey,
   ) {
-    const fetchCwd =
-      path.basename(cacheKey.gitCommonDir) === ".git"
-        ? path.dirname(cacheKey.gitCommonDir)
-        : cacheKey.gitCommonDir;
+    const metadataCwd = gitCommonDirMetadataCwd(cacheKey.gitCommonDir);
     const remoteNamesResult = yield* executeGit(
       "GitVcsDriver.refreshRemoteRefs.remoteNames",
-      fetchCwd,
+      metadataCwd,
       ["--git-dir", cacheKey.gitCommonDir, "remote"],
       {
         allowNonZeroExit: true,
@@ -1257,7 +1262,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     if (remoteNamesResult.exitCode !== 0) {
       return yield* createGitCommandError(
         "GitVcsDriver.refreshRemoteRefs.remoteNames",
-        fetchCwd,
+        metadataCwd,
         ["--git-dir", cacheKey.gitCommonDir, "remote"],
         remoteNamesResult.stderr.trim() || "git remote failed",
       );
@@ -1311,7 +1316,11 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     operation: string,
     cwd: string,
     options?: { readonly includeTags?: boolean },
-  ) => refreshRemoteRefsBestEffort(operation, cwd, options).pipe(Effect.forkDetach, Effect.asVoid);
+  ) =>
+    refreshRemoteRefsBestEffort(operation, cwd, options).pipe(
+      Effect.forkIn(backgroundScope),
+      Effect.asVoid,
+    );
 
   const resolveDefaultBranchName = (
     cwd: string,

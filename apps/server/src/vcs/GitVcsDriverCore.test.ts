@@ -1,3 +1,5 @@
+import { setTimeout as sleepRealTime } from "node:timers/promises";
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it, describe } from "@effect/vitest";
 import * as Clock from "effect/Clock";
@@ -27,8 +29,29 @@ const makeTmpDir = (
 ): Effect.Effect<string, PlatformError.PlatformError, FileSystem.FileSystem | Scope.Scope> =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
-    return yield* fileSystem.makeTempDirectoryScoped({ prefix });
+    const directory = yield* fileSystem.makeTempDirectory({ prefix });
+    yield* Effect.addFinalizer(() => removeTempDirectoryWithRetry(fileSystem, directory));
+    return directory;
   });
+
+const removeTempDirectoryWithRetry = (
+  fileSystem: FileSystem.FileSystem,
+  directory: string,
+  attemptsRemaining = 10,
+): Effect.Effect<void> =>
+  fileSystem
+    .remove(directory, { recursive: true, force: true })
+    .pipe(
+      Effect.catch((error) =>
+        attemptsRemaining <= 1
+          ? Effect.logWarning(`Failed to remove temporary Git test directory ${directory}`, error)
+          : Effect.promise(() => sleepRealTime(50)).pipe(
+              Effect.andThen(() =>
+                removeTempDirectoryWithRetry(fileSystem, directory, attemptsRemaining - 1),
+              ),
+            ),
+      ),
+    );
 
 const writeTextFile = (
   cwd: string,
@@ -81,6 +104,32 @@ const waitForGitOutput = (
     } while ((yield* Clock.currentTimeMillis) - startedAtMs < 5_000);
     return yield* new WaitForGitOutputError({
       message: `Timed out waiting for git ${args.join(" ")}.`,
+    });
+  });
+
+const waitForFileText = (
+  filePath: string,
+  predicate: (output: string) => boolean,
+): Effect.Effect<
+  void,
+  PlatformError.PlatformError | WaitForGitOutputError,
+  FileSystem.FileSystem
+> =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const startedAtMs = yield* Clock.currentTimeMillis;
+    let output = "";
+    do {
+      output = yield* fileSystem
+        .readFileString(filePath)
+        .pipe(Effect.catch(() => Effect.succeed("")));
+      if (predicate(output)) {
+        return;
+      }
+      yield* TestClock.adjust("50 millis");
+    } while ((yield* Clock.currentTimeMillis) - startedAtMs < 5_000);
+    return yield* new WaitForGitOutputError({
+      message: `Timed out waiting for file ${filePath}.`,
     });
   });
 
@@ -374,6 +423,7 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
 
           yield* (yield* GitVcsDriver.GitVcsDriver).statusDetails(cwd);
 
+          yield* waitForFileText(sshLogPath, (output) => output.trim() === "never");
           assert.equal((yield* fileSystem.readFileString(sshLogPath)).trim(), "never");
         }).pipe(
           Effect.ensuring(
