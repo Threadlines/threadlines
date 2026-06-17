@@ -17,7 +17,7 @@ import {
   ResolvedKeybindingsConfig,
 } from "./keybindings.ts";
 import { EditorId } from "./editor.ts";
-import { ModelCapabilities } from "./model.ts";
+import { ModelCapabilities, ModelUpgradeInfo } from "./model.ts";
 import { RuntimeMode } from "./orchestration.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { ServerSettings } from "./settings.ts";
@@ -94,10 +94,16 @@ export const ServerProviderUsageLimit = Schema.Struct({
 });
 export type ServerProviderUsageLimit = typeof ServerProviderUsageLimit.Type;
 
+export const ServerProviderRateLimitResetCredits = Schema.Struct({
+  availableCount: NonNegativeInt,
+});
+export type ServerProviderRateLimitResetCredits = typeof ServerProviderRateLimitResetCredits.Type;
+
 export const ServerProviderAccountUsage = Schema.Struct({
   source: Schema.Literals(["codex-rate-limits", "claude-oauth-usage"]),
   checkedAt: IsoDateTime,
   primaryLimitId: Schema.optional(TrimmedNonEmptyString),
+  rateLimitResetCredits: Schema.optional(ServerProviderRateLimitResetCredits),
   limits: Schema.Array(ServerProviderUsageLimit),
 });
 export type ServerProviderAccountUsage = typeof ServerProviderAccountUsage.Type;
@@ -109,6 +115,11 @@ export const ServerProviderModel = Schema.Struct({
   shortName: Schema.optional(TrimmedNonEmptyString),
   subProvider: Schema.optional(TrimmedNonEmptyString),
   isCustom: Schema.Boolean,
+  isDefault: Schema.optional(Schema.Boolean),
+  isHidden: Schema.optional(Schema.Boolean),
+  availabilityMessage: Schema.optional(TrimmedNonEmptyString),
+  upgrade: Schema.optional(TrimmedNonEmptyString),
+  upgradeInfo: Schema.optional(ModelUpgradeInfo),
   capabilities: Schema.NullOr(ModelCapabilities),
   // Restricts the provider-level runtime modes for this model. Absent means
   // the model supports every mode the provider advertises.

@@ -33,7 +33,11 @@ import { deepMerge } from "@t3tools/shared/Struct";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 
-import { checkCodexProviderStatus, type CodexAppServerProviderSnapshot } from "./CodexProvider.ts";
+import {
+  checkCodexProviderStatus,
+  parseCodexModelListResponse,
+  type CodexAppServerProviderSnapshot,
+} from "./CodexProvider.ts";
 import { checkClaudeProviderStatus } from "./ClaudeProvider.ts";
 import { OpenCodeRuntimeLive } from "../opencodeRuntime.ts";
 import { NoOpProviderEventLoggers, ProviderEventLoggers } from "./ProviderEventLoggers.ts";
@@ -47,7 +51,11 @@ import {
 } from "./ProviderRegistry.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService, type ServerSettingsShape } from "../../serverSettings.ts";
-import { readProviderStatusCache, resolveProviderStatusCachePath } from "../providerStatusCache.ts";
+import {
+  readProviderStatusCache,
+  resolveProviderStatusCachePath,
+  writeProviderStatusCache,
+} from "../providerStatusCache.ts";
 import type { ProviderInstance } from "../ProviderDriver.ts";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
 import { ProviderRegistry } from "../Services/ProviderRegistry.ts";
@@ -349,6 +357,93 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
         }),
       );
 
+      it("maps Codex app-server model metadata into provider models", () => {
+        const response: Parameters<typeof parseCodexModelListResponse>[0] = {
+          data: [
+            {
+              defaultReasoningEffort: "medium",
+              defaultServiceTier: "priority",
+              description: "Latest Codex model for agentic coding.",
+              displayName: "gpt-5.5-codex",
+              hidden: true,
+              id: "model_catalog:gpt-5.5",
+              inputModalities: ["text"],
+              isDefault: true,
+              model: "gpt-5.5",
+              serviceTiers: [
+                {
+                  id: "priority",
+                  name: "Priority",
+                  description: "Use priority capacity when available.",
+                },
+              ],
+              supportedReasoningEfforts: [
+                { reasoningEffort: "low", description: "Faster, lighter reasoning." },
+                { reasoningEffort: "medium", description: "Balanced reasoning." },
+              ],
+              supportsPersonality: true,
+              upgrade: "Use GPT-5.5 for best results.",
+              upgradeInfo: {
+                model: "gpt-5.6",
+                modelLink: "https://example.test/models/gpt-5.6",
+                upgradeCopy: "Try the newer Codex model.",
+                migrationMarkdown: "No prompt changes required.",
+              },
+            },
+          ],
+        };
+
+        assert.deepStrictEqual(parseCodexModelListResponse(response), [
+          {
+            slug: "gpt-5.5",
+            name: "GPT-5.5-Codex",
+            description: "Latest Codex model for agentic coding.",
+            isCustom: false,
+            isDefault: true,
+            isHidden: true,
+            upgrade: "Use GPT-5.5 for best results.",
+            upgradeInfo: {
+              model: "gpt-5.6",
+              modelLink: "https://example.test/models/gpt-5.6",
+              upgradeCopy: "Try the newer Codex model.",
+              migrationMarkdown: "No prompt changes required.",
+            },
+            capabilities: {
+              inputModalities: ["text"],
+              supportsPersonality: true,
+              optionDescriptors: [
+                {
+                  id: "reasoningEffort",
+                  label: "Reasoning",
+                  type: "select",
+                  options: [
+                    { id: "low", label: "Low" },
+                    { id: "medium", label: "Medium", isDefault: true },
+                  ],
+                  currentValue: "medium",
+                },
+                {
+                  id: "serviceTier",
+                  label: "Speed",
+                  description: "1.5x speed. Increased usage.",
+                  type: "select",
+                  options: [
+                    { id: "default", label: "Standard" },
+                    {
+                      id: "priority",
+                      label: "Priority",
+                      description: "Use priority capacity when available.",
+                      isDefault: true,
+                    },
+                  ],
+                  currentValue: "priority",
+                },
+              ],
+            },
+          },
+        ]);
+      });
+
       it.effect("returns unauthenticated when app-server requires OpenAI auth", () =>
         Effect.gen(function* () {
           const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
@@ -465,6 +560,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
                     },
                   },
                   rateLimitsByLimitId: null,
+                  rateLimitResetCredits: {
+                    availableCount: 2,
+                  },
                 },
               }),
             ),
@@ -474,6 +572,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             source: "codex-rate-limits",
             checkedAt: status.checkedAt,
             primaryLimitId: "codex",
+            rateLimitResetCredits: {
+              availableCount: 2,
+            },
             limits: [
               {
                 limitId: "codex",
@@ -861,6 +962,89 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
         );
       });
 
+      it("drops stale cached Codex models when a refreshed app-server list is available", () => {
+        const previousProvider = {
+          instanceId: ProviderInstanceId.make("codex"),
+          driver: ProviderDriverKind.make("codex"),
+          status: "ready",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          checkedAt: "2026-06-16T12:00:00.000Z",
+          version: "0.140.0",
+          models: [
+            {
+              slug: "gpt-5.5",
+              name: "GPT-5.5",
+              isCustom: false,
+              capabilities: createModelCapabilities({
+                optionDescriptors: [
+                  selectDescriptor("reasoningEffort", "Reasoning", [
+                    { id: "medium", label: "Medium", isDefault: true },
+                  ]),
+                ],
+              }),
+            },
+            {
+              slug: "gpt-5.2",
+              name: "GPT-5.2",
+              isCustom: false,
+              capabilities: createModelCapabilities({
+                optionDescriptors: [
+                  selectDescriptor("reasoningEffort", "Reasoning", [
+                    { id: "medium", label: "Medium", isDefault: true },
+                  ]),
+                ],
+              }),
+            },
+          ],
+          slashCommands: [],
+          skills: [],
+        } as const satisfies ServerProvider;
+        const refreshedProvider = {
+          ...previousProvider,
+          checkedAt: "2026-06-16T12:01:00.000Z",
+          models: [
+            {
+              slug: "gpt-5.5",
+              name: "GPT-5.5",
+              description: "Frontier model for complex coding, research, and real-world work.",
+              isCustom: false,
+              isDefault: true,
+              capabilities: createModelCapabilities({
+                inputModalities: ["text", "image"],
+                supportsPersonality: true,
+                optionDescriptors: [
+                  selectDescriptor("reasoningEffort", "Reasoning", [
+                    { id: "medium", label: "Medium", isDefault: true },
+                  ]),
+                ],
+              }),
+            },
+            {
+              slug: "gpt-5.4",
+              name: "GPT-5.4",
+              isCustom: false,
+              capabilities: createModelCapabilities({
+                inputModalities: ["text", "image"],
+                optionDescriptors: [
+                  selectDescriptor("reasoningEffort", "Reasoning", [
+                    { id: "medium", label: "Medium", isDefault: true },
+                  ]),
+                ],
+              }),
+            },
+          ],
+        } satisfies ServerProvider;
+
+        assert.deepStrictEqual(
+          mergeProviderSnapshot(previousProvider, refreshedProvider).models.map(
+            (model) => model.slug,
+          ),
+          ["gpt-5.5", "gpt-5.4"],
+        );
+      });
+
       it.effect("does not run provider probes during layer construction", () =>
         Effect.gen(function* () {
           const codexDriver = ProviderDriverKind.make("codex");
@@ -930,6 +1114,126 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             const registry = yield* ProviderRegistry;
             assert.deepStrictEqual(yield* registry.getProviders, [initialProvider]);
             assert.strictEqual(yield* Ref.get(refreshCalls), 0);
+          }).pipe(Effect.provide(runtimeServices));
+        }),
+      );
+
+      it.effect("drops stale cached Codex models during boot hydration", () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseDir = yield* fs.makeTempDirectoryScoped({
+            prefix: "t3-provider-registry-codex-cache-prune-",
+          });
+          const cacheDir = path.join(baseDir, "caches");
+          yield* fs.makeDirectory(cacheDir, { recursive: true });
+
+          const codexDriver = ProviderDriverKind.make("codex");
+          const codexInstanceId = ProviderInstanceId.make("codex");
+          const liveProvider = {
+            instanceId: codexInstanceId,
+            driver: codexDriver,
+            status: "warning",
+            enabled: true,
+            installed: false,
+            auth: { status: "unknown" },
+            checkedAt: "2026-06-16T12:01:00.000Z",
+            version: null,
+            message: "Checking Codex provider status.",
+            models: [
+              {
+                slug: "gpt-5.5",
+                name: "GPT-5.5",
+                isCustom: false,
+                capabilities: createModelCapabilities({
+                  optionDescriptors: [
+                    selectDescriptor("reasoningEffort", "Reasoning", [
+                      { id: "medium", label: "Medium", isDefault: true },
+                    ]),
+                  ],
+                }),
+              },
+            ],
+            slashCommands: [],
+            skills: [],
+          } as const satisfies ServerProvider;
+          const cachedProvider = {
+            ...liveProvider,
+            status: "ready",
+            installed: true,
+            auth: { status: "authenticated" },
+            checkedAt: "2026-06-16T12:00:00.000Z",
+            version: "0.140.0",
+            message: "Cached ready status.",
+            models: [
+              ...liveProvider.models,
+              {
+                slug: "gpt-5.2",
+                name: "GPT-5.2",
+                isCustom: false,
+                capabilities: createModelCapabilities({
+                  optionDescriptors: [
+                    selectDescriptor("reasoningEffort", "Reasoning", [
+                      { id: "medium", label: "Medium", isDefault: true },
+                    ]),
+                  ],
+                }),
+              },
+            ],
+          } as const satisfies ServerProvider;
+          const cachePath = yield* resolveProviderStatusCachePath({
+            cacheDir,
+            instanceId: codexInstanceId,
+          });
+          yield* writeProviderStatusCache({ filePath: cachePath, provider: cachedProvider });
+
+          const instance = {
+            instanceId: codexInstanceId,
+            driverKind: codexDriver,
+            continuationIdentity: {
+              driverKind: codexDriver,
+              continuationKey: "codex:instance:codex",
+            },
+            displayName: undefined,
+            enabled: true,
+            snapshot: {
+              maintenanceCapabilities: makeManualOnlyProviderMaintenanceCapabilities({
+                provider: codexDriver,
+                packageName: null,
+              }),
+              getSnapshot: Effect.succeed(liveProvider),
+              refresh: Effect.never,
+              streamChanges: Stream.empty,
+            },
+            adapter: {} as ProviderInstance["adapter"],
+            textGeneration: {} as ProviderInstance["textGeneration"],
+          } satisfies ProviderInstance;
+          const instanceRegistryLayer = Layer.succeed(ProviderInstanceRegistry, {
+            getInstance: (instanceId) =>
+              Effect.succeed(instanceId === codexInstanceId ? instance : undefined),
+            listInstances: Effect.succeed([instance]),
+            listUnavailable: Effect.succeed([]),
+            streamChanges: Stream.empty,
+            subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), (pubsub) =>
+              PubSub.subscribe(pubsub),
+            ),
+          });
+          const scope = yield* Scope.make();
+          yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+          const runtimeServices = yield* Layer.build(
+            ProviderRegistryLive.pipe(
+              Layer.provideMerge(instanceRegistryLayer),
+              Layer.provideMerge(ServerConfig.layerTest(process.cwd(), baseDir)),
+              Layer.provideMerge(NodeServices.layer),
+            ),
+          ).pipe(Scope.provide(scope));
+
+          yield* Effect.gen(function* () {
+            const registry = yield* ProviderRegistry;
+            assert.deepStrictEqual(
+              (yield* registry.getProviders)[0]?.models.map((model) => model.slug),
+              ["gpt-5.5"],
+            );
           }).pipe(Effect.provide(runtimeServices));
         }),
       );
@@ -1090,6 +1394,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             assert.deepStrictEqual((yield* registry.getProviders)[0]?.models, [
               ...initialProvider.models,
             ]);
+            yield* Effect.yieldNow;
             yield* PubSub.publish(changes, refreshedProvider);
 
             let cachedProvider = yield* readProviderStatusCache(filePath);
@@ -1895,6 +2200,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             assert.deepStrictEqual(fastModeDescriptor, {
               id: "fastMode",
               label: "Fast Mode",
+              description: "Faster responses, higher cost. Usage credits, not subscription usage.",
               type: "boolean",
             });
             const contextDescriptor = opus48.capabilities.optionDescriptors?.find(
@@ -1950,6 +2256,15 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
                 : undefined,
               { id: "xhigh", label: "Extra High", isDefault: true },
             );
+            const fastModeDescriptor = opus47.capabilities.optionDescriptors?.find(
+              (descriptor) => descriptor.type === "boolean" && descriptor.id === "fastMode",
+            );
+            assert.deepStrictEqual(fastModeDescriptor, {
+              id: "fastMode",
+              label: "Fast Mode",
+              description: "Faster responses, higher cost. Usage credits, not subscription usage.",
+              type: "boolean",
+            });
           }).pipe(
             Effect.provide(
               mockSpawnerLayer((args) => {

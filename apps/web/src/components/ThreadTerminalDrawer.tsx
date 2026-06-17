@@ -75,11 +75,36 @@ function writeSystemMessage(terminal: Terminal, message: string): void {
   terminal.write(`\r\n[terminal] ${message}\r\n`);
 }
 
-function writeTerminalSnapshot(terminal: Terminal, snapshot: TerminalSessionSnapshot): void {
-  terminal.write("\u001bc");
-  if (snapshot.history.length > 0) {
-    terminal.write(snapshot.history);
+function revealTerminalViewport(terminal: Terminal): void {
+  terminal.scrollToBottom();
+  if (terminal.rows > 0) {
+    terminal.refresh(0, terminal.rows - 1);
   }
+}
+
+function isScrolledToBottom(terminal: Terminal): boolean {
+  return terminal.buffer.active.viewportY >= terminal.buffer.active.baseY;
+}
+
+function writeTerminalOutput(terminal: Terminal, data: string): void {
+  const wasAtBottom = isScrolledToBottom(terminal);
+  terminal.write(data, () => {
+    if (wasAtBottom) {
+      revealTerminalViewport(terminal);
+    }
+  });
+}
+
+function writeTerminalSnapshot(terminal: Terminal, snapshot: TerminalSessionSnapshot): void {
+  terminal.write("\u001bc", () => {
+    if (snapshot.history.length === 0) {
+      revealTerminalViewport(terminal);
+      return;
+    }
+    terminal.write(snapshot.history, () => {
+      revealTerminalViewport(terminal);
+    });
+  });
 }
 
 export function selectTerminalEventEntriesAfterSnapshot(
@@ -586,7 +611,7 @@ export function TerminalViewport({
       }
 
       if (event.type === "output") {
-        activeTerminal.write(event.data);
+        writeTerminalOutput(activeTerminal, event.data);
         clearSelectionAction();
         return;
       }
@@ -601,7 +626,9 @@ export function TerminalViewport({
       if (event.type === "cleared") {
         clearSelectionAction();
         activeTerminal.clear();
-        activeTerminal.write("\u001bc");
+        activeTerminal.write("\u001bc", () => {
+          revealTerminalViewport(activeTerminal);
+        });
         return;
       }
 
@@ -703,6 +730,14 @@ export function TerminalViewport({
         }
         lastAppliedTerminalEventIdRef.current = bufferedEntries.at(-1)?.id ?? 0;
         terminalHydratedRef.current = true;
+        applyPendingTerminalEvents(
+          selectTerminalEventEntries(
+            useTerminalStateStore.getState().terminalEventEntriesByKey,
+            threadRef,
+            terminalId,
+          ),
+        );
+        revealTerminalViewport(activeTerminal);
         if (autoFocus) {
           window.requestAnimationFrame(() => {
             activeTerminal.focus();

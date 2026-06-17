@@ -51,6 +51,17 @@ export const ProviderOptionSelection = Schema.Struct({
 });
 export type ProviderOptionSelection = typeof ProviderOptionSelection.Type;
 
+export const ModelInputModality = Schema.Literals(["text", "image"]);
+export type ModelInputModality = typeof ModelInputModality.Type;
+
+export const ModelUpgradeInfo = Schema.Struct({
+  model: TrimmedNonEmptyString,
+  modelLink: Schema.optional(TrimmedNonEmptyString),
+  upgradeCopy: Schema.optional(TrimmedNonEmptyString),
+  migrationMarkdown: Schema.optional(TrimmedNonEmptyString),
+});
+export type ModelUpgradeInfo = typeof ModelUpgradeInfo.Type;
+
 /**
  * Legacy on-disk shape for provider option selections, kept readable by the
  * decoder so we can tolerate stored data written before the v3 array shape.
@@ -123,6 +134,8 @@ function canonicalSelectionsToLegacyObject(
 
 export const ModelCapabilities = Schema.Struct({
   optionDescriptors: Schema.optional(Schema.Array(ProviderOptionDescriptor)),
+  inputModalities: Schema.optional(Schema.Array(ModelInputModality)),
+  supportsPersonality: Schema.optional(Schema.Boolean),
 });
 export type ModelCapabilities = typeof ModelCapabilities.Type;
 

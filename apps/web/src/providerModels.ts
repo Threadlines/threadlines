@@ -7,6 +7,7 @@ import {
   PROVIDER_DISPLAY_NAMES,
   RUNTIME_MODES,
   type ModelCapabilities,
+  type ModelInputModality,
   type ProviderInstanceId,
   type RuntimeMode,
   type ServerProvider,
@@ -121,14 +122,33 @@ export function getProviderModelCapabilities(
   return models.find((candidate) => candidate.slug === slug)?.capabilities ?? EMPTY_CAPABILITIES;
 }
 
+export function getProviderModelInputModalities(
+  models: ReadonlyArray<ServerProviderModel>,
+  model: string | null | undefined,
+  provider: ProviderDriverKind,
+): ReadonlyArray<ModelInputModality> | undefined {
+  const slug = normalizeModelSlug(model, provider);
+  return models.find((candidate) => candidate.slug === slug)?.capabilities?.inputModalities;
+}
+
+export function providerModelSupportsInputModality(
+  models: ReadonlyArray<ServerProviderModel>,
+  model: string | null | undefined,
+  provider: ProviderDriverKind,
+  modality: ModelInputModality,
+): boolean {
+  const modalities = getProviderModelInputModalities(models, model, provider);
+  return modalities ? modalities.includes(modality) : true;
+}
+
 export function getDefaultServerModel(
   providers: ReadonlyArray<ServerProvider>,
   provider: ProviderDriverKind,
 ): string {
   const models = getProviderModels(providers, provider);
   return (
-    models.find((model) => !model.isCustom)?.slug ??
-    models[0]?.slug ??
+    models.find((model) => !model.isCustom && model.isHidden !== true)?.slug ??
+    models.find((model) => model.isHidden !== true)?.slug ??
     DEFAULT_MODEL_BY_PROVIDER[provider] ??
     DEFAULT_MODEL
   );

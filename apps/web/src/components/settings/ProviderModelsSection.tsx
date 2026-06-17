@@ -192,7 +192,9 @@ export function ProviderModelsSection({
         {orderedModels.map((model, index) => {
           const caps = model.capabilities;
           const capLabels: string[] = [];
-          const isHidden = !model.isCustom && hiddenModelSet.has(model.slug);
+          const isUserHidden = !model.isCustom && hiddenModelSet.has(model.slug);
+          const isProviderHidden = model.isHidden === true;
+          const isHidden = isUserHidden || isProviderHidden;
           const isFavorite = favoriteModelSet.has(model.slug);
           const previousModel = orderedModels[index - 1];
           const nextModel = orderedModels[index + 1];
@@ -209,6 +211,17 @@ export function ProviderModelsSection({
           if (descriptors.some((descriptor) => descriptor.id === "thinking")) {
             capLabels.push("Thinking");
           }
+          if (caps?.inputModalities && caps.inputModalities.length > 0) {
+            if (caps.inputModalities.includes("text")) {
+              capLabels.push("Text input");
+            }
+            if (caps.inputModalities.includes("image")) {
+              capLabels.push("Image input");
+            }
+          }
+          if (caps?.supportsPersonality) {
+            capLabels.push("Personality");
+          }
           if (
             descriptors.some(
               (descriptor) =>
@@ -221,8 +234,15 @@ export function ProviderModelsSection({
           ) {
             capLabels.push("Reasoning");
           }
+          if (model.upgrade || model.upgradeInfo) {
+            capLabels.push("Upgrade available");
+          }
           const hasDetails =
-            capLabels.length > 0 || model.description !== undefined || model.name !== model.slug;
+            capLabels.length > 0 ||
+            model.description !== undefined ||
+            model.availabilityMessage !== undefined ||
+            model.name !== model.slug;
+          const upgradeCopy = model.upgradeInfo?.upgradeCopy ?? model.upgrade;
 
           return (
             <div
@@ -263,6 +283,21 @@ export function ProviderModelsSection({
                             {model.description}
                           </p>
                         ) : null}
+                        {model.availabilityMessage ? (
+                          <p className="text-[11px] leading-snug text-muted-foreground">
+                            {model.availabilityMessage}
+                          </p>
+                        ) : null}
+                        {upgradeCopy ? (
+                          <p className="text-[11px] leading-snug text-muted-foreground">
+                            {upgradeCopy}
+                          </p>
+                        ) : null}
+                        {model.upgradeInfo?.model ? (
+                          <p className="text-[10px] leading-snug text-muted-foreground">
+                            Upgrade target: {model.upgradeInfo.model}
+                          </p>
+                        ) : null}
                         {capLabels.length > 0 ? (
                           <div className="flex flex-wrap gap-x-2 gap-y-0.5">
                             {capLabels.map((label) => (
@@ -277,7 +312,12 @@ export function ProviderModelsSection({
                   </Tooltip>
                 ) : null}
                 {isHidden ? (
-                  <span className="text-[10px] text-muted-foreground">hidden</span>
+                  <span className="text-[10px] text-muted-foreground">
+                    {isProviderHidden ? "provider hidden" : "hidden"}
+                  </span>
+                ) : null}
+                {model.isDefault ? (
+                  <span className="text-[10px] text-muted-foreground">default</span>
                 ) : null}
                 {model.isCustom ? (
                   <span className="text-[10px] text-muted-foreground">custom</span>
@@ -348,9 +388,21 @@ export function ProviderModelsSection({
                         <Button
                           size="icon-xs"
                           variant="ghost"
-                          className="size-5 rounded-sm p-0 text-muted-foreground hover:text-foreground"
-                          onClick={() => handleToggleHidden(model.slug)}
-                          aria-label={`${isHidden ? "Show" : "Hide"} ${model.name}`}
+                          className={cn(
+                            "size-5 rounded-sm p-0 text-muted-foreground hover:text-foreground",
+                            isProviderHidden && "opacity-45 hover:text-muted-foreground",
+                          )}
+                          aria-disabled={isProviderHidden}
+                          onClick={() => {
+                            if (!isProviderHidden) {
+                              handleToggleHidden(model.slug);
+                            }
+                          }}
+                          aria-label={
+                            isProviderHidden
+                              ? `${model.name} is hidden by the provider`
+                              : `${isUserHidden ? "Show" : "Hide"} ${model.name}`
+                          }
                         />
                       }
                     >
@@ -361,7 +413,11 @@ export function ProviderModelsSection({
                       )}
                     </TooltipTrigger>
                     <TooltipPopup side="top">
-                      {isHidden ? "Show in picker" : "Hide from picker"}
+                      {isProviderHidden
+                        ? "Hidden by provider"
+                        : isUserHidden
+                          ? "Show in picker"
+                          : "Hide from picker"}
                     </TooltipPopup>
                   </Tooltip>
                 ) : null}

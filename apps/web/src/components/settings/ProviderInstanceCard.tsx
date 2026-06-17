@@ -782,6 +782,14 @@ export function ProviderInstanceCard({
                   <span className="font-medium text-foreground">{usagePresentation.label}</span>
                 </div>
                 <div className="space-y-1.5 pl-5">
+                  {usagePresentation.resetCredits ? (
+                    <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
+                      <span className="min-w-10 font-medium text-foreground">Reset</span>
+                      <span>{usagePresentation.resetCredits.label}</span>
+                      <span aria-hidden>-</span>
+                      <span>{usagePresentation.resetCredits.detail}</span>
+                    </div>
+                  ) : null}
                   {usagePresentation.spendControl ? (
                     <div className="space-y-1">
                       <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">

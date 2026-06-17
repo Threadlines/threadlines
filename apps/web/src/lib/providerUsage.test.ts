@@ -34,6 +34,11 @@ describe("deriveProviderAccountUsagePresentation", () => {
     expect(deriveProviderAccountUsagePresentation(usage, 1_800_000_000_000)).toEqual({
       label: "Codex",
       reachedLimit: false,
+      resetCredits: {
+        availableCount: 0,
+        label: "0 resets available",
+        detail: "usable for 30 days after grant",
+      },
       windows: [
         {
           key: "primary",
@@ -74,6 +79,11 @@ describe("deriveProviderAccountUsagePresentation", () => {
     expect(deriveProviderAccountUsagePresentation(usage, 1_800_000_000_000)).toEqual({
       label: "Codex usage",
       reachedLimit: false,
+      resetCredits: {
+        availableCount: 0,
+        label: "0 resets available",
+        detail: "usable for 30 days after grant",
+      },
       windows: [
         {
           key: "primary",
@@ -89,6 +99,48 @@ describe("deriveProviderAccountUsagePresentation", () => {
           detail: "36% remaining · resets in 7d",
           usedPercent: 64,
           remainingPercent: 36,
+          reachedLimit: false,
+        },
+      ],
+    });
+  });
+
+  it("formats available Codex rate-limit reset credits", () => {
+    const usage: ServerProviderAccountUsage = {
+      source: "codex-rate-limits",
+      checkedAt: "2026-06-16T00:00:00.000Z",
+      primaryLimitId: "codex",
+      rateLimitResetCredits: {
+        availableCount: 2,
+      },
+      limits: [
+        {
+          limitId: "codex",
+          limitName: "Codex",
+          primary: {
+            usedPercent: 95,
+            remainingPercent: 5,
+            windowDurationMins: 300,
+          },
+        },
+      ],
+    };
+
+    expect(deriveProviderAccountUsagePresentation(usage, 1_800_000_000_000)).toEqual({
+      label: "Codex",
+      reachedLimit: false,
+      resetCredits: {
+        availableCount: 2,
+        label: "2 resets available",
+        detail: "usable for 30 days after grant",
+      },
+      windows: [
+        {
+          key: "primary",
+          label: "5h",
+          detail: "5% remaining",
+          usedPercent: 95,
+          remainingPercent: 5,
           reachedLimit: false,
         },
       ],
@@ -117,6 +169,11 @@ describe("deriveProviderAccountUsagePresentation", () => {
     expect(deriveProviderAccountUsagePresentation(usage, 1_800_000_000_000)).toEqual({
       label: "Codex",
       reachedLimit: false,
+      resetCredits: {
+        availableCount: 0,
+        label: "0 resets available",
+        detail: "usable for 30 days after grant",
+      },
       windows: [
         {
           key: "primary",
@@ -149,6 +206,11 @@ describe("deriveProviderAccountUsagePresentation", () => {
     expect(deriveProviderAccountUsagePresentation(usage, 1_800_000_000_000)).toEqual({
       label: "Codex usage",
       reachedLimit: true,
+      resetCredits: {
+        availableCount: 0,
+        label: "0 resets available",
+        detail: "usable for 30 days after grant",
+      },
       windows: [
         {
           key: "primary",
@@ -280,6 +342,11 @@ describe("deriveProviderAccountUsagePresentation", () => {
     expect(deriveProviderAccountUsagePresentation(usage, 1_800_000_000_000)).toEqual({
       label: "Codex",
       reachedLimit: false,
+      resetCredits: {
+        availableCount: 0,
+        label: "0 resets available",
+        detail: "usable for 30 days after grant",
+      },
       spendControl: {
         label: "Monthly",
         detail: "$35.00 used of $100.00 - 65% remaining - resets in 1d",

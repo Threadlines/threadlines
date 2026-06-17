@@ -71,6 +71,8 @@ const MINIMUM_CLAUDE_OPUS_4_8_VERSION = "2.1.154";
 const MINIMUM_CLAUDE_OPUS_4_7_VERSION = "2.1.111";
 const CLAUDE_FABLE_5_DESCRIPTION =
   "Included on subscriptions through Jun 22; usage credits may be required Jun 23.";
+const CLAUDE_FAST_MODE_DESCRIPTION =
+  "Faster responses, higher cost. Usage credits, not subscription usage.";
 
 const CLAUDE_EFFORT_OPTIONS = {
   fable5: [
@@ -146,6 +148,7 @@ const BUILT_IN_MODEL_DEFINITIONS: ReadonlyArray<ServerProviderModel> = [
         buildBooleanOptionDescriptor({
           id: "fastMode",
           label: "Fast Mode",
+          description: CLAUDE_FAST_MODE_DESCRIPTION,
         }),
         buildSelectOptionDescriptor({
           id: "contextWindow",
@@ -168,6 +171,11 @@ const BUILT_IN_MODEL_DEFINITIONS: ReadonlyArray<ServerProviderModel> = [
           id: "effort",
           label: "Reasoning",
           options: CLAUDE_EFFORT_OPTIONS.opus47,
+        }),
+        buildBooleanOptionDescriptor({
+          id: "fastMode",
+          label: "Fast Mode",
+          description: CLAUDE_FAST_MODE_DESCRIPTION,
         }),
         buildSelectOptionDescriptor({
           id: "contextWindow",
@@ -194,6 +202,7 @@ const BUILT_IN_MODEL_DEFINITIONS: ReadonlyArray<ServerProviderModel> = [
         buildBooleanOptionDescriptor({
           id: "fastMode",
           label: "Fast Mode",
+          description: CLAUDE_FAST_MODE_DESCRIPTION,
         }),
         buildSelectOptionDescriptor({
           id: "contextWindow",
@@ -216,10 +225,6 @@ const BUILT_IN_MODEL_DEFINITIONS: ReadonlyArray<ServerProviderModel> = [
           id: "effort",
           label: "Reasoning",
           options: CLAUDE_EFFORT_OPTIONS.opus45,
-        }),
-        buildBooleanOptionDescriptor({
-          id: "fastMode",
-          label: "Fast Mode",
         }),
       ],
     }),

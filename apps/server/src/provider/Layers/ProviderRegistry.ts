@@ -75,7 +75,15 @@ const makeManualProviderMaintenanceCapabilities = (provider: ProviderDriverKind)
     packageName: null,
   });
 
+const CODEX_DRIVER = ProviderDriverKind.make("codex");
 const CLAUDE_DRIVER = ProviderDriverKind.make("claudeAgent");
+const AUTHORITATIVE_MODEL_LIST_DRIVERS: ReadonlySet<ProviderDriverKind> = new Set([
+  CODEX_DRIVER,
+  CLAUDE_DRIVER,
+]);
+
+const hasAuthoritativeModelList = (provider: ServerProvider): boolean =>
+  provider.models.length > 0 && AUTHORITATIVE_MODEL_LIST_DRIVERS.has(provider.driver);
 
 const hasModelCapabilities = (model: ServerProvider["models"][number]): boolean =>
   (model.capabilities?.optionDescriptors?.length ?? 0) > 0;
@@ -115,7 +123,7 @@ export const mergeProviderSnapshot = (
     : {
         ...nextProvider,
         models: mergeProviderModels(previousProvider.models, nextProvider.models, {
-          preserveMissingPreviousModels: nextProvider.driver !== CLAUDE_DRIVER,
+          preserveMissingPreviousModels: !hasAuthoritativeModelList(nextProvider),
         }),
         ...(shouldPreservePreviousAccountUsage(previousProvider, nextProvider)
           ? { accountUsage: previousProvider.accountUsage }
@@ -156,7 +164,7 @@ const sanitizeHydratedProviderModels = (
   cachedProvider: ServerProvider,
   fallbackProvider: ServerProvider,
 ): ServerProvider => {
-  if (cachedProvider.driver !== CLAUDE_DRIVER || fallbackProvider.models.length === 0) {
+  if (!hasAuthoritativeModelList(fallbackProvider)) {
     return cachedProvider;
   }
   return {

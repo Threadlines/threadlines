@@ -3954,6 +3954,13 @@ export const V2GetAccountRateLimitsResponse__CreditsSnapshot = Schema.Struct({
   unlimited: Schema.Boolean,
 });
 
+export type V2GetAccountRateLimitsResponse__RateLimitResetCreditsSummary = {
+  readonly availableCount: number;
+};
+export const V2GetAccountRateLimitsResponse__RateLimitResetCreditsSummary = Schema.Struct({
+  availableCount: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+});
+
 export type V2GetAccountRateLimitsResponse__PlanType =
   | "free"
   | "go"
@@ -33443,6 +33450,7 @@ export type V2GetAccountRateLimitsResponse = {
   readonly rateLimitsByLimitId?: {
     readonly [x: string]: V2GetAccountRateLimitsResponse__RateLimitSnapshot;
   } | null;
+  readonly rateLimitResetCredits?: V2GetAccountRateLimitsResponse__RateLimitResetCreditsSummary | null;
 };
 export const V2GetAccountRateLimitsResponse = Schema.Struct({
   rateLimits: Schema.Struct({
@@ -33476,6 +33484,9 @@ export const V2GetAccountRateLimitsResponse = Schema.Struct({
       }),
       Schema.Null,
     ]),
+  ),
+  rateLimitResetCredits: Schema.optionalKey(
+    Schema.Union([V2GetAccountRateLimitsResponse__RateLimitResetCreditsSummary, Schema.Null]),
   ),
 }).annotate({ title: "GetAccountRateLimitsResponse" });
 

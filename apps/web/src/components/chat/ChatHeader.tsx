@@ -127,54 +127,56 @@ export const ChatHeader = memo(function ChatHeader({
             openInCwd={openInCwd}
           />
         )}
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Toggle
-                className="shrink-0"
-                pressed={terminalOpen}
-                onPressedChange={onToggleTerminal}
-                aria-label="Toggle terminal drawer"
-                variant="outline"
-                size="xs"
-                disabled={!terminalAvailable}
-              >
-                <TerminalSquareIcon className="size-3" />
-              </Toggle>
-            }
-          />
-          <TooltipPopup side="bottom">
-            {!terminalAvailable
-              ? "Terminal is unavailable until this thread has an active project."
-              : terminalToggleShortcutLabel
-                ? `Toggle terminal drawer (${terminalToggleShortcutLabel})`
-                : "Toggle terminal drawer"}
-          </TooltipPopup>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Toggle
-                className="shrink-0"
-                pressed={sourceControlOpen}
-                onPressedChange={onToggleSourceControl}
-                aria-label="Toggle source control panel"
-                variant="outline"
-                size="xs"
-                disabled={!activeProjectName && !sourceControlOpen}
-              >
-                <SourceControlIcon className="size-[11px]" />
-              </Toggle>
-            }
-          />
-          <TooltipPopup side="bottom">
-            {!activeProjectName && !sourceControlOpen
-              ? "Source control is unavailable until this thread has an active project."
-              : sourceControlToggleShortcutLabel
-                ? `Toggle source control panel (${sourceControlToggleShortcutLabel})`
-                : "Toggle source control panel"}
-          </TooltipPopup>
-        </Tooltip>
+        <div className="flex shrink-0 items-center gap-1">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Toggle
+                  className="shrink-0"
+                  pressed={terminalOpen}
+                  onPressedChange={onToggleTerminal}
+                  aria-label="Toggle terminal drawer"
+                  variant="outline"
+                  size="xs"
+                  disabled={!terminalAvailable}
+                >
+                  <TerminalSquareIcon className="size-3" />
+                </Toggle>
+              }
+            />
+            <TooltipPopup side="bottom">
+              {!terminalAvailable
+                ? "Terminal is unavailable until this thread has an active project."
+                : terminalToggleShortcutLabel
+                  ? `Toggle terminal drawer (${terminalToggleShortcutLabel})`
+                  : "Toggle terminal drawer"}
+            </TooltipPopup>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Toggle
+                  className="shrink-0"
+                  pressed={sourceControlOpen}
+                  onPressedChange={onToggleSourceControl}
+                  aria-label="Toggle source control panel"
+                  variant="outline"
+                  size="xs"
+                  disabled={!activeProjectName && !sourceControlOpen}
+                >
+                  <SourceControlIcon className="size-[11px]" />
+                </Toggle>
+              }
+            />
+            <TooltipPopup side="bottom">
+              {!activeProjectName && !sourceControlOpen
+                ? "Source control is unavailable until this thread has an active project."
+                : sourceControlToggleShortcutLabel
+                  ? `Toggle source control panel (${sourceControlToggleShortcutLabel})`
+                  : "Toggle source control panel"}
+            </TooltipPopup>
+          </Tooltip>
+        </div>
       </div>
     </div>
   );

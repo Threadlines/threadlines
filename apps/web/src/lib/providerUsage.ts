@@ -23,9 +23,16 @@ export interface ProviderAccountUsageSpendControlPresentation {
   readonly reachedLimit: boolean;
 }
 
+export interface ProviderAccountUsageResetCreditsPresentation {
+  readonly availableCount: number;
+  readonly label: string;
+  readonly detail: string;
+}
+
 export interface ProviderAccountUsagePresentation {
   readonly label: string;
   readonly spendControl?: ProviderAccountUsageSpendControlPresentation;
+  readonly resetCredits?: ProviderAccountUsageResetCreditsPresentation;
   readonly windows: ReadonlyArray<ProviderAccountUsageWindowPresentation>;
   readonly reachedLimit: boolean;
 }
@@ -137,6 +144,23 @@ function formatSpendControlPresentation(
   };
 }
 
+function formatResetCreditsPresentation(
+  usage: ServerProviderAccountUsage,
+): ProviderAccountUsageResetCreditsPresentation | undefined {
+  const availableCount =
+    usage.rateLimitResetCredits?.availableCount ??
+    (usage.source === "codex-rate-limits" ? 0 : undefined);
+  if (availableCount === undefined || !Number.isInteger(availableCount) || availableCount < 0) {
+    return undefined;
+  }
+
+  return {
+    availableCount,
+    label: availableCount === 1 ? "1 reset available" : `${availableCount} resets available`,
+    detail: "usable for 30 days after grant",
+  };
+}
+
 const PROVIDER_USAGE_SOURCE_LABELS: Record<ServerProviderAccountUsage["source"], string> = {
   "codex-rate-limits": "Codex usage",
   "claude-oauth-usage": "Claude usage",
@@ -148,8 +172,18 @@ export function deriveProviderAccountUsagePresentation(
 ): ProviderAccountUsagePresentation | null {
   if (!usage || !(usage.source in PROVIDER_USAGE_SOURCE_LABELS)) return null;
 
+  const resetCredits = formatResetCreditsPresentation(usage);
   const limit = selectProviderUsageLimit(usage);
-  if (!limit) return null;
+  if (!limit) {
+    return resetCredits
+      ? {
+          label: PROVIDER_USAGE_SOURCE_LABELS[usage.source],
+          resetCredits,
+          windows: [],
+          reachedLimit: false,
+        }
+      : null;
+  }
 
   const reachedLimit = Boolean(limit.rateLimitReachedType);
   const windows = [
@@ -163,11 +197,12 @@ export function deriveProviderAccountUsagePresentation(
   const spendControl = limit.individualLimit
     ? formatSpendControlPresentation(limit.individualLimit, reachedLimit, nowMs)
     : undefined;
-  if (windows.length === 0 && !spendControl) return null;
+  if (windows.length === 0 && !spendControl && !resetCredits) return null;
 
   return {
     label: limit.limitName ?? PROVIDER_USAGE_SOURCE_LABELS[usage.source],
     ...(spendControl ? { spendControl } : {}),
+    ...(resetCredits ? { resetCredits } : {}),
     windows,
     reachedLimit:
       reachedLimit ||

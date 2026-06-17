@@ -98,7 +98,10 @@ import {
   XIcon,
 } from "lucide-react";
 import { proposedPlanTitle } from "../../proposedPlan";
-import { getProviderInteractionModeToggle } from "../../providerModels";
+import {
+  getProviderInteractionModeToggle,
+  providerModelSupportsInputModality,
+} from "../../providerModels";
 import {
   deriveRuntimeModeOptions,
   runtimeModeConfig,
@@ -746,6 +749,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     () => selectedProviderEntry?.models ?? [],
     [selectedProviderEntry],
   );
+  const selectedModelSupportsImages = useMemo(
+    () =>
+      providerModelSupportsInputModality(
+        selectedProviderModels,
+        selectedModel,
+        selectedProvider,
+        "image",
+      ),
+    [selectedProvider, selectedProviderModels, selectedModel],
+  );
 
   const composerProviderState = useMemo(
     () =>
@@ -1083,12 +1096,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const showMobilePendingAnswerActions =
     isMobileViewport && !isComposerCollapsedMobile && pendingPrimaryAction !== null;
   const screenshotCaptureDisabled =
-    isCapturingScreenshot || isComposerApprovalState || pendingUserInputs.length > 0;
+    isCapturingScreenshot ||
+    isComposerApprovalState ||
+    pendingUserInputs.length > 0 ||
+    !selectedModelSupportsImages;
   const screenshotCaptureTooltip = isCapturingScreenshot
     ? "Capturing screenshot..."
     : isComposerApprovalState || pendingUserInputs.length > 0
       ? "Finish the pending prompt before attaching screenshots"
-      : "Capture screenshot";
+      : !selectedModelSupportsImages
+        ? "Selected model does not accept images"
+        : "Capture screenshot";
 
   // ------------------------------------------------------------------
   // Prompt helpers
@@ -1649,12 +1667,26 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
   const submitComposer = useCallback(
     (event?: { preventDefault: () => void }) => {
+      if (composerImages.length > 0 && !selectedModelSupportsImages) {
+        event?.preventDefault();
+        toastManager.add({
+          type: "error",
+          title: "Selected model does not accept images.",
+        });
+        return;
+      }
       onSend(event);
       if (shouldBlurMobileComposerOnSubmit()) {
         blurMobileComposerAfterSend();
       }
     },
-    [blurMobileComposerAfterSend, onSend, shouldBlurMobileComposerOnSubmit],
+    [
+      blurMobileComposerAfterSend,
+      composerImages.length,
+      onSend,
+      selectedModelSupportsImages,
+      shouldBlurMobileComposerOnSubmit,
+    ],
   );
   const expandMobileComposer = useCallback(() => {
     if (composerBlurFrameRef.current !== null) {
@@ -1720,6 +1752,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // ------------------------------------------------------------------
   const addComposerImages = (files: File[]) => {
     if (!activeThreadId || files.length === 0) return;
+    if (!selectedModelSupportsImages) {
+      toastManager.add({
+        type: "error",
+        title: "Selected model does not accept images.",
+      });
+      return;
+    }
     if (pendingUserInputs.length > 0) {
       toastManager.add({
         type: "error",

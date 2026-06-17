@@ -16,12 +16,15 @@ import type {
   CodexSettings,
   ServerProvider,
   ServerProviderAccountUsage,
+  ServerProviderRateLimitResetCredits,
   ServerProviderSpendControlLimit,
   ServerProviderUsageCredits,
   ServerProviderUsageLimit,
   ServerProviderUsageWindow,
   ServerProviderState,
   ModelCapabilities,
+  ModelInputModality,
+  ModelUpgradeInfo,
   ServerProviderModel,
   ServerProviderSkill,
 } from "@t3tools/contracts";
@@ -63,6 +66,8 @@ const REASONING_EFFORT_LABELS: Record<CodexSchema.V2ModelListResponse__Reasoning
 };
 
 const DEFAULT_CODEX_SERVICE_TIER_LABEL = "Standard";
+const DEFAULT_CODEX_INPUT_MODALITIES: ReadonlyArray<ModelInputModality> = ["text", "image"];
+const CODEX_FAST_MODE_DESCRIPTION = "1.5x speed. Increased usage.";
 
 function codexAccountAuthLabel(account: CodexSchema.V2GetAccountResponse["account"]) {
   if (!account) return undefined;
@@ -150,6 +155,18 @@ function normalizeCodexUsageCredits(
   };
 }
 
+function normalizeCodexRateLimitResetCredits(
+  credits: CodexSchema.V2GetAccountRateLimitsResponse["rateLimitResetCredits"],
+): ServerProviderRateLimitResetCredits | undefined {
+  if (!credits) return undefined;
+
+  const availableCount = Number(credits.availableCount);
+  if (!Number.isInteger(availableCount) || availableCount <= 0) {
+    return undefined;
+  }
+  return { availableCount };
+}
+
 function supportsCodexSpendControlLimit(
   planType: CodexSchema.V2GetAccountRateLimitsResponse__PlanType | null | undefined,
 ): boolean {
@@ -226,6 +243,9 @@ function normalizeCodexAccountUsage(
 
   const limits: ServerProviderUsageLimit[] = [];
   const seen = new Set<string>();
+  const rateLimitResetCredits = normalizeCodexRateLimitResetCredits(
+    rateLimits.rateLimitResetCredits,
+  );
   const appendLimit = (
     snapshot: CodexSchema.V2GetAccountRateLimitsResponse__RateLimitSnapshot,
     fallbackLimitId?: string,
@@ -245,7 +265,7 @@ function normalizeCodexAccountUsage(
     appendLimit(snapshot, limitId);
   }
 
-  if (limits.length === 0) return undefined;
+  if (limits.length === 0 && !rateLimitResetCredits) return undefined;
 
   const primaryLimitId =
     optionalString(rateLimits.rateLimits.limitId) ?? limits.find((limit) => limit.limitId)?.limitId;
@@ -253,6 +273,7 @@ function normalizeCodexAccountUsage(
     source: "codex-rate-limits",
     checkedAt,
     ...(primaryLimitId ? { primaryLimitId } : {}),
+    ...(rateLimitResetCredits ? { rateLimitResetCredits } : {}),
     limits,
   };
 }
@@ -278,6 +299,8 @@ function mapCodexModelCapabilities(
   const supportsLegacyFastMode =
     serviceTierOptions.length === 0 && (model.additionalSpeedTiers ?? []).includes("fast");
   return createModelCapabilities({
+    inputModalities: model.inputModalities ?? DEFAULT_CODEX_INPUT_MODALITIES,
+    supportsPersonality: model.supportsPersonality ?? false,
     optionDescriptors: [
       ...(reasoningOptions.length > 0
         ? [
@@ -295,6 +318,7 @@ function mapCodexModelCapabilities(
             {
               id: "serviceTier",
               label: "Speed",
+              description: CODEX_FAST_MODE_DESCRIPTION,
               type: "select" as const,
               options: serviceTierOptions,
               ...(defaultServiceTier ? { currentValue: defaultServiceTier } : {}),
@@ -306,12 +330,31 @@ function mapCodexModelCapabilities(
             {
               id: "fastMode",
               label: "Fast Mode",
+              description: CODEX_FAST_MODE_DESCRIPTION,
               type: "boolean" as const,
             },
           ]
         : []),
     ],
   });
+}
+
+function mapCodexModelUpgradeInfo(
+  upgradeInfo: CodexSchema.V2ModelListResponse__ModelUpgradeInfo | null | undefined,
+): ModelUpgradeInfo | undefined {
+  const model = optionalString(upgradeInfo?.model);
+  if (!model) {
+    return undefined;
+  }
+
+  const mapped: Types.Mutable<ModelUpgradeInfo> = { model };
+  const modelLink = optionalString(upgradeInfo?.modelLink);
+  const upgradeCopy = optionalString(upgradeInfo?.upgradeCopy);
+  const migrationMarkdown = optionalString(upgradeInfo?.migrationMarkdown);
+  if (modelLink) mapped.modelLink = modelLink;
+  if (upgradeCopy) mapped.upgradeCopy = upgradeCopy;
+  if (migrationMarkdown) mapped.migrationMarkdown = migrationMarkdown;
+  return mapped;
 }
 
 function mapCodexServiceTierOptions(model: CodexSchema.V2ModelListResponse__Model) {
@@ -367,15 +410,28 @@ const toDisplayName = (model: CodexSchema.V2ModelListResponse__Model): string =>
     .replace(/-([a-z])/g, (_, c) => "-" + c.toUpperCase());
 };
 
-function parseCodexModelListResponse(
+export function parseCodexModelListResponse(
   response: CodexSchema.V2ModelListResponse,
 ): ReadonlyArray<ServerProviderModel> {
-  return response.data.map((model) => ({
-    slug: model.model,
-    name: toDisplayName(model),
-    isCustom: false,
-    capabilities: mapCodexModelCapabilities(model),
-  }));
+  return response.data.map((model) => {
+    const mapped: Types.Mutable<ServerProviderModel> = {
+      slug: model.model,
+      name: toDisplayName(model),
+      isCustom: false,
+      capabilities: mapCodexModelCapabilities(model),
+    };
+    const description = optionalString(model.description);
+    const availabilityMessage = optionalString(model.availabilityNux?.message);
+    const upgrade = optionalString(model.upgrade);
+    const upgradeInfo = mapCodexModelUpgradeInfo(model.upgradeInfo);
+    if (description) mapped.description = description;
+    if (model.isDefault) mapped.isDefault = true;
+    if (model.hidden) mapped.isHidden = true;
+    if (availabilityMessage) mapped.availabilityMessage = availabilityMessage;
+    if (upgrade) mapped.upgrade = upgrade;
+    if (upgradeInfo) mapped.upgradeInfo = upgradeInfo;
+    return mapped;
+  });
 }
 
 function appendCustomCodexModels(

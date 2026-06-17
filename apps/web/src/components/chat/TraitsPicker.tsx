@@ -39,6 +39,7 @@ type BinaryServiceTierToggle = {
   descriptor: SelectProviderOptionDescriptor;
   standardValue: string;
   fastValue: string;
+  fastDescription?: string;
   checked: boolean;
 };
 
@@ -47,6 +48,7 @@ type TraitSwitchControl =
       type: "boolean";
       descriptor: BooleanProviderOptionDescriptor;
       label: string;
+      description?: string;
       checked: boolean;
       nextValue: (checked: boolean) => boolean;
     }
@@ -54,6 +56,7 @@ type TraitSwitchControl =
       type: "serviceTier";
       descriptor: SelectProviderOptionDescriptor;
       label: string;
+      description?: string;
       checked: boolean;
       nextValue: (checked: boolean) => string;
     };
@@ -128,6 +131,7 @@ function getBinaryServiceTierToggle(
     descriptor,
     standardValue: standardOption.id,
     fastValue: fastOption.id,
+    ...(fastOption.description ? { fastDescription: fastOption.description } : {}),
     checked: getDescriptorStringValue(descriptor) === fastOption.id,
   };
 }
@@ -151,6 +155,7 @@ function getTraitSwitchControls(
           type: "boolean",
           descriptor,
           label: descriptor.label,
+          ...(descriptor.description ? { description: descriptor.description } : {}),
           checked: descriptor.currentValue === true,
           nextValue: (checked) => checked,
         },
@@ -161,12 +166,14 @@ function getTraitSwitchControls(
     if (!serviceTierToggle) {
       return [];
     }
+    const description = descriptor.description ?? serviceTierToggle.fastDescription;
 
     return [
       {
         type: "serviceTier",
         descriptor,
         label: "Fast Mode",
+        ...(description ? { description } : {}),
         checked: serviceTierToggle.checked,
         nextValue: (checked) =>
           checked ? serviceTierToggle.fastValue : serviceTierToggle.standardValue,
@@ -375,6 +382,7 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
                 key={control.descriptor.id}
                 variant="switch"
                 checked={control.checked}
+                title={control.description}
                 closeOnClick={false}
                 onCheckedChange={(checked) => {
                   updateDescriptors(

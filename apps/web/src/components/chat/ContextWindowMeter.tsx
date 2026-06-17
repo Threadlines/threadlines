@@ -184,6 +184,14 @@ export function ContextWindowMeter(props: {
               <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
                 {accountUsage.label}
               </div>
+              {accountUsage.resetCredits ? (
+                <div className="flex items-baseline justify-between gap-4 whitespace-nowrap text-xs">
+                  <span className="font-medium text-foreground">Reset</span>
+                  <span className="text-muted-foreground">
+                    {accountUsage.resetCredits.label} - {accountUsage.resetCredits.detail}
+                  </span>
+                </div>
+              ) : null}
               {accountUsage.spendControl ? (
                 <AccountUsageBar
                   usageLabel={accountUsage.label}

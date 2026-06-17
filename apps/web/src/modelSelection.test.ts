@@ -11,7 +11,7 @@ import {
 function provider(input: {
   provider?: ProviderDriverKind;
   instanceId: string;
-  models?: ReadonlyArray<string>;
+  models?: ReadonlyArray<string | { readonly slug: string; readonly isHidden?: boolean }>;
 }): ServerProvider {
   const driver =
     input.provider ??
@@ -27,12 +27,24 @@ function provider(input: {
     status: "ready",
     auth: { status: "authenticated" },
     checkedAt: "2026-01-01T00:00:00.000Z",
-    models: (input.models ?? []).map((slug) => ({
-      slug,
-      name: slug,
-      isCustom: false,
-      capabilities: {},
-    })),
+    models: (input.models ?? []).map((entry) => {
+      const slug = typeof entry === "string" ? entry : entry.slug;
+      if (typeof entry !== "string" && entry.isHidden === true) {
+        return {
+          slug,
+          name: slug,
+          isCustom: false,
+          isHidden: true,
+          capabilities: {},
+        };
+      }
+      return {
+        slug,
+        name: slug,
+        isCustom: false,
+        capabilities: {},
+      };
+    }),
     slashCommands: [],
     skills: [],
   };
@@ -146,6 +158,24 @@ describe("instance-scoped model selection", () => {
     expect(getAppModelOptionsForInstance(settings, stock).map((option) => option.slug)).toEqual([
       "claude-sonnet-4-6",
     ]);
+  });
+
+  it("omits provider-hidden models from the instance option list", () => {
+    const providers = [
+      provider({
+        instanceId: "claudeAgent",
+        models: [{ slug: "claude-opus-4-6", isHidden: true }, "claude-sonnet-4-6"],
+      }),
+    ];
+    const stock = deriveProviderInstanceEntries(providers).find(
+      (entry) => entry.instanceId === "claudeAgent",
+    )!;
+
+    expect(
+      getAppModelOptionsForInstance(settingsWithProviderInstances(), stock).map(
+        (option) => option.slug,
+      ),
+    ).toEqual(["claude-sonnet-4-6"]);
   });
 
   it("applies persisted per-instance model ordering", () => {

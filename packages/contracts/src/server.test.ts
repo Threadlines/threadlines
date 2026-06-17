@@ -113,6 +113,9 @@ describe("ServerProvider", () => {
         source: "codex-rate-limits",
         checkedAt: "2026-04-10T00:00:00.000Z",
         primaryLimitId: "codex",
+        rateLimitResetCredits: {
+          availableCount: 1,
+        },
         limits: [
           {
             limitId: "codex",
@@ -138,5 +141,6 @@ describe("ServerProvider", () => {
 
     expect(parsed.accountUsage?.limits[0]?.primary?.remainingPercent).toBe(75);
     expect(parsed.accountUsage?.limits[0]?.individualLimit?.remainingPercent).toBe(75);
+    expect(parsed.accountUsage?.rateLimitResetCredits?.availableCount).toBe(1);
   });
 });

@@ -1,21 +1,24 @@
 import "../index.css";
 
 import { scopeThreadRef } from "@t3tools/client-runtime";
-import { ThreadId } from "@t3tools/contracts";
+import { ThreadId, type TerminalEvent, type TerminalSessionSnapshot } from "@t3tools/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
 const {
   terminalConstructorSpy,
   terminalDisposeSpy,
+  terminalWriteSpy,
   fitAddonFitSpy,
   fitAddonLoadSpy,
   environmentApiById,
   readEnvironmentApiMock,
   readLocalApiMock,
+  onTerminalWriteRef,
 } = vi.hoisted(() => ({
   terminalConstructorSpy: vi.fn(),
   terminalDisposeSpy: vi.fn(),
+  terminalWriteSpy: vi.fn(),
   fitAddonFitSpy: vi.fn(),
   fitAddonLoadSpy: vi.fn(),
   environmentApiById: new Map<string, { terminal: { open: ReturnType<typeof vi.fn> } }>(),
@@ -31,6 +34,9 @@ const {
     contextMenu: { show: vi.fn(async () => null) },
     shell: { openExternal: vi.fn(async () => undefined) },
   })),
+  onTerminalWriteRef: {
+    current: null as ((data: string) => void) | null,
+  },
 }));
 
 vi.mock("@xterm/addon-fit", () => ({
@@ -62,7 +68,11 @@ vi.mock("@xterm/xterm", () => ({
 
     open() {}
 
-    write() {}
+    write(data: string, callback?: () => void) {
+      terminalWriteSpy(data);
+      onTerminalWriteRef.current?.(data);
+      callback?.();
+    }
 
     clear() {}
 
@@ -120,10 +130,11 @@ vi.mock("~/localApi", () => ({
 }));
 
 import { TerminalViewport } from "./ThreadTerminalDrawer";
+import { useTerminalStateStore } from "../terminalStateStore";
 
 const THREAD_ID = ThreadId.make("thread-terminal-browser");
 
-function createEnvironmentApi() {
+function createEnvironmentApi(snapshot?: Partial<TerminalSessionSnapshot>) {
   return {
     terminal: {
       open: vi.fn(async () => ({
@@ -137,10 +148,21 @@ function createEnvironmentApi() {
         exitCode: null,
         exitSignal: null,
         updatedAt: "2026-04-07T00:00:00.000Z",
+        ...snapshot,
       })),
       write: vi.fn(async () => undefined),
       resize: vi.fn(async () => undefined),
     },
+  };
+}
+
+function terminalOutputEvent(data: string, createdAt: string): TerminalEvent {
+  return {
+    threadId: THREAD_ID,
+    terminalId: "default",
+    createdAt,
+    type: "output",
+    data,
   };
 }
 
@@ -215,8 +237,16 @@ describe("TerminalViewport", () => {
     readLocalApiMock.mockClear();
     terminalConstructorSpy.mockClear();
     terminalDisposeSpy.mockClear();
+    terminalWriteSpy.mockClear();
     fitAddonFitSpy.mockClear();
     fitAddonLoadSpy.mockClear();
+    onTerminalWriteRef.current = null;
+    useTerminalStateStore.setState({
+      terminalStateByThreadKey: {},
+      terminalLaunchContextByThreadKey: {},
+      terminalEventEntriesByKey: {},
+      nextTerminalEventId: 1,
+    });
   });
 
   it("does not create a terminal when APIs are unavailable", async () => {
@@ -313,6 +343,38 @@ describe("TerminalViewport", () => {
           }),
         }),
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("drains terminal output received while hydration is replaying buffered events", async () => {
+    const environment = createEnvironmentApi({
+      updatedAt: "2026-04-07T00:00:00.500Z",
+    });
+    const threadRef = scopeThreadRef("environment-a" as never, THREAD_ID);
+    environmentApiById.set("environment-a", environment);
+    useTerminalStateStore
+      .getState()
+      .recordTerminalEvent(threadRef, terminalOutputEvent("first", "2026-04-07T00:00:01.000Z"));
+
+    let injectedDuringReplay = false;
+    onTerminalWriteRef.current = (data) => {
+      if (data !== "first" || injectedDuringReplay) return;
+      injectedDuringReplay = true;
+      useTerminalStateStore
+        .getState()
+        .recordTerminalEvent(threadRef, terminalOutputEvent("second", "2026-04-07T00:00:02.000Z"));
+    };
+
+    const mounted = await mountTerminalViewport({
+      threadRef,
+    });
+
+    try {
+      await vi.waitFor(() => {
+        expect(terminalWriteSpy).toHaveBeenCalledWith("second");
+      });
     } finally {
       await mounted.cleanup();
     }

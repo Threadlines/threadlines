@@ -147,7 +147,9 @@ export function getAppModelOptions(
   provider: ProviderDriverKind,
   _selectedModel?: string | null,
 ): AppModelOption[] {
-  const options: AppModelOption[] = getProviderModels(providers, provider).map(toAppModelOption);
+  const options: AppModelOption[] = getProviderModels(providers, provider)
+    .filter((model) => model.isHidden !== true)
+    .map(toAppModelOption);
   const seen = new Set(options.map((option) => option.slug));
   const builtInModelSlugs = new Set(
     getProviderModels(providers, provider)
@@ -195,7 +197,9 @@ export function getAppModelOptionsForInstance(
   settings: UnifiedSettings,
   entry: ProviderInstanceEntry,
 ): AppModelOption[] {
-  const options: AppModelOption[] = entry.models.map(toAppModelOption);
+  const options: AppModelOption[] = entry.models
+    .filter((model) => model.isHidden !== true)
+    .map(toAppModelOption);
   const seen = new Set(options.map((option) => option.slug));
   const builtInModelSlugs = new Set(
     entry.models.filter((model) => !model.isCustom).map((model) => model.slug),
