@@ -80,6 +80,39 @@
         line-height: 1.55;
       }
 
+      .raster-gallery {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 18px;
+        margin: 0 0 30px;
+      }
+
+      .raster-card {
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: rgba(12, 15, 21, 0.82);
+        box-shadow: 0 18px 52px rgba(0, 0, 0, 0.3);
+      }
+
+      .raster-card figcaption {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        border-bottom: 1px solid var(--border-soft);
+        padding: 10px 12px;
+        color: #cfd8e6;
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .raster-card img {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+
       .gallery {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -96,6 +129,10 @@
       }
 
       .capture-mode .page-header {
+        display: none;
+      }
+
+      .capture-mode .raster-gallery {
         display: none;
       }
 
@@ -681,6 +718,7 @@
           width: min(900px, calc(100vw - 28px));
         }
 
+        .raster-gallery,
         .gallery {
           grid-template-columns: 1fr;
         }
@@ -708,6 +746,49 @@
           without permanently occupying composer footer space.
         </p>
       </header>
+
+      <section class="raster-gallery" aria-label="Raster task list location mockups">
+        <figure class="raster-card">
+          <figcaption>
+            <span>A. Compact Overlay Above Composer</span>
+            <span class="rank">Recommended</span>
+          </figcaption>
+          <img
+            src="assets/tasks-composer-overlay.png"
+            alt="Threadlines mockup with a compact current tasks overlay attached above the composer."
+          />
+        </figure>
+        <figure class="raster-card">
+          <figcaption>
+            <span>B. Header Progress Popover</span>
+            <span class="rank">Cleanest composer</span>
+          </figcaption>
+          <img
+            src="assets/tasks-header-popover.png"
+            alt="Threadlines mockup with a task progress pill in the header opening a compact popover."
+          />
+        </figure>
+        <figure class="raster-card">
+          <figcaption>
+            <span>C. Source Control Inline Section</span>
+            <span class="rank">SC-centered</span>
+          </figcaption>
+          <img
+            src="assets/tasks-source-control-inline.png"
+            alt="Threadlines mockup with current tasks integrated into the right source control panel."
+          />
+        </figure>
+        <figure class="raster-card">
+          <figcaption>
+            <span>D. Inline Timeline Progress Strip</span>
+            <span class="rank">Thread-native</span>
+          </figcaption>
+          <img
+            src="assets/tasks-timeline-strip.png"
+            alt="Threadlines mockup with a compact current tasks progress strip embedded in the chat timeline."
+          />
+        </figure>
+      </section>
 
       <section class="gallery" aria-label="Task list location mockups">
         <article class="concept" data-mockup="composer-overlay">
