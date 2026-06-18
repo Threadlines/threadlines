@@ -90,6 +90,7 @@ export interface WorkLogEntry {
   executionState?: "running" | "completed" | "failed";
   authReconnect?: ProviderAuthReconnectAction;
   mcpAuthReconnect?: McpAuthReconnectAction;
+  providerLifecyclePhase?: "preparing" | "waiting-for-model";
   turnId?: TurnId | null;
 }
 
@@ -732,6 +733,10 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (toolCallId) {
     entry.toolCallId = toolCallId;
   }
+  const providerLifecyclePhase = providerLifecyclePhaseFromActivityKind(activity.kind);
+  if (providerLifecyclePhase) {
+    entry.providerLifecyclePhase = providerLifecyclePhase;
+  }
   const executionState = deriveWorkLogExecutionState(activity, entry, payload);
   if (executionState) {
     entry.executionState = executionState;
@@ -858,6 +863,19 @@ function shouldKeepCollapseKeysActive(entry: DerivedWorkLogEntry): boolean {
   return entry.activityKind !== "tool.completed";
 }
 
+function providerLifecyclePhaseFromActivityKind(
+  kind: OrchestrationThreadActivity["kind"],
+): WorkLogEntry["providerLifecyclePhase"] | undefined {
+  switch (kind) {
+    case "provider.turn.preparing":
+      return "preparing";
+    case "provider.turn.started":
+      return "waiting-for-model";
+    default:
+      return undefined;
+  }
+}
+
 function deriveThinkingCollapseKey(
   activity: OrchestrationThreadActivity,
   payload: Record<string, unknown> | null,
@@ -935,7 +953,7 @@ function enrichGenericThinkingEntries(
       continue;
     }
 
-    const previous = findPreviousReviewableWorkEntry(entries, index);
+    const previous = findPreviousReviewableWorkEntry(entries, index, entry);
     const detail = previous ? reviewDetailForPreviousWorkEntry(previous) : null;
     if (!detail) {
       enriched.push(entry);
@@ -962,10 +980,14 @@ function isGenericThinkingEntry(entry: DerivedWorkLogEntry): boolean {
 function findPreviousReviewableWorkEntry(
   entries: ReadonlyArray<DerivedWorkLogEntry>,
   beforeIndex: number,
+  currentEntry: DerivedWorkLogEntry,
 ): DerivedWorkLogEntry | null {
   for (let index = beforeIndex - 1; index >= 0; index -= 1) {
     const candidate = entries[index];
     if (!candidate || candidate.tone === "thinking") {
+      continue;
+    }
+    if (!isSameTurnWorkEntry(currentEntry, candidate)) {
       continue;
     }
     if (reviewDetailForPreviousWorkEntry(candidate)) {
@@ -973,6 +995,13 @@ function findPreviousReviewableWorkEntry(
     }
   }
   return null;
+}
+
+function isSameTurnWorkEntry(left: DerivedWorkLogEntry, right: DerivedWorkLogEntry): boolean {
+  if (left.turnId === null || left.turnId === undefined) {
+    return right.turnId === null || right.turnId === undefined;
+  }
+  return right.turnId === left.turnId;
 }
 
 function reviewDetailForPreviousWorkEntry(entry: DerivedWorkLogEntry): string | null {

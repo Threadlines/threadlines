@@ -712,12 +712,14 @@ describe("deriveWorkLogEntries", () => {
         id: "provider-preparing",
         label: "Preparing provider turn",
         detail: "Preparing context and provider session before handing off to the provider",
+        providerLifecyclePhase: "preparing",
         tone: "info",
       },
       {
         id: "provider-started",
         label: "Waiting for model response",
         detail: "Provider accepted the turn and is preparing a response",
+        providerLifecyclePhase: "waiting-for-model",
         tone: "thinking",
         turnId: "turn-1",
       },
@@ -813,6 +815,53 @@ describe("deriveWorkLogEntries", () => {
     const entries = deriveWorkLogEntries(activities);
     expect(entries[1]?.label).toBe("Thinking");
     expect(entries[1]?.detail).toBe("Reviewing command output");
+  });
+
+  it("does not infer command review context from a previous turn", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "previous-command",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.completed",
+        summary: "Ran command",
+        tone: "tool",
+        payload: {
+          itemType: "command_execution",
+          toolCallId: "cmd-1",
+          title: "Ran command",
+          detail: "bun lint",
+        },
+        turnId: "turn-1",
+      }),
+      makeActivity({
+        id: "provider-started",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "provider.turn.started",
+        summary: "Waiting for model response",
+        tone: "thinking",
+        payload: {
+          phase: "waiting-for-model",
+          detail: "Provider accepted the turn and is preparing a response",
+        },
+        turnId: "turn-2",
+      }),
+      makeActivity({
+        id: "thinking-started",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "thinking.progress",
+        summary: "Thinking",
+        tone: "thinking",
+        payload: {
+          status: "inProgress",
+          detail: "Working through the next step",
+          redacted: true,
+        },
+        turnId: "turn-2",
+      }),
+    ]);
+
+    const thinkingEntry = entries.find((entry) => entry.id === "thinking-started");
+    expect(thinkingEntry?.detail).toBe("Working through the next step");
   });
 
   it("collapses reasoning lifecycle rows and hides completed redacted thinking", () => {

@@ -193,16 +193,19 @@ export function deriveMessagesTimelineRows(input: {
   revertTurnCountByUserMessageId: ReadonlyMap<MessageId, number>;
 }): MessagesTimelineRow[] {
   const nextRows: MessagesTimelineRow[] = [];
+  const visibleTimelineEntries = input.timelineEntries.filter(
+    (entry, index) =>
+      entry.kind !== "work" || shouldShowWorkTimelineEntry(entry.entry, index, input),
+  );
   const durationStartByMessageId = computeMessageDurationStart(
-    input.timelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
+    visibleTimelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
   );
-  const terminalAssistantMessageIds = deriveTerminalAssistantMessageIds(input.timelineEntries);
-  const supersededRunningCommandEntryIds = inferSupersededRunningCommandEntryIds(
-    input.timelineEntries,
-  );
+  const terminalAssistantMessageIds = deriveTerminalAssistantMessageIds(visibleTimelineEntries);
+  const supersededRunningCommandEntryIds =
+    inferSupersededRunningCommandEntryIds(visibleTimelineEntries);
 
-  for (let index = 0; index < input.timelineEntries.length; index += 1) {
-    const timelineEntry = input.timelineEntries[index];
+  for (let index = 0; index < visibleTimelineEntries.length; index += 1) {
+    const timelineEntry = visibleTimelineEntries[index];
     if (!timelineEntry) {
       continue;
     }
@@ -212,8 +215,8 @@ export function deriveMessagesTimelineRows(input: {
         settleSupersededRunningCommandEntry(timelineEntry.entry, supersededRunningCommandEntryIds),
       ];
       let cursor = index + 1;
-      while (cursor < input.timelineEntries.length) {
-        const nextEntry = input.timelineEntries[cursor];
+      while (cursor < visibleTimelineEntries.length) {
+        const nextEntry = visibleTimelineEntries[cursor];
         if (!nextEntry || nextEntry.kind !== "work") break;
         groupedEntries.push(
           settleSupersededRunningCommandEntry(nextEntry.entry, supersededRunningCommandEntryIds),
@@ -290,6 +293,96 @@ export function deriveMessagesTimelineRows(input: {
   }
 
   return nextRows;
+}
+
+function shouldShowWorkTimelineEntry(
+  entry: WorkLogEntry,
+  index: number,
+  input: {
+    readonly timelineEntries: ReadonlyArray<TimelineEntry>;
+    readonly isWorking: boolean;
+    readonly activeTurnId?: TurnId | null;
+  },
+): boolean {
+  if (!entry.providerLifecyclePhase) {
+    return true;
+  }
+  if (!input.isWorking) {
+    return false;
+  }
+
+  const activeTurnId = input.activeTurnId ?? null;
+  if (entry.providerLifecyclePhase === "preparing") {
+    return !hasLaterProviderLifecycleOrConcreteTurnActivity(
+      input.timelineEntries,
+      index,
+      activeTurnId,
+    );
+  }
+
+  if (activeTurnId !== null && entry.turnId !== activeTurnId) {
+    return false;
+  }
+  return !hasLaterConcreteTurnActivity(
+    input.timelineEntries,
+    index,
+    activeTurnId ?? entry.turnId ?? null,
+  );
+}
+
+function hasLaterProviderLifecycleOrConcreteTurnActivity(
+  timelineEntries: ReadonlyArray<TimelineEntry>,
+  afterIndex: number,
+  turnId: TurnId | null,
+): boolean {
+  for (let index = afterIndex + 1; index < timelineEntries.length; index += 1) {
+    const entry = timelineEntries[index];
+    if (!entry) {
+      continue;
+    }
+    if (entry.kind === "work" && entry.entry.providerLifecyclePhase) {
+      return true;
+    }
+    if (isConcreteTurnTimelineEntry(entry, turnId)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasLaterConcreteTurnActivity(
+  timelineEntries: ReadonlyArray<TimelineEntry>,
+  afterIndex: number,
+  turnId: TurnId | null,
+): boolean {
+  for (let index = afterIndex + 1; index < timelineEntries.length; index += 1) {
+    const entry = timelineEntries[index];
+    if (entry && isConcreteTurnTimelineEntry(entry, turnId)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isConcreteTurnTimelineEntry(entry: TimelineEntry, turnId: TurnId | null): boolean {
+  if (entry.kind === "message") {
+    return entry.message.role === "assistant" && timelineEntryMatchesTurn(entry.message, turnId);
+  }
+  return (
+    entry.kind === "work" &&
+    !entry.entry.providerLifecyclePhase &&
+    timelineEntryMatchesTurn(entry.entry, turnId)
+  );
+}
+
+function timelineEntryMatchesTurn(
+  entry: Pick<WorkLogEntry, "turnId"> | { readonly turnId?: TurnId | null },
+  turnId: TurnId | null,
+): boolean {
+  if (turnId === null) {
+    return true;
+  }
+  return entry.turnId === turnId;
 }
 
 function markLatestLiveWorkRow(rows: MessagesTimelineRow[], activeTurnId: TurnId | null) {

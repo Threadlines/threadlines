@@ -465,6 +465,116 @@ describe("deriveMessagesTimelineRows", () => {
     expect(workRows.map((row) => row.isLive)).toEqual([false, true]);
   });
 
+  it("shows only the latest provider lifecycle status while waiting for model output", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "provider-preparing-entry",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:01Z",
+          entry: {
+            id: "provider-preparing",
+            createdAt: "2026-01-01T00:00:01Z",
+            label: "Preparing provider turn",
+            detail: "Preparing context and provider session before handing off to the provider",
+            tone: "info",
+            providerLifecyclePhase: "preparing",
+            turnId: null,
+          },
+        },
+        {
+          id: "provider-started-entry",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:02Z",
+          entry: {
+            id: "provider-started",
+            createdAt: "2026-01-01T00:00:02Z",
+            label: "Waiting for model response",
+            detail: "Provider accepted the turn and is preparing a response",
+            tone: "thinking",
+            providerLifecyclePhase: "waiting-for-model",
+            turnId: "turn-1" as never,
+          },
+        },
+      ],
+      completionDividerBeforeEntryId: null,
+      isWorking: true,
+      activeTurnId: "turn-1" as never,
+      activeTurnStartedAt: "2026-01-01T00:00:00Z",
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    const workRows = rows.filter(
+      (row): row is Extract<(typeof rows)[number], { kind: "work" }> => row.kind === "work",
+    );
+
+    expect(workRows).toHaveLength(1);
+    expect(workRows[0]?.groupedEntries.map((entry) => entry.id)).toEqual(["provider-started"]);
+    expect(workRows[0]?.isLive).toBe(true);
+  });
+
+  it("hides provider lifecycle status after concrete turn activity appears", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "provider-started-entry",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:01Z",
+          entry: {
+            id: "provider-started",
+            createdAt: "2026-01-01T00:00:01Z",
+            label: "Waiting for model response",
+            detail: "Provider accepted the turn and is preparing a response",
+            tone: "thinking",
+            providerLifecyclePhase: "waiting-for-model",
+            turnId: "turn-1" as never,
+          },
+        },
+        {
+          id: "assistant-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:02Z",
+          message: {
+            id: "assistant-1" as never,
+            role: "assistant",
+            text: "I am checking that.",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:02Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "tool-entry",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:03Z",
+          entry: {
+            id: "tool-1",
+            createdAt: "2026-01-01T00:00:03Z",
+            label: "Listed directory",
+            tone: "tool",
+            itemType: "command_execution",
+            turnId: "turn-1" as never,
+          },
+        },
+      ],
+      completionDividerBeforeEntryId: null,
+      isWorking: true,
+      activeTurnId: "turn-1" as never,
+      activeTurnStartedAt: "2026-01-01T00:00:00Z",
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    const workRows = rows.filter(
+      (row): row is Extract<(typeof rows)[number], { kind: "work" }> => row.kind === "work",
+    );
+
+    expect(workRows).toHaveLength(1);
+    expect(workRows[0]?.groupedEntries.map((entry) => entry.id)).toEqual(["tool-1"]);
+    expect(workRows[0]?.isLive).toBe(true);
+  });
+
   it("settles a running command when later same-turn thinking reviews its output", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [
