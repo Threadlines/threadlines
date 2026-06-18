@@ -22,6 +22,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
@@ -60,6 +61,8 @@ const BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY = 10_000;
 const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
 const BUFFERED_ACTIVITY_STREAM_BY_KEY_CACHE_CAPACITY = 20_000;
 const BUFFERED_ACTIVITY_STREAM_BY_KEY_TTL = Duration.minutes(120);
+const STREAMING_ASSISTANT_DELTA_FLUSH_INTERVAL = Duration.millis(50);
+const MARKDOWN_FENCE_INDENT_LIMIT = 3;
 type ContentDeltaStreamKind = Extract<
   ProviderRuntimeEvent,
   { type: "content.delta" }
@@ -91,6 +94,14 @@ interface BufferedActivityStream {
   readonly truncated: boolean;
 }
 
+interface PendingStreamingAssistantMessage {
+  readonly event: ProviderRuntimeEvent;
+  readonly threadId: ThreadId;
+  readonly messageId: MessageId;
+  readonly turnId?: TurnId;
+  readonly createdAt: string;
+}
+
 interface EmittedActivityStreamCursor {
   readonly byteCount: number;
   readonly lineCount: number;
@@ -110,6 +121,9 @@ type RuntimeIngestionInput =
   | {
       source: "domain";
       event: TurnStartRequestedDomainEvent;
+    }
+  | {
+      source: "flush";
     };
 
 function toTurnId(value: TurnId | string | undefined): TurnId | undefined {
@@ -213,6 +227,411 @@ function maxCheckpointTurnCount(
     }
   }
   return maxTurnCount;
+}
+
+function detectMarkdownFenceAtLineStart(
+  text: string,
+  index: number,
+): { marker: "`" | "~"; length: number; end: number } | null {
+  if (index > 0 && text[index - 1] !== "\n") {
+    return null;
+  }
+
+  let cursor = index;
+  let indent = 0;
+  while (text[cursor] === " " && indent < MARKDOWN_FENCE_INDENT_LIMIT + 1) {
+    cursor += 1;
+    indent += 1;
+  }
+  if (indent > MARKDOWN_FENCE_INDENT_LIMIT) {
+    return null;
+  }
+
+  const marker = text[cursor];
+  if (marker !== "`" && marker !== "~") {
+    return null;
+  }
+
+  let end = cursor;
+  while (text[end] === marker) {
+    end += 1;
+  }
+  const length = end - cursor;
+  return length >= 3 ? { marker, length, end } : null;
+}
+
+function isEscapedMarkdownCharacter(text: string, index: number): boolean {
+  let slashCount = 0;
+  for (let cursor = index - 1; cursor >= 0 && text[cursor] === "\\"; cursor -= 1) {
+    slashCount += 1;
+  }
+  return slashCount % 2 === 1;
+}
+
+function isAsciiAlphaNumeric(char: string | undefined): boolean {
+  return char !== undefined && /^[A-Za-z0-9]$/u.test(char);
+}
+
+function isMarkdownBoundaryBefore(char: string | undefined): boolean {
+  return (
+    char === undefined ||
+    /\s/u.test(char) ||
+    char === "(" ||
+    char === "[" ||
+    char === "{" ||
+    char === "<" ||
+    char === '"' ||
+    char === "'"
+  );
+}
+
+function isMarkdownBoundaryAfter(char: string | undefined): boolean {
+  return (
+    char === undefined ||
+    /\s/u.test(char) ||
+    char === "." ||
+    char === "," ||
+    char === ":" ||
+    char === ";" ||
+    char === "!" ||
+    char === "?" ||
+    char === ")" ||
+    char === "]" ||
+    char === "}" ||
+    char === ">" ||
+    char === '"' ||
+    char === "'"
+  );
+}
+
+interface MarkdownLine {
+  readonly text: string;
+  readonly start: number;
+  readonly end: number;
+  readonly hasLineEnding: boolean;
+}
+
+function splitMarkdownLines(text: string): MarkdownLine[] {
+  const lines: MarkdownLine[] = [];
+  let start = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] !== "\n") {
+      continue;
+    }
+    lines.push({
+      text: text.slice(start, index),
+      start,
+      end: index,
+      hasLineEnding: true,
+    });
+    start = index + 1;
+  }
+  lines.push({
+    text: text.slice(start),
+    start,
+    end: text.length,
+    hasLineEnding: false,
+  });
+  return lines;
+}
+
+function isSyntheticTrailingMarkdownLine(line: MarkdownLine, sourceText: string): boolean {
+  return !line.hasLineEnding && line.start === sourceText.length && line.text.length === 0;
+}
+
+function stripOuterTablePipes(line: string): string {
+  let value = line.trim();
+  if (value.startsWith("|")) {
+    value = value.slice(1);
+  }
+  if (value.endsWith("|")) {
+    value = value.slice(0, -1);
+  }
+  return value;
+}
+
+function isPotentialMarkdownTableRow(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith(">")) {
+    return false;
+  }
+  if (trimmed.startsWith("|")) {
+    return stripOuterTablePipes(trimmed).includes("|");
+  }
+  const firstPipe = trimmed.indexOf("|");
+  return firstPipe >= 0 && trimmed.indexOf("|", firstPipe + 1) >= 0;
+}
+
+function isMarkdownTableSeparatorRow(line: string): boolean {
+  if (!isPotentialMarkdownTableRow(line)) {
+    return false;
+  }
+  const cells = stripOuterTablePipes(line)
+    .split("|")
+    .map((cell) => cell.trim());
+  return cells.length >= 2 && cells.every((cell) => /^:?-{3,}:?$/u.test(cell));
+}
+
+function findPendingMarkdownTableStart(
+  text: string,
+  options?: { readonly continuingTable?: boolean },
+): number | null {
+  const lines = splitMarkdownLines(text);
+  let tableActive = options?.continuingTable === true;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    const nextLine = lines[index + 1];
+    if (isSyntheticTrailingMarkdownLine(line, text)) {
+      break;
+    }
+
+    if (tableActive) {
+      if (!isPotentialMarkdownTableRow(line.text)) {
+        tableActive = false;
+        continue;
+      }
+      if (!line.hasLineEnding) {
+        return line.start;
+      }
+      continue;
+    }
+
+    if (!isPotentialMarkdownTableRow(line.text)) {
+      continue;
+    }
+
+    if (!nextLine) {
+      return line.start;
+    }
+    if (!nextLine.hasLineEnding && !isMarkdownTableSeparatorRow(nextLine.text)) {
+      return line.start;
+    }
+    if (!isMarkdownTableSeparatorRow(nextLine.text)) {
+      continue;
+    }
+    if (!nextLine.hasLineEnding) {
+      return line.start;
+    }
+
+    tableActive = true;
+    index += 1;
+  }
+
+  return null;
+}
+
+function markdownTableContinuesAfterFlush(
+  text: string,
+  options?: { readonly continuingTable?: boolean },
+): boolean {
+  const lines = splitMarkdownLines(text);
+  let tableActive = options?.continuingTable === true;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    if (isSyntheticTrailingMarkdownLine(line, text)) {
+      break;
+    }
+
+    if (tableActive) {
+      if (isPotentialMarkdownTableRow(line.text)) {
+        continue;
+      }
+      tableActive = false;
+      continue;
+    }
+
+    if (!isPotentialMarkdownTableRow(line.text)) {
+      continue;
+    }
+
+    const nextLine = lines[index + 1];
+    if (
+      nextLine &&
+      !isSyntheticTrailingMarkdownLine(nextLine, text) &&
+      isMarkdownTableSeparatorRow(nextLine.text)
+    ) {
+      tableActive = true;
+      index += 1;
+    }
+  }
+
+  return tableActive;
+}
+
+function findClosingMarkdownParenthesis(text: string, startIndex: number): number | null {
+  let depth = 0;
+  for (let index = startIndex; index < text.length; index += 1) {
+    const char = text[index];
+    if (isEscapedMarkdownCharacter(text, index)) {
+      continue;
+    }
+    if (char === "(") {
+      depth += 1;
+      continue;
+    }
+    if (char !== ")") {
+      continue;
+    }
+    if (depth === 0) {
+      return index;
+    }
+    depth -= 1;
+  }
+  return null;
+}
+
+function findUnclosedInlineCodeSpanStart(text: string): number | null {
+  let inlineCode: { start: number; tickCount: number } | null = null;
+  let codeFence: { marker: "`" | "~"; length: number } | null = null;
+
+  for (let index = 0; index < text.length; index += 1) {
+    if (inlineCode === null) {
+      const fence = detectMarkdownFenceAtLineStart(text, index);
+      if (fence) {
+        if (codeFence === null) {
+          codeFence = { marker: fence.marker, length: fence.length };
+        } else if (codeFence.marker === fence.marker && fence.length >= codeFence.length) {
+          codeFence = null;
+        }
+        index = fence.end - 1;
+        continue;
+      }
+    }
+
+    if (codeFence !== null) {
+      continue;
+    }
+
+    const char = text[index];
+    if (char === "\\") {
+      index += 1;
+      continue;
+    }
+    if (char !== "`") {
+      continue;
+    }
+
+    const runStart = index;
+    let runEnd = index;
+    while (text[runEnd] === "`") {
+      runEnd += 1;
+    }
+    const tickCount = runEnd - runStart;
+
+    if (inlineCode && tickCount === inlineCode.tickCount) {
+      inlineCode = null;
+    } else if (inlineCode === null) {
+      inlineCode = { start: runStart, tickCount };
+    }
+
+    index = runEnd - 1;
+  }
+
+  return inlineCode?.start ?? null;
+}
+
+function findUnclosedLinkStart(text: string): number | null {
+  const labelStack: number[] = [];
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (isEscapedMarkdownCharacter(text, index)) {
+      continue;
+    }
+
+    if (char === "[") {
+      labelStack.push(text[index - 1] === "!" ? index - 1 : index);
+      continue;
+    }
+
+    if (char !== "]" || labelStack.length === 0) {
+      continue;
+    }
+
+    const labelStart = labelStack.pop()!;
+    const nextChar = text[index + 1];
+    if (nextChar === "(") {
+      const closeIndex = findClosingMarkdownParenthesis(text, index + 2);
+      if (closeIndex === null) {
+        return labelStart;
+      }
+      index = closeIndex;
+      continue;
+    }
+
+    if (nextChar === "[") {
+      const closeReferenceIndex = text.indexOf("]", index + 2);
+      if (closeReferenceIndex < 0) {
+        return labelStart;
+      }
+      index = closeReferenceIndex;
+    }
+  }
+
+  return labelStack[0] ?? null;
+}
+
+function findUnclosedEmphasisStart(text: string): number | null {
+  const markerStack: Array<{ marker: "*" | "~"; length: 1 | 2; start: number }> = [];
+
+  for (let index = 0; index < text.length; index += 1) {
+    const marker = text[index];
+    if ((marker !== "*" && marker !== "~") || isEscapedMarkdownCharacter(text, index)) {
+      continue;
+    }
+
+    let runEnd = index;
+    while (text[runEnd] === marker) {
+      runEnd += 1;
+    }
+    const runLength = runEnd - index;
+    const length = Math.min(runLength, 2) as 1 | 2;
+    const previousChar = text[index - 1];
+    const nextChar = text[index + length];
+    const canOpen =
+      isMarkdownBoundaryBefore(previousChar) &&
+      isAsciiAlphaNumeric(nextChar) &&
+      (marker === "*" || length === 2);
+    const canClose = isAsciiAlphaNumeric(previousChar) && isMarkdownBoundaryAfter(nextChar);
+    const openIndex = markerStack.findLastIndex(
+      (entry) => entry.marker === marker && entry.length === length,
+    );
+
+    if (openIndex >= 0 && canClose) {
+      markerStack.splice(openIndex, 1);
+    } else if (canOpen) {
+      markerStack.push({ marker, length, start: index });
+    }
+
+    index = runEnd - 1;
+  }
+
+  return markerStack.length > 0 ? Math.min(...markerStack.map((entry) => entry.start)) : null;
+}
+
+function splitStreamingAssistantMarkdownFlush(
+  text: string,
+  options?: { readonly continuingTable?: boolean },
+): {
+  readyText: string;
+  pendingText: string;
+} {
+  const pendingStarts = [
+    findUnclosedInlineCodeSpanStart(text),
+    findUnclosedLinkStart(text),
+    findUnclosedEmphasisStart(text),
+    findPendingMarkdownTableStart(text, options),
+  ].filter((start): start is number => start !== null);
+  if (pendingStarts.length === 0) {
+    return { readyText: text, pendingText: "" };
+  }
+  const pendingStart = Math.min(...pendingStarts);
+  return {
+    readyText: text.slice(0, pendingStart),
+    pendingText: text.slice(pendingStart),
+  };
 }
 
 function checkpointFileChangeActivity(input: {
@@ -422,6 +841,10 @@ const make = Effect.gen(function* () {
     timeToLive: BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_TTL,
     lookup: () => Effect.succeed(""),
   });
+  const pendingStreamingAssistantMessages = yield* Ref.make(
+    new Map<MessageId, PendingStreamingAssistantMessage>(),
+  );
+  const streamingAssistantTableMessageIds = yield* Ref.make(new Set<MessageId>());
 
   const assistantSegmentStateByTurnKey = yield* Cache.make<string, AssistantSegmentState>({
     capacity: TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY,
@@ -622,8 +1045,158 @@ const make = Effect.gen(function* () {
       ),
     );
 
+  const peekBufferedAssistantText = (messageId: MessageId) =>
+    Cache.getOption(bufferedAssistantTextByMessageId, messageId).pipe(
+      Effect.map((existingText) => Option.getOrElse(existingText, () => "")),
+    );
+
+  const replaceBufferedAssistantText = (messageId: MessageId, text: string) =>
+    text.length > 0
+      ? Cache.set(bufferedAssistantTextByMessageId, messageId, text)
+      : Cache.invalidate(bufferedAssistantTextByMessageId, messageId);
+
   const clearBufferedAssistantText = (messageId: MessageId) =>
     Cache.invalidate(bufferedAssistantTextByMessageId, messageId);
+
+  const dispatchAssistantDelta = (input: {
+    event: ProviderRuntimeEvent;
+    threadId: ThreadId;
+    messageId: MessageId;
+    delta: string;
+    turnId?: TurnId;
+    createdAt: string;
+    commandTag: string;
+  }) =>
+    orchestrationEngine.dispatch({
+      type: "thread.message.assistant.delta",
+      commandId: providerCommandId(input.event, input.commandTag),
+      threadId: input.threadId,
+      messageId: input.messageId,
+      delta: input.delta,
+      ...(input.turnId ? { turnId: input.turnId } : {}),
+      createdAt: input.createdAt,
+    });
+
+  const queuePendingStreamingAssistantMessage = (input: PendingStreamingAssistantMessage) =>
+    Ref.update(pendingStreamingAssistantMessages, (pending) => {
+      const next = new Map(pending);
+      next.set(input.messageId, input);
+      return next;
+    });
+
+  const takePendingStreamingAssistantMessages = Ref.modify(
+    pendingStreamingAssistantMessages,
+    (pending) => [
+      Array.from(pending.values()),
+      new Map<MessageId, PendingStreamingAssistantMessage>(),
+    ],
+  );
+
+  const clearPendingStreamingAssistantMessage = (messageId: MessageId) =>
+    Ref.update(pendingStreamingAssistantMessages, (pending) => {
+      if (!pending.has(messageId)) {
+        return pending;
+      }
+      const next = new Map(pending);
+      next.delete(messageId);
+      return next;
+    });
+
+  const isStreamingAssistantTableActive = (messageId: MessageId) =>
+    Ref.get(streamingAssistantTableMessageIds).pipe(
+      Effect.map((messageIds) => messageIds.has(messageId)),
+    );
+
+  const setStreamingAssistantTableActive = (messageId: MessageId, active: boolean) =>
+    Ref.update(streamingAssistantTableMessageIds, (messageIds) => {
+      if (active && messageIds.has(messageId)) {
+        return messageIds;
+      }
+      if (!active && !messageIds.has(messageId)) {
+        return messageIds;
+      }
+      const next = new Set(messageIds);
+      if (active) {
+        next.add(messageId);
+      } else {
+        next.delete(messageId);
+      }
+      return next;
+    });
+
+  const clearStreamingAssistantTableState = (messageId: MessageId) =>
+    setStreamingAssistantTableActive(messageId, false);
+
+  const flushPendingStreamingAssistantMessage = (input: PendingStreamingAssistantMessage) =>
+    Effect.gen(function* () {
+      const bufferedText = yield* peekBufferedAssistantText(input.messageId);
+      const continuingTable = yield* isStreamingAssistantTableActive(input.messageId);
+      const { readyText, pendingText } = splitStreamingAssistantMarkdownFlush(bufferedText, {
+        continuingTable,
+      });
+      if (!hasRenderableAssistantText(readyText)) {
+        return false;
+      }
+
+      yield* replaceBufferedAssistantText(input.messageId, pendingText);
+      yield* setStreamingAssistantTableActive(
+        input.messageId,
+        markdownTableContinuesAfterFlush(readyText, { continuingTable }),
+      );
+      yield* dispatchAssistantDelta({
+        ...input,
+        delta: readyText,
+        commandTag: "assistant-delta-stream-batch",
+      });
+      return true;
+    });
+
+  const flushPendingStreamingAssistantMessages = Effect.gen(function* () {
+    const pendingMessages = yield* takePendingStreamingAssistantMessages;
+    if (pendingMessages.length === 0) {
+      return 0;
+    }
+
+    let flushedCount = 0;
+    yield* Effect.forEach(
+      pendingMessages,
+      (pending) =>
+        flushPendingStreamingAssistantMessage(pending).pipe(
+          Effect.tap((flushed) =>
+            flushed
+              ? Effect.sync(() => {
+                  flushedCount += 1;
+                })
+              : Effect.void,
+          ),
+        ),
+      { concurrency: 1 },
+    ).pipe(Effect.asVoid);
+    return flushedCount;
+  });
+
+  const queueStreamingAssistantDelta = (input: {
+    event: ProviderRuntimeEvent;
+    threadId: ThreadId;
+    messageId: MessageId;
+    delta: string;
+    turnId?: TurnId;
+    createdAt: string;
+  }) =>
+    Effect.gen(function* () {
+      const spillChunk = yield* appendBufferedAssistantText(input.messageId, input.delta);
+      if (spillChunk.length > 0) {
+        yield* clearPendingStreamingAssistantMessage(input.messageId);
+        yield* dispatchAssistantDelta({
+          ...input,
+          delta: spillChunk,
+          commandTag: "assistant-delta-stream-spill",
+        });
+        return;
+      }
+
+      yield* queuePendingStreamingAssistantMessage(input);
+    });
 
   const appendBufferedProposedPlan = (planId: string, delta: string, createdAt: string) =>
     Cache.getOption(bufferedProposedPlanById, planId).pipe(
@@ -703,7 +1276,10 @@ const make = Effect.gen(function* () {
     });
 
   const clearAssistantMessageState = (messageId: MessageId) =>
-    clearBufferedAssistantText(messageId);
+    clearPendingStreamingAssistantMessage(messageId).pipe(
+      Effect.andThen(clearStreamingAssistantTableState(messageId)),
+      Effect.andThen(clearBufferedAssistantText(messageId)),
+    );
 
   const flushBufferedAssistantMessage = (input: {
     event: ProviderRuntimeEvent;
@@ -719,14 +1295,9 @@ const make = Effect.gen(function* () {
         return false;
       }
 
-      yield* orchestrationEngine.dispatch({
-        type: "thread.message.assistant.delta",
-        commandId: providerCommandId(input.event, input.commandTag),
-        threadId: input.threadId,
-        messageId: input.messageId,
+      yield* dispatchAssistantDelta({
+        ...input,
         delta: bufferedText,
-        ...(input.turnId ? { turnId: input.turnId } : {}),
-        createdAt: input.createdAt,
       });
       return true;
     });
@@ -786,14 +1357,14 @@ const make = Effect.gen(function* () {
       const hasRenderableText = hasRenderableAssistantText(text);
 
       if (hasRenderableText) {
-        yield* orchestrationEngine.dispatch({
-          type: "thread.message.assistant.delta",
-          commandId: providerCommandId(input.event, input.finalDeltaCommandTag),
+        yield* dispatchAssistantDelta({
+          event: input.event,
           threadId: input.threadId,
           messageId: input.messageId,
           delta: text,
           ...(input.turnId ? { turnId: input.turnId } : {}),
           createdAt: input.createdAt,
+          commandTag: input.finalDeltaCommandTag,
         });
       }
 
@@ -1293,9 +1864,8 @@ const make = Effect.gen(function* () {
             });
           }
         } else {
-          yield* orchestrationEngine.dispatch({
-            type: "thread.message.assistant.delta",
-            commandId: providerCommandId(event, "assistant-delta"),
+          yield* queueStreamingAssistantDelta({
+            event,
             threadId: thread.id,
             messageId: assistantMessageId,
             delta: assistantDelta,
@@ -1311,23 +1881,16 @@ const make = Effect.gen(function* () {
           : undefined;
       if (pauseForUserTurnId) {
         const detailedThread = yield* getLoadedThreadDetail();
-        const assistantDeliveryMode: AssistantDeliveryMode = yield* Effect.map(
-          serverSettingsService.getSettings,
-          (settings) => (settings.enableAssistantStreaming ? "streaming" : "buffered"),
-        );
-        const flushedMessageIds =
-          assistantDeliveryMode === "buffered"
-            ? yield* flushBufferedAssistantMessagesForTurn({
-                event,
-                threadId: thread.id,
-                turnId: pauseForUserTurnId,
-                createdAt: now,
-                commandTag:
-                  event.type === "request.opened"
-                    ? "assistant-delta-flush-on-request-opened"
-                    : "assistant-delta-flush-on-user-input-requested",
-              })
-            : new Set<MessageId>();
+        const flushedMessageIds = yield* flushBufferedAssistantMessagesForTurn({
+          event,
+          threadId: thread.id,
+          turnId: pauseForUserTurnId,
+          createdAt: now,
+          commandTag:
+            event.type === "request.opened"
+              ? "assistant-delta-flush-on-request-opened"
+              : "assistant-delta-flush-on-user-input-requested",
+        });
         yield* finalizeActiveAssistantSegmentForTurn({
           event,
           threadId: thread.id,
@@ -1586,8 +2149,16 @@ const make = Effect.gen(function* () {
 
   const processDomainEvent = (_event: TurnStartRequestedDomainEvent) => Effect.void;
 
-  const processInput = (input: RuntimeIngestionInput) =>
-    input.source === "runtime" ? processRuntimeEvent(input.event) : processDomainEvent(input.event);
+  const processInput = (input: RuntimeIngestionInput) => {
+    switch (input.source) {
+      case "runtime":
+        return processRuntimeEvent(input.event);
+      case "domain":
+        return processDomainEvent(input.event);
+      case "flush":
+        return flushPendingStreamingAssistantMessages.pipe(Effect.asVoid);
+    }
+  };
 
   const processInputSafely = (input: RuntimeIngestionInput) =>
     processInput(input).pipe(
@@ -1597,8 +2168,9 @@ const make = Effect.gen(function* () {
         }
         return Effect.logWarning("provider runtime ingestion failed to process event", {
           source: input.source,
-          eventId: input.event.eventId,
-          eventType: input.event.type,
+          ...(input.source === "flush"
+            ? { eventId: "streaming-assistant-flush", eventType: "flush" }
+            : { eventId: input.event.eventId, eventType: input.event.type }),
           cause: Cause.pretty(cause),
         });
       }),
@@ -1620,6 +2192,18 @@ const make = Effect.gen(function* () {
           }
           return worker.enqueue({ source: "domain", event });
         }),
+      );
+      yield* Effect.forkScoped(
+        Effect.sleep(STREAMING_ASSISTANT_DELTA_FLUSH_INTERVAL).pipe(
+          Effect.andThen(
+            Ref.get(pendingStreamingAssistantMessages).pipe(
+              Effect.flatMap((pending) =>
+                pending.size === 0 ? Effect.void : worker.enqueue({ source: "flush" }),
+              ),
+            ),
+          ),
+          Effect.forever,
+        ),
       );
     });
 

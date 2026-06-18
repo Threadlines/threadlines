@@ -2347,6 +2347,497 @@ describe("ProviderRuntimeIngestion", () => {
     expect(finalMessage?.streaming).toBe(false);
   });
 
+  it("batches rapid streaming assistant deltas into one projected update", async () => {
+    const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-streaming-batch"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-streaming-batch"),
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.status === "running" &&
+        thread.session?.activeTurnId === "turn-streaming-batch",
+    );
+
+    for (const [index, delta] of ["hello", " ", "batched"].entries()) {
+      harness.emit({
+        type: "content.delta",
+        eventId: asEventId(`evt-message-delta-streaming-batch-${index}`),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-streaming-batch"),
+        itemId: asItemId("item-streaming-batch"),
+        payload: {
+          streamKind: "assistant_text",
+          delta,
+        },
+      });
+    }
+
+    await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === "assistant:item-streaming-batch" &&
+          message.streaming &&
+          message.text === "hello batched",
+      ),
+    );
+
+    const events = await Effect.runPromise(
+      Stream.runCollect(harness.engine.readEvents(0)).pipe(
+        Effect.map((chunk) => Array.from(chunk)),
+      ),
+    );
+    const assistantEvents = events.filter(
+      (event): event is Extract<(typeof events)[number], { type: "thread.message-sent" }> =>
+        event.type === "thread.message-sent" &&
+        event.payload.messageId === "assistant:item-streaming-batch",
+    );
+    expect(assistantEvents).toHaveLength(1);
+    expect(assistantEvents[0]?.payload.streaming).toBe(true);
+    expect(assistantEvents[0]?.payload.text).toBe("hello batched");
+  });
+
+  it("holds incomplete inline code markdown while streaming assistant deltas", async () => {
+    const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-streaming-markdown-batch"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-streaming-markdown-batch"),
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.status === "running" &&
+        thread.session?.activeTurnId === "turn-streaming-markdown-batch",
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-streaming-markdown-batch-prefix"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-streaming-markdown-batch"),
+      itemId: asItemId("item-streaming-markdown-batch"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "Use ",
+      },
+    });
+
+    await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === "assistant:item-streaming-markdown-batch" &&
+          message.streaming &&
+          message.text === "Use ",
+      ),
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-streaming-markdown-batch-open"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-streaming-markdown-batch"),
+      itemId: asItemId("item-streaming-markdown-batch"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "`80",
+      },
+    });
+    await Effect.runPromise(Effect.sleep("200 millis"));
+    await harness.drain();
+
+    const partialSnapshot = await harness.readModel();
+    const partialThread = partialSnapshot.threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    const partialMessage = partialThread?.messages.find(
+      (entry: ProviderRuntimeTestMessage) => entry.id === "assistant:item-streaming-markdown-batch",
+    );
+    expect(partialMessage?.text).toBe("Use ");
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-streaming-markdown-batch-close"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-streaming-markdown-batch"),
+      itemId: asItemId("item-streaming-markdown-batch"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "ms` chunks.",
+      },
+    });
+
+    await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === "assistant:item-streaming-markdown-batch" &&
+          message.streaming &&
+          message.text === "Use `80ms` chunks.",
+      ),
+    );
+
+    const events = await Effect.runPromise(
+      Stream.runCollect(harness.engine.readEvents(0)).pipe(
+        Effect.map((chunk) => Array.from(chunk)),
+      ),
+    );
+    const assistantEvents = events.filter(
+      (event): event is Extract<(typeof events)[number], { type: "thread.message-sent" }> =>
+        event.type === "thread.message-sent" &&
+        event.payload.messageId === "assistant:item-streaming-markdown-batch",
+    );
+    expect(assistantEvents.map((event) => event.payload.text)).toEqual(["Use ", "`80ms` chunks."]);
+  });
+
+  it("holds incomplete emphasis and link markdown while streaming assistant deltas", async () => {
+    const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
+    const now = "2026-01-01T00:00:00.000Z";
+    const messageId = "assistant:item-streaming-inline-markdown-batch";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-streaming-inline-markdown-batch"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-streaming-inline-markdown-batch"),
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.status === "running" &&
+        thread.session?.activeTurnId === "turn-streaming-inline-markdown-batch",
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-streaming-inline-markdown-batch-prefix"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-streaming-inline-markdown-batch"),
+      itemId: asItemId("item-streaming-inline-markdown-batch"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "Styled ",
+      },
+    });
+    await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === messageId && message.streaming && message.text === "Styled ",
+      ),
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-streaming-inline-markdown-batch-bold-open"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-streaming-inline-markdown-batch"),
+      itemId: asItemId("item-streaming-inline-markdown-batch"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "**bo",
+      },
+    });
+    await Effect.runPromise(Effect.sleep("200 millis"));
+    await harness.drain();
+
+    let snapshot = await harness.readModel();
+    let thread = snapshot.threads.find((entry) => entry.id === asThreadId("thread-1"));
+    let message = thread?.messages.find(
+      (entry: ProviderRuntimeTestMessage) => entry.id === messageId,
+    );
+    expect(message?.text).toBe("Styled ");
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-streaming-inline-markdown-batch-bold-close"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-streaming-inline-markdown-batch"),
+      itemId: asItemId("item-streaming-inline-markdown-batch"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "ld** and ",
+      },
+    });
+    await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (candidate: ProviderRuntimeTestMessage) =>
+          candidate.id === messageId && candidate.text === "Styled **bold** and ",
+      ),
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-streaming-inline-markdown-batch-italic-open"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-streaming-inline-markdown-batch"),
+      itemId: asItemId("item-streaming-inline-markdown-batch"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "*it",
+      },
+    });
+    await Effect.runPromise(Effect.sleep("200 millis"));
+    await harness.drain();
+
+    snapshot = await harness.readModel();
+    thread = snapshot.threads.find((entry) => entry.id === asThreadId("thread-1"));
+    message = thread?.messages.find((entry: ProviderRuntimeTestMessage) => entry.id === messageId);
+    expect(message?.text).toBe("Styled **bold** and ");
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-streaming-inline-markdown-batch-italic-close"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-streaming-inline-markdown-batch"),
+      itemId: asItemId("item-streaming-inline-markdown-batch"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "alic* with ",
+      },
+    });
+    await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (candidate: ProviderRuntimeTestMessage) =>
+          candidate.id === messageId && candidate.text === "Styled **bold** and *italic* with ",
+      ),
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-streaming-inline-markdown-batch-link-open"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-streaming-inline-markdown-batch"),
+      itemId: asItemId("item-streaming-inline-markdown-batch"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "[ProviderRuntimeIngestion.ts",
+      },
+    });
+    await Effect.runPromise(Effect.sleep("200 millis"));
+    await harness.drain();
+
+    snapshot = await harness.readModel();
+    thread = snapshot.threads.find((entry) => entry.id === asThreadId("thread-1"));
+    message = thread?.messages.find((entry: ProviderRuntimeTestMessage) => entry.id === messageId);
+    expect(message?.text).toBe("Styled **bold** and *italic* with ");
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-streaming-inline-markdown-batch-link-close"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-streaming-inline-markdown-batch"),
+      itemId: asItemId("item-streaming-inline-markdown-batch"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "](file:///C:/repo/ProviderRuntimeIngestion.ts).",
+      },
+    });
+
+    const finalText =
+      "Styled **bold** and *italic* with [ProviderRuntimeIngestion.ts](file:///C:/repo/ProviderRuntimeIngestion.ts).";
+    await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (candidate: ProviderRuntimeTestMessage) =>
+          candidate.id === messageId && candidate.streaming && candidate.text === finalText,
+      ),
+    );
+
+    const events = await Effect.runPromise(
+      Stream.runCollect(harness.engine.readEvents(0)).pipe(
+        Effect.map((chunk) => Array.from(chunk)),
+      ),
+    );
+    const assistantEvents = events.filter(
+      (event): event is Extract<(typeof events)[number], { type: "thread.message-sent" }> =>
+        event.type === "thread.message-sent" && event.payload.messageId === messageId,
+    );
+    expect(assistantEvents.map((event) => event.payload.text)).toEqual([
+      "Styled ",
+      "**bold** and ",
+      "*italic* with ",
+      "[ProviderRuntimeIngestion.ts](file:///C:/repo/ProviderRuntimeIngestion.ts).",
+    ]);
+  });
+
+  it("holds incomplete table markdown while streaming assistant deltas", async () => {
+    const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
+    const now = "2026-01-01T00:00:00.000Z";
+    const messageId = "assistant:item-streaming-table-markdown-batch";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-streaming-table-markdown-batch"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-streaming-table-markdown-batch"),
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.status === "running" &&
+        thread.session?.activeTurnId === "turn-streaming-table-markdown-batch",
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-streaming-table-markdown-batch-prefix"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-streaming-table-markdown-batch"),
+      itemId: asItemId("item-streaming-table-markdown-batch"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "A table:\n\n",
+      },
+    });
+    await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === messageId && message.streaming && message.text === "A table:\n\n",
+      ),
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-streaming-table-markdown-batch-header"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-streaming-table-markdown-batch"),
+      itemId: asItemId("item-streaming-table-markdown-batch"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "| Area | Reference | Purpose |\n",
+      },
+    });
+    await Effect.runPromise(Effect.sleep("200 millis"));
+    await harness.drain();
+
+    let snapshot = await harness.readModel();
+    let thread = snapshot.threads.find((entry) => entry.id === asThreadId("thread-1"));
+    let message = thread?.messages.find(
+      (entry: ProviderRuntimeTestMessage) => entry.id === messageId,
+    );
+    expect(message?.text).toBe("A table:\n\n");
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-streaming-table-markdown-batch-separator"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-streaming-table-markdown-batch"),
+      itemId: asItemId("item-streaming-table-markdown-batch"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "| --- | --- | --- |\n",
+      },
+    });
+    await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (candidate: ProviderRuntimeTestMessage) =>
+          candidate.id === messageId &&
+          candidate.text === "A table:\n\n| Area | Reference | Purpose |\n| --- | --- | --- |\n",
+      ),
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-streaming-table-markdown-batch-row-open"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-streaming-table-markdown-batch"),
+      itemId: asItemId("item-streaming-table-markdown-batch"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "| Flush interval | `50ms` | Smoother",
+      },
+    });
+    await Effect.runPromise(Effect.sleep("200 millis"));
+    await harness.drain();
+
+    snapshot = await harness.readModel();
+    thread = snapshot.threads.find((entry) => entry.id === asThreadId("thread-1"));
+    message = thread?.messages.find((entry: ProviderRuntimeTestMessage) => entry.id === messageId);
+    expect(message?.text).toBe("A table:\n\n| Area | Reference | Purpose |\n| --- | --- | --- |\n");
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-streaming-table-markdown-batch-row-close"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-streaming-table-markdown-batch"),
+      itemId: asItemId("item-streaming-table-markdown-batch"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: " text |\n",
+      },
+    });
+
+    const finalText =
+      "A table:\n\n| Area | Reference | Purpose |\n| --- | --- | --- |\n| Flush interval | `50ms` | Smoother text |\n";
+    await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (candidate: ProviderRuntimeTestMessage) =>
+          candidate.id === messageId && candidate.streaming && candidate.text === finalText,
+      ),
+    );
+
+    const events = await Effect.runPromise(
+      Stream.runCollect(harness.engine.readEvents(0)).pipe(
+        Effect.map((chunk) => Array.from(chunk)),
+      ),
+    );
+    const assistantEvents = events.filter(
+      (event): event is Extract<(typeof events)[number], { type: "thread.message-sent" }> =>
+        event.type === "thread.message-sent" && event.payload.messageId === messageId,
+    );
+    expect(assistantEvents.map((event) => event.payload.text)).toEqual([
+      "A table:\n\n",
+      "| Area | Reference | Purpose |\n| --- | --- | --- |\n",
+      "| Flush interval | `50ms` | Smoother text |\n",
+    ]);
+  });
+
   it("spills oversized buffered deltas and still finalizes full assistant text", async () => {
     const harness = await createHarness({
       serverSettings: { enableAssistantStreaming: false },
