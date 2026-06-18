@@ -586,7 +586,7 @@ jobs:
       - macos
     if: ${{ always() && needs.prepare_release.result == 'success' && needs.macos.result == 'success' && (needs.windows.result == 'success' || needs.windows.result == 'skipped') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -604,8 +604,16 @@ jobs:
         with:
           node-version-file: package.json
 
+      - name: Cache Bun downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ubuntu-publish-bun-${{ hashFiles('bun.lock', 'package.json') }}
+          restore-keys: |
+            ubuntu-publish-bun-
+
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: bun install --frozen-lockfile --ignore-scripts
 
       - name: Download updater manifests
         shell: bash
@@ -708,19 +716,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.preflight.outputs.tag }}
           EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
 
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             echo "Deleting failed workflow-dispatch release $TAG and its generated tag."
-            gh release delete "$TAG" --yes --cleanup-tag
+            gh release delete "$TAG" --repo "$REPOSITORY" --yes
+            gh api --method DELETE "repos/$REPOSITORY/git/refs/tags/$TAG" || true
             exit 0
           fi
 
-          is_draft="$(gh release view "$TAG" --json isDraft -q .isDraft 2>/dev/null || echo false)"
+          is_draft="$(gh release view "$TAG" --repo "$REPOSITORY" --json isDraft -q .isDraft 2>/dev/null || echo false)"
           if [[ "$is_draft" != "true" ]]; then
             echo "Release $TAG is not a draft; leaving it in place."
             exit 0
           fi
 
-          gh release delete "$TAG" --yes
+          gh release delete "$TAG" --repo "$REPOSITORY" --yes
