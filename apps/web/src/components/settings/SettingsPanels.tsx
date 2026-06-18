@@ -3,6 +3,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useCallback, useMemo, useRef, useState } from "react";
 import {
+  AUTO_ARCHIVE_INACTIVE_THREADS_DAY_OPTIONS,
+  type AutoArchiveInactiveThreadsDays,
   defaultInstanceIdForDriver,
   type DesktopUpdateChannel,
   PROVIDER_DISPLAY_NAMES,
@@ -26,11 +28,16 @@ import {
 } from "../../components/desktopUpdate.logic";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { TraitsPicker } from "../chat/TraitsPicker";
+import {
+  canRequestProviderRateLimitResetCredit,
+  useProviderRateLimitResetCredit,
+} from "../ProviderRateLimitResetCredit";
 import { isElectron } from "../../env";
 import { buildHostedChannelSelectionUrl, type HostedAppChannel } from "../../hostedPairing";
 import { useTheme } from "../../hooks/useTheme";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { useThreadActions } from "../../hooks/useThreadActions";
+import { readEnvironmentApi } from "../../environmentApi";
 import {
   setDesktopUpdateStateQueryData,
   useDesktopUpdateState,
@@ -46,9 +53,22 @@ import {
 } from "../../providerInstances";
 import { ensureLocalApi, readLocalApi } from "../../localApi";
 import { useShallow } from "zustand/react/shallow";
-import { selectProjectsAcrossEnvironments, useStore } from "../../store";
-import { useArchivedThreadSnapshots } from "../../lib/archivedThreadsState";
+import {
+  selectProjectsAcrossEnvironments,
+  selectSidebarThreadsAcrossEnvironments,
+  useStore,
+} from "../../store";
+import {
+  refreshArchivedThreadsForEnvironment,
+  useArchivedThreadSnapshots,
+} from "../../lib/archivedThreadsState";
 import { formatRelativeTime, formatRelativeTimeLabel } from "../../timestampFormat";
+import {
+  groupAutoArchiveCandidatesByProject,
+  resolveAutoArchivePreviewDays,
+  selectAutoArchiveCandidates,
+  type AutoArchiveProjectGroup,
+} from "../../threadAutoArchive";
 import { Button } from "../ui/button";
 import { DraftInput } from "../ui/draft-input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
@@ -80,6 +100,7 @@ import {
 } from "./settingsLayout";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { useServerObservability, useServerProviders } from "../../rpc/serverState";
+import { newCommandId } from "../../lib/utils";
 
 const THEME_OPTIONS = [
   {
@@ -104,6 +125,13 @@ const TIMESTAMP_FORMAT_LABELS = {
 
 const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("codex");
 const MAINTAINED_PROVIDER_DRIVER_KINDS = DRIVER_OPTIONS.map((definition) => definition.value);
+const INACTIVE_THREAD_ARCHIVE_COMMAND_DELAY_MS = 25;
+
+function waitForInactiveThreadArchiveCommandSlot(): Promise<void> {
+  return new Promise((resolve) =>
+    window.setTimeout(resolve, INACTIVE_THREAD_ARCHIVE_COMMAND_DELAY_MS),
+  );
+}
 
 function withoutProviderInstanceKey<V>(
   record: Readonly<Record<ProviderInstanceId, V>> | undefined,
@@ -412,6 +440,10 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.autoOpenPlanSidebar !== DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar
         ? ["Auto-open task panel"]
         : []),
+      ...(settings.autoArchiveInactiveThreadsDays !==
+      DEFAULT_UNIFIED_SETTINGS.autoArchiveInactiveThreadsDays
+        ? ["Auto-archive inactive threads"]
+        : []),
       ...(settings.enableAssistantStreaming !== DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming
         ? ["Agent responses"]
         : []),
@@ -436,6 +468,7 @@ export function useSettingsRestore(onRestored?: () => void) {
     [
       isGitWritingModelDirty,
       settings.autoOpenPlanSidebar,
+      settings.autoArchiveInactiveThreadsDays,
       settings.chatChangedFilesDefaultExpanded,
       settings.confirmThreadArchive,
       settings.confirmThreadDelete,
@@ -471,6 +504,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       chatChangedFilesDefaultExpanded: DEFAULT_UNIFIED_SETTINGS.chatChangedFilesDefaultExpanded,
       sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount,
       autoOpenPlanSidebar: DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar,
+      autoArchiveInactiveThreadsDays: DEFAULT_UNIFIED_SETTINGS.autoArchiveInactiveThreadsDays,
       enableAssistantStreaming: DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming,
       automaticGitFetchInterval: DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval,
       defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
@@ -960,6 +994,12 @@ export function ProviderSettingsPanel() {
     ReadonlySet<ProviderDriverKind>
   >(() => new Set());
   const [openInstanceDetails, setOpenInstanceDetails] = useState<Record<string, boolean>>({});
+  const {
+    pendingRateLimitResetCredit,
+    isConsumingRateLimitResetCredit,
+    requestRateLimitResetCredit,
+    rateLimitResetCreditDialog,
+  } = useProviderRateLimitResetCredit();
   const refreshingRef = useRef(false);
 
   const providerUpdateCandidates = useMemo(
@@ -1214,6 +1254,10 @@ export function ProviderSettingsPanel() {
           const favoriteModels = (settings.favorites ?? [])
             .filter((favorite) => favorite.provider === row.instanceId)
             .map((favorite) => favorite.model);
+          const canResetProviderUsage = canRequestProviderRateLimitResetCredit(
+            liveProvider,
+            liveProvider?.accountUsage?.rateLimitResetCredits?.availableCount,
+          );
           const resetLabel = driverOption?.label ?? String(row.driver);
           const headerAction =
             row.isDefault && row.isDirty ? (
@@ -1280,6 +1324,12 @@ export function ProviderSettingsPanel() {
                   : undefined
               }
               isUpdating={showInlineUpdateButton ? isDriverUpdateRunning : undefined}
+              onResetAccountUsage={canResetProviderUsage ? requestRateLimitResetCredit : undefined}
+              accountUsageResetInFlight={
+                pendingRateLimitResetCredit?.instanceId === row.instanceId
+                  ? isConsumingRateLimitResetCredit
+                  : undefined
+              }
             />
           );
         })}
@@ -1289,13 +1339,110 @@ export function ProviderSettingsPanel() {
         open={isAddInstanceDialogOpen}
         onOpenChange={setIsAddInstanceDialogOpen}
       />
+      {rateLimitResetCreditDialog}
     </SettingsPageContainer>
+  );
+}
+
+function formatAutoArchiveDaysLabel(days: AutoArchiveInactiveThreadsDays): string {
+  return days === 0 ? "Off" : `${days} days`;
+}
+
+function formatThreadCount(count: number): string {
+  return count === 1 ? "1 thread" : `${count} threads`;
+}
+
+function formatAutoArchiveCandidateSummary(count: number, days: AutoArchiveInactiveThreadsDays) {
+  if (days === 0) {
+    return `${formatThreadCount(count)} inactive for 30+ days.`;
+  }
+  return `${formatThreadCount(count)} inactive for ${days}+ days.`;
+}
+
+function parseAutoArchiveDays(value: string): AutoArchiveInactiveThreadsDays | null {
+  const parsed = Number(value);
+  return AUTO_ARCHIVE_INACTIVE_THREADS_DAY_OPTIONS.includes(
+    parsed as AutoArchiveInactiveThreadsDays,
+  )
+    ? (parsed as AutoArchiveInactiveThreadsDays)
+    : null;
+}
+
+function buildAutoArchiveConfirmationMessage(input: {
+  readonly action: "enable" | "archive-now";
+  readonly days: Exclude<AutoArchiveInactiveThreadsDays, 0>;
+  readonly groups: ReadonlyArray<AutoArchiveProjectGroup>;
+}): string {
+  const count = input.groups.reduce((total, group) => total + group.count, 0);
+  const projectLines = input.groups.slice(0, 6).map((group) => {
+    const projectName = group.project?.name ?? "Unknown project";
+    return `- ${projectName}: ${formatThreadCount(group.count)}`;
+  });
+  const remainingProjectCount = input.groups.length - projectLines.length;
+
+  return [
+    input.action === "enable"
+      ? `Enable auto-archive after ${input.days} days?`
+      : `Archive ${formatThreadCount(count)} inactive now?`,
+    `This will move ${formatThreadCount(count)} inactive for ${input.days}+ days into Archive.`,
+    "Pinned, running, approval, user-input, and actionable plan threads are skipped.",
+    "",
+    ...projectLines,
+    ...(remainingProjectCount > 0 ? [`- ${remainingProjectCount} more projects`] : []),
+  ].join("\n");
+}
+
+function AutoArchiveCandidatePreview({
+  groups,
+  days,
+}: {
+  readonly groups: ReadonlyArray<AutoArchiveProjectGroup>;
+  readonly days: Exclude<AutoArchiveInactiveThreadsDays, 0>;
+}) {
+  if (groups.length === 0) {
+    return (
+      <div className="mt-3 border-t border-border/60 py-2.5 text-xs text-muted-foreground/75">
+        No threads are currently inactive for {days}+ days.
+      </div>
+    );
+  }
+
+  const visibleGroups = groups.slice(0, 5);
+  const remainingGroupCount = groups.length - visibleGroups.length;
+
+  return (
+    <div className="mt-3 border-t border-border/60 py-2.5">
+      <div className="grid gap-1.5 text-xs">
+        {visibleGroups.map((group) => (
+          <div
+            key={`${group.threads[0]?.environmentId ?? "unknown"}:${group.threads[0]?.projectId ?? "unknown"}`}
+            className="flex min-w-0 items-center justify-between gap-3"
+          >
+            <span className="min-w-0 truncate text-muted-foreground">
+              {group.project?.name ?? "Unknown project"}
+            </span>
+            <span className="shrink-0 font-mono text-[11px] text-muted-foreground/80">
+              {formatThreadCount(group.count)}
+            </span>
+          </div>
+        ))}
+        {remainingGroupCount > 0 ? (
+          <div className="text-xs text-muted-foreground/70">
+            {remainingGroupCount} more projects have eligible inactive threads.
+          </div>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
 export function ArchivedThreadsPanel() {
   const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
+  const sidebarThreads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
+  const settings = useSettings();
+  const { updateSettings } = useUpdateSettings();
   const { unarchiveThread, confirmAndDeleteThread } = useThreadActions();
+  const [isArchivingInactiveThreads, setIsArchivingInactiveThreads] = useState(false);
   const environmentIds = useMemo(
     () => [...new Set(projects.map((project) => project.environmentId))],
     [projects],
@@ -1306,6 +1453,25 @@ export function ArchivedThreadsPanel() {
     isLoading: isLoadingArchive,
     refresh: refreshArchivedThreads,
   } = useArchivedThreadSnapshots(environmentIds);
+  const autoArchivePreviewDays = resolveAutoArchivePreviewDays(
+    settings.autoArchiveInactiveThreadsDays,
+  );
+  const inactiveThreadCandidates = useMemo(
+    () =>
+      selectAutoArchiveCandidates({
+        threads: sidebarThreads,
+        inactiveDays: autoArchivePreviewDays,
+      }),
+    [autoArchivePreviewDays, sidebarThreads],
+  );
+  const inactiveThreadGroups = useMemo(
+    () =>
+      groupAutoArchiveCandidatesByProject({
+        candidates: inactiveThreadCandidates,
+        projects,
+      }),
+    [inactiveThreadCandidates, projects],
+  );
 
   const archivedGroups = useMemo(() => {
     const projectsByEnvironmentAndId = new Map(
@@ -1348,6 +1514,123 @@ export function ArchivedThreadsPanel() {
       .filter((group) => group.threads.length > 0);
   }, [archivedSnapshots]);
 
+  const handleAutoArchiveDaysChange = useCallback(
+    async (value: string) => {
+      const nextDays = parseAutoArchiveDays(value);
+      if (nextDays === null || nextDays === settings.autoArchiveInactiveThreadsDays) {
+        return;
+      }
+
+      if (nextDays !== 0) {
+        const nextCandidates = selectAutoArchiveCandidates({
+          threads: sidebarThreads,
+          inactiveDays: nextDays,
+        });
+        if (nextCandidates.length > 0) {
+          const confirmed = await ensureLocalApi().dialogs.confirm(
+            buildAutoArchiveConfirmationMessage({
+              action: "enable",
+              days: nextDays,
+              groups: groupAutoArchiveCandidatesByProject({
+                candidates: nextCandidates,
+                projects,
+              }),
+            }),
+          );
+          if (!confirmed) {
+            return;
+          }
+        }
+      }
+
+      updateSettings({ autoArchiveInactiveThreadsDays: nextDays });
+    },
+    [projects, settings.autoArchiveInactiveThreadsDays, sidebarThreads, updateSettings],
+  );
+
+  const archiveInactiveThreadsNow = useCallback(async () => {
+    if (inactiveThreadCandidates.length === 0 || isArchivingInactiveThreads) {
+      return;
+    }
+
+    const confirmed = await ensureLocalApi().dialogs.confirm(
+      buildAutoArchiveConfirmationMessage({
+        action: "archive-now",
+        days: autoArchivePreviewDays,
+        groups: inactiveThreadGroups,
+      }),
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setIsArchivingInactiveThreads(true);
+    let archivedCount = 0;
+    let failedCount = 0;
+
+    try {
+      for (const thread of inactiveThreadCandidates) {
+        const api = readEnvironmentApi(thread.environmentId);
+        if (!api) {
+          failedCount += 1;
+          continue;
+        }
+
+        try {
+          await api.orchestration.dispatchCommand({
+            type: "thread.archive",
+            commandId: newCommandId(),
+            threadId: thread.id,
+          });
+          archivedCount += 1;
+          refreshArchivedThreadsForEnvironment(thread.environmentId);
+        } catch (error) {
+          failedCount += 1;
+          console.warn("Failed to archive inactive thread", {
+            threadId: thread.id,
+            environmentId: thread.environmentId,
+            error,
+          });
+        }
+
+        await waitForInactiveThreadArchiveCommandSlot();
+      }
+
+      if (archivedCount > 0) {
+        toastManager.add({
+          type: "success",
+          title:
+            archivedCount === 1
+              ? "Archived one inactive thread"
+              : `Archived ${archivedCount} inactive threads`,
+          description: "Archived threads stay available from this page.",
+        });
+        refreshArchivedThreads();
+      }
+
+      if (failedCount > 0) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "warning",
+            title:
+              failedCount === 1
+                ? "One inactive thread could not be archived"
+                : `${failedCount} inactive threads could not be archived`,
+            description: "Some environments may still be reconnecting.",
+          }),
+        );
+      }
+    } finally {
+      setIsArchivingInactiveThreads(false);
+    }
+  }, [
+    autoArchivePreviewDays,
+    inactiveThreadCandidates,
+    inactiveThreadGroups,
+    isArchivingInactiveThreads,
+    refreshArchivedThreads,
+  ]);
+
   const handleArchivedThreadContextMenu = useCallback(
     async (threadRef: ScopedThreadRef, position: { x: number; y: number }) => {
       const api = readLocalApi();
@@ -1386,6 +1669,89 @@ export function ArchivedThreadsPanel() {
 
   return (
     <SettingsPageContainer>
+      <SettingsSection title="Thread cleanup">
+        <SettingsRow
+          title="Auto-archive inactive threads"
+          description="Moves old inactive threads out of active lists without deleting their history."
+          status={
+            settings.autoArchiveInactiveThreadsDays === 0
+              ? formatAutoArchiveCandidateSummary(inactiveThreadCandidates.length, 0)
+              : formatAutoArchiveCandidateSummary(
+                  inactiveThreadCandidates.length,
+                  settings.autoArchiveInactiveThreadsDays,
+                )
+          }
+          resetAction={
+            settings.autoArchiveInactiveThreadsDays !==
+            DEFAULT_UNIFIED_SETTINGS.autoArchiveInactiveThreadsDays ? (
+              <SettingResetButton
+                label="auto-archive inactive threads"
+                onClick={() =>
+                  updateSettings({
+                    autoArchiveInactiveThreadsDays:
+                      DEFAULT_UNIFIED_SETTINGS.autoArchiveInactiveThreadsDays,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={String(settings.autoArchiveInactiveThreadsDays)}
+              onValueChange={(value) => {
+                if (value !== null) {
+                  void handleAutoArchiveDaysChange(value);
+                }
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-36" aria-label="Auto-archive inactive threads">
+                <SelectValue>
+                  {formatAutoArchiveDaysLabel(settings.autoArchiveInactiveThreadsDays)}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {AUTO_ARCHIVE_INACTIVE_THREADS_DAY_OPTIONS.map((days) => (
+                  <SelectItem key={days} hideIndicator value={String(days)}>
+                    {formatAutoArchiveDaysLabel(days)}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        >
+          <AutoArchiveCandidatePreview
+            groups={inactiveThreadGroups}
+            days={autoArchivePreviewDays}
+          />
+        </SettingsRow>
+        <SettingsRow
+          title="Archive inactive threads now"
+          description="Review the same safe candidates and move them to Archive immediately."
+          control={
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 shrink-0 cursor-pointer gap-1.5 px-2.5"
+              disabled={inactiveThreadCandidates.length === 0 || isArchivingInactiveThreads}
+              onClick={() => void archiveInactiveThreadsNow()}
+            >
+              {isArchivingInactiveThreads ? (
+                <LoaderIcon className="size-3.5 animate-spin" />
+              ) : (
+                <ArchiveIcon className="size-3.5" />
+              )}
+              <span>
+                {isArchivingInactiveThreads
+                  ? "Archiving"
+                  : inactiveThreadCandidates.length === 0
+                    ? "Nothing to Archive"
+                    : `Archive ${formatThreadCount(inactiveThreadCandidates.length)}`}
+              </span>
+            </Button>
+          }
+        />
+      </SettingsSection>
       {archivedGroups.length === 0 ? (
         <SettingsSection title="Archived threads">
           <SettingsRow

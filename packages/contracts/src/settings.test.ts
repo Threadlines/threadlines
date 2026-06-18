@@ -24,6 +24,13 @@ describe("ClientSettings defaults", () => {
     expect(decodeClientSettings({}).autoOpenPlanSidebar).toBe(false);
   });
 
+  it("keeps inactive thread auto-archive off by default", () => {
+    expect(DEFAULT_CLIENT_SETTINGS.autoArchiveInactiveThreadsDays).toBe(0);
+    expect(decodeClientSettings({}).autoArchiveInactiveThreadsDays).toBe(0);
+    const patch = decodeClientSettingsPatch({ autoArchiveInactiveThreadsDays: 30 });
+    expect(patch.autoArchiveInactiveThreadsDays).toBe(30);
+  });
+
   it("shows diff changes only by default", () => {
     expect(DEFAULT_CLIENT_SETTINGS.diffChangesOnly).toBe(true);
     expect(decodeClientSettings({}).diffChangesOnly).toBe(true);

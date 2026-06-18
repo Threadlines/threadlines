@@ -12,6 +12,7 @@ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopClientSettings from "./DesktopClientSettings.ts";
 
 const clientSettings: ClientSettings = {
+  autoArchiveInactiveThreadsDays: 30,
   autoOpenPlanSidebar: false,
   chatChangedFilesDefaultExpanded: false,
   confirmThreadArchive: true,

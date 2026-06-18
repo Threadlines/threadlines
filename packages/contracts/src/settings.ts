@@ -43,8 +43,22 @@ export const DiffRenderMode = Schema.Literals(["stacked", "split"]);
 export type DiffRenderMode = typeof DiffRenderMode.Type;
 export const DEFAULT_DIFF_RENDER_MODE: DiffRenderMode = "stacked";
 
+export const AUTO_ARCHIVE_INACTIVE_THREADS_DAY_OPTIONS = [0, 30, 60, 90, 180] as const;
+export const AutoArchiveInactiveThreadsDays = Schema.Union([
+  Schema.Literal(0),
+  Schema.Literal(30),
+  Schema.Literal(60),
+  Schema.Literal(90),
+  Schema.Literal(180),
+]);
+export type AutoArchiveInactiveThreadsDays = typeof AutoArchiveInactiveThreadsDays.Type;
+export const DEFAULT_AUTO_ARCHIVE_INACTIVE_THREADS_DAYS: AutoArchiveInactiveThreadsDays = 0;
+
 export const ClientSettingsSchema = Schema.Struct({
   autoOpenPlanSidebar: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  autoArchiveInactiveThreadsDays: AutoArchiveInactiveThreadsDays.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_AUTO_ARCHIVE_INACTIVE_THREADS_DAYS)),
+  ),
   chatChangedFilesDefaultExpanded: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
@@ -495,6 +509,7 @@ export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 
 export const ClientSettingsPatch = Schema.Struct({
   autoOpenPlanSidebar: Schema.optionalKey(Schema.Boolean),
+  autoArchiveInactiveThreadsDays: Schema.optionalKey(AutoArchiveInactiveThreadsDays),
   chatChangedFilesDefaultExpanded: Schema.optionalKey(Schema.Boolean),
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),

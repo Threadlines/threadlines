@@ -40,6 +40,7 @@ import type { DriverOption } from "./providerDriverMeta";
 import { ProviderSettingsForm } from "./ProviderSettingsForm";
 import { ProviderModelsSection } from "./ProviderModelsSection";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
+import type { ProviderRateLimitResetCreditRequest } from "../ProviderRateLimitResetCredit";
 import { RedactedSensitiveText } from "./RedactedSensitiveText";
 import {
   getProviderVersionAdvisoryPresentation,
@@ -417,6 +418,10 @@ interface ProviderInstanceCardProps {
   readonly onModelOrderChange: (next: ReadonlyArray<string>) => void;
   readonly onRunUpdate?: (() => void) | undefined;
   readonly isUpdating?: boolean | undefined;
+  readonly onResetAccountUsage?:
+    | ((request: ProviderRateLimitResetCreditRequest) => void)
+    | undefined;
+  readonly accountUsageResetInFlight?: boolean | undefined;
 }
 
 /**
@@ -461,6 +466,8 @@ export function ProviderInstanceCard({
   onModelOrderChange,
   onRunUpdate,
   isUpdating = false,
+  onResetAccountUsage,
+  accountUsageResetInFlight,
 }: ProviderInstanceCardProps) {
   const enabled = instance.enabled ?? true;
   // The server-reported status wins when present; otherwise fall back to
@@ -481,6 +488,7 @@ export function ProviderInstanceCard({
   const versionAdvisory = getProviderVersionAdvisoryPresentation(liveProvider?.versionAdvisory);
   const updateCommand = versionAdvisory?.updateCommand ?? null;
   const usagePresentation = deriveProviderAccountUsagePresentationForProvider(liveProvider);
+  const usageResetCredits = usagePresentation?.resetCredits ?? null;
   // Narrow `instance.driver` for callers that key on the closed
   // `ProviderDriverKind` union (e.g. `normalizeModelSlug`'s alias table). Custom
   // fork drivers pass through as `null` and those callers fall back to
@@ -782,12 +790,30 @@ export function ProviderInstanceCard({
                   <span className="font-medium text-foreground">{usagePresentation.label}</span>
                 </div>
                 <div className="space-y-1.5 pl-5">
-                  {usagePresentation.resetCredits ? (
+                  {usageResetCredits ? (
                     <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
                       <span className="min-w-10 font-medium text-foreground">Reset</span>
-                      <span>{usagePresentation.resetCredits.label}</span>
+                      <span>{usageResetCredits.label}</span>
                       <span aria-hidden>-</span>
-                      <span>{usagePresentation.resetCredits.detail}</span>
+                      <span>{usageResetCredits.detail}</span>
+                      {onResetAccountUsage && usageResetCredits.availableCount > 0 ? (
+                        <Button
+                          type="button"
+                          size="xs"
+                          variant="outline"
+                          className="ml-1 h-5 px-1.5 text-[11px]"
+                          disabled={accountUsageResetInFlight === true}
+                          onClick={() =>
+                            onResetAccountUsage({
+                              instanceId,
+                              availableCount: usageResetCredits.availableCount,
+                            })
+                          }
+                          aria-label={`Reset ${displayName} usage`}
+                        >
+                          {accountUsageResetInFlight ? "Resetting" : "Reset"}
+                        </Button>
+                      ) : null}
                     </div>
                   ) : null}
                   {usagePresentation.spendControl ? (
