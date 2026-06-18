@@ -680,6 +680,51 @@ describe("deriveWorkLogEntries", () => {
     expect(entries.map((entry) => entry.id)).toEqual(["task-progress", "task-complete"]);
   });
 
+  it("shows provider lifecycle rows in work activity", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "provider-preparing",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "provider.turn.preparing",
+        summary: "Preparing provider turn",
+        tone: "info",
+        payload: {
+          phase: "preparing",
+          detail: "Preparing context and provider session before handing off to the provider",
+        },
+      }),
+      makeActivity({
+        id: "provider-started",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "provider.turn.started",
+        summary: "Waiting for model response",
+        tone: "thinking",
+        payload: {
+          phase: "waiting-for-model",
+          detail: "Provider accepted the turn and is preparing a response",
+        },
+        turnId: "turn-1",
+      }),
+    ]);
+
+    expect(entries).toMatchObject([
+      {
+        id: "provider-preparing",
+        label: "Preparing provider turn",
+        detail: "Preparing context and provider session before handing off to the provider",
+        tone: "info",
+      },
+      {
+        id: "provider-started",
+        label: "Waiting for model response",
+        detail: "Provider accepted the turn and is preparing a response",
+        tone: "thinking",
+        turnId: "turn-1",
+      },
+    ]);
+    expect(entries[1]?.executionState).toBeUndefined();
+  });
+
   it("uses payload summary as label for task entries when available", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

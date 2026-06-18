@@ -316,6 +316,23 @@ export function projectRuntimeEventToActivities(
   },
 ): ReadonlyArray<OrchestrationThreadActivity> {
   switch (event.type) {
+    case "turn.started":
+      return [
+        baseActivity(event, {
+          id: event.eventId,
+          tone: "thinking",
+          kind: "provider.turn.started",
+          summary: "Waiting for model response",
+          payload: {
+            phase: "waiting-for-model",
+            provider: event.provider,
+            ...(event.payload?.model ? { model: event.payload.model } : {}),
+            ...(event.payload?.effort ? { effort: event.payload.effort } : {}),
+            detail: "Provider accepted the turn and is preparing a response",
+          },
+        }),
+      ];
+
     case "content.delta":
       return projectContentDeltaActivity(event, options?.stream);
 

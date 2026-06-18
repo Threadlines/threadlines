@@ -112,6 +112,8 @@ type TurnStartRequestedDomainEvent = Extract<
   OrchestrationEvent,
   { type: "thread.turn-start-requested" }
 >;
+const domainCommandId = (event: TurnStartRequestedDomainEvent, tag: string): CommandId =>
+  CommandId.make(`provider:${event.eventId}:${tag}`);
 
 type RuntimeIngestionInput =
   | {
@@ -2147,7 +2149,28 @@ const make = Effect.gen(function* () {
       ).pipe(Effect.asVoid);
     });
 
-  const processDomainEvent = (_event: TurnStartRequestedDomainEvent) => Effect.void;
+  const processDomainEvent = (event: TurnStartRequestedDomainEvent) =>
+    orchestrationEngine.dispatch({
+      type: "thread.activity.append",
+      commandId: domainCommandId(event, "thread-turn-preparing-activity"),
+      threadId: event.payload.threadId,
+      activity: {
+        id: EventId.make(`activity:${event.eventId}:provider-turn-preparing`),
+        tone: "info",
+        kind: "provider.turn.preparing",
+        summary: "Preparing provider turn",
+        payload: {
+          phase: "preparing",
+          detail: "Preparing context and provider session before handing off to the provider",
+          ...(event.payload.modelSelection !== undefined
+            ? { modelSelection: event.payload.modelSelection }
+            : {}),
+        },
+        turnId: null,
+        createdAt: event.payload.createdAt,
+      },
+      createdAt: event.payload.createdAt,
+    });
 
   const processInput = (input: RuntimeIngestionInput) => {
     switch (input.source) {

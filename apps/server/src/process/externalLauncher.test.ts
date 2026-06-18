@@ -490,6 +490,12 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
 
   it.effect("maps file-manager editor to OS open commands", () =>
     Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-file-manager-test-" });
+      const filePath = path.join(dir, "preview.html");
+      yield* fs.writeFileString(filePath, "<!doctype html>");
+
       const launch1 = yield* resolveEditorLaunch(
         { cwd: "/tmp/workspace", editor: "file-manager" },
         "darwin",
@@ -501,23 +507,86 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
       });
 
       const launch2 = yield* resolveEditorLaunch(
-        { cwd: "C:\\workspace", editor: "file-manager" },
+        { cwd: filePath, editor: "file-manager" },
         "win32",
-        { PATH: "" },
+        { PATH: "", SYSTEMROOT: "C:\\Windows" },
       );
       assert.deepEqual(launch2, {
-        command: "explorer",
-        args: ["C:\\workspace"],
+        command: "C:\\Windows\\explorer.exe",
+        args: [`/select,${filePath}`],
+        shell: false,
       });
 
-      const launch3 = yield* resolveEditorLaunch(
+      const launch3 = yield* resolveEditorLaunch({ cwd: dir, editor: "file-manager" }, "win32", {
+        PATH: "",
+        SYSTEMROOT: "C:\\Windows",
+      });
+      assert.deepEqual(launch3, {
+        command: "C:\\Windows\\explorer.exe",
+        args: [dir],
+        shell: false,
+      });
+
+      const launch4 = yield* resolveEditorLaunch(
         { cwd: "/tmp/workspace", editor: "file-manager" },
         "linux",
         { PATH: "" },
       );
-      assert.deepEqual(launch3, {
+      assert.deepEqual(launch4, {
         command: "xdg-open",
         args: ["/tmp/workspace"],
+      });
+    }),
+  );
+
+  it.effect("strips editor line positions before launching a file manager target", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-file-manager-test-" });
+      const filePath = path.join(dir, "preview.html");
+      yield* fs.writeFileString(filePath, "<!doctype html>");
+
+      const launch1 = yield* resolveEditorLaunch(
+        { cwd: "/tmp/workspace/docs/preview.html:12:3", editor: "file-manager" },
+        "darwin",
+        { PATH: "" },
+      );
+      assert.deepEqual(launch1, {
+        command: "open",
+        args: ["/tmp/workspace/docs/preview.html"],
+      });
+
+      const launch2 = yield* resolveEditorLaunch(
+        { cwd: `${filePath}:12:3`, editor: "file-manager" },
+        "win32",
+        { PATH: "", SYSTEMROOT: "C:\\Windows" },
+      );
+      assert.deepEqual(launch2, {
+        command: "C:\\Windows\\explorer.exe",
+        args: [`/select,${filePath}`],
+        shell: false,
+      });
+    }),
+  );
+
+  it.effect("opens the nearest existing directory for missing file-manager targets", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-file-manager-test-" });
+      const missingTarget = path.join(dir, "missing", "preview.html");
+
+      const launch = yield* resolveEditorLaunch(
+        { cwd: missingTarget, editor: "file-manager" },
+        "win32",
+        { PATH: "", SYSTEMROOT: "C:\\Windows" },
+      );
+
+      assert.deepEqual(launch, {
+        command: "C:\\Windows\\explorer.exe",
+        args: [dir],
+        shell: false,
       });
     }),
   );
@@ -654,6 +723,43 @@ it.layer(NodeServices.layer)("launchEditorProcess", (it) => {
         stderr: "ignore",
       });
       assert.equal(didUnref, true);
+    }),
+  );
+
+  it.effect("does not wrap args or use a shell when a launch opts out", () =>
+    Effect.gen(function* () {
+      let spawnedCommand: ChildProcess.StandardCommand | undefined;
+      const expectedArgs = ["/select,C:\\workspace\\src\\file.ts"];
+
+      const spawnerLayer = Layer.mock(ChildProcessSpawner.ChildProcessSpawner, {
+        spawn: (command) =>
+          Effect.sync(() => {
+            assert.equal(ChildProcess.isStandardCommand(command), true);
+            if (!ChildProcess.isStandardCommand(command)) {
+              throw new Error("Expected a standard command");
+            }
+            spawnedCommand = command;
+            return makeMockDetachedHandle();
+          }),
+      });
+
+      const result = yield* launchEditorProcess({
+        command: process.execPath,
+        args: expectedArgs,
+        shell: false,
+      }).pipe(Effect.provide(spawnerLayer), Effect.result);
+
+      assertSuccess(result, undefined);
+      assert.ok(spawnedCommand);
+      assert.equal(spawnedCommand.command, process.execPath);
+      assert.deepEqual(spawnedCommand.args, expectedArgs);
+      assert.deepEqual(spawnedCommand.options, {
+        detached: true,
+        shell: false,
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+      });
     }),
   );
 

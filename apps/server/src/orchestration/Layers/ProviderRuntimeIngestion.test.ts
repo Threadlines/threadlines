@@ -539,6 +539,22 @@ describe("ProviderRuntimeIngestion", () => {
       (thread) => thread.session?.status === "starting" && thread.session.updatedAt === requestedAt,
     );
 
+    const preparingThread = await waitForThread(harness.readModel, (thread) =>
+      thread.activities.some(
+        (activity) =>
+          activity.kind === "provider.turn.preparing" &&
+          activity.summary === "Preparing provider turn" &&
+          activity.turnId === null,
+      ),
+    );
+    const preparingActivity = preparingThread.activities.find(
+      (activity) => activity.kind === "provider.turn.preparing",
+    );
+    expect(preparingActivity?.createdAt).toBe(requestedAt);
+    expect(preparingActivity?.payload).toMatchObject({
+      phase: "preparing",
+    });
+
     harness.emit({
       type: "session.started",
       eventId: asEventId("evt-session-started-before-turn"),
@@ -570,9 +586,24 @@ describe("ProviderRuntimeIngestion", () => {
       harness.readModel,
       (thread) =>
         thread.session?.status === "running" &&
-        thread.session.activeTurnId === asTurnId("turn-preserve-starting"),
+        thread.session.activeTurnId === asTurnId("turn-preserve-starting") &&
+        thread.activities.some(
+          (activity) =>
+            activity.kind === "provider.turn.started" &&
+            activity.turnId === asTurnId("turn-preserve-starting"),
+        ),
     );
     expect(runningThread.session?.updatedAt).toBe("2026-01-01T00:00:06.000Z");
+    const turnStartedActivity = runningThread.activities.find(
+      (activity) => activity.kind === "provider.turn.started",
+    );
+    expect(turnStartedActivity).toMatchObject({
+      tone: "thinking",
+      summary: "Waiting for model response",
+      payload: {
+        phase: "waiting-for-model",
+      },
+    });
   });
 
   it("settles a running turn when the provider reports turn.aborted", async () => {

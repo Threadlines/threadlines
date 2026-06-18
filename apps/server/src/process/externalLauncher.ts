@@ -16,8 +16,10 @@ import { isCommandAvailable, type CommandAvailabilityOptions } from "@t3tools/sh
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Encoding from "effect/Encoding";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 // ==============================
@@ -31,6 +33,7 @@ export { isCommandAvailable } from "@t3tools/shared/shell";
 interface EditorLaunch {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
+  readonly shell?: boolean;
 }
 
 interface ProcessLaunch {
@@ -139,6 +142,10 @@ function resolvePowerShellPath(env: NodeJS.ProcessEnv = process.env): string {
   return `${env.SYSTEMROOT || env.windir || String.raw`C:\Windows`}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
 }
 
+function resolveWindowsExplorerPath(env: NodeJS.ProcessEnv = process.env): string {
+  return `${env.SYSTEMROOT || env.windir || String.raw`C:\Windows`}\\explorer.exe`;
+}
+
 function resolveWslPowerShellPath(): string {
   return "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
 }
@@ -173,6 +180,69 @@ function resolveWindowsBrowserLaunch(target: string, command: string): ProcessLa
   };
 }
 
+function stripTargetPosition(target: string): string {
+  const parsedTarget = parseTargetPathAndPosition(target);
+  return Option.isSome(parsedTarget) ? parsedTarget.value.path : target;
+}
+
+function statTargetType(
+  target: string,
+): Effect.Effect<"directory" | "file" | "missing", never, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const stat = yield* fileSystem.stat(target).pipe(Effect.catch(() => Effect.succeed(null)));
+    if (stat?.type === "Directory") return "directory";
+    if (stat?.type === "File") return "file";
+    return "missing";
+  });
+}
+
+function resolveNearestExistingDirectory(
+  target: string,
+): Effect.Effect<string | null, never, FileSystem.FileSystem | Path.Path> {
+  return Effect.gen(function* () {
+    const path = yield* Path.Path;
+    let parent = path.dirname(target);
+
+    while (parent && parent !== "." && parent !== target) {
+      if ((yield* statTargetType(parent)) === "directory") {
+        return parent;
+      }
+
+      const nextParent = path.dirname(parent);
+      if (!nextParent || nextParent === parent) {
+        return null;
+      }
+      parent = nextParent;
+    }
+
+    return null;
+  });
+}
+
+const resolveWindowsFileManagerLaunch = Effect.fn("resolveWindowsFileManagerLaunch")(function* (
+  target: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Effect.fn.Return<EditorLaunch, never, FileSystem.FileSystem | Path.Path> {
+  const path = yield* Path.Path;
+  const normalizedTarget = path.normalize(target);
+  const targetType = yield* statTargetType(normalizedTarget);
+  const args =
+    targetType === "file"
+      ? [`/select,${normalizedTarget}`]
+      : [
+          targetType === "directory"
+            ? normalizedTarget
+            : ((yield* resolveNearestExistingDirectory(normalizedTarget)) ?? normalizedTarget),
+        ];
+
+  return {
+    command: resolveWindowsExplorerPath(env),
+    args,
+    shell: false,
+  };
+});
+
 function fileManagerCommandForPlatform(platform: NodeJS.Platform): string {
   switch (platform) {
     case "darwin":
@@ -183,6 +253,22 @@ function fileManagerCommandForPlatform(platform: NodeJS.Platform): string {
       return "xdg-open";
   }
 }
+
+const resolveFileManagerLaunch = Effect.fn("resolveFileManagerLaunch")(function* (
+  target: string,
+  platform: NodeJS.Platform,
+  env: NodeJS.ProcessEnv,
+): Effect.fn.Return<EditorLaunch, never, FileSystem.FileSystem | Path.Path> {
+  const openTarget = stripTargetPosition(target);
+  if (platform === "win32") {
+    return yield* resolveWindowsFileManagerLaunch(openTarget, env);
+  }
+
+  return {
+    command: fileManagerCommandForPlatform(platform),
+    args: [openTarget],
+  };
+});
 
 export function resolveBrowserLaunch(
   target: string,
@@ -268,7 +354,7 @@ export const resolveEditorLaunch = Effect.fn("resolveEditorLaunch")(function* (
   input: LaunchEditorInput,
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
-): Effect.fn.Return<EditorLaunch, ExternalLauncherError> {
+): Effect.fn.Return<EditorLaunch, ExternalLauncherError, FileSystem.FileSystem | Path.Path> {
   yield* Effect.annotateCurrentSpan({
     "externalLauncher.editor": input.editor,
     "externalLauncher.cwd": input.cwd,
@@ -294,7 +380,7 @@ export const resolveEditorLaunch = Effect.fn("resolveEditorLaunch")(function* (
     return yield* new ExternalLauncherError({ message: `Unsupported editor: ${input.editor}` });
   }
 
-  return { command: fileManagerCommandForPlatform(platform), args: [input.cwd] };
+  return yield* resolveFileManagerLaunch(input.cwd, platform, env);
 });
 
 const launchAndUnref = Effect.fn("externalLauncher.launchAndUnref")(function* (
@@ -328,13 +414,14 @@ export const launchEditorProcess = Effect.fn("externalLauncher.launchEditorProce
   }
 
   const isWin32 = process.platform === "win32";
+  const shell = isWin32 ? (launch.shell ?? true) : (launch.shell ?? false);
   yield* launchAndUnref(
     {
       command: launch.command,
-      args: isWin32 ? launch.args.map((arg) => `"${arg}"`) : [...launch.args],
+      args: isWin32 && shell ? launch.args.map((arg) => `"${arg}"`) : [...launch.args],
       options: {
         detached: true,
-        shell: isWin32,
+        shell,
         stdin: "ignore",
         stdout: "ignore",
         stderr: "ignore",
@@ -346,6 +433,8 @@ export const launchEditorProcess = Effect.fn("externalLauncher.launchEditorProce
 
 const make = Effect.gen(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
 
   return {
     launchBrowser: (target) =>
@@ -353,10 +442,15 @@ const make = Effect.gen(function* () {
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
       ),
     launchEditor: (input) =>
-      Effect.flatMap(resolveEditorLaunch(input), (launch) =>
-        launchEditorProcess(launch).pipe(
-          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Effect.flatMap(
+        resolveEditorLaunch(input).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
         ),
+        (launch) =>
+          launchEditorProcess(launch).pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          ),
       ),
   } satisfies ExternalLauncherShape;
 });
