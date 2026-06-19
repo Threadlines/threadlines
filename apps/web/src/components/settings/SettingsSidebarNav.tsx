@@ -7,6 +7,7 @@ import {
   KeyboardIcon,
   PlugIcon,
   Settings2Icon,
+  SmartphoneIcon,
 } from "lucide-react";
 import { useCanGoBack, useNavigate } from "@tanstack/react-router";
 
@@ -36,6 +37,7 @@ export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
   { label: "Extensions", to: "/settings/extensions", icon: PlugIcon },
   { label: "Instructions", to: "/settings/instructions", icon: FileTextIcon },
   { label: "Source Control", to: "/settings/source-control", icon: SourceControlIcon },
+  { label: "Devices", to: "/settings/connections", icon: SmartphoneIcon },
   { label: "Archive", to: "/settings/archived", icon: ArchiveIcon },
 ];
 

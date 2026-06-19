@@ -10,9 +10,9 @@ import {
 } from "./settingsNavigation";
 
 describe("SETTINGS_NAV_ITEMS", () => {
-  it("keeps remote connections out of the visible settings navigation", () => {
-    expect(SETTINGS_NAV_ITEMS.map((item) => item.label)).not.toContain("Connections");
-    expect(SETTINGS_NAV_ITEMS.map((item) => item.to)).not.toContain("/settings/connections");
+  it("keeps device connection settings visible in the settings navigation", () => {
+    expect(SETTINGS_NAV_ITEMS.map((item) => item.label)).toContain("Devices");
+    expect(SETTINGS_NAV_ITEMS.map((item) => item.to)).toContain("/settings/connections");
   });
 
   it("matches the visible settings section paths", () => {
