@@ -7,6 +7,12 @@ import {
   type ProviderRuntimeEvent,
   type ThreadTokenUsageSnapshot,
 } from "@t3tools/contracts";
+import {
+  MAX_THREAD_ACTIVITY_PAYLOAD_ARRAY_ITEMS,
+  MAX_THREAD_ACTIVITY_PAYLOAD_DEPTH,
+  MAX_THREAD_ACTIVITY_PAYLOAD_OBJECT_KEYS,
+  MAX_THREAD_ACTIVITY_PAYLOAD_TEXT_LENGTH,
+} from "@t3tools/shared/threadLimits";
 
 type ContentDeltaEvent = Extract<ProviderRuntimeEvent, { type: "content.delta" }>;
 type ContentStreamKind = ContentDeltaEvent["payload"]["streamKind"];
@@ -38,6 +44,62 @@ function truncateBlock(value: string, limit = 1_200): string {
     return value;
   }
   return `...${value.slice(value.length - limit + 3)}`;
+}
+
+const OUTPUT_LIKE_PAYLOAD_KEYS = new Set([
+  "aggregatedOutput",
+  "content",
+  "diff",
+  "output",
+  "patch",
+  "stderr",
+  "stdout",
+]);
+
+function shouldCompactPayloadString(key: string | undefined, value: string): boolean {
+  return (
+    value.length > MAX_THREAD_ACTIVITY_PAYLOAD_TEXT_LENGTH ||
+    (key !== undefined && OUTPUT_LIKE_PAYLOAD_KEYS.has(key) && value.length > 1_200)
+  );
+}
+
+function compactActivityPayloadData(value: unknown, key?: string | undefined, depth = 0): unknown {
+  if (typeof value === "string") {
+    return shouldCompactPayloadString(key, value)
+      ? truncateBlock(value, MAX_THREAD_ACTIVITY_PAYLOAD_TEXT_LENGTH)
+      : value;
+  }
+
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
+
+  if (depth >= MAX_THREAD_ACTIVITY_PAYLOAD_DEPTH) {
+    return "[truncated]";
+  }
+
+  if (Array.isArray(value)) {
+    const compacted = value
+      .slice(0, MAX_THREAD_ACTIVITY_PAYLOAD_ARRAY_ITEMS)
+      .map((entry) => compactActivityPayloadData(entry, key, depth + 1));
+    if (value.length > MAX_THREAD_ACTIVITY_PAYLOAD_ARRAY_ITEMS) {
+      compacted.push({
+        truncated: true,
+        remainingItems: value.length - MAX_THREAD_ACTIVITY_PAYLOAD_ARRAY_ITEMS,
+      });
+    }
+    return compacted;
+  }
+
+  const entries = Object.entries(value as Record<string, unknown>);
+  const compacted: Record<string, unknown> = {};
+  for (const [entryKey, entryValue] of entries.slice(0, MAX_THREAD_ACTIVITY_PAYLOAD_OBJECT_KEYS)) {
+    compacted[entryKey] = compactActivityPayloadData(entryValue, entryKey, depth + 1);
+  }
+  if (entries.length > MAX_THREAD_ACTIVITY_PAYLOAD_OBJECT_KEYS) {
+    compacted.__truncatedKeys = entries.length - MAX_THREAD_ACTIVITY_PAYLOAD_OBJECT_KEYS;
+  }
+  return compacted;
 }
 
 function buildContextWindowActivityPayload(
@@ -692,7 +754,9 @@ export function projectRuntimeEventToActivities(
             ...(event.payload.status ? { status: event.payload.status } : {}),
             ...(event.payload.title ? { title: event.payload.title } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
-            ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
+            ...(event.payload.data !== undefined
+              ? { data: compactActivityPayloadData(event.payload.data) }
+              : {}),
           },
         }),
       ];
@@ -716,7 +780,9 @@ export function projectRuntimeEventToActivities(
             ...(event.itemId ? { toolCallId: event.itemId } : {}),
             ...(event.payload.title ? { title: event.payload.title } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
-            ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
+            ...(event.payload.data !== undefined
+              ? { data: compactActivityPayloadData(event.payload.data) }
+              : {}),
           },
         }),
       ];
@@ -741,7 +807,9 @@ export function projectRuntimeEventToActivities(
             ...(event.payload.status ? { status: event.payload.status } : {}),
             ...(event.payload.title ? { title: event.payload.title } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
-            ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
+            ...(event.payload.data !== undefined
+              ? { data: compactActivityPayloadData(event.payload.data) }
+              : {}),
           },
         }),
       ];
@@ -803,7 +871,9 @@ export function projectRuntimeEventToActivities(
               : "Authentication updated",
           payload: {
             ...(event.payload.error ? { detail: event.payload.error } : {}),
-            ...(event.payload.output ? { output: event.payload.output } : {}),
+            ...(event.payload.output && event.payload.output.length > 0
+              ? { output: truncateBlock(event.payload.output.join("\n")) }
+              : {}),
             ...(event.payload.isAuthenticating !== undefined
               ? { isAuthenticating: event.payload.isAuthenticating }
               : {}),

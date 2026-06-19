@@ -5,6 +5,12 @@ import {
   OrchestrationSession,
   OrchestrationThread,
 } from "@t3tools/contracts";
+import {
+  MAX_THREAD_ACTIVITIES,
+  MAX_THREAD_CHECKPOINTS,
+  MAX_THREAD_MESSAGES,
+  MAX_THREAD_PROPOSED_PLANS,
+} from "@t3tools/shared/threadLimits";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -31,8 +37,6 @@ import {
 } from "./Schemas.ts";
 
 type ThreadPatch = Partial<Omit<OrchestrationThread, "id" | "projectId">>;
-const MAX_THREAD_MESSAGES = 2_000;
-const MAX_THREAD_CHECKPOINTS = 500;
 
 function checkpointStatusToLatestTurnState(status: "ready" | "missing" | "error") {
   if (status === "error") return "error" as const;
@@ -520,7 +524,7 @@ export function projectEvent(
             (left, right) =>
               left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
           )
-          .slice(-200);
+          .slice(-MAX_THREAD_PROPOSED_PLANS);
 
         return {
           ...nextBase,
@@ -620,7 +624,7 @@ export function projectEvent(
           const proposedPlans = retainThreadProposedPlansAfterRevert(
             thread.proposedPlans,
             retainedTurnIds,
-          ).slice(-200);
+          ).slice(-MAX_THREAD_PROPOSED_PLANS);
           const activities = retainThreadActivitiesAfterRevert(thread.activities, retainedTurnIds);
 
           const latestCheckpoint = checkpoints.at(-1) ?? null;
@@ -668,7 +672,7 @@ export function projectEvent(
             payload.activity,
           ]
             .toSorted(compareThreadActivities)
-            .slice(-500);
+            .slice(-MAX_THREAD_ACTIVITIES);
 
           return {
             ...nextBase,

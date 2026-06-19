@@ -193,10 +193,7 @@ export function deriveMessagesTimelineRows(input: {
   revertTurnCountByUserMessageId: ReadonlyMap<MessageId, number>;
 }): MessagesTimelineRow[] {
   const nextRows: MessagesTimelineRow[] = [];
-  const visibleTimelineEntries = input.timelineEntries.filter(
-    (entry, index) =>
-      entry.kind !== "work" || shouldShowWorkTimelineEntry(entry.entry, index, input),
-  );
+  const visibleTimelineEntries = deriveVisibleTimelineEntries(input);
   const durationStartByMessageId = computeMessageDurationStart(
     visibleTimelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
   );
@@ -295,94 +292,96 @@ export function deriveMessagesTimelineRows(input: {
   return nextRows;
 }
 
-function shouldShowWorkTimelineEntry(
+function deriveVisibleTimelineEntries(input: {
+  readonly timelineEntries: ReadonlyArray<TimelineEntry>;
+  readonly isWorking: boolean;
+  readonly activeTurnId?: TurnId | null;
+}): TimelineEntry[] {
+  const visibleByIndex = Array.from({ length: input.timelineEntries.length }, () => true);
+  let hasLaterProviderLifecycle = false;
+  let hasLaterConcreteTurnActivity = false;
+  const laterConcreteTurnIds = new Set<TurnId>();
+
+  for (let index = input.timelineEntries.length - 1; index >= 0; index -= 1) {
+    const timelineEntry = input.timelineEntries[index];
+    if (!timelineEntry) {
+      continue;
+    }
+
+    if (timelineEntry.kind === "work" && timelineEntry.entry.providerLifecyclePhase) {
+      visibleByIndex[index] = shouldShowProviderLifecycleWorkEntry(timelineEntry.entry, input, {
+        hasLaterProviderLifecycle,
+        hasLaterConcreteTurnActivity,
+        laterConcreteTurnIds,
+      });
+    }
+
+    if (timelineEntry.kind === "work" && timelineEntry.entry.providerLifecyclePhase) {
+      hasLaterProviderLifecycle = true;
+    }
+
+    const concreteTurnId = concreteTimelineEntryTurnId(timelineEntry);
+    if (concreteTurnId !== undefined) {
+      hasLaterConcreteTurnActivity = true;
+      if (concreteTurnId !== null) {
+        laterConcreteTurnIds.add(concreteTurnId);
+      }
+    }
+  }
+
+  return input.timelineEntries.filter((_, index) => visibleByIndex[index]);
+}
+
+function shouldShowProviderLifecycleWorkEntry(
   entry: WorkLogEntry,
-  index: number,
   input: {
-    readonly timelineEntries: ReadonlyArray<TimelineEntry>;
     readonly isWorking: boolean;
     readonly activeTurnId?: TurnId | null;
   },
+  later: {
+    readonly hasLaterProviderLifecycle: boolean;
+    readonly hasLaterConcreteTurnActivity: boolean;
+    readonly laterConcreteTurnIds: ReadonlySet<TurnId>;
+  },
 ): boolean {
-  if (!entry.providerLifecyclePhase) {
-    return true;
-  }
   if (!input.isWorking) {
     return false;
   }
 
   const activeTurnId = input.activeTurnId ?? null;
   if (entry.providerLifecyclePhase === "preparing") {
-    return !hasLaterProviderLifecycleOrConcreteTurnActivity(
-      input.timelineEntries,
-      index,
-      activeTurnId,
+    return (
+      !later.hasLaterProviderLifecycle && !hasLaterConcreteTurnActivityForTurn(later, activeTurnId)
     );
   }
 
   if (activeTurnId !== null && entry.turnId !== activeTurnId) {
     return false;
   }
-  return !hasLaterConcreteTurnActivity(
-    input.timelineEntries,
-    index,
-    activeTurnId ?? entry.turnId ?? null,
-  );
+  return !hasLaterConcreteTurnActivityForTurn(later, activeTurnId ?? entry.turnId ?? null);
 }
 
-function hasLaterProviderLifecycleOrConcreteTurnActivity(
-  timelineEntries: ReadonlyArray<TimelineEntry>,
-  afterIndex: number,
-  turnId: TurnId | null,
-): boolean {
-  for (let index = afterIndex + 1; index < timelineEntries.length; index += 1) {
-    const entry = timelineEntries[index];
-    if (!entry) {
-      continue;
-    }
-    if (entry.kind === "work" && entry.entry.providerLifecyclePhase) {
-      return true;
-    }
-    if (isConcreteTurnTimelineEntry(entry, turnId)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function hasLaterConcreteTurnActivity(
-  timelineEntries: ReadonlyArray<TimelineEntry>,
-  afterIndex: number,
-  turnId: TurnId | null,
-): boolean {
-  for (let index = afterIndex + 1; index < timelineEntries.length; index += 1) {
-    const entry = timelineEntries[index];
-    if (entry && isConcreteTurnTimelineEntry(entry, turnId)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function isConcreteTurnTimelineEntry(entry: TimelineEntry, turnId: TurnId | null): boolean {
-  if (entry.kind === "message") {
-    return entry.message.role === "assistant" && timelineEntryMatchesTurn(entry.message, turnId);
-  }
-  return (
-    entry.kind === "work" &&
-    !entry.entry.providerLifecyclePhase &&
-    timelineEntryMatchesTurn(entry.entry, turnId)
-  );
-}
-
-function timelineEntryMatchesTurn(
-  entry: Pick<WorkLogEntry, "turnId"> | { readonly turnId?: TurnId | null },
+function hasLaterConcreteTurnActivityForTurn(
+  later: {
+    readonly hasLaterConcreteTurnActivity: boolean;
+    readonly laterConcreteTurnIds: ReadonlySet<TurnId>;
+  },
   turnId: TurnId | null,
 ): boolean {
   if (turnId === null) {
-    return true;
+    return later.hasLaterConcreteTurnActivity;
   }
-  return entry.turnId === turnId;
+  return later.laterConcreteTurnIds.has(turnId);
+}
+
+function concreteTimelineEntryTurnId(entry: TimelineEntry): TurnId | null | undefined {
+  if (entry.kind === "message") {
+    return entry.message.role === "assistant" ? (entry.message.turnId ?? null) : undefined;
+  }
+  if (entry.kind === "work" && !entry.entry.providerLifecyclePhase) {
+    return entry.entry.turnId ?? null;
+  }
+  return undefined;
 }
 
 function markLatestLiveWorkRow(rows: MessagesTimelineRow[], activeTurnId: TurnId | null) {

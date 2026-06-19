@@ -22,6 +22,12 @@ import { isProviderDriverKind, ProviderDriverKind } from "@t3tools/contracts";
 import type { ThreadId, TurnId } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { resolveModelSlugForProvider } from "@t3tools/shared/model";
+import {
+  MAX_THREAD_ACTIVITIES,
+  MAX_THREAD_CHECKPOINTS,
+  MAX_THREAD_MESSAGES,
+  MAX_THREAD_PROPOSED_PLANS,
+} from "@t3tools/shared/threadLimits";
 import { create } from "zustand";
 import {
   type ChatMessage,
@@ -125,10 +131,6 @@ const initialState: AppState = {
   environmentStateById: {},
 };
 
-const MAX_THREAD_MESSAGES = 2_000;
-const MAX_THREAD_CHECKPOINTS = 500;
-const MAX_THREAD_PROPOSED_PLANS = 200;
-const MAX_THREAD_ACTIVITIES = 500;
 const EMPTY_THREAD_IDS: ThreadId[] = [];
 
 function arraysEqual<T>(left: readonly T[], right: readonly T[]): boolean {
@@ -951,6 +953,72 @@ function compareActivities(
   return left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id);
 }
 
+function capTail<T>(entries: readonly T[], limit: number): T[] {
+  return entries.length > limit ? entries.slice(-limit) : [...entries];
+}
+
+function upsertThreadMessage(
+  messages: ReadonlyArray<ChatMessage>,
+  message: ChatMessage,
+): ChatMessage[] {
+  const existingIndex = messages.findIndex((entry) => entry.id === message.id);
+  if (existingIndex === -1) {
+    return capTail([...messages, message], MAX_THREAD_MESSAGES);
+  }
+
+  const existingMessage = messages[existingIndex];
+  if (!existingMessage) {
+    return capTail([...messages, message], MAX_THREAD_MESSAGES);
+  }
+
+  const nextMessage: ChatMessage = {
+    ...existingMessage,
+    text: message.streaming
+      ? `${existingMessage.text}${message.text}`
+      : message.text.length > 0
+        ? message.text
+        : existingMessage.text,
+    streaming: message.streaming,
+    ...(message.turnId !== undefined ? { turnId: message.turnId } : {}),
+    ...(message.streaming
+      ? existingMessage.completedAt !== undefined
+        ? { completedAt: existingMessage.completedAt }
+        : {}
+      : message.completedAt !== undefined
+        ? { completedAt: message.completedAt }
+        : {}),
+    ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+  };
+  const nextMessages = messages.slice();
+  nextMessages[existingIndex] = nextMessage;
+  return capTail(nextMessages, MAX_THREAD_MESSAGES);
+}
+
+function upsertThreadActivity(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+  activity: OrchestrationThreadActivity,
+): OrchestrationThreadActivity[] {
+  const nextActivity = { ...activity };
+  const existingIndex = activities.findIndex((entry) => entry.id === activity.id);
+  if (
+    existingIndex === -1 &&
+    (activities.length === 0 ||
+      compareActivities(activities[activities.length - 1]!, activity) <= 0)
+  ) {
+    return capTail([...activities, nextActivity], MAX_THREAD_ACTIVITIES);
+  }
+
+  const nextActivities =
+    existingIndex === -1
+      ? [...activities, nextActivity]
+      : [
+          ...activities.slice(0, existingIndex),
+          nextActivity,
+          ...activities.slice(existingIndex + 1),
+        ];
+  return capTail(nextActivities.toSorted(compareActivities), MAX_THREAD_ACTIVITIES);
+}
+
 function buildLatestTurn(params: {
   previous: Thread["latestTurn"];
   turnId: NonNullable<Thread["latestTurn"]>["turnId"];
@@ -1504,34 +1572,7 @@ function applyEnvironmentOrchestrationEvent(
           createdAt: event.payload.createdAt,
           updatedAt: event.payload.updatedAt,
         });
-        const existingMessage = thread.messages.find((entry) => entry.id === message.id);
-        const messages = existingMessage
-          ? thread.messages.map((entry) =>
-              entry.id !== message.id
-                ? entry
-                : {
-                    ...entry,
-                    text: message.streaming
-                      ? `${entry.text}${message.text}`
-                      : message.text.length > 0
-                        ? message.text
-                        : entry.text,
-                    streaming: message.streaming,
-                    ...(message.turnId !== undefined ? { turnId: message.turnId } : {}),
-                    ...(message.streaming
-                      ? entry.completedAt !== undefined
-                        ? { completedAt: entry.completedAt }
-                        : {}
-                      : message.completedAt !== undefined
-                        ? { completedAt: message.completedAt }
-                        : {}),
-                    ...(message.attachments !== undefined
-                      ? { attachments: message.attachments }
-                      : {}),
-                  },
-            )
-          : [...thread.messages, message];
-        const cappedMessages = messages.slice(-MAX_THREAD_MESSAGES);
+        const messages = upsertThreadMessage(thread.messages, message);
         const turnDiffSummaries =
           event.payload.role === "assistant" && event.payload.turnId !== null
             ? rebindTurnDiffSummariesForAssistantMessage(
@@ -1573,7 +1614,7 @@ function applyEnvironmentOrchestrationEvent(
             : thread.latestTurn;
         return {
           ...thread,
-          messages: cappedMessages,
+          messages,
           turnDiffSummaries,
           latestTurn,
           updatedAt: event.occurredAt,
@@ -1759,15 +1800,9 @@ function applyEnvironmentOrchestrationEvent(
 
     case "thread.activity-appended":
       return updateThreadState(state, event.payload.threadId, (thread) => {
-        const activities = [
-          ...thread.activities.filter((activity) => activity.id !== event.payload.activity.id),
-          { ...event.payload.activity },
-        ]
-          .toSorted(compareActivities)
-          .slice(-MAX_THREAD_ACTIVITIES);
         return {
           ...thread,
-          activities,
+          activities: upsertThreadActivity(thread.activities, event.payload.activity),
           updatedAt: event.occurredAt,
         };
       });

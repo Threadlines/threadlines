@@ -31,6 +31,7 @@ import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
+import { MAX_THREAD_ACTIVITIES } from "@t3tools/shared/threadLimits";
 
 import {
   isPersistenceError,
@@ -451,6 +452,18 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     Result: ProjectionThreadActivityDbRowSchema,
     execute: () =>
       sql`
+        WITH ranked_activities AS (
+          SELECT
+            activity.*,
+            ROW_NUMBER() OVER (
+              PARTITION BY activity.thread_id
+              ORDER BY
+                activity.sequence DESC,
+                activity.created_at DESC,
+                activity.activity_id DESC
+            ) AS activity_rank
+          FROM projection_thread_activities AS activity
+        )
         SELECT
           activity_id AS "activityId",
           thread_id AS "threadId",
@@ -461,7 +474,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           payload_json AS "payload",
           sequence,
           created_at AS "createdAt"
-        FROM projection_thread_activities
+        FROM ranked_activities
+        WHERE activity_rank <= ${MAX_THREAD_ACTIVITIES}
         ORDER BY
           thread_id ASC,
           sequence ASC,
@@ -820,6 +834,16 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     Result: ProjectionThreadActivityDbRowSchema,
     execute: ({ threadId }) =>
       sql`
+        WITH limited_activities AS (
+          SELECT *
+          FROM projection_thread_activities
+          WHERE thread_id = ${threadId}
+          ORDER BY
+            sequence DESC,
+            created_at DESC,
+            activity_id DESC
+          LIMIT ${MAX_THREAD_ACTIVITIES}
+        )
         SELECT
           activity_id AS "activityId",
           thread_id AS "threadId",
@@ -830,8 +854,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           payload_json AS "payload",
           sequence,
           created_at AS "createdAt"
-        FROM projection_thread_activities
-        WHERE thread_id = ${threadId}
+        FROM limited_activities
         ORDER BY
           sequence ASC,
           created_at ASC,

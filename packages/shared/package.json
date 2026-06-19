@@ -55,6 +55,10 @@
       "types": "./src/toolActivity.ts",
       "import": "./src/toolActivity.ts"
     },
+    "./threadLimits": {
+      "types": "./src/threadLimits.ts",
+      "import": "./src/threadLimits.ts"
+    },
     "./diffStats": {
       "types": "./src/diffStats.ts",
       "import": "./src/diffStats.ts"

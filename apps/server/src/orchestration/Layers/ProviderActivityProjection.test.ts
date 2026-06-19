@@ -5,6 +5,7 @@ import {
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
+import { MAX_THREAD_ACTIVITY_PAYLOAD_TEXT_LENGTH } from "@t3tools/shared/threadLimits";
 import { describe, expect, it } from "vitest";
 
 import { projectRuntimeEventToActivities } from "./ProviderActivityProjection.ts";
@@ -111,5 +112,41 @@ describe("ProviderActivityProjection", () => {
         },
       },
     });
+  });
+
+  it("compacts large tool lifecycle payload data before projection", () => {
+    const largeOutput = Array.from({ length: 1_000 }, (_, index) => `line ${index}`).join("\n");
+    const activities = projectRuntimeEventToActivities({
+      type: "item.completed",
+      eventId: EventId.make("evt-tool-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: ThreadId.make("thread-1"),
+      turnId: TurnId.make("turn-1"),
+      createdAt: "2026-06-01T12:00:00.000Z",
+      payload: {
+        itemType: "command_execution",
+        title: "Ran command",
+        data: {
+          item: {
+            command: "rg something",
+            status: "completed",
+            aggregatedOutput: largeOutput,
+          },
+        },
+      },
+    } satisfies ProviderRuntimeEvent);
+
+    const payload = activities[0]?.payload as
+      | { data?: { item?: { command?: string; status?: string; aggregatedOutput?: string } } }
+      | undefined;
+    const item = payload?.data?.item;
+
+    expect(item?.command).toBe("rg something");
+    expect(item?.status).toBe("completed");
+    expect(item?.aggregatedOutput).toEqual(expect.stringContaining("line 999"));
+    expect(item?.aggregatedOutput?.startsWith("...")).toBe(true);
+    expect(item?.aggregatedOutput?.length).toBeLessThanOrEqual(
+      MAX_THREAD_ACTIVITY_PAYLOAD_TEXT_LENGTH,
+    );
   });
 });
