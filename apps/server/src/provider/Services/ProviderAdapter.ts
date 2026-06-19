@@ -16,6 +16,7 @@ import type {
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
+  MessageId,
   ThreadId,
   ProviderTurnStartResult,
   TurnId,
@@ -40,6 +41,15 @@ export interface ProviderThreadTurnSnapshot {
 export interface ProviderThreadSnapshot {
   readonly threadId: ThreadId;
   readonly turns: ReadonlyArray<ProviderThreadTurnSnapshot>;
+}
+
+export interface ProviderRollbackThreadOptions {
+  /**
+   * Provider-native file rewind target. For providers that checkpoint files at
+   * user-message boundaries, this is the first user message being removed by
+   * the rollback.
+   */
+  readonly targetUserMessageId?: MessageId;
 }
 
 export interface ProviderAdapterShape<TError> {
@@ -112,7 +122,17 @@ export interface ProviderAdapterShape<TError> {
   readonly rollbackThread: (
     threadId: ThreadId,
     numTurns: number,
+    options?: ProviderRollbackThreadOptions,
   ) => Effect.Effect<ProviderThreadSnapshot, TError>;
+
+  /**
+   * Permanently delete the provider-native transcript/thread when supported.
+   *
+   * Adapters that do not expose a provider-side delete operation should leave
+   * this undefined; ProviderService falls back to stopping their runtime
+   * session while still clearing Threadlines' persisted runtime binding.
+   */
+  readonly deleteThread?: (threadId: ThreadId) => Effect.Effect<void, TError>;
 
   /**
    * Stop all sessions owned by this adapter.

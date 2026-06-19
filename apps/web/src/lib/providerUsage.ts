@@ -1,6 +1,7 @@
 import type {
   ServerProvider,
   ServerProviderAccountUsage,
+  ServerProviderAccountTokenUsage,
   ServerProviderSpendControlLimit,
   ServerProviderUsageLimit,
   ServerProviderUsageWindow,
@@ -29,10 +30,31 @@ export interface ProviderAccountUsageResetCreditsPresentation {
   readonly detail: string;
 }
 
+export interface ProviderAccountTokenUsageBucketPresentation {
+  readonly startDate: string;
+  readonly label: string;
+  readonly tokens: number;
+  readonly tokenLabel: string;
+  readonly intensityPercent: number;
+}
+
+export interface ProviderAccountTokenUsageSummaryPresentation {
+  readonly key: string;
+  readonly label: string;
+  readonly value: string;
+}
+
+export interface ProviderAccountTokenUsagePresentation {
+  readonly label: string;
+  readonly summary: ReadonlyArray<ProviderAccountTokenUsageSummaryPresentation>;
+  readonly buckets: ReadonlyArray<ProviderAccountTokenUsageBucketPresentation>;
+}
+
 export interface ProviderAccountUsagePresentation {
   readonly label: string;
   readonly spendControl?: ProviderAccountUsageSpendControlPresentation;
   readonly resetCredits?: ProviderAccountUsageResetCreditsPresentation;
+  readonly tokenUsage?: ProviderAccountTokenUsagePresentation;
   readonly windows: ReadonlyArray<ProviderAccountUsageWindowPresentation>;
   readonly reachedLimit: boolean;
 }
@@ -161,6 +183,93 @@ function formatResetCreditsPresentation(
   };
 }
 
+export function formatProviderTokenCount(value: number | undefined): string | null {
+  if (value === undefined || !Number.isFinite(value) || value < 0) return null;
+  if (value < 1_000) return `${Math.round(value)}`;
+  if (value < 10_000) return `${(value / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
+  if (value < 1_000_000) return `${Math.round(value / 1_000)}k`;
+  if (value < 1_000_000_000) return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}m`;
+  const billionPrecision = value < 10_000_000_000 ? 2 : 1;
+  return `${(value / 1_000_000_000).toFixed(billionPrecision).replace(/\.?0+$/, "")}B`;
+}
+
+function formatDurationSeconds(value: number | undefined): string | null {
+  if (value === undefined || !Number.isFinite(value) || value < 0) return null;
+  const seconds = Math.round(value);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  if (minutes < 60) {
+    return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+}
+
+function formatDayCount(value: number | undefined): string | null {
+  if (value === undefined || !Number.isFinite(value) || value < 0) return null;
+  const rounded = Math.round(value);
+  return rounded === 1 ? "1d" : `${rounded}d`;
+}
+
+function formatUsageBucketLabel(startDate: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(startDate);
+  if (!match) return startDate;
+  const [, year, month, day] = match;
+  const date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  }).format(date);
+}
+
+function formatTokenUsagePresentation(
+  usage: ServerProviderAccountTokenUsage | undefined,
+): ProviderAccountTokenUsagePresentation | undefined {
+  if (!usage) return undefined;
+
+  const peakTokens = Math.max(0, ...usage.dailyBuckets.map((bucket) => bucket.tokens));
+  const buckets = usage.dailyBuckets.map((bucket) => ({
+    startDate: bucket.startDate,
+    label: formatUsageBucketLabel(bucket.startDate),
+    tokens: bucket.tokens,
+    tokenLabel: formatProviderTokenCount(bucket.tokens) ?? "0",
+    intensityPercent:
+      peakTokens > 0 ? Math.max(6, Math.round((bucket.tokens / peakTokens) * 100)) : 0,
+  }));
+
+  const summary: ProviderAccountTokenUsageSummaryPresentation[] = [];
+  const lifetimeTokens = formatProviderTokenCount(usage.summary.lifetimeTokens);
+  if (lifetimeTokens) {
+    summary.push({ key: "lifetimeTokens", label: "Lifetime tokens", value: lifetimeTokens });
+  }
+  const peakDailyTokens = formatProviderTokenCount(usage.summary.peakDailyTokens);
+  if (peakDailyTokens) {
+    summary.push({ key: "peakDailyTokens", label: "Peak tokens", value: peakDailyTokens });
+  }
+  const longestTurn = formatDurationSeconds(usage.summary.longestRunningTurnSec);
+  if (longestTurn) {
+    summary.push({ key: "longestRunningTurnSec", label: "Longest task", value: longestTurn });
+  }
+  const currentStreak = formatDayCount(usage.summary.currentStreakDays);
+  if (currentStreak) {
+    summary.push({ key: "currentStreakDays", label: "Current streak", value: currentStreak });
+  }
+  const longestStreak = formatDayCount(usage.summary.longestStreakDays);
+  if (longestStreak) {
+    summary.push({ key: "longestStreakDays", label: "Longest streak", value: longestStreak });
+  }
+
+  if (summary.length === 0 && buckets.length === 0) return undefined;
+  return {
+    label: "Token history",
+    summary,
+    buckets,
+  };
+}
+
 const PROVIDER_USAGE_SOURCE_LABELS: Record<ServerProviderAccountUsage["source"], string> = {
   "codex-rate-limits": "Codex usage",
   "claude-oauth-usage": "Claude usage",
@@ -173,12 +282,14 @@ export function deriveProviderAccountUsagePresentation(
   if (!usage || !(usage.source in PROVIDER_USAGE_SOURCE_LABELS)) return null;
 
   const resetCredits = formatResetCreditsPresentation(usage);
+  const tokenUsage = formatTokenUsagePresentation(usage.tokenUsage);
   const limit = selectProviderUsageLimit(usage);
   if (!limit) {
-    return resetCredits
+    return resetCredits || tokenUsage
       ? {
           label: PROVIDER_USAGE_SOURCE_LABELS[usage.source],
-          resetCredits,
+          ...(resetCredits ? { resetCredits } : {}),
+          ...(tokenUsage ? { tokenUsage } : {}),
           windows: [],
           reachedLimit: false,
         }
@@ -197,12 +308,13 @@ export function deriveProviderAccountUsagePresentation(
   const spendControl = limit.individualLimit
     ? formatSpendControlPresentation(limit.individualLimit, reachedLimit, nowMs)
     : undefined;
-  if (windows.length === 0 && !spendControl && !resetCredits) return null;
+  if (windows.length === 0 && !spendControl && !resetCredits && !tokenUsage) return null;
 
   return {
     label: limit.limitName ?? PROVIDER_USAGE_SOURCE_LABELS[usage.source],
     ...(spendControl ? { spendControl } : {}),
     ...(resetCredits ? { resetCredits } : {}),
+    ...(tokenUsage ? { tokenUsage } : {}),
     windows,
     reachedLimit:
       reachedLimit ||

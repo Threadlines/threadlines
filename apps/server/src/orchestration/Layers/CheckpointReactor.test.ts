@@ -91,7 +91,11 @@ function createProviderServiceHarness(
   const now = "2026-01-01T00:00:00.000Z";
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
   const rollbackConversation = vi.fn(
-    (_input: { readonly threadId: ThreadId; readonly numTurns: number }) => Effect.void,
+    (_input: {
+      readonly threadId: ThreadId;
+      readonly numTurns: number;
+      readonly targetUserMessageId?: MessageId;
+    }) => Effect.void,
   );
 
   const unsupported = <A>() =>
@@ -136,6 +140,7 @@ function createProviderServiceHarness(
         },
       }),
     rollbackConversation,
+    deleteThread: () => unsupported(),
     get streamEvents() {
       return Stream.fromPubSub(runtimeEventPubSub);
     },
@@ -1298,6 +1303,8 @@ describe("CheckpointReactor", () => {
   it("executes provider revert and emits thread.reverted for claude sessions", async () => {
     const harness = await createHarness({ providerName: ProviderDriverKind.make("claudeAgent") });
     const createdAt = "2026-01-01T00:00:00.000Z";
+    const firstUserMessageId = MessageId.make("11111111-1111-4111-8111-111111111111");
+    const secondUserMessageId = MessageId.make("22222222-2222-4222-8222-222222222222");
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -1314,6 +1321,39 @@ describe("CheckpointReactor", () => {
           updatedAt: createdAt,
         },
         createdAt,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-user-claude-1"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: firstUserMessageId,
+          role: "user",
+          text: "first turn",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-user-claude-2"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: secondUserMessageId,
+          role: "user",
+          text: "second turn",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:02.000Z",
       }),
     );
 
@@ -1361,6 +1401,7 @@ describe("CheckpointReactor", () => {
     expect(harness.provider.rollbackConversation).toHaveBeenCalledWith({
       threadId: ThreadId.make("thread-1"),
       numTurns: 1,
+      targetUserMessageId: secondUserMessageId,
     });
   });
 

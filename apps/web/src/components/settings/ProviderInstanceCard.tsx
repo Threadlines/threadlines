@@ -8,10 +8,11 @@ import {
   GaugeIcon,
   LoaderIcon,
   PlusIcon,
+  RotateCcwIcon,
   Trash2Icon,
   XIcon,
 } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from "react";
 import {
   isProviderDriverKind,
   PROVIDER_DISPLAY_NAMES,
@@ -24,7 +25,10 @@ import {
 } from "@t3tools/contracts";
 
 import { cn } from "../../lib/utils";
-import { deriveProviderAccountUsagePresentationForProvider } from "../../lib/providerUsage";
+import {
+  deriveProviderAccountUsagePresentationForProvider,
+  type ProviderAccountUsagePresentation,
+} from "../../lib/providerUsage";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { normalizeProviderAccentColor } from "../../providerInstances";
 import { Badge } from "../ui/badge";
@@ -37,9 +41,14 @@ import { Switch } from "../ui/switch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import type { DriverOption } from "./providerDriverMeta";
-import { ProviderSettingsForm } from "./ProviderSettingsForm";
+import {
+  deriveProviderSettingsFields,
+  ProviderSettingsFields,
+  type ProviderSettingsFieldModel,
+} from "./ProviderSettingsForm";
 import { ProviderModelsSection } from "./ProviderModelsSection";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
+import { ProviderUsageDashboard } from "../ProviderUsageDashboard";
 import type { ProviderRateLimitResetCreditRequest } from "../ProviderRateLimitResetCredit";
 import { RedactedSensitiveText } from "./RedactedSensitiveText";
 import {
@@ -53,6 +62,13 @@ import {
 const PROVIDER_ACCENT_SWATCHES = ["#00347D", "#16a34a", "#ea580c", "#dc2626", "#7c3aed"] as const;
 
 const ENVIRONMENT_VARIABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+const RUNTIME_PROVIDER_CONFIG_FIELD_KEYS = new Set([
+  "binaryPath",
+  "launchArgs",
+  "serverUrl",
+  "serverPassword",
+  "apiEndpoint",
+]);
 
 let environmentVariableDraftId = 0;
 const nextEnvironmentVariableDraftId = () => `provider-env-${environmentVariableDraftId++}`;
@@ -108,6 +124,21 @@ function nextConfigBlobWithValue(
     config !== null && typeof config === "object" ? { ...(config as Record<string, unknown>) } : {};
   base[key] = value;
   return base;
+}
+
+function nextConfigBlobWithOptionalStringArray(
+  config: unknown,
+  key: string,
+  value: ReadonlyArray<string>,
+): Record<string, unknown> | undefined {
+  const base: Record<string, unknown> =
+    config !== null && typeof config === "object" ? { ...(config as Record<string, unknown>) } : {};
+  if (value.length > 0) {
+    base[key] = [...value];
+  } else {
+    delete base[key];
+  }
+  return Object.keys(base).length > 0 ? base : undefined;
 }
 
 export function deriveProviderModelsForDisplay(input: {
@@ -295,35 +326,36 @@ function ProviderEnvironmentSection(props: {
     publishRows(nextRows);
   };
 
+  const addVariable = () =>
+    setRows([
+      ...rows,
+      {
+        id: nextEnvironmentVariableDraftId(),
+        name: "",
+        value: "",
+        sensitive: true,
+      },
+    ]);
+
   return (
-    <div className="grid gap-2">
-      <div className="flex items-center justify-between gap-3">
-        <span className="text-xs font-medium text-foreground">Environment variables</span>
+    <ProviderConfigurationSection
+      title="Environment"
+      description="Variables passed to this provider instance. Sensitive values stay stored separately."
+      action={
         <Button
           type="button"
           size="sm"
           variant="outline"
           className="h-7 gap-1.5 px-2 text-xs"
-          onClick={() =>
-            setRows([
-              ...rows,
-              {
-                id: nextEnvironmentVariableDraftId(),
-                name: "",
-                value: "",
-                sensitive: true,
-              },
-            ])
-          }
+          onClick={addVariable}
         >
           <PlusIcon className="size-3" />
           Add
         </Button>
-      </div>
+      }
+    >
       {rows.length === 0 ? (
-        <p className="text-xs text-muted-foreground">
-          Add variables to pass API keys, base URLs, or other per-instance CLI settings.
-        </p>
+        <p className="text-xs text-muted-foreground">No environment variables configured.</p>
       ) : (
         <div className="grid gap-2">
           {rows.map((variable, index) => (
@@ -380,10 +412,263 @@ function ProviderEnvironmentSection(props: {
           ))}
         </div>
       )}
-      <span className="text-xs text-muted-foreground">
-        Sensitive values are stored separately and are not returned to the app after saving.
-      </span>
+    </ProviderConfigurationSection>
+  );
+}
+
+type ProviderDetailsSection = "usage" | "models" | "configuration";
+
+const PROVIDER_DETAILS_SECTION_LABELS: Record<ProviderDetailsSection, string> = {
+  usage: "Usage",
+  models: "Models",
+  configuration: "Configuration",
+};
+
+function splitProviderSettingsFields(fields: ReadonlyArray<ProviderSettingsFieldModel>): {
+  readonly runtimeFields: ReadonlyArray<ProviderSettingsFieldModel>;
+  readonly advancedFields: ReadonlyArray<ProviderSettingsFieldModel>;
+} {
+  const runtimeFields: ProviderSettingsFieldModel[] = [];
+  const advancedFields: ProviderSettingsFieldModel[] = [];
+  for (const field of fields) {
+    if (RUNTIME_PROVIDER_CONFIG_FIELD_KEYS.has(field.key)) {
+      runtimeFields.push(field);
+    } else {
+      advancedFields.push(field);
+    }
+  }
+  return { runtimeFields, advancedFields };
+}
+
+const PROVIDER_CARD_TOGGLE_IGNORE_SELECTOR = [
+  "button",
+  "a[href]",
+  "input",
+  "select",
+  "textarea",
+  "[role='button']",
+  "[role='switch']",
+  "[data-provider-card-toggle-ignore]",
+].join(",");
+
+function shouldIgnoreProviderCardToggle(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest(PROVIDER_CARD_TOGGLE_IGNORE_SELECTOR) !== null;
+}
+
+function formatResetCreditAvailability(availableCount: number): string {
+  if (availableCount <= 0) return "None available";
+  return availableCount === 1 ? "1 available" : `${availableCount} available`;
+}
+
+function formatResetCreditDetail(detail: string): string {
+  return detail === "usable for 30 days after grant" ? "30-day grant window" : detail;
+}
+
+function ProviderUsageSummaryBar(props: {
+  readonly usageLabel: string;
+  readonly label: string;
+  readonly detail: string;
+  readonly usedPercent: number;
+  readonly reachedLimit: boolean;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs">
+        <span className="min-w-10 font-medium text-foreground">{props.label}</span>
+        <span className="text-muted-foreground">
+          {props.usedPercent}% used{props.detail ? ` - ${props.detail}` : ""}
+        </span>
+      </div>
+      <div
+        role="meter"
+        aria-label={`${props.usageLabel} ${props.label} ${props.usedPercent}% used`}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={props.usedPercent}
+        className="h-1.5 overflow-hidden rounded-full bg-muted/70"
+      >
+        <div
+          className={cn(
+            "h-full rounded-full transition-[width]",
+            props.reachedLimit || props.usedPercent >= 90 ? "bg-warning" : "bg-primary",
+          )}
+          style={{ width: `${props.usedPercent}%` }}
+        />
+      </div>
     </div>
+  );
+}
+
+function ProviderUsageSummary(props: {
+  readonly usage: ProviderAccountUsagePresentation;
+  readonly displayName: string;
+  readonly instanceId: ProviderInstanceId;
+  readonly onResetAccountUsage?:
+    | ((request: ProviderRateLimitResetCreditRequest) => void)
+    | undefined;
+  readonly accountUsageResetInFlight?: boolean | undefined;
+}) {
+  const hasLimitSummary =
+    props.usage.windows.length > 0 ||
+    props.usage.spendControl !== undefined ||
+    props.usage.resetCredits !== undefined;
+  if (!hasLimitSummary) return null;
+
+  const canReset =
+    props.onResetAccountUsage !== undefined && (props.usage.resetCredits?.availableCount ?? 0) > 0;
+
+  return (
+    <div className="mt-2 max-w-md space-y-1.5">
+      <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+        <GaugeIcon className="size-3.5 shrink-0" aria-hidden />
+        <span className="font-medium text-foreground">{props.usage.label}</span>
+      </div>
+      <div className="space-y-1.5 pl-5">
+        {props.usage.resetCredits ? (
+          <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
+            <span className="min-w-10 font-medium text-foreground">Resets</span>
+            <span>{formatResetCreditAvailability(props.usage.resetCredits.availableCount)}</span>
+            <span aria-hidden>·</span>
+            <span>{formatResetCreditDetail(props.usage.resetCredits.detail)}</span>
+            {canReset ? (
+              <Button
+                type="button"
+                size="xs"
+                variant="outline"
+                className="ml-1 h-5 gap-1 rounded px-1.5 text-[10px] leading-none [&_svg]:size-2.5"
+                disabled={props.accountUsageResetInFlight === true}
+                onClick={() =>
+                  props.onResetAccountUsage?.({
+                    instanceId: props.instanceId,
+                    availableCount: props.usage.resetCredits?.availableCount ?? 0,
+                  })
+                }
+                aria-label={`Use one reset credit for ${props.displayName} usage`}
+              >
+                <RotateCcwIcon className="size-3" />
+                {props.accountUsageResetInFlight ? "Using" : "Use reset"}
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+        {props.usage.spendControl ? (
+          <ProviderUsageSummaryBar
+            usageLabel={props.usage.label}
+            label={props.usage.spendControl.label}
+            detail={props.usage.spendControl.detail}
+            usedPercent={props.usage.spendControl.usedPercent}
+            reachedLimit={props.usage.spendControl.reachedLimit}
+          />
+        ) : null}
+        {props.usage.windows.map((window) => (
+          <ProviderUsageSummaryBar
+            key={window.key}
+            usageLabel={props.usage.label}
+            label={window.label}
+            detail={window.detail}
+            usedPercent={window.usedPercent}
+            reachedLimit={window.reachedLimit}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ProviderDetailsNav(props: {
+  readonly sections: ReadonlyArray<ProviderDetailsSection>;
+  readonly activeSection: ProviderDetailsSection;
+  readonly onSectionChange: (section: ProviderDetailsSection) => void;
+}) {
+  return (
+    <div className="inline-flex rounded-md border border-border/70 bg-muted/20 p-0.5">
+      {props.sections.map((section) => (
+        <button
+          key={section}
+          type="button"
+          className={cn(
+            "h-7 cursor-pointer rounded px-2.5 text-xs transition-colors",
+            props.activeSection === section
+              ? "bg-background text-foreground shadow-xs"
+              : "text-muted-foreground hover:text-foreground",
+          )}
+          onClick={() => props.onSectionChange(section)}
+          aria-pressed={props.activeSection === section}
+        >
+          {PROVIDER_DETAILS_SECTION_LABELS[section]}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ProviderConfigurationSection(props: {
+  readonly title: string;
+  readonly description?: string | undefined;
+  readonly action?: ReactNode | undefined;
+  readonly children: ReactNode;
+}) {
+  return (
+    <section className="border-t border-border/60 px-4 py-4 sm:px-5">
+      <div className="mb-3 flex min-w-0 flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 space-y-0.5">
+          <h4 className="text-xs font-semibold text-foreground">{props.title}</h4>
+          {props.description ? (
+            <p className="text-xs text-muted-foreground">{props.description}</p>
+          ) : null}
+        </div>
+        {props.action ? <div className="shrink-0">{props.action}</div> : null}
+      </div>
+      {props.children}
+    </section>
+  );
+}
+
+function ProviderAdvancedConfigurationSection(props: {
+  readonly fields: ReadonlyArray<ProviderSettingsFieldModel>;
+  readonly value: unknown;
+  readonly idPrefix: string;
+  readonly onChange: (nextConfig: Record<string, unknown> | undefined) => void;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  if (props.fields.length === 0) return null;
+
+  return (
+    <section className="border-t border-border/60 px-4 py-3 sm:px-5">
+      <Collapsible open={isOpen} onOpenChange={setIsOpen}>
+        <button
+          type="button"
+          className="flex w-full cursor-pointer items-center justify-between gap-3 py-1 text-left"
+          onClick={() => setIsOpen((open) => !open)}
+          aria-expanded={isOpen}
+        >
+          <span className="min-w-0 space-y-0.5">
+            <span className="block text-xs font-semibold text-foreground">Advanced</span>
+            <span className="block text-xs text-muted-foreground">
+              Home paths and low-level provider process settings.
+            </span>
+          </span>
+          <ChevronDownIcon
+            className={cn(
+              "size-3.5 shrink-0 text-muted-foreground transition-transform",
+              isOpen && "rotate-180",
+            )}
+            aria-hidden
+          />
+        </button>
+        <CollapsibleContent>
+          <div className="pt-3">
+            <ProviderSettingsFields
+              fields={props.fields}
+              value={props.value}
+              idPrefix={props.idPrefix}
+              variant="group"
+              onChange={props.onChange}
+            />
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
+    </section>
   );
 }
 
@@ -488,7 +773,8 @@ export function ProviderInstanceCard({
   const versionAdvisory = getProviderVersionAdvisoryPresentation(liveProvider?.versionAdvisory);
   const updateCommand = versionAdvisory?.updateCommand ?? null;
   const usagePresentation = deriveProviderAccountUsagePresentationForProvider(liveProvider);
-  const usageResetCredits = usagePresentation?.resetCredits ?? null;
+  const hasTokenUsageDetails = usagePresentation?.tokenUsage !== undefined;
+  const [detailsSection, setDetailsSection] = useState<ProviderDetailsSection>("usage");
   // Narrow `instance.driver` for callers that key on the closed
   // `ProviderDriverKind` union (e.g. `normalizeModelSlug`'s alias table). Custom
   // fork drivers pass through as `null` and those callers fall back to
@@ -523,6 +809,7 @@ export function ProviderInstanceCard({
   });
 
   const customModels = readConfigStringArray(instance.config, "customModels");
+  const fallbackModels = readConfigStringArray(instance.config, "fallbackModel");
   // Server-returned models may lag behind settings writes. Treat probe
   // models as the source for built-ins only; custom rows come directly
   // from the current instance config so add/remove reflects immediately.
@@ -530,6 +817,14 @@ export function ProviderInstanceCard({
     liveModels: liveProvider?.models,
     customModels,
   });
+  const providerSettingsFields = useMemo(
+    () => (driverOption ? deriveProviderSettingsFields(driverOption) : []),
+    [driverOption],
+  );
+  const providerSettingsFieldGroups = useMemo(
+    () => splitProviderSettingsFields(providerSettingsFields),
+    [providerSettingsFields],
+  );
 
   const updateDisplayName = (value: string) => {
     const trimmed = value.trim();
@@ -568,6 +863,20 @@ export function ProviderInstanceCard({
     const nextConfig = nextConfigBlobWithValue(instance.config, "customModels", [...next]);
     const { config: _omit, ...rest } = instance;
     onUpdate({ ...rest, config: nextConfig } as ProviderInstanceConfig);
+  };
+
+  const updateFallbackModels = (next: ReadonlyArray<string>) => {
+    const nextConfig = nextConfigBlobWithOptionalStringArray(
+      instance.config,
+      "fallbackModel",
+      next,
+    );
+    const { config: _omit, ...rest } = instance;
+    onUpdate(
+      nextConfig !== undefined
+        ? ({ ...rest, config: nextConfig } as ProviderInstanceConfig)
+        : (rest as ProviderInstanceConfig),
+    );
   };
 
   const updateEnvironment = (environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>) => {
@@ -655,6 +964,15 @@ export function ProviderInstanceCard({
     </>
   );
 
+  const availableDetailsSections: ReadonlyArray<ProviderDetailsSection> = [
+    ...(hasTokenUsageDetails ? (["usage"] as const) : []),
+    ...(driverOption !== undefined ? (["models"] as const) : []),
+    "configuration",
+  ];
+  const activeDetailsSection = availableDetailsSections.includes(detailsSection)
+    ? detailsSection
+    : (availableDetailsSections[0] ?? "configuration");
+
   const authRowNode = (
     <p className="flex min-w-0 flex-wrap items-center gap-x-1 text-xs text-muted-foreground/80">
       {hasAuthenticatedEmail ? (
@@ -676,10 +994,18 @@ export function ProviderInstanceCard({
   const versionCodeNode = versionLabel ? (
     <code className="text-xs text-muted-foreground">{versionLabel}</code>
   ) : null;
+  const toggleDetails = () => onExpandedChange(!isExpanded);
+  const handleSummaryClick = (event: MouseEvent<HTMLDivElement>) => {
+    if (shouldIgnoreProviderCardToggle(event.target)) return;
+    toggleDetails();
+  };
 
   return (
-    <div className="border-t border-border/60 first:border-t-0">
-      <div className="px-4 py-3.5 sm:px-5">
+    <div className="relative overflow-hidden rounded-2xl border border-border/75 bg-card text-card-foreground shadow-sm/4 not-dark:bg-clip-padding before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-2xl)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:shadow-none dark:before:shadow-[0_-1px_--theme(--color-white/6%)]">
+      <div
+        className="cursor-pointer px-4 py-3.5 transition-colors hover:bg-muted/10 sm:px-5"
+        onClick={handleSummaryClick}
+      >
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0 flex-1 space-y-1">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -784,109 +1110,21 @@ export function ProviderInstanceCard({
             </div>
             {authRowNode}
             {usagePresentation ? (
-              <div className="mt-2 max-w-md space-y-1.5">
-                <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-                  <GaugeIcon className="size-3.5 shrink-0" aria-hidden />
-                  <span className="font-medium text-foreground">{usagePresentation.label}</span>
-                </div>
-                <div className="space-y-1.5 pl-5">
-                  {usageResetCredits ? (
-                    <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
-                      <span className="min-w-10 font-medium text-foreground">Reset</span>
-                      <span>{usageResetCredits.label}</span>
-                      <span aria-hidden>-</span>
-                      <span>{usageResetCredits.detail}</span>
-                      {onResetAccountUsage && usageResetCredits.availableCount > 0 ? (
-                        <Button
-                          type="button"
-                          size="xs"
-                          variant="outline"
-                          className="ml-1 h-5 px-1.5 text-[11px]"
-                          disabled={accountUsageResetInFlight === true}
-                          onClick={() =>
-                            onResetAccountUsage({
-                              instanceId,
-                              availableCount: usageResetCredits.availableCount,
-                            })
-                          }
-                          aria-label={`Reset ${displayName} usage`}
-                        >
-                          {accountUsageResetInFlight ? "Resetting" : "Reset"}
-                        </Button>
-                      ) : null}
-                    </div>
-                  ) : null}
-                  {usagePresentation.spendControl ? (
-                    <div className="space-y-1">
-                      <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
-                        <span className="min-w-10 font-medium text-foreground">
-                          {usagePresentation.spendControl.label}
-                        </span>
-                        <span>{usagePresentation.spendControl.detail}</span>
-                      </div>
-                      <div
-                        role="meter"
-                        aria-label={`${usagePresentation.label} ${usagePresentation.spendControl.label} ${usagePresentation.spendControl.usedPercent}% used`}
-                        aria-valuemin={0}
-                        aria-valuemax={100}
-                        aria-valuenow={usagePresentation.spendControl.usedPercent}
-                        className="h-1.5 overflow-hidden rounded-full bg-muted"
-                      >
-                        <div
-                          className={cn(
-                            "h-full rounded-full transition-[width]",
-                            usagePresentation.spendControl.reachedLimit ||
-                              usagePresentation.spendControl.usedPercent >= 90
-                              ? "bg-warning"
-                              : "bg-primary",
-                          )}
-                          style={{ width: `${usagePresentation.spendControl.usedPercent}%` }}
-                        />
-                      </div>
-                    </div>
-                  ) : null}
-                  {usagePresentation.windows.map((window) => (
-                    <div key={window.key} className="space-y-1">
-                      <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
-                        <span className="min-w-10 font-medium text-foreground">{window.label}</span>
-                        <span>{window.usedPercent}% used</span>
-                        {window.detail ? (
-                          <>
-                            <span aria-hidden>·</span>
-                            <span>{window.detail}</span>
-                          </>
-                        ) : null}
-                      </div>
-                      <div
-                        role="meter"
-                        aria-label={`${usagePresentation.label} ${window.label} ${window.usedPercent}% used`}
-                        aria-valuemin={0}
-                        aria-valuemax={100}
-                        aria-valuenow={window.usedPercent}
-                        className="h-1.5 overflow-hidden rounded-full bg-muted"
-                      >
-                        <div
-                          className={cn(
-                            "h-full rounded-full transition-[width]",
-                            window.reachedLimit || window.usedPercent >= 90
-                              ? "bg-warning"
-                              : "bg-primary",
-                          )}
-                          style={{ width: `${window.usedPercent}%` }}
-                        />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
+              <ProviderUsageSummary
+                usage={usagePresentation}
+                displayName={displayName}
+                instanceId={instanceId}
+                onResetAccountUsage={onResetAccountUsage}
+                accountUsageResetInFlight={accountUsageResetInFlight}
+              />
             ) : null}
           </div>
           <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
             <Button
               size="sm"
               variant="ghost"
-              className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
-              onClick={() => onExpandedChange(!isExpanded)}
+              className="h-7 px-2 text-xs text-muted-foreground hover:bg-transparent hover:text-foreground data-[pressed]:bg-transparent"
+              onClick={toggleDetails}
               aria-label={`Toggle ${displayName} details`}
             >
               <ChevronDownIcon
@@ -904,74 +1142,116 @@ export function ProviderInstanceCard({
 
       <Collapsible open={isExpanded} onOpenChange={onExpandedChange}>
         <CollapsibleContent>
-          <div className="space-y-0">
-            <div className="border-t border-border/60 px-4 py-3 sm:px-5">
-              <label htmlFor={`provider-instance-${instanceId}-display-name`} className="block">
-                <span className="text-xs font-medium text-foreground">Display name</span>
-                <DraftInput
-                  id={`provider-instance-${instanceId}-display-name`}
-                  className="mt-1.5"
-                  value={instance.displayName ?? ""}
-                  onCommit={updateDisplayName}
-                  placeholder={driverOption?.label ?? "Instance label"}
-                  spellCheck={false}
-                />
-                <span className="mt-1 block text-xs text-muted-foreground">
-                  Optional label shown in the provider list.
-                </span>
-              </label>
-            </div>
+          <div className="border-t border-border/60 px-4 py-3 sm:px-5">
+            <ProviderDetailsNav
+              sections={availableDetailsSections}
+              activeSection={activeDetailsSection}
+              onSectionChange={setDetailsSection}
+            />
+          </div>
 
-            <div className="border-t border-border/60 px-4 py-3 sm:px-5">
-              <ProviderAccentColorPicker
+          {activeDetailsSection === "usage" && usagePresentation ? (
+            <div className="border-t border-border/60 px-4 py-4 sm:px-5">
+              <ProviderUsageDashboard
+                usage={usagePresentation}
                 displayName={displayName}
-                value={accentColor}
-                onCommit={updateAccentColor}
+                instanceId={instanceId}
+                showLimits={false}
+                onResetAccountUsage={onResetAccountUsage}
+                accountUsageResetInFlight={accountUsageResetInFlight}
               />
             </div>
+          ) : null}
 
-            <div className="border-t border-border/60 px-4 py-3 sm:px-5">
+          {activeDetailsSection === "models" && driverOption !== undefined ? (
+            <ProviderModelsSection
+              instanceId={instanceId}
+              driverKind={driverKind}
+              models={modelsForDisplay}
+              customModels={customModels}
+              hiddenModels={hiddenModels}
+              favoriteModels={favoriteModels}
+              fallbackModels={fallbackModels}
+              modelOrder={modelOrder}
+              onChange={updateCustomModels}
+              onHiddenModelsChange={onHiddenModelsChange}
+              onFavoriteModelsChange={onFavoriteModelsChange}
+              onFallbackModelsChange={
+                driverKind === "claudeAgent" ? updateFallbackModels : undefined
+              }
+              onModelOrderChange={onModelOrderChange}
+            />
+          ) : null}
+
+          {activeDetailsSection === "configuration" ? (
+            <div className="space-y-0">
+              <ProviderConfigurationSection
+                title="Identity"
+                description="Controls how this provider appears in pickers and settings."
+              >
+                <label htmlFor={`provider-instance-${instanceId}-display-name`} className="block">
+                  <span className="text-xs font-medium text-foreground">Display name</span>
+                  <DraftInput
+                    id={`provider-instance-${instanceId}-display-name`}
+                    className="mt-1.5"
+                    value={instance.displayName ?? ""}
+                    onCommit={updateDisplayName}
+                    placeholder={driverOption?.label ?? "Instance label"}
+                    spellCheck={false}
+                  />
+                  <span className="mt-1 block text-xs text-muted-foreground">
+                    Optional label shown in the provider list.
+                  </span>
+                </label>
+
+                <div className="mt-4">
+                  <ProviderAccentColorPicker
+                    displayName={displayName}
+                    value={accentColor}
+                    onCommit={updateAccentColor}
+                  />
+                </div>
+              </ProviderConfigurationSection>
+
+              {providerSettingsFieldGroups.runtimeFields.length > 0 ? (
+                <ProviderConfigurationSection
+                  title="Runtime"
+                  description="Process launch settings used when this provider starts a session."
+                >
+                  <ProviderSettingsFields
+                    fields={providerSettingsFieldGroups.runtimeFields}
+                    value={instance.config}
+                    idPrefix={`provider-instance-${instanceId}`}
+                    variant="group"
+                    onChange={updateConfig}
+                  />
+                </ProviderConfigurationSection>
+              ) : null}
+
               <ProviderEnvironmentSection
                 environment={instance.environment ?? []}
                 onChange={updateEnvironment}
               />
+
+              {driverOption ? (
+                <ProviderAdvancedConfigurationSection
+                  fields={providerSettingsFieldGroups.advancedFields}
+                  value={instance.config}
+                  idPrefix={`provider-instance-${instanceId}`}
+                  onChange={updateConfig}
+                />
+              ) : (
+                <div className="border-t border-border/60 px-4 py-3 sm:px-5">
+                  <p className="text-xs text-muted-foreground">
+                    This instance uses a driver (
+                    <code className="text-foreground">{String(instance.driver)}</code>) that is not
+                    shipped with the current build. Configuration values are preserved but cannot be
+                    edited from this surface.
+                  </p>
+                </div>
+              )}
             </div>
-
-            {driverOption ? (
-              <ProviderSettingsForm
-                definition={driverOption}
-                value={instance.config}
-                idPrefix={`provider-instance-${instanceId}`}
-                variant="card"
-                onChange={updateConfig}
-              />
-            ) : null}
-
-            {driverOption !== undefined ? (
-              <ProviderModelsSection
-                instanceId={instanceId}
-                driverKind={driverKind}
-                models={modelsForDisplay}
-                customModels={customModels}
-                hiddenModels={hiddenModels}
-                favoriteModels={favoriteModels}
-                modelOrder={modelOrder}
-                onChange={updateCustomModels}
-                onHiddenModelsChange={onHiddenModelsChange}
-                onFavoriteModelsChange={onFavoriteModelsChange}
-                onModelOrderChange={onModelOrderChange}
-              />
-            ) : (
-              <div className="border-t border-border/60 px-4 py-3 sm:px-5">
-                <p className="text-xs text-muted-foreground">
-                  This instance uses a driver (
-                  <code className="text-foreground">{String(instance.driver)}</code>) that is not
-                  shipped with the current build. Configuration values are preserved but cannot be
-                  edited from this surface.
-                </p>
-              </div>
-            )}
-          </div>
+          ) : null}
         </CollapsibleContent>
       </Collapsible>
     </div>

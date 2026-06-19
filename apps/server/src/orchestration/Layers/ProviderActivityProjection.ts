@@ -438,6 +438,19 @@ export function projectRuntimeEventToActivities(
         }),
       ];
 
+    case "turn.prompt-suggestion.updated":
+      return [
+        baseActivity(event, {
+          id: event.eventId,
+          tone: "info",
+          kind: "prompt-suggestion.updated",
+          summary: "Prompt suggestion",
+          payload: {
+            suggestion: event.payload.suggestion,
+          },
+        }),
+      ];
+
     case "user-input.requested":
       return [
         baseActivity(event, {

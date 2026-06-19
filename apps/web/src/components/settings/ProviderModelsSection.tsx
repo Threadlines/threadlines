@@ -58,6 +58,8 @@ interface ProviderModelsSectionProps {
   readonly hiddenModels: ReadonlyArray<string>;
   /** Model slugs favorited for this provider instance. */
   readonly favoriteModels: ReadonlyArray<string>;
+  /** Claude fallback model chain, tried in order when the primary is unavailable. */
+  readonly fallbackModels: ReadonlyArray<string>;
   /** Explicit user-authored model ordering for this provider instance. */
   readonly modelOrder: ReadonlyArray<string>;
   /**
@@ -68,7 +70,27 @@ interface ProviderModelsSectionProps {
   readonly onChange: (next: ReadonlyArray<string>) => void;
   readonly onHiddenModelsChange: (next: ReadonlyArray<string>) => void;
   readonly onFavoriteModelsChange: (next: ReadonlyArray<string>) => void;
+  readonly onFallbackModelsChange?: ((next: ReadonlyArray<string>) => void) | undefined;
   readonly onModelOrderChange: (next: ReadonlyArray<string>) => void;
+}
+
+export const MAX_FALLBACK_MODEL_COUNT = 3;
+
+export function normalizeFallbackModelChain(models: ReadonlyArray<string>): ReadonlyArray<string> {
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+  for (const model of models) {
+    const trimmed = model.trim();
+    if (trimmed.length === 0 || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    normalized.push(trimmed);
+    if (normalized.length >= MAX_FALLBACK_MODEL_COUNT) {
+      break;
+    }
+  }
+  return normalized;
 }
 
 /**
@@ -89,10 +111,12 @@ export function ProviderModelsSection({
   customModels,
   hiddenModels,
   favoriteModels,
+  fallbackModels,
   modelOrder,
   onChange,
   onHiddenModelsChange,
   onFavoriteModelsChange,
+  onFallbackModelsChange,
   onModelOrderChange,
 }: ProviderModelsSectionProps) {
   const [input, setInput] = useState("");
@@ -100,6 +124,17 @@ export function ProviderModelsSection({
   const listRef = useRef<HTMLDivElement | null>(null);
   const hiddenModelSet = useMemo(() => new Set(hiddenModels), [hiddenModels]);
   const favoriteModelSet = useMemo(() => new Set(favoriteModels), [favoriteModels]);
+  const normalizedFallbackModels = useMemo(
+    () => normalizeFallbackModelChain(fallbackModels),
+    [fallbackModels],
+  );
+  const fallbackModelSet = useMemo(
+    () => new Set(normalizedFallbackModels),
+    [normalizedFallbackModels],
+  );
+  const commitFallbackModels = onFallbackModelsChange;
+  const canEditFallbackModels =
+    driverKind === ProviderDriverKind.make("claudeAgent") && commitFallbackModels !== undefined;
   const orderedModels = useMemo(() => {
     return sortModelsForProviderInstance(models, {
       favoriteModels: favoriteModelSet,
@@ -151,6 +186,7 @@ export function ProviderModelsSection({
     onChange(customModels.filter((model) => model !== slug));
     onModelOrderChange(modelOrder.filter((model) => model !== slug));
     onFavoriteModelsChange(favoriteModels.filter((model) => model !== slug));
+    onFallbackModelsChange?.(normalizedFallbackModels.filter((model) => model !== slug));
     setError(null);
   };
 
@@ -170,6 +206,15 @@ export function ProviderModelsSection({
     onFavoriteModelsChange([...favoriteModels, slug]);
   };
 
+  const handleToggleFallback = (slug: string) => {
+    if (!canEditFallbackModels || !commitFallbackModels) return;
+    if (fallbackModelSet.has(slug)) {
+      commitFallbackModels(normalizedFallbackModels.filter((model) => model !== slug));
+      return;
+    }
+    commitFallbackModels(normalizeFallbackModelChain([...normalizedFallbackModels, slug]));
+  };
+
   const handleMove = (slug: string, direction: -1 | 1) => {
     const slugs = orderedModels.map((model) => model.slug);
     const index = slugs.indexOf(slug);
@@ -182,12 +227,75 @@ export function ProviderModelsSection({
     onModelOrderChange(next);
   };
 
+  const handleMoveFallback = (slug: string, direction: -1 | 1) => {
+    if (!canEditFallbackModels || !commitFallbackModels) return;
+    const index = normalizedFallbackModels.indexOf(slug);
+    const nextIndex = index + direction;
+    if (index < 0 || nextIndex < 0 || nextIndex >= normalizedFallbackModels.length) {
+      return;
+    }
+    const next = [...normalizedFallbackModels];
+    [next[index], next[nextIndex]] = [next[nextIndex]!, next[index]!];
+    commitFallbackModels(next);
+  };
+
   return (
     <div className="border-t border-border/60 px-4 py-3 sm:px-5">
       <div className="text-xs font-medium text-foreground">Models</div>
       <div className="mt-1 text-xs text-muted-foreground">
         {models.length} model{models.length === 1 ? "" : "s"} available.
       </div>
+      {canEditFallbackModels ? (
+        <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5">
+          <span className="text-[11px] font-medium text-muted-foreground">Fallback</span>
+          {normalizedFallbackModels.length === 0 ? (
+            <span className="text-[11px] text-muted-foreground/70">None</span>
+          ) : (
+            normalizedFallbackModels.map((slug, index) => {
+              const canMoveEarlier = index > 0;
+              const canMoveLater = index < normalizedFallbackModels.length - 1;
+              return (
+                <span
+                  key={slug}
+                  className="inline-flex max-w-full items-center gap-1 rounded-md border border-border/70 bg-muted/35 py-0.5 pr-0.5 pl-1.5 text-[11px]"
+                >
+                  <span className="shrink-0 text-muted-foreground">{index + 1}</span>
+                  <span className="min-w-0 max-w-40 truncate text-foreground/85">{slug}</span>
+                  <Button
+                    size="icon-xs"
+                    variant="ghost"
+                    className="size-4 rounded-sm p-0 text-muted-foreground hover:text-foreground"
+                    disabled={!canMoveEarlier}
+                    onClick={() => handleMoveFallback(slug, -1)}
+                    aria-label={`Move ${slug} earlier in fallback chain`}
+                  >
+                    <ArrowUpIcon className="size-2.5" />
+                  </Button>
+                  <Button
+                    size="icon-xs"
+                    variant="ghost"
+                    className="size-4 rounded-sm p-0 text-muted-foreground hover:text-foreground"
+                    disabled={!canMoveLater}
+                    onClick={() => handleMoveFallback(slug, 1)}
+                    aria-label={`Move ${slug} later in fallback chain`}
+                  >
+                    <ArrowDownIcon className="size-2.5" />
+                  </Button>
+                  <Button
+                    size="icon-xs"
+                    variant="ghost"
+                    className="size-4 rounded-sm p-0 text-muted-foreground hover:text-foreground"
+                    onClick={() => handleToggleFallback(slug)}
+                    aria-label={`Remove ${slug} from fallback chain`}
+                  >
+                    <XIcon className="size-2.5" />
+                  </Button>
+                </span>
+              );
+            })
+          )}
+        </div>
+      ) : null}
       <div ref={listRef} className="mt-2 max-h-40 overflow-y-auto pb-1">
         {orderedModels.map((model, index) => {
           const caps = model.capabilities;
@@ -196,6 +304,8 @@ export function ProviderModelsSection({
           const isProviderHidden = model.isHidden === true;
           const isHidden = isUserHidden || isProviderHidden;
           const isFavorite = favoriteModelSet.has(model.slug);
+          const fallbackIndex = normalizedFallbackModels.indexOf(model.slug);
+          const isFallback = fallbackIndex >= 0;
           const previousModel = orderedModels[index - 1];
           const nextModel = orderedModels[index + 1];
           const canMoveUp =
@@ -319,11 +429,49 @@ export function ProviderModelsSection({
                 {model.isDefault ? (
                   <span className="text-[10px] text-muted-foreground">default</span>
                 ) : null}
+                {isFallback ? (
+                  <span className="text-[10px] text-primary-readable">
+                    fallback {fallbackIndex + 1}
+                  </span>
+                ) : null}
                 {model.isCustom ? (
                   <span className="text-[10px] text-muted-foreground">custom</span>
                 ) : null}
               </div>
               <div className="flex shrink-0 items-center gap-0.5">
+                {canEditFallbackModels ? (
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <Button
+                          size="icon-xs"
+                          variant="ghost"
+                          className={cn(
+                            "size-5 rounded-sm p-0 text-muted-foreground hover:text-foreground",
+                            isFallback && "text-primary-readable hover:text-primary-readable",
+                          )}
+                          disabled={
+                            !isFallback &&
+                            normalizedFallbackModels.length >= MAX_FALLBACK_MODEL_COUNT
+                          }
+                          onClick={() => handleToggleFallback(model.slug)}
+                          aria-label={`${isFallback ? "Remove" : "Add"} ${model.name} ${
+                            isFallback ? "from" : "to"
+                          } fallback chain`}
+                        />
+                      }
+                    >
+                      {isFallback ? <XIcon className="size-3" /> : <PlusIcon className="size-3" />}
+                    </TooltipTrigger>
+                    <TooltipPopup side="top">
+                      {isFallback
+                        ? "Remove from fallback"
+                        : normalizedFallbackModels.length >= MAX_FALLBACK_MODEL_COUNT
+                          ? "Fallback chain is full"
+                          : "Add to fallback"}
+                    </TooltipPopup>
+                  </Tooltip>
+                ) : null}
                 <Tooltip>
                   <TooltipTrigger
                     render={

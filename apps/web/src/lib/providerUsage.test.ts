@@ -8,10 +8,16 @@ import {
 import {
   deriveProviderAccountUsagePresentation,
   deriveProviderAccountUsagePresentationForProvider,
+  formatProviderTokenCount,
   isProviderUsageNearLimit,
 } from "./providerUsage";
 
 describe("deriveProviderAccountUsagePresentation", () => {
+  it("formats billion-scale token counts without million overflow", () => {
+    expect(formatProviderTokenCount(6_220_800_000)).toBe("6.22B");
+    expect(formatProviderTokenCount(279_500_000)).toBe("279.5m");
+  });
+
   it("formats Codex rate limit usage with remaining percent and reset time", () => {
     const usage: ServerProviderAccountUsage = {
       source: "codex-rate-limits",
@@ -144,6 +150,65 @@ describe("deriveProviderAccountUsagePresentation", () => {
           reachedLimit: false,
         },
       ],
+    });
+  });
+
+  it("formats Codex token usage history", () => {
+    const usage: ServerProviderAccountUsage = {
+      source: "codex-rate-limits",
+      checkedAt: "2026-06-18T00:00:00.000Z",
+      limits: [],
+      tokenUsage: {
+        checkedAt: "2026-06-18T00:00:00.000Z",
+        dailyBuckets: [
+          { startDate: "2026-06-16", tokens: 1200 },
+          { startDate: "2026-06-17", tokens: 3400 },
+        ],
+        summary: {
+          currentStreakDays: 2,
+          lifetimeTokens: 4600,
+          longestRunningTurnSec: 660,
+          longestStreakDays: 5,
+          peakDailyTokens: 3400,
+        },
+      },
+    };
+
+    expect(deriveProviderAccountUsagePresentation(usage, 1_800_000_000_000)).toEqual({
+      label: "Codex usage",
+      reachedLimit: false,
+      resetCredits: {
+        availableCount: 0,
+        label: "0 resets available",
+        detail: "usable for 30 days after grant",
+      },
+      tokenUsage: {
+        label: "Token history",
+        summary: [
+          { key: "lifetimeTokens", label: "Lifetime tokens", value: "4.6k" },
+          { key: "peakDailyTokens", label: "Peak tokens", value: "3.4k" },
+          { key: "longestRunningTurnSec", label: "Longest task", value: "11m" },
+          { key: "currentStreakDays", label: "Current streak", value: "2d" },
+          { key: "longestStreakDays", label: "Longest streak", value: "5d" },
+        ],
+        buckets: [
+          {
+            startDate: "2026-06-16",
+            label: "Jun 16",
+            tokens: 1200,
+            tokenLabel: "1.2k",
+            intensityPercent: 35,
+          },
+          {
+            startDate: "2026-06-17",
+            label: "Jun 17",
+            tokens: 3400,
+            tokenLabel: "3.4k",
+            intensityPercent: 100,
+          },
+        ],
+      },
+      windows: [],
     });
   });
 

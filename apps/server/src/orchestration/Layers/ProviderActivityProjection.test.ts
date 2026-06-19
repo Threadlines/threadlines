@@ -3,6 +3,7 @@ import {
   ProviderDriverKind,
   type ProviderRuntimeEvent,
   ThreadId,
+  TurnId,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
@@ -22,6 +23,30 @@ function mcpStatusEvent(status: unknown): ProviderRuntimeEvent {
 }
 
 describe("ProviderActivityProjection", () => {
+  it("projects provider prompt suggestions for composer reuse", () => {
+    const activities = projectRuntimeEventToActivities({
+      type: "turn.prompt-suggestion.updated",
+      eventId: EventId.make("evt-prompt-suggestion"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: ThreadId.make("thread-1"),
+      turnId: TurnId.make("turn-1"),
+      createdAt: "2026-06-01T12:00:00.000Z",
+      payload: {
+        suggestion: "Add regression tests for this edge case.",
+      },
+    } satisfies ProviderRuntimeEvent);
+
+    expect(activities).toEqual([
+      expect.objectContaining({
+        kind: "prompt-suggestion.updated",
+        summary: "Prompt suggestion",
+        payload: {
+          suggestion: "Add regression tests for this edge case.",
+        },
+      }),
+    ]);
+  });
+
   it("suppresses routine MCP startup status updates", () => {
     for (const status of ["starting", "ready", "connected", "cancelled"]) {
       expect(

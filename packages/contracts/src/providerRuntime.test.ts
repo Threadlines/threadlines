@@ -69,6 +69,26 @@ describe("ProviderRuntimeEvent", () => {
     expect(parsed.payload.planMarkdown).toBe("# Ship it");
   });
 
+  it("decodes prompt suggestion events", () => {
+    const parsed = decodeRuntimeEvent({
+      type: "turn.prompt-suggestion.updated",
+      eventId: "event-prompt-suggestion-1",
+      provider: "claudeAgent",
+      createdAt: "2026-02-28T00:00:00.000Z",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      payload: {
+        suggestion: "Add regression tests for the edge case.",
+      },
+    });
+
+    expect(parsed.type).toBe("turn.prompt-suggestion.updated");
+    if (parsed.type !== "turn.prompt-suggestion.updated") {
+      throw new Error("expected turn.prompt-suggestion.updated");
+    }
+    expect(parsed.payload.suggestion).toBe("Add regression tests for the edge case.");
+  });
+
   it("decodes user-input.requested with structured questions", () => {
     const parsed = decodeRuntimeEvent({
       type: "user-input.requested",

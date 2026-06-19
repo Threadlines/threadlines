@@ -96,6 +96,22 @@ function buildUserTimelineEntry(text: string) {
   };
 }
 
+function buildAssistantTimelineEntry(text: string) {
+  return {
+    id: "assistant-entry-1",
+    kind: "message" as const,
+    createdAt: MESSAGE_CREATED_AT,
+    message: {
+      id: "assistant-message-1" as never,
+      role: "assistant" as const,
+      text,
+      createdAt: MESSAGE_CREATED_AT,
+      completedAt: "2026-04-13T12:00:30.000Z",
+      streaming: false,
+    },
+  };
+}
+
 describe("MessagesTimeline", () => {
   afterEach(() => {
     scrollToEndSpy.mockReset();
@@ -273,6 +289,44 @@ describe("MessagesTimeline", () => {
       expect(props.onIsAtEndChange).toHaveBeenCalledWith(true);
       expect(scrollToEndSpy).toHaveBeenCalledWith({ animated: false });
       expect(requestAnimationFrameSpy).toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("exposes a continue-in-new-thread action on user messages", async () => {
+    const onContinueInNewThread = vi.fn();
+    const screen = await render(
+      <MessagesTimeline
+        {...buildProps()}
+        onContinueInNewThread={onContinueInNewThread}
+        timelineEntries={[buildUserTimelineEntry("Continue this work from here.")]}
+      />,
+    );
+
+    try {
+      await page.getByRole("button", { name: "Continue in new thread" }).click();
+
+      expect(onContinueInNewThread).toHaveBeenCalledWith("message-1");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("exposes a continue-in-new-thread action on completed assistant messages", async () => {
+    const onContinueInNewThread = vi.fn();
+    const screen = await render(
+      <MessagesTimeline
+        {...buildProps()}
+        onContinueInNewThread={onContinueInNewThread}
+        timelineEntries={[buildAssistantTimelineEntry("Implementation notes are ready.")]}
+      />,
+    );
+
+    try {
+      await page.getByRole("button", { name: "Continue in new thread" }).click();
+
+      expect(onContinueInNewThread).toHaveBeenCalledWith("assistant-message-1");
     } finally {
       await screen.unmount();
     }

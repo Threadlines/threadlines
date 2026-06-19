@@ -16,6 +16,7 @@ import type {
   CodexSettings,
   ServerProvider,
   ServerProviderAccountUsage,
+  ServerProviderAccountTokenUsage,
   ServerProviderRateLimitResetCredits,
   ServerProviderSpendControlLimit,
   ServerProviderUsageCredits,
@@ -51,6 +52,7 @@ const CODEX_PRESENTATION = {
 export interface CodexAppServerProviderSnapshot {
   readonly account: CodexSchema.V2GetAccountResponse;
   readonly rateLimits?: CodexSchema.V2GetAccountRateLimitsResponse;
+  readonly tokenUsage?: CodexSchema.V2GetAccountTokenUsageResponse;
   readonly version: string | undefined;
   readonly models: ReadonlyArray<ServerProviderModel>;
   readonly skills: ReadonlyArray<ServerProviderSkill>;
@@ -245,16 +247,62 @@ function normalizeCodexUsageLimit(
   };
 }
 
+function normalizeCodexTokenUsage(
+  tokenUsage: CodexSchema.V2GetAccountTokenUsageResponse | undefined,
+  checkedAt: string,
+): ServerProviderAccountTokenUsage | undefined {
+  if (!tokenUsage) return undefined;
+
+  const dailyBuckets = (tokenUsage.dailyUsageBuckets ?? [])
+    .map((bucket) => {
+      const startDate = optionalString(bucket.startDate);
+      const tokens = optionalNonNegativeInt(bucket.tokens);
+      return startDate && tokens !== undefined ? { startDate, tokens } : undefined;
+    })
+    .filter((bucket): bucket is { readonly startDate: string; readonly tokens: number } =>
+      Boolean(bucket),
+    )
+    .toSorted((left, right) => left.startDate.localeCompare(right.startDate))
+    .slice(-30);
+
+  const summary = {
+    ...(optionalNonNegativeInt(tokenUsage.summary.currentStreakDays) !== undefined
+      ? { currentStreakDays: optionalNonNegativeInt(tokenUsage.summary.currentStreakDays) }
+      : {}),
+    ...(optionalNonNegativeInt(tokenUsage.summary.lifetimeTokens) !== undefined
+      ? { lifetimeTokens: optionalNonNegativeInt(tokenUsage.summary.lifetimeTokens) }
+      : {}),
+    ...(optionalNonNegativeInt(tokenUsage.summary.longestRunningTurnSec) !== undefined
+      ? { longestRunningTurnSec: optionalNonNegativeInt(tokenUsage.summary.longestRunningTurnSec) }
+      : {}),
+    ...(optionalNonNegativeInt(tokenUsage.summary.longestStreakDays) !== undefined
+      ? { longestStreakDays: optionalNonNegativeInt(tokenUsage.summary.longestStreakDays) }
+      : {}),
+    ...(optionalNonNegativeInt(tokenUsage.summary.peakDailyTokens) !== undefined
+      ? { peakDailyTokens: optionalNonNegativeInt(tokenUsage.summary.peakDailyTokens) }
+      : {}),
+  };
+
+  if (dailyBuckets.length === 0 && Object.keys(summary).length === 0) {
+    return undefined;
+  }
+
+  return {
+    checkedAt,
+    dailyBuckets,
+    summary,
+  };
+}
+
 function normalizeCodexAccountUsage(
   rateLimits: CodexSchema.V2GetAccountRateLimitsResponse | undefined,
+  tokenUsage: CodexSchema.V2GetAccountTokenUsageResponse | undefined,
   checkedAt: string,
 ): ServerProviderAccountUsage | undefined {
-  if (!rateLimits) return undefined;
-
   const limits: ServerProviderUsageLimit[] = [];
   const seen = new Set<string>();
   const rateLimitResetCredits = normalizeCodexRateLimitResetCredits(
-    rateLimits.rateLimitResetCredits,
+    rateLimits?.rateLimitResetCredits,
   );
   const appendLimit = (
     snapshot: CodexSchema.V2GetAccountRateLimitsResponse__RateLimitSnapshot,
@@ -269,22 +317,27 @@ function normalizeCodexAccountUsage(
     limits.push(normalized);
   };
 
-  appendLimit(rateLimits.rateLimits);
-  const byLimitId = rateLimits.rateLimitsByLimitId ?? {};
+  if (rateLimits) {
+    appendLimit(rateLimits.rateLimits);
+  }
+  const byLimitId = rateLimits?.rateLimitsByLimitId ?? {};
   for (const [limitId, snapshot] of Object.entries(byLimitId)) {
     appendLimit(snapshot, limitId);
   }
 
-  if (limits.length === 0 && !rateLimitResetCredits) return undefined;
+  const normalizedTokenUsage = normalizeCodexTokenUsage(tokenUsage, checkedAt);
+  if (limits.length === 0 && !rateLimitResetCredits && !normalizedTokenUsage) return undefined;
 
   const primaryLimitId =
-    optionalString(rateLimits.rateLimits.limitId) ?? limits.find((limit) => limit.limitId)?.limitId;
+    optionalString(rateLimits?.rateLimits.limitId) ??
+    limits.find((limit) => limit.limitId)?.limitId;
   return {
     source: "codex-rate-limits",
     checkedAt,
     ...(primaryLimitId ? { primaryLimitId } : {}),
     ...(rateLimitResetCredits ? { rateLimitResetCredits } : {}),
     limits,
+    ...(normalizedTokenUsage ? { tokenUsage: normalizedTokenUsage } : {}),
   };
 }
 
@@ -604,7 +657,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     } satisfies CodexAppServerProviderSnapshot;
   }
 
-  const [skillsResponse, models, rateLimits] = yield* Effect.all(
+  const [skillsResponse, models, rateLimits, tokenUsage] = yield* Effect.all(
     [
       client.request("skills/list", {
         cwds: [input.cwd],
@@ -613,6 +666,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
       client
         .request("account/rateLimits/read", undefined)
         .pipe(Effect.orElseSucceed(() => undefined)),
+      client.request("account/usage/read", undefined).pipe(Effect.orElseSucceed(() => undefined)),
     ],
     { concurrency: "unbounded" },
   );
@@ -620,6 +674,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
   return {
     account: accountResponse,
     ...(rateLimits ? { rateLimits } : {}),
+    ...(tokenUsage ? { tokenUsage } : {}),
     version,
     models: appendCustomCodexModels(models, input.customModels ?? []),
     skills: parseCodexSkillsListResponse(skillsResponse, input.cwd),
@@ -814,7 +869,11 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
 
   const snapshot = probeResult.success.value;
   const accountStatus = accountProbeStatus(snapshot.account);
-  const accountUsage = normalizeCodexAccountUsage(snapshot.rateLimits, checkedAt);
+  const accountUsage = normalizeCodexAccountUsage(
+    snapshot.rateLimits,
+    snapshot.tokenUsage,
+    checkedAt,
+  );
 
   return buildServerProvider({
     presentation: CODEX_PRESENTATION,

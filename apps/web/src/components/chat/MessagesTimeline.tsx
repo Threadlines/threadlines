@@ -43,6 +43,7 @@ import {
   LogInIcon,
   SearchIcon,
   ShieldCheckIcon,
+  SplitIcon,
   SquarePenIcon,
   TerminalIcon,
   Undo2Icon,
@@ -106,6 +107,7 @@ interface TimelineRowSharedState {
   resolvedProviderAuthReconnectIds: ReadonlySet<string>;
   mcpAuthReconnectStatusByServerName: ReadonlyMap<string, McpAuthReconnectStatus>;
   onRevertUserMessage: (messageId: MessageId) => void;
+  onContinueInNewThread?: (messageId: MessageId) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   onRunProviderAuthReconnect?: (action: ProviderAuthReconnectAction) => void;
@@ -146,6 +148,7 @@ interface MessagesTimelineProps {
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   revertTurnCountByUserMessageId: Map<MessageId, number>;
   onRevertUserMessage: (messageId: MessageId) => void;
+  onContinueInNewThread?: (messageId: MessageId) => void;
   isRevertingCheckpoint: boolean;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   activeThreadEnvironmentId: EnvironmentId;
@@ -180,6 +183,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onOpenTurnDiff,
   revertTurnCountByUserMessageId,
   onRevertUserMessage,
+  onContinueInNewThread,
   isRevertingCheckpoint,
   onImageExpand,
   activeThreadEnvironmentId,
@@ -285,6 +289,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       resolvedProviderAuthReconnectIds,
       mcpAuthReconnectStatusByServerName,
       onRevertUserMessage,
+      ...(onContinueInNewThread ? { onContinueInNewThread } : {}),
       onImageExpand,
       onOpenTurnDiff,
       ...(onRunProviderAuthReconnect ? { onRunProviderAuthReconnect } : {}),
@@ -303,6 +308,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       resolvedProviderAuthReconnectIds,
       mcpAuthReconnectStatusByServerName,
       onRevertUserMessage,
+      onContinueInNewThread,
       onImageExpand,
       onOpenTurnDiff,
       onRunProviderAuthReconnect,
@@ -474,6 +480,9 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
                 {displayedUserMessage.copyText && (
                   <MessageCopyButton text={displayedUserMessage.copyText} />
                 )}
+                {displayedUserMessage.copyText && (
+                  <ContinueInNewThreadButton messageId={row.message.id} />
+                )}
                 {canRevertAgentWork && <RevertUserMessageButton messageId={row.message.id} />}
               </div>
               <p className="text-right text-xs tracking-tight tabular-nums text-muted-foreground/50">
@@ -556,6 +565,44 @@ function RevertUserMessageButton({ messageId }: { messageId: MessageId }) {
   );
 }
 
+function ContinueInNewThreadButton({
+  messageId,
+  className,
+}: {
+  messageId: MessageId;
+  className?: string;
+}) {
+  const ctx = use(TimelineRowCtx);
+  const activity = use(TimelineRowActivityCtx);
+  if (!ctx.onContinueInNewThread) {
+    return null;
+  }
+
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            type="button"
+            size="xs"
+            variant="outline"
+            disabled={activity.isWorking}
+            onClick={() => ctx.onContinueInNewThread?.(messageId)}
+            aria-label="Continue in new thread"
+            title="Continue in new thread"
+            className={className}
+          />
+        }
+      >
+        <SplitIcon className="size-3 rotate-90" />
+      </TooltipTrigger>
+      <TooltipPopup>
+        <p>Continue in new thread</p>
+      </TooltipPopup>
+    </Tooltip>
+  );
+}
+
 function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
@@ -610,6 +657,12 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
               )
             )}
           </p>
+          {!row.message.streaming && row.message.text.trim().length > 0 ? (
+            <ContinueInNewThreadButton
+              messageId={row.message.id}
+              className="border-border/50 bg-background/35 text-muted-foreground/45 opacity-0 shadow-none transition-opacity duration-200 hover:border-border/70 hover:bg-background/55 hover:text-muted-foreground/70 group-hover/assistant:opacity-100"
+            />
+          ) : null}
           <AssistantCopyButton row={row} />
         </div>
       </div>

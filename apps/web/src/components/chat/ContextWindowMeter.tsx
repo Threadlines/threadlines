@@ -5,6 +5,7 @@ import {
   type ProviderAccountUsagePresentation,
 } from "~/lib/providerUsage";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
+import { ProviderUsageHistory } from "../ProviderUsageHistory";
 
 function formatPercentage(value: number | null): string | null {
   if (value === null || !Number.isFinite(value)) {
@@ -225,6 +226,9 @@ export function ContextWindowMeter(props: {
                   reachedLimit={window.reachedLimit}
                 />
               ))}
+              {accountUsage.tokenUsage ? (
+                <ProviderUsageHistory history={accountUsage.tokenUsage} compact />
+              ) : null}
             </div>
           ) : null}
         </div>

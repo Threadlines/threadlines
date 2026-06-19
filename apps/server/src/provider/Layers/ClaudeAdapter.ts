@@ -16,6 +16,7 @@ import {
   type PermissionUpdate,
   type SDKControlGetContextUsageResponse,
   type SDKMessage,
+  type RewindFilesResult,
   type SDKResultMessage,
   type SettingSource,
   type SDKUserMessage,
@@ -28,6 +29,7 @@ import {
   type CanonicalRequestType,
   type ClaudeSettings,
   EventId,
+  MessageId,
   type ProviderApprovalDecision,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -95,6 +97,7 @@ const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJ
 const decodeUnknownJsonStringExit = Schema.decodeUnknownExit(Schema.UnknownFromJsonString);
 
 const PROVIDER = ProviderDriverKind.make("claudeAgent");
+const MAX_CLAUDE_FALLBACK_MODELS = 3;
 type ClaudeTextStreamKind = Extract<RuntimeContentStreamKind, "assistant_text" | "reasoning_text">;
 type ClaudeToolResultStreamKind = Extract<
   RuntimeContentStreamKind,
@@ -105,6 +108,31 @@ type ClaudeSdkEffort = NonNullable<ClaudeQueryOptions["effort"]>;
 function encodeJsonStringForDiagnostics(input: unknown): string | undefined {
   const result = encodeUnknownJsonStringExit(input);
   return Exit.isSuccess(result) ? result.value : undefined;
+}
+
+function resolveClaudeFallbackModelOption(
+  fallbackModel: ReadonlyArray<string>,
+  primaryModels: ReadonlyArray<string | undefined>,
+): string | undefined {
+  const skippedPrimaryModels = new Set(
+    primaryModels
+      .map((model) => model?.trim())
+      .filter((model): model is string => model !== undefined && model.length > 0),
+  );
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+  for (const candidate of fallbackModel) {
+    const trimmed = candidate.trim();
+    if (trimmed.length === 0 || seen.has(trimmed) || skippedPrimaryModels.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    normalized.push(trimmed);
+    if (normalized.length >= MAX_CLAUDE_FALLBACK_MODELS) {
+      break;
+    }
+  }
+  return normalized.length > 0 ? normalized.join(",") : undefined;
 }
 
 type PromptQueueItem =
@@ -190,6 +218,7 @@ interface ClaudeSessionContext {
   readonly turns: Array<{
     id: TurnId;
     items: Array<unknown>;
+    assistantUuid?: string;
   }>;
   readonly inFlightTools: Map<number, ToolInFlight>;
   /** Per-file +/- counts captured by the PostToolUse hook, keyed by tool_use_id.
@@ -205,6 +234,7 @@ interface ClaudeSessionContext {
   lastKnownContextWindow: number | undefined;
   lastKnownTokenUsage: ThreadTokenUsageSnapshot | undefined;
   lastAssistantUuid: string | undefined;
+  lastCompletedTurnId: TurnId | undefined;
   lastThreadStartedId: string | undefined;
   // Rendered cross-driver handoff preamble, injected ahead of the first user
   // turn and cleared once consumed. Set only when a session starts from a
@@ -219,6 +249,10 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
   readonly setPermissionMode: (mode: PermissionMode) => Promise<void>;
   readonly setMaxThinkingTokens: (maxThinkingTokens: number | null) => Promise<void>;
   readonly getContextUsage?: () => Promise<SDKControlGetContextUsageResponse>;
+  readonly rewindFiles?: (
+    userMessageId: string,
+    options?: { readonly dryRun?: boolean },
+  ) => Promise<RewindFilesResult>;
   readonly close: () => void;
 }
 
@@ -1310,11 +1344,14 @@ function buildPromptText(input: ProviderSendTurnInput): string {
 
 function buildUserMessage(input: {
   readonly sdkContent: Array<Record<string, unknown>>;
+  readonly userMessageId?: MessageId;
 }): SDKUserMessage {
+  const uuid = input.userMessageId && isUuid(input.userMessageId) ? input.userMessageId : undefined;
   return {
     type: "user",
     session_id: "",
     parent_tool_use_id: null,
+    ...(uuid ? { uuid } : {}),
     message: {
       role: "user",
       content: input.sdkContent as unknown as SDKUserMessage["message"]["content"],
@@ -1400,7 +1437,10 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
     );
   }
 
-  return buildUserMessage({ sdkContent });
+  return buildUserMessage({
+    sdkContent,
+    ...(input.messageId !== undefined ? { userMessageId: input.messageId } : {}),
+  });
 });
 
 function turnStatusFromResult(result: SDKResultMessage): ProviderRuntimeTurnStatus {
@@ -2206,6 +2246,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       turnState,
     );
     if (!turnState) {
+      context.lastCompletedTurnId = undefined;
       if (usageSnapshot) {
         const usageStamp = yield* makeEventStamp();
         yield* offerRuntimeEvent({
@@ -2291,7 +2332,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     context.turns.push({
       id: turnState.turnId,
       items: [...turnState.items],
+      ...(context.lastAssistantUuid ? { assistantUuid: context.lastAssistantUuid } : {}),
     });
+    context.lastCompletedTurnId = status === "completed" ? turnState.turnId : undefined;
 
     if (usageSnapshot) {
       const usageStamp = yield* makeEventStamp();
@@ -2881,6 +2924,42 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     yield* completeTurn(context, status, errorMessage, message);
   });
 
+  const handlePromptSuggestionMessage = Effect.fn("handlePromptSuggestionMessage")(function* (
+    context: ClaudeSessionContext,
+    message: SDKMessage,
+  ) {
+    if (message.type !== "prompt_suggestion") {
+      return;
+    }
+
+    const suggestion = nonEmptyString(message.suggestion);
+    const turnId = context.lastCompletedTurnId;
+    context.lastCompletedTurnId = undefined;
+    if (!suggestion || !turnId) {
+      return;
+    }
+
+    const stamp = yield* makeEventStamp();
+    yield* offerRuntimeEvent({
+      type: "turn.prompt-suggestion.updated",
+      eventId: stamp.eventId,
+      provider: PROVIDER,
+      createdAt: stamp.createdAt,
+      threadId: context.session.threadId,
+      turnId,
+      payload: {
+        suggestion,
+      },
+      providerRefs: nativeProviderRefs(context),
+      raw: {
+        source: "claude.sdk.message",
+        method: sdkNativeMethod(message),
+        messageType: message.type,
+        payload: message,
+      },
+    });
+  });
+
   const handleSystemMessage = Effect.fn("handleSystemMessage")(function* (
     context: ClaudeSessionContext,
     message: SDKMessage,
@@ -3260,6 +3339,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       case "result":
         yield* handleResultMessage(context, message);
         return;
+      case "prompt_suggestion":
+        yield* handlePromptSuggestionMessage(context, message);
+        return;
       case "system":
         yield* handleSystemMessage(context, message);
         return;
@@ -3272,7 +3354,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       default:
         yield* emitRuntimeWarning(
           context,
-          `Unhandled Claude SDK message type '${message.type}'.`,
+          `Unhandled Claude SDK message type '${sdkMessageType(message) ?? "unknown"}'.`,
           message,
         );
         return;
@@ -3802,6 +3884,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const caps = getClaudeModelCapabilities(modelSelection?.model);
       const descriptors = getProviderOptionDescriptors({ caps });
       const apiModelId = modelSelection ? resolveClaudeApiModelId(modelSelection) : undefined;
+      const fallbackModel = resolveClaudeFallbackModelOption(claudeSettings.fallbackModel, [
+        modelSelection?.model,
+        apiModelId,
+      ]);
       const rawEffort = getModelSelectionStringOptionValue(modelSelection, "effort");
       const effort = resolveClaudeEffort(caps, rawEffort) ?? null;
       const fastModeSupported = descriptors.some(
@@ -3851,10 +3937,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(permissionMode === "bypassPermissions"
           ? { allowDangerouslySkipPermissions: true }
           : {}),
+        ...(fallbackModel ? { fallbackModel } : {}),
         ...(Object.keys(settings).length > 0 ? { settings } : {}),
         ...(existingResumeSessionId ? { resume: existingResumeSessionId } : {}),
         ...(newSessionId ? { sessionId: newSessionId } : {}),
         includePartialMessages: true,
+        enableFileCheckpointing: true,
+        promptSuggestions: true,
         canUseTool,
         hooks: {
           PostToolUse: [
@@ -3881,6 +3970,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         "claude.resume.turn_count": resumeState?.turnCount ?? -1,
         "claude.query.cwd": input.cwd ?? "",
         "claude.query.model": apiModelId ?? "",
+        "claude.query.fallback_model": fallbackModel ?? "",
         "claude.query.effort": effectiveEffort ?? "",
         "claude.query.permission_mode": permissionMode ?? "",
         "claude.query.auto_mode_clamped": autoModeClamped,
@@ -3888,6 +3978,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         "claude.query.resume": existingResumeSessionId ?? "",
         "claude.query.session_id": newSessionId ?? "",
         "claude.query.include_partial_messages": true,
+        "claude.query.enable_file_checkpointing": true,
+        "claude.query.prompt_suggestions": true,
         "claude.query.additional_directories": input.cwd ? [input.cwd] : [],
         "claude.query.setting_sources": [...CLAUDE_SETTING_SOURCES],
         "claude.query.settings_json": encodeJsonStringForDiagnostics(settings) ?? "",
@@ -3951,6 +4043,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         lastKnownContextWindow: undefined,
         lastKnownTokenUsage: undefined,
         lastAssistantUuid: resumeState?.resumeSessionAt,
+        lastCompletedTurnId: undefined,
         lastThreadStartedId: undefined,
         // Render the cross-driver handoff seed once at start; consumed on the
         // first turn. Only honored when there is no native resume to defer to.
@@ -3984,10 +4077,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         payload: {
           config: {
             ...(apiModelId ? { model: apiModelId } : {}),
+            ...(fallbackModel ? { fallbackModel } : {}),
             ...(input.cwd ? { cwd: input.cwd } : {}),
             ...(effectiveEffort ? { effort: effectiveEffort } : {}),
             ...(permissionMode ? { permissionMode } : {}),
             ...(fastMode ? { fastMode: true } : {}),
+            fileCheckpointing: true,
+            promptSuggestions: true,
           },
         },
         providerRefs: {},
@@ -4092,6 +4188,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
     const updatedAt = yield* nowIso;
     context.turnState = turnState;
+    context.lastCompletedTurnId = undefined;
     context.session = {
       ...context.session,
       status: "running",
@@ -4151,11 +4248,69 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     },
   );
 
+  const rewindFilesForRollback = Effect.fn("rewindFilesForRollback")(function* (
+    context: ClaudeSessionContext,
+    targetUserMessageId: MessageId | undefined,
+  ) {
+    const userMessageId =
+      targetUserMessageId !== undefined && isUuid(targetUserMessageId)
+        ? targetUserMessageId
+        : undefined;
+    const rewindFiles = context.query.rewindFiles;
+    if (userMessageId === undefined || rewindFiles === undefined) {
+      return;
+    }
+
+    const result = yield* Effect.promise(
+      async (): Promise<
+        | {
+            readonly ok: true;
+            readonly value: RewindFilesResult;
+          }
+        | {
+            readonly ok: false;
+            readonly cause: unknown;
+          }
+      > => {
+        try {
+          return {
+            ok: true,
+            value: await rewindFiles(userMessageId),
+          };
+        } catch (cause) {
+          return {
+            ok: false,
+            cause,
+          };
+        }
+      },
+    );
+
+    if (!result.ok) {
+      yield* Effect.logWarning("claude.rewind-files.failed", {
+        threadId: context.session.threadId,
+        userMessageId,
+        cause: result.cause,
+      });
+      return;
+    }
+
+    if (!result.value.canRewind) {
+      yield* Effect.logWarning("claude.rewind-files.unavailable", {
+        threadId: context.session.threadId,
+        userMessageId,
+        error: result.value.error ?? "Claude file checkpoint rewind was unavailable.",
+      });
+    }
+  });
+
   const rollbackThread: ClaudeAdapterShape["rollbackThread"] = Effect.fn("rollbackThread")(
-    function* (threadId, numTurns) {
+    function* (threadId, numTurns, options) {
       const context = yield* requireSession(threadId);
+      yield* rewindFilesForRollback(context, options?.targetUserMessageId);
       const nextLength = Math.max(0, context.turns.length - numTurns);
       context.turns.splice(nextLength);
+      context.lastAssistantUuid = context.turns.at(-1)?.assistantUuid;
       yield* updateResumeCursor(context);
       return yield* snapshotThread(context);
     },

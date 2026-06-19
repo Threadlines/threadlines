@@ -170,6 +170,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "turn.plan.updated",
   "turn.proposed.delta",
   "turn.proposed.completed",
+  "turn.prompt-suggestion.updated",
   "turn.diff.updated",
   "item.started",
   "item.updated",
@@ -220,6 +221,7 @@ const TurnAbortedType = Schema.Literal("turn.aborted");
 const TurnPlanUpdatedType = Schema.Literal("turn.plan.updated");
 const TurnProposedDeltaType = Schema.Literal("turn.proposed.delta");
 const TurnProposedCompletedType = Schema.Literal("turn.proposed.completed");
+const TurnPromptSuggestionUpdatedType = Schema.Literal("turn.prompt-suggestion.updated");
 const TurnDiffUpdatedType = Schema.Literal("turn.diff.updated");
 const ItemStartedType = Schema.Literal("item.started");
 const ItemUpdatedType = Schema.Literal("item.updated");
@@ -399,6 +401,11 @@ const TurnProposedCompletedPayload = Schema.Struct({
   planMarkdown: TrimmedNonEmptyStringSchema,
 });
 export type TurnProposedCompletedPayload = typeof TurnProposedCompletedPayload.Type;
+
+const TurnPromptSuggestionUpdatedPayload = Schema.Struct({
+  suggestion: TrimmedNonEmptyStringSchema,
+});
+export type TurnPromptSuggestionUpdatedPayload = typeof TurnPromptSuggestionUpdatedPayload.Type;
 
 const TurnDiffUpdatedPayload = Schema.Struct({
   unifiedDiff: Schema.String,
@@ -756,6 +763,14 @@ const ProviderRuntimeTurnProposedCompletedEvent = Schema.Struct({
 export type ProviderRuntimeTurnProposedCompletedEvent =
   typeof ProviderRuntimeTurnProposedCompletedEvent.Type;
 
+const ProviderRuntimeTurnPromptSuggestionUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: TurnPromptSuggestionUpdatedType,
+  payload: TurnPromptSuggestionUpdatedPayload,
+});
+export type ProviderRuntimeTurnPromptSuggestionUpdatedEvent =
+  typeof ProviderRuntimeTurnPromptSuggestionUpdatedEvent.Type;
+
 const ProviderRuntimeTurnDiffUpdatedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: TurnDiffUpdatedType,
@@ -977,6 +992,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeTurnPlanUpdatedEvent,
   ProviderRuntimeTurnProposedDeltaEvent,
   ProviderRuntimeTurnProposedCompletedEvent,
+  ProviderRuntimeTurnPromptSuggestionUpdatedEvent,
   ProviderRuntimeTurnDiffUpdatedEvent,
   ProviderRuntimeItemStartedEvent,
   ProviderRuntimeItemUpdatedEvent,

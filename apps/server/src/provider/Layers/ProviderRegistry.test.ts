@@ -643,6 +643,47 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
         }),
       );
 
+      it.effect("normalizes Codex app-server token usage history", () =>
+        Effect.gen(function* () {
+          const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
+            Effect.succeed(
+              makeCodexProbeSnapshot({
+                tokenUsage: {
+                  dailyUsageBuckets: [
+                    { startDate: "2026-06-16", tokens: 1200 },
+                    { startDate: "2026-06-17", tokens: 3400 },
+                    { startDate: "", tokens: 900 },
+                    { startDate: "2026-06-18", tokens: -1 },
+                  ],
+                  summary: {
+                    currentStreakDays: 2,
+                    lifetimeTokens: 4600,
+                    longestRunningTurnSec: 660,
+                    longestStreakDays: 5,
+                    peakDailyTokens: 3400,
+                  },
+                },
+              }),
+            ),
+          );
+
+          assert.deepStrictEqual(status.accountUsage?.tokenUsage, {
+            checkedAt: status.checkedAt,
+            dailyBuckets: [
+              { startDate: "2026-06-16", tokens: 1200 },
+              { startDate: "2026-06-17", tokens: 3400 },
+            ],
+            summary: {
+              currentStreakDays: 2,
+              lifetimeTokens: 4600,
+              longestRunningTurnSec: 660,
+              longestStreakDays: 5,
+              peakDailyTokens: 3400,
+            },
+          });
+        }),
+      );
+
       it.effect("does not expose Codex monthly spend controls for non-enterprise plans", () =>
         Effect.gen(function* () {
           const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>

@@ -120,6 +120,7 @@ function createBaseServerConfig(): ServerConfig {
           binaryPath: "",
           homePath: "",
           customModels: [],
+          fallbackModel: [],
           launchArgs: "",
         },
         cursor: { enabled: true, binaryPath: "", apiEndpoint: "", customModels: [] },

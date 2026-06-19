@@ -41,10 +41,10 @@ const make = Effect.gen(function* () {
   const providerService = yield* ProviderService;
   const terminalManager = yield* TerminalManager;
 
-  const stopProviderSession = (threadId: ThreadDeletedEvent["payload"]["threadId"]) =>
+  const deleteProviderThread = (threadId: ThreadDeletedEvent["payload"]["threadId"]) =>
     logCleanupCauseUnlessInterrupted({
-      effect: providerService.stopSession({ threadId }),
-      message: "thread deletion cleanup skipped provider session stop",
+      effect: providerService.deleteThread({ threadId }),
+      message: "thread deletion cleanup skipped provider thread delete",
       threadId,
     });
 
@@ -59,7 +59,7 @@ const make = Effect.gen(function* () {
     event: ThreadDeletedEvent,
   ) {
     const { threadId } = event.payload;
-    yield* stopProviderSession(threadId);
+    yield* deleteProviderThread(threadId);
     yield* closeThreadTerminals(threadId);
   });
 

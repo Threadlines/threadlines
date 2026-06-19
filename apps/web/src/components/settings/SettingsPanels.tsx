@@ -1193,115 +1193,120 @@ export function ProviderSettingsPanel() {
             </Tooltip>
           </div>
         }
+        contentClassName="overflow-visible rounded-none border-0 bg-transparent shadow-none before:hidden dark:shadow-none"
       >
-        {rows.map((row) => {
-          const driverOption = getDriverOption(row.driver);
-          const liveProvider = serverProviders.find(
-            (candidate) => candidate.instanceId === row.instanceId,
-          );
-          const updateCandidate = liveProvider
-            ? providerUpdateCandidateByInstanceId.get(liveProvider.instanceId)
-            : undefined;
-          const isDriverUpdateRunning =
-            updateCandidate !== undefined &&
-            (updatingProviderDrivers.has(updateCandidate.driver) ||
-              serverProviders.some(
-                (provider) =>
-                  provider.driver === updateCandidate.driver && isProviderUpdateActive(provider),
-              ));
-          const showInlineUpdateButton =
-            updateCandidate !== undefined &&
-            hasOneClickUpdateProviderCandidate(updateCandidate, serverProviders);
-          const canRunInlineUpdate =
-            updateCandidate !== undefined &&
-            canOneClickUpdateProviderCandidate(updateCandidate, serverProviders) &&
-            !updatingProviderDrivers.has(updateCandidate.driver);
-          const modelPreferences = settings.providerModelPreferences?.[row.instanceId] ?? {
-            hiddenModels: [],
-            modelOrder: [],
-          };
-          const favoriteModels = (settings.favorites ?? [])
-            .filter((favorite) => favorite.provider === row.instanceId)
-            .map((favorite) => favorite.model);
-          const canResetProviderUsage = canRequestProviderRateLimitResetCredit(
-            liveProvider,
-            liveProvider?.accountUsage?.rateLimitResetCredits?.availableCount,
-          );
-          const resetLabel = driverOption?.label ?? String(row.driver);
-          const headerAction =
-            row.isDefault && row.isDirty ? (
-              <SettingResetButton
-                label={`${resetLabel} provider settings`}
-                onClick={() => resetDefaultInstance(row.driver)}
-              />
-            ) : null;
-          return (
-            <ProviderInstanceCard
-              key={row.instanceId}
-              instanceId={row.instanceId}
-              instance={row.instance}
-              driverOption={driverOption}
-              liveProvider={liveProvider}
-              isExpanded={openInstanceDetails[row.instanceId] ?? false}
-              onExpandedChange={(open) =>
-                setOpenInstanceDetails((existing) => ({
-                  ...existing,
-                  [row.instanceId]: open,
-                }))
-              }
-              onUpdate={(next) => {
-                const wasEnabled = row.instance.enabled ?? true;
-                const isDisabling = next.enabled === false && wasEnabled;
-                const shouldClearTextGen = isDisabling && textGenInstanceId === row.instanceId;
-                if (shouldClearTextGen) {
-                  updateProviderInstance(row, next, {
-                    textGenerationModelSelection:
-                      DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
-                  });
-                } else {
-                  updateProviderInstance(row, next);
+        <div className="space-y-2.5">
+          {rows.map((row) => {
+            const driverOption = getDriverOption(row.driver);
+            const liveProvider = serverProviders.find(
+              (candidate) => candidate.instanceId === row.instanceId,
+            );
+            const updateCandidate = liveProvider
+              ? providerUpdateCandidateByInstanceId.get(liveProvider.instanceId)
+              : undefined;
+            const isDriverUpdateRunning =
+              updateCandidate !== undefined &&
+              (updatingProviderDrivers.has(updateCandidate.driver) ||
+                serverProviders.some(
+                  (provider) =>
+                    provider.driver === updateCandidate.driver && isProviderUpdateActive(provider),
+                ));
+            const showInlineUpdateButton =
+              updateCandidate !== undefined &&
+              hasOneClickUpdateProviderCandidate(updateCandidate, serverProviders);
+            const canRunInlineUpdate =
+              updateCandidate !== undefined &&
+              canOneClickUpdateProviderCandidate(updateCandidate, serverProviders) &&
+              !updatingProviderDrivers.has(updateCandidate.driver);
+            const modelPreferences = settings.providerModelPreferences?.[row.instanceId] ?? {
+              hiddenModels: [],
+              modelOrder: [],
+            };
+            const favoriteModels = (settings.favorites ?? [])
+              .filter((favorite) => favorite.provider === row.instanceId)
+              .map((favorite) => favorite.model);
+            const canResetProviderUsage = canRequestProviderRateLimitResetCredit(
+              liveProvider,
+              liveProvider?.accountUsage?.rateLimitResetCredits?.availableCount,
+            );
+            const resetLabel = driverOption?.label ?? String(row.driver);
+            const headerAction =
+              row.isDefault && row.isDirty ? (
+                <SettingResetButton
+                  label={`${resetLabel} provider settings`}
+                  onClick={() => resetDefaultInstance(row.driver)}
+                />
+              ) : null;
+            return (
+              <ProviderInstanceCard
+                key={row.instanceId}
+                instanceId={row.instanceId}
+                instance={row.instance}
+                driverOption={driverOption}
+                liveProvider={liveProvider}
+                isExpanded={openInstanceDetails[row.instanceId] ?? false}
+                onExpandedChange={(open) =>
+                  setOpenInstanceDetails((existing) => ({
+                    ...existing,
+                    [row.instanceId]: open,
+                  }))
                 }
-              }}
-              onDelete={row.isDefault ? undefined : () => deleteProviderInstance(row.instanceId)}
-              headerAction={headerAction}
-              hiddenModels={modelPreferences.hiddenModels}
-              favoriteModels={favoriteModels}
-              modelOrder={modelPreferences.modelOrder}
-              onHiddenModelsChange={(hiddenModels) =>
-                updateProviderModelPreferences(row.instanceId, {
-                  ...modelPreferences,
-                  hiddenModels,
-                })
-              }
-              onFavoriteModelsChange={(favoriteModels) =>
-                updateProviderFavoriteModels(row.instanceId, favoriteModels)
-              }
-              onModelOrderChange={(modelOrder) =>
-                updateProviderModelPreferences(row.instanceId, {
-                  ...modelPreferences,
-                  modelOrder,
-                })
-              }
-              onRunUpdate={
-                showInlineUpdateButton && updateCandidate
-                  ? () => {
-                      if (!canRunInlineUpdate) {
-                        return;
+                onUpdate={(next) => {
+                  const wasEnabled = row.instance.enabled ?? true;
+                  const isDisabling = next.enabled === false && wasEnabled;
+                  const shouldClearTextGen = isDisabling && textGenInstanceId === row.instanceId;
+                  if (shouldClearTextGen) {
+                    updateProviderInstance(row, next, {
+                      textGenerationModelSelection:
+                        DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
+                    });
+                  } else {
+                    updateProviderInstance(row, next);
+                  }
+                }}
+                onDelete={row.isDefault ? undefined : () => deleteProviderInstance(row.instanceId)}
+                headerAction={headerAction}
+                hiddenModels={modelPreferences.hiddenModels}
+                favoriteModels={favoriteModels}
+                modelOrder={modelPreferences.modelOrder}
+                onHiddenModelsChange={(hiddenModels) =>
+                  updateProviderModelPreferences(row.instanceId, {
+                    ...modelPreferences,
+                    hiddenModels,
+                  })
+                }
+                onFavoriteModelsChange={(favoriteModels) =>
+                  updateProviderFavoriteModels(row.instanceId, favoriteModels)
+                }
+                onModelOrderChange={(modelOrder) =>
+                  updateProviderModelPreferences(row.instanceId, {
+                    ...modelPreferences,
+                    modelOrder,
+                  })
+                }
+                onRunUpdate={
+                  showInlineUpdateButton && updateCandidate
+                    ? () => {
+                        if (!canRunInlineUpdate) {
+                          return;
+                        }
+                        void runProviderUpdate(updateCandidate);
                       }
-                      void runProviderUpdate(updateCandidate);
-                    }
-                  : undefined
-              }
-              isUpdating={showInlineUpdateButton ? isDriverUpdateRunning : undefined}
-              onResetAccountUsage={canResetProviderUsage ? requestRateLimitResetCredit : undefined}
-              accountUsageResetInFlight={
-                pendingRateLimitResetCredit?.instanceId === row.instanceId
-                  ? isConsumingRateLimitResetCredit
-                  : undefined
-              }
-            />
-          );
-        })}
+                    : undefined
+                }
+                isUpdating={showInlineUpdateButton ? isDriverUpdateRunning : undefined}
+                onResetAccountUsage={
+                  canResetProviderUsage ? requestRateLimitResetCredit : undefined
+                }
+                accountUsageResetInFlight={
+                  pendingRateLimitResetCredit?.instanceId === row.instanceId
+                    ? isConsumingRateLimitResetCredit
+                    : undefined
+                }
+              />
+            );
+          })}
+        </div>
       </SettingsSection>
 
       <AddProviderInstanceDialog

@@ -10,6 +10,7 @@
  * @module ProviderServiceLive
  */
 import {
+  MessageId,
   ModelSelection,
   NonNegativeInt,
   ThreadId,
@@ -70,6 +71,10 @@ export interface ProviderServiceLiveOptions {
 const ProviderRollbackConversationInput = Schema.Struct({
   threadId: ThreadId,
   numTurns: NonNegativeInt,
+  targetUserMessageId: Schema.optional(MessageId),
+});
+const ProviderDeleteThreadInput = Schema.Struct({
+  threadId: ThreadId,
 });
 
 function toValidationError(
@@ -968,8 +973,15 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         "provider.kind": routed.adapter.provider,
         "provider.thread_id": input.threadId,
         "provider.rollback_turns": input.numTurns,
+        "provider.rollback_target_user_message_id": input.targetUserMessageId ?? "",
       });
-      yield* routed.adapter.rollbackThread(routed.threadId, input.numTurns);
+      yield* routed.adapter.rollbackThread(
+        routed.threadId,
+        input.numTurns,
+        input.targetUserMessageId !== undefined
+          ? { targetUserMessageId: input.targetUserMessageId }
+          : undefined,
+      );
       yield* analytics.record("provider.conversation.rolled_back", {
         provider: routed.adapter.provider,
         turns: input.numTurns,
@@ -984,6 +996,49 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       }),
     );
   });
+
+  const deleteThread: ProviderServiceShape["deleteThread"] = Effect.fn("deleteThread")(
+    function* (rawInput) {
+      const input = yield* decodeInputOrValidationError({
+        operation: "ProviderService.deleteThread",
+        schema: ProviderDeleteThreadInput,
+        payload: rawInput,
+      });
+      let metricProvider = "unknown";
+      return yield* Effect.gen(function* () {
+        const routed = yield* resolveRoutableSession({
+          threadId: input.threadId,
+          operation: "ProviderService.deleteThread",
+          allowRecovery: true,
+        });
+        metricProvider = routed.adapter.provider;
+        yield* Effect.annotateCurrentSpan({
+          "provider.operation": "delete-thread",
+          "provider.kind": routed.adapter.provider,
+          "provider.thread_id": input.threadId,
+          "provider.native_delete_supported": routed.adapter.deleteThread !== undefined,
+        });
+        if (routed.adapter.deleteThread) {
+          yield* routed.adapter.deleteThread(routed.threadId);
+        } else if (routed.isActive) {
+          yield* routed.adapter.stopSession(routed.threadId);
+        }
+        yield* directory.deleteBinding(input.threadId);
+        yield* analytics.record("provider.thread.deleted", {
+          provider: routed.adapter.provider,
+          nativeDelete: routed.adapter.deleteThread !== undefined,
+        });
+      }).pipe(
+        withMetrics({
+          counter: providerSessionsTotal,
+          outcomeAttributes: () =>
+            providerMetricAttributes(metricProvider, {
+              operation: "delete-thread",
+            }),
+        }),
+      );
+    },
+  );
 
   const runStopAll = Effect.fn("runStopAll")(function* () {
     const threadIds = yield* directory.listThreadIds();
@@ -1052,6 +1107,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     getCapabilities,
     getInstanceInfo,
     rollbackConversation,
+    deleteThread,
     // Each access creates a fresh PubSub subscription so that multiple
     // consumers (ProviderRuntimeIngestion, CheckpointReactor, etc.) each
     // independently receive all runtime events.

@@ -92,7 +92,14 @@ import {
   canRequestProviderRateLimitResetCredit,
   useProviderRateLimitResetCredit,
 } from "../ProviderRateLimitResetCredit";
-import { BotIcon, CameraIcon, CircleAlertIcon, LoaderCircleIcon, XIcon } from "lucide-react";
+import {
+  BotIcon,
+  CameraIcon,
+  CircleAlertIcon,
+  LoaderCircleIcon,
+  SparklesIcon,
+  XIcon,
+} from "lucide-react";
 import { proposedPlanTitle } from "../../proposedPlan";
 import {
   getProviderInteractionModeToggle,
@@ -116,6 +123,7 @@ import type { SessionPhase, Thread } from "../../types";
 import type { PendingUserInputDraftAnswer } from "../../pendingUserInput";
 import type { PendingApproval, PendingUserInput } from "../../session-logic";
 import { deriveLatestContextWindowSnapshot } from "../../lib/contextWindow";
+import { deriveLatestPromptSuggestion } from "../../lib/promptSuggestions";
 import {
   deriveProviderAccountUsagePresentationForProvider,
   type ProviderAccountUsagePresentation,
@@ -127,6 +135,7 @@ import { useMediaQuery } from "../../hooks/useMediaQuery";
 const IMAGE_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES / (1024 * 1024))}MB`;
 
 const COMPOSER_PATH_QUERY_DEBOUNCE_MS = 120;
+const CLAUDE_AGENT_PROVIDER = ProviderDriverKind.make("claudeAgent");
 const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
 const COMPOSER_FLOATING_LAYER_SELECTOR = [
   '[data-slot="popover-popup"]',
@@ -146,6 +155,14 @@ const extendReplacementRangeForTrailingSpace = (
   }
   return text[rangeEnd] === " " ? rangeEnd + 1 : rangeEnd;
 };
+
+function formatPromptSuggestionDisplayText(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return "";
+  }
+  return `${trimmed.charAt(0).toUpperCase()}${trimmed.slice(1)}`;
+}
 
 const syncTerminalContextsByIds = (
   contexts: ReadonlyArray<TerminalContextDraft>,
@@ -998,6 +1015,37 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     (showPlanFollowUpPrompt && activeProposedPlan !== null);
   const showCollapsedMobilePromptRow =
     isComposerCollapsedMobile && !isComposerApprovalState && pendingUserInputs.length === 0;
+  const latestPromptSuggestion = useMemo(() => {
+    if (selectedProvider !== CLAUDE_AGENT_PROVIDER) return null;
+    if (prompt.trim().length > 0) return null;
+    if (
+      phase === "running" ||
+      isSendBusy ||
+      isComposerApprovalState ||
+      pendingUserInputs.length > 0
+    ) {
+      return null;
+    }
+    if (showPlanFollowUpPrompt) return null;
+    if (activeThread?.latestTurn?.state !== "completed") return null;
+
+    return deriveLatestPromptSuggestion(activeThreadActivities ?? [], {
+      turnId: activeThread.latestTurn.turnId,
+    });
+  }, [
+    activeThread?.latestTurn,
+    activeThreadActivities,
+    isComposerApprovalState,
+    isSendBusy,
+    pendingUserInputs.length,
+    phase,
+    prompt,
+    selectedProvider,
+    showPlanFollowUpPrompt,
+  ]);
+  const latestPromptSuggestionDisplayText = latestPromptSuggestion
+    ? formatPromptSuggestionDisplayText(latestPromptSuggestion)
+    : null;
 
   const composerFooterHasWideActions = showPlanFollowUpPrompt || activePendingProgress !== null;
   const composerFooterActionLayoutKey = useMemo(() => {
@@ -1097,6 +1145,22 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       setComposerDraftPrompt(composerDraftTarget, nextPrompt);
     },
     [composerDraftTarget, setComposerDraftPrompt],
+  );
+
+  const applyPromptSuggestion = useCallback(
+    (suggestion: string) => {
+      const nextPrompt = formatPromptSuggestionDisplayText(suggestion);
+      if (nextPrompt.length === 0) return;
+      promptRef.current = nextPrompt;
+      setPrompt(nextPrompt);
+      const nextCursor = collapseExpandedComposerCursor(nextPrompt, nextPrompt.length);
+      setComposerCursor(nextCursor);
+      setComposerTrigger(detectComposerTrigger(nextPrompt, nextPrompt.length));
+      window.requestAnimationFrame(() => {
+        composerEditorRef.current?.focusAt(nextCursor);
+      });
+    },
+    [promptRef, setPrompt],
   );
 
   const addComposerImage = useCallback(
@@ -2048,6 +2112,27 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       className="mx-auto w-full min-w-0 max-w-208"
       data-chat-composer-form="true"
     >
+      {latestPromptSuggestion && latestPromptSuggestionDisplayText && !isComposerCollapsedMobile ? (
+        <div className="mb-2 flex px-1">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  type="button"
+                  data-prompt-suggestion="true"
+                  className="inline-flex max-w-full cursor-pointer items-center gap-2 rounded-md border border-border/55 bg-card/95 px-2.5 py-1.5 text-left text-muted-foreground text-xs shadow-sm shadow-black/5 transition-colors hover:border-border hover:bg-card hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/35"
+                  aria-label={`Use Claude suggested prompt: ${latestPromptSuggestion}`}
+                  onClick={() => applyPromptSuggestion(latestPromptSuggestion)}
+                >
+                  <SparklesIcon className="size-3.5 shrink-0 text-muted-foreground/65" />
+                  <span className="truncate">{latestPromptSuggestionDisplayText}</span>
+                </button>
+              }
+            />
+            <TooltipPopup side="top">Claude suggested this prompt</TooltipPopup>
+          </Tooltip>
+        </div>
+      ) : null}
       <div
         className={cn(
           "group rounded-[22px] p-px transition-colors duration-200",

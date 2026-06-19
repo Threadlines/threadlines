@@ -77,6 +77,28 @@ function checkpointStatusFromRuntime(status: string | undefined): "ready" | "mis
   }
 }
 
+function targetUserMessageIdForCheckpointRewind(input: {
+  readonly thread: {
+    readonly messages: ReadonlyArray<{
+      readonly id: MessageId;
+      readonly role: string;
+      readonly createdAt: string;
+    }>;
+  };
+  readonly targetTurnCount: number;
+}): MessageId | undefined {
+  const userMessages = input.thread.messages
+    .filter((message) => message.role === "user")
+    .toSorted(
+      (left, right) =>
+        left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
+    );
+
+  // Native provider file checkpointing rewinds to the state at a user message.
+  // To keep turns 0..N, target the first user message being removed: N + 1.
+  return userMessages[input.targetTurnCount]?.id;
+}
+
 const serverCommandId = (tag: string): CommandId =>
   CommandId.make(`server:${tag}:${crypto.randomUUID()}`);
 
@@ -801,9 +823,14 @@ const make = Effect.gen(function* () {
 
     const rolledBackTurns = Math.max(0, currentTurnCount - event.payload.turnCount);
     if (rolledBackTurns > 0) {
+      const targetUserMessageId = targetUserMessageIdForCheckpointRewind({
+        thread,
+        targetTurnCount: event.payload.turnCount,
+      });
       yield* providerService.rollbackConversation({
         threadId: sessionRuntime.value.threadId,
         numTurns: rolledBackTurns,
+        ...(targetUserMessageId !== undefined ? { targetUserMessageId } : {}),
       });
     }
 

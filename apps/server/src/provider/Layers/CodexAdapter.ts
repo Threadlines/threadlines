@@ -2152,6 +2152,18 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     );
   };
 
+  const deleteThread: NonNullable<CodexAdapterShape["deleteThread"]> = (threadId) =>
+    requireSession(threadId).pipe(
+      Effect.flatMap((session) =>
+        session.runtime.deleteThread.pipe(Effect.ensuring(stopSessionInternal(session))),
+      ),
+      Effect.mapError((cause) =>
+        cause._tag === "ProviderAdapterSessionNotFoundError"
+          ? cause
+          : mapCodexRuntimeError(threadId, "thread/delete", cause),
+      ),
+    );
+
   const respondToRequest: CodexAdapterShape["respondToRequest"] = (threadId, requestId, decision) =>
     requireSession(threadId).pipe(
       Effect.flatMap((session) => session.runtime.respondToRequest(requestId, decision)),
@@ -2239,6 +2251,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     interruptTurn,
     readThread,
     rollbackThread,
+    deleteThread,
     respondToRequest,
     respondToUserInput,
     stopSession,

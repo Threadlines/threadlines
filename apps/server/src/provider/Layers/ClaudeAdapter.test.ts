@@ -11,10 +11,12 @@ import type {
   SDKControlGetContextUsageResponse,
   SDKMessage,
   SDKUserMessage,
+  RewindFilesResult,
 } from "@anthropic-ai/claude-agent-sdk";
 import {
   ApprovalRequestId,
   ClaudeSettings,
+  MessageId,
   ProviderDriverKind,
   ProviderItemId,
   ProviderRuntimeEvent,
@@ -60,7 +62,17 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
   public readonly setPermissionModeCalls: Array<string> = [];
   public readonly setMaxThinkingTokensCalls: Array<number | null> = [];
   public readonly getContextUsageCalls: Array<void> = [];
+  public readonly rewindFilesCalls: Array<{
+    readonly userMessageId: string;
+    readonly options?: { readonly dryRun?: boolean };
+  }> = [];
   public getContextUsage?: () => Promise<SDKControlGetContextUsageResponse>;
+  public rewindFilesResult: RewindFilesResult = {
+    canRewind: true,
+    filesChanged: [],
+    insertions: 0,
+    deletions: 0,
+  };
   public closeCalls = 0;
 
   setContextUsageResponse(response: SDKControlGetContextUsageResponse): void {
@@ -118,6 +130,17 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
 
   readonly setMaxThinkingTokens = async (maxThinkingTokens: number | null): Promise<void> => {
     this.setMaxThinkingTokensCalls.push(maxThinkingTokens);
+  };
+
+  readonly rewindFiles = async (
+    userMessageId: string,
+    options?: { readonly dryRun?: boolean },
+  ): Promise<RewindFilesResult> => {
+    this.rewindFilesCalls.push({
+      userMessageId,
+      ...(options !== undefined ? { options } : {}),
+    });
+    return this.rewindFilesResult;
   };
 
   readonly close = (): void => {
@@ -362,6 +385,8 @@ describe("ClaudeAdapterLive", () => {
 
       const createInput = harness.getLastCreateQueryInput();
       assert.deepEqual(createInput?.options.settingSources, ["user", "project", "local"]);
+      assert.equal(createInput?.options.enableFileCheckpointing, true);
+      assert.equal(createInput?.options.promptSuggestions, true);
       assert.equal(createInput?.options.permissionMode, undefined);
       assert.equal(createInput?.options.allowDangerouslySkipPermissions, undefined);
     }).pipe(
@@ -406,6 +431,40 @@ describe("ClaudeAdapterLive", () => {
 
       const createInput = harness.getLastCreateQueryInput();
       assert.equal(createInput?.options.effort, "max");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("forwards configured Claude fallback model chains into query options", () => {
+    const harness = makeHarness({
+      claudeConfig: {
+        fallbackModel: [
+          "claude-sonnet-4-6",
+          "claude-opus-4-8",
+          "claude-haiku-4-5",
+          "claude-fable-5",
+        ],
+      },
+    });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-sonnet-4-6",
+        ),
+        runtimeMode: "full-access",
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      assert.equal(
+        createInput?.options.fallbackModel,
+        "claude-opus-4-8,claude-haiku-4-5,claude-fable-5",
+      );
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -783,6 +842,89 @@ describe("ClaudeAdapterLive", () => {
         readFirstPromptText(harness.getLastCreateQueryInput()),
       );
       assert.equal(promptText, "continue");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("uses Threadlines user message UUIDs for Claude SDK user messages", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const messageId = MessageId.make("33333333-3333-4333-8333-333333333333");
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        messageId,
+        input: "hello",
+        attachments: [],
+      });
+
+      const promptMessage = yield* Effect.promise(() =>
+        readFirstPromptMessage(harness.getLastCreateQueryInput()),
+      );
+      assert.equal(promptMessage?.uuid, String(messageId));
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("emits prompt suggestion runtime events after successful turns", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 7).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-suggestion",
+        uuid: "result-suggestion",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "prompt_suggestion",
+        suggestion: "Add regression tests for the completed change.",
+        session_id: "sdk-session-suggestion",
+        uuid: "prompt-suggestion-1",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const suggestionEvent = runtimeEvents.find(
+        (event) => event.type === "turn.prompt-suggestion.updated",
+      );
+      assert.equal(suggestionEvent?.type, "turn.prompt-suggestion.updated");
+      if (suggestionEvent?.type === "turn.prompt-suggestion.updated") {
+        assert.equal(suggestionEvent.turnId, turn.turnId);
+        assert.equal(
+          suggestionEvent.payload.suggestion,
+          "Add regression tests for the completed change.",
+        );
+      }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -3704,9 +3846,14 @@ describe("ClaudeAdapterLive", () => {
           provider: ProviderDriverKind.make("claudeAgent"),
           runtimeMode: "full-access",
         });
+        const firstUserMessageId = MessageId.make("44444444-4444-4444-8444-444444444444");
+        const secondUserMessageId = MessageId.make("55555555-5555-4555-8555-555555555555");
+        const firstAssistantUuid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        const secondAssistantUuid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
         const firstTurn = yield* adapter.sendTurn({
           threadId: session.threadId,
+          messageId: firstUserMessageId,
           input: "first",
           attachments: [],
         });
@@ -3716,6 +3863,15 @@ describe("ClaudeAdapterLive", () => {
           (event) => event.type === "turn.completed",
         ).pipe(Stream.runHead, Effect.forkChild);
 
+        harness.query.emit({
+          type: "assistant",
+          session_id: "sdk-session-rollback",
+          uuid: firstAssistantUuid,
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "first answer" }],
+          },
+        } as unknown as SDKMessage);
         harness.query.emit({
           type: "result",
           subtype: "success",
@@ -3733,6 +3889,7 @@ describe("ClaudeAdapterLive", () => {
 
         const secondTurn = yield* adapter.sendTurn({
           threadId: session.threadId,
+          messageId: secondUserMessageId,
           input: "second",
           attachments: [],
         });
@@ -3742,6 +3899,15 @@ describe("ClaudeAdapterLive", () => {
           (event) => event.type === "turn.completed",
         ).pipe(Stream.runHead, Effect.forkChild);
 
+        harness.query.emit({
+          type: "assistant",
+          session_id: "sdk-session-rollback",
+          uuid: secondAssistantUuid,
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "second answer" }],
+          },
+        } as unknown as SDKMessage);
         harness.query.emit({
           type: "result",
           subtype: "success",
@@ -3760,13 +3926,30 @@ describe("ClaudeAdapterLive", () => {
         const threadBeforeRollback = yield* adapter.readThread(session.threadId);
         assert.equal(threadBeforeRollback.turns.length, 2);
 
-        const rolledBack = yield* adapter.rollbackThread(session.threadId, 1);
+        const rolledBack = yield* adapter.rollbackThread(session.threadId, 1, {
+          targetUserMessageId: secondUserMessageId,
+        });
         assert.equal(rolledBack.turns.length, 1);
         assert.equal(rolledBack.turns[0]?.id, firstTurn.turnId);
+        assert.deepEqual(harness.query.rewindFilesCalls, [
+          {
+            userMessageId: secondUserMessageId,
+          },
+        ]);
 
         const threadAfterRollback = yield* adapter.readThread(session.threadId);
         assert.equal(threadAfterRollback.turns.length, 1);
         assert.equal(threadAfterRollback.turns[0]?.id, firstTurn.turnId);
+        const activeSessions = yield* adapter.listSessions();
+        const activeSession = activeSessions[0];
+        const resumeCursor = activeSession?.resumeCursor as
+          | {
+              readonly resumeSessionAt?: string;
+              readonly turnCount?: number;
+            }
+          | undefined;
+        assert.equal(resumeCursor?.resumeSessionAt, firstAssistantUuid);
+        assert.equal(resumeCursor?.turnCount, 1);
       }).pipe(
         Effect.provideService(Random.Random, makeDeterministicRandomService()),
         Effect.provide(harness.layer),

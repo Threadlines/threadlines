@@ -105,6 +105,8 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
       }),
   );
 
+  public readonly deleteThreadImpl = vi.fn((): Promise<void> => Promise.resolve(undefined));
+
   public readonly respondToRequestImpl = vi.fn(
     (_requestId: ApprovalRequestId, _decision: ProviderApprovalDecision): Promise<void> =>
       Promise.resolve(undefined),
@@ -142,6 +144,8 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
   rollbackThread(numTurns: number) {
     return Effect.promise(() => this.rollbackThreadImpl(numTurns));
   }
+
+  deleteThread = Effect.promise(() => this.deleteThreadImpl());
 
   respondToRequest(requestId: ApprovalRequestId, decision: ProviderApprovalDecision) {
     return Effect.promise(() => this.respondToRequestImpl(requestId, decision));
@@ -220,6 +224,7 @@ const providerSessionDirectoryTestLayer = Layer.succeed(ProviderSessionDirectory
   getBinding: () => Effect.succeed(Option.none()),
   listThreadIds: () => Effect.succeed([]),
   listBindings: () => Effect.succeed([]),
+  deleteBinding: () => Effect.void,
 });
 
 const validationRuntimeFactory = makeRuntimeFactory();
@@ -435,6 +440,27 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
       assert.match(retriedInput, /This conversation was started/);
       assert.match(retriedInput, /prior context/);
       assert.match(retriedInput, /retry me/);
+    }),
+  );
+
+  it.effect("deletes the provider Codex thread and closes the runtime", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("sess-delete-provider-thread");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const runtime = sessionRuntimeFactory.lastRuntime;
+      assert.ok(runtime);
+
+      assert.ok(adapter.deleteThread);
+      yield* adapter.deleteThread(threadId);
+
+      assert.equal(runtime.deleteThreadImpl.mock.calls.length, 1);
+      assert.equal(runtime.closeImpl.mock.calls.length, 1);
+      assert.equal(yield* adapter.hasSession(threadId), false);
     }),
   );
 

@@ -158,16 +158,25 @@ interface ProviderSettingsFormProps {
   readonly definition: ProviderClientDefinition;
   readonly value: unknown;
   readonly idPrefix: string;
-  readonly variant: "card" | "dialog";
+  readonly variant: ProviderSettingsFormVariant;
   readonly onChange: (nextConfig: Record<string, unknown> | undefined) => void;
 }
 
+type ProviderSettingsFormVariant = "card" | "dialog" | "group";
+
 function FieldFrame(props: {
-  readonly variant: ProviderSettingsFormProps["variant"];
+  readonly variant: ProviderSettingsFormVariant;
   readonly children: ReactNode;
 }) {
   if (props.variant === "card") {
     return <div className="border-t border-border/60 px-4 py-3 sm:px-5">{props.children}</div>;
+  }
+  if (props.variant === "group") {
+    return (
+      <div className="border-t border-border/50 py-3 first:border-t-0 first:pt-0 last:pb-0">
+        {props.children}
+      </div>
+    );
   }
   return <div className="grid gap-1.5">{props.children}</div>;
 }
@@ -176,7 +185,7 @@ interface ProviderSettingsFieldRowProps {
   readonly field: ProviderSettingsFieldModel;
   readonly value: unknown;
   readonly idPrefix: string;
-  readonly variant: ProviderSettingsFormProps["variant"];
+  readonly variant: ProviderSettingsFormVariant;
   readonly onChange: ProviderSettingsFormProps["onChange"];
 }
 
@@ -189,7 +198,7 @@ function ProviderSettingsFieldRow({
 }: ProviderSettingsFieldRowProps) {
   const inputId = `${idPrefix}-${field.key}`;
   const descriptionClassName =
-    variant === "card"
+    variant === "card" || variant === "group"
       ? "mt-1 block text-xs text-muted-foreground"
       : "text-[11px] text-muted-foreground";
   const label = <span className="text-xs font-medium text-foreground">{field.label}</span>;
@@ -220,11 +229,14 @@ function ProviderSettingsFieldRow({
   if (field.control === "textarea") {
     return (
       <FieldFrame variant={variant}>
-        <label htmlFor={inputId} className={cn(variant === "card" && "block")}>
+        <label
+          htmlFor={inputId}
+          className={cn((variant === "card" || variant === "group") && "block")}
+        >
           {label}
           <Textarea
             id={inputId}
-            className={cn(variant === "card" && "mt-1.5")}
+            className={cn((variant === "card" || variant === "group") && "mt-1.5")}
             value={readProviderConfigString(value, field.key)}
             onChange={(event) =>
               onChange(nextProviderConfigWithFieldValue(value, field, event.target.value))
@@ -241,9 +253,12 @@ function ProviderSettingsFieldRow({
   const type = field.control === "password" ? "password" : undefined;
   return (
     <FieldFrame variant={variant}>
-      <label htmlFor={inputId} className={cn(variant === "card" && "block")}>
+      <label
+        htmlFor={inputId}
+        className={cn((variant === "card" || variant === "group") && "block")}
+      >
         {label}
-        {variant === "card" ? (
+        {variant === "card" || variant === "group" ? (
           <DraftInput
             id={inputId}
             className="mt-1.5"
@@ -274,6 +289,33 @@ function ProviderSettingsFieldRow({
   );
 }
 
+export function ProviderSettingsFields(props: {
+  readonly fields: ReadonlyArray<ProviderSettingsFieldModel>;
+  readonly value: unknown;
+  readonly idPrefix: string;
+  readonly variant: ProviderSettingsFormVariant;
+  readonly onChange: ProviderSettingsFormProps["onChange"];
+}) {
+  if (props.fields.length === 0) {
+    return null;
+  }
+
+  return (
+    <>
+      {props.fields.map((field) => (
+        <ProviderSettingsFieldRow
+          key={field.key}
+          field={field}
+          value={props.value}
+          idPrefix={props.idPrefix}
+          variant={props.variant}
+          onChange={props.onChange}
+        />
+      ))}
+    </>
+  );
+}
+
 export function ProviderSettingsForm({
   definition,
   value,
@@ -288,17 +330,12 @@ export function ProviderSettingsForm({
   }
 
   return (
-    <>
-      {fields.map((field) => (
-        <ProviderSettingsFieldRow
-          key={field.key}
-          field={field}
-          value={value}
-          idPrefix={idPrefix}
-          variant={variant}
-          onChange={onChange}
-        />
-      ))}
-    </>
+    <ProviderSettingsFields
+      fields={fields}
+      value={value}
+      idPrefix={idPrefix}
+      variant={variant}
+      onChange={onChange}
+    />
   );
 }

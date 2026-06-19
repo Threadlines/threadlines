@@ -14,6 +14,7 @@
 import type {
   ProviderInterruptTurnInput,
   ProviderInstanceId,
+  MessageId,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
   ProviderRuntimeEvent,
@@ -103,6 +104,18 @@ export interface ProviderServiceShape {
   readonly rollbackConversation: (input: {
     readonly threadId: ThreadId;
     readonly numTurns: number;
+    readonly targetUserMessageId?: MessageId;
+  }) => Effect.Effect<void, ProviderServiceError>;
+
+  /**
+   * Delete provider-owned runtime state for a thread.
+   *
+   * Providers with native transcript deletion should remove that transcript;
+   * unsupported providers stop any active runtime and clear the persisted
+   * binding so deleted Threadlines threads are not recovered later.
+   */
+  readonly deleteThread: (input: {
+    readonly threadId: ThreadId;
   }) => Effect.Effect<void, ProviderServiceError>;
 
   /**

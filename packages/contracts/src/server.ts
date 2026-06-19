@@ -99,12 +99,37 @@ export const ServerProviderRateLimitResetCredits = Schema.Struct({
 });
 export type ServerProviderRateLimitResetCredits = typeof ServerProviderRateLimitResetCredits.Type;
 
+export const ServerProviderAccountTokenUsageDailyBucket = Schema.Struct({
+  startDate: TrimmedNonEmptyString,
+  tokens: NonNegativeInt,
+});
+export type ServerProviderAccountTokenUsageDailyBucket =
+  typeof ServerProviderAccountTokenUsageDailyBucket.Type;
+
+export const ServerProviderAccountTokenUsageSummary = Schema.Struct({
+  currentStreakDays: Schema.optional(NonNegativeInt),
+  lifetimeTokens: Schema.optional(NonNegativeInt),
+  longestRunningTurnSec: Schema.optional(NonNegativeInt),
+  longestStreakDays: Schema.optional(NonNegativeInt),
+  peakDailyTokens: Schema.optional(NonNegativeInt),
+});
+export type ServerProviderAccountTokenUsageSummary =
+  typeof ServerProviderAccountTokenUsageSummary.Type;
+
+export const ServerProviderAccountTokenUsage = Schema.Struct({
+  checkedAt: IsoDateTime,
+  dailyBuckets: Schema.Array(ServerProviderAccountTokenUsageDailyBucket),
+  summary: ServerProviderAccountTokenUsageSummary,
+});
+export type ServerProviderAccountTokenUsage = typeof ServerProviderAccountTokenUsage.Type;
+
 export const ServerProviderAccountUsage = Schema.Struct({
   source: Schema.Literals(["codex-rate-limits", "claude-oauth-usage"]),
   checkedAt: IsoDateTime,
   primaryLimitId: Schema.optional(TrimmedNonEmptyString),
   rateLimitResetCredits: Schema.optional(ServerProviderRateLimitResetCredits),
   limits: Schema.Array(ServerProviderUsageLimit),
+  tokenUsage: Schema.optional(ServerProviderAccountTokenUsage),
 });
 export type ServerProviderAccountUsage = typeof ServerProviderAccountUsage.Type;
 

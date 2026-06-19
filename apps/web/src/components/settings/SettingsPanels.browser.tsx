@@ -265,6 +265,36 @@ function createOutdatedProvider(
   };
 }
 
+function createClaudeProvider(): ServerProvider {
+  return {
+    instanceId: ProviderInstanceId.make("claudeAgent"),
+    driver: ProviderDriverKind.make("claudeAgent"),
+    displayName: "Claude",
+    enabled: true,
+    installed: true,
+    version: "2.1.175",
+    status: "ready",
+    auth: { status: "authenticated" },
+    checkedAt: "2026-05-04T10:00:00.000Z",
+    models: [
+      {
+        slug: "claude-sonnet-4-6",
+        name: "Claude Sonnet 4.6",
+        isCustom: false,
+        capabilities: null,
+      },
+      {
+        slug: "claude-haiku-4-5",
+        name: "Claude Haiku 4.5",
+        isCustom: false,
+        capabilities: null,
+      },
+    ],
+    slashCommands: [],
+    skills: [],
+  };
+}
+
 function makeUtc(value: string) {
   return DateTime.makeUnsafe(value);
 }
@@ -1138,6 +1168,50 @@ describe("GeneralSettingsPanel observability", () => {
     await expect.element(page.getByPlaceholder("~")).toBeInTheDocument();
     await expect.element(page.getByText("Launch arguments")).toBeInTheDocument();
     await expect.element(page.getByPlaceholder("e.g. --chrome")).toBeInTheDocument();
+  });
+
+  it("configures Claude fallback models from the provider models list", async () => {
+    const updateSettings = vi
+      .fn<LocalApi["server"]["updateSettings"]>()
+      .mockResolvedValue(DEFAULT_SERVER_SETTINGS);
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      server: {
+        updateSettings,
+      },
+    } as unknown as LocalApi;
+
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [createClaudeProvider()],
+    });
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <ProviderSettingsPanel />
+      </AppAtomRegistryProvider>,
+    );
+
+    await page.getByLabelText("Toggle Claude details").click();
+    await page.getByRole("button", { name: "Add Claude Sonnet 4.6 to fallback chain" }).click();
+
+    await expect.element(page.getByText("fallback 1")).toBeInTheDocument();
+    await vi.waitFor(() => {
+      expect(updateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerInstances: expect.objectContaining({
+            [ProviderInstanceId.make("claudeAgent")]: expect.objectContaining({
+              config: expect.objectContaining({
+                fallbackModel: ["claude-sonnet-4-6"],
+              }),
+            }),
+          }),
+        }),
+      );
+    });
   });
 
   it("runs one-click provider updates from the provider card", async () => {

@@ -20,7 +20,6 @@ import {
   SidebarSeparator,
   useSidebar,
 } from "../ui/sidebar";
-import { CurrentMarker } from "../ui/threadline";
 import { SourceControlIcon } from "../Icons";
 import { SidebarVersionTag } from "../SidebarVersionTag";
 import type { SettingsSectionPath } from "./settingsNavigation";
@@ -78,16 +77,15 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
                     isActive={isActive}
                     className={
                       isActive
-                        ? "relative gap-2.5 px-2.5 py-2 text-left text-[13px] font-medium text-foreground"
+                        ? "gap-2.5 px-2.5 py-2 text-left text-[13px] font-medium text-foreground"
                         : "gap-2.5 px-2.5 py-2 text-left text-[13px] text-muted-foreground/70 hover:text-foreground/80"
                     }
                     onClick={() => handleSectionClick(item.to)}
                   >
-                    {isActive ? <CurrentMarker /> : null}
                     <Icon
                       className={
                         isActive
-                          ? "size-4 shrink-0 text-foreground"
+                          ? "size-4 shrink-0 text-primary-readable"
                           : "size-4 shrink-0 text-muted-foreground/60"
                       }
                     />
