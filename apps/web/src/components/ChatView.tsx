@@ -217,7 +217,7 @@ import {
   isVersionMismatchDismissed,
   resolveServerConfigVersionMismatch,
 } from "../versionSkew";
-import { useThreadPlanCatalog } from "../planPanelState";
+import { derivePlanTaskBadge, useThreadPlanCatalog } from "../planPanelState";
 
 const IMAGE_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more images without additional text. Respond using the conversation context and the attached image(s).]";
@@ -292,10 +292,6 @@ type ChatViewProps =
       environmentId: EnvironmentId;
       threadId: ThreadId;
       onDiffPanelOpen?: () => void;
-      onClosePlanPanel?: () => void;
-      onOpenPlanPanel?: () => void;
-      onTogglePlanPanel?: () => void;
-      planPanelOpen?: boolean;
       reserveTitleBarControlInset?: boolean;
       routeKind: "server";
       draftId?: never;
@@ -304,10 +300,6 @@ type ChatViewProps =
       environmentId: EnvironmentId;
       threadId: ThreadId;
       onDiffPanelOpen?: () => void;
-      onClosePlanPanel?: () => void;
-      onOpenPlanPanel?: () => void;
-      onTogglePlanPanel?: () => void;
-      planPanelOpen?: boolean;
       reserveTitleBarControlInset?: boolean;
       routeKind: "draft";
       draftId: DraftId;
@@ -559,12 +551,8 @@ export default function ChatView(props: ChatViewProps) {
   const {
     environmentId,
     threadId,
-    onClosePlanPanel,
     routeKind,
     onDiffPanelOpen,
-    onOpenPlanPanel,
-    onTogglePlanPanel,
-    planPanelOpen = false,
     reserveTitleBarControlInset = true,
   } = props;
   const { open: sidebarOpen } = useSidebar();
@@ -599,7 +587,6 @@ export default function ChatView(props: ChatViewProps) {
     (store) => store.setStickyModelSelection,
   );
   const timestampFormat = settings.timestampFormat;
-  const autoOpenPlanSidebar = settings.autoOpenPlanSidebar;
   const navigate = useNavigate();
   const rawSearch = useSearch({
     strict: false,
@@ -666,12 +653,6 @@ export default function ChatView(props: ChatViewProps) {
   >({});
   const [pendingUserInputQuestionIndexByRequestId, setPendingUserInputQuestionIndexByRequestId] =
     useState<Record<string, number>>({});
-  const planSidebarOpen = planPanelOpen;
-  // Tracks whether the user explicitly dismissed the sidebar for the active turn.
-  const planSidebarDismissedForTurnRef = useRef<string | null>(null);
-  // Tracks the latest step state that triggered an auto-open so returning to Source Control
-  // doesn't immediately bounce back to Tasks for the same update.
-  const planSidebarLastAutoOpenSignatureRef = useRef<string | null>(null);
   const [terminalFocusRequestId, setTerminalFocusRequestId] = useState(0);
   const [pullRequestDialogState, setPullRequestDialogState] =
     useState<PullRequestDialogState | null>(null);
@@ -1303,7 +1284,27 @@ export default function ChatView(props: ChatViewProps) {
     () => deriveActivePlanState(threadActivities, activeLatestTurn?.turnId ?? undefined),
     [activeLatestTurn?.turnId, threadActivities],
   );
-  const planSidebarLabel = sidebarProposedPlan || interactionMode === "plan" ? "Plan" : "Tasks";
+  const taskProgressProposedPlan = hasActionableProposedPlan(sidebarProposedPlan)
+    ? sidebarProposedPlan
+    : null;
+  const taskProgressLabel =
+    taskProgressProposedPlan || interactionMode === "plan" ? "Plan" : "Tasks";
+  const taskProgressBadge = useMemo(
+    () => derivePlanTaskBadge({ activePlan, activeProposedPlan: taskProgressProposedPlan }),
+    [activePlan, taskProgressProposedPlan],
+  );
+  const taskProgress = useMemo(
+    () =>
+      activePlan || taskProgressProposedPlan || taskProgressBadge
+        ? {
+            activePlan,
+            activeProposedPlan: taskProgressProposedPlan,
+            badge: taskProgressBadge,
+            label: taskProgressLabel,
+          }
+        : null,
+    [activePlan, taskProgressBadge, taskProgressLabel, taskProgressProposedPlan],
+  );
   const showPlanFollowUpPrompt =
     pendingUserInputs.length === 0 &&
     interactionMode === "plan" &&
@@ -2396,15 +2397,6 @@ export default function ChatView(props: ChatViewProps) {
   const toggleInteractionMode = useCallback(() => {
     handleInteractionModeChange(interactionMode === "plan" ? "default" : "plan");
   }, [handleInteractionModeChange, interactionMode]);
-  const togglePlanSidebar = useCallback(() => {
-    if (planSidebarOpen) {
-      planSidebarDismissedForTurnRef.current =
-        activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
-    } else {
-      planSidebarDismissedForTurnRef.current = null;
-    }
-    onTogglePlanPanel?.();
-  }, [activePlan?.turnId, onTogglePlanPanel, planSidebarOpen, sidebarProposedPlan?.turnId]);
   const persistThreadSettingsForNextTurn = useCallback(
     async (input: {
       threadId: ThreadId;
@@ -2489,28 +2481,7 @@ export default function ChatView(props: ChatViewProps) {
     isAtEndRef.current = true;
     showScrollDebouncer.current.cancel();
     setShowScrollToBottom(false);
-    onClosePlanPanel?.();
-    planSidebarDismissedForTurnRef.current = null;
-    planSidebarLastAutoOpenSignatureRef.current = null;
-  }, [activeThread?.id, onClosePlanPanel]);
-
-  // Auto-open Tasks when current-turn step state appears or changes. Proposed plans remain
-  // manually opened so the right panel does not pop in before there is executable step activity.
-  useEffect(() => {
-    if (!autoOpenPlanSidebar) return;
-    if (!activePlan) return;
-    const latestTurnId = activeLatestTurn?.turnId ?? null;
-    if (latestTurnId && activePlan.turnId !== latestTurnId) return;
-    const turnKey = activePlan.turnId ?? "__active_plan__";
-    if (planSidebarDismissedForTurnRef.current === turnKey) return;
-    const signature = `${turnKey}:${activePlan.steps
-      .map((step) => `${step.status}:${step.step}`)
-      .join("|")}`;
-    if (planSidebarLastAutoOpenSignatureRef.current === signature) return;
-    planSidebarLastAutoOpenSignatureRef.current = signature;
-    if (planSidebarOpen) return;
-    onOpenPlanPanel?.();
-  }, [activePlan, activeLatestTurn?.turnId, autoOpenPlanSidebar, onOpenPlanPanel, planSidebarOpen]);
+  }, [activeThread?.id]);
 
   useEffect(() => {
     setIsRevertingCheckpoint(false);
@@ -3465,9 +3436,6 @@ export default function ChatView(props: ChatViewProps) {
             modelSelection: ctxSelectedModelSelection,
           });
         }
-        if (nextInteractionMode === "default" && autoOpenPlanSidebar) {
-          planSidebarDismissedForTurnRef.current = null;
-        }
         sendInFlightRef.current = false;
       } catch (err) {
         removeOptimisticThreadMessages(threadRefForSend, new Set([messageIdForSend]));
@@ -3494,7 +3462,6 @@ export default function ChatView(props: ChatViewProps) {
       runtimeMode,
       setComposerDraftInteractionMode,
       setThreadError,
-      autoOpenPlanSidebar,
       environmentId,
     ],
   );
@@ -3820,6 +3787,7 @@ export default function ChatView(props: ChatViewProps) {
           terminalToggleShortcutLabel={terminalToggleShortcutLabel}
           sourceControlToggleShortcutLabel={sourceControlPanelShortcutLabel}
           sourceControlOpen={sourceControlOpen}
+          taskProgress={taskProgress}
           onRunProjectScript={runProjectScript}
           onAddProjectScript={saveProjectScript}
           onUpdateProjectScript={updateProjectScript}
@@ -3838,7 +3806,7 @@ export default function ChatView(props: ChatViewProps) {
         onRunAuthReconnect={runProviderAuthReconnect}
         onDismiss={() => setThreadError(activeThread.id, null)}
       />
-      {/* Main content area with optional plan sidebar */}
+      {/* Main content area */}
       <div className="flex min-h-0 min-w-0 flex-1">
         {/* Chat column */}
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -3932,10 +3900,6 @@ export default function ChatView(props: ChatViewProps) {
                   respondingRequestIds={respondingRequestIds}
                   showPlanFollowUpPrompt={showPlanFollowUpPrompt}
                   activeProposedPlan={activeProposedPlan}
-                  activePlan={activePlan as { turnId?: TurnId } | null}
-                  sidebarProposedPlan={sidebarProposedPlan as { turnId?: TurnId } | null}
-                  planSidebarLabel={planSidebarLabel}
-                  planSidebarOpen={planSidebarOpen}
                   runtimeMode={runtimeMode}
                   interactionMode={interactionMode}
                   // Unlocked so any provider's models are selectable;
@@ -3972,7 +3936,6 @@ export default function ChatView(props: ChatViewProps) {
                   toggleInteractionMode={toggleInteractionMode}
                   handleRuntimeModeChange={handleRuntimeModeChange}
                   handleInteractionModeChange={handleInteractionModeChange}
-                  togglePlanSidebar={togglePlanSidebar}
                   focusComposer={focusComposer}
                   setThreadError={setThreadError}
                   onExpandImage={onExpandTimelineImage}

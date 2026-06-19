@@ -886,6 +886,7 @@ function mapToRuntimeEvents(
   if (
     event.method === "thread/status/changed" ||
     event.method === "thread/archived" ||
+    event.method === "thread/deleted" ||
     event.method === "thread/unarchived" ||
     event.method === "thread/closed" ||
     event.method === "thread/compacted"
@@ -902,13 +903,15 @@ function mapToRuntimeEvents(
           state:
             event.method === "thread/archived"
               ? "archived"
-              : event.method === "thread/closed"
-                ? "closed"
-                : event.method === "thread/compacted"
-                  ? "compacted"
-                  : payload
-                    ? toThreadState(payload.status)
-                    : "active",
+              : event.method === "thread/deleted"
+                ? "deleted"
+                : event.method === "thread/closed"
+                  ? "closed"
+                  : event.method === "thread/compacted"
+                    ? "compacted"
+                    : payload
+                      ? toThreadState(payload.status)
+                      : "active",
           ...(event.payload !== undefined ? { detail: event.payload } : {}),
         },
       },

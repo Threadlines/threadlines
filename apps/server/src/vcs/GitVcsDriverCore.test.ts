@@ -1056,6 +1056,50 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
+    it.effect("pulls the resolved upstream when branch config has extra merge refs", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const remote = yield* makeTmpDir("git-remote-");
+        const upstreamCwd = yield* makeTmpDir("git-upstream-");
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        yield* git(cwd, ["branch", "-M", "main"]);
+        yield* git(remote, ["init", "--bare"]);
+        yield* git(cwd, ["remote", "add", "origin", remote]);
+        yield* git(cwd, ["push", "-u", "origin", "main"]);
+        yield* git(cwd, ["branch", "other"]);
+        yield* git(cwd, ["push", "origin", "other"]);
+        yield* git(cwd, ["config", "--add", "branch.main.merge", "refs/heads/other"]);
+
+        yield* git(cwd, ["clone", "--branch", "main", remote, upstreamCwd]);
+        yield* git(upstreamCwd, ["config", "user.email", "test@example.com"]);
+        yield* git(upstreamCwd, ["config", "user.name", "Test User"]);
+        yield* writeTextFile(upstreamCwd, "remote.txt", "remote\n");
+        yield* git(upstreamCwd, ["add", "."]);
+        yield* git(upstreamCwd, ["commit", "-m", "Remote update"]);
+        yield* git(upstreamCwd, ["push", "origin", "main"]);
+
+        const plainPull = yield* driver.execute({
+          operation: "GitVcsDriver.test.plainPullWithExtraMergeRef",
+          cwd,
+          args: ["pull", "--ff-only"],
+          allowNonZeroExit: true,
+          timeoutMs: 10_000,
+        });
+        assert.notEqual(plainPull.exitCode, 0);
+        assert.match(plainPull.stderr, /Cannot fast-forward to multiple branches/);
+
+        const result = yield* driver.pullCurrentBranch(cwd);
+
+        assert.deepEqual(result, {
+          status: "pulled",
+          refName: "main",
+          upstreamRef: "origin/main",
+        });
+        assert.equal(yield* git(cwd, ["log", "-1", "--pretty=%s"]), "Remote update");
+      }),
+    );
+
     it.effect(
       "pushes upstream branches to the remote branch name, not the upstream shorthand",
       () =>

@@ -600,6 +600,7 @@ function readNotificationThreadId(notification: CodexServerNotification): string
     case "error":
     case "thread/status/changed":
     case "thread/archived":
+    case "thread/deleted":
     case "thread/unarchived":
     case "thread/closed":
     case "thread/name/updated":

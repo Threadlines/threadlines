@@ -1286,11 +1286,9 @@ describe("SourceControlPanel commit graph", () => {
 
       return (
         <QueryClientProvider client={queryClient}>
-          <SourceControlPanel
-            target={TARGET}
-            activeThreadRef={null}
-            taskPanelButton={<span hidden data-version={renderVersion} />}
-          />
+          <div data-version={renderVersion}>
+            <SourceControlPanel target={TARGET} activeThreadRef={null} />
+          </div>
         </QueryClientProvider>
       );
     }

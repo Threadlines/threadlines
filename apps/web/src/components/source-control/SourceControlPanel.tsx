@@ -161,7 +161,6 @@ interface SourceControlPanelProps {
   readonly onOpenDiff?: (filePath?: string) => void;
   /** Warm the diff chunk + working tree diff query before a likely diff open. */
   readonly onPrefetchDiff?: () => void;
-  readonly taskPanelButton?: ReactNode;
 }
 
 type WorkingTreeFile = VcsStatusResult["workingTree"]["files"][number];
@@ -1442,7 +1441,6 @@ export function SourceControlPanel({
   onActiveBranchChange,
   onOpenDiff,
   onPrefetchDiff,
-  taskPanelButton,
 }: SourceControlPanelProps) {
   const queryClient = useQueryClient();
   const [commitMessage, setCommitMessage] = useState("");
@@ -2726,7 +2724,6 @@ export function SourceControlPanel({
           >
             {target.name}
           </span>
-          {taskPanelButton}
           {status?.refName ? (
             <span
               className="inline-flex min-w-0 max-w-[45%] shrink-0 items-center gap-1 rounded-sm border border-border/70 bg-muted/45 px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground/80"

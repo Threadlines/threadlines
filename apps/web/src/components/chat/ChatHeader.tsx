@@ -14,6 +14,9 @@ import { SidebarOpenTrigger } from "../ui/sidebar";
 import { SourceControlIcon } from "../Icons";
 import { OpenInPicker } from "./OpenInPicker";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
+import { TaskProgressPopover } from "./TaskProgressPopover";
+import type { PlanTaskBadgeState } from "../../planPanelState";
+import type { ActivePlanState, LatestProposedPlanState } from "../../session-logic";
 
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
@@ -30,6 +33,12 @@ interface ChatHeaderProps {
   terminalToggleShortcutLabel: string | null;
   sourceControlToggleShortcutLabel: string | null;
   sourceControlOpen: boolean;
+  taskProgress: {
+    activePlan: ActivePlanState | null;
+    activeProposedPlan: LatestProposedPlanState | null;
+    badge: PlanTaskBadgeState | null;
+    label: string;
+  } | null;
   onRunProjectScript: (script: ProjectScript) => void;
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<void>;
   onUpdateProjectScript: (scriptId: string, input: NewProjectScriptInput) => Promise<void>;
@@ -65,6 +74,7 @@ export const ChatHeader = memo(function ChatHeader({
   terminalToggleShortcutLabel,
   sourceControlToggleShortcutLabel,
   sourceControlOpen,
+  taskProgress,
   onRunProjectScript,
   onAddProjectScript,
   onUpdateProjectScript,
@@ -109,6 +119,14 @@ export const ChatHeader = memo(function ChatHeader({
         )}
       </div>
       <div className="flex shrink-0 items-center justify-end gap-2 @3xl/header-actions:gap-3">
+        {taskProgress ? (
+          <TaskProgressPopover
+            activePlan={taskProgress.activePlan}
+            activeProposedPlan={taskProgress.activeProposedPlan}
+            badge={taskProgress.badge}
+            label={taskProgress.label}
+          />
+        ) : null}
         {activeProjectScripts && (
           <ProjectScriptsControl
             scripts={activeProjectScripts}

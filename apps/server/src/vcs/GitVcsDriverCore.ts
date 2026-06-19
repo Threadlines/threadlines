@@ -2521,16 +2521,30 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         "Current branch has no upstream configured. Push with upstream first.",
       );
     }
+    const currentUpstream = yield* resolveCurrentUpstream(cwd);
+    if (!currentUpstream) {
+      return yield* createGitCommandError(
+        "GitVcsDriver.pullCurrentBranch",
+        cwd,
+        ["pull", "--ff-only"],
+        "Current branch upstream could not be resolved.",
+      );
+    }
     const beforeSha = yield* runGitStdout(
       "GitVcsDriver.pullCurrentBranch.beforeSha",
       cwd,
       ["rev-parse", "HEAD"],
       true,
     ).pipe(Effect.map((stdout) => stdout.trim()));
-    yield* executeGit("GitVcsDriver.pullCurrentBranch.pull", cwd, ["pull", "--ff-only"], {
-      timeoutMs: 30_000,
-      fallbackErrorMessage: "git pull failed",
-    });
+    yield* executeGit(
+      "GitVcsDriver.pullCurrentBranch.pull",
+      cwd,
+      ["pull", "--ff-only", currentUpstream.remoteName, `refs/heads/${currentUpstream.branchName}`],
+      {
+        timeoutMs: 30_000,
+        fallbackErrorMessage: "git pull failed",
+      },
+    );
     const afterSha = yield* runGitStdout(
       "GitVcsDriver.pullCurrentBranch.afterSha",
       cwd,

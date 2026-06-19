@@ -69,6 +69,16 @@ const DEFAULT_CODEX_SERVICE_TIER_LABEL = "Standard";
 const DEFAULT_CODEX_INPUT_MODALITIES: ReadonlyArray<ModelInputModality> = ["text", "image"];
 const CODEX_FAST_MODE_DESCRIPTION = "1.5x speed. Increased usage.";
 
+function titleCaseIdentifier(value: string): string {
+  const words = value.trim().replace(/[_-]+/g, " ");
+  if (words.length === 0) return "Unknown";
+  return words.replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function reasoningEffortLabel(reasoningEffort: string): string {
+  return REASONING_EFFORT_LABELS[reasoningEffort] ?? titleCaseIdentifier(reasoningEffort);
+}
+
 function codexAccountAuthLabel(account: CodexSchema.V2GetAccountResponse["account"]) {
   if (!account) return undefined;
   if (account.type === "apiKey") return "OpenAI API Key";
@@ -285,12 +295,12 @@ function mapCodexModelCapabilities(
     reasoningEffort === model.defaultReasoningEffort
       ? {
           id: reasoningEffort,
-          label: REASONING_EFFORT_LABELS[reasoningEffort],
+          label: reasoningEffortLabel(reasoningEffort),
           isDefault: true,
         }
       : {
           id: reasoningEffort,
-          label: REASONING_EFFORT_LABELS[reasoningEffort],
+          label: reasoningEffortLabel(reasoningEffort),
         },
   );
   const defaultReasoning = reasoningOptions.find((option) => option.isDefault)?.id;
