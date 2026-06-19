@@ -311,6 +311,10 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   onImplementPlanInNewThread: () => void;
   onResetAccountUsage?: (() => void) | undefined;
   accountUsageResetInFlight?: boolean | undefined;
+  onCompactContext?: (() => void) | undefined;
+  contextCompactDisabled?: boolean | undefined;
+  contextCompactInFlight?: boolean | undefined;
+  contextCompactDisabledReason?: string | null | undefined;
 }) {
   return (
     <>
@@ -320,6 +324,10 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         contextWindowLabel={props.contextWindowLabel}
         onResetAccountUsage={props.onResetAccountUsage}
         accountUsageResetInFlight={props.accountUsageResetInFlight}
+        onCompactContext={props.onCompactContext}
+        contextCompactDisabled={props.contextCompactDisabled}
+        contextCompactInFlight={props.contextCompactInFlight}
+        contextCompactDisabledReason={props.contextCompactDisabledReason}
       />
       {props.isPreparingWorktree ? (
         <span className="text-muted-foreground/70 text-xs">Preparing worktree...</span>
@@ -467,6 +475,10 @@ export interface ChatComposerProps {
   // Callbacks
   onSend: (e?: { preventDefault: () => void }) => void;
   onInterrupt: () => void;
+  onCompactContext?: (() => void) | undefined;
+  contextCompactDisabled?: boolean | undefined;
+  contextCompactInFlight?: boolean | undefined;
+  contextCompactDisabledReason?: string | null | undefined;
   onImplementPlanInNewThread: () => void;
   onRespondToApproval: (
     requestId: ApprovalRequestId,
@@ -545,6 +557,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     scheduleStickToBottom,
     onSend,
     onInterrupt,
+    onCompactContext,
+    contextCompactDisabled,
+    contextCompactInFlight,
+    contextCompactDisabledReason,
     onImplementPlanInNewThread,
     onRespondToApproval,
     onSelectActivePendingUserInputOption,
@@ -2619,6 +2635,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     canResetSelectedProviderUsage ? requestSelectedProviderUsageReset : undefined
                   }
                   accountUsageResetInFlight={isConsumingRateLimitResetCredit}
+                  onCompactContext={onCompactContext}
+                  contextCompactDisabled={contextCompactDisabled}
+                  contextCompactInFlight={contextCompactInFlight}
+                  contextCompactDisabledReason={contextCompactDisabledReason}
                 />
               </div>
             </div>

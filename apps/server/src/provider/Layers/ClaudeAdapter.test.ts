@@ -876,6 +876,25 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("queues Claude compact slash command for manual context compaction", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      assert.isDefined(adapter.compactContext);
+      yield* adapter.compactContext(session.threadId);
+      const promptText = yield* Effect.promise(() =>
+        readFirstPromptText(harness.getLastCreateQueryInput()),
+      );
+      assert.equal(promptText, "/compact");
+    }).pipe(Effect.provide(harness.layer));
+  });
+
   it.effect("emits prompt suggestion runtime events after successful turns", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -1167,6 +1186,55 @@ describe("ClaudeAdapterLive", () => {
         assert.equal(String(turnCompleted.turnId), String(turn.turnId));
         assert.equal(turnCompleted.payload.state, "completed");
       }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("maps Claude compacting status to a waiting session state runtime event", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const statusEventFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) =>
+          event.type === "session.state.changed" && event.payload.reason === "status:compacting",
+      ).pipe(Stream.runHead, Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      const turn = yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "hello",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "status",
+        status: "compacting",
+        session_id: "sdk-session-compacting",
+        uuid: "status-compacting-1",
+      } as unknown as SDKMessage);
+
+      const statusEvent = yield* Fiber.join(statusEventFiber);
+      assert.equal(statusEvent._tag, "Some");
+      if (statusEvent._tag !== "Some") {
+        return;
+      }
+      assert.equal(statusEvent.value.type, "session.state.changed");
+      if (statusEvent.value.type !== "session.state.changed") {
+        return;
+      }
+      assert.equal(statusEvent.value.payload.state, "waiting");
+      assert.equal(statusEvent.value.payload.reason, "status:compacting");
+      assert.equal(String(statusEvent.value.turnId), String(turn.turnId));
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

@@ -112,6 +112,26 @@ function buildAssistantTimelineEntry(text: string) {
   };
 }
 
+function buildSubagentResultTimelineEntry(objective: string) {
+  return {
+    id: "subagent-result:turn-1:agent-1",
+    kind: "subagent-result" as const,
+    createdAt: MESSAGE_CREATED_AT,
+    result: {
+      id: "subagent-result:turn-1:agent-1",
+      createdAt: MESSAGE_CREATED_AT,
+      turnId: TurnId.make("turn-1"),
+      agentThreadId: "agent-1",
+      label: "Reviewer subagent",
+      role: "reviewer",
+      objective,
+      body: "**Finding:** subagent output is visible.",
+      model: "gpt-5.5",
+      reasoningEffort: "medium",
+    },
+  };
+}
+
 describe("MessagesTimeline", () => {
   afterEach(() => {
     scrollToEndSpy.mockReset();
@@ -305,6 +325,13 @@ describe("MessagesTimeline", () => {
     );
 
     try {
+      const continueButton = document.querySelector<HTMLButtonElement>(
+        'button[aria-label="Continue in new thread"]',
+      );
+      expect(continueButton).toBeTruthy();
+      expect(getComputedStyle(continueButton!).cursor).toBe("pointer");
+      expect(continueButton?.getAttribute("title")).toBeNull();
+
       await page.getByRole("button", { name: "Continue in new thread" }).click();
 
       expect(onContinueInNewThread).toHaveBeenCalledWith("message-1");
@@ -324,6 +351,13 @@ describe("MessagesTimeline", () => {
     );
 
     try {
+      const continueButton = document.querySelector<HTMLButtonElement>(
+        'button[aria-label="Continue in new thread"]',
+      );
+      expect(continueButton).toBeTruthy();
+      expect(getComputedStyle(continueButton!).cursor).toBe("pointer");
+      expect(continueButton?.getAttribute("title")).toBeNull();
+
       await page.getByRole("button", { name: "Continue in new thread" }).click();
 
       expect(onContinueInNewThread).toHaveBeenCalledWith("assistant-message-1");
@@ -392,6 +426,59 @@ describe("MessagesTimeline", () => {
       expect(messageBody?.className).toContain("max-h-44");
       expect(messageBody?.getAttribute("data-user-message-fade")).toBe("true");
       expect((messageBody as HTMLDivElement | null)?.style.maskImage).toContain("linear-gradient");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("expands truncated subagent result instructions when clicking the text", async () => {
+    const longObjective = [
+      "This is a UI preview task only.",
+      "Do not edit files or run destructive commands.",
+      "Please return a concise chat-style response with markdown formatting.",
+      "Include one heading, one bullet list, one inline-code example, and one file reference.",
+      "Keep the final instruction visible only after the clamped text expands.",
+    ].join(" ");
+    const screen = await render(
+      <div style={{ width: 360 }}>
+        <MessagesTimeline
+          {...buildProps()}
+          timelineEntries={[buildSubagentResultTimelineEntry(longObjective)]}
+        />
+      </div>,
+    );
+
+    try {
+      await vi.waitFor(() => {
+        const objective = document.querySelector<HTMLElement>(
+          "[data-subagent-result-objective='true']",
+        );
+        expect(objective).not.toBeNull();
+        expect(objective?.tagName).toBe("BUTTON");
+        expect(objective?.getAttribute("data-subagent-result-objective-truncated")).toBe("true");
+        expect(objective?.getAttribute("aria-expanded")).toBe("false");
+        expect(objective?.className).toContain("line-clamp-2");
+      });
+
+      await page.getByRole("button", { name: "Expand subagent instructions" }).click();
+
+      await vi.waitFor(() => {
+        const objective = document.querySelector<HTMLElement>(
+          "[data-subagent-result-objective='true']",
+        );
+        expect(objective?.getAttribute("data-subagent-result-objective-expanded")).toBe("true");
+        expect(objective?.className).not.toContain("line-clamp-2");
+      });
+
+      await page.getByRole("button", { name: "Collapse subagent instructions" }).click();
+
+      await vi.waitFor(() => {
+        const objective = document.querySelector<HTMLElement>(
+          "[data-subagent-result-objective='true']",
+        );
+        expect(objective?.getAttribute("data-subagent-result-objective-expanded")).toBe("false");
+        expect(objective?.className).toContain("line-clamp-2");
+      });
     } finally {
       await screen.unmount();
     }

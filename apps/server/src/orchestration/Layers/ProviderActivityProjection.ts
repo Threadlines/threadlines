@@ -111,6 +111,103 @@ function buildContextWindowActivityPayload(
   return event.payload.usage;
 }
 
+function contextCompactionActivityId(event: ProviderRuntimeEvent): EventId {
+  const scopeKey = event.turnId ?? event.itemId ?? "session";
+  return EventId.make(`activity:context-compaction:${event.threadId}:${scopeKey}`);
+}
+
+function compactingSessionStatusReason(event: ProviderRuntimeEvent): string | undefined {
+  if (event.type !== "session.state.changed" || event.payload.state !== "waiting") {
+    return undefined;
+  }
+  const reason = event.payload.reason?.trim().toLowerCase();
+  if (reason === "status:compacting" || reason === "compacting") {
+    return event.payload.reason;
+  }
+  const detail = event.payload.detail;
+  if (detail && typeof detail === "object") {
+    const status = (detail as Record<string, unknown>).status;
+    if (typeof status === "string" && status.trim().toLowerCase() === "compacting") {
+      return `status:${status}`;
+    }
+  }
+  return undefined;
+}
+
+function isManualSyntheticCompactingStatusEvent(event: ProviderRuntimeEvent): boolean {
+  if (event.type !== "session.state.changed") {
+    return false;
+  }
+  const detail = event.payload.detail;
+  if (!detail || typeof detail !== "object" || Array.isArray(detail)) {
+    return false;
+  }
+  const trigger = (detail as Record<string, unknown>).trigger;
+  return typeof trigger === "string" && trigger.trim().toLowerCase() === "manual";
+}
+
+function contextCompactionStatusFromItemEvent(
+  event: Extract<
+    ProviderRuntimeEvent,
+    { type: "item.started" | "item.completed" | "item.updated" }
+  >,
+): "inProgress" | "completed" | "failed" {
+  if (event.type === "item.completed") {
+    return event.payload.status === "failed" || event.payload.status === "declined"
+      ? "failed"
+      : "completed";
+  }
+  if (event.payload.status === "completed") {
+    return "completed";
+  }
+  if (event.payload.status === "failed" || event.payload.status === "declined") {
+    return "failed";
+  }
+  return "inProgress";
+}
+
+function contextCompactionSummary(status: "inProgress" | "completed" | "failed"): string {
+  switch (status) {
+    case "completed":
+      return "Context compacted";
+    case "failed":
+      return "Context compaction failed";
+    case "inProgress":
+      return "Compacting context...";
+  }
+}
+
+function contextCompactionTone(
+  status: "inProgress" | "completed" | "failed",
+): OrchestrationThreadActivity["tone"] {
+  return status === "failed" ? "warning" : "info";
+}
+
+function projectContextCompactionActivity(
+  event: ProviderRuntimeEvent,
+  input: {
+    readonly status: "inProgress" | "completed" | "failed";
+    readonly detail?: unknown;
+    readonly sourceItemType?: string;
+    readonly state?: string;
+  },
+): ReadonlyArray<OrchestrationThreadActivity> {
+  return [
+    baseActivity(event, {
+      id: contextCompactionActivityId(event),
+      tone: contextCompactionTone(input.status),
+      kind: "context-compaction",
+      summary: contextCompactionSummary(input.status),
+      payload: {
+        status: input.status,
+        ...(input.state !== undefined ? { state: input.state } : {}),
+        ...(input.sourceItemType !== undefined ? { sourceItemType: input.sourceItemType } : {}),
+        ...(input.detail !== undefined ? { detail: compactActivityPayloadData(input.detail) } : {}),
+      },
+    }),
+  ];
+}
+
 function requestKindFromCanonicalRequestType(
   requestType: string | undefined,
 ): "command" | "file-read" | "file-change" | "permissions" | undefined {
@@ -699,23 +796,29 @@ export function projectRuntimeEventToActivities(
         }),
       ];
 
+    case "session.state.changed": {
+      const reason = compactingSessionStatusReason(event);
+      if (!reason || isManualSyntheticCompactingStatusEvent(event)) {
+        return [];
+      }
+
+      return projectContextCompactionActivity(event, {
+        status: "inProgress",
+        detail: event.payload.detail ?? reason,
+        state: event.payload.state,
+      });
+    }
+
     case "thread.state.changed": {
       if (event.payload.state !== "compacted") {
         return [];
       }
 
-      return [
-        baseActivity(event, {
-          id: event.eventId,
-          tone: "info",
-          kind: "context-compaction",
-          summary: "Context compacted",
-          payload: {
-            state: event.payload.state,
-            ...(event.payload.detail !== undefined ? { detail: event.payload.detail } : {}),
-          },
-        }),
-      ];
+      return projectContextCompactionActivity(event, {
+        status: "completed",
+        state: event.payload.state,
+        ...(event.payload.detail !== undefined ? { detail: event.payload.detail } : {}),
+      });
     }
 
     case "thread.token-usage.updated": {
@@ -738,6 +841,14 @@ export function projectRuntimeEventToActivities(
     case "item.updated": {
       if (event.payload.itemType === "reasoning") {
         return projectReasoningLifecycleActivity(event);
+      }
+      if (event.payload.itemType === "context_compaction") {
+        const detail = event.payload.detail ?? event.payload.data;
+        return projectContextCompactionActivity(event, {
+          status: contextCompactionStatusFromItemEvent(event),
+          sourceItemType: event.payload.itemType,
+          ...(detail !== undefined ? { detail } : {}),
+        });
       }
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
@@ -766,6 +877,14 @@ export function projectRuntimeEventToActivities(
       if (event.payload.itemType === "reasoning") {
         return projectReasoningLifecycleActivity(event);
       }
+      if (event.payload.itemType === "context_compaction") {
+        const detail = event.payload.detail ?? event.payload.data;
+        return projectContextCompactionActivity(event, {
+          status: contextCompactionStatusFromItemEvent(event),
+          sourceItemType: event.payload.itemType,
+          ...(detail !== undefined ? { detail } : {}),
+        });
+      }
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
@@ -791,6 +910,14 @@ export function projectRuntimeEventToActivities(
     case "item.started": {
       if (event.payload.itemType === "reasoning") {
         return projectReasoningLifecycleActivity(event);
+      }
+      if (event.payload.itemType === "context_compaction") {
+        const detail = event.payload.detail ?? event.payload.data;
+        return projectContextCompactionActivity(event, {
+          status: contextCompactionStatusFromItemEvent(event),
+          sourceItemType: event.payload.itemType,
+          ...(detail !== undefined ? { detail } : {}),
+        });
       }
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];

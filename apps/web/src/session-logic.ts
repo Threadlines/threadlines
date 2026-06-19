@@ -23,6 +23,7 @@ import {
   extensionMcpOAuthActionLabel,
   type ExtensionMcpOAuthActionIntent,
 } from "./mcpAuthStatus";
+import { filterSupersededManualContextCompactionActivities } from "./lib/contextCompactionActivities";
 
 import type {
   ChatMessage,
@@ -135,6 +136,59 @@ export interface LatestProposedPlanState {
   implementationThreadId: ThreadId | null;
 }
 
+export type SubagentProgressStatus =
+  | "starting"
+  | "running"
+  | "waiting"
+  | "completed"
+  | "failed"
+  | "interrupted";
+
+export interface SubagentProgressItem {
+  id: string;
+  agentThreadId: string | null;
+  turnId: TurnId | null;
+  label: string;
+  role: string | null;
+  objective: string | null;
+  status: SubagentProgressStatus;
+  statusLabel: string;
+  model: string | null;
+  reasoningEffort: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SubagentProgressBadgeState {
+  label: string;
+  ariaLabel: string;
+  tone: "active" | "complete" | "warning" | "idle";
+  pulse: boolean;
+}
+
+export interface SubagentProgressState {
+  items: SubagentProgressItem[];
+  activeCount: number;
+  completedCount: number;
+  failedCount: number;
+  totalCount: number;
+  summary: string;
+  badge: SubagentProgressBadgeState;
+}
+
+export interface SubagentResultEntry {
+  id: string;
+  createdAt: string;
+  turnId: TurnId | null;
+  agentThreadId: string;
+  label: string;
+  role: string | null;
+  objective: string | null;
+  body: string;
+  model: string | null;
+  reasoningEffort: string | null;
+}
+
 export type TimelineEntry =
   | {
       id: string;
@@ -153,6 +207,12 @@ export type TimelineEntry =
       kind: "work";
       createdAt: string;
       entry: WorkLogEntry;
+    }
+  | {
+      id: string;
+      kind: "subagent-result";
+      createdAt: string;
+      result: SubagentResultEntry;
     };
 
 export function formatDuration(durationMs: number): string {
@@ -552,10 +612,485 @@ export function hasActionableProposedPlan(
   return proposedPlan !== null && proposedPlan.implementedAt === null;
 }
 
+interface InternalSubagentRecord extends SubagentProgressItem {
+  resultActivityId: string | null;
+  resultBody: string | null;
+  resultCreatedAt: string | null;
+}
+
+interface CollabAgentStateSnapshot {
+  status: string | null;
+  message: string | null;
+}
+
+export function deriveSubagentProgressState(input: {
+  activities: ReadonlyArray<OrchestrationThreadActivity>;
+  latestTurnId?: TurnId | null | undefined;
+  latestTurnSettled?: boolean | undefined;
+}): SubagentProgressState | null {
+  const records = collectSubagentActivityRecords(input.activities, {
+    latestTurnId: input.latestTurnId ?? null,
+  });
+  const items = records.map(
+    ({
+      resultActivityId: _resultActivityId,
+      resultBody: _resultBody,
+      resultCreatedAt: _resultCreatedAt,
+      ...item
+    }) => item,
+  );
+  if (items.length === 0) {
+    return null;
+  }
+
+  const activeCount = items.filter((item) => isActiveSubagentStatus(item.status)).length;
+  if (input.latestTurnSettled === true && activeCount === 0) {
+    return null;
+  }
+
+  const completedCount = items.filter((item) => item.status === "completed").length;
+  const failedCount = items.filter((item) => isFailedSubagentStatus(item.status)).length;
+  const totalCount = items.length;
+  const summary = summarizeSubagentProgress({
+    activeCount,
+    completedCount,
+    failedCount,
+    totalCount,
+  });
+  const badge = deriveSubagentProgressBadge({
+    activeCount,
+    completedCount,
+    failedCount,
+    totalCount,
+  });
+
+  return {
+    items,
+    activeCount,
+    completedCount,
+    failedCount,
+    totalCount,
+    summary,
+    badge,
+  };
+}
+
+export function deriveSubagentResultEntries(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): SubagentResultEntry[] {
+  return collectSubagentActivityRecords(activities, {})
+    .filter(
+      (
+        record,
+      ): record is InternalSubagentRecord & {
+        agentThreadId: string;
+        resultActivityId: string;
+        resultBody: string;
+        resultCreatedAt: string;
+      } =>
+        record.agentThreadId !== null &&
+        record.resultActivityId !== null &&
+        record.resultBody !== null &&
+        record.resultCreatedAt !== null,
+    )
+    .map((record) => ({
+      id: `subagent-result:${record.turnId ?? "no-turn"}:${record.agentThreadId}`,
+      createdAt: record.resultCreatedAt,
+      turnId: record.turnId,
+      agentThreadId: record.agentThreadId,
+      label: record.label,
+      role: record.role,
+      objective: record.objective,
+      body: record.resultBody,
+      model: record.model,
+      reasoningEffort: record.reasoningEffort,
+    }))
+    .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
+}
+
+function collectSubagentActivityRecords(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+  options: { latestTurnId?: TurnId | null | undefined },
+): InternalSubagentRecord[] {
+  const byAgentId = new Map<string, InternalSubagentRecord>();
+  const pendingSpawnKeysByCallId = new Map<string, string>();
+  const latestTurnId = options.latestTurnId ?? null;
+
+  for (const activity of [...activities].toSorted(compareActivitiesByOrder)) {
+    if (latestTurnId !== null && activity.turnId !== latestTurnId) {
+      continue;
+    }
+
+    const payload =
+      activity.payload && typeof activity.payload === "object"
+        ? (activity.payload as Record<string, unknown>)
+        : null;
+    if (extractWorkLogItemType(payload) !== "collab_agent_tool_call") {
+      continue;
+    }
+
+    const data = asRecord(payload?.data);
+    const item = asRecord(data?.item);
+    if (!item) {
+      continue;
+    }
+
+    const toolCallId =
+      asTrimmedString(item.id) ??
+      asTrimmedString(data?.itemId) ??
+      asTrimmedString(payload?.toolCallId) ??
+      activity.id;
+    const tool = asTrimmedString(item.tool)?.trim() ?? null;
+    const prompt = asTrimmedString(item.prompt) ?? asTrimmedString(payload?.detail);
+    const model = asTrimmedString(item.model);
+    const reasoningEffort = asTrimmedString(item.reasoningEffort);
+    const receiverThreadIds = stringArray(item.receiverThreadIds);
+    const agentStates = extractCollabAgentStates(item.agentsStates);
+    const agentIds = uniqueStrings([...receiverThreadIds, ...agentStates.keys()]);
+    const resolvedAgentIds =
+      agentIds.length > 0 ? agentIds : isSpawnAgentTool(tool) ? [`pending:${toolCallId}`] : [];
+    const pendingKey = pendingSpawnKeysByCallId.get(toolCallId);
+    const firstConcreteAgentId = resolvedAgentIds.find(
+      (agentId) => !agentId.startsWith("pending:"),
+    );
+    if (pendingKey && firstConcreteAgentId) {
+      const pendingRecord = byAgentId.get(pendingKey);
+      if (pendingRecord) {
+        byAgentId.set(firstConcreteAgentId, {
+          ...pendingRecord,
+          id: firstConcreteAgentId,
+          agentThreadId: firstConcreteAgentId,
+          updatedAt: activity.createdAt,
+        });
+        byAgentId.delete(pendingKey);
+      }
+      pendingSpawnKeysByCallId.delete(toolCallId);
+    }
+
+    for (const agentId of resolvedAgentIds) {
+      const previous = byAgentId.get(agentId);
+      const pendingAgent = agentId.startsWith("pending:");
+      if (pendingAgent) {
+        pendingSpawnKeysByCallId.set(toolCallId, agentId);
+      }
+      const state = agentStates.get(agentId) ?? null;
+      const stateStatus = state?.status ?? null;
+      const stateMessage = state?.message ?? null;
+      const itemStatus = asTrimmedString(item.status) ?? asTrimmedString(payload?.status);
+      const status = normalizeSubagentProgressStatus({
+        tool,
+        itemStatus,
+        stateStatus,
+      });
+      const parsedObjective = parseSubagentObjective(prompt);
+      const role =
+        asTrimmedString(item.agentRole) ??
+        asTrimmedString(item.role) ??
+        parsedObjective.role ??
+        previous?.role ??
+        null;
+      const label = subagentDisplayLabel({
+        role,
+        nickname: asTrimmedString(item.agentNickname) ?? asTrimmedString(item.nickname),
+      });
+      const objective = parsedObjective.objective ?? prompt ?? previous?.objective ?? null;
+      const terminalResult = isTerminalSubagentResult({
+        itemStatus,
+        stateStatus,
+        stateMessage,
+      });
+      const resultBody = terminalResult ? stateMessage : (previous?.resultBody ?? null);
+      const resultCreatedAt = terminalResult
+        ? activity.createdAt
+        : (previous?.resultCreatedAt ?? null);
+      const resultActivityId = terminalResult ? activity.id : (previous?.resultActivityId ?? null);
+
+      byAgentId.set(agentId, {
+        id: agentId,
+        agentThreadId: pendingAgent ? null : agentId,
+        turnId: activity.turnId,
+        label,
+        role,
+        objective,
+        status,
+        statusLabel: subagentProgressStatusLabel(status),
+        model: model ?? previous?.model ?? null,
+        reasoningEffort: reasoningEffort ?? previous?.reasoningEffort ?? null,
+        createdAt: previous?.createdAt ?? activity.createdAt,
+        updatedAt: activity.createdAt,
+        resultActivityId,
+        resultBody,
+        resultCreatedAt,
+      });
+    }
+  }
+
+  return [...byAgentId.values()].toSorted((left, right) => {
+    const createdAtComparison = left.createdAt.localeCompare(right.createdAt);
+    return createdAtComparison === 0 ? left.id.localeCompare(right.id) : createdAtComparison;
+  });
+}
+
+function extractCollabAgentStates(value: unknown): Map<string, CollabAgentStateSnapshot> {
+  const record = asRecord(value);
+  const result = new Map<string, CollabAgentStateSnapshot>();
+  if (!record) {
+    return result;
+  }
+
+  for (const [agentThreadId, rawState] of Object.entries(record)) {
+    const state = asRecord(rawState);
+    if (!agentThreadId || !state) {
+      continue;
+    }
+    result.set(agentThreadId, {
+      status: asTrimmedString(state.status),
+      message: asTrimmedString(state.message),
+    });
+  }
+  return result;
+}
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((entry) => asTrimmedString(entry))
+    .filter((entry): entry is string => entry !== null);
+}
+
+function isSpawnAgentTool(tool: string | null): boolean {
+  return tool?.trim().toLowerCase() === "spawnagent";
+}
+
+function isTerminalSubagentResult(input: {
+  itemStatus: string | null;
+  stateStatus: string | null;
+  stateMessage: string | null;
+}): input is typeof input & { stateMessage: string } {
+  if (input.stateMessage === null) {
+    return false;
+  }
+
+  const normalizedState = normalizeStatusToken(input.stateStatus);
+  if (
+    normalizedState !== "completed" &&
+    normalizedState !== "shutdown" &&
+    normalizedState !== "errored" &&
+    normalizedState !== "error" &&
+    normalizedState !== "interrupted"
+  ) {
+    return false;
+  }
+
+  const normalizedItem = normalizeStatusToken(input.itemStatus);
+  if (normalizedItem !== "" && normalizedItem !== "completed") {
+    return false;
+  }
+  return true;
+}
+
+function normalizeSubagentProgressStatus(input: {
+  tool: string | null;
+  itemStatus: string | null;
+  stateStatus: string | null;
+}): SubagentProgressStatus {
+  const normalizedState = normalizeStatusToken(input.stateStatus);
+  if (normalizedState === "pendinginit" || normalizedState === "pending") return "starting";
+  if (normalizedState === "running") return "running";
+  if (normalizedState === "interrupted") return "interrupted";
+  if (
+    normalizedState === "errored" ||
+    normalizedState === "notfound" ||
+    normalizedState === "error"
+  ) {
+    return "failed";
+  }
+  if (normalizedState === "completed" || normalizedState === "shutdown") return "completed";
+
+  const normalizedTool = input.tool?.trim().toLowerCase();
+  const normalizedItem = normalizeStatusToken(input.itemStatus);
+  if (normalizedTool === "spawnagent" && normalizedItem !== "completed") {
+    return "starting";
+  }
+  if (
+    (normalizedTool === "wait" || normalizedTool === "closeagent") &&
+    normalizedItem !== "completed"
+  ) {
+    return "waiting";
+  }
+  if (normalizedItem === "failed" || normalizedItem === "errored" || normalizedItem === "error") {
+    return "failed";
+  }
+  if (normalizedItem === "interrupted") {
+    return "interrupted";
+  }
+  if (normalizedItem === "completed" && normalizedTool === "closeagent") {
+    return "completed";
+  }
+  if (
+    normalizedItem === "inprogress" ||
+    normalizedItem === "running" ||
+    normalizedItem === "pending"
+  ) {
+    return normalizedTool === "spawnagent" ? "starting" : "running";
+  }
+  return "running";
+}
+
+function normalizeStatusToken(value: string | null): string {
+  return (
+    value
+      ?.trim()
+      .toLowerCase()
+      .replace(/[_\s-]+/gu, "") ?? ""
+  );
+}
+
+function isActiveSubagentStatus(status: SubagentProgressStatus): boolean {
+  return status === "starting" || status === "running" || status === "waiting";
+}
+
+function isFailedSubagentStatus(status: SubagentProgressStatus): boolean {
+  return status === "failed" || status === "interrupted";
+}
+
+function subagentProgressStatusLabel(status: SubagentProgressStatus): string {
+  switch (status) {
+    case "starting":
+      return "Starting";
+    case "running":
+      return "Running";
+    case "waiting":
+      return "Waiting";
+    case "completed":
+      return "Done";
+    case "failed":
+      return "Error";
+    case "interrupted":
+      return "Interrupted";
+  }
+}
+
+function parseSubagentObjective(prompt: string | null): {
+  role: string | null;
+  objective: string | null;
+} {
+  if (!prompt) {
+    return { role: null, objective: null };
+  }
+
+  const firstLine = prompt
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+  const source = firstLine ?? prompt.trim();
+  const roleMatch = /^([A-Za-z][A-Za-z0-9_-]{1,32})\s*:\s*(.+)$/u.exec(source);
+  const objective = source.replace(/^(?:read-only\s+task|task)\.\s*/iu, "").trim();
+  if (roleMatch) {
+    return {
+      role: roleMatch[1]?.replace(/[_-]+/gu, " ").toLowerCase() ?? null,
+      objective: roleMatch[2]?.trim() ?? objective,
+    };
+  }
+  return {
+    role: null,
+    objective: objective || null,
+  };
+}
+
+function subagentDisplayLabel(input: { role: string | null; nickname: string | null }): string {
+  const raw = input.nickname ?? input.role;
+  if (!raw) {
+    return "Subagent";
+  }
+  const normalized = raw.replace(/[_-]+/gu, " ").replace(/\s+/gu, " ").trim();
+  if (!normalized) {
+    return "Subagent";
+  }
+  return `${normalized.charAt(0).toUpperCase()}${normalized.slice(1)} subagent`;
+}
+
+function summarizeSubagentProgress(input: {
+  activeCount: number;
+  completedCount: number;
+  failedCount: number;
+  totalCount: number;
+}): string {
+  if (input.activeCount > 0) {
+    return formatSubagentCount(input.activeCount, "subagent active", "subagents active");
+  }
+  if (input.failedCount > 0) {
+    return formatSubagentCount(
+      input.failedCount,
+      "subagent needs attention",
+      "subagents need attention",
+    );
+  }
+  if (input.completedCount > 0) {
+    return formatSubagentCount(input.completedCount, "subagent finished", "subagents finished");
+  }
+  return formatSubagentCount(input.totalCount, "subagent", "subagents");
+}
+
+function deriveSubagentProgressBadge(input: {
+  activeCount: number;
+  completedCount: number;
+  failedCount: number;
+  totalCount: number;
+}): SubagentProgressBadgeState {
+  if (input.activeCount > 0) {
+    return {
+      label: String(input.activeCount),
+      ariaLabel: formatSubagentCount(input.activeCount, "subagent active", "subagents active"),
+      tone: "active",
+      pulse: true,
+    };
+  }
+  if (input.failedCount > 0) {
+    return {
+      label: String(input.failedCount),
+      ariaLabel: formatSubagentCount(
+        input.failedCount,
+        "subagent needs attention",
+        "subagents need attention",
+      ),
+      tone: "warning",
+      pulse: false,
+    };
+  }
+  if (input.completedCount > 0) {
+    return {
+      label: String(input.completedCount),
+      ariaLabel: formatSubagentCount(
+        input.completedCount,
+        "subagent finished",
+        "subagents finished",
+      ),
+      tone: "complete",
+      pulse: false,
+    };
+  }
+  return {
+    label: String(input.totalCount),
+    ariaLabel: formatSubagentCount(input.totalCount, "subagent", "subagents"),
+    tone: "idle",
+    pulse: false,
+  };
+}
+
+function formatSubagentCount(count: number, singular: string, plural: string): string {
+  return `${count.toLocaleString()} ${count === 1 ? singular : plural}`;
+}
+
 export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): WorkLogEntry[] {
-  const ordered = [...activities].toSorted(compareActivitiesByOrder);
+  const ordered =
+    filterSupersededManualContextCompactionActivities(activities).toSorted(
+      compareActivitiesByOrder,
+    );
   const entries = ordered
     .filter((activity) => activity.kind !== "task.started")
     .filter((activity) => activity.kind !== "context-window.updated")
@@ -1168,6 +1703,9 @@ function deriveWorkLogExecutionState(
   payload: Record<string, unknown> | null,
 ): WorkLogEntry["executionState"] | undefined {
   if (entry.tone === "thinking") {
+    return normalizeWorkLogExecutionStatus(asTrimmedString(payload?.status));
+  }
+  if (activity.kind === "context-compaction") {
     return normalizeWorkLogExecutionStatus(asTrimmedString(payload?.status));
   }
   if (!isLifecycleWorkLogEntry(entry)) {
@@ -2474,6 +3012,7 @@ export function deriveTimelineEntries(
   messages: ChatMessage[],
   proposedPlans: ProposedPlan[],
   workEntries: WorkLogEntry[],
+  subagentResults: SubagentResultEntry[] = [],
 ): TimelineEntry[] {
   const messageRows: TimelineEntry[] = messages.map((message) => ({
     id: message.id,
@@ -2493,8 +3032,14 @@ export function deriveTimelineEntries(
     createdAt: entry.createdAt,
     entry,
   }));
-  return [...messageRows, ...proposedPlanRows, ...workRows].toSorted((a, b) =>
-    a.createdAt.localeCompare(b.createdAt),
+  const subagentResultRows: TimelineEntry[] = subagentResults.map((result) => ({
+    id: result.id,
+    kind: "subagent-result",
+    createdAt: result.createdAt,
+    result,
+  }));
+  return [...messageRows, ...proposedPlanRows, ...workRows, ...subagentResultRows].toSorted(
+    (a, b) => a.createdAt.localeCompare(b.createdAt),
   );
 }
 

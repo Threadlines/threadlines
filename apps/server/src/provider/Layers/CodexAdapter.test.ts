@@ -89,6 +89,8 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
     (_turnId?: TurnId): Promise<void> => Promise.resolve(undefined),
   );
 
+  public readonly compactContextImpl = vi.fn((): Promise<void> => Promise.resolve(undefined));
+
   public readonly readThreadImpl = vi.fn(
     (): Promise<CodexThreadSnapshot> =>
       Promise.resolve({
@@ -138,6 +140,8 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
   interruptTurn(turnId?: TurnId) {
     return Effect.promise(() => this.interruptTurnImpl(turnId));
   }
+
+  compactContext = Effect.promise(() => this.compactContextImpl());
 
   readThread = Effect.promise(() => this.readThreadImpl());
 
@@ -464,6 +468,25 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
     }),
   );
 
+  it.effect("starts provider Codex context compaction", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("sess-compact-provider-thread");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const runtime = sessionRuntimeFactory.lastRuntime;
+      assert.ok(runtime);
+
+      assert.ok(adapter.compactContext);
+      yield* adapter.compactContext(threadId);
+
+      assert.equal(runtime.compactContextImpl.mock.calls.length, 1);
+    }),
+  );
+
   it.effect("maps codex model options for the adapter's bound custom instance id", () => {
     const customInstanceId = ProviderInstanceId.make("codex_personal");
     const customRuntimeFactory = makeRuntimeFactory();
@@ -637,6 +660,48 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       assert.equal(firstEvent.value.itemId, "msg_1");
       assert.equal(firstEvent.value.turnId, "turn-1");
       assert.equal(firstEvent.value.payload.itemType, "assistant_message");
+    }),
+  );
+
+  it.effect("maps context compaction items to canonical lifecycle events", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      yield* runtime.emit({
+        id: asEventId("evt-context-compaction-started"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "item/started",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-1"),
+        itemId: asItemId("compact_1"),
+        payload: {
+          startedAtMs: 1_778_000_001_234,
+          threadId: "thread-1",
+          turnId: "turn-1",
+          item: {
+            type: "contextCompaction",
+            id: "compact_1",
+            summary: "Summarizing earlier context",
+          },
+        },
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      assert.equal(firstEvent.value.type, "item.started");
+      if (firstEvent.value.type !== "item.started") {
+        return;
+      }
+      assert.equal(firstEvent.value.payload.itemType, "context_compaction");
+      assert.equal(firstEvent.value.payload.status, "inProgress");
+      assert.equal(firstEvent.value.payload.detail, "Summarizing earlier context");
     }),
   );
 

@@ -60,6 +60,13 @@ export interface ProviderServiceShape {
   ) => Effect.Effect<void, ProviderServiceError>;
 
   /**
+   * Ask the active provider session to compact its context.
+   */
+  readonly compactContext: (input: {
+    readonly threadId: ThreadId;
+  }) => Effect.Effect<void, ProviderServiceError>;
+
+  /**
    * Respond to a provider approval request.
    */
   readonly respondToRequest: (

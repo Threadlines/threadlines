@@ -10,6 +10,7 @@
  * @module ProviderServiceLive
  */
 import {
+  EventId,
   MessageId,
   ModelSelection,
   NonNegativeInt,
@@ -72,6 +73,9 @@ const ProviderRollbackConversationInput = Schema.Struct({
   threadId: ThreadId,
   numTurns: NonNegativeInt,
   targetUserMessageId: Schema.optional(MessageId),
+});
+const ProviderCompactContextInput = Schema.Struct({
+  threadId: ThreadId,
 });
 const ProviderDeleteThreadInput = Schema.Struct({
   threadId: ThreadId,
@@ -746,6 +750,103 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     },
   );
 
+  const compactContext: ProviderServiceShape["compactContext"] = Effect.fn("compactContext")(
+    function* (rawInput) {
+      const input = yield* decodeInputOrValidationError({
+        operation: "ProviderService.compactContext",
+        schema: ProviderCompactContextInput,
+        payload: rawInput,
+      });
+      let metricProvider = "unknown";
+      return yield* Effect.gen(function* () {
+        const routed = yield* resolveRoutableSession({
+          threadId: input.threadId,
+          operation: "ProviderService.compactContext",
+          allowRecovery: true,
+        });
+        metricProvider = routed.adapter.provider;
+        yield* Effect.annotateCurrentSpan({
+          "provider.operation": "compact-context",
+          "provider.kind": routed.adapter.provider,
+          "provider.thread_id": input.threadId,
+        });
+        if (
+          routed.adapter.capabilities.manualContextCompaction !== "supported" ||
+          routed.adapter.compactContext === undefined
+        ) {
+          return yield* toValidationError(
+            "ProviderService.compactContext",
+            `Provider '${routed.adapter.provider}' does not support manual context compaction.`,
+          );
+        }
+
+        const createdAt = yield* nowIso;
+        yield* processRuntimeEvent(
+          {
+            instanceId: routed.instanceId,
+            provider: routed.adapter.provider,
+          },
+          {
+            eventId: EventId.make(crypto.randomUUID()),
+            provider: routed.adapter.provider,
+            providerInstanceId: routed.instanceId,
+            threadId: input.threadId,
+            createdAt,
+            type: "session.state.changed",
+            payload: {
+              state: "waiting",
+              reason: "status:compacting",
+              detail: {
+                trigger: "manual",
+              },
+            },
+          },
+        );
+        yield* routed.adapter.compactContext(routed.threadId).pipe(
+          Effect.catchCause((cause) =>
+            Effect.gen(function* () {
+              yield* processRuntimeEvent(
+                {
+                  instanceId: routed.instanceId,
+                  provider: routed.adapter.provider,
+                },
+                {
+                  eventId: EventId.make(crypto.randomUUID()),
+                  provider: routed.adapter.provider,
+                  providerInstanceId: routed.instanceId,
+                  threadId: input.threadId,
+                  createdAt: yield* nowIso,
+                  type: "item.completed",
+                  payload: {
+                    itemType: "context_compaction",
+                    status: "failed",
+                    title: "Context compaction failed",
+                    detail: Cause.pretty(cause),
+                    data: {
+                      trigger: "manual",
+                    },
+                  },
+                },
+              );
+              return yield* Effect.failCause(cause);
+            }),
+          ),
+        );
+        yield* analytics.record("provider.context.compact_requested", {
+          provider: routed.adapter.provider,
+        });
+      }).pipe(
+        withMetrics({
+          counter: providerTurnsTotal,
+          outcomeAttributes: () =>
+            providerMetricAttributes(metricProvider, {
+              operation: "compact-context",
+            }),
+        }),
+      );
+    },
+  );
+
   const respondToRequest: ProviderServiceShape["respondToRequest"] = Effect.fn("respondToRequest")(
     function* (rawInput) {
       const input = yield* decodeInputOrValidationError({
@@ -1100,6 +1201,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     startSession,
     sendTurn,
     interruptTurn,
+    compactContext,
     respondToRequest,
     respondToUserInput,
     stopSession,

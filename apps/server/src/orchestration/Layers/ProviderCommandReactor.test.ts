@@ -230,6 +230,7 @@ describe("ProviderCommandReactor", () => {
       }),
     );
     const interruptTurn = vi.fn((_: unknown) => Effect.void);
+    const compactContext = vi.fn<ProviderServiceShape["compactContext"]>(() => Effect.void);
     const respondToRequest = vi.fn<ProviderServiceShape["respondToRequest"]>(() => Effect.void);
     const respondToUserInput = vi.fn<ProviderServiceShape["respondToUserInput"]>(() => Effect.void);
     const stopSession = vi.fn((input: unknown) =>
@@ -306,6 +307,7 @@ describe("ProviderCommandReactor", () => {
       startSession: startSession as ProviderServiceShape["startSession"],
       sendTurn: sendTurn as ProviderServiceShape["sendTurn"],
       interruptTurn: interruptTurn as ProviderServiceShape["interruptTurn"],
+      compactContext,
       respondToRequest: respondToRequest as ProviderServiceShape["respondToRequest"],
       respondToUserInput: respondToUserInput as ProviderServiceShape["respondToUserInput"],
       stopSession: stopSession as ProviderServiceShape["stopSession"],
@@ -440,6 +442,7 @@ describe("ProviderCommandReactor", () => {
       startSession,
       sendTurn,
       interruptTurn,
+      compactContext,
       respondToRequest,
       respondToUserInput,
       stopSession,
@@ -1609,6 +1612,106 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.interruptTurn.mock.calls.length === 1);
     expect(harness.interruptTurn.mock.calls[0]?.[0]).toEqual({
       threadId: "thread-1",
+    });
+  });
+
+  it("reacts to thread.context-compact.request by calling provider compact", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-for-compact"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.context-compact.request",
+        commandId: CommandId.make("cmd-context-compact"),
+        threadId: ThreadId.make("thread-1"),
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.compactContext.mock.calls.length === 1);
+    expect(harness.compactContext.mock.calls[0]?.[0]).toEqual({
+      threadId: "thread-1",
+    });
+  });
+
+  it("delegates context compact requests without a projected session", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.context-compact.request",
+        commandId: CommandId.make("cmd-context-compact-without-projected-session"),
+        threadId: ThreadId.make("thread-1"),
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.compactContext.mock.calls.length === 1);
+    expect(harness.compactContext.mock.calls[0]?.[0]).toEqual({
+      threadId: "thread-1",
+    });
+  });
+
+  it("surfaces context compact failures from provider service", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    harness.compactContext.mockImplementationOnce(() =>
+      Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: "codex",
+          method: "thread/compact/start",
+          detail: "No persisted provider binding exists.",
+        }),
+      ),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.context-compact.request",
+        commandId: CommandId.make("cmd-context-compact-failure"),
+        threadId: ThreadId.make("thread-1"),
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.compactContext.mock.calls.length === 1);
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      return (
+        thread?.activities.some(
+          (activity) => activity.kind === "provider.context-compact.failed",
+        ) ?? false
+      );
+    });
+
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    const activity = thread?.activities.find(
+      (entry) => entry.kind === "provider.context-compact.failed",
+    );
+    expect(activity?.summary).toBe("Context compaction failed");
+    expect(activity?.payload).toMatchObject({
+      detail: "No persisted provider binding exists.",
     });
   });
 

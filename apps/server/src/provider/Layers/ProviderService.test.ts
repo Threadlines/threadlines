@@ -140,6 +140,10 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
       Effect.void,
   );
 
+  const compactContext = vi.fn(
+    (_threadId: ThreadId): Effect.Effect<void, ProviderAdapterError> => Effect.void,
+  );
+
   const respondToRequest = vi.fn(
     (
       _threadId: ThreadId,
@@ -214,10 +218,12 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     provider,
     capabilities: {
       sessionModelSwitch: "in-session",
+      manualContextCompaction: "supported",
     },
     startSession,
     sendTurn,
     interruptTurn,
+    compactContext,
     respondToRequest,
     respondToUserInput,
     stopSession,
@@ -254,6 +260,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     startSession,
     sendTurn,
     interruptTurn,
+    compactContext,
     respondToRequest,
     respondToUserInput,
     stopSession,
@@ -817,6 +824,27 @@ routing.layer("ProviderServiceLive routing", (it) => {
 
       yield* provider.interruptTurn({ threadId: session.threadId });
       assert.deepEqual(routing.codex.interruptTurn.mock.calls, [[session.threadId, undefined]]);
+
+      const compactEventsRef = yield* Ref.make<Array<ProviderRuntimeEvent>>([]);
+      const compactEventConsumer = yield* Stream.runForEach(provider.streamEvents, (event) =>
+        Ref.update(compactEventsRef, (current) => [...current, event]),
+      ).pipe(Effect.forkChild);
+      yield* advanceTestClock(50);
+
+      yield* provider.compactContext({ threadId: session.threadId });
+      assert.deepEqual(routing.codex.compactContext.mock.calls, [[session.threadId]]);
+      yield* advanceTestClock(50);
+      const compactEvents = yield* Ref.get(compactEventsRef);
+      yield* Fiber.interrupt(compactEventConsumer);
+      const compactStartedEvent = compactEvents.find(
+        (event) => event.type === "session.state.changed",
+      );
+      assert.equal(compactStartedEvent?.providerInstanceId, codexInstanceId);
+      assert.equal(compactStartedEvent?.threadId, session.threadId);
+      if (compactStartedEvent?.type === "session.state.changed") {
+        assert.equal(compactStartedEvent.payload.state, "waiting");
+        assert.equal(compactStartedEvent.payload.reason, "status:compacting");
+      }
 
       yield* provider.respondToRequest({
         threadId: session.threadId,

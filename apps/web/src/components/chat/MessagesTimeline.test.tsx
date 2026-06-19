@@ -703,6 +703,41 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain('data-subagent-activity-details="true"');
   });
 
+  it("renders final subagent results as distinct timeline rows", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "subagent-result:turn-1:agent-1",
+            kind: "subagent-result",
+            createdAt: "2026-03-17T19:12:30.000Z",
+            result: {
+              id: "subagent-result:turn-1:agent-1",
+              createdAt: "2026-03-17T19:12:30.000Z",
+              turnId: TurnId.make("turn-1"),
+              agentThreadId: "agent-1",
+              label: "Reviewer subagent",
+              role: "reviewer",
+              objective: "Inspect timeline rendering",
+              body: "**Finding:** subagent output is visible.",
+              model: "gpt-5.5",
+              reasoningEffort: "medium",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('data-subagent-result-row="true"');
+    expect(markup).toContain('data-subagent-result-body="true"');
+    expect(markup).toContain("Reviewer subagent");
+    expect(markup).toContain("Inspect timeline rendering");
+    expect(markup).toContain("subagent output is visible");
+    expect(markup).toContain("Subagent");
+  });
+
   it("marks agent response bodies without changing markdown rendering", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(

@@ -450,6 +450,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
         <AssistantTimelineRow row={row} />
       ) : null}
       {row.kind === "proposed-plan" ? <ProposedPlanTimelineRow row={row} /> : null}
+      {row.kind === "subagent-result" ? <SubagentResultTimelineRow row={row} /> : null}
       {row.kind === "working" ? <WorkingTimelineRow row={row} /> : null}
     </div>
   );
@@ -589,8 +590,7 @@ function ContinueInNewThreadButton({
             disabled={activity.isWorking}
             onClick={() => ctx.onContinueInNewThread?.(messageId)}
             aria-label="Continue in new thread"
-            title="Continue in new thread"
-            className={className}
+            className={cn("enabled:cursor-pointer", className)}
           />
         }
       >
@@ -721,6 +721,164 @@ function ProposedPlanTimelineRow({
         workspaceRoot={ctx.workspaceRoot}
       />
     </div>
+  );
+}
+
+function SubagentResultTimelineRow({
+  row,
+}: {
+  row: Extract<TimelineRow, { kind: "subagent-result" }>;
+}) {
+  const ctx = use(TimelineRowCtx);
+  const meta = [row.result.model, row.result.reasoningEffort].filter(
+    (part): part is string => typeof part === "string" && part.length > 0,
+  );
+
+  return (
+    <div className="min-w-0 px-1 py-0.5" data-subagent-result-row="true">
+      <div className="max-w-2xl rounded-lg border border-border/65 bg-muted/20 px-3 py-2.5">
+        <div className="mb-2 flex min-w-0 items-start justify-between gap-3">
+          <div className="flex min-w-0 items-start gap-2">
+            <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary-readable">
+              <BotIcon className="size-3" aria-hidden="true" />
+            </span>
+            <div className="min-w-0">
+              <div className="flex min-w-0 items-center gap-1.5">
+                <p
+                  className="truncate text-xs font-medium text-foreground"
+                  title={row.result.label}
+                >
+                  {row.result.label}
+                </p>
+                <span className="shrink-0 rounded border border-border/55 bg-background/55 px-1 py-px text-[9px] uppercase tracking-[0.12em] text-muted-foreground/55">
+                  Subagent
+                </span>
+              </div>
+              {row.result.objective ? (
+                <ExpandableSubagentInstructionText text={row.result.objective} />
+              ) : null}
+            </div>
+          </div>
+          <span className="shrink-0 rounded-full bg-success/10 px-1.5 py-0.5 text-[10px] font-medium text-success">
+            Done
+          </span>
+        </div>
+        <div className="min-w-0 border-l border-border/60 pl-3" data-subagent-result-body="true">
+          <ChatMarkdown
+            text={row.result.body}
+            cwd={ctx.markdownCwd}
+            isStreaming={false}
+            skills={ctx.skills}
+          />
+        </div>
+        <div className="mt-2 flex items-center justify-between gap-2">
+          <p className="truncate text-[10px] text-muted-foreground/40">
+            {meta.length > 0 ? meta.join(" / ") : "Subagent result"}
+          </p>
+          <p className="shrink-0 text-[10px] tracking-tight tabular-nums text-muted-foreground/30">
+            {formatTimestamp(row.createdAt, ctx.timestampFormat)}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ExpandableSubagentInstructionText({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const [truncated, setTruncated] = useState(false);
+  const textElementRef = useRef<HTMLElement | null>(null);
+  const setParagraphRef = useCallback((node: HTMLParagraphElement | null) => {
+    textElementRef.current = node;
+  }, []);
+  const setButtonRef = useCallback((node: HTMLButtonElement | null) => {
+    textElementRef.current = node;
+  }, []);
+  const measureTruncation = useCallback(() => {
+    if (expanded) {
+      return;
+    }
+    const element = textElementRef.current;
+    if (!element) {
+      return;
+    }
+    const nextTruncated =
+      element.scrollHeight > element.clientHeight + 1 ||
+      element.scrollWidth > element.clientWidth + 1;
+    setTruncated((current) => (current === nextTruncated ? current : nextTruncated));
+  }, [expanded]);
+
+  useEffect(() => {
+    setExpanded(false);
+    setTruncated(false);
+  }, [text]);
+
+  useEffect(() => {
+    if (expanded) {
+      return;
+    }
+
+    const element = textElementRef.current;
+    if (!element) {
+      return;
+    }
+
+    const animationFrameId = window.requestAnimationFrame(measureTruncation);
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", measureTruncation);
+      return () => {
+        window.cancelAnimationFrame(animationFrameId);
+        window.removeEventListener("resize", measureTruncation);
+      };
+    }
+
+    const resizeObserver = new ResizeObserver(() => {
+      measureTruncation();
+    });
+    resizeObserver.observe(element);
+    return () => {
+      window.cancelAnimationFrame(animationFrameId);
+      resizeObserver.disconnect();
+    };
+  }, [expanded, measureTruncation, text]);
+
+  const className = cn(
+    "mt-0.5 w-full text-left text-[11px] leading-4 text-muted-foreground/70",
+    !expanded && "line-clamp-2",
+    (truncated || expanded) &&
+      "cursor-pointer rounded-sm transition-colors hover:text-muted-foreground/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/45",
+  );
+
+  if (truncated || expanded) {
+    return (
+      <button
+        type="button"
+        ref={setButtonRef}
+        className={className}
+        title={expanded ? "Collapse subagent instructions" : text}
+        aria-expanded={expanded}
+        aria-label={expanded ? "Collapse subagent instructions" : "Expand subagent instructions"}
+        data-subagent-result-objective="true"
+        data-subagent-result-objective-expanded={expanded ? "true" : "false"}
+        data-subagent-result-objective-truncated={truncated ? "true" : "false"}
+        onClick={() => setExpanded((current) => !current)}
+      >
+        {text}
+      </button>
+    );
+  }
+
+  return (
+    <p
+      ref={setParagraphRef}
+      className={className}
+      title={text}
+      data-subagent-result-objective="true"
+      data-subagent-result-objective-expanded="false"
+      data-subagent-result-objective-truncated="false"
+    >
+      {text}
+    </p>
   );
 }
 

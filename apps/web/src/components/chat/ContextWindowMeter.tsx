@@ -1,3 +1,5 @@
+import { useCallback, useState } from "react";
+
 import { cn } from "~/lib/utils";
 import { type ContextWindowSnapshot, formatContextWindowTokens } from "~/lib/contextWindow";
 import {
@@ -5,7 +7,7 @@ import {
   type ProviderAccountUsagePresentation,
 } from "~/lib/providerUsage";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
-import { ProviderUsageHistory } from "../ProviderUsageHistory";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 function formatPercentage(value: number | null): string | null {
   if (value === null || !Number.isFinite(value)) {
@@ -17,6 +19,18 @@ function formatPercentage(value: number | null): string | null {
   return `${Math.round(value)}%`;
 }
 
+function formatComposerResetCreditAvailability(availableCount: number): string {
+  if (availableCount <= 0) return "None available";
+  return availableCount === 1 ? "1 available" : `${availableCount} available`;
+}
+
+function formatComposerResetCreditDetail(detail: string): string {
+  return detail === "usable for 30 days after grant" ? "30-day grant window" : detail;
+}
+
+const contextWindowActionButtonClassName =
+  "h-5 shrink-0 cursor-pointer rounded-sm border border-border/70 px-1.5 font-medium text-[10px] text-foreground leading-none transition-colors hover:border-border hover:bg-muted hover:text-foreground focus-visible:border-ring focus-visible:bg-muted focus-visible:outline-none disabled:pointer-events-none disabled:cursor-default disabled:opacity-55";
+
 function AccountUsageBar(props: {
   usageLabel: string;
   rowLabel: string;
@@ -26,9 +40,9 @@ function AccountUsageBar(props: {
 }) {
   return (
     <div className="space-y-1">
-      <div className="flex items-baseline justify-between gap-4 whitespace-nowrap text-xs">
-        <span className="font-medium text-foreground">{props.rowLabel}</span>
-        <span className="text-muted-foreground">{props.detail}</span>
+      <div className="flex min-w-0 items-baseline justify-between gap-3 text-xs">
+        <span className="shrink-0 font-medium text-foreground">{props.rowLabel}</span>
+        <span className="min-w-0 text-right text-muted-foreground">{props.detail}</span>
       </div>
       <div
         role="meter"
@@ -56,8 +70,14 @@ export function ContextWindowMeter(props: {
   contextWindowLabel?: string | null;
   onResetAccountUsage?: (() => void) | undefined;
   accountUsageResetInFlight?: boolean | undefined;
+  onCompactContext?: (() => void) | undefined;
+  contextCompactDisabled?: boolean | undefined;
+  contextCompactInFlight?: boolean | undefined;
+  contextCompactDisabledReason?: string | null | undefined;
 }) {
   const { usage, contextWindowLabel } = props;
+  const [isOpen, setIsOpen] = useState(false);
+  const [isPinnedOpen, setIsPinnedOpen] = useState(false);
   const accountUsage = props.accountUsage ?? null;
   const usageNearLimit = isProviderUsageNearLimit(accountUsage);
   const usedPercentage = formatPercentage(usage?.usedPercentage ?? null);
@@ -65,28 +85,63 @@ export function ContextWindowMeter(props: {
   const radius = 9.75;
   const circumference = 2 * Math.PI * radius;
   const dashOffset = circumference - (normalizedPercentage / 100) * circumference;
+  const showCompactButton =
+    props.onCompactContext !== undefined || props.contextCompactDisabledReason !== undefined;
+  const compactButtonDisabled =
+    props.contextCompactDisabled === true ||
+    props.contextCompactInFlight === true ||
+    props.onCompactContext === undefined;
+  const compactButtonTooltip =
+    props.contextCompactDisabledReason ??
+    (props.contextCompactInFlight === true
+      ? "Context compaction is running."
+      : "Best used near the context limit.");
 
   const contextAriaLabel = !usage
     ? "Context window — no tokens used yet"
     : usage.maxTokens !== null && usedPercentage
       ? `Context window ${usedPercentage} used`
       : `Context window ${formatContextWindowTokens(usage.usedTokens)} tokens used`;
+  const onOpenChange = useCallback((nextOpen: boolean) => {
+    setIsOpen(nextOpen);
+    if (!nextOpen) {
+      setIsPinnedOpen(false);
+    }
+  }, []);
+  const onTogglePinnedOpen = useCallback(() => {
+    setIsPinnedOpen((currentPinnedOpen) => {
+      const nextPinnedOpen = !currentPinnedOpen;
+      setIsOpen(nextPinnedOpen);
+      return nextPinnedOpen;
+    });
+  }, []);
+  const isMeterActive = isOpen || isPinnedOpen;
 
   return (
-    <Popover>
+    <Popover onOpenChange={onOpenChange} open={isOpen}>
       <PopoverTrigger
-        openOnHover
+        openOnHover={!isPinnedOpen}
         delay={150}
         closeDelay={0}
         render={
           <button
             type="button"
-            className="group inline-flex items-center justify-center rounded-full transition-opacity hover:opacity-85"
+            className={cn(
+              "group/context-meter inline-flex size-6 cursor-pointer items-center justify-center rounded-full text-muted-foreground outline-none ring-1 ring-transparent transition-[background-color,box-shadow,color] duration-200",
+              "hover:bg-muted/45 hover:text-foreground hover:ring-border/70 focus-visible:bg-muted/45 focus-visible:text-foreground focus-visible:ring-ring/55",
+              isMeterActive && "bg-muted/45 text-foreground ring-border/70",
+            )}
+            aria-expanded={isOpen}
             aria-label={
               usageNearLimit && accountUsage
                 ? `${contextAriaLabel}, ${accountUsage.label} near limit`
                 : contextAriaLabel
             }
+            onClickCapture={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onTogglePinnedOpen();
+            }}
           >
             <span className="relative flex h-6 w-6 items-center justify-center">
               <svg
@@ -101,6 +156,7 @@ export function ContextWindowMeter(props: {
                   fill="none"
                   stroke="color-mix(in oklab, var(--color-muted) 70%, transparent)"
                   strokeWidth="3"
+                  className="transition-[stroke] duration-200 group-hover/context-meter:stroke-muted-foreground/35 group-focus-visible/context-meter:stroke-muted-foreground/35 motion-reduce:transition-none"
                 />
                 {usage ? (
                   <circle
@@ -108,7 +164,7 @@ export function ContextWindowMeter(props: {
                     cy="12"
                     r={radius}
                     fill="none"
-                    stroke="var(--color-muted-foreground)"
+                    stroke="var(--color-primary)"
                     strokeWidth="3"
                     strokeLinecap="round"
                     strokeDasharray={circumference}
@@ -139,7 +195,12 @@ export function ContextWindowMeter(props: {
           </button>
         }
       />
-      <PopoverPopup tooltipStyle side="top" align="end" className="w-max max-w-none px-3 py-2">
+      <PopoverPopup
+        tooltipStyle
+        side="top"
+        align="end"
+        className="w-96 max-w-[calc(100vw-2rem)] px-3 py-2"
+      >
         <div className="space-y-2 leading-tight">
           <div className="space-y-1.5">
             <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
@@ -176,9 +237,39 @@ export function ContextWindowMeter(props: {
                 tokens
               </div>
             ) : null}
-            {usage?.compactsAutomatically ? (
-              <div className="text-xs text-muted-foreground">
-                Automatically compacts its context when needed.
+            {usage?.compactsAutomatically || showCompactButton ? (
+              <div className="flex min-w-0 items-center justify-between gap-3 text-xs text-muted-foreground">
+                <span className="min-w-0">
+                  {usage?.compactsAutomatically
+                    ? "Automatically compacts its context when needed."
+                    : "Manual context compaction is available."}
+                </span>
+                {showCompactButton ? (
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <span
+                          className={cn(
+                            "inline-flex shrink-0",
+                            compactButtonDisabled ? "cursor-default" : "cursor-pointer",
+                          )}
+                        >
+                          <button
+                            type="button"
+                            disabled={compactButtonDisabled}
+                            onClick={props.onCompactContext}
+                            className={contextWindowActionButtonClassName}
+                          >
+                            {props.contextCompactInFlight ? "Compacting" : "Compact now"}
+                          </button>
+                        </span>
+                      }
+                    />
+                    <TooltipPopup side="top" align="end" className="max-w-64">
+                      {compactButtonTooltip}
+                    </TooltipPopup>
+                  </Tooltip>
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -188,23 +279,31 @@ export function ContextWindowMeter(props: {
                 {accountUsage.label}
               </div>
               {accountUsage.resetCredits ? (
-                <div className="flex items-baseline justify-between gap-4 whitespace-nowrap text-xs">
-                  <span className="font-medium text-foreground">Reset</span>
-                  <span className="inline-flex items-center gap-2 text-muted-foreground">
-                    <span>
-                      {accountUsage.resetCredits.label} - {accountUsage.resetCredits.detail}
-                    </span>
-                    {props.onResetAccountUsage && accountUsage.resetCredits.availableCount > 0 ? (
-                      <button
-                        type="button"
-                        disabled={props.accountUsageResetInFlight === true}
-                        onClick={props.onResetAccountUsage}
-                        className="rounded-sm border border-border/70 px-1.5 py-0.5 font-medium text-[11px] text-foreground transition-colors hover:border-border hover:bg-muted disabled:pointer-events-none disabled:opacity-55"
-                      >
-                        {props.accountUsageResetInFlight ? "Resetting" : "Reset"}
-                      </button>
+                <div className="flex min-w-0 items-center gap-2 text-xs">
+                  <span className="shrink-0 font-medium text-foreground">Resets</span>
+                  <span className="min-w-0 truncate text-muted-foreground">
+                    {formatComposerResetCreditAvailability(
+                      accountUsage.resetCredits.availableCount,
+                    )}
+                    {accountUsage.resetCredits.detail ? (
+                      <>
+                        <span className="mx-1" aria-hidden>
+                          -
+                        </span>
+                        {formatComposerResetCreditDetail(accountUsage.resetCredits.detail)}
+                      </>
                     ) : null}
                   </span>
+                  {props.onResetAccountUsage && accountUsage.resetCredits.availableCount > 0 ? (
+                    <button
+                      type="button"
+                      disabled={props.accountUsageResetInFlight === true}
+                      onClick={props.onResetAccountUsage}
+                      className={contextWindowActionButtonClassName}
+                    >
+                      {props.accountUsageResetInFlight ? "Resetting" : "Reset"}
+                    </button>
+                  ) : null}
                 </div>
               ) : null}
               {accountUsage.spendControl ? (
@@ -226,9 +325,6 @@ export function ContextWindowMeter(props: {
                   reachedLimit={window.reachedLimit}
                 />
               ))}
-              {accountUsage.tokenUsage ? (
-                <ProviderUsageHistory history={accountUsage.tokenUsage} compact />
-              ) : null}
             </div>
           ) : null}
         </div>

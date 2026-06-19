@@ -1,5 +1,9 @@
 import * as Equal from "effect/Equal";
-import { type TimelineEntry, type WorkLogEntry } from "../../session-logic";
+import {
+  type SubagentResultEntry,
+  type TimelineEntry,
+  type WorkLogEntry,
+} from "../../session-logic";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
 import { type MessageId, type TurnId } from "@t3tools/contracts";
 
@@ -39,6 +43,12 @@ export type MessagesTimelineRow =
       id: string;
       createdAt: string;
       proposedPlan: ProposedPlan;
+    }
+  | {
+      kind: "subagent-result";
+      id: string;
+      createdAt: string;
+      result: SubagentResultEntry;
     }
   | { kind: "working"; id: string; createdAt: string | null; label: string };
 
@@ -241,6 +251,16 @@ export function deriveMessagesTimelineRows(input: {
       continue;
     }
 
+    if (timelineEntry.kind === "subagent-result") {
+      nextRows.push({
+        kind: "subagent-result",
+        id: timelineEntry.id,
+        createdAt: timelineEntry.createdAt,
+        result: timelineEntry.result,
+      });
+      continue;
+    }
+
     const assistantTurnStillInProgress =
       timelineEntry.message.role === "assistant" &&
       input.activeTurnInProgress === true &&
@@ -381,6 +401,9 @@ function concreteTimelineEntryTurnId(entry: TimelineEntry): TurnId | null | unde
   if (entry.kind === "work" && !entry.entry.providerLifecyclePhase) {
     return entry.entry.turnId ?? null;
   }
+  if (entry.kind === "subagent-result") {
+    return entry.result.turnId ?? null;
+  }
   return undefined;
 }
 
@@ -438,6 +461,9 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
 
     case "proposed-plan":
       return a.proposedPlan === (b as typeof a).proposedPlan;
+
+    case "subagent-result":
+      return a.result === (b as typeof a).result;
 
     case "work":
       return (

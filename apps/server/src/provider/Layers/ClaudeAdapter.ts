@@ -97,6 +97,7 @@ const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJ
 const decodeUnknownJsonStringExit = Schema.decodeUnknownExit(Schema.UnknownFromJsonString);
 
 const PROVIDER = ProviderDriverKind.make("claudeAgent");
+const COMPACT_CONTEXT_COMMAND = "/compact";
 const MAX_CLAUDE_FALLBACK_MODELS = 3;
 type ClaudeTextStreamKind = Extract<RuntimeContentStreamKind, "assistant_text" | "reasoning_text">;
 type ClaudeToolResultStreamKind = Extract<
@@ -1442,6 +1443,12 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
     ...(input.messageId !== undefined ? { userMessageId: input.messageId } : {}),
   });
 });
+
+function buildSlashCommandUserMessage(command: string): SDKUserMessage {
+  return buildUserMessage({
+    sdkContent: [{ type: "text", text: command }],
+  });
+}
 
 function turnStatusFromResult(result: SDKResultMessage): ProviderRuntimeTurnStatus {
   if (result.subtype === "success") {
@@ -4241,6 +4248,24 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     },
   );
 
+  const compactContext: NonNullable<ClaudeAdapterShape["compactContext"]> = Effect.fn(
+    "compactContext",
+  )(function* (threadId) {
+    const context = yield* requireSession(threadId);
+    if (context.turnState) {
+      return yield* new ProviderAdapterRequestError({
+        provider: PROVIDER,
+        method: "thread/compact",
+        detail: "Cannot compact Claude context while a turn is running.",
+      });
+    }
+
+    yield* Queue.offer(context.promptQueue, {
+      type: "message",
+      message: buildSlashCommandUserMessage(COMPACT_CONTEXT_COMMAND),
+    }).pipe(Effect.mapError((cause) => toRequestError(threadId, "thread/compact", cause)));
+  });
+
   const readThread: ClaudeAdapterShape["readThread"] = Effect.fn("readThread")(
     function* (threadId) {
       const context = yield* requireSession(threadId);
@@ -4393,10 +4418,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     provider: PROVIDER,
     capabilities: {
       sessionModelSwitch: "in-session",
+      manualContextCompaction: "supported",
     },
     startSession,
     sendTurn,
     interruptTurn,
+    compactContext,
     readThread,
     rollbackThread,
     respondToRequest,

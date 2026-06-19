@@ -261,6 +261,8 @@ function itemTitle(itemType: CanonicalItemType): string | undefined {
       return "MCP tool call";
     case "dynamic_tool_call":
       return "Tool call";
+    case "collab_agent_tool_call":
+      return "Subagent task";
     case "web_search":
       return "Web search";
     case "image_view":
@@ -2113,6 +2115,16 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       ),
     );
 
+  const compactContext: NonNullable<CodexAdapterShape["compactContext"]> = (threadId) =>
+    requireSession(threadId).pipe(
+      Effect.flatMap((session) => session.runtime.compactContext),
+      Effect.mapError((cause) =>
+        cause._tag === "ProviderAdapterSessionNotFoundError"
+          ? cause
+          : mapCodexRuntimeError(threadId, "thread/compact/start", cause),
+      ),
+    );
+
   const readThread: CodexAdapterShape["readThread"] = (threadId) =>
     requireSession(threadId).pipe(
       Effect.flatMap((session) => session.runtime.readThread),
@@ -2245,10 +2257,12 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     provider: PROVIDER,
     capabilities: {
       sessionModelSwitch: "in-session",
+      manualContextCompaction: "supported",
     },
     startSession,
     sendTurn,
     interruptTurn,
+    compactContext,
     readThread,
     rollbackThread,
     deleteThread,

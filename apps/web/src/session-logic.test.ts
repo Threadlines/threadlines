@@ -14,6 +14,8 @@ import {
   deriveActivePlanState,
   derivePendingApprovals,
   derivePendingUserInputs,
+  deriveSubagentProgressState,
+  deriveSubagentResultEntries,
   deriveTimelineEntries,
   deriveWorkLogEntries,
   findLatestProposedPlan,
@@ -2743,6 +2745,58 @@ describe("deriveWorkLogEntries context window handling", () => {
     expect(entries).toHaveLength(1);
     expect(entries[0]?.label).toBe("Context compacted");
   });
+
+  it("marks in-progress context compaction as running work", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "compaction-1",
+        turnId: "turn-1",
+        kind: "context-compaction",
+        summary: "Compacting context...",
+        tone: "info",
+        payload: {
+          status: "inProgress",
+        },
+      }),
+    ]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.label).toBe("Compacting context...");
+    expect(entries[0]?.executionState).toBe("running");
+  });
+
+  it("hides superseded manual context compaction placeholders", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "manual-placeholder",
+        createdAt: "2026-06-19T20:14:01.000Z",
+        kind: "context-compaction",
+        summary: "Compacting context...",
+        tone: "info",
+        payload: {
+          status: "inProgress",
+          state: "waiting",
+          detail: { trigger: "manual" },
+        },
+      }),
+      makeActivity({
+        id: "provider-context-compaction",
+        createdAt: "2026-06-19T20:14:39.000Z",
+        turnId: "turn-1",
+        kind: "context-compaction",
+        summary: "Context compacted",
+        tone: "info",
+        payload: {
+          status: "completed",
+          sourceItemType: "context_compaction",
+        },
+      }),
+    ]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.id).toBe("provider-context-compaction");
+    expect(entries[0]?.label).toBe("Context compacted");
+  });
 });
 
 describe("hasToolActivityForTurn", () => {
@@ -2886,6 +2940,336 @@ describe("deriveActiveWorkStartedAt", () => {
         "2026-02-27T21:11:00.000Z",
       ),
     ).toBe("2026-02-27T21:11:00.000Z");
+  });
+});
+
+describe("deriveSubagentProgressState", () => {
+  it("tracks spawned agents through pending, running, and completed states", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "spawn-started",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.started",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "inProgress",
+          data: {
+            item: {
+              id: "call-spawn",
+              type: "collabAgentToolCall",
+              tool: "spawnAgent",
+              status: "inProgress",
+              prompt: "Read-only task. Inspect timeline rendering",
+              receiverThreadIds: [],
+              agentsStates: {},
+              model: "gpt-5.5",
+              reasoningEffort: "medium",
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "spawn-completed",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.completed",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          data: {
+            item: {
+              id: "call-spawn",
+              type: "collabAgentToolCall",
+              tool: "spawnAgent",
+              status: "completed",
+              prompt: "Read-only task. Inspect timeline rendering",
+              receiverThreadIds: ["agent-1"],
+              agentsStates: {
+                "agent-1": { status: "pendingInit", message: null },
+              },
+              model: "gpt-5.5",
+              reasoningEffort: "medium",
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "wait-started",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "tool.started",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "inProgress",
+          data: {
+            item: {
+              id: "call-wait",
+              type: "collabAgentToolCall",
+              tool: "wait",
+              status: "inProgress",
+              receiverThreadIds: ["agent-1"],
+              agentsStates: {
+                "agent-1": { status: "running", message: null },
+              },
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "close-completed",
+        createdAt: "2026-02-23T00:00:04.000Z",
+        kind: "tool.completed",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          data: {
+            item: {
+              id: "call-close",
+              type: "collabAgentToolCall",
+              tool: "closeAgent",
+              status: "completed",
+              receiverThreadIds: ["agent-1"],
+              agentsStates: {
+                "agent-1": { status: "completed", message: "Done" },
+              },
+            },
+          },
+        },
+      }),
+    ];
+
+    const activeState = deriveSubagentProgressState({
+      activities: activities.slice(0, 3),
+      latestTurnId: TurnId.make("turn-1"),
+      latestTurnSettled: false,
+    });
+    expect(activeState).toMatchObject({
+      activeCount: 1,
+      completedCount: 0,
+      totalCount: 1,
+      summary: "1 subagent active",
+      badge: { label: "1", tone: "active", pulse: true },
+    });
+    expect(activeState?.items[0]).toMatchObject({
+      id: "agent-1",
+      agentThreadId: "agent-1",
+      objective: "Inspect timeline rendering",
+      status: "running",
+      model: "gpt-5.5",
+      reasoningEffort: "medium",
+    });
+
+    const completedState = deriveSubagentProgressState({
+      activities,
+      latestTurnId: TurnId.make("turn-1"),
+      latestTurnSettled: false,
+    });
+    expect(completedState).toMatchObject({
+      activeCount: 0,
+      completedCount: 1,
+      totalCount: 1,
+      summary: "1 subagent finished",
+      badge: { label: "1", tone: "complete", pulse: false },
+    });
+
+    expect(
+      deriveSubagentProgressState({
+        activities,
+        latestTurnId: TurnId.make("turn-1"),
+        latestTurnSettled: true,
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("deriveSubagentResultEntries", () => {
+  it("extracts final subagent messages from close-agent states", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "spawn-completed",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.completed",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          data: {
+            item: {
+              id: "call-spawn",
+              type: "collabAgentToolCall",
+              tool: "spawnAgent",
+              status: "completed",
+              prompt: "reviewer: Inspect timeline rendering",
+              receiverThreadIds: ["agent-1"],
+              agentsStates: {
+                "agent-1": { status: "pendingInit", message: null },
+              },
+              model: "gpt-5.5",
+              reasoningEffort: "high",
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "close-completed",
+        createdAt: "2026-02-23T00:00:04.000Z",
+        kind: "tool.completed",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          data: {
+            item: {
+              id: "call-close",
+              type: "collabAgentToolCall",
+              tool: "closeAgent",
+              status: "completed",
+              receiverThreadIds: ["agent-1"],
+              agentsStates: {
+                "agent-1": {
+                  status: "completed",
+                  message: "**Finding:** timeline rows can render subagent output.",
+                },
+              },
+            },
+          },
+        },
+      }),
+    ];
+
+    expect(deriveSubagentResultEntries(activities)).toEqual([
+      {
+        id: "subagent-result:turn-1:agent-1",
+        createdAt: "2026-02-23T00:00:04.000Z",
+        turnId: "turn-1",
+        agentThreadId: "agent-1",
+        label: "Reviewer subagent",
+        role: "reviewer",
+        objective: "Inspect timeline rendering",
+        body: "**Finding:** timeline rows can render subagent output.",
+        model: "gpt-5.5",
+        reasoningEffort: "high",
+      },
+    ]);
+  });
+
+  it("waits for terminal subagent state before exposing result markdown", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "spawn-completed",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.completed",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          data: {
+            item: {
+              id: "call-spawn",
+              type: "collabAgentToolCall",
+              tool: "spawnAgent",
+              status: "completed",
+              prompt: "reviewer: Inspect timeline rendering",
+              receiverThreadIds: ["agent-1"],
+              agentsStates: {
+                "agent-1": { status: "pendingInit", message: null },
+              },
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "wait-started",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.started",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "inProgress",
+          data: {
+            item: {
+              id: "call-wait",
+              type: "collabAgentToolCall",
+              tool: "wait",
+              status: "inProgress",
+              receiverThreadIds: ["agent-1"],
+              agentsStates: {
+                "agent-1": {
+                  status: "running",
+                  message: "**Partial",
+                },
+              },
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "close-started",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "tool.started",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "inProgress",
+          data: {
+            item: {
+              id: "call-close",
+              type: "collabAgentToolCall",
+              tool: "closeAgent",
+              status: "inProgress",
+              receiverThreadIds: ["agent-1"],
+              agentsStates: {
+                "agent-1": {
+                  status: "running",
+                  message: "**Finding:** still streaming",
+                },
+              },
+            },
+          },
+        },
+      }),
+    ];
+
+    expect(deriveSubagentResultEntries(activities)).toEqual([]);
+
+    expect(
+      deriveSubagentResultEntries([
+        ...activities,
+        makeActivity({
+          id: "close-completed",
+          createdAt: "2026-02-23T00:00:04.000Z",
+          kind: "tool.completed",
+          turnId: "turn-1",
+          payload: {
+            itemType: "collab_agent_tool_call",
+            status: "completed",
+            data: {
+              item: {
+                id: "call-close",
+                type: "collabAgentToolCall",
+                tool: "closeAgent",
+                status: "completed",
+                receiverThreadIds: ["agent-1"],
+                agentsStates: {
+                  "agent-1": {
+                    status: "completed",
+                    message: "**Finding:** final styled subagent output.",
+                  },
+                },
+              },
+            },
+          },
+        }),
+      ]),
+    ).toEqual([
+      expect.objectContaining({
+        id: "subagent-result:turn-1:agent-1",
+        createdAt: "2026-02-23T00:00:04.000Z",
+        body: "**Finding:** final styled subagent output.",
+      }),
+    ]);
   });
 });
 

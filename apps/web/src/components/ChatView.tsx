@@ -63,6 +63,8 @@ import {
   deriveActiveStatusLabel,
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
+  deriveSubagentProgressState,
+  deriveSubagentResultEntries,
   findSidebarProposedPlan,
   findLatestProposedPlan,
   deriveWorkLogEntries,
@@ -200,6 +202,7 @@ import {
 } from "../optimisticThreadMessages";
 import { sanitizeThreadErrorMessage } from "~/rpc/transportError";
 import { retainThreadDetailSubscription } from "../environments/runtime/service";
+import { hasActiveContextCompactionActivity } from "~/lib/contextCompactionActivities";
 import { Button } from "./ui/button";
 import {
   AlertDialog,
@@ -226,7 +229,24 @@ const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
 const CODEX_PROVIDER_DRIVER = ProviderDriverKind.make("codex");
+const CLAUDE_PROVIDER_DRIVER = ProviderDriverKind.make("claudeAgent");
 type McpAuthReconnectStatus = "running" | "completed";
+
+function providerSupportsManualContextCompaction(
+  provider: ServerProvider | null,
+  driver: ProviderDriverKind,
+): boolean {
+  if (driver === CODEX_PROVIDER_DRIVER) {
+    return true;
+  }
+  if (driver !== CLAUDE_PROVIDER_DRIVER) {
+    return false;
+  }
+  return (
+    provider?.slashCommands.some((command) => command.name.trim().toLowerCase() === "compact") ??
+    false
+  );
+}
 
 function mcpAuthReconnectStateKey(providerInstanceId: ProviderInstanceId, serverName: string) {
   return `${providerInstanceId}\u001f${serverName}`;
@@ -732,6 +752,8 @@ export default function ChatView(props: ChatViewProps) {
   >({});
   const [isConnecting, _setIsConnecting] = useState(false);
   const [isRevertingCheckpoint, setIsRevertingCheckpoint] = useState(false);
+  const [contextCompactDispatchingThreadId, setContextCompactDispatchingThreadId] =
+    useState<ThreadId | null>(null);
   const [respondingRequestIds, setRespondingRequestIds] = useState<ApprovalRequestId[]>([]);
   const [respondingUserInputRequestIds, setRespondingUserInputRequestIds] = useState<
     ApprovalRequestId[]
@@ -1393,6 +1415,15 @@ export default function ChatView(props: ChatViewProps) {
         : null,
     [activePlan, taskProgressBadge, taskProgressLabel, taskProgressProposedPlan],
   );
+  const subagentProgress = useMemo(
+    () =>
+      deriveSubagentProgressState({
+        activities: threadActivities,
+        latestTurnId: activeLatestTurn?.turnId ?? null,
+        latestTurnSettled,
+      }),
+    [activeLatestTurn?.turnId, latestTurnSettled, threadActivities],
+  );
   const showPlanFollowUpPrompt =
     pendingUserInputs.length === 0 &&
     interactionMode === "plan" &&
@@ -1669,8 +1700,13 @@ export default function ChatView(props: ChatViewProps) {
   ]);
   const timelineEntries = useMemo(
     () =>
-      deriveTimelineEntries(timelineMessages, activeThread?.proposedPlans ?? [], workLogEntries),
-    [activeThread?.proposedPlans, timelineMessages, workLogEntries],
+      deriveTimelineEntries(
+        timelineMessages,
+        activeThread?.proposedPlans ?? [],
+        workLogEntries,
+        deriveSubagentResultEntries(threadActivities),
+      ),
+    [activeThread?.proposedPlans, threadActivities, timelineMessages, workLogEntries],
   );
   const { turnDiffSummaries, inferredCheckpointTurnCountByTurnId } =
     useTurnDiffSummaries(activeThread);
@@ -1766,6 +1802,27 @@ export default function ChatView(props: ChatViewProps) {
   const activeProviderLabel =
     activeProviderStatus?.displayName?.trim() ||
     formatProviderDriverKindLabel(activeProviderDriver);
+  const activeProviderSupportsManualContextCompaction = providerSupportsManualContextCompaction(
+    activeProviderStatus,
+    activeProviderDriver,
+  );
+  const contextCompactActivityInProgress = hasActiveContextCompactionActivity(
+    activeThread?.activities,
+  );
+  const contextCompactInFlight =
+    contextCompactActivityInProgress || contextCompactDispatchingThreadId === activeThread?.id;
+  const contextCompactDisabledReason =
+    activeThread === undefined || !isServerThread
+      ? "Open a saved thread before compacting context."
+      : !activeProviderSupportsManualContextCompaction
+        ? `${activeProviderLabel} does not expose manual context compaction.`
+        : phase === "running"
+          ? "Context cannot be compacted while a response is running."
+          : contextCompactInFlight
+            ? "Context compaction is already running."
+            : null;
+  const contextCompactDisabled = contextCompactDisabledReason !== null;
+  const contextCompactControlVisible = activeThread !== undefined && isServerThread;
   const providerAuthReconnectPrompt = useMemo(
     () =>
       deriveProviderAuthReconnectPrompt({
@@ -3259,6 +3316,44 @@ export default function ChatView(props: ChatViewProps) {
     });
   };
 
+  const onCompactContext = useCallback(async () => {
+    if (!activeThread || contextCompactDisabledReason !== null) {
+      return;
+    }
+    const api = readEnvironmentApi(environmentId);
+    if (!api) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not compact context",
+          description: "Environment API unavailable.",
+        }),
+      );
+      return;
+    }
+
+    const threadId = activeThread.id;
+    setContextCompactDispatchingThreadId(threadId);
+    try {
+      await api.orchestration.dispatchCommand({
+        type: "thread.context-compact.request",
+        commandId: newCommandId(),
+        threadId,
+        createdAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not compact context",
+          description: error instanceof Error ? error.message : "Context compaction failed.",
+        }),
+      );
+    } finally {
+      setContextCompactDispatchingThreadId((current) => (current === threadId ? null : current));
+    }
+  }, [activeThread, contextCompactDisabledReason, environmentId]);
+
   const onRespondToApproval = useCallback(
     async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
       const api = readEnvironmentApi(environmentId);
@@ -4007,6 +4102,7 @@ export default function ChatView(props: ChatViewProps) {
           sourceControlToggleShortcutLabel={sourceControlPanelShortcutLabel}
           sourceControlOpen={sourceControlOpen}
           taskProgress={taskProgress}
+          subagentProgress={subagentProgress}
           onRunProjectScript={runProjectScript}
           onAddProjectScript={saveProjectScript}
           onUpdateProjectScript={updateProjectScript}
@@ -4142,6 +4238,16 @@ export default function ChatView(props: ChatViewProps) {
                   scheduleStickToBottom={scrollToEnd}
                   onSend={onSend}
                   onInterrupt={onInterrupt}
+                  onCompactContext={contextCompactControlVisible ? onCompactContext : undefined}
+                  contextCompactDisabled={
+                    contextCompactControlVisible ? contextCompactDisabled : undefined
+                  }
+                  contextCompactInFlight={
+                    contextCompactControlVisible ? contextCompactInFlight : undefined
+                  }
+                  contextCompactDisabledReason={
+                    contextCompactControlVisible ? contextCompactDisabledReason : undefined
+                  }
                   onImplementPlanInNewThread={onImplementPlanInNewThread}
                   onRespondToApproval={onRespondToApproval}
                   onSelectActivePendingUserInputOption={onSelectActivePendingUserInputOption}

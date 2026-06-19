@@ -114,6 +114,52 @@ describe("ProviderActivityProjection", () => {
     });
   });
 
+  it("does not project synthetic manual compacting status as a separate activity", () => {
+    const activities = projectRuntimeEventToActivities({
+      type: "session.state.changed",
+      eventId: EventId.make("evt-manual-compact-dispatched"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: ThreadId.make("thread-1"),
+      createdAt: "2026-06-01T12:00:00.000Z",
+      payload: {
+        state: "waiting",
+        reason: "status:compacting",
+        detail: {
+          trigger: "manual",
+        },
+      },
+    } satisfies ProviderRuntimeEvent);
+
+    expect(activities).toEqual([]);
+  });
+
+  it("still projects provider compacting status as a context compaction activity", () => {
+    const activities = projectRuntimeEventToActivities({
+      type: "session.state.changed",
+      eventId: EventId.make("evt-provider-compacting"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: ThreadId.make("thread-1"),
+      createdAt: "2026-06-01T12:00:00.000Z",
+      payload: {
+        state: "waiting",
+        reason: "status:compacting",
+        detail: {
+          status: "compacting",
+        },
+      },
+    } satisfies ProviderRuntimeEvent);
+
+    expect(activities).toHaveLength(1);
+    expect(activities[0]).toMatchObject({
+      kind: "context-compaction",
+      summary: "Compacting context...",
+      payload: {
+        status: "inProgress",
+        state: "waiting",
+      },
+    });
+  });
+
   it("compacts large tool lifecycle payload data before projection", () => {
     const largeOutput = Array.from({ length: 1_000 }, (_, index) => `line ${index}`).join("\n");
     const activities = projectRuntimeEventToActivities({

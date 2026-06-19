@@ -101,6 +101,7 @@ function createProviderServiceHarness() {
     startSession: () => unsupported(),
     sendTurn: () => unsupported(),
     interruptTurn: () => unsupported(),
+    compactContext: () => unsupported(),
     respondToRequest: () => unsupported(),
     respondToUserInput: () => unsupported(),
     stopSession: () => unsupported(),
@@ -3620,6 +3621,133 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(activity?.summary).toBe("Context compacted");
     expect(activity?.tone).toBe("info");
+    expect((activity?.payload as Record<string, unknown> | undefined)?.status).toBe("completed");
+  });
+
+  it("projects provider compacting status into a running context compaction activity", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "session.state.changed",
+      eventId: asEventId("evt-claude-compacting"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-1"),
+      payload: {
+        state: "waiting",
+        reason: "status:compacting",
+        detail: { status: "compacting" },
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.kind === "context-compaction" && activity.summary === "Compacting context...",
+      ),
+    );
+
+    const activity = thread.activities.find(
+      (candidate: ProviderRuntimeTestActivity) => candidate.kind === "context-compaction",
+    );
+    const payload = activity?.payload as Record<string, unknown> | undefined;
+    expect(activity?.summary).toBe("Compacting context...");
+    expect(activity?.tone).toBe("info");
+    expect(payload?.status).toBe("inProgress");
+    expect(payload?.state).toBe("waiting");
+  });
+
+  it("updates Codex context compaction item activity from running to compacted", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "item.started",
+      eventId: asEventId("evt-context-compaction-started"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-1"),
+      itemId: asItemId("item-context-compaction"),
+      payload: {
+        itemType: "context_compaction",
+        status: "inProgress",
+        title: "Context compaction",
+        detail: "Summarizing earlier conversation",
+      },
+    });
+
+    await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.kind === "context-compaction" && activity.summary === "Compacting context...",
+      ),
+    );
+
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-context-compaction-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-1"),
+      itemId: asItemId("item-context-compaction"),
+      payload: {
+        itemType: "context_compaction",
+        status: "completed",
+        title: "Context compaction",
+        detail: "Summarized earlier conversation",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.kind === "context-compaction" && activity.summary === "Context compacted",
+      ),
+    );
+
+    const activities = thread.activities.filter(
+      (activity: ProviderRuntimeTestActivity) => activity.kind === "context-compaction",
+    );
+    expect(activities).toHaveLength(1);
+    expect(activities[0]?.summary).toBe("Context compacted");
+    expect((activities[0]?.payload as Record<string, unknown> | undefined)?.status).toBe(
+      "completed",
+    );
+
+    harness.emit({
+      type: "thread.state.changed",
+      eventId: asEventId("evt-thread-compacted-after-context-item"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-1"),
+      payload: {
+        state: "compacted",
+        detail: { source: "thread-event" },
+      },
+    });
+
+    const updatedThread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some((activity: ProviderRuntimeTestActivity) => {
+        if (activity.kind !== "context-compaction") {
+          return false;
+        }
+        const payload = activity.payload as Record<string, unknown> | undefined;
+        return payload?.state === "compacted";
+      }),
+    );
+
+    const updatedActivities = updatedThread.activities.filter(
+      (activity: ProviderRuntimeTestActivity) => activity.kind === "context-compaction",
+    );
+    expect(updatedActivities).toHaveLength(1);
+    expect((updatedActivities[0]?.payload as Record<string, unknown> | undefined)?.status).toBe(
+      "completed",
+    );
   });
 
   it("projects Codex task lifecycle chunks into thread activities", async () => {

@@ -25,12 +25,18 @@ import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
 export type ProviderSessionModelSwitchMode = "in-session" | "unsupported";
+export type ProviderManualContextCompactionMode = "supported" | "unsupported";
 
 export interface ProviderAdapterCapabilities {
   /**
    * Declares whether changing the model on an existing session is supported.
    */
   readonly sessionModelSwitch: ProviderSessionModelSwitchMode;
+
+  /**
+   * Declares whether this adapter can ask the provider to compact context on demand.
+   */
+  readonly manualContextCompaction?: ProviderManualContextCompactionMode;
 }
 
 export interface ProviderThreadTurnSnapshot {
@@ -77,6 +83,14 @@ export interface ProviderAdapterShape<TError> {
    * Interrupt an active turn.
    */
   readonly interruptTurn: (threadId: ThreadId, turnId?: TurnId) => Effect.Effect<void, TError>;
+
+  /**
+   * Ask the provider to summarize older context for an active session.
+   *
+   * Unsupported adapters should omit this method and leave
+   * `capabilities.manualContextCompaction` unset or `"unsupported"`.
+   */
+  readonly compactContext?: (threadId: ThreadId) => Effect.Effect<void, TError>;
 
   /**
    * Respond to an interactive approval request.

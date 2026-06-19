@@ -15,8 +15,13 @@ import { SourceControlIcon } from "../Icons";
 import { OpenInPicker } from "./OpenInPicker";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { TaskProgressPopover } from "./TaskProgressPopover";
+import { SubagentProgressPopover } from "./SubagentProgressPopover";
 import type { PlanTaskBadgeState } from "../../planPanelState";
-import type { ActivePlanState, LatestProposedPlanState } from "../../session-logic";
+import type {
+  ActivePlanState,
+  LatestProposedPlanState,
+  SubagentProgressState,
+} from "../../session-logic";
 
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
@@ -39,6 +44,7 @@ interface ChatHeaderProps {
     badge: PlanTaskBadgeState | null;
     label: string;
   } | null;
+  subagentProgress: SubagentProgressState | null;
   onRunProjectScript: (script: ProjectScript) => void;
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<void>;
   onUpdateProjectScript: (scriptId: string, input: NewProjectScriptInput) => Promise<void>;
@@ -75,6 +81,7 @@ export const ChatHeader = memo(function ChatHeader({
   sourceControlToggleShortcutLabel,
   sourceControlOpen,
   taskProgress,
+  subagentProgress,
   onRunProjectScript,
   onAddProjectScript,
   onUpdateProjectScript,
@@ -127,6 +134,7 @@ export const ChatHeader = memo(function ChatHeader({
             label={taskProgress.label}
           />
         ) : null}
+        {subagentProgress ? <SubagentProgressPopover state={subagentProgress} /> : null}
         {activeProjectScripts && (
           <ProjectScriptsControl
             scripts={activeProjectScripts}
