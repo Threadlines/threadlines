@@ -8,6 +8,10 @@ The public hosted link for this flow is `https://app.threadlines.dev`. It can
 open a one-time device link and route the phone or tablet to the desktop
 Threadlines instance when the desktop is reachable.
 
+The planned public-friendly path is the Cloudflare relay in
+`apps/relay-worker`. See `docs/cloudflare-relay.md` for setup and deployment
+notes.
+
 Current product wording should lead with user concepts:
 
 - phone and tablet access for the main setup path;

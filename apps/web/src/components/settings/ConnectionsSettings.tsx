@@ -1,9 +1,11 @@
 import {
   ChevronDownIcon,
   ChevronsLeftRightEllipsisIcon,
+  CopyIcon,
   PlusIcon,
   QrCodeIcon,
   RefreshCwIcon,
+  SmartphoneIcon,
   TerminalIcon,
   TriangleAlertIcon,
 } from "lucide-react";
@@ -13,6 +15,7 @@ import {
   type AuthPairingLink,
   type AdvertisedEndpoint,
   type DesktopDiscoveredSshHost,
+  type DesktopRelayPairingSession,
   type DesktopSshEnvironmentTarget,
   type DesktopServerExposureState,
   type EnvironmentId,
@@ -269,11 +272,14 @@ function parsePairingUrlFields(
         : `https://${trimmed}`;
     const url = new URL(urlLikeInput, window.location.origin);
     const hostedPairingRequest = readHostedPairingRequest(url);
-    if (hostedPairingRequest) {
+    if (hostedPairingRequest?.kind === "direct") {
       return {
         host: hostedPairingRequest.host,
         pairingCode: hostedPairingRequest.token,
       };
+    }
+    if (hostedPairingRequest?.kind === "relay") {
+      return null;
     }
 
     const pairingCode = getPairingTokenFromUrl(url);
@@ -1290,6 +1296,7 @@ function SavedBackendListRow({
   const versionMismatch = resolveServerConfigVersionMismatch(runtime?.serverConfig);
   const metadataBits = [
     record.desktopSsh ? `SSH ${formatDesktopSshTarget(record.desktopSsh)}` : null,
+    record.relay ? "Phone link" : null,
     roleLabel,
     record.lastConnectedAt
       ? `Last connected ${formatAccessTimestamp(record.lastConnectedAt)}`
@@ -1491,6 +1498,10 @@ export function ConnectionsSettings() {
   const [isUpdatingDesktopServerExposure, setIsUpdatingDesktopServerExposure] = useState(false);
   const [isDesktopServerExposureDialogOpen, setIsDesktopServerExposureDialogOpen] = useState(false);
   const [isUpdatingTailscaleServe, setIsUpdatingTailscaleServe] = useState(false);
+  const [mobileConnectSession, setMobileConnectSession] =
+    useState<DesktopRelayPairingSession | null>(null);
+  const [isCreatingMobileConnectLink, setIsCreatingMobileConnectLink] = useState(false);
+  const [mobileConnectError, setMobileConnectError] = useState<string | null>(null);
   const [pendingTailscaleServeEndpoint, setPendingTailscaleServeEndpoint] =
     useState<AdvertisedEndpoint | null>(null);
   const [disableTailscaleServeDialogOpen, setDisableTailscaleServeDialogOpen] = useState(false);
@@ -1509,6 +1520,7 @@ export function ConnectionsSettings() {
   const setDefaultAdvertisedEndpointKey = useUiStateStore(
     (state) => state.setDefaultAdvertisedEndpointKey,
   );
+  const mobileConnectNowMs = useRelativeTimeTick(1_000);
   const canManageLocalBackend = currentSessionRole === "owner";
   const isLocalBackendNetworkAccessible = desktopBridge
     ? desktopServerExposureState?.mode === "network-accessible"
@@ -1520,6 +1532,27 @@ export function ConnectionsSettings() {
     Number.isInteger(parsedTailscaleServePort) &&
     parsedTailscaleServePort >= 1 &&
     parsedTailscaleServePort <= 65_535;
+  const { copyToClipboard: copyMobileConnectLink, isCopied: isMobileConnectLinkCopied } =
+    useCopyToClipboard<"mobile-link">({
+      onCopy: () => {
+        toastManager.add(
+          stackedThreadToast({
+            type: "success",
+            title: "Phone link copied",
+            description: "Open it on your phone to connect to this desktop app.",
+          }),
+        );
+      },
+      onError: () => {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not copy phone link",
+            description: "Use the QR code or copy the link manually.",
+          }),
+        );
+      },
+    });
 
   const pendingTailscaleServeBaseUrl = useMemo(() => {
     if (!pendingTailscaleServeEndpoint) return null;
@@ -1598,6 +1631,50 @@ export function ConnectionsSettings() {
       setIsUpdatingTailscaleServe(false);
     }
   }, [desktopBridge, isTailscaleServePortValid, parsedTailscaleServePort]);
+
+  const handleCreateMobileConnectLink = useCallback(async () => {
+    if (!desktopBridge) return;
+    setIsCreatingMobileConnectLink(true);
+    setMobileConnectError(null);
+    try {
+      const session = await desktopBridge.createRelayPairingSession();
+      setMobileConnectSession(session);
+      copyMobileConnectLink(session.pairingUrl, "mobile-link");
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to create a phone connection link.";
+      setMobileConnectError(message);
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not create phone link",
+          description: message,
+        }),
+      );
+    } finally {
+      setIsCreatingMobileConnectLink(false);
+    }
+  }, [copyMobileConnectLink, desktopBridge]);
+
+  const handleDisconnectMobileConnectLink = useCallback(async () => {
+    if (!desktopBridge) return;
+    setMobileConnectError(null);
+    try {
+      await desktopBridge.disconnectRelayPairingSession();
+      setMobileConnectSession(null);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to stop the phone connection link.";
+      setMobileConnectError(message);
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not stop phone link",
+          description: message,
+        }),
+      );
+    }
+  }, [desktopBridge]);
 
   const handleStartTailscaleServeSetup = useCallback(
     (endpoint: AdvertisedEndpoint) => {
@@ -2440,6 +2517,97 @@ export function ConnectionsSettings() {
       }
     />
   );
+  const renderMobileConnectRow = () => (
+    <SettingsRow
+      title="Phone link"
+      description={
+        mobileConnectSession
+          ? `Ready for ${formatExpiresInLabel(mobileConnectSession.expiresAt, mobileConnectNowMs)}. Open this link on your phone while the desktop app stays running.`
+          : "Create a private app.threadlines.dev link for your phone. No same Wi-Fi or Tailscale setup required."
+      }
+      status={
+        mobileConnectError ? (
+          <span className="block text-destructive">{mobileConnectError}</span>
+        ) : null
+      }
+      control={
+        desktopBridge ? (
+          <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
+            {mobileConnectSession ? (
+              <Popover>
+                <PopoverTrigger
+                  render={
+                    <Button size="xs" variant="outline" aria-label="Show phone link QR code" />
+                  }
+                >
+                  <QrCodeIcon className="size-3.5" />
+                  QR
+                </PopoverTrigger>
+                <PopoverPopup
+                  side="top"
+                  align="end"
+                  className="w-72 rounded-lg border bg-popover p-3 shadow-lg"
+                >
+                  <div className="flex items-start gap-3">
+                    <QRCodeSvg
+                      value={mobileConnectSession.pairingUrl}
+                      size={104}
+                      level="M"
+                      marginSize={2}
+                      title="Phone link - scan to open on your phone"
+                    />
+                    <div className="min-w-0 flex-1 space-y-2">
+                      <p className="text-xs font-medium text-foreground">Scan with your phone</p>
+                      <Textarea
+                        readOnly
+                        rows={3}
+                        value={mobileConnectSession.pairingUrl}
+                        className="text-[11px]"
+                      />
+                    </div>
+                  </div>
+                </PopoverPopup>
+              </Popover>
+            ) : null}
+            {mobileConnectSession ? (
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() =>
+                  copyMobileConnectLink(mobileConnectSession.pairingUrl, "mobile-link")
+                }
+              >
+                <CopyIcon className="size-3.5" />
+                {isMobileConnectLinkCopied ? "Copied" : "Copy"}
+              </Button>
+            ) : null}
+            <Button
+              size="xs"
+              onClick={() => void handleCreateMobileConnectLink()}
+              disabled={isCreatingMobileConnectLink}
+            >
+              {isCreatingMobileConnectLink ? (
+                <Spinner className="size-3.5" />
+              ) : (
+                <SmartphoneIcon className="size-3.5" />
+              )}
+              {mobileConnectSession ? "New link" : "Create link"}
+            </Button>
+            {mobileConnectSession ? (
+              <Button
+                size="xs"
+                variant="ghost"
+                onClick={() => void handleDisconnectMobileConnectLink()}
+                disabled={isCreatingMobileConnectLink}
+              >
+                Stop
+              </Button>
+            ) : null}
+          </div>
+        ) : null
+      }
+    />
+  );
 
   return (
     <SettingsPageContainer>
@@ -2460,6 +2628,7 @@ export function ConnectionsSettings() {
             ) : null}
             {desktopBridge ? (
               <>
+                {renderMobileConnectRow()}
                 {renderNetworkAccessRow()}
                 {renderEndpointRows("endpoint-rail")}
                 {renderTailscaleRow()}

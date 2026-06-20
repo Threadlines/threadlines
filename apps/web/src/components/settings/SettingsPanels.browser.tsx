@@ -444,6 +444,14 @@ const createDesktopBridgeStub = (overrides?: {
       tailscaleServePort: input.port ?? 443,
     })),
     getAdvertisedEndpoints: vi.fn().mockResolvedValue(overrides?.advertisedEndpoints ?? []),
+    createRelayPairingSession: vi.fn().mockResolvedValue({
+      pairingUrl:
+        "https://app.threadlines.dev/pair?relay=https%3A%2F%2Frelay.threadlines.dev&session=session-1#token=device-token",
+      relayOrigin: "https://relay.threadlines.dev",
+      sessionId: "session-1",
+      expiresAt: "2026-06-20T12:00:00.000Z",
+    }),
+    disconnectRelayPairingSession: vi.fn().mockResolvedValue(undefined),
     pickFolder: vi.fn().mockResolvedValue(null),
     confirm: vi.fn().mockResolvedValue(false),
     setTheme: vi.fn().mockResolvedValue(undefined),

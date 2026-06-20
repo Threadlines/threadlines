@@ -83,4 +83,42 @@ describe("clientPersistenceStorage", () => {
       ],
     });
   });
+
+  it("preserves relay metadata when browser secrets are written", async () => {
+    const testWindow = getTestWindow();
+    const relayRecord: PersistedSavedEnvironmentRecord = {
+      environmentId: testEnvironmentId,
+      label: "Desktop app",
+      httpBaseUrl: "https://relay.threadlines.dev/",
+      wsBaseUrl: "wss://relay.threadlines.dev/v1/sessions/session-1/connect?role=device&mode=raw",
+      createdAt: "2026-04-09T00:00:00.000Z",
+      lastConnectedAt: null,
+      relay: {
+        relayOrigin: "https://relay.threadlines.dev",
+        sessionId: "session-1",
+      },
+    };
+    const {
+      SAVED_ENVIRONMENT_REGISTRY_STORAGE_KEY,
+      readBrowserSavedEnvironmentRegistry,
+      writeBrowserSavedEnvironmentRegistry,
+      writeBrowserSavedEnvironmentSecret,
+    } = await import("./clientPersistenceStorage");
+
+    writeBrowserSavedEnvironmentRegistry([relayRecord]);
+    expect(writeBrowserSavedEnvironmentSecret(testEnvironmentId, "device-token")).toBe(true);
+
+    expect(readBrowserSavedEnvironmentRegistry()).toEqual([relayRecord]);
+    expect(
+      JSON.parse(testWindow.localStorage.getItem(SAVED_ENVIRONMENT_REGISTRY_STORAGE_KEY)!),
+    ).toEqual({
+      version: 1,
+      records: [
+        {
+          ...relayRecord,
+          bearerToken: "device-token",
+        },
+      ],
+    });
+  });
 });

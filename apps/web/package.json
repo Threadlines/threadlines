@@ -52,7 +52,6 @@
     "@types/babel__core": "^7.20.5",
     "@types/react": "~19.2.14",
     "@types/react-dom": "~19.2.3",
-    "@vercel/config": "^0.3.0",
     "@vitejs/plugin-react": "^6.0.0",
     "@vitest/browser-playwright": "^4.0.18",
     "babel-plugin-react-compiler": "1.0.0",

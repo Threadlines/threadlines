@@ -93,6 +93,18 @@ const portAliasWithDefault = (
     Config.map((value) => Option.getOrElse(value, () => defaultValue)),
   );
 
+const urlAliasWithDefault = (
+  threadlinesName: string,
+  badcodeName: string,
+  legacyT3CodeName: string,
+  defaultValue: string,
+) =>
+  firstSomeOption([
+    Config.url(threadlinesName).pipe(Config.option),
+    Config.url(badcodeName).pipe(Config.option),
+    Config.url(legacyT3CodeName).pipe(Config.option),
+  ]).pipe(Config.map((value) => Option.getOrElse(value, () => new URL(defaultValue))));
+
 const compactEnv = (env: Readonly<Record<string, string | undefined>>): Record<string, string> =>
   Object.fromEntries(
     Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined),
@@ -123,6 +135,12 @@ export const DesktopConfig = Config.all({
     "THREADLINES_DESKTOP_HTTPS_ENDPOINTS",
     "BADCODE_DESKTOP_HTTPS_ENDPOINTS",
     "T3CODE_DESKTOP_HTTPS_ENDPOINTS",
+  ),
+  relayUrl: urlAliasWithDefault(
+    "THREADLINES_RELAY_URL",
+    "BADCODE_RELAY_URL",
+    "T3CODE_RELAY_URL",
+    "https://threadlines-relay.threadlines.workers.dev",
   ),
   otlpTracesUrl: trimmedStringAlias(
     "THREADLINES_OTLP_TRACES_URL",

@@ -30,6 +30,7 @@ describe("remote environment api", () => {
         pairingUrl: "https://remote.example.com/pair#token=pairing-token",
       }),
     ).toEqual({
+      kind: "direct",
       credential: "pairing-token",
       httpBaseUrl: "https://remote.example.com/",
       wsBaseUrl: "wss://remote.example.com/",
@@ -42,6 +43,7 @@ describe("remote environment api", () => {
         pairingUrl: "https://remote.example.com/pair?token=pairing-token",
       }),
     ).toEqual({
+      kind: "direct",
       credential: "pairing-token",
       httpBaseUrl: "https://remote.example.com/",
       wsBaseUrl: "wss://remote.example.com/",
@@ -55,9 +57,26 @@ describe("remote environment api", () => {
           "https://app.threadlines.dev/pair?host=https%3A%2F%2Fdesktop.tailnet.ts.net%3A44342%2F#token=pairing-token",
       }),
     ).toEqual({
+      kind: "direct",
       credential: "pairing-token",
       httpBaseUrl: "https://desktop.tailnet.ts.net:44342/",
       wsBaseUrl: "wss://desktop.tailnet.ts.net:44342/",
+    });
+  });
+
+  it("derives raw relay urls from a hosted relay pairing link", () => {
+    expect(
+      resolveRemotePairingTarget({
+        pairingUrl:
+          "https://app.threadlines.dev/pair?relay=https%3A%2F%2Frelay.threadlines.dev%2F&session=session-1#token=device-token",
+      }),
+    ).toEqual({
+      kind: "relay",
+      credential: "device-token",
+      relayOrigin: "https://relay.threadlines.dev",
+      sessionId: "session-1",
+      httpBaseUrl: "https://relay.threadlines.dev/",
+      wsBaseUrl: "wss://relay.threadlines.dev/v1/sessions/session-1/connect?role=device&mode=raw",
     });
   });
 
@@ -68,6 +87,7 @@ describe("remote environment api", () => {
         pairingCode: "pairing-token",
       }),
     ).toEqual({
+      kind: "direct",
       credential: "pairing-token",
       httpBaseUrl: "https://remote.example.com/",
       wsBaseUrl: "wss://remote.example.com/",
@@ -81,6 +101,7 @@ describe("remote environment api", () => {
         pairingCode: "pairing-token",
       }),
     ).toEqual({
+      kind: "direct",
       credential: "pairing-token",
       httpBaseUrl: "https://myserver.com:3000/",
       wsBaseUrl: "wss://myserver.com:3000/",

@@ -162,13 +162,14 @@ export function PairingRouteSurface({
 }
 
 export function HostedPairingRouteSurface() {
+  const hostedPairingUrlRef = useRef(new URL(window.location.href).toString());
   const hostedPairingRequestRef = useRef(readHostedPairingRequest());
   const [status, setStatus] = useState<"pairing" | "paired" | "error">(() =>
     hostedPairingRequestRef.current ? "pairing" : "error",
   );
   const [message, setMessage] = useState(() =>
     hostedPairingRequestRef.current
-      ? "Connecting to this backend."
+      ? describeHostedPairingProgress(hostedPairingRequestRef.current)
       : "This pairing link is missing its backend host or token.",
   );
   const [canRetry, setCanRetry] = useState(false);
@@ -193,15 +194,14 @@ export function HostedPairingRouteSurface() {
     }
 
     setStatus("pairing");
-    setMessage("Connecting to this backend.");
+    setMessage(describeHostedPairingProgress(request));
     setCanRetry(false);
     tokenSubmittedRef.current = true;
 
     try {
       const record = await addSavedEnvironment({
         label: request.label,
-        host: request.host,
-        pairingCode: request.token,
+        pairingUrl: hostedPairingUrlRef.current,
       });
       setStatus("paired");
       setMessage(`${record.label} is saved in this browser.`);
@@ -250,7 +250,10 @@ export function HostedPairingRouteSurface() {
 
         {request ? (
           <div className="mt-5 rounded-lg border border-border/70 bg-background/55 px-3 py-3 text-xs leading-relaxed text-muted-foreground">
-            Host: <span className="font-mono text-foreground/80">{request.host}</span>
+            {request.kind === "relay" ? "Relay" : "Host"}:{" "}
+            <span className="font-mono text-foreground/80">
+              {request.kind === "relay" ? request.relayOrigin : request.host}
+            </span>
           </div>
         ) : null}
 
@@ -292,6 +295,14 @@ function errorMessageFromUnknown(error: unknown): string {
   }
 
   return "Authentication failed.";
+}
+
+function describeHostedPairingProgress(
+  request: NonNullable<ReturnType<typeof readHostedPairingRequest>>,
+): string {
+  return request.kind === "relay"
+    ? "Connecting to your desktop app."
+    : "Connecting to this backend.";
 }
 
 function describeAuthGate(bootstrapMethods: ReadonlyArray<string>): string {

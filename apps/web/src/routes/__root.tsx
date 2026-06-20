@@ -65,13 +65,16 @@ import {
   resolveInitialServerAuthGateState,
   updatePrimaryEnvironmentDescriptor,
 } from "../environments/primary";
-import { hasHostedPairingRequest, isHostedStaticApp } from "../hostedPairing";
+import { hasHostedPairingRouteIntent, isHostedStaticApp } from "../hostedPairing";
 
 export const Route = createRootRouteWithContext<{
   queryClient: QueryClient;
 }>()({
   beforeLoad: async ({ location }) => {
-    if (location.pathname === "/pair" && hasHostedPairingRequest(new URL(window.location.href))) {
+    if (
+      location.pathname === "/pair" &&
+      hasHostedPairingRouteIntent(new URL(window.location.href))
+    ) {
       return {
         authGateState: {
           status: "hosted-pairing",
