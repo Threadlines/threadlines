@@ -4,6 +4,7 @@ const shared = {
   format: "cjs" as const,
   outDir: "dist-electron",
   sourcemap: true,
+  dts: false,
   outExtensions: () => ({ js: ".cjs" }),
 };
 

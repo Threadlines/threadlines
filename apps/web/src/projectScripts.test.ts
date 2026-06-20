@@ -55,6 +55,10 @@ describe("projectScripts helpers", () => {
     });
 
     expect(env).toMatchObject({
+      THREADLINES_PROJECT_ROOT: "/repo",
+      THREADLINES_WORKTREE_PATH: "/repo/worktree-a",
+      BADCODE_PROJECT_ROOT: "/repo",
+      BADCODE_WORKTREE_PATH: "/repo/worktree-a",
       T3CODE_PROJECT_ROOT: "/repo",
       T3CODE_WORKTREE_PATH: "/repo/worktree-a",
     });
@@ -69,8 +73,12 @@ describe("projectScripts helpers", () => {
       },
     });
 
+    expect(env.THREADLINES_PROJECT_ROOT).toBe("/repo");
+    expect(env.BADCODE_PROJECT_ROOT).toBe("/repo");
     expect(env.T3CODE_PROJECT_ROOT).toBe("/custom-root");
     expect(env.CUSTOM_FLAG).toBe("1");
+    expect(env.THREADLINES_WORKTREE_PATH).toBeUndefined();
+    expect(env.BADCODE_WORKTREE_PATH).toBeUndefined();
     expect(env.T3CODE_WORKTREE_PATH).toBeUndefined();
   });
 

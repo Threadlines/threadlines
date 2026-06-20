@@ -566,6 +566,12 @@ function toSessionKey(threadId: string, terminalId: string): string {
 
 function shouldExcludeTerminalEnvKey(key: string): boolean {
   const normalizedKey = key.toUpperCase();
+  if (normalizedKey.startsWith("THREADLINES_")) {
+    return true;
+  }
+  if (normalizedKey.startsWith("BADCODE_")) {
+    return true;
+  }
   if (normalizedKey.startsWith("T3CODE_")) {
     return true;
   }
@@ -575,9 +581,120 @@ function shouldExcludeTerminalEnvKey(key: string): boolean {
   return TERMINAL_ENV_BLOCKLIST.has(normalizedKey);
 }
 
+function isPathEnvKey(key: string): boolean {
+  return key.toUpperCase() === "PATH";
+}
+
+function pathListDelimiter(platform: NodeJS.Platform): string {
+  return platform === "win32" ? ";" : ":";
+}
+
+function pathEnvKey(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string {
+  if (env.PATH !== undefined) return "PATH";
+  if (platform === "win32") {
+    if (env.Path !== undefined) return "Path";
+    if (env.path !== undefined) return "path";
+  }
+  return "PATH";
+}
+
+function localNodeModulesBinPath(root: string, platform: NodeJS.Platform): string | null {
+  const trimmedRoot = root.trim();
+  if (trimmedRoot.length === 0) return null;
+  if (platform === "win32") {
+    return joinWindowsPath(trimmedRoot, "node_modules", ".bin");
+  }
+  return `${trimmedRoot.replace(/\/+$/g, "")}/node_modules/.bin`;
+}
+
+function pathDedupeKey(pathEntry: string, platform: NodeJS.Platform): string {
+  const normalizedEntry = platform === "win32" ? pathEntry.replaceAll("/", "\\") : pathEntry;
+  return platform === "win32" ? normalizedEntry.toLowerCase() : normalizedEntry;
+}
+
+function appendUniquePathEntry(
+  entries: string[],
+  seen: Set<string>,
+  pathEntry: string | null | undefined,
+  platform: NodeJS.Platform,
+): void {
+  if (!pathEntry) return;
+  const trimmedEntry = pathEntry.trim();
+  if (trimmedEntry.length === 0) return;
+  const dedupeKey = pathDedupeKey(trimmedEntry, platform);
+  if (seen.has(dedupeKey)) return;
+  seen.add(dedupeKey);
+  entries.push(trimmedEntry);
+}
+
+function localProjectBinPathEntries(input: {
+  cwd: string;
+  worktreePath?: string | null;
+  runtimeEnv?: Record<string, string> | null;
+  platform: NodeJS.Platform;
+}): string[] {
+  const entries: string[] = [];
+  const seen = new Set<string>();
+  const appendRoot = (root: string | null | undefined) =>
+    appendUniquePathEntry(
+      entries,
+      seen,
+      root ? localNodeModulesBinPath(root, input.platform) : null,
+      input.platform,
+    );
+
+  appendRoot(input.cwd);
+  appendRoot(input.worktreePath);
+  appendRoot(input.runtimeEnv?.THREADLINES_WORKTREE_PATH);
+  appendRoot(input.runtimeEnv?.THREADLINES_PROJECT_ROOT);
+  appendRoot(input.runtimeEnv?.BADCODE_WORKTREE_PATH);
+  appendRoot(input.runtimeEnv?.BADCODE_PROJECT_ROOT);
+  appendRoot(input.runtimeEnv?.T3CODE_WORKTREE_PATH);
+  appendRoot(input.runtimeEnv?.T3CODE_PROJECT_ROOT);
+  return entries;
+}
+
+function mergeTerminalPath(input: {
+  spawnEnv: NodeJS.ProcessEnv;
+  baseEnv: NodeJS.ProcessEnv;
+  runtimePath: string | null;
+  runtimePathKey: string | null;
+  cwd: string;
+  worktreePath?: string | null;
+  runtimeEnv?: Record<string, string> | null;
+  platform: NodeJS.Platform;
+}): void {
+  const delimiter = pathListDelimiter(input.platform);
+  const basePathKey = pathEnvKey(input.baseEnv, input.platform);
+  const finalPathKey = input.runtimePathKey ?? pathEnvKey(input.spawnEnv, input.platform);
+  const basePath = input.baseEnv[basePathKey];
+  const entries = localProjectBinPathEntries(input);
+  const seen = new Set(entries.map((entry) => pathDedupeKey(entry, input.platform)));
+
+  for (const pathValue of [input.runtimePath, basePath]) {
+    if (!pathValue) continue;
+    for (const pathEntry of pathValue.split(delimiter)) {
+      appendUniquePathEntry(entries, seen, pathEntry, input.platform);
+    }
+  }
+
+  if (entries.length === 0) return;
+  for (const key of Object.keys(input.spawnEnv)) {
+    if (isPathEnvKey(key) && key !== finalPathKey) {
+      delete input.spawnEnv[key];
+    }
+  }
+  input.spawnEnv[finalPathKey] = entries.join(delimiter);
+}
+
 function createTerminalSpawnEnv(
   baseEnv: NodeJS.ProcessEnv,
   runtimeEnv?: Record<string, string> | null,
+  options?: {
+    cwd?: string;
+    worktreePath?: string | null;
+    platform?: NodeJS.Platform;
+  },
 ): NodeJS.ProcessEnv {
   const spawnEnv: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(baseEnv)) {
@@ -585,10 +702,32 @@ function createTerminalSpawnEnv(
     if (shouldExcludeTerminalEnvKey(key)) continue;
     spawnEnv[key] = value;
   }
+  let runtimePath: string | null = null;
+  let runtimePathKey: string | null = null;
   if (runtimeEnv) {
     for (const [key, value] of Object.entries(runtimeEnv)) {
+      if (isPathEnvKey(key)) {
+        runtimePath = value;
+        runtimePathKey = key;
+        continue;
+      }
       spawnEnv[key] = value;
     }
+  }
+  if (options?.cwd) {
+    mergeTerminalPath({
+      spawnEnv,
+      baseEnv,
+      runtimePath,
+      runtimePathKey,
+      cwd: options.cwd,
+      ...(options.worktreePath !== undefined ? { worktreePath: options.worktreePath } : {}),
+      ...(runtimeEnv !== undefined ? { runtimeEnv } : {}),
+      platform: options.platform ?? process.platform,
+    });
+  } else if (runtimePath !== null) {
+    spawnEnv[runtimePathKey ?? pathEnvKey(spawnEnv, options?.platform ?? process.platform)] =
+      runtimePath;
   }
   return spawnEnv;
 }
@@ -1328,7 +1467,11 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           Effect.andThen(
             Effect.gen(function* () {
               const shellCandidates = resolveShellCandidates(shellResolver, platform, baseEnv);
-              const terminalEnv = createTerminalSpawnEnv(baseEnv, session.runtimeEnv);
+              const terminalEnv = createTerminalSpawnEnv(baseEnv, session.runtimeEnv, {
+                cwd: input.cwd,
+                ...(input.worktreePath !== undefined ? { worktreePath: input.worktreePath } : {}),
+                platform,
+              });
               const spawnResult = yield* trySpawn(shellCandidates, terminalEnv, session);
               ptyProcess = spawnResult.process;
               startedShell = spawnResult.shellLabel;

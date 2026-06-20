@@ -53,7 +53,7 @@ describe("hostedPairing", () => {
     );
 
     expect(url.origin).toBe("https://app.t3.codes");
-    expect(url.pathname).toBe("/__t3code/channel");
+    expect(url.pathname).toBe("/__threadlines/channel");
     expect(url.searchParams.get("channel")).toBe("nightly");
     expect(url.searchParams.has("next")).toBe(false);
   });

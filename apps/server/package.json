@@ -9,7 +9,8 @@
   },
   "bin": {
     "badcode": "./dist/bin.mjs",
-    "t3": "./dist/bin.mjs"
+    "t3": "./dist/bin.mjs",
+    "threadlines": "./dist/bin.mjs"
   },
   "files": [
     "dist"

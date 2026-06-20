@@ -172,6 +172,10 @@ function restartInput(overrides: Partial<TerminalRestartInput> = {}): TerminalRe
   };
 }
 
+function posixLocalNodeModulesBinPath(root: string): string {
+  return `${root.trim().replace(/\/+$/g, "")}/node_modules/.bin`;
+}
+
 const historyLogPath = (logsDir: string, threadId = "thread-1") =>
   Effect.service(Path.Path).pipe(
     Effect.map(({ join }) => join(logsDir, `terminal_${Encoding.encodeBase64Url(threadId)}.log`)),
@@ -1040,6 +1044,8 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       };
 
       setEnv("PORT", "5173");
+      setEnv("THREADLINES_PORT", "3773");
+      setEnv("BADCODE_PORT", "3773");
       setEnv("T3CODE_PORT", "3773");
       setEnv("VITE_DEV_SERVER_URL", "http://localhost:5173");
       setEnv("TEST_TERMINAL_KEEP", "keep-me");
@@ -1052,6 +1058,8 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
         if (!spawnInput) return;
 
         expect(spawnInput.env.PORT).toBeUndefined();
+        expect(spawnInput.env.THREADLINES_PORT).toBeUndefined();
+        expect(spawnInput.env.BADCODE_PORT).toBeUndefined();
         expect(spawnInput.env.T3CODE_PORT).toBeUndefined();
         expect(spawnInput.env.VITE_DEV_SERVER_URL).toBeUndefined();
         expect(spawnInput.env.TEST_TERMINAL_KEEP).toBe("keep-me");
@@ -1067,6 +1075,10 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       yield* manager.open(
         openInput({
           env: {
+            THREADLINES_PROJECT_ROOT: "/repo",
+            THREADLINES_WORKTREE_PATH: "/repo/worktree-a",
+            BADCODE_PROJECT_ROOT: "/repo",
+            BADCODE_WORKTREE_PATH: "/repo/worktree-a",
             T3CODE_PROJECT_ROOT: "/repo",
             T3CODE_WORKTREE_PATH: "/repo/worktree-a",
             CUSTOM_FLAG: "1",
@@ -1077,9 +1089,100 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       expect(spawnInput).toBeDefined();
       if (!spawnInput) return;
 
+      assert.equal(spawnInput.env.THREADLINES_PROJECT_ROOT, "/repo");
+      assert.equal(spawnInput.env.THREADLINES_WORKTREE_PATH, "/repo/worktree-a");
+      assert.equal(spawnInput.env.BADCODE_PROJECT_ROOT, "/repo");
+      assert.equal(spawnInput.env.BADCODE_WORKTREE_PATH, "/repo/worktree-a");
       assert.equal(spawnInput.env.T3CODE_PROJECT_ROOT, "/repo");
       assert.equal(spawnInput.env.T3CODE_WORKTREE_PATH, "/repo/worktree-a");
       assert.equal(spawnInput.env.CUSTOM_FLAG, "1");
+    }),
+  );
+
+  it.effect("prepends local project binaries to spawned terminal PATH", () =>
+    Effect.gen(function* () {
+      const projectRoot = process.cwd();
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        env: { PATH: "/usr/bin" },
+        platform: "linux",
+      });
+      yield* manager.open(
+        openInput({
+          cwd: projectRoot,
+          env: {
+            THREADLINES_PROJECT_ROOT: projectRoot,
+          },
+        }),
+      );
+      const spawnInput = ptyAdapter.spawnInputs[0];
+      expect(spawnInput).toBeDefined();
+      if (!spawnInput) return;
+
+      expect(spawnInput.env.PATH?.split(":").slice(0, 2)).toEqual([
+        posixLocalNodeModulesBinPath(projectRoot),
+        "/usr/bin",
+      ]);
+    }),
+  );
+
+  it.effect("prefers worktree binaries before project root binaries in spawned PATH", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { baseDir, manager, ptyAdapter } = yield* createManager(5, {
+        env: { PATH: "/usr/bin" },
+        platform: "linux",
+      });
+      const worktreePath = path.join(baseDir, "worktree-a");
+      yield* fs.makeDirectory(worktreePath);
+
+      yield* manager.open(
+        openInput({
+          cwd: worktreePath,
+          worktreePath,
+          env: {
+            THREADLINES_PROJECT_ROOT: baseDir,
+            THREADLINES_WORKTREE_PATH: worktreePath,
+          },
+        }),
+      );
+      const spawnInput = ptyAdapter.spawnInputs[0];
+      expect(spawnInput).toBeDefined();
+      if (!spawnInput) return;
+
+      expect(spawnInput.env.PATH?.split(":").slice(0, 3)).toEqual([
+        posixLocalNodeModulesBinPath(worktreePath),
+        posixLocalNodeModulesBinPath(baseDir),
+        "/usr/bin",
+      ]);
+    }),
+  );
+
+  it.effect("keeps runtime PATH entries ahead of inherited PATH entries", () =>
+    Effect.gen(function* () {
+      const projectRoot = process.cwd();
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        env: { PATH: "/usr/bin" },
+        platform: "linux",
+      });
+      yield* manager.open(
+        openInput({
+          cwd: projectRoot,
+          env: {
+            THREADLINES_PROJECT_ROOT: projectRoot,
+            PATH: "/custom/bin",
+          },
+        }),
+      );
+      const spawnInput = ptyAdapter.spawnInputs[0];
+      expect(spawnInput).toBeDefined();
+      if (!spawnInput) return;
+
+      expect(spawnInput.env.PATH?.split(":").slice(0, 3)).toEqual([
+        posixLocalNodeModulesBinPath(projectRoot),
+        "/custom/bin",
+        "/usr/bin",
+      ]);
     }),
   );
 

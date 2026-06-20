@@ -393,7 +393,7 @@ export default function ProjectScriptsControl({
                 <Label htmlFor="script-command">Command</Label>
                 <Textarea
                   id="script-command"
-                  placeholder="bun test"
+                  placeholder="pnpm run test"
                   value={command}
                   onChange={(event) => setCommand(event.target.value)}
                 />

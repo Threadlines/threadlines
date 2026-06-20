@@ -21,9 +21,13 @@ export function projectScriptRuntimeEnv(
   input: ProjectScriptRuntimeEnvInput,
 ): Record<string, string> {
   const env: Record<string, string> = {
+    THREADLINES_PROJECT_ROOT: input.project.cwd,
+    BADCODE_PROJECT_ROOT: input.project.cwd,
     T3CODE_PROJECT_ROOT: input.project.cwd,
   };
   if (input.worktreePath) {
+    env.THREADLINES_WORKTREE_PATH = input.worktreePath;
+    env.BADCODE_WORKTREE_PATH = input.worktreePath;
     env.T3CODE_WORKTREE_PATH = input.worktreePath;
   }
   if (input.extraEnv) {

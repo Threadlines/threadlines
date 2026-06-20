@@ -31,6 +31,7 @@ export default mergeConfig(
       outDir: "dist",
       sourcemap: true,
       clean: true,
+      dts: false,
       deps: {
         alwaysBundle: shouldBundleCliDependency,
         onlyBundle: false,
