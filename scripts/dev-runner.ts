@@ -31,16 +31,15 @@ export const DEFAULT_THREADLINES_HOME = Effect.map(Effect.service(Path.Path), (p
 const MODE_ARGS = {
   dev: [
     "run",
-    "dev",
-    "--ui=tui",
     "--filter=@t3tools/contracts",
     "--filter=@t3tools/web",
     "--filter=t3",
     "--parallel",
+    "dev",
   ],
-  "dev:server": ["run", "dev", "--filter=t3"],
-  "dev:web": ["run", "dev", "--filter=@t3tools/web"],
-  "dev:desktop": ["run", "dev", "--filter=@t3tools/desktop", "--filter=@t3tools/web", "--parallel"],
+  "dev:server": ["run", "--filter=t3", "dev"],
+  "dev:web": ["run", "--filter=@t3tools/web", "dev"],
+  "dev:desktop": ["run", "--filter=@t3tools/desktop", "--filter=@t3tools/web", "--parallel", "dev"],
 } as const satisfies Record<string, ReadonlyArray<string>>;
 
 type DevMode = keyof typeof MODE_ARGS;
@@ -442,7 +441,7 @@ interface DevRunnerCliInput {
   readonly port: number | undefined;
   readonly devUrl: URL | undefined;
   readonly dryRun: boolean;
-  readonly turboArgs: ReadonlyArray<string>;
+  readonly runArgs: ReadonlyArray<string>;
 }
 
 export function runDevRunnerWithInput(input: DevRunnerCliInput) {
@@ -517,29 +516,25 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
       return;
     }
 
-    const child = yield* ChildProcess.make(
-      "turbo",
-      [...MODE_ARGS[input.mode], ...input.turboArgs],
-      {
-        stdin: "inherit",
-        stdout: "inherit",
-        stderr: "inherit",
-        env,
-        extendEnv: false,
-        // Windows needs shell mode to resolve .cmd shims (e.g. bun.cmd).
-        shell: process.platform === "win32",
-        // Keep turbo in the same process group so terminal signals (Ctrl+C)
-        // reach it directly. Effect defaults to detached: true on non-Windows,
-        // which would put turbo in a new group and require manual forwarding.
-        detached: false,
-        forceKillAfter: "1500 millis",
-      },
-    );
+    const child = yield* ChildProcess.make("vp", [...MODE_ARGS[input.mode], ...input.runArgs], {
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
+      env,
+      extendEnv: false,
+      // Windows needs shell mode to resolve .cmd shims.
+      shell: process.platform === "win32",
+      // Keep Vite+ in the same process group so terminal signals (Ctrl+C)
+      // reach it directly. Effect defaults to detached: true on non-Windows,
+      // which would put Vite+ in a new group and require manual forwarding.
+      detached: false,
+      forceKillAfter: "1500 millis",
+    });
 
     const exitCode = yield* child.exitCode;
     if (exitCode !== 0) {
       return yield* new DevRunnerError({
-        message: `turbo exited with code ${exitCode}`,
+        message: `vp run exited with code ${exitCode}`,
       });
     }
   }).pipe(
@@ -632,11 +627,11 @@ const devRunnerCli = Command.make("dev-runner", {
     Flag.withFallbackConfig(optionalUrlConfig("VITE_DEV_SERVER_URL")),
   ),
   dryRun: Flag.boolean("dry-run").pipe(
-    Flag.withDescription("Resolve mode/ports/env and print, but do not spawn turbo."),
+    Flag.withDescription("Resolve mode/ports/env and print, but do not spawn Vite+."),
     Flag.withDefault(false),
   ),
-  turboArgs: Argument.string("turbo-arg").pipe(
-    Argument.withDescription("Additional turbo args (pass after `--`)."),
+  runArgs: Argument.string("run-arg").pipe(
+    Argument.withDescription("Additional Vite+ run args (pass after `--`)."),
     Argument.variadic(),
   ),
 }).pipe(

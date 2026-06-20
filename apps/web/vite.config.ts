@@ -2,7 +2,9 @@ import tailwindcss from "@tailwindcss/vite";
 import react, { reactCompilerPreset } from "@vitejs/plugin-react";
 import babel from "@rolldown/plugin-babel";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
-import { defineConfig } from "vite";
+import { defineProject, type TestProjectInlineConfiguration } from "vite-plus/test/config";
+import "vite-plus/test/config";
+import { defineConfig } from "vite-plus";
 import pkg from "./package.json" with { type: "json" };
 
 const port = Number(process.env.PORT ?? 5733);
@@ -54,6 +56,15 @@ function resolveDevProxyTarget(wsUrl: string | undefined): string | undefined {
 }
 
 const devProxyTarget = resolveDevProxyTarget(configuredWsUrl);
+const unitTestProject = {
+  extends: true,
+  test: {
+    name: "unit",
+    include: ["src/**/*.test.{ts,tsx}"],
+    hookTimeout: 30_000,
+    testTimeout: 30_000,
+  },
+} satisfies TestProjectInlineConfiguration;
 
 export default defineConfig({
   plugins: [
@@ -122,5 +133,8 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: true,
     sourcemap: buildSourcemap,
+  },
+  test: {
+    projects: [defineProject(unitTestProject)],
   },
 });

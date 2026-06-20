@@ -58,18 +58,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: package.json
-
-      - name: Setup Node
-        uses: actions/setup-node@v6
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
         with:
           node-version-file: package.json
+          cache: true
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: vp install --frozen-lockfile
 
       - name: Ensure Electron binary is installed
         run: node scripts/ensure-electron-binary.ts
@@ -119,7 +115,7 @@ jobs:
               git fetch --force --tags origin "refs/tags/*:refs/tags/*"
             fi
 
-            bun "${args[@]}"
+            node "${args[@]}"
           }
 
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
@@ -237,16 +233,16 @@ jobs:
           echo "macos_matrix=$macos_matrix" >> "$GITHUB_OUTPUT"
 
       - name: Format check
-        run: bun run fmt:check
+        run: vp fmt --check
 
       - name: Lint
-        run: bun run lint
+        run: vp lint --report-unused-disable-directives
 
       - name: Typecheck
-        run: bun run typecheck
+        run: vpr typecheck
 
       - name: Test
-        run: bun run test
+        run: vp run test
 
   prepare_release:
     name: Prepare draft GitHub Release
@@ -260,22 +256,18 @@ jobs:
           ref: ${{ needs.preflight.outputs.ref }}
           fetch-depth: 0
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: package.json
-
-      - name: Setup Node
-        uses: actions/setup-node@v6
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
         with:
           node-version-file: package.json
+          cache: true
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: vp install --frozen-lockfile
 
       - name: Generate release notes
         run: >
-          bun scripts/generate-release-notes.ts
+          node scripts/generate-release-notes.ts
           --channel "${{ needs.preflight.outputs.channel }}"
           --current-tag "${{ needs.preflight.outputs.tag }}"
           --current-ref "${{ needs.preflight.outputs.ref }}"
@@ -323,28 +315,24 @@ jobs:
           ref: ${{ needs.preflight.outputs.ref }}
           fetch-depth: 0
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: package.json
-
-      - name: Setup Node
-        uses: actions/setup-node@v6
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
         with:
           node-version-file: package.json
+          cache: true
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: vp install --frozen-lockfile
 
       - name: Ensure Electron binary is installed
         run: node scripts/ensure-electron-binary.ts
 
       - name: Align release package versions
-        run: bun scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
+        run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
 
       - name: Build Windows installer
         run: >
-          bun run dist:desktop:artifact --
+          vp run dist:desktop:artifact --
           --platform win
           --target nsis
           --arch x64
@@ -419,36 +407,31 @@ jobs:
           ref: ${{ needs.preflight.outputs.ref }}
           fetch-depth: 0
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: package.json
-
-      - name: Setup Node
-        uses: actions/setup-node@v6
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
         with:
           node-version-file: package.json
+          cache: true
 
       - name: Cache desktop build downloads
         uses: actions/cache@v4
         with:
           path: |
-            ~/.bun/install/cache
             ~/Library/Caches/electron
             ~/Library/Caches/electron-builder
-          key: macos-${{ matrix.arch }}-desktop-${{ hashFiles('bun.lock', 'package.json', 'apps/desktop/package.json') }}
+          key: macos-${{ matrix.arch }}-desktop-${{ hashFiles('pnpm-lock.yaml', 'package.json', 'apps/desktop/package.json') }}
           restore-keys: |
             macos-${{ matrix.arch }}-desktop-
             macos-desktop-
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: vp install --frozen-lockfile
 
       - name: Ensure Electron binary is installed
         run: node scripts/ensure-electron-binary.ts
 
       - name: Align release package versions
-        run: bun scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
+        run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
 
       - name: Require macOS signing for updater releases
         env:
@@ -483,7 +466,7 @@ jobs:
           chmod 600 "$apple_api_key_path"
           unset APPLE_API_KEY_CONTENT
 
-          APPLE_API_KEY="$apple_api_key_path" bun run dist:desktop:artifact -- \
+          APPLE_API_KEY="$apple_api_key_path" vp run dist:desktop:artifact -- \
             --platform mac \
             --target dmg \
             --arch "${{ matrix.arch }}" \
@@ -594,26 +577,14 @@ jobs:
           ref: ${{ needs.preflight.outputs.ref }}
           fetch-depth: 0
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: package.json
-
-      - name: Setup Node
-        uses: actions/setup-node@v6
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
         with:
           node-version-file: package.json
-
-      - name: Cache Bun downloads
-        uses: actions/cache@v4
-        with:
-          path: ~/.bun/install/cache
-          key: ubuntu-publish-bun-${{ hashFiles('bun.lock', 'package.json') }}
-          restore-keys: |
-            ubuntu-publish-bun-
+          cache: true
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile --ignore-scripts
+        run: vp install --frozen-lockfile --ignore-scripts
 
       - name: Download updater manifests
         shell: bash
@@ -652,7 +623,7 @@ jobs:
             local secondary_path="release-manifests/$secondary"
 
             if [[ -f "$primary_path" && -f "$secondary_path" ]]; then
-              bun scripts/merge-update-manifests.ts \
+              node scripts/merge-update-manifests.ts \
                 --platform mac \
                 "$primary_path" \
                 "$secondary_path" \

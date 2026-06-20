@@ -4,12 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview",
+    "dev": "vp dev",
+    "build": "vp build",
+    "preview": "vp preview",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests --testTimeout=30000",
-    "test:browser": "vitest run --config vitest.browser.config.ts",
+    "test": "vp test run --passWithNoTests --project unit",
+    "test:browser": "vp test run --config vitest.browser.config.ts",
     "test:browser:install": "playwright install --with-deps chromium"
   },
   "dependencies": {
@@ -45,7 +45,6 @@
     "zustand": "^5.0.11"
   },
   "devDependencies": {
-    "@effect/language-service": "catalog:",
     "@rolldown/plugin-babel": "^0.2.0",
     "@tailwindcss/vite": "^4.0.0",
     "@tanstack/router-plugin": "^1.161.0",
@@ -60,8 +59,8 @@
     "playwright": "^1.58.2",
     "tailwindcss": "^4.0.0",
     "typescript": "catalog:",
-    "vite": "^8.0.0",
-    "vitest": "catalog:",
+    "vite": "catalog:",
+    "vite-plus": "catalog:",
     "vitest-browser-react": "^2.0.5"
   }
 }

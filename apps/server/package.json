@@ -17,12 +17,11 @@
   "type": "module",
   "scripts": {
     "dev": "node --watch src/bin.ts ../..",
-    "dev:bundle": "tsdown --watch",
-    "build": "node scripts/cli.ts build",
-    "build:bundle": "tsdown",
+    "dev:bundle": "vp pack --watch",
+    "build:bundle": "vp pack",
     "start": "node dist/bin.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vp test run"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.183",
@@ -37,7 +36,6 @@
     "node-pty": "^1.1.0"
   },
   "devDependencies": {
-    "@effect/language-service": "catalog:",
     "@effect/vitest": "catalog:",
     "@t3tools/contracts": "workspace:*",
     "@t3tools/shared": "workspace:*",
@@ -47,9 +45,8 @@
     "@types/node": "catalog:",
     "effect-acp": "workspace:*",
     "effect-codex-app-server": "workspace:*",
-    "tsdown": "catalog:",
     "typescript": "catalog:",
-    "vitest": "catalog:"
+    "vite-plus": "catalog:"
   },
   "engines": {
     "node": "^22.16 || ^23.11 || >=24.10"

@@ -18,6 +18,14 @@ describe("provider auth helpers", () => {
     expect(isProviderAuthErrorMessage("Sandbox setup failed")).toBe(false);
   });
 
+  it("does not treat explanatory unauthenticated prose as an auth failure", () => {
+    expect(
+      isProviderAuthErrorMessage(
+        "The UI would repeatedly appear unauthenticated even though the primary login was fresh.",
+      ),
+    ).toBe(false);
+  });
+
   it("exposes the provider reconnect command", () => {
     expect(providerAuthReconnectCommand(ProviderDriverKind.make("claudeAgent"))).toBe(
       "claude auth login",

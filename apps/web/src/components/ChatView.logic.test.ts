@@ -280,6 +280,20 @@ describe("deriveProviderAuthReconnectPrompt", () => {
     });
   });
 
+  it("ignores diagnostic assistant prose that mentions unauthenticated UI state", () => {
+    expect(
+      deriveProviderAuthReconnectPrompt({
+        provider: codexProvider,
+        messages: [
+          {
+            role: "assistant",
+            text: "The config path matters here: Threadlines can materialize a Codex shadow home before starting app-server. If that shadow home misses or ages out MCP credential files, the UI would repeatedly appear unauthenticated even though the primary ~/.codex login was fresh.",
+          },
+        ],
+      }),
+    ).toBeNull();
+  });
+
   it("ignores unrelated runtime errors", () => {
     expect(
       deriveProviderAuthReconnectPrompt({

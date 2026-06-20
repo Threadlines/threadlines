@@ -2,7 +2,6 @@ import { setTimeout as sleepRealTime } from "node:timers/promises";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it, describe } from "@effect/vitest";
-import * as Clock from "effect/Clock";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -10,7 +9,6 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Scope from "effect/Scope";
-import { TestClock } from "effect/testing";
 
 import { GitCommandError } from "@t3tools/contracts";
 import { ServerConfig } from "../config.ts";
@@ -93,15 +91,15 @@ const waitForGitOutput = (
   predicate: (output: string) => boolean,
 ): Effect.Effect<void, GitCommandError | WaitForGitOutputError, GitVcsDriver.GitVcsDriver> =>
   Effect.gen(function* () {
-    const startedAtMs = yield* Clock.currentTimeMillis;
+    const startedAtMs = Date.now();
     let output = "";
     do {
       output = yield* git(cwd, args);
       if (predicate(output)) {
         return;
       }
-      yield* TestClock.adjust("50 millis");
-    } while ((yield* Clock.currentTimeMillis) - startedAtMs < 5_000);
+      yield* Effect.promise(() => sleepRealTime(50));
+    } while (Date.now() - startedAtMs < 5_000);
     return yield* new WaitForGitOutputError({
       message: `Timed out waiting for git ${args.join(" ")}.`,
     });
@@ -117,7 +115,7 @@ const waitForFileText = (
 > =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
-    const startedAtMs = yield* Clock.currentTimeMillis;
+    const startedAtMs = Date.now();
     let output = "";
     do {
       output = yield* fileSystem
@@ -126,8 +124,8 @@ const waitForFileText = (
       if (predicate(output)) {
         return;
       }
-      yield* TestClock.adjust("50 millis");
-    } while ((yield* Clock.currentTimeMillis) - startedAtMs < 5_000);
+      yield* Effect.promise(() => sleepRealTime(50));
+    } while (Date.now() - startedAtMs < 5_000);
     return yield* new WaitForGitOutputError({
       message: `Timed out waiting for file ${filePath}.`,
     });

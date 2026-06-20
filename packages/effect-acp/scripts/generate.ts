@@ -146,7 +146,7 @@ function collectSchemaEntries(
   return entries;
 }
 
-function normalizeNullableTypes(value: typeof Schema.Json.Type): typeof Schema.Json.Type {
+function normalizeNullableTypes(value: Schema.Json): Schema.Json {
   if (Array.isArray(value)) {
     return value.map(normalizeNullableTypes);
   }
@@ -158,10 +158,7 @@ function normalizeNullableTypes(value: typeof Schema.Json.Type): typeof Schema.J
     key,
     normalizeNullableTypes(child),
   ]);
-  const normalizedObject = Object.fromEntries(normalizedEntries) as Record<
-    string,
-    typeof Schema.Json.Type
-  >;
+  const normalizedObject = Object.fromEntries(normalizedEntries) as Record<string, Schema.Json>;
   const typeValue = normalizedObject.type;
 
   if (!Array.isArray(typeValue)) {
@@ -179,7 +176,7 @@ function normalizeNullableTypes(value: typeof Schema.Json.Type): typeof Schema.J
   }
   const nonNullType = nonNullTypes[0]!;
 
-  const nextObject: Record<string, typeof Schema.Json.Type> = {};
+  const nextObject: Record<string, Schema.Json> = {};
   for (const [key, child] of Object.entries(normalizedObject)) {
     if (key !== "type") {
       nextObject[key] = child;
@@ -268,14 +265,14 @@ const generateSchemas = Effect.fn("generateSchemas")(function* (skipDownload: bo
 
   const { generatedDir } = yield* getGeneratedPaths();
   yield* Effect.service(ChildProcessSpawner.ChildProcessSpawner).pipe(
-    Effect.flatMap((spawner) => spawner.spawn(ChildProcess.make("bun", ["oxfmt", generatedDir]))),
+    Effect.flatMap((spawner) => spawner.spawn(ChildProcess.make("vp", ["fmt", generatedDir]))),
     Effect.flatMap((child) => child.exitCode),
     Effect.tap((code) =>
       code === 0
         ? Effect.void
         : Effect.fail<GenerateCommandError>({
             _tag: "GenerateCommandError",
-            message: `oxfmt failed with exit code ${code}`,
+            message: `vp fmt failed with exit code ${code}`,
           }),
     ),
   );

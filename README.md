@@ -43,15 +43,15 @@ access to the repo.
 ### Local development
 
 ```bash
-bun install --frozen-lockfile
-bun run dev
+vp install --frozen-lockfile
+vp run dev
 ```
 
 ### Local desktop artifact
 
 ```powershell
-bun install --frozen-lockfile
-bun run dist:desktop:artifact -- --platform win --target nsis --arch x64 --build-version 0.0.1
+vp install --frozen-lockfile
+vp run dist:desktop:artifact -- --platform win --target nsis --arch x64 --build-version 0.0.1
 ```
 
 The artifact is written to `release/`.
@@ -79,7 +79,7 @@ Before local development, prepare the environment and install dependencies:
 ```bash
 # Optional: only needed if you use mise for dev tool management.
 mise install
-bun install
+vp install
 ```
 
 Read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening an issue or PR.

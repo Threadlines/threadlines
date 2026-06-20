@@ -424,10 +424,14 @@ it.effect("decodes thread archived, unarchived, pinned, and unpinned events", ()
       },
     });
 
-    assert.strictEqual(archived.type, "thread.archived");
+    if (archived.type !== "thread.archived") {
+      throw new Error(`Expected thread.archived, got ${archived.type}`);
+    }
     assert.strictEqual(archived.payload.archivedAt, "2026-01-01T00:00:00.000Z");
     assert.strictEqual(unarchived.type, "thread.unarchived");
-    assert.strictEqual(pinned.type, "thread.pinned");
+    if (pinned.type !== "thread.pinned") {
+      throw new Error(`Expected thread.pinned, got ${pinned.type}`);
+    }
     assert.strictEqual(pinned.payload.pinnedAt, "2026-01-03T00:00:00.000Z");
     assert.strictEqual(unpinned.type, "thread.unpinned");
   }),

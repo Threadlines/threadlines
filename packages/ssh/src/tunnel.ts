@@ -1055,10 +1055,8 @@ export const fetchLoopbackSshJson = Effect.fn("ssh/tunnel.fetchLoopbackSshJson")
     ),
   );
   if (response.status < 200 || response.status >= 300) {
-    const text = yield* response.text.pipe(Effect.catch(() => Effect.succeed("")));
-    const parsedError = yield* decodeRemoteHttpError(text).pipe(
-      Effect.catch(() => Effect.succeed(null)),
-    );
+    const text = yield* response.text.pipe(Effect.orElseSucceed(() => ""));
+    const parsedError = yield* decodeRemoteHttpError(text).pipe(Effect.orElseSucceed(() => null));
     const message =
       parsedError?.error && parsedError.error.trim().length > 0
         ? parsedError.error
@@ -1753,10 +1751,13 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
   return SshEnvironmentManager.of({ ensureEnvironment, disconnectEnvironment });
 });
 
+/**
+ * @effect-expect-leaking ChildProcessSpawner | FileSystem | HttpClient | NetService | Path | SshPasswordPrompt
+ */
 export class SshEnvironmentManager extends Context.Service<
   SshEnvironmentManager,
   SshEnvironmentManagerShape
->()("@t3tools/ssh/SshEnvironmentManager") {
+>()("@t3tools/ssh/tunnel/SshEnvironmentManager") {
   static readonly layer = (options: SshEnvironmentManagerOptions = {}) =>
     Layer.effect(SshEnvironmentManager, makeSshEnvironmentManager(options));
 }

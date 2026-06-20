@@ -15,62 +15,36 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: package.json
-
-      - name: Setup Node
-        uses: actions/setup-node@v6
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
         with:
           node-version-file: package.json
-
-      - name: Cache Bun and Turbo
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.bun/install/cache
-            .turbo
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}-${{ hashFiles('turbo.json') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}-
-
-      - name: Cache Playwright browsers
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ hashFiles('bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-playwright-
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
+          cache: true
+          run-install: true
 
       - name: Ensure Electron binary is installed
         run: node scripts/ensure-electron-binary.ts
 
       - name: Format
-        run: bun run fmt:check
+        run: vp fmt --check
 
       - name: Lint
-        run: bun run lint
+        run: vp lint --report-unused-disable-directives
 
       - name: Typecheck
-        run: bun run typecheck
+        run: vpr typecheck
 
       - name: Test
-        run: bun run test
+        run: vp run test
 
       - name: Install browser test runtime
-        run: |
-          cd apps/web
-          bunx playwright install --with-deps chromium
+        run: vp run --filter @t3tools/web test:browser:install
 
       - name: Browser test
-        run: bun run --cwd apps/web test:browser
+        run: vp run --filter @t3tools/web test:browser
 
       - name: Build desktop pipeline
-        run: bun run build:desktop
+        run: vp run build:desktop
 
       - name: Verify preload bundle output
         run: |
@@ -85,18 +59,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: package.json
-
-      - name: Setup Node
-        uses: actions/setup-node@v6
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
         with:
           node-version-file: package.json
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
+          cache: true
+          run-install: true
 
       - name: Exercise release-only workflow steps
         run: node scripts/release-smoke.ts
