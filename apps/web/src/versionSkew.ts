@@ -1,8 +1,8 @@
-import type { EnvironmentId, ServerConfig } from "@t3tools/contracts";
+import type { EnvironmentId, ServerConfig } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
 
 import { APP_VERSION } from "./branding";
-import { getLocalStorageItem, setLocalStorageItem } from "./hooks/useLocalStorage";
+import { getLocalStorageItemWithLegacyKeys, setLocalStorageItem } from "./hooks/useLocalStorage";
 
 export interface VersionMismatch {
   readonly clientVersion: string;
@@ -10,7 +10,10 @@ export interface VersionMismatch {
   readonly hint: string;
 }
 
-export const VERSION_MISMATCH_DISMISSALS_STORAGE_KEY = "t3code:version-mismatch-dismissals:v1";
+export const VERSION_MISMATCH_DISMISSALS_STORAGE_KEY = "threadlines:version-mismatch-dismissals:v1";
+const LEGACY_VERSION_MISMATCH_DISMISSALS_STORAGE_KEYS = [
+  "t3code:version-mismatch-dismissals:v1",
+] as const;
 
 const VersionMismatchDismissalsSchema = Schema.Struct({
   keys: Schema.Array(Schema.String),
@@ -59,8 +62,9 @@ export function buildVersionMismatchDismissalKey(
 function readVersionMismatchDismissals(): VersionMismatchDismissals {
   try {
     return (
-      getLocalStorageItem(
+      getLocalStorageItemWithLegacyKeys(
         VERSION_MISMATCH_DISMISSALS_STORAGE_KEY,
+        LEGACY_VERSION_MISMATCH_DISMISSALS_STORAGE_KEYS,
         VersionMismatchDismissalsSchema,
       ) ?? { keys: [] }
     );

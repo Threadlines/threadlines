@@ -2,7 +2,7 @@ import {
   defaultInstanceIdForDriver,
   ProviderDriverKind,
   type ServerProvider,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import { it, assert, vi } from "@effect/vitest";
 
 import * as Effect from "effect/Effect";

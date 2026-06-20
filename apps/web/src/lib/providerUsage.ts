@@ -5,7 +5,7 @@ import type {
   ServerProviderSpendControlLimit,
   ServerProviderUsageLimit,
   ServerProviderUsageWindow,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 
 export interface ProviderAccountUsageWindowPresentation {
   readonly key: "primary" | "secondary";

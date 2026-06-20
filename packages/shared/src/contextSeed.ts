@@ -17,7 +17,7 @@ import type {
   ProviderDriverKind,
   ThreadContextSeed,
   ThreadContextSeedEntry,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 
 const ROLE_LABEL: Record<string, string> = {
   user: "User",

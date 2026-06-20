@@ -3,14 +3,14 @@ import {
   type ModelCapabilities,
   type OpenCodeSettings,
   type ServerProviderModel,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import * as Cause from "effect/Cause";
 import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 
-import { createModelCapabilities } from "@t3tools/shared/model";
-import { compareSemverVersions } from "@t3tools/shared/semver";
+import { createModelCapabilities } from "@threadlines/shared/model";
+import { compareSemverVersions } from "@threadlines/shared/semver";
 import {
   buildServerProvider,
   nonEmptyTrimmed,

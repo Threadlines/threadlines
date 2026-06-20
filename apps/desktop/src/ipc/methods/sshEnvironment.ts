@@ -12,7 +12,7 @@ import {
   AuthBearerBootstrapResult,
   AuthSessionState,
   AuthWebSocketTokenResult,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 

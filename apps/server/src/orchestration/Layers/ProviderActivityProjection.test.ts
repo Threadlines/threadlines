@@ -4,8 +4,8 @@ import {
   type ProviderRuntimeEvent,
   ThreadId,
   TurnId,
-} from "@t3tools/contracts";
-import { MAX_THREAD_ACTIVITY_PAYLOAD_TEXT_LENGTH } from "@t3tools/shared/threadLimits";
+} from "@threadlines/contracts";
+import { MAX_THREAD_ACTIVITY_PAYLOAD_TEXT_LENGTH } from "@threadlines/shared/threadLimits";
 import { describe, expect, it } from "vitest";
 
 import { projectRuntimeEventToActivities } from "./ProviderActivityProjection.ts";

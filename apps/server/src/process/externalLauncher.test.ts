@@ -767,7 +767,7 @@ it.layer(NodeServices.layer)("launchEditorProcess", (it) => {
     Effect.gen(function* () {
       const spawnerLayer = Layer.mock(ChildProcessSpawner.ChildProcessSpawner, {});
       const result = yield* launchEditorProcess({
-        command: `t3code-no-such-command-${yield* Random.nextUUIDv4}`,
+        command: `threadlines-no-such-command-${yield* Random.nextUUIDv4}`,
         args: [],
       }).pipe(Effect.provide(spawnerLayer), Effect.result);
       assert.equal(result._tag, "Failure");

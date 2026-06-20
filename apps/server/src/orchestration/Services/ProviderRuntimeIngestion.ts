@@ -38,4 +38,6 @@ export interface ProviderRuntimeIngestionShape {
 export class ProviderRuntimeIngestionService extends Context.Service<
   ProviderRuntimeIngestionService,
   ProviderRuntimeIngestionShape
->()("t3/orchestration/Services/ProviderRuntimeIngestion/ProviderRuntimeIngestionService") {}
+>()(
+  "threadlines/orchestration/Services/ProviderRuntimeIngestion/ProviderRuntimeIngestionService",
+) {}

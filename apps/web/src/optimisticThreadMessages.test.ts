@@ -1,5 +1,5 @@
-import { scopeThreadRef } from "@t3tools/client-runtime";
-import { EnvironmentId, MessageId, ThreadId } from "@t3tools/contracts";
+import { scopeThreadRef } from "@threadlines/client-runtime";
+import { EnvironmentId, MessageId, ThreadId } from "@threadlines/contracts";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {

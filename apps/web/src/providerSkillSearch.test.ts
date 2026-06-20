@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { ServerProviderSkill } from "@t3tools/contracts";
+import type { ServerProviderSkill } from "@threadlines/contracts";
 
 import { searchProviderSkills } from "./providerSkillSearch";
 

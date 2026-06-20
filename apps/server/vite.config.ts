@@ -5,7 +5,7 @@ import baseConfig from "../../vite.config.ts";
 
 const bundledPackagePrefixes = [
   "@pierre/diffs",
-  "@t3tools/",
+  "@threadlines/",
   "effect-acp",
   "effect-codex-app-server",
 ];
@@ -21,7 +21,7 @@ export default mergeConfig(
       tasks: {
         build: {
           command: "node scripts/cli.ts build",
-          dependsOn: ["@t3tools/web#build"],
+          dependsOn: ["@threadlines/web#build"],
           cache: false,
         },
       },

@@ -15,7 +15,7 @@ import {
   type OrchestrationProposedPlan,
   type OrchestrationThread,
   type ProviderRuntimeEvent,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
@@ -24,7 +24,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
-import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
+import { makeDrainableWorker } from "@threadlines/shared/DrainableWorker";
 
 import { parseTurnDiffFilesFromUnifiedDiff } from "../../checkpointing/Diffs.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
@@ -85,7 +85,9 @@ const ACTIVITY_STREAM_EMIT_LINE_THRESHOLDS = {
 } as const satisfies Record<ActivityStreamDeltaKind, number>;
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
 const MAX_BUFFERED_ACTIVITY_STREAM_CHARS = 4_000;
-const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
+const STRICT_PROVIDER_LIFECYCLE_GUARD =
+  (process.env.THREADLINES_STRICT_PROVIDER_LIFECYCLE_GUARD ??
+    process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD) !== "0";
 
 interface BufferedActivityStream {
   readonly text: string;

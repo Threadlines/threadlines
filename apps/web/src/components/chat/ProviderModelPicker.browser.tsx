@@ -1,6 +1,10 @@
-import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
-import { EnvironmentId } from "@t3tools/contracts";
-import { createModelCapabilities } from "@t3tools/shared/model";
+import {
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ServerProvider,
+} from "@threadlines/contracts";
+import { EnvironmentId } from "@threadlines/contracts";
+import { createModelCapabilities } from "@threadlines/shared/model";
 import { page, userEvent } from "vitest/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
@@ -17,8 +21,9 @@ import {
   DEFAULT_CLIENT_SETTINGS,
   DEFAULT_UNIFIED_SETTINGS,
   type UnifiedSettings,
-} from "@t3tools/contracts/settings";
+} from "@threadlines/contracts/settings";
 import { __resetLocalApiForTests } from "../../localApi";
+import { CLIENT_SETTINGS_STORAGE_KEY } from "../../clientPersistenceStorage";
 
 // Mock the environments/runtime module to provide a mock primary environment connection
 vi.mock("../../environments/runtime", () => {
@@ -347,7 +352,7 @@ describe("ProviderModelPicker", () => {
 
   it("expands only the favorites group when the active model is favorited", async () => {
     localStorage.setItem(
-      "t3code:client-settings:v1",
+      CLIENT_SETTINGS_STORAGE_KEY,
       JSON.stringify({
         ...DEFAULT_CLIENT_SETTINGS,
         favorites: [{ provider: "claudeAgent", model: "claude-sonnet-4-6" }],
@@ -370,7 +375,7 @@ describe("ProviderModelPicker", () => {
       });
     } finally {
       await mounted.cleanup();
-      localStorage.removeItem("t3code:client-settings:v1");
+      localStorage.removeItem(CLIENT_SETTINGS_STORAGE_KEY);
     }
   });
 
@@ -501,7 +506,7 @@ describe("ProviderModelPicker", () => {
 
   it("shows locked provider header and only its models in locked mode", async () => {
     localStorage.setItem(
-      "t3code:client-settings:v1",
+      CLIENT_SETTINGS_STORAGE_KEY,
       JSON.stringify({
         ...DEFAULT_CLIENT_SETTINGS,
         favorites: [
@@ -531,7 +536,7 @@ describe("ProviderModelPicker", () => {
         ]);
       });
     } finally {
-      localStorage.removeItem("t3code:client-settings:v1");
+      localStorage.removeItem(CLIENT_SETTINGS_STORAGE_KEY);
       await mounted.cleanup();
     }
   });
@@ -985,7 +990,7 @@ describe("ProviderModelPicker", () => {
   });
 
   it("toggles favorite stars when clicked", async () => {
-    localStorage.removeItem("t3code:client-settings:v1");
+    localStorage.removeItem(CLIENT_SETTINGS_STORAGE_KEY);
 
     const mounted = await mountPicker({
       activeInstanceId: CLAUDE_INSTANCE_ID,
@@ -1025,12 +1030,12 @@ describe("ProviderModelPicker", () => {
       });
     } finally {
       await mounted.cleanup();
-      localStorage.removeItem("t3code:client-settings:v1");
+      localStorage.removeItem(CLIENT_SETTINGS_STORAGE_KEY);
     }
   });
 
   it("does not duplicate favorited models across favorites and all models sections", async () => {
-    localStorage.removeItem("t3code:client-settings:v1");
+    localStorage.removeItem(CLIENT_SETTINGS_STORAGE_KEY);
 
     const mounted = await mountPicker({
       activeInstanceId: CLAUDE_INSTANCE_ID,
@@ -1061,13 +1066,13 @@ describe("ProviderModelPicker", () => {
       });
     } finally {
       await mounted.cleanup();
-      localStorage.removeItem("t3code:client-settings:v1");
+      localStorage.removeItem(CLIENT_SETTINGS_STORAGE_KEY);
     }
   });
 
   it("lists favorited models in the favorites group ahead of provider groups", async () => {
     localStorage.setItem(
-      "t3code:client-settings:v1",
+      CLIENT_SETTINGS_STORAGE_KEY,
       JSON.stringify({
         ...DEFAULT_CLIENT_SETTINGS,
         favorites: [{ provider: "codex", model: "gpt-5.3-codex" }],
@@ -1096,7 +1101,7 @@ describe("ProviderModelPicker", () => {
       });
     } finally {
       await mounted.cleanup();
-      localStorage.removeItem("t3code:client-settings:v1");
+      localStorage.removeItem(CLIENT_SETTINGS_STORAGE_KEY);
     }
   });
 

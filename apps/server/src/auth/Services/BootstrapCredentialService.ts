@@ -1,4 +1,4 @@
-import type { AuthPairingLink, ServerAuthBootstrapMethod } from "@t3tools/contracts";
+import type { AuthPairingLink, ServerAuthBootstrapMethod } from "@threadlines/contracts";
 import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -58,4 +58,4 @@ export interface BootstrapCredentialServiceShape {
 export class BootstrapCredentialService extends Context.Service<
   BootstrapCredentialService,
   BootstrapCredentialServiceShape
->()("t3/auth/Services/BootstrapCredentialService") {}
+>()("threadlines/auth/Services/BootstrapCredentialService") {}

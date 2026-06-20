@@ -1,5 +1,5 @@
-import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime";
-import { projectScriptCwd } from "@t3tools/shared/projectScripts";
+import { scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
+import { projectScriptCwd } from "@threadlines/shared/projectScripts";
 import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo } from "react";

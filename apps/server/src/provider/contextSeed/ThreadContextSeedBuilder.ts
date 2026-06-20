@@ -22,13 +22,13 @@ import type {
   ThreadContextSeed,
   ThreadContextSeedEntry,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import {
   DEFAULT_SEED_BUDGET,
   renderSeedEntries,
   type SeedBudget,
   splitSeedEntriesByBudget,
-} from "@t3tools/shared/contextSeed";
+} from "@threadlines/shared/contextSeed";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -72,7 +72,7 @@ export interface ThreadContextSeedBuilderShape {
 export class ThreadContextSeedBuilder extends Context.Service<
   ThreadContextSeedBuilder,
   ThreadContextSeedBuilderShape
->()("t3/provider/contextSeed/ThreadContextSeedBuilder") {}
+>()("threadlines/provider/contextSeed/ThreadContextSeedBuilder") {}
 
 function truncationMarker(count: number): string {
   return `[${count} earlier message${count === 1 ? "" : "s"} omitted to fit the handoff budget.]`;

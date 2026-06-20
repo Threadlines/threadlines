@@ -3,7 +3,7 @@ const REPO = "Threadlines/threadlines";
 export const RELEASES_URL = `https://github.com/${REPO}/releases`;
 
 const API_URL = `https://api.github.com/repos/${REPO}/releases/latest`;
-const CACHE_KEY = "badcode-latest-release";
+const CACHE_KEY = "threadlines-latest-release";
 
 export interface ReleaseAsset {
   name: string;

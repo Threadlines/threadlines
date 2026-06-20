@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ProviderDriverKind, type ServerProviderModel } from "@t3tools/contracts";
+import { ProviderDriverKind, type ServerProviderModel } from "@threadlines/contracts";
 
 import { providerModelSupportsInputModality } from "./providerModels";
 

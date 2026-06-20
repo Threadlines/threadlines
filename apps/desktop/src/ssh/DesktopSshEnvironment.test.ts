@@ -1,8 +1,8 @@
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import * as NetService from "@t3tools/shared/Net";
-import { SshPasswordPromptError } from "@t3tools/ssh/errors";
+import * as NetService from "@threadlines/shared/Net";
+import { SshPasswordPromptError } from "@threadlines/ssh/errors";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -14,7 +14,7 @@ import * as DesktopSshPasswordPrompts from "./DesktopSshPasswordPrompts.ts";
 function makeTempHomeDir() {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    return yield* fs.makeTempDirectoryScoped({ prefix: "t3-ssh-env-test-" });
+    return yield* fs.makeTempDirectoryScoped({ prefix: "threadlines-ssh-env-test-" });
   });
 }
 

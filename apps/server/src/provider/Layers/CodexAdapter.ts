@@ -25,7 +25,7 @@ import {
   ThreadId,
   TurnId,
   ProviderSendTurnInput,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as Exit from "effect/Exit";
@@ -40,8 +40,8 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
-import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
-import { renderThreadContextSeed, withContextSeedPreamble } from "@t3tools/shared/contextSeed";
+import { getModelSelectionStringOptionValue } from "@threadlines/shared/model";
+import { renderThreadContextSeed, withContextSeedPreamble } from "@threadlines/shared/contextSeed";
 import { resolveCodexServiceTier } from "../../codexServiceTier.ts";
 
 import {

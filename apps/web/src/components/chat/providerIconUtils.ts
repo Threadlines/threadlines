@@ -1,4 +1,4 @@
-import { ProviderDriverKind } from "@t3tools/contracts";
+import { ProviderDriverKind } from "@threadlines/contracts";
 import { ClaudeAI, Icon, OpenAI } from "../Icons";
 import { PROVIDER_OPTIONS } from "../../session-logic";
 

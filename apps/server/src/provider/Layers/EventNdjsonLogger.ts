@@ -9,8 +9,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import type { ThreadId } from "@t3tools/contracts";
-import { RotatingFileSink } from "@t3tools/shared/logging";
+import type { ThreadId } from "@threadlines/contracts";
+import { RotatingFileSink } from "@threadlines/shared/logging";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";

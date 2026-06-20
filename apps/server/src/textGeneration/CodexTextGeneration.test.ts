@@ -6,7 +6,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import { createModelSelection } from "@t3tools/shared/model";
+import { createModelSelection } from "@threadlines/shared/model";
 import { expect } from "vitest";
 
 import {
@@ -15,7 +15,7 @@ import {
   DEFAULT_MODEL,
   ProviderInstanceId,
   TextGenerationError,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 
 import { ServerConfig } from "../config.ts";
 import { type TextGenerationShape } from "./TextGeneration.ts";
@@ -28,7 +28,7 @@ const DEFAULT_TEST_MODEL_SELECTION = createModelSelection(
 );
 
 const CodexTextGenerationTestLayer = ServerConfig.layerTest(process.cwd(), {
-  prefix: "t3code-codex-text-generation-test-",
+  prefix: "threadlines-codex-text-generation-test-",
 }).pipe(Layer.provideMerge(NodeServices.layer));
 
 function batchQuote(value: string): string {
@@ -438,9 +438,9 @@ function makeFakeCodexBinary(
             ]
           : []),
         'if [ -n "$output_path" ]; then',
-        "  cat > \"$output_path\" <<'__T3CODE_FAKE_CODEX_OUTPUT__'",
+        "  cat > \"$output_path\" <<'__THREADLINES_FAKE_CODEX_OUTPUT__'",
         input.output,
-        "__T3CODE_FAKE_CODEX_OUTPUT__",
+        "__THREADLINES_FAKE_CODEX_OUTPUT__",
         "fi",
         `exit ${input.exitCode ?? 0}`,
         "",
@@ -476,7 +476,7 @@ function withFakeCodexEnv<A, E, R>(
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-codex-text-" });
+    const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "threadlines-codex-text-" });
     const codexPath = yield* makeFakeCodexBinary(tempDir, input);
     const config = decodeCodexSettings({ binaryPath: codexPath });
     const textGeneration = yield* makeCodexTextGeneration(config);

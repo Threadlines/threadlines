@@ -8,7 +8,7 @@ import {
   type LocalApi,
   type VcsCommitGraphResult,
   type VcsStatusResult,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   RouterProvider,

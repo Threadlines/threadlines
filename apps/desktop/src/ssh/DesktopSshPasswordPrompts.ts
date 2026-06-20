@@ -1,6 +1,6 @@
-import type { DesktopSshPasswordPromptRequest } from "@t3tools/contracts";
-import { DesktopSshPasswordPromptResolutionInputSchema } from "@t3tools/contracts";
-import type { SshPasswordRequest } from "@t3tools/ssh/auth";
+import type { DesktopSshPasswordPromptRequest } from "@threadlines/contracts";
+import { DesktopSshPasswordPromptResolutionInputSchema } from "@threadlines/contracts";
+import type { SshPasswordRequest } from "@threadlines/ssh/auth";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
@@ -129,7 +129,7 @@ export interface DesktopSshPasswordPromptsShape {
 export class DesktopSshPasswordPrompts extends Context.Service<
   DesktopSshPasswordPrompts,
   DesktopSshPasswordPromptsShape
->()("t3/desktop/SshPasswordPrompts") {}
+>()("threadlines/desktop/SshPasswordPrompts") {}
 
 interface PendingSshPasswordPrompt {
   readonly requestId: string;

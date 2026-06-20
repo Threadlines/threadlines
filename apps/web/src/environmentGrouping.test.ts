@@ -1,5 +1,5 @@
-import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
-import { scopeProjectRef } from "@t3tools/client-runtime";
+import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@threadlines/contracts";
+import { scopeProjectRef } from "@threadlines/client-runtime";
 import { describe, expect, it } from "vitest";
 
 import {

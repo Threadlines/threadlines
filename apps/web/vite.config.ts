@@ -25,7 +25,9 @@ const configuredHostedAppUrl = (() => {
   }
   return undefined;
 })();
-const sourcemapEnv = process.env.T3CODE_WEB_SOURCEMAP?.trim().toLowerCase();
+const sourcemapEnv = (process.env.THREADLINES_WEB_SOURCEMAP ?? process.env.T3CODE_WEB_SOURCEMAP)
+  ?.trim()
+  .toLowerCase();
 
 const buildSourcemap =
   sourcemapEnv === "0" || sourcemapEnv === "false"

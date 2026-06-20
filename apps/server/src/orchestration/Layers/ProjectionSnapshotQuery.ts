@@ -23,7 +23,7 @@ import {
   ModelSelection,
   ProjectId,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -31,7 +31,7 @@ import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
-import { MAX_THREAD_ACTIVITIES } from "@t3tools/shared/threadLimits";
+import { MAX_THREAD_ACTIVITIES } from "@threadlines/shared/threadLimits";
 
 import {
   isPersistenceError,

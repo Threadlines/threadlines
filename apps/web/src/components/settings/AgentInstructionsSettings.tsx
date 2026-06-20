@@ -3,7 +3,7 @@ import type {
   ProviderInstructionFile,
   ProviderInstructionFilesResult,
   ProviderInstructionFileKind,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 

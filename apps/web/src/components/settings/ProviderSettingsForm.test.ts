@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ProviderDriverKind } from "@t3tools/contracts";
+import { ProviderDriverKind } from "@threadlines/contracts";
 
 import { DRIVER_OPTION_BY_VALUE, DRIVER_OPTIONS } from "./providerDriverMeta";
 import {

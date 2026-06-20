@@ -2,10 +2,10 @@ import { parsePatchFiles } from "@pierre/diffs";
 import { FileDiff, type FileDiffMetadata, Virtualizer, useVirtualizer } from "@pierre/diffs/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime";
-import { type ContextMenuItem, TurnId } from "@t3tools/contracts";
-import type { DiffRenderMode } from "@t3tools/contracts/settings";
-import { projectScriptCwd } from "@t3tools/shared/projectScripts";
+import { scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
+import { type ContextMenuItem, TurnId } from "@threadlines/contracts";
+import type { DiffRenderMode } from "@threadlines/contracts/settings";
+import { projectScriptCwd } from "@threadlines/shared/projectScripts";
 import {
   ChevronDownIcon,
   ChevronLeftIcon,

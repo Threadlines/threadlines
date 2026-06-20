@@ -1,5 +1,5 @@
 import { memo, type PointerEventHandler } from "react";
-import type { RuntimeMode } from "@t3tools/contracts";
+import type { RuntimeMode } from "@threadlines/contracts";
 import { ChevronDownIcon, ChevronLeftIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";

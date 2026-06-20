@@ -6,7 +6,8 @@ type ThemeSnapshot = {
   systemDark: boolean;
 };
 
-const STORAGE_KEY = "t3code:theme";
+const STORAGE_KEY = "threadlines:theme";
+const LEGACY_STORAGE_KEYS = ["t3code:theme"] as const;
 const MEDIA_QUERY = "(prefers-color-scheme: dark)";
 const DEFAULT_THEME_SNAPSHOT: ThemeSnapshot = {
   theme: "system",
@@ -35,6 +36,14 @@ function getStored(): Theme {
   if (!hasThemeStorage()) return DEFAULT_THEME_SNAPSHOT.theme;
   const raw = localStorage.getItem(STORAGE_KEY);
   if (raw === "light" || raw === "dark" || raw === "system") return raw;
+  for (const legacyKey of LEGACY_STORAGE_KEYS) {
+    const legacyRaw = localStorage.getItem(legacyKey);
+    if (legacyRaw !== "light" && legacyRaw !== "dark" && legacyRaw !== "system") {
+      continue;
+    }
+    localStorage.setItem(STORAGE_KEY, legacyRaw);
+    return legacyRaw;
+  }
   return DEFAULT_THEME_SNAPSHOT.theme;
 }
 
@@ -157,7 +166,7 @@ function subscribe(listener: () => void): () => void {
 
   // Listen for storage changes from other tabs
   const handleStorage = (e: StorageEvent) => {
-    if (e.key === STORAGE_KEY) {
+    if (e.key === STORAGE_KEY || (LEGACY_STORAGE_KEYS as readonly string[]).includes(e.key ?? "")) {
       applyTheme(getStored(), true);
       emitChange();
     }

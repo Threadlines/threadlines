@@ -6,11 +6,11 @@ export default defineConfig({
   resolve: {
     alias: [
       {
-        find: /^@t3tools\/contracts$/,
+        find: /^@threadlines\/contracts$/,
         replacement: fileURLToPath(new URL("./packages/contracts/src/index.ts", import.meta.url)),
       },
       {
-        find: /^@t3tools\/contracts\/settings$/,
+        find: /^@threadlines\/contracts\/settings$/,
         replacement: fileURLToPath(
           new URL("./packages/contracts/src/settings.ts", import.meta.url),
         ),
@@ -60,7 +60,7 @@ export default defineConfig({
       "apps/web/src/lib/vendor/qrcodegen.ts",
     ],
     plugins: ["eslint", "oxc", "react", "unicorn", "typescript"],
-    jsPlugins: ["./oxlint-plugin-t3code/index.ts"],
+    jsPlugins: ["./oxlint-plugin-threadlines/index.ts"],
     categories: {
       correctness: "warn",
       suspicious: "warn",
@@ -92,7 +92,7 @@ export default defineConfig({
       "typescript/require-array-sort-compare": "off",
       "typescript/restrict-template-expressions": "off",
       "typescript/unbound-method": "off",
-      "t3code/no-inline-schema-compile": "warn",
+      "threadlines/no-inline-schema-compile": "warn",
     },
     options: {
       typeAware: false,

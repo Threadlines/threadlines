@@ -2,8 +2,8 @@ import {
   type SourceControlDiscoveryResult,
   type VcsDiscoveryItem,
   type VcsDriverKind,
-} from "@t3tools/contracts";
-import { isCommandAvailable } from "@t3tools/shared/shell";
+} from "@threadlines/contracts";
+import { isCommandAvailable } from "@threadlines/shared/shell";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -69,7 +69,7 @@ export interface SourceControlDiscoveryOptions {
 export class SourceControlDiscovery extends Context.Service<
   SourceControlDiscovery,
   SourceControlDiscoveryShape
->()("t3/source-control/SourceControlDiscovery") {}
+>()("threadlines/source-control/SourceControlDiscovery") {}
 
 function missingProbeResult<Kind extends string>(
   input: DiscoveryProbe & { readonly kind: Kind },

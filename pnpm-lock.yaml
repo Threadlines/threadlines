@@ -78,16 +78,16 @@ importers:
       '@effect/platform-node':
         specifier: 4.0.0-beta.59
         version: 4.0.0-beta.59(effect@4.0.0-beta.59(patch_hash=6e1973a8a5694a117f3782960e4f08303dac4d147a23129b5b1d1cb5cb67b773))(ioredis@5.11.1)
-      '@t3tools/contracts':
+      '@threadlines/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
-      '@t3tools/shared':
+      '@threadlines/shared':
         specifier: workspace:*
         version: link:../../packages/shared
-      '@t3tools/ssh':
+      '@threadlines/ssh':
         specifier: workspace:*
         version: link:../../packages/ssh
-      '@t3tools/tailscale':
+      '@threadlines/tailscale':
         specifier: workspace:*
         version: link:../../packages/tailscale
       effect:
@@ -165,16 +165,16 @@ importers:
       '@effect/vitest':
         specifier: 4.0.0-beta.59
         version: 4.0.0-beta.59(patch_hash=bcd4bb15a4d721a18939585b62bc4c4cd51baec66010c6ef4c3893879e68179c)(effect@4.0.0-beta.59(patch_hash=6e1973a8a5694a117f3782960e4f08303dac4d147a23129b5b1d1cb5cb67b773))
-      '@t3tools/contracts':
+      '@threadlines/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
-      '@t3tools/shared':
+      '@threadlines/shared':
         specifier: workspace:*
         version: link:../../packages/shared
-      '@t3tools/tailscale':
+      '@threadlines/tailscale':
         specifier: workspace:*
         version: link:../../packages/tailscale
-      '@t3tools/web':
+      '@threadlines/web':
         specifier: workspace:*
         version: link:../web
       '@types/bun':
@@ -234,13 +234,13 @@ importers:
       '@pierre/diffs':
         specifier: 'catalog:'
         version: 1.1.20(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
-      '@t3tools/client-runtime':
+      '@threadlines/client-runtime':
         specifier: workspace:*
         version: link:../../packages/client-runtime
-      '@t3tools/contracts':
+      '@threadlines/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
-      '@t3tools/shared':
+      '@threadlines/shared':
         specifier: workspace:*
         version: link:../../packages/shared
       '@tanstack/react-pacer':
@@ -341,7 +341,7 @@ importers:
         specifier: ^2.0.5
         version: 2.2.0(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(vitest@4.1.9)
 
-  oxlint-plugin-t3code:
+  oxlint-plugin-threadlines:
     dependencies:
       '@effect/platform-node':
         specifier: 4.0.0-beta.59
@@ -368,10 +368,10 @@ importers:
 
   packages/client-runtime:
     dependencies:
-      '@t3tools/contracts':
+      '@threadlines/contracts':
         specifier: workspace:*
         version: link:../contracts
-      '@t3tools/shared':
+      '@threadlines/shared':
         specifier: workspace:*
         version: link:../shared
       effect:
@@ -453,7 +453,7 @@ importers:
 
   packages/shared:
     dependencies:
-      '@t3tools/contracts':
+      '@threadlines/contracts':
         specifier: workspace:*
         version: link:../contracts
       effect:
@@ -481,10 +481,10 @@ importers:
 
   packages/ssh:
     dependencies:
-      '@t3tools/contracts':
+      '@threadlines/contracts':
         specifier: workspace:*
         version: link:../contracts
-      '@t3tools/shared':
+      '@threadlines/shared':
         specifier: workspace:*
         version: link:../shared
       effect:
@@ -540,10 +540,10 @@ importers:
       '@effect/platform-node':
         specifier: 4.0.0-beta.59
         version: 4.0.0-beta.59(effect@4.0.0-beta.59(patch_hash=6e1973a8a5694a117f3782960e4f08303dac4d147a23129b5b1d1cb5cb67b773))(ioredis@5.11.1)
-      '@t3tools/contracts':
+      '@threadlines/contracts':
         specifier: workspace:*
         version: link:../packages/contracts
-      '@t3tools/shared':
+      '@threadlines/shared':
         specifier: workspace:*
         version: link:../packages/shared
       effect:

@@ -1,7 +1,7 @@
 import "../index.css";
 
-import { scopeThreadRef } from "@t3tools/client-runtime";
-import { ThreadId, type TerminalEvent, type TerminalSessionSnapshot } from "@t3tools/contracts";
+import { scopeThreadRef } from "@threadlines/client-runtime";
+import { ThreadId, type TerminalEvent, type TerminalSessionSnapshot } from "@threadlines/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 

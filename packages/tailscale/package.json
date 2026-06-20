@@ -1,5 +1,5 @@
 {
-  "name": "@t3tools/tailscale",
+  "name": "@threadlines/tailscale",
   "private": true,
   "type": "module",
   "exports": {

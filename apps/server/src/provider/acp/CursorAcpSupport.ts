@@ -1,4 +1,4 @@
-import { type CursorSettings, type ProviderOptionSelection } from "@t3tools/contracts";
+import { type CursorSettings, type ProviderOptionSelection } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Scope from "effect/Scope";

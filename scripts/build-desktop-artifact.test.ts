@@ -48,10 +48,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       resolveDesktopRuntimeDependencies(
         {
           "@effect/platform-node": "catalog:",
-          "@t3tools/contracts": "workspace:*",
-          "@t3tools/shared": "workspace:*",
-          "@t3tools/ssh": "workspace:*",
-          "@t3tools/tailscale": "workspace:*",
+          "@threadlines/contracts": "workspace:*",
+          "@threadlines/shared": "workspace:*",
+          "@threadlines/ssh": "workspace:*",
+          "@threadlines/tailscale": "workspace:*",
           effect: "catalog:",
           electron: "41.5.0",
         },
@@ -144,7 +144,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     const stagePackageJson = createStagePackageJson({
       appVersion: "0.0.7",
       commitHash: "abcdef123456",
-      build: { appId: "com.badcuban.badcode" },
+      build: { appId: "com.threadlines.app" },
       dependencies: { effect: "4.0.0-beta.59" },
       electronVersion: "41.5.0",
       overrides: { vite: "^8.0.0" },
@@ -162,7 +162,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       resolveGitHubPublishConfig("latest", {
         THREADLINES_DESKTOP_UPDATE_REPOSITORY: "threadlines/app",
         BADCODE_DESKTOP_UPDATE_REPOSITORY: "badcuban/badcode",
-        T3CODE_DESKTOP_UPDATE_REPOSITORY: "legacy/t3code",
+        T3CODE_DESKTOP_UPDATE_REPOSITORY: "legacy/threadlines",
         GITHUB_REPOSITORY: "fallback/repo",
       }),
       {
@@ -179,7 +179,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.deepStrictEqual(
       resolveGitHubPublishConfig("latest", {
         BADCODE_DESKTOP_UPDATE_REPOSITORY: "badcuban/badcode",
-        T3CODE_DESKTOP_UPDATE_REPOSITORY: "legacy/t3code",
+        T3CODE_DESKTOP_UPDATE_REPOSITORY: "legacy/threadlines",
         GITHUB_REPOSITORY: "fallback/repo",
       }),
       {
@@ -195,13 +195,13 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   it("falls back to the legacy update repository env var", () => {
     assert.deepStrictEqual(
       resolveGitHubPublishConfig("nightly", {
-        T3CODE_DESKTOP_UPDATE_REPOSITORY: "legacy/t3code",
+        T3CODE_DESKTOP_UPDATE_REPOSITORY: "legacy/threadlines",
         GITHUB_REPOSITORY: "fallback/repo",
       }),
       {
         provider: "github",
         owner: "legacy",
-        repo: "t3code",
+        repo: "threadlines",
         private: true,
         releaseType: "prerelease",
         channel: "nightly",
@@ -241,7 +241,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
                 BADCODE_DESKTOP_VERSION: "0.0.7",
                 T3CODE_DESKTOP_VERSION: "0.0.6",
                 THREADLINES_DESKTOP_OUTPUT_DIR: "threadlines-release",
-                BADCODE_DESKTOP_OUTPUT_DIR: "badcode-release",
+                BADCODE_DESKTOP_OUTPUT_DIR: "compat-release",
                 T3CODE_DESKTOP_OUTPUT_DIR: "legacy-release",
                 THREADLINES_DESKTOP_SKIP_BUILD: "false",
                 BADCODE_DESKTOP_SKIP_BUILD: "true",

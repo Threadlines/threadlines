@@ -5,7 +5,7 @@ import {
   type WorkLogEntry,
 } from "../../session-logic";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
-import { type MessageId, type TurnId } from "@t3tools/contracts";
+import { type MessageId, type TurnId } from "@threadlines/contracts";
 
 export const MAX_VISIBLE_WORK_LOG_ENTRIES = 6;
 

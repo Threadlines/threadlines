@@ -8,14 +8,14 @@ import {
   type ProviderOptionSelection,
   type ServerProviderModel,
   ThreadId,
-} from "@t3tools/contracts";
-import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime";
+} from "@threadlines/contracts";
+import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import "../../index.css";
 
 import { page } from "vitest/browser";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
-import { createModelCapabilities, createModelSelection } from "@t3tools/shared/model";
+import { createModelCapabilities, createModelSelection } from "@threadlines/shared/model";
 
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
 import { TraitsMenuContent, TraitsPicker } from "./TraitsPicker";

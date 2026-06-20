@@ -1,4 +1,4 @@
-import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@threadlines/contracts";
 import { describe, expect, it } from "vitest";
 
 import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, type Thread } from "./types";
@@ -87,16 +87,16 @@ describe("getOrphanedWorktreePathForThread", () => {
 describe("formatWorktreePathForDisplay", () => {
   it("shows only the last path segment for unix-like paths", () => {
     const result = formatWorktreePathForDisplay(
-      "/Users/julius/.t3/worktrees/t3code-mvp/t3code-4e609bb8",
+      "/Users/julius/.threadlines/worktrees/threadlines-mvp/threadlines-4e609bb8",
     );
-    expect(result).toBe("t3code-4e609bb8");
+    expect(result).toBe("threadlines-4e609bb8");
   });
 
   it("normalizes windows separators before selecting the final segment", () => {
     const result = formatWorktreePathForDisplay(
-      "C:\\Users\\julius\\.t3\\worktrees\\t3code-mvp\\t3code-4e609bb8",
+      "C:\\Users\\julius\\.threadlines\\worktrees\\threadlines-mvp\\threadlines-4e609bb8",
     );
-    expect(result).toBe("t3code-4e609bb8");
+    expect(result).toBe("threadlines-4e609bb8");
   });
 
   it("uses the final segment even when outside ~/.t3/worktrees", () => {

@@ -1,5 +1,5 @@
 {
-  "name": "@t3tools/oxlint-plugin-t3code",
+  "name": "@threadlines/oxlint-plugin-threadlines",
   "private": true,
   "type": "module",
   "scripts": {

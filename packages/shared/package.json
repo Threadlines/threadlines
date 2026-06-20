@@ -1,5 +1,5 @@
 {
-  "name": "@t3tools/shared",
+  "name": "@threadlines/shared",
   "private": true,
   "type": "module",
   "exports": {
@@ -117,7 +117,7 @@
     "test": "vp test run"
   },
   "dependencies": {
-    "@t3tools/contracts": "workspace:*",
+    "@threadlines/contracts": "workspace:*",
     "effect": "catalog:",
     "yaml": "catalog:"
   },

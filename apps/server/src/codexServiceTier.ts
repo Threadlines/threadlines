@@ -1,8 +1,8 @@
-import type { ModelSelection, ProviderInstanceId } from "@t3tools/contracts";
+import type { ModelSelection, ProviderInstanceId } from "@threadlines/contracts";
 import {
   getModelSelectionBooleanOptionValue,
   getModelSelectionStringOptionValue,
-} from "@t3tools/shared/model";
+} from "@threadlines/shared/model";
 
 export const DEFAULT_CODEX_SERVICE_TIER_SELECTION = "default";
 

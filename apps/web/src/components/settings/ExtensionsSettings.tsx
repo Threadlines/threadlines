@@ -19,7 +19,7 @@ import {
   TerminalIcon,
   WrenchIcon,
 } from "lucide-react";
-import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime";
+import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import type {
   ProviderExtensionApp,
   ProviderExtensionMcpServer,
@@ -28,8 +28,8 @@ import type {
   ProviderExtensionProviderInventory,
   ProviderExtensionsInventoryResult,
   ProviderExtensionSkill,
-} from "@t3tools/contracts";
-import { ProviderDriverKind, type ProviderInstanceId } from "@t3tools/contracts";
+} from "@threadlines/contracts";
+import { ProviderDriverKind, type ProviderInstanceId } from "@threadlines/contracts";
 import {
   type ReactNode,
   useCallback,

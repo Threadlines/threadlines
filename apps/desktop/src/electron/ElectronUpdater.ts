@@ -69,7 +69,7 @@ export interface ElectronUpdaterShape {
 }
 
 export class ElectronUpdater extends Context.Service<ElectronUpdater, ElectronUpdaterShape>()(
-  "t3/desktop/electron/Updater",
+  "threadlines/desktop/electron/Updater",
 ) {}
 
 export const layer = Layer.succeed(ElectronUpdater, {

@@ -1,5 +1,5 @@
 {
-  "name": "@t3tools/desktop",
+  "name": "@threadlines/desktop",
   "version": "0.0.1",
   "private": true,
   "author": "Threadlines",
@@ -18,10 +18,10 @@
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",
-    "@t3tools/contracts": "workspace:*",
-    "@t3tools/shared": "workspace:*",
-    "@t3tools/ssh": "workspace:*",
-    "@t3tools/tailscale": "workspace:*",
+    "@threadlines/contracts": "workspace:*",
+    "@threadlines/shared": "workspace:*",
+    "@threadlines/ssh": "workspace:*",
+    "@threadlines/tailscale": "workspace:*",
     "effect": "catalog:",
     "electron": "41.5.0",
     "electron-updater": "^6.6.2"

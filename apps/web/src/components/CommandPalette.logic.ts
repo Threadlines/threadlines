@@ -1,5 +1,5 @@
-import { type KeybindingCommand, type FilesystemBrowseEntry } from "@t3tools/contracts";
-import type { SidebarThreadSortOrder } from "@t3tools/contracts/settings";
+import { type KeybindingCommand, type FilesystemBrowseEntry } from "@threadlines/contracts";
+import type { SidebarThreadSortOrder } from "@threadlines/contracts/settings";
 import { type ReactNode } from "react";
 import { sortThreads } from "../lib/threadSort";
 import { formatRelativeTimeLabel } from "../timestampFormat";

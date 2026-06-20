@@ -1,4 +1,10 @@
-import { EnvironmentId, ProjectId, ProviderDriverKind, ThreadId, TurnId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ProjectId,
+  ProviderDriverKind,
+  ThreadId,
+  TurnId,
+} from "@threadlines/contracts";
 import { describe, expect, it } from "vitest";
 
 import type { Project, SidebarThreadSummary, ThreadSession } from "./types";

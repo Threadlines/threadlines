@@ -10,7 +10,7 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import { decodeJsonResult } from "@t3tools/shared/schemaJson";
+import { decodeJsonResult } from "@threadlines/shared/schemaJson";
 
 class BootstrapError extends Data.TaggedError("BootstrapError")<{
   readonly message: string;

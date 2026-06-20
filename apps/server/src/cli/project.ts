@@ -3,7 +3,7 @@ import {
   OrchestrationReadModel,
   ProjectId,
   type ClientOrchestrationCommand,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import * as Console from "effect/Console";
 import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
@@ -78,7 +78,7 @@ const withProjectCliSessionToken = <A, E, R>(
   Effect.acquireUseRelease(
     authControlPlane.issueSession({
       role: "owner",
-      label: "badcode project cli",
+      label: "threadlines project cli",
     }),
     (issued) => run(issued.token),
     (issued) => authControlPlane.revokeSession(issued.sessionId).pipe(Effect.ignore({ log: true })),

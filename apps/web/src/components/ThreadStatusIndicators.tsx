@@ -1,5 +1,5 @@
-import { scopeProjectRef, scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime";
-import type { VcsStatusResult } from "@t3tools/contracts";
+import { scopeProjectRef, scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
+import type { VcsStatusResult } from "@threadlines/contracts";
 import { CloudIcon, GitPullRequestIcon, TerminalIcon } from "lucide-react";
 import { useMemo } from "react";
 import { usePrimaryEnvironmentId } from "../environments/primary";

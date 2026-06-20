@@ -1,4 +1,4 @@
-import type { ProviderDriverKind } from "@t3tools/contracts";
+import type { ProviderDriverKind } from "@threadlines/contracts";
 
 export const PROVIDER_AUTH_RECONNECT_COMMANDS = {
   claudeAgent: "claude auth login",

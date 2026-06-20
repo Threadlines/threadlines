@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { CommandId, type OrchestrationSession } from "@t3tools/contracts";
+import { CommandId, type OrchestrationSession } from "@threadlines/contracts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";

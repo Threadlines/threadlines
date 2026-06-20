@@ -1,4 +1,4 @@
-import { DEFAULT_SERVER_SETTINGS, ServerSettings, WS_METHODS } from "@t3tools/contracts";
+import { DEFAULT_SERVER_SETTINGS, ServerSettings, WS_METHODS } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

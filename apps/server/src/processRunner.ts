@@ -90,7 +90,7 @@ export interface ProcessRunnerShape {
 }
 
 export class ProcessRunner extends Context.Service<ProcessRunner, ProcessRunnerShape>()(
-  "t3/process/ProcessRunner",
+  "threadlines/process/ProcessRunner",
 ) {}
 
 const DEFAULT_TIMEOUT = "60 seconds";

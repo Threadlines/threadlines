@@ -1,5 +1,5 @@
-import { makeLocalFileTracer, makeTraceSink } from "@t3tools/shared/observability";
-import { parsePersistedServerObservabilitySettings } from "@t3tools/shared/serverSettings";
+import { makeLocalFileTracer, makeTraceSink } from "@threadlines/shared/observability";
+import { parsePersistedServerObservabilitySettings } from "@threadlines/shared/serverSettings";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
@@ -44,7 +44,7 @@ export interface DesktopBackendOutputLogShape {
 export class DesktopBackendOutputLog extends Context.Service<
   DesktopBackendOutputLog,
   DesktopBackendOutputLogShape
->()("t3/desktop/BackendOutputLog") {}
+>()("threadlines/desktop/BackendOutputLog") {}
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();

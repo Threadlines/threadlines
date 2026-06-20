@@ -5,7 +5,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
-import { CodexSettings } from "@t3tools/contracts";
+import { CodexSettings } from "@threadlines/contracts";
 import {
   CodexShadowHomeError,
   materializeCodexShadowHome,
@@ -40,7 +40,7 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
   describe("resolveCodexHomeLayout", () => {
     it.effect("uses direct CODEX_HOME when no shadow home is configured", () =>
       Effect.gen(function* () {
-        const homePath = yield* makeTempDir("t3code-codex-home-");
+        const homePath = yield* makeTempDir("threadlines-codex-home-");
 
         const layout = yield* resolveCodexHomeLayout(
           decodeCodexSettings({
@@ -60,8 +60,8 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
     it.effect("uses the shared home for continuation and the shadow home for runtime", () =>
       Effect.gen(function* () {
         const path = yield* Path.Path;
-        const sharedHome = yield* makeTempDir("t3code-codex-shared-");
-        const shadowRoot = yield* makeTempDir("t3code-codex-shadow-root-");
+        const sharedHome = yield* makeTempDir("threadlines-codex-shared-");
+        const shadowRoot = yield* makeTempDir("threadlines-codex-shadow-root-");
         const shadowHome = path.join(shadowRoot, "shadow");
 
         const layout = yield* resolveCodexHomeLayout(
@@ -86,8 +86,8 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        const sharedHome = yield* makeTempDir("t3code-codex-shared-");
-        const shadowRoot = yield* makeTempDir("t3code-codex-shadow-root-");
+        const sharedHome = yield* makeTempDir("threadlines-codex-shared-");
+        const shadowRoot = yield* makeTempDir("threadlines-codex-shadow-root-");
         const shadowHome = path.join(shadowRoot, "shadow");
 
         yield* fileSystem.makeDirectory(path.join(sharedHome, "sessions"));
@@ -139,8 +139,8 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        const sharedHome = yield* makeTempDir("t3code-codex-shared-");
-        const shadowRoot = yield* makeTempDir("t3code-codex-shadow-root-");
+        const sharedHome = yield* makeTempDir("threadlines-codex-shared-");
+        const shadowRoot = yield* makeTempDir("threadlines-codex-shadow-root-");
         const shadowHome = path.join(shadowRoot, "shadow");
 
         yield* fileSystem.makeDirectory(path.join(sharedHome, "log"));
@@ -185,7 +185,7 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
 
     it.effect("rejects shadow homes that point at the shared home", () =>
       Effect.gen(function* () {
-        const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+        const sharedHome = yield* makeTempDir("threadlines-codex-shared-");
         const layout = yield* resolveCodexHomeLayout(
           decodeCodexSettings({
             homePath: sharedHome,
@@ -202,8 +202,8 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
     it.effect("rejects shared entries that already exist in the shadow home as real files", () =>
       Effect.gen(function* () {
         const path = yield* Path.Path;
-        const sharedHome = yield* makeTempDir("t3code-codex-shared-");
-        const shadowRoot = yield* makeTempDir("t3code-codex-shadow-root-");
+        const sharedHome = yield* makeTempDir("threadlines-codex-shared-");
+        const shadowRoot = yield* makeTempDir("threadlines-codex-shadow-root-");
         const shadowHome = path.join(shadowRoot, "shadow");
         yield* writeTextFile(path.join(sharedHome, "config.toml"), 'model = "gpt-5-codex"\n');
         yield* writeTextFile(path.join(shadowHome, "config.toml"), 'model = "local"\n');

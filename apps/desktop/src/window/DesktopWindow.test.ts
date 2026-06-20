@@ -347,7 +347,7 @@ describe("DesktopWindow", () => {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "badcode-window-state-",
+        prefix: "threadlines-window-state-",
       });
       const stateDir = path.join(baseDir, "dev");
       const windowStatePath = path.join(stateDir, "window-state.json");

@@ -1,4 +1,4 @@
-import { KeybindingCommand, KeybindingRule, KeybindingsConfig } from "@t3tools/contracts";
+import { KeybindingCommand, KeybindingRule, KeybindingsConfig } from "@threadlines/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { assertFailure } from "@effect/vitest/utils";
@@ -20,7 +20,7 @@ import {
   compileResolvedKeybindingsConfig,
   parseKeybindingShortcut,
 } from "./keybindings.ts";
-import { KeybindingsConfigError } from "@t3tools/contracts";
+import { KeybindingsConfigError } from "@threadlines/contracts";
 
 const KeybindingsConfigJson = Schema.fromJsonString(KeybindingsConfig);
 const encodeKeybindingsConfigJson = Schema.encodeEffect(KeybindingsConfigJson);
@@ -34,7 +34,7 @@ const makeKeybindingsLayer = () => {
     Layer.provideMerge(
       Layer.fresh(
         ServerConfig.layerTest(process.cwd(), {
-          prefix: "t3code-keybindings-test-",
+          prefix: "threadlines-keybindings-test-",
         }),
       ),
     ),

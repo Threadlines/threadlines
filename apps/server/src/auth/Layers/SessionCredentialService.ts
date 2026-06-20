@@ -1,4 +1,8 @@
-import { AuthSessionId, type AuthClientMetadata, type AuthClientSession } from "@t3tools/contracts";
+import {
+  AuthSessionId,
+  type AuthClientMetadata,
+  type AuthClientSession,
+} from "@threadlines/contracts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";

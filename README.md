@@ -16,9 +16,9 @@ Threadlines as the visible product identity:
 - new local configuration should use `THREADLINES_*` environment variables;
 - legacy `BADCODE_*` and `T3CODE_*` variables remain accepted as compatibility aliases;
 - when multiple aliases are set, `THREADLINES_*` wins, then `BADCODE_*`, then `T3CODE_*`;
-- new installs default to a separate `~/.badcode` data directory;
-- the `badcode` CLI alias remains the supported command name for now, while `t3`
-  remains available for old scripts during the transition.
+- new installs default to a separate `~/.threadlines` data directory;
+- the `threadlines` CLI is preferred, while `badcode` and `t3` remain available
+  for old scripts during the transition.
 
 See [docs/fork-separation.md](./docs/fork-separation.md) for the current
 branding and compatibility policy.

@@ -1,5 +1,5 @@
 import { QueryClient } from "@tanstack/react-query";
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId } from "@threadlines/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockCreateEnvironmentConnection = vi.fn();

@@ -73,7 +73,7 @@ describe("DesktopEnvironment", () => {
       assertPathEqual(environment.developmentDockIconPath, "/repo/apps/desktop/resources/icon.png");
       assertPathEqual(environment.backendEntryPath, "/repo/apps/server/dist/bin.mjs");
       assertPathEqual(environment.backendCwd, "/repo");
-      assert.equal(environment.appUserModelId, "com.badcuban.badcode.dev");
+      assert.equal(environment.appUserModelId, "com.threadlines.app.dev");
       assert.equal(environment.linuxWmClass, "threadlines-dev");
       assert.equal(environment.displayName, "Threadlines (Dev)");
       assert.deepEqual(
@@ -126,8 +126,8 @@ describe("DesktopEnvironment", () => {
   it.effect("uses Threadlines data directory defaults and aliases", () =>
     Effect.gen(function* () {
       const defaultEnvironment = yield* makeEnvironment();
-      assertPathEqual(defaultEnvironment.baseDir, "/Users/alice/.badcode");
-      assertPathEqual(defaultEnvironment.stateDir, "/Users/alice/.badcode/userdata");
+      assertPathEqual(defaultEnvironment.baseDir, "/Users/alice/.threadlines");
+      assertPathEqual(defaultEnvironment.stateDir, "/Users/alice/.threadlines/userdata");
 
       const aliasedEnvironment = yield* makeEnvironment(
         {},
@@ -135,7 +135,7 @@ describe("DesktopEnvironment", () => {
           THREADLINES_HOME: "/tmp/threadlines-home",
           THREADLINES_PORT: "6888",
           THREADLINES_COMMIT_HASH: "threadlineshash",
-          BADCODE_HOME: "/tmp/badcode-home",
+          BADCODE_HOME: "/tmp/compat-home",
           BADCODE_PORT: "5888",
           BADCODE_COMMIT_HASH: "badcodehash",
           T3CODE_HOME: "/tmp/legacy-home",

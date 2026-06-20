@@ -3,4 +3,4 @@ export {
   isProviderAuthErrorMessage,
   providerAuthReconnectCommand,
   providerAuthReconnectHint,
-} from "@t3tools/shared/providerAuth";
+} from "@threadlines/shared/providerAuth";

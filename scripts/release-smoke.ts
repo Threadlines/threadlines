@@ -26,7 +26,7 @@ const workspaceFiles = [
   "apps/desktop/package.json",
   "apps/web/package.json",
   "apps/marketing/package.json",
-  "oxlint-plugin-t3code/package.json",
+  "oxlint-plugin-threadlines/package.json",
   "packages/client-runtime/package.json",
   "packages/contracts/package.json",
   "packages/shared/package.json",
@@ -225,7 +225,7 @@ function assertMissing(path: string, message: string): void {
   }
 }
 
-const tempRoot = mkdtempSync(join(tmpdir(), "badcode-release-smoke-"));
+const tempRoot = mkdtempSync(join(tmpdir(), "threadlines-release-smoke-"));
 
 try {
   copyWorkspaceManifestFixture(tempRoot);

@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { GaugeIcon, RotateCcwIcon } from "lucide-react";
-import type { ProviderInstanceId } from "@t3tools/contracts";
+import type { ProviderInstanceId } from "@threadlines/contracts";
 
 import {
   formatProviderTokenCount,

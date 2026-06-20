@@ -29,7 +29,7 @@ import {
   type ServerProvider,
   ServerProviderRateLimitResetCreditError,
   type ServerProviderUpdateState,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import { randomUUID } from "node:crypto";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";

@@ -1,4 +1,4 @@
-import { compareSemverVersions, parseSemver } from "@t3tools/shared/semver";
+import { compareSemverVersions, parseSemver } from "@threadlines/shared/semver";
 import { CancellationToken, type UpdateInfo } from "electron-updater";
 import type { AppUpdater } from "electron-updater/out/AppUpdater.js";
 import { BaseGitHubProvider } from "electron-updater/out/providers/GitHubProvider.js";

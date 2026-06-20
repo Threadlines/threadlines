@@ -22,7 +22,7 @@ import {
   type SDKUserMessage,
   type ModelUsage,
 } from "@anthropic-ai/claude-agent-sdk";
-import { parseCliArgs } from "@t3tools/shared/cliArgs";
+import { parseCliArgs } from "@threadlines/shared/cliArgs";
 import {
   ApprovalRequestId,
   type CanonicalItemType,
@@ -48,13 +48,13 @@ import {
   ThreadId,
   TurnId,
   type UserInputQuestion,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import {
   getModelSelectionBooleanOptionValue,
   getModelSelectionStringOptionValue,
   getProviderOptionDescriptors,
-} from "@t3tools/shared/model";
-import { renderThreadContextSeed, withContextSeedPreamble } from "@t3tools/shared/contextSeed";
+} from "@threadlines/shared/model";
+import { renderThreadContextSeed, withContextSeedPreamble } from "@threadlines/shared/contextSeed";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -69,7 +69,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
-import { countStructuredPatchStats, type FileChangeStat } from "@t3tools/shared/diffStats";
+import { countStructuredPatchStats, type FileChangeStat } from "@threadlines/shared/diffStats";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";

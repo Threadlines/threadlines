@@ -5,11 +5,11 @@
  * API constrained to store actions/selectors.
  */
 
-import { parseScopedThreadKey, scopedThreadKey } from "@t3tools/client-runtime";
-import { type ScopedThreadRef, type TerminalEvent } from "@t3tools/contracts";
+import { parseScopedThreadKey, scopedThreadKey } from "@threadlines/client-runtime";
+import { type ScopedThreadRef, type TerminalEvent } from "@threadlines/contracts";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
-import { resolveStorage } from "./lib/storage";
+import { resolveStorage, withLegacyFallbackStorage } from "./lib/storage";
 import { terminalRunningSubprocessFromEvent } from "./terminalActivity";
 import {
   DEFAULT_THREAD_TERMINAL_HEIGHT,
@@ -38,7 +38,8 @@ export interface TerminalEventEntry {
   event: TerminalEvent;
 }
 
-const TERMINAL_STATE_STORAGE_KEY = "t3code:terminal-state:v1";
+const TERMINAL_STATE_STORAGE_KEY = "threadlines:terminal-state:v1";
+const LEGACY_TERMINAL_STATE_STORAGE_KEYS = ["t3code:terminal-state:v1"] as const;
 const EMPTY_TERMINAL_EVENT_ENTRIES: ReadonlyArray<TerminalEventEntry> = [];
 const MAX_TERMINAL_EVENT_BUFFER = 200;
 
@@ -63,7 +64,11 @@ export function migratePersistedTerminalStateStoreState(
 }
 
 function createTerminalStateStorage() {
-  return resolveStorage(typeof window !== "undefined" ? window.localStorage : undefined);
+  return withLegacyFallbackStorage(
+    resolveStorage(typeof window !== "undefined" ? window.localStorage : undefined),
+    TERMINAL_STATE_STORAGE_KEY,
+    LEGACY_TERMINAL_STATE_STORAGE_KEYS,
+  );
 }
 
 function normalizeTerminalIds(terminalIds: string[]): string[] {

@@ -4,9 +4,9 @@ import type {
   ProviderInstanceId,
   ServerSettings,
   UnifiedSettings,
-} from "@t3tools/contracts";
-import { defaultInstanceIdForDriver } from "@t3tools/contracts";
-import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
+} from "@threadlines/contracts";
+import { defaultInstanceIdForDriver } from "@threadlines/contracts";
+import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
 import * as Equal from "effect/Equal";
 
 function collapseOtelSignalsUrl(input: {

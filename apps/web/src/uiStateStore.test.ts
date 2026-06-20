@@ -1,4 +1,4 @@
-import { ProjectId, ThreadId } from "@t3tools/contracts";
+import { ProjectId, ThreadId } from "@threadlines/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {

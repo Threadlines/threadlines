@@ -1,4 +1,4 @@
-import type { GitActionProgressEvent } from "@t3tools/contracts";
+import type { GitActionProgressEvent } from "@threadlines/contracts";
 
 import { toastManager, type ThreadToastData } from "~/components/ui/toast";
 

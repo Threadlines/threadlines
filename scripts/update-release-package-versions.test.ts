@@ -8,7 +8,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { Command, CliError } from "effect/unstable/cli";
 import * as TestConsole from "effect/testing/TestConsole";
-import { fromJsonStringPretty } from "@t3tools/shared/schemaJson";
+import { fromJsonStringPretty } from "@threadlines/shared/schemaJson";
 
 import {
   releasePackageFiles,

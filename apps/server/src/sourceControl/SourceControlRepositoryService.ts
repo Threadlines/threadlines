@@ -19,8 +19,8 @@ import {
   type SourceControlRepositoryCloneUrls,
   type SourceControlRepositoryInfo,
   type SourceControlRepositoryLookupInput,
-} from "@t3tools/contracts";
-import { deriveRepositoryDirectoryName } from "@t3tools/shared/git";
+} from "@threadlines/contracts";
+import { deriveRepositoryDirectoryName } from "@threadlines/shared/git";
 
 import { ServerConfig } from "../config.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
@@ -45,7 +45,7 @@ export interface SourceControlRepositoryServiceShape {
 export class SourceControlRepositoryService extends Context.Service<
   SourceControlRepositoryService,
   SourceControlRepositoryServiceShape
->()("t3/source-control/SourceControlRepositoryService") {}
+>()("threadlines/source-control/SourceControlRepositoryService") {}
 
 function detailFromUnknown(cause: unknown): string {
   if (typeof cause === "object" && cause !== null) {

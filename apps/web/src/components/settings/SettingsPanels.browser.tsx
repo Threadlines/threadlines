@@ -16,7 +16,7 @@ import {
   type ServerProcessResourceHistoryResult,
   type ServerProvider,
   type SourceControlDiscoveryResult,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import { page } from "vitest/browser";
@@ -221,7 +221,7 @@ function createBaseServerConfig(): ServerConfig {
       sessionCookieName: "t3_session",
     },
     cwd: "/repo/project",
-    keybindingsConfigPath: "/repo/project/.t3code-keybindings.json",
+    keybindingsConfigPath: "/repo/project/.threadlines/keybindings.json",
     keybindings: [],
     issues: [],
     providers: [],
@@ -1251,7 +1251,7 @@ describe("GeneralSettingsPanel observability", () => {
 
   it("keeps long provider update commands inside the fixed-width popover", async () => {
     const longUpdateCommand =
-      "npm install -g @anthropic-ai/claude-code@latest --registry=https://registry.npmjs.org --cache=/tmp/t3code-provider-update-cache";
+      "npm install -g @anthropic-ai/claude-code@latest --registry=https://registry.npmjs.org --cache=/tmp/threadlines-provider-update-cache";
 
     setServerConfigSnapshot({
       ...createBaseServerConfig(),

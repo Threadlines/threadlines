@@ -1,4 +1,4 @@
-import type { DesktopBridge } from "@t3tools/contracts";
+import type { DesktopBridge } from "@threadlines/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 function jsonResponse(body: unknown, init?: ResponseInit) {

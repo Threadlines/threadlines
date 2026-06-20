@@ -1,4 +1,4 @@
-import { ProviderDriverKind } from "@t3tools/contracts";
+import { ProviderDriverKind } from "@threadlines/contracts";
 import { expect, it } from "@effect/vitest";
 
 import { addProviderAuthHint } from "./providerAuthHints.ts";

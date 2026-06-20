@@ -1,4 +1,4 @@
-import { type ServerProvider } from "@t3tools/contracts";
+import { type ServerProvider } from "@threadlines/contracts";
 import { Link } from "@tanstack/react-router";
 import { memo, useCallback, useState } from "react";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";

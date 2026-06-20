@@ -14,8 +14,8 @@ import * as Schema from "effect/Schema";
 import {
   DesktopBackendBootstrap,
   type DesktopBackendBootstrap as DesktopBackendBootstrapValue,
-} from "@t3tools/contracts";
-import * as NetService from "@t3tools/shared/Net";
+} from "@threadlines/contracts";
+import * as NetService from "@threadlines/shared/Net";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { deriveServerPaths } from "../config.ts";
 import { resolveServerConfig } from "./config.ts";
@@ -173,9 +173,9 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
                   THREADLINES_OTLP_SERVICE_NAME: "threadlines-dev",
                   BADCODE_MODE: "desktop",
                   BADCODE_PORT: "4888",
-                  BADCODE_HOME: join(NodeOS.tmpdir(), "badcode-cli-config-env-base"),
+                  BADCODE_HOME: join(NodeOS.tmpdir(), "threadlines-cli-config-env-base"),
                   BADCODE_NO_BROWSER: "true",
-                  BADCODE_OTLP_SERVICE_NAME: "badcode-dev",
+                  BADCODE_OTLP_SERVICE_NAME: "compat-service",
                   T3CODE_MODE: "web",
                   T3CODE_PORT: "4001",
                   T3CODE_HOME: join(NodeOS.tmpdir(), "legacy-t3-home"),

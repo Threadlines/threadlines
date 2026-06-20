@@ -10,10 +10,10 @@ import {
   type ChatAttachment,
   type ModelSelection,
   type OpenCodeSettings,
-} from "@t3tools/contracts";
-import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
-import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
-import { extractJsonObject } from "@t3tools/shared/schemaJson";
+} from "@threadlines/contracts";
+import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@threadlines/shared/git";
+import { getModelSelectionStringOptionValue } from "@threadlines/shared/model";
+import { extractJsonObject } from "@threadlines/shared/schemaJson";
 
 import { ServerConfig } from "../config.ts";
 import { resolveAttachmentPath } from "../attachmentStore.ts";

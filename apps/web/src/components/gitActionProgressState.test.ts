@@ -1,4 +1,4 @@
-import { EnvironmentId, type GitActionProgressEvent } from "@t3tools/contracts";
+import { EnvironmentId, type GitActionProgressEvent } from "@threadlines/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { resetAppAtomRegistryForTests } from "../rpc/atomRegistry";

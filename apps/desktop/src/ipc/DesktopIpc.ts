@@ -42,7 +42,9 @@ export interface DesktopIpcShape {
   ) => Effect.Effect<void, never, R | Scope.Scope>;
 }
 
-export class DesktopIpc extends Context.Service<DesktopIpc, DesktopIpcShape>()("t3/desktop/Ipc") {}
+export class DesktopIpc extends Context.Service<DesktopIpc, DesktopIpcShape>()(
+  "threadlines/desktop/Ipc",
+) {}
 
 export const make = (ipcMain: DesktopIpcMain): DesktopIpcShape =>
   DesktopIpc.of({

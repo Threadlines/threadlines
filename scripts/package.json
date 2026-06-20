@@ -1,5 +1,5 @@
 {
-  "name": "@t3tools/scripts",
+  "name": "@threadlines/scripts",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,8 +10,8 @@
     "@anthropic-ai/claude-agent-sdk": "^0.3.181",
     "@anthropic-ai/sdk": "^0.93.0",
     "@effect/platform-node": "catalog:",
-    "@t3tools/contracts": "workspace:*",
-    "@t3tools/shared": "workspace:*",
+    "@threadlines/contracts": "workspace:*",
+    "@threadlines/shared": "workspace:*",
     "effect": "catalog:",
     "yaml": "catalog:"
   },

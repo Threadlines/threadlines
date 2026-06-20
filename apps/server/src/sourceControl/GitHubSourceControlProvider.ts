@@ -8,8 +8,8 @@ import {
   type ChangeRequest,
   type ChangeRequestState,
   type SourceControlRepositoryInfo,
-} from "@t3tools/contracts";
-import { parseGitHubRepositoryNameWithOwnerFromRemoteUrl } from "@t3tools/shared/git";
+} from "@threadlines/contracts";
+import { parseGitHubRepositoryNameWithOwnerFromRemoteUrl } from "@threadlines/shared/git";
 
 import * as GitHubCli from "./GitHubCli.ts";
 import { findAuthenticatedGitHubAccount, parseGitHubAuthStatus } from "./gitHubAuthStatus.ts";

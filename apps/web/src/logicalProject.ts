@@ -1,10 +1,10 @@
-import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime";
-import type { ScopedProjectRef } from "@t3tools/contracts";
+import { scopedProjectKey, scopeProjectRef } from "@threadlines/client-runtime";
+import type { ScopedProjectRef } from "@threadlines/contracts";
 import {
   DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE,
   type SidebarProjectGroupingMode,
   type UnifiedSettings,
-} from "@t3tools/contracts/settings";
+} from "@threadlines/contracts/settings";
 import { normalizeProjectPathForComparison } from "./lib/projectPaths";
 import type { Project } from "./types";
 
