@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
 import { type ContextWindowSnapshot, formatContextWindowTokens } from "~/lib/contextWindow";
@@ -76,6 +76,8 @@ export function ContextWindowMeter(props: {
   contextCompactDisabledReason?: string | null | undefined;
 }) {
   const { usage, contextWindowLabel } = props;
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const popupRef = useRef<HTMLDivElement | null>(null);
   const [isOpen, setIsOpen] = useState(false);
   const [isPinnedOpen, setIsPinnedOpen] = useState(false);
   const accountUsage = props.accountUsage ?? null;
@@ -115,6 +117,23 @@ export function ContextWindowMeter(props: {
       return nextPinnedOpen;
     });
   }, []);
+  useEffect(() => {
+    if (!isPinnedOpen) return;
+
+    const handleDocumentPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (triggerRef.current?.contains(target) || popupRef.current?.contains(target)) {
+        return;
+      }
+      onOpenChange(false);
+    };
+
+    document.addEventListener("pointerdown", handleDocumentPointerDown, true);
+    return () => {
+      document.removeEventListener("pointerdown", handleDocumentPointerDown, true);
+    };
+  }, [isPinnedOpen, onOpenChange]);
   const isMeterActive = isOpen || isPinnedOpen;
 
   return (
@@ -125,6 +144,7 @@ export function ContextWindowMeter(props: {
         closeDelay={0}
         render={
           <button
+            ref={triggerRef}
             type="button"
             className={cn(
               "group/context-meter inline-flex size-6 cursor-pointer items-center justify-center rounded-full text-muted-foreground outline-none ring-1 ring-transparent transition-[background-color,box-shadow,color] duration-200",
@@ -196,6 +216,7 @@ export function ContextWindowMeter(props: {
         }
       />
       <PopoverPopup
+        ref={popupRef}
         tooltipStyle
         side="top"
         align="end"

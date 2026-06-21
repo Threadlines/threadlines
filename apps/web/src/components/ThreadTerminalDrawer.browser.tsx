@@ -9,16 +9,20 @@ const {
   terminalConstructorSpy,
   terminalDisposeSpy,
   terminalWriteSpy,
+  terminalScrollToBottomSpy,
   fitAddonFitSpy,
   fitAddonLoadSpy,
   environmentApiById,
   readEnvironmentApiMock,
   readLocalApiMock,
   onTerminalWriteRef,
+  pendingTerminalWriteCallbacks,
+  deferTerminalWriteCallbacksRef,
 } = vi.hoisted(() => ({
   terminalConstructorSpy: vi.fn(),
   terminalDisposeSpy: vi.fn(),
   terminalWriteSpy: vi.fn(),
+  terminalScrollToBottomSpy: vi.fn(),
   fitAddonFitSpy: vi.fn(),
   fitAddonLoadSpy: vi.fn(),
   environmentApiById: new Map<string, { terminal: { open: ReturnType<typeof vi.fn> } }>(),
@@ -36,6 +40,10 @@ const {
   })),
   onTerminalWriteRef: {
     current: null as ((data: string) => void) | null,
+  },
+  pendingTerminalWriteCallbacks: [] as Array<() => void>,
+  deferTerminalWriteCallbacksRef: {
+    current: false,
   },
 }));
 
@@ -71,7 +79,12 @@ vi.mock("@xterm/xterm", () => ({
     write(data: string, callback?: () => void) {
       terminalWriteSpy(data);
       onTerminalWriteRef.current?.(data);
-      callback?.();
+      if (!callback) return;
+      if (deferTerminalWriteCallbacksRef.current) {
+        pendingTerminalWriteCallbacks.push(callback);
+        return;
+      }
+      callback();
     }
 
     clear() {}
@@ -82,7 +95,9 @@ vi.mock("@xterm/xterm", () => ({
 
     refresh() {}
 
-    scrollToBottom() {}
+    scrollToBottom() {
+      terminalScrollToBottomSpy();
+    }
 
     hasSelection() {
       return false;
@@ -238,9 +253,12 @@ describe("TerminalViewport", () => {
     terminalConstructorSpy.mockClear();
     terminalDisposeSpy.mockClear();
     terminalWriteSpy.mockClear();
+    terminalScrollToBottomSpy.mockClear();
     fitAddonFitSpy.mockClear();
     fitAddonLoadSpy.mockClear();
     onTerminalWriteRef.current = null;
+    pendingTerminalWriteCallbacks.length = 0;
+    deferTerminalWriteCallbacksRef.current = false;
     useTerminalStateStore.setState({
       terminalStateByThreadKey: {},
       terminalLaunchContextByThreadKey: {},
@@ -377,6 +395,49 @@ describe("TerminalViewport", () => {
       });
     } finally {
       await mounted.cleanup();
+    }
+  });
+
+  it("ignores terminal write callbacks after unmount", async () => {
+    const environment = createEnvironmentApi();
+    const threadRef = scopeThreadRef("environment-a" as never, THREAD_ID);
+    environmentApiById.set("environment-a", environment);
+    deferTerminalWriteCallbacksRef.current = true;
+
+    const mounted = await mountTerminalViewport({
+      threadRef,
+    });
+    let cleanedUp = false;
+
+    try {
+      await vi.waitFor(() => {
+        expect(environment.terminal.open).toHaveBeenCalledTimes(1);
+      });
+
+      terminalScrollToBottomSpy.mockClear();
+      useTerminalStateStore
+        .getState()
+        .recordTerminalEvent(
+          threadRef,
+          terminalOutputEvent("late output", "2026-04-07T00:00:01.000Z"),
+        );
+
+      await vi.waitFor(() => {
+        expect(terminalWriteSpy).toHaveBeenCalledWith("late output");
+      });
+
+      const deferredCallbacks = pendingTerminalWriteCallbacks.splice(0);
+      await mounted.cleanup();
+      cleanedUp = true;
+      for (const callback of deferredCallbacks) {
+        callback();
+      }
+
+      expect(terminalScrollToBottomSpy).not.toHaveBeenCalled();
+    } finally {
+      if (!cleanedUp) {
+        await mounted.cleanup();
+      }
     }
   });
 });

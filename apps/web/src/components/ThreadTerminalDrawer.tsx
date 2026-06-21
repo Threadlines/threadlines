@@ -86,23 +86,36 @@ function isScrolledToBottom(terminal: Terminal): boolean {
   return terminal.buffer.active.viewportY >= terminal.buffer.active.baseY;
 }
 
-function writeTerminalOutput(terminal: Terminal, data: string): void {
+function writeTerminalOutput(
+  terminal: Terminal,
+  data: string,
+  shouldReveal: () => boolean = () => true,
+): void {
   const wasAtBottom = isScrolledToBottom(terminal);
   terminal.write(data, () => {
-    if (wasAtBottom) {
+    if (wasAtBottom && shouldReveal()) {
       revealTerminalViewport(terminal);
     }
   });
 }
 
-function writeTerminalSnapshot(terminal: Terminal, snapshot: TerminalSessionSnapshot): void {
+function writeTerminalSnapshot(
+  terminal: Terminal,
+  snapshot: TerminalSessionSnapshot,
+  shouldReveal: () => boolean = () => true,
+): void {
   terminal.write("\u001bc", () => {
+    if (!shouldReveal()) {
+      return;
+    }
     if (snapshot.history.length === 0) {
       revealTerminalViewport(terminal);
       return;
     }
     terminal.write(snapshot.history, () => {
-      revealTerminalViewport(terminal);
+      if (shouldReveal()) {
+        revealTerminalViewport(terminal);
+      }
     });
   });
 }
@@ -363,6 +376,9 @@ export function TerminalViewport({
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
 
+    const isTerminalActive = (activeTerminal: Terminal) =>
+      !disposed && terminalRef.current === activeTerminal;
+
     const clearSelectionAction = () => {
       selectionActionRequestIdRef.current += 1;
       if (selectionActionTimerRef.current !== null) {
@@ -611,7 +627,7 @@ export function TerminalViewport({
       }
 
       if (event.type === "output") {
-        writeTerminalOutput(activeTerminal, event.data);
+        writeTerminalOutput(activeTerminal, event.data, () => isTerminalActive(activeTerminal));
         clearSelectionAction();
         return;
       }
@@ -619,7 +635,9 @@ export function TerminalViewport({
       if (event.type === "started" || event.type === "restarted") {
         hasHandledExitRef.current = false;
         clearSelectionAction();
-        writeTerminalSnapshot(activeTerminal, event.snapshot);
+        writeTerminalSnapshot(activeTerminal, event.snapshot, () =>
+          isTerminalActive(activeTerminal),
+        );
         return;
       }
 
@@ -627,7 +645,9 @@ export function TerminalViewport({
         clearSelectionAction();
         activeTerminal.clear();
         activeTerminal.write("\u001bc", () => {
-          revealTerminalViewport(activeTerminal);
+          if (isTerminalActive(activeTerminal)) {
+            revealTerminalViewport(activeTerminal);
+          }
         });
         return;
       }
@@ -715,7 +735,7 @@ export function TerminalViewport({
           ...(runtimeEnv ? { env: runtimeEnv } : {}),
         });
         if (disposed) return;
-        writeTerminalSnapshot(activeTerminal, snapshot);
+        writeTerminalSnapshot(activeTerminal, snapshot, () => isTerminalActive(activeTerminal));
         const bufferedEntries = selectTerminalEventEntries(
           useTerminalStateStore.getState().terminalEventEntriesByKey,
           threadRef,
@@ -737,7 +757,9 @@ export function TerminalViewport({
             terminalId,
           ),
         );
-        revealTerminalViewport(activeTerminal);
+        if (isTerminalActive(activeTerminal)) {
+          revealTerminalViewport(activeTerminal);
+        }
         if (autoFocus) {
           window.requestAnimationFrame(() => {
             activeTerminal.focus();
