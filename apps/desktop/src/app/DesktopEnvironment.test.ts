@@ -3,6 +3,10 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import {
+  DESKTOP_DEVELOPMENT_APP_ID,
+  DESKTOP_RELEASE_APP_ID,
+} from "@threadlines/shared/desktopIdentity";
 
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopConfig from "./DesktopConfig.ts";
@@ -73,7 +77,7 @@ describe("DesktopEnvironment", () => {
       assertPathEqual(environment.developmentDockIconPath, "/repo/apps/desktop/resources/icon.png");
       assertPathEqual(environment.backendEntryPath, "/repo/apps/server/dist/bin.mjs");
       assertPathEqual(environment.backendCwd, "/repo");
-      assert.equal(environment.appUserModelId, "com.threadlines.app.dev");
+      assert.equal(environment.appUserModelId, DESKTOP_DEVELOPMENT_APP_ID);
       assert.equal(environment.linuxWmClass, "threadlines-dev");
       assert.equal(environment.displayName, "Threadlines (Dev)");
       assert.deepEqual(
@@ -117,6 +121,7 @@ describe("DesktopEnvironment", () => {
 
       assert.equal(environment.isDevelopment, false);
       assert.equal(environment.displayName, "Threadlines");
+      assert.equal(environment.appUserModelId, DESKTOP_RELEASE_APP_ID);
       assertPathEqual(environment.stateDir, "/tmp/t3/userdata");
       assertPathEqual(environment.logDir, "/tmp/t3/userdata/logs");
       assertPathEqual(environment.serverSettingsPath, "/tmp/t3/userdata/settings.json");

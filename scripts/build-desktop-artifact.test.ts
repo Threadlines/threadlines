@@ -3,6 +3,7 @@ import { assert, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import { DESKTOP_RELEASE_APP_ID } from "@threadlines/shared/desktopIdentity";
 
 import {
   createStagePackageJson,
@@ -112,6 +113,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       const buildConfig = yield* createBuildConfig("win", "nsis", "0.0.2", false, false, undefined);
       const winConfig = buildConfig.win as Record<string, unknown>;
 
+      assert.equal(buildConfig.appId, DESKTOP_RELEASE_APP_ID);
       assert.equal(winConfig.icon, "icon.ico");
       assert.equal(winConfig.signExecutable, undefined);
       assert.equal(winConfig.signAndEditExecutable, undefined);
@@ -129,6 +131,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       const buildConfig = yield* createBuildConfig("mac", "dmg", "0.0.19", false, false, undefined);
       const macConfig = buildConfig.mac as Record<string, unknown>;
 
+      assert.equal(buildConfig.appId, DESKTOP_RELEASE_APP_ID);
       assert.deepStrictEqual(macConfig.target, ["dmg", "zip"]);
       assert.equal(macConfig.identity, "-");
       assert.equal(macConfig.hardenedRuntime, false);
@@ -142,6 +145,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       const buildConfig = yield* createBuildConfig("mac", "dmg", "0.0.19", true, false, undefined);
       const macConfig = buildConfig.mac as Record<string, unknown>;
 
+      assert.equal(buildConfig.appId, DESKTOP_RELEASE_APP_ID);
       assert.deepStrictEqual(macConfig.target, ["dmg", "zip"]);
       assert.equal(macConfig.identity, undefined);
       assert.equal(macConfig.hardenedRuntime, true);
@@ -185,11 +189,11 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }),
   );
 
-  it("uses Threadlines identity in staged desktop package metadata", () => {
+  it("uses Threadlines branding while preserving release app identity in staged package metadata", () => {
     const stagePackageJson = createStagePackageJson({
       appVersion: "0.0.7",
       commitHash: "abcdef123456",
-      build: { appId: "com.threadlines.app" },
+      build: { appId: DESKTOP_RELEASE_APP_ID },
       dependencies: { effect: "4.0.0-beta.59" },
       electronVersion: "41.5.0",
       overrides: { vite: "^8.0.0" },
@@ -200,6 +204,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.equal("badcodeCommitHash" in stagePackageJson, false);
     assert.equal("t3codeCommitHash" in stagePackageJson, false);
     assert.equal(stagePackageJson.author, "Threadlines");
+    assert.deepStrictEqual(stagePackageJson.build, { appId: DESKTOP_RELEASE_APP_ID });
     assert.match(stagePackageJson.packageManager, /^pnpm@/u);
   });
 

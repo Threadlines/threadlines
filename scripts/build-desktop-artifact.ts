@@ -8,6 +8,7 @@ import rootPackageJson from "../package.json" with { type: "json" };
 import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
 import { getDefaultBuildArch } from "./lib/build-target-arch.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
+import { DESKTOP_RELEASE_APP_ID } from "@threadlines/shared/desktopIdentity";
 import { fromYaml } from "@threadlines/shared/schemaYaml";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -775,7 +776,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       ? path.join(stageResourcesDir, fileName)
       : `apps/desktop/resources/${fileName}`;
   const buildConfig: Record<string, unknown> = {
-    appId: "com.threadlines.app",
+    appId: DESKTOP_RELEASE_APP_ID,
     productName: resolveDesktopProductName(version),
     artifactName: "Threadlines-${version}-${arch}.${ext}",
     directories: {

@@ -4,6 +4,10 @@ import type {
   DesktopRuntimeArch,
   DesktopRuntimeInfo,
 } from "@threadlines/contracts";
+import {
+  DESKTOP_DEVELOPMENT_APP_ID,
+  DESKTOP_RELEASE_APP_ID,
+} from "@threadlines/shared/desktopIdentity";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -201,7 +205,7 @@ const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
     openDevToolsInDevelopment: config.openDevToolsInDevelopment,
     branding,
     displayName,
-    appUserModelId: isDevelopment ? "com.threadlines.app.dev" : "com.threadlines.app",
+    appUserModelId: isDevelopment ? DESKTOP_DEVELOPMENT_APP_ID : DESKTOP_RELEASE_APP_ID,
     linuxDesktopEntryName: isDevelopment ? "threadlines-dev.desktop" : "threadlines.desktop",
     linuxWmClass: isDevelopment ? "threadlines-dev" : "threadlines",
     userDataDirName,
