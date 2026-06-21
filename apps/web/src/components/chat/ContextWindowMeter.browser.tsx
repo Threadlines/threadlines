@@ -75,7 +75,9 @@ describe("ContextWindowMeter", () => {
   it("keeps the composer usage popout compact and dismissible", async () => {
     const screen = await render(
       <div>
-        <button type="button">Outside target</button>
+        <button type="button" style={{ position: "fixed", bottom: 8, left: 8, zIndex: 1000 }}>
+          Outside target
+        </button>
         <ContextWindowMeter usage={TEST_CONTEXT_WINDOW} accountUsage={TEST_ACCOUNT_USAGE} />
       </div>,
     );
