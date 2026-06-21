@@ -1,5 +1,7 @@
 name: Desktop Release
 
+run-name: Desktop Release ${{ inputs.channel || github.ref_name }} / ${{ inputs.build_scope || 'auto' }}
+
 on:
   push:
     tags:
@@ -19,11 +21,12 @@ on:
         required: false
         type: string
       build_scope:
-        description: "Artifacts to build. Defaults to all; use mac-arm64 for low-cost signing/updater proof runs."
+        description: "Artifacts to build. Auto uses mac-arm64-windows for nightly and all for stable."
         required: false
-        default: all
+        default: auto
         type: choice
         options:
+          - auto
           - mac-arm64
           - mac-arm64-windows
           - mac-all
@@ -84,7 +87,7 @@ jobs:
         run: |
           plain_stable_pattern='^[0-9]+\.[0-9]+\.[0-9]+$'
           nightly_pattern='^[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9]{8}\.[0-9]+$'
-          build_scope="${DISPATCH_BUILD_SCOPE:-all}"
+          build_scope="${DISPATCH_BUILD_SCOPE:-auto}"
 
           resolve_next_stable_version() {
             git fetch --force --tags origin "refs/tags/*:refs/tags/*"
@@ -197,6 +200,16 @@ jobs:
             echo "Invalid release version: ${version:-<blank>}" >&2
             exit 1
           fi
+
+          if [[ "$build_scope" == "auto" ]]; then
+            if [[ "$channel" == "stable" ]]; then
+              build_scope="all"
+            else
+              build_scope="mac-arm64-windows"
+            fi
+          fi
+
+          echo "Resolved build scope: $build_scope"
 
           case "$build_scope" in
             mac-arm64)
@@ -460,6 +473,7 @@ jobs:
           fi
 
       - name: Build macOS artifact
+        timeout-minutes: 35
         env:
           THREADLINES_DESKTOP_SIGNED: ${{ (vars.THREADLINES_MACOS_SIGNED == 'true' || vars.BADCODE_MACOS_SIGNED == 'true') && 'true' || 'false' }}
           CSC_LINK: ${{ secrets.MACOS_CSC_LINK }}
