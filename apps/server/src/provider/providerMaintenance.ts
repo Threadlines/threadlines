@@ -20,6 +20,8 @@ export interface ProviderMaintenanceCapabilities {
   readonly provider: ProviderDriverKind;
   readonly packageName: string | null;
   readonly update: ProviderMaintenanceCommandAction | null;
+  readonly manualUpdateCommand: string | null;
+  readonly advisoryMessage: string | null;
 }
 
 export interface ProviderMaintenanceCommandAction {
@@ -27,6 +29,14 @@ export interface ProviderMaintenanceCommandAction {
   readonly executable: string;
   readonly args: ReadonlyArray<string>;
   readonly lockKey: string;
+}
+
+export interface ProviderMaintenanceCommandDefinition {
+  readonly executable: string;
+  readonly args: ReadonlyArray<string>;
+  readonly lockKey: string;
+  readonly displayCommand?: string | null | undefined;
+  readonly advisoryMessage?: string | null | undefined;
 }
 
 export interface ProviderMaintenanceCapabilityResolutionOptions {
@@ -46,12 +56,17 @@ export interface PackageManagedProviderMaintenanceDefinition {
   readonly provider: ProviderDriverKind;
   readonly npmPackageName: string;
   readonly homebrewFormula: string | null;
-  readonly nativeUpdate: {
-    readonly executable: string;
-    readonly args: ReadonlyArray<string>;
-    readonly lockKey: string;
-    readonly isCommandPath: (commandPath: string) => boolean;
-  } | null;
+  readonly nativeUpdate:
+    | (ProviderMaintenanceCommandDefinition & {
+        readonly isCommandPath: (commandPath: string) => boolean;
+        readonly unsupportedOneClickPlatforms?: ReadonlyArray<NodeJS.Platform>;
+        readonly platformUpdateOverrides?: Partial<
+          Record<NodeJS.Platform, ProviderMaintenanceCommandDefinition>
+        >;
+        readonly manualCommand?: string | null | undefined;
+        readonly advisoryMessage?: string | null | undefined;
+      })
+    | null;
 }
 
 interface LatestVersionCacheEntry {
@@ -78,12 +93,16 @@ export function makeProviderMaintenanceCapabilities(input: {
   readonly updateExecutable: string | null;
   readonly updateArgs: ReadonlyArray<string>;
   readonly updateLockKey: string | null;
+  readonly updateDisplayCommand?: string | null | undefined;
+  readonly manualUpdateCommand?: string | null | undefined;
+  readonly advisoryMessage?: string | null | undefined;
 }): ProviderMaintenanceCapabilities {
   const update =
     input.updateExecutable === null || input.updateLockKey === null
       ? null
       : {
-          command: [input.updateExecutable, ...input.updateArgs].join(" "),
+          command:
+            input.updateDisplayCommand ?? [input.updateExecutable, ...input.updateArgs].join(" "),
           executable: input.updateExecutable,
           args: input.updateArgs,
           lockKey: input.updateLockKey,
@@ -92,12 +111,16 @@ export function makeProviderMaintenanceCapabilities(input: {
     provider: input.provider,
     packageName: input.packageName,
     update,
+    manualUpdateCommand: input.manualUpdateCommand ?? null,
+    advisoryMessage: input.advisoryMessage ?? null,
   };
 }
 
 export function makeManualOnlyProviderMaintenanceCapabilities(input: {
   readonly provider: ProviderDriverKind;
   readonly packageName: string | null;
+  readonly manualUpdateCommand?: string | null | undefined;
+  readonly advisoryMessage?: string | null | undefined;
 }): ProviderMaintenanceCapabilities {
   return makeProviderMaintenanceCapabilities({
     provider: input.provider,
@@ -105,6 +128,8 @@ export function makeManualOnlyProviderMaintenanceCapabilities(input: {
     updateExecutable: null,
     updateArgs: [],
     updateLockKey: null,
+    manualUpdateCommand: input.manualUpdateCommand,
+    advisoryMessage: input.advisoryMessage,
   });
 }
 
@@ -177,17 +202,32 @@ function makeHomebrewProviderMaintenanceCapabilities(
 
 function makeNativeProviderMaintenanceCapabilities(
   definition: PackageManagedProviderMaintenanceDefinition,
+  updateOverride?: ProviderMaintenanceCommandDefinition,
 ): ProviderMaintenanceCapabilities | null {
   if (!definition.nativeUpdate) {
     return null;
   }
+  const update = updateOverride ?? definition.nativeUpdate;
 
   return makeProviderMaintenanceCapabilities({
     provider: definition.provider,
     packageName: definition.npmPackageName,
-    updateExecutable: definition.nativeUpdate.executable,
-    updateArgs: definition.nativeUpdate.args,
-    updateLockKey: definition.nativeUpdate.lockKey,
+    updateExecutable: update.executable,
+    updateArgs: update.args,
+    updateLockKey: update.lockKey,
+    updateDisplayCommand: update.displayCommand,
+    advisoryMessage: update.advisoryMessage ?? definition.nativeUpdate.advisoryMessage,
+  });
+}
+
+function makeNativeManualOnlyProviderMaintenanceCapabilities(
+  definition: PackageManagedProviderMaintenanceDefinition,
+): ProviderMaintenanceCapabilities {
+  return makeManualOnlyProviderMaintenanceCapabilities({
+    provider: definition.provider,
+    packageName: definition.npmPackageName,
+    manualUpdateCommand: definition.nativeUpdate?.manualCommand ?? null,
+    advisoryMessage: definition.nativeUpdate?.advisoryMessage ?? null,
   });
 }
 
@@ -246,6 +286,7 @@ export function resolvePackageManagedProviderMaintenance(
   options?: ProviderMaintenanceCapabilityResolutionOptions,
 ): ProviderMaintenanceCapabilities {
   const binaryPath = nonEmptyString(options?.binaryPath);
+  const platform = options?.platform ?? process.platform;
   if (!binaryPath) {
     return makeNpmGlobalProviderMaintenanceCapabilities(definition);
   }
@@ -267,6 +308,16 @@ export function resolvePackageManagedProviderMaintenance(
       nativeUpdate &&
       commandPaths.some((commandPath) => nativeUpdate.isCommandPath(commandPath))
     ) {
+      const platformUpdateOverride = nativeUpdate.platformUpdateOverrides?.[platform];
+      if (platformUpdateOverride) {
+        return (
+          makeNativeProviderMaintenanceCapabilities(definition, platformUpdateOverride) ??
+          makeNpmGlobalProviderMaintenanceCapabilities(definition)
+        );
+      }
+      if (nativeUpdate.unsupportedOneClickPlatforms?.includes(platform)) {
+        return makeNativeManualOnlyProviderMaintenanceCapabilities(definition);
+      }
       return (
         makeNativeProviderMaintenanceCapabilities(definition) ??
         makeNpmGlobalProviderMaintenanceCapabilities(definition)
@@ -387,15 +438,19 @@ export function createProviderVersionAdvisory(input: {
     currentVersion: input.currentVersion,
     latestVersion,
   });
+  const advisoryMessage =
+    advisory.status === "behind_latest"
+      ? (capabilities.advisoryMessage ?? advisory.message)
+      : advisory.message;
 
   return {
     status: advisory.status,
     currentVersion: input.currentVersion,
     latestVersion,
-    updateCommand: capabilities.update?.command ?? null,
+    updateCommand: capabilities.update?.command ?? capabilities.manualUpdateCommand,
     canUpdate: capabilities.update !== null,
     checkedAt: input.checkedAt ?? null,
-    message: advisory.message,
+    message: advisoryMessage,
   };
 }
 

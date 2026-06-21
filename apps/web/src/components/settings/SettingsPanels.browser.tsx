@@ -265,6 +265,25 @@ function createOutdatedProvider(
   };
 }
 
+function createInstallerBackedOutdatedClaudeProvider(): ServerProvider {
+  const installerCommand = "irm https://claude.ai/install.ps1 | iex";
+  return {
+    ...createOutdatedProvider("claudeAgent", installerCommand),
+    displayName: "Claude",
+    version: "2.1.183",
+    versionAdvisory: {
+      status: "behind_latest",
+      currentVersion: "2.1.183",
+      latestVersion: "2.1.185",
+      message:
+        "Threadlines will run Anthropic's Windows installer because `claude update` can report success without replacing the active binary.",
+      checkedAt: "2026-05-04T10:00:00.000Z",
+      updateCommand: installerCommand,
+      canUpdate: true,
+    },
+  };
+}
+
 function createClaudeProvider(): ServerProvider {
   return {
     instanceId: ProviderInstanceId.make("claudeAgent"),
@@ -1163,9 +1182,10 @@ describe("GeneralSettingsPanel observability", () => {
     );
 
     await page.getByLabelText("Toggle Claude details").click();
+    await page.getByRole("button", { name: "Configuration" }).click();
 
-    await expect.element(page.getByText("Claude HOME path")).toBeInTheDocument();
-    await expect.element(page.getByPlaceholder("~")).toBeInTheDocument();
+    await expect.element(page.getByText("Binary path")).toBeInTheDocument();
+    await expect.element(page.getByLabelText("Binary path")).toHaveValue("claude");
     await expect.element(page.getByText("Launch arguments")).toBeInTheDocument();
     await expect.element(page.getByPlaceholder("e.g. --chrome")).toBeInTheDocument();
   });
@@ -1246,6 +1266,44 @@ describe("GeneralSettingsPanel observability", () => {
     expect(updateProvider).toHaveBeenCalledWith({
       provider: ProviderDriverKind.make("codex"),
       instanceId: ProviderInstanceId.make("codex"),
+    });
+  });
+
+  it("runs installer-backed one-click updates for native Windows Claude advisories", async () => {
+    const updateProvider = vi.fn<LocalApi["server"]["updateProvider"]>().mockResolvedValue({
+      providers: [createInstallerBackedOutdatedClaudeProvider()],
+    });
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      server: {
+        updateProvider,
+      },
+    } as unknown as LocalApi;
+
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [createInstallerBackedOutdatedClaudeProvider()],
+    });
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <ProviderSettingsPanel />
+      </AppAtomRegistryProvider>,
+    );
+
+    await page.getByRole("button", { name: "Update available — view details" }).click();
+    await expect
+      .element(page.getByText("irm https://claude.ai/install.ps1 | iex"))
+      .toBeInTheDocument();
+    await expect.element(page.getByRole("button", { name: "Update now" })).toBeInTheDocument();
+    await page.getByRole("button", { name: "Update now" }).click();
+
+    expect(updateProvider).toHaveBeenCalledWith({
+      provider: ProviderDriverKind.make("claudeAgent"),
+      instanceId: ProviderInstanceId.make("claudeAgent"),
     });
   });
 

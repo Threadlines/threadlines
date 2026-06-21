@@ -18,6 +18,14 @@ import {
 } from "./providerMaintenance.ts";
 
 const driver = (value: string) => ProviderDriverKind.make(value);
+const noManualUpdate = {
+  manualUpdateCommand: null,
+  advisoryMessage: null,
+} as const;
+const windowsInstallerCommand = "irm https://example.test/install.ps1 | iex";
+const windowsInstallerCommandEncoded = Buffer.from(windowsInstallerCommand, "utf16le").toString(
+  "base64",
+);
 const makeTempDir = Effect.fn("makeTempDir")(function* (name: string) {
   const id = yield* Random.nextUUIDv4;
   return path.join(os.tmpdir(), `${name}-${id}`);
@@ -54,6 +62,33 @@ const nativePackageToolUpdate = makePackageManagedProviderMaintenanceResolver({
     args: ["update"],
     lockKey: "native-package-tool-native",
     isCommandPath: isNativeTestCommandPath("/.local/bin/native-package-tool"),
+  },
+});
+const nativePackageToolPlatformOverrideUpdate = makePackageManagedProviderMaintenanceResolver({
+  provider: driver("nativePackageTool"),
+  npmPackageName: "@example/native-package-tool",
+  homebrewFormula: "native-package-tool",
+  nativeUpdate: {
+    executable: "native-package-tool",
+    args: ["update"],
+    lockKey: "native-package-tool-native",
+    isCommandPath: isNativeTestCommandPath("/.local/bin/native-package-tool"),
+    platformUpdateOverrides: {
+      win32: {
+        executable: "powershell.exe",
+        args: [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-EncodedCommand",
+          windowsInstallerCommandEncoded,
+        ],
+        lockKey: "native-package-tool-installer-win32",
+        displayCommand: windowsInstallerCommand,
+        advisoryMessage:
+          "Run the native-package-tool Windows installer instead of native-package-tool update.",
+      },
+    },
   },
 });
 const scopedPackageToolUpdate = makePackageManagedProviderMaintenanceResolver({
@@ -142,6 +177,7 @@ describe("providerMaintenance", () => {
 
         lockKey: "static-tool",
       },
+      ...noManualUpdate,
     });
   });
 
@@ -176,6 +212,7 @@ describe("providerMaintenance", () => {
 
             lockKey: "vite-plus-global",
           },
+          ...noManualUpdate,
         });
       }),
   );
@@ -210,6 +247,7 @@ describe("providerMaintenance", () => {
 
             lockKey: "bun-global",
           },
+          ...noManualUpdate,
         });
       }),
   );
@@ -245,6 +283,7 @@ describe("providerMaintenance", () => {
 
             lockKey: "pnpm-global",
           },
+          ...noManualUpdate,
         });
       }),
   );
@@ -270,6 +309,7 @@ describe("providerMaintenance", () => {
 
         lockKey: "homebrew",
       },
+      ...noManualUpdate,
     });
   });
 
@@ -304,9 +344,93 @@ describe("providerMaintenance", () => {
 
             lockKey: "native-package-tool-native",
           },
+          ...noManualUpdate,
         });
       }),
   );
+
+  it("uses configured platform update overrides for native providers", () => {
+    expect(
+      nativePackageToolPlatformOverrideUpdate.resolve({
+        binaryPath: "C:\\Users\\alice\\.local\\bin\\native-package-tool.exe",
+        platform: "win32",
+        env: {
+          PATH: "",
+          PATHEXT: ".COM;.EXE;.BAT;.CMD",
+        },
+      }),
+    ).toEqual({
+      provider: driver("nativePackageTool"),
+      packageName: "@example/native-package-tool",
+      update: {
+        command: windowsInstallerCommand,
+
+        executable: "powershell.exe",
+
+        args: [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-EncodedCommand",
+          windowsInstallerCommandEncoded,
+        ],
+
+        lockKey: "native-package-tool-installer-win32",
+      },
+      manualUpdateCommand: null,
+      advisoryMessage:
+        "Run the native-package-tool Windows installer instead of native-package-tool update.",
+    });
+
+    expect(
+      nativePackageToolPlatformOverrideUpdate.resolve({
+        binaryPath: "/Users/alice/.local/bin/native-package-tool",
+        platform: "darwin",
+        env: {
+          PATH: "",
+        },
+      }),
+    ).toEqual({
+      provider: driver("nativePackageTool"),
+      packageName: "@example/native-package-tool",
+      update: {
+        command: "native-package-tool update",
+
+        executable: "native-package-tool",
+
+        args: ["update"],
+
+        lockKey: "native-package-tool-native",
+      },
+      ...noManualUpdate,
+    });
+  });
+
+  it("keeps platform update overrides as one-click version advisories", () => {
+    expect(
+      createProviderVersionAdvisory({
+        driver: driver("nativePackageTool"),
+        currentVersion: "2.1.183",
+        latestVersion: "2.1.185",
+        maintenanceCapabilities: nativePackageToolPlatformOverrideUpdate.resolve({
+          binaryPath: "C:\\Users\\alice\\.local\\bin\\native-package-tool.exe",
+          platform: "win32",
+          env: {
+            PATH: "",
+            PATHEXT: ".COM;.EXE;.BAT;.CMD",
+          },
+        }),
+      }),
+    ).toMatchObject({
+      status: "behind_latest",
+      currentVersion: "2.1.183",
+      latestVersion: "2.1.185",
+      updateCommand: windowsInstallerCommand,
+      canUpdate: true,
+      message:
+        "Run the native-package-tool Windows installer instead of native-package-tool update.",
+    });
+  });
 
   it.effect(
     "switches scoped-package-tool to native upgrades when the binary resolves through the standalone installer",
@@ -339,6 +463,7 @@ describe("providerMaintenance", () => {
 
             lockKey: "scoped-package-tool-native",
           },
+          ...noManualUpdate,
         });
       }),
   );
@@ -364,6 +489,7 @@ describe("providerMaintenance", () => {
 
         lockKey: "homebrew",
       },
+      ...noManualUpdate,
     });
   });
 
@@ -388,6 +514,7 @@ describe("providerMaintenance", () => {
 
         lockKey: "homebrew",
       },
+      ...noManualUpdate,
     });
   });
 
@@ -431,6 +558,7 @@ describe("providerMaintenance", () => {
 
           lockKey: "npm-global",
         },
+        ...noManualUpdate,
       });
     }),
   );
@@ -479,6 +607,7 @@ describe("providerMaintenance", () => {
 
           lockKey: "pnpm-global",
         },
+        ...noManualUpdate,
       });
     }),
   );
@@ -497,6 +626,7 @@ describe("providerMaintenance", () => {
       provider: driver("packageTool"),
       packageName: "@example/package-tool",
       update: null,
+      ...noManualUpdate,
     });
   });
 });

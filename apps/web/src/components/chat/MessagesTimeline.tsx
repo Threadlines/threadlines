@@ -435,10 +435,7 @@ type TimelineImagePreviewItem = {
 const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: TimelineRow }) {
   return (
     <div
-      className={cn(
-        "pb-4",
-        row.kind === "message" && row.message.role === "assistant" ? "group/assistant" : null,
-      )}
+      className="pb-4"
       data-timeline-row-id={row.id}
       data-timeline-row-kind={row.kind}
       data-message-id={row.kind === "message" ? row.message.id : undefined}
@@ -575,7 +572,7 @@ function ContinueInNewThreadButton({
 }) {
   const ctx = use(TimelineRowCtx);
   const activity = use(TimelineRowActivityCtx);
-  if (!ctx.onContinueInNewThread) {
+  if (!ctx.onContinueInNewThread || activity.isWorking) {
     return null;
   }
 
@@ -587,7 +584,6 @@ function ContinueInNewThreadButton({
             type="button"
             size="xs"
             variant="outline"
-            disabled={activity.isWorking}
             onClick={() => ctx.onContinueInNewThread?.(messageId)}
             aria-label="Continue in new thread"
             className={cn("enabled:cursor-pointer", className)}
@@ -617,53 +613,58 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
         <AssistantCompletionDivider completionSummary={row.completionSummary} />
       )}
       <div className="min-w-0 px-1 py-0.5">
-        {authReconnect ? (
-          <ProviderAuthReconnectCard
-            action={authReconnect}
-            className="max-w-2xl"
-            resolved={ctx.resolvedProviderAuthReconnectIds.has(row.id)}
-            {...(ctx.onRunProviderAuthReconnect ? { onRun: ctx.onRunProviderAuthReconnect } : {})}
-          />
-        ) : (
-          <div data-agent-response-body="true" data-assistant-message-body="true">
-            <ChatMarkdown
-              text={messageText}
-              cwd={ctx.markdownCwd}
-              isStreaming={Boolean(row.message.streaming)}
-              skills={ctx.skills}
+        <div
+          className="group/assistant-message inline-block max-w-full align-top"
+          data-assistant-message-section="true"
+        >
+          {authReconnect ? (
+            <ProviderAuthReconnectCard
+              action={authReconnect}
+              className="max-w-2xl"
+              resolved={ctx.resolvedProviderAuthReconnectIds.has(row.id)}
+              {...(ctx.onRunProviderAuthReconnect ? { onRun: ctx.onRunProviderAuthReconnect } : {})}
             />
-          </div>
-        )}
-        <AssistantChangedFilesSection
-          turnSummary={row.assistantTurnDiffSummary}
-          isTurnInProgress={row.assistantTurnInProgress}
-          routeThreadKey={ctx.routeThreadKey}
-          resolvedTheme={ctx.resolvedTheme}
-          onOpenTurnDiff={ctx.onOpenTurnDiff}
-        />
-        <div className="mt-1.5 flex items-center gap-2">
-          <p className="text-[10px] tracking-tight tabular-nums text-muted-foreground/30">
-            {row.message.streaming ? (
-              <LiveMessageMeta
-                createdAt={row.message.createdAt}
-                durationStart={row.durationStart}
-                timestampFormat={ctx.timestampFormat}
+          ) : (
+            <div data-agent-response-body="true" data-assistant-message-body="true">
+              <ChatMarkdown
+                text={messageText}
+                cwd={ctx.markdownCwd}
+                isStreaming={Boolean(row.message.streaming)}
+                skills={ctx.skills}
               />
-            ) : (
-              formatMessageMeta(
-                row.message.createdAt,
-                formatElapsed(row.durationStart, row.message.completedAt),
-                ctx.timestampFormat,
-              )
-            )}
-          </p>
-          {!row.message.streaming && row.message.text.trim().length > 0 ? (
-            <ContinueInNewThreadButton
-              messageId={row.message.id}
-              className="border-border/50 bg-background/35 text-muted-foreground/45 opacity-0 shadow-none transition-opacity duration-200 hover:border-border/70 hover:bg-background/55 hover:text-muted-foreground/70 group-hover/assistant:opacity-100"
-            />
-          ) : null}
-          <AssistantCopyButton row={row} />
+            </div>
+          )}
+          <AssistantChangedFilesSection
+            turnSummary={row.assistantTurnDiffSummary}
+            isTurnInProgress={row.assistantTurnInProgress}
+            routeThreadKey={ctx.routeThreadKey}
+            resolvedTheme={ctx.resolvedTheme}
+            onOpenTurnDiff={ctx.onOpenTurnDiff}
+          />
+          <div className="mt-1.5 flex items-center gap-2">
+            <p className="text-[10px] tracking-tight tabular-nums text-muted-foreground/30">
+              {row.message.streaming ? (
+                <LiveMessageMeta
+                  createdAt={row.message.createdAt}
+                  durationStart={row.durationStart}
+                  timestampFormat={ctx.timestampFormat}
+                />
+              ) : (
+                formatMessageMeta(
+                  row.message.createdAt,
+                  formatElapsed(row.durationStart, row.message.completedAt),
+                  ctx.timestampFormat,
+                )
+              )}
+            </p>
+            {!row.message.streaming && row.message.text.trim().length > 0 ? (
+              <ContinueInNewThreadButton
+                messageId={row.message.id}
+                className="pointer-events-none border-border/50 bg-background/35 text-muted-foreground/45 opacity-0 shadow-none transition-opacity duration-200 hover:border-border/70 hover:bg-background/55 hover:text-muted-foreground/70 group-hover/assistant-message:pointer-events-auto group-hover/assistant-message:opacity-100 group-focus-within/assistant-message:pointer-events-auto group-focus-within/assistant-message:opacity-100"
+              />
+            ) : null}
+            <AssistantCopyButton row={row} />
+          </div>
         </div>
       </div>
     </>
@@ -694,7 +695,7 @@ function AssistantCopyButton({ row }: { row: Extract<TimelineRow, { kind: "messa
   }
 
   return (
-    <div className="flex items-center opacity-0 transition-opacity duration-200  group-hover/assistant:opacity-100">
+    <div className="flex items-center opacity-0 transition-opacity duration-200 group-hover/assistant-message:opacity-100 group-focus-within/assistant-message:opacity-100">
       <MessageCopyButton
         text={assistantCopyState.text ?? ""}
         size="icon-xs"

@@ -124,6 +124,19 @@ describe("provider update launch notification logic", () => {
     ).toBe(false);
   });
 
+  it("disables one-click updates for manual-only provider advisories", () => {
+    const candidate = updateCandidate({
+      driver: driver("claudeAgent"),
+      latestVersion: "2.1.185",
+      canUpdate: false,
+      updateCommand: "irm https://claude.ai/install.ps1 | iex",
+    });
+
+    expect(isProviderUpdateCandidate(candidate)).toBe(true);
+    expect(hasOneClickUpdateProviderCandidate(candidate, [candidate])).toBe(false);
+    expect(canOneClickUpdateProviderCandidate(candidate, [candidate])).toBe(false);
+  });
+
   it("keeps one-click updates enabled when sibling instances are already current", () => {
     const candidate = updateCandidate({
       driver: driver("claudeAgent"),
