@@ -82,8 +82,10 @@ export function ContextWindowMeter(props: {
   const { usage, contextWindowLabel } = props;
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const popupRef = useRef<HTMLDivElement | null>(null);
+  const suppressHoverOpenRef = useRef(false);
   const [isOpen, setIsOpen] = useState(false);
   const [isPinnedOpen, setIsPinnedOpen] = useState(false);
+  const [isHoverOpenSuppressed, setIsHoverOpenSuppressed] = useState(false);
   const accountUsage = props.accountUsage ?? null;
   const usageNearLimit = isProviderUsageNearLimit(accountUsage);
   const usedPercentage = formatPercentage(usage?.usedPercentage ?? null);
@@ -109,18 +111,26 @@ export function ContextWindowMeter(props: {
       ? `Context window ${usedPercentage} used`
       : `Context window ${formatContextWindowTokens(usage.usedTokens)} tokens used`;
   const onOpenChange = useCallback((nextOpen: boolean) => {
+    if (nextOpen && suppressHoverOpenRef.current) {
+      return;
+    }
     setIsOpen(nextOpen);
     if (!nextOpen) {
       setIsPinnedOpen(false);
     }
   }, []);
+  const allowHoverOpen = useCallback(() => {
+    suppressHoverOpenRef.current = false;
+    setIsHoverOpenSuppressed(false);
+  }, []);
   const onTogglePinnedOpen = useCallback(() => {
+    allowHoverOpen();
     setIsPinnedOpen((currentPinnedOpen) => {
       const nextPinnedOpen = !currentPinnedOpen;
       setIsOpen(nextPinnedOpen);
       return nextPinnedOpen;
     });
-  }, []);
+  }, [allowHoverOpen]);
   useLayoutEffect(() => {
     if (!isOpen) return;
 
@@ -137,6 +147,8 @@ export function ContextWindowMeter(props: {
       ) {
         return;
       }
+      suppressHoverOpenRef.current = true;
+      setIsHoverOpenSuppressed(true);
       onOpenChange(false);
     };
 
@@ -156,7 +168,7 @@ export function ContextWindowMeter(props: {
   return (
     <Popover onOpenChange={onOpenChange} open={isOpen}>
       <PopoverTrigger
-        openOnHover={!isPinnedOpen}
+        openOnHover={!isPinnedOpen && !isHoverOpenSuppressed}
         delay={150}
         closeDelay={0}
         render={
@@ -179,6 +191,7 @@ export function ContextWindowMeter(props: {
               event.stopPropagation();
               onTogglePinnedOpen();
             }}
+            onPointerLeave={allowHoverOpen}
           >
             <span className="relative flex h-6 w-6 items-center justify-center">
               <svg
