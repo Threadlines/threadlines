@@ -1,11 +1,25 @@
 import { getPairingTokenFromUrl } from "../../pairingUrl";
-import { readHostedPairingRequest } from "../../hostedPairing";
+import { buildRelayDeviceSocketUrl, readHostedPairingRequest } from "../../hostedPairing";
 
-export interface ResolvedRemotePairingTarget {
+export interface ResolvedDirectRemotePairingTarget {
+  readonly kind: "direct";
   readonly credential: string;
   readonly httpBaseUrl: string;
   readonly wsBaseUrl: string;
 }
+
+export interface ResolvedRelayRemotePairingTarget {
+  readonly kind: "relay";
+  readonly credential: string;
+  readonly relayOrigin: string;
+  readonly sessionId: string;
+  readonly httpBaseUrl: string;
+  readonly wsBaseUrl: string;
+}
+
+export type ResolvedRemotePairingTarget =
+  | ResolvedDirectRemotePairingTarget
+  | ResolvedRelayRemotePairingTarget;
 
 function normalizeRemoteBaseUrl(rawValue: string): URL {
   const trimmed = rawValue.trim();
@@ -60,8 +74,23 @@ export function resolveRemotePairingTarget(input: {
     const url = new URL(pairingUrl, window.location.origin);
     const hostedPairingRequest = readHostedPairingRequest(url);
     if (hostedPairingRequest) {
+      if (hostedPairingRequest.kind === "relay") {
+        return {
+          kind: "relay",
+          credential: hostedPairingRequest.token,
+          relayOrigin: hostedPairingRequest.relayOrigin,
+          sessionId: hostedPairingRequest.sessionId,
+          httpBaseUrl: `${hostedPairingRequest.relayOrigin}/`,
+          wsBaseUrl: buildRelayDeviceSocketUrl({
+            relayOrigin: hostedPairingRequest.relayOrigin,
+            sessionId: hostedPairingRequest.sessionId,
+          }),
+        };
+      }
+
       const hostedBackendUrl = normalizeRemoteBaseUrl(hostedPairingRequest.host);
       return {
+        kind: "direct",
         credential: hostedPairingRequest.token,
         httpBaseUrl: toHttpBaseUrl(hostedBackendUrl),
         wsBaseUrl: toWsBaseUrl(hostedBackendUrl),
@@ -73,6 +102,7 @@ export function resolveRemotePairingTarget(input: {
       throw new Error("Pairing URL is missing its token.");
     }
     return {
+      kind: "direct",
       credential,
       httpBaseUrl: toHttpBaseUrl(url),
       wsBaseUrl: toWsBaseUrl(url),
@@ -90,6 +120,7 @@ export function resolveRemotePairingTarget(input: {
 
   const normalizedHost = normalizeRemoteBaseUrl(host);
   return {
+    kind: "direct",
     credential: pairingCode,
     httpBaseUrl: toHttpBaseUrl(normalizedHost),
     wsBaseUrl: toWsBaseUrl(normalizedHost),

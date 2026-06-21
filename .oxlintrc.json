@@ -6,7 +6,8 @@
     "node_modules",
     "bun.lock",
     "*.tsbuildinfo",
-    "**/routeTree.gen.ts"
+    "**/routeTree.gen.ts",
+    "**/worker-configuration.d.ts"
   ],
   "plugins": ["eslint", "oxc", "react", "unicorn", "typescript"],
   "jsPlugins": ["./oxlint-plugin-t3code/index.ts"],

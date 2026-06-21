@@ -493,6 +493,14 @@ const createDesktopBridgeStub = (overrides?: {
       tailscaleServePort: input.port ?? 443,
     })),
     getAdvertisedEndpoints: vi.fn().mockResolvedValue(overrides?.advertisedEndpoints ?? []),
+    createRelayPairingSession: vi.fn().mockResolvedValue({
+      pairingUrl:
+        "https://app.threadlines.dev/pair?relay=https%3A%2F%2Frelay.threadlines.dev&session=session-1#token=device-token",
+      relayOrigin: "https://relay.threadlines.dev",
+      sessionId: "session-1",
+      expiresAt: "2026-06-20T12:00:00.000Z",
+    }),
+    disconnectRelayPairingSession: vi.fn().mockResolvedValue(undefined),
     pickFolder: vi.fn().mockResolvedValue(null),
     confirm: vi.fn().mockResolvedValue(false),
     setTheme: vi.fn().mockResolvedValue(undefined),
@@ -601,19 +609,21 @@ describe("GeneralSettingsPanel observability", () => {
       </AppAtomRegistryProvider>,
     );
 
-    await expect.element(page.getByText("Manage local backend")).toBeInTheDocument();
-    await expect.element(page.getByLabelText("Enable network access")).toBeDisabled();
+    await expect.element(page.getByText("Connect your phone or tablet")).toBeInTheDocument();
+    await expect.element(page.getByLabelText("Allow phone and tablet access")).toBeDisabled();
     await expect
       .element(
         page.getByText(
-          "This backend is only reachable on this machine. Restart it with a non-loopback host to enable remote pairing.",
+          "Only this computer can use Threadlines. Restart Threadlines with device access enabled to connect a phone or tablet.",
         ),
       )
       .toBeInTheDocument();
-    await expect.element(page.getByText("Authorized clients")).not.toBeInTheDocument();
+    await expect.element(page.getByText("Connected devices")).not.toBeInTheDocument();
     await expect.element(page.getByText("Chrome on Mac")).not.toBeInTheDocument();
     await expect
-      .element(page.getByRole("heading", { name: "Remote environments", exact: true }))
+      .element(
+        page.getByRole("heading", { name: "Advanced: connect another computer", exact: true }),
+      )
       .toBeInTheDocument();
   });
 
@@ -680,7 +690,9 @@ describe("GeneralSettingsPanel observability", () => {
       </AppAtomRegistryProvider>,
     );
 
-    await expect.element(page.getByText("Limited to this machine.")).toBeInTheDocument();
+    await expect
+      .element(page.getByText("Only this computer can use Threadlines."))
+      .toBeInTheDocument();
     await expect
       .element(page.getByRole("heading", { name: "This machine", exact: true }))
       .not.toBeInTheDocument();
@@ -911,21 +923,19 @@ describe("GeneralSettingsPanel observability", () => {
       </AppAtomRegistryProvider>,
     );
 
-    await expect.element(page.getByText("Authorized clients")).toBeInTheDocument();
-    await expect.element(page.getByText("Revoke others")).toBeInTheDocument();
+    await expect.element(page.getByText("Connected devices")).toBeInTheDocument();
+    await expect.element(page.getByText("Remove other devices")).toBeInTheDocument();
     await expect.element(page.getByText("This Mac")).toBeInTheDocument();
-    await page.getByRole("button", { name: "Create link", exact: true }).click();
-    await expect.element(page.getByText("Create pairing link")).toBeInTheDocument();
+    await page.getByRole("button", { name: "Add device", exact: true }).click();
+    await expect.element(page.getByText("Add phone or tablet")).toBeInTheDocument();
     await page.getByRole("button", { name: "Create link", exact: true }).click();
     authAccessHarness.emitPairingLinkUpserted(pairingLinks[0]!);
     authAccessHarness.emitClientUpserted(clientSessions[1]!);
     await expect
-      .element(page.getByText("Client · Mobile · iOS · Safari · 192.168.1.88"))
+      .element(page.getByText("Device · Mobile · iOS · Safari · 192.168.1.88"))
       .toBeInTheDocument();
-    await expect
-      .element(page.getByRole("button", { name: /^Copy pairing URL for:/ }))
-      .toBeInTheDocument();
-    await expect.element(page.getByText("Revoke others")).toBeInTheDocument();
+    await expect.element(page.getByRole("button", { name: /^Copy link for:/ })).toBeInTheDocument();
+    await expect.element(page.getByText("Remove other devices")).toBeInTheDocument();
   });
 
   it("revokes all other paired clients from settings", async () => {
@@ -1007,7 +1017,7 @@ describe("GeneralSettingsPanel observability", () => {
     );
 
     await expect.element(page.getByText("Julius iPhone")).toBeInTheDocument();
-    await page.getByRole("button", { name: "Revoke others", exact: true }).click();
+    await page.getByRole("button", { name: "Remove other devices", exact: true }).click();
     await expect.element(page.getByText("This Mac")).toBeInTheDocument();
     await expect.element(page.getByText("Julius iPhone")).not.toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalled();
@@ -1025,16 +1035,18 @@ describe("GeneralSettingsPanel observability", () => {
       </AppAtomRegistryProvider>,
     );
 
-    const networkAccessToggle = page.getByLabelText("Enable network access");
+    const networkAccessToggle = page.getByLabelText("Allow phone and tablet access");
     await expect.element(networkAccessToggle).not.toBeDisabled();
     await networkAccessToggle.click();
-    await expect.element(page.getByText("Enable network access?")).toBeInTheDocument();
+    await expect.element(page.getByText("Allow other devices to connect?")).toBeInTheDocument();
     await expect
       .element(
-        page.getByText("Threadlines will restart to expose this environment over the network."),
+        page.getByText(
+          "Threadlines will restart so your phone or tablet can connect to this computer.",
+        ),
       )
       .toBeInTheDocument();
-    await page.getByRole("button", { name: "Restart and enable", exact: true }).click();
+    await page.getByRole("button", { name: "Restart and allow", exact: true }).click();
     await vi.waitFor(() => {
       expect(desktopBridge.setServerExposureMode).toHaveBeenCalledWith("network-accessible");
     });
@@ -1077,12 +1089,14 @@ describe("GeneralSettingsPanel observability", () => {
       </AppAtomRegistryProvider>,
     );
 
-    await page.getByRole("button", { name: "Add environment", exact: true }).click();
-    const addEnvironmentDialog = page.getByRole("dialog", { name: "Add Environment" });
+    await page.getByRole("button", { name: "Add computer", exact: true }).click();
+    const addEnvironmentDialog = page.getByRole("dialog", { name: "Add another computer" });
     await expect
-      .element(addEnvironmentDialog.getByRole("heading", { name: "Add Environment", exact: true }))
+      .element(
+        addEnvironmentDialog.getByRole("heading", { name: "Add another computer", exact: true }),
+      )
       .toBeInTheDocument();
-    await addEnvironmentDialog.getByRole("button", { name: /^SSH\b/ }).click();
+    await addEnvironmentDialog.getByRole("button", { name: "Use SSH (advanced)" }).click();
     await vi.waitFor(() => {
       expect(discoverSshHosts).toHaveBeenCalledTimes(1);
     });
@@ -1090,11 +1104,13 @@ describe("GeneralSettingsPanel observability", () => {
       .element(page.getByRole("heading", { name: "devbox", exact: true }))
       .toBeInTheDocument();
 
-    await addEnvironmentDialog.getByLabelText("SSH host or alias").fill("devbox.example.com");
-    await addEnvironmentDialog.getByLabelText("Username").fill("julius");
+    await addEnvironmentDialog
+      .getByLabelText("Computer name or SSH host")
+      .fill("devbox.example.com");
+    await addEnvironmentDialog.getByLabelText("User name").fill("julius");
     await addEnvironmentDialog.getByLabelText("Port").fill("2222");
     await addEnvironmentDialog
-      .getByRole("button", { name: "Add environment", exact: true })
+      .getByRole("button", { name: "Add computer", exact: true })
       .first()
       .click();
 

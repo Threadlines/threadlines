@@ -602,6 +602,52 @@ describe("addSavedEnvironment", () => {
     await resetEnvironmentServiceForTests();
   });
 
+  it("pairs a relay environment through the websocket client", async () => {
+    mockWriteSavedEnvironmentBearerToken.mockResolvedValue(true);
+    mockResolveRemotePairingTarget.mockReturnValueOnce({
+      kind: "relay",
+      credential: "device-token",
+      relayOrigin: "https://relay.threadlines.dev",
+      sessionId: "session-1",
+      httpBaseUrl: "https://relay.threadlines.dev/",
+      wsBaseUrl: "wss://relay.threadlines.dev/v1/sessions/session-1/connect?role=device&mode=raw",
+    });
+
+    const { addSavedEnvironment, resetEnvironmentServiceForTests } = await import("./service");
+
+    await expect(
+      addSavedEnvironment({
+        label: "My PC",
+        pairingUrl:
+          "https://app.threadlines.dev/pair?relay=https%3A%2F%2Frelay.threadlines.dev&session=session-1#token=device-token",
+      }),
+    ).resolves.toMatchObject({
+      environmentId: EnvironmentId.make("environment-1"),
+      label: "My PC",
+      httpBaseUrl: "https://relay.threadlines.dev/",
+      wsBaseUrl: "wss://relay.threadlines.dev/v1/sessions/session-1/connect?role=device&mode=raw",
+      relay: {
+        relayOrigin: "https://relay.threadlines.dev",
+        sessionId: "session-1",
+      },
+    });
+
+    expect(mockClientGetConfig).toHaveBeenCalled();
+    expect(mockFetchRemoteEnvironmentDescriptor).not.toHaveBeenCalled();
+    expect(mockBootstrapRemoteBearerSession).not.toHaveBeenCalled();
+    expect(mockWriteSavedEnvironmentBearerToken).toHaveBeenCalledWith(
+      EnvironmentId.make("environment-1"),
+      "device-token",
+    );
+    expect(mockCreateEnvironmentConnection).toHaveBeenCalledWith(
+      expect.objectContaining({
+        client: expect.any(Object),
+      }),
+    );
+
+    await resetEnvironmentServiceForTests();
+  });
+
   it("disconnects the desktop ssh process before removing a saved ssh environment", async () => {
     mockSavedRecords = [
       {

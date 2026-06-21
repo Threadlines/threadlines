@@ -1,12 +1,23 @@
 import { getPairingTokenFromUrl, setPairingTokenOnUrl } from "./pairingUrl";
 
-const DEFAULT_HOSTED_APP_URL = "https://app.t3.codes";
+const DEFAULT_HOSTED_APP_URL = "https://app.threadlines.dev";
 
 export interface HostedPairingRequest {
+  readonly kind: "direct";
   readonly host: string;
   readonly token: string;
   readonly label: string;
 }
+
+export interface HostedRelayPairingRequest {
+  readonly kind: "relay";
+  readonly relayOrigin: string;
+  readonly sessionId: string;
+  readonly token: string;
+  readonly label: string;
+}
+
+export type AnyHostedPairingRequest = HostedPairingRequest | HostedRelayPairingRequest;
 
 export type HostedAppChannel = "latest" | "nightly";
 
@@ -31,6 +42,14 @@ function originFromUrl(value: string): string | null {
   }
 }
 
+function hostedStaticOrigins(): ReadonlySet<string> {
+  return new Set(
+    [configuredHostedAppUrl(), DEFAULT_HOSTED_APP_URL]
+      .map(originFromUrl)
+      .filter((origin): origin is string => origin !== null),
+  );
+}
+
 export function isHostedStaticApp(url: URL = new URL(window.location.href)): boolean {
   if (configuredBackendUrl()) {
     return false;
@@ -40,20 +59,68 @@ export function isHostedStaticApp(url: URL = new URL(window.location.href)): boo
     return true;
   }
 
-  const hostedOrigin = originFromUrl(configuredHostedAppUrl());
-  return hostedOrigin !== null && url.origin === hostedOrigin;
+  return hostedStaticOrigins().has(url.origin);
 }
 
-export function readHostedPairingRequest(url: URL = new URL(window.location.href)) {
-  const host = url.searchParams.get("host")?.trim() ?? "";
+function normalizeOrigin(value: string): string {
+  const url = new URL(value);
+  url.pathname = "/";
+  url.search = "";
+  url.hash = "";
+  return url.origin;
+}
+
+export function buildRelayDeviceSocketUrl(input: {
+  readonly relayOrigin: string;
+  readonly sessionId: string;
+}): string {
+  const url = new URL(
+    `/v1/sessions/${encodeURIComponent(input.sessionId)}/connect`,
+    input.relayOrigin,
+  );
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.searchParams.set("role", "device");
+  url.searchParams.set("mode", "raw");
+  return url.toString();
+}
+
+export function readHostedPairingRequest(
+  url: URL = new URL(window.location.href),
+): AnyHostedPairingRequest | null {
+  const relayOrigin = url.searchParams.get("relay")?.trim() ?? "";
+  const sessionId = url.searchParams.get("session")?.trim() ?? "";
   const token = getPairingTokenFromUrl(url)?.trim() ?? "";
   const label = url.searchParams.get("label")?.trim() ?? "";
+
+  if (relayOrigin || sessionId) {
+    if (!relayOrigin || !sessionId || !token) {
+      return null;
+    }
+
+    let normalizedRelayOrigin: string;
+    try {
+      normalizedRelayOrigin = normalizeOrigin(relayOrigin);
+    } catch {
+      return null;
+    }
+
+    return {
+      kind: "relay",
+      relayOrigin: normalizedRelayOrigin,
+      sessionId,
+      token,
+      label,
+    } satisfies HostedRelayPairingRequest;
+  }
+
+  const host = url.searchParams.get("host")?.trim() ?? "";
 
   if (!host || !token) {
     return null;
   }
 
   return {
+    kind: "direct",
     host,
     token,
     label,
@@ -62,6 +129,14 @@ export function readHostedPairingRequest(url: URL = new URL(window.location.href
 
 export function hasHostedPairingRequest(url: URL = new URL(window.location.href)): boolean {
   return readHostedPairingRequest(url) !== null;
+}
+
+export function hasHostedPairingRouteIntent(url: URL = new URL(window.location.href)): boolean {
+  return (
+    Boolean(url.searchParams.get("host")?.trim()) ||
+    Boolean(url.searchParams.get("relay")?.trim()) ||
+    Boolean(url.searchParams.get("session")?.trim())
+  );
 }
 
 export function buildHostedPairingUrl(input: {
@@ -80,10 +155,20 @@ export function buildHostedPairingUrl(input: {
   return setPairingTokenOnUrl(url, input.token).toString();
 }
 
-export function buildHostedChannelSelectionUrl(input: {
-  readonly channel: HostedAppChannel;
+export function buildHostedRelayPairingUrl(input: {
+  readonly relayOrigin: string;
+  readonly sessionId: string;
+  readonly token: string;
+  readonly label?: string | null;
 }): string {
-  const url = new URL("/__t3code/channel", configuredHostedAppUrl());
-  url.searchParams.set("channel", input.channel);
-  return url.toString();
+  const url = new URL("/pair", configuredHostedAppUrl());
+  url.searchParams.set("relay", normalizeOrigin(input.relayOrigin));
+  url.searchParams.set("session", input.sessionId);
+
+  const label = input.label?.trim();
+  if (label) {
+    url.searchParams.set("label", label);
+  }
+
+  return setPairingTokenOnUrl(url, input.token).toString();
 }

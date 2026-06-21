@@ -67,6 +67,7 @@ import type { WsProtocolCloseContext } from "../../rpc/protocol";
 import { getServerConfig } from "../../rpc/serverState";
 import { WsTransport } from "../../rpc/wsTransport";
 import { createWsRpcClient, type WsRpcClient } from "../../rpc/wsRpcClient";
+import { relayWebSocketProtocols } from "../../relayTransport";
 import { appendVersionMismatchHint, resolveServerConfigVersionMismatch } from "../../versionSkew";
 import {
   deriveLogicalProjectKeyFromSettings,
@@ -1156,6 +1157,9 @@ function createSavedEnvironmentClient(
         if (!record) {
           throw new Error(`Saved environment ${environmentId} not found.`);
         }
+        if (record.relay) {
+          return record.wsBaseUrl;
+        }
         return record.desktopSsh
           ? await resolveDesktopSshWebSocketConnectionUrl(
               record.wsBaseUrl,
@@ -1208,6 +1212,12 @@ function createSavedEnvironmentClient(
           );
         },
       },
+      getSavedEnvironmentRecord(environmentId)?.relay
+        ? {
+            preservePath: true,
+            protocols: relayWebSocketProtocols(bearerToken),
+          }
+        : undefined,
     ),
   );
 }
@@ -1222,6 +1232,20 @@ async function refreshSavedEnvironmentMetadata(
   const record = getSavedEnvironmentRecord(environmentId);
   if (!record) {
     throw new Error(`Saved environment ${environmentId} not found.`);
+  }
+
+  if (record.relay) {
+    const serverConfig = configHint ?? (await client.server.getConfig());
+    useSavedEnvironmentRuntimeStore.getState().patch(record.environmentId, {
+      authState: "authenticated",
+      descriptor: serverConfig.environment,
+      serverConfig,
+      role: roleHint ?? "owner",
+    });
+    useSavedEnvironmentRegistryStore
+      .getState()
+      .rename(record.environmentId, serverConfig.environment.label);
+    return;
   }
 
   const [serverConfig, sessionState] = await Promise.all([
@@ -1322,7 +1346,16 @@ async function ensureSavedEnvironmentConnection(
       let bearerToken =
         options?.bearerToken ?? (await readSavedEnvironmentBearerToken(record.environmentId));
       if (!bearerToken) {
-        if (record.desktopSsh) {
+        if (record.relay) {
+          useSavedEnvironmentRuntimeStore.getState().patch(record.environmentId, {
+            authState: "requires-auth",
+            role: null,
+            connectionState: "disconnected",
+            lastError: "Mobile connection expired. Create a new phone link from the desktop app.",
+            lastErrorAt: isoNow(),
+          });
+          throw new Error("Saved relay connection is missing its device token.");
+        } else if (record.desktopSsh) {
           const issued = await issueDesktopSshBearerSession(record);
           activeRecord = issued.record;
           bearerToken = issued.bearerToken;
@@ -1641,6 +1674,76 @@ export async function removeSavedEnvironment(environmentId: EnvironmentId): Prom
   await removeSavedEnvironmentBearerToken(environmentId);
 }
 
+type ResolvedRelayPairingTarget = Extract<
+  ReturnType<typeof resolveRemotePairingTarget>,
+  { readonly kind: "relay" }
+>;
+
+async function addRelaySavedEnvironment(input: {
+  readonly label: string;
+  readonly target: ResolvedRelayPairingTarget;
+}): Promise<SavedEnvironmentRecord> {
+  const client = createWsRpcClient(
+    new WsTransport(
+      input.target.wsBaseUrl,
+      {
+        getConnectionLabel: () => input.label.trim() || "Desktop app",
+      },
+      {
+        preservePath: true,
+        protocols: relayWebSocketProtocols(input.target.credential),
+      },
+    ),
+  );
+  let connectionRegistered = false;
+
+  try {
+    const serverConfig = await client.server.getConfig();
+    const descriptor = serverConfig.environment;
+    const environmentId = descriptor.environmentId;
+    const registrySnapshot = snapshotSavedEnvironmentRegistry([environmentId]);
+    const existingRecord = getSavedEnvironmentRecord(environmentId);
+    const record: SavedEnvironmentRecord = {
+      environmentId,
+      label: input.label.trim() || existingRecord?.label || descriptor.label,
+      wsBaseUrl: input.target.wsBaseUrl,
+      httpBaseUrl: input.target.httpBaseUrl,
+      createdAt: existingRecord?.createdAt ?? isoNow(),
+      lastConnectedAt: isoNow(),
+      relay: {
+        relayOrigin: input.target.relayOrigin,
+        sessionId: input.target.sessionId,
+      },
+    };
+
+    await persistSavedEnvironmentRecord(record);
+    const didPersistRelayToken = await writeSavedEnvironmentBearerToken(
+      environmentId,
+      input.target.credential,
+    );
+    if (!didPersistRelayToken) {
+      await persistSavedEnvironmentRegistryRollback(registrySnapshot);
+      throw new Error("Unable to persist mobile connection credentials.");
+    }
+
+    useSavedEnvironmentRegistryStore.getState().upsert(record);
+    await removeConnection(environmentId).catch(() => false);
+    await ensureSavedEnvironmentConnection(record, {
+      bearerToken: input.target.credential,
+      role: "owner",
+      serverConfig,
+      client,
+    });
+    connectionRegistered = true;
+    return record;
+  } catch (error) {
+    if (!connectionRegistered) {
+      await client.dispose().catch(() => undefined);
+    }
+    throw error;
+  }
+}
+
 export async function addSavedEnvironment(input: {
   readonly label: string;
   readonly pairingUrl?: string;
@@ -1653,6 +1756,12 @@ export async function addSavedEnvironment(input: {
     ...(input.host !== undefined ? { host: input.host } : {}),
     ...(input.pairingCode !== undefined ? { pairingCode: input.pairingCode } : {}),
   });
+  if (resolvedTarget.kind === "relay") {
+    return addRelaySavedEnvironment({
+      label: input.label,
+      target: resolvedTarget,
+    });
+  }
   const descriptor = input.desktopSsh
     ? await fetchDesktopSshEnvironmentDescriptor(resolvedTarget.httpBaseUrl)
     : await fetchRemoteEnvironmentDescriptor({
