@@ -60,6 +60,7 @@
     "typescript": "catalog:",
     "vite": "catalog:",
     "vite-plus": "catalog:",
+    "vitest": "catalog:",
     "vitest-browser-react": "^2.0.5"
   }
 }
