@@ -1954,7 +1954,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const stagedSummary = yield* runGitStdoutWithOptions(
       `${operation}.stagedSummary`,
       cwd,
-      ["diff", "--cached", "--name-status"],
+      ["diff", "--no-color", "--cached", "--name-status"],
       env ? { env } : {},
     ).pipe(Effect.map((stdout) => stdout.trim()));
     if (stagedSummary.length === 0) {
@@ -1964,7 +1964,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const stagedPatch = yield* runGitStdoutWithOptions(
       `${operation}.stagedPatch`,
       cwd,
-      ["diff", "--no-ext-diff", "--cached", "--patch"],
+      ["diff", "--no-color", "--no-ext-diff", "--cached", "--patch"],
       {
         ...(env ? { env } : {}),
         maxOutputBytes: PREPARED_COMMIT_PATCH_MAX_OUTPUT_BYTES,
@@ -2075,6 +2075,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       yield* stageCommitContext(operation, input.cwd, input.filePaths, env);
       const diffArgs = [
         "diff",
+        "--no-color",
         "--no-ext-diff",
         "--cached",
         "--patch",
@@ -2578,7 +2579,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         runGitStdoutWithOptions(
           "GitVcsDriver.readRangeContext.diffStat",
           cwd,
-          ["diff", "--stat", range],
+          ["diff", "--no-color", "--stat", range],
           {
             maxOutputBytes: RANGE_DIFF_SUMMARY_MAX_OUTPUT_BYTES,
             appendTruncationMarker: true,
@@ -2587,7 +2588,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         runGitStdoutWithOptions(
           "GitVcsDriver.readRangeContext.diffPatch",
           cwd,
-          ["diff", "--no-ext-diff", "--patch", "--minimal", range],
+          ["diff", "--no-color", "--no-ext-diff", "--patch", "--minimal", range],
           {
             maxOutputBytes: RANGE_DIFF_PATCH_MAX_OUTPUT_BYTES,
             appendTruncationMarker: true,

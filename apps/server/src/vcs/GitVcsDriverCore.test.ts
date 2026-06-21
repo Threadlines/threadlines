@@ -814,6 +814,22 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         assert.equal(yield* git(cwd, ["diff", "--cached", "--name-only"]), "");
       }),
     );
+
+    it.effect("reads colorless working tree diffs when git color is forced on", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        yield* git(cwd, ["config", "color.diff", "always"]);
+        yield* writeTextFile(cwd, "README.md", "# changed\n");
+
+        const result = yield* driver.workingTreeDiff({ cwd, filePaths: ["README.md"] });
+
+        assert.include(result.diff, "diff --git a/README.md b/README.md");
+        assert.notInclude(result.diff, "\u001B[");
+      }),
+    );
   });
 
   describe("commit graph", () => {
