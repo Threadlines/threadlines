@@ -881,6 +881,7 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
   const showMoreButtonRender = useMemo(() => <button type="button" />, []);
   const showLessButtonRender = useMemo(() => <button type="button" />, []);
   const searchAllButtonRender = useMemo(() => <button type="button" />, []);
+  const shouldShowThreadCollapseButton = shouldShowThreadPanel && isThreadListRevealed;
 
   return (
     <SidebarMenuSub
@@ -971,7 +972,7 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
           </SidebarMenuSubButton>
         </SidebarMenuSubItem>
       )}
-      {shouldShowThreadPanel && isThreadListRevealed && (
+      {shouldShowThreadCollapseButton ? (
         // Pinned to the sidebar viewport bottom while the expanded list
         // scrolls, so collapsing never requires scrolling to the end.
         <SidebarMenuSubItem className="sticky bottom-0 z-10 -ml-1 w-[calc(100%+0.25rem)] bg-sidebar pl-1">
@@ -987,7 +988,7 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
             <span>Show less</span>
           </SidebarMenuSubButton>
         </SidebarMenuSubItem>
-      )}
+      ) : null}
     </SidebarMenuSub>
   );
 });
