@@ -6,9 +6,13 @@ import {
 } from "@threadlines/contracts";
 import { describe, expect, it } from "vitest";
 import {
+  buildArchivedThreadBulkDeleteConfirmationMessage,
   buildProviderInstanceUpdatePatch,
   deriveProviderSettingsRows,
+  formatArchivedThreadDeleteAgeLabel,
   formatDiagnosticsDescription,
+  isArchivedThreadOlderThan,
+  parseArchivedThreadDeleteAgeDays,
 } from "./SettingsPanels.logic";
 
 const MAINTAINED_DRIVER_KINDS = [
@@ -51,6 +55,55 @@ describe("formatDiagnosticsDescription", () => {
         otlpMetricsEnabled: false,
       }),
     ).toBe("Local trace file.");
+  });
+});
+
+describe("archived thread delete helpers", () => {
+  it("parses and formats supported archived-thread delete ages", () => {
+    expect(parseArchivedThreadDeleteAgeDays("90")).toBe(90);
+    expect(parseArchivedThreadDeleteAgeDays("7")).toBeNull();
+    expect(formatArchivedThreadDeleteAgeLabel(180)).toBe("180+ days");
+  });
+
+  it("selects only threads archived at least the requested number of days ago", () => {
+    const nowMs = Date.parse("2026-06-21T00:00:00.000Z");
+
+    expect(
+      isArchivedThreadOlderThan({
+        archivedAt: "2026-03-23T00:00:00.000Z",
+        olderThanDays: 90,
+        nowMs,
+      }),
+    ).toBe(true);
+    expect(
+      isArchivedThreadOlderThan({
+        archivedAt: "2026-03-24T00:00:00.000Z",
+        olderThanDays: 90,
+        nowMs,
+      }),
+    ).toBe(false);
+    expect(
+      isArchivedThreadOlderThan({
+        archivedAt: null,
+        olderThanDays: 90,
+        nowMs,
+      }),
+    ).toBe(false);
+  });
+
+  it("builds count-based confirmation copy for bulk archive deletion", () => {
+    const message = buildArchivedThreadBulkDeleteConfirmationMessage({
+      days: 90,
+      groups: [
+        { projectName: "Alpha", count: 2 },
+        { projectName: "Beta", count: 1 },
+      ],
+    });
+
+    expect(message).toContain("Delete 3 threads archived for 90+ days?");
+    expect(message).toContain("This cannot be undone.");
+    expect(message).toContain("- Alpha: 2 threads");
+    expect(message).toContain("- Beta: 1 thread");
   });
 });
 

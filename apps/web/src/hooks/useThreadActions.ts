@@ -282,17 +282,17 @@ export function useThreadActions() {
   );
 
   const confirmAndDeleteThread = useCallback(
-    async (target: ScopedThreadRef) => {
+    async (target: ScopedThreadRef, opts: { title?: string } = {}) => {
       const api = readEnvironmentApi(target.environmentId);
       if (!api) return;
       const localApi = readLocalApi();
       const resolved = resolveThreadTarget(target);
 
       if (confirmThreadDelete && localApi) {
-        const title = resolved?.thread.title ?? "this thread";
+        const title = opts.title ?? resolved?.thread.title;
         const confirmed = await localApi.dialogs.confirm(
           [
-            `Delete thread "${title}"?`,
+            title ? `Delete thread "${title}"?` : "Delete this thread?",
             "This permanently clears conversation history for this thread.",
           ].join("\n"),
         );

@@ -1,7 +1,11 @@
 import {
   ChevronDownIcon,
   ChevronsLeftRightEllipsisIcon,
+  CircleCheckIcon,
+  ClockIcon,
+  CloudIcon,
   CopyIcon,
+  ExternalLinkIcon,
   PlusIcon,
   QrCodeIcon,
   RefreshCwIcon,
@@ -61,6 +65,7 @@ import { Switch } from "../ui/switch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { Button } from "../ui/button";
+import { Badge } from "../ui/badge";
 import { Group, GroupSeparator } from "../ui/group";
 import { AnimatedHeight } from "../AnimatedHeight";
 import {
@@ -115,6 +120,114 @@ function formatAccessTimestamp(value: string): string {
     return value;
   }
   return accessTimestampFormatter.format(parsed);
+}
+
+interface MobileConnectErrorView {
+  readonly title: string;
+  readonly description: string;
+  readonly detail: string;
+  readonly tone: "warning" | "error";
+}
+
+function parseEmbeddedErrorPayload(message: string): string | null {
+  const jsonStart = message.indexOf('{"error"');
+  if (jsonStart < 0) {
+    return null;
+  }
+
+  const jsonEnd = message.indexOf("}", jsonStart);
+  if (jsonEnd < 0) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(message.slice(jsonStart, jsonEnd + 1)) as {
+      readonly error?: unknown;
+    };
+    return typeof parsed.error === "string" && parsed.error.trim().length > 0
+      ? parsed.error.trim()
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeMobileConnectErrorMessage(message: string): string {
+  const embedded = parseEmbeddedErrorPayload(message);
+  if (embedded) {
+    return embedded;
+  }
+
+  const desktopRelayPrefix = "DesktopRelayError: ";
+  const desktopRelayIndex = message.indexOf(desktopRelayPrefix);
+  if (desktopRelayIndex >= 0) {
+    const reason = message.slice(desktopRelayIndex + desktopRelayPrefix.length).trim();
+    if (reason.length > 0) {
+      return reason;
+    }
+  }
+
+  return message.trim();
+}
+
+function getMobileConnectErrorView(message: string): MobileConnectErrorView {
+  const detail = normalizeMobileConnectErrorMessage(message);
+  const lowerDetail = detail.toLowerCase();
+
+  if (
+    lowerDetail.includes("invalid bootstrap credential") ||
+    lowerDetail.includes("unknown bootstrap credential") ||
+    lowerDetail.includes("bootstrap credential expired") ||
+    lowerDetail.includes("desktop bridge sign-in was rejected")
+  ) {
+    return {
+      title: "Desktop sign-in was rejected",
+      description:
+        "The relay is reachable, but the desktop bridge could not sign into the local backend. Quit and reopen Threadlines, then create a new phone link.",
+      detail,
+      tone: "warning",
+    };
+  }
+
+  if (
+    lowerDetail.includes("relay") ||
+    lowerDetail.includes("cloudflare") ||
+    lowerDetail.includes("request failed with http")
+  ) {
+    return {
+      title: "Relay is not reachable",
+      description:
+        "Threadlines could not create the Cloudflare relay session. Check the network connection and try again.",
+      detail,
+      tone: "error",
+    };
+  }
+
+  if (lowerDetail.includes("local backend") || lowerDetail.includes("backend is not ready")) {
+    return {
+      title: "Desktop backend is not ready",
+      description:
+        "Keep the desktop app open and wait for the local backend to finish starting, then create a new phone link.",
+      detail,
+      tone: "warning",
+    };
+  }
+
+  return {
+    title: "Could not create phone link",
+    description: "Threadlines could not finish the phone-link setup. Try again in a moment.",
+    detail: detail || message,
+    tone: "error",
+  };
+}
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
+}
+
+function isIsoTimestampExpired(value: string, nowMs: number): boolean {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && parsed <= nowMs;
 }
 
 type ConnectionStatusDotProps = {
@@ -1521,6 +1634,12 @@ export function ConnectionsSettings() {
     (state) => state.setDefaultAdvertisedEndpointKey,
   );
   const mobileConnectNowMs = useRelativeTimeTick(1_000);
+  const mobileConnectErrorView = mobileConnectError
+    ? getMobileConnectErrorView(mobileConnectError)
+    : null;
+  const isMobileConnectSessionExpired = mobileConnectSession
+    ? isIsoTimestampExpired(mobileConnectSession.expiresAt, mobileConnectNowMs)
+    : false;
   const canManageLocalBackend = currentSessionRole === "owner";
   const isLocalBackendNetworkAccessible = desktopBridge
     ? desktopServerExposureState?.mode === "network-accessible"
@@ -1641,14 +1760,14 @@ export function ConnectionsSettings() {
       setMobileConnectSession(session);
       copyMobileConnectLink(session.pairingUrl, "mobile-link");
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to create a phone connection link.";
+      const message = getErrorMessage(error, "Failed to create a phone connection link.");
+      const errorView = getMobileConnectErrorView(message);
       setMobileConnectError(message);
       toastManager.add(
         stackedThreadToast({
-          type: "error",
-          title: "Could not create phone link",
-          description: message,
+          type: errorView.tone,
+          title: errorView.title,
+          description: errorView.description,
         }),
       );
     } finally {
@@ -1663,8 +1782,7 @@ export function ConnectionsSettings() {
       await desktopBridge.disconnectRelayPairingSession();
       setMobileConnectSession(null);
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to stop the phone connection link.";
+      const message = getErrorMessage(error, "Failed to stop the phone connection link.");
       setMobileConnectError(message);
       toastManager.add(
         stackedThreadToast({
@@ -1675,6 +1793,13 @@ export function ConnectionsSettings() {
       );
     }
   }, [desktopBridge]);
+
+  const handleOpenMobileConnectLink = useCallback(async () => {
+    if (!mobileConnectSession) return;
+    const opened = await desktopBridge?.openExternal(mobileConnectSession.pairingUrl);
+    if (opened) return;
+    window.open(mobileConnectSession.pairingUrl, "_blank", "noopener,noreferrer");
+  }, [desktopBridge, mobileConnectSession]);
 
   const handleStartTailscaleServeSetup = useCallback(
     (endpoint: AdvertisedEndpoint) => {
@@ -2517,62 +2642,172 @@ export function ConnectionsSettings() {
       }
     />
   );
+  const renderMobileConnectProgressDetails = () => (
+    <div className="mt-3 border-t border-border/60 py-3">
+      <div className="flex items-start gap-3 text-xs">
+        <Spinner className="mt-0.5 size-4 shrink-0" />
+        <div className="min-w-0 space-y-2">
+          <p className="font-medium text-foreground">Creating phone link...</p>
+          <div className="grid gap-2 text-[11px] text-muted-foreground sm:grid-cols-3">
+            <div className="flex items-center gap-1.5">
+              <CloudIcon className="size-3.5 shrink-0" />
+              Cloud relay session
+            </div>
+            <div className="flex items-center gap-1.5">
+              <TerminalIcon className="size-3.5 shrink-0" />
+              Desktop bridge
+            </div>
+            <div className="flex items-center gap-1.5">
+              <SmartphoneIcon className="size-3.5 shrink-0" />
+              Phone-ready link
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+  const renderMobileConnectErrorDetails = () =>
+    mobileConnectErrorView ? (
+      <div className="mt-3 border-t border-border/60 py-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex min-w-0 items-start gap-2">
+            <TriangleAlertIcon
+              className={cn(
+                "mt-0.5 size-4 shrink-0",
+                mobileConnectErrorView.tone === "warning" ? "text-warning" : "text-destructive",
+              )}
+            />
+            <div className="min-w-0 space-y-1">
+              <p className="text-xs font-medium text-foreground">{mobileConnectErrorView.title}</p>
+              <p className="text-xs text-muted-foreground">{mobileConnectErrorView.description}</p>
+            </div>
+          </div>
+          <Button
+            size="xs"
+            variant="outline"
+            className="self-start"
+            disabled={isCreatingMobileConnectLink}
+            onClick={() => void handleCreateMobileConnectLink()}
+          >
+            {isCreatingMobileConnectLink ? (
+              <Spinner className="size-3.5" />
+            ) : (
+              <RefreshCwIcon className="size-3.5" />
+            )}
+            Try again
+          </Button>
+        </div>
+        <p className="mt-2 break-words rounded-md bg-muted/45 px-2 py-1.5 font-mono text-[10.5px] leading-relaxed text-muted-foreground">
+          {mobileConnectErrorView.detail}
+        </p>
+      </div>
+    ) : null;
+  const renderMobileConnectSessionDetails = () =>
+    mobileConnectSession ? (
+      <div className="mt-3 border-t border-border/60 py-3">
+        <div className="grid gap-3 sm:grid-cols-[8.5rem_minmax(0,1fr)]">
+          <div className="flex justify-start">
+            <div className="flex size-[8.5rem] items-center justify-center rounded-md bg-white p-2 text-black shadow-xs ring-1 ring-border/60">
+              <QRCodeSvg
+                value={mobileConnectSession.pairingUrl}
+                size={120}
+                level="M"
+                marginSize={2}
+                title="Phone link - scan to open on your phone"
+              />
+            </div>
+          </div>
+          <div className="min-w-0 space-y-3">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <Badge variant={isMobileConnectSessionExpired ? "warning" : "success"} size="sm">
+                {isMobileConnectSessionExpired ? (
+                  <ClockIcon className="size-3" />
+                ) : (
+                  <CircleCheckIcon className="size-3" />
+                )}
+                {isMobileConnectSessionExpired ? "Expired" : "Bridge open"}
+              </Badge>
+              <Badge variant="info" size="sm">
+                <CloudIcon className="size-3" />
+                Cloud relay
+              </Badge>
+              <Badge variant="outline" size="sm">
+                <ClockIcon className="size-3" />
+                {formatExpiresInLabel(mobileConnectSession.expiresAt, mobileConnectNowMs)}
+              </Badge>
+            </div>
+            <Textarea
+              readOnly
+              rows={3}
+              value={mobileConnectSession.pairingUrl}
+              className="text-[11px] leading-relaxed"
+              onFocus={(event) => event.currentTarget.select()}
+              onClick={(event) => event.currentTarget.select()}
+            />
+            <div className="grid gap-2 text-[11px] text-muted-foreground sm:grid-cols-2">
+              <div>
+                <span className="block font-medium text-foreground/75">Hosted app</span>
+                app.threadlines.dev
+              </div>
+              <div>
+                <span className="block font-medium text-foreground/75">Relay</span>
+                <span className="break-all">{mobileConnectSession.relayOrigin}</span>
+              </div>
+              <div>
+                <span className="block font-medium text-foreground/75">Relay session</span>
+                <span className="break-all">{mobileConnectSession.sessionId}</span>
+              </div>
+              <div>
+                <span className="block font-medium text-foreground/75">Expires</span>
+                {formatAccessTimestamp(mobileConnectSession.expiresAt)}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    ) : null;
+  const renderMobileConnectDetails = () => (
+    <>
+      {renderMobileConnectErrorDetails()}
+      {isCreatingMobileConnectLink && !mobileConnectSession
+        ? renderMobileConnectProgressDetails()
+        : null}
+      {renderMobileConnectSessionDetails()}
+    </>
+  );
   const renderMobileConnectRow = () => (
     <SettingsRow
       title="Phone link"
       description={
         mobileConnectSession
-          ? `Ready for ${formatExpiresInLabel(mobileConnectSession.expiresAt, mobileConnectNowMs)}. Open this link on your phone while the desktop app stays running.`
-          : "Create a private app.threadlines.dev link for your phone. No same Wi-Fi or Tailscale setup required."
-      }
-      status={
-        mobileConnectError ? (
-          <span className="block text-destructive">{mobileConnectError}</span>
-        ) : null
+          ? isMobileConnectSessionExpired
+            ? "This phone link expired. Create a new link before opening Threadlines on your phone."
+            : `Ready for ${formatExpiresInLabel(mobileConnectSession.expiresAt, mobileConnectNowMs)}. Open this link on your phone while the desktop app stays running.`
+          : isCreatingMobileConnectLink
+            ? "Creating a Cloudflare relay session and opening the desktop bridge."
+            : mobileConnectErrorView
+              ? mobileConnectErrorView.description
+              : "Create a private app.threadlines.dev link for your phone. No same Wi-Fi or Tailscale setup required."
       }
       control={
         desktopBridge ? (
           <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
             {mobileConnectSession ? (
-              <Popover>
-                <PopoverTrigger
-                  render={
-                    <Button size="xs" variant="outline" aria-label="Show phone link QR code" />
-                  }
-                >
-                  <QrCodeIcon className="size-3.5" />
-                  QR
-                </PopoverTrigger>
-                <PopoverPopup
-                  side="top"
-                  align="end"
-                  className="w-72 rounded-lg border bg-popover p-3 shadow-lg"
-                >
-                  <div className="flex items-start gap-3">
-                    <QRCodeSvg
-                      value={mobileConnectSession.pairingUrl}
-                      size={104}
-                      level="M"
-                      marginSize={2}
-                      title="Phone link - scan to open on your phone"
-                    />
-                    <div className="min-w-0 flex-1 space-y-2">
-                      <p className="text-xs font-medium text-foreground">Scan with your phone</p>
-                      <Textarea
-                        readOnly
-                        rows={3}
-                        value={mobileConnectSession.pairingUrl}
-                        className="text-[11px]"
-                      />
-                    </div>
-                  </div>
-                </PopoverPopup>
-              </Popover>
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={isMobileConnectSessionExpired}
+                onClick={() => void handleOpenMobileConnectLink()}
+              >
+                <ExternalLinkIcon className="size-3.5" />
+                Open
+              </Button>
             ) : null}
             {mobileConnectSession ? (
               <Button
                 size="xs"
                 variant="outline"
+                disabled={isMobileConnectSessionExpired}
                 onClick={() =>
                   copyMobileConnectLink(mobileConnectSession.pairingUrl, "mobile-link")
                 }
@@ -2596,7 +2831,7 @@ export function ConnectionsSettings() {
             {mobileConnectSession ? (
               <Button
                 size="xs"
-                variant="ghost"
+                variant="destructive-outline"
                 onClick={() => void handleDisconnectMobileConnectLink()}
                 disabled={isCreatingMobileConnectLink}
               >
@@ -2606,7 +2841,9 @@ export function ConnectionsSettings() {
           </div>
         ) : null
       }
-    />
+    >
+      {renderMobileConnectDetails()}
+    </SettingsRow>
   );
 
   return (

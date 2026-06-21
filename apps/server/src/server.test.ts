@@ -1591,19 +1591,17 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("rejects reusing the same bootstrap credential after it has been exchanged", () =>
+  it.effect("keeps the desktop bootstrap credential available after browser sign-in", () =>
     Effect.gen(function* () {
       yield* buildAppUnderTest();
 
-      const first = yield* bootstrapBrowserSession();
-      const second = yield* bootstrapBrowserSession();
+      const browserSession = yield* bootstrapBrowserSession();
+      const bearerSession = yield* bootstrapBearerSession();
 
-      assert.equal(first.response.status, 200);
-      assert.equal(second.response.status, 401);
-      assert.equal(
-        (second.body as { readonly error?: string }).error,
-        "Invalid bootstrap credential.",
-      );
+      assert.equal(browserSession.response.status, 200);
+      assert.equal(bearerSession.response.status, 200);
+      assert.equal(bearerSession.body.sessionMethod, "bearer-session-token");
+      assert.equal(typeof bearerSession.body.sessionToken, "string");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

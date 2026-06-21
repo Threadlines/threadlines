@@ -1,4 +1,11 @@
-import { ArchiveIcon, ArchiveX, LoaderIcon, PlusIcon, RefreshCwIcon } from "lucide-react";
+import {
+  ArchiveIcon,
+  ArchiveX,
+  LoaderIcon,
+  PlusIcon,
+  RefreshCwIcon,
+  Trash2Icon,
+} from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useCallback, useMemo, useRef, useState } from "react";
@@ -85,9 +92,19 @@ import {
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
 import { DRIVER_OPTIONS, getDriverOption } from "./providerDriverMeta";
 import {
+  ARCHIVED_THREAD_DELETE_AGE_OPTIONS,
+  type ArchivedThreadDeleteAgeDays,
+  buildArchivedThreadBulkDeleteConfirmationMessage,
   buildProviderInstanceUpdatePatch,
   deriveProviderSettingsRows,
+  formatArchivedThreadDeleteAgeLabel,
+  formatAutoArchiveCandidateSummary,
+  formatAutoArchiveDaysLabel,
   formatDiagnosticsDescription,
+  formatThreadCount,
+  isArchivedThreadOlderThan,
+  parseArchivedThreadDeleteAgeDays,
+  parseAutoArchiveDays,
   type ProviderSettingsRow,
 } from "./SettingsPanels.logic";
 import {
@@ -125,10 +142,18 @@ const TIMESTAMP_FORMAT_LABELS = {
 const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("codex");
 const MAINTAINED_PROVIDER_DRIVER_KINDS = DRIVER_OPTIONS.map((definition) => definition.value);
 const INACTIVE_THREAD_ARCHIVE_COMMAND_DELAY_MS = 25;
+const ARCHIVED_THREAD_DELETE_COMMAND_DELAY_MS = 25;
+const DEFAULT_ARCHIVED_THREAD_DELETE_AGE_DAYS: ArchivedThreadDeleteAgeDays = 90;
 
 function waitForInactiveThreadArchiveCommandSlot(): Promise<void> {
   return new Promise((resolve) =>
     window.setTimeout(resolve, INACTIVE_THREAD_ARCHIVE_COMMAND_DELAY_MS),
+  );
+}
+
+function waitForArchivedThreadDeleteCommandSlot(): Promise<void> {
+  return new Promise((resolve) =>
+    window.setTimeout(resolve, ARCHIVED_THREAD_DELETE_COMMAND_DELAY_MS),
   );
 }
 
@@ -1288,30 +1313,6 @@ export function ProviderSettingsPanel() {
   );
 }
 
-function formatAutoArchiveDaysLabel(days: AutoArchiveInactiveThreadsDays): string {
-  return days === 0 ? "Off" : `${days} days`;
-}
-
-function formatThreadCount(count: number): string {
-  return count === 1 ? "1 thread" : `${count} threads`;
-}
-
-function formatAutoArchiveCandidateSummary(count: number, days: AutoArchiveInactiveThreadsDays) {
-  if (days === 0) {
-    return `${formatThreadCount(count)} inactive for 30+ days.`;
-  }
-  return `${formatThreadCount(count)} inactive for ${days}+ days.`;
-}
-
-function parseAutoArchiveDays(value: string): AutoArchiveInactiveThreadsDays | null {
-  const parsed = Number(value);
-  return AUTO_ARCHIVE_INACTIVE_THREADS_DAY_OPTIONS.includes(
-    parsed as AutoArchiveInactiveThreadsDays,
-  )
-    ? (parsed as AutoArchiveInactiveThreadsDays)
-    : null;
-}
-
 function buildAutoArchiveConfirmationMessage(input: {
   readonly action: "enable" | "archive-now";
   readonly days: Exclude<AutoArchiveInactiveThreadsDays, 0>;
@@ -1385,8 +1386,11 @@ export function ArchivedThreadsPanel() {
   const sidebarThreads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
-  const { unarchiveThread, confirmAndDeleteThread } = useThreadActions();
+  const { unarchiveThread, deleteThread, confirmAndDeleteThread } = useThreadActions();
   const [isArchivingInactiveThreads, setIsArchivingInactiveThreads] = useState(false);
+  const [isDeletingArchivedThreads, setIsDeletingArchivedThreads] = useState(false);
+  const [archivedThreadDeleteAgeDays, setArchivedThreadDeleteAgeDays] =
+    useState<ArchivedThreadDeleteAgeDays>(DEFAULT_ARCHIVED_THREAD_DELETE_AGE_DAYS);
   const environmentIds = useMemo(
     () => [...new Set(projects.map((project) => project.environmentId))],
     [projects],
@@ -1457,6 +1461,32 @@ export function ArchivedThreadsPanel() {
       }))
       .filter((group) => group.threads.length > 0);
   }, [archivedSnapshots]);
+
+  const archivedDeleteSelection = useMemo(() => {
+    const nowMs = Date.now();
+    const groups = archivedGroups
+      .map(({ project, threads }) => {
+        const selectedThreads = threads.filter((thread) =>
+          isArchivedThreadOlderThan({
+            archivedAt: thread.archivedAt,
+            olderThanDays: archivedThreadDeleteAgeDays,
+            nowMs,
+          }),
+        );
+
+        return {
+          projectName: project.name,
+          count: selectedThreads.length,
+          threads: selectedThreads,
+        };
+      })
+      .filter((group) => group.count > 0);
+
+    return {
+      groups,
+      threads: groups.flatMap((group) => group.threads),
+    };
+  }, [archivedGroups, archivedThreadDeleteAgeDays]);
 
   const handleAutoArchiveDaysChange = useCallback(
     async (value: string) => {
@@ -1575,8 +1605,111 @@ export function ArchivedThreadsPanel() {
     refreshArchivedThreads,
   ]);
 
+  const handleArchivedThreadDeleteAgeChange = useCallback((value: string) => {
+    const nextDays = parseArchivedThreadDeleteAgeDays(value);
+    if (nextDays !== null) {
+      setArchivedThreadDeleteAgeDays(nextDays);
+    }
+  }, []);
+
+  const deleteArchivedThreadsByAge = useCallback(async () => {
+    const threads = archivedDeleteSelection.threads;
+    if (threads.length === 0 || isDeletingArchivedThreads) {
+      return;
+    }
+
+    const confirmed = await ensureLocalApi().dialogs.confirm(
+      buildArchivedThreadBulkDeleteConfirmationMessage({
+        days: archivedThreadDeleteAgeDays,
+        groups: archivedDeleteSelection.groups,
+      }),
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setIsDeletingArchivedThreads(true);
+    let deletedCount = 0;
+    let failedCount = 0;
+
+    try {
+      for (const thread of threads) {
+        const api = readEnvironmentApi(thread.environmentId);
+        if (!api) {
+          failedCount += 1;
+          continue;
+        }
+
+        try {
+          await deleteThread(scopeThreadRef(thread.environmentId, thread.id));
+          deletedCount += 1;
+        } catch (error) {
+          failedCount += 1;
+          console.warn("Failed to delete archived thread", {
+            threadId: thread.id,
+            environmentId: thread.environmentId,
+            error,
+          });
+        }
+
+        await waitForArchivedThreadDeleteCommandSlot();
+      }
+
+      if (deletedCount > 0) {
+        toastManager.add({
+          type: "success",
+          title:
+            deletedCount === 1
+              ? "Deleted one archived thread"
+              : `Deleted ${deletedCount} archived threads`,
+          description: `Deleted threads archived for ${archivedThreadDeleteAgeDays}+ days.`,
+        });
+        refreshArchivedThreads();
+      }
+
+      if (failedCount > 0) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "warning",
+            title:
+              failedCount === 1
+                ? "One archived thread could not be deleted"
+                : `${failedCount} archived threads could not be deleted`,
+            description: "Some environments may still be reconnecting.",
+          }),
+        );
+      }
+    } finally {
+      setIsDeletingArchivedThreads(false);
+    }
+  }, [
+    archivedDeleteSelection,
+    archivedThreadDeleteAgeDays,
+    deleteThread,
+    isDeletingArchivedThreads,
+    refreshArchivedThreads,
+  ]);
+
+  const deleteArchivedThread = useCallback(
+    async (threadRef: ScopedThreadRef, title: string) => {
+      try {
+        await confirmAndDeleteThread(threadRef, { title });
+        refreshArchivedThreads();
+      } catch (error) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Failed to delete thread",
+            description: error instanceof Error ? error.message : "An error occurred.",
+          }),
+        );
+      }
+    },
+    [confirmAndDeleteThread, refreshArchivedThreads],
+  );
+
   const handleArchivedThreadContextMenu = useCallback(
-    async (threadRef: ScopedThreadRef, position: { x: number; y: number }) => {
+    async (threadRef: ScopedThreadRef, title: string, position: { x: number; y: number }) => {
       const api = readLocalApi();
       if (!api) return;
       const clicked = await api.contextMenu.show(
@@ -1604,11 +1737,10 @@ export function ArchivedThreadsPanel() {
       }
 
       if (clicked === "delete") {
-        await confirmAndDeleteThread(threadRef);
-        refreshArchivedThreads();
+        await deleteArchivedThread(threadRef, title);
       }
     },
-    [confirmAndDeleteThread, refreshArchivedThreads, unarchiveThread],
+    [deleteArchivedThread, refreshArchivedThreads, unarchiveThread],
   );
 
   return (
@@ -1695,6 +1827,57 @@ export function ArchivedThreadsPanel() {
             </Button>
           }
         />
+        <SettingsRow
+          title="Delete old archived threads"
+          description="Permanently removes archived threads by how long they have been in Archive."
+          status={`${formatThreadCount(archivedDeleteSelection.threads.length)} archived for ${archivedThreadDeleteAgeDays}+ days.`}
+          control={
+            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center sm:justify-end">
+              <Select
+                value={String(archivedThreadDeleteAgeDays)}
+                onValueChange={(value) => {
+                  if (value !== null) {
+                    handleArchivedThreadDeleteAgeChange(value);
+                  }
+                }}
+              >
+                <SelectTrigger className="w-full sm:w-36" aria-label="Archived thread delete age">
+                  <SelectValue>
+                    {formatArchivedThreadDeleteAgeLabel(archivedThreadDeleteAgeDays)}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  {ARCHIVED_THREAD_DELETE_AGE_OPTIONS.map((days) => (
+                    <SelectItem key={days} hideIndicator value={String(days)}>
+                      {formatArchivedThreadDeleteAgeLabel(days)}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+              <Button
+                type="button"
+                variant="destructive-outline"
+                size="sm"
+                className="h-7 shrink-0 cursor-pointer gap-1.5 px-2.5"
+                disabled={archivedDeleteSelection.threads.length === 0 || isDeletingArchivedThreads}
+                onClick={() => void deleteArchivedThreadsByAge()}
+              >
+                {isDeletingArchivedThreads ? (
+                  <LoaderIcon className="size-3.5 animate-spin" />
+                ) : (
+                  <Trash2Icon className="size-3.5" />
+                )}
+                <span>
+                  {isDeletingArchivedThreads
+                    ? "Deleting"
+                    : archivedDeleteSelection.threads.length === 0
+                      ? "Nothing to Delete"
+                      : `Delete ${formatThreadCount(archivedDeleteSelection.threads.length)}`}
+                </span>
+              </Button>
+            </div>
+          }
+        />
       </SettingsSection>
       {archivedGroups.length === 0 ? (
         <SettingsSection title="Archived threads">
@@ -1734,6 +1917,7 @@ export function ArchivedThreadsPanel() {
                   event.preventDefault();
                   void handleArchivedThreadContextMenu(
                     scopeThreadRef(thread.environmentId, thread.id),
+                    thread.title,
                     {
                       x: event.clientX,
                       y: event.clientY,
@@ -1749,29 +1933,53 @@ export function ArchivedThreadsPanel() {
                   </>
                 }
                 control={
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-7 shrink-0 cursor-pointer gap-1.5 px-2.5"
-                    onClick={() =>
-                      void unarchiveThread(scopeThreadRef(thread.environmentId, thread.id))
-                        .then(() => refreshArchivedThreads())
-                        .catch((error) => {
-                          toastManager.add(
-                            stackedThreadToast({
-                              type: "error",
-                              title: "Failed to unarchive thread",
-                              description:
-                                error instanceof Error ? error.message : "An error occurred.",
-                            }),
-                          );
-                        })
-                    }
-                  >
-                    <ArchiveX className="size-3.5" />
-                    <span>Unarchive</span>
-                  </Button>
+                  <div className="ml-auto flex items-center gap-1.5">
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <Button
+                            type="button"
+                            variant="destructive-outline"
+                            size="icon-xs"
+                            className="size-7 rounded-md text-destructive-foreground"
+                            aria-label={`Delete archived thread ${thread.title}`}
+                            onClick={() =>
+                              void deleteArchivedThread(
+                                scopeThreadRef(thread.environmentId, thread.id),
+                                thread.title,
+                              )
+                            }
+                          >
+                            <Trash2Icon className="size-3.5" />
+                          </Button>
+                        }
+                      />
+                      <TooltipPopup side="top">Delete thread</TooltipPopup>
+                    </Tooltip>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 shrink-0 cursor-pointer gap-1.5 px-2.5"
+                      onClick={() =>
+                        void unarchiveThread(scopeThreadRef(thread.environmentId, thread.id))
+                          .then(() => refreshArchivedThreads())
+                          .catch((error) => {
+                            toastManager.add(
+                              stackedThreadToast({
+                                type: "error",
+                                title: "Failed to unarchive thread",
+                                description:
+                                  error instanceof Error ? error.message : "An error occurred.",
+                              }),
+                            );
+                          })
+                      }
+                    >
+                      <ArchiveX className="size-3.5" />
+                      <span>Unarchive</span>
+                    </Button>
+                  </div>
                 }
               />
             ))}

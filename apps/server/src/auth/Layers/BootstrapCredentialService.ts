@@ -36,6 +36,8 @@ type ConsumeResult =
     };
 
 const DEFAULT_ONE_TIME_TOKEN_TTL_MINUTES = Duration.minutes(5);
+// Desktop IPC reuses this process-local grant after the renderer consumes its browser session.
+const DESKTOP_BOOTSTRAP_EXPIRES_AT = DateTime.makeUnsafe("9999-12-31T23:59:59.999Z");
 const PAIRING_TOKEN_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 const PAIRING_TOKEN_LENGTH = 12;
 
@@ -84,15 +86,12 @@ export const makeBootstrapCredentialService = Effect.gen(function* () {
     }).pipe(Effect.asVoid);
 
   if (config.desktopBootstrapToken) {
-    const now = yield* DateTime.now;
     yield* seedGrant(config.desktopBootstrapToken, {
       method: "desktop-bootstrap",
       role: "owner",
       subject: "desktop-bootstrap",
-      expiresAt: DateTime.add(now, {
-        milliseconds: Duration.toMillis(DEFAULT_ONE_TIME_TOKEN_TTL_MINUTES),
-      }),
-      remainingUses: 1,
+      expiresAt: DESKTOP_BOOTSTRAP_EXPIRES_AT,
+      remainingUses: "unbounded",
     });
   }
 

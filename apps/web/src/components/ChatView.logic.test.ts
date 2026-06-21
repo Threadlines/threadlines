@@ -294,6 +294,20 @@ describe("deriveProviderAuthReconnectPrompt", () => {
     ).toBeNull();
   });
 
+  it("ignores assistant summaries that mention unrelated unauthenticated tooling", () => {
+    expect(
+      deriveProviderAuthReconnectPrompt({
+        provider: codexProvider,
+        messages: [
+          {
+            role: "assistant",
+            text: "I could not change the live Vercel project setting yet because the local Vercel CLI is not authenticated and the connector returned 403. To finish it directly in your Vercel dashboard, I need your explicit approval to use your logged-in Chrome session.",
+          },
+        ],
+      }),
+    ).toBeNull();
+  });
+
   it("ignores unrelated runtime errors", () => {
     expect(
       deriveProviderAuthReconnectPrompt({

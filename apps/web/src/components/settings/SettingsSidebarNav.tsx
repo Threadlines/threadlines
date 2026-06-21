@@ -33,7 +33,7 @@ export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
   { label: "General", to: "/settings/general", icon: Settings2Icon },
   { label: "Keybindings", to: "/settings/keybindings", icon: KeyboardIcon },
   { label: "Providers", to: "/settings/providers", icon: BotIcon },
-  { label: "Extensions", to: "/settings/extensions", icon: PlugIcon },
+  { label: "Plugins", to: "/settings/extensions", icon: PlugIcon },
   { label: "Instructions", to: "/settings/instructions", icon: FileTextIcon },
   { label: "Source Control", to: "/settings/source-control", icon: SourceControlIcon },
   { label: "Devices", to: "/settings/connections", icon: SmartphoneIcon },

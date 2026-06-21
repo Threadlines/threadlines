@@ -388,6 +388,9 @@ const createDesktopBridgeStub = (overrides?: {
   readonly serverExposureState?: Awaited<ReturnType<DesktopBridge["getServerExposureState"]>>;
   readonly advertisedEndpoints?: Awaited<ReturnType<DesktopBridge["getAdvertisedEndpoints"]>>;
   readonly setServerExposureMode?: DesktopBridge["setServerExposureMode"];
+  readonly createRelayPairingSession?: DesktopBridge["createRelayPairingSession"];
+  readonly disconnectRelayPairingSession?: DesktopBridge["disconnectRelayPairingSession"];
+  readonly openExternal?: DesktopBridge["openExternal"];
   readonly setUpdateChannel?: DesktopBridge["setUpdateChannel"];
 }): DesktopBridge => {
   const idleUpdateState: DesktopUpdateState = {
@@ -493,19 +496,22 @@ const createDesktopBridgeStub = (overrides?: {
       tailscaleServePort: input.port ?? 443,
     })),
     getAdvertisedEndpoints: vi.fn().mockResolvedValue(overrides?.advertisedEndpoints ?? []),
-    createRelayPairingSession: vi.fn().mockResolvedValue({
-      pairingUrl:
-        "https://app.threadlines.dev/pair?relay=https%3A%2F%2Frelay.threadlines.dev&session=session-1#token=device-token",
-      relayOrigin: "https://relay.threadlines.dev",
-      sessionId: "session-1",
-      expiresAt: "2026-06-20T12:00:00.000Z",
-    }),
-    disconnectRelayPairingSession: vi.fn().mockResolvedValue(undefined),
+    createRelayPairingSession:
+      overrides?.createRelayPairingSession ??
+      vi.fn().mockResolvedValue({
+        pairingUrl:
+          "https://app.threadlines.dev/pair?relay=https%3A%2F%2Frelay.threadlines.dev&session=session-1#token=device-token",
+        relayOrigin: "https://relay.threadlines.dev",
+        sessionId: "session-1",
+        expiresAt: "2036-06-20T12:00:00.000Z",
+      }),
+    disconnectRelayPairingSession:
+      overrides?.disconnectRelayPairingSession ?? vi.fn().mockResolvedValue(undefined),
     pickFolder: vi.fn().mockResolvedValue(null),
     confirm: vi.fn().mockResolvedValue(false),
     setTheme: vi.fn().mockResolvedValue(undefined),
     showContextMenu: vi.fn().mockResolvedValue(null),
-    openExternal: vi.fn().mockResolvedValue(true),
+    openExternal: overrides?.openExternal ?? vi.fn().mockResolvedValue(true),
     onMenuAction: () => () => {},
     getUpdateState: vi.fn().mockResolvedValue(idleUpdateState),
     setUpdateChannel:
@@ -625,6 +631,73 @@ describe("GeneralSettingsPanel observability", () => {
         page.getByRole("heading", { name: "Advanced: connect another computer", exact: true }),
       )
       .toBeInTheDocument();
+  });
+
+  it("creates a desktop phone link and shows QR details inline", async () => {
+    const createRelayPairingSession = vi.fn().mockResolvedValue({
+      pairingUrl:
+        "https://app.threadlines.dev/pair?relay=https%3A%2F%2Frelay.threadlines.dev&session=session-1#token=device-token",
+      relayOrigin: "https://relay.threadlines.dev",
+      sessionId: "session-1",
+      expiresAt: "2036-06-20T12:00:00.000Z",
+    });
+    window.desktopBridge = createDesktopBridgeStub({ createRelayPairingSession });
+    authAccessHarness.setSnapshot({
+      pairingLinks: [],
+      clientSessions: [],
+    });
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <ConnectionsSettings />
+      </AppAtomRegistryProvider>,
+    );
+
+    await page.getByRole("button", { name: "Create link", exact: true }).click();
+
+    await vi.waitFor(() => {
+      expect(createRelayPairingSession).toHaveBeenCalledTimes(1);
+    });
+    await expect.element(page.getByText("Bridge open")).toBeInTheDocument();
+    await expect.element(page.getByText("Cloud relay")).toBeInTheDocument();
+    await expect.element(page.getByText("https://relay.threadlines.dev")).toBeInTheDocument();
+    await expect.element(page.getByText("app.threadlines.dev")).toBeInTheDocument();
+    await expect.element(page.getByText("session-1")).toBeInTheDocument();
+  });
+
+  it("explains invalid desktop bootstrap failures when creating a phone link", async () => {
+    const createRelayPairingSession = vi
+      .fn()
+      .mockRejectedValue(
+        new Error(
+          'Error invoking remote method \'desktop:create-relay-pairing-session\': DesktopRelayError: {"error":"Invalid bootstrap credential."}',
+        ),
+      );
+    window.desktopBridge = createDesktopBridgeStub({ createRelayPairingSession });
+    authAccessHarness.setSnapshot({
+      pairingLinks: [],
+      clientSessions: [],
+    });
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <ConnectionsSettings />
+      </AppAtomRegistryProvider>,
+    );
+
+    await page.getByRole("button", { name: "Create link", exact: true }).click();
+
+    await expect.element(page.getByText("Desktop sign-in was rejected")).toBeInTheDocument();
+    await expect
+      .element(
+        page.getByText(
+          "The relay is reachable, but the desktop bridge could not sign into the local backend. Quit and reopen Threadlines, then create a new phone link.",
+        ),
+      )
+      .toBeInTheDocument();
+    await expect.element(page.getByText("Invalid bootstrap credential.")).toBeInTheDocument();
   });
 
   it("hides advertised endpoint rows when desktop network access is disabled", async () => {

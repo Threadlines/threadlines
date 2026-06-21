@@ -16,11 +16,14 @@ const AUTH_ERROR_PATTERNS = [
   /\binvalid authentication\b/u,
   /\binvalid authorization\b/u,
   /\bmissing api key\b/u,
-  /\bnot authenticated\b/u,
-  /\bnot logged in\b/u,
-  /\brequires authentication\b/u,
   /\brequires openai auth\b/u,
-  /^\s*(error:\s*)?unauthenticated[.!]?\s*$/u,
+] as const;
+
+const GENERIC_AUTH_STATUS_PATTERNS = [
+  /^(?:error:\s*)?(?:(?:codex(?: cli)?|claude(?: code)?|cursor agent|openai(?: cli)?|provider|model provider)\s+is\s+)?not authenticated[.!]?(?:\s+run `[^`]+`(?: in a terminal)?(?:, then retry| and try again)\.)?$/u,
+  /^(?:error:\s*)?not logged in[.!]?(?:\s+run `[^`]+`(?: in a terminal)?(?:, then retry| and try again)\.)?$/u,
+  /^(?:error:\s*)?(?:(?:codex|claude|cursor agent|openai|provider|model provider)\s+)?requires authentication[.!]?$/u,
+  /^(?:error:\s*)?unauthenticated[.!]?$/u,
 ] as const;
 
 export function providerAuthReconnectCommand(provider: ProviderDriverKind): string | undefined {
@@ -41,7 +44,10 @@ export function isProviderAuthErrorMessage(message: string | null | undefined): 
   }
 
   const normalized = trimmed.toLowerCase();
-  return AUTH_ERROR_PATTERNS.some((pattern) => pattern.test(normalized));
+  return (
+    AUTH_ERROR_PATTERNS.some((pattern) => pattern.test(normalized)) ||
+    GENERIC_AUTH_STATUS_PATTERNS.some((pattern) => pattern.test(normalized))
+  );
 }
 
 export function addProviderAuthHint(provider: ProviderDriverKind, message: string): string {

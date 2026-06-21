@@ -87,17 +87,18 @@ it.layer(NodeServices.layer)("BootstrapCredentialServiceLive", (it) => {
     }).pipe(Effect.provide(makeBootstrapCredentialLayer())),
   );
 
-  it.effect("seeds the desktop bootstrap credential as a one-time grant", () =>
+  it.effect("seeds the desktop bootstrap credential as a reusable process grant", () =>
     Effect.gen(function* () {
       const bootstrapCredentials = yield* BootstrapCredentialService;
       const first = yield* bootstrapCredentials.consume("desktop-bootstrap-token");
-      const second = yield* Effect.flip(bootstrapCredentials.consume("desktop-bootstrap-token"));
+      const second = yield* bootstrapCredentials.consume("desktop-bootstrap-token");
 
       expect(first.method).toBe("desktop-bootstrap");
       expect(first.role).toBe("owner");
       expect(first.subject).toBe("desktop-bootstrap");
-      expect(second._tag).toBe("BootstrapCredentialError");
-      expect(second.status).toBe(401);
+      expect(second.method).toBe("desktop-bootstrap");
+      expect(second.role).toBe("owner");
+      expect(second.subject).toBe("desktop-bootstrap");
     }).pipe(
       Effect.provide(
         makeBootstrapCredentialLayer({
@@ -107,26 +108,20 @@ it.layer(NodeServices.layer)("BootstrapCredentialServiceLive", (it) => {
     ),
   );
 
-  it.effect("reports seeded desktop bootstrap credentials as expired after their ttl", () =>
+  it.effect("reports issued one-time bootstrap credentials as expired after their ttl", () =>
     Effect.gen(function* () {
       const bootstrapCredentials = yield* BootstrapCredentialService;
+      const issued = yield* bootstrapCredentials.issueOneTimeToken({
+        ttl: Duration.minutes(5),
+      });
 
       yield* TestClock.adjust(Duration.minutes(6));
-      const expired = yield* Effect.flip(bootstrapCredentials.consume("desktop-bootstrap-token"));
+      const expired = yield* Effect.flip(bootstrapCredentials.consume(issued.credential));
 
       expect(expired._tag).toBe("BootstrapCredentialError");
       expect(expired.status).toBe(401);
       expect(expired.message).toContain("Bootstrap credential expired");
-    }).pipe(
-      Effect.provide(
-        Layer.merge(
-          makeBootstrapCredentialLayer({
-            desktopBootstrapToken: "desktop-bootstrap-token",
-          }),
-          TestClock.layer(),
-        ),
-      ),
-    ),
+    }).pipe(Effect.provide(Layer.merge(makeBootstrapCredentialLayer(), TestClock.layer()))),
   );
 
   it.effect("lists and revokes active pairing links", () =>

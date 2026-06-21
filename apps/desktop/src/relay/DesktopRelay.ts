@@ -84,6 +84,47 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function parseHttpErrorMessage(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) {
+    return "";
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as { readonly error?: unknown };
+    if (typeof parsed.error === "string" && parsed.error.trim().length > 0) {
+      return parsed.error.trim();
+    }
+  } catch {
+    // Fall back to the raw response body below.
+  }
+
+  return trimmed;
+}
+
+function isInvalidBootstrapCredentialMessage(message: string): boolean {
+  return (
+    message === "Invalid bootstrap credential." ||
+    message === "Unknown bootstrap credential." ||
+    message === "Bootstrap credential expired."
+  );
+}
+
+function mapDesktopBridgeBootstrapError(cause: DesktopRelayError | Schema.SchemaError) {
+  if (cause instanceof DesktopRelayError && isInvalidBootstrapCredentialMessage(cause.reason)) {
+    return relayError(
+      "bootstrap-bearer-session",
+      "Desktop bridge sign-in was rejected. Quit and reopen Threadlines, then create a new phone link.",
+      cause,
+    );
+  }
+
+  return mapRelayDecodeError(
+    "bootstrap-bearer-session",
+    "Desktop backend returned an invalid sign-in session.",
+  )(cause);
+}
+
 function withPath(baseUrl: URL, pathname: string): URL {
   const url = new URL(baseUrl.href);
   url.pathname = pathname;
@@ -118,7 +159,7 @@ function readJsonResponse(
         if (!response.ok) {
           throw relayError(
             operation,
-            responseText.trim() || `Request failed with HTTP ${response.status}.`,
+            parseHttpErrorMessage(responseText) || `Request failed with HTTP ${response.status}.`,
           );
         }
         return responseText;
@@ -236,12 +277,7 @@ const createLocalWebSocketUrl = Effect.fn("desktop.relay.createLocalWebSocketUrl
     },
   ).pipe(
     Effect.flatMap(decodeAuthBearerBootstrapResult),
-    Effect.mapError(
-      mapRelayDecodeError(
-        "bootstrap-bearer-session",
-        "Desktop backend returned an invalid sign-in session.",
-      ),
-    ),
+    Effect.mapError(mapDesktopBridgeBootstrapError),
   );
 
   const wsToken = yield* readJsonResponse(

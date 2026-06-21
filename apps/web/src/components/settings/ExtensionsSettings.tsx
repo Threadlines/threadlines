@@ -411,6 +411,34 @@ function appExtensionItem(
   };
 }
 
+function findRefreshedExtensionItem(
+  current: ExtensionItem,
+  inventory: ProviderExtensionsInventoryResult,
+): ExtensionItem | null {
+  const provider =
+    inventory.providers.find((entry) => entry.instanceId === current.provider.instanceId) ?? null;
+  if (!provider) return null;
+
+  switch (current.kind) {
+    case "plugin": {
+      const plugin = provider.plugins.find((entry) => entry.id === current.plugin.id);
+      return plugin ? pluginExtensionItem(provider, plugin) : null;
+    }
+    case "skill": {
+      const skill = provider.skills.find((entry) => entry.path === current.skill.path);
+      return skill ? skillExtensionItem(provider, skill) : null;
+    }
+    case "mcp": {
+      const server = provider.mcpServers.find((entry) => entry.name === current.server.name);
+      return server ? mcpExtensionItem(provider, server) : null;
+    }
+    case "app": {
+      const app = provider.apps.find((entry) => entry.id === current.app.id);
+      return app ? appExtensionItem(provider, app) : null;
+    }
+  }
+}
+
 function filterExtensionItems(
   items: ReadonlyArray<ExtensionItem>,
   filterText: string,
@@ -831,7 +859,7 @@ function openPathInEditor(targetPath: string) {
     toastManager.add(
       stackedThreadToast({
         type: "error",
-        title: "Unable to open extension path",
+        title: "Unable to open plugin path",
         description: error instanceof Error ? error.message : "Local API unavailable.",
       }),
     );
@@ -850,7 +878,7 @@ function openPathInEditor(targetPath: string) {
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: "Unable to open extension path",
+          title: "Unable to open plugin path",
           description: error instanceof Error ? error.message : "An error occurred.",
         }),
       );
@@ -1940,8 +1968,13 @@ function ExtensionDetailDialog({
                     size="icon-xs"
                     variant="ghost"
                     className="size-7 rounded-sm text-muted-foreground hover:text-foreground"
-                    onClick={() => copyText(extensionClipboardDetails(item), "Extension metadata")}
-                    aria-label="Copy extension metadata"
+                    onClick={() =>
+                      copyText(
+                        extensionClipboardDetails(item),
+                        `${extensionKindLabel(item.kind)} metadata`,
+                      )
+                    }
+                    aria-label={`Copy ${extensionKindLabel(item.kind).toLowerCase()} metadata`}
                   >
                     <CopyIcon className="size-3.5" />
                   </Button>
@@ -2216,7 +2249,7 @@ function ExtensionBrowserDialog({
                   setVisibleLimit(EXTENSION_BROWSER_PAGE_SIZE);
                 }}
               >
-                <SelectTrigger className="w-full" aria-label="Sort extensions">
+                <SelectTrigger className="w-full" aria-label="Sort plugins">
                   <SelectValue>
                     {EXTENSION_BROWSER_SORT_OPTIONS.find((option) => option.value === sort)
                       ?.label ?? "Recommended"}
@@ -2345,7 +2378,7 @@ function ExtensionBrowserDialog({
               </div>
             ) : (
               <div className="px-6 py-5">
-                <EmptyList label="No extensions match the current browser filters." />
+                <EmptyList label="No plugins match the current browser filters." />
               </div>
             )}
           </div>
@@ -2485,9 +2518,9 @@ function ProviderInventoryRow({
               type="search"
               value={providerFilterText}
               onChange={(event) => setProviderFilterText(event.currentTarget.value)}
-              placeholder={`Search ${providerTitle(provider)} extensions`}
+              placeholder={`Search ${providerTitle(provider)} plugins`}
               className="w-full [&_[data-slot=input]]:pl-8"
-              aria-label={`Search ${providerTitle(provider)} extensions`}
+              aria-label={`Search ${providerTitle(provider)} plugins`}
             />
           </div>
           {providerFilterText.trim().length > 0 ? (
@@ -2501,7 +2534,7 @@ function ProviderInventoryRow({
             </Button>
           ) : null}
         </div>
-        <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Extension section">
+        <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Plugin section">
           {sections.map((section) => (
             <SectionTabButton
               key={section.key}
@@ -2746,58 +2779,67 @@ export function ExtensionsSettingsPanel() {
     setError(null);
   }, [clearInventory, inventoryRequestKey]);
 
-  const refresh = useCallback(async () => {
-    const requestId = refreshRequestRef.current + 1;
-    refreshRequestRef.current = requestId;
-    const requestKey = inventoryRequestKey;
-    const requestCwd = cwd.trim();
-    if (!requestCwd || !providerInstanceId) {
-      setInventory(null);
-      setLastInventoryLoadMs(null);
-      setError(null);
-      setIsLoading(false);
-      return;
-    }
-
-    setIsLoading(true);
-    setError(null);
-    const startedMs = performance.now();
-    try {
-      const result = await ensureLocalApi().server.getProviderExtensions({
-        cwd: requestCwd,
-        providerInstanceId: providerInstanceId as ProviderInstanceId,
-        ...(effectiveProviderThreadId ? { providerThreadId: effectiveProviderThreadId } : {}),
-      });
-      if (
-        refreshRequestRef.current === requestId &&
-        inventoryRequestKeyRef.current === requestKey
-      ) {
-        const loadDurationMs = performance.now() - startedMs;
-        if (requestKey) {
-          extensionInventoryCache.set(requestKey, result, loadDurationMs);
-        }
-        setInventory(result);
-        setLastInventoryLoadMs(loadDurationMs);
-      }
-    } catch (refreshError) {
-      if (
-        refreshRequestRef.current === requestId &&
-        inventoryRequestKeyRef.current === requestKey
-      ) {
-        setError(
-          refreshError instanceof Error ? refreshError.message : "Extension inventory failed.",
-        );
+  const refresh = useCallback(
+    async (options?: { readonly invalidateCache?: boolean }) => {
+      const requestId = refreshRequestRef.current + 1;
+      refreshRequestRef.current = requestId;
+      const requestKey = inventoryRequestKey;
+      const requestCwd = cwd.trim();
+      if (!requestCwd || !providerInstanceId) {
+        setInventory(null);
         setLastInventoryLoadMs(null);
-      }
-    } finally {
-      if (
-        refreshRequestRef.current === requestId &&
-        inventoryRequestKeyRef.current === requestKey
-      ) {
+        setError(null);
         setIsLoading(false);
+        return;
       }
-    }
-  }, [cwd, effectiveProviderThreadId, inventoryRequestKey, providerInstanceId]);
+
+      setIsLoading(true);
+      setError(null);
+      if (options?.invalidateCache && requestKey) {
+        extensionInventoryCache.delete(requestKey);
+      }
+      const startedMs = performance.now();
+      try {
+        const result = await ensureLocalApi().server.getProviderExtensions({
+          cwd: requestCwd,
+          providerInstanceId: providerInstanceId as ProviderInstanceId,
+          ...(effectiveProviderThreadId ? { providerThreadId: effectiveProviderThreadId } : {}),
+        });
+        if (
+          refreshRequestRef.current === requestId &&
+          inventoryRequestKeyRef.current === requestKey
+        ) {
+          const loadDurationMs = performance.now() - startedMs;
+          if (requestKey) {
+            extensionInventoryCache.set(requestKey, result, loadDurationMs);
+          }
+          setInventory(result);
+          setSelectedItem((current) =>
+            current ? findRefreshedExtensionItem(current, result) : current,
+          );
+          setLastInventoryLoadMs(loadDurationMs);
+        }
+      } catch (refreshError) {
+        if (
+          refreshRequestRef.current === requestId &&
+          inventoryRequestKeyRef.current === requestKey
+        ) {
+          setError(
+            refreshError instanceof Error ? refreshError.message : "Plugin inventory failed.",
+          );
+          setLastInventoryLoadMs(null);
+        }
+      } finally {
+        if (
+          refreshRequestRef.current === requestId &&
+          inventoryRequestKeyRef.current === requestKey
+        ) {
+          setIsLoading(false);
+        }
+      }
+    },
+    [cwd, effectiveProviderThreadId, inventoryRequestKey, providerInstanceId],
+  );
 
   useEffect(() => {
     const loadDelayMs = manualProviderThreadId.trim().length > 0 ? 350 : 0;
@@ -2824,7 +2866,7 @@ export function ExtensionsSettingsPanel() {
         title: "Marketplace refreshed",
         description: result.output ?? "Codex plugin marketplace metadata is up to date.",
       });
-      await refresh();
+      await refresh({ invalidateCache: true });
     } catch (refreshError) {
       toastManager.add(
         stackedThreadToast({
@@ -2847,10 +2889,11 @@ export function ExtensionsSettingsPanel() {
     },
     [],
   );
+  const refreshAfterMutation = useCallback(() => refresh({ invalidateCache: true }), [refresh]);
 
   return (
     <SettingsPageContainer className="max-w-5xl">
-      <SettingsSection title="Extensions" icon={<PlugIcon className="size-3.5" />}>
+      <SettingsSection title="Plugins" icon={<PlugIcon className="size-3.5" />}>
         <SettingsRow
           title="Project"
           description={
@@ -2858,7 +2901,7 @@ export function ExtensionsSettingsPanel() {
               ? `Inventory generated ${new Date(inventory.generatedAt).toLocaleString()}${
                   lastInventoryLoadMs !== null ? ` in ${formatDuration(lastInventoryLoadMs)}` : ""
                 }.`
-              : "Pick the project context used for project skills and MCP status."
+              : "Pick the project context used for project plugins, skills, and MCP status."
           }
           control={
             projectOptions.length > 0 ? (
@@ -3035,19 +3078,19 @@ export function ExtensionsSettingsPanel() {
               ) : isLoading ? (
                 <span className="inline-flex items-center gap-2">
                   <LoaderIcon className="size-3.5 animate-spin" />
-                  Loading extensions
+                  Loading plugins
                 </span>
               ) : error ? (
                 "Inventory failed to load"
               ) : hasInventory ? (
-                "No extension providers found"
+                "No plugin providers found"
               ) : (
-                "No extension inventory"
+                "No plugin inventory"
               )
             }
             description={
               !cwd
-                ? "Choose a project to inspect extension surfaces."
+                ? "Choose a project to inspect plugin surfaces."
                 : !providerInstanceId
                   ? "Choose Codex or Claude to load plugins, skills, MCP servers, and apps."
                   : isLoading
@@ -3055,8 +3098,8 @@ export function ExtensionsSettingsPanel() {
                     : error
                       ? "The selected provider inventory could not be loaded. Details are shown above."
                       : hasInventory
-                        ? "The selected provider returned no extension records."
-                        : "Choose a provider to load its extension inventory."
+                        ? "The selected provider returned no plugin records."
+                        : "Choose a provider to load its plugin inventory."
             }
           />
         )}
@@ -3066,7 +3109,7 @@ export function ExtensionsSettingsPanel() {
         cwd={cwd}
         providerThreadId={effectiveProviderThreadId}
         onClose={() => setSelectedItem(null)}
-        onInventoryMutated={refresh}
+        onInventoryMutated={refreshAfterMutation}
         lastAction={selectedItemLastAction}
         onActionHistoryChange={recordItemActionHistory}
       />

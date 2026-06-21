@@ -24,6 +24,11 @@ describe("provider auth helpers", () => {
         "The UI would repeatedly appear unauthenticated even though the primary login was fresh.",
       ),
     ).toBe(false);
+    expect(
+      isProviderAuthErrorMessage(
+        "I could not change the live Vercel project setting yet because the local Vercel CLI is not authenticated and the connector returned 403.",
+      ),
+    ).toBe(false);
   });
 
   it("exposes the provider reconnect command", () => {

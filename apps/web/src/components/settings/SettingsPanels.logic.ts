@@ -1,13 +1,22 @@
 import type {
+  AutoArchiveInactiveThreadsDays,
   ProviderDriverKind,
   ProviderInstanceConfig,
   ProviderInstanceId,
   ServerSettings,
   UnifiedSettings,
 } from "@threadlines/contracts";
-import { defaultInstanceIdForDriver } from "@threadlines/contracts";
+import {
+  AUTO_ARCHIVE_INACTIVE_THREADS_DAY_OPTIONS,
+  defaultInstanceIdForDriver,
+} from "@threadlines/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
 import * as Equal from "effect/Equal";
+
+export const ARCHIVED_THREAD_DELETE_AGE_OPTIONS = [30, 90, 180, 365] as const;
+export type ArchivedThreadDeleteAgeDays = (typeof ARCHIVED_THREAD_DELETE_AGE_OPTIONS)[number];
+
+const MS_PER_DAY = 24 * 60 * 60 * 1_000;
 
 function collapseOtelSignalsUrl(input: {
   readonly tracesUrl: string;
@@ -179,4 +188,82 @@ export function buildProviderInstanceUpdatePatch(input: {
       ? { textGenerationModelSelection: input.textGenerationModelSelection }
       : {}),
   };
+}
+
+export function formatThreadCount(count: number): string {
+  return count === 1 ? "1 thread" : `${count} threads`;
+}
+
+export function formatAutoArchiveDaysLabel(days: AutoArchiveInactiveThreadsDays): string {
+  return days === 0 ? "Off" : `${days} days`;
+}
+
+export function formatAutoArchiveCandidateSummary(
+  count: number,
+  days: AutoArchiveInactiveThreadsDays,
+) {
+  if (days === 0) {
+    return `${formatThreadCount(count)} inactive for 30+ days.`;
+  }
+  return `${formatThreadCount(count)} inactive for ${days}+ days.`;
+}
+
+export function parseAutoArchiveDays(value: string): AutoArchiveInactiveThreadsDays | null {
+  const parsed = Number(value);
+  return AUTO_ARCHIVE_INACTIVE_THREADS_DAY_OPTIONS.includes(
+    parsed as AutoArchiveInactiveThreadsDays,
+  )
+    ? (parsed as AutoArchiveInactiveThreadsDays)
+    : null;
+}
+
+export function formatArchivedThreadDeleteAgeLabel(days: ArchivedThreadDeleteAgeDays): string {
+  return `${days}+ days`;
+}
+
+export function parseArchivedThreadDeleteAgeDays(
+  value: string,
+): ArchivedThreadDeleteAgeDays | null {
+  const parsed = Number(value);
+  return ARCHIVED_THREAD_DELETE_AGE_OPTIONS.includes(parsed as ArchivedThreadDeleteAgeDays)
+    ? (parsed as ArchivedThreadDeleteAgeDays)
+    : null;
+}
+
+export function isArchivedThreadOlderThan(input: {
+  readonly archivedAt: string | null;
+  readonly olderThanDays: ArchivedThreadDeleteAgeDays;
+  readonly nowMs?: number;
+}): boolean {
+  if (input.archivedAt === null) {
+    return false;
+  }
+
+  const archivedAtMs = Date.parse(input.archivedAt);
+  if (!Number.isFinite(archivedAtMs)) {
+    return false;
+  }
+
+  return archivedAtMs <= (input.nowMs ?? Date.now()) - input.olderThanDays * MS_PER_DAY;
+}
+
+export function buildArchivedThreadBulkDeleteConfirmationMessage(input: {
+  readonly days: ArchivedThreadDeleteAgeDays;
+  readonly groups: ReadonlyArray<{ readonly projectName: string | null; readonly count: number }>;
+}): string {
+  const count = input.groups.reduce((total, group) => total + group.count, 0);
+  const projectLines = input.groups.slice(0, 6).map((group) => {
+    const projectName = group.projectName ?? "Unknown project";
+    return `- ${projectName}: ${formatThreadCount(group.count)}`;
+  });
+  const remainingProjectCount = input.groups.length - projectLines.length;
+
+  return [
+    `Delete ${formatThreadCount(count)} archived for ${input.days}+ days?`,
+    "This permanently clears conversation history for these archived threads.",
+    "This cannot be undone.",
+    "",
+    ...projectLines,
+    ...(remainingProjectCount > 0 ? [`- ${remainingProjectCount} more projects`] : []),
+  ].join("\n");
 }
