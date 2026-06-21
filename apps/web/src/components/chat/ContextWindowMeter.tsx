@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
 import { type ContextWindowSnapshot, formatContextWindowTokens } from "~/lib/contextWindow";
@@ -117,10 +117,10 @@ export function ContextWindowMeter(props: {
       return nextPinnedOpen;
     });
   }, []);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!isPinnedOpen) return;
 
-    const handleDocumentPointerDown = (event: PointerEvent) => {
+    const handleDocumentInteraction = (event: Event) => {
       const target = event.target;
       if (!(target instanceof Node)) return;
       if (triggerRef.current?.contains(target) || popupRef.current?.contains(target)) {
@@ -129,9 +129,11 @@ export function ContextWindowMeter(props: {
       onOpenChange(false);
     };
 
-    document.addEventListener("pointerdown", handleDocumentPointerDown, true);
+    document.addEventListener("pointerdown", handleDocumentInteraction, true);
+    document.addEventListener("click", handleDocumentInteraction, true);
     return () => {
-      document.removeEventListener("pointerdown", handleDocumentPointerDown, true);
+      document.removeEventListener("pointerdown", handleDocumentInteraction, true);
+      document.removeEventListener("click", handleDocumentInteraction, true);
     };
   }, [isPinnedOpen, onOpenChange]);
   const isMeterActive = isOpen || isPinnedOpen;
