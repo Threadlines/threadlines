@@ -1,4 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { DESKTOP_RELEASE_APP_ID } from "@threadlines/shared/desktopIdentity";
 import { execFileSync } from "node:child_process";
 import {
   cpSync,
@@ -15,6 +17,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
+
+import { createBuildConfig } from "./build-desktop-artifact.ts";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const vpBinary = resolve(
@@ -219,6 +223,12 @@ function assertContains(haystack: string, needle: string, message: string): void
   }
 }
 
+function assertEqual(actual: unknown, expected: unknown, message: string): void {
+  if (!Object.is(actual, expected)) {
+    throw new Error(`${message} Expected ${String(expected)}, got ${String(actual)}.`);
+  }
+}
+
 function assertExists(path: string, message: string): void {
   if (!existsSync(path)) {
     throw new Error(message);
@@ -231,9 +241,46 @@ function assertMissing(path: string, message: string): void {
   }
 }
 
+function assertReleaseBuildIdentity(): void {
+  const macBuildConfig = Effect.runSync(
+    createBuildConfig("mac", "dmg", "9.9.9-smoke.0", true, false, undefined).pipe(
+      Effect.provide(NodeServices.layer),
+    ),
+  );
+  const macConfig = macBuildConfig.mac as Record<string, unknown>;
+
+  assertEqual(
+    macBuildConfig.appId,
+    DESKTOP_RELEASE_APP_ID,
+    "macOS release app id changed; Squirrel.Mac updates require this to remain stable.",
+  );
+  assertEqual(
+    macConfig.hardenedRuntime,
+    true,
+    "Signed macOS release builds must keep hardened runtime enabled.",
+  );
+  assertEqual(
+    macConfig.notarize,
+    false,
+    "macOS release builds must keep the explicit afterSign notarization hook.",
+  );
+
+  const windowsBuildConfig = Effect.runSync(
+    createBuildConfig("win", "nsis", "9.9.9-smoke.0", false, false, undefined).pipe(
+      Effect.provide(NodeServices.layer),
+    ),
+  );
+  assertEqual(
+    windowsBuildConfig.appId,
+    DESKTOP_RELEASE_APP_ID,
+    "Windows release app id changed; NSIS upgrades require this to remain stable.",
+  );
+}
+
 const tempRoot = mkdtempSync(join(tmpdir(), "threadlines-release-smoke-"));
 
 try {
+  assertReleaseBuildIdentity();
   copyWorkspaceManifestFixture(tempRoot);
 
   execFileSync(
