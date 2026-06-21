@@ -1,4 +1,4 @@
-import type { DesktopDiscoveredSshHost } from "@t3tools/contracts";
+import type { DesktopDiscoveredSshHost } from "@threadlines/contracts";
 
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";

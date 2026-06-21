@@ -1,4 +1,4 @@
-import type { EnvironmentId, ExecutionEnvironmentDescriptor } from "@t3tools/contracts";
+import type { EnvironmentId, ExecutionEnvironmentDescriptor } from "@threadlines/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 
@@ -8,5 +8,5 @@ export interface ServerEnvironmentShape {
 }
 
 export class ServerEnvironment extends Context.Service<ServerEnvironment, ServerEnvironmentShape>()(
-  "t3/environment/Services/ServerEnvironment",
+  "threadlines/environment/Services/ServerEnvironment",
 ) {}

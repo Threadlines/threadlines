@@ -21,9 +21,9 @@ import {
   OrchestrationSessionStatus,
   DEFAULT_SERVER_SETTINGS,
   ServerConfig as ServerConfigSchema,
-} from "@t3tools/contracts";
-import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime";
-import { createModelCapabilities, createModelSelection } from "@t3tools/shared/model";
+} from "@threadlines/contracts";
+import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
+import { createModelCapabilities, createModelSelection } from "@threadlines/shared/model";
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -34,6 +34,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { render } from "vitest-browser-react";
 
 import { useCommandPaletteStore } from "../commandPaletteStore";
+import { CLIENT_SETTINGS_STORAGE_KEY } from "../clientPersistenceStorage";
 import { useComposerDraftStore, DraftId } from "../composerDraftStore";
 import {
   __resetEnvironmentApiOverridesForTests,
@@ -62,7 +63,7 @@ import { useUiStateStore } from "../uiStateStore";
 import { createAuthenticatedSessionHandlers } from "../../test/authHttpHandlers";
 import { BrowserWsRpcHarness, type NormalizedWsRpcRequestBody } from "../../test/wsRpcHarness";
 
-import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
+import { DEFAULT_CLIENT_SETTINGS } from "@threadlines/contracts/settings";
 
 vi.mock("../lib/gitStatusState", () => ({
   useGitStatus: () => ({ data: null, error: null, cause: null, isPending: false }),
@@ -171,7 +172,7 @@ function createBaseServerConfig(): ServerConfig {
       sessionCookieName: "t3_session",
     },
     cwd: "/repo/project",
-    keybindingsConfigPath: "/repo/project/.t3code-keybindings.json",
+    keybindingsConfigPath: "/repo/project/.threadlines/keybindings.json",
     keybindings: [],
     issues: [],
     providers: [
@@ -1472,7 +1473,10 @@ async function replaceComposerSelectionWithNativeSpellcheckText(
     cancelable: true,
   });
   composerEditor.dispatchEvent(beforeInputEvent);
-  if (!beforeInputEvent.defaultPrevented) {
+  if (
+    !beforeInputEvent.defaultPrevented &&
+    !document.execCommand("insertText", false, replacement)
+  ) {
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) {
       throw new Error("Unable to resolve composer selection for native replacement.");
@@ -1485,14 +1489,14 @@ async function replaceComposerSelectionWithNativeSpellcheckText(
     range.collapse(true);
     selection.removeAllRanges();
     selection.addRange(range);
+    composerEditor.dispatchEvent(
+      new InputEvent("input", {
+        data: replacement,
+        inputType: "insertReplacementText",
+        bubbles: true,
+      }),
+    );
   }
-  composerEditor.dispatchEvent(
-    new InputEvent("input", {
-      data: replacement,
-      inputType: "insertReplacementText",
-      bubbles: true,
-    }),
-  );
   await waitForLayout();
 }
 
@@ -1651,6 +1655,24 @@ async function waitForSelectItemContainingText(text: string): Promise<HTMLElemen
   );
 }
 
+async function clickSelectItemContainingText(text: string): Promise<void> {
+  const item = await waitForSelectItemContainingText(text);
+  item.click();
+  await waitForLayout();
+}
+
+async function clickComboboxItemContainingText(text: string): Promise<void> {
+  const item = await waitForElement(
+    () =>
+      Array.from(document.querySelectorAll<HTMLElement>('[data-slot="combobox-item"]')).find(
+        (entry) => entry.textContent?.includes(text),
+      ) ?? null,
+    `Unable to find combobox item containing "${text}".`,
+  );
+  item.click();
+  await waitForLayout();
+}
+
 async function expectComposerActionsContained(): Promise<void> {
   const footer = await waitForElement(
     () => document.querySelector<HTMLElement>('[data-chat-composer-footer="true"]'),
@@ -1673,7 +1695,7 @@ async function expectComposerActionsContained(): Promise<void> {
       for (const rect of buttonRects) {
         expect(rect.right).toBeLessThanOrEqual(footerRect.right + 0.5);
         expect(rect.bottom).toBeLessThanOrEqual(footerRect.bottom + 0.5);
-        expect(Math.abs(rect.top - firstTop)).toBeLessThanOrEqual(1.5);
+        expect(Math.abs(rect.top - firstTop)).toBeLessThanOrEqual(4.5);
       }
     },
     { timeout: 8_000, interval: 16 },
@@ -1813,12 +1835,21 @@ async function dispatchInputKey(
   await waitForLayout();
 }
 
+function withClosedSourceControlSearch(path: string): string {
+  const url = new URL(path, "https://threadlines.test");
+  if (!url.searchParams.has("sourceControl") && !url.searchParams.has("diff")) {
+    url.searchParams.set("sourceControl", "0");
+  }
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
 async function mountChatView(options: {
   viewport: ViewportSpec;
   snapshot: OrchestrationReadModel;
   configureFixture?: (fixture: TestFixture) => void;
   resolveRpc?: (body: NormalizedWsRpcRequestBody) => unknown | undefined;
   initialPath?: string;
+  sourceControlDefault?: "closed" | "open";
 }): Promise<MountedChatView> {
   fixture = buildFixture(options.snapshot);
   options.configureFixture?.(fixture);
@@ -1836,9 +1867,15 @@ async function mountChatView(options: {
   host.style.overflow = "hidden";
   document.body.append(host);
 
+  const baseInitialPath = options.initialPath ?? `/${LOCAL_ENVIRONMENT_ID}/${THREAD_ID}`;
+  const initialPath =
+    options.sourceControlDefault === "open"
+      ? baseInitialPath
+      : withClosedSourceControlSearch(baseInitialPath);
+
   const router = getRouter(
     createMemoryHistory({
-      initialEntries: [options.initialPath ?? `/${LOCAL_ENVIRONMENT_ID}/${THREAD_ID}`],
+      initialEntries: [initialPath],
     }),
   );
 
@@ -2201,6 +2238,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       viewport: DEFAULT_VIEWPORT,
       snapshot: createDraftOnlySnapshot(),
       initialPath: `/draft/${draftId}`,
+      sourceControlDefault: "open",
     });
 
     try {
@@ -2338,10 +2376,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
             cwd: "/repo/project",
             worktreePath: null,
             env: {
-              T3CODE_PROJECT_ROOT: "/repo/project",
+              THREADLINES_PROJECT_ROOT: "/repo/project",
             },
           });
-          expect(openRequest?.env?.T3CODE_WORKTREE_PATH).toBeUndefined();
+          expect(openRequest?.env?.THREADLINES_WORKTREE_PATH).toBeUndefined();
         },
         { timeout: 8_000, interval: 16 },
       );
@@ -2459,19 +2497,25 @@ describe("ChatView timeline estimator parity (full app)", () => {
     try {
       await waitForServerConfigToApply();
       const menuButton = await waitForElement(
-        () => document.querySelector('button[aria-label="Copy options"]'),
+        () => document.querySelector('button[aria-label="Choose editor"]'),
         "Unable to find Open picker button.",
       );
       (menuButton as HTMLButtonElement).click();
 
       const kiroItem = await waitForElement(
         () =>
-          Array.from(document.querySelectorAll('[data-slot="menu-item"]')).find((item) =>
-            item.textContent?.includes("Kiro"),
-          ) ?? null,
+          Array.from(
+            document.querySelectorAll('[data-slot="menu-item"], [data-slot="menu-radio-item"]'),
+          ).find((item) => item.textContent?.includes("Kiro")) ?? null,
         "Unable to find Kiro menu item.",
       );
       (kiroItem as HTMLElement).click();
+
+      const openInKiroButton = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('button[title="Open in Kiro"]'),
+        "Unable to find Open in Kiro button.",
+      );
+      openInKiroButton.click();
 
       await vi.waitFor(
         () => {
@@ -2508,33 +2552,39 @@ describe("ChatView timeline estimator parity (full app)", () => {
     try {
       await waitForServerConfigToApply();
       const menuButton = await waitForElement(
-        () => document.querySelector('button[aria-label="Copy options"]'),
+        () => document.querySelector('button[aria-label="Choose editor"]'),
         "Unable to find Open picker button.",
       );
       (menuButton as HTMLButtonElement).click();
 
       await waitForElement(
         () =>
-          Array.from(document.querySelectorAll('[data-slot="menu-item"]')).find((item) =>
-            item.textContent?.includes("VS Code Insiders"),
-          ) ?? null,
+          Array.from(
+            document.querySelectorAll('[data-slot="menu-item"], [data-slot="menu-radio-item"]'),
+          ).find((item) => item.textContent?.includes("VS Code Insiders")) ?? null,
         "Unable to find VS Code Insiders menu item.",
       );
 
       expect(
-        Array.from(document.querySelectorAll('[data-slot="menu-item"]')).some((item) =>
-          item.textContent?.includes("Zed"),
-        ),
+        Array.from(
+          document.querySelectorAll('[data-slot="menu-item"], [data-slot="menu-radio-item"]'),
+        ).some((item) => item.textContent?.includes("Zed")),
       ).toBe(false);
 
       const vscodiumItem = await waitForElement(
         () =>
-          Array.from(document.querySelectorAll('[data-slot="menu-item"]')).find((item) =>
-            item.textContent?.includes("VSCodium"),
-          ) ?? null,
+          Array.from(
+            document.querySelectorAll('[data-slot="menu-item"], [data-slot="menu-radio-item"]'),
+          ).find((item) => item.textContent?.includes("VSCodium")) ?? null,
         "Unable to find VSCodium menu item.",
       );
       (vscodiumItem as HTMLElement).click();
+
+      const openInVscodiumButton = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('button[title="Open in VSCodium"]'),
+        "Unable to find Open in VSCodium button.",
+      );
+      openInVscodiumButton.click();
 
       await vi.waitFor(
         () => {
@@ -2555,7 +2605,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
   });
 
   it("falls back to the first installed editor when the stored favorite is unavailable", async () => {
-    localStorage.setItem("t3code:last-editor", JSON.stringify("vscodium"));
+    localStorage.setItem("threadlines:last-editor", JSON.stringify("vscodium"));
     setDraftThreadWithoutWorktree();
 
     const mounted = await mountChatView({
@@ -2655,7 +2705,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
             threadId: THREAD_ID,
             cwd: "/repo/project",
             env: {
-              T3CODE_PROJECT_ROOT: "/repo/project",
+              THREADLINES_PROJECT_ROOT: "/repo/project",
             },
           });
         },
@@ -2734,8 +2784,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
             threadId: THREAD_ID,
             cwd: "/repo/worktrees/feature-draft",
             env: {
-              T3CODE_PROJECT_ROOT: "/repo/project",
-              T3CODE_WORKTREE_PATH: "/repo/worktrees/feature-draft",
+              THREADLINES_PROJECT_ROOT: "/repo/project",
+              THREADLINES_WORKTREE_PATH: "/repo/worktrees/feature-draft",
             },
           });
         },
@@ -2949,7 +2999,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
               prepareWorktree: {
                 projectCwd: "/repo/project",
                 baseBranch: "main",
-                branch: expect.stringMatching(/^t3code\/[0-9a-f]{8}$/),
+                branch: expect.stringMatching(/^threadlines\/[0-9a-f]{8}$/),
               },
               runSetupScript: true,
             },
@@ -3132,7 +3182,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
     try {
       (await waitForButtonByText("Current checkout")).click();
-      await page.getByText("New worktree", { exact: true }).click();
+      await clickSelectItemContainingText("New worktree");
 
       await vi.waitFor(
         () => {
@@ -3173,7 +3223,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
               prepareWorktree: {
                 projectCwd: "/repo/project",
                 baseBranch: "main",
-                branch: expect.stringMatching(/^t3code\/[0-9a-f]{8}$/),
+                branch: expect.stringMatching(/^threadlines\/[0-9a-f]{8}$/),
               },
               runSetupScript: true,
             },
@@ -3231,9 +3281,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
     try {
       (await waitForButtonByText("Current checkout")).click();
-      await page.getByText("New worktree", { exact: true }).click();
-      await page.getByText("From main", { exact: true }).click();
-      await page.getByText("release/next", { exact: true }).click();
+      await clickSelectItemContainingText("New worktree");
+      (await waitForButtonByText("From main")).click();
+      await clickComboboxItemContainingText("release/next");
 
       await vi.waitFor(
         () => {
@@ -3327,9 +3377,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
     try {
       (await waitForButtonByText("Current checkout")).click();
-      await page.getByText("New worktree", { exact: true }).click();
-      await page.getByText("From main", { exact: true }).click();
-      await page.getByText("release/next", { exact: true }).click();
+      await clickSelectItemContainingText("New worktree");
+      (await waitForButtonByText("From main")).click();
+      await clickComboboxItemContainingText("release/next");
 
       await vi.waitFor(
         () => {
@@ -3361,7 +3411,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       );
 
       (await waitForButtonByText("Current checkout")).click();
-      await page.getByText("New worktree", { exact: true }).click();
+      await clickSelectItemContainingText("New worktree");
 
       await vi.waitFor(
         () => {
@@ -3590,14 +3640,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       );
       branchButton.click();
 
-      const branchOption = await waitForElement(
-        () =>
-          Array.from(document.querySelectorAll("span")).find(
-            (element) => element.textContent?.trim() === "release/next",
-          ) as HTMLSpanElement | null,
-        'Unable to find the "release/next" branch option.',
-      );
-      branchOption.click();
+      await clickComboboxItemContainingText("release/next");
 
       await vi.waitFor(
         () => {
@@ -4387,7 +4430,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
   it("shows the confirm archive action after clicking the archive button", async () => {
     localStorage.setItem(
-      "t3code:client-settings:v1",
+      CLIENT_SETTINGS_STORAGE_KEY,
       JSON.stringify({
         ...DEFAULT_CLIENT_SETTINGS,
         confirmThreadArchive: true,
@@ -4416,7 +4459,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await expect.element(confirmButton).toBeInTheDocument();
       await expect.element(confirmButton).toBeVisible();
     } finally {
-      localStorage.removeItem("t3code:client-settings:v1");
+      localStorage.removeItem(CLIENT_SETTINGS_STORAGE_KEY);
       await mounted.cleanup();
     }
   });

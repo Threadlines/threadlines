@@ -1,6 +1,6 @@
 "use client";
 
-import { scopedProjectKey, scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime";
+import { scopedProjectKey, scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
 import {
   DEFAULT_MODEL,
   type EnvironmentId,
@@ -10,8 +10,8 @@ import {
   type SourceControlDiscoveryResult,
   type SourceControlProviderKind,
   type SourceControlRepositoryInfo,
-} from "@t3tools/contracts";
-import { deriveRepositoryDirectoryName, normalizeGitRemoteUrl } from "@t3tools/shared/git";
+} from "@threadlines/contracts";
+import { deriveRepositoryDirectoryName, normalizeGitRemoteUrl } from "@threadlines/shared/git";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation, useNavigate, useParams } from "@tanstack/react-router";
 import * as Option from "effect/Option";

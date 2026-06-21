@@ -1,4 +1,4 @@
-import { fromJsonStringPretty } from "@t3tools/shared/schemaJson";
+import { fromJsonStringPretty } from "@threadlines/shared/schemaJson";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
@@ -80,7 +80,7 @@ export interface DesktopWindowShape {
 }
 
 export class DesktopWindow extends Context.Service<DesktopWindow, DesktopWindowShape>()(
-  "t3/desktop/Window",
+  "threadlines/desktop/Window",
 ) {}
 
 const { logInfo: logWindowInfo, logWarning: logWindowWarning } =

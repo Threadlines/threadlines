@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { ThreadId } from "@t3tools/contracts";
+import type { ThreadId } from "@threadlines/contracts";
 
 import { useStore } from "./store";
 import type { Thread } from "./types";

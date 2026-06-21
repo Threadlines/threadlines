@@ -3,7 +3,7 @@ import type {
   RuntimeMode,
   ServerProvider,
   ServerProviderModel,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import {
   LockIcon,
   LockOpenIcon,

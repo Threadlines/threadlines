@@ -10,7 +10,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import { CheckpointStore, type CheckpointStoreShape } from "../Services/CheckpointStore.ts";
-import { VcsUnsupportedOperationError } from "@t3tools/contracts";
+import { VcsUnsupportedOperationError } from "@threadlines/contracts";
 import { VcsDriverRegistry } from "../../vcs/VcsDriverRegistry.ts";
 import type { VcsCheckpointOps } from "../../vcs/VcsDriver.ts";
 

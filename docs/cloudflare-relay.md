@@ -78,27 +78,27 @@ relay session with Web Crypto and stored as SHA-256 hashes in the Durable Object
 From the repo root:
 
 ```powershell
-bun run --cwd apps/relay-worker types
-bun run --cwd apps/relay-worker test
-bun run --cwd apps/relay-worker typecheck
+pnpm --filter @threadlines/relay-worker run types
+pnpm --filter @threadlines/relay-worker run test
+pnpm --filter @threadlines/relay-worker run typecheck
 ```
 
 Local Worker dev:
 
 ```powershell
-bun run --cwd apps/relay-worker dev
+pnpm --filter @threadlines/relay-worker run dev
 ```
 
 Deploy after `wrangler login`:
 
 ```powershell
-bun run --cwd apps/relay-worker deploy
+pnpm --filter @threadlines/relay-worker run deploy
 ```
 
 Dry-run deploy validation:
 
 ```powershell
-bunx wrangler deploy --dry-run --config apps/relay-worker/wrangler.jsonc
+pnpm --filter @threadlines/relay-worker exec wrangler deploy --dry-run --config wrangler.jsonc
 ```
 
 ## Runtime Flow

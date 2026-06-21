@@ -6,7 +6,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderSession,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";

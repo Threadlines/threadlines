@@ -8,7 +8,7 @@ import {
   type LocalApi,
   type VcsCommitGraphResult,
   type VcsStatusResult,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   RouterProvider,
@@ -28,6 +28,7 @@ import {
   __setEnvironmentApiOverrideForTests,
 } from "../../environmentApi";
 import { __resetLocalApiForTests } from "../../localApi";
+import { AppAtomRegistryProvider, resetAppAtomRegistryForTests } from "../../rpc/atomRegistry";
 import { resetGitActionProgressStateForTests } from "../gitActionProgressState";
 import { SourceControlPanel, type SourceControlProjectTarget } from "./SourceControlPanel";
 
@@ -293,13 +294,15 @@ async function renderPanel(
   document.body.append(host);
 
   const router = createTestRouter(
-    <QueryClientProvider client={queryClient}>
-      <SourceControlPanel
-        target={TARGET}
-        activeThreadRef={null}
-        {...(input.onOpenDiff ? { onOpenDiff: input.onOpenDiff } : {})}
-      />
-    </QueryClientProvider>,
+    <AppAtomRegistryProvider>
+      <QueryClientProvider client={queryClient}>
+        <SourceControlPanel
+          target={TARGET}
+          activeThreadRef={null}
+          {...(input.onOpenDiff ? { onOpenDiff: input.onOpenDiff } : {})}
+        />
+      </QueryClientProvider>
+    </AppAtomRegistryProvider>,
   );
   const screen = await render(<RouterProvider router={router} />, { container: host });
 
@@ -330,6 +333,7 @@ describe("SourceControlPanel changes", () => {
     gitActionMock.toastUpdate.mockClear();
     Reflect.deleteProperty(window, "nativeApi");
     window.localStorage.clear();
+    resetAppAtomRegistryForTests();
     resetGitActionProgressStateForTests();
     await __resetLocalApiForTests();
   });
@@ -773,9 +777,11 @@ describe("SourceControlPanel changes", () => {
       host.style.height = "720px";
       document.body.append(host);
       const router = createTestRouter(
-        <QueryClientProvider client={queryClient}>
-          <SourceControlPanel target={TARGET} activeThreadRef={null} />
-        </QueryClientProvider>,
+        <AppAtomRegistryProvider>
+          <QueryClientProvider client={queryClient}>
+            <SourceControlPanel target={TARGET} activeThreadRef={null} />
+          </QueryClientProvider>
+        </AppAtomRegistryProvider>,
       );
       const screen = await render(<RouterProvider router={router} />, { container: host });
       return {
@@ -1160,7 +1166,7 @@ describe("SourceControlPanel commit graph", () => {
 
     try {
       await expect.element(page.getByText("Polish source control graph")).toBeVisible();
-      await expect.element(page.getByText(`${GRAPH.commits.length}+`)).toBeVisible();
+      await expect.element(page.getByText(`${GRAPH.commits.length} commits+`)).toBeVisible();
     } finally {
       await mounted.cleanup();
     }
@@ -1285,11 +1291,13 @@ describe("SourceControlPanel commit graph", () => {
       }, []);
 
       return (
-        <QueryClientProvider client={queryClient}>
-          <div data-version={renderVersion}>
-            <SourceControlPanel target={TARGET} activeThreadRef={null} />
-          </div>
-        </QueryClientProvider>
+        <AppAtomRegistryProvider>
+          <QueryClientProvider client={queryClient}>
+            <div data-version={renderVersion}>
+              <SourceControlPanel target={TARGET} activeThreadRef={null} />
+            </div>
+          </QueryClientProvider>
+        </AppAtomRegistryProvider>
       );
     }
 

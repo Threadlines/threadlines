@@ -2,8 +2,8 @@ import {
   type ProviderInstanceId,
   type ProviderDriverKind,
   type ResolvedKeybindingsConfig,
-} from "@t3tools/contracts";
-import { resolveSelectableModel } from "@t3tools/shared/model";
+} from "@threadlines/contracts";
+import { resolveSelectableModel } from "@threadlines/shared/model";
 import { memo, useMemo, useState, useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import { ChevronDownIcon, SearchIcon, StarIcon } from "lucide-react";
 import { cn } from "~/lib/utils";

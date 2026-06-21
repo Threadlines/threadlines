@@ -1,16 +1,16 @@
-import type { OrchestrationEvent, OrchestrationReadModel, ThreadId } from "@t3tools/contracts";
+import type { OrchestrationEvent, OrchestrationReadModel, ThreadId } from "@threadlines/contracts";
 import {
   OrchestrationCheckpointSummary,
   OrchestrationMessage,
   OrchestrationSession,
   OrchestrationThread,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import {
   MAX_THREAD_ACTIVITIES,
   MAX_THREAD_CHECKPOINTS,
   MAX_THREAD_MESSAGES,
   MAX_THREAD_PROPOSED_PLANS,
-} from "@t3tools/shared/threadLimits";
+} from "@threadlines/shared/threadLimits";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 

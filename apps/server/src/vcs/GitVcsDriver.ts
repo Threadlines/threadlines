@@ -41,7 +41,7 @@ import {
   type VcsRemoveWorktreeInput,
   type VcsStatusInput,
   type VcsStatusResult,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import * as GitVcsDriverCore from "./GitVcsDriverCore.ts";
 import * as VcsDriver from "./VcsDriver.ts";
 import * as VcsProcess from "./VcsProcess.ts";
@@ -273,7 +273,7 @@ export interface GitVcsDriverShape {
 }
 
 export class GitVcsDriver extends Context.Service<GitVcsDriver, GitVcsDriverShape>()(
-  "t3/vcs/GitVcsDriver",
+  "threadlines/vcs/GitVcsDriver",
 ) {}
 
 const WORKSPACE_FILES_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
@@ -665,9 +665,9 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
         ...process.env,
         GIT_INDEX_FILE: tempIndexPath,
         GIT_AUTHOR_NAME: "Threadlines",
-        GIT_AUTHOR_EMAIL: "badcode@users.noreply.github.com",
+        GIT_AUTHOR_EMAIL: "threadlines@users.noreply.github.com",
         GIT_COMMITTER_NAME: "Threadlines",
-        GIT_COMMITTER_EMAIL: "badcode@users.noreply.github.com",
+        GIT_COMMITTER_EMAIL: "threadlines@users.noreply.github.com",
       };
 
       const cleanupTempIndex = fileSystem

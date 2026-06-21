@@ -2,7 +2,7 @@ import {
   EnvironmentId,
   type ExecutionEnvironmentDescriptor,
   type ServerAuthDescriptor,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import { HttpResponse, http } from "msw";
 
 const TEST_SESSION_EXPIRES_AT = "2026-05-01T12:00:00.000Z";

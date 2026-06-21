@@ -158,7 +158,7 @@ describe("DesktopScreenCapture", () => {
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "badcode-capture-windows-",
+        prefix: "threadlines-capture-windows-",
       });
       const oldImage = makeNativeImage({ png: Buffer.from("old"), width: 12, height: 8 });
       const newImage = makeNativeImage({ png: Buffer.from("new"), width: 640, height: 480 });
@@ -193,7 +193,7 @@ describe("DesktopScreenCapture", () => {
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "badcode-capture-macos-",
+        prefix: "threadlines-capture-macos-",
       });
       createFromBufferMock.mockReturnValue(
         makeNativeImage({ png: PNG_BYTES, width: 800, height: 500 }),
@@ -251,7 +251,7 @@ describe("DesktopScreenCapture", () => {
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "badcode-capture-macos-dev-permission-",
+        prefix: "threadlines-capture-macos-dev-permission-",
       });
       getMediaAccessStatusMock.mockReturnValue("denied");
       createFromBufferMock.mockReturnValue(
@@ -295,7 +295,7 @@ describe("DesktopScreenCapture", () => {
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "badcode-capture-macos-permission-",
+        prefix: "threadlines-capture-macos-permission-",
       });
       getMediaAccessStatusMock.mockReturnValue("denied");
       const openExternal = vi.fn(() => Effect.succeed(true));
@@ -336,7 +336,7 @@ describe("DesktopScreenCapture", () => {
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "badcode-capture-macos-permission-lost-",
+        prefix: "threadlines-capture-macos-permission-lost-",
       });
       getMediaAccessStatusMock.mockReturnValue("denied");
       const openExternal = vi.fn(() => Effect.succeed(true));
@@ -381,7 +381,7 @@ describe("DesktopScreenCapture", () => {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "badcode-capture-macos-cleanup-",
+        prefix: "threadlines-capture-macos-cleanup-",
       });
       const environment = yield* Effect.gen(function* () {
         return yield* DesktopEnvironment.DesktopEnvironment;
@@ -445,7 +445,7 @@ describe("DesktopScreenCapture", () => {
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "badcode-capture-linux-",
+        prefix: "threadlines-capture-linux-",
       });
       const result = yield* Effect.gen(function* () {
         const screenCapture = yield* DesktopScreenCapture.DesktopScreenCapture;

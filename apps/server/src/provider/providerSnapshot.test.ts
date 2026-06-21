@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { ProviderDriverKind, type ModelCapabilities } from "@t3tools/contracts";
-import { createModelCapabilities } from "@t3tools/shared/model";
+import { ProviderDriverKind, type ModelCapabilities } from "@threadlines/contracts";
+import { createModelCapabilities } from "@threadlines/shared/model";
 
 import { providerModelsFromSettings } from "./providerSnapshot.ts";
 

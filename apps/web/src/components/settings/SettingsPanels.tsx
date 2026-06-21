@@ -12,10 +12,10 @@ import {
   type ProviderInstanceConfig,
   type ProviderInstanceId,
   type ScopedThreadRef,
-} from "@t3tools/contracts";
-import { scopeThreadRef } from "@t3tools/client-runtime";
-import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
-import { createModelSelection } from "@t3tools/shared/model";
+} from "@threadlines/contracts";
+import { scopeThreadRef } from "@threadlines/client-runtime";
+import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
+import { createModelSelection } from "@threadlines/shared/model";
 import * as Duration from "effect/Duration";
 import * as Equal from "effect/Equal";
 import { APP_VERSION } from "../../branding";

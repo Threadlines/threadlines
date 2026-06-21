@@ -2,8 +2,11 @@ import type {
   RelayClientMessage,
   RelayConnectionRole,
   RelayForwardTarget,
-} from "@t3tools/contracts/relay";
-import { RELAY_TOKEN_PROTOCOL_PREFIX, RELAY_WEBSOCKET_PROTOCOL } from "@t3tools/contracts/relay";
+} from "@threadlines/contracts/relay";
+import {
+  RELAY_TOKEN_PROTOCOL_PREFIX,
+  RELAY_WEBSOCKET_PROTOCOL,
+} from "@threadlines/contracts/relay";
 
 export { RELAY_TOKEN_PROTOCOL_PREFIX, RELAY_WEBSOCKET_PROTOCOL };
 

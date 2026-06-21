@@ -3,7 +3,7 @@ import type {
   DesktopAppStageLabel,
   DesktopRuntimeArch,
   DesktopRuntimeInfo,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -79,7 +79,7 @@ export interface DesktopEnvironmentShape {
 export class DesktopEnvironment extends Context.Service<
   DesktopEnvironment,
   DesktopEnvironmentShape
->()("t3/desktop/Environment") {}
+>()("threadlines/desktop/Environment") {}
 
 const APP_BASE_NAME = "Threadlines";
 
@@ -152,7 +152,7 @@ const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
       : input.platform === "darwin"
         ? path.join(homeDirectory, "Library", "Application Support")
         : Option.getOrElse(config.xdgConfigHome, () => path.join(homeDirectory, ".config"));
-  const baseDir = Option.getOrElse(config.t3Home, () => path.join(homeDirectory, ".badcode"));
+  const baseDir = Option.getOrElse(config.t3Home, () => path.join(homeDirectory, ".threadlines"));
   const rootDir = path.resolve(input.dirname, "../../..");
   const appRoot = input.isPackaged ? input.appPath : rootDir;
   const branding = resolveDesktopAppBranding({
@@ -201,7 +201,7 @@ const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
     openDevToolsInDevelopment: config.openDevToolsInDevelopment,
     branding,
     displayName,
-    appUserModelId: isDevelopment ? "com.badcuban.badcode.dev" : "com.badcuban.badcode",
+    appUserModelId: isDevelopment ? "com.threadlines.app.dev" : "com.threadlines.app",
     linuxDesktopEntryName: isDevelopment ? "threadlines-dev.desktop" : "threadlines.desktop",
     linuxWmClass: isDevelopment ? "threadlines-dev" : "threadlines",
     userDataDirName,

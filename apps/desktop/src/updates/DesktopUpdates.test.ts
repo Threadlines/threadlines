@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import type { DesktopUpdateState } from "@t3tools/contracts";
+import type { DesktopUpdateState } from "@threadlines/contracts";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -411,7 +411,7 @@ describe("DesktopUpdates", () => {
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const resourcesPath = yield* fileSystem.makeTempDirectoryScoped({
-          prefix: "badcode-private-updates-",
+          prefix: "threadlines-private-updates-",
         });
         yield* fileSystem.writeFileString(
           path.join(resourcesPath, "app-update.yml"),

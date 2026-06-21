@@ -1,4 +1,4 @@
-import { DesktopRelayPairingSessionSchema } from "@t3tools/contracts";
+import { DesktopRelayPairingSessionSchema } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 

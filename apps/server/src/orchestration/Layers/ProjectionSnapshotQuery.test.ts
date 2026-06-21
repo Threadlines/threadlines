@@ -6,8 +6,8 @@ import {
   ThreadId,
   TurnId,
   ProviderInstanceId,
-} from "@t3tools/contracts";
-import { MAX_THREAD_ACTIVITIES } from "@t3tools/shared/threadLimits";
+} from "@threadlines/contracts";
+import { MAX_THREAD_ACTIVITIES } from "@threadlines/shared/threadLimits";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";

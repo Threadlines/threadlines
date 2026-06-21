@@ -5,7 +5,7 @@ import {
   ProviderInstanceId,
   defaultInstanceIdForDriver,
   type ServerSettings,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 
 import { deriveProviderInstanceConfigMap } from "./ProviderInstanceRegistryHydration.ts";
 

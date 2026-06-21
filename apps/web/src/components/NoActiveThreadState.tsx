@@ -1,4 +1,4 @@
-import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime";
+import { scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
 import { useNavigate } from "@tanstack/react-router";
 import { ChevronDownIcon, SearchIcon, SquarePenIcon, FolderPlusIcon } from "lucide-react";
 import type * as React from "react";

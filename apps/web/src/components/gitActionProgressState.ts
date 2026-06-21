@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import type { EnvironmentId, GitActionProgressEvent } from "@t3tools/contracts";
+import type { EnvironmentId, GitActionProgressEvent } from "@threadlines/contracts";
 import { Atom } from "effect/unstable/reactivity";
 
 import { appAtomRegistry } from "~/rpc/atomRegistry";

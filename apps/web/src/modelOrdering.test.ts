@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ProviderInstanceId } from "@t3tools/contracts";
+import { ProviderInstanceId } from "@threadlines/contracts";
 
 import {
   providerModelKey,

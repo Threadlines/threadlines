@@ -7,12 +7,12 @@ import {
   type ScopedThreadRef,
   type ThreadId,
   type TurnId,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import {
   isProviderAuthErrorMessage,
   providerAuthReconnectCommand,
-} from "@t3tools/shared/providerAuth";
-import type { DesktopCapturedScreenshot } from "@t3tools/contracts";
+} from "@threadlines/shared/providerAuth";
+import type { DesktopCapturedScreenshot } from "@threadlines/contracts";
 import { type ChatMessage, type SessionPhase, type Thread, type ThreadSession } from "../types";
 import { type ComposerImageAttachment, type DraftThreadState } from "../composerDraftStore";
 import * as Schema from "effect/Schema";
@@ -24,7 +24,10 @@ import {
 } from "../lib/terminalContext";
 import type { DraftThreadEnvMode } from "../composerDraftStore";
 
-export const LAST_INVOKED_SCRIPT_BY_PROJECT_KEY = "t3code:last-invoked-script-by-project";
+export const LAST_INVOKED_SCRIPT_BY_PROJECT_KEY = "threadlines:last-invoked-script-by-project";
+export const LEGACY_LAST_INVOKED_SCRIPT_BY_PROJECT_KEYS = [
+  "t3code:last-invoked-script-by-project",
+] as const;
 export const MAX_HIDDEN_MOUNTED_TERMINAL_THREADS = 10;
 
 export const LastInvokedScriptByProjectSchema = Schema.Record(ProjectId, Schema.String);

@@ -99,7 +99,7 @@ function killChildTreeByPid(pid, signal) {
 }
 
 function cleanupStaleDevApps() {
-  const needle = `--t3code-dev-root=${desktopDir}`;
+  const needle = `--threadlines-dev-root=${desktopDir}`;
 
   if (process.platform === "win32") {
     // Match only Electron mains carrying our dev-root flag, then take each
@@ -127,7 +127,7 @@ function startApp() {
 
   const app = spawn(
     resolveElectronPath(),
-    [`--t3code-dev-root=${desktopDir}`, "dist-electron/main.cjs"],
+    [`--threadlines-dev-root=${desktopDir}`, "dist-electron/main.cjs"],
     {
       cwd: desktopDir,
       env: childEnv,

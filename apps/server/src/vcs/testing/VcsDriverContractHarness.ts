@@ -10,7 +10,7 @@ import type * as Scope from "effect/Scope";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 
-import type { VcsDriverKind } from "@t3tools/contracts";
+import type { VcsDriverKind } from "@threadlines/contracts";
 import * as VcsDriver from "../VcsDriver.ts";
 
 function normalizePathForComparison(value: string): string {

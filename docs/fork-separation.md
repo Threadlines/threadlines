@@ -39,6 +39,6 @@ Public docs may state that Threadlines started as the BadCode fork of T3 Code.
 Product copy, release assets, app names, icons, and new setup instructions should
 lead with Threadlines.
 
-Avoid broad package-name churn unless it removes a real collision. Workspace
-package names under `@t3tools/*` can be handled later after higher-risk runtime
-surface changes are smaller.
+Workspace packages use the `@threadlines/*` scope. Keep legacy `BADCODE_*`,
+`T3CODE_*`, and old local-storage keys only where they are explicitly needed for
+upgrade compatibility.

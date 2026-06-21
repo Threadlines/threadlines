@@ -28,11 +28,11 @@ import type {
   ModelUpgradeInfo,
   ServerProviderModel,
   ServerProviderSkill,
-} from "@t3tools/contracts";
-import { RUNTIME_MODES, ServerSettingsError } from "@t3tools/contracts";
+} from "@threadlines/contracts";
+import { RUNTIME_MODES, ServerSettingsError } from "@threadlines/contracts";
 
-import { createModelCapabilities } from "@t3tools/shared/model";
-import { isCommandAvailable } from "@t3tools/shared/shell";
+import { createModelCapabilities } from "@threadlines/shared/model";
+import { isCommandAvailable } from "@threadlines/shared/shell";
 import { DEFAULT_CODEX_SERVICE_TIER_SELECTION } from "../../codexServiceTier.ts";
 import {
   AUTH_PROBE_TIMEOUT_MS,
@@ -581,7 +581,7 @@ const requestAllCodexModels = Effect.fn("requestAllCodexModels")(function* (
 export function buildCodexInitializeParams(): CodexSchema.V1InitializeParams {
   return {
     clientInfo: {
-      name: "t3code_desktop",
+      name: "threadlines_desktop",
       title: "Threadlines Desktop",
       version: packageJson.version,
     },

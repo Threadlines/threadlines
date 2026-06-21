@@ -2,7 +2,7 @@ import {
   makeLocalFileTracer,
   makeTraceSink,
   type TraceRecord,
-} from "@t3tools/shared/observability";
+} from "@threadlines/shared/observability";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as References from "effect/References";

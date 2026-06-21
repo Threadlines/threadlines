@@ -1,5 +1,5 @@
-import { ProjectId } from "@t3tools/contracts";
-import { projectScriptRuntimeEnv, setupProjectScript } from "@t3tools/shared/projectScripts";
+import { ProjectId } from "@threadlines/contracts";
+import { projectScriptRuntimeEnv, setupProjectScript } from "@threadlines/shared/projectScripts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";

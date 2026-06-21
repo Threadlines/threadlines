@@ -16,9 +16,9 @@ Threadlines as the visible product identity:
 - new local configuration should use `THREADLINES_*` environment variables;
 - legacy `BADCODE_*` and `T3CODE_*` variables remain accepted as compatibility aliases;
 - when multiple aliases are set, `THREADLINES_*` wins, then `BADCODE_*`, then `T3CODE_*`;
-- new installs default to a separate `~/.badcode` data directory;
-- the `badcode` CLI alias remains the supported command name for now, while `t3`
-  remains available for old scripts during the transition.
+- new installs default to a separate `~/.threadlines` data directory;
+- the `threadlines` CLI is preferred, while `badcode` and `t3` remain available
+  for old scripts during the transition.
 
 See [docs/fork-separation.md](./docs/fork-separation.md) for the current
 branding and compatibility policy.
@@ -43,15 +43,15 @@ access to the repo.
 ### Local development
 
 ```bash
-bun install --frozen-lockfile
-bun run dev
+vp install --frozen-lockfile
+vp run dev
 ```
 
 ### Local desktop artifact
 
 ```powershell
-bun install --frozen-lockfile
-bun run dist:desktop:artifact -- --platform win --target nsis --arch x64 --build-version 0.0.1
+vp install --frozen-lockfile
+vp run dist:desktop:artifact -- --platform win --target nsis --arch x64 --build-version 0.0.1
 ```
 
 The artifact is written to `release/`.
@@ -79,7 +79,7 @@ Before local development, prepare the environment and install dependencies:
 ```bash
 # Optional: only needed if you use mise for dev tool management.
 mise install
-bun install
+vp install
 ```
 
 Read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening an issue or PR.

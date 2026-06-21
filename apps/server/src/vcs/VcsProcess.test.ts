@@ -6,7 +6,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import { TestClock } from "effect/testing";
 
-import { VcsProcessExitError, VcsProcessTimeoutError } from "@t3tools/contracts";
+import { VcsProcessExitError, VcsProcessTimeoutError } from "@threadlines/contracts";
 import * as VcsProcess from "./VcsProcess.ts";
 
 const run = (input: VcsProcess.VcsProcessInput) =>

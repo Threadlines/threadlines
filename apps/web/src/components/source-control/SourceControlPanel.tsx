@@ -8,7 +8,7 @@ import {
   type VcsRef,
   type VcsStatusResult,
   type VcsWorkingTreeFileChangeKind,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import {
   useInfiniteQuery,
   useIsMutating,
@@ -957,8 +957,15 @@ const MIN_GRAPH_PANEL_HEIGHT = 120;
 const MIN_CHANGES_PANEL_HEIGHT = 96;
 const SOURCE_CONTROL_SPLIT_VERTICAL_CHROME = 28;
 const SOURCE_CONTROL_CHANGES_PANEL_RATIO_STORAGE_KEY =
-  "badcode:source-control:changes-panel-ratio:v1";
-const SOURCE_CONTROL_CHANGES_VIEW_MODE_STORAGE_KEY = "badcode:source-control:changes-view-mode:v1";
+  "threadlines:source-control:changes-panel-ratio:v1";
+const LEGACY_SOURCE_CONTROL_CHANGES_PANEL_RATIO_STORAGE_KEYS = [
+  "badcode:source-control:changes-panel-ratio:v1",
+] as const;
+const SOURCE_CONTROL_CHANGES_VIEW_MODE_STORAGE_KEY =
+  "threadlines:source-control:changes-view-mode:v1";
+const LEGACY_SOURCE_CONTROL_CHANGES_VIEW_MODE_STORAGE_KEYS = [
+  "badcode:source-control:changes-view-mode:v1",
+] as const;
 const SourceControlChangesViewMode = Schema.Literals(["list", "tree"]);
 type SourceControlChangesViewMode = typeof SourceControlChangesViewMode.Type;
 const EMPTY_DIRECTORY_EXPANSION_OVERRIDES: Record<string, boolean> = {};
@@ -1461,11 +1468,14 @@ export function SourceControlPanel({
     SOURCE_CONTROL_CHANGES_PANEL_RATIO_STORAGE_KEY,
     DEFAULT_CHANGES_PANEL_RATIO,
     Schema.Finite,
+    { legacyKeys: LEGACY_SOURCE_CONTROL_CHANGES_PANEL_RATIO_STORAGE_KEYS },
   );
   const [changesViewMode, setChangesViewMode] = useLocalStorage<
     SourceControlChangesViewMode,
     string
-  >(SOURCE_CONTROL_CHANGES_VIEW_MODE_STORAGE_KEY, "list", SourceControlChangesViewMode);
+  >(SOURCE_CONTROL_CHANGES_VIEW_MODE_STORAGE_KEY, "list", SourceControlChangesViewMode, {
+    legacyKeys: LEGACY_SOURCE_CONTROL_CHANGES_VIEW_MODE_STORAGE_KEYS,
+  });
   const [changesPanelHeight, setChangesPanelHeight] = useState(DEFAULT_CHANGES_PANEL_HEIGHT);
   const [changesTreeExpansionState, setChangesTreeExpansionState] = useState<{
     readonly key: string;

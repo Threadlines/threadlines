@@ -4,13 +4,17 @@ import {
   type ClientSettings,
   type EnvironmentId as EnvironmentIdValue,
   type PersistedSavedEnvironmentRecord,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
 
-import { getLocalStorageItem, setLocalStorageItem } from "./hooks/useLocalStorage";
+import { getLocalStorageItemWithLegacyKeys, setLocalStorageItem } from "./hooks/useLocalStorage";
 
-export const CLIENT_SETTINGS_STORAGE_KEY = "t3code:client-settings:v1";
-export const SAVED_ENVIRONMENT_REGISTRY_STORAGE_KEY = "t3code:saved-environment-registry:v1";
+export const CLIENT_SETTINGS_STORAGE_KEY = "threadlines:client-settings:v1";
+export const LEGACY_CLIENT_SETTINGS_STORAGE_KEYS = ["t3code:client-settings:v1"] as const;
+export const SAVED_ENVIRONMENT_REGISTRY_STORAGE_KEY = "threadlines:saved-environment-registry:v1";
+export const LEGACY_SAVED_ENVIRONMENT_REGISTRY_STORAGE_KEYS = [
+  "t3code:saved-environment-registry:v1",
+] as const;
 
 const BrowserSavedEnvironmentRecordSchema = Schema.Struct({
   environmentId: EnvironmentId,
@@ -72,7 +76,11 @@ export function readBrowserClientSettings(): ClientSettings | null {
   }
 
   try {
-    return getLocalStorageItem(CLIENT_SETTINGS_STORAGE_KEY, ClientSettingsSchema);
+    return getLocalStorageItemWithLegacyKeys(
+      CLIENT_SETTINGS_STORAGE_KEY,
+      LEGACY_CLIENT_SETTINGS_STORAGE_KEYS,
+      ClientSettingsSchema,
+    );
   } catch {
     return null;
   }
@@ -92,8 +100,9 @@ function readBrowserSavedEnvironmentRegistryDocument(): BrowserSavedEnvironmentR
   }
 
   try {
-    const parsed = getLocalStorageItem(
+    const parsed = getLocalStorageItemWithLegacyKeys(
       SAVED_ENVIRONMENT_REGISTRY_STORAGE_KEY,
+      LEGACY_SAVED_ENVIRONMENT_REGISTRY_STORAGE_KEYS,
       BrowserSavedEnvironmentRegistryDocumentSchema,
     );
     return parsed ?? {};

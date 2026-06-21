@@ -1,4 +1,4 @@
-import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime";
+import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
 import { useLocation, useRouter } from "@tanstack/react-router";
 import { useEffect, useEffectEvent, useMemo, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";

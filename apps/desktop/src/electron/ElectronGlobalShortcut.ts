@@ -12,7 +12,7 @@ export interface ElectronGlobalShortcutShape {
 export class ElectronGlobalShortcut extends Context.Service<
   ElectronGlobalShortcut,
   ElectronGlobalShortcutShape
->()("t3/desktop/electron/GlobalShortcut") {}
+>()("threadlines/desktop/electron/GlobalShortcut") {}
 
 const make = ElectronGlobalShortcut.of({
   register: (accelerator, callback) =>

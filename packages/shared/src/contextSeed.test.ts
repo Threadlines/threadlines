@@ -1,4 +1,4 @@
-import { ProviderDriverKind, type ThreadContextSeedEntry } from "@t3tools/contracts";
+import { ProviderDriverKind, type ThreadContextSeedEntry } from "@threadlines/contracts";
 import { describe, expect, it } from "vitest";
 
 import {

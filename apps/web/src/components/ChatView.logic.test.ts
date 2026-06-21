@@ -1,4 +1,4 @@
-import { scopeThreadRef } from "@t3tools/client-runtime";
+import { scopeThreadRef } from "@threadlines/client-runtime";
 import {
   EnvironmentId,
   EventId,
@@ -8,7 +8,7 @@ import {
   ProviderInstanceId,
   ThreadId,
   TurnId,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type EnvironmentState, useStore } from "../store";
 import { type Thread } from "../types";
@@ -278,6 +278,20 @@ describe("deriveProviderAuthReconnectPrompt", () => {
       command: "codex login",
       message: "Not logged in. Run `codex login` in a terminal, then retry.",
     });
+  });
+
+  it("ignores diagnostic assistant prose that mentions unauthenticated UI state", () => {
+    expect(
+      deriveProviderAuthReconnectPrompt({
+        provider: codexProvider,
+        messages: [
+          {
+            role: "assistant",
+            text: "The config path matters here: Threadlines can materialize a Codex shadow home before starting app-server. If that shadow home misses or ages out MCP credential files, the UI would repeatedly appear unauthenticated even though the primary ~/.codex login was fresh.",
+          },
+        ],
+      }),
+    ).toBeNull();
   });
 
   it("ignores unrelated runtime errors", () => {

@@ -1,38 +1,36 @@
 {
-  "name": "@t3tools/desktop",
+  "name": "@threadlines/desktop",
   "version": "0.0.1",
   "private": true,
   "author": "Threadlines",
   "type": "module",
   "main": "dist-electron/main.cjs",
   "scripts": {
-    "dev": "bun run --parallel dev:server-bundle dev:bundle dev:electron",
-    "dev:server-bundle": "bun run --cwd ../server dev:bundle",
-    "dev:bundle": "tsdown --watch",
+    "dev": "node scripts/dev.mjs",
+    "dev:server-bundle": "vp run --filter t3 dev:bundle",
+    "dev:bundle": "vp pack --watch",
     "dev:electron": "node scripts/dev-electron.mjs",
-    "build": "tsdown",
+    "build": "vp pack",
     "start": "node scripts/start-electron.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests",
+    "test": "vp test run --passWithNoTests",
     "smoke-test": "node scripts/smoke-test.mjs"
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",
-    "@t3tools/contracts": "workspace:*",
-    "@t3tools/shared": "workspace:*",
-    "@t3tools/ssh": "workspace:*",
-    "@t3tools/tailscale": "workspace:*",
+    "@threadlines/contracts": "workspace:*",
+    "@threadlines/shared": "workspace:*",
+    "@threadlines/ssh": "workspace:*",
+    "@threadlines/tailscale": "workspace:*",
     "effect": "catalog:",
     "electron": "41.5.0",
     "electron-updater": "^6.6.2"
   },
   "devDependencies": {
-    "@effect/language-service": "catalog:",
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
-    "tsdown": "catalog:",
     "typescript": "catalog:",
-    "vitest": "catalog:"
+    "vite-plus": "catalog:"
   },
   "productName": "Threadlines"
 }

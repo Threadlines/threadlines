@@ -6,13 +6,13 @@ import {
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
   type ThreadTokenUsageSnapshot,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import {
   MAX_THREAD_ACTIVITY_PAYLOAD_ARRAY_ITEMS,
   MAX_THREAD_ACTIVITY_PAYLOAD_DEPTH,
   MAX_THREAD_ACTIVITY_PAYLOAD_OBJECT_KEYS,
   MAX_THREAD_ACTIVITY_PAYLOAD_TEXT_LENGTH,
-} from "@t3tools/shared/threadLimits";
+} from "@threadlines/shared/threadLimits";
 
 type ContentDeltaEvent = Extract<ProviderRuntimeEvent, { type: "content.delta" }>;
 type ContentStreamKind = ContentDeltaEvent["payload"]["streamKind"];

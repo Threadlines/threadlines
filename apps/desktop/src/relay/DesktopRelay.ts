@@ -2,12 +2,12 @@ import {
   AuthBearerBootstrapResult,
   AuthWebSocketTokenResult,
   type DesktopRelayPairingSession,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import {
   RELAY_TOKEN_PROTOCOL_PREFIX,
   RELAY_WEBSOCKET_PROTOCOL,
   RelayCreateSessionResult,
-} from "@t3tools/contracts/relay";
+} from "@threadlines/contracts/relay";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";

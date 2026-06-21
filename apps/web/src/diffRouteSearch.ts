@@ -1,4 +1,4 @@
-import { TurnId } from "@t3tools/contracts";
+import { TurnId } from "@threadlines/contracts";
 
 export interface DiffRouteSearch {
   diff?: "1" | undefined;
@@ -102,6 +102,15 @@ export function closeRightPanelSearchParams<T extends Record<string, unknown>>(p
     ...stripRightPanelSearchParams(params),
     sourceControl: "0" as const,
   };
+}
+
+export function preserveRightPanelSearchParamsForNavigation<T extends Record<string, unknown>>(
+  params: T,
+  options: { sourceControlOpen: boolean },
+) {
+  return options.sourceControlOpen
+    ? { ...stripRightPanelSearchParams(params), sourceControl: "1" as const }
+    : closeRightPanelSearchParams(params);
 }
 
 export function isSourceControlPanelOpen(search: DiffRouteSearch): boolean {

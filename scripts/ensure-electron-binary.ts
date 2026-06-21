@@ -104,7 +104,7 @@ async function installElectronBinary(): Promise<void> {
   const artifactVersion = `v${electronPackage.version}`;
   const fileName = `electron-${artifactVersion}-${platform}-${arch}.zip`;
   const artifactUrl = `https://github.com/electron/electron/releases/download/${artifactVersion}/${fileName}`;
-  const tempDirectory = mkdtempSync(resolve(tmpdir(), "badcode-electron-"));
+  const tempDirectory = mkdtempSync(resolve(tmpdir(), "threadlines-electron-"));
   const zipPath = resolve(tempDirectory, fileName);
 
   try {

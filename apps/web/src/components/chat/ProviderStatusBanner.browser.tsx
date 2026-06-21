@@ -1,9 +1,21 @@
 import "../../index.css";
 
-import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
+import {
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ServerProvider,
+} from "@threadlines/contracts";
 import { page } from "vitest/browser";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
+import type { ReactNode } from "react";
+import {
+  RouterProvider,
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+} from "@tanstack/react-router";
 
 const { refreshProvidersMock } = vi.hoisted(() => ({
   refreshProvidersMock: vi.fn(async () => ({ providers: [] })),
@@ -18,6 +30,22 @@ vi.mock("../../localApi", () => ({
 }));
 
 import { ProviderStatusBanner } from "./ProviderStatusBanner";
+
+function renderWithTestRouter(children: ReactNode) {
+  const rootRoute = createRootRoute({
+    component: () => children,
+  });
+  const indexRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/",
+  });
+  const router = createRouter({
+    routeTree: rootRoute.addChildren([indexRoute]),
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+  });
+
+  return render(<RouterProvider router={router} />);
+}
 
 function makeProvider(overrides: Partial<ServerProvider> = {}): ServerProvider {
   return {
@@ -46,10 +74,10 @@ describe("ProviderStatusBanner", () => {
 
   it("offers targeted refresh and diagnostics actions for provider warnings", async () => {
     const provider = makeProvider();
-    const screen = await render(<ProviderStatusBanner status={provider} />);
+    const screen = await renderWithTestRouter(<ProviderStatusBanner status={provider} />);
 
     try {
-      await expect.element(page.getByText("Codex provider status")).toBeVisible();
+      await expect.element(page.getByText("Codex provider status", { exact: true })).toBeVisible();
       await expect.element(page.getByText("Codex provider status check timed out.")).toBeVisible();
       await expect
         .element(page.getByRole("link", { name: "Open diagnostics" }))

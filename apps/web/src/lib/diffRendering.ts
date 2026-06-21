@@ -1,3 +1,6 @@
+import { parsePatchFiles } from "@pierre/diffs";
+import type { FileDiffMetadata } from "@pierre/diffs/react";
+
 export const DIFF_THEME_NAMES = {
   light: "pierre-light",
   dark: "pierre-dark",
@@ -5,8 +8,29 @@ export const DIFF_THEME_NAMES = {
 
 export type DiffThemeName = (typeof DIFF_THEME_NAMES)[keyof typeof DIFF_THEME_NAMES];
 
+export type RenderablePatch =
+  | {
+      kind: "files";
+      files: FileDiffMetadata[];
+    }
+  | {
+      kind: "raw";
+      text: string;
+      reason: string;
+    };
+
+const ANSI_ESCAPE = String.fromCharCode(0x1b);
+const ANSI_CONTROL_SEQUENCE_PATTERN = new RegExp(
+  `${ANSI_ESCAPE}(?:[@-Z\\\\-_]|\\[[0-?]*[ -/]*[@-~])`,
+  "gu",
+);
+
 export function resolveDiffThemeName(theme: "light" | "dark"): DiffThemeName {
   return theme === "dark" ? DIFF_THEME_NAMES.dark : DIFF_THEME_NAMES.light;
+}
+
+function normalizePatchForParsing(patch: string): string {
+  return patch.replace(ANSI_CONTROL_SEQUENCE_PATTERN, "").trim();
 }
 
 const FNV_OFFSET_BASIS_32 = 0x811c9dc5;
@@ -36,4 +60,36 @@ export function buildPatchCacheKey(patch: string, scope = "diff-panel"): string 
     SECONDARY_HASH_MULTIPLIER,
   ).toString(36);
   return `${scope}:${normalizedPatch.length}:${primary}:${secondary}`;
+}
+
+export function getRenderablePatch(
+  patch: string | undefined,
+  cacheScope = "diff-panel",
+): RenderablePatch | null {
+  if (!patch) return null;
+  const normalizedPatch = normalizePatchForParsing(patch);
+  if (normalizedPatch.length === 0) return null;
+
+  try {
+    const parsedPatches = parsePatchFiles(
+      normalizedPatch,
+      buildPatchCacheKey(normalizedPatch, cacheScope),
+    );
+    const files = parsedPatches.flatMap((parsedPatch) => parsedPatch.files);
+    if (files.length > 0) {
+      return { kind: "files", files };
+    }
+
+    return {
+      kind: "raw",
+      text: normalizedPatch,
+      reason: "Unsupported diff format. Showing raw patch.",
+    };
+  } catch {
+    return {
+      kind: "raw",
+      text: normalizedPatch,
+      reason: "Failed to parse patch. Showing raw patch.",
+    };
+  }
 }

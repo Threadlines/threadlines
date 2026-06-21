@@ -1,4 +1,4 @@
-import type { GitStackedAction, VcsStatusResult } from "@t3tools/contracts";
+import type { GitStackedAction, VcsStatusResult } from "@threadlines/contracts";
 
 export type SourceControlPrimaryActionIcon = "sparkles" | "upload";
 

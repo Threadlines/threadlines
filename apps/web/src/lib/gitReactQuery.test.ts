@@ -15,7 +15,7 @@ import {
   EnvironmentId,
   type VcsCommitGraphResult,
   type VcsListRefsResult,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 
 import {
   gitBranchSearchInfiniteQueryOptions,

@@ -17,17 +17,17 @@ import type {
   ProjectId,
   ScopedProjectRef,
   ScopedThreadRef,
-} from "@t3tools/contracts";
-import { isProviderDriverKind, ProviderDriverKind } from "@t3tools/contracts";
-import type { ThreadId, TurnId } from "@t3tools/contracts";
+} from "@threadlines/contracts";
+import { isProviderDriverKind, ProviderDriverKind } from "@threadlines/contracts";
+import type { ThreadId, TurnId } from "@threadlines/contracts";
 import * as Schema from "effect/Schema";
-import { resolveModelSlugForProvider } from "@t3tools/shared/model";
+import { resolveModelSlugForProvider } from "@threadlines/shared/model";
 import {
   MAX_THREAD_ACTIVITIES,
   MAX_THREAD_CHECKPOINTS,
   MAX_THREAD_MESSAGES,
   MAX_THREAD_PROPOSED_PLANS,
-} from "@t3tools/shared/threadLimits";
+} from "@threadlines/shared/threadLimits";
 import { create } from "zustand";
 import {
   type ChatMessage,

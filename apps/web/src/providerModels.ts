@@ -12,8 +12,8 @@ import {
   type RuntimeMode,
   type ServerProvider,
   type ServerProviderModel,
-} from "@t3tools/contracts";
-import { createModelCapabilities, normalizeModelSlug } from "@t3tools/shared/model";
+} from "@threadlines/contracts";
+import { createModelCapabilities, normalizeModelSlug } from "@threadlines/shared/model";
 
 const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],

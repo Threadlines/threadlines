@@ -28,7 +28,7 @@ export interface ElectronShellShape {
 }
 
 export class ElectronShell extends Context.Service<ElectronShell, ElectronShellShape>()(
-  "t3/desktop/electron/Shell",
+  "threadlines/desktop/electron/Shell",
 ) {}
 
 const make = ElectronShell.of({

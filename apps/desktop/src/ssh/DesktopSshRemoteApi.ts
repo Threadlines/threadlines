@@ -7,9 +7,9 @@ import {
   type AuthWebSocketTokenResult as AuthWebSocketTokenResultType,
   ExecutionEnvironmentDescriptor,
   type ExecutionEnvironmentDescriptor as ExecutionEnvironmentDescriptorType,
-} from "@t3tools/contracts";
-import { SshHttpBridgeError } from "@t3tools/ssh/errors";
-import { fetchLoopbackSshJson } from "@t3tools/ssh/tunnel";
+} from "@threadlines/contracts";
+import { SshHttpBridgeError } from "@threadlines/ssh/errors";
+import { fetchLoopbackSshJson } from "@threadlines/ssh/tunnel";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
@@ -53,7 +53,7 @@ export interface DesktopSshRemoteApiShape {
 export class DesktopSshRemoteApi extends Context.Service<
   DesktopSshRemoteApi,
   DesktopSshRemoteApiShape
->()("t3/desktop/SshRemoteApi") {}
+>()("threadlines/desktop/SshRemoteApi") {}
 
 const decodeExecutionEnvironmentDescriptor = Schema.decodeUnknownEffect(
   ExecutionEnvironmentDescriptor,

@@ -1,4 +1,4 @@
-import type { AuthClientSession, AuthPairingLink } from "@t3tools/contracts";
+import type { AuthClientSession, AuthPairingLink } from "@threadlines/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

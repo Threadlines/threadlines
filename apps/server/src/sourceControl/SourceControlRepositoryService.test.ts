@@ -11,7 +11,7 @@ import {
   GitCommandError,
   type SourceControlProviderError,
   SourceControlRepositoryError,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 
 import { ServerConfig } from "../config.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";

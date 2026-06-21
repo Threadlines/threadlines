@@ -20,16 +20,16 @@ import {
   ProviderDriverKind,
   RuntimeMode,
   TerminalOpenInput,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import {
   parseScopedThreadKey,
   scopedThreadKey,
   scopeProjectRef,
   scopeThreadRef,
-} from "@t3tools/client-runtime";
-import { createModelSelection } from "@t3tools/shared/model";
-import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
-import { truncate } from "@t3tools/shared/String";
+} from "@threadlines/client-runtime";
+import { createModelSelection } from "@threadlines/shared/model";
+import { projectScriptCwd, projectScriptRuntimeEnv } from "@threadlines/shared/projectScripts";
+import { truncate } from "@threadlines/shared/String";
 import { Debouncer } from "@tanstack/react-pacer";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
@@ -48,6 +48,7 @@ import {
   closeRightPanelSearchParams,
   isSourceControlPanelOpen,
   parseDiffRouteSearch,
+  preserveRightPanelSearchParamsForNavigation,
   stripRightPanelSearchParams,
 } from "../diffRouteSearch";
 import {
@@ -108,7 +109,7 @@ import {
 import { useTheme } from "../hooks/useTheme";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { useCommandPaletteStore } from "../commandPaletteStore";
-import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
+import { buildTemporaryWorktreeBranchName } from "@threadlines/shared/git";
 import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
@@ -172,6 +173,7 @@ import {
   deriveProviderAuthReconnectPrompt,
   hasServerAcknowledgedLocalDispatch,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
+  LEGACY_LAST_INVOKED_SCRIPT_BY_PROJECT_KEYS,
   LastInvokedScriptByProjectSchema,
   type LocalDispatchSnapshot,
   PullRequestDialogState,
@@ -779,6 +781,7 @@ export default function ChatView(props: ChatViewProps) {
     LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
     {},
     LastInvokedScriptByProjectSchema,
+    { legacyKeys: LEGACY_LAST_INVOKED_SCRIPT_BY_PROJECT_KEYS },
   );
   const legendListRef = useRef<LegendListRef | null>(null);
   const isAtEndRef = useRef(true);
@@ -875,6 +878,11 @@ export default function ChatView(props: ChatViewProps) {
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
   const sourceControlOpen = isSourceControlPanelOpen(rawSearch);
+  const preserveRightPanelSearchForDraftNavigation = useCallback(
+    (previous: Record<string, unknown>) =>
+      preserveRightPanelSearchParamsForNavigation(previous, { sourceControlOpen }),
+    [sourceControlOpen],
+  );
   const activeThreadId = activeThread?.id ?? null;
   const activeThreadRef = useMemo(
     () => (activeThread ? scopeThreadRef(activeThread.environmentId, activeThread.id) : null),
@@ -1100,6 +1108,7 @@ export default function ChatView(props: ChatViewProps) {
           await navigate({
             to: "/draft/$draftId",
             params: buildDraftThreadRouteParams(storedDraftSession.draftId),
+            search: preserveRightPanelSearchForDraftNavigation,
           });
         }
         return storedDraftSession.threadId;
@@ -1134,6 +1143,7 @@ export default function ChatView(props: ChatViewProps) {
       await navigate({
         to: "/draft/$draftId",
         params: buildDraftThreadRouteParams(nextDraftId),
+        search: preserveRightPanelSearchForDraftNavigation,
       });
       return nextThreadId;
     },
@@ -1144,6 +1154,7 @@ export default function ChatView(props: ChatViewProps) {
       getDraftSessionByLogicalProjectKey,
       isServerThread,
       navigate,
+      preserveRightPanelSearchForDraftNavigation,
       projectGroupingSettings,
       routeKind,
       setDraftThreadContext,
@@ -1648,7 +1659,6 @@ export default function ChatView(props: ChatViewProps) {
         : // Spread only fires for the few messages that actually changed;
           // unchanged ones early-return their original reference.
           // In-place mutation would break React's immutable state contract.
-          // oxlint-disable-next-line no-map-spread
           messages.map((message) => {
             if (
               message.role !== "user" ||

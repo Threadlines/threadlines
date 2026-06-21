@@ -1,8 +1,8 @@
 import {
   type DesktopTaskbarStatusInput,
   type ServerLifecycleWelcomePayload,
-} from "@t3tools/contracts";
-import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime";
+} from "@threadlines/contracts";
+import { scopedProjectKey, scopeProjectRef } from "@threadlines/client-runtime";
 import {
   Outlet,
   createRootRouteWithContext,

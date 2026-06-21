@@ -1,5 +1,5 @@
 import type { FileDiffMetadata } from "@pierre/diffs/react";
-import type { VcsStatusResult } from "@t3tools/contracts";
+import type { VcsStatusResult } from "@threadlines/contracts";
 import { describe, expect, it } from "vitest";
 
 import {

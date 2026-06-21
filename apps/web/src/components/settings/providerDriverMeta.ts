@@ -1,4 +1,4 @@
-import { ClaudeSettings, CodexSettings, ProviderDriverKind } from "@t3tools/contracts";
+import { ClaudeSettings, CodexSettings, ProviderDriverKind } from "@threadlines/contracts";
 import type * as Schema from "effect/Schema";
 import { ClaudeAI, type Icon, OpenAI } from "../Icons";
 

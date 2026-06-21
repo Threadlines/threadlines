@@ -1,5 +1,5 @@
-import { scopedThreadKey } from "@t3tools/client-runtime";
-import type { MessageId, ScopedThreadRef } from "@t3tools/contracts";
+import { scopedThreadKey } from "@threadlines/client-runtime";
+import type { MessageId, ScopedThreadRef } from "@threadlines/contracts";
 import { create } from "zustand";
 
 import type { ChatMessage } from "./types";

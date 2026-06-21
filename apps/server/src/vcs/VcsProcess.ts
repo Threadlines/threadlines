@@ -9,7 +9,7 @@ import {
   VcsProcessExitError,
   VcsProcessSpawnError,
   VcsProcessTimeoutError,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import { ProcessRunner, layer as ProcessRunnerLive } from "../processRunner.ts";
 import * as Match from "effect/Match";
 
@@ -40,7 +40,7 @@ export interface VcsProcessShape {
 }
 
 export class VcsProcess extends Context.Service<VcsProcess, VcsProcessShape>()(
-  "t3/vcs/VcsProcess",
+  "threadlines/vcs/VcsProcess",
 ) {}
 
 const DEFAULT_TIMEOUT_MS = 30_000;

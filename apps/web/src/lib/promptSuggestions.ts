@@ -1,4 +1,4 @@
-import type { OrchestrationThreadActivity, TurnId } from "@t3tools/contracts";
+import type { OrchestrationThreadActivity, TurnId } from "@threadlines/contracts";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : null;

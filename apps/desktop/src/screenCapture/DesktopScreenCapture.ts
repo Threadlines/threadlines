@@ -5,7 +5,7 @@ import type {
   DesktopCapturedScreenshotSource,
   DesktopCaptureScreenshotInput,
   DesktopCaptureScreenshotResult,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -66,7 +66,7 @@ export interface DesktopScreenCaptureShape {
 export class DesktopScreenCapture extends Context.Service<
   DesktopScreenCapture,
   DesktopScreenCaptureShape
->()("t3/desktop/ScreenCapture") {}
+>()("threadlines/desktop/ScreenCapture") {}
 
 function screenshotName(capturedAt: string): string {
   const compactTimestamp = capturedAt.replace(/\D/g, "").slice(0, 14);

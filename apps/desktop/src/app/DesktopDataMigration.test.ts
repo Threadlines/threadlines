@@ -39,16 +39,16 @@ const runMigration = (homeDirectory: string, env: Record<string, string | undefi
   );
 
 describe("DesktopDataMigration", () => {
-  it.effect("copies legacy .t3 data into the default .badcode directory", () =>
+  it.effect("copies legacy .badcode data into the default .threadlines directory", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const homeDirectory = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "badcode-data-migration-",
+        prefix: "threadlines-legacy-data-migration-",
       });
       const legacyThreadPath = path.join(
         homeDirectory,
-        ".t3",
+        ".badcode",
         "userdata",
         "threads",
         "thread.json",
@@ -62,7 +62,7 @@ describe("DesktopDataMigration", () => {
       assert.equal(status, "migrated");
       assert.equal(
         yield* fileSystem.readFileString(
-          path.join(homeDirectory, ".badcode", "userdata", "threads", "thread.json"),
+          path.join(homeDirectory, ".threadlines", "userdata", "threads", "thread.json"),
         ),
         "legacy-thread",
       );
@@ -70,15 +70,14 @@ describe("DesktopDataMigration", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("uses an empty .badcode directory as a safe migration target", () =>
+  it.effect("falls back to legacy .t3 data when .badcode is missing", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const homeDirectory = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "badcode-empty-target-migration-",
+        prefix: "threadlines-t3-data-migration-",
       });
 
-      yield* fileSystem.makeDirectory(path.join(homeDirectory, ".badcode"), { recursive: true });
       yield* fileSystem.makeDirectory(path.join(homeDirectory, ".t3", "userdata"), {
         recursive: true,
       });
@@ -92,42 +91,73 @@ describe("DesktopDataMigration", () => {
       assert.equal(status, "migrated");
       assert.equal(
         yield* fileSystem.readFileString(
-          path.join(homeDirectory, ".badcode", "userdata", "settings.json"),
+          path.join(homeDirectory, ".threadlines", "userdata", "settings.json"),
         ),
         "legacy-settings",
       );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("does not overwrite an existing .badcode directory", () =>
+  it.effect("uses an empty .threadlines directory as a safe migration target", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const homeDirectory = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "badcode-existing-target-migration-",
+        prefix: "threadlines-empty-target-migration-",
       });
 
-      yield* fileSystem.makeDirectory(path.join(homeDirectory, ".t3", "userdata"), {
+      yield* fileSystem.makeDirectory(path.join(homeDirectory, ".threadlines"), {
         recursive: true,
       });
-      yield* fileSystem.writeFileString(
-        path.join(homeDirectory, ".t3", "userdata", "settings.json"),
-        "legacy-settings",
-      );
       yield* fileSystem.makeDirectory(path.join(homeDirectory, ".badcode", "userdata"), {
         recursive: true,
       });
       yield* fileSystem.writeFileString(
         path.join(homeDirectory, ".badcode", "userdata", "settings.json"),
+        "legacy-settings",
+      );
+
+      const status = yield* runMigration(homeDirectory);
+
+      assert.equal(status, "migrated");
+      assert.equal(
+        yield* fileSystem.readFileString(
+          path.join(homeDirectory, ".threadlines", "userdata", "settings.json"),
+        ),
+        "legacy-settings",
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("does not overwrite an existing .threadlines directory", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const homeDirectory = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-existing-target-migration-",
+      });
+
+      yield* fileSystem.makeDirectory(path.join(homeDirectory, ".badcode", "userdata"), {
+        recursive: true,
+      });
+      yield* fileSystem.writeFileString(
+        path.join(homeDirectory, ".badcode", "userdata", "settings.json"),
+        "legacy-settings",
+      );
+      yield* fileSystem.makeDirectory(path.join(homeDirectory, ".threadlines", "userdata"), {
+        recursive: true,
+      });
+      yield* fileSystem.writeFileString(
+        path.join(homeDirectory, ".threadlines", "userdata", "settings.json"),
         "current-settings",
       );
 
       const status = yield* runMigration(homeDirectory);
 
-      assert.equal(status, "skipped-existing-badcode-dir");
+      assert.equal(status, "skipped-existing-threadlines-dir");
       assert.equal(
         yield* fileSystem.readFileString(
-          path.join(homeDirectory, ".badcode", "userdata", "settings.json"),
+          path.join(homeDirectory, ".threadlines", "userdata", "settings.json"),
         ),
         "current-settings",
       );
@@ -139,23 +169,23 @@ describe("DesktopDataMigration", () => {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const homeDirectory = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "badcode-custom-home-migration-",
+        prefix: "threadlines-custom-home-migration-",
       });
 
-      yield* fileSystem.makeDirectory(path.join(homeDirectory, ".t3", "userdata"), {
+      yield* fileSystem.makeDirectory(path.join(homeDirectory, ".badcode", "userdata"), {
         recursive: true,
       });
       yield* fileSystem.writeFileString(
-        path.join(homeDirectory, ".t3", "userdata", "settings.json"),
+        path.join(homeDirectory, ".badcode", "userdata", "settings.json"),
         "legacy-settings",
       );
 
       const status = yield* runMigration(homeDirectory, {
-        BADCODE_HOME: path.join(homeDirectory, "custom-badcode-home"),
+        BADCODE_HOME: path.join(homeDirectory, "custom-compat-home"),
       });
 
       assert.equal(status, "skipped-custom-base-dir");
-      assert.isFalse(yield* fileSystem.exists(path.join(homeDirectory, ".badcode")));
+      assert.isFalse(yield* fileSystem.exists(path.join(homeDirectory, ".threadlines")));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });

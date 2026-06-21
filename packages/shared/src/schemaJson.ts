@@ -1,3 +1,4 @@
+// @effect-diagnostics preferSchemaOverJson:off
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";

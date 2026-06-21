@@ -5,8 +5,8 @@ import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import { describe, expect } from "vitest";
 
-import { ProviderInstanceId } from "@t3tools/contracts";
-import { createModelSelection } from "@t3tools/shared/model";
+import { ProviderInstanceId } from "@threadlines/contracts";
+import { createModelSelection } from "@threadlines/shared/model";
 
 import type { ProviderInstance } from "../provider/ProviderDriver.ts";
 import type { ProviderInstanceRegistryShape } from "../provider/Services/ProviderInstanceRegistry.ts";

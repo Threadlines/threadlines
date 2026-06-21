@@ -5,7 +5,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
-import { VcsDriverKind, type VcsDriverKind as VcsDriverKindType } from "@t3tools/contracts";
+import { VcsDriverKind, type VcsDriverKind as VcsDriverKindType } from "@threadlines/contracts";
 
 const ProjectVcsConfig = Schema.Struct({
   vcs: Schema.optional(
@@ -38,8 +38,10 @@ export interface VcsProjectConfigShape {
 }
 
 export class VcsProjectConfig extends Context.Service<VcsProjectConfig, VcsProjectConfigShape>()(
-  "t3/vcs/VcsProjectConfig",
+  "threadlines/vcs/VcsProjectConfig",
 ) {}
+
+const PROJECT_VCS_CONFIG_DIR_NAMES = [".threadlines", ".t3code"] as const;
 
 function configuredKind(config: ProjectVcsConfigFile): VcsDriverKindType | "auto" {
   return config.vcs?.kind ?? config.vcsKind ?? "auto";
@@ -61,9 +63,11 @@ export const make = Effect.fn("makeVcsProjectConfig")(function* () {
   const findConfigPath = Effect.fn("VcsProjectConfig.findConfigPath")(function* (cwd: string) {
     let current = cwd;
     while (true) {
-      const candidate = path.join(current, ".t3code", "vcs.json");
-      if (yield* fileSystem.exists(candidate).pipe(Effect.orElseSucceed(() => false))) {
-        return candidate;
+      for (const directoryName of PROJECT_VCS_CONFIG_DIR_NAMES) {
+        const candidate = path.join(current, directoryName, "vcs.json");
+        if (yield* fileSystem.exists(candidate).pipe(Effect.orElseSucceed(() => false))) {
+          return candidate;
+        }
       }
 
       const parent = path.dirname(current);

@@ -1,26 +1,26 @@
-import type { ProviderDriverKind } from "@t3tools/contracts";
+import type { ProviderDriverKind } from "@threadlines/contracts";
 
 export const PROVIDER_AUTH_RECONNECT_COMMANDS = {
   claudeAgent: "claude auth login",
   codex: "codex login",
 } as const;
 
-const AUTH_ERROR_SNIPPETS = [
-  "401 invalid authentication",
-  "401 unauthorized",
-  "access token expired",
-  "authentication credentials",
-  "expired credential",
-  "failed to authenticate",
-  "invalid api key",
-  "invalid authentication",
-  "invalid authorization",
-  "missing api key",
-  "not authenticated",
-  "not logged in",
-  "requires authentication",
-  "requires openai auth",
-  "unauthenticated",
+const AUTH_ERROR_PATTERNS = [
+  /\b401\s+invalid authentication\b/u,
+  /\b401\s+unauthorized\b/u,
+  /\baccess token expired\b/u,
+  /\bauthentication credentials\b/u,
+  /\bexpired credential\b/u,
+  /\bfailed to authenticate\b/u,
+  /\binvalid api key\b/u,
+  /\binvalid authentication\b/u,
+  /\binvalid authorization\b/u,
+  /\bmissing api key\b/u,
+  /\bnot authenticated\b/u,
+  /\bnot logged in\b/u,
+  /\brequires authentication\b/u,
+  /\brequires openai auth\b/u,
+  /^\s*(error:\s*)?unauthenticated[.!]?\s*$/u,
 ] as const;
 
 export function providerAuthReconnectCommand(provider: ProviderDriverKind): string | undefined {
@@ -41,7 +41,7 @@ export function isProviderAuthErrorMessage(message: string | null | undefined): 
   }
 
   const normalized = trimmed.toLowerCase();
-  return AUTH_ERROR_SNIPPETS.some((snippet) => normalized.includes(snippet));
+  return AUTH_ERROR_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
 export function addProviderAuthHint(provider: ProviderDriverKind, message: string): string {

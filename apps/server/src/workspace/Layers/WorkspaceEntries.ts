@@ -16,14 +16,14 @@ import {
   type FilesystemBrowseEntry,
   type FilesystemBrowseInput,
   type ProjectEntry,
-} from "@t3tools/contracts";
-import { isExplicitRelativePath, isWindowsAbsolutePath } from "@t3tools/shared/path";
+} from "@threadlines/contracts";
+import { isExplicitRelativePath, isWindowsAbsolutePath } from "@threadlines/shared/path";
 import {
   insertRankedSearchResult,
   normalizeSearchQuery,
   scoreQueryMatch,
   type RankedSearchResult,
-} from "@t3tools/shared/searchRanking";
+} from "@threadlines/shared/searchRanking";
 
 import { VcsDriverRegistry } from "../../vcs/VcsDriverRegistry.ts";
 import {

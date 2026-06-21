@@ -9,7 +9,7 @@ import type {
   SourceControlRepositoryCloneUrls,
   SourceControlRepositoryInfo,
   SourceControlRepositoryVisibility,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 
 export interface SourceControlProviderContext {
   readonly provider: SourceControlProviderInfo;
@@ -104,4 +104,4 @@ export interface SourceControlProviderShape {
 export class SourceControlProvider extends Context.Service<
   SourceControlProvider,
   SourceControlProviderShape
->()("t3/source-control/SourceControlProvider") {}
+>()("threadlines/source-control/SourceControlProvider") {}

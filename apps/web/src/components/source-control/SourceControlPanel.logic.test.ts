@@ -11,7 +11,7 @@ import {
   normalizeCommitGraphRefName,
   resolveSourceControlPrimaryAction,
 } from "./SourceControlPanel.logic";
-import type { VcsStatusResult } from "@t3tools/contracts";
+import type { VcsStatusResult } from "@threadlines/contracts";
 
 function status(overrides: Partial<VcsStatusResult> = {}): VcsStatusResult {
   return {

@@ -20,7 +20,7 @@ import type {
   ClaudeSettings,
   ServerProviderAccountUsage,
   ServerProviderUsageWindow,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import * as NodeOS from "node:os";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";

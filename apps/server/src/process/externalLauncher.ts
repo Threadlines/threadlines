@@ -11,8 +11,8 @@ import {
   ExternalLauncherError,
   type EditorId,
   type LaunchEditorInput,
-} from "@t3tools/contracts";
-import { isCommandAvailable, type CommandAvailabilityOptions } from "@t3tools/shared/shell";
+} from "@threadlines/contracts";
+import { isCommandAvailable, type CommandAvailabilityOptions } from "@threadlines/shared/shell";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Encoding from "effect/Encoding";
@@ -28,7 +28,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 export { ExternalLauncherError };
 export type { LaunchEditorInput };
-export { isCommandAvailable } from "@t3tools/shared/shell";
+export { isCommandAvailable } from "@threadlines/shared/shell";
 
 interface EditorLaunch {
   readonly command: string;
@@ -343,7 +343,7 @@ export interface ExternalLauncherShape {
  * ExternalLauncher - Service tag for browser/editor launch operations.
  */
 export class ExternalLauncher extends Context.Service<ExternalLauncher, ExternalLauncherShape>()(
-  "t3/process/ExternalLauncher",
+  "threadlines/process/ExternalLauncher",
 ) {}
 
 // ==============================

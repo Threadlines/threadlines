@@ -1,4 +1,4 @@
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId } from "@threadlines/contracts";
 import { describe, expect, it } from "vitest";
 
 import { shouldShowOpenInPicker } from "./ChatHeader";

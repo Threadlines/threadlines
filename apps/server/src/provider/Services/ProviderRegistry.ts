@@ -14,7 +14,7 @@ import type {
   ServerProviderRateLimitResetCreditConsumeResult,
   ServerProviderRateLimitResetCreditError,
   ServerProviderUpdateState,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
@@ -91,5 +91,5 @@ export interface ProviderRegistryShape {
 }
 
 export class ProviderRegistry extends Context.Service<ProviderRegistry, ProviderRegistryShape>()(
-  "t3/provider/Services/ProviderRegistry",
+  "threadlines/provider/Services/ProviderRegistry",
 ) {}

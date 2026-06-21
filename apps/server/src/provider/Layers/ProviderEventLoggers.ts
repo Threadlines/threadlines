@@ -57,7 +57,7 @@ export interface ProviderEventLoggersShape {
 export class ProviderEventLoggers extends Context.Service<
   ProviderEventLoggers,
   ProviderEventLoggersShape
->()("t3/provider/ProviderEventLoggers") {}
+>()("threadlines/provider/ProviderEventLoggers") {}
 
 /**
  * Constant value used by tests / boot layers that want to opt out of native

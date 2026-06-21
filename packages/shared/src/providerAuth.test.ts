@@ -1,4 +1,4 @@
-import { ProviderDriverKind } from "@t3tools/contracts";
+import { ProviderDriverKind } from "@threadlines/contracts";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -16,6 +16,14 @@ describe("provider auth helpers", () => {
     ).toBe(true);
     expect(isProviderAuthErrorMessage("Access token expired")).toBe(true);
     expect(isProviderAuthErrorMessage("Sandbox setup failed")).toBe(false);
+  });
+
+  it("does not treat explanatory unauthenticated prose as an auth failure", () => {
+    expect(
+      isProviderAuthErrorMessage(
+        "The UI would repeatedly appear unauthenticated even though the primary login was fresh.",
+      ),
+    ).toBe(false);
   });
 
   it("exposes the provider reconnect command", () => {

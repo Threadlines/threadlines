@@ -5,7 +5,7 @@ import * as Option from "effect/Option";
 import * as Random from "effect/Random";
 import * as Ref from "effect/Ref";
 
-import * as NetService from "@t3tools/shared/Net";
+import * as NetService from "@threadlines/shared/Net";
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronDialog from "../electron/ElectronDialog.ts";
 import * as ElectronProtocol from "../electron/ElectronProtocol.ts";
@@ -47,7 +47,7 @@ class DesktopDevelopmentBackendPortRequiredError extends Data.TaggedError(
   "DesktopDevelopmentBackendPortRequiredError",
 )<{}> {
   override get message() {
-    return "T3CODE_PORT is required in desktop development.";
+    return "THREADLINES_PORT is required in desktop development.";
   }
 }
 

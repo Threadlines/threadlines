@@ -1,4 +1,4 @@
-import { EnvironmentId, type VcsStatusResult } from "@t3tools/contracts";
+import { EnvironmentId, type VcsStatusResult } from "@threadlines/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { WsRpcClient } from "../rpc/wsRpcClient";

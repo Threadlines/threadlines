@@ -4,7 +4,7 @@ import noInlineSchemaCompile from "./rules/no-inline-schema-compile.ts";
 
 export default definePlugin({
   meta: {
-    name: "t3code",
+    name: "threadlines",
   },
   rules: {
     "no-inline-schema-compile": noInlineSchemaCompile,

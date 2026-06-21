@@ -14,7 +14,7 @@ import {
   ProviderInstanceId,
   ServerSettings,
   type ServerSettings as ServerSettingsContract,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 
 import {
   isCodexAppsDirectoryAccessDeniedError,

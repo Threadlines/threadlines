@@ -3,7 +3,7 @@ import {
   ProviderDriverKind,
   TextGenerationError,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { describe, expect, it } from "vitest";

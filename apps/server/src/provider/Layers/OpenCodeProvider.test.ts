@@ -7,7 +7,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { beforeEach } from "vitest";
 
-import { OpenCodeSettings } from "@t3tools/contracts";
+import { OpenCodeSettings } from "@threadlines/contracts";
 import { ServerConfig } from "../../config.ts";
 import {
   OpenCodeRuntime,

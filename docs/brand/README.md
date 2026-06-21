@@ -50,10 +50,9 @@ its rendered copy).
 
 ## Where the assets are deployed
 
-- `assets/{dev,nightly,prod}/badcode-*` — channel masters consumed by
+- `assets/{dev,nightly,prod}/threadlines-*` — channel masters consumed by
   `scripts/lib/brand-assets.ts`, `scripts/build-desktop-artifact.ts`, and
-  `scripts/apply-web-brand-assets.ts` (filenames keep the `badcode-` prefix until the identity
-  rename phase). All three channels currently share the same artwork.
+  `scripts/apply-web-brand-assets.ts`. All three channels currently share the same artwork.
 - `apps/desktop/resources/icon.{ico,icns,png}` — desktop dev-runtime icons. The macOS
   `icon.png` and `icon.icns` are padded for Dock display; keep the raw 1024px channel masters in
   `assets/{dev,nightly,prod}/`.

@@ -1,4 +1,4 @@
-import type { ServerAuthDescriptor } from "@t3tools/contracts";
+import type { ServerAuthDescriptor } from "@threadlines/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 
@@ -7,5 +7,5 @@ export interface ServerAuthPolicyShape {
 }
 
 export class ServerAuthPolicy extends Context.Service<ServerAuthPolicy, ServerAuthPolicyShape>()(
-  "t3/auth/Services/ServerAuthPolicy",
+  "threadlines/auth/Services/ServerAuthPolicy",
 ) {}

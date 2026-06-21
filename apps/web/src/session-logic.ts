@@ -11,12 +11,12 @@ import {
   type UserInputQuestion,
   type ThreadId,
   type TurnId,
-} from "@t3tools/contracts";
-import { countUnifiedDiffStats, type FileChangeStat } from "@t3tools/shared/diffStats";
+} from "@threadlines/contracts";
+import { countUnifiedDiffStats, type FileChangeStat } from "@threadlines/shared/diffStats";
 import {
   isProviderAuthErrorMessage,
   providerAuthReconnectCommand,
-} from "@t3tools/shared/providerAuth";
+} from "@threadlines/shared/providerAuth";
 import {
   codexMcpLoginCommand,
   extensionMcpOAuthActionIntent,

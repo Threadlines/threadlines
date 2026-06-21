@@ -4,7 +4,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ModelCapabilities,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 
 import {
   buildProviderOptionSelectionsFromDescriptors,

@@ -4,6 +4,7 @@ import {
   closeRightPanelSearchParams,
   isSourceControlPanelOpen,
   parseDiffRouteSearch,
+  preserveRightPanelSearchParamsForNavigation,
   stripDiffSearchParams,
   stripRightPanelSearchParams,
 } from "./diffRouteSearch";
@@ -166,6 +167,58 @@ describe("closeRightPanelSearchParams", () => {
         diffFilePath: "src/app.ts",
         keep: "yes",
       }),
+    ).toEqual({
+      keep: "yes",
+      diff: undefined,
+      diffMode: undefined,
+      sourceControl: "0",
+      sourceControlReturn: undefined,
+      diffTurnId: undefined,
+      diffFilePath: undefined,
+    });
+  });
+});
+
+describe("preserveRightPanelSearchParamsForNavigation", () => {
+  it("keeps source control explicitly open while clearing diff params", () => {
+    expect(
+      preserveRightPanelSearchParamsForNavigation(
+        {
+          diff: "1",
+          diffMode: "workingTree",
+          sourceControl: "0",
+          sourceControlReturn: "1",
+          diffTurnId: "turn-1",
+          diffFilePath: "src/app.ts",
+          keep: "yes",
+        },
+        { sourceControlOpen: true },
+      ),
+    ).toEqual({
+      keep: "yes",
+      diff: undefined,
+      diffMode: undefined,
+      sourceControl: "1",
+      sourceControlReturn: undefined,
+      diffTurnId: undefined,
+      diffFilePath: undefined,
+    });
+  });
+
+  it("keeps source control explicitly closed while clearing diff params", () => {
+    expect(
+      preserveRightPanelSearchParamsForNavigation(
+        {
+          diff: "1",
+          diffMode: "workingTree",
+          sourceControl: "1",
+          sourceControlReturn: "1",
+          diffTurnId: "turn-1",
+          diffFilePath: "src/app.ts",
+          keep: "yes",
+        },
+        { sourceControlOpen: false },
+      ),
     ).toEqual({
       keep: "yes",
       diff: undefined,

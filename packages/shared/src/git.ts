@@ -5,13 +5,17 @@ import type {
   VcsStatusRemoteResult,
   VcsStatusResult,
   VcsStatusStreamEvent,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Random from "effect/Random";
 import { detectSourceControlProviderFromRemoteUrl } from "./sourceControl.ts";
 
-export const WORKTREE_BRANCH_PREFIX = "t3code";
-const TEMP_WORKTREE_BRANCH_PATTERN = new RegExp(`^${WORKTREE_BRANCH_PREFIX}\\/[0-9a-f]{8}$`);
+export const WORKTREE_BRANCH_PREFIX = "threadlines";
+const LEGACY_WORKTREE_BRANCH_PREFIXES = ["t3code"] as const;
+const TEMP_WORKTREE_BRANCH_PATTERNS = [
+  WORKTREE_BRANCH_PREFIX,
+  ...LEGACY_WORKTREE_BRANCH_PREFIXES,
+].map((prefix) => new RegExp(`^${prefix}\\/[0-9a-f]{8}$`));
 
 /**
  * Sanitize an arbitrary string into a valid, lowercase git refName fragment.
@@ -92,7 +96,8 @@ export function buildTemporaryWorktreeBranchName(): string {
 }
 
 export function isTemporaryWorktreeBranch(refName: string): boolean {
-  return TEMP_WORKTREE_BRANCH_PATTERN.test(refName.trim().toLowerCase());
+  const normalizedRefName = refName.trim().toLowerCase();
+  return TEMP_WORKTREE_BRANCH_PATTERNS.some((pattern) => pattern.test(normalizedRefName));
 }
 
 /**

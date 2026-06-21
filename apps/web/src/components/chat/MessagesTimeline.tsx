@@ -5,7 +5,7 @@ import {
   PROVIDER_DISPLAY_NAMES,
   type ServerProviderSkill,
   type TurnId,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import {
   createContext,
   memo,
@@ -19,7 +19,7 @@ import {
   type ReactNode,
 } from "react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
-import { isProviderAuthErrorMessage } from "@t3tools/shared/providerAuth";
+import { isProviderAuthErrorMessage } from "@threadlines/shared/providerAuth";
 import {
   deriveTimelineEntries,
   formatElapsed,
@@ -74,7 +74,7 @@ import {
 } from "~/lib/terminalContext";
 import { cn } from "~/lib/utils";
 import { useUiStateStore } from "~/uiStateStore";
-import { type TimestampFormat } from "@t3tools/contracts/settings";
+import { type TimestampFormat } from "@threadlines/contracts/settings";
 import { formatTimestamp } from "../../timestampFormat";
 import { useSettings } from "../../hooks/useSettings";
 

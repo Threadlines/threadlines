@@ -61,7 +61,7 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
   });
 
   describe("createDevRunnerEnv", () => {
-    it.effect("defaults Threadlines home to ~/.badcode when not provided", () =>
+    it.effect("defaults Threadlines home to ~/.threadlines when not provided", () =>
       Effect.gen(function* () {
         const path = yield* Path.Path;
         const env = yield* createDevRunnerEnv({
@@ -78,9 +78,9 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
           devUrl: undefined,
         });
 
-        assert.equal(env.THREADLINES_HOME, path.resolve(NodeOS.homedir(), ".badcode"));
-        assert.equal(env.BADCODE_HOME, path.resolve(NodeOS.homedir(), ".badcode"));
-        assert.equal(env.T3CODE_HOME, path.resolve(NodeOS.homedir(), ".badcode"));
+        assert.equal(env.THREADLINES_HOME, path.resolve(NodeOS.homedir(), ".threadlines"));
+        assert.equal(env.BADCODE_HOME, path.resolve(NodeOS.homedir(), ".threadlines"));
+        assert.equal(env.T3CODE_HOME, path.resolve(NodeOS.homedir(), ".threadlines"));
       }),
     );
 

@@ -62,7 +62,7 @@ import {
   type ProviderInstructionWriteResult,
   type ServerProvider,
   type ServerSettings,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 
 import { makeClaudeEnvironment } from "./Drivers/ClaudeHome.ts";
 import { materializeCodexShadowHome, resolveCodexHomeLayout } from "./Drivers/CodexHomeLayout.ts";

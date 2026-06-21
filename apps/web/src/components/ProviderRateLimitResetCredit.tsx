@@ -6,7 +6,7 @@ import {
   type ProviderInstanceId,
   type ServerProvider,
   type ServerProviderRateLimitResetCreditOutcome,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 
 import { ensureLocalApi } from "../localApi";
 import { randomUUID } from "../lib/utils";

@@ -1,5 +1,5 @@
-import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime";
-import type { AutoArchiveInactiveThreadsDays } from "@t3tools/contracts/settings";
+import { scopedThreadKey, scopeThreadRef } from "@threadlines/client-runtime";
+import type { AutoArchiveInactiveThreadsDays } from "@threadlines/contracts/settings";
 
 import type { Project, SidebarThreadSummary } from "./types";
 

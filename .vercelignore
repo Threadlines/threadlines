@@ -1,12 +1,15 @@
 node_modules
 apps/*/node_modules
 packages/*/node_modules
-oxlint-plugin-t3code/node_modules
+oxlint-plugin-threadlines/node_modules
 scripts/node_modules
+.pnpm-store
 
 .git
-.bun
 .turbo
+.vite-plus
+apps/*/.vite-plus
+packages/*/.vite-plus
 .tanstack
 .vercel
 .vitest-*
@@ -17,7 +20,7 @@ scripts/node_modules
 apps/*/dist
 apps/*/dist-electron
 packages/*/dist
-oxlint-plugin-t3code/dist
+oxlint-plugin-threadlines/dist
 scripts/dist
 build
 release

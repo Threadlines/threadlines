@@ -8,7 +8,7 @@ import type {
   RelayPeerLeftEvent,
   RelayPeerSummary,
   RelayReadyEvent,
-} from "@t3tools/contracts/relay";
+} from "@threadlines/contracts/relay";
 import {
   createJsonResponse,
   isRelayConnectionRole,

@@ -1,13 +1,18 @@
 import { fileURLToPath } from "node:url";
-import { playwright } from "@vitest/browser-playwright";
-import { defineConfig, mergeConfig } from "vitest/config";
+import { playwright } from "vite-plus/test/browser-playwright";
+import "vite-plus/test/config";
+import { defineConfig, mergeConfig } from "vite-plus";
 
 import viteConfig from "./vite.config";
 
 const srcPath = fileURLToPath(new URL("./src", import.meta.url));
+const browserViteConfig = {
+  ...viteConfig,
+  test: undefined,
+};
 
 export default mergeConfig(
-  viteConfig,
+  browserViteConfig,
   defineConfig({
     resolve: {
       alias: {
@@ -24,7 +29,12 @@ export default mergeConfig(
       browser: {
         enabled: true,
         provider: playwright(),
-        instances: [{ browser: "chromium" }],
+        instances: [
+          {
+            browser: "chromium",
+            viewport: { width: 1_600, height: 1_300 },
+          },
+        ],
         headless: true,
         api: {
           strictPort: false,

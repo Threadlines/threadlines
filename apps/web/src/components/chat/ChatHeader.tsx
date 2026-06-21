@@ -3,7 +3,7 @@ import {
   type EditorId,
   type ProjectScript,
   type ResolvedKeybindingsConfig,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import { memo } from "react";
 import { TerminalSquareIcon } from "lucide-react";
 import { Badge } from "../ui/badge";

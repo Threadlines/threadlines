@@ -3,7 +3,7 @@ import {
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetTurnDiffInput,
   ThreadId,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import { queryOptions } from "@tanstack/react-query";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";

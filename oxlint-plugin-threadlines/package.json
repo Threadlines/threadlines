@@ -1,10 +1,10 @@
 {
-  "name": "@t3tools/oxlint-plugin-t3code",
+  "name": "@threadlines/oxlint-plugin-threadlines",
   "private": true,
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --testTimeout=30000"
+    "test": "vp test run --testTimeout=30000"
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",
@@ -12,10 +12,9 @@
     "effect": "catalog:"
   },
   "devDependencies": {
-    "@effect/language-service": "catalog:",
     "@effect/vitest": "catalog:",
-    "@types/bun": "catalog:",
+    "oxlint": "^1.67.0",
     "typescript": "catalog:",
-    "vitest": "catalog:"
+    "vite-plus": "catalog:"
   }
 }

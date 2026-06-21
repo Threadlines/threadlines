@@ -1,5 +1,5 @@
 {
-  "name": "@t3tools/contracts",
+  "name": "@threadlines/contracts",
   "version": "0.0.1",
   "private": true,
   "files": [
@@ -21,16 +21,16 @@
     }
   },
   "scripts": {
+    "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vp test run"
   },
   "dependencies": {
     "effect": "catalog:"
   },
   "devDependencies": {
-    "@effect/language-service": "catalog:",
     "@effect/vitest": "catalog:",
     "typescript": "catalog:",
-    "vitest": "catalog:"
+    "vite-plus": "catalog:"
   }
 }

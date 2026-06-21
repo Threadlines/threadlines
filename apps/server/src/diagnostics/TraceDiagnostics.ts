@@ -7,7 +7,7 @@ import type {
   ServerTraceDiagnosticsSpanOccurrence,
   ServerTraceDiagnosticsSpanSummary,
   ServerTraceDiagnosticsTraceSummary,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -47,7 +47,7 @@ export interface TraceDiagnosticsShape {
 }
 
 export class TraceDiagnostics extends Context.Service<TraceDiagnostics, TraceDiagnosticsShape>()(
-  "t3/diagnostics/TraceDiagnostics",
+  "threadlines/diagnostics/TraceDiagnostics",
 ) {}
 
 interface TraceDiagnosticsInput {

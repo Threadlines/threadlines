@@ -22,7 +22,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import {
   DesktopBackendBootstrap,
   type DesktopBackendBootstrap as DesktopBackendBootstrapValue,
-} from "@t3tools/contracts";
+} from "@threadlines/contracts";
 
 import * as DesktopBackendConfiguration from "./DesktopBackendConfiguration.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
@@ -117,7 +117,7 @@ export interface DesktopBackendManagerShape {
 export class DesktopBackendManager extends Context.Service<
   DesktopBackendManager,
   DesktopBackendManagerShape
->()("t3/desktop/BackendManager") {}
+>()("threadlines/desktop/BackendManager") {}
 
 const { logWarning: logBackendManagerWarning, logError: logBackendManagerError } =
   DesktopObservability.makeComponentLogger("desktop-backend-manager");
