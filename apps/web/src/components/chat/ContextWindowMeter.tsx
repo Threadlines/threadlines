@@ -28,6 +28,10 @@ function formatComposerResetCreditDetail(detail: string): string {
   return detail === "usable for 30 days after grant" ? "30-day grant window" : detail;
 }
 
+function isDomNode(value: unknown): value is Node {
+  return typeof value === "object" && value !== null && "nodeType" in value;
+}
+
 const contextWindowActionButtonClassName =
   "h-5 shrink-0 cursor-pointer rounded-sm border border-border/70 px-1.5 font-medium text-[10px] text-foreground leading-none transition-colors hover:border-border hover:bg-muted hover:text-foreground focus-visible:border-ring focus-visible:bg-muted focus-visible:outline-none disabled:pointer-events-none disabled:cursor-default disabled:opacity-55";
 
@@ -121,9 +125,16 @@ export function ContextWindowMeter(props: {
     if (!isOpen) return;
 
     const handleDocumentInteraction = (event: Event) => {
-      const target = event.target;
-      if (!(target instanceof Node)) return;
-      if (triggerRef.current?.contains(target) || popupRef.current?.contains(target)) {
+      const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+      const targetNodes = path.filter(isDomNode);
+      if (targetNodes.length === 0 && isDomNode(event.target)) {
+        targetNodes.push(event.target);
+      }
+      if (
+        targetNodes.some(
+          (target) => triggerRef.current?.contains(target) || popupRef.current?.contains(target),
+        )
+      ) {
         return;
       }
       onOpenChange(false);

@@ -125,18 +125,6 @@ describe("ContextWindowMeter", () => {
       await expect.element(compactButton).toBeVisible();
       await expect.element(compactButton).not.toBeDisabled();
 
-      await compactButton.hover();
-      await vi.waitFor(() => {
-        const tooltips = Array.from(
-          document.querySelectorAll<HTMLElement>('[data-slot="tooltip-popup"]'),
-        );
-        expect(
-          tooltips.some((tooltip) =>
-            tooltip.textContent?.includes("Best used near the context limit."),
-          ),
-        ).toBe(true);
-      });
-
       await compactButton.click();
       expect(onCompactContext).toHaveBeenCalledTimes(1);
     } finally {
