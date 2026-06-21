@@ -1,5 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, it, assert } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -1475,6 +1476,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             models: [],
           } satisfies ServerProvider;
           const changes = yield* PubSub.unbounded<ServerProvider>();
+          const streamSubscribed = yield* Deferred.make<void>();
           const instance = {
             instanceId: cursorInstanceId,
             driverKind: cursorDriver,
@@ -1491,7 +1493,12 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
               }),
               getSnapshot: Effect.succeed(initialProvider),
               refresh: Effect.succeed(refreshedProvider),
-              streamChanges: Stream.fromPubSub(changes),
+              streamChanges: Stream.unwrap(
+                PubSub.subscribe(changes).pipe(
+                  Effect.tap(() => Deferred.succeed(streamSubscribed, undefined)),
+                  Effect.map(Stream.fromSubscription),
+                ),
+              ),
             },
             adapter: {} as ProviderInstance["adapter"],
             textGeneration: {} as ProviderInstance["textGeneration"],
@@ -1531,6 +1538,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             assert.deepStrictEqual((yield* registry.getProviders)[0]?.models, [
               ...initialProvider.models,
             ]);
+            yield* Deferred.await(streamSubscribed);
             yield* Effect.yieldNow;
             yield* PubSub.publish(changes, refreshedProvider);
 
