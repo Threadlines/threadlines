@@ -66,6 +66,8 @@ jobs:
         with:
           node-version-file: package.json
           cache: true
+          version: "0.1.24"
+          run-install: false
 
       - name: Install dependencies
         run: vp install --frozen-lockfile
@@ -246,16 +248,16 @@ jobs:
           echo "macos_matrix=$macos_matrix" >> "$GITHUB_OUTPUT"
 
       - name: Format check
-        run: vp fmt --check
+        run: vp exec vp fmt --check
 
       - name: Lint
-        run: vp lint --report-unused-disable-directives
+        run: vp exec vp lint --report-unused-disable-directives
 
       - name: Typecheck
-        run: vpr typecheck
+        run: vp exec vp run -r --concurrency-limit 2 typecheck
 
       - name: Test
-        run: vp run test
+        run: vp exec vp run test
 
   prepare_release:
     name: Prepare draft GitHub Release
@@ -274,6 +276,8 @@ jobs:
         with:
           node-version-file: package.json
           cache: true
+          version: "0.1.24"
+          run-install: false
 
       - name: Install dependencies
         run: vp install --frozen-lockfile
@@ -333,6 +337,8 @@ jobs:
         with:
           node-version-file: package.json
           cache: true
+          version: "0.1.24"
+          run-install: false
 
       - name: Install dependencies
         run: vp install --frozen-lockfile
@@ -345,7 +351,7 @@ jobs:
 
       - name: Build Windows installer
         run: >
-          vp run dist:desktop:artifact --
+          vp exec vp run dist:desktop:artifact --
           --platform win
           --target nsis
           --arch x64
@@ -425,6 +431,8 @@ jobs:
         with:
           node-version-file: package.json
           cache: true
+          version: "0.1.24"
+          run-install: false
 
       - name: Cache desktop build downloads
         uses: actions/cache@v4
@@ -480,7 +488,7 @@ jobs:
           chmod 600 "$apple_api_key_path"
           unset APPLE_API_KEY_CONTENT
 
-          APPLE_API_KEY="$apple_api_key_path" vp run dist:desktop:artifact -- \
+          APPLE_API_KEY="$apple_api_key_path" vp exec vp run dist:desktop:artifact -- \
             --platform mac \
             --target dmg \
             --arch "${{ matrix.arch }}" \
@@ -596,6 +604,8 @@ jobs:
         with:
           node-version-file: package.json
           cache: true
+          version: "0.1.24"
+          run-install: false
 
       - name: Install dependencies
         run: vp install --frozen-lockfile --ignore-scripts

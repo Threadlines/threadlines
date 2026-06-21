@@ -17,6 +17,12 @@ import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const vpBinary = resolve(
+  repoRoot,
+  "node_modules/.bin",
+  process.platform === "win32" ? "vp.cmd" : "vp",
+);
+const vpCommand = existsSync(vpBinary) ? vpBinary : "vp";
 
 const workspaceFiles = [
   "package.json",
@@ -246,7 +252,7 @@ try {
 
   rmSync(resolve(tempRoot, "pnpm-lock.yaml"), { force: true });
 
-  execFileSync("vp", ["install", "--lockfile-only", "--ignore-scripts"], {
+  execFileSync(vpCommand, ["install", "--lockfile-only", "--ignore-scripts"], {
     cwd: tempRoot,
     stdio: "inherit",
   });

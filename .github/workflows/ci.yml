@@ -24,31 +24,35 @@ jobs:
         with:
           node-version-file: package.json
           cache: true
-          run-install: true
+          version: "0.1.24"
+          run-install: false
+
+      - name: Install dependencies
+        run: vp install --frozen-lockfile
 
       - name: Ensure Electron binary is installed
         run: node scripts/ensure-electron-binary.ts
 
       - name: Format
-        run: vp fmt --check
+        run: vp exec vp fmt --check
 
       - name: Lint
-        run: vp lint --report-unused-disable-directives
+        run: vp exec vp lint --report-unused-disable-directives
 
       - name: Typecheck
-        run: vpr typecheck
+        run: vp exec vp run -r --concurrency-limit 2 typecheck
 
       - name: Test
-        run: vp run test
+        run: vp exec vp run test
 
       - name: Install browser test runtime
-        run: vp run --filter @threadlines/web test:browser:install
+        run: vp exec vp run --filter @threadlines/web test:browser:install
 
       - name: Browser test
-        run: vp run --filter @threadlines/web test:browser
+        run: vp exec vp run --filter @threadlines/web test:browser
 
       - name: Build desktop pipeline
-        run: vp run build:desktop
+        run: vp exec vp run build:desktop
 
       - name: Verify preload bundle output
         run: |
@@ -68,7 +72,11 @@ jobs:
         with:
           node-version-file: package.json
           cache: true
-          run-install: true
+          version: "0.1.24"
+          run-install: false
+
+      - name: Install dependencies
+        run: vp install --frozen-lockfile
 
       - name: Exercise release-only workflow steps
         run: node scripts/release-smoke.ts
