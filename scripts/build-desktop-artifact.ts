@@ -112,12 +112,18 @@ class BuildScriptError extends Data.TaggedError("BuildScriptError")<{
   readonly cause?: unknown;
 }> {}
 
-const collectStreamAsString = <E>(stream: Stream.Stream<Uint8Array, E>): Effect.Effect<string, E> =>
+const collectStreamAsString = <E>(
+  stream: Stream.Stream<Uint8Array, E>,
+  replay?: (chunk: string) => void,
+): Effect.Effect<string, E> =>
   stream.pipe(
     Stream.decodeText(),
     Stream.runFold(
       () => "",
-      (acc, chunk) => acc + chunk,
+      (acc, chunk) => {
+        replay?.(chunk);
+        return acc + chunk;
+      },
     ),
   );
 
@@ -138,8 +144,12 @@ const spawnAndCollectOutput = Effect.fn("spawnAndCollectOutput")(function* (
 
   const [stdout, stderr, exitCode] = yield* Effect.all(
     [
-      collectStreamAsString(child.stdout),
-      collectStreamAsString(child.stderr),
+      collectStreamAsString(child.stdout, (chunk) => {
+        process.stdout.write(chunk);
+      }),
+      collectStreamAsString(child.stderr, (chunk) => {
+        process.stderr.write(chunk);
+      }),
       child.exitCode.pipe(Effect.map(Number)),
     ],
     { concurrency: "unbounded" },
@@ -461,20 +471,60 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
   } satisfies ResolvedBuildOptions;
 });
 
-const commandOutputOptions = (verbose: boolean) =>
+const commandOutputOptions = (_verbose: boolean) =>
   ({
-    stdout: verbose ? "inherit" : "ignore",
-    stderr: "inherit",
+    stdout: "pipe",
+    stderr: "pipe",
   }) as const;
+
+const MAX_COMMAND_OUTPUT_CHARS = 20_000;
+
+function formatCommand(command: ChildProcess.Command): string {
+  if (command._tag === "StandardCommand") {
+    return [command.command, ...command.args].join(" ");
+  }
+
+  return "<piped command>";
+}
+
+function formatCommandOutput(label: string, output: string): string | undefined {
+  const trimmed = output.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const omittedChars = trimmed.length - MAX_COMMAND_OUTPUT_CHARS;
+  const visibleOutput =
+    omittedChars > 0
+      ? `[truncated ${omittedChars} chars]\n${trimmed.slice(-MAX_COMMAND_OUTPUT_CHARS)}`
+      : trimmed;
+
+  return `${label}:\n${visibleOutput}`;
+}
 
 const runCommand = Effect.fn("runCommand")(function* (command: ChildProcess.Command) {
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const child = yield* commandSpawner.spawn(command);
-  const exitCode = yield* child.exitCode;
+  const [stdout, stderr, exitCode] = yield* Effect.all(
+    [
+      collectStreamAsString(child.stdout),
+      collectStreamAsString(child.stderr),
+      child.exitCode.pipe(Effect.map(Number)),
+    ],
+    { concurrency: "unbounded" },
+  );
 
   if (exitCode !== 0) {
+    const capturedOutput = [
+      formatCommandOutput("stdout", stdout),
+      formatCommandOutput("stderr", stderr),
+    ]
+      .filter((section) => section !== undefined)
+      .join("\n\n");
+    const suffix = capturedOutput ? `\n\n${capturedOutput}` : "";
+
     return yield* new BuildScriptError({
-      message: `Command exited with non-zero exit code (${exitCode})`,
+      message: `Command exited with non-zero exit code (${exitCode}): ${formatCommand(command)}${suffix}`,
     });
   }
 });
@@ -717,7 +767,13 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   signed: boolean,
   mockUpdates: boolean,
   mockUpdateServerPort: number | undefined,
+  stageResourcesDir?: string,
 ) {
+  const path = yield* Path.Path;
+  const stageResourcePath = (fileName: string) =>
+    stageResourcesDir
+      ? path.join(stageResourcesDir, fileName)
+      : `apps/desktop/resources/${fileName}`;
   const buildConfig: Record<string, unknown> = {
     appId: "com.threadlines.app",
     productName: resolveDesktopProductName(version),
@@ -748,10 +804,10 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     if (signed) {
       macConfig.hardenedRuntime = true;
       macConfig.gatekeeperAssess = true;
-      macConfig.entitlements = "apps/desktop/resources/entitlements.mac.plist";
-      macConfig.entitlementsInherit = "apps/desktop/resources/entitlements.mac.inherit.plist";
+      macConfig.entitlements = stageResourcePath("entitlements.mac.plist");
+      macConfig.entitlementsInherit = stageResourcePath("entitlements.mac.inherit.plist");
       macConfig.notarize = false;
-      buildConfig.afterSign = "apps/desktop/resources/notarize-after-sign.cjs";
+      buildConfig.afterSign = stageResourcePath("notarize-after-sign.cjs");
     } else {
       macConfig.identity = "-";
       macConfig.hardenedRuntime = false;
@@ -996,6 +1052,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       options.signed,
       options.mockUpdates,
       options.mockUpdateServerPort,
+      stageResourcesDir,
     ),
     dependencies: stageDependencies,
     electronVersion,

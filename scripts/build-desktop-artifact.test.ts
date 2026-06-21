@@ -156,6 +156,35 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }),
   );
 
+  it.effect("uses staged absolute resource paths for signed macOS artifact builds", () =>
+    Effect.gen(function* () {
+      const stageResourcesDir = "/tmp/threadlines-stage/apps/desktop/resources";
+      const buildConfig = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "0.0.19",
+        true,
+        false,
+        undefined,
+        stageResourcesDir,
+      );
+      const macConfig = buildConfig.mac as Record<string, unknown>;
+
+      assert.equal(
+        macConfig.entitlements,
+        "/tmp/threadlines-stage/apps/desktop/resources/entitlements.mac.plist",
+      );
+      assert.equal(
+        macConfig.entitlementsInherit,
+        "/tmp/threadlines-stage/apps/desktop/resources/entitlements.mac.inherit.plist",
+      );
+      assert.equal(
+        buildConfig.afterSign,
+        "/tmp/threadlines-stage/apps/desktop/resources/notarize-after-sign.cjs",
+      );
+    }),
+  );
+
   it("uses Threadlines identity in staged desktop package metadata", () => {
     const stagePackageJson = createStagePackageJson({
       appVersion: "0.0.7",
