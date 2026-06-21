@@ -56,7 +56,7 @@ const makeHandle = (env?: Record<string, string>) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const path = yield* Path.Path;
-    const command = ChildProcess.make("bun", ["run", yield* mockPeerPath], {
+    const command = ChildProcess.make(process.execPath, [yield* mockPeerPath], {
       cwd: path.join(import.meta.dirname, ".."),
       shell: process.platform === "win32",
       ...(env ? { env: { ...process.env, ...env } } : {}),

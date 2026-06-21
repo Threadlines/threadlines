@@ -91,7 +91,7 @@ const makeMockAgentWrapper = Effect.fn("makeMockAgentWrapper")(function* (
   });
   const wrapperPath = commandWrapperPath(path, dir);
   // @effect-diagnostics-next-line preferSchemaOverJson:off
-  const bunCommand = JSON.stringify("bun");
+  const nodeCommand = JSON.stringify(process.execPath);
   // @effect-diagnostics-next-line preferSchemaOverJson:off
   const mockAgentPathJson = JSON.stringify(mockAgentPath);
   const envExports = commandWrapperEnv(extraEnv);
@@ -99,11 +99,11 @@ const makeMockAgentWrapper = Effect.fn("makeMockAgentWrapper")(function* (
     ? `@echo off
 setlocal
 ${envExports}
-${batchQuote("bun")} ${batchQuote(mockAgentPath)} %*
+${batchQuote(process.execPath)} ${batchQuote(mockAgentPath)} %*
 `
     : `#!/bin/sh
 ${envExports}
-exec ${bunCommand} ${mockAgentPathJson} "$@"
+exec ${nodeCommand} ${mockAgentPathJson} "$@"
 `;
   yield* fileSystem.writeFileString(wrapperPath, script);
   yield* fileSystem.chmod(wrapperPath, 0o755);
@@ -120,7 +120,7 @@ const makeMockAgentWithAboutWrapper = Effect.fn("makeMockAgentWithAboutWrapper")
   });
   const wrapperPath = commandWrapperPath(path, dir);
   // @effect-diagnostics-next-line preferSchemaOverJson:off
-  const bunCommand = JSON.stringify("bun");
+  const nodeCommand = JSON.stringify(process.execPath);
   // @effect-diagnostics-next-line preferSchemaOverJson:off
   const mockAgentPathJson = JSON.stringify(mockAgentPath);
   const script = isWindows
@@ -130,7 +130,7 @@ if "%~1"=="about" (
   echo User Email          cursor@example.com
   exit /b 0
 )
-${batchQuote("bun")} ${batchQuote(mockAgentPath)} %*
+${batchQuote(process.execPath)} ${batchQuote(mockAgentPath)} %*
 `
     : `#!/bin/sh
 if [ "$1" = "about" ]; then
@@ -138,7 +138,7 @@ if [ "$1" = "about" ]; then
   printf 'User Email          cursor@example.com\\n'
   exit 0
 fi
-exec ${bunCommand} ${mockAgentPathJson} "$@"
+exec ${nodeCommand} ${mockAgentPathJson} "$@"
 `;
   yield* fileSystem.writeFileString(wrapperPath, script);
   yield* fileSystem.chmod(wrapperPath, 0o755);

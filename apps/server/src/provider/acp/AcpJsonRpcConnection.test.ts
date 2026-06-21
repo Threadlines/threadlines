@@ -15,7 +15,7 @@ import type * as EffectAcpProtocol from "effect-acp/protocol";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const mockAgentPath = path.join(__dirname, "../../../scripts/acp-mock-agent.ts");
-const bunExe = "bun";
+const nodeExe = process.execPath;
 
 describe("AcpSessionRuntime", () => {
   it.effect("merges custom initialize client capabilities into the ACP handshake", () => {
@@ -39,7 +39,7 @@ describe("AcpSessionRuntime", () => {
       Effect.provide(
         AcpSessionRuntime.layer({
           spawn: {
-            command: bunExe,
+            command: nodeExe,
             args: [mockAgentPath],
           },
           cwd: process.cwd(),
@@ -99,7 +99,7 @@ describe("AcpSessionRuntime", () => {
       Effect.provide(
         AcpSessionRuntime.layer({
           spawn: {
-            command: bunExe,
+            command: nodeExe,
             args: [mockAgentPath],
           },
           cwd: process.cwd(),
@@ -157,7 +157,7 @@ describe("AcpSessionRuntime", () => {
       Effect.provide(
         AcpSessionRuntime.layer({
           spawn: {
-            command: bunExe,
+            command: nodeExe,
             args: [mockAgentPath],
             env: {
               T3_ACP_EMIT_INTERLEAVED_ASSISTANT_TOOL_CALLS: "1",
@@ -195,7 +195,7 @@ describe("AcpSessionRuntime", () => {
       Effect.provide(
         AcpSessionRuntime.layer({
           spawn: {
-            command: bunExe,
+            command: nodeExe,
             args: [mockAgentPath],
             env: {
               T3_ACP_EMIT_GENERIC_TOOL_PLACEHOLDERS: "1",
@@ -247,7 +247,7 @@ describe("AcpSessionRuntime", () => {
         AcpSessionRuntime.layer({
           authMethodId: "test",
           spawn: {
-            command: bunExe,
+            command: nodeExe,
             args: [mockAgentPath],
           },
           cwd: process.cwd(),
@@ -282,7 +282,7 @@ describe("AcpSessionRuntime", () => {
         AcpSessionRuntime.layer({
           authMethodId: "test",
           spawn: {
-            command: bunExe,
+            command: nodeExe,
             args: [mockAgentPath],
           },
           cwd: process.cwd(),
@@ -325,7 +325,7 @@ describe("AcpSessionRuntime", () => {
         AcpSessionRuntime.layer({
           authMethodId: "test",
           spawn: {
-            command: bunExe,
+            command: nodeExe,
             args: [mockAgentPath],
           },
           cwd: process.cwd(),
@@ -379,7 +379,7 @@ describe("AcpSessionRuntime", () => {
         AcpSessionRuntime.layer({
           authMethodId: "test",
           spawn: {
-            command: bunExe,
+            command: nodeExe,
             args: [mockAgentPath],
             env: {
               T3_ACP_REQUEST_LOG_PATH: requestLogPath,

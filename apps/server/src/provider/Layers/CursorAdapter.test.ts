@@ -37,7 +37,7 @@ class CursorAdapter extends Context.Service<CursorAdapter, CursorAdapterShape>()
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const mockAgentPath = path.join(__dirname, "../../../scripts/acp-mock-agent.ts");
-const bunExe = "bun";
+const nodeExe = process.execPath;
 const isWindows = process.platform === "win32";
 
 function batchQuote(value: string): string {
@@ -68,12 +68,12 @@ async function makeMockAgentWrapper(
 setlocal
 ${envExports}
 ${options?.initialDelaySeconds ? `powershell.exe -NoProfile -NonInteractive -Command "Start-Sleep -Seconds ${options.initialDelaySeconds}"` : ""}
-${batchQuote(bunExe)} ${batchQuote(mockAgentPath)} %*
+${batchQuote(nodeExe)} ${batchQuote(mockAgentPath)} %*
 `
     : `#!/bin/sh
 ${envExports}
 ${options?.initialDelaySeconds ? `sleep ${JSON.stringify(String(options.initialDelaySeconds))}` : ""}
-exec ${JSON.stringify(bunExe)} ${JSON.stringify(mockAgentPath)} "$@"
+exec ${JSON.stringify(nodeExe)} ${JSON.stringify(mockAgentPath)} "$@"
 `;
   await writeFile(wrapperPath, script, "utf8");
   await chmod(wrapperPath, 0o755);
@@ -95,14 +95,14 @@ for %%A in (%*) do <nul set /p "=%%~A	" >> ${batchQuote(argvLogPath)}
 echo.>> ${batchQuote(argvLogPath)}
 set "T3_ACP_REQUEST_LOG_PATH=${requestLogPath}"
 ${envExports}
-${batchQuote(bunExe)} ${batchQuote(mockAgentPath)} %*
+${batchQuote(nodeExe)} ${batchQuote(mockAgentPath)} %*
 `
     : `#!/bin/sh
 printf '%s\t' "$@" >> ${JSON.stringify(argvLogPath)}
 printf '\n' >> ${JSON.stringify(argvLogPath)}
 export T3_ACP_REQUEST_LOG_PATH=${JSON.stringify(requestLogPath)}
 ${envExports}
-exec ${JSON.stringify(bunExe)} ${JSON.stringify(mockAgentPath)} "$@"
+exec ${JSON.stringify(nodeExe)} ${JSON.stringify(mockAgentPath)} "$@"
 `;
   await writeFile(wrapperPath, script, "utf8");
   await chmod(wrapperPath, 0o755);
