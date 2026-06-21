@@ -118,7 +118,7 @@ export function ContextWindowMeter(props: {
     });
   }, []);
   useLayoutEffect(() => {
-    if (!isPinnedOpen) return;
+    if (!isOpen) return;
 
     const handleDocumentInteraction = (event: Event) => {
       const target = event.target;
@@ -130,12 +130,16 @@ export function ContextWindowMeter(props: {
     };
 
     document.addEventListener("pointerdown", handleDocumentInteraction, true);
+    document.addEventListener("mousedown", handleDocumentInteraction, true);
     document.addEventListener("click", handleDocumentInteraction, true);
+    document.addEventListener("focusin", handleDocumentInteraction, true);
     return () => {
       document.removeEventListener("pointerdown", handleDocumentInteraction, true);
+      document.removeEventListener("mousedown", handleDocumentInteraction, true);
       document.removeEventListener("click", handleDocumentInteraction, true);
+      document.removeEventListener("focusin", handleDocumentInteraction, true);
     };
-  }, [isPinnedOpen, onOpenChange]);
+  }, [isOpen, onOpenChange]);
   const isMeterActive = isOpen || isPinnedOpen;
 
   return (
