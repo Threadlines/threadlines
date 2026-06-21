@@ -13,6 +13,7 @@ import {
   resolveDesktopBuildIconAssets,
   resolveDesktopProductName,
   resolveDesktopUpdateChannel,
+  filterPatchedDependenciesForStage,
   resolveMockUpdateServerPort,
   resolveMockUpdateServerUrl,
 } from "./build-desktop-artifact.ts";
@@ -63,6 +64,21 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       {
         "@effect/platform-node": "4.0.0-beta.59",
         effect: "4.0.0-beta.59",
+      },
+    );
+  });
+
+  it("keeps only staged dependency patches", () => {
+    assert.deepStrictEqual(
+      filterPatchedDependenciesForStage(
+        {
+          "@effect/vitest@4.0.0-beta.59": "patches/@effect__vitest@4.0.0-beta.59.patch",
+          "effect@4.0.0-beta.59": "patches/effect@4.0.0-beta.59.patch",
+        },
+        ["effect", "electron"],
+      ),
+      {
+        "effect@4.0.0-beta.59": "patches/effect@4.0.0-beta.59.patch",
       },
     );
   });
@@ -155,6 +171,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.equal("badcodeCommitHash" in stagePackageJson, false);
     assert.equal("t3codeCommitHash" in stagePackageJson, false);
     assert.equal(stagePackageJson.author, "Threadlines");
+    assert.match(stagePackageJson.packageManager, /^pnpm@/u);
   });
 
   it("prefers the Threadlines update repository env var over legacy and GitHub defaults", () => {

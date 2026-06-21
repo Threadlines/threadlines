@@ -3,6 +3,7 @@
 import { stringify as stringifyYamlValue } from "yaml";
 import desktopPackageJson from "../apps/desktop/package.json" with { type: "json" };
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
+import rootPackageJson from "../package.json" with { type: "json" };
 
 import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
 import { getDefaultBuildArch } from "./lib/build-target-arch.ts";
@@ -120,6 +121,15 @@ const collectStreamAsString = <E>(stream: Stream.Stream<Uint8Array, E>): Effect.
     ),
   );
 
+function resolveWorkspaceVpBinary(repoRoot: string, path: Path.Path): string {
+  return path.join(
+    repoRoot,
+    "node_modules",
+    ".bin",
+    process.platform === "win32" ? "vp.cmd" : "vp",
+  );
+}
+
 const spawnAndCollectOutput = Effect.fn("spawnAndCollectOutput")(function* (
   command: ChildProcess.Command,
 ) {
@@ -232,6 +242,7 @@ interface StagePackageJson {
   readonly description: string;
   readonly author: string;
   readonly main: string;
+  readonly packageManager: string;
   readonly build: Record<string, unknown>;
   readonly dependencies: Record<string, unknown>;
   readonly devDependencies: {
@@ -794,6 +805,7 @@ export function createStagePackageJson(input: StagePackageJsonInput): StagePacka
     description: "Threadlines desktop build",
     author: "Threadlines",
     main: "apps/desktop/dist-electron/main.cjs",
+    packageManager: rootPackageJson.packageManager,
     build: input.build,
     dependencies: input.dependencies,
     devDependencies: {
@@ -801,6 +813,26 @@ export function createStagePackageJson(input: StagePackageJsonInput): StagePacka
     },
     overrides: input.overrides,
   };
+}
+
+function resolvePatchedDependencyPackageName(patchedDependencyKey: string): string {
+  const versionSeparatorIndex = patchedDependencyKey.lastIndexOf("@");
+  if (versionSeparatorIndex <= 0) {
+    return patchedDependencyKey;
+  }
+  return patchedDependencyKey.slice(0, versionSeparatorIndex);
+}
+
+export function filterPatchedDependenciesForStage(
+  patchedDependencies: Record<string, string>,
+  dependencyNames: Iterable<string>,
+): Record<string, string> {
+  const stageDependencyNames = new Set(dependencyNames);
+  return Object.fromEntries(
+    Object.entries(patchedDependencies).filter(([key]) =>
+      stageDependencyNames.has(resolvePatchedDependencyPackageName(key)),
+    ),
+  );
 }
 
 const assertPlatformBuildResources = Effect.fn("assertPlatformBuildResources")(function* (
@@ -834,6 +866,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   const workspaceCatalog = workspaceConfig.catalog ?? {};
   const workspaceOverrides = workspaceConfig.overrides ?? {};
   const workspacePatchedDependencies = workspaceConfig.patchedDependencies ?? {};
+  const vpBinary = resolveWorkspaceVpBinary(repoRoot, path);
 
   const platformConfig = PLATFORM_CONFIG[options.platform];
   if (!platformConfig) {
@@ -902,7 +935,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
         ...commandOutputOptions(options.verbose),
         // Windows needs shell mode to resolve .cmd shims.
         shell: process.platform === "win32",
-      })`vp run build:desktop`,
+      })`${vpBinary} run build:desktop`,
     );
   }
 
@@ -944,6 +977,15 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   // electron-builder is filtering out stageResourcesDir directory in the AppImage for production
   yield* fs.copy(stageResourcesDir, path.join(stageAppDir, "apps/desktop/prod-resources"));
 
+  const stageDependencies = {
+    ...resolvedServerDependencies,
+    ...resolvedDesktopRuntimeDependencies,
+  };
+  const stagePatchedDependencies = filterPatchedDependenciesForStage(workspacePatchedDependencies, [
+    ...Object.keys(stageDependencies),
+    "electron",
+  ]);
+
   const stagePackageJson = createStagePackageJson({
     appVersion,
     commitHash,
@@ -955,10 +997,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       options.mockUpdates,
       options.mockUpdateServerPort,
     ),
-    dependencies: {
-      ...resolvedServerDependencies,
-      ...resolvedDesktopRuntimeDependencies,
-    },
+    dependencies: stageDependencies,
     electronVersion,
     overrides: resolvedOverrides,
   });
@@ -968,11 +1007,11 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   const stageWorkspaceConfig = stringifyYamlValue({
     onlyBuiltDependencies: ["electron", "node-pty"],
     overrides: resolvedOverrides,
-    patchedDependencies: workspacePatchedDependencies,
+    patchedDependencies: stagePatchedDependencies,
   });
   yield* fs.writeFileString(path.join(stageAppDir, "pnpm-workspace.yaml"), stageWorkspaceConfig);
   const patchesDir = path.join(repoRoot, "patches");
-  if (Object.keys(workspacePatchedDependencies).length > 0 && (yield* fs.exists(patchesDir))) {
+  if (Object.keys(stagePatchedDependencies).length > 0 && (yield* fs.exists(patchesDir))) {
     yield* fs.copy(patchesDir, path.join(stageAppDir, "patches"));
   }
 
@@ -983,7 +1022,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       ...commandOutputOptions(options.verbose),
       // Windows needs shell mode to resolve .cmd shims.
       shell: process.platform === "win32",
-    })`vp install --prod --omit optional`,
+    })`${vpBinary} install --prod --no-optional`,
   );
 
   const buildEnv: NodeJS.ProcessEnv = {
@@ -1033,7 +1072,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       ...commandOutputOptions(options.verbose),
       // Windows needs shell mode to resolve .cmd shims.
       shell: process.platform === "win32",
-    })`vp exec --filter @threadlines/desktop -- electron-builder --projectDir ${stageAppDir} ${platformConfig.cliFlag} --${options.arch} --publish never`,
+    })`${vpBinary} exec --filter @threadlines/desktop -- electron-builder --projectDir ${stageAppDir} ${platformConfig.cliFlag} --${options.arch} --publish never`,
   );
 
   const stageDistDir = path.join(stageAppDir, "dist");

@@ -29,6 +29,7 @@
   "devDependencies": {
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
+    "electron-builder": "^26.15.3",
     "typescript": "catalog:",
     "vite-plus": "catalog:",
     "vitest": "catalog:"
