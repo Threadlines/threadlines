@@ -1,0 +1,23 @@
+{
+  "name": "@threadlines/relay-worker",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "test": "vp test run",
+    "typecheck": "tsc --noEmit",
+    "types": "wrangler types src/worker-configuration.d.ts"
+  },
+  "dependencies": {
+    "@threadlines/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "vite-plus": "catalog:",
+    "vitest": "catalog:",
+    "wrangler": "^4.103.0"
+  }
+}

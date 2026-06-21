@@ -104,6 +104,15 @@ export function closeRightPanelSearchParams<T extends Record<string, unknown>>(p
   };
 }
 
+export function preserveRightPanelSearchParamsForNavigation<T extends Record<string, unknown>>(
+  params: T,
+  options: { sourceControlOpen: boolean },
+) {
+  return options.sourceControlOpen
+    ? { ...stripRightPanelSearchParams(params), sourceControl: "1" as const }
+    : closeRightPanelSearchParams(params);
+}
+
 export function isSourceControlPanelOpen(search: DiffRouteSearch): boolean {
   return search.diff !== "1" && search.sourceControl !== "0";
 }

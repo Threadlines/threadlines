@@ -31,6 +31,12 @@ const BrowserSavedEnvironmentRecordSchema = Schema.Struct({
       port: Schema.NullOr(Schema.Number),
     }),
   ),
+  relay: Schema.optionalKey(
+    Schema.Struct({
+      relayOrigin: Schema.String,
+      sessionId: Schema.String,
+    }),
+  ),
   bearerToken: Schema.optionalKey(Schema.String),
 });
 type BrowserSavedEnvironmentRecord = typeof BrowserSavedEnvironmentRecordSchema.Type;
@@ -57,7 +63,11 @@ function toPersistedSavedEnvironmentRecord(
     createdAt: record.createdAt,
     lastConnectedAt: record.lastConnectedAt,
   };
-  return record.desktopSsh ? { ...nextRecord, desktopSsh: record.desktopSsh } : nextRecord;
+  return {
+    ...nextRecord,
+    ...(record.desktopSsh ? { desktopSsh: record.desktopSsh } : {}),
+    ...(record.relay ? { relay: record.relay } : {}),
+  };
 }
 
 export function readBrowserClientSettings(): ClientSettings | null {
@@ -154,6 +164,7 @@ export function writeBrowserSavedEnvironmentRegistry(
             createdAt: record.createdAt,
             lastConnectedAt: record.lastConnectedAt,
             ...(record.desktopSsh ? { desktopSsh: record.desktopSsh } : {}),
+            ...(record.relay ? { relay: record.relay } : {}),
             bearerToken,
           }
         : toPersistedSavedEnvironmentRecord(record);
@@ -194,7 +205,13 @@ export function writeBrowserSavedEnvironmentSecret(
         lastConnectedAt: record.lastConnectedAt,
         bearerToken: secret,
       };
-      return record.desktopSsh ? { ...nextRecord, desktopSsh: record.desktopSsh } : nextRecord;
+      if (record.desktopSsh) {
+        Object.assign(nextRecord, { desktopSsh: record.desktopSsh });
+      }
+      if (record.relay) {
+        Object.assign(nextRecord, { relay: record.relay });
+      }
+      return nextRecord;
     }),
   });
   return found;

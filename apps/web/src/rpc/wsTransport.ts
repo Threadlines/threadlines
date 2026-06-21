@@ -14,6 +14,7 @@ import { clearAllTrackedRpcRequests } from "./requestLatencyState";
 import {
   createWsRpcProtocolLayer,
   makeWsRpcProtocolClient,
+  type WsRpcProtocolOptions,
   type WsProtocolLifecycleHandlers,
   type WsRpcProtocolClient,
   type WsRpcProtocolSocketUrlProvider,
@@ -55,6 +56,7 @@ function formatErrorMessage(error: unknown): string {
 export class WsTransport {
   private readonly url: WsRpcProtocolSocketUrlProvider;
   private readonly lifecycleHandlers: WsProtocolLifecycleHandlers | undefined;
+  private readonly protocolOptions: WsRpcProtocolOptions | undefined;
   private disposed = false;
   private hasReportedTransportDisconnect = false;
   private intentionalCloseDepth = 0;
@@ -68,9 +70,11 @@ export class WsTransport {
   constructor(
     url: WsRpcProtocolSocketUrlProvider,
     lifecycleHandlers?: WsProtocolLifecycleHandlers,
+    protocolOptions?: WsRpcProtocolOptions,
   ) {
     this.url = url;
     this.lifecycleHandlers = lifecycleHandlers;
+    this.protocolOptions = protocolOptions;
     this.session = this.createSession();
   }
 
@@ -243,27 +247,31 @@ export class WsTransport {
     this.activeSessionId = sessionId;
     const runtime = ManagedRuntime.make(
       Layer.mergeAll(
-        createWsRpcProtocolLayer(this.url, {
-          ...this.lifecycleHandlers,
-          isActive: () => !this.disposed && this.activeSessionId === sessionId,
-          isCloseIntentional: () =>
-            this.disposed ||
-            this.intentionalCloseDepth > 0 ||
-            this.lifecycleHandlers?.isCloseIntentional?.() === true,
-          onHeartbeatPong: () => {
-            this.lastHeartbeatPongAt = Date.now();
-            this.lifecycleHandlers?.onHeartbeatPong?.();
+        createWsRpcProtocolLayer(
+          this.url,
+          {
+            ...this.lifecycleHandlers,
+            isActive: () => !this.disposed && this.activeSessionId === sessionId,
+            isCloseIntentional: () =>
+              this.disposed ||
+              this.intentionalCloseDepth > 0 ||
+              this.lifecycleHandlers?.isCloseIntentional?.() === true,
+            onHeartbeatPong: () => {
+              this.lastHeartbeatPongAt = Date.now();
+              this.lifecycleHandlers?.onHeartbeatPong?.();
+            },
+            onRequestStart: (info) => {
+              this.lifecycleHandlers?.onRequestStart?.(info);
+              if (!info.stream) {
+                return;
+              }
+              for (const listener of this.streamRequestStartListeners) {
+                listener(info);
+              }
+            },
           },
-          onRequestStart: (info) => {
-            this.lifecycleHandlers?.onRequestStart?.(info);
-            if (!info.stream) {
-              return;
-            }
-            for (const listener of this.streamRequestStartListeners) {
-              listener(info);
-            }
-          },
-        }),
+          this.protocolOptions,
+        ),
         ClientTracingLive,
       ),
     );

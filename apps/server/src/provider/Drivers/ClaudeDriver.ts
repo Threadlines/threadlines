@@ -54,6 +54,11 @@ const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 const DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
 const CAPABILITIES_PROBE_TTL = Duration.minutes(5);
+const WINDOWS_NATIVE_INSTALL_COMMAND = "irm https://claude.ai/install.ps1 | iex";
+const WINDOWS_NATIVE_INSTALL_COMMAND_ENCODED = Buffer.from(
+  WINDOWS_NATIVE_INSTALL_COMMAND,
+  "utf16le",
+).toString("base64");
 
 function isClaudeNativeCommandPath(commandPath: string): boolean {
   const normalized = normalizeCommandPath(commandPath);
@@ -73,6 +78,22 @@ const UPDATE = makePackageManagedProviderMaintenanceResolver({
     args: ["update"],
     lockKey: "claude-native",
     isCommandPath: isClaudeNativeCommandPath,
+    platformUpdateOverrides: {
+      win32: {
+        executable: "powershell.exe",
+        args: [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-EncodedCommand",
+          WINDOWS_NATIVE_INSTALL_COMMAND_ENCODED,
+        ],
+        lockKey: "claude-native-installer-win32",
+        displayCommand: WINDOWS_NATIVE_INSTALL_COMMAND,
+        advisoryMessage:
+          "Threadlines will run Anthropic's Windows installer because `claude update` can report success without replacing the active binary.",
+      },
+    },
   },
 });
 
@@ -124,6 +145,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       const maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
         binaryPath: effectiveConfig.binaryPath,
         env: processEnv,
+        platform: process.platform,
       });
       const continuationGroupKey = yield* makeClaudeContinuationGroupKey(effectiveConfig);
       const stampIdentity = withInstanceIdentity({

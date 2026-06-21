@@ -6,9 +6,13 @@ import { defineConfig, mergeConfig } from "vite-plus";
 import viteConfig from "./vite.config";
 
 const srcPath = fileURLToPath(new URL("./src", import.meta.url));
+const browserViteConfig = {
+  ...viteConfig,
+  test: undefined,
+};
 
 export default mergeConfig(
-  viteConfig,
+  browserViteConfig,
   defineConfig({
     resolve: {
       alias: {
@@ -25,7 +29,12 @@ export default mergeConfig(
       browser: {
         enabled: true,
         provider: playwright(),
-        instances: [{ browser: "chromium" }],
+        instances: [
+          {
+            browser: "chromium",
+            viewport: { width: 1_600, height: 1_300 },
+          },
+        ],
         headless: true,
         api: {
           strictPort: false,

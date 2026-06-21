@@ -35,11 +35,13 @@ class MockWebSocket {
 
   readyState = MockWebSocket.CONNECTING;
   readonly sent: string[] = [];
+  readonly protocols: string | string[] | undefined;
   readonly url: string;
   private readonly listeners = new Map<WsEventType, Set<WsListener>>();
 
-  constructor(url: string) {
+  constructor(url: string, protocols?: string | string[]) {
     this.url = url;
+    this.protocols = protocols;
     sockets.push(this);
   }
 
@@ -197,6 +199,27 @@ describe("WsTransport", () => {
     });
 
     expect(getSocket().url).toBe("wss://remote.example.com/ws?wsToken=dynamic");
+    await transport.dispose();
+  });
+
+  it("can preserve explicit websocket paths and pass subprotocols", async () => {
+    const transport = createTransport(
+      "wss://relay.threadlines.dev/v1/sessions/session-1/connect?role=device&mode=raw",
+      undefined,
+      {
+        preservePath: true,
+        protocols: ["threadlines-relay", "threadlines-token.device-token"],
+      },
+    );
+
+    await waitFor(() => {
+      expect(sockets).toHaveLength(1);
+    });
+
+    expect(getSocket().url).toBe(
+      "wss://relay.threadlines.dev/v1/sessions/session-1/connect?role=device&mode=raw",
+    );
+    expect(getSocket().protocols).toEqual(["threadlines-relay", "threadlines-token.device-token"]);
     await transport.dispose();
   });
 

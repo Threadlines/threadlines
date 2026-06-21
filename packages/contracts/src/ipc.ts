@@ -115,7 +115,7 @@ import type {
   OrchestrationSubscribeThreadInput,
   OrchestrationThreadStreamItem,
 } from "./orchestration.ts";
-import { EnvironmentId } from "./baseSchemas.ts";
+import { EnvironmentId, IsoDateTime } from "./baseSchemas.ts";
 import { AuthBearerBootstrapResult, AuthSessionState, AuthWebSocketTokenResult } from "./auth.ts";
 import { AdvertisedEndpoint } from "./remoteAccess.ts";
 import { EditorId } from "./editor.ts";
@@ -448,6 +448,12 @@ export const PersistedSavedEnvironmentRecordSchema = Schema.Struct({
   createdAt: Schema.String,
   lastConnectedAt: Schema.NullOr(Schema.String),
   desktopSsh: Schema.optionalKey(DesktopSshEnvironmentTargetSchema),
+  relay: Schema.optionalKey(
+    Schema.Struct({
+      relayOrigin: Schema.String,
+      sessionId: Schema.String,
+    }),
+  ),
 });
 export type PersistedSavedEnvironmentRecord = typeof PersistedSavedEnvironmentRecordSchema.Type;
 
@@ -473,6 +479,14 @@ export const DesktopServerExposureStateSchema = Schema.Struct({
   tailscaleServeEnabled: Schema.Boolean,
   tailscaleServePort: Schema.Number,
 });
+
+export const DesktopRelayPairingSessionSchema = Schema.Struct({
+  pairingUrl: Schema.String,
+  relayOrigin: Schema.String,
+  sessionId: Schema.String,
+  expiresAt: IsoDateTime,
+});
+export type DesktopRelayPairingSession = typeof DesktopRelayPairingSessionSchema.Type;
 
 export interface PickFolderOptions {
   initialPath?: string | null;
@@ -519,6 +533,8 @@ export interface DesktopBridge {
     readonly port?: number;
   }) => Promise<DesktopServerExposureState>;
   getAdvertisedEndpoints: () => Promise<readonly AdvertisedEndpoint[]>;
+  createRelayPairingSession: () => Promise<DesktopRelayPairingSession>;
+  disconnectRelayPairingSession: () => Promise<void>;
   pickFolder: (options?: PickFolderOptions) => Promise<string | null>;
   confirm: (message: string) => Promise<boolean>;
   captureScreenshot?: (

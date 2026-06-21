@@ -31,8 +31,8 @@ build. Auto-updaters normally treat `0.0.1` as older than `0.0.24`.
 Use this when you want a local installer before publishing a GitHub Release:
 
 ```powershell
-bun install --frozen-lockfile
-bun run dist:desktop:artifact -- --platform win --target nsis --arch x64 --build-version 0.0.1
+vp install --frozen-lockfile
+vp run dist:desktop:artifact -- --platform win --target nsis --arch x64 --build-version 0.0.1
 ```
 
 The artifacts and updater metadata are written to `release/`.
@@ -40,8 +40,8 @@ The artifacts and updater metadata are written to `release/`.
 On macOS, build a local DMG plus updater ZIP with:
 
 ```bash
-bun install --frozen-lockfile
-bun run dist:desktop:artifact -- --platform mac --target dmg --arch arm64 --build-version 0.0.1
+vp install --frozen-lockfile
+vp run dist:desktop:artifact -- --platform mac --target dmg --arch arm64 --build-version 0.0.1
 ```
 
 Use `--arch x64` on an Intel Mac runner. The macOS build uses `sips` and
@@ -51,7 +51,7 @@ For a private-repo update feed, set the update repository while building:
 
 ```powershell
 $env:THREADLINES_DESKTOP_UPDATE_REPOSITORY = "Threadlines/threadlines"
-bun run dist:desktop:artifact -- --platform win --target nsis --arch x64 --build-version 0.0.1
+vp run dist:desktop:artifact -- --platform win --target nsis --arch x64 --build-version 0.0.1
 ```
 
 The desktop artifact script accepts `THREADLINES_DESKTOP_*` variables. Legacy
@@ -64,10 +64,10 @@ The workflow is `.github/workflows/release.yml`.
 
 It runs:
 
-- `bun run fmt:check`
-- `bun run lint`
-- `bun run typecheck`
-- `bun run test`
+- `vp fmt --check`
+- `vp lint --report-unused-disable-directives`
+- `vpr typecheck`
+- `vp run test`
 - Windows x64 NSIS packaging
 - macOS arm64 DMG/ZIP packaging
 - macOS x64 DMG/ZIP packaging
@@ -242,7 +242,7 @@ for now.
 The local script can build a Linux AppImage:
 
 ```bash
-bun run dist:desktop:artifact -- --platform linux --target AppImage --arch x64 --build-version 0.0.1
+vp run dist:desktop:artifact -- --platform linux --target AppImage --arch x64 --build-version 0.0.1
 ```
 
 Keep Linux out of normal stable/nightly releases until there is at least one

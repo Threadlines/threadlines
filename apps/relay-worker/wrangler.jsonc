@@ -1,0 +1,34 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "threadlines-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-20",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "invocation_logs": true,
+      "head_sampling_rate": 1,
+    },
+  },
+  "vars": {
+    "THREADLINES_APP_ORIGIN": "https://app.threadlines.dev",
+    "THREADLINES_ALLOWED_ORIGINS": "https://app.threadlines.dev,http://localhost:5733,http://127.0.0.1:5733",
+    "THREADLINES_RELAY_PUBLIC_ORIGIN": "",
+    "THREADLINES_RELAY_SESSION_TTL_SECONDS": "43200",
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "RELAY_SESSION",
+        "class_name": "RelaySession",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["RelaySession"],
+    },
+  ],
+}

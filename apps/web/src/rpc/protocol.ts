@@ -64,6 +64,11 @@ export type WsRpcProtocolClient =
   RpcClientFactory extends Effect.Effect<infer Client, any, any> ? Client : never;
 export type WsRpcProtocolSocketUrlProvider = string | (() => Promise<string>);
 
+export interface WsRpcProtocolOptions {
+  readonly preservePath?: boolean;
+  readonly protocols?: string | readonly string[];
+}
+
 function formatSocketErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim().length > 0) {
     return error.message;
@@ -71,13 +76,15 @@ function formatSocketErrorMessage(error: unknown): string {
   return String(error);
 }
 
-function resolveWsRpcSocketUrl(rawUrl: string): string {
+function resolveWsRpcSocketUrl(rawUrl: string, options?: WsRpcProtocolOptions): string {
   const resolved = new URL(rawUrl);
   if (resolved.protocol !== "ws:" && resolved.protocol !== "wss:") {
     throw new Error(`Unsupported websocket transport URL protocol: ${resolved.protocol}`);
   }
 
-  resolved.pathname = "/ws";
+  if (!options?.preservePath) {
+    resolved.pathname = "/ws";
+  }
   return resolved.toString();
 }
 
@@ -86,6 +93,15 @@ function resolveConnectionMetadata(handlers?: WsProtocolLifecycleHandlers): WsCo
     connectionLabel: handlers?.getConnectionLabel?.() ?? null,
     versionMismatchHint: handlers?.getVersionMismatchHint?.() ?? null,
   };
+}
+
+function normalizeProtocols(
+  protocols: WsRpcProtocolOptions["protocols"],
+): string | Array<string> | undefined {
+  if (protocols === undefined) {
+    return undefined;
+  }
+  return typeof protocols === "string" ? protocols : [...protocols];
 }
 
 type ComposedWsProtocolLifecycleHandlers = Required<
@@ -159,12 +175,13 @@ function composeLifecycleHandlers(
 export function createWsRpcProtocolLayer(
   url: WsRpcProtocolSocketUrlProvider,
   handlers?: WsProtocolLifecycleHandlers,
+  options?: WsRpcProtocolOptions,
 ) {
   const lifecycle = composeLifecycleHandlers(handlers);
   const resolvedUrl =
     typeof url === "function"
       ? Effect.promise(() => url()).pipe(
-          Effect.map((rawUrl) => resolveWsRpcSocketUrl(rawUrl)),
+          Effect.map((rawUrl) => resolveWsRpcSocketUrl(rawUrl, options)),
           Effect.tapError((error) =>
             Effect.sync(() => {
               lifecycle.onError(formatSocketErrorMessage(error));
@@ -172,7 +189,7 @@ export function createWsRpcProtocolLayer(
           ),
           Effect.orDie,
         )
-      : resolveWsRpcSocketUrl(url);
+      : resolveWsRpcSocketUrl(url, options);
 
   const trackingWebSocketConstructorLayer = Layer.succeed(
     Socket.WebSocketConstructor,
@@ -213,9 +230,10 @@ export function createWsRpcProtocolLayer(
       return socket;
     },
   );
-  const socketLayer = Socket.layerWebSocket(resolvedUrl).pipe(
-    Layer.provide(trackingWebSocketConstructorLayer),
-  );
+  const socketLayer = Socket.layerWebSocket(
+    resolvedUrl,
+    options?.protocols === undefined ? {} : { protocols: normalizeProtocols(options.protocols) },
+  ).pipe(Layer.provide(trackingWebSocketConstructorLayer));
   const retryPolicy = Schedule.addDelay(Schedule.recurs(WS_RECONNECT_MAX_RETRIES), (retryCount) =>
     Effect.succeed(Duration.millis(getWsReconnectDelayMsForRetry(retryCount) ?? 0)),
   );

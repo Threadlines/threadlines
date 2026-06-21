@@ -887,6 +887,32 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
   const readConfigValueNullable = (cwd: string, key: string) =>
     gitCore.readConfigValue(cwd, key).pipe(Effect.catch(() => Effect.succeed(null)));
 
+  const resolveCanonicalGitHubRepositoryName = Effect.fn("resolveCanonicalGitHubRepositoryName")(
+    function* (cwd: string, remoteName: string, repositoryNameWithOwner: string) {
+      const ghResolvedMode = yield* readConfigValueNullable(
+        cwd,
+        `remote.${remoteName}.gh-resolved`,
+      );
+      if (!ghResolvedMode?.trim()) {
+        return repositoryNameWithOwner;
+      }
+
+      return yield* sourceControlProvider(cwd).pipe(
+        Effect.flatMap((provider) =>
+          provider.getRepositoryCloneUrls({
+            cwd,
+            repository: repositoryNameWithOwner,
+          }),
+        ),
+        Effect.map((cloneUrls) => {
+          const canonical = cloneUrls.nameWithOwner.trim();
+          return canonical.length > 0 ? canonical : repositoryNameWithOwner;
+        }),
+        Effect.catch(() => Effect.succeed(repositoryNameWithOwner)),
+      );
+    },
+  );
+
   const resolveHostingProvider = Effect.fn("resolveHostingProvider")(function* (
     cwd: string,
     branch: string | null,
@@ -914,7 +940,11 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
     }
 
     const remoteUrl = yield* readConfigValueNullable(cwd, `remote.${remoteName}.url`);
-    const repositoryNameWithOwner = parseGitHubRepositoryNameWithOwnerFromRemoteUrl(remoteUrl);
+    const parsedRepositoryNameWithOwner =
+      parseGitHubRepositoryNameWithOwnerFromRemoteUrl(remoteUrl);
+    const repositoryNameWithOwner = parsedRepositoryNameWithOwner
+      ? yield* resolveCanonicalGitHubRepositoryName(cwd, remoteName, parsedRepositoryNameWithOwner)
+      : null;
     return {
       repositoryNameWithOwner,
       ownerLogin: parseRepositoryOwnerLogin(repositoryNameWithOwner),
@@ -933,13 +963,11 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
     const shouldProbeLocalBranchSelector =
       headBranchFromUpstream.length === 0 || headBranch === details.branch;
 
-    const [remoteRepository, originRepository] = yield* Effect.all(
-      [
-        resolveRemoteRepositoryContext(cwd, remoteName),
-        resolveRemoteRepositoryContext(cwd, "origin"),
-      ],
-      { concurrency: "unbounded" },
-    );
+    const originRepository = yield* resolveRemoteRepositoryContext(cwd, "origin");
+    const remoteRepository =
+      remoteName === "origin"
+        ? originRepository
+        : yield* resolveRemoteRepositoryContext(cwd, remoteName);
 
     const isCrossRepository =
       remoteRepository.repositoryNameWithOwner !== null &&

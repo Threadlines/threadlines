@@ -1,14 +1,23 @@
-# Remote Access
+# Device Access
 
-Remote, hosted-web, SSH, and Tailscale pairing flows are deprecated in Threadlines'
-current product direction.
+Threadlines is local-first: your desktop computer still runs the projects and
+provider CLIs. The device-access work is for reaching that desktop from another
+device, most commonly a phone or tablet.
 
-Threadlines is narrowing toward a local-first native desktop workflow for Codex and
-Claude Code. The old remote-access internals remain in the repository for
-compatibility while the runtime boundary is simplified, but new setup should not
-depend on `app.t3.codes`, remote pairing links, or SSH-launched environments.
+The public hosted link for this flow is `https://app.threadlines.dev`. It can
+open a one-time device link and route the phone or tablet to the desktop
+Threadlines instance when the desktop is reachable.
 
-Use the desktop app on the machine where your projects and provider CLIs are
-installed. If you need to keep an older remote setup alive temporarily, expect
-that surface to move to compatibility-only behavior and be removed in a later
-cleanup.
+The planned public-friendly path is the Cloudflare relay in
+`apps/relay-worker`. See `docs/cloudflare-relay.md` for setup and deployment
+notes.
+
+Current product wording should lead with user concepts:
+
+- phone and tablet access for the main setup path;
+- private network link for Tailscale-backed access;
+- another computer for remote Threadlines instances;
+- SSH only as an advanced setup path.
+
+Do not use old T3-hosted domains for new setup. Existing internal protocol names
+and package names may remain for compatibility until they can be changed safely.

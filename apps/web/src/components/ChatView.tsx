@@ -48,6 +48,7 @@ import {
   closeRightPanelSearchParams,
   isSourceControlPanelOpen,
   parseDiffRouteSearch,
+  preserveRightPanelSearchParamsForNavigation,
   stripRightPanelSearchParams,
 } from "../diffRouteSearch";
 import {
@@ -877,6 +878,11 @@ export default function ChatView(props: ChatViewProps) {
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
   const sourceControlOpen = isSourceControlPanelOpen(rawSearch);
+  const preserveRightPanelSearchForDraftNavigation = useCallback(
+    (previous: Record<string, unknown>) =>
+      preserveRightPanelSearchParamsForNavigation(previous, { sourceControlOpen }),
+    [sourceControlOpen],
+  );
   const activeThreadId = activeThread?.id ?? null;
   const activeThreadRef = useMemo(
     () => (activeThread ? scopeThreadRef(activeThread.environmentId, activeThread.id) : null),
@@ -1102,6 +1108,7 @@ export default function ChatView(props: ChatViewProps) {
           await navigate({
             to: "/draft/$draftId",
             params: buildDraftThreadRouteParams(storedDraftSession.draftId),
+            search: preserveRightPanelSearchForDraftNavigation,
           });
         }
         return storedDraftSession.threadId;
@@ -1136,6 +1143,7 @@ export default function ChatView(props: ChatViewProps) {
       await navigate({
         to: "/draft/$draftId",
         params: buildDraftThreadRouteParams(nextDraftId),
+        search: preserveRightPanelSearchForDraftNavigation,
       });
       return nextThreadId;
     },
@@ -1146,6 +1154,7 @@ export default function ChatView(props: ChatViewProps) {
       getDraftSessionByLogicalProjectKey,
       isServerThread,
       navigate,
+      preserveRightPanelSearchForDraftNavigation,
       projectGroupingSettings,
       routeKind,
       setDraftThreadContext,
@@ -1650,7 +1659,6 @@ export default function ChatView(props: ChatViewProps) {
         : // Spread only fires for the few messages that actually changed;
           // unchanged ones early-return their original reference.
           // In-place mutation would break React's immutable state contract.
-          // oxlint-disable-next-line no-map-spread
           messages.map((message) => {
             if (
               message.role !== "user" ||

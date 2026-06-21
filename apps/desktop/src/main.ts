@@ -44,6 +44,7 @@ import * as DesktopShellEnvironment from "./shell/DesktopShellEnvironment.ts";
 import * as DesktopSshEnvironment from "./ssh/DesktopSshEnvironment.ts";
 import * as DesktopSshPasswordPrompts from "./ssh/DesktopSshPasswordPrompts.ts";
 import * as DesktopSshRemoteApi from "./ssh/DesktopSshRemoteApi.ts";
+import * as DesktopRelay from "./relay/DesktopRelay.ts";
 import * as DesktopState from "./app/DesktopState.ts";
 import * as DesktopUpdates from "./updates/DesktopUpdates.ts";
 import * as DesktopWindow from "./window/DesktopWindow.ts";
@@ -142,6 +143,7 @@ const desktopApplicationLayer = Layer.mergeAll(
   DesktopApplicationMenu.layer,
   DesktopScreenCapture.layer,
   DesktopShellEnvironment.layer,
+  DesktopRelay.layer,
   desktopSshLayer,
 ).pipe(Layer.provideMerge(DesktopUpdates.layer), Layer.provideMerge(desktopBackendLayer));
 

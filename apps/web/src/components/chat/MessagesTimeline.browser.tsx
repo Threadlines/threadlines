@@ -357,10 +357,36 @@ describe("MessagesTimeline", () => {
       expect(continueButton).toBeTruthy();
       expect(getComputedStyle(continueButton!).cursor).toBe("pointer");
       expect(continueButton?.getAttribute("title")).toBeNull();
+      expect(getComputedStyle(continueButton!).opacity).toBe("0");
+      expect(getComputedStyle(continueButton!).pointerEvents).toBe("none");
 
+      await page.getByText("Implementation notes are ready.").hover();
+      await vi.waitFor(() => {
+        expect(Number(getComputedStyle(continueButton!).opacity)).toBeGreaterThan(0.5);
+        expect(getComputedStyle(continueButton!).pointerEvents).toBe("auto");
+      });
       await page.getByRole("button", { name: "Continue in new thread" }).click();
 
       expect(onContinueInNewThread).toHaveBeenCalledWith("assistant-message-1");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("does not show assistant continue-in-new-thread actions while a turn is working", async () => {
+    const screen = await render(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        onContinueInNewThread={vi.fn()}
+        timelineEntries={[buildAssistantTimelineEntry("Earlier implementation notes.")]}
+      />,
+    );
+
+    try {
+      expect(
+        document.querySelector<HTMLButtonElement>('button[aria-label="Continue in new thread"]'),
+      ).toBeNull();
     } finally {
       await screen.unmount();
     }

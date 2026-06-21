@@ -7,6 +7,7 @@ export const VISIBLE_SETTINGS_SECTION_PATHS = [
   "/settings/extensions",
   "/settings/instructions",
   "/settings/source-control",
+  "/settings/connections",
   "/settings/archived",
 ] as const;
 

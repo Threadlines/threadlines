@@ -19,6 +19,7 @@ export interface SavedEnvironmentRecord {
   readonly createdAt: string;
   readonly lastConnectedAt: string | null;
   readonly desktopSsh?: PersistedSavedEnvironmentRecord["desktopSsh"];
+  readonly relay?: PersistedSavedEnvironmentRecord["relay"];
 }
 
 interface SavedEnvironmentRegistryState {
@@ -47,6 +48,7 @@ export function toPersistedSavedEnvironmentRecord(
     createdAt: record.createdAt,
     lastConnectedAt: record.lastConnectedAt,
     ...(record.desktopSsh ? { desktopSsh: record.desktopSsh } : {}),
+    ...(record.relay ? { relay: record.relay } : {}),
   };
 }
 

@@ -59,7 +59,7 @@ interface FakeGhScenario {
     headRepositoryNameWithOwner?: string | null;
     headRepositoryOwnerLogin?: string | null;
   };
-  repositoryCloneUrls?: Record<string, { url: string; sshUrl: string }>;
+  repositoryCloneUrls?: Record<string, { nameWithOwner?: string; url: string; sshUrl: string }>;
   failWith?: GitHubCliError;
 }
 
@@ -512,7 +512,7 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
         return Effect.succeed(
           fakeGhOutput(
             JSON.stringify({
-              nameWithOwner: repository,
+              nameWithOwner: cloneUrls.nameWithOwner ?? repository,
               url: cloneUrls.url,
               sshUrl: cloneUrls.sshUrl,
             }) + "\n",
@@ -787,6 +787,71 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         state: "open",
       });
     }),
+  );
+
+  it.effect(
+    "status matches PRs against GitHub's canonical remote repository",
+    () =>
+      Effect.gen(function* () {
+        const repoDir = yield* makeTempDir("t3code-git-manager-");
+        yield* initRepo(repoDir);
+        yield* runGit(repoDir, ["checkout", "-b", "feature/cloudflare-relay"]);
+        const remoteDir = yield* createBareRemote();
+        yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+        yield* runGit(repoDir, ["push", "-u", "origin", "feature/cloudflare-relay"]);
+        yield* configureVisibleRemoteUrlWithLocalRewrite(
+          repoDir,
+          "origin",
+          "https://github.com/badcuban/badcode.git",
+          remoteDir,
+        );
+        yield* runGit(repoDir, ["config", "remote.origin.gh-resolved", "base"]);
+
+        const { manager, ghCalls } = yield* makeManager({
+          ghScenario: {
+            repositoryCloneUrls: {
+              "badcuban/badcode": {
+                nameWithOwner: "Threadlines/threadlines",
+                url: "https://github.com/Threadlines/threadlines",
+                sshUrl: "git@github.com:Threadlines/threadlines.git",
+              },
+            },
+            prListSequence: [
+              // @effect-diagnostics-next-line preferSchemaOverJson:off
+              JSON.stringify([
+                {
+                  number: 30,
+                  title: "Add Cloudflare relay device access",
+                  url: "https://github.com/Threadlines/threadlines/pull/30",
+                  baseRefName: "main",
+                  headRefName: "feature/cloudflare-relay",
+                  state: "OPEN",
+                  isCrossRepository: false,
+                  headRepository: {
+                    nameWithOwner: "Threadlines/threadlines",
+                  },
+                  headRepositoryOwner: {
+                    login: "Threadlines",
+                  },
+                },
+              ]),
+            ],
+          },
+        });
+
+        const status = yield* manager.status({ cwd: repoDir });
+
+        expect(status.pr).toEqual({
+          number: 30,
+          title: "Add Cloudflare relay device access",
+          url: "https://github.com/Threadlines/threadlines/pull/30",
+          baseRef: "main",
+          headRef: "feature/cloudflare-relay",
+          state: "open",
+        });
+        expect(ghCalls).toContain("repo view badcuban/badcode --json nameWithOwner,url,sshUrl");
+      }),
+    20_000,
   );
 
   it.effect("status ignores invalid gh pr list entries and keeps valid ones", () =>

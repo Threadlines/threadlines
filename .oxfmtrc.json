@@ -9,6 +9,7 @@
     "bun.lock",
     "*.tsbuildinfo",
     "**/routeTree.gen.ts",
+    "**/worker-configuration.d.ts",
     "apps/web/public/mockServiceWorker.js",
     "apps/web/src/lib/vendor/qrcodegen.ts",
     "*.icon/**"

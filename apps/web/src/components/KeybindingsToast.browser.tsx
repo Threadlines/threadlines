@@ -37,6 +37,7 @@ vi.mock("../lib/gitStatusState", () => ({
   useGitStatus: () => ({ data: null, error: null, cause: null, isPending: false }),
   useGitStatuses: () => new Map(),
   refreshGitStatus: () => Promise.resolve(null),
+  refreshLocalGitStatus: () => Promise.resolve(null),
   resetGitStatusStateForTests: () => undefined,
 }));
 
