@@ -117,12 +117,50 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(winConfig.icon, "icon.ico");
       assert.equal(winConfig.signExecutable, undefined);
       assert.equal(winConfig.signAndEditExecutable, undefined);
+      assert.equal(winConfig.azureSignOptions, undefined);
       assert.deepStrictEqual(buildConfig.extraResources, [
         {
           from: "apps/desktop/resources/icon.ico",
           to: "icon.ico",
         },
       ]);
+    }),
+  );
+
+  it.effect("configures Azure Trusted Signing for signed Windows builds", () =>
+    Effect.gen(function* () {
+      const buildConfig = yield* createBuildConfig(
+        "win",
+        "nsis",
+        "0.0.2",
+        true,
+        false,
+        undefined,
+      ).pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({
+              env: {
+                AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: "Wilfredo Leon",
+                AZURE_TRUSTED_SIGNING_ENDPOINT: "https://eus.codesigning.azure.net",
+                AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: "threadlinespublic",
+                AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: "threadlinessigning",
+              },
+            }),
+          ),
+        ),
+      );
+      const winConfig = buildConfig.win as Record<string, unknown>;
+
+      assert.deepStrictEqual(winConfig.azureSignOptions, {
+        publisherName: "Wilfredo Leon",
+        endpoint: "https://eus.codesigning.azure.net",
+        certificateProfileName: "threadlinespublic",
+        codeSigningAccountName: "threadlinessigning",
+        fileDigest: "SHA256",
+        timestampDigest: "SHA256",
+        timestampRfc3161: "http://timestamp.acs.microsoft.com",
+      });
     }),
   );
 
@@ -173,17 +211,18 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         stageResourcesDir,
       );
       const macConfig = buildConfig.mac as Record<string, unknown>;
+      const normalizePath = (value: unknown) => String(value).replaceAll("\\", "/");
 
       assert.equal(
-        macConfig.entitlements,
+        normalizePath(macConfig.entitlements),
         "/tmp/threadlines-stage/apps/desktop/resources/entitlements.mac.plist",
       );
       assert.equal(
-        macConfig.entitlementsInherit,
+        normalizePath(macConfig.entitlementsInherit),
         "/tmp/threadlines-stage/apps/desktop/resources/entitlements.mac.inherit.plist",
       );
       assert.equal(
-        buildConfig.afterSign,
+        normalizePath(buildConfig.afterSign),
         "/tmp/threadlines-stage/apps/desktop/resources/notarize-after-sign.cjs",
       );
     }),

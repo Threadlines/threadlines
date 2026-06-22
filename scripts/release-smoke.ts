@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { DESKTOP_RELEASE_APP_ID } from "@threadlines/shared/desktopIdentity";
-import { execFileSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import {
   cpSync,
   existsSync,
@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as Console from "effect/Console";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 
 import { createBuildConfig } from "./build-desktop-artifact.ts";
@@ -266,14 +267,32 @@ function assertReleaseBuildIdentity(): void {
   );
 
   const windowsBuildConfig = Effect.runSync(
-    createBuildConfig("win", "nsis", "9.9.9-smoke.0", false, false, undefined).pipe(
+    createBuildConfig("win", "nsis", "9.9.9-smoke.0", true, false, undefined).pipe(
+      Effect.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromEnv({
+            env: {
+              AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: "Threadlines Smoke",
+              AZURE_TRUSTED_SIGNING_ENDPOINT: "https://eus.codesigning.azure.net",
+              AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: "threadlinessmoke",
+              AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: "threadlinessmoke",
+            },
+          }),
+        ),
+      ),
       Effect.provide(NodeServices.layer),
     ),
   );
+  const windowsConfig = windowsBuildConfig.win as Record<string, unknown>;
   assertEqual(
     windowsBuildConfig.appId,
     DESKTOP_RELEASE_APP_ID,
     "Windows release app id changed; NSIS upgrades require this to remain stable.",
+  );
+  assertEqual(
+    typeof windowsConfig.azureSignOptions,
+    "object",
+    "Windows release builds must keep Azure Trusted Signing enabled.",
   );
 }
 
@@ -299,10 +318,17 @@ try {
 
   rmSync(resolve(tempRoot, "pnpm-lock.yaml"), { force: true });
 
-  execFileSync(vpCommand, ["install", "--lockfile-only", "--ignore-scripts"], {
-    cwd: tempRoot,
-    stdio: "inherit",
-  });
+  if (process.platform === "win32") {
+    execSync(`"${vpCommand}" install --lockfile-only --ignore-scripts`, {
+      cwd: tempRoot,
+      stdio: "inherit",
+    });
+  } else {
+    execFileSync(vpCommand, ["install", "--lockfile-only", "--ignore-scripts"], {
+      cwd: tempRoot,
+      stdio: "inherit",
+    });
+  }
 
   const lockfile = readFileSync(resolve(tempRoot, "pnpm-lock.yaml"), "utf8");
   assertContains(lockfile, "lockfileVersion:", "Expected pnpm-lock.yaml to be regenerated.");

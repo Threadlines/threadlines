@@ -381,7 +381,46 @@ jobs:
       - name: Align release package versions
         run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
 
+      - name: Require Windows signing for installer releases
+        shell: pwsh
+        env:
+          THREADLINES_DESKTOP_SIGNED: ${{ (vars.THREADLINES_DESKTOP_SIGNED == 'true' || vars.BADCODE_DESKTOP_SIGNED == 'true') && 'true' || 'false' }}
+          AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ vars.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME }}
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ vars.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ vars.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ vars.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        run: |
+          if ($env:THREADLINES_DESKTOP_SIGNED -ne "true") {
+            throw "Windows desktop releases must be signed. Configure THREADLINES_DESKTOP_SIGNED=true and the Azure Trusted Signing variables/secrets before publishing."
+          }
+
+          $required = @(
+            "AZURE_TRUSTED_SIGNING_PUBLISHER_NAME",
+            "AZURE_TRUSTED_SIGNING_ENDPOINT",
+            "AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME",
+            "AZURE_TRUSTED_SIGNING_ACCOUNT_NAME",
+            "AZURE_CLIENT_ID",
+            "AZURE_CLIENT_SECRET",
+            "AZURE_TENANT_ID"
+          )
+          $missing = $required | Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) }
+          if ($missing.Count -gt 0) {
+            throw "Windows Azure Trusted Signing is missing required environment values: $($missing -join ', ')"
+          }
+
       - name: Build Windows installer
+        env:
+          THREADLINES_DESKTOP_SIGNED: ${{ (vars.THREADLINES_DESKTOP_SIGNED == 'true' || vars.BADCODE_DESKTOP_SIGNED == 'true') && 'true' || 'false' }}
+          AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ vars.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME }}
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ vars.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ vars.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ vars.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
         run: >
           vp exec vp run dist:desktop:artifact --
           --platform win
@@ -424,6 +463,30 @@ jobs:
       - name: List release assets
         shell: pwsh
         run: Get-ChildItem release | Select-Object Name, Length
+
+      - name: Verify Windows installer signature
+        shell: pwsh
+        run: |
+          $installers = Get-ChildItem release -Filter *.exe
+          if ($installers.Count -eq 0) {
+            throw "No Windows installer executable was produced."
+          }
+
+          $signatures = $installers | ForEach-Object {
+            $signature = Get-AuthenticodeSignature -FilePath $_.FullName
+            [pscustomobject]@{
+              Name = $_.Name
+              Status = $signature.Status
+              Publisher = $signature.SignerCertificate.Subject
+              Issuer = $signature.SignerCertificate.Issuer
+            }
+          }
+          $signatures | Format-Table -AutoSize
+
+          $invalid = $signatures | Where-Object { $_.Status -ne "Valid" }
+          if ($invalid.Count -gt 0) {
+            throw "Windows release assets must have a valid Authenticode signature before upload."
+          }
 
       - name: Upload Windows assets to draft release
         shell: bash
