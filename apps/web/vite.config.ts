@@ -2,6 +2,7 @@ import tailwindcss from "@tailwindcss/vite";
 import react, { reactCompilerPreset } from "@vitejs/plugin-react";
 import babel from "@rolldown/plugin-babel";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
+import { execFileSync } from "node:child_process";
 import { defineProject, type TestProjectInlineConfiguration } from "vite-plus/test/config";
 import "vite-plus/test/config";
 import { defineConfig } from "vite-plus";
@@ -11,7 +12,11 @@ const port = Number(process.env.PORT ?? 5733);
 const host = process.env.HOST?.trim() || "localhost";
 const configuredWsUrl = process.env.VITE_WS_URL?.trim();
 const configuredHostedAppChannel = process.env.VITE_HOSTED_APP_CHANNEL?.trim() || "";
-const configuredAppVersion = process.env.APP_VERSION?.trim() || pkg.version;
+const configuredAppVersion =
+  process.env.APP_VERSION?.trim() ||
+  process.env.VITE_APP_VERSION?.trim() ||
+  resolveGitReleaseVersion() ||
+  pkg.version;
 const defaultHostedAppUrl = "https://app.threadlines.dev";
 const configuredHostedAppUrl = (() => {
   const explicitHostedAppUrl = process.env.VITE_HOSTED_APP_URL?.trim();
@@ -36,6 +41,29 @@ const buildSourcemap =
     : sourcemapEnv === "hidden"
       ? "hidden"
       : true;
+
+function stripVersionTagPrefix(version: string): string {
+  return version.trim().replace(/^v(?=\d+\.\d+\.\d+(?:[-+]|$))/, "");
+}
+
+function readGitOutput(args: ReadonlyArray<string>): string | undefined {
+  try {
+    const output = execFileSync("git", args, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return output.length > 0 ? output : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveGitReleaseVersion(): string | undefined {
+  const tag =
+    readGitOutput(["describe", "--tags", "--exact-match", "HEAD"]) ??
+    readGitOutput(["describe", "--tags", "--abbrev=0"]);
+  return tag ? stripVersionTagPrefix(tag) : undefined;
+}
 
 function resolveDevProxyTarget(wsUrl: string | undefined): string | undefined {
   if (!wsUrl) {

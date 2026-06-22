@@ -16,6 +16,10 @@ describe("versionSkew", () => {
     expect(resolveVersionMismatch(APP_VERSION)).toBeNull();
   });
 
+  it("does not warn when the server reports a semver tag with a v prefix", () => {
+    expect(resolveVersionMismatch(`v${APP_VERSION}`)).toBeNull();
+  });
+
   it("returns a mismatch when the server version differs from the client", () => {
     expect(resolveVersionMismatch("9.9.9")).toEqual({
       clientVersion: APP_VERSION,

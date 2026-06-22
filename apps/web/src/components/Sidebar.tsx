@@ -398,7 +398,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   const isPinned = thread.pinnedAt !== null;
   const threadMetaClassName = isConfirmingArchive
     ? "pointer-events-none opacity-0"
-    : "pointer-events-none transition-opacity duration-150 max-sm:pr-6 group-hover/menu-sub-item:opacity-0 group-focus-within/menu-sub-item:opacity-0";
+    : "pointer-events-none transition-opacity duration-150 max-sm:hidden group-hover/menu-sub-item:opacity-0 group-focus-within/menu-sub-item:opacity-0";
   const clearConfirmingArchive = useCallback(() => {
     setConfirmingArchiveThreadKey((current) => (current === threadKey ? null : current));
   }, [setConfirmingArchiveThreadKey, threadKey]);

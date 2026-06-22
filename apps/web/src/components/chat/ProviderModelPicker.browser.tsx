@@ -317,6 +317,28 @@ function getModelPickerTabText(tabId: string) {
   return tab!.textContent?.replace(/\s+/g, "") ?? "";
 }
 
+async function openModelPicker() {
+  const trigger = document.querySelector<HTMLButtonElement>(
+    '[data-chat-provider-model-picker="true"]',
+  );
+  expect(trigger).not.toBeNull();
+  trigger!.click();
+
+  await vi.waitFor(() => {
+    expect(document.querySelector(".model-picker-list")).not.toBeNull();
+  });
+}
+
+async function clickModelPickerTab(tabId: string) {
+  const tab = document.querySelector<HTMLButtonElement>(`[data-model-picker-tab="${tabId}"]`);
+  expect(tab).not.toBeNull();
+  tab!.click();
+
+  await vi.waitFor(() => {
+    expect(tab!.getAttribute("aria-selected")).toBe("true");
+  });
+}
+
 describe("ProviderModelPicker", () => {
   beforeEach(async () => {
     // Reset test environment before each test
@@ -336,7 +358,7 @@ describe("ProviderModelPicker", () => {
     });
 
     try {
-      await page.getByRole("button").click();
+      await openModelPicker();
 
       await vi.waitFor(() => {
         const listText = getModelPickerListText();
@@ -345,7 +367,7 @@ describe("ProviderModelPicker", () => {
         expect(getModelPickerTabOrder()).toEqual(["favorites", "codex", "claudeAgent"]);
       });
 
-      await page.getByRole("button", { name: /^Codex/ }).click();
+      await clickModelPickerTab("codex");
 
       await vi.waitFor(() => {
         expect(getModelPickerListText()).toContain("GPT-5 Codex");
@@ -371,7 +393,7 @@ describe("ProviderModelPicker", () => {
     });
 
     try {
-      await page.getByRole("button").click();
+      await openModelPicker();
 
       await vi.waitFor(() => {
         expect(getModelPickerTabOrder()).toEqual(["favorites", "codex", "claudeAgent"]);
@@ -416,7 +438,7 @@ describe("ProviderModelPicker", () => {
     });
 
     try {
-      await page.getByRole("button").click();
+      await openModelPicker();
 
       await vi.waitFor(() => {
         expect(getModelPickerTabOrder()).toEqual(["favorites", "codex", "claudeAgent"]);
@@ -440,13 +462,13 @@ describe("ProviderModelPicker", () => {
     });
 
     try {
-      await page.getByRole("button").click();
+      await openModelPicker();
 
       await vi.waitFor(() => {
         expect(getModelPickerTabOrder()).toEqual(["favorites", "codex", "claudeAgent"]);
       });
 
-      await page.getByRole("button", { name: /^Codex/ }).click();
+      await clickModelPickerTab("codex");
 
       await vi.waitFor(() => {
         expect(getVisibleModelNames()).toContain("GPT-5 Codex");
@@ -474,7 +496,7 @@ describe("ProviderModelPicker", () => {
     });
 
     try {
-      await page.getByRole("button").click();
+      await openModelPicker();
 
       await vi.waitFor(() => {
         expect(getVisibleModelNames()).toEqual(["Claude Haiku 4.5", "Claude Sonnet 4.6"]);
@@ -493,7 +515,7 @@ describe("ProviderModelPicker", () => {
     });
 
     try {
-      await page.getByRole("button").click();
+      await openModelPicker();
 
       await vi.waitFor(() => {
         const searchInput = document.querySelector<HTMLInputElement>(
@@ -526,7 +548,7 @@ describe("ProviderModelPicker", () => {
     });
 
     try {
-      await page.getByRole("button").click();
+      await openModelPicker();
 
       await vi.waitFor(() => {
         const text = document.body.textContent ?? "";
@@ -602,17 +624,16 @@ describe("ProviderModelPicker", () => {
     });
 
     try {
-      await page.getByRole("button").click();
+      await openModelPicker();
 
       await vi.waitFor(() => {
         expect(getModelPickerTabOrder()).toEqual(["codex", "codex_personal"]);
-        expect(getModelPickerListText()).not.toContain("Codex Isolated");
-        expect(getModelPickerListText()).toContain("Codex Work");
-        expect(getModelPickerListText()).toContain("Codex Personal");
+        expect(getModelPickerTabText("codex")).toContain("CodexWork");
+        expect(getModelPickerTabText("codex_personal")).toContain("CodexPersonal");
         expect(getVisibleModelNames()).toEqual(["GPT Work"]);
       });
 
-      await page.getByRole("button", { name: /^Codex Personal/ }).click();
+      await clickModelPickerTab("codex_personal");
 
       await vi.waitFor(() => {
         expect(getVisibleModelNames()).toEqual(["GPT Personal"]);
@@ -705,7 +726,7 @@ describe("ProviderModelPicker", () => {
         expect(trigger?.textContent).toContain("Opus 4.5");
       });
 
-      await page.getByRole("button").click();
+      await openModelPicker();
 
       await vi.waitFor(() => {
         expect(getVisibleModelNames()).toEqual(["Enterprise · Opus 4.5"]);
@@ -723,7 +744,7 @@ describe("ProviderModelPicker", () => {
     });
 
     try {
-      await page.getByRole("button").click();
+      await openModelPicker();
 
       await vi.waitFor(() => {
         const text = document.body.textContent ?? "";
@@ -753,7 +774,7 @@ describe("ProviderModelPicker", () => {
     });
 
     try {
-      await page.getByRole("button").click();
+      await openModelPicker();
 
       const searchInput = page.getByPlaceholder("Search models...");
       await userEvent.click(searchInput);
@@ -792,7 +813,7 @@ describe("ProviderModelPicker", () => {
     });
 
     try {
-      await page.getByRole("button").click();
+      await openModelPicker();
 
       await vi.waitFor(() => {
         expect(getModelPickerTabOrder()).toEqual(["favorites", "codex", "claudeAgent"]);
@@ -827,7 +848,7 @@ describe("ProviderModelPicker", () => {
     });
 
     try {
-      await page.getByRole("button").click();
+      await openModelPicker();
       await page.getByPlaceholder("Search models...").fill("opus");
 
       await vi.waitFor(() => {
@@ -837,7 +858,7 @@ describe("ProviderModelPicker", () => {
         expect(getVisibleModelNames()).toEqual(["Claude Opus 4.6"]);
       });
 
-      await page.getByRole("button", { name: /^Claude/ }).click();
+      await clickModelPickerTab("claudeAgent");
 
       await vi.waitFor(() => {
         expect(getVisibleModelNames()).toEqual(["Claude Opus 4.6"]);
@@ -856,7 +877,7 @@ describe("ProviderModelPicker", () => {
     });
 
     try {
-      await page.getByRole("button").click();
+      await openModelPicker();
 
       const searchInput = page.getByPlaceholder("Search models...");
       await searchInput.click();
@@ -884,7 +905,7 @@ describe("ProviderModelPicker", () => {
     });
 
     try {
-      await page.getByRole("button").click();
+      await openModelPicker();
 
       await vi.waitFor(() => {
         const text = document.body.textContent ?? "";
@@ -953,7 +974,7 @@ describe("ProviderModelPicker", () => {
     });
 
     try {
-      await page.getByRole("button").click();
+      await openModelPicker();
       await page.getByPlaceholder("Search models...").fill("entr op");
 
       await vi.waitFor(() => {
@@ -1025,7 +1046,7 @@ describe("ProviderModelPicker", () => {
     });
 
     try {
-      await page.getByRole("button").click();
+      await openModelPicker();
       await page.getByPlaceholder("Search models...").fill("model");
 
       await vi.waitFor(() => {
@@ -1050,7 +1071,7 @@ describe("ProviderModelPicker", () => {
     });
 
     try {
-      await page.getByRole("button").click();
+      await openModelPicker();
 
       await vi.waitFor(() => {
         const text = document.body.textContent ?? "";
@@ -1095,7 +1116,7 @@ describe("ProviderModelPicker", () => {
     });
 
     try {
-      await page.getByRole("button").click();
+      await openModelPicker();
 
       await vi.waitFor(() => {
         const text = document.body.textContent ?? "";
@@ -1136,14 +1157,14 @@ describe("ProviderModelPicker", () => {
     });
 
     try {
-      await page.getByRole("button").click();
+      await openModelPicker();
 
       await vi.waitFor(() => {
         expect(getModelPickerTabOrder()[0]).toBe("favorites");
         expect(getVisibleModelNames()).toEqual(["GPT-5.3 Codex"]);
       });
 
-      await page.getByRole("button", { name: /^Codex/ }).click();
+      await clickModelPickerTab("codex");
 
       await vi.waitFor(() => {
         expect(getVisibleModelNames()).toEqual(["GPT-5 Codex", "GPT-5.3 Codex"]);
@@ -1170,8 +1191,8 @@ describe("ProviderModelPicker", () => {
     });
 
     try {
-      await page.getByRole("button").click();
-      await page.getByRole("button", { name: /^Claude/ }).click();
+      await openModelPicker();
+      await clickModelPickerTab("claudeAgent");
 
       await vi.waitFor(() => {
         const favoriteButton = getModelPickerListElement().querySelector<HTMLButtonElement>(
@@ -1195,7 +1216,7 @@ describe("ProviderModelPicker", () => {
     });
 
     try {
-      await page.getByRole("button").click();
+      await openModelPicker();
 
       await vi.waitFor(() => {
         const text = document.body.textContent ?? "";
@@ -1280,7 +1301,7 @@ describe("ProviderModelPicker", () => {
     });
 
     try {
-      await page.getByRole("button").click();
+      await openModelPicker();
 
       await vi.waitFor(() => {
         const text = document.body.textContent ?? "";
@@ -1298,7 +1319,7 @@ describe("ProviderModelPicker", () => {
     });
 
     try {
-      await page.getByRole("button").click();
+      await openModelPicker();
 
       await vi.waitFor(() => {
         expect(document.body.textContent ?? "").toContain("GPT-5.3 Codex Spark");
@@ -1329,7 +1350,7 @@ describe("ProviderModelPicker", () => {
     });
 
     try {
-      await page.getByRole("button").click();
+      await openModelPicker();
 
       await vi.waitFor(() => {
         const text = document.body.textContent ?? "";

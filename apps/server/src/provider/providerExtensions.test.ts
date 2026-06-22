@@ -3,7 +3,9 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
@@ -21,8 +23,10 @@ import {
   mapCodexMcpServers,
   parseClaudeMcpList,
   parseClaudePluginList,
+  readProviderInstructionFiles,
   readProviderExtensionsInventory,
   refreshProviderExtensionPluginMarketplaces,
+  writeInstructionFile,
 } from "./providerExtensions.ts";
 
 const encoder = new TextEncoder();
@@ -323,4 +327,60 @@ describe("provider extensions inventory", () => {
       assert.equal(calls[0]?.cwd, process.cwd());
     }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
   });
+
+  it.effect("creates missing project instruction files at the canonical path", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-provider-instructions-",
+      });
+
+      const result = yield* writeInstructionFile({
+        cwd,
+        kind: "claude-instructions",
+        contents: "Use concise responses.\n",
+      });
+
+      assert.equal(result.file.relativePath, "CLAUDE.md");
+      assert.equal(result.file.exists, true);
+      assert.equal(result.file.editable, true);
+      assert.equal(
+        yield* fileSystem.readFileString(path.join(cwd, "CLAUDE.md")),
+        "Use concise responses.\n",
+      );
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("does not write through symlinked project instruction files", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-provider-instructions-",
+      });
+      const symlinkTarget = "@AGENTS.md\n";
+
+      yield* fileSystem.symlink(symlinkTarget, path.join(cwd, "CLAUDE.md"));
+
+      const files = yield* readProviderInstructionFiles({ cwd });
+      const claudeFile = files.instructionFiles.find((file) => file.kind === "claude-instructions");
+
+      assert.equal(claudeFile?.relativePath, "CLAUDE.md");
+      assert.equal(claudeFile?.exists, true);
+      assert.equal(claudeFile?.editable, false);
+
+      const writeError = yield* writeInstructionFile({
+        cwd,
+        kind: "claude-instructions",
+        contents: "Use concise responses.\n",
+      }).pipe(Effect.flip);
+
+      assert.equal(
+        writeError.message,
+        "CLAUDE.md is a symbolic link and cannot be edited from settings.",
+      );
+      assert.equal(yield* fileSystem.exists(path.join(cwd, symlinkTarget)), false);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
 });

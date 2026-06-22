@@ -857,10 +857,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const [isComposerFooterCompact, setIsComposerFooterCompact] = useState(false);
   const [isComposerPrimaryActionsCompact, setIsComposerPrimaryActionsCompact] = useState(false);
   const [isComposerModelPickerOpen, setIsComposerModelPickerOpen] = useState(false);
-  const [isComposerFocused, setIsComposerFocused] = useState(false);
+  const [, setIsComposerFocused] = useState(false);
   const [isCapturingScreenshot, setIsCapturingScreenshot] = useState(false);
   const isMobileViewport = useMediaQuery("max-sm");
-  const isComposerCollapsedMobile = isMobileViewport && !isComposerFocused;
+  // Keep the real editor mounted on phones; the one-line proxy is fragile with mobile browser focus.
+  const isComposerCollapsedMobile = false;
   const canCaptureScreenshot =
     typeof window !== "undefined" && typeof window.desktopBridge?.captureScreenshot === "function";
 

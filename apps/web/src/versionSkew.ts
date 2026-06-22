@@ -23,7 +23,10 @@ type VersionMismatchDismissals = typeof VersionMismatchDismissalsSchema.Type;
 
 function normalizeVersion(version: string | null | undefined): string | null {
   const trimmed = version?.trim();
-  return trimmed && trimmed.length > 0 ? trimmed : null;
+  if (!trimmed) {
+    return null;
+  }
+  return trimmed.replace(/^v(?=\d+\.\d+\.\d+(?:[-+]|$))/, "");
 }
 
 export function resolveVersionMismatch(

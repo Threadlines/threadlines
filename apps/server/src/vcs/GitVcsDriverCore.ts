@@ -128,6 +128,75 @@ function parseBranchAb(value: string): { ahead: number; behind: number } {
   };
 }
 
+function decodeGitQuotedPath(value: string): string {
+  if (!value.startsWith('"') || !value.endsWith('"')) {
+    return value;
+  }
+
+  let decoded = "";
+  for (let index = 1; index < value.length - 1; index += 1) {
+    const char = value[index];
+    if (char !== "\\") {
+      decoded += char;
+      continue;
+    }
+
+    const escaped = value[index + 1];
+    if (escaped === undefined || index + 1 >= value.length - 1) {
+      decoded += "\\";
+      continue;
+    }
+    index += 1;
+
+    switch (escaped) {
+      case "a":
+        decoded += "\x07";
+        break;
+      case "b":
+        decoded += "\b";
+        break;
+      case "f":
+        decoded += "\f";
+        break;
+      case "n":
+        decoded += "\n";
+        break;
+      case "r":
+        decoded += "\r";
+        break;
+      case "t":
+        decoded += "\t";
+        break;
+      case "v":
+        decoded += "\v";
+        break;
+      case "\\":
+      case '"':
+        decoded += escaped;
+        break;
+      default: {
+        if (escaped < "0" || escaped > "7") {
+          decoded += escaped;
+          break;
+        }
+
+        let octal = escaped;
+        for (let offset = 0; offset < 2; offset += 1) {
+          const next = value[index + 1];
+          if (next === undefined || next < "0" || next > "7" || index + 1 >= value.length - 1) {
+            break;
+          }
+          octal += next;
+          index += 1;
+        }
+        decoded += String.fromCharCode(Number.parseInt(octal, 8));
+      }
+    }
+  }
+
+  return decoded;
+}
+
 function parseNumstatEntries(
   stdout: string,
 ): Array<{ path: string; insertions: number; deletions: number }> {
@@ -144,7 +213,7 @@ function parseNumstatEntries(
     const normalizedPath =
       renameArrowIndex >= 0 ? rawPath.slice(renameArrowIndex + " => ".length).trim() : rawPath;
     entries.push({
-      path: normalizedPath.length > 0 ? normalizedPath : rawPath,
+      path: decodeGitQuotedPath(normalizedPath.length > 0 ? normalizedPath : rawPath),
       insertions: Number.isFinite(added) ? added : 0,
       deletions: Number.isFinite(deleted) ? deleted : 0,
     });
@@ -205,7 +274,7 @@ function sliceAfterNthSpace(line: string, spaceCount: number): string | null {
 
 function parsePorcelainChange(line: string): ParsedPorcelainChange | null {
   if (line.startsWith("? ")) {
-    const path = line.slice(2).trim();
+    const path = decodeGitQuotedPath(line.slice(2).trim());
     return path.length > 0
       ? { path, originalPath: null, indexStatus: null, worktreeStatus: "untracked" }
       : null;
@@ -218,7 +287,7 @@ function parsePorcelainChange(line: string): ParsedPorcelainChange | null {
       return null;
     }
     return {
-      path,
+      path: decodeGitQuotedPath(path),
       originalPath: null,
       indexStatus: parsePorcelainStatusCode(statusToken[0] ?? "."),
       worktreeStatus: parsePorcelainStatusCode(statusToken[1] ?? "."),
@@ -232,20 +301,22 @@ function parsePorcelainChange(line: string): ParsedPorcelainChange | null {
       return null;
     }
     const [filePath = "", originalPath = ""] = payload.split("\t");
-    const path = filePath.trim();
+    const path = decodeGitQuotedPath(filePath.trim());
     if (path.length === 0) {
       return null;
     }
     return {
       path,
-      originalPath: originalPath.trim().length > 0 ? originalPath.trim() : null,
+      originalPath:
+        originalPath.trim().length > 0 ? decodeGitQuotedPath(originalPath.trim()) : null,
       indexStatus: parsePorcelainStatusCode(statusToken[0] ?? "."),
       worktreeStatus: parsePorcelainStatusCode(statusToken[1] ?? "."),
     };
   }
 
   if (line.startsWith("u ")) {
-    const path = sliceAfterNthSpace(line, 10);
+    const rawPath = sliceAfterNthSpace(line, 10);
+    const path = rawPath ? decodeGitQuotedPath(rawPath) : null;
     return path
       ? {
           path,

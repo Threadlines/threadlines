@@ -183,6 +183,13 @@ function makeInstructionFile(input: {
   };
 }
 
+const readSymbolicLinkTarget = Effect.fn("providerExtensions.readSymbolicLinkTarget")(function* (
+  filePath: string,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  return yield* fileSystem.readLink(filePath).pipe(Effect.catch(() => Effect.succeed(null)));
+});
+
 const readInstructionFile = Effect.fn("providerExtensions.readInstructionFile")(function* (
   cwd: string,
   kind: ProviderInstructionFileKind,
@@ -194,6 +201,21 @@ const readInstructionFile = Effect.fn("providerExtensions.readInstructionFile")(
   if (!target) {
     return yield* new ProviderExtensionsError({
       message: `Invalid ${instructionProviderLabel(kind)} instruction path.`,
+    });
+  }
+
+  const linkTarget = yield* readSymbolicLinkTarget(target.absolutePath);
+  if (linkTarget !== null) {
+    const contents = yield* fileSystem
+      .readFileString(target.absolutePath)
+      .pipe(Effect.catch(() => Effect.succeed(undefined)));
+    return makeInstructionFile({
+      kind,
+      absolutePath: target.absolutePath,
+      relativePath: target.relativePath,
+      exists: true,
+      editable: false,
+      ...(contents !== undefined ? { contents } : {}),
     });
   }
 
@@ -247,6 +269,13 @@ export const writeInstructionFile = Effect.fn("providerExtensions.writeInstructi
   if (!target) {
     return yield* new ProviderExtensionsError({
       message: `Invalid ${instructionProviderLabel(input.kind)} instruction path.`,
+    });
+  }
+
+  const linkTarget = yield* readSymbolicLinkTarget(target.absolutePath);
+  if (linkTarget !== null) {
+    return yield* new ProviderExtensionsError({
+      message: `${target.relativePath} is a symbolic link and cannot be edited from settings.`,
     });
   }
 

@@ -143,6 +143,13 @@ const COMPACT_FOOTER_VIEWPORT: ViewportSpec = {
   textTolerancePx: 56,
   attachmentTolerancePx: 56,
 };
+const PHONE_VIEWPORT: ViewportSpec = {
+  name: "phone",
+  width: 390,
+  height: 844,
+  textTolerancePx: 56,
+  attachmentTolerancePx: 56,
+};
 
 interface MountedChatView {
   [Symbol.asyncDispose]: () => Promise<void>;
@@ -2048,6 +2055,81 @@ describe("ChatView timeline estimator parity (full app)", () => {
       );
 
       expect(findButtonByText("Local checkout")).toBeNull();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the full composer editor mounted on phone viewports", async () => {
+    const mounted = await mountChatView({
+      viewport: PHONE_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-phone-composer-editor" as MessageId,
+        targetText: "phone composer editor",
+      }),
+    });
+
+    try {
+      const composerSurface = await waitForElement(
+        () => document.querySelector<HTMLElement>("[data-chat-composer-mobile-collapsed]"),
+        "Unable to find composer surface.",
+      );
+      const composerEditor = await waitForComposerEditor();
+
+      expect(composerSurface.getAttribute("data-chat-composer-mobile-collapsed")).toBe("false");
+      expect(findButtonContainingText("Ask anything...")).toBeNull();
+
+      composerEditor.click();
+      await waitForLayout();
+      expect(
+        document.activeElement === composerEditor || composerEditor.matches(":focus-within"),
+      ).toBe(true);
+
+      await pressComposerKey("m");
+      await waitForComposerText("m");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("hides mobile thread timestamps while touch actions are visible", async () => {
+    const mounted = await mountChatView({
+      viewport: PHONE_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-phone-thread-actions" as MessageId,
+        targetText: "phone thread actions",
+      }),
+    });
+
+    try {
+      const sidebarTrigger = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('button[data-sidebar="trigger"]'),
+        "Unable to find mobile sidebar trigger.",
+      );
+
+      sidebarTrigger.click();
+      await waitForLayout();
+
+      const threadRow = await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-row-${THREAD_ID}"]`),
+        "Unable to find phone thread row.",
+      );
+      const archiveButton = await waitForElement(
+        () =>
+          document.querySelector<HTMLButtonElement>(`[data-testid="thread-archive-${THREAD_ID}"]`),
+        "Unable to find archive button.",
+      );
+      const compactActions = archiveButton.parentElement;
+      const timestampWrapper =
+        Array.from(threadRow.querySelectorAll<HTMLElement>("span")).find((element) =>
+          element.className.includes("max-sm:hidden"),
+        ) ?? null;
+
+      expect(compactActions).not.toBeNull();
+      expect(timestampWrapper).not.toBeNull();
+      expect(getComputedStyle(compactActions!).opacity).toBe("1");
+      expect(getComputedStyle(compactActions!).pointerEvents).toBe("auto");
+      expect(getComputedStyle(timestampWrapper!).display).toBe("none");
     } finally {
       await mounted.cleanup();
     }
