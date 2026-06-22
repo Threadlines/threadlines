@@ -180,8 +180,8 @@ const readMacosScreenCapturePermissionStatus: Effect.Effect<MacosMediaAccessStat
   },
 );
 
-function isMacosScreenCapturePermissionBlocked(status: MacosMediaAccessStatus): boolean {
-  return status === "denied" || status === "restricted";
+function shouldMacosScreenCapturePreflightBlock(status: MacosMediaAccessStatus): boolean {
+  return status === "restricted";
 }
 
 function isMacosScreenCapturePermissionInactiveAfterAttempt(
@@ -419,7 +419,8 @@ const captureMacosInteractive = Effect.fn("desktop.screenCapture.macosInteractiv
 
   if (!input.environment.isDevelopment) {
     const permissionStatus = yield* readMacosScreenCapturePermissionStatus;
-    if (isMacosScreenCapturePermissionBlocked(permissionStatus)) {
+    yield* Effect.annotateCurrentSpan({ "macos.permission.preflight": permissionStatus });
+    if (shouldMacosScreenCapturePreflightBlock(permissionStatus)) {
       return yield* macosPermissionFailed(input.shell, permissionStatus, input.environment);
     }
   }
@@ -444,6 +445,10 @@ const captureMacosInteractive = Effect.fn("desktop.screenCapture.macosInteractiv
     }
     if (result.exitCode !== 0) {
       const statusAfterCapture = yield* readMacosScreenCapturePermissionStatus;
+      yield* Effect.annotateCurrentSpan({
+        "macos.permission.afterCapture": statusAfterCapture,
+        "macos.screencapture.exitCode": result.exitCode,
+      });
       if (isMacosScreenCapturePermissionInactiveAfterAttempt(statusAfterCapture)) {
         return yield* macosPermissionFailed(input.shell, statusAfterCapture, input.environment);
       }

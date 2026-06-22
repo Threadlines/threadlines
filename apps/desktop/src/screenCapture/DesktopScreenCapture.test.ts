@@ -291,13 +291,61 @@ describe("DesktopScreenCapture", () => {
     }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
   );
 
-  it.effect("does not start macOS capture while screen recording permission is denied", () =>
+  it.effect("attempts macOS capture when preflight screen recording status is denied", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "threadlines-capture-macos-permission-",
       });
       getMediaAccessStatusMock.mockReturnValue("denied");
+      createFromBufferMock.mockReturnValue(
+        makeNativeImage({ png: PNG_BYTES, width: 800, height: 500 }),
+      );
+      const openExternal = vi.fn(() => Effect.succeed(true));
+      const spawn = vi.fn((command) =>
+        Effect.gen(function* () {
+          if (command._tag === "StandardCommand") {
+            const outputPath = command.args.at(-1);
+            if (outputPath) {
+              yield* fileSystem.writeFile(outputPath, PNG_BYTES);
+            }
+          }
+          return makeProcess();
+        }),
+      );
+      const spawnerLayer = Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(spawn),
+      );
+
+      const result = yield* Effect.gen(function* () {
+        const screenCapture = yield* DesktopScreenCapture.DesktopScreenCapture;
+        return yield* screenCapture.captureScreenshot({ mode: "interactive" });
+      }).pipe(
+        Effect.provide(
+          screenCaptureLayer({
+            platform: "darwin",
+            baseDir,
+            isDevelopment: false,
+            openExternal,
+            spawnerLayer,
+          }),
+        ),
+      );
+
+      assert.equal(result.status, "captured");
+      assert.equal(spawn.mock.calls.length, 1);
+      assert.equal(openExternal.mock.calls.length, 0);
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  );
+
+  it.effect("does not start macOS capture while screen recording permission is restricted", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-capture-macos-permission-restricted-",
+      });
+      getMediaAccessStatusMock.mockReturnValue("restricted");
       const openExternal = vi.fn(() => Effect.succeed(true));
       const spawn = vi.fn(() => Effect.succeed(makeProcess()));
       const spawnerLayer = Layer.succeed(
@@ -322,7 +370,7 @@ describe("DesktopScreenCapture", () => {
 
       assert.equal(result.status, "failed");
       if (result.status !== "failed") return;
-      assert.include(result.message, "Threadlines screen recording permission as denied");
+      assert.include(result.message, "Threadlines screen recording permission as restricted");
       assert.include(result.message, "Screen & System Audio Recording");
       assert.include(result.message, "quit and reopen Threadlines");
       assert.equal(spawn.mock.calls.length, 0);
