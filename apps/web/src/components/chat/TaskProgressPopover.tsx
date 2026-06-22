@@ -21,7 +21,7 @@ const SUMMARY_DISCLOSURE_MIN_LENGTH = 44;
 
 function badgeClassName(tone: PlanTaskBadgeState["tone"], pulse: boolean) {
   return cn(
-    "ml-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-[4px] px-1 font-semibold text-[10px] leading-none tabular-nums",
+    "ml-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-[var(--app-radius-badge)] px-1 font-semibold text-[10px] leading-none tabular-nums",
     tone === "active" && "bg-primary/15 text-primary-readable",
     tone === "complete" && "bg-success/15 text-success",
     tone === "ready" && "bg-amber-500/15 text-amber-600 dark:text-amber-400",
@@ -170,7 +170,7 @@ export const TaskProgressPopover = memo(function TaskProgressPopover({
                   variant="outline"
                   size="xs"
                   className={cn(
-                    "h-6 min-w-6 rounded-[5px] px-1.5 text-[11px] [-webkit-app-region:no-drag]",
+                    "h-6 min-w-6 px-1.5 text-[11px] [-webkit-app-region:no-drag]",
                     badge ? "pr-1" : undefined,
                   )}
                   aria-label={triggerLabel}

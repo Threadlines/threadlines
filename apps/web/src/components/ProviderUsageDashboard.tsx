@@ -261,7 +261,7 @@ function TokenActivitySquare(props: { readonly cell: TokenActivityCell }) {
             role="img"
             aria-label={props.cell.tooltip}
             className={cn(
-              "block aspect-square w-full min-w-0 cursor-default rounded-[3px] transition-[transform,filter,box-shadow] duration-150 ease-out",
+              "block aspect-square w-full min-w-0 cursor-default rounded-[var(--app-radius-tiny)] transition-[transform,filter,box-shadow] duration-150 ease-out",
               "hover:z-10 hover:-translate-y-px hover:scale-110 hover:brightness-125 hover:ring-1 hover:ring-primary/45",
               tokenActivityColorClass(props.cell.intensityPercent),
             )}
@@ -309,7 +309,7 @@ function TokenActivityWeekColumn(props: {
                 key={cell.dateKey}
                 aria-hidden="true"
                 className={cn(
-                  "block aspect-square w-full min-w-0 rounded-[3px] transition-[transform,filter,box-shadow] duration-150 ease-out",
+                  "block aspect-square w-full min-w-0 rounded-[var(--app-radius-tiny)] transition-[transform,filter,box-shadow] duration-150 ease-out",
                   "group-hover:z-10 group-hover:scale-105 group-hover:brightness-125 group-hover:ring-1 group-hover:ring-primary/40",
                   tokenActivityColorClass(cell.intensityPercent),
                 )}

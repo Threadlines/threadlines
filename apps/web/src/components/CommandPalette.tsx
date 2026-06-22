@@ -895,7 +895,7 @@ function OpenCommandPaletteDialog() {
                   <Button
                     variant="outline"
                     size="xs"
-                    className="h-5 rounded-[.25rem] px-1.5 text-[10px] text-warning-foreground"
+                    className="h-5 rounded-[var(--app-radius-badge)] px-1.5 text-[10px] text-warning-foreground"
                     onClick={() => {
                       openSourceControlSettings();
                     }}

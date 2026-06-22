@@ -857,7 +857,7 @@ export function TerminalViewport({
   return (
     <div
       ref={containerRef}
-      className="relative h-full w-full overflow-hidden rounded-[4px] bg-background"
+      className="relative h-full w-full overflow-hidden rounded-[var(--app-radius-badge)] bg-background"
     />
   );
 }

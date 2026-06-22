@@ -15,7 +15,7 @@ const COLLAPSED_SUBAGENT_LIMIT = 3;
 
 function badgeClassName(tone: SubagentProgressState["badge"]["tone"], pulse: boolean) {
   return cn(
-    "ml-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-[4px] px-1 font-semibold text-[10px] leading-none tabular-nums",
+    "ml-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-[var(--app-radius-badge)] px-1 font-semibold text-[10px] leading-none tabular-nums",
     tone === "active" && "bg-primary/15 text-primary-readable",
     tone === "complete" && "bg-success/15 text-success",
     tone === "warning" && "bg-destructive/15 text-destructive",
@@ -79,7 +79,7 @@ export const SubagentProgressPopover = memo(function SubagentProgressPopover({
                   variant="outline"
                   size="xs"
                   className={cn(
-                    "h-6 min-w-6 rounded-[5px] px-1.5 text-[11px] [-webkit-app-region:no-drag]",
+                    "h-6 min-w-6 px-1.5 text-[11px] [-webkit-app-region:no-drag]",
                     "pr-1",
                   )}
                   aria-label={state.badge.ariaLabel}
