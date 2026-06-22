@@ -519,6 +519,45 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         : [userMessageEvent, turnStartRequestedEvent];
     }
 
+    case "thread.follow-up.submit": {
+      const targetThread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const activeTurnId = targetThread.session?.activeTurnId ?? null;
+      if (targetThread.session?.status !== "running" || activeTurnId === null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' does not have an active running provider turn to steer.`,
+        });
+      }
+      if (activeTurnId !== command.turnId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Follow-up expected active turn '${command.turnId}' but thread '${command.threadId}' is running '${activeTurnId}'.`,
+        });
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.follow-up-submitted",
+        payload: {
+          threadId: command.threadId,
+          turnId: command.turnId,
+          messageId: command.message.messageId,
+          role: "user",
+          text: command.message.text,
+          attachments: command.message.attachments,
+          createdAt: command.createdAt,
+        },
+      };
+    }
+
     case "thread.turn.interrupt": {
       yield* requireThread({
         readModel,
@@ -729,6 +768,32 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           streaming: false,
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.follow-up.accept": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.follow-up-accepted",
+        payload: {
+          threadId: command.threadId,
+          turnId: command.turnId,
+          messageId: command.message.messageId,
+          role: "user",
+          text: command.message.text,
+          attachments: command.message.attachments,
+          createdAt: command.createdAt,
         },
       };
     }

@@ -496,7 +496,10 @@ export const TraitsPicker = memo(function TraitsPicker({
         <span className="flex min-w-0 w-full items-center gap-1.5 overflow-hidden">
           <SlidersHorizontalIcon
             aria-hidden="true"
-            className={cn("size-3 shrink-0 opacity-70", ultracodeActive && "text-[#c9a8ff]")}
+            className={cn(
+              "size-3 shrink-0 opacity-70",
+              ultracodeActive && "text-[#7c3aed] dark:text-[#c9a8ff]",
+            )}
           />
           {primaryTriggerLabel ? (
             <span className={cn("min-w-0 truncate", ultracodeActive && "ultracode-trait-label")}>

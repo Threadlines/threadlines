@@ -209,7 +209,7 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain("Context compacted");
-    expect(markup).toContain("Activity");
+    expect(markup).toContain('data-work-activity-inline="true"');
   });
 
   it("summarizes command-heavy activity groups by default", async () => {
@@ -239,7 +239,9 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("Activity (4)");
+    expect(markup).toContain('data-work-activity-receipt="true"');
+    expect(markup).toContain("Activity");
+    expect(markup).toContain("4 actions");
     expect(markup).toContain("Explored project");
     expect(markup).toContain("1 search");
     expect(markup).toContain("1 file read");
@@ -592,21 +594,64 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("Current activity");
-    expect(markup).toContain("3 earlier events");
-    expect(markup).toContain('aria-label="Show 3 previous activities"');
-    expect(markup).toContain("Show previous");
+    // The live turn renders as an accent spine: the most recent steps stay
+    // visible (dimming as they recede toward the live node) while the oldest
+    // fold into a single count, and the running command keeps its pulse.
+    expect(markup).not.toContain("Current activity");
+    expect(markup).toContain("2 earlier events");
+    expect(markup).not.toContain("Show previous");
     expect(markup).toContain('data-live-activity-strip="true"');
     expect(markup).not.toContain("min-h-[3.25rem]");
     expect(markup).not.toContain("git status --short");
     expect(markup).not.toContain("rg -n");
-    expect(markup).not.toContain("apps/web/src/session-logic.ts");
-    expect(markup).toContain("git diff --stat");
+    expect(markup).toContain("Read session-logic.ts");
+    expect(markup).toContain("Checked git state");
     expect(markup).toContain("Verifying bun typecheck");
     expect(markup).toContain("bun typecheck");
-    expect(markup).toMatch(/aria-label="Tool still running"[\s\S]*Verifying bun typecheck/u);
+    // The running tool is the current activity: it carries the single live node
+    // (halo) on the spine rather than a detached inline pulse off the thread.
+    expect((markup.match(/class="thread-halo /gu) ?? []).length).toBe(1);
+    expect(markup).not.toContain("Tool still running");
     expect(markup).not.toContain("Explored project");
     expect(markup).not.toContain("View transcript");
+  });
+
+  it("connects an untracked reasoning step to the single live terminus", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const turnId = TurnId.make("turn-1");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        activeTurnInProgress
+        activeTurnId={turnId}
+        activeStatusLabel="Working"
+        activeTurnStartedAt="2026-03-17T19:12:21.000Z"
+        timelineEntries={[
+          {
+            id: "entry-think",
+            kind: "work" as const,
+            createdAt: "2026-03-17T19:12:25.000Z",
+            entry: {
+              id: "work-think",
+              createdAt: "2026-03-17T19:12:25.000Z",
+              label: "Thinking",
+              tone: "thinking" as const,
+              detail: "Working through the next step",
+            },
+          },
+        ]}
+      />,
+    );
+
+    // Reasoning entries carry no turn id, but the step still joins the accent
+    // spine (not a settled group) so it connects down to the live node.
+    expect(markup).toContain('data-live-activity-strip="true"');
+    expect(markup).not.toContain('data-work-activity-inline="true"');
+    expect(markup).toContain("Working through the next step");
+    // The standalone working row is absorbed into the spine: exactly one live
+    // node (halo) terminates the thread.
+    expect((markup.match(/class="thread-halo /gu) ?? []).length).toBe(1);
   });
 
   it("renders unpaired output-only command activity as inactive progress", async () => {
@@ -1159,6 +1204,58 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("Running command");
   });
 
+  it("anchors the live node at the bottom once the assistant responds after work", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const turnId = TurnId.make("turn-1");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        activeTurnInProgress
+        activeTurnId={turnId}
+        activeStatusLabel="Working"
+        activeTurnStartedAt="2026-03-17T19:12:27.000Z"
+        timelineEntries={[
+          {
+            id: "command-entry",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "command-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Ran command",
+              tone: "tool",
+              itemType: "command_execution",
+              command: "codex list mcp resources",
+              executionState: "completed",
+              turnId,
+            },
+          },
+          {
+            id: "assistant-entry",
+            kind: "message",
+            createdAt: "2026-03-17T19:12:29.000Z",
+            message: {
+              id: MessageId.make("assistant-1"),
+              role: "assistant",
+              text: "The resource probe returned plugin and skill resources.",
+              turnId,
+              createdAt: "2026-03-17T19:12:29.000Z",
+              streaming: true,
+            },
+          },
+        ]}
+      />,
+    );
+
+    // The work group is no longer the tail, so it is not the live spine; the
+    // single live node sits at the very bottom (the working row), not stranded
+    // on the finished command above the message.
+    expect(markup).not.toContain('data-live-activity-strip="true"');
+    expect(markup).toContain("The resource probe returned");
+    expect((markup.match(/class="thread-halo /gu) ?? []).length).toBe(1);
+  });
+
   it("shows a live read label while a file-read command is running", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(
@@ -1238,6 +1335,7 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Turn changes (1)");
     expect(markup).toContain("Expand tree");
     expect(markup).toContain("View turn diff");
+    expect(markup).toContain("group/assistant-message block w-full max-w-full align-top");
     expect(markup).not.toContain("src/example.ts");
     expect(markup).not.toContain("Hide files");
   });

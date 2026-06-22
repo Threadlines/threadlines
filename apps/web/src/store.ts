@@ -1533,6 +1533,33 @@ function applyEnvironmentOrchestrationEvent(
         };
       });
 
+    case "thread.follow-up-submitted":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        updatedAt: event.payload.createdAt,
+      }));
+
+    case "thread.follow-up-accepted":
+      return updateThreadState(state, event.payload.threadId, (thread) => {
+        const message = mapMessage(thread.environmentId, {
+          id: event.payload.messageId,
+          role: event.payload.role,
+          text: event.payload.text,
+          ...(event.payload.attachments !== undefined
+            ? { attachments: event.payload.attachments }
+            : {}),
+          turnId: event.payload.turnId,
+          streaming: false,
+          createdAt: event.payload.createdAt,
+          updatedAt: event.payload.createdAt,
+        });
+        return {
+          ...thread,
+          messages: upsertThreadMessage(thread.messages, message),
+          updatedAt: event.payload.createdAt,
+        };
+      });
+
     case "thread.turn-interrupt-requested": {
       if (event.payload.turnId === undefined) {
         return state;

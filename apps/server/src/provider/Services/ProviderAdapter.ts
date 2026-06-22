@@ -16,6 +16,7 @@ import type {
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
+  ProviderSteerTurnInput,
   MessageId,
   ThreadId,
   ProviderTurnStartResult,
@@ -26,6 +27,7 @@ import type * as Stream from "effect/Stream";
 
 export type ProviderSessionModelSwitchMode = "in-session" | "unsupported";
 export type ProviderManualContextCompactionMode = "supported" | "unsupported";
+export type ProviderActiveTurnSteeringMode = "supported" | "unsupported";
 
 export interface ProviderAdapterCapabilities {
   /**
@@ -37,6 +39,11 @@ export interface ProviderAdapterCapabilities {
    * Declares whether this adapter can ask the provider to compact context on demand.
    */
   readonly manualContextCompaction?: ProviderManualContextCompactionMode;
+
+  /**
+   * Declares whether this adapter can add user input to the active running turn.
+   */
+  readonly activeTurnSteering?: ProviderActiveTurnSteeringMode;
 }
 
 export interface ProviderThreadTurnSnapshot {
@@ -77,6 +84,16 @@ export interface ProviderAdapterShape<TError> {
    */
   readonly sendTurn: (
     input: ProviderSendTurnInput,
+  ) => Effect.Effect<ProviderTurnStartResult, TError>;
+
+  /**
+   * Add user input to the active provider turn.
+   *
+   * Unsupported adapters should omit this method and leave
+   * `capabilities.activeTurnSteering` unset or `"unsupported"`.
+   */
+  readonly steerTurn?: (
+    input: ProviderSteerTurnInput,
   ) => Effect.Effect<ProviderTurnStartResult, TError>;
 
   /**

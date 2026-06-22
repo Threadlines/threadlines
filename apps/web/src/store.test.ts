@@ -686,6 +686,38 @@ describe("incremental orchestration updates", () => {
     expect(sidebarThreads[0]?.session?.orchestrationStatus).toBe("starting");
   });
 
+  it("adds accepted follow-ups as inline user messages", () => {
+    const threadId = ThreadId.make("thread-1");
+    const turnId = TurnId.make("turn-1");
+    const messageId = MessageId.make("message-follow-up-1");
+    const baseState = makeState(makeThread({ id: threadId }));
+
+    const nextState = applyOrchestrationEvent(
+      baseState,
+      makeEvent("thread.follow-up-accepted", {
+        threadId,
+        turnId,
+        messageId,
+        role: "user",
+        text: "steer the running work",
+        createdAt: "2026-02-27T00:00:02.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    const thread = selectThreadByRef(nextState, scopeThreadRef(localEnvironmentId, threadId));
+    expect(thread?.messages).toHaveLength(1);
+    expect(thread?.messages[0]).toMatchObject({
+      id: messageId,
+      role: "user",
+      text: "steer the running work",
+      turnId,
+      streaming: false,
+      createdAt: "2026-02-27T00:00:02.000Z",
+      completedAt: "2026-02-27T00:00:02.000Z",
+    });
+  });
+
   it("updates only the affected thread for message events", () => {
     const thread1 = makeThread({
       id: ThreadId.make("thread-1"),

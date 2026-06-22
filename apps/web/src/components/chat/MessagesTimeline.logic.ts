@@ -292,6 +292,10 @@ export function deriveMessagesTimelineRows(input: {
     const showCompletionDivider =
       timelineEntry.message.role === "assistant" &&
       input.completionDividerBeforeEntryId === timelineEntry.id;
+    const assistantTurnDiffSummary =
+      timelineEntry.message.role === "assistant"
+        ? input.turnDiffSummaryByAssistantMessageId.get(timelineEntry.message.id)
+        : undefined;
 
     nextRows.push({
       kind: "message",
@@ -312,8 +316,8 @@ export function deriveMessagesTimelineRows(input: {
           ? modelFallbackByTurn.get(turnSignalKey(timelineEntry.message.turnId))
           : undefined,
       assistantTurnDiffSummary:
-        timelineEntry.message.role === "assistant"
-          ? input.turnDiffSummaryByAssistantMessageId.get(timelineEntry.message.id)
+        assistantTurnDiffSummary?.turnId === timelineEntry.message.turnId
+          ? assistantTurnDiffSummary
           : undefined,
       revertTurnCount:
         timelineEntry.message.role === "user"
@@ -323,13 +327,19 @@ export function deriveMessagesTimelineRows(input: {
   }
 
   if (input.isWorking) {
-    markLatestLiveWorkRow(nextRows, input.activeTurnId ?? null);
-    nextRows.push({
-      kind: "working",
-      id: "working-indicator-row",
-      createdAt: input.activeTurnStartedAt,
-      label: input.activeStatusLabel ?? "Working",
-    });
+    // The live work group renders its own terminal live node (the spine's
+    // halo), so only fall back to a standalone working row when there is no
+    // live work group to absorb it (e.g. a turn that has not emitted any tool
+    // activity yet).
+    const absorbedByLiveWorkRow = markLatestLiveWorkRow(nextRows, input.activeTurnId ?? null);
+    if (!absorbedByLiveWorkRow) {
+      nextRows.push({
+        kind: "working",
+        id: "working-indicator-row",
+        createdAt: input.activeTurnStartedAt,
+        label: input.activeStatusLabel ?? "Working",
+      });
+    }
   }
 
   return nextRows;
@@ -430,18 +440,27 @@ function concreteTimelineEntryTurnId(entry: TimelineEntry): TurnId | null | unde
   return undefined;
 }
 
-function markLatestLiveWorkRow(rows: MessagesTimelineRow[], activeTurnId: TurnId | null) {
-  for (let index = rows.length - 1; index >= 0; index -= 1) {
-    const row = rows[index];
-    if (!row || row.kind !== "work") {
-      continue;
-    }
-    if (!workRowMatchesActiveTurn(row, activeTurnId)) {
-      continue;
-    }
-    rows[index] = { ...row, isLive: true };
-    return;
+function markLatestLiveWorkRow(rows: MessagesTimelineRow[], activeTurnId: TurnId | null): boolean {
+  // The live work group must be the tail of the timeline. Once the assistant
+  // emits a message (or any other row) after the work, that work is no longer
+  // the current activity — the standalone working row then anchors the live
+  // node at the very bottom instead of stranding a halo on a finished step.
+  const lastIndex = rows.length - 1;
+  const lastRow = rows[lastIndex];
+  if (!lastRow || lastRow.kind !== "work") {
+    return false;
   }
+  // Reasoning and other lifecycle entries arrive without a turn id, so a tail
+  // work group that carries no turn association is still treated as the live
+  // one rather than handed off to a detached working row.
+  const isActiveTurnWork =
+    workRowMatchesActiveTurn(lastRow, activeTurnId) ||
+    (activeTurnId !== null && lastRow.groupedEntries.every((entry) => entry.turnId === undefined));
+  if (!isActiveTurnWork) {
+    return false;
+  }
+  rows[lastIndex] = { ...lastRow, isLive: true };
+  return true;
 }
 
 function workRowMatchesActiveTurn(

@@ -35,7 +35,7 @@ export function DiffPanelShell(props: {
       onKeyDown={handleKeyDown}
     >
       <div className="drag-region shrink-0 border-b border-border">
-        <div className="@container/source-control-title flex h-8 items-center justify-between gap-2 px-3 py-1 wco:h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
+        <div className="@container/source-control-title flex h-12 items-center justify-between gap-2 px-4 py-2 wco:min-h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
           {props.header}
         </div>
       </div>

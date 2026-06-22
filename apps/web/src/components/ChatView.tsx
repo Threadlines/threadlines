@@ -1733,12 +1733,19 @@ export default function ChatView(props: ChatViewProps) {
     useTurnDiffSummaries(activeThread);
   const turnDiffSummaryByAssistantMessageId = useMemo(() => {
     const byMessageId = new Map<MessageId, TurnDiffSummary>();
+    const assistantTurnIdByMessageId = new Map<MessageId, TurnId | null | undefined>();
+    for (const message of activeThread?.messages ?? []) {
+      if (message.role === "assistant") {
+        assistantTurnIdByMessageId.set(message.id, message.turnId);
+      }
+    }
     for (const summary of turnDiffSummaries) {
       if (!summary.assistantMessageId) continue;
+      if (assistantTurnIdByMessageId.get(summary.assistantMessageId) !== summary.turnId) continue;
       byMessageId.set(summary.assistantMessageId, summary);
     }
     return byMessageId;
-  }, [turnDiffSummaries]);
+  }, [activeThread?.messages, turnDiffSummaries]);
   const revertTurnCountByUserMessageId = useMemo(() => {
     const byUserMessageId = new Map<MessageId, number>();
     for (let index = 0; index < timelineEntries.length; index += 1) {
@@ -3052,10 +3059,21 @@ export default function ChatView(props: ChatViewProps) {
   const onSend = async (e?: { preventDefault: () => void }) => {
     e?.preventDefault();
     const api = readEnvironmentApi(environmentId);
+    const activeSteerTurnId =
+      activeThread?.session?.status === "running" && activeThread.session.activeTurnId != null
+        ? activeThread.session.activeTurnId
+        : activeThread?.latestTurn?.state === "running"
+          ? activeThread.latestTurn.turnId
+          : null;
+    const canSubmitSteeringFollowUp =
+      phase === "running" &&
+      isServerThread &&
+      activeThreadKey !== null &&
+      activeSteerTurnId !== null;
     if (
       !api ||
       !activeThread ||
-      isSendBusy ||
+      (isSendBusy && !canSubmitSteeringFollowUp) ||
       isConnecting ||
       activeEnvironmentUnavailable ||
       sendInFlightRef.current
@@ -3129,7 +3147,7 @@ export default function ChatView(props: ChatViewProps) {
     const threadIdForSend = activeThread.id;
     const isFirstMessage = !isServerThread || activeThread.messages.length === 0;
     const steeringThreadKey = activeThreadKey;
-    const isSteeringFollowUp = phase === "running" && isServerThread && steeringThreadKey !== null;
+    const isSteeringFollowUp = canSubmitSteeringFollowUp && steeringThreadKey !== null;
     const baseBranchForWorktree =
       isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath
         ? activeThreadBranch
@@ -3145,7 +3163,9 @@ export default function ChatView(props: ChatViewProps) {
     }
 
     sendInFlightRef.current = true;
-    beginLocalDispatch({ preparingWorktree: Boolean(baseBranchForWorktree) });
+    if (!isSteeringFollowUp) {
+      beginLocalDispatch({ preparingWorktree: Boolean(baseBranchForWorktree) });
+    }
 
     const composerImagesSnapshot = [...composerImages];
     const composerTerminalContextsSnapshot = [...sendableComposerTerminalContexts];
@@ -3153,10 +3173,6 @@ export default function ChatView(props: ChatViewProps) {
       promptForSend,
       composerTerminalContextsSnapshot,
     );
-    const steeringPreviewText =
-      messageTextForSend.trim() ||
-      composerImagesSnapshot.map((image) => image.name).join(", ") ||
-      IMAGE_ONLY_BOOTSTRAP_PROMPT;
     const messageIdForSend = newMessageId();
     const messageCreatedAt = new Date().toISOString();
     const outgoingMessageText = formatOutgoingPrompt(
@@ -3185,6 +3201,7 @@ export default function ChatView(props: ChatViewProps) {
       role: "user",
       text: outgoingMessageText,
       ...(optimisticAttachments.length > 0 ? { attachments: optimisticAttachments } : {}),
+      ...(isSteeringFollowUp && activeSteerTurnId !== null ? { turnId: activeSteerTurnId } : {}),
       createdAt: messageCreatedAt,
       streaming: false,
     };
@@ -3194,7 +3211,7 @@ export default function ChatView(props: ChatViewProps) {
         [messageIdForSend]: {
           id: messageIdForSend,
           threadKey: steeringThreadKey,
-          text: steeringPreviewText,
+          text: outgoingMessageText,
           createdAt: messageCreatedAt,
           status: "queued",
         },
@@ -3229,7 +3246,7 @@ export default function ChatView(props: ChatViewProps) {
     clearComposerDraftContent(composerDraftTarget);
     composerRef.current?.resetCursorState();
 
-    let turnStartSucceeded = false;
+    let dispatchSucceeded = false;
     await (async () => {
       let firstComposerImageName: string | null = null;
       if (composerImagesSnapshot.length > 0) {
@@ -3254,6 +3271,29 @@ export default function ChatView(props: ChatViewProps) {
         ctxSelectedModel || activeProject.defaultModelSelection?.model || DEFAULT_MODEL,
         ctxSelectedModelSelection.options,
       );
+
+      if (isSteeringFollowUp) {
+        const steerTurnId = activeSteerTurnId;
+        if (steerTurnId == null) {
+          throw new Error("No active provider turn is available for a follow-up.");
+        }
+        const turnAttachments = await turnAttachmentsPromise;
+        await api.orchestration.dispatchCommand({
+          type: "thread.follow-up.submit",
+          commandId: newCommandId(),
+          threadId: threadIdForSend,
+          turnId: steerTurnId,
+          message: {
+            messageId: messageIdForSend,
+            role: "user",
+            text: outgoingMessageText,
+            attachments: turnAttachments,
+          },
+          createdAt: messageCreatedAt,
+        });
+        dispatchSucceeded = true;
+        return;
+      }
 
       // Auto-title from first message
       if (isFirstMessage && isServerThread) {
@@ -3322,7 +3362,7 @@ export default function ChatView(props: ChatViewProps) {
         ...(bootstrap ? { bootstrap } : {}),
         createdAt: messageCreatedAt,
       });
-      turnStartSucceeded = true;
+      dispatchSucceeded = true;
       if (isServerThread && ctxSelectedModel) {
         await persistThreadSettingsForNextTurn({
           threadId: threadIdForSend,
@@ -3332,7 +3372,7 @@ export default function ChatView(props: ChatViewProps) {
       }
     })().catch(async (err: unknown) => {
       if (
-        !turnStartSucceeded &&
+        !dispatchSucceeded &&
         promptRef.current.length === 0 &&
         composerImagesRef.current.length === 0 &&
         composerTerminalContextsRef.current.length === 0
@@ -3346,6 +3386,7 @@ export default function ChatView(props: ChatViewProps) {
             delete next[messageIdForSend];
             return next;
           });
+          revokeUserMessagePreviewUrls(optimisticMessage);
         } else {
           removeOptimisticThreadMessages(threadRefForSend, new Set([messageIdForSend]));
           revokeUserMessagePreviewUrls(optimisticMessage);
@@ -3369,7 +3410,7 @@ export default function ChatView(props: ChatViewProps) {
       );
     });
     sendInFlightRef.current = false;
-    if (!turnStartSucceeded) {
+    if (!dispatchSucceeded && !isSteeringFollowUp) {
       resetLocalDispatch();
     }
   };

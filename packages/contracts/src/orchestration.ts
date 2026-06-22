@@ -630,6 +630,20 @@ export const ThreadTurnStartCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+export const ThreadFollowUpSubmitCommand = Schema.Struct({
+  type: Schema.Literal("thread.follow-up.submit"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  turnId: TurnId,
+  message: Schema.Struct({
+    messageId: MessageId,
+    role: Schema.Literal("user"),
+    text: Schema.String,
+    attachments: Schema.Array(ChatAttachment),
+  }),
+  createdAt: IsoDateTime,
+});
+
 const ClientThreadTurnStartCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.start"),
   commandId: CommandId,
@@ -646,6 +660,20 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  createdAt: IsoDateTime,
+});
+
+const ClientThreadFollowUpSubmitCommand = Schema.Struct({
+  type: Schema.Literal("thread.follow-up.submit"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  turnId: TurnId,
+  message: Schema.Struct({
+    messageId: MessageId,
+    role: Schema.Literal("user"),
+    text: Schema.String,
+    attachments: Schema.Array(UploadChatAttachment),
+  }),
   createdAt: IsoDateTime,
 });
 
@@ -711,6 +739,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ThreadTurnStartCommand,
+  ThreadFollowUpSubmitCommand,
   ThreadTurnInterruptCommand,
   ThreadContextCompactRequestCommand,
   ThreadApprovalRespondCommand,
@@ -735,6 +764,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ClientThreadTurnStartCommand,
+  ClientThreadFollowUpSubmitCommand,
   ThreadTurnInterruptCommand,
   ThreadContextCompactRequestCommand,
   ThreadApprovalRespondCommand,
@@ -801,6 +831,20 @@ const ThreadActivityAppendCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadFollowUpAcceptCommand = Schema.Struct({
+  type: Schema.Literal("thread.follow-up.accept"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  turnId: TurnId,
+  message: Schema.Struct({
+    messageId: MessageId,
+    role: Schema.Literal("user"),
+    text: Schema.String,
+    attachments: Schema.Array(ChatAttachment),
+  }),
+  createdAt: IsoDateTime,
+});
+
 const ThreadRevertCompleteCommand = Schema.Struct({
   type: Schema.Literal("thread.revert.complete"),
   commandId: CommandId,
@@ -816,6 +860,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadProposedPlanUpsertCommand,
   ThreadTurnDiffCompleteCommand,
   ThreadActivityAppendCommand,
+  ThreadFollowUpAcceptCommand,
   ThreadRevertCompleteCommand,
 ]);
 export type InternalOrchestrationCommand = typeof InternalOrchestrationCommand.Type;
@@ -841,6 +886,8 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.interaction-mode-set",
   "thread.message-sent",
   "thread.turn-start-requested",
+  "thread.follow-up-submitted",
+  "thread.follow-up-accepted",
   "thread.turn-interrupt-requested",
   "thread.context-compact-requested",
   "thread.approval-response-requested",
@@ -974,6 +1021,18 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
   createdAt: IsoDateTime,
 });
+
+export const ThreadFollowUpSubmittedPayload = Schema.Struct({
+  threadId: ThreadId,
+  turnId: TurnId,
+  messageId: MessageId,
+  role: Schema.Literal("user"),
+  text: Schema.String,
+  attachments: Schema.optional(Schema.Array(ChatAttachment)),
+  createdAt: IsoDateTime,
+});
+
+export const ThreadFollowUpAcceptedPayload = ThreadFollowUpSubmittedPayload;
 
 export const ThreadTurnInterruptRequestedPayload = Schema.Struct({
   threadId: ThreadId,
@@ -1133,6 +1192,16 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.turn-start-requested"),
     payload: ThreadTurnStartRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.follow-up-submitted"),
+    payload: ThreadFollowUpSubmittedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.follow-up-accepted"),
+    payload: ThreadFollowUpAcceptedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

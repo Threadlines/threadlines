@@ -44,6 +44,7 @@ import {
   type CodexSessionRuntimeOptions,
   type CodexSessionRuntimeSendTurnInput,
   type CodexSessionRuntimeShape,
+  type CodexSessionRuntimeSteerTurnInput,
   type CodexThreadSnapshot,
 } from "./CodexSessionRuntime.ts";
 import { makeCodexAdapter } from "./CodexAdapter.ts";
@@ -82,6 +83,14 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
       Promise.resolve({
         threadId: this.options.threadId,
         turnId: asTurnId("turn-1"),
+      }),
+  );
+
+  public readonly steerTurnImpl = vi.fn(
+    (input: CodexSessionRuntimeSteerTurnInput): Promise<ProviderTurnStartResult> =>
+      Promise.resolve({
+        threadId: this.options.threadId,
+        turnId: input.expectedTurnId,
       }),
   );
 
@@ -135,6 +144,10 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
 
   sendTurn(input: CodexSessionRuntimeSendTurnInput) {
     return Effect.promise(() => this.sendTurnImpl(input));
+  }
+
+  steerTurn(input: CodexSessionRuntimeSteerTurnInput) {
+    return Effect.promise(() => this.steerTurnImpl(input));
   }
 
   interruptTurn(turnId?: TurnId) {

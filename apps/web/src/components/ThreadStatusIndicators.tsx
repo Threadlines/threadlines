@@ -120,14 +120,67 @@ export function ThreadStatusLabel({
   return (
     <span
       title={status.label}
-      className={`inline-flex items-center gap-1 text-[10px] ${status.colorClass}`}
+      className={`inline-flex items-center text-[10px] ${status.colorClass}`}
     >
       {status.pulse ? (
         <LiveNode className="size-1.5" />
       ) : (
         <span className={`h-1.5 w-1.5 rounded-full ${status.dotClass}`} />
       )}
-      <span className="hidden md:inline">{status.label}</span>
+      <span className="sr-only">{status.label}</span>
+    </span>
+  );
+}
+
+/**
+ * A thread row's live node: a status-coloured dot that sits centered on the
+ * project rail so the vertical line reads as one continuous threadline running
+ * through every thread's node. Colour alone encodes the status; a soft halo
+ * pings while work is in flight. Hovering the dot reveals the status label, so
+ * dropping the inline text label loses no information.
+ *
+ * Presentation only — the caller positions it (absolutely, over the rail).
+ */
+export function ThreadStatusRailDot({ status }: { status: ThreadStatusPill }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <span
+            aria-label={status.label}
+            className={`pointer-events-auto flex items-center justify-center ${status.colorClass}`}
+          />
+        }
+      >
+        {status.pulse ? (
+          <LiveNode className="size-2" />
+        ) : (
+          <span className={`size-2 rounded-full ${status.dotClass}`} />
+        )}
+      </TooltipTrigger>
+      <TooltipPopup side="right">{status.label}</TooltipPopup>
+    </Tooltip>
+  );
+}
+
+/**
+ * The node a thread row contributes to its project's rail. Every thread gets one
+ * so the rail reads as a continuous threadline studded with nodes: idle threads
+ * show a small muted dot, active threads a status-coloured dot that pulses while
+ * work is in flight. Hovering an active node reveals the status label.
+ *
+ * Must be rendered as a sibling of the row button (not inside it) and centered
+ * on the rail in the row's left gutter, so the button's own clipping never
+ * shaves the dot or its halo off the line.
+ */
+export function ThreadRailNode({ status }: { status: ThreadStatusPill | null }) {
+  return (
+    <span className="pointer-events-none absolute top-1/2 left-[-4.5px] z-20 -translate-x-1/2 -translate-y-1/2">
+      {status ? (
+        <ThreadStatusRailDot status={status} />
+      ) : (
+        <span aria-hidden="true" className="block size-1.5 rounded-full bg-muted-foreground/35" />
+      )}
     </span>
   );
 }

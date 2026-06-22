@@ -8,6 +8,7 @@
  * @module CodexAdapterLive
  */
 import {
+  type ChatAttachment,
   type CanonicalItemType,
   type CanonicalRequestType,
   type CodexSettings,
@@ -24,7 +25,7 @@ import {
   ProviderApprovalDecision,
   ThreadId,
   TurnId,
-  ProviderSendTurnInput,
+  type ProviderSteerTurnInput,
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
@@ -2018,8 +2019,8 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     );
 
   const resolveAttachment = Effect.fn("resolveAttachment")(function* (
-    input: ProviderSendTurnInput,
-    attachment: NonNullable<ProviderSendTurnInput["attachments"]>[number],
+    method: "turn/start" | "turn/steer",
+    attachment: ChatAttachment,
   ) {
     const attachmentPath = resolveAttachmentPath({
       attachmentsDir: serverConfig.attachmentsDir,
@@ -2028,7 +2029,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     if (!attachmentPath) {
       return yield* new ProviderAdapterRequestError({
         provider: PROVIDER,
-        method: "turn/start",
+        method,
         detail: `Invalid attachment id '${attachment.id}'.`,
       });
     }
@@ -2037,7 +2038,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         (cause) =>
           new ProviderAdapterRequestError({
             provider: PROVIDER,
-            method: "turn/start",
+            method,
             detail: `Failed to read attachment file: ${cause.message}.`,
             cause,
           }),
@@ -2052,7 +2053,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
   const sendTurn: CodexAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
     const codexAttachments = yield* Effect.forEach(
       input.attachments ?? [],
-      (attachment) => resolveAttachment(input, attachment),
+      (attachment) => resolveAttachment("turn/start", attachment),
       { concurrency: 1 },
     );
 
@@ -2092,6 +2093,26 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       session.pendingContextSeedText = undefined;
     }
     return turn;
+  });
+
+  const steerTurn: NonNullable<CodexAdapterShape["steerTurn"]> = Effect.fn("steerTurn")(function* (
+    input: ProviderSteerTurnInput,
+  ) {
+    const codexAttachments = yield* Effect.forEach(
+      input.attachments ?? [],
+      (attachment) => resolveAttachment("turn/steer", attachment),
+      { concurrency: 1 },
+    );
+
+    const session = yield* requireSession(input.threadId);
+    return yield* session.runtime
+      .steerTurn({
+        expectedTurnId: input.expectedTurnId,
+        ...(input.messageId !== undefined ? { clientUserMessageId: input.messageId } : {}),
+        ...(input.input !== undefined ? { input: input.input } : {}),
+        ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
+      })
+      .pipe(Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "turn/steer", cause)));
   });
 
   const requireSession = Effect.fn("requireSession")(function* (threadId: ThreadId) {
@@ -2258,9 +2279,11 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     capabilities: {
       sessionModelSwitch: "in-session",
       manualContextCompaction: "supported",
+      activeTurnSteering: "supported",
     },
     startSession,
     sendTurn,
+    steerTurn,
     interruptTurn,
     compactContext,
     readThread,

@@ -230,6 +230,18 @@ describe("ProviderCommandReactor", () => {
         turnId: asTurnId("turn-1"),
       }),
     );
+    const steerTurn = vi.fn((input: unknown) =>
+      Effect.succeed({
+        threadId:
+          typeof input === "object" && input !== null && "threadId" in input
+            ? ((input as { threadId?: ThreadId }).threadId ?? ThreadId.make("thread-1"))
+            : ThreadId.make("thread-1"),
+        turnId:
+          typeof input === "object" && input !== null && "expectedTurnId" in input
+            ? ((input as { expectedTurnId?: TurnId }).expectedTurnId ?? asTurnId("turn-1"))
+            : asTurnId("turn-1"),
+      }),
+    );
     const interruptTurn = vi.fn((_: unknown) => Effect.void);
     const compactContext = vi.fn<ProviderServiceShape["compactContext"]>(() => Effect.void);
     const respondToRequest = vi.fn<ProviderServiceShape["respondToRequest"]>(() => Effect.void);
@@ -307,6 +319,7 @@ describe("ProviderCommandReactor", () => {
     const service: ProviderServiceShape = {
       startSession: startSession as ProviderServiceShape["startSession"],
       sendTurn: sendTurn as ProviderServiceShape["sendTurn"],
+      steerTurn: steerTurn as ProviderServiceShape["steerTurn"],
       interruptTurn: interruptTurn as ProviderServiceShape["interruptTurn"],
       compactContext,
       respondToRequest: respondToRequest as ProviderServiceShape["respondToRequest"],
@@ -442,6 +455,7 @@ describe("ProviderCommandReactor", () => {
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
       startSession,
       sendTurn,
+      steerTurn,
       interruptTurn,
       compactContext,
       respondToRequest,
@@ -511,6 +525,95 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.latestTurn).toMatchObject({
       turnId: "turn-1",
       state: "running",
+    });
+  });
+
+  it("steers a running provider turn even when latest turn is completed", async () => {
+    const harness = await createHarness();
+    const turnId = asTurnId("turn-1");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-follow-up-running-session"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: turnId,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        },
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.assistant.delta",
+        commandId: CommandId.make("cmd-follow-up-assistant-delta"),
+        threadId: ThreadId.make("thread-1"),
+        messageId: asMessageId("assistant-message-1"),
+        turnId,
+        delta: "The live command is running.",
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.assistant.complete",
+        commandId: CommandId.make("cmd-follow-up-assistant-complete"),
+        threadId: ThreadId.make("thread-1"),
+        messageId: asMessageId("assistant-message-1"),
+        turnId,
+        createdAt: "2026-01-01T00:00:03.000Z",
+      }),
+    );
+
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      return thread?.latestTurn?.state === "completed" && thread.session?.activeTurnId === turnId;
+    });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.follow-up.submit",
+        commandId: CommandId.make("cmd-follow-up-submit"),
+        threadId: ThreadId.make("thread-1"),
+        turnId,
+        message: {
+          messageId: asMessageId("user-message-follow-up"),
+          role: "user",
+          text: "adjust the running command",
+          attachments: [],
+        },
+        createdAt: "2026-01-01T00:00:04.000Z",
+      }),
+    );
+
+    await waitFor(() => harness.steerTurn.mock.calls.length === 1);
+
+    expect(harness.steerTurn.mock.calls[0]?.[0]).toMatchObject({
+      threadId: ThreadId.make("thread-1"),
+      expectedTurnId: turnId,
+      messageId: asMessageId("user-message-follow-up"),
+      input: "adjust the running command",
+    });
+
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(thread?.activities.some((entry) => entry.kind === "provider.follow-up.failed")).toBe(
+      false,
+    );
+    expect(
+      thread?.messages.find((entry) => entry.id === asMessageId("user-message-follow-up")),
+    ).toMatchObject({
+      role: "user",
+      text: "adjust the running command",
+      turnId,
     });
   });
 

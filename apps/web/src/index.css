@@ -113,14 +113,16 @@
   --app-scrollbar-hit-size: 10px;
   --app-scrollbar-thumb-inset: 2px;
   --app-accent-blue: #00347d;
-  /* Surface neutrals carry a whisper of the accent hue so the blue reads native. */
-  --app-tint-hue: 264;
-  --background: var(--color-white);
-  --app-chrome-background: var(--background);
-  --foreground: oklch(0.285 0.012 var(--app-tint-hue));
+  /* Surfaces are fully neutral grey in both modes; the navy accent is the only hue in
+     the palette, and neutral-vs-warm is itself the differentiator from comparable
+     tools. Light is a soft-grey canvas with white raised surfaces (chrome 0.95 <
+     rail 0.965 < background 0.98 < card/popover white); dark inverts it (see below). */
+  --background: oklch(0.98 0 0);
+  --app-chrome-background: oklch(0.95 0 0);
+  --foreground: oklch(0.285 0 0);
   --card: var(--color-white);
   --card-foreground: var(--foreground);
-  --rail: oklch(0.977 0.004 var(--app-tint-hue));
+  --rail: oklch(0.965 0 0);
   --sidebar: var(--rail);
   --sidebar-foreground: var(--foreground);
   --sidebar-border: var(--border);
@@ -135,7 +137,7 @@
   --secondary: --alpha(var(--color-black) / 4%);
   --secondary-foreground: var(--foreground);
   --muted: --alpha(var(--color-black) / 4%);
-  --muted-foreground: oklch(0.5 0.015 var(--app-tint-hue));
+  --muted-foreground: oklch(0.5 0 0);
   --accent: --alpha(var(--color-black) / 4%);
   --accent-foreground: var(--foreground);
   --control-active: --alpha(var(--color-black) / 9%);
@@ -153,33 +155,45 @@
 
   @variant dark {
     color-scheme: dark;
-    --background: oklch(0.2 0.006 var(--app-tint-hue));
-    --app-chrome-background: var(--background);
+    /* Dark surfaces are fully neutral grey (chroma 0, no hue). Pure neutral reads
+       cleaner than the warm-leaning greys of comparable tools, so the palette stays
+       distinct without copying anyone; the navy brand tint lives only on the accent
+       tokens below and on light-mode surfaces.
+
+       Elevation ladder — distinct lightness steps so sections read as stacked
+       surfaces, not one flat field (deepest to highest):
+         chrome 0.205      window frame / gutters behind panels
+         background 0.245  main content well
+         rail 0.278        left + right side panels
+         card 0.308        raised cards, activity bands, composer
+         popover 0.328     floating menus */
+    --background: oklch(0.245 0 0);
+    --app-chrome-background: oklch(0.205 0 0);
     --foreground: oklch(0.92 0 0);
-    --card: color-mix(in srgb, var(--background) 98%, var(--color-white));
+    --card: oklch(0.308 0 0);
     --card-foreground: var(--foreground);
-    --rail: oklch(0.175 0.008 var(--app-tint-hue));
+    --rail: oklch(0.278 0 0);
     --sidebar: var(--rail);
     --sidebar-foreground: var(--foreground);
     --sidebar-border: var(--border);
-    --sidebar-accent: --alpha(var(--color-white) / 7%);
+    --sidebar-accent: --alpha(var(--color-white) / 9%);
     --sidebar-accent-foreground: var(--foreground);
-    --popover: color-mix(in srgb, var(--background) 98%, var(--color-white));
+    --popover: oklch(0.328 0 0);
     --popover-foreground: var(--foreground);
     --primary: var(--app-accent-blue);
     --primary-readable: oklch(0.65 0.19 264);
     --primary-graph: oklch(0.7 0.17 264);
     --primary-foreground: var(--color-white);
-    --secondary: --alpha(var(--color-white) / 4%);
+    --secondary: --alpha(var(--color-white) / 7%);
     --secondary-foreground: var(--foreground);
-    --muted: --alpha(var(--color-white) / 4%);
-    --muted-foreground: oklch(0.6 0.006 var(--app-tint-hue));
-    --accent: --alpha(var(--color-white) / 4%);
+    --muted: --alpha(var(--color-white) / 8%);
+    --muted-foreground: oklch(0.66 0 0);
+    --accent: --alpha(var(--color-white) / 8%);
     --accent-foreground: var(--foreground);
-    --control-active: --alpha(var(--color-white) / 12%);
+    --control-active: --alpha(var(--color-white) / 16%);
     --destructive: color-mix(in srgb, var(--color-red-500) 90%, var(--color-white));
-    --border: --alpha(var(--color-white) / 6%);
-    --input: --alpha(var(--color-white) / 8%);
+    --border: --alpha(var(--color-white) / 12%);
+    --input: --alpha(var(--color-white) / 11%);
     --ring: var(--app-accent-blue);
     --destructive-foreground: var(--color-red-400);
     --info: var(--app-accent-blue);
@@ -236,7 +250,9 @@ body::after {
   background-size: 256px 256px;
 }
 
-/* Light specks from the grain sit on glyph edges in dark mode; keep the texture but quieter. */
+/* Grain renders over the whole viewport, text included, so in dark mode it speckles
+   glyph edges and softens crispness fast. Keep it low here; for more surface texture
+   without muddying text, move the layer behind content rather than raising opacity. */
 .dark body::after {
   opacity: 0.015;
 }
@@ -283,6 +299,49 @@ code {
   .source-control-title-full {
     display: inline;
   }
+}
+
+/* Elevation — depth on neutral surfaces without re-introducing tint. A soft drop
+   shadow lifts a surface off its background; in dark mode a 1px top edge-light
+   (inset white) catches "light" on the upper rim so raised elements read as solid
+   rather than flat. Light mode uses the drop shadow alone (a white edge-light is
+   invisible on light surfaces). Recessed surfaces invert it — an inset shadow
+   presses them into the page. Three lift tiers — raised (inline cards) < popover
+   (anchored menus) < overlay (modals) — plus recess; consume via the utilities below. */
+:root {
+  --elevate-raised: 0 1px 2px -1px rgb(0 0 0 / 0.1), 0 4px 10px -4px rgb(0 0 0 / 0.07);
+  --elevate-popover: 0 2px 6px -2px rgb(0 0 0 / 0.1), 0 8px 18px -8px rgb(0 0 0 / 0.1);
+  --elevate-overlay: 0 4px 12px -3px rgb(0 0 0 / 0.14), 0 14px 36px -10px rgb(0 0 0 / 0.16);
+  --recess: inset 0 1px 2px 0 rgb(0 0 0 / 0.05);
+
+  @variant dark {
+    --elevate-raised:
+      inset 0 1px 0 0 rgb(255 255 255 / 0.05), 0 1px 2px 0 rgb(0 0 0 / 0.25),
+      0 4px 10px -4px rgb(0 0 0 / 0.22);
+    /* Anchored menus sit close to their trigger — a tighter, lower cast keeps them
+       feeling attached, not floating away. Modals (dialog/command/sheet) keep the
+       bigger overlay float. Both drop-only; the primitives' ::before adds the top
+       edge-light, so an inset highlight here would double it. */
+    --elevate-popover: 0 2px 4px -2px rgb(0 0 0 / 0.28), 0 8px 18px -8px rgb(0 0 0 / 0.3);
+    --elevate-overlay: 0 8px 24px -6px rgb(0 0 0 / 0.45), 0 18px 48px -16px rgb(0 0 0 / 0.4);
+    --recess: inset 0 1px 2px 0 rgb(0 0 0 / 0.3), inset 0 -1px 0 0 rgb(255 255 255 / 0.03);
+  }
+}
+
+@utility elevate-raised {
+  box-shadow: var(--elevate-raised);
+}
+
+@utility elevate-popover {
+  box-shadow: var(--elevate-popover);
+}
+
+@utility elevate-overlay {
+  box-shadow: var(--elevate-overlay);
+}
+
+@utility recess {
+  box-shadow: var(--recess);
 }
 
 /* Scrollbar styling */
@@ -763,7 +822,53 @@ label:has(> select#reasoning-effort) select {
     0 8px 28px color-mix(in srgb, var(--primary) 10%, transparent);
 }
 
+/* Ultracode accent. Base rules target light mode — deep violet reads against
+   the near-white composer/menu surfaces. The .dark overrides below restore the
+   lighter lavender treatment that's tuned for dark backgrounds. */
 .ultracode-trait-trigger {
+  border-color: rgba(124, 58, 237, 0.32);
+  color: #6d28d9;
+  background: linear-gradient(
+    90deg,
+    rgba(120, 120, 130, 0.05) 0%,
+    rgba(168, 85, 247, 0.12) 50%,
+    rgba(120, 120, 130, 0.05) 100%
+  );
+  box-shadow:
+    inset 0 0 0 1px rgba(124, 58, 237, 0.12),
+    0 0 0.24rem rgba(168, 85, 247, 0.08);
+}
+
+.ultracode-trait-trigger:hover,
+.ultracode-trait-trigger[data-pressed] {
+  border-color: rgba(124, 58, 237, 0.5);
+  background: linear-gradient(
+    90deg,
+    rgba(120, 120, 130, 0.08) 0%,
+    rgba(168, 85, 247, 0.18) 50%,
+    rgba(120, 120, 130, 0.08) 100%
+  );
+  color: #5b21b6;
+}
+
+.ultracode-trait-label {
+  color: #6d28d9;
+}
+
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .ultracode-trait-label {
+    color: transparent;
+    background: linear-gradient(90deg, #6b7280 0%, #7c3aed 45%, #9333ea 100%);
+    background-clip: text;
+    -webkit-background-clip: text;
+  }
+}
+
+.ultracode-menu-option {
+  background-image: linear-gradient(90deg, rgba(120, 120, 130, 0.04), rgba(168, 85, 247, 0.12));
+}
+
+.dark .ultracode-trait-trigger {
   border-color: rgba(168, 85, 247, 0.24);
   color: #d6c6f6;
   background: linear-gradient(
@@ -777,8 +882,8 @@ label:has(> select#reasoning-effort) select {
     0 0 0.24rem rgba(168, 85, 247, 0.06);
 }
 
-.ultracode-trait-trigger:hover,
-.ultracode-trait-trigger[data-pressed] {
+.dark .ultracode-trait-trigger:hover,
+.dark .ultracode-trait-trigger[data-pressed] {
   border-color: rgba(205, 174, 255, 0.42);
   background: linear-gradient(
     90deg,
@@ -789,12 +894,12 @@ label:has(> select#reasoning-effort) select {
   color: #eadfff;
 }
 
-.ultracode-trait-label {
+.dark .ultracode-trait-label {
   color: #c9a8ff;
 }
 
 @supports ((-webkit-background-clip: text) or (background-clip: text)) {
-  .ultracode-trait-label {
+  .dark .ultracode-trait-label {
     color: transparent;
     background: linear-gradient(90deg, #d6d6dc 0%, #d8c6ff 45%, #b982ff 100%);
     background-clip: text;
@@ -802,7 +907,7 @@ label:has(> select#reasoning-effort) select {
   }
 }
 
-.ultracode-menu-option {
+.dark .ultracode-menu-option {
   background-image: linear-gradient(90deg, rgba(82, 82, 88, 0.06), rgba(168, 85, 247, 0.08));
 }
 

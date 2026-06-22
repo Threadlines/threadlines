@@ -1264,102 +1264,105 @@ function SourceControlBranchMenu({
 
   return (
     <>
-      <Menu>
-        <MenuTrigger
-          render={
-            <Button
-              type="button"
-              variant="outline"
-              size="xs"
-              className="w-full min-w-0 justify-between"
-            />
-          }
-          disabled={!status?.isRepo || branchSearch.isPending}
-        >
-          <span className="flex min-w-0 items-center gap-1.5">
-            <GitBranchIcon className="size-3 shrink-0" />
-            <span className="truncate">{currentBranch ?? "Select branch"}</span>
-          </span>
-          <ChevronDownIcon className="size-3 shrink-0 opacity-60" />
-        </MenuTrigger>
-        <MenuPopup align="start" side="top" className="w-72">
-          <MenuGroup>
-            <MenuGroupLabel>Branch</MenuGroupLabel>
-            <MenuItem disabled>
-              <GitBranchIcon className="size-3.5" />
-              <span className="min-w-0 truncate">{currentBranch ?? "Detached HEAD"}</span>
-            </MenuItem>
-          </MenuGroup>
-          <MenuSeparator />
-          <MenuItem
-            disabled={createDisabledReason !== null}
-            onClick={() => setCreateBranchOpen(true)}
+      <div className="min-w-0">
+        <Menu modal={false}>
+          <MenuTrigger
+            render={
+              <Button
+                aria-label={currentBranch ? `Branch: ${currentBranch}` : "Select branch"}
+                type="button"
+                variant="outline"
+                size="xs"
+                className="w-full min-w-0 justify-between"
+              />
+            }
+            disabled={!status?.isRepo || branchSearch.isPending}
           >
-            <PlusIcon className="size-3.5" />
-            <span>Create branch...</span>
-          </MenuItem>
-          <MenuSub>
-            <MenuSubTrigger>
-              <GitBranchIcon className="size-3.5" />
-              <span>Switch to</span>
-            </MenuSubTrigger>
-            <MenuSubPopup className="w-72">
-              {switchDisabledReason ? (
-                <MenuItem disabled>
-                  <span className="min-w-0 text-muted-foreground">{switchDisabledReason}</span>
-                </MenuItem>
-              ) : switchRefs.length === 0 ? (
-                <MenuItem disabled>
-                  <span className="min-w-0 text-muted-foreground">No branches found.</span>
-                </MenuItem>
-              ) : (
-                switchRefs.map((ref) => (
-                  <MenuItem
-                    key={ref.name}
-                    disabled={ref.current}
-                    onClick={() => runSwitchRef(ref)}
-                    className="justify-between"
-                  >
-                    <span className="min-w-0 truncate">{ref.name}</span>
-                    <span className="shrink-0 text-[10px] text-muted-foreground/60">
-                      {ref.current
-                        ? "current"
-                        : ref.isRemote
-                          ? "remote"
-                          : ref.isDefault
-                            ? "default"
-                            : ""}
-                    </span>
+            <span className="flex min-w-0 items-center gap-1.5">
+              <GitBranchIcon className="size-3 shrink-0" />
+              <span className="truncate">{currentBranch ?? "Select branch"}</span>
+            </span>
+            <ChevronDownIcon className="size-3 shrink-0 opacity-60" />
+          </MenuTrigger>
+          <MenuPopup align="start" side="top" className="w-72">
+            <MenuGroup>
+              <MenuGroupLabel>Branch</MenuGroupLabel>
+              <MenuItem disabled>
+                <GitBranchIcon className="size-3.5" />
+                <span className="min-w-0 truncate">{currentBranch ?? "Detached HEAD"}</span>
+              </MenuItem>
+            </MenuGroup>
+            <MenuSeparator />
+            <MenuItem
+              disabled={createDisabledReason !== null}
+              onClick={() => setCreateBranchOpen(true)}
+            >
+              <PlusIcon className="size-3.5" />
+              <span>Create branch...</span>
+            </MenuItem>
+            <MenuSub>
+              <MenuSubTrigger>
+                <GitBranchIcon className="size-3.5" />
+                <span>Switch to</span>
+              </MenuSubTrigger>
+              <MenuSubPopup className="w-72">
+                {switchDisabledReason ? (
+                  <MenuItem disabled>
+                    <span className="min-w-0 text-muted-foreground">{switchDisabledReason}</span>
                   </MenuItem>
-                ))
-              )}
-            </MenuSubPopup>
-          </MenuSub>
-          <MenuSub>
-            <MenuSubTrigger>
-              <GitMergeIcon className="size-3.5" />
-              <span>Merge into current</span>
-            </MenuSubTrigger>
-            <MenuSubPopup className="w-72">
-              {mergeDisabledReason ? (
-                <MenuItem disabled>
-                  <span className="min-w-0 text-muted-foreground">{mergeDisabledReason}</span>
-                </MenuItem>
-              ) : mergeRefs.length === 0 ? (
-                <MenuItem disabled>
-                  <span className="min-w-0 text-muted-foreground">No other branches found.</span>
-                </MenuItem>
-              ) : (
-                mergeRefs.map((ref) => (
-                  <MenuItem key={ref.name} onClick={() => setPendingMergeRef(ref)}>
-                    <span className="min-w-0 truncate">{ref.name}</span>
+                ) : switchRefs.length === 0 ? (
+                  <MenuItem disabled>
+                    <span className="min-w-0 text-muted-foreground">No branches found.</span>
                   </MenuItem>
-                ))
-              )}
-            </MenuSubPopup>
-          </MenuSub>
-        </MenuPopup>
-      </Menu>
+                ) : (
+                  switchRefs.map((ref) => (
+                    <MenuItem
+                      key={ref.name}
+                      disabled={ref.current}
+                      onClick={() => runSwitchRef(ref)}
+                      className="justify-between"
+                    >
+                      <span className="min-w-0 truncate">{ref.name}</span>
+                      <span className="shrink-0 text-[10px] text-muted-foreground/60">
+                        {ref.current
+                          ? "current"
+                          : ref.isRemote
+                            ? "remote"
+                            : ref.isDefault
+                              ? "default"
+                              : ""}
+                      </span>
+                    </MenuItem>
+                  ))
+                )}
+              </MenuSubPopup>
+            </MenuSub>
+            <MenuSub>
+              <MenuSubTrigger>
+                <GitMergeIcon className="size-3.5" />
+                <span>Merge into current</span>
+              </MenuSubTrigger>
+              <MenuSubPopup className="w-72">
+                {mergeDisabledReason ? (
+                  <MenuItem disabled>
+                    <span className="min-w-0 text-muted-foreground">{mergeDisabledReason}</span>
+                  </MenuItem>
+                ) : mergeRefs.length === 0 ? (
+                  <MenuItem disabled>
+                    <span className="min-w-0 text-muted-foreground">No other branches found.</span>
+                  </MenuItem>
+                ) : (
+                  mergeRefs.map((ref) => (
+                    <MenuItem key={ref.name} onClick={() => setPendingMergeRef(ref)}>
+                      <span className="min-w-0 truncate">{ref.name}</span>
+                    </MenuItem>
+                  ))
+                )}
+              </MenuSubPopup>
+            </MenuSub>
+          </MenuPopup>
+        </Menu>
+      </div>
 
       <Dialog
         open={pendingMergeRef !== null}
@@ -2698,7 +2701,7 @@ export function SourceControlPanel({
   return (
     <div className="flex h-full min-h-0 flex-col bg-rail">
       <div className="drag-region shrink-0 border-b border-border">
-        <div className="@container/source-control-title flex h-8 items-center justify-between gap-2 px-3 py-1 wco:h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
+        <div className="@container/source-control-title flex h-12 items-center justify-between gap-2 px-4 py-2 wco:min-h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]">
           <div className="flex min-w-0 items-center gap-1.5">
             <SourceControlIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
             <h2
@@ -2828,7 +2831,7 @@ export function SourceControlPanel({
               No working tree changes
             </div>
           ) : (
-            <div className="min-h-0 flex-1 overflow-y-auto rounded-md border border-border/70 bg-background/35">
+            <div className="min-h-0 flex-1 overflow-y-auto rounded-md border border-border/70 bg-background/35 recess">
               {renderWorkingTreeChangeSection({
                 title: "Staged Changes",
                 entries: stagedChangeFiles,
@@ -2990,7 +2993,7 @@ export function SourceControlPanel({
                 </div>
               </div>
             ) : null}
-            <div className="grid grid-cols-[minmax(0,1fr)_2rem] gap-1.5">
+            <div className="grid w-full grid-cols-[minmax(0,1fr)_1.5rem] gap-1.5">
               <ActionButton
                 label={primaryAction.label}
                 icon={
@@ -3006,6 +3009,7 @@ export function SourceControlPanel({
               />
               <Menu>
                 <MenuTrigger
+                  className="w-full"
                   render={
                     <Button
                       type="button"
@@ -3107,7 +3111,7 @@ export function SourceControlPanel({
                 {commitGraphCountLabel}
               </span>
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto rounded-md border border-border/70 bg-background/35">
+            <div className="min-h-0 flex-1 overflow-y-auto rounded-md border border-border/70 bg-background/35 recess">
               {status === null ? (
                 <CommitGraphSkeleton />
               ) : !status.isRepo ? (

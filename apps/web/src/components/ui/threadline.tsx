@@ -68,6 +68,49 @@ function SectionTick({ className }: { className?: string }) {
 }
 
 /**
+ * One row on an activity thread: a gutter that draws a continuous vertical line
+ * through a centered node, beside the row content. Stack `SpineRow`s with no
+ * vertical gap and they read as one unbroken spine; drop `connectTop` on the
+ * first row and `connectBottom` on the last (the live terminus). Colour the
+ * line by setting the `--spine` custom property on any ancestor; it falls back
+ * to the hairline border colour.
+ */
+function SpineRow({
+  node,
+  connectTop = true,
+  connectBottom = true,
+  className,
+  children,
+}: {
+  node: React.ReactNode;
+  connectTop?: boolean;
+  connectBottom?: boolean;
+  className?: string | undefined;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className={cn("flex gap-2", className)}>
+      <div className="relative flex w-4 shrink-0 justify-center self-stretch">
+        {connectTop ? (
+          <span
+            aria-hidden="true"
+            className="absolute top-0 left-1/2 h-3.5 w-px -translate-x-1/2 bg-[var(--spine,var(--border))]"
+          />
+        ) : null}
+        {connectBottom ? (
+          <span
+            aria-hidden="true"
+            className="absolute top-3.5 bottom-0 left-1/2 w-px -translate-x-1/2 bg-[var(--spine,var(--border))]"
+          />
+        ) : null}
+        <span className="relative z-10 flex h-7 items-center justify-center">{node}</span>
+      </div>
+      <div className="min-w-0 flex-1">{children}</div>
+    </div>
+  );
+}
+
+/**
  * Current marker: a short rounded accent segment marking the selected item
  * in a list or rail. The parent needs `relative`; override the edge/offsets
  * via `className` (defaults to the left edge, vertically centered).
@@ -85,4 +128,4 @@ function CurrentMarker({ className, ...props }: React.ComponentPropsWithoutRef<"
   );
 }
 
-export { CurrentMarker, LiveNode, SectionLabel, SectionTick };
+export { CurrentMarker, LiveNode, SectionLabel, SectionTick, SpineRow };

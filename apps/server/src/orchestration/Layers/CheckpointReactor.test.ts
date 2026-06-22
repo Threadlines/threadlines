@@ -122,6 +122,7 @@ function createProviderServiceHarness(
   const service: ProviderServiceShape = {
     startSession: () => unsupported(),
     sendTurn: () => unsupported(),
+    steerTurn: () => unsupported(),
     interruptTurn: () => unsupported(),
     compactContext: () => unsupported(),
     respondToRequest: () => unsupported(),
@@ -685,6 +686,69 @@ describe("CheckpointReactor", () => {
         ? (fileActivity.payload as { data?: { files?: unknown } })
         : undefined;
     expect(payload?.data?.files).toEqual(providerFiles);
+  });
+
+  it("does not replace an empty provider diff summary with shared-checkout Git changes", async () => {
+    const harness = await createHarness({ seedFilesystemCheckpoints: false });
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const turnId = asTurnId("turn-empty-provider-summary");
+
+    harness.provider.emit({
+      type: "turn.started",
+      eventId: EventId.make("evt-turn-started-empty-provider-summary"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId,
+      turnId,
+    });
+    await waitForGitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 0));
+
+    fs.writeFileSync(path.join(harness.cwd, "README.md"), "changed outside provider\n", "utf8");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.diff.complete",
+        commandId: CommandId.make("cmd-empty-provider-summary-placeholder"),
+        threadId,
+        turnId,
+        completedAt: createdAt,
+        checkpointRef: asCheckpointRef("provider-diff:evt-empty-provider-summary"),
+        status: "missing",
+        files: [],
+        checkpointTurnCount: 1,
+        createdAt,
+      }),
+    );
+
+    await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.latestTurn?.turnId === "turn-empty-provider-summary" &&
+        entry.checkpoints.length === 1 &&
+        entry.checkpoints[0]?.status === "ready",
+    );
+
+    harness.provider.emit({
+      type: "turn.completed",
+      eventId: EventId.make("evt-turn-completed-empty-provider-summary"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId,
+      turnId,
+      payload: { state: "completed" },
+    });
+    await harness.drain();
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.latestTurn?.turnId === "turn-empty-provider-summary" &&
+        entry.checkpoints.length === 1 &&
+        entry.checkpoints[0]?.status === "ready",
+    );
+
+    expect(thread.checkpoints[0]?.files).toEqual([]);
+    expect(thread.activities.some((activity) => activity.summary === "Changed files")).toBe(false);
   });
 
   it("uses the per-turn pre-state for changed-file summaries when the branch advances between turns", async () => {

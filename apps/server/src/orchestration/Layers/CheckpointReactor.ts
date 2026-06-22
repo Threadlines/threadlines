@@ -350,7 +350,7 @@ const make = Effect.gen(function* () {
       cwd: input.cwd,
     });
     const files =
-      hasConcurrentSession && input.providerSummaryFiles !== undefined
+      input.providerSummaryFiles !== undefined
         ? input.providerSummaryFiles.map((file) => ({ ...file }))
         : hasConcurrentSession
           ? yield* Effect.logWarning("skipping shared-checkout checkpoint file summary", {
@@ -488,8 +488,9 @@ const make = Effect.gen(function* () {
       }
 
       // If an early diff event already created a placeholder or real checkpoint
-      // for this turn, refresh that same turn count instead of freezing the
-      // assistant changed-files summary at the first partial diff.
+      // for this turn, refresh that same turn count. Preserve provider-reported
+      // file summaries so shared-checkout edits from elsewhere are not attributed
+      // to this turn.
       const existingCheckpoint = thread.checkpoints.find(
         (checkpoint) => checkpoint.turnId === turnId,
       );
@@ -500,8 +501,7 @@ const make = Effect.gen(function* () {
       const nextTurnCount = existingCheckpoint
         ? existingCheckpoint.checkpointTurnCount
         : currentTurnCount + 1;
-      const providerSummaryFiles =
-        existingCheckpoint?.status === "missing" ? existingCheckpoint.files : undefined;
+      const providerSummaryFiles = existingCheckpoint?.files;
 
       yield* captureAndDispatchCheckpoint({
         threadId: thread.id,

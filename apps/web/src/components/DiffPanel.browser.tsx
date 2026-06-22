@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
 import { DIFF_PANEL_HOST_STYLE, DIFF_PANEL_UNSAFE_CSS } from "./DiffPanel.styles";
+import { DiffPanelShell } from "./DiffPanelShell";
 
 function createFileDiff(): FileDiffMetadata {
   const patch = [
@@ -66,6 +67,30 @@ describe("DiffPanel typography", () => {
         throw new Error("Diff code block should render inside the shadow root.");
       }
       expect(getComputedStyle(codePre).fontFamily).toContain("Cascadia Mono Variable");
+    } finally {
+      await screen.unmount();
+    }
+  });
+});
+
+describe("DiffPanel shell", () => {
+  it("uses a full-height title strip for the right-panel header", async () => {
+    const screen = await render(
+      <div style={{ height: "240px", width: "360px" }}>
+        <DiffPanelShell mode="sidebar" header={<span>Source Control / Diff</span>}>
+          <div />
+        </DiffPanelShell>
+      </div>,
+    );
+
+    try {
+      const headerText = Array.from(document.querySelectorAll("span")).find(
+        (element) => element.textContent === "Source Control / Diff",
+      );
+      expect(headerText).toBeInstanceOf(HTMLSpanElement);
+      const titleStrip = headerText?.closest(".drag-region")?.firstElementChild;
+      expect(titleStrip).toBeInstanceOf(HTMLElement);
+      expect((titleStrip as HTMLElement).getBoundingClientRect().height).toBeGreaterThanOrEqual(48);
     } finally {
       await screen.unmount();
     }

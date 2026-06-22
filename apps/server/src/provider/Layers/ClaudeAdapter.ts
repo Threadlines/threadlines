@@ -39,6 +39,7 @@ import {
   type ProviderRuntimeTurnStatus,
   type ProviderSendTurnInput,
   type ProviderSession,
+  type ProviderSteerTurnInput,
   type ThreadTokenUsageSnapshot,
   type ProviderUserInputAnswers,
   type RuntimeContentStreamKind,
@@ -1350,7 +1351,9 @@ const CLAUDE_SETTING_SOURCES = [
   "local",
 ] as const satisfies ReadonlyArray<SettingSource>;
 
-function buildPromptText(input: ProviderSendTurnInput): string {
+function buildPromptText(
+  input: Pick<ProviderSendTurnInput | ProviderSteerTurnInput, "input">,
+): string {
   return input.input?.trim() ?? "";
 }
 
@@ -1386,13 +1389,18 @@ function buildClaudeImageContentBlock(input: {
 }
 
 const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
-  input: ProviderSendTurnInput,
+  input: Pick<
+    ProviderSendTurnInput | ProviderSteerTurnInput,
+    "messageId" | "input" | "attachments"
+  >,
   dependencies: {
     readonly fileSystem: FileSystem.FileSystem;
     readonly attachmentsDir: string;
+    readonly method?: "turn/start" | "turn/steer";
     readonly seedPreamble?: string | undefined;
   },
 ) {
+  const method = dependencies.method ?? "turn/start";
   const promptText = buildPromptText(input);
   // Cross-driver handoff: lead the first turn with the rendered seed.
   const text = dependencies.seedPreamble
@@ -1412,7 +1420,7 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
     if (!SUPPORTED_CLAUDE_IMAGE_MIME_TYPES.has(attachment.mimeType)) {
       return yield* new ProviderAdapterRequestError({
         provider: PROVIDER,
-        method: "turn/start",
+        method,
         detail: `Unsupported Claude image attachment type '${attachment.mimeType}'.`,
       });
     }
@@ -1424,7 +1432,7 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
     if (!attachmentPath) {
       return yield* new ProviderAdapterRequestError({
         provider: PROVIDER,
-        method: "turn/start",
+        method,
         detail: `Invalid attachment id '${attachment.id}'.`,
       });
     }
@@ -1434,7 +1442,7 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
         (cause) =>
           new ProviderAdapterRequestError({
             provider: PROVIDER,
-            method: "turn/start",
+            method,
             detail: toMessage(cause, "Failed to read attachment file."),
             cause,
           }),
@@ -4347,6 +4355,53 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     };
   });
 
+  const steerTurn: NonNullable<ClaudeAdapterShape["steerTurn"]> = Effect.fn("steerTurn")(function* (
+    input: ProviderSteerTurnInput,
+  ) {
+    const context = yield* requireSession(input.threadId);
+    const activeTurn = context.turnState;
+    if (!activeTurn) {
+      return yield* new ProviderAdapterRequestError({
+        provider: PROVIDER,
+        method: "turn/steer",
+        detail: "No active Claude turn is available to steer.",
+      });
+    }
+    if (activeTurn.turnId !== input.expectedTurnId) {
+      return yield* new ProviderAdapterRequestError({
+        provider: PROVIDER,
+        method: "turn/steer",
+        detail: `Expected active turn '${input.expectedTurnId}' but Claude is running '${activeTurn.turnId}'.`,
+      });
+    }
+
+    const message = yield* buildUserMessageEffect(input, {
+      fileSystem,
+      attachmentsDir: serverConfig.attachmentsDir,
+      method: "turn/steer",
+    });
+
+    yield* Queue.offer(context.promptQueue, {
+      type: "message",
+      message,
+    }).pipe(Effect.mapError((cause) => toRequestError(input.threadId, "turn/steer", cause)));
+
+    context.session = {
+      ...context.session,
+      status: "running",
+      activeTurnId: activeTurn.turnId,
+      updatedAt: yield* nowIso,
+    };
+
+    return {
+      threadId: context.session.threadId,
+      turnId: activeTurn.turnId,
+      ...(context.session.resumeCursor !== undefined
+        ? { resumeCursor: context.session.resumeCursor }
+        : {}),
+    };
+  });
+
   const interruptTurn: ClaudeAdapterShape["interruptTurn"] = Effect.fn("interruptTurn")(
     function* (threadId, _turnId) {
       const context = yield* requireSession(threadId);
@@ -4528,9 +4583,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     capabilities: {
       sessionModelSwitch: "in-session",
       manualContextCompaction: "supported",
+      activeTurnSteering: "supported",
     },
     startSession,
     sendTurn,
+    steerTurn,
     interruptTurn,
     compactContext,
     readThread,

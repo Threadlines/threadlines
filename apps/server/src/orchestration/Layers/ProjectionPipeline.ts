@@ -747,6 +747,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         }
 
         case "thread.message-sent":
+        case "thread.follow-up-submitted":
+        case "thread.follow-up-accepted":
         case "thread.proposed-plan-upserted":
         case "thread.approval-response-requested":
         case "thread.user-input-response-requested": {
@@ -899,6 +901,31 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             isStreaming: event.payload.streaming,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "thread.follow-up-accepted": {
+          const existingMessage = yield* projectionThreadMessageRepository.getByMessageId({
+            messageId: event.payload.messageId,
+          });
+          const previousMessage = Option.getOrUndefined(existingMessage);
+          const nextAttachments =
+            event.payload.attachments !== undefined
+              ? yield* materializeAttachmentsForProjection({
+                  attachments: event.payload.attachments,
+                })
+              : previousMessage?.attachments;
+          yield* projectionThreadMessageRepository.upsert({
+            messageId: event.payload.messageId,
+            threadId: event.payload.threadId,
+            turnId: event.payload.turnId,
+            role: event.payload.role,
+            text: event.payload.text,
+            ...(nextAttachments !== undefined ? { attachments: [...nextAttachments] } : {}),
+            isStreaming: false,
+            createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
+            updatedAt: event.payload.createdAt,
           });
           return;
         }

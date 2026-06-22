@@ -57,6 +57,7 @@ type ProviderIntentEvent = Extract<
     type:
       | "thread.runtime-mode-set"
       | "thread.turn-start-requested"
+      | "thread.follow-up-submitted"
       | "thread.turn-interrupt-requested"
       | "thread.context-compact-requested"
       | "thread.approval-response-requested"
@@ -229,6 +230,7 @@ const make = Effect.gen(function* () {
     readonly threadId: ThreadId;
     readonly kind:
       | "provider.turn.start.failed"
+      | "provider.follow-up.failed"
       | "provider.turn.interrupt.failed"
       | "provider.context-compact.failed"
       | "provider.approval.respond.failed"
@@ -978,6 +980,100 @@ const make = Effect.gen(function* () {
     );
   });
 
+  const processFollowUpSubmitted = Effect.fn("processFollowUpSubmitted")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.follow-up-submitted" }>,
+  ) {
+    const thread = yield* resolveThread(event.payload.threadId);
+    if (!thread) {
+      return;
+    }
+
+    const session = thread.session;
+    const activeTurnId = session?.activeTurnId ?? null;
+    if (session?.status !== "running" || activeTurnId !== event.payload.turnId) {
+      return yield* appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.follow-up.failed",
+        summary: "Follow-up send failed",
+        detail:
+          activeTurnId === null
+            ? "No active provider turn is available to steer."
+            : `Expected active turn '${event.payload.turnId}' but thread is running '${activeTurnId}'.`,
+        turnId: event.payload.turnId,
+        createdAt: event.payload.createdAt,
+      });
+    }
+    const normalizedInput = toNonEmptyProviderInput(event.payload.text);
+    const attachments = event.payload.attachments ?? [];
+    if (!normalizedInput && attachments.length === 0) {
+      return yield* appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.follow-up.failed",
+        summary: "Follow-up send failed",
+        detail: "Either input text or at least one attachment is required.",
+        turnId: event.payload.turnId,
+        createdAt: event.payload.createdAt,
+      });
+    }
+
+    const recoverFollowUpFailure = (cause: Cause.Cause<unknown>) => {
+      if (Cause.hasInterruptsOnly(cause)) {
+        return Effect.void;
+      }
+      const detail = formatFailureDetail(cause);
+      return appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.follow-up.failed",
+        summary: "Follow-up send failed",
+        detail,
+        turnId: event.payload.turnId,
+        createdAt: event.payload.createdAt,
+      }).pipe(Effect.asVoid);
+    };
+
+    const delivered = yield* providerService
+      .steerTurn({
+        threadId: event.payload.threadId,
+        expectedTurnId: event.payload.turnId,
+        messageId: event.payload.messageId,
+        ...(normalizedInput ? { input: normalizedInput } : {}),
+        ...(attachments.length > 0 ? { attachments } : {}),
+      })
+      .pipe(
+        Effect.as(true),
+        Effect.catchCause((cause) =>
+          recoverFollowUpFailure(cause).pipe(
+            Effect.catchCause((recoveryCause) =>
+              Effect.logWarning("provider command reactor failed to recover follow-up failure", {
+                eventType: event.type,
+                threadId: event.payload.threadId,
+                cause: Cause.pretty(recoveryCause),
+                originalCause: Cause.pretty(cause),
+              }),
+            ),
+            Effect.as(false),
+          ),
+        ),
+      );
+    if (!delivered) {
+      return;
+    }
+
+    yield* orchestrationEngine.dispatch({
+      type: "thread.follow-up.accept",
+      commandId: serverCommandId("follow-up-accepted"),
+      threadId: event.payload.threadId,
+      turnId: event.payload.turnId,
+      message: {
+        messageId: event.payload.messageId,
+        role: "user",
+        text: event.payload.text,
+        attachments,
+      },
+      createdAt: event.payload.createdAt,
+    });
+  });
+
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-interrupt-requested" }>,
   ) {
@@ -1182,6 +1278,9 @@ const make = Effect.gen(function* () {
       case "thread.turn-start-requested":
         yield* processTurnStartRequested(event);
         return;
+      case "thread.follow-up-submitted":
+        yield* processFollowUpSubmitted(event);
+        return;
       case "thread.turn-interrupt-requested":
         yield* processTurnInterruptRequested(event);
         return;
@@ -1220,6 +1319,7 @@ const make = Effect.gen(function* () {
       if (
         event.type === "thread.runtime-mode-set" ||
         event.type === "thread.turn-start-requested" ||
+        event.type === "thread.follow-up-submitted" ||
         event.type === "thread.turn-interrupt-requested" ||
         event.type === "thread.context-compact-requested" ||
         event.type === "thread.approval-response-requested" ||

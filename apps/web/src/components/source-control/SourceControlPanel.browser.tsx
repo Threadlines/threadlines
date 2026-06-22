@@ -452,6 +452,46 @@ describe("SourceControlPanel changes", () => {
     }
   });
 
+  it("aligns the primary action row with the secondary action row", async () => {
+    const status = makeStatus({
+      hasWorkingTreeChanges: true,
+      workingTree: {
+        files: [
+          {
+            path: "src/app.ts",
+            indexStatus: null,
+            worktreeStatus: "modified",
+            insertions: 2,
+            deletions: 1,
+          },
+        ],
+        insertions: 2,
+        deletions: 1,
+      },
+    });
+    const mounted = await renderPanel({ status });
+
+    try {
+      const primaryButton = page.getByRole("button", { name: "Generate, commit & push" }).element();
+      const optionsButton = page.getByRole("button", { name: "Source control actions" }).element();
+      const pullButton = page.getByRole("button", { name: "Pull" }).element();
+      const newPrButton = page.getByRole("button", { name: "New PR" }).element();
+
+      const primaryRect = primaryButton.getBoundingClientRect();
+      const optionsRect = optionsButton.getBoundingClientRect();
+      const pullRect = pullButton.getBoundingClientRect();
+      const newPrRect = newPrButton.getBoundingClientRect();
+
+      expect(Math.abs(primaryRect.left - pullRect.left)).toBeLessThanOrEqual(1);
+      expect(Math.abs(optionsRect.right - newPrRect.right)).toBeLessThanOrEqual(1);
+      expect(Math.abs(optionsRect.height - primaryRect.height)).toBeLessThanOrEqual(1);
+      expect(Math.abs(optionsRect.height - newPrRect.height)).toBeLessThanOrEqual(1);
+      expect(Math.abs(optionsRect.width - 24)).toBeLessThanOrEqual(1);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("clears the commit message draft when discarding changes", async () => {
     const discardChanges: EnvironmentApi["vcs"]["discardChanges"] = vi.fn(async (input) => ({
       discardedPaths: input.filePaths,
@@ -1086,6 +1126,77 @@ describe("SourceControlPanel changes", () => {
       await vi.waitFor(() => {
         expect(unstageChanges).toHaveBeenCalledWith({ cwd: CWD, filePaths: ["README.md"] });
       });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("uses a full-height title strip for the right-panel header", async () => {
+    const mounted = await renderPanel();
+
+    try {
+      await expect.element(page.getByRole("heading", { name: "Source Control" })).toBeVisible();
+      const heading = document.querySelector('h2[aria-label="Source Control"]');
+      expect(heading).toBeInstanceOf(HTMLHeadingElement);
+      const titleStrip = heading?.closest(".drag-region")?.firstElementChild;
+      expect(titleStrip).toBeInstanceOf(HTMLElement);
+      expect((titleStrip as HTMLElement).getBoundingClientRect().height).toBeGreaterThanOrEqual(48);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the branch trigger fixed when opening branch actions", async () => {
+    const listRefs: EnvironmentApi["vcs"]["listRefs"] = vi.fn(async () => ({
+      isRepo: true,
+      hasPrimaryRemote: true,
+      nextCursor: null,
+      totalCount: 3,
+      refs: [
+        {
+          name: "main",
+          current: true,
+          isDefault: true,
+          worktreePath: null,
+        },
+        {
+          name: "feature/source-control",
+          current: false,
+          isDefault: false,
+          worktreePath: null,
+        },
+        {
+          name: "origin/feature/remote",
+          current: false,
+          isDefault: false,
+          isRemote: true,
+          worktreePath: null,
+        },
+      ],
+    }));
+    const mounted = await renderPanel({
+      environmentApi: makeEnvironmentApi({ vcs: { listRefs } }),
+    });
+
+    try {
+      await expect.element(page.getByRole("button", { name: "Branch: main" })).toBeVisible();
+      await expect.element(page.getByText("Polish source control graph")).toBeVisible();
+      const branchButton = document.querySelector('button[aria-label="Branch: main"]');
+      expect(branchButton).toBeInstanceOf(HTMLButtonElement);
+      await vi.waitFor(() => {
+        expect((branchButton as HTMLButtonElement).disabled).toBe(false);
+      });
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+      const before = (branchButton as HTMLButtonElement).getBoundingClientRect();
+      await page.getByRole("button", { name: "Branch: main" }).click();
+      await expect.element(page.getByText("Create branch...")).toBeVisible();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+      const after = (branchButton as HTMLButtonElement).getBoundingClientRect();
+
+      expect(document.documentElement.hasAttribute("data-base-ui-scroll-locked")).toBe(false);
+      expect(Math.abs(after.top - before.top)).toBeLessThan(0.5);
+      expect(Math.abs(after.height - before.height)).toBeLessThan(0.5);
     } finally {
       await mounted.cleanup();
     }

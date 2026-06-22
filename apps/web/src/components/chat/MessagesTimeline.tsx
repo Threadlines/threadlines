@@ -15,6 +15,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react";
@@ -51,7 +52,7 @@ import {
   ZapIcon,
 } from "lucide-react";
 import { Button } from "../ui/button";
-import { LiveNode, SectionLabel } from "../ui/threadline";
+import { LiveNode, SpineRow } from "../ui/threadline";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import { ChangedFilesTree } from "./ChangedFilesTree";
@@ -126,7 +127,7 @@ const TIMELINE_LIST_FOOTER = <div className="h-3 sm:h-4" />;
 const EMPTY_TIMELINE_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
 type McpAuthReconnectStatus = "running" | "completed";
 const EMPTY_MCP_AUTH_RECONNECT_STATUS: ReadonlyMap<string, McpAuthReconnectStatus> = new Map();
-const LIVE_WORK_LOG_ENTRY_COUNT = 2;
+const LIVE_WORK_LOG_ENTRY_COUNT = 3;
 const INITIAL_STICK_TO_BOTTOM_FRAME_COUNT = 3;
 
 // ---------------------------------------------------------------------------
@@ -683,7 +684,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
       )}
       <div className="min-w-0 px-1 py-0.5">
         <div
-          className="group/assistant-message inline-block max-w-full align-top"
+          className="group/assistant-message block w-full max-w-full align-top"
           data-assistant-message-section="true"
         >
           {authReconnect ? (
@@ -1058,6 +1059,59 @@ function LiveMessageMeta({
 
 /** Owns its own expand/collapse state so toggling re-renders only this row.
  *  State resets on unmount which is fine — work groups start collapsed. */
+type SpineNodeKind = "done" | "live" | "warning" | "error" | "group";
+
+/** The glyph that sits on the activity spine for one row. The accent halo is
+ *  reserved for the single live terminus; settled steps are quiet solid dots, a
+ *  collapsed group of steps is a hollow ring (same family, reads as "openable"),
+ *  and warnings and errors escalate to an icon so they still catch the eye. */
+function SpineNode({ kind }: { kind: SpineNodeKind }) {
+  if (kind === "live") {
+    return <LiveNode className="size-1.5 [--thread-halo-delay:0.2s]" />;
+  }
+  if (kind === "error") {
+    return <CircleAlertIcon aria-hidden="true" className="size-3 text-foreground/85" />;
+  }
+  if (kind === "warning") {
+    return <CircleAlertIcon aria-hidden="true" className="size-3 text-amber-400/80" />;
+  }
+  if (kind === "group") {
+    return (
+      <span
+        aria-hidden="true"
+        className="size-[7px] rounded-full border border-muted-foreground/45 bg-background"
+      />
+    );
+  }
+  return <span aria-hidden="true" className="size-[5px] rounded-full bg-muted-foreground/35" />;
+}
+
+function workEntryNodeKind(entry: TimelineWorkEntry): SpineNodeKind {
+  if (entry.tone === "error") {
+    return "error";
+  }
+  if (entry.tone === "warning") {
+    return "warning";
+  }
+  return "done";
+}
+
+// Completed steps fade as they recede above the live terminus; the floor keeps
+// the oldest step legible. Index 0 is the row nearest the live node.
+const LIVE_SPINE_DIM = ["opacity-100", "opacity-80", "opacity-65"] as const;
+function liveSpineDimClass(indexFromBottom: number): string {
+  return LIVE_SPINE_DIM[indexFromBottom] ?? "opacity-50";
+}
+
+function spineStyle(tone: "live" | "settled"): CSSProperties {
+  return {
+    ["--spine"]:
+      tone === "live"
+        ? "color-mix(in oklab, var(--primary-graph) 60%, transparent)"
+        : "var(--border)",
+  } as CSSProperties;
+}
+
 const WorkGroupSection = memo(function WorkGroupSection({
   row,
 }: {
@@ -1082,114 +1136,199 @@ const WorkGroupSection = memo(function WorkGroupSection({
     }
   }, [isWorking]);
 
-  const isShowingLiveHistory = isLiveActivity && isExpanded;
-  const isShowingFullLog = !isLiveActivity && isExpanded;
-  const liveActivityEntries = isLiveActivity ? deriveLiveActivityEntries(groupedEntries) : [];
-  const activityEntries = isLiveActivity
-    ? isShowingLiveHistory
-      ? groupedEntries
-      : liveActivityEntries
-    : isShowingFullLog
-      ? groupedEntries
-      : summarizeSemanticActivityEntries(groupedEntries);
-  const visibleLimit = isLiveActivity ? LIVE_WORK_LOG_ENTRY_COUNT : MAX_VISIBLE_WORK_LOG_ENTRIES;
-  const hasOverflow = activityEntries.length > visibleLimit;
-  const visibleEntries =
-    hasOverflow && !isShowingFullLog && !isShowingLiveHistory
-      ? activityEntries.slice(-visibleLimit)
-      : activityEntries;
-  const hasCompactedEntries = !isLiveActivity && activityEntries.length < groupedEntries.length;
-  const liveHiddenCount = isLiveActivity
-    ? Math.max(0, groupedEntries.length - liveActivityEntries.length)
-    : 0;
-  const hiddenCount = isLiveActivity
-    ? liveHiddenCount
-    : isShowingFullLog
-      ? 0
-      : Math.max(0, groupedEntries.length - visibleEntries.length);
-  const onlyToolEntries = groupedEntries.every((entry) => entry.tone === "tool");
-  const hiddenSummary =
-    hasOverflow && !hasCompactedEntries && !isShowingFullLog && !isLiveActivity
-      ? summarizeHiddenWorkEntries(groupedEntries.slice(0, hiddenCount))
-      : null;
-  const liveHiddenSummary =
-    isLiveActivity && !isShowingLiveHistory
-      ? summarizeLiveHiddenWorkEntries(groupedEntries, liveActivityEntries)
-      : null;
-  const canToggleLiveHistory = isLiveActivity && liveHiddenCount > 0;
-  const canToggleFullLog = !isLiveActivity && (hasOverflow || hasCompactedEntries);
-  const canToggleActivityLog = canToggleLiveHistory || canToggleFullLog;
-  const showHeader =
-    isLiveActivity ||
-    canToggleActivityLog ||
-    hasCompactedEntries ||
-    hasOverflow ||
-    !onlyToolEntries;
-  const toggleLabel = isExpanded
-    ? isLiveActivity
-      ? "Hide previous"
-      : "Hide transcript"
-    : isLiveActivity
-      ? "Show previous"
-      : hasCompactedEntries
-        ? "View transcript"
-        : `Show ${hiddenCount} more`;
-  const toggleAriaLabel = isExpanded
-    ? isLiveActivity
-      ? "Hide previous activities"
-      : "Hide activity transcript"
-    : isLiveActivity
-      ? `Show ${liveHiddenCount.toLocaleString()} previous ${
-          liveHiddenCount === 1 ? "activity" : "activities"
-        }`
-      : toggleLabel;
+  if (isLiveActivity) {
+    return <LiveActivitySpine entries={groupedEntries} workspaceRoot={workspaceRoot} />;
+  }
 
-  return (
-    <div
-      className={cn(
-        "rounded-xl border border-border/45 bg-card/25 px-2 py-1.5",
-        // Live segments read as "hot" via a heavier accent edge on the thread.
-        isLiveActivity && "border-l-2 border-l-primary-graph/40 pl-[7px]",
-      )}
-    >
-      {showHeader && (
-        <div className="mb-1.5 flex items-start justify-between gap-2 px-0.5">
-          <div className="min-w-0">
-            <SectionLabel className="text-[9px] tracking-[0.16em]">
-              {isLiveActivity ? "Current activity" : `Activity (${groupedEntries.length})`}
-            </SectionLabel>
-            {hiddenSummary || liveHiddenSummary ? (
-              <p className="mt-0.5 truncate text-[10px] leading-4 text-muted-foreground/45">
-                {hiddenSummary ?? liveHiddenSummary}
-              </p>
-            ) : null}
-          </div>
-          {canToggleActivityLog && (
-            <button
-              type="button"
-              className="shrink-0 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/55 transition-colors duration-150 hover:text-foreground/75"
-              aria-expanded={isExpanded}
-              aria-label={toggleAriaLabel}
-              onClick={() => setIsExpanded((v) => !v)}
-            >
-              {toggleLabel}
-            </button>
-          )}
-        </div>
-      )}
-      <div className="space-y-0.5" data-live-activity-strip={isLiveActivity ? "true" : undefined}>
-        {visibleEntries.map((workEntry) => (
-          <SimpleWorkEntryRow
+  const summarizedEntries = summarizeSemanticActivityEntries(groupedEntries);
+  const hasCompactedEntries = summarizedEntries.length < groupedEntries.length;
+  const hasOverflow = summarizedEntries.length > MAX_VISIBLE_WORK_LOG_ENTRIES;
+  const shouldRenderReceipt = hasCompactedEntries || hasOverflow;
+  const transcriptEntries = isExpanded
+    ? groupedEntries
+    : hasOverflow
+      ? summarizedEntries.slice(-MAX_VISIBLE_WORK_LOG_ENTRIES)
+      : summarizedEntries;
+
+  if (!shouldRenderReceipt) {
+    return (
+      <div data-work-activity-inline="true" style={spineStyle("settled")}>
+        {transcriptEntries.map((workEntry, index) => (
+          <SpineRow
             key={`work-row:${workEntry.id}`}
-            isLiveActivity={isLiveActivity}
-            workEntry={workEntry}
-            workspaceRoot={workspaceRoot}
-          />
+            node={<SpineNode kind={workEntryNodeKind(workEntry)} />}
+            connectTop={index > 0}
+            connectBottom={index < transcriptEntries.length - 1}
+          >
+            <SimpleWorkEntryRow
+              isLiveActivity={false}
+              workEntry={workEntry}
+              workspaceRoot={workspaceRoot}
+              inSpine
+            />
+          </SpineRow>
         ))}
       </div>
+    );
+  }
+
+  const hiddenCount = isExpanded
+    ? 0
+    : Math.max(0, groupedEntries.length - transcriptEntries.length);
+  return (
+    <div
+      data-work-activity-receipt="true"
+      data-work-activity-expanded={isExpanded ? "true" : "false"}
+      style={spineStyle("settled")}
+    >
+      <SpineRow node={<SpineNode kind="group" />} connectTop={false} connectBottom={isExpanded}>
+        <ActivityReceipt
+          entries={groupedEntries}
+          isExpanded={isExpanded}
+          onToggle={() => setIsExpanded((value) => !value)}
+        />
+      </SpineRow>
+      {isExpanded ? (
+        <div data-activity-transcript="true">
+          {transcriptEntries.map((workEntry, index) => (
+            <SpineRow
+              key={`work-row:${workEntry.id}`}
+              node={<SpineNode kind={workEntryNodeKind(workEntry)} />}
+              connectBottom={index < transcriptEntries.length - 1}
+            >
+              <SimpleWorkEntryRow
+                isLiveActivity={false}
+                workEntry={workEntry}
+                workspaceRoot={workspaceRoot}
+                inSpine
+              />
+            </SpineRow>
+          ))}
+        </div>
+      ) : hiddenCount > 0 && !hasCompactedEntries ? (
+        <p className="mt-0.5 truncate pl-6 text-[10px] leading-4 text-muted-foreground/45">
+          {summarizeHiddenWorkEntries(groupedEntries.slice(0, hiddenCount))}
+        </p>
+      ) : null}
     </div>
   );
 });
+
+/** The live turn rendered as an accent spine: the recent steps dim as they
+ *  recede upward toward the single live node — the halo sits directly on the
+ *  most recent activity (the running tool, the current reasoning) and ends the
+ *  thread, so there is no detached dot and the standalone working row is
+ *  absorbed here. */
+function LiveActivitySpine({
+  entries,
+  workspaceRoot,
+}: {
+  entries: ReadonlyArray<TimelineWorkEntry>;
+  workspaceRoot: string | undefined;
+}) {
+  const liveEntries = deriveLiveActivityEntries(entries);
+  const hiddenSummary = summarizeLiveHiddenWorkEntries(entries, liveEntries);
+  const lastIndex = liveEntries.length - 1;
+
+  return (
+    <div data-live-activity-strip="true" style={spineStyle("live")}>
+      {hiddenSummary ? (
+        <p className="truncate pb-0.5 pl-6 text-[10px] leading-4 text-muted-foreground/45">
+          {hiddenSummary}
+        </p>
+      ) : null}
+      {liveEntries.map((workEntry, index) => {
+        const isCurrent = index === lastIndex;
+        return (
+          <SpineRow
+            key={`work-row:${workEntry.id}`}
+            node={<SpineNode kind={isCurrent ? "live" : workEntryNodeKind(workEntry)} />}
+            connectTop={index > 0}
+            connectBottom={!isCurrent}
+            className={isCurrent ? undefined : liveSpineDimClass(lastIndex - index)}
+          >
+            <SimpleWorkEntryRow
+              isLiveActivity
+              workEntry={workEntry}
+              workspaceRoot={workspaceRoot}
+              inSpine
+            />
+          </SpineRow>
+        );
+      })}
+    </div>
+  );
+}
+
+function ActivityReceipt({
+  entries,
+  isExpanded,
+  onToggle,
+}: {
+  entries: ReadonlyArray<TimelineWorkEntry>;
+  isExpanded: boolean;
+  onToggle: () => void;
+}) {
+  const summary = summarizeActivityReceipt(entries);
+  const actionCount = entries.length;
+  const duration = formatActivityDuration(entries);
+
+  return (
+    <div className="flex min-w-0 items-start justify-between gap-3 py-1">
+      <div className="min-w-0">
+        <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs leading-5 text-muted-foreground/80">
+          <span className="font-medium text-foreground/75">Activity</span>
+          <span className="text-muted-foreground/35">·</span>
+          <span>{formatActivityCount(actionCount, "action", "actions")}</span>
+          {duration ? (
+            <>
+              <span className="text-muted-foreground/35">·</span>
+              <span>{duration}</span>
+            </>
+          ) : null}
+        </p>
+        {summary ? (
+          <p className="truncate text-[10px] leading-4 text-muted-foreground/45">{summary}</p>
+        ) : null}
+      </div>
+      <button
+        type="button"
+        className="shrink-0 text-[10px] font-medium text-muted-foreground/55 transition-colors duration-150 hover:text-foreground/75"
+        aria-expanded={isExpanded}
+        aria-label={isExpanded ? "Hide activity transcript" : "View activity transcript"}
+        data-activity-transcript-toggle="true"
+        onClick={onToggle}
+      >
+        {isExpanded ? "Hide transcript" : "View transcript"}
+      </button>
+    </div>
+  );
+}
+
+function summarizeActivityReceipt(entries: ReadonlyArray<TimelineWorkEntry>): string | null {
+  const summarizedEntries = summarizeSemanticActivityEntries(entries);
+  const parts = summarizedEntries
+    .map((entry) => [entry.label, entry.detail].filter(Boolean).join(" · "))
+    .filter(Boolean);
+  if (parts.length === 0) {
+    return null;
+  }
+  const visibleParts = parts.slice(0, 2);
+  const hiddenCount = parts.length - visibleParts.length;
+  return hiddenCount > 0
+    ? `${visibleParts.join(" · ")} · +${hiddenCount.toLocaleString()}`
+    : visibleParts.join(" · ");
+}
+
+function formatActivityDuration(entries: ReadonlyArray<TimelineWorkEntry>): string | null {
+  const firstEntry = entries[0];
+  const lastEntry = entries.at(-1);
+  if (!firstEntry || !lastEntry || firstEntry.id === lastEntry.id) {
+    return null;
+  }
+  const duration = formatWorkingTimer(firstEntry.createdAt, lastEntry.createdAt);
+  return duration === "0s" ? null : duration;
+}
 
 function coalesceFileChangeWorkEntries(
   entries: ReadonlyArray<TimelineWorkEntry>,
@@ -1452,12 +1591,14 @@ function summarizeLiveHiddenWorkEntries(
   allEntries: ReadonlyArray<TimelineWorkEntry>,
   visibleEntries: ReadonlyArray<TimelineWorkEntry>,
 ): string | null {
-  const hiddenCount = Math.max(0, allEntries.length - visibleEntries.length);
+  const visibleIds = new Set(visibleEntries.map((entry) => entry.id));
+  const hiddenEntries = allEntries.filter((entry) => !visibleIds.has(entry.id));
+  const hiddenCount = hiddenEntries.length;
   if (hiddenCount <= 0) {
     return null;
   }
-  const runningCount = allEntries.filter((entry) => entry.executionState === "running").length;
-  const delegatedCount = allEntries.filter(
+  const runningCount = hiddenEntries.filter((entry) => entry.executionState === "running").length;
+  const delegatedCount = hiddenEntries.filter(
     (entry) => entry.itemType === "collab_agent_tool_call",
   ).length;
   const parts = [
@@ -2884,6 +3025,7 @@ function WorkEntrySummaryLine({
   tone,
   visibleDiffStat,
   className,
+  inSpine = false,
 }: {
   displayText: string;
   heading: string;
@@ -2894,6 +3036,7 @@ function WorkEntrySummaryLine({
   tone: TimelineWorkEntry["tone"];
   visibleDiffStat: { additions: number; deletions: number } | null;
   className?: string;
+  inSpine?: boolean;
 }) {
   const previewClassName =
     "flex min-w-0 flex-1 items-center self-center overflow-hidden leading-5 text-muted-foreground/55 transition-colors hover:text-muted-foreground/75 focus-visible:text-muted-foreground/75";
@@ -2908,7 +3051,7 @@ function WorkEntrySummaryLine({
       )}
       title={displayText}
     >
-      {isRunningTool ? <RunningToolIndicator className="mr-1.5 shrink-0" /> : null}
+      {isRunningTool && !inSpine ? <RunningToolIndicator className="mr-1.5 shrink-0" /> : null}
       <span
         className={cn(
           "min-w-0 shrink-0 truncate leading-5 text-foreground/80",
@@ -2961,8 +3104,9 @@ const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
   compact: boolean;
+  inSpine?: boolean;
 }) {
-  const { workEntry, workspaceRoot, compact } = props;
+  const { workEntry, workspaceRoot, compact, inSpine = false } = props;
   const [isExpanded, setIsExpanded] = useState(false);
   const isRunningTool = isRunningToolWorkEntry(workEntry);
   const heading = toolWorkEntryHeading(workEntry, workspaceRoot);
@@ -2997,7 +3141,7 @@ const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
               title={displayText}
             >
               <span className="inline-flex items-center text-foreground/80">
-                {isRunningTool ? <RunningToolIndicator className="mr-1.5" /> : null}
+                {isRunningTool && !inSpine ? <RunningToolIndicator className="mr-1.5" /> : null}
                 {heading}
               </span>
               {objective ? <span className="text-muted-foreground/55"> - {objective}</span> : null}
@@ -3228,6 +3372,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   isLiveActivity: boolean;
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
+  inSpine?: boolean;
 }) {
   const {
     turnDiffSummaryByTurnId,
@@ -3237,7 +3382,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     onRunMcpAuthReconnect,
   } = use(TimelineRowCtx);
   const [isOutputExpanded, setIsOutputExpanded] = useState(false);
-  const { isLiveActivity, workspaceRoot } = props;
+  const { isLiveActivity, workspaceRoot, inSpine = false } = props;
   const workEntry = resolveDisplayedWorkEntry(props.workEntry, isLiveActivity);
 
   if (isSubagentWorkEntry(workEntry)) {
@@ -3246,6 +3391,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
         workEntry={workEntry}
         workspaceRoot={workspaceRoot}
         compact={isLiveActivity}
+        inSpine={inSpine}
       />
     );
   }
@@ -3288,9 +3434,16 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   // "View into the terminal": command rows with retained output expand in
   // place on click; failures additionally surface their first error line.
   const outputPreview = isCommandWorkEntry(workEntry) ? workEntry.outputPreview : undefined;
-  const hasExpandableOutput = Boolean(outputPreview);
+  const hasExpandableOutput = Boolean(outputPreview) && !isLiveActivity;
   const failureLine = isOutputExpanded ? null : commandFailureLine(workEntry);
+  const showExpandedDetails = !isLiveActivity;
+  // On the spine the gutter owns the leading node, so the row drops its own
+  // tone icon and the sub-rows align flush under the heading text.
+  const detailIndent = inSpine ? "" : "pl-7";
+  const cardIndent = inSpine ? "" : "ml-7";
+  const chipIndent = inSpine ? "" : "pl-6";
   const isStandaloneImagePreview =
+    showExpandedDetails &&
     imagePreviews.length > 0 &&
     workEntry.itemType === "image_view" &&
     !preview &&
@@ -3302,7 +3455,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       <div className="rounded-lg px-1 py-1">
         <TimelineImagePreviewGrid
           images={imagePreviews}
-          className="max-w-[420px] pl-7"
+          className={cn("max-w-[420px]", detailIndent)}
           imageClassName="max-h-[260px] object-contain"
         />
       </div>
@@ -3329,11 +3482,13 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
         : {})}
     >
       <div className="flex items-center gap-2 transition-[opacity,translate] duration-200">
-        <span
-          className={cn("flex size-5 shrink-0 items-center justify-center", iconConfig.className)}
-        >
-          <EntryIcon className="size-3" />
-        </span>
+        {inSpine ? null : (
+          <span
+            className={cn("flex size-5 shrink-0 items-center justify-center", iconConfig.className)}
+          >
+            <EntryIcon className="size-3" />
+          </span>
+        )}
         <div className="min-w-0 flex-1 overflow-hidden">
           {rawCommand ? (
             <div className="max-w-full">
@@ -3342,6 +3497,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                 displayText={displayText}
                 heading={heading}
                 isRunningTool={isRunningTool}
+                inSpine={inSpine}
                 preview={preview}
                 rawCommand={rawCommand}
                 runningStartedAt={isRunningTool ? workEntry.createdAt : null}
@@ -3361,6 +3517,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                   displayText={displayText}
                   heading={heading}
                   isRunningTool={isRunningTool}
+                  inSpine={inSpine}
                   preview={preview}
                   rawCommand={null}
                   runningStartedAt={isRunningTool ? workEntry.createdAt : null}
@@ -3387,7 +3544,10 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       </div>
       {failureLine ? (
         <p
-          className="mt-0.5 truncate pl-7 font-mono text-[11px] leading-4 text-destructive/85"
+          className={cn(
+            "mt-0.5 truncate font-mono text-[11px] leading-4 text-destructive/85",
+            detailIndent,
+          )}
           data-command-failure="true"
           title={failureLine}
         >
@@ -3397,7 +3557,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       {workEntry.authReconnect ? (
         <ProviderAuthReconnectCard
           action={workEntry.authReconnect}
-          className="mt-1.5 ml-7"
+          className={cn("mt-1.5", cardIndent)}
           resolved={resolvedProviderAuthReconnectIds.has(workEntry.id)}
           {...(onRunProviderAuthReconnect ? { onRun: onRunProviderAuthReconnect } : {})}
         />
@@ -3405,13 +3565,13 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       {workEntry.mcpAuthReconnect ? (
         <McpAuthReconnectCard
           action={workEntry.mcpAuthReconnect}
-          className="mt-1.5 ml-7"
+          className={cn("mt-1.5", cardIndent)}
           status={mcpAuthReconnectStatusByServerName.get(workEntry.mcpAuthReconnect.serverName)}
           {...(onRunMcpAuthReconnect ? { onRun: onRunMcpAuthReconnect } : {})}
         />
       ) : null}
       {hasExpandableOutput && isOutputExpanded ? (
-        <div className="mt-1 pl-7" data-command-output="true">
+        <div className={cn("mt-1", detailIndent)} data-command-output="true">
           <pre className="max-h-52 overflow-y-auto rounded-md border border-border/45 bg-background/70 px-2 py-1.5 font-mono text-[11px] leading-4 whitespace-pre-wrap wrap-break-word text-muted-foreground/80">
             {commandOutputTail(outputPreview ?? "")}
           </pre>
@@ -3422,8 +3582,8 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           ) : null}
         </div>
       ) : null}
-      {hasChangedFiles && !previewIsChangedFiles && (
-        <div className="mt-1 flex flex-wrap gap-1 pl-6">
+      {hasChangedFiles && !previewIsChangedFiles && showExpandedDetails && (
+        <div className={cn("mt-1 flex flex-wrap gap-1", chipIndent)}>
           {workEntry.changedFiles?.slice(0, 4).map((filePath) => {
             const displayPath = formatWorkspaceRelativePath(filePath, workspaceRoot);
             const fileStat = workEntry.changedFileStats?.find((stat) =>
@@ -3451,10 +3611,10 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           )}
         </div>
       )}
-      {imagePreviews.length > 0 && (
+      {imagePreviews.length > 0 && showExpandedDetails && (
         <TimelineImagePreviewGrid
           images={imagePreviews}
-          className="mt-2 max-w-[420px] pl-7"
+          className={cn("mt-2 max-w-[420px]", detailIndent)}
           imageClassName="max-h-[260px] object-contain"
         />
       )}

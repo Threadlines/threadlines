@@ -405,6 +405,50 @@ describe("deriveMessagesTimelineRows", () => {
     expect(assistantRow?.assistantTurnDiffSummary).toBe(assistantTurnDiffSummary);
   });
 
+  it("does not attach assistant diff summaries from a different turn", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "assistant-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:20Z",
+          message: {
+            id: "assistant-1" as never,
+            role: "assistant",
+            text: "No changes",
+            turnId: "turn-current" as never,
+            createdAt: "2026-01-01T00:00:20Z",
+            completedAt: "2026-01-01T00:00:30Z",
+            streaming: false,
+          },
+        },
+      ],
+      completionDividerBeforeEntryId: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map([
+        [
+          "assistant-1" as never,
+          {
+            turnId: "turn-stale" as never,
+            completedAt: "2026-01-01T00:00:30Z",
+            assistantMessageId: "assistant-1" as never,
+            checkpointTurnCount: 2,
+            files: [{ path: "src/index.ts", additions: 3, deletions: 1 }],
+          },
+        ],
+      ]),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    const assistantRow = rows.find(
+      (row): row is Extract<(typeof rows)[number], { kind: "message" }> =>
+        row.kind === "message" && row.message.role === "assistant",
+    );
+
+    expect(assistantRow?.assistantTurnDiffSummary).toBeUndefined();
+  });
+
   it("attaches model fallback metadata to the assistant response for the turn", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [

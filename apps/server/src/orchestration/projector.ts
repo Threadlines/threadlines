@@ -33,6 +33,8 @@ import {
   ThreadUnpinnedPayload,
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
+  ThreadFollowUpSubmittedPayload,
+  ThreadFollowUpAcceptedPayload,
   ThreadTurnDiffCompletedPayload,
 } from "./Schemas.ts";
 
@@ -443,6 +445,64 @@ export function projectEvent(
           threads: updateThread(nextBase.threads, payload.threadId, {
             messages: cappedMessages,
             updatedAt: event.occurredAt,
+          }),
+        };
+      });
+
+    case "thread.follow-up-submitted":
+      return decodeForEvent(
+        ThreadFollowUpSubmittedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            updatedAt: payload.createdAt,
+          }),
+        })),
+      );
+
+    case "thread.follow-up-accepted":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          ThreadFollowUpAcceptedPayload,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+        if (!thread) {
+          return nextBase;
+        }
+
+        const message: OrchestrationMessage = yield* decodeForEvent(
+          OrchestrationMessage,
+          {
+            id: payload.messageId,
+            role: payload.role,
+            text: payload.text,
+            ...(payload.attachments !== undefined ? { attachments: payload.attachments } : {}),
+            turnId: payload.turnId,
+            streaming: false,
+            createdAt: payload.createdAt,
+            updatedAt: payload.createdAt,
+          },
+          event.type,
+          "message",
+        );
+
+        const existingMessage = thread.messages.find((entry) => entry.id === message.id);
+        const messages = existingMessage
+          ? thread.messages.map((entry) => (entry.id === message.id ? message : entry))
+          : [...thread.messages, message];
+
+        return {
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            messages: messages.slice(-MAX_THREAD_MESSAGES),
+            updatedAt: payload.createdAt,
           }),
         };
       });

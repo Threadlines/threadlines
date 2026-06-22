@@ -16,10 +16,11 @@ import {
   prStatusIndicator,
   resolveThreadPr,
   terminalStatusFromRunningIds,
+  ThreadRailNode,
   ThreadStatusLabel,
 } from "./ThreadStatusIndicators";
 import { ThreadlinesGlyph } from "./Icons";
-import { CurrentMarker, SectionLabel } from "./ui/threadline";
+import { SectionLabel } from "./ui/threadline";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { autoAnimate } from "@formkit/auto-animate";
 import React, { useCallback, useEffect, memo, useMemo, useRef, useState } from "react";
@@ -563,6 +564,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       onMouseLeave={handleMouseLeave}
       onBlurCapture={handleBlurCapture}
     >
+      {/* The rail node lives in the row (a sibling of the button, which clips its
+          own overflow) so it can sit centered on the project line: every thread
+          contributes one node, turning the rail into a continuous threadline. */}
+      <ThreadRailNode status={threadStatus} />
       <SidebarMenuSubButton
         render={rowButtonRender}
         size="sm"
@@ -576,7 +581,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         onKeyDown={handleRowKeyDown}
         onContextMenu={handleRowContextMenu}
       >
-        {isActive ? <CurrentMarker className="-left-1" /> : null}
         <div className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
           {prStatus && (
             <Tooltip>
@@ -610,7 +614,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               <TooltipPopup side="top">Pinned</TooltipPopup>
             </Tooltip>
           )}
-          {threadStatus && <ThreadStatusLabel status={threadStatus} />}
           {renamingThreadKey === threadKey ? (
             <input
               ref={handleRenameInputRef}
@@ -888,8 +891,10 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
       ref={attachThreadListAutoAnimateRef}
       // Threads hang off their project's line: the inherited border-l is the rail.
       // overflow-clip (not hidden) keeps this list from becoming a scroll
-      // container, so the sticky "Show less" row tracks the sidebar viewport.
-      className="my-0 ml-3.5 mr-1 translate-x-0 gap-0.5 overflow-clip border-muted-foreground/15 py-0 pl-1 pr-0"
+      // container, so the sticky "Show less" row tracks the sidebar viewport. The
+      // clip margin lets each row's live node (and its halo) sit on the rail
+      // without being shaved off at the left edge.
+      className="my-0 ml-3.5 mr-1 translate-x-0 gap-0.5 overflow-clip [overflow-clip-margin:0.875rem] border-muted-foreground/15 py-0 pl-1 pr-0"
     >
       {shouldShowThreadPanel && showEmptyThreadState ? (
         <SidebarMenuSubItem className="w-full" data-thread-selection-safe>
