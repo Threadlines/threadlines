@@ -23,6 +23,7 @@ describe("branding", () => {
             baseName: "Threadlines",
             stageLabel: "Nightly",
             displayName: "Threadlines (Nightly)",
+            version: "1.2.3-nightly.4",
           }),
         },
       },
@@ -33,6 +34,7 @@ describe("branding", () => {
     expect(branding.APP_BASE_NAME).toBe("Threadlines");
     expect(branding.APP_STAGE_LABEL).toBe("Nightly");
     expect(branding.APP_DISPLAY_NAME).toBe("Threadlines (Nightly)");
+    expect(branding.APP_VERSION).toBe("1.2.3-nightly.4");
   });
 
   it("normalizes hosted app channel metadata", async () => {

@@ -24,6 +24,7 @@ import {
   type StartupPresentation,
 } from "../config.ts";
 import { expandHomePath, resolveBaseDir } from "../os-jank.ts";
+import packageJson from "../../package.json" with { type: "json" };
 
 export const modeFlag = Flag.choice("mode", RuntimeMode.literals).pipe(
   Flag.withDescription("Runtime mode. `desktop` keeps loopback defaults unless overridden."),
@@ -111,6 +112,24 @@ const aliasedConfigWithDefault = <A>(
   );
 
 const EnvServerConfig = Config.all({
+  appVersion: Config.all({
+    threadlines: Config.nonEmptyString("THREADLINES_APP_VERSION").pipe(Config.option),
+    badcode: Config.nonEmptyString("BADCODE_APP_VERSION").pipe(Config.option),
+    legacyT3Code: Config.nonEmptyString("T3CODE_APP_VERSION").pipe(Config.option),
+    generic: Config.nonEmptyString("APP_VERSION").pipe(Config.option),
+  }).pipe(
+    Config.map(({ threadlines, badcode, legacyT3Code, generic }) =>
+      Option.getOrUndefined(
+        Option.isSome(threadlines)
+          ? threadlines
+          : Option.isSome(badcode)
+            ? badcode
+            : Option.isSome(legacyT3Code)
+              ? legacyT3Code
+              : generic,
+      ),
+    ),
+  ),
   logLevel: aliasedConfigWithDefault(
     Config.logLevel("THREADLINES_LOG_LEVEL"),
     Config.logLevel("BADCODE_LOG_LEVEL"),
@@ -429,8 +448,16 @@ export const resolveServerConfig = (
       () => (mode === "desktop" ? "127.0.0.1" : undefined),
     );
     const logLevel = Option.getOrElse(cliLogLevel, () => env.logLevel);
+    const appVersion = Option.getOrElse(
+      resolveOptionPrecedence(
+        Option.fromUndefinedOr(bootstrap?.appVersion),
+        Option.fromUndefinedOr(env.appVersion),
+      ),
+      () => packageJson.version,
+    );
 
     const config: ServerConfigShape = {
+      appVersion,
       logLevel,
       traceMinLevel: env.traceMinLevel,
       traceTimingEnabled: env.traceTimingEnabled,

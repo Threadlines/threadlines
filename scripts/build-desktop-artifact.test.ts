@@ -17,6 +17,7 @@ import {
   filterPatchedDependenciesForStage,
   resolveMockUpdateServerPort,
   resolveMockUpdateServerUrl,
+  createDesktopArtifactBuildEnv,
 } from "./build-desktop-artifact.ts";
 import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
 
@@ -245,6 +246,21 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.equal(stagePackageJson.author, "Threadlines");
     assert.deepStrictEqual(stagePackageJson.build, { appId: DESKTOP_RELEASE_APP_ID });
     assert.match(stagePackageJson.packageManager, /^pnpm@/u);
+  });
+
+  it("injects the artifact version into desktop build-time version env", () => {
+    assert.deepStrictEqual(
+      createDesktopArtifactBuildEnv("0.0.21-nightly.20260622.128", {
+        PATH: "/bin",
+        APP_VERSION: "0.0.21-nightly.20260622.127",
+      }),
+      {
+        PATH: "/bin",
+        APP_VERSION: "0.0.21-nightly.20260622.128",
+        THREADLINES_APP_VERSION: "0.0.21-nightly.20260622.128",
+        VITE_APP_VERSION: "0.0.21-nightly.20260622.128",
+      },
+    );
   });
 
   it("prefers the Threadlines update repository env var over legacy and GitHub defaults", () => {

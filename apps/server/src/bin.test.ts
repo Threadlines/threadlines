@@ -53,6 +53,7 @@ const makeCliTestServerConfig = (baseDir: string) =>
   Effect.gen(function* () {
     const derivedPaths = yield* deriveServerPaths(baseDir, undefined);
     return {
+      appVersion: "0.0.0-test",
       logLevel: "Info",
       traceMinLevel: "Info",
       traceTimingEnabled: true,

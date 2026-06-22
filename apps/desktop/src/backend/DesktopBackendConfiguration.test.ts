@@ -110,6 +110,9 @@ describe("DesktopBackendConfiguration", () => {
         assert.equal(first.cwd, environment.backendCwd);
         assert.equal(first.captureOutput, true);
         assert.equal(first.env.ELECTRON_RUN_AS_NODE, "1");
+        assert.equal(first.env.APP_VERSION, "1.2.3");
+        assert.equal(first.env.THREADLINES_APP_VERSION, "1.2.3");
+        assert.isUndefined(first.env.VITE_APP_VERSION);
         assert.isUndefined(first.env.THREADLINES_PORT);
         assert.isUndefined(first.env.THREADLINES_MODE);
         assert.isUndefined(first.env.THREADLINES_DESKTOP_LAN_HOST);
@@ -125,6 +128,7 @@ describe("DesktopBackendConfiguration", () => {
         assert.equal(first.bootstrap.port, 4888);
         assert.equal(first.bootstrap.host, "0.0.0.0");
         assert.equal(first.bootstrap.t3Home, environment.baseDir);
+        assert.equal(first.bootstrap.appVersion, "1.2.3");
         assert.equal(first.bootstrap.tailscaleServeEnabled, true);
         assert.equal(first.bootstrap.tailscaleServePort, 8443);
         assert.match(first.bootstrap.desktopBootstrapToken, /^[0-9a-f]{48}$/i);

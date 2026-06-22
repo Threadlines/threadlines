@@ -23,4 +23,5 @@ export const APP_STAGE_LABEL =
 export const APP_DISPLAY_NAME =
   injectedDesktopAppBranding?.displayName ??
   (APP_STAGE_LABEL === "Dev" ? `${APP_BASE_NAME} (${APP_STAGE_LABEL})` : APP_BASE_NAME);
-export const APP_VERSION = import.meta.env.APP_VERSION || "0.0.0";
+export const APP_VERSION =
+  injectedDesktopAppBranding?.version ?? import.meta.env.APP_VERSION ?? "0.0.0";

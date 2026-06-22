@@ -19,6 +19,7 @@ import * as NetService from "@threadlines/shared/Net";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { deriveServerPaths } from "../config.ts";
 import { resolveServerConfig } from "./config.ts";
+import packageJson from "../../package.json" with { type: "json" };
 
 const encodeDesktopBootstrap = Schema.encodeEffect(Schema.fromJsonString(DesktopBackendBootstrap));
 
@@ -57,6 +58,10 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
     otlpMetricsUrl: undefined,
     otlpExportIntervalMs: 10_000,
     otlpServiceName: "threadlines-server",
+  } as const;
+  const defaultConfigMetadata = {
+    appVersion: packageJson.version,
+    ...defaultObservabilityConfig,
   } as const;
 
   const openBootstrapFd = Effect.fn(function* (payload: DesktopBackendBootstrapValue) {
@@ -119,7 +124,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
 
       expect(resolved).toEqual({
         logLevel: "Warn",
-        ...defaultObservabilityConfig,
+        ...defaultConfigMetadata,
         mode: "desktop",
         port: 4001,
         cwd: process.cwd(),
@@ -167,16 +172,19 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
               ConfigProvider.fromEnv({
                 env: {
                   THREADLINES_MODE: "desktop",
+                  THREADLINES_APP_VERSION: "1.2.3",
                   THREADLINES_PORT: "5888",
                   THREADLINES_HOME: threadlinesBaseDir,
                   THREADLINES_NO_BROWSER: "true",
                   THREADLINES_OTLP_SERVICE_NAME: "threadlines-dev",
                   BADCODE_MODE: "desktop",
+                  BADCODE_APP_VERSION: "1.2.2",
                   BADCODE_PORT: "4888",
                   BADCODE_HOME: join(NodeOS.tmpdir(), "threadlines-cli-config-env-base"),
                   BADCODE_NO_BROWSER: "true",
                   BADCODE_OTLP_SERVICE_NAME: "compat-service",
                   T3CODE_MODE: "web",
+                  T3CODE_APP_VERSION: "1.2.1",
                   T3CODE_PORT: "4001",
                   T3CODE_HOME: join(NodeOS.tmpdir(), "legacy-t3-home"),
                   T3CODE_NO_BROWSER: "false",
@@ -191,7 +199,8 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
 
       expect(resolved).toEqual({
         logLevel: "Info",
-        ...defaultObservabilityConfig,
+        ...defaultConfigMetadata,
+        appVersion: "1.2.3",
         otlpServiceName: "threadlines-dev",
         mode: "desktop",
         port: 5888,
@@ -258,7 +267,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
 
       expect(resolved).toEqual({
         logLevel: "Debug",
-        ...defaultObservabilityConfig,
+        ...defaultConfigMetadata,
         mode: "web",
         port: 8788,
         cwd: process.cwd(),
@@ -327,7 +336,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
 
       expect(resolved).toEqual({
         logLevel: "Info",
-        ...defaultObservabilityConfig,
+        ...defaultConfigMetadata,
         mode: "web",
         port: 8788,
         cwd: process.cwd(),
@@ -355,6 +364,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         makeDesktopBootstrap({
           port: 4888,
           host: "127.0.0.2",
+          appVersion: "9.9.9",
           t3Home: baseDir,
           noBrowser: true,
           desktopBootstrapToken: "desktop-token",
@@ -399,7 +409,8 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
 
       expect(resolved).toEqual({
         logLevel: "Info",
-        ...defaultObservabilityConfig,
+        ...defaultConfigMetadata,
+        appVersion: "9.9.9",
         otlpTracesUrl: "http://localhost:4318/v1/traces",
         otlpMetricsUrl: "http://localhost:4318/v1/metrics",
         mode: "desktop",
@@ -526,7 +537,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
 
       expect(resolved).toEqual({
         logLevel: "Debug",
-        ...defaultObservabilityConfig,
+        ...defaultConfigMetadata,
         mode: "web",
         port: 8788,
         cwd: process.cwd(),
@@ -593,7 +604,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
       expect(resolved.otlpMetricsUrl).toBe("http://localhost:4318/v1/metrics");
       expect(resolved).toEqual({
         logLevel: "Info",
-        ...defaultObservabilityConfig,
+        ...defaultConfigMetadata,
         otlpTracesUrl: "http://localhost:4318/v1/traces",
         otlpMetricsUrl: "http://localhost:4318/v1/metrics",
         mode: "desktop",
@@ -658,7 +669,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
 
       expect(resolved).toEqual({
         logLevel: "Info",
-        ...defaultObservabilityConfig,
+        ...defaultConfigMetadata,
         mode: "web",
         port: 3773,
         cwd: process.cwd(),

@@ -32,10 +32,13 @@ const emptyBackendObservabilitySettings: BackendObservabilitySettings = {
 };
 
 const DESKTOP_BACKEND_ENV_NAMES = [
+  "APP_VERSION",
+  "VITE_APP_VERSION",
   "THREADLINES_PORT",
   "THREADLINES_MODE",
   "THREADLINES_NO_BROWSER",
   "THREADLINES_HOST",
+  "THREADLINES_APP_VERSION",
   "THREADLINES_DESKTOP_WS_URL",
   "THREADLINES_DESKTOP_LAN_ACCESS",
   "THREADLINES_DESKTOP_LAN_HOST",
@@ -46,6 +49,7 @@ const DESKTOP_BACKEND_ENV_NAMES = [
   "BADCODE_MODE",
   "BADCODE_NO_BROWSER",
   "BADCODE_HOST",
+  "BADCODE_APP_VERSION",
   "BADCODE_DESKTOP_WS_URL",
   "BADCODE_DESKTOP_LAN_ACCESS",
   "BADCODE_DESKTOP_LAN_HOST",
@@ -56,6 +60,7 @@ const DESKTOP_BACKEND_ENV_NAMES = [
   "T3CODE_MODE",
   "T3CODE_NO_BROWSER",
   "T3CODE_HOST",
+  "T3CODE_APP_VERSION",
   "T3CODE_DESKTOP_WS_URL",
   "T3CODE_DESKTOP_LAN_ACCESS",
   "T3CODE_DESKTOP_LAN_HOST",
@@ -137,6 +142,8 @@ const resolveBackendStartConfig = Effect.fn("desktop.backendConfiguration.resolv
       env: {
         ...backendChildEnvPatch(),
         ELECTRON_RUN_AS_NODE: "1",
+        APP_VERSION: environment.appVersion,
+        THREADLINES_APP_VERSION: environment.appVersion,
       },
       bootstrap: {
         mode: "desktop",
@@ -145,6 +152,7 @@ const resolveBackendStartConfig = Effect.fn("desktop.backendConfiguration.resolv
         t3Home: environment.baseDir,
         host: backendExposure.bindHost,
         desktopBootstrapToken: input.bootstrapToken,
+        appVersion: environment.appVersion,
         tailscaleServeEnabled: backendExposure.tailscaleServeEnabled,
         tailscaleServePort: backendExposure.tailscaleServePort,
         ...Option.match(input.observabilitySettings.otlpTracesUrl, {

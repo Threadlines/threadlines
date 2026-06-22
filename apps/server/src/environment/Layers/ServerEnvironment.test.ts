@@ -20,6 +20,7 @@ const makeServerConfig = Effect.fn(function* (baseDir: string) {
 
   return {
     ...derivedPaths,
+    appVersion: "0.0.0-test",
     logLevel: "Error",
     traceMinLevel: "Info",
     traceTimingEnabled: true,
@@ -65,6 +66,7 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
       }).pipe(Effect.provide(makeServerEnvironmentLayer(baseDir)));
 
       expect(first.environmentId).toBe(second.environmentId);
+      expect(second.serverVersion).toBe("0.0.0-test");
       expect(second.capabilities.repositoryIdentity).toBe(true);
     }),
   );

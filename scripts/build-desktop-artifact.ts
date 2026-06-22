@@ -872,6 +872,18 @@ export function createStagePackageJson(input: StagePackageJsonInput): StagePacka
   };
 }
 
+export function createDesktopArtifactBuildEnv(
+  appVersion: string,
+  baseEnv: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  return {
+    ...baseEnv,
+    APP_VERSION: appVersion,
+    THREADLINES_APP_VERSION: appVersion,
+    VITE_APP_VERSION: appVersion,
+  };
+}
+
 function resolvePatchedDependencyPackageName(patchedDependencyKey: string): string {
   const versionSeparatorIndex = patchedDependencyKey.lastIndexOf("@");
   if (versionSeparatorIndex <= 0) {
@@ -989,6 +1001,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     yield* runCommand(
       ChildProcess.make({
         cwd: repoRoot,
+        env: createDesktopArtifactBuildEnv(appVersion),
         ...commandOutputOptions(options.verbose),
         // Windows needs shell mode to resolve .cmd shims.
         shell: process.platform === "win32",

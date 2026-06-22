@@ -1,6 +1,6 @@
 import * as Schema from "effect/Schema";
 
-import { PortSchema } from "./baseSchemas.ts";
+import { PortSchema, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 export const DesktopBackendBootstrap = Schema.Struct({
   mode: Schema.Literal("desktop"),
@@ -9,6 +9,7 @@ export const DesktopBackendBootstrap = Schema.Struct({
   t3Home: Schema.String,
   host: Schema.String,
   desktopBootstrapToken: Schema.String,
+  appVersion: Schema.optional(TrimmedNonEmptyString),
   tailscaleServeEnabled: Schema.Boolean,
   tailscaleServePort: PortSchema,
   otlpTracesUrl: Schema.optional(Schema.String),

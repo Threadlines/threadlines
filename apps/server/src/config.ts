@@ -49,6 +49,7 @@ export interface ServerDerivedPaths {
  * ServerConfigShape - Process/runtime configuration required by the server.
  */
 export interface ServerConfigShape extends ServerDerivedPaths {
+  readonly appVersion: string;
   readonly logLevel: LogLevel.LogLevel;
   readonly traceMinLevel: LogLevel.LogLevel;
   readonly traceTimingEnabled: boolean;
@@ -150,6 +151,7 @@ export class ServerConfig extends Context.Service<ServerConfig, ServerConfigShap
         yield* ensureServerDirectories(derivedPaths);
 
         return {
+          appVersion: "0.0.0-test",
           logLevel: "Error",
           traceMinLevel: "Info",
           traceTimingEnabled: true,
