@@ -13,6 +13,7 @@ import {
   parseDiffRouteSearch,
   preserveRightPanelSearchParamsForNavigation,
 } from "../diffRouteSearch";
+import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import { newDraftId, newThreadId } from "../lib/utils";
 import { orderItemsByPreferredIds } from "../components/Sidebar.logic";
 import {
@@ -25,14 +26,19 @@ import { createThreadSelectorByRef } from "../storeSelectors";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import { useUiStateStore } from "../uiStateStore";
 import { useSettings } from "./useSettings";
+import { useMediaQuery } from "./useMediaQuery";
 
 function useNewThreadState() {
   const projects = useStore(useShallow((store) => selectProjectsAcrossEnvironments(store)));
   const projectGroupingSettings = useSettings(selectProjectGroupingSettings);
   const router = useRouter();
+  const shouldUseRightPanelSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   const sourceControlOpen = useSearch({
     strict: false,
-    select: (params) => isSourceControlPanelOpen(parseDiffRouteSearch(params)),
+    select: (params) =>
+      isSourceControlPanelOpen(parseDiffRouteSearch(params), {
+        defaultOpen: !shouldUseRightPanelSheet,
+      }),
   });
   const preserveRightPanelSearchForDraftNavigation = useCallback(
     (previous: Record<string, unknown>) =>

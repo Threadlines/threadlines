@@ -10,7 +10,6 @@ import {
   getSidebarThreadWindow,
   getProjectSortTimestamp,
   SIDEBAR_THREAD_REVEAL_ALL_SLACK,
-  SIDEBAR_THREAD_REVEAL_CHUNK_SIZE,
   hasUnseenCompletion,
   isContextMenuPointerDown,
   orderItemsByPreferredIds,
@@ -819,12 +818,14 @@ const makeKeys = (count: number) => Array.from({ length: count }, (_, index) => 
 const getThreadKey = (key: string) => key;
 
 describe("getSidebarThreadWindow", () => {
+  const previewLimit = 6;
+
   it("includes the active thread even when it falls below the folded preview", () => {
     const window = getSidebarThreadWindow({
       threads: makeKeys(8),
       getThreadKey,
       activeThreadKey: "t-8",
-      previewLimit: 6,
+      previewLimit,
       revealedCount: 0,
     });
 
@@ -833,33 +834,45 @@ describe("getSidebarThreadWindow", () => {
     expect(window.isRevealed).toBe(false);
   });
 
-  it("offers the whole tail when it fits within one chunk plus slack", () => {
+  it("offers the whole tail when it fits within one preview-sized step plus slack", () => {
     const window = getSidebarThreadWindow({
-      threads: makeKeys(6 + SIDEBAR_THREAD_REVEAL_CHUNK_SIZE + SIDEBAR_THREAD_REVEAL_ALL_SLACK),
+      threads: makeKeys(previewLimit + previewLimit + SIDEBAR_THREAD_REVEAL_ALL_SLACK),
       getThreadKey,
       activeThreadKey: null,
-      previewLimit: 6,
+      previewLimit,
       revealedCount: 0,
     });
 
-    expect(window.nextRevealCount).toBe(
-      SIDEBAR_THREAD_REVEAL_CHUNK_SIZE + SIDEBAR_THREAD_REVEAL_ALL_SLACK,
-    );
+    expect(window.nextRevealCount).toBe(previewLimit + SIDEBAR_THREAD_REVEAL_ALL_SLACK);
     expect(window.searchHandoffThreadCount).toBeNull();
   });
 
-  it("offers a single chunk when the tail is larger than chunk plus slack", () => {
+  it("offers a single preview-sized step when the tail is larger than the preview plus slack", () => {
     const window = getSidebarThreadWindow({
       threads: makeKeys(40),
       getThreadKey,
       activeThreadKey: null,
-      previewLimit: 6,
+      previewLimit,
       revealedCount: 0,
     });
 
-    expect(window.visibleThreads).toHaveLength(6);
-    expect(window.nextRevealCount).toBe(SIDEBAR_THREAD_REVEAL_CHUNK_SIZE);
+    expect(window.visibleThreads).toHaveLength(previewLimit);
+    expect(window.nextRevealCount).toBe(previewLimit);
     expect(window.searchHandoffThreadCount).toBeNull();
+  });
+
+  it("uses the configured preview count for the reveal step", () => {
+    const configuredPreviewLimit = 5;
+    const window = getSidebarThreadWindow({
+      threads: makeKeys(40),
+      getThreadKey,
+      activeThreadKey: null,
+      previewLimit: configuredPreviewLimit,
+      revealedCount: 0,
+    });
+
+    expect(window.visibleThreads).toHaveLength(configuredPreviewLimit);
+    expect(window.nextRevealCount).toBe(configuredPreviewLimit);
   });
 
   it("hands off to search instead of revealing further once expanded", () => {
@@ -867,11 +880,11 @@ describe("getSidebarThreadWindow", () => {
       threads: makeKeys(40),
       getThreadKey,
       activeThreadKey: null,
-      previewLimit: 6,
-      revealedCount: SIDEBAR_THREAD_REVEAL_CHUNK_SIZE,
+      previewLimit,
+      revealedCount: previewLimit,
     });
 
-    expect(window.visibleThreads).toHaveLength(6 + SIDEBAR_THREAD_REVEAL_CHUNK_SIZE);
+    expect(window.visibleThreads).toHaveLength(previewLimit + previewLimit);
     expect(window.nextRevealCount).toBe(0);
     expect(window.searchHandoffThreadCount).toBe(40);
     expect(window.isRevealed).toBe(true);
@@ -882,7 +895,7 @@ describe("getSidebarThreadWindow", () => {
       threads: makeKeys(10),
       getThreadKey,
       activeThreadKey: null,
-      previewLimit: 6,
+      previewLimit,
       revealedCount: 4,
     });
 
@@ -898,7 +911,7 @@ describe("getSidebarThreadWindow", () => {
       threads: makeKeys(8),
       getThreadKey,
       activeThreadKey: "t-2",
-      previewLimit: 6,
+      previewLimit,
       revealedCount: 0,
     });
 
@@ -911,7 +924,7 @@ describe("getSidebarThreadWindow", () => {
       threads: makeKeys(8),
       getThreadKey,
       activeThreadKey: "other-project-thread",
-      previewLimit: 6,
+      previewLimit,
       revealedCount: 0,
     });
 

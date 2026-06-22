@@ -143,7 +143,7 @@ async function mountMenu(props?: { modelSelection?: ModelSelection; prompt?: str
           modelOptions={providerOptions}
         />
       }
-      onToggleInteractionMode={vi.fn()}
+      onInteractionModeChange={vi.fn()}
       onRuntimeModeChange={vi.fn()}
     />,
     { container: host },
@@ -368,7 +368,7 @@ describe("CompactComposerControlsMenu", () => {
         runtimeMode="approval-required"
         runtimeModeOptions={TEST_RUNTIME_MODE_OPTIONS}
         showInteractionModeToggle={false}
-        onToggleInteractionMode={vi.fn()}
+        onInteractionModeChange={vi.fn()}
         onRuntimeModeChange={vi.fn()}
       />,
       { container: host },
@@ -380,6 +380,7 @@ describe("CompactComposerControlsMenu", () => {
       const text = document.body.textContent ?? "";
       expect(text).not.toContain("Mode");
       expect(text).not.toContain("Chat");
+      expect(text).not.toContain("Build");
       expect(text).not.toContain("Plan");
       expect(text).toContain("Access");
       expect(text).toContain("Supervised");
@@ -388,5 +389,15 @@ describe("CompactComposerControlsMenu", () => {
 
     await screen.unmount();
     host.remove();
+  });
+
+  it("uses the same interaction labels as the expanded composer", async () => {
+    await using _ = await mountMenu();
+
+    await page.getByLabelText("More composer controls").click();
+
+    await expect.element(page.getByRole("menuitemradio", { name: "Build" })).toBeInTheDocument();
+    await expect.element(page.getByRole("menuitemradio", { name: "Plan" })).toBeInTheDocument();
+    await expect.element(page.getByRole("menuitemradio", { name: "Chat" })).not.toBeInTheDocument();
   });
 });

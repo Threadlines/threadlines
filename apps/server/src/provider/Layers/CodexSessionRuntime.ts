@@ -816,6 +816,20 @@ function currentProviderThreadId(session: ProviderSession): string | undefined {
   return readResumeCursorThreadId(session.resumeCursor);
 }
 
+export function shouldAcceptCodexNotificationForSession(input: {
+  readonly currentProviderThreadId: string | undefined;
+  readonly notificationThreadId: string | undefined;
+  readonly isKnownChildThread?: boolean;
+}): boolean {
+  if (!input.currentProviderThreadId || !input.notificationThreadId) {
+    return true;
+  }
+  return (
+    input.notificationThreadId === input.currentProviderThreadId ||
+    input.isKnownChildThread === true
+  );
+}
+
 function updateSession(
   sessionRef: Ref.Ref<ProviderSession>,
   updates: Partial<ProviderSession>,
@@ -961,12 +975,23 @@ export const makeCodexSessionRuntime = (
         const payload = notification.params;
         const route = readRouteFields(notification);
         const collabReceiverTurns = yield* Ref.get(collabReceiverTurnsRef);
+        const providerConversationId = readNotificationThreadId(notification);
         const childParentTurnId = (() => {
-          const providerConversationId = readNotificationThreadId(notification);
           return providerConversationId
             ? collabReceiverTurns.get(providerConversationId)
             : undefined;
         })();
+        const providerThreadId = currentProviderThreadId(yield* Ref.get(sessionRef));
+
+        if (
+          !shouldAcceptCodexNotificationForSession({
+            currentProviderThreadId: providerThreadId,
+            notificationThreadId: providerConversationId,
+            isKnownChildThread: childParentTurnId !== undefined,
+          })
+        ) {
+          return;
+        }
 
         rememberCollabReceiverTurns(collabReceiverTurns, notification, route.turnId);
         if (childParentTurnId && shouldSuppressChildConversationNotification(notification.method)) {

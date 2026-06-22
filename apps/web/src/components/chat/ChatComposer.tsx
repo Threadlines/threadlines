@@ -83,6 +83,7 @@ import { ContextWindowMeter } from "./ContextWindowMeter";
 import { buildExpandedImagePreview, type ExpandedImagePreview } from "./ExpandedImagePreview";
 import { basenameOfPath } from "../../vscode-icons";
 import { cn, randomUUID } from "~/lib/utils";
+import { getInteractionModeToggleTitle, interactionModeConfig } from "../../interactionModeOptions";
 import { Separator } from "../ui/separator";
 import { Button } from "../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
@@ -92,14 +93,7 @@ import {
   canRequestProviderRateLimitResetCredit,
   useProviderRateLimitResetCredit,
 } from "../ProviderRateLimitResetCredit";
-import {
-  BotIcon,
-  CameraIcon,
-  CircleAlertIcon,
-  LoaderCircleIcon,
-  SparklesIcon,
-  XIcon,
-} from "lucide-react";
+import { CameraIcon, CircleAlertIcon, LoaderCircleIcon, SparklesIcon, XIcon } from "lucide-react";
 import { proposedPlanTitle } from "../../proposedPlan";
 import {
   getProviderInteractionModeToggle,
@@ -205,6 +199,7 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
     ...runtimeModeConfig[props.runtimeMode],
   };
   const RuntimeModeIcon = currentRuntimeModeOption.icon;
+  const InteractionModeIcon = interactionModeConfig[props.interactionMode].icon;
 
   return (
     <>
@@ -218,15 +213,13 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
             size="sm"
             type="button"
             onClick={props.onToggleInteractionMode}
-            title={
-              props.interactionMode === "plan"
-                ? "Plan mode — click to return to normal build mode"
-                : "Default mode — click to enter plan mode"
-            }
+            title={getInteractionModeToggleTitle(props.interactionMode)}
           >
-            <BotIcon />
+            <InteractionModeIcon
+              className={cn(isPlanInteraction && "text-primary-readable opacity-100")}
+            />
             <span className="sr-only sm:not-sr-only">
-              {props.interactionMode === "plan" ? "Plan" : "Build"}
+              {interactionModeConfig[props.interactionMode].label}
             </span>
           </Button>
 
@@ -2151,7 +2144,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       ) : null}
       <div
         className={cn(
-          "group rounded-[22px] p-px transition-colors duration-200",
+          "group rounded-[22px] p-px transition-[background-color,box-shadow] duration-200",
+          interactionMode === "plan" && "plan-mode-frame",
           composerProviderState.composerFrameClassName,
         )}
         onDragEnter={onComposerDragEnter}
@@ -2555,7 +2549,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     runtimeModeOptions={composerProviderControls.runtimeModeOptions}
                     showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
                     traitsMenuContent={providerTraitsMenuContent}
-                    onToggleInteractionMode={toggleInteractionMode}
+                    onInteractionModeChange={handleInteractionModeChange}
                     onRuntimeModeChange={handleRuntimeModeChange}
                   />
                 ) : (

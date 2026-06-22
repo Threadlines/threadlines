@@ -1,18 +1,28 @@
 import { memo } from "react";
 import type { ProviderAuthReconnectAction } from "../../session-logic";
+import { formatProviderRateLimitResetCreditTooltip } from "../ProviderRateLimitResetCredit";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
 import { Button } from "../ui/button";
-import { CircleAlertIcon, TerminalIcon, XIcon } from "lucide-react";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { CircleAlertIcon, RotateCcwIcon, TerminalIcon, XIcon } from "lucide-react";
+
+type UsageResetAction = {
+  availableCount: number;
+  isResetting?: boolean;
+  onReset: () => void;
+};
 
 export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   error,
   authReconnect,
+  usageReset,
   providerLabel,
   onRunAuthReconnect,
   onDismiss,
 }: {
   error: string | null;
   authReconnect?: ProviderAuthReconnectAction | null;
+  usageReset?: UsageResetAction | null;
   providerLabel?: string;
   onRunAuthReconnect?: (action: ProviderAuthReconnectAction) => void;
   onDismiss?: () => void;
@@ -67,16 +77,41 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
         <AlertDescription className="line-clamp-3" title={error}>
           {error}
         </AlertDescription>
-        {onDismiss && (
+        {(usageReset || onDismiss) && (
           <AlertAction>
-            <button
-              type="button"
-              aria-label="Dismiss error"
-              className="inline-flex size-6 items-center justify-center rounded-md text-destructive/60 transition-colors hover:text-destructive"
-              onClick={onDismiss}
-            >
-              <XIcon className="size-3.5" />
-            </button>
+            {usageReset ? (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <span className="inline-flex">
+                      <Button
+                        type="button"
+                        size="xs"
+                        disabled={usageReset.isResetting === true}
+                        onClick={usageReset.onReset}
+                        aria-label="Reset Codex usage"
+                      >
+                        <RotateCcwIcon className="size-3" />
+                        {usageReset.isResetting ? "Resetting" : "Reset usage"}
+                      </Button>
+                    </span>
+                  }
+                />
+                <TooltipPopup side="top" align="end" className="max-w-64">
+                  {formatProviderRateLimitResetCreditTooltip(usageReset.availableCount)}
+                </TooltipPopup>
+              </Tooltip>
+            ) : null}
+            {onDismiss ? (
+              <button
+                type="button"
+                aria-label="Dismiss error"
+                className="inline-flex size-6 items-center justify-center rounded-md text-destructive/60 transition-colors hover:text-destructive"
+                onClick={onDismiss}
+              >
+                <XIcon className="size-3.5" />
+              </button>
+            ) : null}
           </AlertAction>
         )}
       </Alert>

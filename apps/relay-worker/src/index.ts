@@ -275,13 +275,17 @@ export class RelaySession extends DurableObject<Env> {
   private hasConnectedDesktop(): boolean {
     return this.ctx
       .getWebSockets()
-      .some((socket) => readSocketAttachment(socket)?.role === "desktop");
+      .some(
+        (socket) =>
+          socket.readyState === WebSocket.OPEN && readSocketAttachment(socket)?.role === "desktop",
+      );
   }
 
   private getPeerSummary(): RelayPeerSummary {
     let desktopConnected = false;
     let deviceCount = 0;
     for (const socket of this.ctx.getWebSockets()) {
+      if (socket.readyState !== WebSocket.OPEN) continue;
       const attachment = readSocketAttachment(socket);
       if (!attachment) continue;
       if (attachment.role === "desktop") {

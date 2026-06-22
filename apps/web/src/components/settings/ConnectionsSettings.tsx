@@ -106,8 +106,10 @@ import {
 import { useUiStateStore } from "~/uiStateStore";
 import { resolveServerConfigVersionMismatch } from "~/versionSkew";
 import { useServerConfig } from "~/rpc/serverState";
+import { useStore } from "~/store";
 
 const DEFAULT_TAILSCALE_SERVE_PORT = 443;
+const MOBILE_CONNECT_SESSION_HEALTHCHECK_INTERVAL_MS = 3_000;
 
 const accessTimestampFormatter = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
@@ -208,6 +210,19 @@ function getMobileConnectErrorView(message: string): MobileConnectErrorView {
       title: "Desktop backend is not ready",
       description:
         "Keep the desktop app open and wait for the local backend to finish starting, then create a new phone link.",
+      detail,
+      tone: "warning",
+    };
+  }
+
+  if (
+    lowerDetail.includes("phone link disconnected") ||
+    lowerDetail.includes("desktop bridge closed")
+  ) {
+    return {
+      title: "Phone link disconnected",
+      description:
+        "The desktop bridge closed. Create a new link before opening Threadlines on your phone.",
       detail,
       tone: "warning",
     };
@@ -1512,7 +1527,8 @@ const DesktopSshHostRow = memo(function DesktopSshHostRow({
   );
 });
 
-export function ConnectionsSettings() {
+export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "phone" }) {
+  const isPhoneSurface = surface === "phone";
   const desktopBridge = window.desktopBridge;
   const [currentSessionRole, setCurrentSessionRole] = useState<"owner" | "client" | null>(
     desktopBridge ? "owner" : null,
@@ -1521,6 +1537,8 @@ export function ConnectionsSettings() {
     "desktop-managed-local" | "loopback-browser" | "remote-reachable" | "unsafe-no-auth" | null
   >(desktopBridge ? null : null);
   const savedEnvironmentsById = useSavedEnvironmentRegistryStore((state) => state.byId);
+  const savedEnvironmentRuntimeById = useSavedEnvironmentRuntimeStore((state) => state.byId);
+  const activeEnvironmentId = useStore((state) => state.activeEnvironmentId);
   const savedEnvironmentIds = useMemo(
     () =>
       Object.values(savedEnvironmentsById)
@@ -1528,6 +1546,16 @@ export function ConnectionsSettings() {
         .map((record) => record.environmentId),
     [savedEnvironmentsById],
   );
+  const activeSavedEnvironmentId =
+    activeEnvironmentId && savedEnvironmentsById[activeEnvironmentId]
+      ? activeEnvironmentId
+      : (savedEnvironmentIds[0] ?? null);
+  const activeSavedEnvironment = activeSavedEnvironmentId
+    ? (savedEnvironmentsById[activeSavedEnvironmentId] ?? null)
+    : null;
+  const activeSavedEnvironmentRuntime = activeSavedEnvironmentId
+    ? (savedEnvironmentRuntimeById[activeSavedEnvironmentId] ?? null)
+    : null;
   const savedDesktopSshEnvironmentsByAlias = useMemo(
     () =>
       Object.values(savedEnvironmentsById).reduce<Record<string, SavedEnvironmentRecord>>(
@@ -1640,6 +1668,11 @@ export function ConnectionsSettings() {
   const isMobileConnectSessionExpired = mobileConnectSession
     ? isIsoTimestampExpired(mobileConnectSession.expiresAt, mobileConnectNowMs)
     : false;
+  const mobileConnectSessionStatus = mobileConnectSession?.status ?? "open";
+  const isMobileConnectSessionReconnecting = mobileConnectSessionStatus === "reconnecting";
+  const isMobileConnectSessionDisconnected = mobileConnectSessionStatus === "disconnected";
+  const isMobileConnectSessionUnavailable =
+    isMobileConnectSessionExpired || isMobileConnectSessionDisconnected;
   const canManageLocalBackend = currentSessionRole === "owner";
   const isLocalBackendNetworkAccessible = desktopBridge
     ? desktopServerExposureState?.mode === "network-accessible"
@@ -1672,6 +1705,73 @@ export function ConnectionsSettings() {
         );
       },
     });
+
+  useEffect(() => {
+    if (!desktopBridge) {
+      setMobileConnectSession(null);
+      return;
+    }
+
+    let cancelled = false;
+    void desktopBridge
+      .getRelayPairingSession()
+      .then((session) => {
+        if (cancelled) return;
+        setMobileConnectSession((current) => current ?? session);
+      })
+      .catch(() => {
+        // A stale preload or transient IPC failure should not block creating a fresh phone link.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [desktopBridge]);
+
+  useEffect(() => {
+    if (!desktopBridge || !mobileConnectSession || isMobileConnectSessionExpired) {
+      return;
+    }
+
+    let cancelled = false;
+    const refreshActiveSession = async () => {
+      try {
+        const session = await desktopBridge.getRelayPairingSession();
+        if (cancelled) return;
+        if (!session) {
+          setMobileConnectSession(null);
+          setMobileConnectError("Phone link disconnected. Create a new link.");
+          return;
+        }
+        setMobileConnectError(null);
+        setMobileConnectSession((current) => {
+          if (
+            !current ||
+            current.sessionId !== session.sessionId ||
+            current.status !== session.status ||
+            current.expiresAt !== session.expiresAt ||
+            current.pairingUrl !== session.pairingUrl ||
+            current.relayOrigin !== session.relayOrigin
+          ) {
+            return session;
+          }
+          return current;
+        });
+      } catch {
+        // A transient health-check failure should not hide an otherwise visible link.
+      }
+    };
+    void refreshActiveSession();
+    const intervalId = window.setInterval(
+      () => void refreshActiveSession(),
+      MOBILE_CONNECT_SESSION_HEALTHCHECK_INTERVAL_MS,
+    );
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [desktopBridge, isMobileConnectSessionExpired, mobileConnectSession]);
 
   const pendingTailscaleServeBaseUrl = useMemo(() => {
     if (!pendingTailscaleServeEndpoint) return null;
@@ -2126,6 +2226,12 @@ export function ConnectionsSettings() {
   ]);
 
   useEffect(() => {
+    if (isPhoneSurface) {
+      setCurrentSessionRole(null);
+      setCurrentAuthPolicy(null);
+      return;
+    }
+
     if (desktopBridge) {
       setCurrentSessionRole("owner");
       return;
@@ -2147,10 +2253,10 @@ export function ConnectionsSettings() {
     return () => {
       cancelled = true;
     };
-  }, [desktopBridge]);
+  }, [desktopBridge, isPhoneSurface]);
 
   useEffect(() => {
-    if (!canManageLocalBackend) return;
+    if (isPhoneSurface || !canManageLocalBackend) return;
 
     let cancelled = false;
     setIsLoadingDesktopAccessManagement(true);
@@ -2249,7 +2355,7 @@ export function ConnectionsSettings() {
       cancelled = true;
       unsubscribeAuthAccess();
     };
-  }, [canManageLocalBackend, desktopBridge]);
+  }, [canManageLocalBackend, desktopBridge, isPhoneSurface]);
 
   useEffect(() => {
     if (canManageLocalBackend) return;
@@ -2260,7 +2366,7 @@ export function ConnectionsSettings() {
     setDesktopServerExposureState(null);
     setDesktopAdvertisedEndpoints([]);
     setDesktopServerExposureError(null);
-  }, [canManageLocalBackend]);
+  }, [canManageLocalBackend, isPhoneSurface]);
   const visibleDesktopPairingLinks = useMemo(
     () => desktopPairingLinks.filter((pairingLink) => pairingLink.role === "client"),
     [desktopPairingLinks],
@@ -2719,13 +2825,32 @@ export function ConnectionsSettings() {
           </div>
           <div className="min-w-0 space-y-3">
             <div className="flex flex-wrap items-center gap-1.5">
-              <Badge variant={isMobileConnectSessionExpired ? "warning" : "success"} size="sm">
+              <Badge
+                variant={
+                  isMobileConnectSessionExpired ||
+                  isMobileConnectSessionReconnecting ||
+                  isMobileConnectSessionDisconnected
+                    ? "warning"
+                    : "success"
+                }
+                size="sm"
+              >
                 {isMobileConnectSessionExpired ? (
                   <ClockIcon className="size-3" />
+                ) : isMobileConnectSessionReconnecting ? (
+                  <RefreshCwIcon className="size-3 animate-spin" />
+                ) : isMobileConnectSessionDisconnected ? (
+                  <TriangleAlertIcon className="size-3" />
                 ) : (
                   <CircleCheckIcon className="size-3" />
                 )}
-                {isMobileConnectSessionExpired ? "Expired" : "Bridge open"}
+                {isMobileConnectSessionExpired
+                  ? "Expired"
+                  : isMobileConnectSessionReconnecting
+                    ? "Reconnecting"
+                    : isMobileConnectSessionDisconnected
+                      ? "Disconnected"
+                      : "Bridge open"}
               </Badge>
               <Badge variant="info" size="sm">
                 <CloudIcon className="size-3" />
@@ -2766,15 +2891,21 @@ export function ConnectionsSettings() {
         </div>
       </div>
     ) : null;
-  const renderMobileConnectDetails = () => (
-    <>
-      {renderMobileConnectErrorDetails()}
-      {isCreatingMobileConnectLink && !mobileConnectSession
-        ? renderMobileConnectProgressDetails()
-        : null}
-      {renderMobileConnectSessionDetails()}
-    </>
-  );
+  const renderMobileConnectDetails = () => {
+    if (!mobileConnectErrorView && !isCreatingMobileConnectLink && !mobileConnectSession) {
+      return null;
+    }
+
+    return (
+      <>
+        {renderMobileConnectErrorDetails()}
+        {isCreatingMobileConnectLink && !mobileConnectSession
+          ? renderMobileConnectProgressDetails()
+          : null}
+        {renderMobileConnectSessionDetails()}
+      </>
+    );
+  };
   const renderMobileConnectRow = () => (
     <SettingsRow
       title="Phone link"
@@ -2782,7 +2913,11 @@ export function ConnectionsSettings() {
         mobileConnectSession
           ? isMobileConnectSessionExpired
             ? "This phone link expired. Create a new link before opening Threadlines on your phone."
-            : `Ready for ${formatExpiresInLabel(mobileConnectSession.expiresAt, mobileConnectNowMs)}. Open this link on your phone while the desktop app stays running.`
+            : isMobileConnectSessionDisconnected
+              ? "The desktop bridge closed. Create a new link before opening Threadlines on your phone."
+              : isMobileConnectSessionReconnecting
+                ? "Reconnecting to this computer. The QR code and link stay valid while Threadlines tries to restore the bridge."
+                : `Ready for ${formatExpiresInLabel(mobileConnectSession.expiresAt, mobileConnectNowMs)}. Open this link on your phone while the desktop app stays running.`
           : isCreatingMobileConnectLink
             ? "Creating a Cloudflare relay session and opening the desktop bridge."
             : mobileConnectErrorView
@@ -2796,7 +2931,7 @@ export function ConnectionsSettings() {
               <Button
                 size="xs"
                 variant="outline"
-                disabled={isMobileConnectSessionExpired}
+                disabled={isMobileConnectSessionUnavailable}
                 onClick={() => void handleOpenMobileConnectLink()}
               >
                 <ExternalLinkIcon className="size-3.5" />
@@ -2807,7 +2942,7 @@ export function ConnectionsSettings() {
               <Button
                 size="xs"
                 variant="outline"
-                disabled={isMobileConnectSessionExpired}
+                disabled={isMobileConnectSessionUnavailable}
                 onClick={() =>
                   copyMobileConnectLink(mobileConnectSession.pairingUrl, "mobile-link")
                 }
@@ -2845,10 +2980,97 @@ export function ConnectionsSettings() {
       {renderMobileConnectDetails()}
     </SettingsRow>
   );
+  const renderPhoneConnectionSection = () => {
+    const connectionState = activeSavedEnvironmentRuntime?.connectionState ?? "disconnected";
+    const stateDotClassName =
+      connectionState === "connected"
+        ? "bg-success"
+        : connectionState === "connecting"
+          ? "bg-warning"
+          : connectionState === "error"
+            ? "bg-destructive"
+            : "bg-muted-foreground/40";
+    const badgeVariant =
+      connectionState === "connected"
+        ? "success"
+        : connectionState === "connecting"
+          ? "warning"
+          : connectionState === "error"
+            ? "error"
+            : "outline";
+    const statusLabel =
+      connectionState === "connected"
+        ? "Connected"
+        : connectionState === "connecting"
+          ? "Connecting"
+          : connectionState === "error"
+            ? "Connection error"
+            : "Disconnected";
+    const description = activeSavedEnvironment
+      ? activeSavedEnvironmentRuntime?.lastError && connectionState === "error"
+        ? activeSavedEnvironmentRuntime.lastError
+        : activeSavedEnvironment.relay
+          ? "This browser is paired through the hosted phone link."
+          : "This browser can connect to the saved computer."
+      : "No desktop is paired with this browser.";
+    const versionMismatch = resolveServerConfigVersionMismatch(
+      activeSavedEnvironmentRuntime?.serverConfig,
+    );
+
+    return (
+      <SettingsSection title="Phone connection">
+        <SettingsRow
+          title={
+            <span className="flex min-w-0 items-center gap-1.5">
+              {activeSavedEnvironment ? (
+                <ConnectionStatusDot
+                  tooltipText={
+                    activeSavedEnvironment
+                      ? getSavedBackendStatusTooltip(
+                          activeSavedEnvironmentRuntime,
+                          activeSavedEnvironment,
+                          mobileConnectNowMs,
+                        )
+                      : null
+                  }
+                  dotClassName={stateDotClassName}
+                  pingClassName={connectionState === "connecting" ? "bg-warning/60" : null}
+                />
+              ) : null}
+              <span className="truncate">
+                {activeSavedEnvironmentRuntime?.descriptor?.label ??
+                  activeSavedEnvironment?.label ??
+                  "No desktop paired"}
+              </span>
+            </span>
+          }
+          description={description}
+          status={
+            versionMismatch ? (
+              <span className="flex items-center gap-1 text-warning">
+                <TriangleAlertIcon className="size-3.5 shrink-0" />
+                Version mismatch: this app {versionMismatch.clientVersion}, desktop{" "}
+                {versionMismatch.serverVersion}.
+              </span>
+            ) : null
+          }
+          control={
+            activeSavedEnvironment ? (
+              <Badge variant={badgeVariant} size="sm">
+                {statusLabel}
+              </Badge>
+            ) : null
+          }
+        />
+      </SettingsSection>
+    );
+  };
 
   return (
     <SettingsPageContainer>
-      {canManageLocalBackend ? (
+      {isPhoneSurface ? (
+        renderPhoneConnectionSection()
+      ) : canManageLocalBackend ? (
         <>
           <SettingsSection title="Connect your phone or tablet">
             {primaryVersionMismatch ? (
@@ -3057,7 +3279,7 @@ export function ConnectionsSettings() {
       )}
 
       <SettingsSection
-        title="Advanced: connect another computer"
+        title={isPhoneSurface ? "Saved computers" : "Advanced: connect another computer"}
         headerAction={
           <Dialog
             open={addBackendDialogOpen}
@@ -3090,7 +3312,9 @@ export function ConnectionsSettings() {
             </Tooltip>
             <DialogPopup className="max-h-[80dvh] sm:max-w-3xl">
               <DialogHeader>
-                <DialogTitle>Add another computer</DialogTitle>
+                <DialogTitle>
+                  {isPhoneSurface ? "Add computer" : "Add another computer"}
+                </DialogTitle>
                 <DialogDescription>
                   Use a Threadlines link or SSH if you already have it set up.
                 </DialogDescription>
@@ -3138,8 +3362,9 @@ export function ConnectionsSettings() {
         {savedEnvironmentIds.length === 0 ? (
           <div className={ITEM_ROW_CLASSNAME}>
             <p className="text-xs text-muted-foreground">
-              No other computers saved. Use &ldquo;Add computer&rdquo; when you want to connect
-              Threadlines to another machine.
+              {isPhoneSurface
+                ? "No computers are saved in this browser."
+                : 'No other computers saved. Use "Add computer" when you want to connect Threadlines to another machine.'}
             </p>
           </div>
         ) : null}

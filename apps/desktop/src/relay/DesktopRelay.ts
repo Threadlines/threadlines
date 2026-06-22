@@ -21,6 +21,7 @@ import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 
 export interface DesktopRelayShape {
+  readonly getPairingSession: Effect.Effect<DesktopRelayPairingSession | null>;
   readonly createPairingSession: Effect.Effect<DesktopRelayPairingSession, DesktopRelayError>;
   readonly disconnectPairingSession: Effect.Effect<void>;
 }
@@ -30,8 +31,21 @@ export class DesktopRelay extends Context.Service<DesktopRelay, DesktopRelayShap
 ) {}
 
 interface ActiveRelayBridge {
-  readonly session: DesktopRelayPairingSession;
+  session: DesktopRelayPairingSession;
+  relayDesktopSocketUrl: string;
+  relayDesktopToken: string;
+  bridge: RelayBridgeHandle;
+  intentionalClose: boolean;
+  reconnectInFlight: boolean;
+  reconnectAttempt: number;
+  reconnectTimer: ReturnType<typeof setTimeout> | null;
+  status: DesktopRelayPairingSessionStatus;
+  lastError: string | null;
+}
+
+interface RelayBridgeHandle {
   readonly close: () => void;
+  readonly isClosed: () => boolean;
 }
 
 type DesktopRelayOperation =
@@ -66,6 +80,10 @@ const encodeEmptyJsonRequestBody = Schema.encodeEffect(Schema.fromJsonString(Emp
 
 const { logInfo: logRelayInfo, logWarning: logRelayWarning } =
   DesktopObservability.makeComponentLogger("desktop-relay");
+
+type DesktopRelayPairingSessionStatus = NonNullable<DesktopRelayPairingSession["status"]>;
+
+const RELAY_RECONNECT_DELAYS_MS = [500, 1_000, 2_000, 5_000, 10_000, 15_000, 30_000] as const;
 
 function relayError(
   operation: DesktopRelayOperation,
@@ -108,6 +126,30 @@ function isInvalidBootstrapCredentialMessage(message: string): boolean {
     message === "Unknown bootstrap credential." ||
     message === "Bootstrap credential expired."
   );
+}
+
+function isSessionExpired(session: DesktopRelayPairingSession, nowMs = Date.now()): boolean {
+  const expiresAtMs = Date.parse(session.expiresAt);
+  return Number.isFinite(expiresAtMs) && expiresAtMs <= nowMs;
+}
+
+function nextReconnectDelayMs(attempt: number): number {
+  const index = Math.min(Math.max(0, attempt), RELAY_RECONNECT_DELAYS_MS.length - 1);
+  return RELAY_RECONNECT_DELAYS_MS[index] ?? 30_000;
+}
+
+function createClosedBridgeHandle(): RelayBridgeHandle {
+  return {
+    close: () => {},
+    isClosed: () => true,
+  };
+}
+
+function toPairingSession(active: ActiveRelayBridge): DesktopRelayPairingSession {
+  return {
+    ...active.session,
+    status: active.status,
+  };
 }
 
 function mapDesktopBridgeBootstrapError(cause: DesktopRelayError | Schema.SchemaError) {
@@ -322,7 +364,8 @@ function openBridge(input: {
   readonly localSocketUrl: string;
   readonly relayDesktopSocketUrl: string;
   readonly relayDesktopToken: string;
-}): Effect.Effect<() => void, DesktopRelayError> {
+  readonly onClosed?: () => void;
+}): Effect.Effect<RelayBridgeHandle, DesktopRelayError> {
   return Effect.tryPromise({
     try: async () => {
       const relaySocket = new WebSocket(withRawRelayMode(input.relayDesktopSocketUrl), [
@@ -347,13 +390,45 @@ function openBridge(input: {
       const cleanupRelayForward = forwardSocketMessages(relaySocket, localSocket);
       const cleanupLocalForward = forwardSocketMessages(localSocket, relaySocket);
       const cleanupCloseBinding = bindCloseTogether(relaySocket, localSocket);
+      let closed = false;
+      let closeNotified = false;
+      const markClosed = () => {
+        closed = true;
+        if (closeNotified) {
+          return;
+        }
+        closeNotified = true;
+        input.onClosed?.();
+      };
+      relaySocket.addEventListener("close", markClosed);
+      relaySocket.addEventListener("error", markClosed);
+      localSocket.addEventListener("close", markClosed);
+      localSocket.addEventListener("error", markClosed);
 
-      return () => {
-        cleanupRelayForward();
-        cleanupLocalForward();
-        cleanupCloseBinding();
-        closeSocket(relaySocket);
-        closeSocket(localSocket);
+      const cleanupClosedListeners = () => {
+        relaySocket.removeEventListener("close", markClosed);
+        relaySocket.removeEventListener("error", markClosed);
+        localSocket.removeEventListener("close", markClosed);
+        localSocket.removeEventListener("error", markClosed);
+      };
+
+      return {
+        close: () => {
+          closed = true;
+          closeNotified = true;
+          cleanupRelayForward();
+          cleanupLocalForward();
+          cleanupCloseBinding();
+          cleanupClosedListeners();
+          closeSocket(relaySocket);
+          closeSocket(localSocket);
+        },
+        isClosed: () =>
+          closed ||
+          relaySocket.readyState === WebSocket.CLOSING ||
+          relaySocket.readyState === WebSocket.CLOSED ||
+          localSocket.readyState === WebSocket.CLOSING ||
+          localSocket.readyState === WebSocket.CLOSED,
       };
     },
     catch: (cause) =>
@@ -368,15 +443,211 @@ const make = Effect.gen(function* () {
   const backendManager = yield* DesktopBackendManager.DesktopBackendManager;
   const activeBridgeRef = yield* Ref.make(Option.none<ActiveRelayBridge>());
 
+  function clearReconnectTimer(active: ActiveRelayBridge): void {
+    if (!active.reconnectTimer) {
+      return;
+    }
+    clearTimeout(active.reconnectTimer);
+    active.reconnectTimer = null;
+  }
+
   const disconnectPairingSession = Effect.gen(function* () {
     const active = yield* Ref.getAndSet(activeBridgeRef, Option.none());
     if (Option.isNone(active)) {
       return;
     }
-    active.value.close();
+
+    active.value.intentionalClose = true;
+    active.value.status = "disconnected";
+    clearReconnectTimer(active.value);
+    active.value.bridge.close();
     yield* logRelayInfo("relay pairing session disconnected", {
       sessionId: active.value.session.sessionId,
     });
+  });
+
+  function openActiveBridge(
+    active: ActiveRelayBridge,
+  ): Effect.Effect<RelayBridgeHandle, DesktopRelayError> {
+    return Effect.gen(function* () {
+      const maybeBackendConfig = yield* backendManager.currentConfig;
+      if (Option.isNone(maybeBackendConfig)) {
+        return yield* relayError("open-relay-bridge", "Desktop backend is not ready yet.");
+      }
+
+      const localSocketUrl = yield* createLocalWebSocketUrl(maybeBackendConfig.value);
+      let bridge: RelayBridgeHandle | null = null;
+      bridge = yield* openBridge({
+        localSocketUrl,
+        relayDesktopSocketUrl: active.relayDesktopSocketUrl,
+        relayDesktopToken: active.relayDesktopToken,
+        onClosed: () => {
+          void Effect.runPromise(handleBridgeClosed(active, bridge)).catch((error) => {
+            void Effect.runPromise(
+              logRelayWarning("failed to handle relay pairing bridge close", {
+                sessionId: active.session.sessionId,
+                error: errorMessage(error),
+              }),
+            );
+          });
+        },
+      });
+      return bridge;
+    });
+  }
+
+  function scheduleReconnect(active: ActiveRelayBridge): Effect.Effect<void> {
+    return Effect.sync(() => {
+      if (
+        active.intentionalClose ||
+        active.reconnectTimer ||
+        active.reconnectInFlight ||
+        isSessionExpired(active.session)
+      ) {
+        return;
+      }
+
+      active.status = "reconnecting";
+      const delayMs = nextReconnectDelayMs(active.reconnectAttempt);
+      active.reconnectTimer = setTimeout(() => {
+        active.reconnectTimer = null;
+        void Effect.runPromise(reconnectActiveBridge(active)).catch((error) => {
+          void Effect.runPromise(
+            logRelayWarning("failed to run relay pairing reconnect", {
+              sessionId: active.session.sessionId,
+              error: errorMessage(error),
+            }),
+          );
+        });
+      }, delayMs);
+    });
+  }
+
+  function handleBridgeClosed(
+    active: ActiveRelayBridge,
+    closedBridge: RelayBridgeHandle | null,
+  ): Effect.Effect<void> {
+    return Effect.gen(function* () {
+      const current = yield* Ref.get(activeBridgeRef);
+      if (
+        Option.isNone(current) ||
+        current.value !== active ||
+        active.intentionalClose ||
+        (closedBridge && active.bridge !== closedBridge)
+      ) {
+        return;
+      }
+
+      if (isSessionExpired(active.session)) {
+        yield* disconnectPairingSession;
+        return;
+      }
+
+      const shouldLogClosed = active.status === "open";
+      active.status = "reconnecting";
+      if (shouldLogClosed) {
+        yield* logRelayWarning("relay pairing bridge closed; reconnecting", {
+          sessionId: active.session.sessionId,
+        });
+      }
+      yield* scheduleReconnect(active);
+    });
+  }
+
+  function reconnectActiveBridge(active: ActiveRelayBridge): Effect.Effect<void> {
+    let ownsReconnectAttempt = false;
+
+    return Effect.gen(function* () {
+      const current = yield* Ref.get(activeBridgeRef);
+      if (Option.isNone(current) || current.value !== active || active.intentionalClose) {
+        return;
+      }
+
+      if (isSessionExpired(active.session)) {
+        yield* disconnectPairingSession;
+        return;
+      }
+
+      if (active.reconnectInFlight) {
+        return;
+      }
+
+      active.reconnectInFlight = true;
+      ownsReconnectAttempt = true;
+      active.status = "reconnecting";
+
+      const previousBridge = active.bridge;
+      const nextBridge = yield* openActiveBridge(active);
+      const latest = yield* Ref.get(activeBridgeRef);
+      if (Option.isNone(latest) || latest.value !== active || active.intentionalClose) {
+        nextBridge.close();
+        return;
+      }
+
+      previousBridge.close();
+      active.bridge = nextBridge;
+      active.status = "open";
+      active.lastError = null;
+      active.reconnectAttempt = 0;
+      yield* logRelayInfo("relay pairing bridge reconnected", {
+        sessionId: active.session.sessionId,
+      });
+    }).pipe(
+      Effect.catch((error: DesktopRelayError) =>
+        Effect.gen(function* () {
+          if (ownsReconnectAttempt) {
+            active.reconnectInFlight = false;
+            ownsReconnectAttempt = false;
+          }
+
+          const current = yield* Ref.get(activeBridgeRef);
+          if (Option.isNone(current) || current.value !== active || active.intentionalClose) {
+            return;
+          }
+
+          if (isSessionExpired(active.session)) {
+            yield* disconnectPairingSession;
+            return;
+          }
+
+          active.status = "reconnecting";
+          active.lastError = error.message;
+          active.reconnectAttempt += 1;
+          yield* logRelayWarning("failed to reconnect relay pairing bridge", {
+            sessionId: active.session.sessionId,
+            error: error.message,
+            retryInMs: nextReconnectDelayMs(active.reconnectAttempt),
+          });
+          yield* scheduleReconnect(active);
+        }),
+      ),
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (ownsReconnectAttempt) {
+            active.reconnectInFlight = false;
+          }
+        }),
+      ),
+    );
+  }
+
+  const getPairingSession = Effect.gen(function* () {
+    const active = yield* Ref.get(activeBridgeRef);
+    if (Option.isNone(active)) {
+      return null;
+    }
+
+    if (isSessionExpired(active.value.session)) {
+      yield* disconnectPairingSession;
+      return null;
+    }
+
+    if (active.value.bridge.isClosed() && active.value.status === "open") {
+      yield* handleBridgeClosed(active.value, active.value.bridge);
+    }
+
+    const latest = yield* Ref.get(activeBridgeRef);
+    return Option.isSome(latest) ? toPairingSession(latest.value) : null;
   });
 
   const createPairingSession = Effect.gen(function* () {
@@ -387,28 +658,35 @@ const make = Effect.gen(function* () {
 
     yield* disconnectPairingSession;
 
-    const backendConfig = maybeBackendConfig.value;
     const relaySession = yield* createRelaySession(config.relayUrl);
-    const localSocketUrl = yield* createLocalWebSocketUrl(backendConfig);
-    const close = yield* openBridge({
-      localSocketUrl,
-      relayDesktopSocketUrl: relaySession.desktopSocketUrl,
-      relayDesktopToken: relaySession.desktopToken,
-    });
     const session: DesktopRelayPairingSession = {
       pairingUrl: relaySession.pairingUrl,
       relayOrigin: new URL(relaySession.deviceSocketUrl).origin,
       sessionId: relaySession.sessionId,
       expiresAt: relaySession.expiresAt,
+      status: "open",
     };
+    const active: ActiveRelayBridge = {
+      session,
+      relayDesktopSocketUrl: relaySession.desktopSocketUrl,
+      relayDesktopToken: relaySession.desktopToken,
+      bridge: createClosedBridgeHandle(),
+      intentionalClose: false,
+      reconnectInFlight: false,
+      reconnectAttempt: 0,
+      reconnectTimer: null,
+      status: "open",
+      lastError: null,
+    };
+    active.bridge = yield* openActiveBridge(active);
 
-    yield* Ref.set(activeBridgeRef, Option.some({ session, close }));
+    yield* Ref.set(activeBridgeRef, Option.some(active));
     yield* logRelayInfo("relay pairing session created", {
       sessionId: session.sessionId,
       relayOrigin: session.relayOrigin,
       expiresAt: session.expiresAt,
     });
-    return session;
+    return toPairingSession(active);
   }).pipe(
     Effect.tapError((error) =>
       logRelayWarning("failed to create relay pairing session", {
@@ -418,6 +696,7 @@ const make = Effect.gen(function* () {
   );
 
   return DesktopRelay.of({
+    getPairingSession,
     createPairingSession,
     disconnectPairingSession,
   });

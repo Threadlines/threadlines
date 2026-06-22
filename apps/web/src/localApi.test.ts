@@ -181,7 +181,7 @@ function createLocalStorageStub(): Storage {
 }
 
 function makeDesktopBridge(overrides: Partial<DesktopBridge> = {}): DesktopBridge {
-  return {
+  const bridge: DesktopBridge = {
     getAppBranding: () => null,
     getLocalEnvironmentBootstrap: () => null,
     getClientSettings: async () => null,
@@ -232,6 +232,7 @@ function makeDesktopBridge(overrides: Partial<DesktopBridge> = {}): DesktopBridg
       tailscaleServePort: input.port ?? 443,
     }),
     getAdvertisedEndpoints: async () => [],
+    getRelayPairingSession: async () => null,
     createRelayPairingSession: async () => {
       throw new Error("createRelayPairingSession not implemented in test");
     },
@@ -258,8 +259,8 @@ function makeDesktopBridge(overrides: Partial<DesktopBridge> = {}): DesktopBridg
       throw new Error("installUpdate not implemented in test");
     },
     onUpdateState: () => () => undefined,
-    ...overrides,
   };
+  return Object.assign(bridge, overrides);
 }
 
 const defaultProviders: ReadonlyArray<ServerProvider> = [

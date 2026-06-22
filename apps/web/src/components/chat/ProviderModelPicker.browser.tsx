@@ -305,10 +305,16 @@ function getVisibleModelNames() {
     .filter((text) => text.length > 0);
 }
 
-function getModelPickerGroupOrder() {
-  return Array.from(document.querySelectorAll<HTMLElement>("[data-model-picker-group]")).map(
-    (element) => element.dataset.modelPickerGroup ?? "",
+function getModelPickerTabOrder() {
+  return Array.from(document.querySelectorAll<HTMLElement>("[data-model-picker-tab]")).map(
+    (element) => element.dataset.modelPickerTab ?? "",
   );
+}
+
+function getModelPickerTabText(tabId: string) {
+  const tab = document.querySelector<HTMLElement>(`[data-model-picker-tab="${tabId}"]`);
+  expect(tab).not.toBeNull();
+  return tab!.textContent?.replace(/\s+/g, "") ?? "";
 }
 
 describe("ProviderModelPicker", () => {
@@ -322,7 +328,7 @@ describe("ProviderModelPicker", () => {
     await __resetLocalApiForTests();
   });
 
-  it("expands the active provider group and folds the rest until clicked", async () => {
+  it("selects the active provider tab and switches panes when clicked", async () => {
     const mounted = await mountPicker({
       activeInstanceId: CLAUDE_INSTANCE_ID,
       model: "claude-opus-4-6",
@@ -335,9 +341,8 @@ describe("ProviderModelPicker", () => {
       await vi.waitFor(() => {
         const listText = getModelPickerListText();
         expect(listText).toContain("Claude Opus 4.6");
-        // Codex is not the active group: header only, models folded away.
         expect(listText).not.toContain("GPT-5 Codex");
-        expect(getModelPickerGroupOrder()).toEqual(["codex", "claudeAgent"]);
+        expect(getModelPickerTabOrder()).toEqual(["favorites", "codex", "claudeAgent"]);
       });
 
       await page.getByRole("button", { name: /^Codex/ }).click();
@@ -350,7 +355,7 @@ describe("ProviderModelPicker", () => {
     }
   });
 
-  it("expands only the favorites group when the active model is favorited", async () => {
+  it("selects the favorites tab when the active model is favorited", async () => {
     localStorage.setItem(
       CLIENT_SETTINGS_STORAGE_KEY,
       JSON.stringify({
@@ -369,8 +374,7 @@ describe("ProviderModelPicker", () => {
       await page.getByRole("button").click();
 
       await vi.waitFor(() => {
-        expect(getModelPickerGroupOrder()).toEqual(["favorites", "codex", "claudeAgent"]);
-        // The active model lives in Favorites, so only Favorites opens.
+        expect(getModelPickerTabOrder()).toEqual(["favorites", "codex", "claudeAgent"]);
         expect(getVisibleModelNames()).toEqual(["Claude Sonnet 4.6"]);
       });
     } finally {
@@ -415,7 +419,7 @@ describe("ProviderModelPicker", () => {
       await page.getByRole("button").click();
 
       await vi.waitFor(() => {
-        expect(getModelPickerGroupOrder()).toEqual(["codex", "claudeAgent"]);
+        expect(getModelPickerTabOrder()).toEqual(["favorites", "codex", "claudeAgent"]);
       });
 
       await page.getByPlaceholder("Search models...").fill("rogue");
@@ -428,7 +432,7 @@ describe("ProviderModelPicker", () => {
     }
   });
 
-  it("lists provider groups in configured order with their models", async () => {
+  it("lists provider tabs in configured order with their models", async () => {
     const mounted = await mountPicker({
       activeInstanceId: CLAUDE_INSTANCE_ID,
       model: "claude-opus-4-6",
@@ -439,13 +443,12 @@ describe("ProviderModelPicker", () => {
       await page.getByRole("button").click();
 
       await vi.waitFor(() => {
-        expect(getModelPickerGroupOrder()).toEqual(["codex", "claudeAgent"]);
+        expect(getModelPickerTabOrder()).toEqual(["favorites", "codex", "claudeAgent"]);
       });
 
       await page.getByRole("button", { name: /^Codex/ }).click();
 
       await vi.waitFor(() => {
-        // Accordion: opening Codex folds the previously open Claude group.
         expect(getVisibleModelNames()).toContain("GPT-5 Codex");
         expect(getVisibleModelNames()).not.toContain("Claude Opus 4.6");
       });
@@ -541,7 +544,7 @@ describe("ProviderModelPicker", () => {
     }
   });
 
-  it("shows instance groups in locked mode when that provider has multiple instances", async () => {
+  it("shows instance tabs in locked mode when that provider has multiple instances", async () => {
     const defaultCodexModels: ServerProvider["models"] = [
       {
         slug: "gpt-work",
@@ -602,18 +605,16 @@ describe("ProviderModelPicker", () => {
       await page.getByRole("button").click();
 
       await vi.waitFor(() => {
-        expect(getModelPickerGroupOrder()).toEqual(["codex", "codex_personal"]);
+        expect(getModelPickerTabOrder()).toEqual(["codex", "codex_personal"]);
         expect(getModelPickerListText()).not.toContain("Codex Isolated");
         expect(getModelPickerListText()).toContain("Codex Work");
         expect(getModelPickerListText()).toContain("Codex Personal");
-        // Active instance group opens; the sibling instance stays folded.
         expect(getVisibleModelNames()).toEqual(["GPT Work"]);
       });
 
       await page.getByRole("button", { name: /^Codex Personal/ }).click();
 
       await vi.waitFor(() => {
-        // Accordion: the sibling instance group folds when this one opens.
         expect(getVisibleModelNames()).toEqual(["GPT Personal"]);
       });
     } finally {
@@ -714,7 +715,7 @@ describe("ProviderModelPicker", () => {
     }
   });
 
-  it("searches models by name in flat list", async () => {
+  it("searches models by name in the active tab", async () => {
     const mounted = await mountPicker({
       activeInstanceId: CLAUDE_INSTANCE_ID,
       model: "claude-opus-4-6",
@@ -783,7 +784,7 @@ describe("ProviderModelPicker", () => {
     }
   });
 
-  it("drops group headers while searching", async () => {
+  it("keeps provider tabs visible while searching the active pane", async () => {
     const mounted = await mountPicker({
       activeInstanceId: CLAUDE_INSTANCE_ID,
       model: "claude-opus-4-6",
@@ -794,16 +795,56 @@ describe("ProviderModelPicker", () => {
       await page.getByRole("button").click();
 
       await vi.waitFor(() => {
-        expect(getModelPickerGroupOrder().length).toBeGreaterThan(0);
+        expect(getModelPickerTabOrder()).toEqual(["favorites", "codex", "claudeAgent"]);
       });
 
       await page.getByPlaceholder("Search models...").fill("cla");
 
       await vi.waitFor(() => {
-        expect(getModelPickerGroupOrder()).toEqual([]);
+        expect(getModelPickerTabOrder()).toEqual(["favorites", "codex", "claudeAgent"]);
+        expect(getVisibleModelNames()).toEqual(
+          expect.arrayContaining(["Claude Opus 4.6", "Claude Sonnet 4.6", "Claude Haiku 4.5"]),
+        );
       });
     } finally {
       await mounted.cleanup();
+    }
+  });
+
+  it("shows duplicate favorite search matches as scoped tab counts", async () => {
+    localStorage.setItem(
+      CLIENT_SETTINGS_STORAGE_KEY,
+      JSON.stringify({
+        ...DEFAULT_CLIENT_SETTINGS,
+        favorites: [{ provider: "claudeAgent", model: "claude-opus-4-6" }],
+      }),
+    );
+
+    const mounted = await mountPicker({
+      activeInstanceId: CLAUDE_INSTANCE_ID,
+      model: "claude-opus-4-6",
+      lockedProvider: null,
+    });
+
+    try {
+      await page.getByRole("button").click();
+      await page.getByPlaceholder("Search models...").fill("opus");
+
+      await vi.waitFor(() => {
+        expect(getModelPickerTabText("favorites")).toBe("Favorites1/1");
+        expect(getModelPickerTabText("claudeAgent")).toBe("Claude1/3");
+        expect(getModelPickerTabText("codex")).toBe("Codex0/2");
+        expect(getVisibleModelNames()).toEqual(["Claude Opus 4.6"]);
+      });
+
+      await page.getByRole("button", { name: /^Claude/ }).click();
+
+      await vi.waitFor(() => {
+        expect(getVisibleModelNames()).toEqual(["Claude Opus 4.6"]);
+      });
+    } finally {
+      await mounted.cleanup();
+      localStorage.removeItem(CLIENT_SETTINGS_STORAGE_KEY);
     }
   });
 
@@ -837,8 +878,8 @@ describe("ProviderModelPicker", () => {
 
   it("searches models by provider name", async () => {
     const mounted = await mountPicker({
-      activeInstanceId: CLAUDE_INSTANCE_ID,
-      model: "claude-opus-4-6",
+      activeInstanceId: CODEX_INSTANCE_ID,
+      model: "gpt-5-codex",
       lockedProvider: null,
     });
 
@@ -847,11 +888,10 @@ describe("ProviderModelPicker", () => {
 
       await vi.waitFor(() => {
         const text = document.body.textContent ?? "";
-        expect(text).toContain("Claude Opus 4.6");
-        expect(text).not.toContain("GPT-5 Codex");
+        expect(text).toContain("GPT-5 Codex");
+        expect(text).not.toContain("Claude Opus 4.6");
       });
 
-      // Search by provider name
       const searchInput = page.getByPlaceholder("Search models...");
       await searchInput.fill("codex");
 
@@ -926,7 +966,17 @@ describe("ProviderModelPicker", () => {
     }
   });
 
-  it("renders each search result with its own provider branding", async () => {
+  it("renders favorite tab rows with their own provider branding", async () => {
+    localStorage.setItem(
+      CLIENT_SETTINGS_STORAGE_KEY,
+      JSON.stringify({
+        ...DEFAULT_CLIENT_SETTINGS,
+        favorites: [
+          { provider: "codex", model: "gpt-team-model" },
+          { provider: "claudeAgent", model: "claude-opus-4-6" },
+        ],
+      }),
+    );
     const providers: ReadonlyArray<ServerProvider> = [
       buildCodexProvider([
         {
@@ -986,6 +1036,7 @@ describe("ProviderModelPicker", () => {
       });
     } finally {
       await mounted.cleanup();
+      localStorage.removeItem(CLIENT_SETTINGS_STORAGE_KEY);
     }
   });
 
@@ -1034,7 +1085,7 @@ describe("ProviderModelPicker", () => {
     }
   });
 
-  it("does not duplicate favorited models across favorites and all models sections", async () => {
+  it("does not duplicate favorited models within the active tab", async () => {
     localStorage.removeItem(CLIENT_SETTINGS_STORAGE_KEY);
 
     const mounted = await mountPicker({
@@ -1070,7 +1121,7 @@ describe("ProviderModelPicker", () => {
     }
   });
 
-  it("lists favorited models in the favorites group ahead of provider groups", async () => {
+  it("opens the favorites tab for a favorited active model", async () => {
     localStorage.setItem(
       CLIENT_SETTINGS_STORAGE_KEY,
       JSON.stringify({
@@ -1088,16 +1139,47 @@ describe("ProviderModelPicker", () => {
       await page.getByRole("button").click();
 
       await vi.waitFor(() => {
-        // The favorited active model opens the Favorites group first.
-        expect(getModelPickerGroupOrder()[0]).toBe("favorites");
+        expect(getModelPickerTabOrder()[0]).toBe("favorites");
         expect(getVisibleModelNames()).toEqual(["GPT-5.3 Codex"]);
       });
 
       await page.getByRole("button", { name: /^Codex/ }).click();
 
       await vi.waitFor(() => {
-        // Accordion: Codex opens, Favorites folds.
-        expect(getVisibleModelNames()).toEqual(["GPT-5 Codex"]);
+        expect(getVisibleModelNames()).toEqual(["GPT-5 Codex", "GPT-5.3 Codex"]);
+      });
+    } finally {
+      await mounted.cleanup();
+      localStorage.removeItem(CLIENT_SETTINGS_STORAGE_KEY);
+    }
+  });
+
+  it("keeps favorited provider rows visible with a filled star", async () => {
+    localStorage.setItem(
+      CLIENT_SETTINGS_STORAGE_KEY,
+      JSON.stringify({
+        ...DEFAULT_CLIENT_SETTINGS,
+        favorites: [{ provider: "claudeAgent", model: "claude-opus-4-6" }],
+      }),
+    );
+
+    const mounted = await mountPicker({
+      activeInstanceId: CLAUDE_INSTANCE_ID,
+      model: "claude-opus-4-6",
+      lockedProvider: null,
+    });
+
+    try {
+      await page.getByRole("button").click();
+      await page.getByRole("button", { name: /^Claude/ }).click();
+
+      await vi.waitFor(() => {
+        const favoriteButton = getModelPickerListElement().querySelector<HTMLButtonElement>(
+          'button[aria-label="Remove from favorites"]',
+        );
+        expect(favoriteButton).not.toBeNull();
+        expect(getComputedStyle(favoriteButton!).opacity).toBe("1");
+        expect(favoriteButton!.querySelector("svg")?.classList.contains("fill-current")).toBe(true);
       });
     } finally {
       await mounted.cleanup();

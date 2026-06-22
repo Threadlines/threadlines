@@ -24,4 +24,20 @@ describe("ThreadErrorBanner", () => {
     expect(markup).toContain("complete the browser sign-in");
     expect(markup).toContain("Sign in in terminal");
   });
+
+  it("renders a Codex usage reset action for usage-limit errors", () => {
+    const markup = renderToStaticMarkup(
+      <ThreadErrorBanner
+        error="You've hit your usage limit."
+        usageReset={{
+          availableCount: 2,
+          onReset: () => {},
+        }}
+      />,
+    );
+
+    expect(markup).toContain("usage limit.");
+    expect(markup).toContain("Reset usage");
+    expect(markup).toContain("Reset Codex usage");
+  });
 });

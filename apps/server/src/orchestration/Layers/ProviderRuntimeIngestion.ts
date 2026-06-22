@@ -220,6 +220,23 @@ function hasCheckpointForTurn(
   return false;
 }
 
+function turnScopedRuntimeEventMatchesThread(
+  thread: Pick<OrchestrationThread, "latestTurn" | "session">,
+  turnId: TurnId,
+): boolean {
+  const activeTurnId = thread.session?.activeTurnId ?? null;
+  if (activeTurnId !== null) {
+    return sameId(activeTurnId, turnId);
+  }
+
+  const latestTurnId = thread.latestTurn?.turnId ?? null;
+  if (latestTurnId !== null) {
+    return sameId(latestTurnId, turnId);
+  }
+
+  return true;
+}
+
 function maxCheckpointTurnCount(
   checkpoints: ReadonlyArray<OrchestrationCheckpointSummary>,
 ): number {
@@ -2086,6 +2103,21 @@ const make = Effect.gen(function* () {
 
       if (event.type === "turn.diff.updated") {
         const turnId = toTurnId(event.turnId);
+        if (
+          turnId &&
+          STRICT_PROVIDER_LIFECYCLE_GUARD &&
+          !turnScopedRuntimeEventMatchesThread(thread, turnId)
+        ) {
+          yield* Effect.logDebug("provider runtime ingestion ignored stale turn diff event", {
+            eventId: event.eventId,
+            eventType: event.type,
+            threadId: thread.id,
+            eventTurnId: turnId,
+            activeTurnId,
+            latestTurnId: thread.latestTurn?.turnId ?? null,
+          });
+          return;
+        }
         const checkpointContext = turnId
           ? yield* projectionSnapshotQuery
               .getThreadCheckpointContext(thread.id)

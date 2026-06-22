@@ -388,6 +388,7 @@ const createDesktopBridgeStub = (overrides?: {
   readonly serverExposureState?: Awaited<ReturnType<DesktopBridge["getServerExposureState"]>>;
   readonly advertisedEndpoints?: Awaited<ReturnType<DesktopBridge["getAdvertisedEndpoints"]>>;
   readonly setServerExposureMode?: DesktopBridge["setServerExposureMode"];
+  readonly getRelayPairingSession?: DesktopBridge["getRelayPairingSession"];
   readonly createRelayPairingSession?: DesktopBridge["createRelayPairingSession"];
   readonly disconnectRelayPairingSession?: DesktopBridge["disconnectRelayPairingSession"];
   readonly openExternal?: DesktopBridge["openExternal"];
@@ -496,6 +497,7 @@ const createDesktopBridgeStub = (overrides?: {
       tailscaleServePort: input.port ?? 443,
     })),
     getAdvertisedEndpoints: vi.fn().mockResolvedValue(overrides?.advertisedEndpoints ?? []),
+    getRelayPairingSession: overrides?.getRelayPairingSession ?? vi.fn().mockResolvedValue(null),
     createRelayPairingSession:
       overrides?.createRelayPairingSession ??
       vi.fn().mockResolvedValue({
@@ -634,14 +636,23 @@ describe("GeneralSettingsPanel observability", () => {
   });
 
   it("creates a desktop phone link and shows QR details inline", async () => {
-    const createRelayPairingSession = vi.fn().mockResolvedValue({
+    const session = {
       pairingUrl:
         "https://app.threadlines.dev/pair?relay=https%3A%2F%2Frelay.threadlines.dev&session=session-1#token=device-token",
       relayOrigin: "https://relay.threadlines.dev",
       sessionId: "session-1",
       expiresAt: "2036-06-20T12:00:00.000Z",
+    };
+    let activeSession: typeof session | null = null;
+    const getRelayPairingSession = vi.fn(async () => activeSession);
+    const createRelayPairingSession = vi.fn(async () => {
+      activeSession = session;
+      return session;
     });
-    window.desktopBridge = createDesktopBridgeStub({ createRelayPairingSession });
+    window.desktopBridge = createDesktopBridgeStub({
+      getRelayPairingSession,
+      createRelayPairingSession,
+    });
     authAccessHarness.setSnapshot({
       pairingLinks: [],
       clientSessions: [],
@@ -664,6 +675,135 @@ describe("GeneralSettingsPanel observability", () => {
     await expect.element(page.getByText("https://relay.threadlines.dev")).toBeInTheDocument();
     await expect.element(page.getByText("app.threadlines.dev")).toBeInTheDocument();
     await expect.element(page.getByText("session-1")).toBeInTheDocument();
+  });
+
+  it("restores an active desktop phone link when settings remount", async () => {
+    const getRelayPairingSession = vi.fn().mockResolvedValue({
+      pairingUrl:
+        "https://app.threadlines.dev/pair?relay=https%3A%2F%2Frelay.threadlines.dev&session=session-restored#token=device-token",
+      relayOrigin: "https://relay.threadlines.dev",
+      sessionId: "session-restored",
+      expiresAt: "2036-06-20T12:00:00.000Z",
+    });
+    const createRelayPairingSession = vi.fn();
+    window.desktopBridge = createDesktopBridgeStub({
+      getRelayPairingSession,
+      createRelayPairingSession,
+    });
+    authAccessHarness.setSnapshot({
+      pairingLinks: [],
+      clientSessions: [],
+    });
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <ConnectionsSettings />
+      </AppAtomRegistryProvider>,
+    );
+
+    await vi.waitFor(() => {
+      expect(getRelayPairingSession).toHaveBeenCalled();
+    });
+    await expect.element(page.getByText("Bridge open")).toBeInTheDocument();
+    await expect.element(page.getByText("session-restored")).toBeInTheDocument();
+    expect(createRelayPairingSession).not.toHaveBeenCalled();
+  });
+
+  it("shows when an active desktop phone link disconnects", async () => {
+    const session = {
+      pairingUrl:
+        "https://app.threadlines.dev/pair?relay=https%3A%2F%2Frelay.threadlines.dev&session=session-1#token=device-token",
+      relayOrigin: "https://relay.threadlines.dev",
+      sessionId: "session-1",
+      expiresAt: "2036-06-20T12:00:00.000Z",
+    };
+    let activeSession: typeof session | null = null;
+    const getRelayPairingSession = vi.fn(async () => activeSession);
+    const createRelayPairingSession = vi.fn(async () => {
+      activeSession = session;
+      return session;
+    });
+    window.desktopBridge = createDesktopBridgeStub({
+      getRelayPairingSession,
+      createRelayPairingSession,
+    });
+    authAccessHarness.setSnapshot({
+      pairingLinks: [],
+      clientSessions: [],
+    });
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <ConnectionsSettings />
+      </AppAtomRegistryProvider>,
+    );
+
+    await page.getByRole("button", { name: "Create link", exact: true }).click();
+
+    await expect.element(page.getByText("Bridge open")).toBeInTheDocument();
+    activeSession = null;
+    getRelayPairingSession.mockClear();
+    await vi.waitFor(
+      () => {
+        expect(document.body.textContent ?? "").toContain("Phone link disconnected");
+      },
+      { timeout: 4_000 },
+    );
+    await expect.element(page.getByText("Phone link disconnected")).toBeInTheDocument();
+    await expect.element(page.getByText("Bridge open")).not.toBeInTheDocument();
+  });
+
+  it("keeps a desktop phone link visible while the desktop bridge reconnects", async () => {
+    const session = {
+      pairingUrl:
+        "https://app.threadlines.dev/pair?relay=https%3A%2F%2Frelay.threadlines.dev&session=session-1#token=device-token",
+      relayOrigin: "https://relay.threadlines.dev",
+      sessionId: "session-1",
+      expiresAt: "2036-06-20T12:00:00.000Z",
+      status: "open" as const,
+    };
+    const reconnectingSession = {
+      ...session,
+      status: "reconnecting" as const,
+    };
+    let activeSession: typeof session | typeof reconnectingSession | null = null;
+    const getRelayPairingSession = vi.fn(async () => activeSession);
+    const createRelayPairingSession = vi.fn(async () => {
+      activeSession = session;
+      return session;
+    });
+    window.desktopBridge = createDesktopBridgeStub({
+      getRelayPairingSession,
+      createRelayPairingSession,
+    });
+    authAccessHarness.setSnapshot({
+      pairingLinks: [],
+      clientSessions: [],
+    });
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <ConnectionsSettings />
+      </AppAtomRegistryProvider>,
+    );
+
+    await page.getByRole("button", { name: "Create link", exact: true }).click();
+
+    await expect.element(page.getByText("Bridge open")).toBeInTheDocument();
+    activeSession = reconnectingSession;
+
+    await vi.waitFor(
+      () => {
+        const text = document.body.textContent ?? "";
+        expect(text).toContain("Reconnecting");
+        expect(text).toContain("session-1");
+      },
+      { timeout: 4_000 },
+    );
+    await expect.element(page.getByText("Phone link disconnected")).not.toBeInTheDocument();
   });
 
   it("explains invalid desktop bootstrap failures when creating a phone link", async () => {

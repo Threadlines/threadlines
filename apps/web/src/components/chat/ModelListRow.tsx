@@ -65,19 +65,18 @@ export const ModelListRow = memo(function ModelListRow(props: {
             </span>
           </div>
           <span className="flex shrink-0 items-center gap-1.5">
-            {/* Favorite toggle is hover-revealed: Favorites membership is
-                already visible from the group, so resting rows stay quiet. */}
+            {/* Favorited rows keep the filled star visible in provider tabs;
+                non-favorites reveal the action on hover/focus. */}
             <Tooltip>
               <TooltipTrigger
                 render={
                   <button
                     className={cn(
-                      "flex shrink-0 cursor-pointer items-center rounded-sm p-0.5 opacity-0 transition-opacity",
+                      "flex shrink-0 cursor-pointer items-center rounded-sm p-0.5 transition-opacity",
                       "focus-visible:opacity-100 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring",
-                      "group-hover:opacity-100 group-data-highlighted:opacity-100 pointer-coarse:opacity-100",
                       props.isFavorite
-                        ? "text-yellow-500/80 hover:text-yellow-500"
-                        : "text-muted-foreground/50 hover:text-foreground",
+                        ? "opacity-100 text-yellow-500/80 hover:text-yellow-500"
+                        : "opacity-0 text-muted-foreground/50 hover:text-foreground group-hover:opacity-100 group-data-highlighted:opacity-100 pointer-coarse:opacity-100",
                     )}
                     onClick={(event) => {
                       event.stopPropagation();

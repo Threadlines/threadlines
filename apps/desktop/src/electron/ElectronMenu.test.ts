@@ -4,21 +4,24 @@ import * as Option from "effect/Option";
 import type * as Electron from "electron";
 import { beforeEach, vi } from "vitest";
 
-const { buildFromTemplateMock, createFromNamedImageMock, setApplicationMenuMock } = vi.hoisted(
-  () => ({
+const { buildFromTemplateMock, createFromDataURLMock, nativeThemeMock, setApplicationMenuMock } =
+  vi.hoisted(() => ({
     buildFromTemplateMock: vi.fn(),
-    createFromNamedImageMock: vi.fn(),
+    createFromDataURLMock: vi.fn(),
+    nativeThemeMock: {
+      shouldUseDarkColors: true,
+    },
     setApplicationMenuMock: vi.fn(),
-  }),
-);
+  }));
 
 vi.mock("electron", () => ({
   Menu: {
     buildFromTemplate: buildFromTemplateMock,
     setApplicationMenu: setApplicationMenuMock,
   },
+  nativeTheme: nativeThemeMock,
   nativeImage: {
-    createFromNamedImage: createFromNamedImageMock,
+    createFromDataURL: createFromDataURLMock,
   },
 }));
 
@@ -27,7 +30,8 @@ import * as ElectronMenu from "./ElectronMenu.ts";
 describe("ElectronMenu", () => {
   beforeEach(() => {
     buildFromTemplateMock.mockReset();
-    createFromNamedImageMock.mockReset();
+    createFromDataURLMock.mockReset();
+    nativeThemeMock.shouldUseDarkColors = true;
     setApplicationMenuMock.mockReset();
   });
 
@@ -136,6 +140,45 @@ describe("ElectronMenu", () => {
         frame,
         sourceType: "mouse",
       });
+    }).pipe(Effect.provide(ElectronMenu.layer)),
+  );
+
+  it.effect("uses a red native icon for destructive context menu items on macOS", () =>
+    Effect.gen(function* () {
+      const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+      const icon = {
+        isEmpty: () => false,
+      } as Electron.NativeImage;
+      createFromDataURLMock.mockReturnValue(icon);
+      buildFromTemplateMock.mockImplementation(() => ({
+        popup: (options: Electron.PopupOptions) => {
+          options.callback?.();
+        },
+      }));
+
+      try {
+        const electronMenu = yield* ElectronMenu.ElectronMenu;
+        yield* electronMenu.showContextMenu({
+          window: {} as Electron.BrowserWindow,
+          items: [
+            { id: "rename", label: "Rename" },
+            { id: "delete", label: "Delete", destructive: true },
+          ],
+          position: Option.none(),
+        });
+
+        const template = buildFromTemplateMock.mock.calls[0]?.[0];
+        assert.equal(createFromDataURLMock.mock.calls.length, 1);
+        assert.include(createFromDataURLMock.mock.calls[0]?.[0], "data:image/png;base64,");
+        assert.deepEqual(template?.[2], {
+          label: "Delete",
+          enabled: true,
+          click: template?.[2].click,
+          icon,
+        });
+      } finally {
+        platformSpy.mockRestore();
+      }
     }).pipe(Effect.provide(ElectronMenu.layer)),
   );
 });

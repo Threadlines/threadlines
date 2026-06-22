@@ -1,4 +1,4 @@
-import { ProviderInteractionMode, RuntimeMode } from "@threadlines/contracts";
+import type { ProviderInteractionMode, RuntimeMode } from "@threadlines/contracts";
 import { memo, type ReactNode } from "react";
 import { EllipsisIcon } from "lucide-react";
 import { Button } from "../ui/button";
@@ -10,6 +10,7 @@ import {
   MenuSeparator as MenuDivider,
   MenuTrigger,
 } from "../ui/menu";
+import { interactionModeOptions } from "../../interactionModeOptions";
 import type { RuntimeModeOption } from "../../runtimeModeOptions";
 
 export const CompactComposerControlsMenu = memo(function CompactComposerControlsMenu(props: {
@@ -18,7 +19,7 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
   runtimeModeOptions: ReadonlyArray<RuntimeModeOption>;
   showInteractionModeToggle: boolean;
   traitsMenuContent?: ReactNode;
-  onToggleInteractionMode: () => void;
+  onInteractionModeChange: (mode: ProviderInteractionMode) => void;
   onRuntimeModeChange: (mode: RuntimeMode) => void;
 }) {
   return (
@@ -49,11 +50,14 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
               value={props.interactionMode}
               onValueChange={(value) => {
                 if (!value || value === props.interactionMode) return;
-                props.onToggleInteractionMode();
+                props.onInteractionModeChange(value as ProviderInteractionMode);
               }}
             >
-              <MenuRadioItem value="default">Chat</MenuRadioItem>
-              <MenuRadioItem value="plan">Plan</MenuRadioItem>
+              {interactionModeOptions.map((option) => (
+                <MenuRadioItem key={option.mode} value={option.mode} title={option.description}>
+                  {option.label}
+                </MenuRadioItem>
+              ))}
             </MenuRadioGroup>
             <MenuDivider />
           </>
@@ -71,7 +75,11 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
               key={option.mode}
               value={option.mode}
               disabled={option.disabled === true}
-              title={option.disabled && option.disabledReason ? option.disabledReason : undefined}
+              title={
+                option.disabled && option.disabledReason
+                  ? option.disabledReason
+                  : option.description
+              }
             >
               {option.label}
             </MenuRadioItem>

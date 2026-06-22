@@ -41,6 +41,7 @@ function DraftChatThreadRouteView() {
   const navigate = useNavigate();
   const { draftId: rawDraftId } = Route.useParams();
   const search = Route.useSearch();
+  const shouldUseSourceControlSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   const draftId = DraftId.make(rawDraftId);
   const draftSession = useComposerDraftStore((store) => store.getDraftSession(draftId));
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
@@ -64,8 +65,9 @@ function DraftChatThreadRouteView() {
       }),
     [draftSession?.promotedTo, serverThread, serverThreadHasTurnActivity, serverThreadRef],
   );
-  const sourceControlOpen = isSourceControlPanelOpen(search);
-  const shouldUseSourceControlSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
+  const sourceControlOpen = isSourceControlPanelOpen(search, {
+    defaultOpen: !shouldUseSourceControlSheet,
+  });
   const draftProjectRef = draftSession
     ? scopeProjectRef(draftSession.environmentId, draftSession.projectId)
     : null;

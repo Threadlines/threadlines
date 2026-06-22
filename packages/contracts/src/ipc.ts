@@ -485,8 +485,12 @@ export const DesktopRelayPairingSessionSchema = Schema.Struct({
   relayOrigin: Schema.String,
   sessionId: Schema.String,
   expiresAt: IsoDateTime,
+  status: Schema.optionalKey(Schema.Literals(["open", "reconnecting", "disconnected"])),
 });
 export type DesktopRelayPairingSession = typeof DesktopRelayPairingSessionSchema.Type;
+export const DesktopRelayPairingSessionOrNullSchema = Schema.NullOr(
+  DesktopRelayPairingSessionSchema,
+);
 
 export interface PickFolderOptions {
   initialPath?: string | null;
@@ -533,6 +537,7 @@ export interface DesktopBridge {
     readonly port?: number;
   }) => Promise<DesktopServerExposureState>;
   getAdvertisedEndpoints: () => Promise<readonly AdvertisedEndpoint[]>;
+  getRelayPairingSession: () => Promise<DesktopRelayPairingSession | null>;
   createRelayPairingSession: () => Promise<DesktopRelayPairingSession>;
   disconnectRelayPairingSession: () => Promise<void>;
   pickFolder: (options?: PickFolderOptions) => Promise<string | null>;

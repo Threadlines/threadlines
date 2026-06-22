@@ -11,6 +11,8 @@ import { useCallback, useEffect, useState } from "react";
 
 import { useSettingsRestore } from "../components/settings/SettingsPanels";
 import {
+  HOSTED_STATIC_DEFAULT_SETTINGS_SECTION_PATH,
+  isHostedStaticSettingsSectionPath,
   isVisibleSettingsSectionPath,
   rememberVisibleSettingsSection,
   resolveSettingsEntryPath,
@@ -49,12 +51,14 @@ function RestoreDefaultsButton({ onRestored }: { onRestored: () => void }) {
 
 function SettingsContentLayout() {
   const location = useLocation();
+  const { authGateState } = Route.useRouteContext();
   const navigate = useNavigate();
   const canGoBack = useCanGoBack();
   const { open: sidebarOpen } = useSidebar();
   const useMacTitlebarClearance = needsMacTrafficLightClearance(sidebarOpen);
   const [restoreSignal, setRestoreSignal] = useState(0);
-  const showRestoreDefaults = location.pathname === "/settings/general";
+  const isHostedStatic = authGateState.status === "hosted-static";
+  const showRestoreDefaults = location.pathname === "/settings/general" && !isHostedStatic;
   const handleRestored = () => setRestoreSignal((value) => value + 1);
   const navigateBackWithinApp = useCallback(() => {
     if (canGoBack) {
@@ -90,10 +94,15 @@ function SettingsContentLayout() {
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
         {!isElectron && (
-          <header className="border-b border-border px-3 py-2 sm:px-5">
+          <header className="border-b border-border pb-2 pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-[calc(env(safe-area-inset-top)+0.5rem)] sm:px-5">
             <div className="flex min-h-7 items-center gap-2 sm:min-h-6">
               <SidebarOpenTrigger className="size-7 shrink-0" />
               <span className="text-sm font-medium text-foreground">Settings</span>
+              {isHostedStatic ? (
+                <span className="rounded-sm border border-border/70 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+                  Phone
+                </span>
+              ) : null}
               {showRestoreDefaults ? (
                 <div className="ms-auto flex items-center gap-2">
                   <RestoreDefaultsButton onRestored={handleRestored} />
@@ -145,12 +154,23 @@ export const Route = createFileRoute("/settings")({
       throw redirect({ to: "/pair", replace: true });
     }
 
-    if (isVisibleSettingsSectionPath(location.pathname)) {
-      rememberVisibleSettingsSection(location.pathname);
-    }
+    const isHostedStatic = context.authGateState.status === "hosted-static";
 
     if (location.pathname === "/settings") {
-      throw redirect({ to: resolveSettingsEntryPath(), replace: true });
+      throw redirect({
+        to: isHostedStatic
+          ? HOSTED_STATIC_DEFAULT_SETTINGS_SECTION_PATH
+          : resolveSettingsEntryPath(),
+        replace: true,
+      });
+    }
+
+    if (isHostedStatic && !isHostedStaticSettingsSectionPath(location.pathname)) {
+      throw redirect({ to: HOSTED_STATIC_DEFAULT_SETTINGS_SECTION_PATH, replace: true });
+    }
+
+    if (isVisibleSettingsSectionPath(location.pathname)) {
+      rememberVisibleSettingsSection(location.pathname);
     }
   },
   component: SettingsRouteLayout,

@@ -2212,7 +2212,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("defaults source control open from draft thread routes before first send", async () => {
+  it("defaults source control open from wide draft thread routes before first send", async () => {
     const draftId = DraftId.make("draft-source-control-before-start");
     useComposerDraftStore.setState({
       draftThreadsByThreadKey: {
@@ -2235,7 +2235,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     const mounted = await mountChatView({
-      viewport: DEFAULT_VIEWPORT,
+      viewport: WIDE_FOOTER_VIEWPORT,
       snapshot: createDraftOnlySnapshot(),
       initialPath: `/draft/${draftId}`,
       sourceControlDefault: "open",
@@ -2265,6 +2265,54 @@ describe("ChatView timeline estimator parity (full app)", () => {
         },
         { timeout: 8_000, interval: 16 },
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps source control closed by default on compact draft thread routes", async () => {
+    const draftId = DraftId.make("draft-source-control-compact-before-start");
+    useComposerDraftStore.setState({
+      draftThreadsByThreadKey: {
+        [draftId]: {
+          threadId: THREAD_ID,
+          environmentId: LOCAL_ENVIRONMENT_ID,
+          projectId: PROJECT_ID,
+          logicalProjectKey: PROJECT_DRAFT_KEY,
+          createdAt: NOW_ISO,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          envMode: "local",
+        },
+      },
+      logicalProjectDraftThreadKeyByLogicalProjectKey: {
+        [PROJECT_DRAFT_KEY]: draftId,
+      },
+    });
+
+    const mounted = await mountChatView({
+      viewport: COMPACT_FOOTER_VIEWPORT,
+      snapshot: createDraftOnlySnapshot(),
+      initialPath: `/draft/${draftId}`,
+      sourceControlDefault: "open",
+    });
+
+    try {
+      const sourceControlToggle = await waitForElement(
+        () =>
+          document.querySelector(
+            'button[aria-label="Toggle source control panel"]',
+          ) as HTMLButtonElement | null,
+        "Unable to find source control toggle.",
+      );
+
+      expect(sourceControlToggle.disabled).toBe(false);
+      expect(sourceControlToggle.hasAttribute("data-pressed")).toBe(false);
+      await expect
+        .element(page.getByRole("heading", { name: "Source Control" }))
+        .not.toBeInTheDocument();
     } finally {
       await mounted.cleanup();
     }

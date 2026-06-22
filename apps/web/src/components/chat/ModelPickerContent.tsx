@@ -5,12 +5,11 @@ import {
 } from "@threadlines/contracts";
 import { resolveSelectableModel } from "@threadlines/shared/model";
 import { memo, useMemo, useState, useCallback, useEffect, useLayoutEffect, useRef } from "react";
-import { ChevronDownIcon, SearchIcon, StarIcon } from "lucide-react";
+import { SearchIcon, StarIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
 import { ModelListRow } from "./ModelListRow";
 import { buildModelPickerSearchText, scoreModelPickerSearch } from "./modelPickerSearch";
 import { Combobox, ComboboxEmpty, ComboboxInput, ComboboxListVirtualized } from "../ui/combobox";
-import { SectionLabel } from "../ui/threadline";
 import { ModelEsque, PROVIDER_ICON_BY_PROVIDER } from "./providerIconUtils";
 import {
   modelPickerJumpCommandForIndex,
@@ -37,19 +36,25 @@ type ModelPickerItem = {
 };
 
 const EMPTY_MODEL_JUMP_LABELS = new Map<string, string>();
+const EMPTY_MODEL_PICKER_ITEMS: ReadonlyArray<ModelPickerItem> = [];
+const EMPTY_SEARCHED_MODELS_BY_TAB_ID: ReadonlyMap<
+  string,
+  ReadonlyArray<ModelPickerItem>
+> = new Map();
+const EMPTY_FAVORITES: ReadonlyArray<{
+  readonly provider: ProviderInstanceId;
+  readonly model: string;
+}> = [];
 
-/** Display row in the grouped picker list: a section header or a model. */
-type ModelPickerListRow =
-  | {
-      kind: "header";
-      id: string;
-      label: string;
-      driverKind?: ProviderDriverKind;
-      accentColor?: string;
-      modelCount: number;
-      collapsed: boolean;
-    }
-  | { kind: "model"; model: ModelPickerItem };
+type ModelPickerTab = {
+  id: string;
+  label: string;
+  kind: "favorites" | "instance";
+  modelCount: number;
+  models: ReadonlyArray<ModelPickerItem>;
+  driverKind?: ProviderDriverKind;
+  accentColor?: string | undefined;
+};
 
 // Split a `${instanceId}:${slug}` combobox key back into its pieces. Slugs
 // can contain colons (e.g. some vendor model ids), so we only split on the
@@ -63,6 +68,66 @@ function splitInstanceModelKey(key: string): { instanceId: ProviderInstanceId; s
     instanceId: key.slice(0, colonIndex) as ProviderInstanceId,
     slug: key.slice(colonIndex + 1),
   };
+}
+
+function rankModelPickerSearchMatches(
+  models: ReadonlyArray<ModelPickerItem>,
+  searchQuery: string,
+  favoriteModelKeys: ReadonlySet<string>,
+): ReadonlyArray<ModelPickerItem> {
+  const query = searchQuery.trim();
+  if (!query) {
+    return EMPTY_MODEL_PICKER_ITEMS;
+  }
+
+  const rankedMatches = models
+    .map((model) => ({
+      model,
+      score: scoreModelPickerSearch(
+        {
+          name: model.name,
+          ...(model.description ? { description: model.description } : {}),
+          ...(model.shortName ? { shortName: model.shortName } : {}),
+          ...(model.subProvider ? { subProvider: model.subProvider } : {}),
+          driverKind: model.driverKind,
+          providerDisplayName: model.instanceDisplayName,
+          isFavorite: favoriteModelKeys.has(providerModelKey(model.instanceId, model.slug)),
+        },
+        query,
+      ),
+      isFavorite: favoriteModelKeys.has(providerModelKey(model.instanceId, model.slug)),
+      tieBreaker: buildModelPickerSearchText({
+        name: model.name,
+        ...(model.description ? { description: model.description } : {}),
+        ...(model.shortName ? { shortName: model.shortName } : {}),
+        ...(model.subProvider ? { subProvider: model.subProvider } : {}),
+        driverKind: model.driverKind,
+        providerDisplayName: model.instanceDisplayName,
+      }),
+    }))
+    .filter(
+      (
+        rankedModel,
+      ): rankedModel is {
+        model: ModelPickerItem;
+        score: number;
+        isFavorite: boolean;
+        tieBreaker: string;
+      } => rankedModel.score !== null,
+    );
+
+  return rankedMatches
+    .toSorted((a, b) => {
+      const scoreDelta = a.score - b.score;
+      if (scoreDelta !== 0) {
+        return scoreDelta;
+      }
+      if (a.isFavorite !== b.isFavorite) {
+        return a.isFavorite ? -1 : 1;
+      }
+      return a.tieBreaker.localeCompare(b.tieBreaker);
+    })
+    .map((rankedModel) => rankedModel.model);
 }
 
 export const ModelPickerContent = memo(function ModelPickerContent(props: {
@@ -105,11 +170,10 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   const [searchQuery, setSearchQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
   const highlightedModelKeyRef = useRef<string | null>(null);
-  const favorites = useSettings((s) => s.favorites ?? []);
-  // Group expansion. `null` means the smart default: Favorites plus the
-  // group of the currently selected model open, every other group folded
-  // to its header so the list never starts as one long scroll.
-  const [expandedGroupIds, setExpandedGroupIds] = useState<ReadonlySet<string> | null>(null);
+  const favorites = useSettings((s) => s.favorites ?? EMPTY_FAVORITES);
+  // `null` means the smart default follows the current selection: Favorites
+  // when the active model is favorited, otherwise the active provider tab.
+  const [manualActiveTabId, setManualActiveTabId] = useState<string | null>(null);
   const keybindings = useMemo<ResolvedKeybindingsConfig>(
     () => providedKeybindings ?? [],
     [providedKeybindings],
@@ -209,7 +273,8 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   }, [modelOptionsByInstance, entryByInstanceId, readyInstanceSet]);
 
   const isLocked = props.lockedProvider !== null;
-  const isSearching = searchQuery.trim().length > 0;
+  const normalizedSearchQuery = searchQuery.trim();
+  const isSearching = normalizedSearchQuery.length > 0;
   const lockedInstanceEntries = useMemo(
     () =>
       props.lockedProvider ? instanceEntries.filter((entry) => matchesLockedProvider(entry)) : [],
@@ -223,198 +288,179 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     [instanceEntries],
   );
 
-  // Tokenized fuzzy search across the combined provider/model fields. While
-  // searching the list is one flat ranked run (no group structure).
-  const searchedModels = useMemo(() => {
-    if (!searchQuery.trim()) {
-      return [];
-    }
-    const rankedMatches = flatModels
-      .map((model) => ({
-        model,
-        score: scoreModelPickerSearch(
-          {
-            name: model.name,
-            ...(model.description ? { description: model.description } : {}),
-            ...(model.shortName ? { shortName: model.shortName } : {}),
-            ...(model.subProvider ? { subProvider: model.subProvider } : {}),
-            driverKind: model.driverKind,
-            providerDisplayName: model.instanceDisplayName,
-            isFavorite: favoritesSet.has(providerModelKey(model.instanceId, model.slug)),
-          },
-          searchQuery,
-        ),
-        isFavorite: favoritesSet.has(providerModelKey(model.instanceId, model.slug)),
-        tieBreaker: buildModelPickerSearchText({
-          name: model.name,
-          ...(model.description ? { description: model.description } : {}),
-          ...(model.shortName ? { shortName: model.shortName } : {}),
-          ...(model.subProvider ? { subProvider: model.subProvider } : {}),
-          driverKind: model.driverKind,
-          providerDisplayName: model.instanceDisplayName,
-        }),
-      }))
-      .filter(
-        (
-          rankedModel,
-        ): rankedModel is {
-          model: ModelPickerItem;
-          score: number;
-          isFavorite: boolean;
-          tieBreaker: string;
-        } => rankedModel.score !== null,
-      );
-
-    const lockFiltered =
-      props.lockedProvider !== null
-        ? rankedMatches.filter((rankedModel) => matchesLockedProvider(rankedModel.model))
-        : rankedMatches;
-
-    return lockFiltered
-      .toSorted((a, b) => {
-        const scoreDelta = a.score - b.score;
-        if (scoreDelta !== 0) {
-          return scoreDelta;
-        }
-        if (a.isFavorite !== b.isFavorite) {
-          return a.isFavorite ? -1 : 1;
-        }
-        return a.tieBreaker.localeCompare(b.tieBreaker);
-      })
-      .map((rankedModel) => rankedModel.model);
-  }, [favoritesSet, flatModels, matchesLockedProvider, props.lockedProvider, searchQuery]);
-
-  // Default view: one list grouped by section — Favorites first, then each
-  // instance in configured order. A favorited model lives in Favorites only
-  // (never duplicated in its provider group) so combobox keys stay unique.
-  // Groups fold to their headers; only the group that holds the active model
-  // starts open: Favorites when the model is favorited, otherwise its
-  // provider group. Searching bypasses grouping (and collapse) entirely.
+  const eligibleModels = useMemo(
+    () => (isLocked ? flatModels.filter((model) => matchesLockedProvider(model)) : flatModels),
+    [flatModels, isLocked, matchesLockedProvider],
+  );
   const activeModelIsFavorite =
     !isLocked && favoritesSet.has(providerModelKey(props.activeInstanceId, props.model));
-  const defaultExpandedGroupIds = useMemo(
-    () => new Set<string>([activeModelIsFavorite ? "favorites" : props.activeInstanceId]),
-    [activeModelIsFavorite, props.activeInstanceId],
-  );
-  const isGroupExpanded = useCallback(
-    (groupId: string) => (expandedGroupIds ?? defaultExpandedGroupIds).has(groupId),
-    [defaultExpandedGroupIds, expandedGroupIds],
-  );
-  // Accordion: one group open at a time. Picking a model is a single-choice
-  // flow, and exclusive expansion keeps every group header in view.
-  const toggleGroup = useCallback(
-    (groupId: string) => {
-      setExpandedGroupIds((previous) => {
-        const current = previous ?? defaultExpandedGroupIds;
-        return current.has(groupId) ? new Set<string>() : new Set<string>([groupId]);
-      });
-    },
-    [defaultExpandedGroupIds],
-  );
 
-  const listRows = useMemo((): ModelPickerListRow[] => {
-    if (isSearching) {
-      return searchedModels.map((model) => ({ kind: "model" as const, model }));
+  const favoriteModels = useMemo(() => {
+    if (isLocked) {
+      return EMPTY_MODEL_PICKER_ITEMS;
     }
-
-    const rows: ModelPickerListRow[] = [];
-    const eligibleModels = isLocked
-      ? flatModels.filter((model) => matchesLockedProvider(model))
-      : flatModels;
-    const favoriteModels: ModelPickerItem[] = [];
-    const modelsByInstance = new Map<ProviderInstanceId, ModelPickerItem[]>();
-    for (const model of eligibleModels) {
-      if (!isLocked && favoritesSet.has(providerModelKey(model.instanceId, model.slug))) {
-        favoriteModels.push(model);
-        continue;
-      }
-      const group = modelsByInstance.get(model.instanceId);
-      if (group) {
-        group.push(model);
-      } else {
-        modelsByInstance.set(model.instanceId, [model]);
-      }
-    }
-
-    if (favoriteModels.length > 0) {
-      const favoritesCollapsed = !isGroupExpanded("favorites");
-      rows.push({
-        kind: "header",
-        id: "favorites",
-        label: "Favorites",
-        modelCount: favoriteModels.length,
-        collapsed: favoritesCollapsed,
-      });
-      if (!favoritesCollapsed) {
-        for (const model of sortProviderModelItems(favoriteModels, {
-          favoriteModelKeys: favoritesSet,
-          groupFavorites: false,
-          instanceOrder,
-        })) {
-          rows.push({ kind: "model", model });
-        }
-      }
-    }
-
-    const groupedInstances = instanceEntries.filter((entry) =>
-      modelsByInstance.has(entry.instanceId),
+    return sortProviderModelItems(
+      eligibleModels.filter((model) =>
+        favoritesSet.has(providerModelKey(model.instanceId, model.slug)),
+      ),
+      {
+        favoriteModelKeys: favoritesSet,
+        groupFavorites: false,
+        instanceOrder,
+      },
     );
-    const showGroupHeaders =
-      !lockedToSingleInstance && (groupedInstances.length > 1 || favoriteModels.length > 0);
-    for (const entry of groupedInstances) {
+  }, [eligibleModels, favoritesSet, instanceOrder, isLocked]);
+
+  const modelsByInstance = useMemo(() => {
+    const grouped = new Map<ProviderInstanceId, ModelPickerItem[]>();
+    for (const model of eligibleModels) {
+      const models = grouped.get(model.instanceId);
+      if (models) {
+        models.push(model);
+      } else {
+        grouped.set(model.instanceId, [model]);
+      }
+    }
+    return grouped;
+  }, [eligibleModels]);
+
+  const providerTabs = useMemo((): ModelPickerTab[] => {
+    const tabs: ModelPickerTab[] = [];
+    for (const entry of instanceEntries) {
       const models = modelsByInstance.get(entry.instanceId);
       if (!models || models.length === 0) {
         continue;
       }
-      // Collapse only applies where a header exists to reopen the group.
-      const collapsed = showGroupHeaders && !isGroupExpanded(entry.instanceId);
-      if (showGroupHeaders) {
-        rows.push({
-          kind: "header",
-          id: entry.instanceId,
-          label: entry.displayName,
-          driverKind: entry.driverKind,
-          ...(entry.accentColor ? { accentColor: entry.accentColor } : {}),
-          modelCount: models.length,
-          collapsed,
-        });
-      }
-      if (collapsed) {
-        continue;
-      }
-      // Locked mode has no favorites section, so favorites float within the
-      // group instead.
-      for (const model of sortProviderModelItems(models, {
+      const sortedModels = sortProviderModelItems(models, {
         favoriteModelKeys: favoritesSet,
         groupFavorites: isLocked,
         instanceOrder: [],
-      })) {
-        rows.push({ kind: "model", model });
-      }
+      });
+      tabs.push({
+        kind: "instance",
+        id: entry.instanceId,
+        label: entry.displayName,
+        driverKind: entry.driverKind,
+        ...(entry.accentColor ? { accentColor: entry.accentColor } : {}),
+        modelCount: sortedModels.length,
+        models: sortedModels,
+      });
     }
-    return rows;
+    return tabs;
+  }, [favoritesSet, instanceEntries, isLocked, modelsByInstance]);
+
+  const showTabList = !lockedToSingleInstance && (!isLocked || providerTabs.length > 1);
+  const tabs = useMemo((): ModelPickerTab[] => {
+    if (!showTabList) {
+      return [];
+    }
+    return [
+      ...(!isLocked
+        ? [
+            {
+              kind: "favorites" as const,
+              id: "favorites",
+              label: "Favorites",
+              modelCount: favoriteModels.length,
+              models: favoriteModels,
+            },
+          ]
+        : []),
+      ...providerTabs,
+    ];
+  }, [favoriteModels, isLocked, providerTabs, showTabList]);
+
+  const defaultActiveTabId = activeModelIsFavorite ? "favorites" : props.activeInstanceId;
+  const activeTab = useMemo(() => {
+    if (!showTabList) {
+      return null;
+    }
+    const manualTab = tabs.find((tab) => tab.id === manualActiveTabId);
+    if (manualTab) {
+      return manualTab;
+    }
+    const defaultTab = tabs.find((tab) => tab.id === defaultActiveTabId);
+    if (defaultTab) {
+      return defaultTab;
+    }
+    return tabs.find((tab) => tab.kind === "instance") ?? tabs[0] ?? null;
+  }, [defaultActiveTabId, manualActiveTabId, showTabList, tabs]);
+  const activeTabId = activeTab?.id ?? null;
+
+  const activeTabModels = activeTab?.models ?? providerTabs[0]?.models ?? EMPTY_MODEL_PICKER_ITEMS;
+
+  const searchedModelsByTabId = useMemo((): ReadonlyMap<string, ReadonlyArray<ModelPickerItem>> => {
+    if (!isSearching || tabs.length === 0) {
+      return EMPTY_SEARCHED_MODELS_BY_TAB_ID;
+    }
+
+    const searchResults = new Map<string, ReadonlyArray<ModelPickerItem>>();
+    for (const tab of tabs) {
+      searchResults.set(
+        tab.id,
+        rankModelPickerSearchMatches(tab.models, normalizedSearchQuery, favoritesSet),
+      );
+    }
+    return searchResults;
+  }, [favoritesSet, isSearching, normalizedSearchQuery, tabs]);
+
+  // Tokenized fuzzy search stays scoped to the selected tab. During search,
+  // tab badges switch to match counts so duplicate membership such as
+  // Favorites + Claude is visible without duplicating rows in one pane.
+  const searchedModels = useMemo(() => {
+    if (!isSearching) {
+      return EMPTY_MODEL_PICKER_ITEMS;
+    }
+    if (activeTab) {
+      return searchedModelsByTabId.get(activeTab.id) ?? EMPTY_MODEL_PICKER_ITEMS;
+    }
+    return rankModelPickerSearchMatches(activeTabModels, normalizedSearchQuery, favoritesSet);
   }, [
+    activeTab,
+    activeTabModels,
     favoritesSet,
-    flatModels,
-    instanceEntries,
-    instanceOrder,
-    isGroupExpanded,
-    isLocked,
     isSearching,
-    lockedToSingleInstance,
-    matchesLockedProvider,
-    searchedModels,
+    normalizedSearchQuery,
+    searchedModelsByTabId,
   ]);
 
   const orderedModels = useMemo(
-    () =>
-      listRows
-        .filter(
-          (row): row is Extract<ModelPickerListRow, { kind: "model" }> => row.kind === "model",
-        )
-        .map((row) => row.model),
-    [listRows],
+    () => (isSearching ? searchedModels : activeTabModels),
+    [activeTabModels, isSearching, searchedModels],
   );
+
+  const emptyMessage = isSearching
+    ? activeTab
+      ? `No matches in ${activeTab.label}`
+      : "No models found"
+    : activeTab?.kind === "favorites"
+      ? "No favorite models"
+      : "No models available";
+
+  const tabModelCountLabel = (count: number) => `${count} ${count === 1 ? "model" : "models"}`;
+  const tabSearchCountLabel = (count: number, total: number) =>
+    `${count} ${count === 1 ? "match" : "matches"} of ${tabModelCountLabel(total)}`;
+
+  const renderTabIcon = (tab: ModelPickerTab) => {
+    if (tab.kind === "favorites") {
+      return <StarIcon className="size-3.5 fill-current text-yellow-500/80" />;
+    }
+    const ProviderIcon = tab.driverKind
+      ? (PROVIDER_ICON_BY_PROVIDER[tab.driverKind] ?? null)
+      : null;
+    return (
+      <>
+        {ProviderIcon ? <ProviderIcon className="size-3.5 opacity-70" /> : null}
+        {tab.accentColor ? (
+          <span
+            aria-hidden
+            className="absolute -bottom-0.5 -right-0.5 size-1.5 rounded-full ring-1 ring-popover"
+            style={{ backgroundColor: tab.accentColor }}
+          />
+        ) : null}
+      </>
+    );
+  };
 
   const handleModelSelect = useCallback(
     (modelSlug: string, instanceId: ProviderInstanceId) => {
@@ -439,6 +485,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
 
   const toggleFavorite = useCallback(
     (instanceId: ProviderInstanceId, model: string) => {
+      setManualActiveTabId((current) => current ?? activeTabId);
       const newFavorites = [...favorites];
       const index = newFavorites.findIndex((f) => f.provider === instanceId && f.model === model);
       if (index >= 0) {
@@ -448,7 +495,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       }
       updateSettings({ favorites: newFavorites });
     },
-    [favorites, updateSettings],
+    [activeTabId, favorites, updateSettings],
   );
 
   const LockedProviderIcon =
@@ -487,10 +534,6 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   const modelJumpModelKeys = useMemo(
     () => [...modelJumpCommandByKey.keys()],
     [modelJumpCommandByKey],
-  );
-  const allModelKeys = useMemo(
-    (): string[] => flatModels.map((model) => `${model.instanceId}:${model.slug}`),
-    [flatModels],
   );
   const orderedModelKeys = useMemo(
     (): string[] => orderedModels.map((model) => `${model.instanceId}:${model.slug}`),
@@ -561,7 +604,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
           The card also clamps to the positioner's --available-height so rows
           can't extend past the window edge, where the inner scroller (with
           overscroll-contain) would leave them unreachable. */}
-      <div className="relative flex max-h-(--available-height) w-screen max-w-96 flex-col overflow-hidden rounded-lg border bg-popover not-dark:bg-clip-padding text-popover-foreground shadow-lg/5 before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:before:shadow-[0_-1px_--theme(--color-white/6%)]">
+      <div className="relative flex max-h-(--available-height) w-screen max-w-[34rem] flex-col overflow-hidden rounded-lg border bg-popover not-dark:bg-clip-padding text-popover-foreground shadow-lg/5 before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:before:shadow-[0_-1px_--theme(--color-white/6%)]">
         {/* Locked provider banner: the turn's driver cannot change */}
         {lockedToSingleInstance && LockedProviderIcon && lockedHeaderLabel && (
           <div className="flex items-center gap-2 border-b px-4 py-3">
@@ -570,158 +613,160 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
           </div>
         )}
 
-        <Combobox
-          inline
-          items={allModelKeys}
-          filteredItems={orderedModelKeys}
-          filter={null}
-          autoHighlight
-          open
-          value={`${props.activeInstanceId}:${props.model}`}
-          onItemHighlighted={(modelKey) => {
-            highlightedModelKeyRef.current = typeof modelKey === "string" ? modelKey : null;
-          }}
-          onValueChange={(modelKey) => {
-            if (typeof modelKey !== "string") {
-              return;
-            }
-            const { instanceId, slug } = splitInstanceModelKey(modelKey);
-            handleModelSelect(slug, instanceId);
-          }}
-        >
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-            {/* Search bar */}
-            <div className="border-b px-3 py-2">
-              <ComboboxInput
-                ref={searchInputRef}
-                className="[&_input]:font-sans rounded-md"
-                inputClassName="border-0 shadow-none ring-0 focus-visible:ring-0"
-                placeholder="Search models..."
-                showTrigger={false}
-                startAddon={<SearchIcon className="size-4 shrink-0 text-muted-foreground/50" />}
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Escape") {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    props.onRequestClose?.();
-                    return;
-                  }
-                  if (e.key === "Enter" && highlightedModelKeyRef.current) {
-                    (
-                      e as typeof e & { preventBaseUIHandler?: () => void }
-                    ).preventBaseUIHandler?.();
-                    e.preventDefault();
-                    e.stopPropagation();
-                    const { instanceId, slug } = splitInstanceModelKey(
-                      highlightedModelKeyRef.current,
-                    );
-                    handleModelSelect(slug, instanceId);
-                    return;
-                  }
-                  e.stopPropagation();
-                }}
-                onMouseDown={(e) => e.stopPropagation()}
-                onTouchStart={(e) => e.stopPropagation()}
-                size="sm"
-              />
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+          {showTabList ? (
+            <div className="border-b bg-muted/20 px-3 py-2">
+              <div
+                role="tablist"
+                aria-label="Model tabs"
+                className="flex min-w-0 gap-1 overflow-x-auto rounded-md bg-background/55 p-1"
+              >
+                {tabs.map((tab) => {
+                  const isActive = activeTab?.id === tab.id;
+                  const visibleModelCount = isSearching
+                    ? (searchedModelsByTabId.get(tab.id)?.length ?? 0)
+                    : tab.modelCount;
+                  return (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={isActive}
+                      data-model-picker-tab={tab.id}
+                      title={`${tab.label} · ${
+                        isSearching
+                          ? tabSearchCountLabel(visibleModelCount, tab.modelCount)
+                          : tabModelCountLabel(tab.modelCount)
+                      }`}
+                      className={cn(
+                        "flex min-w-20 max-w-40 shrink-0 cursor-pointer items-center gap-1.5 rounded px-2.5 py-1.5 text-left text-xs font-medium transition-colors",
+                        "focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring",
+                        isActive
+                          ? "bg-accent text-foreground shadow-xs/5"
+                          : "text-muted-foreground hover:bg-muted/70 hover:text-foreground",
+                      )}
+                      onClick={() => {
+                        setManualActiveTabId(tab.id);
+                        focusSearchInput();
+                      }}
+                    >
+                      <span className="relative flex size-4 shrink-0 items-center justify-center">
+                        {renderTabIcon(tab)}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate">{tab.label}</span>
+                      <span
+                        className={cn(
+                          "shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] leading-none tabular-nums",
+                          isActive ? "text-foreground/75" : "text-muted-foreground/60",
+                        )}
+                      >
+                        {isSearching ? `${visibleModelCount}/${tab.modelCount}` : tab.modelCount}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
+          ) : null}
 
-            {/* Model list: Favorites first, then one section per provider.
-                The region is its own scroller with a cap, so the popup hugs
-                short lists and scrolls long ones (e.g. broad searches). */}
-            <div className="model-picker-list min-h-0 max-h-80 flex-1 overflow-y-auto overscroll-contain bg-muted/40">
-              <ComboboxListVirtualized className="w-full px-1.5 py-1">
-                {(() => {
-                  let modelIndex = -1;
-                  return listRows.map((row) => {
-                    if (row.kind === "header") {
-                      const HeaderIcon = row.driverKind
-                        ? (PROVIDER_ICON_BY_PROVIDER[row.driverKind] ?? null)
-                        : null;
-                      return (
-                        <button
-                          key={`header:${row.id}`}
-                          type="button"
-                          data-model-picker-group={row.id}
-                          aria-expanded={!row.collapsed}
-                          className="group/picker-group flex w-full cursor-pointer items-center justify-between gap-2 rounded px-2 pb-1.5 pt-3 text-left transition-colors first:pt-2 hover:bg-muted/60"
-                          onMouseDown={(event) => {
-                            // Keep focus in the search input while toggling.
-                            event.preventDefault();
-                          }}
-                          onClick={() => toggleGroup(row.id)}
-                        >
-                          <SectionLabel
-                            as="span"
-                            className="min-w-0 flex-1"
-                            icon={
-                              <span className="flex shrink-0 items-center gap-1">
-                                {row.id === "favorites" ? (
-                                  <StarIcon className="size-3 fill-current text-yellow-500/70" />
-                                ) : HeaderIcon ? (
-                                  <HeaderIcon className="size-3 opacity-60" />
-                                ) : null}
-                                {row.accentColor ? (
-                                  <span
-                                    aria-hidden
-                                    className="size-1.5 rounded-full"
-                                    style={{ backgroundColor: row.accentColor }}
-                                  />
-                                ) : null}
-                              </span>
-                            }
-                          >
-                            {row.label}
-                          </SectionLabel>
-                          <span className="flex shrink-0 items-center gap-1.5">
-                            {row.collapsed ? (
-                              <span className="text-[10px] tabular-nums text-muted-foreground/45">
-                                {row.modelCount}
-                              </span>
-                            ) : null}
-                            <ChevronDownIcon
-                              aria-hidden
-                              className={cn(
-                                "size-3 text-muted-foreground/40 transition-transform duration-150 group-hover/picker-group:text-muted-foreground/70",
-                                row.collapsed && "-rotate-90",
-                              )}
-                            />
-                          </span>
-                        </button>
-                      );
+          <Combobox
+            inline
+            items={orderedModelKeys}
+            filteredItems={orderedModelKeys}
+            filter={null}
+            autoHighlight
+            open
+            value={`${props.activeInstanceId}:${props.model}`}
+            onItemHighlighted={(modelKey) => {
+              highlightedModelKeyRef.current = typeof modelKey === "string" ? modelKey : null;
+            }}
+            onValueChange={(modelKey) => {
+              if (typeof modelKey !== "string") {
+                return;
+              }
+              const { instanceId, slug } = splitInstanceModelKey(modelKey);
+              handleModelSelect(slug, instanceId);
+            }}
+          >
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+              {/* Search bar */}
+              <div className="border-b px-3 py-2">
+                <ComboboxInput
+                  ref={searchInputRef}
+                  className="[&_input]:font-sans rounded-md"
+                  inputClassName="border-0 shadow-none ring-0 focus-visible:ring-0"
+                  placeholder="Search models..."
+                  showTrigger={false}
+                  startAddon={<SearchIcon className="size-4 shrink-0 text-muted-foreground/50" />}
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      props.onRequestClose?.();
+                      return;
                     }
-                    modelIndex += 1;
-                    const modelKey = `${row.model.instanceId}:${row.model.slug}`;
-                    return (
-                      <ModelListRow
-                        key={modelKey}
-                        index={modelIndex}
-                        model={row.model}
-                        instanceId={row.model.instanceId}
-                        driverKind={row.model.driverKind}
-                        providerDisplayName={row.model.instanceDisplayName}
-                        providerAccentColor={row.model.instanceAccentColor}
-                        isFavorite={favoritesSet.has(modelKey)}
-                        showProvider={isSearching}
-                        preferShortName={!isLocked}
-                        useTriggerLabel={lockedToSingleInstance}
-                        jumpLabel={modelJumpLabelByKey.get(modelKey) ?? null}
-                        onToggleFavorite={() =>
-                          toggleFavorite(row.model.instanceId, row.model.slug)
-                        }
-                      />
-                    );
-                  });
-                })()}
-              </ComboboxListVirtualized>
+                    if (
+                      e.key === "Enter" &&
+                      highlightedModelKeyRef.current &&
+                      orderedModelKeys.includes(highlightedModelKeyRef.current)
+                    ) {
+                      (
+                        e as typeof e & { preventBaseUIHandler?: () => void }
+                      ).preventBaseUIHandler?.();
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const { instanceId, slug } = splitInstanceModelKey(
+                        highlightedModelKeyRef.current,
+                      );
+                      handleModelSelect(slug, instanceId);
+                      return;
+                    }
+                    e.stopPropagation();
+                  }}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onTouchStart={(e) => e.stopPropagation()}
+                  size="sm"
+                />
+              </div>
+
+              {/* The region is its own scroller with a cap, so the popup hugs
+                short lists and scrolls long ones (e.g. broad searches). */}
+              <div className="model-picker-list min-h-0 max-h-80 flex-1 overflow-y-auto overscroll-contain bg-muted/40">
+                <ComboboxListVirtualized className="w-full px-1.5 py-1">
+                  {(() => {
+                    let modelIndex = -1;
+                    return orderedModels.map((model) => {
+                      modelIndex += 1;
+                      const modelKey = `${model.instanceId}:${model.slug}`;
+                      return (
+                        <ModelListRow
+                          key={modelKey}
+                          index={modelIndex}
+                          model={model}
+                          instanceId={model.instanceId}
+                          driverKind={model.driverKind}
+                          providerDisplayName={model.instanceDisplayName}
+                          providerAccentColor={model.instanceAccentColor}
+                          isFavorite={favoritesSet.has(modelKey)}
+                          showProvider={activeTab?.kind === "favorites"}
+                          preferShortName={!isLocked}
+                          useTriggerLabel={lockedToSingleInstance}
+                          jumpLabel={modelJumpLabelByKey.get(modelKey) ?? null}
+                          onToggleFavorite={() => toggleFavorite(model.instanceId, model.slug)}
+                        />
+                      );
+                    });
+                  })()}
+                </ComboboxListVirtualized>
+              </div>
+              <ComboboxEmpty className="not-empty:py-6 empty:h-0 text-xs font-normal leading-snug">
+                {emptyMessage}
+              </ComboboxEmpty>
             </div>
-            <ComboboxEmpty className="not-empty:py-6 empty:h-0 text-xs font-normal leading-snug">
-              No models found
-            </ComboboxEmpty>
-          </div>
-        </Combobox>
+          </Combobox>
+        </div>
       </div>
     </TooltipProvider>
   );

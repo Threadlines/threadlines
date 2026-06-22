@@ -106,11 +106,13 @@ export const AuthBootstrapInput = Schema.Struct({
 });
 export type AuthBootstrapInput = typeof AuthBootstrapInput.Type;
 
+const AuthIsoDateTime = Schema.DateTimeUtcFromString;
+
 export const AuthBootstrapResult = Schema.Struct({
   authenticated: Schema.Literal(true),
   role: AuthSessionRole,
   sessionMethod: ServerAuthSessionMethod,
-  expiresAt: Schema.DateTimeUtc,
+  expiresAt: AuthIsoDateTime,
 });
 export type AuthBootstrapResult = typeof AuthBootstrapResult.Type;
 
@@ -118,14 +120,14 @@ export const AuthBearerBootstrapResult = Schema.Struct({
   authenticated: Schema.Literal(true),
   role: AuthSessionRole,
   sessionMethod: Schema.Literal("bearer-session-token"),
-  expiresAt: Schema.DateTimeUtc,
+  expiresAt: AuthIsoDateTime,
   sessionToken: TrimmedNonEmptyString,
 });
 export type AuthBearerBootstrapResult = typeof AuthBearerBootstrapResult.Type;
 
 export const AuthWebSocketTokenResult = Schema.Struct({
   token: TrimmedNonEmptyString,
-  expiresAt: Schema.DateTimeUtc,
+  expiresAt: AuthIsoDateTime,
 });
 export type AuthWebSocketTokenResult = typeof AuthWebSocketTokenResult.Type;
 
@@ -133,7 +135,7 @@ export const AuthPairingCredentialResult = Schema.Struct({
   id: TrimmedNonEmptyString,
   credential: TrimmedNonEmptyString,
   label: Schema.optionalKey(TrimmedNonEmptyString),
-  expiresAt: Schema.DateTimeUtc,
+  expiresAt: AuthIsoDateTime,
 });
 export type AuthPairingCredentialResult = typeof AuthPairingCredentialResult.Type;
 
@@ -143,8 +145,8 @@ export const AuthPairingLink = Schema.Struct({
   role: AuthSessionRole,
   subject: TrimmedNonEmptyString,
   label: Schema.optionalKey(TrimmedNonEmptyString),
-  createdAt: Schema.DateTimeUtc,
-  expiresAt: Schema.DateTimeUtc,
+  createdAt: AuthIsoDateTime,
+  expiresAt: AuthIsoDateTime,
 });
 export type AuthPairingLink = typeof AuthPairingLink.Type;
 
@@ -173,9 +175,9 @@ export const AuthClientSession = Schema.Struct({
   role: AuthSessionRole,
   method: ServerAuthSessionMethod,
   client: AuthClientMetadata,
-  issuedAt: Schema.DateTimeUtc,
-  expiresAt: Schema.DateTimeUtc,
-  lastConnectedAt: Schema.NullOr(Schema.DateTimeUtc),
+  issuedAt: AuthIsoDateTime,
+  expiresAt: AuthIsoDateTime,
+  lastConnectedAt: Schema.NullOr(AuthIsoDateTime),
   connected: Schema.Boolean,
   current: Schema.Boolean,
 });
@@ -262,6 +264,6 @@ export const AuthSessionState = Schema.Struct({
   auth: ServerAuthDescriptor,
   role: Schema.optionalKey(AuthSessionRole),
   sessionMethod: Schema.optionalKey(ServerAuthSessionMethod),
-  expiresAt: Schema.optionalKey(Schema.DateTimeUtc),
+  expiresAt: Schema.optionalKey(AuthIsoDateTime),
 });
 export type AuthSessionState = typeof AuthSessionState.Type;

@@ -113,8 +113,17 @@ export function preserveRightPanelSearchParamsForNavigation<T extends Record<str
     : closeRightPanelSearchParams(params);
 }
 
-export function isSourceControlPanelOpen(search: DiffRouteSearch): boolean {
-  return search.diff !== "1" && search.sourceControl !== "0";
+export function isSourceControlPanelOpen(
+  search: DiffRouteSearch,
+  options: { defaultOpen?: boolean } = {},
+): boolean {
+  if (search.diff === "1" || search.sourceControl === "0") {
+    return false;
+  }
+  if (search.sourceControl === "1") {
+    return true;
+  }
+  return options.defaultOpen ?? true;
 }
 
 export function parseDiffRouteSearch(search: Record<string, unknown>): DiffRouteSearch {

@@ -56,6 +56,25 @@ export function formatProviderRateLimitResetCreditConfirmation(availableCount: n
   return `This spends ${creditLabel} and refreshes your current Codex rate-limit windows so you can keep working. This cannot be undone.`;
 }
 
+export function formatProviderRateLimitResetCreditTooltip(availableCount: number): string {
+  const creditLabel =
+    availableCount === 1 ? "your reset credit" : `1 of your ${availableCount} reset credits`;
+  return `Use ${creditLabel} to refresh the current Codex 5h and weekly usage windows.`;
+}
+
+export function isProviderUsageLimitErrorMessage(message: string | null | undefined): boolean {
+  const normalized = message?.trim().toLowerCase();
+  if (!normalized) return false;
+
+  return (
+    normalized.includes("usage limit") ||
+    normalized.includes("usagelimitexceeded") ||
+    normalized.includes("usage limited") ||
+    normalized.includes("rate limit reached") ||
+    normalized.includes("rate limit exceeded")
+  );
+}
+
 export function toastForProviderRateLimitResetCreditOutcome(
   outcome: ServerProviderRateLimitResetCreditOutcome,
 ): ProviderRateLimitResetCreditToast {

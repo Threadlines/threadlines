@@ -512,10 +512,11 @@ export function useSettingsRestore(onRestored?: () => void) {
   };
 }
 
-export function GeneralSettingsPanel() {
+export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | "phone" }) {
   const { theme, setTheme } = useTheme();
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
+  const isPhoneSurface = surface === "phone";
   const observability = useServerObservability();
   const serverProviders = useServerProviders();
   const diagnosticsDescription = formatDiagnosticsDescription({
@@ -551,7 +552,7 @@ export function GeneralSettingsPanel() {
 
   return (
     <SettingsPageContainer>
-      <SettingsSection title="General">
+      <SettingsSection title="Appearance">
         <SettingsRow
           title="Theme"
           description="Choose how Threadlines looks across the app."
@@ -626,7 +627,9 @@ export function GeneralSettingsPanel() {
             </Select>
           }
         />
+      </SettingsSection>
 
+      <SettingsSection title="Review & Diffs">
         <SettingsRow
           title="Diff line wrapping"
           description="Set the default wrap state when the diff panel opens."
@@ -704,102 +707,183 @@ export function GeneralSettingsPanel() {
             />
           }
         />
+      </SettingsSection>
 
-        <SettingsRow
-          title="Agent responses"
-          description="Stream response text while a turn is in progress."
-          resetAction={
-            settings.enableAssistantStreaming !==
-            DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming ? (
-              <SettingResetButton
-                label="agent responses"
-                onClick={() =>
-                  updateSettings({
-                    enableAssistantStreaming: DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming,
-                  })
+      {!isPhoneSurface ? (
+        <SettingsSection title="Agent Behavior">
+          <SettingsRow
+            title="Agent responses"
+            description="Stream response text while a turn is in progress."
+            resetAction={
+              settings.enableAssistantStreaming !==
+              DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming ? (
+                <SettingResetButton
+                  label="agent responses"
+                  onClick={() =>
+                    updateSettings({
+                      enableAssistantStreaming: DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={settings.enableAssistantStreaming}
+                onCheckedChange={(checked) =>
+                  updateSettings({ enableAssistantStreaming: Boolean(checked) })
                 }
+                aria-label="Stream agent responses"
               />
-            ) : null
-          }
-          control={
-            <Switch
-              checked={settings.enableAssistantStreaming}
-              onCheckedChange={(checked) =>
-                updateSettings({ enableAssistantStreaming: Boolean(checked) })
+            }
+          />
+
+          <SettingsRow
+            title="Text generation model"
+            description="Configure the model used for generated thread titles, branch names, commit messages, and PR text."
+            resetAction={
+              isGitWritingModelDirty ? (
+                <SettingResetButton
+                  label="text generation model"
+                  onClick={() =>
+                    updateSettings({
+                      textGenerationModelSelection:
+                        DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <div className="flex flex-wrap items-center justify-end gap-1.5">
+                <ProviderModelPicker
+                  activeInstanceId={textGenInstanceId}
+                  model={textGenModel}
+                  lockedProvider={null}
+                  instanceEntries={gitModelInstanceEntries}
+                  modelOptionsByInstance={gitModelOptionsByInstance}
+                  triggerVariant="outline"
+                  triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
+                  onInstanceModelChange={(instanceId, model) => {
+                    updateSettings({
+                      textGenerationModelSelection: resolveAppModelSelectionState(
+                        {
+                          ...settings,
+                          textGenerationModelSelection: createModelSelection(instanceId, model),
+                        },
+                        serverProviders,
+                      ),
+                    });
+                  }}
+                />
+                <TraitsPicker
+                  provider={textGenProvider}
+                  models={
+                    // Use the exact instance's models (rather than the
+                    // first-kind-match) so a custom text-gen instance like
+                    // `codex_personal` gets its own model list, not the
+                    // default Codex one.
+                    textGenInstanceEntry?.models ?? []
+                  }
+                  model={textGenModel}
+                  modelOptions={textGenModelOptions}
+                  triggerVariant="outline"
+                  triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
+                  onModelOptionsChange={(nextOptions) => {
+                    updateSettings({
+                      textGenerationModelSelection: resolveAppModelSelectionState(
+                        {
+                          ...settings,
+                          textGenerationModelSelection: createModelSelection(
+                            textGenInstanceId,
+                            textGenModel,
+                            nextOptions,
+                          ),
+                        },
+                        serverProviders,
+                      ),
+                    });
+                  }}
+                />
+              </div>
+            }
+          />
+        </SettingsSection>
+      ) : null}
+
+      <SettingsSection title="Projects & Threads">
+        {!isPhoneSurface ? (
+          <>
+            <SettingsRow
+              title="New threads"
+              description="Pick the default workspace mode for newly created draft threads."
+              resetAction={
+                settings.defaultThreadEnvMode !== DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode ? (
+                  <SettingResetButton
+                    label="new threads"
+                    onClick={() =>
+                      updateSettings({
+                        defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
+                      })
+                    }
+                  />
+                ) : null
               }
-              aria-label="Stream agent responses"
+              control={
+                <Select
+                  value={settings.defaultThreadEnvMode}
+                  onValueChange={(value) => {
+                    if (value === "local" || value === "worktree") {
+                      updateSettings({ defaultThreadEnvMode: value });
+                    }
+                  }}
+                >
+                  <SelectTrigger className="w-full sm:w-44" aria-label="Default thread mode">
+                    <SelectValue>
+                      {settings.defaultThreadEnvMode === "worktree" ? "New worktree" : "Local"}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup align="end" alignItemWithTrigger={false}>
+                    <SelectItem hideIndicator value="local">
+                      Local
+                    </SelectItem>
+                    <SelectItem hideIndicator value="worktree">
+                      New worktree
+                    </SelectItem>
+                  </SelectPopup>
+                </Select>
+              }
             />
-          }
-        />
 
-        <SettingsRow
-          title="New threads"
-          description="Pick the default workspace mode for newly created draft threads."
-          resetAction={
-            settings.defaultThreadEnvMode !== DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode ? (
-              <SettingResetButton
-                label="new threads"
-                onClick={() =>
-                  updateSettings({
-                    defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Select
-              value={settings.defaultThreadEnvMode}
-              onValueChange={(value) => {
-                if (value === "local" || value === "worktree") {
-                  updateSettings({ defaultThreadEnvMode: value });
-                }
-              }}
-            >
-              <SelectTrigger className="w-full sm:w-44" aria-label="Default thread mode">
-                <SelectValue>
-                  {settings.defaultThreadEnvMode === "worktree" ? "New worktree" : "Local"}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                <SelectItem hideIndicator value="local">
-                  Local
-                </SelectItem>
-                <SelectItem hideIndicator value="worktree">
-                  New worktree
-                </SelectItem>
-              </SelectPopup>
-            </Select>
-          }
-        />
-
-        <SettingsRow
-          title="Add project starts in"
-          description='Leave empty to start in your home folder ("~/"). On Windows, Desktop follows the real user Desktop folder, including OneDrive redirection.'
-          resetAction={
-            settings.addProjectBaseDirectory !==
-            DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory ? (
-              <SettingResetButton
-                label="add project base directory"
-                onClick={() =>
-                  updateSettings({
-                    addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <DraftInput
-              className="w-full sm:w-72"
-              value={settings.addProjectBaseDirectory}
-              onCommit={(next) => updateSettings({ addProjectBaseDirectory: next })}
-              placeholder="~/"
-              spellCheck={false}
-              aria-label="Add project base directory"
+            <SettingsRow
+              title="Add project starts in"
+              description='Leave empty to start in your home folder ("~/"). On Windows, Desktop follows the real user Desktop folder, including OneDrive redirection.'
+              resetAction={
+                settings.addProjectBaseDirectory !==
+                DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory ? (
+                  <SettingResetButton
+                    label="add project base directory"
+                    onClick={() =>
+                      updateSettings({
+                        addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
+                      })
+                    }
+                  />
+                ) : null
+              }
+              control={
+                <DraftInput
+                  className="w-full sm:w-72"
+                  value={settings.addProjectBaseDirectory}
+                  onCommit={(next) => updateSettings({ addProjectBaseDirectory: next })}
+                  placeholder="~/"
+                  spellCheck={false}
+                  aria-label="Add project base directory"
+                />
+              }
             />
-          }
-        />
+          </>
+        ) : null}
 
         <SettingsRow
           title="Archive confirmation"
@@ -852,77 +936,6 @@ export function GeneralSettingsPanel() {
             />
           }
         />
-
-        <SettingsRow
-          title="Text generation model"
-          description="Configure the model used for generated thread titles, branch names, commit messages, and PR text."
-          resetAction={
-            isGitWritingModelDirty ? (
-              <SettingResetButton
-                label="text generation model"
-                onClick={() =>
-                  updateSettings({
-                    textGenerationModelSelection:
-                      DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <div className="flex flex-wrap items-center justify-end gap-1.5">
-              <ProviderModelPicker
-                activeInstanceId={textGenInstanceId}
-                model={textGenModel}
-                lockedProvider={null}
-                instanceEntries={gitModelInstanceEntries}
-                modelOptionsByInstance={gitModelOptionsByInstance}
-                triggerVariant="outline"
-                triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
-                onInstanceModelChange={(instanceId, model) => {
-                  updateSettings({
-                    textGenerationModelSelection: resolveAppModelSelectionState(
-                      {
-                        ...settings,
-                        textGenerationModelSelection: createModelSelection(instanceId, model),
-                      },
-                      serverProviders,
-                    ),
-                  });
-                }}
-              />
-              <TraitsPicker
-                provider={textGenProvider}
-                models={
-                  // Use the exact instance's models (rather than the
-                  // first-kind-match) so a custom text-gen instance like
-                  // `codex_personal` gets its own model list, not the
-                  // default Codex one.
-                  textGenInstanceEntry?.models ?? []
-                }
-                model={textGenModel}
-                modelOptions={textGenModelOptions}
-                triggerVariant="outline"
-                triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
-                onModelOptionsChange={(nextOptions) => {
-                  updateSettings({
-                    textGenerationModelSelection: resolveAppModelSelectionState(
-                      {
-                        ...settings,
-                        textGenerationModelSelection: createModelSelection(
-                          textGenInstanceId,
-                          textGenModel,
-                          nextOptions,
-                        ),
-                      },
-                      serverProviders,
-                    ),
-                  });
-                }}
-              />
-            </div>
-          }
-        />
       </SettingsSection>
 
       <SettingsSection title="About">
@@ -934,15 +947,22 @@ export function GeneralSettingsPanel() {
             description="Current version of the application."
           />
         )}
-        <SettingsRow
-          title="Diagnostics"
-          description={diagnosticsDescription}
-          control={
-            <Button render={<Link to="/settings/diagnostics" />} size="xs" variant="outline">
-              View diagnostics
-            </Button>
-          }
-        />
+        {!isPhoneSurface ? (
+          <SettingsRow
+            title="Diagnostics"
+            description={diagnosticsDescription}
+            control={
+              <Button render={<Link to="/settings/diagnostics" />} size="xs" variant="outline">
+                View diagnostics
+              </Button>
+            }
+          />
+        ) : (
+          <SettingsRow
+            title="Phone settings"
+            description="Only browser-local preferences are shown here on the hosted phone app."
+          />
+        )}
       </SettingsSection>
     </SettingsPageContainer>
   );
@@ -1934,28 +1954,6 @@ export function ArchivedThreadsPanel() {
                 }
                 control={
                   <div className="ml-auto flex items-center gap-1.5">
-                    <Tooltip>
-                      <TooltipTrigger
-                        render={
-                          <Button
-                            type="button"
-                            variant="destructive-outline"
-                            size="icon-xs"
-                            className="size-7 rounded-md text-destructive-foreground"
-                            aria-label={`Delete archived thread ${thread.title}`}
-                            onClick={() =>
-                              void deleteArchivedThread(
-                                scopeThreadRef(thread.environmentId, thread.id),
-                                thread.title,
-                              )
-                            }
-                          >
-                            <Trash2Icon className="size-3.5" />
-                          </Button>
-                        }
-                      />
-                      <TooltipPopup side="top">Delete thread</TooltipPopup>
-                    </Tooltip>
                     <Button
                       type="button"
                       variant="outline"
@@ -1979,6 +1977,28 @@ export function ArchivedThreadsPanel() {
                       <ArchiveX className="size-3.5" />
                       <span>Unarchive</span>
                     </Button>
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <Button
+                            type="button"
+                            variant="destructive-outline"
+                            size="icon-xs"
+                            className="size-7 rounded-md text-destructive-foreground"
+                            aria-label={`Delete archived thread ${thread.title}`}
+                            onClick={() =>
+                              void deleteArchivedThread(
+                                scopeThreadRef(thread.environmentId, thread.id),
+                                thread.title,
+                              )
+                            }
+                          >
+                            <Trash2Icon className="size-3.5" />
+                          </Button>
+                        }
+                      />
+                      <TooltipPopup side="top">Delete thread</TooltipPopup>
+                    </Tooltip>
                   </div>
                 }
               />

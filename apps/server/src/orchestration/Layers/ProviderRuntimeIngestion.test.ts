@@ -954,6 +954,56 @@ describe("ProviderRuntimeIngestion", () => {
     );
   });
 
+  it("ignores turn diff updates for a different active turn", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-diff-guard"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-diff-guard-main"),
+    });
+
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.status === "running" &&
+        thread.session?.activeTurnId === "turn-diff-guard-main",
+    );
+
+    harness.emit({
+      type: "turn.diff.updated",
+      eventId: asEventId("evt-turn-diff-guard-other"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-diff-guard-other"),
+      payload: {
+        unifiedDiff:
+          "diff --git a/leaked.txt b/leaked.txt\nindex e69de29..ce01362 100644\n--- a/leaked.txt\n+++ b/leaked.txt\n@@ -0,0 +1 @@\n+leaked\n",
+      },
+    });
+
+    await harness.drain();
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(thread?.session?.activeTurnId).toBe("turn-diff-guard-main");
+    expect(thread?.checkpoints.some((entry) => entry.turnId === "turn-diff-guard-other")).toBe(
+      false,
+    );
+    expect(
+      thread?.activities.some(
+        (activity) =>
+          activity.turnId === "turn-diff-guard-other" &&
+          activity.kind === "tool.completed" &&
+          activity.summary === "Changed files",
+      ),
+    ).toBe(false);
+  });
+
   it("maps canonical content delta/item completed into finalized assistant messages", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

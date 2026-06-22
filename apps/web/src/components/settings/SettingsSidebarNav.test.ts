@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { SETTINGS_NAV_ITEMS } from "./SettingsSidebarNav";
+import { HOSTED_STATIC_SETTINGS_NAV_ITEMS, SETTINGS_NAV_ITEMS } from "./SettingsSidebarNav";
 import {
   DEFAULT_SETTINGS_SECTION_PATH,
+  HOSTED_STATIC_SETTINGS_SECTION_PATHS,
   rememberVisibleSettingsSection,
   resetRememberedSettingsSectionForTest,
   resolveSettingsEntryPath,
@@ -17,6 +18,12 @@ describe("SETTINGS_NAV_ITEMS", () => {
 
   it("matches the visible settings section paths", () => {
     expect(SETTINGS_NAV_ITEMS.map((item) => item.to)).toEqual([...VISIBLE_SETTINGS_SECTION_PATHS]);
+  });
+
+  it("keeps hosted phone navigation to phone-safe settings sections", () => {
+    expect(HOSTED_STATIC_SETTINGS_NAV_ITEMS.map((item) => item.to)).toEqual([
+      ...HOSTED_STATIC_SETTINGS_SECTION_PATHS,
+    ]);
   });
 });
 

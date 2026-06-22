@@ -23,7 +23,11 @@ import {
 } from "../ui/sidebar";
 import { SourceControlIcon } from "../Icons";
 import { SidebarVersionTag } from "../SidebarVersionTag";
-import type { SettingsSectionPath } from "./settingsNavigation";
+import { isHostedStaticApp } from "../../hostedPairing";
+import {
+  HOSTED_STATIC_SETTINGS_SECTION_PATHS,
+  type SettingsSectionPath,
+} from "./settingsNavigation";
 
 export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
   label: string;
@@ -31,19 +35,27 @@ export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
   icon: ComponentType<{ className?: string }>;
 }> = [
   { label: "General", to: "/settings/general", icon: Settings2Icon },
-  { label: "Keybindings", to: "/settings/keybindings", icon: KeyboardIcon },
   { label: "Providers", to: "/settings/providers", icon: BotIcon },
-  { label: "Plugins", to: "/settings/extensions", icon: PlugIcon },
-  { label: "Instructions", to: "/settings/instructions", icon: FileTextIcon },
+  { label: "Plugins", to: "/settings/plugins", icon: PlugIcon },
+  { label: "Agent Instructions", to: "/settings/instructions", icon: FileTextIcon },
   { label: "Source Control", to: "/settings/source-control", icon: SourceControlIcon },
   { label: "Devices", to: "/settings/connections", icon: SmartphoneIcon },
-  { label: "Archive", to: "/settings/archived", icon: ArchiveIcon },
+  { label: "Keybindings", to: "/settings/keybindings", icon: KeyboardIcon },
+  { label: "Archives", to: "/settings/archived", icon: ArchiveIcon },
 ];
+
+export const HOSTED_STATIC_SETTINGS_NAV_ITEMS = SETTINGS_NAV_ITEMS.filter((item) =>
+  (HOSTED_STATIC_SETTINGS_SECTION_PATHS as readonly string[]).includes(item.to),
+);
 
 export function SettingsSidebarNav({ pathname }: { pathname: string }) {
   const navigate = useNavigate();
   const canGoBack = useCanGoBack();
   const { isMobile, setOpenMobile } = useSidebar();
+  const navItems =
+    typeof window !== "undefined" && isHostedStaticApp(new URL(window.location.href))
+      ? HOSTED_STATIC_SETTINGS_NAV_ITEMS
+      : SETTINGS_NAV_ITEMS;
   const handleSectionClick = useCallback(
     (to: SettingsSectionPath) => {
       if (isMobile) {
@@ -69,7 +81,7 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
       <SidebarContent className="overflow-x-hidden">
         <SidebarGroup className="px-2 py-3">
           <SidebarMenu>
-            {SETTINGS_NAV_ITEMS.map((item) => {
+            {navItems.map((item) => {
               const Icon = item.icon;
               const isActive = pathname === item.to;
               return (

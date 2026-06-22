@@ -18,6 +18,7 @@ import {
   isRecoverableThreadResumeError,
   makeCodexStderrLineClassifier,
   openCodexThread,
+  shouldAcceptCodexNotificationForSession,
 } from "./CodexSessionRuntime.ts";
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
 
@@ -176,6 +177,53 @@ describe("buildTurnStartParams", () => {
         },
       ],
     });
+  });
+});
+
+describe("shouldAcceptCodexNotificationForSession", () => {
+  it("drops notifications for a different provider thread after the session is bound", () => {
+    assert.equal(
+      shouldAcceptCodexNotificationForSession({
+        currentProviderThreadId: "provider-thread-1",
+        notificationThreadId: "provider-thread-2",
+      }),
+      false,
+    );
+  });
+
+  it("accepts notifications for the current provider thread and known child threads", () => {
+    assert.equal(
+      shouldAcceptCodexNotificationForSession({
+        currentProviderThreadId: "provider-thread-1",
+        notificationThreadId: "provider-thread-1",
+      }),
+      true,
+    );
+    assert.equal(
+      shouldAcceptCodexNotificationForSession({
+        currentProviderThreadId: "provider-thread-1",
+        notificationThreadId: "provider-thread-child",
+        isKnownChildThread: true,
+      }),
+      true,
+    );
+  });
+
+  it("accepts unscoped notifications and notifications before the provider thread is known", () => {
+    assert.equal(
+      shouldAcceptCodexNotificationForSession({
+        currentProviderThreadId: undefined,
+        notificationThreadId: "provider-thread-1",
+      }),
+      true,
+    );
+    assert.equal(
+      shouldAcceptCodexNotificationForSession({
+        currentProviderThreadId: "provider-thread-1",
+        notificationThreadId: undefined,
+      }),
+      true,
+    );
   });
 });
 

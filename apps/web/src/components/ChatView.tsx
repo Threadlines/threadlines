@@ -108,7 +108,9 @@ import {
 } from "../types";
 import { useTheme } from "../hooks/useTheme";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
+import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useCommandPaletteStore } from "../commandPaletteStore";
+import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import { buildTemporaryWorktreeBranchName } from "@threadlines/shared/git";
 import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
@@ -205,6 +207,7 @@ import {
 import { sanitizeThreadErrorMessage } from "~/rpc/transportError";
 import { retainThreadDetailSubscription } from "../environments/runtime/service";
 import { hasActiveContextCompactionActivity } from "~/lib/contextCompactionActivities";
+import { deriveProviderAccountUsagePresentationForProvider } from "~/lib/providerUsage";
 import { Button } from "./ui/button";
 import {
   AlertDialog,
@@ -216,6 +219,11 @@ import {
   AlertDialogTitle,
 } from "./ui/alert-dialog";
 import { Checkbox } from "./ui/checkbox";
+import {
+  canRequestProviderRateLimitResetCredit,
+  isProviderUsageLimitErrorMessage,
+  useProviderRateLimitResetCredit,
+} from "./ProviderRateLimitResetCredit";
 import {
   buildVersionMismatchDismissalKey,
   dismissVersionMismatch,
@@ -702,6 +710,7 @@ export default function ChatView(props: ChatViewProps) {
     strict: false,
     select: (params) => parseDiffRouteSearch(params),
   });
+  const shouldUseRightPanelSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   const { resolvedTheme } = useTheme();
   // Granular store selectors — avoid subscribing to prompt changes.
   const composerRuntimeMode = useComposerDraftStore(
@@ -877,7 +886,9 @@ export default function ChatView(props: ChatViewProps) {
     composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE;
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
-  const sourceControlOpen = isSourceControlPanelOpen(rawSearch);
+  const sourceControlOpen = isSourceControlPanelOpen(rawSearch, {
+    defaultOpen: !shouldUseRightPanelSheet,
+  });
   const preserveRightPanelSearchForDraftNavigation = useCallback(
     (previous: Record<string, unknown>) =>
       preserveRightPanelSearchParamsForNavigation(previous, { sourceControlOpen }),
@@ -1812,6 +1823,54 @@ export default function ChatView(props: ChatViewProps) {
   const activeProviderLabel =
     activeProviderStatus?.displayName?.trim() ||
     formatProviderDriverKindLabel(activeProviderDriver);
+  const activeProviderAccountUsage = useMemo(
+    () => deriveProviderAccountUsagePresentationForProvider(activeProviderStatus),
+    [activeProviderStatus],
+  );
+  const {
+    isConsumingRateLimitResetCredit: isConsumingThreadErrorRateLimitResetCredit,
+    requestRateLimitResetCredit: requestThreadErrorRateLimitResetCredit,
+    rateLimitResetCreditDialog: threadErrorRateLimitResetCreditDialog,
+  } = useProviderRateLimitResetCredit();
+  const activeProviderResetCredits = activeProviderAccountUsage?.resetCredits ?? null;
+  const canResetActiveProviderUsage = canRequestProviderRateLimitResetCredit(
+    activeProviderStatus,
+    activeProviderResetCredits?.availableCount,
+  );
+  const requestActiveProviderUsageReset = useCallback(() => {
+    if (!canResetActiveProviderUsage || !activeProviderStatus || !activeProviderResetCredits) {
+      return;
+    }
+    requestThreadErrorRateLimitResetCredit({
+      instanceId: activeProviderStatus.instanceId,
+      availableCount: activeProviderResetCredits.availableCount,
+    });
+  }, [
+    activeProviderResetCredits,
+    activeProviderStatus,
+    canResetActiveProviderUsage,
+    requestThreadErrorRateLimitResetCredit,
+  ]);
+  const threadErrorUsageResetAction = useMemo(() => {
+    if (
+      !canResetActiveProviderUsage ||
+      !activeProviderResetCredits ||
+      !isProviderUsageLimitErrorMessage(activeThread?.error)
+    ) {
+      return null;
+    }
+    return {
+      availableCount: activeProviderResetCredits.availableCount,
+      isResetting: isConsumingThreadErrorRateLimitResetCredit,
+      onReset: requestActiveProviderUsageReset,
+    };
+  }, [
+    activeProviderResetCredits,
+    activeThread?.error,
+    canResetActiveProviderUsage,
+    isConsumingThreadErrorRateLimitResetCredit,
+    requestActiveProviderUsageReset,
+  ]);
   const activeProviderSupportsManualContextCompaction = providerSupportsManualContextCompaction(
     activeProviderStatus,
     activeProviderDriver,
@@ -4127,10 +4186,12 @@ export default function ChatView(props: ChatViewProps) {
       <ThreadErrorBanner
         error={activeThread.error}
         authReconnect={providerAuthReconnectPrompt}
+        usageReset={threadErrorUsageResetAction}
         providerLabel={activeProviderLabel}
         onRunAuthReconnect={runProviderAuthReconnect}
         onDismiss={() => setThreadError(activeThread.id, null)}
       />
+      {threadErrorRateLimitResetCreditDialog}
       {/* Main content area */}
       <div className="flex min-h-0 min-w-0 flex-1">
         {/* Chat column */}

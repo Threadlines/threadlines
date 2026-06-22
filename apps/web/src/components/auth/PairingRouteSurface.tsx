@@ -12,6 +12,8 @@ import { readHostedPairingRequest } from "../../hostedPairing";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 
+const HOSTED_PAIRING_SLOW_FEEDBACK_DELAY_MS = 10_000;
+
 export function PairingPendingSurface() {
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background px-4 py-10 text-foreground sm:px-6">
@@ -225,6 +227,23 @@ export function HostedPairingRouteSurface() {
     void submitHostedPairingRequest();
   }, [submitHostedPairingRequest]);
 
+  useEffect(() => {
+    if (status !== "pairing") {
+      return;
+    }
+
+    const request = hostedPairingRequestRef.current;
+    const timeout = window.setTimeout(() => {
+      setMessage(
+        request?.kind === "relay"
+          ? "Still connecting to your desktop app. Keep the desktop app open, then wait here or request a new phone link if this does not finish."
+          : "Still connecting to this backend. Keep the backend running, then wait here or request a new pairing link if this does not finish.",
+      );
+    }, HOSTED_PAIRING_SLOW_FEEDBACK_DELAY_MS);
+
+    return () => window.clearTimeout(timeout);
+  }, [status]);
+
   const request = hostedPairingRequestRef.current;
 
   return (
@@ -267,7 +286,7 @@ export function HostedPairingRouteSurface() {
         <div className="mt-6 flex flex-wrap gap-2">
           {status === "pairing" ? (
             <Button disabled size="sm">
-              Pairing...
+              Connecting...
             </Button>
           ) : canRetry ? (
             <Button size="sm" onClick={() => void submitHostedPairingRequest()}>

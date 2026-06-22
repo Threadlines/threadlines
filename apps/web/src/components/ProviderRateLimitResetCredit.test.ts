@@ -4,6 +4,8 @@ import { ProviderDriverKind } from "@threadlines/contracts";
 import {
   canRequestProviderRateLimitResetCredit,
   formatProviderRateLimitResetCreditConfirmation,
+  formatProviderRateLimitResetCreditTooltip,
+  isProviderUsageLimitErrorMessage,
   toastForProviderRateLimitResetCreditOutcome,
 } from "./ProviderRateLimitResetCredit";
 
@@ -25,6 +27,23 @@ describe("ProviderRateLimitResetCredit", () => {
       "spends 1 of your 2 reset credits",
     );
     expect(formatProviderRateLimitResetCreditConfirmation(1)).toContain("spends your reset credit");
+  });
+
+  it("uses reset tooltip copy that names both Codex usage windows", () => {
+    expect(formatProviderRateLimitResetCreditTooltip(1)).toBe(
+      "Use your reset credit to refresh the current Codex 5h and weekly usage windows.",
+    );
+    expect(formatProviderRateLimitResetCreditTooltip(3)).toContain("1 of your 3 reset credits");
+  });
+
+  it("recognizes provider usage-limit failures", () => {
+    expect(
+      isProviderUsageLimitErrorMessage(
+        "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage",
+      ),
+    ).toBe(true);
+    expect(isProviderUsageLimitErrorMessage("usageLimitExceeded")).toBe(true);
+    expect(isProviderUsageLimitErrorMessage("Sandbox setup failed")).toBe(false);
   });
 
   it("maps reset outcomes to compact toast messages", () => {

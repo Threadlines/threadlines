@@ -69,6 +69,7 @@ function ChatThreadRouteView() {
     select: (params) => resolveThreadRouteRef(params),
   });
   const search = Route.useSearch();
+  const shouldUseDiffSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   const bootstrapComplete = useStore(
     (store) => selectEnvironmentState(store, threadRef?.environmentId ?? null).bootstrapComplete,
   );
@@ -93,7 +94,9 @@ function ChatThreadRouteView() {
   const serverThreadHasPromotableActivity = threadHasPromotableServerActivity(serverThread);
   const environmentHasAnyThreads = environmentHasServerThreads || environmentHasDraftThreads;
   const diffOpen = search.diff === "1";
-  const sourceControlOpen = isSourceControlPanelOpen(search);
+  const sourceControlOpen = isSourceControlPanelOpen(search, {
+    defaultOpen: !shouldUseDiffSheet,
+  });
   const rightPanelOpen = diffOpen || sourceControlOpen;
   const sourceControlThread = serverThread ?? draftThread;
   const sourceControlProjectRef = sourceControlThread
@@ -128,7 +131,6 @@ function ChatThreadRouteView() {
     },
     [setDraftThreadContext, threadRef],
   );
-  const shouldUseDiffSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   const diffIgnoreWhitespace = useSettings((settings) => settings.diffIgnoreWhitespace);
   const queryClient = useQueryClient();
   const currentThreadKey = threadRef ? `${threadRef.environmentId}:${threadRef.threadId}` : null;

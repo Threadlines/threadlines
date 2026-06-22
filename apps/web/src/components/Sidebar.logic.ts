@@ -431,8 +431,7 @@ export function resolveProjectStatusIndicator(
   return highestPriorityStatus;
 }
 
-export const SIDEBAR_THREAD_REVEAL_CHUNK_SIZE = 15;
-// One click reveals the whole tail when it is at most a chunk plus this
+// One click reveals the whole tail when it is at most the preview size plus this
 // slack, so a couple of stragglers never hide behind the search handoff.
 export const SIDEBAR_THREAD_REVEAL_ALL_SLACK = 5;
 
@@ -485,13 +484,14 @@ export function getSidebarThreadWindow<T>(input: {
     : windowThreads;
   const hiddenThreads = threads.filter((thread) => !visibleThreadKeys.has(getThreadKey(thread)));
 
-  // Inline expansion is capped at one reveal step; past that the tail stays
-  // reachable through search so huge projects cannot flood the sidebar.
+  // Inline expansion is capped at one preview-sized reveal step; past that the
+  // tail stays reachable through search so huge projects cannot flood the sidebar.
+  const revealStepSize = Math.max(0, previewLimit);
   const nextRevealCount = isRevealed
     ? 0
-    : hiddenThreads.length <= SIDEBAR_THREAD_REVEAL_CHUNK_SIZE + SIDEBAR_THREAD_REVEAL_ALL_SLACK
+    : hiddenThreads.length <= revealStepSize + SIDEBAR_THREAD_REVEAL_ALL_SLACK
       ? hiddenThreads.length
-      : SIDEBAR_THREAD_REVEAL_CHUNK_SIZE;
+      : revealStepSize;
 
   return {
     visibleThreads,

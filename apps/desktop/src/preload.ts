@@ -87,6 +87,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   setTailscaleServeEnabled: (input) =>
     ipcRenderer.invoke(IpcChannels.SET_TAILSCALE_SERVE_ENABLED_CHANNEL, input),
   getAdvertisedEndpoints: () => ipcRenderer.invoke(IpcChannels.GET_ADVERTISED_ENDPOINTS_CHANNEL),
+  getRelayPairingSession: () => ipcRenderer.invoke(IpcChannels.GET_RELAY_PAIRING_SESSION_CHANNEL),
   createRelayPairingSession: () =>
     ipcRenderer.invoke(IpcChannels.CREATE_RELAY_PAIRING_SESSION_CHANNEL),
   disconnectRelayPairingSession: () =>

@@ -785,6 +785,22 @@ label:has(> select#reasoning-effort) select {
     0 0 1rem rgba(168, 85, 247, 0.16);
 }
 
+.plan-mode-frame {
+  background-color: color-mix(in srgb, var(--primary) 36%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--primary) 32%, transparent),
+    0 0 0 5px color-mix(in srgb, var(--primary) 12%, transparent),
+    0 8px 28px color-mix(in srgb, var(--primary) 10%, transparent);
+}
+
+.ultracode-frame.plan-mode-frame {
+  box-shadow:
+    0 0 0 1px rgba(168, 85, 247, 0.08),
+    0 0 0 5px color-mix(in srgb, var(--primary) 12%, transparent),
+    0 8px 28px color-mix(in srgb, var(--primary) 10%, transparent),
+    0 0 1rem rgba(168, 85, 247, 0.16);
+}
+
 .ultracode-chroma {
   color: #c084fc;
   animation: ultracode-chroma-pulse 3.6s ease-in-out infinite;
