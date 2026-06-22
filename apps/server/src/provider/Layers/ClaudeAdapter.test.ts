@@ -471,6 +471,71 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("maps Claude model_fallback system messages to model reroute events", () => {
+    const harness = makeHarness({
+      claudeConfig: {
+        fallbackModel: ["claude-opus-4-8"],
+      },
+    });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 7).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-fable-5",
+        ),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "hello",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "model_fallback",
+        original_model: "claude-fable-5",
+        fallback_model: "claude-opus-4-8",
+        trigger: "unavailable",
+        session_id: "sdk-session-model-fallback",
+        uuid: "model-fallback-1",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-model-fallback",
+        uuid: "result-model-fallback",
+      } as unknown as SDKMessage);
+      harness.query.finish();
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const reroute = runtimeEvents.find((event) => event.type === "model.rerouted");
+      assert.equal(reroute?.type, "model.rerouted");
+      if (reroute?.type === "model.rerouted") {
+        assert.equal(reroute.payload.fromModel, "claude-fable-5");
+        assert.equal(reroute.payload.toModel, "claude-opus-4-8");
+        assert.equal(reroute.payload.reason, "fallback:unavailable");
+      }
+      assert.isUndefined(runtimeEvents.find((event) => event.type === "runtime.warning"));
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("runs Claude SDK sessions with the configured Claude HOME", () => {
     const harness = makeHarness({ claudeConfig: { homePath: "~/.claude-work" } });
     return Effect.gen(function* () {

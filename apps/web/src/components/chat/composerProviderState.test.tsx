@@ -50,12 +50,6 @@ function selections(
   return entries.map(([id, value]) => ({ id, value }));
 }
 
-const ULTRACODE_FRAME_CLASSES = {
-  composerFrameClassName: "ultracode-frame",
-  composerSurfaceClassName: "shadow-[0_0_0_1px_rgba(168,85,247,0.18)_inset]",
-  modelPickerIconClassName: "ultracode-chroma",
-} as const;
-
 describe("getComposerProviderState", () => {
   it("returns descriptor defaults when no selections are provided", () => {
     const state = getComposerProviderState({
@@ -196,7 +190,7 @@ describe("getComposerProviderState", () => {
     });
   });
 
-  it("adds ultracode class names when ultracode is selected", () => {
+  it("keeps ultracode scoped out of the composer frame state", () => {
     const state = getComposerProviderState({
       provider: PROVIDER,
       model: MODEL,
@@ -215,7 +209,6 @@ describe("getComposerProviderState", () => {
       promptEffort: "ultracode",
       modelOptionsForDispatch: selections(["effort", "ultracode"]),
       contextWindowLabel: null,
-      ...ULTRACODE_FRAME_CLASSES,
     });
   });
 });

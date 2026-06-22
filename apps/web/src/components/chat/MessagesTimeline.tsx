@@ -599,6 +599,75 @@ function ContinueInNewThreadButton({
   );
 }
 
+function titleCaseModelPart(value: string): string {
+  return value.length > 0 ? `${value.charAt(0).toUpperCase()}${value.slice(1)}` : value;
+}
+
+function formatFallbackModelName(modelId: string): string {
+  const parts = modelId.trim().split(/[-_]+/u).filter(Boolean);
+  if (parts.length === 0) {
+    return modelId;
+  }
+  if (parts[0]?.toLowerCase() !== "claude") {
+    return modelId;
+  }
+
+  const tailNumbers: string[] = [];
+  while (parts.length > 1) {
+    const tail = parts[parts.length - 1];
+    if (!tail || !/^\d+$/u.test(tail)) {
+      break;
+    }
+    tailNumbers.unshift(tail);
+    parts.pop();
+  }
+
+  const family = parts
+    .slice(1)
+    .map((part) => titleCaseModelPart(part.toLowerCase()))
+    .join(" ");
+  const version =
+    tailNumbers.length >= 2
+      ? `${tailNumbers[tailNumbers.length - 2]}.${tailNumbers[tailNumbers.length - 1]}`
+      : tailNumbers[0];
+  return ["Claude", family, version].filter(Boolean).join(" ");
+}
+
+function FallbackAssistantResponseContainer({
+  row,
+  children,
+}: {
+  row: Extract<TimelineRow, { kind: "message" }>;
+  children: ReactNode;
+}) {
+  const fallback = row.assistantModelFallback;
+  if (!fallback) {
+    return children;
+  }
+
+  const requestedModel = formatFallbackModelName(fallback.requestedModel);
+  const activeModel = formatFallbackModelName(fallback.activeModel);
+
+  return (
+    <div
+      data-assistant-fallback-response="true"
+      className="max-w-full rounded-xl border border-warning/30 bg-warning/6 px-3 py-2.5 shadow-sm shadow-warning/5"
+    >
+      <div className="mb-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px] leading-tight">
+        <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-warning/12 px-2 py-0.5 font-medium text-warning-foreground">
+          <CircleAlertIcon aria-hidden="true" className="size-3" />
+          Fallback response
+        </span>
+        <span className="min-w-0 text-muted-foreground">
+          Requested <span className="font-medium text-foreground/80">{requestedModel}</span>,
+          answered by <span className="font-medium text-foreground/80">{activeModel}</span>.
+        </span>
+      </div>
+      {children}
+    </div>
+  );
+}
+
 function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
@@ -625,14 +694,16 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
               {...(ctx.onRunProviderAuthReconnect ? { onRun: ctx.onRunProviderAuthReconnect } : {})}
             />
           ) : (
-            <div data-agent-response-body="true" data-assistant-message-body="true">
-              <ChatMarkdown
-                text={messageText}
-                cwd={ctx.markdownCwd}
-                isStreaming={Boolean(row.message.streaming)}
-                skills={ctx.skills}
-              />
-            </div>
+            <FallbackAssistantResponseContainer row={row}>
+              <div data-agent-response-body="true" data-assistant-message-body="true">
+                <ChatMarkdown
+                  text={messageText}
+                  cwd={ctx.markdownCwd}
+                  isStreaming={Boolean(row.message.streaming)}
+                  skills={ctx.skills}
+                />
+              </div>
+            </FallbackAssistantResponseContainer>
           )}
           <AssistantChangedFilesSection
             turnSummary={row.assistantTurnDiffSummary}

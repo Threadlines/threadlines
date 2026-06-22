@@ -875,7 +875,7 @@ describe("getSidebarThreadWindow", () => {
     expect(window.nextRevealCount).toBe(configuredPreviewLimit);
   });
 
-  it("hands off to search instead of revealing further once expanded", () => {
+  it("keeps revealing in chunks once expanded while also offering search", () => {
     const window = getSidebarThreadWindow({
       threads: makeKeys(40),
       getThreadKey,
@@ -885,7 +885,7 @@ describe("getSidebarThreadWindow", () => {
     });
 
     expect(window.visibleThreads).toHaveLength(previewLimit + previewLimit);
-    expect(window.nextRevealCount).toBe(0);
+    expect(window.nextRevealCount).toBe(previewLimit);
     expect(window.searchHandoffThreadCount).toBe(40);
     expect(window.isRevealed).toBe(true);
   });

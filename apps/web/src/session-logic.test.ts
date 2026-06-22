@@ -8,6 +8,7 @@ import {
 import { describe, expect, it } from "vitest";
 
 import {
+  deriveActiveModelFallbackState,
   deriveCompletionDividerBeforeEntryId,
   deriveActiveStatusLabel,
   deriveActiveWorkStartedAt,
@@ -47,6 +48,103 @@ function makeActivity(overrides: {
     ...(overrides.sequence !== undefined ? { sequence: overrides.sequence } : {}),
   };
 }
+
+describe("deriveActiveModelFallbackState", () => {
+  it("returns the latest model fallback for the running turn", () => {
+    const fallback = deriveActiveModelFallbackState(
+      [
+        makeActivity({
+          id: "model-fallback",
+          createdAt: "2026-02-23T00:00:03.000Z",
+          kind: "provider.model.rerouted",
+          summary: "Using fallback model: claude-opus-4-8",
+          tone: "info",
+          turnId: "turn-1",
+          payload: {
+            fromModel: "claude-fable-5",
+            toModel: "claude-opus-4-8",
+            reason: "fallback:unavailable",
+            detail: "Claude is using claude-opus-4-8 because claude-fable-5 was unavailable.",
+          },
+        }),
+      ],
+      {
+        turnId: TurnId.make("turn-1"),
+        state: "running",
+        requestedAt: "2026-02-23T00:00:01.000Z",
+        startedAt: "2026-02-23T00:00:02.000Z",
+        completedAt: null,
+        assistantMessageId: null,
+      },
+    );
+
+    expect(fallback).toEqual({
+      requestedModel: "claude-fable-5",
+      activeModel: "claude-opus-4-8",
+      reason: "fallback:unavailable",
+      detail: "Claude is using claude-opus-4-8 because claude-fable-5 was unavailable.",
+      createdAt: "2026-02-23T00:00:03.000Z",
+      turnId: "turn-1",
+    });
+  });
+
+  it("does not keep showing fallback state after the turn completes", () => {
+    const fallback = deriveActiveModelFallbackState(
+      [
+        makeActivity({
+          kind: "provider.model.rerouted",
+          summary: "Using fallback model: claude-opus-4-8",
+          tone: "info",
+          turnId: "turn-1",
+          payload: {
+            fromModel: "claude-fable-5",
+            toModel: "claude-opus-4-8",
+          },
+        }),
+      ],
+      {
+        turnId: TurnId.make("turn-1"),
+        state: "completed",
+        requestedAt: "2026-02-23T00:00:01.000Z",
+        startedAt: "2026-02-23T00:00:02.000Z",
+        completedAt: "2026-02-23T00:00:04.000Z",
+        assistantMessageId: MessageId.make("assistant-1"),
+      },
+    );
+
+    expect(fallback).toBeNull();
+  });
+});
+
+describe("deriveWorkLogEntries model fallback metadata", () => {
+  it("carries model fallback details on reroute work entries", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "model-fallback",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "provider.model.rerouted",
+        summary: "Using fallback model: claude-opus-4-8",
+        tone: "info",
+        turnId: "turn-1",
+        payload: {
+          fromModel: "claude-fable-5",
+          toModel: "claude-opus-4-8",
+          reason: "fallback:unavailable",
+          detail: "Claude is using claude-opus-4-8 because claude-fable-5 was unavailable.",
+        },
+      }),
+    ]);
+
+    expect(entry?.modelFallback).toEqual({
+      requestedModel: "claude-fable-5",
+      activeModel: "claude-opus-4-8",
+      reason: "fallback:unavailable",
+      detail: "Claude is using claude-opus-4-8 because claude-fable-5 was unavailable.",
+      createdAt: "2026-02-23T00:00:03.000Z",
+      turnId: "turn-1",
+    });
+  });
+});
 
 describe("derivePendingApprovals", () => {
   it("tracks open approvals and removes resolved ones", () => {

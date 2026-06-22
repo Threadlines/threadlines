@@ -484,12 +484,11 @@ export function getSidebarThreadWindow<T>(input: {
     : windowThreads;
   const hiddenThreads = threads.filter((thread) => !visibleThreadKeys.has(getThreadKey(thread)));
 
-  // Inline expansion is capped at one preview-sized reveal step; past that the
-  // tail stays reachable through search so huge projects cannot flood the sidebar.
+  // Reveal in preview-sized chunks until the tail is exhausted. Search remains
+  // available after the first expansion as a fast path for huge projects.
   const revealStepSize = Math.max(0, previewLimit);
-  const nextRevealCount = isRevealed
-    ? 0
-    : hiddenThreads.length <= revealStepSize + SIDEBAR_THREAD_REVEAL_ALL_SLACK
+  const nextRevealCount =
+    hiddenThreads.length <= revealStepSize + SIDEBAR_THREAD_REVEAL_ALL_SLACK
       ? hiddenThreads.length
       : revealStepSize;
 

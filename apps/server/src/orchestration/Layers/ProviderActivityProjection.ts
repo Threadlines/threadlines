@@ -63,6 +63,19 @@ function shouldCompactPayloadString(key: string | undefined, value: string): boo
   );
 }
 
+function isImageGenerationPayloadRecord(value: Record<string, unknown>): boolean {
+  const type = typeof value.type === "string" ? value.type.trim().toLowerCase() : "";
+  if (type === "imagegeneration" || type === "image_generation") {
+    return true;
+  }
+
+  const tool = typeof value.tool === "string" ? value.tool.trim().toLowerCase() : "";
+  const namespace = typeof value.namespace === "string" ? value.namespace.trim().toLowerCase() : "";
+  return (
+    typeof value.result === "string" && (tool.includes("image") || namespace.includes("image"))
+  );
+}
+
 function compactActivityPayloadData(value: unknown, key?: string | undefined, depth = 0): unknown {
   if (typeof value === "string") {
     return shouldCompactPayloadString(key, value)
@@ -93,13 +106,35 @@ function compactActivityPayloadData(value: unknown, key?: string | undefined, de
 
   const entries = Object.entries(value as Record<string, unknown>);
   const compacted: Record<string, unknown> = {};
+  const preserveImageResult = isImageGenerationPayloadRecord(value as Record<string, unknown>);
   for (const [entryKey, entryValue] of entries.slice(0, MAX_THREAD_ACTIVITY_PAYLOAD_OBJECT_KEYS)) {
-    compacted[entryKey] = compactActivityPayloadData(entryValue, entryKey, depth + 1);
+    compacted[entryKey] =
+      preserveImageResult && entryKey === "result" && typeof entryValue === "string"
+        ? entryValue
+        : compactActivityPayloadData(entryValue, entryKey, depth + 1);
   }
   if (entries.length > MAX_THREAD_ACTIVITY_PAYLOAD_OBJECT_KEYS) {
     compacted.__truncatedKeys = entries.length - MAX_THREAD_ACTIVITY_PAYLOAD_OBJECT_KEYS;
   }
   return compacted;
+}
+
+function isFallbackModelRerouteReason(reason: string): boolean {
+  return reason.toLowerCase().includes("fallback");
+}
+
+function describeModelRerouteDetail(input: {
+  readonly fromModel: string;
+  readonly toModel: string;
+  readonly reason: string;
+}): string {
+  if (input.reason === "fallback:refusal") {
+    return `Claude retried with ${input.toModel} after ${input.fromModel} refused the request.`;
+  }
+  if (isFallbackModelRerouteReason(input.reason)) {
+    return `Claude is using ${input.toModel} because ${input.fromModel} was unavailable.`;
+  }
+  return input.reason;
 }
 
 function buildContextWindowActivityPayload(
@@ -948,11 +983,14 @@ export function projectRuntimeEventToActivities(
           id: event.eventId,
           tone: "info",
           kind: "provider.model.rerouted",
-          summary: `Model switched to ${event.payload.toModel}`,
+          summary: isFallbackModelRerouteReason(event.payload.reason)
+            ? `Using fallback model: ${event.payload.toModel}`
+            : `Model switched to ${event.payload.toModel}`,
           payload: {
             fromModel: event.payload.fromModel,
             toModel: event.payload.toModel,
-            detail: event.payload.reason,
+            reason: event.payload.reason,
+            detail: describeModelRerouteDetail(event.payload),
           },
         }),
       ];

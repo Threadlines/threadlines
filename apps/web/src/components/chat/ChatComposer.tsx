@@ -115,7 +115,11 @@ import { type AppModelOption, getAppModelOptionsForInstance } from "../../modelS
 import type { UnifiedSettings } from "@threadlines/contracts/settings";
 import type { SessionPhase, Thread } from "../../types";
 import type { PendingUserInputDraftAnswer } from "../../pendingUserInput";
-import type { PendingApproval, PendingUserInput } from "../../session-logic";
+import {
+  deriveActiveModelFallbackState,
+  type PendingApproval,
+  type PendingUserInput,
+} from "../../session-logic";
 import { deriveLatestContextWindowSnapshot } from "../../lib/contextWindow";
 import { deriveLatestPromptSuggestion } from "../../lib/promptSuggestions";
 import {
@@ -181,6 +185,11 @@ function isInsideComposerFloatingLayer(element: Element): boolean {
 
 function unknownErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
+}
+
+function formatModelDisplayName(modelId: string, options: ReadonlyArray<AppModelOption>): string {
+  const option = options.find((candidate) => candidate.slug === modelId);
+  return option?.shortName ?? option?.name ?? modelId;
 }
 
 const ComposerFooterModeControls = memo(function ComposerFooterModeControls(props: {
@@ -831,6 +840,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       ? selectedModelForPicker
       : (normalizeModelSlug(selectedModelForPicker, selectedProvider) ?? selectedModelForPicker);
   }, [modelOptionsByInstance, selectedInstanceId, selectedModelForPicker, selectedProvider]);
+  const activeModelFallback = useMemo(
+    () => deriveActiveModelFallbackState(activeThreadActivities ?? [], activeThread?.latestTurn),
+    [activeThread?.latestTurn, activeThreadActivities],
+  );
+  const activeFallbackModelDisplayName = useMemo(() => {
+    if (!activeModelFallback) {
+      return null;
+    }
+    return formatModelDisplayName(
+      activeModelFallback.activeModel,
+      modelOptionsByInstance.get(selectedInstanceId) ?? [],
+    );
+  }, [activeModelFallback, modelOptionsByInstance, selectedInstanceId]);
 
   // ------------------------------------------------------------------
   // Context window
@@ -2542,6 +2564,32 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   }}
                   onInstanceModelChange={onProviderModelSelect}
                 />
+                {activeModelFallback && activeFallbackModelDisplayName ? (
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <span
+                          data-chat-model-fallback-chip="true"
+                          className={cn(
+                            "inline-flex h-7 max-w-52 shrink-0 cursor-help items-center gap-1.5 rounded-full border border-warning/25 bg-warning/8 px-2 text-[11px] font-medium text-warning-foreground sm:h-6",
+                            isComposerFooterCompact ? "max-w-36" : "max-w-52",
+                          )}
+                        />
+                      }
+                    >
+                      <CircleAlertIcon aria-hidden="true" className="size-3 shrink-0" />
+                      <span className="min-w-0 truncate">
+                        {isComposerFooterCompact
+                          ? activeFallbackModelDisplayName
+                          : `Fallback: ${activeFallbackModelDisplayName}`}
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipPopup side="top" className="max-w-72 whitespace-normal leading-tight">
+                      {activeModelFallback.detail ??
+                        `Using ${activeModelFallback.activeModel} instead of ${activeModelFallback.requestedModel}.`}
+                    </TooltipPopup>
+                  </Tooltip>
+                ) : null}
 
                 {isComposerFooterCompact ? (
                   <CompactComposerControlsMenu

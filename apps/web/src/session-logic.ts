@@ -93,7 +93,19 @@ export interface WorkLogEntry {
   mcpAuthReconnect?: McpAuthReconnectAction;
   providerLifecyclePhase?: "preparing" | "waiting-for-model";
   turnId?: TurnId | null;
+  modelFallback?: ModelFallbackState;
 }
+
+export interface ModelFallbackState {
+  requestedModel: string;
+  activeModel: string;
+  reason: string | null;
+  detail: string | null;
+  createdAt: string;
+  turnId: TurnId | null;
+}
+
+export type ActiveModelFallbackState = ModelFallbackState;
 
 interface DerivedWorkLogEntry extends WorkLogEntry {
   activityKind: OrchestrationThreadActivity["kind"];
@@ -250,6 +262,57 @@ export function isLatestTurnSettled(
   if (!session) return true;
   if (session.orchestrationStatus === "running") return false;
   return true;
+}
+
+export function deriveActiveModelFallbackState(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+  latestTurn: OrchestrationLatestTurn | null | undefined,
+): ActiveModelFallbackState | null {
+  if (latestTurn?.state !== "running") {
+    return null;
+  }
+
+  const ordered = [...activities].toSorted(compareActivitiesByOrder);
+  for (let index = ordered.length - 1; index >= 0; index -= 1) {
+    const activity = ordered[index];
+    if (!activity || activity.kind !== "provider.model.rerouted") {
+      continue;
+    }
+    if (activity.turnId !== null && activity.turnId !== latestTurn.turnId) {
+      continue;
+    }
+
+    const payload = asRecord(activity.payload);
+    const modelFallback = deriveModelFallbackFromActivity(activity, payload);
+    if (!modelFallback) {
+      continue;
+    }
+    return modelFallback;
+  }
+
+  return null;
+}
+
+function deriveModelFallbackFromActivity(
+  activity: OrchestrationThreadActivity,
+  payload: Record<string, unknown> | null,
+): ModelFallbackState | null {
+  if (activity.kind !== "provider.model.rerouted") {
+    return null;
+  }
+  const requestedModel = asTrimmedString(payload?.fromModel);
+  const activeModel = asTrimmedString(payload?.toModel);
+  if (!requestedModel || !activeModel) {
+    return null;
+  }
+  return {
+    requestedModel,
+    activeModel,
+    reason: asTrimmedString(payload?.reason),
+    detail: asTrimmedString(payload?.detail),
+    createdAt: activity.createdAt,
+    turnId: activity.turnId,
+  };
 }
 
 export function deriveActiveWorkStartedAt(
@@ -1149,6 +1212,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     activity.payload && typeof activity.payload === "object"
       ? (activity.payload as Record<string, unknown>)
       : null;
+  const modelFallback = deriveModelFallbackFromActivity(activity, payload);
   const commandPreview = extractToolCommand(payload, {
     detailMayBeCommand: activity.kind !== "tool.output.updated",
   });
@@ -1213,6 +1277,9 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     activityKind: activity.kind,
     turnId: activity.turnId,
   };
+  if (modelFallback) {
+    entry.modelFallback = modelFallback;
+  }
   const authReconnect = deriveAuthReconnectAction(activity, payload);
   if (authReconnect) {
     entry.authReconnect = authReconnect;

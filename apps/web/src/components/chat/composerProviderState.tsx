@@ -62,20 +62,11 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
     descriptors.find(
       (descriptor) => descriptor.type === "select" && descriptor.id === "contextWindow",
     ) ?? null;
-  const ultracodeActive = promptEffort === "ultracode";
-
   return {
     provider,
     promptEffort,
     modelOptionsForDispatch: buildProviderOptionSelectionsFromDescriptors(descriptors),
     contextWindowLabel: getProviderOptionCurrentLabel(contextWindowDescriptor) ?? null,
-    ...(ultracodeActive
-      ? {
-          composerFrameClassName: "ultracode-frame",
-          composerSurfaceClassName: "shadow-[0_0_0_1px_rgba(168,85,247,0.18)_inset]",
-          modelPickerIconClassName: "ultracode-chroma",
-        }
-      : {}),
   };
 }
 

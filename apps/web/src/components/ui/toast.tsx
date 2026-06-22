@@ -94,11 +94,16 @@ function errorDescriptionClampClass(type: unknown, description: unknown): string
   return "line-clamp-4";
 }
 
-/** Dismiss-only: circular control overlapping the card corner (iOS notification–style). */
-const toastCornerDismissClass = "absolute z-20 -top-1.5 -right-1.5";
+/** Dismiss-only: integrated control kept inside the notice edge. */
+function toastDismissContainerClassName(stackedActionLayout: boolean): string {
+  return cn(
+    "absolute right-1.5 z-20",
+    stackedActionLayout ? "top-1.5" : "top-1/2 -translate-y-1/2",
+  );
+}
 const toastCornerOrbClass = cn(
-  "inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full border border-border/60 bg-popover/92 text-muted-foreground shadow-sm outline-none backdrop-blur-sm",
-  "transition-[color,background-color,box-shadow] hover:bg-popover hover:text-foreground",
+  "inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/50 opacity-60 outline-none sm:opacity-0",
+  "transition-[color,background-color,opacity] hover:bg-accent/60 hover:text-foreground hover:opacity-100 group-hover/toast:opacity-100 focus-visible:opacity-100",
   "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
 );
 
@@ -116,13 +121,23 @@ function CopyErrorButton({ text }: { text: string }) {
 
   return (
     <button
-      className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md p-0 text-muted-foreground/80 transition-colors hover:text-muted-foreground"
+      className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md p-0 text-muted-foreground/60 transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
       onClick={() => copyToClipboard(text)}
       title="Copy error"
       type="button"
     >
-      {isCopied ? <CheckIcon className="size-3 text-success" /> : <CopyIcon className="size-3" />}
+      {isCopied ? (
+        <CheckIcon className="size-3 translate-y-px text-success" />
+      ) : (
+        <CopyIcon className="size-3 translate-y-px" />
+      )}
     </button>
+  );
+}
+
+function hasRenderableToastDescription(description: unknown): boolean {
+  return (
+    description !== undefined && description !== null && description !== false && description !== ""
   );
 }
 
@@ -247,6 +262,46 @@ function ToastDescriptionAndExpandable({
   );
 }
 
+const toastStatusIconClassName =
+  "size-3.5 in-data-[type=loading]:animate-spin in-data-[type=error]:text-destructive/80 in-data-[type=info]:text-info/80 in-data-[type=success]:text-success/80 in-data-[type=warning]:text-warning/80 in-data-[type=loading]:text-muted-foreground/75";
+
+function toastInlineActionClassName(
+  variant: NonNullable<ThreadToastData["actionVariant"]>,
+): string {
+  const destructive = variant === "destructive" || variant === "destructive-outline";
+
+  return cn(
+    "inline-flex h-5 shrink-0 cursor-pointer items-center justify-center rounded-md px-1.5 text-xs font-medium outline-none transition-colors",
+    "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50",
+    destructive
+      ? "text-destructive/85 hover:bg-destructive/8 hover:text-destructive"
+      : "text-muted-foreground/80 hover:bg-accent/50 hover:text-foreground",
+  );
+}
+
+function toastContentClassName({
+  stackedActionLayout,
+  inlineContentEndPad,
+  hideCollapsedContent = false,
+  animated = false,
+}: {
+  readonly stackedActionLayout: boolean;
+  readonly inlineContentEndPad: string;
+  readonly hideCollapsedContent?: boolean;
+  readonly animated?: boolean;
+}): string {
+  return cn(
+    // `overflow-x: clip` avoids the CSS quirk where pairing `hidden` + `y: visible`
+    // forces `y` to `auto`. Expandable detail panels can extend below without being cut off.
+    "pointer-events-auto min-h-0 overflow-y-visible text-sm [overflow-x:clip]",
+    animated && "transition-opacity duration-250 data-expanded:opacity-100",
+    stackedActionLayout
+      ? "flex flex-col gap-1.5 px-3 py-2.5"
+      : cn("flex min-h-8 items-center justify-between gap-2 py-1.5 pl-3", inlineContentEndPad),
+    hideCollapsedContent && "not-data-expanded:pointer-events-none not-data-expanded:opacity-0",
+  );
+}
+
 type ToastIconComponent = (typeof TOAST_ICONS)[keyof typeof TOAST_ICONS];
 
 interface ToastBodyDescriptor {
@@ -279,7 +334,7 @@ function deriveToastBodyDescriptor(toast: {
   const hasSecondaryAction = toast.data?.secondaryActionProps !== undefined;
   const hasTrailingControls =
     copyErrorText !== null || toast.actionProps !== undefined || hasSecondaryAction;
-  const inlineContentEndPad = hasTrailingControls ? "pr-6" : "pr-10";
+  const inlineContentEndPad = hasTrailingControls ? "pr-7" : "pr-8";
   return {
     Icon,
     stackedActionLayout,
@@ -314,44 +369,110 @@ function ToastBodyContent({
   const leadingIcon = toastData?.leadingIcon;
   const { className: secondaryActionClassName, ...secondaryActionRest } =
     secondaryActionProps ?? {};
+  const compactInlineText = !stackedActionLayout && !toastData?.expandableContent;
+  const hasDescription = hasRenderableToastDescription(toastDescription);
+  const canExpandCompactText = compactInlineText && hasDescription;
+  const [compactTextExpanded, setCompactTextExpanded] = useState(false);
+  const toggleCompactTextExpanded = () => setCompactTextExpanded((expanded) => !expanded);
+  const onCompactTextKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      toggleCompactTextExpanded();
+    }
+  };
 
   return (
     <>
-      <div className={cn("flex min-w-0 gap-2", !stackedActionLayout && "flex-1")}>
+      <div
+        className={cn(
+          "flex min-w-0 gap-2",
+          compactInlineText ? "flex-1 items-center" : !stackedActionLayout && "flex-1",
+        )}
+      >
         {leadingIcon ? (
           <div
-            className="flex h-lh w-4 shrink-0 items-center justify-center"
+            className="flex h-5 w-4 shrink-0 items-center justify-center text-muted-foreground/80 [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-3.5"
             data-slot="toast-icon"
           >
             {leadingIcon}
           </div>
         ) : Icon ? (
           <div
-            className="[&>svg]:h-lh [&>svg]:w-4 [&_svg]:pointer-events-none [&_svg]:shrink-0"
+            className="flex h-5 w-4 shrink-0 items-center justify-center [&_svg]:pointer-events-none [&_svg]:shrink-0"
             data-slot="toast-icon"
           >
-            <Icon className="in-data-[type=loading]:animate-spin in-data-[type=error]:text-destructive in-data-[type=info]:text-info in-data-[type=success]:text-success in-data-[type=warning]:text-warning in-data-[type=loading]:opacity-80" />
+            <Icon className={toastStatusIconClassName} strokeWidth={2.25} />
           </div>
         ) : null}
-        <div
-          className={cn(
-            "flex min-h-0 min-w-0 flex-1 flex-col gap-0.5",
-            stackedActionLayout && "pr-5",
-          )}
-        >
-          <Toast.Title className="min-w-0 wrap-break-word font-medium" data-slot="toast-title" />
-          <ToastDescriptionAndExpandable
-            toastData={toastData}
-            toastDescription={toastDescription}
-            toastType={toastType}
-          />
-        </div>
+        {compactInlineText ? (
+          <div
+            aria-expanded={canExpandCompactText ? compactTextExpanded : undefined}
+            className={cn(
+              "min-w-0 flex-1 rounded-sm outline-none ring-offset-background",
+              compactTextExpanded ? "flex flex-col gap-0.5 pr-1" : "flex items-baseline gap-1.5",
+              canExpandCompactText &&
+                "cursor-pointer transition-colors hover:bg-muted/35 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
+            )}
+            onClick={canExpandCompactText ? toggleCompactTextExpanded : undefined}
+            onKeyDown={canExpandCompactText ? onCompactTextKeyDown : undefined}
+            role={canExpandCompactText ? "button" : undefined}
+            tabIndex={canExpandCompactText ? 0 : undefined}
+            title={
+              canExpandCompactText
+                ? compactTextExpanded
+                  ? "Collapse notice"
+                  : "Expand notice"
+                : undefined
+            }
+          >
+            <Toast.Title
+              className={cn(
+                "min-w-0 font-medium text-foreground/90",
+                compactTextExpanded
+                  ? "wrap-break-word"
+                  : cn("truncate", hasDescription ? "max-w-[52%] shrink-0" : "flex-1"),
+              )}
+              data-slot="toast-title"
+            />
+            {hasDescription ? (
+              <Toast.Description
+                className={cn(
+                  "min-w-0 text-muted-foreground",
+                  compactTextExpanded
+                    ? cn(
+                        "select-text wrap-break-word",
+                        errorDescriptionClampClass(toastType, toastDescription),
+                      )
+                    : "flex-1 truncate",
+                )}
+                data-slot="toast-description"
+              />
+            ) : null}
+          </div>
+        ) : (
+          <div
+            className={cn(
+              "flex min-h-0 min-w-0 flex-1 flex-col gap-0.5",
+              stackedActionLayout && "pr-6",
+            )}
+          >
+            <Toast.Title
+              className="min-w-0 wrap-break-word font-medium text-foreground/90"
+              data-slot="toast-title"
+            />
+            <ToastDescriptionAndExpandable
+              toastData={toastData}
+              toastDescription={toastDescription}
+              toastType={toastType}
+            />
+          </div>
+        )}
       </div>
       {hasTrailingControls ? (
         <div
           className={cn(
-            "flex items-center gap-1.5",
-            stackedActionLayout ? "w-full justify-end" : "shrink-0",
+            "flex items-center gap-1",
+            stackedActionLayout ? "w-full justify-end pt-0.5" : "shrink-0",
           )}
         >
           {copyErrorText !== null ? <CopyErrorButton text={copyErrorText} /> : null}
@@ -359,7 +480,9 @@ function ToastBodyContent({
             <button
               {...secondaryActionRest}
               className={cn(
-                buttonVariants({ size: "xs", variant: secondaryActionVariant }),
+                stackedActionLayout
+                  ? buttonVariants({ size: "xs", variant: secondaryActionVariant })
+                  : toastInlineActionClassName(secondaryActionVariant),
                 secondaryActionClassName,
               )}
               type="button"
@@ -367,7 +490,12 @@ function ToastBodyContent({
           ) : null}
           {actionProps ? (
             <Toast.Action
-              className={cn(buttonVariants({ size: "xs", variant: actionVariant }), "shrink-0")}
+              className={cn(
+                stackedActionLayout
+                  ? buttonVariants({ size: "xs", variant: actionVariant })
+                  : toastInlineActionClassName(actionVariant),
+                "shrink-0",
+              )}
               data-slot="toast-action"
             >
               {actionProps.children}
@@ -523,7 +651,7 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
     <Toast.Portal data-slot="toast-portal">
       <Toast.Viewport
         className={cn(
-          "fixed z-100 mx-auto flex w-[calc(100%-var(--toast-inset)*2)] max-w-90 [--toast-header-offset:52px] [--toast-inset:--spacing(4)] sm:[--toast-inset:--spacing(8)]",
+          "fixed z-100 mx-auto flex w-[calc(100%-var(--toast-inset)*2)] max-w-[21.25rem] [--toast-header-offset:52px] [--toast-inset:--spacing(4)] sm:[--toast-inset:--spacing(6)]",
           // Vertical positioning
           "data-[position*=top]:top-[calc(var(--toast-inset)+var(--toast-header-offset))]",
           "data-[position*=bottom]:bottom-(--toast-inset)",
@@ -551,7 +679,7 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
           return (
             <Toast.Root
               className={cn(
-                "absolute z-[calc(9999-var(--toast-index))] w-full overflow-visible select-none rounded-lg border bg-popover not-dark:bg-clip-padding text-popover-foreground shadow-lg/5 [transition:transform_.5s_cubic-bezier(.22,1,.36,1),opacity_.5s,height_.15s] before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:before:shadow-[0_-1px_--theme(--color-white/6%)]",
+                "group/toast absolute z-[calc(9999-var(--toast-index))] w-full overflow-visible select-none rounded-lg border border-border/75 bg-popover/96 not-dark:bg-clip-padding text-popover-foreground shadow-sm/5 [transition:transform_.5s_cubic-bezier(.22,1,.36,1),opacity_.5s,height_.15s] before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:bg-popover/94 dark:before:shadow-[0_-1px_--theme(--color-white/6%)]",
                 // Base positioning using data-position
                 "data-[position*=right]:right-0 data-[position*=right]:left-auto",
                 "data-[position*=left]:right-auto data-[position*=left]:left-0",
@@ -567,7 +695,7 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
                 visibleIndex > 0
                   ? "not-data-expanded:[--toast-calc-height:var(--toast-frontmost-height)] data-expanded:[--toast-calc-height:max(var(--toast-frontmost-height,var(--toast-height)),var(--toast-height))]"
                   : "[--toast-calc-height:max(var(--toast-frontmost-height,var(--toast-height)),var(--toast-height))]",
-                "[--toast-gap:--spacing(3)] [--toast-peek:--spacing(3)] [--toast-scale:calc(max(0,1-(var(--toast-index)*.1)))] [--toast-shrink:calc(1-var(--toast-scale))]",
+                "[--toast-gap:--spacing(2)] [--toast-peek:6px] [--toast-scale:calc(max(0,1-(var(--toast-index)*.035)))] [--toast-shrink:calc(1-var(--toast-scale))]",
                 // Root height: never `min-h-(--toast-height)` — Base UI measures height by briefly forcing
                 // `height: auto` on this node; an old `min-height` from `--toast-height` blocks shrinking,
                 // so `recalculateHeight` keeps the inflated value after an expandable closes.
@@ -624,7 +752,7 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
                 dismissAfterVisibleMs={toast.data?.dismissAfterVisibleMs}
                 toastId={toast.id}
               />
-              <div className={toastCornerDismissClass}>
+              <div className={toastDismissContainerClassName(stackedActionLayout)}>
                 <button
                   aria-label="Dismiss notification"
                   className={toastCornerOrbClass}
@@ -638,16 +766,12 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
                 </button>
               </div>
               <Toast.Content
-                className={cn(
-                  // `overflow-x: clip` avoids the CSS quirk where pairing `hidden` + `y: visible`
-                  // forces `y` to `auto`. Expandable detail panels can extend below without being cut off.
-                  "pointer-events-auto min-h-0 overflow-y-visible pl-3.5 text-sm transition-opacity duration-250 [overflow-x:clip] data-expanded:opacity-100",
-                  stackedActionLayout
-                    ? "flex flex-col gap-2 py-2.5 pr-3.5"
-                    : cn("py-3", "flex items-center justify-between gap-1.5", inlineContentEndPad),
-                  hideCollapsedContent &&
-                    "not-data-expanded:pointer-events-none not-data-expanded:opacity-0",
-                )}
+                className={toastContentClassName({
+                  stackedActionLayout,
+                  inlineContentEndPad,
+                  hideCollapsedContent,
+                  animated: true,
+                })}
               >
                 <ToastBodyContent
                   {...bodyDescriptor}
@@ -703,10 +827,10 @@ function AnchoredToasts() {
               >
                 <Toast.Root
                   className={cn(
-                    "relative overflow-visible text-balance border bg-popover not-dark:bg-clip-padding text-popover-foreground text-xs transition-[scale,opacity] before:pointer-events-none before:absolute before:inset-0 before:shadow-[0_1px_--theme(--color-black/4%)] data-ending-style:scale-98 data-starting-style:scale-98 data-ending-style:opacity-0 data-starting-style:opacity-0 dark:before:shadow-[0_-1px_--theme(--color-white/6%)]",
+                    "group/toast relative overflow-visible text-balance border border-border/75 bg-popover/96 not-dark:bg-clip-padding text-popover-foreground text-xs shadow-sm/5 transition-[scale,opacity] before:pointer-events-none before:absolute before:inset-0 before:shadow-[0_1px_--theme(--color-black/4%)] data-ending-style:scale-98 data-starting-style:scale-98 data-ending-style:opacity-0 data-starting-style:opacity-0 dark:bg-popover/94 dark:before:shadow-[0_-1px_--theme(--color-white/6%)]",
                     tooltipStyle
-                      ? "rounded-md shadow-md/5 before:rounded-[calc(var(--radius-md)-1px)]"
-                      : "rounded-lg shadow-lg/5 before:rounded-[calc(var(--radius-lg)-1px)]",
+                      ? "rounded-md before:rounded-[calc(var(--radius-md)-1px)]"
+                      : "rounded-lg before:rounded-[calc(var(--radius-lg)-1px)]",
                   )}
                   data-slot="toast-popup"
                   toast={toast}
@@ -717,7 +841,7 @@ function AnchoredToasts() {
                     </Toast.Content>
                   ) : (
                     <>
-                      <div className={toastCornerDismissClass}>
+                      <div className={toastDismissContainerClassName(stackedActionLayout)}>
                         <button
                           aria-label="Dismiss notification"
                           className={toastCornerOrbClass}
@@ -735,16 +859,10 @@ function AnchoredToasts() {
                         </button>
                       </div>
                       <Toast.Content
-                        className={cn(
-                          "pointer-events-auto min-h-0 overflow-y-visible pl-3.5 text-sm [overflow-x:clip]",
-                          stackedActionLayout
-                            ? "flex flex-col gap-2 py-2.5 pr-3.5"
-                            : cn(
-                                "py-3",
-                                "flex items-center justify-between gap-1.5",
-                                inlineContentEndPad,
-                              ),
-                        )}
+                        className={toastContentClassName({
+                          stackedActionLayout,
+                          inlineContentEndPad,
+                        })}
                       >
                         <ToastBodyContent
                           {...bodyDescriptor}

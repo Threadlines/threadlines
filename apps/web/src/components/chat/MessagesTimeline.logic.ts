@@ -1,5 +1,6 @@
 import * as Equal from "effect/Equal";
 import {
+  type ModelFallbackState,
   type SubagentResultEntry,
   type TimelineEntry,
   type WorkLogEntry,
@@ -35,6 +36,7 @@ export type MessagesTimelineRow =
       showAssistantCopyButton: boolean;
       assistantCopyStreaming: boolean;
       assistantTurnInProgress: boolean;
+      assistantModelFallback?: ModelFallbackState | undefined;
       assistantTurnDiffSummary?: TurnDiffSummary | undefined;
       revertTurnCount?: number | undefined;
     }
@@ -190,6 +192,22 @@ function deriveTerminalAssistantMessageIds(timelineEntries: ReadonlyArray<Timeli
   return new Set(lastAssistantMessageIdByResponseKey.values());
 }
 
+function deriveModelFallbackByTurn(
+  timelineEntries: ReadonlyArray<TimelineEntry>,
+): ReadonlyMap<string, ModelFallbackState> {
+  const fallbackByTurn = new Map<string, ModelFallbackState>();
+  for (const timelineEntry of timelineEntries) {
+    if (timelineEntry.kind !== "work" || !timelineEntry.entry.modelFallback) {
+      continue;
+    }
+    fallbackByTurn.set(
+      turnSignalKey(timelineEntry.entry.modelFallback.turnId),
+      timelineEntry.entry.modelFallback,
+    );
+  }
+  return fallbackByTurn;
+}
+
 export function deriveMessagesTimelineRows(input: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
   completionDividerBeforeEntryId: string | null;
@@ -208,6 +226,7 @@ export function deriveMessagesTimelineRows(input: {
     visibleTimelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
   );
   const terminalAssistantMessageIds = deriveTerminalAssistantMessageIds(visibleTimelineEntries);
+  const modelFallbackByTurn = deriveModelFallbackByTurn(visibleTimelineEntries);
   const supersededRunningCommandEntryIds =
     inferSupersededRunningCommandEntryIds(visibleTimelineEntries);
 
@@ -288,6 +307,10 @@ export function deriveMessagesTimelineRows(input: {
         terminalAssistantMessageIds.has(timelineEntry.message.id),
       assistantCopyStreaming: assistantTurnInProgress,
       assistantTurnInProgress,
+      assistantModelFallback:
+        timelineEntry.message.role === "assistant"
+          ? modelFallbackByTurn.get(turnSignalKey(timelineEntry.message.turnId))
+          : undefined,
       assistantTurnDiffSummary:
         timelineEntry.message.role === "assistant"
           ? input.turnDiffSummaryByAssistantMessageId.get(timelineEntry.message.id)
@@ -481,6 +504,7 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.showAssistantCopyButton === bm.showAssistantCopyButton &&
         a.assistantCopyStreaming === bm.assistantCopyStreaming &&
         a.assistantTurnInProgress === bm.assistantTurnInProgress &&
+        a.assistantModelFallback === bm.assistantModelFallback &&
         a.assistantTurnDiffSummary === bm.assistantTurnDiffSummary &&
         a.revertTurnCount === bm.revertTurnCount
       );

@@ -136,6 +136,16 @@ function resolveClaudeFallbackModelOption(
   return normalized.length > 0 ? normalized.join(",") : undefined;
 }
 
+function splitClaudeFallbackModelOption(value: string | undefined): ReadonlyArray<string> {
+  if (!value) {
+    return [];
+  }
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
 type PromptQueueItem =
   | {
       readonly type: "message";
@@ -213,6 +223,7 @@ interface ClaudeSessionContext {
   // turns never inherit the auto-allow of permissive runtime modes.
   currentInteractionMode: ProviderInteractionMode | undefined;
   currentApiModelId: string | undefined;
+  readonly currentFallbackModelIds: ReadonlyArray<string>;
   resumeSessionId: string | undefined;
   readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
   readonly pendingUserInputs: Map<ApprovalRequestId, PendingUserInput>;
@@ -1481,6 +1492,72 @@ function nativeProviderRefs(
     };
   }
   return {};
+}
+
+function firstNonEmptyString(...values: ReadonlyArray<unknown>): string | undefined {
+  for (const value of values) {
+    const normalized = nonEmptyString(value);
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return undefined;
+}
+
+function describeClaudeModelFallbackReason(
+  message: Record<string, unknown>,
+  fallback: string,
+): string {
+  const trigger = firstNonEmptyString(message.trigger, message.reason, message.cause);
+  if (trigger) {
+    return trigger.startsWith("fallback:") ? trigger : `fallback:${trigger}`;
+  }
+  return fallback;
+}
+
+function extractClaudeModelFallback(
+  context: ClaudeSessionContext,
+  message: SDKMessage,
+  fallbackReason: string,
+):
+  | {
+      readonly fromModel: string;
+      readonly toModel: string;
+      readonly reason: string;
+    }
+  | undefined {
+  const record = message as unknown as Record<string, unknown>;
+  const fromModel = firstNonEmptyString(
+    record.original_model,
+    record.originalModel,
+    record.primary_model,
+    record.primaryModel,
+    record.requested_model,
+    record.requestedModel,
+    record.from_model,
+    record.fromModel,
+    context.currentApiModelId,
+    context.session.model,
+  );
+  const toModel = firstNonEmptyString(
+    record.fallback_model,
+    record.fallbackModel,
+    record.effective_model,
+    record.effectiveModel,
+    record.actual_model,
+    record.actualModel,
+    record.to_model,
+    record.toModel,
+    context.currentFallbackModelIds[0],
+  );
+  if (!fromModel || !toModel || fromModel === toModel) {
+    return undefined;
+  }
+  return {
+    fromModel,
+    toModel,
+    reason: describeClaudeModelFallbackReason(record, fallbackReason),
+  };
 }
 
 function extractAssistantTextBlocks(message: SDKMessage): Array<string> {
@@ -3002,6 +3079,25 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       },
     };
 
+    if (sdkMessageSubtype(message) === "model_fallback") {
+      const fallback = extractClaudeModelFallback(context, message, "fallback:model-unavailable");
+      if (fallback) {
+        yield* offerRuntimeEvent({
+          ...base,
+          type: "model.rerouted",
+          payload: fallback,
+        });
+      } else {
+        yield* emitRuntimeWarning(
+          context,
+          "Claude is using a fallback model, but did not report the model names.",
+          message,
+          { warningKind: "model-fallback" },
+        );
+      }
+      return;
+    }
+
     switch (message.subtype) {
       case "init":
         yield* offerRuntimeEvent({
@@ -3223,13 +3319,24 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         });
         return;
       }
-      case "model_refusal_fallback":
-        yield* emitRuntimeWarning(
-          context,
-          "Claude substituted a fallback response after a refusal.",
-          message,
-        );
+      case "model_refusal_fallback": {
+        const fallback = extractClaudeModelFallback(context, message, "fallback:refusal");
+        if (fallback) {
+          yield* offerRuntimeEvent({
+            ...base,
+            type: "model.rerouted",
+            payload: fallback,
+          });
+        } else {
+          yield* emitRuntimeWarning(
+            context,
+            "Claude substituted a fallback response after a refusal.",
+            message,
+            { warningKind: "model-fallback" },
+          );
+        }
         return;
+      }
       // SDK bookkeeping with no user-facing activity. Notifications and
       // elicitations surface through the approval/user-input flows instead.
       case "commands_changed":
@@ -3895,6 +4002,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         modelSelection?.model,
         apiModelId,
       ]);
+      const fallbackModelIds = splitClaudeFallbackModelOption(fallbackModel);
       const rawEffort = getModelSelectionStringOptionValue(modelSelection, "effort");
       const effort = resolveClaudeEffort(caps, rawEffort) ?? null;
       const fastModeSupported = descriptors.some(
@@ -4037,6 +4145,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         basePermissionMode: permissionMode,
         currentInteractionMode: undefined,
         currentApiModelId: apiModelId,
+        currentFallbackModelIds: fallbackModelIds,
         resumeSessionId: sessionId,
         pendingApprovals,
         pendingUserInputs,

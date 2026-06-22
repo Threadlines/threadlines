@@ -360,14 +360,32 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
               value={getDescriptorStringValue(descriptor) ?? ""}
               onValueChange={(value) => handleSelectChange(descriptor, value)}
             >
-              {descriptor.options.map((option) => (
-                <MenuRadioItem key={option.id} value={option.id}>
-                  {option.label}
-                  {option.isDefault ? (
-                    <span className="ml-1 text-[10px] text-muted-foreground/60">default</span>
-                  ) : null}
-                </MenuRadioItem>
-              ))}
+              {descriptor.options.map((option) => {
+                const isUltracodeOption = option.id === "ultracode";
+                return (
+                  <MenuRadioItem
+                    key={option.id}
+                    value={option.id}
+                    className={cn(isUltracodeOption && "ultracode-menu-option")}
+                  >
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span
+                        className={cn(
+                          "min-w-0 truncate",
+                          isUltracodeOption && "ultracode-trait-label",
+                        )}
+                      >
+                        {option.label}
+                      </span>
+                      {option.isDefault ? (
+                        <span className="shrink-0 text-[10px] text-muted-foreground/60">
+                          default
+                        </span>
+                      ) : null}
+                    </span>
+                  </MenuRadioItem>
+                );
+              })}
             </MenuRadioGroup>
           </MenuGroup>
         </div>
@@ -441,6 +459,8 @@ export const TraitsPicker = memo(function TraitsPicker({
   const activeFastModeControl = switchControls.find(
     (control) => isFastModeControl(control) && control.checked,
   );
+  const primaryTraitValue = getDescriptorStringValue(primarySelectDescriptor);
+  const ultracodeActive = primaryTraitValue === "ultracode";
   const primaryTriggerLabel = primarySelectDescriptor
     ? getProviderOptionCurrentLabel(primarySelectDescriptor)
     : firstSwitchControl
@@ -467,15 +487,21 @@ export const TraitsPicker = memo(function TraitsPicker({
             variant={triggerVariant ?? "ghost"}
             className={cn(
               "min-w-0 max-w-40 shrink justify-start overflow-hidden whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 sm:max-w-48 sm:px-3 [&_svg]:mx-0",
+              ultracodeActive && "ultracode-trait-trigger",
               triggerClassName,
             )}
           />
         }
       >
         <span className="flex min-w-0 w-full items-center gap-1.5 overflow-hidden">
-          <SlidersHorizontalIcon aria-hidden="true" className="size-3 shrink-0 opacity-70" />
+          <SlidersHorizontalIcon
+            aria-hidden="true"
+            className={cn("size-3 shrink-0 opacity-70", ultracodeActive && "text-[#c9a8ff]")}
+          />
           {primaryTriggerLabel ? (
-            <span className="min-w-0 truncate">{primaryTriggerLabel}</span>
+            <span className={cn("min-w-0 truncate", ultracodeActive && "ultracode-trait-label")}>
+              {primaryTriggerLabel}
+            </span>
           ) : null}
           {activeFastModeControl ? (
             <>

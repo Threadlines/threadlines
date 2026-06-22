@@ -24,6 +24,35 @@ function mcpStatusEvent(status: unknown): ProviderRuntimeEvent {
 }
 
 describe("ProviderActivityProjection", () => {
+  it("projects model fallback reroutes with explicit fallback wording", () => {
+    const activities = projectRuntimeEventToActivities({
+      type: "model.rerouted",
+      eventId: EventId.make("evt-model-fallback"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: ThreadId.make("thread-1"),
+      turnId: TurnId.make("turn-1"),
+      createdAt: "2026-06-01T12:00:00.000Z",
+      payload: {
+        fromModel: "claude-fable-5",
+        toModel: "claude-opus-4-8",
+        reason: "fallback:unavailable",
+      },
+    } satisfies ProviderRuntimeEvent);
+
+    expect(activities).toEqual([
+      expect.objectContaining({
+        kind: "provider.model.rerouted",
+        summary: "Using fallback model: claude-opus-4-8",
+        payload: {
+          fromModel: "claude-fable-5",
+          toModel: "claude-opus-4-8",
+          reason: "fallback:unavailable",
+          detail: "Claude is using claude-opus-4-8 because claude-fable-5 was unavailable.",
+        },
+      }),
+    ]);
+  });
+
   it("projects provider prompt suggestions for composer reuse", () => {
     const activities = projectRuntimeEventToActivities({
       type: "turn.prompt-suggestion.updated",
@@ -194,5 +223,63 @@ describe("ProviderActivityProjection", () => {
     expect(item?.aggregatedOutput?.length).toBeLessThanOrEqual(
       MAX_THREAD_ACTIVITY_PAYLOAD_TEXT_LENGTH,
     );
+  });
+
+  it("preserves image generation result payloads for inline previews", () => {
+    const imageResult = `iVBORw0KGgo${"A".repeat(MAX_THREAD_ACTIVITY_PAYLOAD_TEXT_LENGTH + 128)}`;
+    const activities = projectRuntimeEventToActivities({
+      type: "item.completed",
+      eventId: EventId.make("evt-image-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: ThreadId.make("thread-1"),
+      turnId: TurnId.make("turn-1"),
+      createdAt: "2026-06-01T12:00:00.000Z",
+      payload: {
+        itemType: "image_view",
+        title: "Image view",
+        data: {
+          item: {
+            id: "ig_123",
+            result: imageResult,
+            type: "imageGeneration",
+          },
+        },
+      },
+    } satisfies ProviderRuntimeEvent);
+
+    const payload = activities[0]?.payload as { data?: { item?: { result?: string } } } | undefined;
+
+    expect(payload?.data?.item?.result).toBe(imageResult);
+    expect(payload?.data?.item?.result?.startsWith("...")).toBe(false);
+  });
+
+  it("still compacts non-image result payload strings", () => {
+    const largeResult = Array.from({ length: 1_000 }, (_, index) => `line ${index}`).join("\n");
+    const activities = projectRuntimeEventToActivities({
+      type: "item.completed",
+      eventId: EventId.make("evt-dynamic-tool-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: ThreadId.make("thread-1"),
+      turnId: TurnId.make("turn-1"),
+      createdAt: "2026-06-01T12:00:00.000Z",
+      payload: {
+        itemType: "dynamic_tool_call",
+        title: "Tool call",
+        data: {
+          item: {
+            id: "tool_123",
+            result: largeResult,
+            type: "toolResult",
+          },
+        },
+      },
+    } satisfies ProviderRuntimeEvent);
+
+    const payload = activities[0]?.payload as { data?: { item?: { result?: string } } } | undefined;
+    const result = payload?.data?.item?.result;
+
+    expect(result).toEqual(expect.stringContaining("line 999"));
+    expect(result?.startsWith("...")).toBe(true);
+    expect(result?.length).toBeLessThanOrEqual(MAX_THREAD_ACTIVITY_PAYLOAD_TEXT_LENGTH);
   });
 });

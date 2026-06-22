@@ -405,6 +405,67 @@ describe("deriveMessagesTimelineRows", () => {
     expect(assistantRow?.assistantTurnDiffSummary).toBe(assistantTurnDiffSummary);
   });
 
+  it("attaches model fallback metadata to the assistant response for the turn", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "model-fallback-entry",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:05Z",
+          entry: {
+            id: "model-fallback",
+            createdAt: "2026-01-01T00:00:05Z",
+            label: "Using fallback model: claude-opus-4-8",
+            detail: "Claude is using claude-opus-4-8 because claude-fable-5 was unavailable.",
+            tone: "info",
+            turnId: "turn-1" as never,
+            modelFallback: {
+              requestedModel: "claude-fable-5",
+              activeModel: "claude-opus-4-8",
+              reason: "fallback:unavailable",
+              detail: "Claude is using claude-opus-4-8 because claude-fable-5 was unavailable.",
+              createdAt: "2026-01-01T00:00:05Z",
+              turnId: "turn-1" as never,
+            },
+          },
+        },
+        {
+          id: "assistant-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:20Z",
+          message: {
+            id: "assistant-1" as never,
+            role: "assistant",
+            text: "Fallback response body.",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:20Z",
+            completedAt: "2026-01-01T00:00:30Z",
+            streaming: false,
+          },
+        },
+      ],
+      completionDividerBeforeEntryId: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    const assistantRow = rows.find(
+      (row): row is Extract<(typeof rows)[number], { kind: "message" }> =>
+        row.kind === "message" && row.message.role === "assistant",
+    );
+
+    expect(assistantRow?.assistantModelFallback).toEqual({
+      requestedModel: "claude-fable-5",
+      activeModel: "claude-opus-4-8",
+      reason: "fallback:unavailable",
+      detail: "Claude is using claude-opus-4-8 because claude-fable-5 was unavailable.",
+      createdAt: "2026-01-01T00:00:05Z",
+      turnId: "turn-1",
+    });
+  });
+
   it("marks only the latest active-turn work group as live while working", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [
