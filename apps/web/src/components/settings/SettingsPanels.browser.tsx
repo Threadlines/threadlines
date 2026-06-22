@@ -265,10 +265,11 @@ function createOutdatedProvider(
   };
 }
 
-function createInstallerBackedOutdatedClaudeProvider(): ServerProvider {
-  const installerCommand = "irm https://claude.ai/install.ps1 | iex";
+function createVerifiedNativeOutdatedClaudeProvider(): ServerProvider {
+  const nativeUpdaterCommand =
+    "powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand <verified-native-claude-updater>";
   return {
-    ...createOutdatedProvider("claudeAgent", installerCommand),
+    ...createOutdatedProvider("claudeAgent", nativeUpdaterCommand),
     displayName: "Claude",
     version: "2.1.183",
     versionAdvisory: {
@@ -276,9 +277,9 @@ function createInstallerBackedOutdatedClaudeProvider(): ServerProvider {
       currentVersion: "2.1.183",
       latestVersion: "2.1.185",
       message:
-        "Threadlines will run Anthropic's Windows installer because `claude update` can report success without replacing the active binary.",
+        "Threadlines will run a checksum-verified Windows native Claude updater because `claude update` and Anthropic's installer can report success without replacing the active binary.",
       checkedAt: "2026-05-04T10:00:00.000Z",
-      updateCommand: installerCommand,
+      updateCommand: nativeUpdaterCommand,
       canUpdate: true,
     },
   };
@@ -1498,9 +1499,9 @@ describe("GeneralSettingsPanel observability", () => {
     });
   });
 
-  it("runs installer-backed one-click updates for native Windows Claude advisories", async () => {
+  it("runs verified native one-click updates for Windows Claude advisories", async () => {
     const updateProvider = vi.fn<LocalApi["server"]["updateProvider"]>().mockResolvedValue({
-      providers: [createInstallerBackedOutdatedClaudeProvider()],
+      providers: [createVerifiedNativeOutdatedClaudeProvider()],
     });
     window.nativeApi = {
       persistence: {
@@ -1514,7 +1515,7 @@ describe("GeneralSettingsPanel observability", () => {
 
     setServerConfigSnapshot({
       ...createBaseServerConfig(),
-      providers: [createInstallerBackedOutdatedClaudeProvider()],
+      providers: [createVerifiedNativeOutdatedClaudeProvider()],
     });
 
     mounted = await render(
@@ -1525,7 +1526,11 @@ describe("GeneralSettingsPanel observability", () => {
 
     await page.getByRole("button", { name: "Update available — view details" }).click();
     await expect
-      .element(page.getByText("irm https://claude.ai/install.ps1 | iex"))
+      .element(
+        page.getByText(
+          "powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand <verified-native-claude-updater>",
+        ),
+      )
       .toBeInTheDocument();
     await expect.element(page.getByRole("button", { name: "Update now" })).toBeInTheDocument();
     await page.getByRole("button", { name: "Update now" }).click();

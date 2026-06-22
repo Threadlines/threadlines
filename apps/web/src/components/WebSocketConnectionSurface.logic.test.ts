@@ -127,11 +127,12 @@ describe("WebSocketConnectionSurface.logic", () => {
           reconnectAttemptCount: 1,
           reconnectPhase: "attempting",
         }),
+        new Date("2026-04-03T20:00:12.000Z").getTime(),
       ),
     ).toBe(false);
   });
 
-  it("shows the reconnect toast when the live websocket actually disconnected", () => {
+  it("does not show the reconnect toast for brief recovered hiccups", () => {
     expect(
       shouldShowReconnectIssueToast(
         makeStatus({
@@ -141,6 +142,22 @@ describe("WebSocketConnectionSurface.logic", () => {
           reconnectAttemptCount: 1,
           reconnectPhase: "waiting",
         }),
+        new Date("2026-04-03T20:00:05.000Z").getTime(),
+      ),
+    ).toBe(false);
+  });
+
+  it("shows the reconnect toast when the live websocket stays disconnected", () => {
+    expect(
+      shouldShowReconnectIssueToast(
+        makeStatus({
+          disconnectedAt: "2026-04-03T20:00:00.000Z",
+          hasConnected: true,
+          phase: "disconnected",
+          reconnectAttemptCount: 1,
+          reconnectPhase: "waiting",
+        }),
+        new Date("2026-04-03T20:00:10.000Z").getTime(),
       ),
     ).toBe(true);
   });

@@ -54,11 +54,79 @@ const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 const DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
 const CAPABILITIES_PROBE_TTL = Duration.minutes(5);
-const WINDOWS_NATIVE_INSTALL_COMMAND = "irm https://claude.ai/install.ps1 | iex";
-const WINDOWS_NATIVE_INSTALL_COMMAND_ENCODED = Buffer.from(
-  WINDOWS_NATIVE_INSTALL_COMMAND,
+const WINDOWS_NATIVE_UPDATE_SCRIPT = String.raw`
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+
+if (-not [Environment]::Is64BitProcess) {
+    Write-Error "Claude Code does not support 32-bit Windows. Please use a 64-bit version of Windows."
+    exit 1
+}
+
+function Test-NativeClaudePath([string]$Path) {
+    $normalized = $Path.Replace("\", "/").ToLowerInvariant()
+    return $normalized.EndsWith("/.local/bin/claude.exe") -or $normalized.Contains("/.local/share/claude/")
+}
+
+$downloadBaseUrl = "https://downloads.claude.ai/claude-code-releases"
+$downloadDir = Join-Path $env:USERPROFILE ".claude\downloads"
+$defaultInstallPath = Join-Path $env:USERPROFILE ".local\bin\claude.exe"
+$platform = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "win32-arm64" } else { "win32-x64" }
+
+New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null
+
+$version = Invoke-RestMethod -Uri "$downloadBaseUrl/latest" -ErrorAction Stop
+if ($version -notmatch "^\d+\.\d+\.\d+") {
+    Write-Error "Failed to get a valid Claude Code version from downloads.claude.ai."
+    exit 1
+}
+
+$manifest = Invoke-RestMethod -Uri "$downloadBaseUrl/$version/manifest.json" -ErrorAction Stop
+$platformManifest = $manifest.platforms.$platform
+if (-not $platformManifest -or -not $platformManifest.checksum) {
+    Write-Error "Platform $platform not found in Claude Code manifest."
+    exit 1
+}
+
+$downloadPath = Join-Path $downloadDir "claude-$version-$platform.exe"
+try {
+    Invoke-WebRequest -Uri "$downloadBaseUrl/$version/$platform/claude.exe" -OutFile $downloadPath -ErrorAction Stop
+    $actualChecksum = (Get-FileHash -Path $downloadPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualChecksum -ne $platformManifest.checksum) {
+        Write-Error "Claude Code checksum verification failed."
+        exit 1
+    }
+
+    $command = Get-Command claude -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    $installPath = if ($command -and $command.Source -and (Test-NativeClaudePath $command.Source)) {
+        $command.Source
+    } else {
+        $defaultInstallPath
+    }
+
+    $installDir = Split-Path -Parent $installPath
+    New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+    Move-Item -LiteralPath $downloadPath -Destination $installPath -Force
+
+    $installedVersion = & $installPath --version
+    if ($LASTEXITCODE -ne 0 -or $installedVersion -notmatch [regex]::Escape($version)) {
+        Write-Error "Claude Code was replaced, but version verification failed: $installedVersion"
+        exit 1
+    }
+
+    Write-Output "Installed Claude Code $installedVersion at $installPath"
+} finally {
+    if (Test-Path -LiteralPath $downloadPath) {
+        Remove-Item -LiteralPath $downloadPath -Force
+    }
+}
+`;
+const WINDOWS_NATIVE_UPDATE_COMMAND_ENCODED = Buffer.from(
+  WINDOWS_NATIVE_UPDATE_SCRIPT,
   "utf16le",
 ).toString("base64");
+const WINDOWS_NATIVE_UPDATE_COMMAND = `powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${WINDOWS_NATIVE_UPDATE_COMMAND_ENCODED}`;
 
 function isClaudeNativeCommandPath(commandPath: string): boolean {
   const normalized = normalizeCommandPath(commandPath);
@@ -86,12 +154,12 @@ const UPDATE = makePackageManagedProviderMaintenanceResolver({
           "-ExecutionPolicy",
           "Bypass",
           "-EncodedCommand",
-          WINDOWS_NATIVE_INSTALL_COMMAND_ENCODED,
+          WINDOWS_NATIVE_UPDATE_COMMAND_ENCODED,
         ],
-        lockKey: "claude-native-installer-win32",
-        displayCommand: WINDOWS_NATIVE_INSTALL_COMMAND,
+        lockKey: "claude-native-verified-win32",
+        displayCommand: WINDOWS_NATIVE_UPDATE_COMMAND,
         advisoryMessage:
-          "Threadlines will run Anthropic's Windows installer because `claude update` can report success without replacing the active binary.",
+          "Threadlines will run a checksum-verified Windows native Claude updater because `claude update` and Anthropic's installer can report success without replacing the active binary.",
       },
     },
   },

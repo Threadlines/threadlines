@@ -6,6 +6,7 @@ import {
   type OrchestrationEvent,
   type OrchestrationShellSnapshot,
   type OrchestrationShellStreamEvent,
+  type OrchestrationThreadShell,
   type ServerConfig,
   type TerminalEvent,
   ThreadId,
@@ -359,6 +360,23 @@ function shouldEvictThreadDetailSubscription(entry: ThreadDetailSubscriptionEntr
   return entry.refCount === 0 && !isNonIdleThreadDetailSubscription(entry);
 }
 
+function shouldWarmThreadDetailSubscription(thread: OrchestrationThreadShell): boolean {
+  if (
+    thread.hasPendingApprovals ||
+    thread.hasPendingUserInput ||
+    thread.hasActionableProposedPlan
+  ) {
+    return true;
+  }
+
+  const orchestrationStatus = thread.session?.status;
+  if (orchestrationStatus && orchestrationStatus !== "idle" && orchestrationStatus !== "stopped") {
+    return true;
+  }
+
+  return thread.latestTurn?.state === "running";
+}
+
 function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): boolean {
   if (entry.unsubscribeConnectionListener !== null) {
     entry.unsubscribeConnectionListener();
@@ -528,6 +546,48 @@ function reconcileThreadDetailSubscriptionEvictionForEnvironment(
     }
   }
   evictIdleThreadDetailSubscriptionsToCapacity();
+}
+
+function ensureWarmThreadDetailSubscription(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+): void {
+  const key = getThreadDetailSubscriptionKey(environmentId, threadId);
+  const existing = threadDetailSubscriptions.get(key);
+  if (existing) {
+    clearThreadDetailSubscriptionEviction(existing);
+    existing.lastAccessedAt = Date.now();
+    if (!attachThreadDetailSubscription(existing)) {
+      watchThreadDetailSubscriptionConnection(existing);
+    }
+    return;
+  }
+
+  const entry: ThreadDetailSubscriptionEntry = {
+    environmentId,
+    threadId,
+    unsubscribe: NOOP,
+    unsubscribeConnectionListener: null,
+    refCount: 0,
+    lastAccessedAt: Date.now(),
+    evictionTimeoutId: null,
+  };
+  threadDetailSubscriptions.set(key, entry);
+  if (!attachThreadDetailSubscription(entry)) {
+    watchThreadDetailSubscriptionConnection(entry);
+  }
+  evictIdleThreadDetailSubscriptionsToCapacity();
+}
+
+function warmNonIdleThreadDetailSubscriptionsForEnvironment(
+  environmentId: EnvironmentId,
+  threads: ReadonlyArray<OrchestrationThreadShell>,
+): void {
+  for (const thread of threads) {
+    if (shouldWarmThreadDetailSubscription(thread)) {
+      ensureWarmThreadDetailSubscription(environmentId, thread.id);
+    }
+  }
 }
 
 export function retainThreadDetailSubscription(
@@ -1065,6 +1125,9 @@ function applyShellEvent(event: OrchestrationShellStreamEvent, environmentId: En
       if (!previousThread && threadRef) {
         markPromotedDraftThreadByRef(threadRef);
       }
+      if (shouldWarmThreadDetailSubscription(event.thread)) {
+        ensureWarmThreadDetailSubscription(environmentId, event.thread.id);
+      }
       if (previousThread?.archivedAt === null && event.thread.archivedAt !== null && threadRef) {
         useTerminalStateStore.getState().removeTerminalState(threadRef);
       }
@@ -1099,6 +1162,7 @@ function createEnvironmentConnectionHandlers() {
 
       useStore.getState().syncServerShellSnapshot(snapshot, environmentId);
       markAppliedProjectionSnapshot(environmentId, snapshot);
+      warmNonIdleThreadDetailSubscriptionsForEnvironment(environmentId, snapshot.threads);
       reconcileThreadDetailSubscriptionsForEnvironment(
         environmentId,
         snapshot.threads.map((thread) => thread.id),

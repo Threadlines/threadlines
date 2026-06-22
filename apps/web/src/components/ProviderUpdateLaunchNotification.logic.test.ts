@@ -133,7 +133,7 @@ describe("provider update launch notification logic", () => {
       driver: driver("claudeAgent"),
       latestVersion: "2.1.185",
       canUpdate: false,
-      updateCommand: "irm https://claude.ai/install.ps1 | iex",
+      updateCommand: "manual claude update command",
     });
 
     expect(isProviderUpdateCandidate(candidate)).toBe(true);

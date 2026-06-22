@@ -15,6 +15,7 @@ import { stackedThreadToast, toastManager } from "./ui/toast";
 import { getPrimaryEnvironmentConnection } from "../environments/runtime";
 
 const FORCED_WS_RECONNECT_DEBOUNCE_MS = 5_000;
+const RECONNECT_TOAST_GRACE_MS = 10_000;
 type WsAutoReconnectTrigger = "focus" | "online";
 
 const connectionTimeFormatter = new Intl.DateTimeFormat(undefined, {
@@ -31,6 +32,15 @@ function formatConnectionMoment(isoDate: string | null): string | null {
   }
 
   return connectionTimeFormatter.format(new Date(isoDate));
+}
+
+function parseConnectionMomentMs(isoDate: string | null): number | null {
+  if (!isoDate) {
+    return null;
+  }
+
+  const timestamp = new Date(isoDate).getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
 }
 
 function formatRetryCountdown(nextRetryAt: string, nowMs: number): string {
@@ -197,10 +207,12 @@ export function shouldRestartStalledReconnect(
   );
 }
 
-export function shouldShowReconnectIssueToast(status: WsConnectionStatus): boolean {
+export function shouldShowReconnectIssueToast(status: WsConnectionStatus, nowMs: number): boolean {
+  const disconnectedAtMs = parseConnectionMomentMs(status.disconnectedAt);
   return (
     status.hasConnected &&
-    status.disconnectedAt !== null &&
+    disconnectedAtMs !== null &&
+    nowMs - disconnectedAtMs >= RECONNECT_TOAST_GRACE_MS &&
     getWsConnectionUiState(status) === "reconnecting"
   );
 }
@@ -211,6 +223,7 @@ export function WebSocketConnectionCoordinator() {
   const lastForcedReconnectAtRef = useRef(0);
   const toastIdRef = useRef<ReturnType<typeof toastManager.add> | null>(null);
   const toastResetTimerRef = useRef<number | null>(null);
+  const hasShownConnectionIssueToastRef = useRef(false);
   const previousUiStateRef = useRef<WsConnectionUiState>(getWsConnectionUiState(status));
   const previousDisconnectedAtRef = useRef<string | null>(status.disconnectedAt);
 
@@ -331,7 +344,7 @@ export function WebSocketConnectionCoordinator() {
     const uiState = getWsConnectionUiState(status);
     const previousUiState = previousUiStateRef.current;
     const previousDisconnectedAt = previousDisconnectedAtRef.current;
-    const shouldShowReconnectToast = shouldShowReconnectIssueToast(status);
+    const shouldShowReconnectToast = shouldShowReconnectIssueToast(status, nowMs);
     const shouldShowOfflineToast = uiState === "offline" && status.disconnectedAt !== null;
     const shouldShowExhaustedToast = status.hasConnected && status.reconnectPhase === "exhausted";
 
@@ -344,6 +357,7 @@ export function WebSocketConnectionCoordinator() {
     }
 
     if (shouldShowReconnectToast || shouldShowOfflineToast || shouldShowExhaustedToast) {
+      hasShownConnectionIssueToastRef.current = true;
       const toastPayload = shouldShowOfflineToast
         ? stackedThreadToast({
             data: {
@@ -397,6 +411,7 @@ export function WebSocketConnectionCoordinator() {
 
     if (
       uiState === "connected" &&
+      hasShownConnectionIssueToastRef.current &&
       (previousUiState === "offline" || previousUiState === "reconnecting") &&
       previousDisconnectedAt !== null
     ) {
@@ -416,11 +431,14 @@ export function WebSocketConnectionCoordinator() {
       } else {
         toastIdRef.current = toastManager.add(successToast);
       }
+      hasShownConnectionIssueToastRef.current = false;
 
       toastResetTimerRef.current = window.setTimeout(() => {
         toastIdRef.current = null;
         toastResetTimerRef.current = null;
       }, 8_250);
+    } else if (uiState === "connected") {
+      hasShownConnectionIssueToastRef.current = false;
     }
 
     previousUiStateRef.current = uiState;

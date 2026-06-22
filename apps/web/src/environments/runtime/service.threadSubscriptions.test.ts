@@ -280,6 +280,127 @@ describe("retainThreadDetailSubscription", () => {
     await resetEnvironmentServiceForTests();
   });
 
+  it("warms non-idle thread detail subscriptions from shell snapshots without a mounted chat view", async () => {
+    const { resetEnvironmentServiceForTests, startEnvironmentConnectionService } =
+      await import("./service");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    const environmentId = EnvironmentId.make("env-1");
+    const threadId = ThreadId.make("thread-running");
+
+    const connectionInput = mockCreateEnvironmentConnection.mock.calls[0]?.[0];
+    expect(connectionInput).toBeDefined();
+
+    connectionInput.syncShellSnapshot(
+      makeThreadShellSnapshot({
+        threadId,
+        sessionStatus: "running",
+      }),
+      environmentId,
+    );
+
+    expect(mockSubscribeThread).toHaveBeenCalledTimes(1);
+    expect(mockSubscribeThread).toHaveBeenCalledWith({ threadId }, expect.any(Function));
+
+    stop();
+    await resetEnvironmentServiceForTests();
+  });
+
+  it("does not warm idle thread detail subscriptions from shell snapshots", async () => {
+    const { resetEnvironmentServiceForTests, startEnvironmentConnectionService } =
+      await import("./service");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    const environmentId = EnvironmentId.make("env-1");
+    const threadId = ThreadId.make("thread-idle");
+
+    const connectionInput = mockCreateEnvironmentConnection.mock.calls[0]?.[0];
+    expect(connectionInput).toBeDefined();
+
+    connectionInput.syncShellSnapshot(
+      makeThreadShellSnapshot({
+        threadId,
+        sessionStatus: "idle",
+      }),
+      environmentId,
+    );
+
+    expect(mockSubscribeThread).not.toHaveBeenCalled();
+
+    stop();
+    await resetEnvironmentServiceForTests();
+  });
+
+  it("warms newly upserted non-idle thread detail subscriptions without a mounted chat view", async () => {
+    const { resetEnvironmentServiceForTests, startEnvironmentConnectionService } =
+      await import("./service");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    const environmentId = EnvironmentId.make("env-1");
+    const threadId = ThreadId.make("thread-promoted");
+
+    const connectionInput = mockCreateEnvironmentConnection.mock.calls[0]?.[0];
+    expect(connectionInput).toBeDefined();
+    const thread = makeThreadShellSnapshot({
+      threadId,
+      sessionStatus: "running",
+    }).threads[0]!;
+
+    connectionInput.applyShellEvent(
+      {
+        kind: "thread-upserted",
+        sequence: 1,
+        thread,
+      },
+      environmentId,
+    );
+
+    expect(mockSubscribeThread).toHaveBeenCalledTimes(1);
+    expect(mockSubscribeThread).toHaveBeenCalledWith({ threadId }, expect.any(Function));
+
+    stop();
+    await resetEnvironmentServiceForTests();
+  });
+
+  it("evicts automatically warmed thread detail subscriptions once the thread becomes idle", async () => {
+    const { resetEnvironmentServiceForTests, startEnvironmentConnectionService } =
+      await import("./service");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    const environmentId = EnvironmentId.make("env-1");
+    const threadId = ThreadId.make("thread-warm-evict");
+
+    const connectionInput = mockCreateEnvironmentConnection.mock.calls[0]?.[0];
+    expect(connectionInput).toBeDefined();
+
+    connectionInput.syncShellSnapshot(
+      makeThreadShellSnapshot({
+        threadId,
+        sessionStatus: "running",
+      }),
+      environmentId,
+    );
+    expect(mockSubscribeThread).toHaveBeenCalledTimes(1);
+
+    connectionInput.applyShellEvent(
+      {
+        kind: "thread-upserted",
+        sequence: 2,
+        thread: makeThreadShellSnapshot({
+          threadId,
+          sessionStatus: "idle",
+        }).threads[0]!,
+      },
+      environmentId,
+    );
+
+    await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
+    expect(mockThreadUnsubscribe).toHaveBeenCalledTimes(1);
+
+    stop();
+    await resetEnvironmentServiceForTests();
+  });
+
   it("keeps non-idle thread detail subscriptions attached until the thread becomes idle", async () => {
     const {
       retainThreadDetailSubscription,
