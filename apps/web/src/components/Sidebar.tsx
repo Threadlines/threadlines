@@ -2589,13 +2589,16 @@ const SidebarChromeHeader = memo(function SidebarChromeHeader({
 }) {
   const wordmark = (
     <div className="flex w-full min-w-0 items-center gap-2">
-      <SidebarTrigger className="shrink-0 md:hidden" />
+      <SidebarTrigger
+        className="size-7 shrink-0 text-muted-foreground/60 hover:text-foreground"
+        tooltip="Collapse sidebar"
+      />
       <Tooltip>
         <TooltipTrigger
           render={
             <Link
               aria-label={`Go to ${APP_BASE_NAME} home`}
-              className="ml-1 flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-md text-foreground outline-hidden ring-ring transition-opacity hover:opacity-85 focus-visible:ring-2"
+              className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-md text-foreground outline-hidden ring-ring transition-opacity hover:opacity-85 focus-visible:ring-2"
               to="/"
             >
               <ThreadlinesGlyph aria-hidden="true" className="h-3 w-auto shrink-0" />
@@ -2612,33 +2615,25 @@ const SidebarChromeHeader = memo(function SidebarChromeHeader({
           </div>
         </TooltipPopup>
       </Tooltip>
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <SidebarTrigger className="ml-auto hidden size-6 shrink-0 text-muted-foreground/60 hover:text-foreground md:flex" />
-          }
-        />
-        <TooltipPopup side="bottom">Collapse sidebar</TooltipPopup>
-      </Tooltip>
     </div>
   );
 
   return isElectron ? (
     <SidebarHeader
       className={cn(
-        "drag-region flex-row gap-2 px-4",
+        "drag-region flex-row gap-2 px-3 sm:px-5",
         isMacElectron
           ? MAC_TRAFFIC_LIGHT_CLEARANCE_HEADER_CLASS
           : cn(
               ELECTRON_HEADER_HEIGHT_CLASS,
-              "items-center py-0 pl-[90px] wco:h-[env(titlebar-area-height)] wco:pl-[calc(env(titlebar-area-x)+1em)]",
+              "items-center py-0 pl-5 wco:h-[env(titlebar-area-height)]",
             ),
       )}
     >
       {wordmark}
     </SidebarHeader>
   ) : (
-    <SidebarHeader className="gap-3 px-3 py-2 sm:gap-2.5 sm:px-4 sm:py-3">{wordmark}</SidebarHeader>
+    <SidebarHeader className="gap-3 px-3 py-2 sm:gap-2.5 sm:px-5 sm:py-3">{wordmark}</SidebarHeader>
   );
 });
 

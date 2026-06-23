@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 
 import * as NodeOS from "node:os";
+import { existsSync } from "node:fs";
+import * as NodePath from "node:path";
+import { fileURLToPath } from "node:url";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -23,6 +26,8 @@ const MAX_HASH_OFFSET = 3000;
 const MAX_PORT = 65535;
 const DESKTOP_DEV_LOOPBACK_HOST = "127.0.0.1";
 const DEV_PORT_PROBE_HOSTS = ["127.0.0.1", "0.0.0.0", "::1", "::"] as const;
+const REPO_ROOT = NodePath.resolve(NodePath.dirname(fileURLToPath(import.meta.url)), "..");
+const WORKSPACE_BIN_DIR = NodePath.join(REPO_ROOT, "node_modules", ".bin");
 
 export const DEFAULT_THREADLINES_HOME = Effect.map(Effect.service(Path.Path), (path) =>
   path.join(NodeOS.homedir(), ".threadlines"),
@@ -200,6 +205,30 @@ const deleteThreadlinesEnvAlias = (env: NodeJS.ProcessEnv, suffix: string) => {
   delete env[`BADCODE_${suffix}`];
   delete env[`T3CODE_${suffix}`];
 };
+
+function prependWorkspaceBinToPath(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  if (!existsSync(WORKSPACE_BIN_DIR)) {
+    return env;
+  }
+
+  const pathKey =
+    Object.keys(env).find((key) => key.toLowerCase() === "path") ??
+    (process.platform === "win32" ? "Path" : "PATH");
+  const currentPath = env[pathKey] ?? "";
+  const entries = currentPath.split(NodePath.delimiter).filter(Boolean);
+
+  if (entries.includes(WORKSPACE_BIN_DIR)) {
+    return env;
+  }
+
+  return {
+    ...env,
+    [pathKey]:
+      currentPath.length > 0
+        ? `${WORKSPACE_BIN_DIR}${NodePath.delimiter}${currentPath}`
+        : WORKSPACE_BIN_DIR,
+  };
+}
 
 export function createDevRunnerEnv({
   mode,
@@ -526,7 +555,7 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
       stdin: "inherit",
       stdout: "inherit",
       stderr: "inherit",
-      env,
+      env: prependWorkspaceBinToPath(env),
       extendEnv: false,
       // Windows needs shell mode to resolve .cmd shims.
       shell: process.platform === "win32",

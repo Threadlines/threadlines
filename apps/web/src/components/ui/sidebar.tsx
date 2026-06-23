@@ -314,11 +314,15 @@ function Sidebar({
   );
 }
 
-function SidebarTrigger({ className, onClick, ...props }: React.ComponentProps<typeof Button>) {
+type SidebarTriggerProps = React.ComponentProps<typeof Button> & {
+  tooltip?: React.ReactNode;
+};
+
+function SidebarTrigger({ className, onClick, tooltip, ...props }: SidebarTriggerProps) {
   const { toggleSidebar, openMobile, open, isMobile } = useSidebar();
   const isOpen = isMobile ? openMobile : open;
 
-  return (
+  const trigger = (
     <Button
       className={cn("size-7", className)}
       data-sidebar="trigger"
@@ -335,6 +339,15 @@ function SidebarTrigger({ className, onClick, ...props }: React.ComponentProps<t
       <span className="sr-only">Toggle Sidebar</span>
     </Button>
   );
+
+  return tooltip ? (
+    <Tooltip>
+      <TooltipTrigger render={trigger} />
+      <TooltipPopup side="bottom">{tooltip}</TooltipPopup>
+    </Tooltip>
+  ) : (
+    trigger
+  );
 }
 
 /**
@@ -345,7 +358,13 @@ function SidebarTrigger({ className, onClick, ...props }: React.ComponentProps<t
 function SidebarOpenTrigger({ className, ...props }: React.ComponentProps<typeof Button>) {
   const { open } = useSidebar();
 
-  return <SidebarTrigger className={cn(className, open && "md:hidden")} {...props} />;
+  return (
+    <SidebarTrigger
+      className={cn(className, open && "md:hidden")}
+      tooltip="Open sidebar"
+      {...props}
+    />
+  );
 }
 
 function clampSidebarWidth(width: number, options: SidebarResolvedResizableOptions): number {

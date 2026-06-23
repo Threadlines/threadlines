@@ -25,6 +25,28 @@ const DESKTOP_LOG_FILE_MAX_FILES = 10;
 const DESKTOP_BACKEND_CHILD_LOG_FIBER_ID = "#backend-child";
 const DESKTOP_TRACE_BATCH_WINDOW_MS = 200;
 
+function isBrokenPipeError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { readonly code?: unknown }).code === "EPIPE"
+  );
+}
+
+function ignoreDevelopmentConsoleBrokenPipe(stream: NodeJS.WriteStream): void {
+  stream.on("error", (error) => {
+    if (isBrokenPipeError(error)) {
+      return;
+    }
+
+    throw error;
+  });
+}
+
+ignoreDevelopmentConsoleBrokenPipe(process.stdout);
+ignoreDevelopmentConsoleBrokenPipe(process.stderr);
+
 export interface RotatingLogFileWriter {
   readonly writeBytes: (chunk: Uint8Array) => Effect.Effect<void>;
   readonly writeText: (chunk: string) => Effect.Effect<void>;
@@ -267,7 +289,13 @@ const writeDevelopmentConsoleOutput = (
 ): Effect.Effect<void> =>
   Effect.sync(() => {
     const output = streamName === "stderr" ? process.stderr : process.stdout;
-    output.write(chunk);
+    try {
+      output.write(chunk);
+    } catch (error) {
+      if (!isBrokenPipeError(error)) {
+        throw error;
+      }
+    }
   }).pipe(Effect.ignore);
 
 const writeBackendChildLogRecord = Effect.fn("desktop.observability.writeBackendChildLogRecord")(

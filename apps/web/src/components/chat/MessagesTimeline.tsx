@@ -1083,7 +1083,12 @@ function SpineNode({ kind }: { kind: SpineNodeKind }) {
       />
     );
   }
-  return <span aria-hidden="true" className="size-[5px] rounded-full bg-muted-foreground/35" />;
+  return (
+    <span
+      aria-hidden="true"
+      className="relative z-10 size-[5px] rounded-full bg-[color-mix(in_oklab,var(--muted-foreground)_42%,var(--background))]"
+    />
+  );
 }
 
 function workEntryNodeKind(entry: TimelineWorkEntry): SpineNodeKind {

@@ -162,38 +162,38 @@
 
        Elevation ladder — distinct lightness steps so sections read as stacked
        surfaces, not one flat field (deepest to highest):
-         chrome 0.205      window frame / gutters behind panels
-         background 0.245  main content well
-         rail 0.278        left + right side panels
-         card 0.308        raised cards, activity bands, composer
-         popover 0.328     floating menus */
-    --background: oklch(0.245 0 0);
-    --app-chrome-background: oklch(0.205 0 0);
-    --foreground: oklch(0.92 0 0);
-    --card: oklch(0.308 0 0);
+         chrome 0.19       window frame / gutters behind panels
+         background 0.228  main content well
+         rail 0.26         left + right side panels
+         card 0.292        raised cards, activity bands, composer
+         popover 0.312     floating menus */
+    --background: oklch(0.228 0 0);
+    --app-chrome-background: oklch(0.19 0 0);
+    --foreground: oklch(0.93 0 0);
+    --card: oklch(0.292 0 0);
     --card-foreground: var(--foreground);
-    --rail: oklch(0.278 0 0);
+    --rail: oklch(0.26 0 0);
     --sidebar: var(--rail);
     --sidebar-foreground: var(--foreground);
     --sidebar-border: var(--border);
-    --sidebar-accent: --alpha(var(--color-white) / 9%);
+    --sidebar-accent: --alpha(var(--color-white) / 10%);
     --sidebar-accent-foreground: var(--foreground);
-    --popover: oklch(0.328 0 0);
+    --popover: oklch(0.312 0 0);
     --popover-foreground: var(--foreground);
     --primary: var(--app-accent-blue);
     --primary-readable: oklch(0.65 0.19 264);
     --primary-graph: oklch(0.7 0.17 264);
     --primary-foreground: var(--color-white);
-    --secondary: --alpha(var(--color-white) / 7%);
+    --secondary: --alpha(var(--color-white) / 8%);
     --secondary-foreground: var(--foreground);
-    --muted: --alpha(var(--color-white) / 8%);
-    --muted-foreground: oklch(0.66 0 0);
-    --accent: --alpha(var(--color-white) / 8%);
+    --muted: --alpha(var(--color-white) / 9%);
+    --muted-foreground: oklch(0.68 0 0);
+    --accent: --alpha(var(--color-white) / 9%);
     --accent-foreground: var(--foreground);
-    --control-active: --alpha(var(--color-white) / 16%);
+    --control-active: --alpha(var(--color-white) / 17%);
     --destructive: color-mix(in srgb, var(--color-red-500) 90%, var(--color-white));
-    --border: --alpha(var(--color-white) / 12%);
-    --input: --alpha(var(--color-white) / 11%);
+    --border: --alpha(var(--color-white) / 14%);
+    --input: --alpha(var(--color-white) / 13%);
     --ring: var(--app-accent-blue);
     --destructive-foreground: var(--color-red-400);
     --info: var(--app-accent-blue);

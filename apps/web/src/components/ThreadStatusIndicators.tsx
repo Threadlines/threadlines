@@ -175,11 +175,14 @@ export function ThreadStatusRailDot({ status }: { status: ThreadStatusPill }) {
  */
 export function ThreadRailNode({ status }: { status: ThreadStatusPill | null }) {
   return (
-    <span className="pointer-events-none absolute top-1/2 left-[-4.5px] z-20 -translate-x-1/2 -translate-y-1/2">
+    <span className="pointer-events-none absolute top-1/2 left-[-4px] z-20 flex size-3 -translate-x-1/2 -translate-y-1/2 items-center justify-center">
       {status ? (
         <ThreadStatusRailDot status={status} />
       ) : (
-        <span aria-hidden="true" className="block size-1.5 rounded-full bg-muted-foreground/35" />
+        <span
+          aria-hidden="true"
+          className="relative z-10 block size-1.5 rounded-full bg-[color-mix(in_oklab,var(--muted-foreground)_42%,var(--rail))]"
+        />
       )}
     </span>
   );
