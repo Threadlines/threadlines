@@ -75,6 +75,20 @@ function buildProps() {
   };
 }
 
+async function resetBrowserHoverState() {
+  const resetTarget = document.createElement("button");
+  resetTarget.type = "button";
+  resetTarget.setAttribute("aria-label", "Reset hover target");
+  resetTarget.style.cssText = "display:block;width:24px;height:24px;margin:0;padding:0";
+  document.body.append(resetTarget);
+
+  try {
+    await page.getByRole("button", { name: "Reset hover target" }).hover();
+  } finally {
+    resetTarget.remove();
+  }
+}
+
 function buildLongUserMessageText(tail = "deep hidden detail only after expand") {
   return Array.from({ length: 9 }, (_, index) =>
     index === 8 ? tail : `Line ${index + 1}: ${"verbose prompt content ".repeat(8).trim()}`,
@@ -342,6 +356,7 @@ describe("MessagesTimeline", () => {
 
   it("exposes a continue-in-new-thread action on completed assistant messages", async () => {
     const onContinueInNewThread = vi.fn();
+    await resetBrowserHoverState();
     const screen = await render(
       <MessagesTimeline
         {...buildProps()}
