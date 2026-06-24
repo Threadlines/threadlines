@@ -556,6 +556,7 @@ describe("MessagesTimeline", () => {
       <MessagesTimeline
         {...buildProps()}
         isWorking
+        activeTurnStartedAt="2026-03-17T19:12:21.000Z"
         timelineEntries={[
           ...[
             "git status --short",
@@ -608,12 +609,39 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Checked git state");
     expect(markup).toContain("Verifying bun typecheck");
     expect(markup).toContain("bun typecheck");
+    expect(markup).toContain('data-live-turn-elapsed="true"');
+    expect(markup).toContain("Working ");
     // The running tool is the current activity: it carries the single live node
     // (halo) on the spine rather than a detached inline pulse off the thread.
     expect((markup.match(/class="thread-halo /gu) ?? []).length).toBe(1);
     expect(markup).not.toContain("Tool still running");
     expect(markup).not.toContain("Explored project");
     expect(markup).not.toContain("View transcript");
+  });
+
+  it("renders warning work activity with an amber spine circle", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-warning",
+            kind: "work" as const,
+            createdAt: "2026-03-17T19:12:29.000Z",
+            entry: {
+              id: "work-warning",
+              createdAt: "2026-03-17T19:12:29.000Z",
+              label: "Claude API connection issue, retrying in 1s (attempt 1/10)",
+              tone: "warning" as const,
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Claude API connection issue");
+    expect(markup).toContain("rounded-full border border-warning/65 bg-warning/30");
   });
 
   it("connects an untracked reasoning step to the single live terminus", async () => {
@@ -764,6 +792,7 @@ describe("MessagesTimeline", () => {
               turnId: TurnId.make("turn-1"),
               agentThreadId: "agent-1",
               label: "Reviewer subagent",
+              nickname: "Heisenberg",
               role: "reviewer",
               objective: "Inspect timeline rendering",
               body: "**Finding:** subagent output is visible.",
@@ -777,6 +806,7 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain('data-subagent-result-row="true"');
     expect(markup).toContain('data-subagent-result-body="true"');
+    expect(markup).toContain("Heisenberg");
     expect(markup).toContain("Reviewer subagent");
     expect(markup).toContain("Inspect timeline rendering");
     expect(markup).toContain("subagent output is visible");

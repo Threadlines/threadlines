@@ -52,6 +52,14 @@ const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
   Completed: 1,
 };
 
+export const THREAD_STATUS_DOT_CLASSES = {
+  amber: "bg-amber-500 dark:bg-amber-300/90",
+  blue: "bg-primary-graph",
+  cyan: "bg-cyan-500 dark:bg-cyan-300/90",
+  emerald: "bg-emerald-500 dark:bg-emerald-300/90",
+  violet: "bg-violet-500 dark:bg-violet-300/90",
+} as const;
+
 type ThreadStatusInput = Pick<
   SidebarThreadSummary,
   | "hasActionableProposedPlan"
@@ -340,7 +348,7 @@ export function resolveThreadStatusPill(input: {
     return {
       label: "Pending Approval",
       colorClass: "text-amber-600 dark:text-amber-300/90",
-      dotClass: "bg-amber-500 dark:bg-amber-300/90",
+      dotClass: THREAD_STATUS_DOT_CLASSES.amber,
       pulse: false,
     };
   }
@@ -348,8 +356,8 @@ export function resolveThreadStatusPill(input: {
   if (thread.hasPendingUserInput) {
     return {
       label: "Awaiting Input",
-      colorClass: "text-primary-readable",
-      dotClass: "bg-primary",
+      colorClass: "text-amber-600 dark:text-amber-300/90",
+      dotClass: THREAD_STATUS_DOT_CLASSES.amber,
       pulse: false,
     };
   }
@@ -358,7 +366,7 @@ export function resolveThreadStatusPill(input: {
     return {
       label: "Working",
       colorClass: "text-primary-readable",
-      dotClass: "bg-primary",
+      dotClass: THREAD_STATUS_DOT_CLASSES.blue,
       pulse: true,
     };
   }
@@ -370,7 +378,7 @@ export function resolveThreadStatusPill(input: {
     return {
       label: "Connecting",
       colorClass: "text-primary-readable",
-      dotClass: "bg-primary",
+      dotClass: THREAD_STATUS_DOT_CLASSES.blue,
       pulse: true,
     };
   }
@@ -384,7 +392,7 @@ export function resolveThreadStatusPill(input: {
     return {
       label: "Plan Ready",
       colorClass: "text-violet-600 dark:text-violet-300/90",
-      dotClass: "bg-violet-500 dark:bg-violet-300/90",
+      dotClass: THREAD_STATUS_DOT_CLASSES.violet,
       pulse: false,
     };
   }
@@ -395,8 +403,8 @@ export function resolveThreadStatusPill(input: {
   if (pendingBackgroundTaskCount > 0 && isLatestTurnSettled(thread.latestTurn, thread.session)) {
     return {
       label: "Background",
-      colorClass: "text-amber-600 dark:text-amber-300/90",
-      dotClass: "bg-amber-500 dark:bg-amber-300/90",
+      colorClass: "text-cyan-600 dark:text-cyan-300/90",
+      dotClass: THREAD_STATUS_DOT_CLASSES.cyan,
       pulse: true,
     };
   }
@@ -405,7 +413,7 @@ export function resolveThreadStatusPill(input: {
     return {
       label: "Completed",
       colorClass: "text-emerald-600 dark:text-emerald-300/90",
-      dotClass: "bg-emerald-500 dark:bg-emerald-300/90",
+      dotClass: THREAD_STATUS_DOT_CLASSES.emerald,
       pulse: false,
     };
   }
@@ -430,10 +438,6 @@ export function resolveProjectStatusIndicator(
 
   return highestPriorityStatus;
 }
-
-// One click reveals the whole tail when it is at most the preview size plus this
-// slack, so a couple of stragglers never hide behind the search handoff.
-export const SIDEBAR_THREAD_REVEAL_ALL_SLACK = 5;
 
 export interface SidebarThreadWindow<T> {
   visibleThreads: T[];
@@ -487,10 +491,7 @@ export function getSidebarThreadWindow<T>(input: {
   // Reveal in preview-sized chunks until the tail is exhausted. Search remains
   // available after the first expansion as a fast path for huge projects.
   const revealStepSize = Math.max(0, previewLimit);
-  const nextRevealCount =
-    hiddenThreads.length <= revealStepSize + SIDEBAR_THREAD_REVEAL_ALL_SLACK
-      ? hiddenThreads.length
-      : revealStepSize;
+  const nextRevealCount = Math.min(hiddenThreads.length, revealStepSize);
 
   return {
     visibleThreads,

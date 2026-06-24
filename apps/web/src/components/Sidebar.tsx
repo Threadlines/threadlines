@@ -2,6 +2,7 @@ import {
   ArchiveIcon,
   ArrowUpDownIcon,
   ChevronRightIcon,
+  ChevronUpIcon,
   CloudIcon,
   FolderPlusIcon,
   PinIcon,
@@ -20,7 +21,7 @@ import {
   ThreadStatusLabel,
 } from "./ThreadStatusIndicators";
 import { ThreadlinesGlyph } from "./Icons";
-import { SectionLabel } from "./ui/threadline";
+import { LiveNode, SectionLabel } from "./ui/threadline";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { autoAnimate } from "@formkit/auto-animate";
 import React, { useCallback, useEffect, memo, useMemo, useRef, useState } from "react";
@@ -64,11 +65,6 @@ import {
   type SidebarThreadSortOrder,
 } from "@threadlines/contracts/settings";
 import { usePrimaryEnvironmentId } from "../environments/primary";
-import {
-  ELECTRON_HEADER_HEIGHT_CLASS,
-  MAC_TRAFFIC_LIGHT_CLEARANCE_HEADER_CLASS,
-  isMacElectron,
-} from "../desktopChrome";
 import { isElectron } from "../env";
 import { APP_BASE_NAME, APP_STAGE_LABEL, APP_VERSION } from "../branding";
 import { isTerminalFocused } from "../lib/terminalFocus";
@@ -881,17 +877,18 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
     expandThreadListForProject,
     collapseThreadListForProject,
   } = props;
-  const showMoreButtonRender = useMemo(() => <button type="button" />, []);
-  const showLessButtonRender = useMemo(() => <button type="button" />, []);
-  const searchAllButtonRender = useMemo(() => <button type="button" />, []);
   const shouldShowThreadCollapseButton = shouldShowThreadPanel && isThreadListRevealed;
+  const shouldPromoteThreadCollapseButton = shouldShowThreadCollapseButton && nextRevealCount <= 0;
+  const shouldShowThreadListFooter =
+    shouldShowThreadPanel &&
+    (nextRevealCount > 0 || searchHandoffThreadCount !== null || shouldShowThreadCollapseButton);
 
   return (
     <SidebarMenuSub
       ref={attachThreadListAutoAnimateRef}
       // Threads hang off their project's line: the inherited border-l is the rail.
       // overflow-clip (not hidden) keeps this list from becoming a scroll
-      // container, so the sticky "Show less" row tracks the sidebar viewport. The
+      // container, so the sticky thread-list footer tracks the sidebar viewport. The
       // clip margin lets each row's live node (and its halo) sit on the rail
       // without being shaved off at the left edge.
       className="my-0 ml-3.5 mr-1 translate-x-0 gap-0.5 overflow-clip [overflow-clip-margin:0.875rem] border-muted-foreground/15 py-0 pl-1 pr-0"
@@ -940,58 +937,87 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
           );
         })}
 
-      {shouldShowThreadPanel && nextRevealCount > 0 && (
-        <SidebarMenuSubItem className="w-full">
-          <SidebarMenuSubButton
-            render={showMoreButtonRender}
+      {shouldShowThreadListFooter ? (
+        <SidebarMenuSubItem
+          className={cn(
+            "w-full",
+            // Pinned to the sidebar viewport bottom while the expanded list
+            // scrolls, so collapsing never requires scrolling to the end.
+            shouldShowThreadCollapseButton &&
+              "sticky bottom-0 z-10 -ml-1 w-[calc(100%+0.25rem)] bg-sidebar py-0.5 pl-1",
+          )}
+        >
+          <div
             data-thread-selection-safe
-            size="sm"
-            className="h-6 w-full translate-x-0 justify-start px-2 text-left text-[10px] text-muted-foreground/60 hover:bg-accent hover:text-muted-foreground/80"
-            onClick={() => {
-              expandThreadListForProject(projectKey, nextRevealCount);
-            }}
+            className="flex h-6 w-full translate-x-0 items-center gap-1 px-1"
           >
-            <span className="flex min-w-0 flex-1 items-center gap-2">
-              {hiddenThreadStatus && <ThreadStatusLabel status={hiddenThreadStatus} compact />}
-              <span>Show {nextRevealCount} more</span>
-            </span>
-          </SidebarMenuSubButton>
-        </SidebarMenuSubItem>
-      )}
-      {shouldShowThreadPanel && searchHandoffThreadCount !== null && (
-        <SidebarMenuSubItem className="w-full">
-          <SidebarMenuSubButton
-            render={searchAllButtonRender}
-            data-thread-selection-safe
-            size="sm"
-            className="h-6 w-full translate-x-0 justify-start px-2 text-left text-[10px] text-muted-foreground/60 hover:bg-accent hover:text-muted-foreground/80"
-            onClick={onSearchAllThreads}
-          >
-            <span className="flex min-w-0 flex-1 items-center gap-2">
-              {hiddenThreadStatus && <ThreadStatusLabel status={hiddenThreadStatus} compact />}
-              <span className="inline-flex items-center gap-1">
-                <SearchIcon className="size-2.5" />
-                Search all {searchHandoffThreadCount} threads…
-              </span>
-            </span>
-          </SidebarMenuSubButton>
-        </SidebarMenuSubItem>
-      )}
-      {shouldShowThreadCollapseButton ? (
-        // Pinned to the sidebar viewport bottom while the expanded list
-        // scrolls, so collapsing never requires scrolling to the end.
-        <SidebarMenuSubItem className="sticky bottom-0 z-10 -ml-1 w-[calc(100%+0.25rem)] bg-sidebar pl-1">
-          <SidebarMenuSubButton
-            render={showLessButtonRender}
-            data-thread-selection-safe
-            size="sm"
-            className="h-6 w-full translate-x-0 justify-start px-2 text-left text-[10px] text-muted-foreground/60 hover:bg-accent hover:text-muted-foreground/80"
-            onClick={() => {
-              collapseThreadListForProject(projectKey);
-            }}
-          >
-            <span>Show less</span>
-          </SidebarMenuSubButton>
+            {nextRevealCount > 0 ? (
+              <button
+                type="button"
+                data-thread-selection-safe
+                className="inline-flex h-6 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md px-1.5 text-left text-[10px] text-muted-foreground/60 transition-colors hover:bg-accent hover:text-muted-foreground/80 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+                onClick={() => {
+                  expandThreadListForProject(projectKey, nextRevealCount);
+                }}
+              >
+                {hiddenThreadStatus && <ThreadStatusLabel status={hiddenThreadStatus} compact />}
+                <span className="truncate">Show {nextRevealCount} more</span>
+              </button>
+            ) : shouldPromoteThreadCollapseButton ? (
+              <button
+                type="button"
+                data-thread-selection-safe
+                className="inline-flex h-6 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md px-1.5 text-left text-[10px] text-muted-foreground/60 transition-colors hover:bg-accent hover:text-muted-foreground/80 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+                onClick={() => {
+                  collapseThreadListForProject(projectKey);
+                }}
+              >
+                <span className="truncate">Show less</span>
+              </button>
+            ) : (
+              <span className="min-w-0 flex-1" aria-hidden="true" />
+            )}
+            {searchHandoffThreadCount !== null ? (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <button
+                      type="button"
+                      data-thread-selection-safe
+                      aria-label={`Search all ${searchHandoffThreadCount} threads`}
+                      className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-accent hover:text-muted-foreground/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+                      onClick={onSearchAllThreads}
+                    >
+                      <SearchIcon className="size-3" />
+                    </button>
+                  }
+                />
+                <TooltipPopup side="top">
+                  Search all {searchHandoffThreadCount} threads
+                </TooltipPopup>
+              </Tooltip>
+            ) : null}
+            {shouldShowThreadCollapseButton && !shouldPromoteThreadCollapseButton ? (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <button
+                      type="button"
+                      data-thread-selection-safe
+                      aria-label="Show less"
+                      className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-accent hover:text-muted-foreground/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+                      onClick={() => {
+                        collapseThreadListForProject(projectKey);
+                      }}
+                    >
+                      <ChevronUpIcon className="size-3.5" />
+                    </button>
+                  }
+                />
+                <TooltipPopup side="top">Show less</TooltipPopup>
+              </Tooltip>
+            ) : null}
+          </div>
         </SidebarMenuSubItem>
       ) : null}
     </SidebarMenuSub>
@@ -2146,11 +2172,15 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
               className={`-ml-0.5 relative inline-flex size-3.5 shrink-0 items-center justify-center ${projectStatus.colorClass}`}
             >
               <span className="absolute inset-0 flex items-center justify-center transition-opacity duration-150 group-hover/project-header:opacity-0">
-                <span
-                  className={`size-[9px] rounded-full ${projectStatus.dotClass} ${
-                    projectStatus.pulse ? "animate-pulse" : ""
-                  }`}
-                />
+                {projectStatus.pulse ? (
+                  <LiveNode
+                    className="size-[9px]"
+                    dotClassName={projectStatus.dotClass}
+                    haloClassName={projectStatus.dotClass}
+                  />
+                ) : (
+                  <span className={`size-[9px] rounded-full ${projectStatus.dotClass}`} />
+                )}
               </span>
               <ChevronRightIcon className="absolute inset-0 m-auto size-3.5 text-muted-foreground/70 opacity-0 transition-opacity duration-150 group-hover/project-header:opacity-100" />
             </span>
@@ -2588,18 +2618,17 @@ const SidebarChromeHeader = memo(function SidebarChromeHeader({
   isElectron: boolean;
 }) {
   const wordmark = (
-    <div className="flex w-full min-w-0 items-center gap-2">
+    <div className="flex min-w-0 items-center gap-2">
       <SidebarTrigger
         className="size-7 shrink-0 text-muted-foreground/60 hover:text-foreground md:hidden"
         tooltip="Collapse sidebar"
       />
-      <span aria-hidden="true" className="hidden size-7 shrink-0 md:block md:size-8" />
       <Tooltip>
         <TooltipTrigger
           render={
             <Link
               aria-label={`Go to ${APP_BASE_NAME} home`}
-              className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-md text-foreground outline-hidden ring-ring transition-opacity hover:opacity-85 focus-visible:ring-2"
+              className="flex min-w-0 cursor-pointer items-center gap-1.5 rounded-md text-foreground outline-hidden ring-ring transition-opacity hover:opacity-85 focus-visible:ring-2"
               to="/"
             >
               <ThreadlinesGlyph aria-hidden="true" className="h-3 w-auto shrink-0" />
@@ -2620,18 +2649,9 @@ const SidebarChromeHeader = memo(function SidebarChromeHeader({
   );
 
   return isElectron ? (
-    <SidebarHeader
-      className={cn(
-        "drag-region flex-row gap-2 px-3 sm:px-5",
-        isMacElectron
-          ? MAC_TRAFFIC_LIGHT_CLEARANCE_HEADER_CLASS
-          : cn(
-              ELECTRON_HEADER_HEIGHT_CLASS,
-              "items-center py-0 pl-5 wco:h-[env(titlebar-area-height)]",
-            ),
-      )}
-    >
-      {wordmark}
+    <SidebarHeader className="drag-region shrink-0 gap-0 px-0 py-0">
+      <div aria-hidden="true" className="h-10 shrink-0" />
+      <div className="flex h-8 min-h-8 items-center px-3">{wordmark}</div>
     </SidebarHeader>
   ) : (
     <SidebarHeader className="gap-3 px-3 py-2 sm:gap-2.5 sm:px-5 sm:py-3">{wordmark}</SidebarHeader>

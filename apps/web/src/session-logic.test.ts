@@ -17,6 +17,7 @@ import {
   derivePendingUserInputs,
   deriveSubagentProgressState,
   deriveSubagentResultEntries,
+  deriveForkContextEntries,
   deriveTimelineEntries,
   deriveWorkLogEntries,
   findLatestProposedPlan,
@@ -1159,6 +1160,19 @@ describe("deriveWorkLogEntries", () => {
     expect(entries.map((entry) => entry.id)).toEqual(["turn-1", "turn-2"]);
   });
 
+  it("excludes fork context activities from the generic work log", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "fork-context",
+        kind: "thread.fork.context",
+        summary: "Fork context carried over",
+        tone: "info",
+      }),
+    ]);
+
+    expect(entries).toEqual([]);
+  });
+
   it("keeps generated image previews from previous turns", () => {
     const imageBase64 =
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
@@ -1633,7 +1647,7 @@ describe("deriveWorkLogEntries", () => {
     });
   });
 
-  it("renders tagged Codex stream retries without repeating the reconnect label", () => {
+  it("renders tagged Codex stream retries as provider transport status", () => {
     const [entry] = deriveWorkLogEntries([
       makeActivity({
         id: "codex-retry",
@@ -1643,6 +1657,7 @@ describe("deriveWorkLogEntries", () => {
         turnId: "turn-1",
         payload: {
           message: "Reconnecting... 1/5",
+          provider: "codex",
           warningKind: "api-retry",
           detail: {
             error: {
@@ -1658,9 +1673,31 @@ describe("deriveWorkLogEntries", () => {
 
     expect(entry).toMatchObject({
       id: "codex-retry",
-      label: "Reconnecting... 1/5",
+      label: "Codex stream reconnecting 1/5",
+      detail: "Network error while connecting to the Codex responses endpoint.",
+      tone: "warning",
+    });
+  });
+
+  it("renders Codex transport fallback warnings as recovery status", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "codex-fallback",
+        kind: "runtime.warning",
+        summary: "Runtime warning",
+        tone: "warning",
+        payload: {
+          message:
+            "Falling back from WebSockets to HTTPS transport. stream disconnected before completion: IO error: received fatal alert: BadRecordMac",
+        },
+      }),
+    ]);
+
+    expect(entry).toMatchObject({
+      id: "codex-fallback",
+      label: "Codex switched to HTTPS transport",
       detail:
-        "stream disconnected before completion: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
+        "After repeated stream disconnects, Codex continued the turn over HTTPS. Last error: TLS stream error (BadRecordMac) interrupted the provider connection.",
       tone: "warning",
     });
   });
@@ -2774,6 +2811,109 @@ describe("deriveTimelineEntries", () => {
     });
   });
 
+  it("orders fork context before the first visible fork message at the same timestamp", () => {
+    const [forkContext] = deriveForkContextEntries([
+      makeActivity({
+        id: "fork-context",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "thread.fork.context",
+        summary: "Fork context carried over",
+        tone: "info",
+        payload: {
+          sourceThreadId: "thread-source",
+          sourceThreadTitle: "Source thread",
+          sourceMessageId: "message-source",
+          sourceMessageRole: "assistant",
+          sourceMessageText: "Finished setup.",
+          sourceMessageCreatedAt: "2026-02-23T00:00:00.000Z",
+          workspaceMode: "current",
+          includedMessageCount: 2,
+          includedToolSummaryCount: 1,
+          includedAttachmentCount: 0,
+          omittedAttachmentCount: 0,
+          contextText: "Carried context",
+          attachments: [],
+          modelSelection: {
+            instanceId: "codex",
+            model: "gpt-5.4",
+          },
+          createdAt: "2026-02-23T00:00:01.000Z",
+        },
+      }),
+    ]);
+
+    const entries = deriveTimelineEntries(
+      [
+        {
+          id: MessageId.make("message-fork"),
+          role: "user",
+          text: "Continue from here.",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          streaming: false,
+        },
+      ],
+      [],
+      [],
+      [],
+      forkContext ? [forkContext] : [],
+    );
+
+    expect(entries.map((entry) => entry.kind)).toEqual(["fork-context", "message"]);
+  });
+
+  it("suppresses assistant messages that exactly echo same-turn subagent results", () => {
+    const entries = deriveTimelineEntries(
+      [
+        {
+          id: MessageId.make("assistant-subagent-echo"),
+          role: "assistant",
+          text: "Subagent render check: hello from a background helper.",
+          createdAt: "2026-02-23T00:00:03.000Z",
+          streaming: false,
+          turnId: TurnId.make("turn-1"),
+        },
+        {
+          id: MessageId.make("assistant-summary"),
+          role: "assistant",
+          text: "The subagent responded, so I am closing it now.",
+          createdAt: "2026-02-23T00:00:04.000Z",
+          streaming: false,
+          turnId: TurnId.make("turn-1"),
+        },
+        {
+          id: MessageId.make("assistant-other-turn"),
+          role: "assistant",
+          text: "Subagent render check: hello from a background helper.",
+          createdAt: "2026-02-23T00:00:05.000Z",
+          streaming: false,
+          turnId: TurnId.make("turn-2"),
+        },
+      ],
+      [],
+      [],
+      [
+        {
+          id: "subagent-result:turn-1:agent-1",
+          createdAt: "2026-02-23T00:00:06.000Z",
+          turnId: TurnId.make("turn-1"),
+          agentThreadId: "agent-1",
+          label: "Subagent",
+          role: null,
+          objective: "Render check",
+          body: "Subagent render check: hello from a background helper.",
+          model: null,
+          reasoningEffort: null,
+        },
+      ],
+    );
+
+    expect(entries.map((entry) => entry.id)).toEqual([
+      "assistant-summary",
+      "assistant-other-turn",
+      "subagent-result:turn-1:agent-1",
+    ]);
+  });
+
   it("anchors the completion divider to latestTurn.assistantMessageId before timestamp fallback", () => {
     const entries = deriveTimelineEntries(
       [
@@ -3083,6 +3223,7 @@ describe("deriveSubagentProgressState", () => {
               status: "completed",
               prompt: "Read-only task. Inspect timeline rendering",
               receiverThreadIds: ["agent-1"],
+              agentNickname: "Heisenberg",
               agentsStates: {
                 "agent-1": { status: "pendingInit", message: null },
               },
@@ -3153,6 +3294,8 @@ describe("deriveSubagentProgressState", () => {
     expect(activeState?.items[0]).toMatchObject({
       id: "agent-1",
       agentThreadId: "agent-1",
+      nickname: "Heisenberg",
+      label: "Subagent",
       objective: "Inspect timeline rendering",
       status: "running",
       model: "gpt-5.5",
@@ -3164,13 +3307,7 @@ describe("deriveSubagentProgressState", () => {
       latestTurnId: TurnId.make("turn-1"),
       latestTurnSettled: false,
     });
-    expect(completedState).toMatchObject({
-      activeCount: 0,
-      completedCount: 1,
-      totalCount: 1,
-      summary: "1 subagent finished",
-      badge: { label: "1", tone: "complete", pulse: false },
-    });
+    expect(completedState).toBeNull();
 
     expect(
       deriveSubagentProgressState({
@@ -3179,6 +3316,121 @@ describe("deriveSubagentProgressState", () => {
         latestTurnSettled: true,
       }),
     ).toBeNull();
+  });
+
+  it("keeps failed subagents visible after the turn settles", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "spawn-completed",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.completed",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          data: {
+            item: {
+              id: "call-spawn",
+              type: "collabAgentToolCall",
+              tool: "spawnAgent",
+              status: "completed",
+              prompt: "reviewer: Inspect timeline rendering",
+              receiverThreadIds: ["agent-1"],
+              agentsStates: {
+                "agent-1": { status: "running", message: null },
+              },
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "wait-completed",
+        createdAt: "2026-02-23T00:00:04.000Z",
+        kind: "tool.completed",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          data: {
+            item: {
+              id: "call-wait",
+              type: "collabAgentToolCall",
+              tool: "wait",
+              status: "completed",
+              receiverThreadIds: ["agent-1"],
+              agentsStates: {
+                "agent-1": { status: "errored", message: "Subagent failed." },
+              },
+            },
+          },
+        },
+      }),
+    ];
+
+    expect(
+      deriveSubagentProgressState({
+        activities,
+        latestTurnId: TurnId.make("turn-1"),
+        latestTurnSettled: true,
+      }),
+    ).toMatchObject({
+      activeCount: 0,
+      failedCount: 1,
+      totalCount: 1,
+      summary: "1 subagent needs attention",
+      badge: { label: "1", tone: "warning", pulse: false },
+      items: [expect.objectContaining({ status: "failed", statusLabel: "Error" })],
+    });
+  });
+
+  it("tracks in-progress Claude Agent tool calls as subagents", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "claude-agent-started",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.started",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "inProgress",
+          title: "Subagent task",
+          detail: "code-reviewer: Inspect timeline rendering",
+          toolCallId: "tool-agent-1",
+          data: {
+            toolName: "Agent",
+            input: {
+              description: "Inspect timeline rendering",
+              prompt: "Audit the subagent row rendering.",
+              subagent_type: "code-reviewer",
+            },
+          },
+        },
+      }),
+    ];
+
+    expect(
+      deriveSubagentProgressState({
+        activities,
+        latestTurnId: TurnId.make("turn-1"),
+        latestTurnSettled: false,
+      }),
+    ).toMatchObject({
+      activeCount: 1,
+      completedCount: 0,
+      totalCount: 1,
+      summary: "1 subagent active",
+      items: [
+        expect.objectContaining({
+          id: "tool-agent-1",
+          agentThreadId: "tool-agent-1",
+          label: "Code reviewer subagent",
+          role: "code-reviewer",
+          objective: "Inspect timeline rendering",
+          status: "running",
+          statusLabel: "Running",
+        }),
+      ],
+    });
   });
 });
 
@@ -3201,6 +3453,7 @@ describe("deriveSubagentResultEntries", () => {
               status: "completed",
               prompt: "reviewer: Inspect timeline rendering",
               receiverThreadIds: ["agent-1"],
+              agentNickname: "Heisenberg",
               agentsStates: {
                 "agent-1": { status: "pendingInit", message: null },
               },
@@ -3244,12 +3497,192 @@ describe("deriveSubagentResultEntries", () => {
         turnId: "turn-1",
         agentThreadId: "agent-1",
         label: "Reviewer subagent",
+        nickname: "Heisenberg",
         role: "reviewer",
         objective: "Inspect timeline rendering",
         body: "**Finding:** timeline rows can render subagent output.",
         model: "gpt-5.5",
         reasoningEffort: "high",
       },
+    ]);
+  });
+
+  it("uses subagent nicknames that first appear on terminal close-agent states", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "spawn-completed",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.completed",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          data: {
+            item: {
+              id: "call-spawn",
+              type: "collabAgentToolCall",
+              tool: "spawnAgent",
+              status: "completed",
+              prompt: "For this render check, output one sentence.",
+              receiverThreadIds: ["agent-1"],
+              agentsStates: {
+                "agent-1": { status: "running", message: null },
+              },
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "close-completed",
+        createdAt: "2026-02-23T00:00:04.000Z",
+        kind: "tool.completed",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          data: {
+            item: {
+              id: "call-close",
+              type: "collabAgentToolCall",
+              tool: "closeAgent",
+              status: "completed",
+              receiverThreadIds: ["agent-1"],
+              agentNickname: "Euclid",
+              agentsStates: {
+                "agent-1": {
+                  status: "completed",
+                  message: "Willy: hello from a background helper.",
+                },
+              },
+            },
+          },
+        },
+      }),
+    ];
+
+    expect(deriveSubagentResultEntries(activities)).toEqual([
+      expect.objectContaining({
+        agentThreadId: "agent-1",
+        label: "Subagent",
+        nickname: "Euclid",
+        body: "Willy: hello from a background helper.",
+      }),
+    ]);
+  });
+
+  it("extracts final Claude Agent tool results into styled subagent result entries", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "claude-agent-started",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.started",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "inProgress",
+          title: "Subagent task",
+          detail: "code-reviewer: Inspect timeline rendering",
+          toolCallId: "tool-agent-1",
+          data: {
+            toolName: "Agent",
+            input: {
+              description: "Inspect timeline rendering",
+              prompt: "Audit the subagent row rendering.",
+              subagent_type: "code-reviewer",
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "claude-agent-completed",
+        createdAt: "2026-02-23T00:00:04.000Z",
+        kind: "tool.completed",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          title: "Subagent task",
+          detail: "code-reviewer: Inspect timeline rendering",
+          toolCallId: "tool-agent-1",
+          data: {
+            toolName: "Agent",
+            input: {
+              description: "Inspect timeline rendering",
+              prompt: "Audit the subagent row rendering.",
+              subagent_type: "code-reviewer",
+            },
+            result: {
+              type: "tool_result",
+              tool_use_id: "tool-agent-1",
+              content: [
+                {
+                  type: "text",
+                  text: "**Finding:** Claude subagent output is visible.",
+                },
+              ],
+            },
+          },
+        },
+      }),
+    ];
+
+    expect(deriveSubagentResultEntries(activities)).toEqual([
+      {
+        id: "subagent-result:turn-1:tool-agent-1",
+        createdAt: "2026-02-23T00:00:04.000Z",
+        turnId: "turn-1",
+        agentThreadId: "tool-agent-1",
+        label: "Code reviewer subagent",
+        role: "code-reviewer",
+        objective: "Inspect timeline rendering",
+        body: "**Finding:** Claude subagent output is visible.",
+        model: null,
+        reasoningEffort: null,
+      },
+    ]);
+  });
+
+  it("strips Claude Agent continuation metadata from styled subagent output", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "claude-agent-completed",
+        createdAt: "2026-02-23T00:00:04.000Z",
+        kind: "tool.completed",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          title: "Subagent task",
+          detail: "general-purpose: Output sample sentences to chat",
+          toolCallId: "tool-agent-1",
+          data: {
+            toolName: "Agent",
+            input: {
+              description: "Output sample sentences to chat",
+              subagent_type: "general-purpose",
+            },
+            result: {
+              type: "tool_result",
+              tool_use_id: "tool-agent-1",
+              content: [
+                {
+                  type: "text",
+                  text: [
+                    "Hello again. This is the useful subagent output.",
+                    "",
+                    "agentId: a69ec8d2ea0d135cc (use SendMessage with to: 'a69ec8d2ea0d135cc', summary: '<5-10 word recap>' to continue this agent) <usage>subagent_tokens: 9870 tool_uses: 0 duration_ms: 2430</usage>",
+                  ].join("\n"),
+                },
+              ],
+            },
+          },
+        },
+      }),
+    ];
+
+    expect(deriveSubagentResultEntries(activities)).toEqual([
+      expect.objectContaining({
+        body: "Hello again. This is the useful subagent output.",
+      }),
     ]);
   });
 

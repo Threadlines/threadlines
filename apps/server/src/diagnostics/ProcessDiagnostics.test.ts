@@ -363,7 +363,7 @@ describe("ProcessDiagnostics", () => {
           status: "Live",
           cpuPercent: 0,
           rssBytes: 100,
-          elapsed: "",
+          elapsed: "02:13",
           command: "node vite cli.js dev",
         },
         {
@@ -373,7 +373,7 @@ describe("ProcessDiagnostics", () => {
           status: "Live",
           cpuPercent: 0,
           rssBytes: 100,
-          elapsed: "",
+          elapsed: "00:37",
           command: "node apps/server/scripts/cli.ts",
         },
       ],
@@ -392,6 +392,7 @@ describe("ProcessDiagnostics", () => {
     });
 
     expect(result.runs.map((run) => `${run.port}:${run.pid}`)).toEqual(["6013:12", "14053:13"]);
+    expect(result.runs.map((run) => run.elapsed)).toEqual(["02:13", "00:37"]);
   });
 
   itEffect("does not allow signaling the diagnostics query process", () =>

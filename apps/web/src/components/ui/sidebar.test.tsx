@@ -6,6 +6,7 @@ import {
   SidebarMenuButton,
   SidebarMenuSubButton,
   SidebarProvider,
+  SidebarTrigger,
 } from "./sidebar";
 
 function renderSidebarButton(className?: string) {
@@ -17,6 +18,29 @@ function renderSidebarButton(className?: string) {
 }
 
 describe("sidebar interactive cursors", () => {
+  it("exposes collapsed state for shared titlebar inset styling", () => {
+    const html = renderToStaticMarkup(
+      <SidebarProvider defaultOpen={false}>
+        <div />
+      </SidebarProvider>,
+    );
+
+    expect(html).toContain('data-sidebar-state="collapsed"');
+  });
+
+  it("keeps sidebar triggers clickable inside Electron drag regions", () => {
+    const html = renderToStaticMarkup(
+      <SidebarProvider>
+        <SidebarTrigger />
+      </SidebarProvider>,
+    );
+
+    expect(html).toContain('data-slot="sidebar-trigger"');
+    expect(html).toContain("pointer-events-auto");
+    expect(html).toContain("[-webkit-app-region:no-drag]");
+    expect(html).toContain("size-[var(--workspace-titlebar-control-size)]!");
+  });
+
   it("uses a pointer cursor for menu buttons by default", () => {
     const html = renderSidebarButton();
 

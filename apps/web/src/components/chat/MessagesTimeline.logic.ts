@@ -1,6 +1,7 @@
 import * as Equal from "effect/Equal";
 import {
   type ModelFallbackState,
+  type ForkContextEntry,
   type SubagentResultEntry,
   type TimelineEntry,
   type WorkLogEntry,
@@ -24,6 +25,7 @@ export type MessagesTimelineRow =
       createdAt: string;
       groupedEntries: WorkLogEntry[];
       isLive: boolean;
+      liveStartedAt: string | null;
     }
   | {
       kind: "message";
@@ -51,6 +53,12 @@ export type MessagesTimelineRow =
       id: string;
       createdAt: string;
       result: SubagentResultEntry;
+    }
+  | {
+      kind: "fork-context";
+      id: string;
+      createdAt: string;
+      forkContext: ForkContextEntry;
     }
   | { kind: "working"; id: string; createdAt: string | null; label: string };
 
@@ -255,6 +263,7 @@ export function deriveMessagesTimelineRows(input: {
         createdAt: timelineEntry.createdAt,
         groupedEntries,
         isLive: false,
+        liveStartedAt: null,
       });
       index = cursor - 1;
       continue;
@@ -276,6 +285,16 @@ export function deriveMessagesTimelineRows(input: {
         id: timelineEntry.id,
         createdAt: timelineEntry.createdAt,
         result: timelineEntry.result,
+      });
+      continue;
+    }
+
+    if (timelineEntry.kind === "fork-context") {
+      nextRows.push({
+        kind: "fork-context",
+        id: timelineEntry.id,
+        createdAt: timelineEntry.createdAt,
+        forkContext: timelineEntry.forkContext,
       });
       continue;
     }
@@ -331,7 +350,11 @@ export function deriveMessagesTimelineRows(input: {
     // halo), so only fall back to a standalone working row when there is no
     // live work group to absorb it (e.g. a turn that has not emitted any tool
     // activity yet).
-    const absorbedByLiveWorkRow = markLatestLiveWorkRow(nextRows, input.activeTurnId ?? null);
+    const absorbedByLiveWorkRow = markLatestLiveWorkRow(
+      nextRows,
+      input.activeTurnId ?? null,
+      input.activeTurnStartedAt,
+    );
     if (!absorbedByLiveWorkRow) {
       nextRows.push({
         kind: "working",
@@ -440,7 +463,11 @@ function concreteTimelineEntryTurnId(entry: TimelineEntry): TurnId | null | unde
   return undefined;
 }
 
-function markLatestLiveWorkRow(rows: MessagesTimelineRow[], activeTurnId: TurnId | null): boolean {
+function markLatestLiveWorkRow(
+  rows: MessagesTimelineRow[],
+  activeTurnId: TurnId | null,
+  activeTurnStartedAt: string | null,
+): boolean {
   // The live work group must be the tail of the timeline. Once the assistant
   // emits a message (or any other row) after the work, that work is no longer
   // the current activity — the standalone working row then anchors the live
@@ -459,7 +486,7 @@ function markLatestLiveWorkRow(rows: MessagesTimelineRow[], activeTurnId: TurnId
   if (!isActiveTurnWork) {
     return false;
   }
-  rows[lastIndex] = { ...lastRow, isLive: true };
+  rows[lastIndex] = { ...lastRow, isLive: true, liveStartedAt: activeTurnStartedAt };
   return true;
 }
 
@@ -507,9 +534,13 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
     case "subagent-result":
       return a.result === (b as typeof a).result;
 
+    case "fork-context":
+      return a.forkContext === (b as typeof a).forkContext;
+
     case "work":
       return (
         a.isLive === (b as typeof a).isLive &&
+        a.liveStartedAt === (b as typeof a).liveStartedAt &&
         Equal.equals(a.groupedEntries, (b as typeof a).groupedEntries)
       );
 

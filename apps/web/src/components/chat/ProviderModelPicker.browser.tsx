@@ -361,9 +361,9 @@ describe("ProviderModelPicker", () => {
       await openModelPicker();
 
       await vi.waitFor(() => {
-        const listText = getModelPickerListText();
-        expect(listText).toContain("Claude Opus 4.6");
-        expect(listText).not.toContain("GPT-5 Codex");
+        expect(getVisibleModelNames()).toContain("Opus 4.6");
+        expect(getModelPickerListText()).not.toContain("Claude Opus 4.6");
+        expect(getModelPickerListText()).not.toContain("GPT-5 Codex");
         expect(getModelPickerTabOrder()).toEqual(["favorites", "codex", "claudeAgent"]);
       });
 
@@ -397,7 +397,7 @@ describe("ProviderModelPicker", () => {
 
       await vi.waitFor(() => {
         expect(getModelPickerTabOrder()).toEqual(["favorites", "codex", "claudeAgent"]);
-        expect(getVisibleModelNames()).toEqual(["Claude Sonnet 4.6"]);
+        expect(getVisibleModelNames()).toEqual(["Sonnet 4.6"]);
       });
     } finally {
       await mounted.cleanup();
@@ -472,7 +472,7 @@ describe("ProviderModelPicker", () => {
 
       await vi.waitFor(() => {
         expect(getVisibleModelNames()).toContain("GPT-5 Codex");
-        expect(getVisibleModelNames()).not.toContain("Claude Opus 4.6");
+        expect(getVisibleModelNames()).not.toContain("Opus 4.6");
       });
     } finally {
       await mounted.cleanup();
@@ -499,8 +499,8 @@ describe("ProviderModelPicker", () => {
       await openModelPicker();
 
       await vi.waitFor(() => {
-        expect(getVisibleModelNames()).toEqual(["Claude Haiku 4.5", "Claude Sonnet 4.6"]);
-        expect(getModelPickerListText()).not.toContain("Claude Opus 4.6");
+        expect(getVisibleModelNames()).toEqual(["Haiku 4.5", "Sonnet 4.6"]);
+        expect(getModelPickerListText()).not.toContain("Opus 4.6");
       });
     } finally {
       await mounted.cleanup();
@@ -554,11 +554,7 @@ describe("ProviderModelPicker", () => {
         const text = document.body.textContent ?? "";
         // Should show locked provider label
         expect(text).toContain("Claude");
-        expect(getVisibleModelNames()).toEqual([
-          "Claude Sonnet 4.6",
-          "Claude Opus 4.6",
-          "Claude Haiku 4.5",
-        ]);
+        expect(getVisibleModelNames()).toEqual(["Sonnet 4.6", "Opus 4.6", "Haiku 4.5"]);
       });
     } finally {
       localStorage.removeItem(CLIENT_SETTINGS_STORAGE_KEY);
@@ -679,7 +675,8 @@ describe("ProviderModelPicker", () => {
       expect(trigger).not.toBeNull();
       const label = trigger?.textContent ?? "";
       expect(label).not.toContain("gpt-5-codex");
-      expect(label).toContain("Claude Opus 4.6");
+      expect(label).toContain("Opus 4.6");
+      expect(label).not.toContain("Claude Opus 4.6");
     } finally {
       await screen.unmount();
       host.remove();
@@ -747,9 +744,9 @@ describe("ProviderModelPicker", () => {
       await openModelPicker();
 
       await vi.waitFor(() => {
-        const text = document.body.textContent ?? "";
-        expect(text).toContain("Claude Opus 4.6");
-        expect(text).not.toContain("GPT-5 Codex");
+        expect(getVisibleModelNames()).toContain("Opus 4.6");
+        expect(getModelPickerListText()).not.toContain("Claude Opus 4.6");
+        expect(getModelPickerListText()).not.toContain("GPT-5 Codex");
       });
 
       // Find and type in search box
@@ -757,9 +754,9 @@ describe("ProviderModelPicker", () => {
       await searchInput.fill("claude");
 
       await vi.waitFor(() => {
-        const text = document.body.textContent ?? "";
-        expect(text).toContain("Claude Opus 4.6");
-        expect(text).not.toContain("GPT-5 Codex");
+        expect(getVisibleModelNames()).toContain("Opus 4.6");
+        expect(getModelPickerListText()).not.toContain("Claude Opus 4.6");
+        expect(getModelPickerListText()).not.toContain("GPT-5 Codex");
       });
     } finally {
       await mounted.cleanup();
@@ -784,7 +781,7 @@ describe("ProviderModelPicker", () => {
           '[data-slot="combobox-item"][data-highlighted]',
         );
         expect(highlightedItem).not.toBeNull();
-        expect(highlightedItem?.textContent).toContain("Claude Opus 4.6");
+        expect(highlightedItem?.textContent).toContain("Opus 4.6");
       });
       await userEvent.keyboard("{ArrowDown}");
       await vi.waitFor(() => {
@@ -792,7 +789,7 @@ describe("ProviderModelPicker", () => {
           '[data-slot="combobox-item"][data-highlighted]',
         );
         expect(highlightedItem).not.toBeNull();
-        expect(highlightedItem?.textContent).toContain("Claude Sonnet 4.6");
+        expect(highlightedItem?.textContent).toContain("Sonnet 4.6");
       });
       await userEvent.keyboard("{Enter}");
 
@@ -824,8 +821,30 @@ describe("ProviderModelPicker", () => {
       await vi.waitFor(() => {
         expect(getModelPickerTabOrder()).toEqual(["favorites", "codex", "claudeAgent"]);
         expect(getVisibleModelNames()).toEqual(
-          expect.arrayContaining(["Claude Opus 4.6", "Claude Sonnet 4.6", "Claude Haiku 4.5"]),
+          expect.arrayContaining(["Opus 4.6", "Sonnet 4.6", "Haiku 4.5"]),
         );
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("switches to a provider tab with matches while searching", async () => {
+    const mounted = await mountPicker({
+      activeInstanceId: CLAUDE_INSTANCE_ID,
+      model: "claude-opus-4-6",
+      lockedProvider: null,
+    });
+
+    try {
+      await openModelPicker();
+      await page.getByPlaceholder("Search models...").fill("gpt");
+
+      await vi.waitFor(() => {
+        const codexTab = document.querySelector<HTMLElement>('[data-model-picker-tab="codex"]');
+        expect(codexTab?.getAttribute("aria-selected")).toBe("true");
+        expect(getVisibleModelNames()).toEqual(["GPT-5 Codex", "GPT-5.3 Codex"]);
+        expect(getModelPickerListText()).not.toContain("Opus 4.6");
       });
     } finally {
       await mounted.cleanup();
@@ -855,13 +874,17 @@ describe("ProviderModelPicker", () => {
         expect(getModelPickerTabText("favorites")).toBe("Favorites1/1");
         expect(getModelPickerTabText("claudeAgent")).toBe("Claude1/3");
         expect(getModelPickerTabText("codex")).toBe("Codex0/2");
-        expect(getVisibleModelNames()).toEqual(["Claude Opus 4.6"]);
+        const claudeTab = document.querySelector<HTMLElement>(
+          '[data-model-picker-tab="claudeAgent"]',
+        );
+        expect(claudeTab?.getAttribute("aria-selected")).toBe("true");
+        expect(getVisibleModelNames()).toEqual(["Opus 4.6"]);
       });
 
       await clickModelPickerTab("claudeAgent");
 
       await vi.waitFor(() => {
-        expect(getVisibleModelNames()).toEqual(["Claude Opus 4.6"]);
+        expect(getVisibleModelNames()).toEqual(["Opus 4.6"]);
       });
     } finally {
       await mounted.cleanup();
@@ -979,7 +1002,7 @@ describe("ProviderModelPicker", () => {
 
       await vi.waitFor(() => {
         const listText = getModelPickerListText();
-        expect(listText).toContain("Claude Opus 4.7");
+        expect(listText).toContain("Enterprise · Opus 4.7");
         expect(listText).not.toContain("GPT-5 Codex");
       });
     } finally {
@@ -1047,13 +1070,13 @@ describe("ProviderModelPicker", () => {
 
     try {
       await openModelPicker();
-      await page.getByPlaceholder("Search models...").fill("model");
 
       await vi.waitFor(() => {
         const listText = getModelPickerListText();
+        expect(getVisibleModelNames()).toEqual(["Team · Team Model", "Model"]);
         expect(listText).toContain("Codex · Team");
         expect(listText).toContain("Claude");
-        expect(listText).not.toContain("CodexClaude Model");
+        expect(listText).not.toContain("Claude Model");
       });
     } finally {
       await mounted.cleanup();
@@ -1074,8 +1097,8 @@ describe("ProviderModelPicker", () => {
       await openModelPicker();
 
       await vi.waitFor(() => {
-        const text = document.body.textContent ?? "";
-        expect(text).toContain("Claude Opus 4.6");
+        expect(getVisibleModelNames()).toContain("Opus 4.6");
+        expect(getModelPickerListText()).not.toContain("Claude Opus 4.6");
       });
 
       const getFirstStarButton = () => {
@@ -1119,8 +1142,8 @@ describe("ProviderModelPicker", () => {
       await openModelPicker();
 
       await vi.waitFor(() => {
-        const text = document.body.textContent ?? "";
-        expect(text).toContain("Claude Opus 4.6");
+        expect(getVisibleModelNames()).toContain("Opus 4.6");
+        expect(getModelPickerListText()).not.toContain("Claude Opus 4.6");
       });
 
       const favoriteButton = page.getByRole("button", {
@@ -1133,7 +1156,7 @@ describe("ProviderModelPicker", () => {
           getModelPickerListElement().querySelectorAll<HTMLDivElement>(
             "[data-model-picker-model-name]",
           ),
-        ).filter((element) => element.textContent?.trim() === "Claude Opus 4.6");
+        ).filter((element) => element.textContent?.trim() === "Opus 4.6");
         expect(favoritedModelRows.length).toBe(1);
       });
     } finally {
@@ -1219,12 +1242,11 @@ describe("ProviderModelPicker", () => {
       await openModelPicker();
 
       await vi.waitFor(() => {
-        const text = document.body.textContent ?? "";
-        expect(text).toContain("Claude Sonnet 4.6");
+        expect(getVisibleModelNames()).toContain("Sonnet 4.6");
       });
 
       // Click on a model
-      const modelRow = page.getByText("Claude Sonnet 4.6").first();
+      const modelRow = page.getByText("Sonnet 4.6").first();
       await modelRow.click();
 
       // Verify callback was called with correct values

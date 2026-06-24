@@ -17,16 +17,22 @@ import {
   useState,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  type TouchEvent as ReactTouchEvent,
+  type WheelEvent as ReactWheelEvent,
 } from "react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { isProviderAuthErrorMessage } from "@threadlines/shared/providerAuth";
 import {
   deriveTimelineEntries,
   formatElapsed,
+  formatSubagentDisplayName,
+  shouldShowSubagentDisplayChip,
   type McpAuthReconnectAction,
   type ProviderAuthReconnectAction,
 } from "../../session-logic";
+import { DEFAULT_SCROLL_END_TOLERANCE_PX, isScrollMetricsAtEnd } from "../ChatView.logic";
 import { type TurnDiffSummary } from "../../types";
 import { summarizeTurnDiffStats } from "../../lib/turnDiffTree";
 import ChatMarkdown from "../ChatMarkdown";
@@ -129,6 +135,83 @@ type McpAuthReconnectStatus = "running" | "completed";
 const EMPTY_MCP_AUTH_RECONNECT_STATUS: ReadonlyMap<string, McpAuthReconnectStatus> = new Map();
 const LIVE_WORK_LOG_ENTRY_COUNT = 3;
 const INITIAL_STICK_TO_BOTTOM_FRAME_COUNT = 3;
+const USER_SCROLL_STICK_LOCK_MS = 450;
+const TIMELINE_MAINTAIN_END_THRESHOLD_RATIO = 0.01;
+const SCROLLBAR_POINTER_GUTTER_PX = 18;
+const TOUCH_SCROLL_INTENT_THRESHOLD_PX = 4;
+const MAINTAIN_SCROLL_AT_END = { animated: false } as const;
+type TimelineScrollEvent = {
+  readonly nativeEvent?: {
+    readonly contentOffset?: {
+      readonly y?: number | null;
+    };
+    readonly contentSize?: {
+      readonly height?: number | null;
+    };
+    readonly layoutMeasurement?: {
+      readonly height?: number | null;
+    };
+    readonly contentInset?: {
+      readonly bottom?: number | null;
+    };
+  };
+};
+
+function finiteScrollMetric(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function getTimelineScrollMetrics(event: TimelineScrollEvent) {
+  const nativeEvent = event.nativeEvent;
+  const viewportLength = finiteScrollMetric(nativeEvent?.layoutMeasurement?.height);
+  const contentLength = finiteScrollMetric(nativeEvent?.contentSize?.height);
+  if (viewportLength === null || contentLength === null) {
+    return null;
+  }
+
+  return {
+    scrollOffset: finiteScrollMetric(nativeEvent?.contentOffset?.y) ?? 0,
+    viewportLength,
+    contentLength,
+    contentInsetEnd: finiteScrollMetric(nativeEvent?.contentInset?.bottom) ?? 0,
+  };
+}
+
+function isTimelineScrollEventAtEnd(event: TimelineScrollEvent): boolean | null {
+  const metrics = getTimelineScrollMetrics(event);
+  if (metrics === null) {
+    return null;
+  }
+  return isScrollMetricsAtEnd({
+    ...metrics,
+    tolerancePx: DEFAULT_SCROLL_END_TOLERANCE_PX,
+  });
+}
+
+function isTimelineListAtEnd(list: LegendListRef | null): boolean {
+  const scrollableNode = list?.getScrollableNode?.();
+  if (!scrollableNode || typeof scrollableNode !== "object") {
+    return Boolean(list?.getState?.().isAtEnd);
+  }
+
+  const metrics = scrollableNode as {
+    readonly scrollTop?: number | null;
+    readonly scrollHeight?: number | null;
+    readonly clientHeight?: number | null;
+  };
+  const viewportLength = finiteScrollMetric(metrics.clientHeight);
+  const contentLength = finiteScrollMetric(metrics.scrollHeight);
+  if (viewportLength === null || contentLength === null) {
+    return Boolean(list?.getState?.().isAtEnd);
+  }
+
+  return isScrollMetricsAtEnd({
+    scrollOffset: finiteScrollMetric(metrics.scrollTop) ?? 0,
+    viewportLength,
+    contentLength,
+    tolerancePx: DEFAULT_SCROLL_END_TOLERANCE_PX,
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Props (public API)
@@ -238,13 +321,118 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     }
     return next;
   }, [turnDiffSummaryByAssistantMessageId]);
+  const [autoStickToBottom, setAutoStickToBottom] = useState(true);
+  const autoStickToBottomRef = useRef(true);
+  const userScrollLockTimerRef = useRef<number | null>(null);
+  const touchStartYRef = useRef<number | null>(null);
 
-  const handleScroll = useCallback(() => {
-    const state = listRef.current?.getState?.();
-    if (state) {
-      onIsAtEndChange(state.isAtEnd);
+  const setAutoStickToBottomState = useCallback((next: boolean) => {
+    if (autoStickToBottomRef.current === next) {
+      return;
     }
-  }, [listRef, onIsAtEndChange]);
+    autoStickToBottomRef.current = next;
+    setAutoStickToBottom(next);
+  }, []);
+
+  const clearUserScrollLockTimer = useCallback(() => {
+    if (userScrollLockTimerRef.current === null) {
+      return;
+    }
+    window.clearTimeout(userScrollLockTimerRef.current);
+    userScrollLockTimerRef.current = null;
+  }, []);
+
+  const enableAutoStickIfAtEnd = useCallback(() => {
+    if (!isTimelineListAtEnd(listRef.current)) {
+      return;
+    }
+    setAutoStickToBottomState(true);
+    onIsAtEndChange(true);
+  }, [listRef, onIsAtEndChange, setAutoStickToBottomState]);
+
+  const markUserScrollIntent = useCallback(
+    (options?: { notifyAwayFromEnd?: boolean }) => {
+      clearUserScrollLockTimer();
+      setAutoStickToBottomState(false);
+      if (options?.notifyAwayFromEnd) {
+        onIsAtEndChange(false);
+      }
+      userScrollLockTimerRef.current = window.setTimeout(() => {
+        userScrollLockTimerRef.current = null;
+        enableAutoStickIfAtEnd();
+      }, USER_SCROLL_STICK_LOCK_MS);
+    },
+    [clearUserScrollLockTimer, enableAutoStickIfAtEnd, onIsAtEndChange, setAutoStickToBottomState],
+  );
+
+  const handleScroll = useCallback(
+    (event: TimelineScrollEvent) => {
+      const eventAtEnd = isTimelineScrollEventAtEnd(event);
+      const nextIsAtEnd =
+        eventAtEnd !== null ? eventAtEnd : Boolean(listRef.current?.getState?.().isAtEnd);
+      if (nextIsAtEnd) {
+        clearUserScrollLockTimer();
+        setAutoStickToBottomState(true);
+      }
+      onIsAtEndChange(nextIsAtEnd);
+    },
+    [clearUserScrollLockTimer, listRef, onIsAtEndChange, setAutoStickToBottomState],
+  );
+
+  const handleWheelCapture = useCallback(
+    (event: ReactWheelEvent) => {
+      if (event.deltaY < 0 && Math.abs(event.deltaY) >= Math.abs(event.deltaX)) {
+        markUserScrollIntent({ notifyAwayFromEnd: true });
+      }
+    },
+    [markUserScrollIntent],
+  );
+
+  const handlePointerDownCapture = useCallback(
+    (event: ReactPointerEvent) => {
+      const targetBounds = event.currentTarget.getBoundingClientRect();
+      if (event.clientX >= targetBounds.right - SCROLLBAR_POINTER_GUTTER_PX) {
+        markUserScrollIntent();
+      }
+    },
+    [markUserScrollIntent],
+  );
+
+  const handleTouchStartCapture = useCallback((event: ReactTouchEvent) => {
+    touchStartYRef.current = event.touches[0]?.clientY ?? null;
+  }, []);
+
+  const handleTouchMoveCapture = useCallback(
+    (event: ReactTouchEvent) => {
+      const touchStartY = touchStartYRef.current;
+      const currentY = event.touches[0]?.clientY;
+      if (touchStartY === null || currentY === undefined) {
+        return;
+      }
+      if (currentY - touchStartY > TOUCH_SCROLL_INTENT_THRESHOLD_PX) {
+        markUserScrollIntent({ notifyAwayFromEnd: true });
+      }
+    },
+    [markUserScrollIntent],
+  );
+
+  const handleTouchEndCapture = useCallback(() => {
+    touchStartYRef.current = null;
+  }, []);
+
+  const handleKeyDownCapture = useCallback(
+    (event: ReactKeyboardEvent) => {
+      if (
+        event.key === "ArrowUp" ||
+        event.key === "PageUp" ||
+        event.key === "Home" ||
+        (event.key === " " && event.shiftKey)
+      ) {
+        markUserScrollIntent({ notifyAwayFromEnd: true });
+      }
+    },
+    [markUserScrollIntent],
+  );
 
   const hasRows = rows.length > 0;
   useEffect(() => {
@@ -254,6 +442,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
     const frameIds: number[] = [];
     const stickToBottom = () => {
+      clearUserScrollLockTimer();
+      setAutoStickToBottomState(true);
       onIsAtEndChange(true);
       void listRef.current?.scrollToEnd?.({ animated: false });
     };
@@ -274,7 +464,20 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         window.cancelAnimationFrame(frameId);
       }
     };
-  }, [hasRows, listRef, onIsAtEndChange, routeThreadKey]);
+  }, [
+    clearUserScrollLockTimer,
+    hasRows,
+    listRef,
+    onIsAtEndChange,
+    routeThreadKey,
+    setAutoStickToBottomState,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      clearUserScrollLockTimer();
+    };
+  }, [clearUserScrollLockTimer]);
 
   const sharedState = useMemo<TimelineRowSharedState>(
     () => ({
@@ -355,10 +558,18 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           renderItem={renderItem}
           estimatedItemSize={90}
           initialScrollAtEnd
-          maintainScrollAtEnd
-          maintainScrollAtEndThreshold={0.1}
+          maintainScrollAtEnd={autoStickToBottom ? MAINTAIN_SCROLL_AT_END : false}
+          maintainScrollAtEndThreshold={TIMELINE_MAINTAIN_END_THRESHOLD_RATIO}
           maintainVisibleContentPosition
           onScroll={handleScroll}
+          onWheelCapture={handleWheelCapture}
+          onPointerDownCapture={handlePointerDownCapture}
+          onTouchStartCapture={handleTouchStartCapture}
+          onTouchMoveCapture={handleTouchMoveCapture}
+          onTouchEndCapture={handleTouchEndCapture}
+          onTouchCancelCapture={handleTouchEndCapture}
+          onKeyDownCapture={handleKeyDownCapture}
+          data-chat-messages-list="true"
           className="h-full overflow-x-hidden overscroll-y-contain px-3 sm:px-5"
           ListHeaderComponent={TIMELINE_LIST_HEADER}
           ListFooterComponent={TIMELINE_LIST_FOOTER}
@@ -447,12 +658,78 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       {row.kind === "message" && row.message.role === "assistant" ? (
         <AssistantTimelineRow row={row} />
       ) : null}
+      {row.kind === "fork-context" ? <ForkContextTimelineRow row={row} /> : null}
       {row.kind === "proposed-plan" ? <ProposedPlanTimelineRow row={row} /> : null}
       {row.kind === "subagent-result" ? <SubagentResultTimelineRow row={row} /> : null}
       {row.kind === "working" ? <WorkingTimelineRow row={row} /> : null}
     </div>
   );
 });
+
+function ForkContextTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "fork-context" }> }) {
+  const ctx = use(TimelineRowCtx);
+  const payload = row.forkContext.payload;
+  const sourceRole = payload.sourceMessageRole === "assistant" ? "assistant" : "user";
+  const contextCounts = [
+    `${payload.includedMessageCount} message${payload.includedMessageCount === 1 ? "" : "s"}`,
+    payload.includedToolSummaryCount > 0
+      ? `${payload.includedToolSummaryCount} tool summar${
+          payload.includedToolSummaryCount === 1 ? "y" : "ies"
+        }`
+      : null,
+    payload.includedAttachmentCount > 0
+      ? `${payload.includedAttachmentCount} image${payload.includedAttachmentCount === 1 ? "" : "s"}`
+      : null,
+  ].filter((part): part is string => part !== null);
+  const attachmentNames = payload.attachments.map((attachment) => attachment.name).join(", ");
+
+  return (
+    <div className="mx-auto max-w-208 px-1">
+      <div className="rounded-lg border border-border/70 bg-muted/35 px-3.5 py-3 text-sm">
+        <div className="flex min-w-0 items-start gap-2.5">
+          <SplitIcon className="mt-0.5 size-4 shrink-0 rotate-90 text-muted-foreground/70" />
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+              <p className="font-medium text-foreground/90">Fork context</p>
+              <p className="text-xs text-muted-foreground/60">
+                {formatTimestamp(payload.createdAt, ctx.timestampFormat)}
+              </p>
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground/75">
+              Current files were used. Context carried over: {contextCounts.join(", ") || "none"}.
+            </p>
+            <div className="mt-2 rounded-md border border-border/60 bg-background/45 px-3 py-2">
+              <p className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/55">
+                Source {sourceRole} message
+              </p>
+              <p className="line-clamp-3 text-xs text-muted-foreground/85">
+                {payload.sourceMessageText || "No text in the source message."}
+              </p>
+            </div>
+            {attachmentNames || payload.omittedAttachmentCount > 0 ? (
+              <p className="mt-2 text-xs text-muted-foreground/70">
+                {attachmentNames ? `Images: ${attachmentNames}.` : null}
+                {payload.omittedAttachmentCount > 0
+                  ? ` ${payload.omittedAttachmentCount} image${
+                      payload.omittedAttachmentCount === 1 ? " was" : "s were"
+                    } omitted.`
+                  : null}
+              </p>
+            ) : null}
+            <details className="mt-2 group/fork-context">
+              <summary className="cursor-pointer select-none text-xs text-muted-foreground/75 transition-colors hover:text-foreground">
+                Carried context
+              </summary>
+              <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-md border border-border/60 bg-background/55 p-3 text-[11px] leading-relaxed text-muted-foreground/85">
+                {payload.contextText}
+              </pre>
+            </details>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
@@ -806,6 +1083,8 @@ function SubagentResultTimelineRow({
   const meta = [row.result.model, row.result.reasoningEffort].filter(
     (part): part is string => typeof part === "string" && part.length > 0,
   );
+  const displayName = formatSubagentDisplayName(row.result);
+  const showSubagentChip = shouldShowSubagentDisplayChip(row.result);
 
   return (
     <div className="min-w-0 px-1 py-0.5" data-subagent-result-row="true">
@@ -821,11 +1100,13 @@ function SubagentResultTimelineRow({
                   className="truncate text-xs font-medium text-foreground"
                   title={row.result.label}
                 >
-                  {row.result.label}
+                  {displayName}
                 </p>
-                <span className="shrink-0 rounded border border-border/55 bg-background/55 px-1 py-px text-[9px] uppercase tracking-[0.12em] text-muted-foreground/55">
-                  Subagent
-                </span>
+                {showSubagentChip ? (
+                  <span className="shrink-0 rounded border border-border/55 bg-background/55 px-1 py-px text-[9px] uppercase tracking-[0.12em] text-muted-foreground/55">
+                    Subagent
+                  </span>
+                ) : null}
               </div>
               {row.result.objective ? (
                 <ExpandableSubagentInstructionText text={row.result.objective} />
@@ -1073,7 +1354,12 @@ function SpineNode({ kind }: { kind: SpineNodeKind }) {
     return <CircleAlertIcon aria-hidden="true" className="size-3 text-foreground/85" />;
   }
   if (kind === "warning") {
-    return <CircleAlertIcon aria-hidden="true" className="size-3 text-amber-400/80" />;
+    return (
+      <span
+        aria-hidden="true"
+        className="size-[7px] rounded-full border border-warning/65 bg-warning/30 shadow-[0_0_0_2px_color-mix(in_oklab,var(--warning)_16%,transparent)]"
+      />
+    );
   }
   if (kind === "group") {
     return (
@@ -1142,7 +1428,13 @@ const WorkGroupSection = memo(function WorkGroupSection({
   }, [isWorking]);
 
   if (isLiveActivity) {
-    return <LiveActivitySpine entries={groupedEntries} workspaceRoot={workspaceRoot} />;
+    return (
+      <LiveActivitySpine
+        entries={groupedEntries}
+        liveStartedAt={row.liveStartedAt}
+        workspaceRoot={workspaceRoot}
+      />
+    );
   }
 
   const summarizedEntries = summarizeSemanticActivityEntries(groupedEntries);
@@ -1226,9 +1518,11 @@ const WorkGroupSection = memo(function WorkGroupSection({
  *  absorbed here. */
 function LiveActivitySpine({
   entries,
+  liveStartedAt,
   workspaceRoot,
 }: {
   entries: ReadonlyArray<TimelineWorkEntry>;
+  liveStartedAt: string | null;
   workspaceRoot: string | undefined;
 }) {
   const liveEntries = deriveLiveActivityEntries(entries);
@@ -1252,16 +1546,34 @@ function LiveActivitySpine({
             connectBottom={!isCurrent}
             className={isCurrent ? undefined : liveSpineDimClass(lastIndex - index)}
           >
-            <SimpleWorkEntryRow
-              isLiveActivity
-              workEntry={workEntry}
-              workspaceRoot={workspaceRoot}
-              inSpine
-            />
+            <>
+              <SimpleWorkEntryRow
+                isLiveActivity
+                workEntry={workEntry}
+                workspaceRoot={workspaceRoot}
+                inSpine
+              />
+              {isCurrent && liveStartedAt ? (
+                <LiveTurnElapsedTimer createdAt={liveStartedAt} />
+              ) : null}
+            </>
           </SpineRow>
         );
       })}
     </div>
+  );
+}
+
+function LiveTurnElapsedTimer({ createdAt }: { createdAt: string }) {
+  return (
+    <span
+      className="-mt-0.5 ml-1 block text-[11px] leading-4 text-muted-foreground/55 tabular-nums"
+      data-live-turn-elapsed="true"
+      title="Total turn elapsed time"
+    >
+      Working <span className="text-muted-foreground/35">·</span>{" "}
+      <WorkingTimer createdAt={createdAt} />
+    </span>
   );
 }
 

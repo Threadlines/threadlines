@@ -248,6 +248,28 @@ export const OrchestrationMessage = Schema.Struct({
 });
 export type OrchestrationMessage = typeof OrchestrationMessage.Type;
 
+export const ThreadForkWorkspaceMode = Schema.Literal("current");
+export type ThreadForkWorkspaceMode = typeof ThreadForkWorkspaceMode.Type;
+
+export const ThreadForkContextPayload = Schema.Struct({
+  sourceThreadId: ThreadId,
+  sourceThreadTitle: TrimmedNonEmptyString,
+  sourceMessageId: MessageId,
+  sourceMessageRole: OrchestrationMessageRole,
+  sourceMessageText: Schema.String,
+  sourceMessageCreatedAt: IsoDateTime,
+  workspaceMode: ThreadForkWorkspaceMode,
+  includedMessageCount: NonNegativeInt,
+  includedToolSummaryCount: NonNegativeInt,
+  includedAttachmentCount: NonNegativeInt,
+  omittedAttachmentCount: NonNegativeInt,
+  contextText: Schema.String,
+  attachments: Schema.Array(ChatAttachment),
+  modelSelection: ModelSelection,
+  createdAt: IsoDateTime,
+});
+export type ThreadForkContextPayload = typeof ThreadForkContextPayload.Type;
+
 export const OrchestrationProposedPlanId = TrimmedNonEmptyString;
 export type OrchestrationProposedPlanId = typeof OrchestrationProposedPlanId.Type;
 
@@ -528,6 +550,55 @@ const ThreadCreateCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ClientThreadForkCommand = Schema.Struct({
+  type: Schema.Literal("thread.fork"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  sourceThreadId: ThreadId,
+  sourceMessageId: MessageId,
+  message: Schema.Struct({
+    messageId: MessageId,
+    role: Schema.Literal("user"),
+    text: Schema.String,
+  }),
+  modelSelection: ModelSelection,
+  runtimeMode: RuntimeMode,
+  interactionMode: ProviderInteractionMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
+  ),
+  workspaceMode: ThreadForkWorkspaceMode,
+  includeAttachments: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  createdAt: IsoDateTime,
+});
+
+const ThreadForkCommand = Schema.Struct({
+  type: Schema.Literal("thread.fork"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  sourceThreadId: ThreadId,
+  sourceMessageId: MessageId,
+  message: Schema.Struct({
+    messageId: MessageId,
+    role: Schema.Literal("user"),
+    text: Schema.String,
+  }),
+  modelSelection: ModelSelection,
+  runtimeMode: RuntimeMode,
+  interactionMode: ProviderInteractionMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
+  ),
+  workspaceMode: ThreadForkWorkspaceMode,
+  includeAttachments: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  createdAt: IsoDateTime,
+  projectId: ProjectId,
+  title: TrimmedNonEmptyString,
+  branch: Schema.NullOr(TrimmedNonEmptyString),
+  worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  forkContext: ThreadForkContextPayload,
+  providerContext: Schema.String,
+  providerAttachments: Schema.Array(ChatAttachment),
+});
+
 const ThreadDeleteCommand = Schema.Struct({
   type: Schema.Literal("thread.delete"),
   commandId: CommandId,
@@ -736,6 +807,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadPinCommand,
   ThreadUnpinCommand,
   ThreadMetaUpdateCommand,
+  ThreadForkCommand,
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ThreadTurnStartCommand,
@@ -761,6 +833,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadPinCommand,
   ThreadUnpinCommand,
   ThreadMetaUpdateCommand,
+  ClientThreadForkCommand,
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ClientThreadTurnStartCommand,
@@ -1019,6 +1092,8 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  providerContext: Schema.optional(Schema.String),
+  providerAttachments: Schema.optional(Schema.Array(ChatAttachment)),
   createdAt: IsoDateTime,
 });
 

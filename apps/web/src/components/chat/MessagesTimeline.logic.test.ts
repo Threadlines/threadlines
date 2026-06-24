@@ -568,6 +568,7 @@ describe("deriveMessagesTimelineRows", () => {
     );
 
     expect(workRows.map((row) => row.isLive)).toEqual([false, true]);
+    expect(workRows.map((row) => row.liveStartedAt)).toEqual([null, "2026-01-01T00:00:00Z"]);
   });
 
   it("shows only the latest provider lifecycle status while waiting for model output", () => {

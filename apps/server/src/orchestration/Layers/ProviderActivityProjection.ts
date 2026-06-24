@@ -608,6 +608,7 @@ export function projectRuntimeEventToActivities(
           summary: "Runtime warning",
           payload: {
             message: truncateDetail(event.payload.message),
+            provider: event.provider,
             ...(event.payload.detail !== undefined ? { detail: event.payload.detail } : {}),
             ...(event.payload.warningKind !== undefined
               ? { warningKind: event.payload.warningKind }
@@ -932,6 +933,7 @@ export function projectRuntimeEventToActivities(
           payload: {
             itemType: event.payload.itemType,
             ...(event.itemId ? { toolCallId: event.itemId } : {}),
+            ...(event.payload.status ? { status: event.payload.status } : {}),
             ...(event.payload.title ? { title: event.payload.title } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
             ...(event.payload.data !== undefined

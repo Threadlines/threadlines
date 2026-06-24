@@ -2518,6 +2518,60 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("keeps the scroll-to-bottom affordance hidden after closing the terminal while pinned", async () => {
+    useTerminalStateStore.setState({
+      terminalStateByThreadKey: {
+        [THREAD_KEY]: {
+          terminalOpen: true,
+          terminalHeight: 280,
+          terminalIds: ["default"],
+          runningTerminalIds: [],
+          activeTerminalId: "default",
+          terminalGroups: [{ id: "group-default", terminalIds: ["default"] }],
+          activeTerminalGroupId: "group-default",
+        },
+      },
+      terminalLaunchContextByThreadKey: {},
+    });
+
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-terminal-close-scroll-target" as MessageId,
+        targetText: "terminal close scroll target",
+      }),
+    });
+
+    try {
+      const messagesList = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-chat-messages-list="true"]'),
+        "Unable to find messages list.",
+      );
+
+      messagesList.scrollTop = messagesList.scrollHeight;
+      messagesList.dispatchEvent(new Event("scroll", { bubbles: true }));
+      await waitForLayout();
+
+      const terminalToggle = await waitForElement(
+        () =>
+          document.querySelector<HTMLButtonElement>('button[aria-label="Toggle terminal drawer"]'),
+        "Unable to find terminal toggle.",
+      );
+      terminalToggle.click();
+      await waitForLayout();
+      await new Promise((resolve) => window.setTimeout(resolve, 220));
+      await waitForLayout();
+
+      expect(
+        Array.from(document.querySelectorAll("button")).some(
+          (button) => button.textContent?.trim() === "Scroll to bottom",
+        ),
+      ).toBe(false);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("opens the project cwd with VS Code Insiders when it is the only available editor", async () => {
     setDraftThreadWithoutWorktree();
 

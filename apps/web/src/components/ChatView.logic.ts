@@ -29,8 +29,37 @@ export const LEGACY_LAST_INVOKED_SCRIPT_BY_PROJECT_KEYS = [
   "t3code:last-invoked-script-by-project",
 ] as const;
 export const MAX_HIDDEN_MOUNTED_TERMINAL_THREADS = 10;
+export const DEFAULT_SCROLL_END_TOLERANCE_PX = 2;
 
 export const LastInvokedScriptByProjectSchema = Schema.Record(ProjectId, Schema.String);
+
+export function isScrollMetricsAtEnd(input: {
+  readonly scrollOffset: number;
+  readonly viewportLength: number;
+  readonly contentLength: number;
+  readonly contentInsetEnd?: number | null;
+  readonly tolerancePx?: number;
+}): boolean {
+  const scrollOffset = Number.isFinite(input.scrollOffset) ? input.scrollOffset : 0;
+  const viewportLength = Number.isFinite(input.viewportLength) ? input.viewportLength : 0;
+  const contentLength = Number.isFinite(input.contentLength) ? input.contentLength : 0;
+  const contentInsetEnd =
+    input.contentInsetEnd !== null &&
+    input.contentInsetEnd !== undefined &&
+    Number.isFinite(input.contentInsetEnd)
+      ? input.contentInsetEnd
+      : 0;
+  const tolerancePx =
+    input.tolerancePx !== undefined && Number.isFinite(input.tolerancePx)
+      ? Math.max(0, input.tolerancePx)
+      : DEFAULT_SCROLL_END_TOLERANCE_PX;
+
+  if (viewportLength <= 0 || contentLength <= 0) {
+    return true;
+  }
+
+  return contentLength - scrollOffset - viewportLength - contentInsetEnd <= tolerancePx;
+}
 
 export function buildLocalDraftThread(
   threadId: ThreadId,
@@ -271,18 +300,21 @@ export function deriveProviderBackgroundRuns(input: {
   activities: ReadonlyArray<OrchestrationThreadActivity>;
   messages: ReadonlyArray<ChatMessage>;
   pendingBackgroundTaskCount: number;
+  activeSubagentCount?: number | undefined;
 }): ProviderBackgroundRunState[] {
   const activeRunsByTaskId = new Map<string, ProviderBackgroundRunState>();
+  const suppressedSubagentTaskIds = new Set<string>();
 
   for (const activity of [...input.activities].toSorted(compareActivitiesByOrder)) {
     const payload = asBackgroundRunRecord(activity.payload);
     const taskId = asBackgroundRunString(payload?.taskId);
-    if (!taskId) {
+    if (!payload || !taskId) {
       continue;
     }
 
     if (activity.kind === "task.completed") {
       activeRunsByTaskId.delete(taskId);
+      suppressedSubagentTaskIds.delete(taskId);
       continue;
     }
 
@@ -297,11 +329,6 @@ export function deriveProviderBackgroundRuns(input: {
       previous?.detail ??
       null;
     const taskType = asBackgroundRunString(payload?.taskType);
-    const label =
-      detail ??
-      (taskType ? `${humanizeTaskType(taskType) ?? taskType} task` : null) ??
-      previous?.label ??
-      "Provider background task";
     const urls = [...new Set([...(previous?.urls ?? []), ...extractLocalPreviewUrls(detail)])];
     const commandHints = [
       ...new Set([
@@ -311,6 +338,25 @@ export function deriveProviderBackgroundRuns(input: {
         ...collectBackgroundCommandHintsFromPayload(payload),
       ]),
     ].slice(0, 8);
+    if (
+      isSubagentProviderTask({
+        payload,
+        activitySummary: activity.summary,
+        urls,
+        commandHints,
+        activeSubagentCount: input.activeSubagentCount ?? 0,
+      })
+    ) {
+      activeRunsByTaskId.delete(taskId);
+      suppressedSubagentTaskIds.add(taskId);
+      continue;
+    }
+
+    const label =
+      detail ??
+      (taskType ? `${humanizeTaskType(taskType) ?? taskType} task` : null) ??
+      previous?.label ??
+      "Provider background task";
 
     activeRunsByTaskId.set(taskId, {
       id: `provider:${taskId}`,
@@ -326,7 +372,14 @@ export function deriveProviderBackgroundRuns(input: {
   }
 
   const runs = [...activeRunsByTaskId.values()];
-  const missingProviderCount = Math.max(0, input.pendingBackgroundTaskCount - runs.length);
+  const hiddenSubagentTaskCount = Math.max(
+    suppressedSubagentTaskIds.size,
+    input.activeSubagentCount ?? 0,
+  );
+  const missingProviderCount = Math.max(
+    0,
+    input.pendingBackgroundTaskCount - runs.length - hiddenSubagentTaskCount,
+  );
   for (let index = 0; index < missingProviderCount; index += 1) {
     runs.push({
       id: `provider:unknown:${index + 1}`,
@@ -368,6 +421,48 @@ export function deriveProviderBackgroundRuns(input: {
   }
 
   return runs;
+}
+
+function isSubagentProviderTask(input: {
+  payload: Record<string, unknown>;
+  activitySummary: string;
+  urls: ReadonlyArray<string>;
+  commandHints: ReadonlyArray<string>;
+  activeSubagentCount: number;
+}): boolean {
+  const taskType = asBackgroundRunString(input.payload.taskType);
+  const text = [
+    taskType,
+    asBackgroundRunString(input.payload.description),
+    asBackgroundRunString(input.payload.detail),
+    asBackgroundRunString(input.payload.summary),
+    asBackgroundRunString(input.payload.lastToolName),
+    input.activitySummary,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(" ")
+    .toLowerCase();
+
+  if (/\bsub[-\s]?agent\b/u.test(text) || /\bteammate\b/u.test(text)) {
+    return true;
+  }
+
+  const normalizedTaskType = taskType?.toLowerCase() ?? "";
+  const explicitBackgroundTask =
+    /\bbackground\b/u.test(normalizedTaskType) ||
+    /\bpreview\b/u.test(normalizedTaskType) ||
+    /\bserver\b/u.test(normalizedTaskType) ||
+    /\bcommand\b/u.test(normalizedTaskType);
+  if (explicitBackgroundTask) {
+    return false;
+  }
+
+  return (
+    input.activeSubagentCount > 0 &&
+    input.urls.length === 0 &&
+    input.commandHints.length === 0 &&
+    normalizedTaskType.length > 0
+  );
 }
 
 export function revokeBlobPreviewUrl(previewUrl: string | undefined): void {

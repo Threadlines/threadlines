@@ -1,11 +1,12 @@
 import {
   type EnvironmentId,
   type EditorId,
+  type ThreadId,
   type ProjectScript,
   type ResolvedKeybindingsConfig,
 } from "@threadlines/contracts";
 import { memo } from "react";
-import { TerminalSquareIcon } from "lucide-react";
+import { GitForkIcon, TerminalSquareIcon } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import ProjectScriptsControl, { type NewProjectScriptInput } from "../ProjectScriptsControl";
@@ -20,6 +21,11 @@ import {
   type ThreadTaskProgressState,
 } from "./ThreadActivityPopover";
 import type { SubagentProgressState } from "../../session-logic";
+
+export interface ForkHeaderContext {
+  readonly sourceThreadId: ThreadId;
+  readonly sourceThreadTitle: string;
+}
 
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
@@ -38,6 +44,7 @@ interface ChatHeaderProps {
   sourceControlOpen: boolean;
   taskProgress: ThreadTaskProgressState | null;
   subagentProgress: SubagentProgressState | null;
+  forkContext: ForkHeaderContext | null;
   backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
   onRunProjectScript: (script: ProjectScript) => void;
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<void>;
@@ -45,6 +52,7 @@ interface ChatHeaderProps {
   onDeleteProjectScript: (scriptId: string) => Promise<void>;
   onOpenBackgroundRunTerminal: (terminalId: string) => void;
   onStopBackgroundRun: (run: ThreadBackgroundRunItem) => void;
+  onOpenForkSourceThread: (threadId: ThreadId) => void;
   onToggleTerminal: () => void;
   onToggleSourceControl: () => void;
 }
@@ -78,6 +86,7 @@ export const ChatHeader = memo(function ChatHeader({
   sourceControlOpen,
   taskProgress,
   subagentProgress,
+  forkContext,
   backgroundRuns,
   onRunProjectScript,
   onAddProjectScript,
@@ -85,6 +94,7 @@ export const ChatHeader = memo(function ChatHeader({
   onDeleteProjectScript,
   onOpenBackgroundRunTerminal,
   onStopBackgroundRun,
+  onOpenForkSourceThread,
   onToggleTerminal,
   onToggleSourceControl,
 }: ChatHeaderProps) {
@@ -97,7 +107,7 @@ export const ChatHeader = memo(function ChatHeader({
 
   return (
     <div className="@container/header-actions flex min-w-0 flex-1 items-center gap-2">
-      <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden sm:gap-2">
+      <div className="flex min-w-0 flex-1 items-center gap-1.5 sm:gap-2">
         <SidebarOpenTrigger className="size-7 shrink-0" />
         {activeProjectName && (
           <div className="hidden min-w-0 shrink items-center gap-1.5 sm:flex">
@@ -118,6 +128,23 @@ export const ChatHeader = memo(function ChatHeader({
         >
           {activeThreadTitle}
         </h2>
+        {forkContext ? (
+          <button
+            type="button"
+            className="translate-y-px inline-flex h-6 min-w-0 shrink-0 items-center rounded-md border border-border/70 bg-muted/45 px-1.5 text-[11px] leading-none text-muted-foreground transition-colors hover:border-border hover:bg-muted/70 hover:text-foreground"
+            onClick={() => onOpenForkSourceThread(forkContext.sourceThreadId)}
+            aria-label={`Open source thread: ${forkContext.sourceThreadTitle}`}
+            title={`Forked from ${forkContext.sourceThreadTitle}`}
+          >
+            <span className="inline-flex min-w-0 items-center gap-1">
+              <GitForkIcon aria-hidden="true" className="size-3 shrink-0" />
+              <span className="hidden sm:inline">Forked from</span>
+              <span className="max-w-28 truncate text-foreground/80 sm:max-w-40">
+                {forkContext.sourceThreadTitle}
+              </span>
+            </span>
+          </button>
+        ) : null}
         {activeProjectName && !isGitRepo && (
           <Badge variant="outline" className="shrink-0 text-[10px] text-amber-700">
             No Git

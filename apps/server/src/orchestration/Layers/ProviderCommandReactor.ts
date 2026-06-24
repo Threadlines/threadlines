@@ -14,6 +14,7 @@ import {
   type ThreadContextSeed,
   type TurnId,
 } from "@threadlines/contracts";
+import { withContextSeedPreamble } from "@threadlines/shared/contextSeed";
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@threadlines/shared/git";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
@@ -628,6 +629,8 @@ const make = Effect.gen(function* () {
     readonly messageId: MessageId;
     readonly messageText: string;
     readonly attachments?: ReadonlyArray<ChatAttachment>;
+    readonly providerContext?: string;
+    readonly providerAttachments?: ReadonlyArray<ChatAttachment>;
     readonly modelSelection?: ModelSelection;
     readonly interactionMode?: "default" | "plan";
     readonly createdAt: string;
@@ -645,8 +648,15 @@ const make = Effect.gen(function* () {
     if (input.modelSelection !== undefined) {
       threadModelSelections.set(input.threadId, input.modelSelection);
     }
-    const normalizedInput = toNonEmptyProviderInput(input.messageText);
-    const normalizedAttachments = input.attachments ?? [];
+    const messageText =
+      input.providerContext !== undefined
+        ? withContextSeedPreamble(input.providerContext, input.messageText)
+        : input.messageText;
+    const normalizedInput = toNonEmptyProviderInput(messageText);
+    const normalizedAttachments = [
+      ...(input.providerAttachments ?? []),
+      ...(input.attachments ?? []),
+    ];
     const activeSession = yield* providerService
       .listSessions()
       .pipe(
@@ -945,6 +955,12 @@ const make = Effect.gen(function* () {
       messageId: event.payload.messageId,
       messageText: message.text,
       ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+      ...(event.payload.providerContext !== undefined
+        ? { providerContext: event.payload.providerContext }
+        : {}),
+      ...(event.payload.providerAttachments !== undefined
+        ? { providerAttachments: event.payload.providerAttachments }
+        : {}),
       ...(event.payload.modelSelection !== undefined
         ? { modelSelection: event.payload.modelSelection }
         : {}),

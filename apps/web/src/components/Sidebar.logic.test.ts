@@ -9,13 +9,13 @@ import {
   getFallbackThreadIdAfterDelete,
   getSidebarThreadWindow,
   getProjectSortTimestamp,
-  SIDEBAR_THREAD_REVEAL_ALL_SLACK,
   hasUnseenCompletion,
   isContextMenuPointerDown,
   orderItemsByPreferredIds,
   resolveProjectStatusIndicator,
   resolveSidebarNewThreadSeedContext,
   resolveSidebarNewThreadEnvMode,
+  THREAD_STATUS_DOT_CLASSES,
   resolveThreadRowClassName,
   resolveThreadStatusPill,
   shouldClearThreadSelectionOnMouseDown,
@@ -511,7 +511,11 @@ describe("resolveThreadStatusPill", () => {
           hasPendingUserInput: true,
         },
       }),
-    ).toMatchObject({ label: "Awaiting Input", pulse: false });
+    ).toMatchObject({
+      label: "Awaiting Input",
+      dotClass: THREAD_STATUS_DOT_CLASSES.amber,
+      pulse: false,
+    });
   });
 
   it("falls back to working when the thread is actively running without blockers", () => {
@@ -519,7 +523,11 @@ describe("resolveThreadStatusPill", () => {
       resolveThreadStatusPill({
         thread: baseThread,
       }),
-    ).toMatchObject({ label: "Working", pulse: true });
+    ).toMatchObject({
+      label: "Working",
+      dotClass: THREAD_STATUS_DOT_CLASSES.blue,
+      pulse: true,
+    });
   });
 
   it("shows working from the orchestration running status even if the legacy status lags", () => {
@@ -700,7 +708,11 @@ describe("resolveThreadStatusPill", () => {
           },
         },
       }),
-    ).toMatchObject({ label: "Background", pulse: true });
+    ).toMatchObject({
+      label: "Background",
+      dotClass: THREAD_STATUS_DOT_CLASSES.cyan,
+      pulse: true,
+    });
   });
 
   it("keeps active background-tracked turns in the working state", () => {
@@ -736,7 +748,11 @@ describe("resolveThreadStatusPill", () => {
           },
         },
       }),
-    ).toMatchObject({ label: "Completed", pulse: false });
+    ).toMatchObject({
+      label: "Completed",
+      dotClass: THREAD_STATUS_DOT_CLASSES.emerald,
+      pulse: false,
+    });
   });
 });
 
@@ -775,23 +791,23 @@ describe("resolveProjectStatusIndicator", () => {
         {
           label: "Completed",
           colorClass: "text-emerald-600",
-          dotClass: "bg-emerald-500",
+          dotClass: THREAD_STATUS_DOT_CLASSES.emerald,
           pulse: false,
         },
         {
           label: "Pending Approval",
           colorClass: "text-amber-600",
-          dotClass: "bg-amber-500",
+          dotClass: THREAD_STATUS_DOT_CLASSES.amber,
           pulse: false,
         },
         {
           label: "Working",
           colorClass: "text-primary-readable",
-          dotClass: "bg-primary",
+          dotClass: THREAD_STATUS_DOT_CLASSES.blue,
           pulse: true,
         },
       ]),
-    ).toMatchObject({ label: "Pending Approval", dotClass: "bg-amber-500" });
+    ).toMatchObject({ label: "Pending Approval", dotClass: THREAD_STATUS_DOT_CLASSES.amber });
   });
 
   it("prefers plan-ready over completed when no stronger action is needed", () => {
@@ -800,17 +816,17 @@ describe("resolveProjectStatusIndicator", () => {
         {
           label: "Completed",
           colorClass: "text-emerald-600",
-          dotClass: "bg-emerald-500",
+          dotClass: THREAD_STATUS_DOT_CLASSES.emerald,
           pulse: false,
         },
         {
           label: "Plan Ready",
           colorClass: "text-violet-600",
-          dotClass: "bg-violet-500",
+          dotClass: THREAD_STATUS_DOT_CLASSES.violet,
           pulse: false,
         },
       ]),
-    ).toMatchObject({ label: "Plan Ready", dotClass: "bg-violet-500" });
+    ).toMatchObject({ label: "Plan Ready", dotClass: THREAD_STATUS_DOT_CLASSES.violet });
   });
 });
 
@@ -834,20 +850,20 @@ describe("getSidebarThreadWindow", () => {
     expect(window.isRevealed).toBe(false);
   });
 
-  it("offers the whole tail when it fits within one preview-sized step plus slack", () => {
+  it("caps the next reveal to the configured preview count", () => {
     const window = getSidebarThreadWindow({
-      threads: makeKeys(previewLimit + previewLimit + SIDEBAR_THREAD_REVEAL_ALL_SLACK),
+      threads: makeKeys(previewLimit + previewLimit + 2),
       getThreadKey,
       activeThreadKey: null,
       previewLimit,
       revealedCount: 0,
     });
 
-    expect(window.nextRevealCount).toBe(previewLimit + SIDEBAR_THREAD_REVEAL_ALL_SLACK);
+    expect(window.nextRevealCount).toBe(previewLimit);
     expect(window.searchHandoffThreadCount).toBeNull();
   });
 
-  it("offers a single preview-sized step when the tail is larger than the preview plus slack", () => {
+  it("offers a single preview-sized step when the tail is larger than the preview", () => {
     const window = getSidebarThreadWindow({
       threads: makeKeys(40),
       getThreadKey,
@@ -858,6 +874,19 @@ describe("getSidebarThreadWindow", () => {
 
     expect(window.visibleThreads).toHaveLength(previewLimit);
     expect(window.nextRevealCount).toBe(previewLimit);
+    expect(window.searchHandoffThreadCount).toBeNull();
+  });
+
+  it("offers only the remaining tail when it is smaller than the preview count", () => {
+    const window = getSidebarThreadWindow({
+      threads: makeKeys(previewLimit + 2),
+      getThreadKey,
+      activeThreadKey: null,
+      previewLimit,
+      revealedCount: 0,
+    });
+
+    expect(window.nextRevealCount).toBe(2);
     expect(window.searchHandoffThreadCount).toBeNull();
   });
 

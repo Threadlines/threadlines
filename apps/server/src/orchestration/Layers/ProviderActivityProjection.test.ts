@@ -2,6 +2,7 @@ import {
   EventId,
   ProviderDriverKind,
   type ProviderRuntimeEvent,
+  RuntimeItemId,
   ThreadId,
   TurnId,
 } from "@threadlines/contracts";
@@ -72,6 +73,33 @@ describe("ProviderActivityProjection", () => {
         summary: "Prompt suggestion",
         payload: {
           suggestion: "Add regression tests for this edge case.",
+        },
+      }),
+    ]);
+  });
+
+  it("keeps provider metadata on runtime warnings", () => {
+    const activities = projectRuntimeEventToActivities({
+      type: "runtime.warning",
+      eventId: EventId.make("evt-runtime-warning"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: ThreadId.make("thread-1"),
+      turnId: TurnId.make("turn-1"),
+      createdAt: "2026-06-01T12:00:00.000Z",
+      payload: {
+        message: "Reconnecting... 2/5",
+        warningKind: "api-retry",
+      },
+    } satisfies ProviderRuntimeEvent);
+
+    expect(activities).toEqual([
+      expect.objectContaining({
+        kind: "runtime.warning",
+        summary: "Runtime warning",
+        payload: {
+          message: "Reconnecting... 2/5",
+          provider: "codex",
+          warningKind: "api-retry",
         },
       }),
     ]);
@@ -223,6 +251,33 @@ describe("ProviderActivityProjection", () => {
     expect(item?.aggregatedOutput?.length).toBeLessThanOrEqual(
       MAX_THREAD_ACTIVITY_PAYLOAD_TEXT_LENGTH,
     );
+  });
+
+  it("preserves completed tool lifecycle status for flat provider payloads", () => {
+    const activities = projectRuntimeEventToActivities({
+      type: "item.completed",
+      eventId: EventId.make("evt-claude-agent-completed"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: ThreadId.make("thread-1"),
+      turnId: TurnId.make("turn-1"),
+      itemId: RuntimeItemId.make("tool-agent-1"),
+      createdAt: "2026-06-01T12:00:00.000Z",
+      payload: {
+        itemType: "collab_agent_tool_call",
+        status: "completed",
+        title: "Subagent task",
+        data: {
+          toolName: "Agent",
+          result: { type: "tool_result", content: "done" },
+        },
+      },
+    } satisfies ProviderRuntimeEvent);
+
+    expect(activities[0]?.payload).toMatchObject({
+      itemType: "collab_agent_tool_call",
+      toolCallId: "tool-agent-1",
+      status: "completed",
+    });
   });
 
   it("preserves image generation result payloads for inline previews", () => {

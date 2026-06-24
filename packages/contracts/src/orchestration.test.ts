@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import {
+  ClientOrchestrationCommand,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   ModelSelection,
@@ -20,6 +21,7 @@ import {
   ThreadMetaUpdatedPayload,
   ThreadTurnStartCommand,
   ThreadCreatedPayload,
+  ThreadForkContextPayload,
   ThreadTurnDiff,
   ThreadTurnStartRequestedPayload,
 } from "./orchestration.ts";
@@ -47,9 +49,11 @@ function getOptionValue(
   return options?.find((option) => option.id === id)?.value;
 }
 const decodeThreadCreatedPayload = Schema.decodeUnknownEffect(ThreadCreatedPayload);
+const decodeClientOrchestrationCommand = Schema.decodeUnknownEffect(ClientOrchestrationCommand);
 const decodeOrchestrationCommand = Schema.decodeUnknownEffect(OrchestrationCommand);
 const decodeOrchestrationEvent = Schema.decodeUnknownEffect(OrchestrationEvent);
 const decodeThreadMetaUpdatedPayload = Schema.decodeUnknownEffect(ThreadMetaUpdatedPayload);
+const decodeThreadForkContextPayload = Schema.decodeUnknownEffect(ThreadForkContextPayload);
 
 it.effect("parses turn diff input when fromTurnCount <= toTurnCount", () =>
   Effect.gen(function* () {
@@ -587,6 +591,76 @@ it.effect("accepts a source proposed plan reference in thread.turn.start", () =>
   }),
 );
 
+it.effect("decodes thread.fork client command defaults", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeClientOrchestrationCommand({
+      type: "thread.fork",
+      commandId: "cmd-fork-1",
+      threadId: "thread-fork",
+      sourceThreadId: "thread-source",
+      sourceMessageId: "msg-source",
+      message: {
+        messageId: "msg-fork",
+        role: "user",
+        text: "Continue from here",
+      },
+      modelSelection: {
+        instanceId: "codex",
+        model: "gpt-5.4",
+      },
+      runtimeMode: "full-access",
+      workspaceMode: "current",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    assert.strictEqual(parsed.type, "thread.fork");
+    if (parsed.type !== "thread.fork") {
+      return;
+    }
+    assert.strictEqual(parsed.includeAttachments, true);
+    assert.strictEqual(parsed.interactionMode, DEFAULT_PROVIDER_INTERACTION_MODE);
+    assert.strictEqual(parsed.modelSelection.instanceId, "codex");
+    assert.strictEqual(parsed.workspaceMode, "current");
+  }),
+);
+
+it.effect("decodes thread fork context payload", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeThreadForkContextPayload({
+      sourceThreadId: "thread-source",
+      sourceThreadTitle: "Source thread",
+      sourceMessageId: "msg-source",
+      sourceMessageRole: "assistant",
+      sourceMessageText: "Use this result",
+      sourceMessageCreatedAt: "2026-01-01T00:00:00.000Z",
+      workspaceMode: "current",
+      includedMessageCount: 3,
+      includedToolSummaryCount: 1,
+      includedAttachmentCount: 1,
+      omittedAttachmentCount: 2,
+      contextText: "carried context",
+      attachments: [
+        {
+          type: "image",
+          id: "threadfork_attachment_1",
+          name: "screenshot.png",
+          mimeType: "image/png",
+          sizeBytes: 12,
+        },
+      ],
+      modelSelection: {
+        instanceId: "codex",
+        model: "gpt-5.4",
+      },
+      createdAt: "2026-01-01T00:00:01.000Z",
+    });
+
+    assert.strictEqual(parsed.workspaceMode, "current");
+    assert.strictEqual(parsed.attachments.length, 1);
+    assert.strictEqual(parsed.omittedAttachmentCount, 2);
+  }),
+);
+
 it.effect(
   "decodes thread.turn-start-requested defaults for provider, runtime mode, and interaction mode",
   () =>
@@ -600,6 +674,8 @@ it.effect(
       assert.strictEqual(parsed.runtimeMode, DEFAULT_RUNTIME_MODE);
       assert.strictEqual(parsed.interactionMode, DEFAULT_PROVIDER_INTERACTION_MODE);
       assert.strictEqual(parsed.sourceProposedPlan, undefined);
+      assert.strictEqual(parsed.providerContext, undefined);
+      assert.strictEqual(parsed.providerAttachments, undefined);
     }),
 );
 
@@ -630,6 +706,29 @@ it.effect("decodes thread.turn-start-requested title seed when present", () =>
       createdAt: "2026-01-01T00:00:00.000Z",
     });
     assert.strictEqual(parsed.titleSeed, "Investigate reconnect failures");
+  }),
+);
+
+it.effect("decodes thread.turn-start-requested provider context when present", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeThreadTurnStartRequestedPayload({
+      threadId: "thread-fork",
+      messageId: "msg-fork",
+      providerContext: "background context",
+      providerAttachments: [
+        {
+          type: "image",
+          id: "threadfork_attachment_2",
+          name: "screen.png",
+          mimeType: "image/png",
+          sizeBytes: 24,
+        },
+      ],
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    assert.strictEqual(parsed.providerContext, "background context");
+    assert.strictEqual(parsed.providerAttachments?.[0]?.name, "screen.png");
   }),
 );
 

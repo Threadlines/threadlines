@@ -17,10 +17,12 @@ import {
 } from "~/components/ui/sheet";
 import { Skeleton } from "~/components/ui/skeleton";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
-import { isMacElectron } from "~/desktopChrome";
-import { isElectron } from "~/env";
 import { useIsMobile } from "~/hooks/useMediaQuery";
-import { getLocalStorageItem, setLocalStorageItem } from "~/hooks/useLocalStorage";
+import {
+  getLocalStorageItem,
+  removeLocalStorageItem,
+  setLocalStorageItem,
+} from "~/hooks/useLocalStorage";
 import * as Schema from "effect/Schema";
 
 const SIDEBAR_COOKIE_NAME = "sidebar_state";
@@ -29,9 +31,6 @@ const SIDEBAR_WIDTH = "16rem";
 const SIDEBAR_WIDTH_MOBILE = "calc(100vw - var(--spacing(3)))";
 const SIDEBAR_WIDTH_ICON = "3rem";
 const SIDEBAR_RESIZE_DEFAULT_MIN_WIDTH = 16 * 16;
-const WINDOWS_ELECTRON_TRIGGER_TOP_CLASS = "top-2";
-const MAC_ELECTRON_TRIGGER_TOP_CLASS = "top-[38px]";
-
 type SidebarContextProps = {
   state: "expanded" | "collapsed";
   open: boolean;
@@ -45,6 +44,7 @@ type SidebarContextProps = {
 type SidebarResizableOptions = {
   maxWidth?: number;
   minWidth?: number;
+  normalizeStoredWidth?: (width: number) => number | null;
   onResize?: (width: number) => void;
   shouldAcceptWidth?: (context: {
     currentWidth: number;
@@ -60,6 +60,7 @@ type SidebarResizableOptions = {
 type SidebarResolvedResizableOptions = {
   maxWidth: number;
   minWidth: number;
+  normalizeStoredWidth?: (width: number) => number | null;
   onResize?: (width: number) => void;
   shouldAcceptWidth?: (context: {
     currentWidth: number;
@@ -158,6 +159,7 @@ function SidebarProvider({
           "group/sidebar-wrapper flex min-h-svh w-full has-data-[variant=inset]:bg-sidebar",
           className,
         )}
+        data-sidebar-state={state}
         data-slot="sidebar-wrapper"
         style={
           {
@@ -202,6 +204,9 @@ function Sidebar({
       maxWidth: options.maxWidth ?? Number.POSITIVE_INFINITY,
       minWidth: options.minWidth ?? SIDEBAR_RESIZE_DEFAULT_MIN_WIDTH,
       storageKey: options.storageKey ?? null,
+      ...(options.normalizeStoredWidth
+        ? { normalizeStoredWidth: options.normalizeStoredWidth }
+        : {}),
       ...(options.onResize ? { onResize: options.onResize } : {}),
       ...(options.shouldAcceptWidth ? { shouldAcceptWidth: options.shouldAcceptWidth } : {}),
     };
@@ -329,9 +334,13 @@ function SidebarTrigger({ className, onClick, tooltip, ...props }: SidebarTrigge
 
   const trigger = (
     <Button
-      className={cn("size-7", className)}
+      className={cn(
+        "size-[var(--workspace-titlebar-control-size)]! pointer-events-auto [-webkit-app-region:no-drag]",
+        className,
+      )}
       data-sidebar="trigger"
       data-slot="sidebar-trigger"
+      aria-pressed={isOpen}
       onClick={(event) => {
         onClick?.(event);
         toggleSidebar();
@@ -354,41 +363,11 @@ function SidebarTrigger({ className, onClick, tooltip, ...props }: SidebarTrigge
 }
 
 /**
- * Sidebar trigger for headers outside the sidebar: always available on
- * mobile, and on desktop only while the sidebar is collapsed (it is the only
- * way back once an offcanvas sidebar is hidden).
+ * Header-local sidebar trigger for mobile sheet layouts. Desktop uses the
+ * shared fixed titlebar control from AppSidebarLayout.
  */
 function SidebarOpenTrigger({ className, style, ...props }: React.ComponentProps<typeof Button>) {
-  const { open } = useSidebar();
-
-  return (
-    <>
-      <SidebarTrigger className={cn(className, "md:hidden")} style={style} {...props} />
-      <span
-        aria-hidden="true"
-        className={cn("hidden size-7 shrink-0 md:block md:size-8", open && "md:hidden", className)}
-      />
-    </>
-  );
-}
-
-function SidebarFixedTrigger({ className, ...props }: React.ComponentProps<typeof Button>) {
-  const fixedPositionClass = isElectron
-    ? isMacElectron
-      ? MAC_ELECTRON_TRIGGER_TOP_CLASS
-      : WINDOWS_ELECTRON_TRIGGER_TOP_CLASS
-    : "top-2 sm:top-3";
-
-  return (
-    <SidebarTrigger
-      className={cn(
-        "fixed left-3 z-50 hidden shrink-0 text-muted-foreground/60 hover:text-foreground md:flex sm:left-5",
-        fixedPositionClass,
-        className,
-      )}
-      {...props}
-    />
-  );
+  return <SidebarTrigger className={cn(className, "md:hidden")} style={style} {...props} />;
 }
 
 function clampSidebarWidth(width: number, options: SidebarResolvedResizableOptions): number {
@@ -610,9 +589,19 @@ function SidebarRail({
     const wrapper = rail.closest<HTMLElement>("[data-slot='sidebar-wrapper']");
     if (!wrapper) return;
 
-    const storedWidth = getLocalStorageItem(resolvedResizable.storageKey, Schema.Finite);
+    const storageKey = resolvedResizable.storageKey;
+    const storedWidth = getLocalStorageItem(storageKey, Schema.Finite);
     if (storedWidth === null) return;
-    const clampedWidth = clampSidebarWidth(storedWidth, resolvedResizable);
+
+    const normalizedWidth = resolvedResizable.normalizeStoredWidth
+      ? resolvedResizable.normalizeStoredWidth(storedWidth)
+      : storedWidth;
+    if (normalizedWidth === null) {
+      removeLocalStorageItem(storageKey);
+      return;
+    }
+
+    const clampedWidth = clampSidebarWidth(normalizedWidth, resolvedResizable);
     wrapper.style.setProperty("--sidebar-width", `${clampedWidth}px`);
     resolvedResizable.onResize?.(clampedWidth);
   }, [resolvedResizable]);
@@ -1039,7 +1028,6 @@ export {
   Sidebar,
   SidebarContent,
   SidebarFooter,
-  SidebarFixedTrigger,
   SidebarGroup,
   SidebarGroupAction,
   SidebarGroupContent,

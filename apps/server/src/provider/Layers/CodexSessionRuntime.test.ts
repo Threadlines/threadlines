@@ -15,10 +15,13 @@ import {
   buildPermissionsApprovalResponse,
   buildTurnStartParams,
   classifyCodexStderrLine,
+  enrichCollabAgentToolPayload,
   isRecoverableThreadResumeError,
   makeCodexStderrLineClassifier,
   openCodexThread,
+  readCollabChildThreadMetadata,
   shouldAcceptCodexNotificationForSession,
+  type CodexServerNotification,
 } from "./CodexSessionRuntime.ts";
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
 
@@ -224,6 +227,85 @@ describe("shouldAcceptCodexNotificationForSession", () => {
       }),
       true,
     );
+  });
+});
+
+describe("collab child thread metadata", () => {
+  it("reads the runtime nickname and role from child thread starts", () => {
+    const notification = {
+      method: "thread/started",
+      params: {
+        thread: {
+          id: "child-thread-1",
+          agentNickname: " Euclid ",
+          agentRole: " helper ",
+          source: {
+            subAgent: {
+              thread_spawn: {
+                agent_nickname: "Fallback",
+                agent_role: "fallback-role",
+                depth: 1,
+                parent_thread_id: "parent-thread",
+              },
+            },
+          },
+        },
+      },
+    } as unknown as CodexServerNotification;
+
+    assert.deepStrictEqual(readCollabChildThreadMetadata(notification), {
+      threadId: "child-thread-1",
+      metadata: {
+        agentNickname: "Euclid",
+        agentRole: "helper",
+      },
+    });
+  });
+
+  it("attaches child thread metadata to collab agent tool lifecycle payloads", () => {
+    const notification = {
+      method: "item/completed",
+      params: {
+        threadId: "parent-thread",
+        turnId: "turn-1",
+        completedAtMs: 10,
+        item: {
+          id: "call-close",
+          type: "collabAgentToolCall",
+          tool: "closeAgent",
+          status: "completed",
+          receiverThreadIds: ["child-thread-1"],
+          senderThreadId: "parent-thread",
+          agentsStates: {
+            "child-thread-1": {
+              status: "completed",
+              message: "Done",
+            },
+          },
+        },
+      },
+    } as unknown as CodexServerNotification;
+
+    const payload = enrichCollabAgentToolPayload(
+      notification,
+      new Map([
+        [
+          "child-thread-1",
+          {
+            agentNickname: "Euclid",
+            agentRole: "helper",
+          },
+        ],
+      ]),
+    ) as {
+      readonly item: {
+        readonly agentNickname?: string;
+        readonly agentRole?: string;
+      };
+    };
+
+    assert.equal(payload.item.agentNickname, "Euclid");
+    assert.equal(payload.item.agentRole, "helper");
   });
 });
 

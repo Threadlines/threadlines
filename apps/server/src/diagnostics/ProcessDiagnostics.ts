@@ -807,6 +807,11 @@ export function resolveBackgroundRunsFromListeningPorts(input: {
   const processCommandByPid = new Map(
     input.processRows?.map((row) => [row.pid, row.command]) ?? [],
   );
+  const processElapsedByPid = new Map(
+    input.processRows
+      ?.filter((row) => row.elapsed.trim().length > 0)
+      .map((row) => [row.pid, row.elapsed]) ?? [],
+  );
   const rowsByPort = new Map<number, ListeningPortRow>();
   for (const row of input.portRows) {
     const matchesUrl = urlsByPort.has(row.port);
@@ -829,6 +834,7 @@ export function resolveBackgroundRunsFromListeningPorts(input: {
         pid: row.pid,
         command,
         detail: `PID ${row.pid} on localhost:${row.port} - ${command}`,
+        ...(processElapsedByPid.get(row.pid) ? { elapsed: processElapsedByPid.get(row.pid) } : {}),
         statusLabel: canStop ? "Detected" : "Protected",
         canStop,
       };

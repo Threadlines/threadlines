@@ -8,6 +8,7 @@ import { Sidebar, SidebarProvider, SidebarRail } from "./ui/sidebar";
 export { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY };
 
 const RIGHT_PANEL_INLINE_SIDEBAR_WIDTH_STORAGE_KEY = "chat_right_panel_sidebar_width";
+const RIGHT_PANEL_INLINE_LEGACY_DEFAULT_WIDTH = 17 * 16;
 const RIGHT_PANEL_INLINE_SIDEBAR_MIN_CONTENT_WIDTH = 15 * 16;
 // Keep in sync with --app-window-resize-edge-inset in index.css. The right
 // panel reserves this space inside its border box in Electron, so the outer
@@ -21,6 +22,10 @@ const RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH =
 const RIGHT_PANEL_INLINE_DEFAULT_WIDTH = `${RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH}px`;
 const RIGHT_PANEL_INLINE_SIDEBAR_MAX_WIDTH = 256 * 16;
 const COMPOSER_COMPACT_MIN_LEFT_CONTROLS_WIDTH_PX = 208;
+
+function normalizeRightPanelStoredWidth(width: number) {
+  return width <= RIGHT_PANEL_INLINE_LEGACY_DEFAULT_WIDTH ? null : width;
+}
 
 export function ChatRightPanelInlineSidebar(props: {
   open: boolean;
@@ -104,6 +109,7 @@ export function ChatRightPanelInlineSidebar(props: {
         resizable={{
           maxWidth: RIGHT_PANEL_INLINE_SIDEBAR_MAX_WIDTH,
           minWidth: RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH,
+          normalizeStoredWidth: normalizeRightPanelStoredWidth,
           shouldAcceptWidth: shouldAcceptInlineSidebarWidth,
           storageKey: RIGHT_PANEL_INLINE_SIDEBAR_WIDTH_STORAGE_KEY,
         }}

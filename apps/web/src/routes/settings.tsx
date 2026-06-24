@@ -18,14 +18,11 @@ import {
   resolveSettingsEntryPath,
 } from "../components/settings/settingsNavigation";
 import { Button } from "../components/ui/button";
-import { SidebarInset, SidebarOpenTrigger, useSidebar } from "../components/ui/sidebar";
-import {
-  ELECTRON_HEADER_HEIGHT_CLASS,
-  MAC_TRAFFIC_LIGHT_CLEARANCE_HEADER_CLASS,
-  needsMacTrafficLightClearance,
-} from "../desktopChrome";
+import { SidebarInset, SidebarOpenTrigger } from "../components/ui/sidebar";
+import { ELECTRON_HEADER_HEIGHT_CLASS } from "../desktopChrome";
 import { isElectron } from "../env";
 import { cn } from "../lib/utils";
+import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../workspaceTitlebar";
 
 function isEditableElementTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false;
@@ -54,8 +51,6 @@ function SettingsContentLayout() {
   const { authGateState } = Route.useRouteContext();
   const navigate = useNavigate();
   const canGoBack = useCanGoBack();
-  const { open: sidebarOpen } = useSidebar();
-  const useMacTitlebarClearance = needsMacTrafficLightClearance(sidebarOpen);
   const [restoreSignal, setRestoreSignal] = useState(0);
   const isHostedStatic = authGateState.status === "hosted-static";
   const showRestoreDefaults = location.pathname === "/settings/general" && !isHostedStatic;
@@ -94,7 +89,12 @@ function SettingsContentLayout() {
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
         {!isElectron && (
-          <header className="border-b border-border pb-2 pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-[calc(env(safe-area-inset-top)+0.5rem)] sm:px-5">
+          <header
+            className={cn(
+              "border-b border-border pb-2 pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-[calc(env(safe-area-inset-top)+0.5rem)] transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none sm:px-5",
+              COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
+            )}
+          >
             <div className="flex min-h-7 items-center gap-2 sm:min-h-6">
               <SidebarOpenTrigger className="size-7 shrink-0" />
               <span className="text-sm font-medium text-foreground">Settings</span>
@@ -115,10 +115,9 @@ function SettingsContentLayout() {
         {isElectron && (
           <div
             className={cn(
-              "drag-region flex shrink-0 items-center gap-2 border-b border-border px-5 wco:h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]",
-              useMacTitlebarClearance
-                ? MAC_TRAFFIC_LIGHT_CLEARANCE_HEADER_CLASS
-                : ELECTRON_HEADER_HEIGHT_CLASS,
+              "drag-region flex shrink-0 items-center gap-2 border-b border-border px-5 transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none wco:h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]",
+              ELECTRON_HEADER_HEIGHT_CLASS,
+              COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
             )}
           >
             <SidebarOpenTrigger className="size-7 shrink-0" />

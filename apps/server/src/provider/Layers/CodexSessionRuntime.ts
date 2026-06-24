@@ -254,7 +254,12 @@ interface PendingUserInput {
   readonly answers: Deferred.Deferred<ProviderUserInputAnswers>;
 }
 
-type CodexServerNotification = {
+export interface CollabChildThreadMetadata {
+  readonly agentNickname?: string;
+  readonly agentRole?: string;
+}
+
+export type CodexServerNotification = {
   readonly [M in CodexRpc.ServerNotificationMethod]: {
     readonly method: M;
     readonly params: CodexRpc.ServerNotificationParamsByMethod[M];
@@ -796,6 +801,142 @@ function rememberCollabReceiverTurns(
   }
 }
 
+function readTrimmedString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function readSubAgentSourceMetadata(source: unknown): CollabChildThreadMetadata | undefined {
+  if (!source || typeof source !== "object") {
+    return undefined;
+  }
+
+  const subAgent = (source as Record<string, unknown>).subAgent;
+  if (!subAgent || typeof subAgent !== "object") {
+    return undefined;
+  }
+
+  const threadSpawn = (subAgent as Record<string, unknown>).thread_spawn;
+  if (!threadSpawn || typeof threadSpawn !== "object") {
+    return undefined;
+  }
+
+  const threadSpawnRecord = threadSpawn as Record<string, unknown>;
+  const agentNickname = readTrimmedString(threadSpawnRecord.agent_nickname);
+  const agentRole = readTrimmedString(threadSpawnRecord.agent_role);
+  return agentNickname || agentRole
+    ? {
+        ...(agentNickname ? { agentNickname } : {}),
+        ...(agentRole ? { agentRole } : {}),
+      }
+    : undefined;
+}
+
+function mergeCollabChildThreadMetadata(
+  current: CollabChildThreadMetadata | undefined,
+  incoming: CollabChildThreadMetadata,
+): CollabChildThreadMetadata {
+  return {
+    ...current,
+    ...(incoming.agentNickname ? { agentNickname: incoming.agentNickname } : {}),
+    ...(incoming.agentRole ? { agentRole: incoming.agentRole } : {}),
+  };
+}
+
+export function readCollabChildThreadMetadata(
+  notification: CodexServerNotification,
+): { readonly threadId: string; readonly metadata: CollabChildThreadMetadata } | undefined {
+  if (notification.method !== "thread/started") {
+    return undefined;
+  }
+
+  const thread = notification.params.thread;
+  const sourceMetadata = readSubAgentSourceMetadata(thread.source);
+  const agentNickname = readTrimmedString(thread.agentNickname) ?? sourceMetadata?.agentNickname;
+  const agentRole = readTrimmedString(thread.agentRole) ?? sourceMetadata?.agentRole;
+  const metadata = {
+    ...(agentNickname ? { agentNickname } : {}),
+    ...(agentRole ? { agentRole } : {}),
+  };
+
+  return Object.keys(metadata).length > 0 ? { threadId: thread.id, metadata } : undefined;
+}
+
+function rememberCollabChildThreadMetadata(
+  childThreadMetadata: Map<string, CollabChildThreadMetadata>,
+  notification: CodexServerNotification,
+): void {
+  const childMetadata = readCollabChildThreadMetadata(notification);
+  if (!childMetadata) {
+    return;
+  }
+
+  childThreadMetadata.set(
+    childMetadata.threadId,
+    mergeCollabChildThreadMetadata(
+      childThreadMetadata.get(childMetadata.threadId),
+      childMetadata.metadata,
+    ),
+  );
+}
+
+function readCollabAgentMetadataForItem(
+  item: Extract<
+    CodexRpc.ServerNotificationParamsByMethod["item/started"]["item"],
+    { readonly type: "collabAgentToolCall" }
+  >,
+  childThreadMetadata: ReadonlyMap<string, CollabChildThreadMetadata>,
+): CollabChildThreadMetadata | undefined {
+  for (const receiverThreadId of item.receiverThreadIds) {
+    const metadata = childThreadMetadata.get(receiverThreadId);
+    if (metadata?.agentNickname || metadata?.agentRole) {
+      return metadata;
+    }
+  }
+  return undefined;
+}
+
+export function enrichCollabAgentToolPayload(
+  notification: CodexServerNotification,
+  childThreadMetadata: ReadonlyMap<string, CollabChildThreadMetadata>,
+): unknown {
+  if (notification.method !== "item/started" && notification.method !== "item/completed") {
+    return notification.params;
+  }
+
+  const item = notification.params.item;
+  if (item.type !== "collabAgentToolCall") {
+    return notification.params;
+  }
+
+  const metadata = readCollabAgentMetadataForItem(item, childThreadMetadata);
+  if (!metadata) {
+    return notification.params;
+  }
+
+  const itemRecord = item as typeof item & {
+    readonly agentNickname?: string | null;
+    readonly agentRole?: string | null;
+  };
+  const agentNickname = readTrimmedString(itemRecord.agentNickname) ?? metadata.agentNickname;
+  const agentRole = readTrimmedString(itemRecord.agentRole) ?? metadata.agentRole;
+  if (!agentNickname && !agentRole) {
+    return notification.params;
+  }
+
+  return {
+    ...notification.params,
+    item: {
+      ...item,
+      ...(agentNickname ? { agentNickname } : {}),
+      ...(agentRole ? { agentRole } : {}),
+    },
+  };
+}
+
 function shouldSuppressChildConversationNotification(
   method: CodexRpc.ServerNotificationMethod,
 ): boolean {
@@ -920,6 +1061,9 @@ export const makeCodexSessionRuntime = (
     const approvalCorrelationsRef = yield* Ref.make(new Map<string, ApprovalCorrelation>());
     const pendingUserInputsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingUserInput>());
     const collabReceiverTurnsRef = yield* Ref.make(new Map<string, TurnId>());
+    const collabChildThreadMetadataRef = yield* Ref.make(
+      new Map<string, CollabChildThreadMetadata>(),
+    );
     const closedRef = yield* Ref.make(false);
 
     // `~` is not shell-expanded when env vars are set via
@@ -1021,9 +1165,10 @@ export const makeCodexSessionRuntime = (
 
     const handleRawNotification = (notification: CodexServerNotification) =>
       Effect.gen(function* () {
-        const payload = notification.params;
         const route = readRouteFields(notification);
         const collabReceiverTurns = yield* Ref.get(collabReceiverTurnsRef);
+        const collabChildThreadMetadata = yield* Ref.get(collabChildThreadMetadataRef);
+        rememberCollabChildThreadMetadata(collabChildThreadMetadata, notification);
         const providerConversationId = readNotificationThreadId(notification);
         const childParentTurnId = (() => {
           return providerConversationId
@@ -1039,12 +1184,14 @@ export const makeCodexSessionRuntime = (
             isKnownChildThread: childParentTurnId !== undefined,
           })
         ) {
+          yield* Ref.set(collabChildThreadMetadataRef, collabChildThreadMetadata);
           return;
         }
 
         rememberCollabReceiverTurns(collabReceiverTurns, notification, route.turnId);
         if (childParentTurnId && shouldSuppressChildConversationNotification(notification.method)) {
           yield* Ref.set(collabReceiverTurnsRef, collabReceiverTurns);
+          yield* Ref.set(collabChildThreadMetadataRef, collabChildThreadMetadata);
           return;
         }
 
@@ -1075,6 +1222,8 @@ export const makeCodexSessionRuntime = (
         }
 
         yield* Ref.set(collabReceiverTurnsRef, collabReceiverTurns);
+        yield* Ref.set(collabChildThreadMetadataRef, collabChildThreadMetadata);
+        const payload = enrichCollabAgentToolPayload(notification, collabChildThreadMetadata);
         yield* emitEvent({
           kind: "notification",
           threadId: options.threadId,

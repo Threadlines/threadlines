@@ -26,6 +26,13 @@ export type ModelEsque = {
   subProvider?: string | undefined;
 };
 
+const CLAUDE_AGENT_DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
+
+function stripClaudeModelPrefix(name: string): string {
+  const strippedName = name.replace(/^Claude\s+/u, "").trim();
+  return strippedName.length > 0 ? strippedName : name;
+}
+
 export function getDisplayModelName(
   model: ModelEsque,
   options?: { preferShortName?: boolean },
@@ -34,6 +41,27 @@ export function getDisplayModelName(
     return model.shortName;
   }
   return model.name;
+}
+
+export function getProviderScopedDisplayModelName(
+  model: ModelEsque,
+  driverKind: ProviderDriverKind,
+  options?: { preferShortName?: boolean },
+): string {
+  const displayName = getDisplayModelName(model, options);
+  if (driverKind === CLAUDE_AGENT_DRIVER_KIND) {
+    return stripClaudeModelPrefix(displayName);
+  }
+  return displayName;
+}
+
+export function getProviderScopedDisplayModelLabel(
+  model: ModelEsque,
+  driverKind: ProviderDriverKind,
+  options?: { preferShortName?: boolean },
+): string {
+  const title = getProviderScopedDisplayModelName(model, driverKind, options);
+  return model.subProvider ? `${model.subProvider} · ${title}` : title;
 }
 
 export function getTriggerDisplayModelName(model: ModelEsque): string {

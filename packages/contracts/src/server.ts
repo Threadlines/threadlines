@@ -417,6 +417,7 @@ export const ServerResolvedBackgroundRun = Schema.Struct({
   pid: PositiveInt,
   command: TrimmedNonEmptyString,
   detail: TrimmedNonEmptyString,
+  elapsed: Schema.optional(TrimmedNonEmptyString),
   statusLabel: TrimmedNonEmptyString,
   canStop: Schema.Boolean,
 });

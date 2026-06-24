@@ -3,10 +3,12 @@ import * as Arr from "effect/Array";
 import {
   ApprovalRequestId,
   isToolLifecycleItemType,
+  type MessageId,
   type OrchestrationLatestTurn,
   type OrchestrationThreadActivity,
   type OrchestrationProposedPlanId,
   ProviderDriverKind,
+  type ThreadForkContextPayload,
   type ToolLifecycleItemType,
   type UserInputQuestion,
   type ThreadId,
@@ -161,6 +163,7 @@ export interface SubagentProgressItem {
   agentThreadId: string | null;
   turnId: TurnId | null;
   label: string;
+  nickname?: string | null;
   role: string | null;
   objective: string | null;
   status: SubagentProgressStatus;
@@ -194,11 +197,50 @@ export interface SubagentResultEntry {
   turnId: TurnId | null;
   agentThreadId: string;
   label: string;
+  nickname?: string | null;
   role: string | null;
   objective: string | null;
   body: string;
   model: string | null;
   reasoningEffort: string | null;
+}
+
+export function formatSubagentDisplayName(input: {
+  label: string;
+  nickname?: string | null;
+  role?: string | null;
+}): string {
+  const nickname = asTrimmedString(input.nickname);
+  if (nickname) {
+    return nickname;
+  }
+
+  const role = asTrimmedString(input.role);
+  if (role) {
+    return formatSubagentNameToken(role) ?? "Subagent";
+  }
+
+  const label = asTrimmedString(input.label);
+  const labelWithoutSuffix = label?.replace(/\s+subagent$/iu, "").trim();
+  if (labelWithoutSuffix && labelWithoutSuffix.toLowerCase() !== "subagent") {
+    return labelWithoutSuffix;
+  }
+
+  return "Subagent";
+}
+
+export function shouldShowSubagentDisplayChip(input: {
+  label: string;
+  nickname?: string | null;
+  role?: string | null;
+}): boolean {
+  return formatSubagentDisplayName(input) !== "Subagent";
+}
+
+export interface ForkContextEntry {
+  id: string;
+  createdAt: string;
+  payload: ThreadForkContextPayload;
 }
 
 export type TimelineEntry =
@@ -225,6 +267,12 @@ export type TimelineEntry =
       kind: "subagent-result";
       createdAt: string;
       result: SubagentResultEntry;
+    }
+  | {
+      id: string;
+      kind: "fork-context";
+      createdAt: string;
+      forkContext: ForkContextEntry;
     };
 
 export function formatDuration(durationMs: number): string {
@@ -694,7 +742,8 @@ export function deriveSubagentProgressState(input: {
   const records = collectSubagentActivityRecords(input.activities, {
     latestTurnId: input.latestTurnId ?? null,
   });
-  const items = records.map(
+  const visibleRecords = records.filter((record) => record.status !== "completed");
+  const items = visibleRecords.map(
     ({
       resultActivityId: _resultActivityId,
       resultBody: _resultBody,
@@ -707,12 +756,12 @@ export function deriveSubagentProgressState(input: {
   }
 
   const activeCount = items.filter((item) => isActiveSubagentStatus(item.status)).length;
-  if (input.latestTurnSettled === true && activeCount === 0) {
+  const failedCount = items.filter((item) => isFailedSubagentStatus(item.status)).length;
+  if (input.latestTurnSettled === true && activeCount === 0 && failedCount === 0) {
     return null;
   }
 
   const completedCount = items.filter((item) => item.status === "completed").length;
-  const failedCount = items.filter((item) => isFailedSubagentStatus(item.status)).length;
   const totalCount = items.length;
   const summary = summarizeSubagentProgress({
     activeCount,
@@ -762,12 +811,60 @@ export function deriveSubagentResultEntries(
       turnId: record.turnId,
       agentThreadId: record.agentThreadId,
       label: record.label,
+      ...(record.nickname ? { nickname: record.nickname } : {}),
       role: record.role,
       objective: record.objective,
       body: record.resultBody,
       model: record.model,
       reasoningEffort: record.reasoningEffort,
     }))
+    .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
+}
+
+function asForkContextPayload(payload: unknown): ThreadForkContextPayload | null {
+  const record = asRecord(payload);
+  if (!record) {
+    return null;
+  }
+  if (
+    typeof record.sourceThreadId !== "string" ||
+    typeof record.sourceThreadTitle !== "string" ||
+    typeof record.sourceMessageId !== "string" ||
+    typeof record.sourceMessageRole !== "string" ||
+    typeof record.sourceMessageText !== "string" ||
+    typeof record.sourceMessageCreatedAt !== "string" ||
+    record.workspaceMode !== "current" ||
+    typeof record.includedMessageCount !== "number" ||
+    typeof record.includedToolSummaryCount !== "number" ||
+    typeof record.includedAttachmentCount !== "number" ||
+    typeof record.omittedAttachmentCount !== "number" ||
+    typeof record.contextText !== "string" ||
+    !Array.isArray(record.attachments) ||
+    typeof record.createdAt !== "string"
+  ) {
+    return null;
+  }
+  return record as unknown as ThreadForkContextPayload;
+}
+
+export function deriveForkContextEntries(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ForkContextEntry[] {
+  return activities
+    .filter((activity) => activity.kind === "thread.fork.context")
+    .flatMap((activity) => {
+      const payload = asForkContextPayload(activity.payload);
+      if (!payload) {
+        return [];
+      }
+      return [
+        {
+          id: activity.id,
+          createdAt: activity.createdAt,
+          payload,
+        },
+      ];
+    })
     .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
 }
 
@@ -788,12 +885,12 @@ function collectSubagentActivityRecords(
       activity.payload && typeof activity.payload === "object"
         ? (activity.payload as Record<string, unknown>)
         : null;
-    if (extractWorkLogItemType(payload) !== "collab_agent_tool_call") {
+    if (payload === null || extractWorkLogItemType(payload) !== "collab_agent_tool_call") {
       continue;
     }
 
     const data = asRecord(payload?.data);
-    const item = asRecord(data?.item);
+    const item = asRecord(data?.item) ?? asClaudeSubagentActivityItem({ activity, payload, data });
     if (!item) {
       continue;
     }
@@ -852,9 +949,15 @@ function collectSubagentActivityRecords(
         parsedObjective.role ??
         previous?.role ??
         null;
+      const nickname =
+        asTrimmedString(item.agentNickname) ??
+        asTrimmedString(item.agent_nickname) ??
+        asTrimmedString(item.nickname) ??
+        previous?.nickname ??
+        null;
       const label = subagentDisplayLabel({
         role,
-        nickname: asTrimmedString(item.agentNickname) ?? asTrimmedString(item.nickname),
+        nickname: null,
       });
       const objective = parsedObjective.objective ?? prompt ?? previous?.objective ?? null;
       const terminalResult = isTerminalSubagentResult({
@@ -873,6 +976,7 @@ function collectSubagentActivityRecords(
         agentThreadId: pendingAgent ? null : agentId,
         turnId: activity.turnId,
         label,
+        ...(nickname ? { nickname } : {}),
         role,
         objective,
         status,
@@ -892,6 +996,156 @@ function collectSubagentActivityRecords(
     const createdAtComparison = left.createdAt.localeCompare(right.createdAt);
     return createdAtComparison === 0 ? left.id.localeCompare(right.id) : createdAtComparison;
   });
+}
+
+function asClaudeSubagentActivityItem(input: {
+  activity: OrchestrationThreadActivity;
+  payload: Record<string, unknown>;
+  data: Record<string, unknown> | null;
+}): Record<string, unknown> | null {
+  const toolName = asTrimmedString(input.data?.toolName);
+  if (!isClaudeSubagentToolName(toolName)) {
+    return null;
+  }
+
+  const toolInput = asRecord(input.data?.input);
+  const toolCallId =
+    asTrimmedString(input.payload.toolCallId) ??
+    asTrimmedString(input.data?.itemId) ??
+    input.activity.id;
+  const itemStatus =
+    asTrimmedString(input.payload.status) ?? claudeSubagentStatusFromActivityKind(input.activity);
+  const resultText = extractClaudeSubagentResultText(input.data?.result);
+  const stateStatus = claudeSubagentStateStatus(itemStatus);
+  const agentMessage = isTerminalClaudeSubagentState(stateStatus) ? resultText : null;
+  const role =
+    asTrimmedString(toolInput?.subagent_type) ??
+    asTrimmedString(toolInput?.subagentType) ??
+    asTrimmedString(toolInput?.agent_type) ??
+    asTrimmedString(toolInput?.agentType);
+  const nickname =
+    asTrimmedString(toolInput?.agentNickname) ??
+    asTrimmedString(toolInput?.agent_nickname) ??
+    asTrimmedString(toolInput?.nickname) ??
+    asTrimmedString(toolInput?.name) ??
+    asTrimmedString(toolInput?.displayName);
+  const prompt =
+    asTrimmedString(toolInput?.description) ??
+    asTrimmedString(toolInput?.prompt) ??
+    asTrimmedString(input.payload.detail);
+
+  return {
+    id: toolCallId,
+    type: "collabAgentToolCall",
+    tool: toolName,
+    status: itemStatus,
+    ...(prompt ? { prompt } : {}),
+    ...(role ? { agentRole: role } : {}),
+    ...(nickname ? { agentNickname: nickname } : {}),
+    receiverThreadIds: [toolCallId],
+    agentsStates: {
+      [toolCallId]: {
+        status: stateStatus,
+        ...(agentMessage ? { message: agentMessage } : { message: null }),
+      },
+    },
+  };
+}
+
+function isClaudeSubagentToolName(toolName: string | null): boolean {
+  const normalized = toolName?.trim().toLowerCase();
+  return (
+    normalized === "agent" ||
+    normalized === "task" ||
+    normalized === "subagent" ||
+    normalized === "sub-agent" ||
+    normalized?.includes("subagent") === true ||
+    normalized?.includes("sub-agent") === true
+  );
+}
+
+function claudeSubagentStateStatus(itemStatus: string): string {
+  const normalized = normalizeStatusToken(itemStatus);
+  if (normalized === "completed") {
+    return "completed";
+  }
+  if (normalized === "failed" || normalized === "errored" || normalized === "error") {
+    return "errored";
+  }
+  if (normalized === "interrupted" || normalized === "aborted" || normalized === "cancelled") {
+    return "interrupted";
+  }
+  return "running";
+}
+
+function claudeSubagentStatusFromActivityKind(activity: OrchestrationThreadActivity): string {
+  if (activity.kind === "tool.completed") {
+    return "completed";
+  }
+  return "inProgress";
+}
+
+function isTerminalClaudeSubagentState(stateStatus: string): boolean {
+  return stateStatus === "completed" || stateStatus === "errored" || stateStatus === "interrupted";
+}
+
+function extractClaudeSubagentResultText(result: unknown): string | null {
+  const direct = asTrimmedString(result);
+  if (direct) {
+    return sanitizeClaudeSubagentResultText(direct);
+  }
+
+  const resultRecord = asRecord(result);
+  if (!resultRecord) {
+    return null;
+  }
+
+  const text =
+    extractClaudeTextContent(resultRecord.content) ??
+    extractClaudeTextContent(resultRecord.text) ??
+    extractClaudeTextContent(resultRecord.message);
+  return sanitizeClaudeSubagentResultText(text);
+}
+
+function sanitizeClaudeSubagentResultText(value: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const withoutUsage = value.replace(/\s*<usage>[\s\S]*?<\/usage>\s*$/iu, "").trimEnd();
+  const withoutContinuationFooter = withoutUsage
+    .replace(
+      /\s*agentId:\s*[A-Za-z0-9_-]+\s*\(use\s+SendMessage\s+with\s+to:\s*['"`][^'"`]+['"`],\s*summary:\s*['"`][\s\S]*?['"`]\s+to\s+continue\s+this\s+agent\)\s*$/iu,
+      "",
+    )
+    .trim();
+
+  return withoutContinuationFooter.length > 0 ? withoutContinuationFooter : null;
+}
+
+function extractClaudeTextContent(content: unknown): string | null {
+  const direct = asTrimmedString(content);
+  if (direct) {
+    return direct;
+  }
+
+  if (!Array.isArray(content)) {
+    return null;
+  }
+
+  const parts = content
+    .flatMap((entry) => {
+      const text = asTrimmedString(entry);
+      if (text) {
+        return [text];
+      }
+      const entryRecord = asRecord(entry);
+      const entryText = asTrimmedString(entryRecord?.text);
+      return entryText ? [entryText] : [];
+    })
+    .filter((part) => part.length > 0);
+
+  return parts.length > 0 ? parts.join("\n\n") : null;
 }
 
 function extractCollabAgentStates(value: unknown): Map<string, CollabAgentStateSnapshot> {
@@ -1068,11 +1322,19 @@ function subagentDisplayLabel(input: { role: string | null; nickname: string | n
   if (!raw) {
     return "Subagent";
   }
-  const normalized = raw.replace(/[_-]+/gu, " ").replace(/\s+/gu, " ").trim();
+  const normalized = formatSubagentNameToken(raw);
   if (!normalized) {
     return "Subagent";
   }
-  return `${normalized.charAt(0).toUpperCase()}${normalized.slice(1)} subagent`;
+  return `${normalized} subagent`;
+}
+
+function formatSubagentNameToken(value: string): string | null {
+  const normalized = value.replace(/[_-]+/gu, " ").replace(/\s+/gu, " ").trim();
+  if (!normalized) {
+    return null;
+  }
+  return `${normalized.charAt(0).toUpperCase()}${normalized.slice(1)}`;
 }
 
 function summarizeSubagentProgress(input: {
@@ -1157,6 +1419,7 @@ export function deriveWorkLogEntries(
   const entries = ordered
     .filter((activity) => activity.kind !== "task.started")
     .filter((activity) => activity.kind !== "subagent.result")
+    .filter((activity) => activity.kind !== "thread.fork.context")
     .filter((activity) => activity.kind !== "context-window.updated")
     // Account telemetry; belongs in a usage meter, not the work narrative.
     .filter((activity) => activity.kind !== "account.rate-limits.updated")
@@ -1245,6 +1508,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
       ? payload.detail
       : null;
   const taskLabel = taskSummary || taskDetailAsLabel;
+  const runtimeWarningDisplay = deriveRuntimeWarningDisplay(activity, payload);
   const detail = isTaskActivity
     ? !taskDetailAsLabel &&
       payload &&
@@ -1252,19 +1516,14 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
       payload.detail.length > 0
       ? stripTrailingExitCode(payload.detail).output
       : null
-    : (extractRuntimeActivityDetail(activity, payload) ??
+    : (runtimeWarningDisplay?.detail ??
+      extractRuntimeActivityDetail(activity, payload) ??
       extractToolDetail(payload, title ?? activity.summary));
   const toolCallId = isTaskActivity ? null : extractToolCallId(payload);
-  // Recurring transient warnings (API retries) read as a status line: the
-  // message is the label, and repeats collapse into one updating row.
-  const transientWarningLabel =
-    activity.kind === "runtime.warning" && asTrimmedString(payload?.warningKind) === "api-retry"
-      ? asTrimmedString(payload?.message)
-      : undefined;
   const entry: DerivedWorkLogEntry = {
     id: activity.id,
     createdAt: activity.createdAt,
-    label: transientWarningLabel ?? (taskLabel || activity.summary),
+    label: runtimeWarningDisplay?.label ?? (taskLabel || activity.summary),
     tone:
       activity.kind === "task.progress"
         ? "thinking"
@@ -1832,6 +2091,111 @@ function normalizeWorkLogExecutionStatus(
     return "failed";
   }
   return undefined;
+}
+
+function deriveRuntimeWarningDisplay(
+  activity: OrchestrationThreadActivity,
+  payload: Record<string, unknown> | null,
+): { label: string; detail?: string } | null {
+  if (activity.kind !== "runtime.warning") {
+    return null;
+  }
+
+  const message = asTrimmedString(payload?.message);
+  const warningKind = asTrimmedString(payload?.warningKind);
+  const provider = asTrimmedString(payload?.provider);
+  const detail = asRecord(payload?.detail);
+  const detailError = asRecord(detail?.error);
+  const additionalDetails = asTrimmedString(detailError?.additionalDetails);
+  const codexStreamWarning = isCodexStreamWarning({
+    provider,
+    message,
+    additionalDetails,
+  });
+
+  if (warningKind === "api-retry") {
+    if (!codexStreamWarning) {
+      const label = message ?? "Provider API retry";
+      const rawDetail = extractRuntimeActivityDetail(activity, payload);
+      return rawDetail ? { label, detail: rawDetail } : { label };
+    }
+
+    const attempt = extractReconnectAttempt(message);
+    const label = attempt ? `Codex stream reconnecting ${attempt}` : "Codex stream reconnecting";
+    const retryDetail = summarizeCodexStreamDisconnect(additionalDetails);
+    return retryDetail ? { label, detail: retryDetail } : { label };
+  }
+
+  if (isCodexTransportFallbackWarning({ provider, message })) {
+    const fallbackDetails = stripCodexTransportFallbackPrefix(message);
+    const summarizedFallback = summarizeCodexStreamDisconnect(fallbackDetails);
+    const detailText = summarizedFallback
+      ? `After repeated stream disconnects, Codex continued the turn over HTTPS. Last error: ${summarizedFallback}`
+      : "After repeated stream disconnects, Codex continued the turn over HTTPS.";
+    return {
+      label: "Codex switched to HTTPS transport",
+      detail: detailText,
+    };
+  }
+
+  return null;
+}
+
+function isCodexStreamWarning(input: {
+  provider: string | null;
+  message: string | null;
+  additionalDetails: string | null;
+}): boolean {
+  if (input.provider === "codex") {
+    return true;
+  }
+  const haystack = [input.message, input.additionalDetails].filter(Boolean).join(" ").toLowerCase();
+  return (
+    haystack.includes("chatgpt.com/backend-api/codex") ||
+    haystack.includes("response.completed") ||
+    haystack.includes("badrecordmac")
+  );
+}
+
+function isCodexTransportFallbackWarning(input: {
+  provider: string | null;
+  message: string | null;
+}): boolean {
+  const message = input.message?.toLowerCase() ?? "";
+  return (
+    (input.provider === "codex" || input.provider === null) &&
+    message.startsWith("falling back from websockets to https transport")
+  );
+}
+
+function extractReconnectAttempt(message: string | null): string | null {
+  const match = message?.match(/reconnecting\.\.\.\s*(\d+\/\d+)/i);
+  return match?.[1] ?? null;
+}
+
+function stripCodexTransportFallbackPrefix(message: string | null): string | null {
+  const value = message
+    ?.replace(/^Falling back from WebSockets to HTTPS transport\.\s*/i, "")
+    .trim();
+  return value && value.length > 0 ? value : null;
+}
+
+function summarizeCodexStreamDisconnect(detail: string | null): string | null {
+  if (!detail) {
+    return null;
+  }
+  const normalized = detail.replace(/^stream disconnected before completion:\s*/i, "").trim();
+  const lower = normalized.toLowerCase();
+  if (lower.includes("badrecordmac")) {
+    return "TLS stream error (BadRecordMac) interrupted the provider connection.";
+  }
+  if (lower.includes("websocket closed by server before response.completed")) {
+    return "The upstream provider WebSocket closed before the model response completed.";
+  }
+  if (lower.includes("error sending request for url")) {
+    return "Network error while connecting to the Codex responses endpoint.";
+  }
+  return normalized;
 }
 
 function extractRuntimeActivityDetail(
@@ -3081,13 +3445,17 @@ export function deriveTimelineEntries(
   proposedPlans: ProposedPlan[],
   workEntries: WorkLogEntry[],
   subagentResults: SubagentResultEntry[] = [],
+  forkContexts: ForkContextEntry[] = [],
 ): TimelineEntry[] {
-  const messageRows: TimelineEntry[] = messages.map((message) => ({
-    id: message.id,
-    kind: "message",
-    createdAt: message.createdAt,
-    message,
-  }));
+  const suppressedAssistantEchoIds = findSubagentResultEchoMessageIds(messages, subagentResults);
+  const messageRows: TimelineEntry[] = messages
+    .filter((message) => !suppressedAssistantEchoIds.has(message.id))
+    .map((message) => ({
+      id: message.id,
+      kind: "message",
+      createdAt: message.createdAt,
+      message,
+    }));
   const proposedPlanRows: TimelineEntry[] = proposedPlans.map((proposedPlan) => ({
     id: proposedPlan.id,
     kind: "proposed-plan",
@@ -3106,9 +3474,62 @@ export function deriveTimelineEntries(
     createdAt: result.createdAt,
     result,
   }));
-  return [...messageRows, ...proposedPlanRows, ...workRows, ...subagentResultRows].toSorted(
-    (a, b) => a.createdAt.localeCompare(b.createdAt),
-  );
+  const forkContextRows: TimelineEntry[] = forkContexts.map((forkContext) => ({
+    id: forkContext.id,
+    kind: "fork-context",
+    createdAt: forkContext.createdAt,
+    forkContext,
+  }));
+  return [
+    ...forkContextRows,
+    ...messageRows,
+    ...proposedPlanRows,
+    ...workRows,
+    ...subagentResultRows,
+  ].toSorted((a, b) => {
+    const timeDelta = a.createdAt.localeCompare(b.createdAt);
+    if (timeDelta !== 0) {
+      return timeDelta;
+    }
+    const rank = (entry: TimelineEntry) => (entry.kind === "fork-context" ? 0 : 1);
+    return rank(a) - rank(b);
+  });
+}
+
+function findSubagentResultEchoMessageIds(
+  messages: ReadonlyArray<ChatMessage>,
+  subagentResults: ReadonlyArray<SubagentResultEntry>,
+): Set<MessageId> {
+  const subagentBodiesByTurnId = new Map<TurnId, Set<string>>();
+  for (const result of subagentResults) {
+    const body = normalizeExactSubagentEchoText(result.body);
+    if (!result.turnId || body === null) {
+      continue;
+    }
+    const bodies = subagentBodiesByTurnId.get(result.turnId) ?? new Set<string>();
+    bodies.add(body);
+    subagentBodiesByTurnId.set(result.turnId, bodies);
+  }
+
+  const suppressed = new Set<MessageId>();
+  for (const message of messages) {
+    if (message.role !== "assistant" || !message.turnId) {
+      continue;
+    }
+    const body = normalizeExactSubagentEchoText(message.text);
+    if (body === null) {
+      continue;
+    }
+    if (subagentBodiesByTurnId.get(message.turnId)?.has(body)) {
+      suppressed.add(message.id);
+    }
+  }
+  return suppressed;
+}
+
+function normalizeExactSubagentEchoText(value: string): string | null {
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
 }
 
 export function deriveCompletionDividerBeforeEntryId(

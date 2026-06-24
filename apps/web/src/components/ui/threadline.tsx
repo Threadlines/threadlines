@@ -14,15 +14,28 @@ import { cn } from "~/lib/utils";
  * is happening right now. Limit to one per visible surface. Size it via
  * `className` (defaults to an 8px dot); the halo scales with the dot.
  */
-function LiveNode({ className, ...props }: React.ComponentPropsWithoutRef<"span">) {
+function LiveNode({
+  className,
+  dotClassName,
+  haloClassName,
+  ...props
+}: React.ComponentPropsWithoutRef<"span"> & {
+  dotClassName?: string;
+  haloClassName?: string;
+}) {
   return (
     <span
       aria-hidden="true"
       {...props}
       className={cn("relative inline-flex size-2 shrink-0", className)}
     >
-      <span className="thread-halo absolute inset-0 rounded-full bg-primary-graph" />
-      <span className="relative size-full rounded-full bg-primary-graph" />
+      <span
+        className={cn(
+          "thread-halo absolute inset-0 rounded-full",
+          haloClassName ?? "bg-primary-graph",
+        )}
+      />
+      <span className={cn("relative size-full rounded-full", dotClassName ?? "bg-primary-graph")} />
     </span>
   );
 }

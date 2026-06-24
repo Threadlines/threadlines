@@ -4,6 +4,7 @@ import {
   CheckIcon,
   ChevronDownIcon,
   CircleAlertIcon,
+  ClockIcon,
   ExternalLinkIcon,
   FileTextIcon,
   ListTodoIcon,
@@ -15,11 +16,13 @@ import {
 
 import type { PlanTaskBadgeState } from "../../planPanelState";
 import { proposedPlanTitle } from "../../proposedPlan";
-import type {
-  ActivePlanState,
-  LatestProposedPlanState,
-  SubagentProgressItem,
-  SubagentProgressState,
+import {
+  formatSubagentDisplayName,
+  shouldShowSubagentDisplayChip,
+  type ActivePlanState,
+  type LatestProposedPlanState,
+  type SubagentProgressItem,
+  type SubagentProgressState,
 } from "../../session-logic";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
@@ -44,6 +47,7 @@ export interface ThreadBackgroundRunItem {
   terminalId: string | null;
   pid: number | null;
   port: number | null;
+  elapsed: string | null;
   canStop: boolean;
 }
 
@@ -541,6 +545,8 @@ function SubagentSection({ state }: { state: SubagentProgressState }) {
       <div className={cn("space-y-1 pr-1", expanded && "max-h-56 overflow-y-auto")}>
         {visibleItems.map((item) => {
           const meta = subagentMeta(item);
+          const displayName = formatSubagentDisplayName(item);
+          const showSubagentChip = shouldShowSubagentDisplayChip(item);
           return (
             <div
               key={item.id}
@@ -556,8 +562,15 @@ function SubagentSection({ state }: { state: SubagentProgressState }) {
             >
               <div className="mt-0.5">{subagentStatusIcon(item.status)}</div>
               <div className="min-w-0">
-                <div className="truncate text-[12px] leading-snug text-foreground/90">
-                  {item.label}
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <div className="truncate text-[12px] leading-snug text-foreground/90">
+                    {displayName}
+                  </div>
+                  {showSubagentChip ? (
+                    <span className="shrink-0 rounded border border-border/55 bg-background/55 px-1 py-px text-[9px] leading-none font-medium tracking-[0.08em] text-muted-foreground/55 uppercase">
+                      Subagent
+                    </span>
+                  ) : null}
                 </div>
                 {item.objective ? (
                   <div
@@ -593,6 +606,40 @@ function SubagentSection({ state }: { state: SubagentProgressState }) {
   );
 }
 
+function backgroundRunFallbackDetail(run: ThreadBackgroundRunItem): string {
+  if (run.source === "terminal") {
+    return "Managed terminal";
+  }
+  if (run.source === "detected") {
+    return "Detected local process";
+  }
+  if (run.source === "mentioned-preview") {
+    return "Mentioned only; no process handle.";
+  }
+  return "Provider-managed";
+}
+
+function backgroundRunCommandText(run: ThreadBackgroundRunItem): string {
+  const detail = run.detail ?? run.cwd ?? backgroundRunFallbackDetail(run);
+  const detectedCommandSeparator = " - ";
+  if (run.source === "detected" && detail.includes(detectedCommandSeparator)) {
+    return detail.slice(detail.indexOf(detectedCommandSeparator) + detectedCommandSeparator.length);
+  }
+  return detail;
+}
+
+function isInformativeBackgroundRunCommand(commandText: string): boolean {
+  return commandText.includes(" ") || commandText.length > 18 || commandText.includes("/");
+}
+
+function backgroundRunMetaItems(run: ThreadBackgroundRunItem): string[] {
+  return [
+    run.pid === null ? null : `PID ${run.pid}`,
+    run.port === null ? null : `:${run.port}`,
+    run.elapsed ? `Up ${run.elapsed}` : null,
+  ].filter((item): item is string => item !== null);
+}
+
 function BackgroundRunsSection({
   backgroundRuns,
   onOpenBackgroundRunTerminal,
@@ -621,92 +668,119 @@ function BackgroundRunsSection({
         <span className={badgeClassName("active", true)}>{backgroundRuns.length}</span>
       </div>
 
-      <div className="space-y-1 pr-1">
-        {backgroundRuns.map((run) => (
-          <div
-            key={run.id}
-            className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2 rounded-md bg-primary/5 px-2 py-2"
-          >
-            <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary-readable">
-              <LoaderIcon className="size-3 animate-spin" aria-hidden="true" />
-            </span>
-            <div className="min-w-0">
-              <div className="truncate text-[12px] leading-snug text-foreground/90">
-                {run.label}
+      <div className="space-y-1.5 pr-1">
+        {backgroundRuns.map((run) => {
+          const metaItems = backgroundRunMetaItems(run);
+          const commandText = backgroundRunCommandText(run);
+          const showCommandText = isInformativeBackgroundRunCommand(commandText);
+          const primaryUrl = run.urls[0] ?? null;
+          const extraUrlCount = Math.max(0, run.urls.length - 1);
+
+          return (
+            <div key={run.id} className="rounded-md bg-primary/5 px-2.5 py-2">
+              <div className="flex min-w-0 items-start gap-2">
+                <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary-readable ring-1 ring-primary/15">
+                  <LoaderIcon className="size-3 animate-spin" aria-hidden="true" />
+                </span>
+
+                <div className="min-w-0 flex-1">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <div className="min-w-0 flex-1 truncate text-[12px] font-medium leading-snug text-foreground/90">
+                      {run.label}
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <span className="rounded-[var(--app-radius-badge)] bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-primary-readable">
+                        {run.statusLabel}
+                      </span>
+                      {run.terminalId ? (
+                        <button
+                          type="button"
+                          className="inline-flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-background/70 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring/50"
+                          aria-label={`Open ${run.label}`}
+                          title={`Open ${run.label}`}
+                          onClick={() => {
+                            if (run.terminalId) {
+                              onOpenBackgroundRunTerminal(run.terminalId);
+                            }
+                          }}
+                        >
+                          <TerminalSquareIcon className="size-3" aria-hidden="true" />
+                        </button>
+                      ) : null}
+                      {run.canStop ? (
+                        <button
+                          type="button"
+                          className="inline-flex h-6 cursor-pointer items-center gap-1 rounded-md bg-destructive/10 px-1.5 text-[10px] font-medium text-destructive transition-colors hover:bg-destructive/15 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-destructive/40"
+                          aria-label={`Stop ${run.label}`}
+                          title={`Stop ${run.label}`}
+                          onClick={() => {
+                            onStopBackgroundRun(run);
+                          }}
+                        >
+                          <SquareIcon className="size-2.5 fill-current" aria-hidden="true" />
+                          <span>Stop</span>
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1">
+                    <span className="text-[10px] leading-none text-muted-foreground/55">
+                      {run.source === "detected"
+                        ? "Local preview"
+                        : run.source === "terminal"
+                          ? "Terminal"
+                          : run.source === "mentioned-preview"
+                            ? "Preview mention"
+                            : "Provider task"}
+                    </span>
+                    {metaItems.map((item) => (
+                      <span
+                        key={item}
+                        className="inline-flex h-4 items-center gap-1 rounded-[var(--app-radius-badge)] bg-background/55 px-1.5 font-mono text-[10px] leading-none text-muted-foreground ring-1 ring-border/40"
+                      >
+                        {item.startsWith("Up ") ? (
+                          <ClockIcon className="size-2.5" aria-hidden="true" />
+                        ) : null}
+                        {item}
+                      </span>
+                    ))}
+                  </div>
+
+                  {primaryUrl || showCommandText ? (
+                    <div className="mt-1 flex min-w-0 items-center gap-1">
+                      {primaryUrl ? (
+                        <Button
+                          render={<a href={primaryUrl} target="_blank" rel="noreferrer" />}
+                          variant="ghost"
+                          size="xs"
+                          className="h-5 min-w-0 flex-1 justify-start gap-1 rounded-md bg-background/40 px-1.5 text-[10px] text-muted-foreground hover:bg-background/75 hover:text-foreground"
+                          title={primaryUrl}
+                        >
+                          <ExternalLinkIcon className="size-2.5 shrink-0" aria-hidden="true" />
+                          <span className="truncate">{primaryUrl}</span>
+                          {extraUrlCount > 0 ? (
+                            <span className="shrink-0 text-muted-foreground/50">
+                              +{extraUrlCount}
+                            </span>
+                          ) : null}
+                        </Button>
+                      ) : null}
+                      {showCommandText ? (
+                        <div
+                          className="min-w-0 flex-1 truncate rounded-md bg-background/30 px-1.5 py-1 font-mono text-[10px] leading-3 text-muted-foreground/60"
+                          title={commandText}
+                        >
+                          {commandText}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
               </div>
-              {run.detail ? (
-                <div className="mt-0.5 truncate text-[10px] text-muted-foreground/50">
-                  {run.detail}
-                </div>
-              ) : run.cwd ? (
-                <div className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground/50">
-                  {run.cwd}
-                </div>
-              ) : (
-                <div className="mt-0.5 text-[10px] text-muted-foreground/50">
-                  {run.source === "terminal"
-                    ? "Managed terminal"
-                    : run.source === "detected"
-                      ? "Detected local process"
-                      : run.source === "mentioned-preview"
-                        ? "Mentioned only; no process handle."
-                        : "Provider-managed"}
-                </div>
-              )}
-              {run.urls.length > 0 ? (
-                <div className="mt-1 flex min-w-0 flex-wrap gap-1">
-                  {run.urls.map((url) => (
-                    <Button
-                      key={url}
-                      render={<a href={url} target="_blank" rel="noreferrer" />}
-                      variant="ghost"
-                      size="xs"
-                      className="h-5 max-w-full gap-1 px-1.5 text-[10px] text-muted-foreground hover:text-foreground"
-                      title={url}
-                    >
-                      <ExternalLinkIcon className="size-2.5" aria-hidden="true" />
-                      <span className="truncate">{url}</span>
-                    </Button>
-                  ))}
-                </div>
-              ) : null}
             </div>
-            <div className="flex shrink-0 items-center gap-1">
-              <div className="pt-0.5 text-[10px] text-muted-foreground/50">{run.statusLabel}</div>
-              {run.terminalId ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-xs"
-                  className="text-muted-foreground hover:text-foreground"
-                  aria-label={`Open ${run.label}`}
-                  title={`Open ${run.label}`}
-                  onClick={() => {
-                    if (run.terminalId) {
-                      onOpenBackgroundRunTerminal(run.terminalId);
-                    }
-                  }}
-                >
-                  <TerminalSquareIcon className="size-3" aria-hidden="true" />
-                </Button>
-              ) : null}
-              {run.canStop ? (
-                <Button
-                  type="button"
-                  variant="destructive-outline"
-                  size="icon-xs"
-                  aria-label={`Stop ${run.label}`}
-                  title={`Stop ${run.label}`}
-                  onClick={() => {
-                    onStopBackgroundRun(run);
-                  }}
-                >
-                  <SquareIcon className="size-3" aria-hidden="true" />
-                </Button>
-              ) : null}
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </section>
   );

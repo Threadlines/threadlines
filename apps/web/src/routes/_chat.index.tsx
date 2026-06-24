@@ -14,6 +14,8 @@ import {
 import { selectProjectsAcrossEnvironments, useStore } from "../store";
 import { APP_DISPLAY_NAME } from "~/branding";
 import { deriveHostedStaticIndexState } from "./-hostedStaticIndexState";
+import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../workspaceTitlebar";
+import { cn } from "../lib/utils";
 
 function ChatIndexRouteView() {
   const { authGateState } = Route.useRouteContext();
@@ -72,7 +74,12 @@ function HostedStaticStatusState({
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background">
-        <header className="border-b border-border px-3 py-2 sm:px-5 sm:py-3">
+        <header
+          className={cn(
+            "border-b border-border px-3 py-2 transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none sm:px-5 sm:py-3",
+            COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
+          )}
+        >
           <div className="flex items-center gap-2">
             <SidebarOpenTrigger className="size-7 shrink-0" />
             <span className="text-sm font-medium text-foreground md:text-muted-foreground/60">
@@ -152,7 +159,12 @@ function HostedStaticOnboardingState() {
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background">
-        <header className="border-b border-border px-3 py-2 sm:px-5 sm:py-3">
+        <header
+          className={cn(
+            "border-b border-border px-3 py-2 transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none sm:px-5 sm:py-3",
+            COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
+          )}
+        >
           <div className="flex items-center gap-2">
             <SidebarOpenTrigger className="size-7 shrink-0" />
             <span className="text-sm font-medium text-foreground md:text-muted-foreground/60">

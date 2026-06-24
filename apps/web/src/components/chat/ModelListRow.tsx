@@ -3,6 +3,7 @@ import { memo } from "react";
 import { StarIcon } from "lucide-react";
 import {
   getDisplayModelName,
+  getProviderScopedDisplayModelLabel,
   getTriggerDisplayModelLabel,
   type ModelEsque,
   PROVIDER_ICON_BY_PROVIDER,
@@ -29,6 +30,7 @@ export const ModelListRow = memo(function ModelListRow(props: {
   isFavorite: boolean;
   showProvider: boolean;
   preferShortName?: boolean;
+  useProviderScopedLabel?: boolean;
   useTriggerLabel?: boolean;
   jumpLabel?: string | null;
   onToggleFavorite: () => void;
@@ -37,6 +39,16 @@ export const ModelListRow = memo(function ModelListRow(props: {
   const providerLabel = props.model.subProvider
     ? `${props.providerDisplayName} · ${props.model.subProvider}`
     : props.providerDisplayName;
+  const modelNameOptions = props.preferShortName ? { preferShortName: true } : undefined;
+  const modelLabel = props.useTriggerLabel
+    ? props.useProviderScopedLabel
+      ? getProviderScopedDisplayModelLabel(props.model, props.driverKind, {
+          preferShortName: true,
+        })
+      : getTriggerDisplayModelLabel(props.model)
+    : props.useProviderScopedLabel
+      ? getProviderScopedDisplayModelLabel(props.model, props.driverKind, modelNameOptions)
+      : getDisplayModelName(props.model, modelNameOptions);
 
   return (
     <ComboboxItem
@@ -55,14 +67,7 @@ export const ModelListRow = memo(function ModelListRow(props: {
             className="text-xs font-medium leading-snug flex items-center gap-2 min-w-0 group-data-selected:text-primary-readable"
             data-model-picker-model-name
           >
-            <span className="truncate">
-              {props.useTriggerLabel
-                ? getTriggerDisplayModelLabel(props.model)
-                : getDisplayModelName(
-                    props.model,
-                    props.preferShortName ? { preferShortName: true } : undefined,
-                  )}
-            </span>
+            <span className="truncate">{modelLabel}</span>
           </div>
           <span className="flex shrink-0 items-center gap-1.5">
             {/* Favorited rows keep the filled star visible in provider tabs;

@@ -25,6 +25,7 @@ import {
   deriveProviderAuthReconnectPrompt,
   desktopCapturedScreenshotToFile,
   hasServerAcknowledgedLocalDispatch,
+  isScrollMetricsAtEnd,
   mergeLocalDraftThreadWithServerThread,
   threadHasPromotableServerActivity,
   reconcileSteeringHandoffStatuses,
@@ -36,6 +37,49 @@ import {
 } from "./ChatView.logic";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
+
+describe("isScrollMetricsAtEnd", () => {
+  it("treats content shorter than the viewport as already at the end", () => {
+    expect(
+      isScrollMetricsAtEnd({
+        scrollOffset: 0,
+        viewportLength: 800,
+        contentLength: 640,
+      }),
+    ).toBe(true);
+  });
+
+  it("allows small fractional drift at the end", () => {
+    expect(
+      isScrollMetricsAtEnd({
+        scrollOffset: 298.5,
+        viewportLength: 500,
+        contentLength: 800,
+      }),
+    ).toBe(true);
+  });
+
+  it("returns false when there is visible content below the viewport", () => {
+    expect(
+      isScrollMetricsAtEnd({
+        scrollOffset: 240,
+        viewportLength: 500,
+        contentLength: 800,
+      }),
+    ).toBe(false);
+  });
+
+  it("accounts for bottom content inset", () => {
+    expect(
+      isScrollMetricsAtEnd({
+        scrollOffset: 280,
+        viewportLength: 500,
+        contentLength: 800,
+        contentInsetEnd: 20,
+      }),
+    ).toBe(true);
+  });
+});
 
 describe("classifyModelSwitch", () => {
   const CODEX = ProviderDriverKind.make("codex");
@@ -474,6 +518,48 @@ describe("deriveProviderBackgroundRuns", () => {
         commandHints: [],
       },
     ]);
+  });
+
+  it("does not duplicate active subagents as anonymous provider background rows", () => {
+    const runs = deriveProviderBackgroundRuns({
+      activities: [],
+      messages: [],
+      pendingBackgroundTaskCount: 1,
+      activeSubagentCount: 1,
+    });
+
+    expect(runs).toEqual([]);
+  });
+
+  it("does not surface Claude subagent task progress as a background run", () => {
+    const runs = deriveProviderBackgroundRuns({
+      activities: [
+        taskActivity(
+          "task.started",
+          {
+            taskId: "subagent-task-1",
+            taskType: "general-purpose",
+            description: "Output sample sentences to chat",
+          },
+          1,
+        ),
+        taskActivity(
+          "task.progress",
+          {
+            taskId: "subagent-task-1",
+            taskType: "general-purpose",
+            description: "Output sample sentences to chat",
+            summary: "General purpose subagent returned a sample sentence.",
+          },
+          2,
+        ),
+      ],
+      messages: [],
+      pendingBackgroundTaskCount: 1,
+      activeSubagentCount: 1,
+    });
+
+    expect(runs).toEqual([]);
   });
 
   it("surfaces mentioned localhost preview URLs without a stop handle", () => {

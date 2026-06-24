@@ -370,25 +370,6 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     ];
   }, [favoriteModels, isLocked, providerTabs, showTabList]);
 
-  const defaultActiveTabId = activeModelIsFavorite ? "favorites" : props.activeInstanceId;
-  const activeTab = useMemo(() => {
-    if (!showTabList) {
-      return null;
-    }
-    const manualTab = tabs.find((tab) => tab.id === manualActiveTabId);
-    if (manualTab) {
-      return manualTab;
-    }
-    const defaultTab = tabs.find((tab) => tab.id === defaultActiveTabId);
-    if (defaultTab) {
-      return defaultTab;
-    }
-    return tabs.find((tab) => tab.kind === "instance") ?? tabs[0] ?? null;
-  }, [defaultActiveTabId, manualActiveTabId, showTabList, tabs]);
-  const activeTabId = activeTab?.id ?? null;
-
-  const activeTabModels = activeTab?.models ?? providerTabs[0]?.models ?? EMPTY_MODEL_PICKER_ITEMS;
-
   const searchedModelsByTabId = useMemo((): ReadonlyMap<string, ReadonlyArray<ModelPickerItem>> => {
     if (!isSearching || tabs.length === 0) {
       return EMPTY_SEARCHED_MODELS_BY_TAB_ID;
@@ -404,9 +385,46 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     return searchResults;
   }, [favoritesSet, isSearching, normalizedSearchQuery, tabs]);
 
-  // Tokenized fuzzy search stays scoped to the selected tab. During search,
-  // tab badges switch to match counts so duplicate membership such as
-  // Favorites + Claude is visible without duplicating rows in one pane.
+  const defaultActiveTabId = activeModelIsFavorite ? "favorites" : props.activeInstanceId;
+  const activeTab = useMemo(() => {
+    if (!showTabList) {
+      return null;
+    }
+    const manualTab = tabs.find((tab) => tab.id === manualActiveTabId);
+    const defaultTab = tabs.find((tab) => tab.id === defaultActiveTabId);
+    const selectedTab = manualTab ?? defaultTab ?? tabs.find((tab) => tab.kind === "instance");
+    const fallbackTab = selectedTab ?? tabs[0] ?? null;
+    if (!isSearching) {
+      return fallbackTab;
+    }
+
+    const selectedTabMatchCount = fallbackTab
+      ? (searchedModelsByTabId.get(fallbackTab.id)?.length ?? 0)
+      : 0;
+    if (fallbackTab?.kind === "instance" && selectedTabMatchCount > 0) {
+      return fallbackTab;
+    }
+
+    return (
+      providerTabs.find((tab) => (searchedModelsByTabId.get(tab.id)?.length ?? 0) > 0) ??
+      fallbackTab
+    );
+  }, [
+    defaultActiveTabId,
+    isSearching,
+    manualActiveTabId,
+    providerTabs,
+    searchedModelsByTabId,
+    showTabList,
+    tabs,
+  ]);
+  const activeTabId = activeTab?.id ?? null;
+
+  const activeTabModels = activeTab?.models ?? providerTabs[0]?.models ?? EMPTY_MODEL_PICKER_ITEMS;
+
+  // Search renders the active provider pane. If the current pane has no
+  // matches, jump to the first provider tab with matches; Favorites remains
+  // a display tab rather than an automatic search destination.
   const searchedModels = useMemo(() => {
     if (!isSearching) {
       return EMPTY_MODEL_PICKER_ITEMS;
@@ -752,6 +770,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                           isFavorite={favoritesSet.has(modelKey)}
                           showProvider={activeTab?.kind === "favorites"}
                           preferShortName={!isLocked}
+                          useProviderScopedLabel
                           useTriggerLabel={lockedToSingleInstance}
                           jumpLabel={modelJumpLabelByKey.get(modelKey) ?? null}
                           onToggleFavorite={() => toggleFavorite(model.instanceId, model.slug)}

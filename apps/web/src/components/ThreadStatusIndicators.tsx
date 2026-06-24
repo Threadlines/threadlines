@@ -108,7 +108,11 @@ export function ThreadStatusLabel({
         className={`inline-flex size-3.5 shrink-0 items-center justify-center ${status.colorClass}`}
       >
         {status.pulse ? (
-          <LiveNode className="size-[9px]" />
+          <LiveNode
+            className="size-[9px]"
+            dotClassName={status.dotClass}
+            haloClassName={status.dotClass}
+          />
         ) : (
           <span className={`size-[9px] rounded-full ${status.dotClass}`} />
         )}
@@ -123,7 +127,11 @@ export function ThreadStatusLabel({
       className={`inline-flex items-center text-[10px] ${status.colorClass}`}
     >
       {status.pulse ? (
-        <LiveNode className="size-1.5" />
+        <LiveNode
+          className="size-1.5"
+          dotClassName={status.dotClass}
+          haloClassName={status.dotClass}
+        />
       ) : (
         <span className={`h-1.5 w-1.5 rounded-full ${status.dotClass}`} />
       )}
@@ -153,7 +161,11 @@ export function ThreadStatusRailDot({ status }: { status: ThreadStatusPill }) {
         }
       >
         {status.pulse ? (
-          <LiveNode className="size-2" />
+          <LiveNode
+            className="size-2"
+            dotClassName={status.dotClass}
+            haloClassName={status.dotClass}
+          />
         ) : (
           <span className={`size-2 rounded-full ${status.dotClass}`} />
         )}

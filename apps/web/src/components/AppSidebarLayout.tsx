@@ -1,8 +1,10 @@
 import { useEffect, type CSSProperties, type ReactNode } from "react";
 import { useNavigate } from "@tanstack/react-router";
 
+import { isElectron } from "../env";
+import { isMacPlatform } from "../lib/utils";
 import ThreadSidebar from "./Sidebar";
-import { Sidebar, SidebarFixedTrigger, SidebarProvider, SidebarRail } from "./ui/sidebar";
+import { Sidebar, SidebarProvider, SidebarRail, SidebarTrigger } from "./ui/sidebar";
 import {
   clearShortcutModifierState,
   syncShortcutModifierStateFromKeyboardEvent,
@@ -14,8 +16,30 @@ const THREAD_SIDEBAR_MIN_WIDTH = 13 * 16;
 // grows if the user drags it wider (which is then persisted).
 const THREAD_SIDEBAR_DEFAULT_WIDTH = `${THREAD_SIDEBAR_MIN_WIDTH}px`;
 const THREAD_MAIN_CONTENT_MIN_WIDTH = 40 * 16;
+const MACOS_TRAFFIC_LIGHTS_LEFT_INSET = "88px";
+
+function SidebarControl() {
+  return (
+    <div
+      className="pointer-events-none fixed top-[var(--workspace-controls-top)] left-[var(--workspace-controls-left)] z-50 flex h-[var(--workspace-topbar-height)] items-center"
+      data-sidebar-control=""
+    >
+      <SidebarTrigger
+        aria-label="Toggle main sidebar"
+        className="pointer-events-auto text-muted-foreground/60 hover:text-foreground"
+      />
+    </div>
+  );
+}
+
 export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
+  const sidebarStyle = {
+    "--sidebar-width": THREAD_SIDEBAR_DEFAULT_WIDTH,
+    ...(isElectron && typeof navigator !== "undefined" && isMacPlatform(navigator.platform)
+      ? { "--workspace-controls-left": MACOS_TRAFFIC_LIGHTS_LEFT_INSET }
+      : {}),
+  } as CSSProperties;
 
   useEffect(() => {
     const onWindowKeyDown = (event: KeyboardEvent) => {
@@ -57,12 +81,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
   }, [navigate]);
 
   return (
-    <SidebarProvider
-      className="h-dvh! min-h-0!"
-      defaultOpen
-      style={{ "--sidebar-width": THREAD_SIDEBAR_DEFAULT_WIDTH } as CSSProperties}
-    >
-      <SidebarFixedTrigger className="size-7" />
+    <SidebarProvider className="h-dvh! min-h-0!" defaultOpen style={sidebarStyle}>
       <Sidebar
         side="left"
         collapsible="offcanvas"
@@ -78,6 +97,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
         <SidebarRail />
       </Sidebar>
       {children}
+      <SidebarControl />
     </SidebarProvider>
   );
 }
