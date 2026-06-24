@@ -604,6 +604,13 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("2 earlier events");
     expect(markup).not.toContain("Show previous");
     expect(markup).toContain('data-live-activity-strip="true"');
+    expect(markup).toContain("--spine:var(--border)");
+    expect(markup).toContain(
+      "--spine-top:linear-gradient(to bottom, var(--border), color-mix(in oklab, var(--primary-graph) 34%, var(--border)));--spine-bottom:linear-gradient(to bottom, color-mix(in oklab, var(--primary-graph) 34%, var(--border)), color-mix(in oklab, var(--primary-graph) 58%, var(--border)))",
+    );
+    expect(markup).toMatch(
+      /--spine-top:linear-gradient\(to bottom, color-mix\(in oklab, var\(--primary-graph\) 58%, var\(--border\)\), color-mix\(in oklab, var\(--primary-graph\) 82%, var\(--border\)\)\)/u,
+    );
     expect(markup).not.toContain("min-h-[3.25rem]");
     expect(markup).not.toContain("git status --short");
     expect(markup).not.toContain("rg -n");

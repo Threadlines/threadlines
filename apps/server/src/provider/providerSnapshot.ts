@@ -9,6 +9,7 @@ import type {
   ServerProviderSlashCommand,
   ServerProviderModel,
   ServerProviderState,
+  ServerProviderStatusReason,
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Data from "effect/Data";
@@ -20,8 +21,8 @@ import { createProviderVersionAdvisory } from "./providerMaintenance.ts";
 import { collectUint8StreamText } from "../stream/collectUint8StreamText.ts";
 
 export const DEFAULT_TIMEOUT_MS = 4_000;
-// Auth status checks involve disk/network lookups and can be slow on first run (especially Windows)
-export const AUTH_PROBE_TIMEOUT_MS = 10_000;
+// Codex app-server provider probes can be slow on first run, especially on Windows.
+export const AUTH_PROBE_TIMEOUT_MS = 60_000;
 
 export interface CommandResult {
   readonly stdout: string;
@@ -39,6 +40,7 @@ export interface ProviderProbeResult {
   readonly installed: boolean;
   readonly version: string | null;
   readonly status: Exclude<ServerProviderState, "disabled">;
+  readonly statusReason?: ServerProviderStatusReason;
   readonly auth: ServerProviderAuth;
   readonly accountUsage?: ServerProviderAccountUsage;
   readonly message?: string;
@@ -223,6 +225,7 @@ export function buildServerProvider(input: {
     installed: input.probe.installed,
     version: input.probe.version,
     status: input.enabled ? input.probe.status : "disabled",
+    ...(input.probe.statusReason ? { statusReason: input.probe.statusReason } : {}),
     auth: input.probe.auth,
     ...(input.probe.accountUsage ? { accountUsage: input.probe.accountUsage } : {}),
     checkedAt: input.checkedAt,

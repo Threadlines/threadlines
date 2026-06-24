@@ -26,6 +26,11 @@ import {
   useProcessResourceHistory,
 } from "../../lib/processDiagnosticsState";
 import { useTraceDiagnostics } from "../../lib/traceDiagnosticsState";
+import {
+  describeSlowRpcAckToast,
+  formatSlowRpcTagLabel,
+} from "../../rpc/requestLatencyPresentation";
+import { useSlowRpcAckRequests } from "../../rpc/requestLatencyState";
 import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -63,6 +68,22 @@ function formatRelative(value: DateTime.Utc | null): string {
 
 function formatRelativeNoWrap(value: DateTime.Utc | null): string {
   return formatRelative(value).replaceAll(" ", "\u00a0");
+}
+
+function formatRelativeIsoNoWrap(value: string): string {
+  const relative = formatRelativeTime(value);
+  const label = relative.suffix ? `${relative.value} ${relative.suffix}` : relative.value;
+  return label.replaceAll(" ", "\u00a0");
+}
+
+function formatDurationRange(values: ReadonlyArray<number>): string {
+  if (values.length === 0) return "...";
+  const sortedValues = [...new Set(values)].sort((a, b) => a - b);
+  const firstValue = sortedValues[0];
+  const lastValue = sortedValues.at(-1);
+  if (firstValue === undefined || lastValue === undefined) return "...";
+  if (firstValue === lastValue) return formatDuration(firstValue);
+  return `${formatDuration(firstValue)} - ${formatDuration(lastValue)}`;
 }
 
 function shortenTraceId(traceId: string): string {
@@ -327,6 +348,91 @@ function TraceIdCell({ traceId }: { traceId: string }) {
         <TooltipPopup side="top">{copied ? "Copied" : "Copy full trace ID"}</TooltipPopup>
       </Tooltip>
     </div>
+  );
+}
+
+function SlowRpcRequestNameCell({ tag }: { tag: string }) {
+  return (
+    <div className="min-w-0">
+      <div className="truncate font-medium text-foreground">{formatSlowRpcTagLabel(tag)}</div>
+      <div className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">{tag}</div>
+    </div>
+  );
+}
+
+function PendingRequestsSection() {
+  const requests = useSlowRpcAckRequests();
+  const nowMs = useRelativeTimeTick();
+  const longestWaitingMs = requests.reduce(
+    (longest, request) => Math.max(longest, Math.max(0, nowMs - request.startedAtMs)),
+    0,
+  );
+  const oldestStartedAt = requests.reduce<string | null>((oldest, request) => {
+    if (!oldest) return request.startedAt;
+    return request.startedAtMs < new Date(oldest).getTime() ? request.startedAt : oldest;
+  }, null);
+  const summary = requests.length > 0 ? describeSlowRpcAckToast(requests) : null;
+
+  return (
+    <SettingsSection title="Slow Requests">
+      <StatsGrid>
+        <StatBlock
+          label="Waiting"
+          value={formatCount(requests.length)}
+          tone={requests.length > 0 ? "warning" : "default"}
+        />
+        <StatBlock
+          label="Longest"
+          value={requests.length > 0 ? formatDuration(longestWaitingMs) : "None"}
+        />
+        <StatBlock
+          label="Threshold"
+          value={formatDurationRange(requests.map((request) => request.thresholdMs))}
+        />
+        <StatBlock
+          label="Oldest"
+          value={oldestStartedAt ? formatRelativeIsoNoWrap(oldestStartedAt) : "None"}
+        />
+      </StatsGrid>
+      {summary ? (
+        <div className="flex items-start gap-2 border-t border-border/60 px-4 py-3 text-xs text-muted-foreground sm:px-5">
+          <AlertTriangleIcon className="mt-0.5 size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+          <span>{summary}</span>
+        </div>
+      ) : null}
+      {requests.length > 0 ? (
+        <DiagnosticsTable
+          headers={["Request", "Waiting", "Threshold", "Started", "ID"]}
+          minTableWidth="min-w-[860px]"
+          columnWidths={["w-[34%]", "w-[13%]", "w-[13%]", "w-[16%]", "w-[24%]"]}
+        >
+          {requests.map((request) => (
+            <tr key={request.requestId} className="hover:bg-muted/15">
+              <td className="min-w-0 px-4 py-3 align-top text-xs first:sm:pl-5">
+                <SlowRpcRequestNameCell tag={request.tag} />
+              </td>
+              <td className="whitespace-nowrap px-4 py-3 align-top font-mono tabular-nums">
+                {formatDuration(Math.max(0, nowMs - request.startedAtMs))}
+              </td>
+              <td className="whitespace-nowrap px-4 py-3 align-top font-mono tabular-nums">
+                {formatDuration(request.thresholdMs)}
+              </td>
+              <td className="whitespace-nowrap px-4 py-3 align-top font-mono tabular-nums text-muted-foreground">
+                {formatRelativeIsoNoWrap(request.startedAt)}
+              </td>
+              <td
+                className="min-w-0 truncate px-4 py-3 align-top font-mono text-[11px] text-muted-foreground last:sm:pr-5"
+                title={request.requestId}
+              >
+                {request.requestId}
+              </td>
+            </tr>
+          ))}
+        </DiagnosticsTable>
+      ) : (
+        <EmptyRows label="No slow pending requests." />
+      )}
+    </SettingsSection>
   );
 }
 
@@ -1118,6 +1224,8 @@ export function DiagnosticsSettingsPanel() {
           }
         />
       </SettingsSection>
+
+      <PendingRequestsSection />
 
       <SettingsSection
         title="Trace Diagnostics"

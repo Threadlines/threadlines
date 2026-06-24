@@ -2660,7 +2660,11 @@ const SidebarChromeHeader = memo(function SidebarChromeHeader({
       <div className={electronWordmarkLayout.wordmarkRowClassName}>{wordmark}</div>
     </SidebarHeader>
   ) : (
-    <SidebarHeader className="gap-3 px-3 py-2 sm:gap-2.5 sm:px-5 sm:py-3">{wordmark}</SidebarHeader>
+    <SidebarHeader className="gap-3 px-3 py-2 sm:gap-2.5 sm:px-5 sm:py-3 md:shrink-0 md:gap-0 md:px-0 md:py-0">
+      <div className="min-w-0 md:flex md:h-[var(--workspace-topbar-height)] md:min-h-[var(--workspace-topbar-height)] md:items-center md:pr-3 md:pl-[var(--workspace-titlebar-content-left)]">
+        {wordmark}
+      </div>
+    </SidebarHeader>
   );
 });
 

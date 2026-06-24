@@ -2,9 +2,63 @@ import { describe, expect, it } from "vitest";
 
 import type { SubagentProgressState } from "../../session-logic";
 import {
+  deriveSubagentDisplayDetails,
   deriveThreadActivityTriggerState,
   type ThreadTaskProgressState,
 } from "./ThreadActivityPopover";
+
+describe("deriveSubagentDisplayDetails", () => {
+  it("promotes the goal and removes the workspace path from visible metadata", () => {
+    const details = deriveSubagentDisplayDetails({
+      objective:
+        "Read-only exploration in C:\\Users\\Will\\Desktop\\Projects\\badcode. Goal: inspect the toast emitters and warning taxonomy before changing behavior",
+      model: "gpt-5.5",
+      reasoningEffort: "medium",
+    });
+
+    expect(details.goal).toBe(
+      "inspect the toast emitters and warning taxonomy before changing behavior",
+    );
+    expect(details.context).toBe("Read-only exploration");
+    expect(details.metadata.map((chip) => `${chip.title}:${chip.label}`)).toEqual([
+      "Scope:Read-only exploration",
+      "Model:gpt-5.5",
+      "Reasoning:medium",
+    ]);
+    expect(details.metadata.map((chip) => chip.label).join(" ")).not.toContain("C:\\Users\\Will");
+  });
+
+  it("removes a workspace path from task-in-location objectives without a Goal marker", () => {
+    const details = deriveSubagentDisplayDetails({
+      objective:
+        "Read-only task in C:\\Users\\Will\\Desktop\\Projects\\badcode. Inspect the current working tree changes related to subagent styling",
+      model: "gpt-5.5",
+      reasoningEffort: "xhigh",
+    });
+
+    expect(details.goal).toBe(
+      "Inspect the current working tree changes related to subagent styling",
+    );
+    expect(details.context).toBe("Read-only task");
+    expect(details.metadata.map((chip) => `${chip.title}:${chip.label}`)).toEqual([
+      "Scope:Read-only task",
+      "Model:gpt-5.5",
+      "Reasoning:xhigh",
+    ]);
+  });
+
+  it("keeps ordinary objective text when no Goal marker is present", () => {
+    const details = deriveSubagentDisplayDetails({
+      objective: "Review the terminal drawer hydration path",
+      model: null,
+      reasoningEffort: null,
+    });
+
+    expect(details.goal).toBe("Review the terminal drawer hydration path");
+    expect(details.context).toBeNull();
+    expect(details.metadata).toEqual([]);
+  });
+});
 
 describe("deriveThreadActivityTriggerState", () => {
   it("hides when there is no thread activity", () => {

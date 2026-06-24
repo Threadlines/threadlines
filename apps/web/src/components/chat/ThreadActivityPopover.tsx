@@ -1,4 +1,13 @@
-import { memo, useMemo, useState, type ReactNode } from "react";
+import {
+  memo,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import {
   BotIcon,
   CheckIcon,
@@ -79,9 +88,30 @@ interface ActivityTriggerState {
   summary: string;
 }
 
+interface SubagentMetadataChip {
+  title: string;
+  label: string;
+}
+
+interface SubagentDisplayDetails {
+  goal: string | null;
+  context: string | null;
+  metadata: ReadonlyArray<SubagentMetadataChip>;
+  title: string | null;
+}
+
 const COLLAPSED_TASK_LIMIT = 3;
 const COLLAPSED_SUBAGENT_LIMIT = 3;
 const SUMMARY_DISCLOSURE_MIN_LENGTH = 44;
+const ACTIVITY_POPOVER_MIN_WIDTH_PX = 256;
+const ACTIVITY_POPOVER_PREFERRED_MIN_WIDTH_PX = 320;
+const ACTIVITY_POPOVER_MAX_WIDTH_PX = 480;
+const ACTIVITY_POPOVER_VIEWPORT_WIDTH_RATIO = 0.36;
+const ACTIVITY_POPOVER_BOUNDARY_GUTTER_PX = 12;
+
+type ActivityPopoverWidthStyle = CSSProperties & {
+  "--thread-activity-popover-width": string;
+};
 
 function badgeClassName(tone: ActivityBadgeTone, pulse: boolean) {
   return cn(
@@ -93,6 +123,101 @@ function badgeClassName(tone: ActivityBadgeTone, pulse: boolean) {
     tone === "idle" && "bg-muted text-muted-foreground",
     pulse && "animate-pulse",
   );
+}
+
+function clampNumber(value: number, minimum: number, maximum: number): number {
+  return Math.min(Math.max(value, minimum), maximum);
+}
+
+function quantizeLayoutValue(value: number): number {
+  return Math.round(value / 4) * 4;
+}
+
+function preferredActivityPopoverWidth(viewportWidth: number): number {
+  return clampNumber(
+    viewportWidth * ACTIVITY_POPOVER_VIEWPORT_WIDTH_RATIO,
+    ACTIVITY_POPOVER_PREFERRED_MIN_WIDTH_PX,
+    ACTIVITY_POPOVER_MAX_WIDTH_PX,
+  );
+}
+
+function resolveActivityPopoverWidth(input: {
+  triggerRight: number;
+  boundaryLeft: number;
+  viewportWidth: number;
+}): number {
+  const preferredWidth = preferredActivityPopoverWidth(input.viewportWidth);
+  const availableBeforeBoundary =
+    input.triggerRight - input.boundaryLeft - ACTIVITY_POPOVER_BOUNDARY_GUTTER_PX;
+  const usableWidth = Math.max(ACTIVITY_POPOVER_MIN_WIDTH_PX, availableBeforeBoundary);
+  return Math.round(Math.min(preferredWidth, usableWidth));
+}
+
+function useActivityPopoverAnchorLayout(open: boolean): {
+  triggerRef: RefObject<HTMLButtonElement | null>;
+  layoutKey: string;
+  widthStyle: ActivityPopoverWidthStyle;
+} {
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const [layout, setLayout] = useState(() => ({
+    key: "initial",
+    widthPx: ACTIVITY_POPOVER_MAX_WIDTH_PX,
+  }));
+
+  useLayoutEffect(() => {
+    if (!open || typeof window === "undefined") {
+      return;
+    }
+
+    let frameId: number | null = null;
+
+    const measure = () => {
+      const trigger = triggerRef.current;
+      if (trigger) {
+        const triggerRect = trigger.getBoundingClientRect();
+        const boundaryRect = trigger.closest("main")?.getBoundingClientRect();
+        const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
+        const boundaryLeft = boundaryRect?.left ?? ACTIVITY_POPOVER_BOUNDARY_GUTTER_PX;
+        const widthPx = resolveActivityPopoverWidth({
+          triggerRight: triggerRect.right,
+          boundaryLeft,
+          viewportWidth,
+        });
+        const key = [
+          quantizeLayoutValue(triggerRect.right),
+          quantizeLayoutValue(boundaryLeft),
+          quantizeLayoutValue(widthPx),
+        ].join(":");
+
+        setLayout((current) =>
+          current.key === key && current.widthPx === widthPx ? current : { key, widthPx },
+        );
+      }
+
+      frameId = window.requestAnimationFrame(measure);
+    };
+
+    measure();
+
+    return () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+      }
+    };
+  }, [open]);
+
+  const widthStyle = useMemo<ActivityPopoverWidthStyle>(
+    () => ({
+      "--thread-activity-popover-width": `${layout.widthPx}px`,
+    }),
+    [layout.widthPx],
+  );
+
+  return {
+    triggerRef,
+    layoutKey: layout.key,
+    widthStyle,
+  };
 }
 
 function chipClassName(tone: ActivityBadgeTone, pulse: boolean) {
@@ -163,23 +288,23 @@ function TriggerContent({ state }: { state: ActivityTriggerState }) {
 function taskStatusIcon(status: ActivePlanState["steps"][number]["status"]): ReactNode {
   if (status === "completed") {
     return (
-      <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-500">
-        <CheckIcon className="size-3" aria-hidden="true" />
+      <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-success/20 text-success">
+        <CheckIcon className="size-2.5" aria-hidden="true" />
       </span>
     );
   }
 
   if (status === "inProgress") {
     return (
-      <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary-readable">
-        <LoaderIcon className="size-3 animate-spin" aria-hidden="true" />
+      <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-primary/20 text-primary-readable">
+        <LoaderIcon className="size-2.5 animate-spin" aria-hidden="true" />
       </span>
     );
   }
 
   return (
-    <span className="flex size-5 shrink-0 items-center justify-center rounded-full border border-border/60 bg-muted/30">
-      <span className="size-1.5 rounded-full bg-muted-foreground/30" />
+    <span className="flex size-4 shrink-0 items-center justify-center rounded-full border border-border/70 bg-muted/45">
+      <span className="size-1.5 rounded-full bg-muted-foreground/45" />
     </span>
   );
 }
@@ -248,32 +373,126 @@ function collapsedPlanStepWindow(steps: ActivePlanState["steps"]): {
 function subagentStatusIcon(status: SubagentProgressItem["status"]): ReactNode {
   if (status === "completed") {
     return (
-      <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-success/15 text-success">
-        <CheckIcon className="size-3" aria-hidden="true" />
+      <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-success/20 text-success">
+        <CheckIcon className="size-2.5" aria-hidden="true" />
       </span>
     );
   }
 
   if (status === "failed" || status === "interrupted") {
     return (
-      <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-destructive/15 text-destructive">
-        <CircleAlertIcon className="size-3" aria-hidden="true" />
+      <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-destructive/20 text-destructive">
+        <CircleAlertIcon className="size-2.5" aria-hidden="true" />
       </span>
     );
   }
 
   return (
-    <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary-readable">
-      <LoaderIcon className="size-3 animate-spin" aria-hidden="true" />
+    <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-primary/20 text-primary-readable">
+      <LoaderIcon className="size-2.5 animate-spin" aria-hidden="true" />
     </span>
   );
 }
 
-function subagentMeta(item: SubagentProgressItem): string | null {
-  const parts = [item.model, item.reasoningEffort].filter(
-    (part): part is string => typeof part === "string" && part.length > 0,
+export function deriveSubagentDisplayDetails(
+  item: Pick<SubagentProgressItem, "objective" | "model" | "reasoningEffort">,
+): SubagentDisplayDetails {
+  const rawObjective = item.objective?.trim() || null;
+  const normalizedObjective = rawObjective ? normalizeSubagentInlineText(rawObjective) : null;
+  const objectiveParts = normalizedObjective
+    ? parseSubagentDisplayObjective(normalizedObjective)
+    : null;
+  const metadata = [
+    objectiveParts?.context ? { title: "Scope", label: objectiveParts.context } : null,
+    item.model ? { title: "Model", label: item.model } : null,
+    item.reasoningEffort ? { title: "Reasoning", label: item.reasoningEffort } : null,
+  ].filter((part): part is SubagentMetadataChip => part !== null);
+
+  return {
+    goal: objectiveParts?.goal || normalizedObjective,
+    context: objectiveParts?.context ?? null,
+    metadata,
+    title: rawObjective,
+  };
+}
+
+function normalizeSubagentInlineText(value: string): string {
+  return value.trim().replace(/\s+/gu, " ");
+}
+
+function parseSubagentDisplayObjective(value: string): {
+  goal: string | null;
+  context: string | null;
+} {
+  const goalMatch = /\bGoal\s*:/iu.exec(value);
+  if (goalMatch) {
+    return {
+      goal: value.slice(goalMatch.index + goalMatch[0].length).trim() || null,
+      context: subagentContextFromGoalPrefix(value.slice(0, goalMatch.index)),
+    };
+  }
+
+  return subagentObjectiveWithoutLocation(value) ?? { goal: value, context: null };
+}
+
+function subagentContextFromGoalPrefix(prefix: string): string | null {
+  const cleanedPrefix = normalizeSubagentInlineText(prefix).replace(/[.:\s]+$/u, "");
+  if (!cleanedPrefix) {
+    return null;
+  }
+
+  const locationMatch = /^(.+?)\s+in\s+(.+)$/iu.exec(cleanedPrefix);
+  if (locationMatch) {
+    const action = normalizeSubagentInlineText(locationMatch[1] ?? "");
+    const location = normalizeSubagentInlineText(locationMatch[2] ?? "");
+    if (action && looksLikeSubagentLocation(location)) {
+      return titleCaseSubagentContext(action);
+    }
+  }
+
+  return cleanedPrefix.length <= 56 ? titleCaseSubagentContext(cleanedPrefix) : null;
+}
+
+function subagentObjectiveWithoutLocation(value: string): {
+  goal: string | null;
+  context: string | null;
+} | null {
+  const locationMatch = /^(.+?)\s+in\s+(.+)$/iu.exec(value);
+  const action = normalizeSubagentInlineText(locationMatch?.[1] ?? "");
+  const remainder = normalizeSubagentInlineText(locationMatch?.[2] ?? "");
+  if (!action || !looksLikeSubagentLocation(remainder)) {
+    return null;
+  }
+
+  const boundaryMatch = /[.!?]\s+(?=\S)/u.exec(remainder);
+  if (!boundaryMatch) {
+    return null;
+  }
+
+  const goal = remainder.slice(boundaryMatch.index + boundaryMatch[0].length).trim();
+  if (!goal) {
+    return null;
+  }
+
+  return {
+    goal,
+    context: titleCaseSubagentContext(action),
+  };
+}
+
+function looksLikeSubagentLocation(value: string): boolean {
+  return (
+    /^[A-Za-z]:[\\/]/u.test(value) ||
+    value.startsWith("\\\\") ||
+    value.startsWith("/") ||
+    value.includes("\\") ||
+    value.includes("/")
   );
-  return parts.length > 0 ? parts.join(" / ") : null;
+}
+
+function titleCaseSubagentContext(value: string): string {
+  const normalized = normalizeSubagentInlineText(value);
+  return normalized ? normalized[0]!.toUpperCase() + normalized.slice(1) : normalized;
 }
 
 function formatCount(count: number, singular: string, plural: string): string {
@@ -405,18 +624,18 @@ function TaskSection({ taskProgress }: { taskProgress: ThreadTaskProgressState }
       : planStepRows;
 
   return (
-    <section className="min-w-0 space-y-2">
+    <section className="min-w-0 space-y-1.5">
       <div className="flex min-w-0 items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-            <ListTodoIcon className="size-3 text-muted-foreground/70" aria-hidden="true" />
+            <ListTodoIcon className="size-3 text-muted-foreground/85" aria-hidden="true" />
             <span>{headerLabel}</span>
           </div>
           {summaryCanExpand ? (
             <button
               type="button"
               className={cn(
-                "mt-0.5 flex max-w-full items-start gap-1 text-left text-[11px] text-muted-foreground/70 transition-colors hover:text-muted-foreground",
+                "mt-0.5 flex max-w-full items-start gap-1 text-left text-[11px] text-muted-foreground/80 transition-colors hover:text-foreground/85",
                 summaryExpanded && "pr-1",
               )}
               aria-expanded={summaryExpanded}
@@ -442,7 +661,7 @@ function TaskSection({ taskProgress }: { taskProgress: ThreadTaskProgressState }
               />
             </button>
           ) : (
-            <div className="mt-0.5 truncate text-[11px] text-muted-foreground/70" title={summary}>
+            <div className="mt-0.5 truncate text-[11px] text-muted-foreground/80" title={summary}>
               {summary}
             </div>
           )}
@@ -455,15 +674,15 @@ function TaskSection({ taskProgress }: { taskProgress: ThreadTaskProgressState }
       </div>
 
       {activePlan && activePlan.steps.length > 0 ? (
-        <div className="space-y-2">
+        <div className="space-y-1.5">
           <div className={cn("space-y-1 pr-1", expanded && "max-h-56 overflow-y-auto")}>
             {visiblePlanStepRows.map(({ key, step }) => (
               <div
                 key={key}
                 className={cn(
-                  "grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2 rounded-md px-2 py-2 transition-colors",
-                  step.status === "inProgress" && "bg-primary/5",
-                  step.status === "completed" && "bg-emerald-500/5",
+                  "grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2 rounded-md px-2 py-1.5 transition-colors",
+                  step.status === "inProgress" && "bg-primary/10",
+                  step.status === "completed" && "bg-success/10",
                 )}
               >
                 <div className="mt-0.5">{taskStatusIcon(step.status)}</div>
@@ -471,15 +690,15 @@ function TaskSection({ taskProgress }: { taskProgress: ThreadTaskProgressState }
                   className={cn(
                     "min-w-0 text-[12px] leading-snug",
                     step.status === "completed"
-                      ? "text-muted-foreground/50 line-through decoration-muted-foreground/20"
+                      ? "text-muted-foreground/65 line-through decoration-muted-foreground/30"
                       : step.status === "inProgress"
-                        ? "text-foreground/90"
-                        : "text-muted-foreground/75",
+                        ? "font-medium text-foreground/95"
+                        : "text-muted-foreground/85",
                   )}
                 >
                   {step.step}
                 </div>
-                <div className="pt-0.5 text-[10px] text-muted-foreground/50">
+                <div className="pt-0.5 text-[10px] text-muted-foreground/65">
                   {taskStatusLabel(step.status)}
                 </div>
               </div>
@@ -490,7 +709,7 @@ function TaskSection({ taskProgress }: { taskProgress: ThreadTaskProgressState }
               type="button"
               variant="ghost"
               size="xs"
-              className="h-6 w-full justify-center text-[11px] text-muted-foreground/75 hover:text-foreground"
+              className="h-5 w-full justify-center text-[11px] text-muted-foreground/80 hover:text-foreground"
               aria-expanded={expanded}
               onClick={() => setExpanded((value) => !value)}
             >
@@ -527,14 +746,14 @@ function SubagentSection({ state }: { state: SubagentProgressState }) {
   );
 
   return (
-    <section className="min-w-0 space-y-2">
+    <section className="min-w-0 space-y-1.5">
       <div className="flex min-w-0 items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-            <BotIcon className="size-3 text-muted-foreground/70" aria-hidden="true" />
+            <BotIcon className="size-3 text-muted-foreground/85" aria-hidden="true" />
             <span>Subagents</span>
           </div>
-          <div className="mt-0.5 truncate text-[11px] text-muted-foreground/70">
+          <div className="mt-0.5 truncate text-[11px] text-muted-foreground/80">
             {state.summary}
           </div>
         </div>
@@ -545,47 +764,72 @@ function SubagentSection({ state }: { state: SubagentProgressState }) {
 
       <div className={cn("space-y-1 pr-1", expanded && "max-h-56 overflow-y-auto")}>
         {visibleItems.map((item) => {
-          const meta = subagentMeta(item);
+          const details = deriveSubagentDisplayDetails(item);
           const displayName = formatSubagentDisplayName(item);
           const showSubagentChip = shouldShowSubagentDisplayChip(item);
           return (
             <div
               key={item.id}
               className={cn(
-                "grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2 rounded-md px-2 py-2 transition-colors",
+                "grid grid-cols-[auto_minmax(0,1fr)] items-start gap-2 rounded-md px-2 py-2 transition-colors",
                 (item.status === "starting" ||
                   item.status === "running" ||
                   item.status === "waiting") &&
-                  "bg-primary/5",
-                item.status === "completed" && "bg-success/5",
-                (item.status === "failed" || item.status === "interrupted") && "bg-destructive/5",
+                  "bg-primary/10",
+                item.status === "completed" && "bg-success/10",
+                (item.status === "failed" || item.status === "interrupted") && "bg-destructive/10",
               )}
             >
               <div className="mt-0.5">{subagentStatusIcon(item.status)}</div>
               <div className="min-w-0">
-                <div className="flex min-w-0 items-center gap-1.5">
-                  <div className="truncate text-[12px] leading-snug text-foreground/90">
-                    {displayName}
+                <div className="flex min-w-0 items-start justify-between gap-2">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <div className="truncate text-[12px] leading-snug font-medium text-foreground/90">
+                      {displayName}
+                    </div>
+                    {showSubagentChip ? (
+                      <span className="shrink-0 rounded border border-border/60 bg-background/65 px-1 py-px text-[9px] leading-none font-medium tracking-[0.08em] text-muted-foreground/75 uppercase">
+                        Subagent
+                      </span>
+                    ) : null}
                   </div>
-                  {showSubagentChip ? (
-                    <span className="shrink-0 rounded border border-border/55 bg-background/55 px-1 py-px text-[9px] leading-none font-medium tracking-[0.08em] text-muted-foreground/55 uppercase">
-                      Subagent
-                    </span>
-                  ) : null}
+                  <div className="shrink-0 rounded border border-border/60 bg-background/65 px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground/80">
+                    {item.statusLabel}
+                  </div>
                 </div>
-                {item.objective ? (
+
+                {details.goal ? (
                   <div
-                    className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-muted-foreground/70"
-                    title={item.objective}
+                    className="mt-1 grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-1.5"
+                    title={details.title ?? undefined}
                   >
-                    {item.objective}
+                    <div className="mt-0.5 rounded bg-primary/15 px-1 py-0.5 text-[9px] leading-none font-semibold tracking-[0.08em] text-primary-readable uppercase">
+                      Goal
+                    </div>
+                    <div
+                      className="line-clamp-2 text-[11px] leading-4 text-foreground/80"
+                      data-subagent-progress-goal="true"
+                    >
+                      {details.goal}
+                    </div>
                   </div>
                 ) : null}
-                {meta ? (
-                  <div className="mt-0.5 truncate text-[10px] text-muted-foreground/45">{meta}</div>
+
+                {details.metadata.length > 0 ? (
+                  <div className="mt-1 flex min-w-0 flex-wrap gap-1">
+                    {details.metadata.map((chip) => (
+                      <span
+                        key={`${item.id}:${chip.title}:${chip.label}`}
+                        className="inline-flex max-w-full items-center rounded border border-border/55 bg-background/60 px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground/80"
+                        title={`${chip.title}: ${chip.label}`}
+                        data-subagent-progress-meta="true"
+                      >
+                        <span className="min-w-0 truncate">{chip.label}</span>
+                      </span>
+                    ))}
+                  </div>
                 ) : null}
               </div>
-              <div className="pt-0.5 text-[10px] text-muted-foreground/50">{item.statusLabel}</div>
             </div>
           );
         })}
@@ -596,7 +840,7 @@ function SubagentSection({ state }: { state: SubagentProgressState }) {
           type="button"
           variant="ghost"
           size="xs"
-          className="h-6 w-full justify-center text-[11px] text-muted-foreground/75 hover:text-foreground"
+          className="h-5 w-full justify-center text-[11px] text-muted-foreground/80 hover:text-foreground"
           aria-expanded={expanded}
           onClick={() => setExpanded((value) => !value)}
         >
@@ -794,6 +1038,8 @@ export const ThreadActivityPopover = memo(function ThreadActivityPopover({
   onOpenBackgroundRunTerminal,
   onStopBackgroundRun,
 }: ThreadActivityPopoverProps) {
+  const [popoverOpen, setPopoverOpen] = useState(false);
+  const popoverLayout = useActivityPopoverAnchorLayout(popoverOpen);
   const triggerState = deriveThreadActivityTriggerState({
     taskProgress,
     subagentProgress,
@@ -806,7 +1052,7 @@ export const ThreadActivityPopover = memo(function ThreadActivityPopover({
 
   return (
     <Tooltip>
-      <Popover>
+      <Popover open={popoverOpen} onOpenChange={(nextOpen) => setPopoverOpen(nextOpen)}>
         <TooltipTrigger
           render={
             <PopoverTrigger
@@ -815,6 +1061,7 @@ export const ThreadActivityPopover = memo(function ThreadActivityPopover({
                   type="button"
                   variant="outline"
                   size="xs"
+                  ref={popoverLayout.triggerRef}
                   className={cn(
                     "h-6 min-w-6 px-1.5 text-[11px] [-webkit-app-region:no-drag]",
                     triggerState.mode !== "background" && triggerState.badge ? "pr-1" : undefined,
@@ -832,12 +1079,15 @@ export const ThreadActivityPopover = memo(function ThreadActivityPopover({
           {triggerState.tooltipText}
         </TooltipPopup>
         <PopoverPopup
+          key={popoverLayout.layoutKey}
           align="end"
+          positionerClassName="transition-none"
           side="bottom"
           sideOffset={8}
-          className="w-96 max-w-[calc(100vw-1rem)]"
+          className="max-h-[min(34rem,calc(100vh-5rem))] w-(--thread-activity-popover-width) max-w-[calc(100vw-1rem)] overflow-y-auto [&_[data-slot=popover-viewport]]:py-3 [&_[data-slot=popover-viewport]]:[--viewport-inline-padding:--spacing(3)]"
+          style={popoverLayout.widthStyle}
         >
-          <div className="min-w-0 space-y-3">
+          <div className="min-w-0 space-y-2.5">
             {taskProgress ? <TaskSection taskProgress={taskProgress} /> : null}
             {subagentProgress ? <SubagentSection state={subagentProgress} /> : null}
             <BackgroundRunsSection

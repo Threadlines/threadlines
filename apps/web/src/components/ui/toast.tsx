@@ -143,7 +143,7 @@ function hasRenderableToastDescription(description: unknown): boolean {
 
 /** Scrollable cap for long expandable lists (~10rem); keeps the toast from growing without bound. */
 const toastExpandablePanelClassName =
-  "mt-2 max-h-40 min-h-0 overflow-y-auto overscroll-contain pr-0.5 select-text";
+  "mt-1.5 max-h-32 min-h-0 overflow-y-auto overscroll-contain pr-0.5 select-text text-[11px] leading-relaxed";
 
 function ToastExpandableSection({
   children,
@@ -160,7 +160,7 @@ function ToastExpandableSection({
     <div className="min-w-0">
       <button
         aria-expanded={open}
-        className="inline-flex cursor-pointer items-center gap-1 rounded-md py-0.5 text-left text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+        className="inline-flex cursor-pointer items-center gap-1 rounded-md py-0.5 text-left text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground"
         onClick={() => setOpen((prev) => !prev)}
         type="button"
       >
@@ -189,7 +189,7 @@ function ToastDescriptionAndExpandable({
   const labels = toastData?.expandableLabels ?? {};
   const descriptionTrigger = toastData?.expandableDescriptionTrigger ?? false;
   const descriptionClassName = cn(
-    "min-w-0 select-text wrap-break-word text-muted-foreground",
+    "min-w-0 select-text wrap-break-word text-xs leading-4 text-muted-foreground",
     errorDescriptionClampClass(toastType, toastDescription),
   );
   const [open, setOpen] = useState(false);
@@ -224,7 +224,7 @@ function ToastDescriptionAndExpandable({
         aria-expanded={open}
         className={cn(
           "group flex min-w-0 w-full cursor-pointer select-none items-start gap-1.5 rounded-sm text-left outline-none ring-offset-background",
-          "transition-colors hover:bg-muted/40",
+          "transition-colors hover:bg-muted/30",
           "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
         )}
         onClick={toggle}
@@ -236,9 +236,9 @@ function ToastDescriptionAndExpandable({
         <div className="min-w-0 flex-1">
           <Toast.Description
             className={cn(
-              "min-w-0 select-none wrap-break-word text-muted-foreground",
+              "min-w-0 select-none wrap-break-word text-xs leading-4 text-muted-foreground",
               errorDescriptionClampClass(toastType, toastDescription),
-              "underline-offset-2 decoration-muted-foreground/60 group-hover:underline",
+              "group-hover:text-foreground/80",
             )}
             data-slot="toast-description"
           />
@@ -293,11 +293,11 @@ function toastContentClassName({
   return cn(
     // `overflow-x: clip` avoids the CSS quirk where pairing `hidden` + `y: visible`
     // forces `y` to `auto`. Expandable detail panels can extend below without being cut off.
-    "pointer-events-auto min-h-0 overflow-y-visible text-sm [overflow-x:clip]",
+    "pointer-events-auto min-h-0 overflow-y-visible text-[13px] leading-5 [overflow-x:clip]",
     animated && "transition-opacity duration-250 data-expanded:opacity-100",
     stackedActionLayout
-      ? "flex flex-col gap-1.5 px-3 py-2.5"
-      : cn("flex min-h-8 items-center justify-between gap-2 py-1.5 pl-3", inlineContentEndPad),
+      ? "flex flex-col gap-1.5 px-3 py-2"
+      : cn("flex min-h-7 items-center justify-between gap-2 py-1 pl-3", inlineContentEndPad),
     hideCollapsedContent && "not-data-expanded:pointer-events-none not-data-expanded:opacity-0",
   );
 }
@@ -437,7 +437,7 @@ function ToastBodyContent({
             {hasDescription ? (
               <Toast.Description
                 className={cn(
-                  "min-w-0 text-muted-foreground",
+                  "min-w-0 text-xs leading-4 text-muted-foreground",
                   compactTextExpanded
                     ? cn(
                         "select-text wrap-break-word",
@@ -457,7 +457,7 @@ function ToastBodyContent({
             )}
           >
             <Toast.Title
-              className="min-w-0 wrap-break-word font-medium text-foreground/90"
+              className="min-w-0 wrap-break-word text-[13px] leading-5 font-medium text-foreground/90"
               data-slot="toast-title"
             />
             <ToastDescriptionAndExpandable
@@ -651,7 +651,7 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
     <Toast.Portal data-slot="toast-portal">
       <Toast.Viewport
         className={cn(
-          "fixed z-100 mx-auto flex w-[calc(100%-var(--toast-inset)*2)] max-w-[21.25rem] [--toast-header-offset:52px] [--toast-inset:--spacing(4)] sm:[--toast-inset:--spacing(6)]",
+          "fixed z-100 mx-auto flex w-[calc(100%-var(--toast-inset)*2)] max-w-[20rem] [--toast-header-offset:52px] [--toast-inset:--spacing(4)] sm:[--toast-inset:--spacing(6)]",
           // Vertical positioning
           "data-[position*=top]:top-[calc(var(--toast-inset)+var(--toast-header-offset))]",
           "data-[position*=bottom]:bottom-(--toast-inset)",

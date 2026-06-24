@@ -21,7 +21,7 @@ const MACOS_TRAFFIC_LIGHTS_LEFT_INSET = "88px";
 function SidebarControl() {
   return (
     <div
-      className="pointer-events-none fixed top-[var(--workspace-controls-top)] left-[var(--workspace-controls-left)] z-50 flex h-[var(--workspace-topbar-height)] items-center"
+      className="pointer-events-none fixed top-[var(--workspace-controls-top)] left-[var(--workspace-controls-left)] z-50 hidden h-[var(--workspace-topbar-height)] items-center md:flex"
       data-sidebar-control=""
     >
       <SidebarTrigger

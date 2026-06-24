@@ -61,7 +61,7 @@ function makeProvider(overrides: Partial<ServerProvider> = {}): ServerProvider {
     skills: [],
     status: "warning",
     version: null,
-    message: "Codex provider status check timed out.",
+    message: "Codex provider has limited availability.",
     ...overrides,
   };
 }
@@ -72,13 +72,19 @@ describe("ProviderStatusBanner", () => {
     document.body.innerHTML = "";
   });
 
-  it("offers targeted refresh and diagnostics actions for provider warnings", async () => {
-    const provider = makeProvider();
+  it("offers compact targeted refresh and diagnostics actions for provider probe timeouts", async () => {
+    const provider = makeProvider({
+      statusReason: "provider_probe_timeout",
+      message:
+        "Codex status check timed out after 60 seconds. Existing sessions may still work; refresh provider status if this keeps happening.",
+    });
     const screen = await renderWithTestRouter(<ProviderStatusBanner status={provider} />);
 
     try {
-      await expect.element(page.getByText("Codex provider status", { exact: true })).toBeVisible();
-      await expect.element(page.getByText("Codex provider status check timed out.")).toBeVisible();
+      await expect.element(page.getByText("Codex provider status:", { exact: true })).toBeVisible();
+      await expect
+        .element(page.getByText("Codex status check timed out after 60 seconds."))
+        .toBeVisible();
       await expect
         .element(page.getByRole("link", { name: "Open diagnostics" }))
         .toHaveAttribute("href", "/settings/diagnostics");

@@ -44,6 +44,12 @@ const ServerConfigIssues = Schema.Array(ServerConfigIssue);
 export const ServerProviderState = Schema.Literals(["ready", "warning", "error", "disabled"]);
 export type ServerProviderState = typeof ServerProviderState.Type;
 
+export const ServerProviderStatusReason = Schema.Literals([
+  "provider_probe_pending",
+  "provider_probe_timeout",
+]);
+export type ServerProviderStatusReason = typeof ServerProviderStatusReason.Type;
+
 export const ServerProviderAuthStatus = Schema.Literals([
   "authenticated",
   "unauthenticated",
@@ -256,6 +262,7 @@ export const ServerProvider = Schema.Struct({
   installed: Schema.Boolean,
   version: Schema.NullOr(TrimmedNonEmptyString),
   status: ServerProviderState,
+  statusReason: Schema.optional(ServerProviderStatusReason),
   auth: ServerProviderAuth,
   accountUsage: Schema.optional(ServerProviderAccountUsage),
   checkedAt: IsoDateTime,

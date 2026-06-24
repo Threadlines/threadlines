@@ -773,14 +773,15 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
           }).pipe(Effect.provide(hangingScopedSpawnerLayer(killCalls)), Effect.forkChild);
 
           yield* Effect.yieldNow;
-          yield* TestClock.adjust("11 seconds");
+          yield* TestClock.adjust("61 seconds");
           yield* Effect.yieldNow;
 
           const status = yield* Fiber.join(statusFiber);
           assert.strictEqual(status.status, "warning");
+          assert.strictEqual(status.statusReason, "provider_probe_timeout");
           assert.strictEqual(
             status.message,
-            "Codex provider status check timed out. Chat may still work if a Codex session is already running; refresh provider status if this keeps happening.",
+            "Codex status check timed out after 60 seconds. Existing sessions may still work; refresh provider status if this keeps happening.",
           );
           assert.strictEqual(yield* Ref.get(killCalls), 1);
         }),

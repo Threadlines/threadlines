@@ -86,34 +86,46 @@ function SectionTick({ className }: { className?: string }) {
  * vertical gap and they read as one unbroken spine; drop `connectTop` on the
  * first row and `connectBottom` on the last (the live terminus). Colour the
  * line by setting the `--spine` custom property on any ancestor; it falls back
- * to the hairline border colour.
+ * to the hairline border colour. For row-specific accents, set `--spine-top`
+ * and/or `--spine-bottom` on the row to override each connector segment.
  */
+const SPINE_TOP_STYLE = {
+  background: "var(--spine-top, var(--spine, var(--border)))",
+} satisfies React.CSSProperties;
+const SPINE_BOTTOM_STYLE = {
+  background: "var(--spine-bottom, var(--spine, var(--border)))",
+} satisfies React.CSSProperties;
+
 function SpineRow({
   node,
   connectTop = true,
   connectBottom = true,
   className,
+  style,
   children,
 }: {
   node: React.ReactNode;
   connectTop?: boolean;
   connectBottom?: boolean;
   className?: string | undefined;
+  style?: React.CSSProperties | undefined;
   children: React.ReactNode;
 }) {
   return (
-    <div className={cn("flex gap-2", className)}>
+    <div className={cn("flex gap-2", className)} style={style}>
       <div className="relative flex w-4 shrink-0 justify-center self-stretch">
         {connectTop ? (
           <span
             aria-hidden="true"
-            className="absolute top-0 left-1/2 h-3.5 w-px -translate-x-1/2 bg-[var(--spine,var(--border))]"
+            className="absolute top-0 left-1/2 h-3.5 w-px -translate-x-1/2"
+            style={SPINE_TOP_STYLE}
           />
         ) : null}
         {connectBottom ? (
           <span
             aria-hidden="true"
-            className="absolute top-3.5 bottom-0 left-1/2 w-px -translate-x-1/2 bg-[var(--spine,var(--border))]"
+            className="absolute top-3.5 bottom-0 left-1/2 w-px -translate-x-1/2"
+            style={SPINE_BOTTOM_STYLE}
           />
         ) : null}
         <span className="relative z-10 flex h-7 items-center justify-center">{node}</span>

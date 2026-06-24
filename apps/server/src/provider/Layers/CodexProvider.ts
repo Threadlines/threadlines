@@ -49,6 +49,10 @@ const CODEX_PRESENTATION = {
   supportedRuntimeModes: RUNTIME_MODES,
 } as const;
 
+const CODEX_PROVIDER_PENDING_MESSAGE = "Checking Codex provider status.";
+const CODEX_PROVIDER_TIMEOUT_MESSAGE =
+  "Codex status check timed out after 60 seconds. Existing sessions may still work; refresh provider status if this keeps happening.";
+
 export interface CodexAppServerProviderSnapshot {
   readonly account: CodexSchema.V2GetAccountResponse;
   readonly rateLimits?: CodexSchema.V2GetAccountRateLimitsResponse;
@@ -742,8 +746,9 @@ const makePendingCodexProvider = (
         installed: false,
         version: null,
         status: "warning",
+        statusReason: "provider_probe_pending",
         auth: { status: "unknown" },
-        message: "Codex provider status has not been checked in this session yet.",
+        message: CODEX_PROVIDER_PENDING_MESSAGE,
       },
     });
   });
@@ -860,9 +865,9 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
         installed: true,
         version: null,
         status: "warning",
+        statusReason: "provider_probe_timeout",
         auth: { status: "unknown" },
-        message:
-          "Codex provider status check timed out. Chat may still work if a Codex session is already running; refresh provider status if this keeps happening.",
+        message: CODEX_PROVIDER_TIMEOUT_MESSAGE,
       },
     });
   }

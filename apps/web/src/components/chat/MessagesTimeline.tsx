@@ -1394,12 +1394,35 @@ function liveSpineDimClass(indexFromBottom: number): string {
   return LIVE_SPINE_DIM[indexFromBottom] ?? "opacity-50";
 }
 
-function spineStyle(tone: "live" | "settled"): CSSProperties {
+function liveSpineColor(distanceFromCurrent: number): string {
+  if (distanceFromCurrent >= 1.5) {
+    return "var(--border)";
+  }
+
+  const primaryMix = Math.round(82 - distanceFromCurrent * 48);
+  return `color-mix(in oklab, var(--primary-graph) ${primaryMix}%, var(--border))`;
+}
+
+function liveSpineSegment(fromDistance: number, toDistance: number): string {
+  const from = liveSpineColor(fromDistance);
+  const to = liveSpineColor(toDistance);
+  return from === to ? from : `linear-gradient(to bottom, ${from}, ${to})`;
+}
+
+function liveSpineRowStyle(index: number, lastIndex: number): CSSProperties {
+  const distanceFromCurrent = lastIndex - index;
   return {
-    ["--spine"]:
-      tone === "live"
-        ? "color-mix(in oklab, var(--primary-graph) 60%, transparent)"
-        : "var(--border)",
+    ["--spine-top"]: liveSpineSegment(distanceFromCurrent + 0.5, distanceFromCurrent),
+    ["--spine-bottom"]: liveSpineSegment(
+      distanceFromCurrent,
+      Math.max(0, distanceFromCurrent - 0.5),
+    ),
+  } as CSSProperties;
+}
+
+function spineStyle(): CSSProperties {
+  return {
+    ["--spine"]: "var(--border)",
   } as CSSProperties;
 }
 
@@ -1449,7 +1472,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
 
   if (!shouldRenderReceipt) {
     return (
-      <div data-work-activity-inline="true" style={spineStyle("settled")}>
+      <div data-work-activity-inline="true" style={spineStyle()}>
         {transcriptEntries.map((workEntry, index) => (
           <SpineRow
             key={`work-row:${workEntry.id}`}
@@ -1476,7 +1499,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
     <div
       data-work-activity-receipt="true"
       data-work-activity-expanded={isExpanded ? "true" : "false"}
-      style={spineStyle("settled")}
+      style={spineStyle()}
     >
       <SpineRow node={<SpineNode kind="group" />} connectTop={false} connectBottom={isExpanded}>
         <ActivityReceipt
@@ -1530,7 +1553,7 @@ function LiveActivitySpine({
   const lastIndex = liveEntries.length - 1;
 
   return (
-    <div data-live-activity-strip="true" style={spineStyle("live")}>
+    <div data-live-activity-strip="true" style={spineStyle()}>
       {hiddenSummary ? (
         <p className="truncate pb-0.5 pl-6 text-[10px] leading-4 text-muted-foreground/45">
           {hiddenSummary}
@@ -1545,6 +1568,7 @@ function LiveActivitySpine({
             connectTop={index > 0}
             connectBottom={!isCurrent}
             className={isCurrent ? undefined : liveSpineDimClass(lastIndex - index)}
+            style={liveSpineRowStyle(index, lastIndex)}
           >
             <>
               <SimpleWorkEntryRow

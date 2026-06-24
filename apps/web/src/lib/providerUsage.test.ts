@@ -376,10 +376,118 @@ describe("deriveProviderAccountUsagePresentation", () => {
         {
           key: "secondary",
           label: "Weekly",
-          detail: "91% remaining \u00b7 resets in 1d 11h",
+          detail: "91% remaining \u00b7 blocked by 5h limit \u00b7 resets in 1d 11h",
           usedPercent: 9,
           remainingPercent: 91,
           reachedLimit: false,
+        },
+      ],
+    });
+  });
+
+  it("keeps weekly usage available when the provider reports the 5h cap as reached", () => {
+    const usage: ServerProviderAccountUsage = {
+      source: "codex-rate-limits",
+      checkedAt: "2026-06-10T15:00:00.000Z",
+      primaryLimitId: "codex",
+      limits: [
+        {
+          limitId: "codex",
+          rateLimitReachedType: "rate_limit_reached",
+          primary: {
+            usedPercent: 100,
+            remainingPercent: 0,
+            resetsAt: 1_781_116_200,
+            windowDurationMins: 300,
+          },
+          secondary: {
+            usedPercent: 64,
+            remainingPercent: 36,
+            resetsAt: 1_781_233_200,
+            windowDurationMins: 10_080,
+          },
+        },
+      ],
+    };
+
+    expect(deriveProviderAccountUsagePresentation(usage, 1_781_104_200_000)).toEqual({
+      label: "Codex usage",
+      reachedLimit: true,
+      resetCredits: {
+        availableCount: 0,
+        label: "0 resets available",
+        detail: "usable for 30 days after grant",
+      },
+      windows: [
+        {
+          key: "primary",
+          label: "5h",
+          detail: "limit reached \u00b7 resets in 3h 20m",
+          usedPercent: 100,
+          remainingPercent: 0,
+          reachedLimit: true,
+        },
+        {
+          key: "secondary",
+          label: "Weekly",
+          detail: "36% remaining \u00b7 blocked by 5h limit \u00b7 resets in 1d 11h",
+          usedPercent: 64,
+          remainingPercent: 36,
+          reachedLimit: false,
+        },
+      ],
+    });
+  });
+
+  it("keeps 5h usage available when the provider reports the weekly cap as reached", () => {
+    const usage: ServerProviderAccountUsage = {
+      source: "codex-rate-limits",
+      checkedAt: "2026-06-10T15:00:00.000Z",
+      primaryLimitId: "codex",
+      limits: [
+        {
+          limitId: "codex",
+          rateLimitReachedType: "rate_limit_reached",
+          primary: {
+            usedPercent: 42,
+            remainingPercent: 58,
+            resetsAt: 1_781_116_200,
+            windowDurationMins: 300,
+          },
+          secondary: {
+            usedPercent: 100,
+            remainingPercent: 0,
+            resetsAt: 1_781_233_200,
+            windowDurationMins: 10_080,
+          },
+        },
+      ],
+    };
+
+    expect(deriveProviderAccountUsagePresentation(usage, 1_781_104_200_000)).toEqual({
+      label: "Codex usage",
+      reachedLimit: true,
+      resetCredits: {
+        availableCount: 0,
+        label: "0 resets available",
+        detail: "usable for 30 days after grant",
+      },
+      windows: [
+        {
+          key: "primary",
+          label: "5h",
+          detail: "58% remaining \u00b7 blocked by weekly limit \u00b7 resets in 3h 20m",
+          usedPercent: 42,
+          remainingPercent: 58,
+          reachedLimit: false,
+        },
+        {
+          key: "secondary",
+          label: "Weekly",
+          detail: "limit reached \u00b7 resets in 1d 11h",
+          usedPercent: 100,
+          remainingPercent: 0,
+          reachedLimit: true,
         },
       ],
     });

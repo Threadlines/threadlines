@@ -103,6 +103,14 @@ function selectProviderUsageLimit(
   );
 }
 
+function hasReachedUsageWindow(window: ServerProviderUsageWindow): boolean {
+  return window.usedPercent >= 100 || window.remainingPercent <= 0;
+}
+
+function hasReachedSpendControlLimit(limit: ServerProviderSpendControlLimit): boolean {
+  return limit.remainingPercent <= 0;
+}
+
 function formatUsageWindowDurationLabel(
   window: ServerProviderUsageWindow,
   fallback: string,
@@ -117,24 +125,46 @@ function formatUsageWindowDurationLabel(
   return `${minutes}m`;
 }
 
+function formatBlockingLimitLabel(label: string): string {
+  return label.toLowerCase();
+}
+
+function formatBlockedByLimitDetail(blockingLimitLabels: ReadonlyArray<string>): string | null {
+  const uniqueLabels = [...new Set(blockingLimitLabels)]
+    .map(formatBlockingLimitLabel)
+    .filter((label) => label.length > 0);
+  if (uniqueLabels.length === 0) return null;
+  if (uniqueLabels.length === 1) return `blocked by ${uniqueLabels[0]} limit`;
+  if (uniqueLabels.length === 2) {
+    return `blocked by ${uniqueLabels[0]} and ${uniqueLabels[1]} limits`;
+  }
+  return `blocked by ${uniqueLabels.length} limits`;
+}
+
 function formatUsageWindowPresentation(
   key: ProviderAccountUsageWindowPresentation["key"],
   window: ServerProviderUsageWindow,
+  label: string,
   reachedLimit: boolean,
+  blockingLimitLabels: ReadonlyArray<string>,
   nowMs: number,
 ): ProviderAccountUsageWindowPresentation {
   const usedPercent = Math.max(0, Math.min(100, window.usedPercent));
   const remainingPercent = Math.max(0, Math.min(100, window.remainingPercent));
   const windowReachedLimit = reachedLimit || usedPercent >= 100 || remainingPercent <= 0;
   const resetDetail = formatResetDetail(window.resetsAt, nowMs);
+  const blockedByLimitDetail = windowReachedLimit
+    ? null
+    : formatBlockedByLimitDetail(blockingLimitLabels);
   const detailParts = [
     windowReachedLimit ? "limit reached" : `${remainingPercent}% remaining`,
+    blockedByLimitDetail,
     resetDetail,
   ].filter((part): part is string => Boolean(part));
 
   return {
     key,
-    label: formatUsageWindowDurationLabel(window, key === "primary" ? "5h" : "Weekly"),
+    label,
     detail: detailParts.join(" · "),
     usedPercent,
     remainingPercent,
@@ -145,15 +175,20 @@ function formatUsageWindowPresentation(
 function formatSpendControlPresentation(
   limit: ServerProviderSpendControlLimit,
   reachedLimit: boolean,
+  blockingLimitLabels: ReadonlyArray<string>,
   nowMs: number,
 ): ProviderAccountUsageSpendControlPresentation {
   const remainingPercent = Math.max(0, Math.min(100, limit.remainingPercent));
   const usedPercent = Math.max(0, 100 - remainingPercent);
   const spendControlReachedLimit = reachedLimit || usedPercent >= 100 || remainingPercent <= 0;
   const resetDetail = formatResetDetail(limit.resetsAt, nowMs);
+  const blockedByLimitDetail = spendControlReachedLimit
+    ? null
+    : formatBlockedByLimitDetail(blockingLimitLabels);
   const detailParts = [
     `${limit.used} used of ${limit.limit}`,
     spendControlReachedLimit ? "limit reached" : `${remainingPercent}% remaining`,
+    blockedByLimitDetail,
     resetDetail,
   ].filter((part): part is string => Boolean(part));
 
@@ -297,16 +332,56 @@ export function deriveProviderAccountUsagePresentation(
   }
 
   const reachedLimit = Boolean(limit.rateLimitReachedType);
-  const windows = [
+  const windowInputs = [
     ...(limit.primary
-      ? [formatUsageWindowPresentation("primary", limit.primary, reachedLimit, nowMs)]
+      ? [
+          {
+            key: "primary" as const,
+            label: formatUsageWindowDurationLabel(limit.primary, "5h"),
+            window: limit.primary,
+          },
+        ]
       : []),
     ...(limit.secondary
-      ? [formatUsageWindowPresentation("secondary", limit.secondary, reachedLimit, nowMs)]
+      ? [
+          {
+            key: "secondary" as const,
+            label: formatUsageWindowDurationLabel(limit.secondary, "Weekly"),
+            window: limit.secondary,
+          },
+        ]
       : []),
   ];
+  const reachedLimitLabels = [
+    ...windowInputs
+      .filter((input) => hasReachedUsageWindow(input.window))
+      .map((input) => input.label),
+    ...(limit.individualLimit && hasReachedSpendControlLimit(limit.individualLimit)
+      ? ["Monthly"]
+      : []),
+  ];
+  const useProviderLevelLimitFallback = reachedLimit && reachedLimitLabels.length === 0;
+  const windows = windowInputs.map((input) => {
+    const windowReachedLimit = hasReachedUsageWindow(input.window);
+    return formatUsageWindowPresentation(
+      input.key,
+      input.window,
+      input.label,
+      useProviderLevelLimitFallback || windowReachedLimit,
+      windowReachedLimit ? [] : reachedLimitLabels,
+      nowMs,
+    );
+  });
+  const spendControlReachedLimit = limit.individualLimit
+    ? hasReachedSpendControlLimit(limit.individualLimit)
+    : false;
   const spendControl = limit.individualLimit
-    ? formatSpendControlPresentation(limit.individualLimit, reachedLimit, nowMs)
+    ? formatSpendControlPresentation(
+        limit.individualLimit,
+        useProviderLevelLimitFallback || spendControlReachedLimit,
+        spendControlReachedLimit ? [] : reachedLimitLabels,
+        nowMs,
+      )
     : undefined;
   if (windows.length === 0 && !spendControl && !resetCredits && !tokenUsage) return null;
 

@@ -1,9 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import type { WsConnectionStatus } from "../rpc/wsConnectionState";
+import { describeSlowRpcAckToast, formatSlowRpcTagLabel } from "../rpc/requestLatencyPresentation";
 import {
-  describeSlowRpcAckToast,
-  formatSlowRpcTagLabel,
   shouldAutoReconnect,
   shouldRestartStalledReconnect,
   shouldShowReconnectIssueToast,
