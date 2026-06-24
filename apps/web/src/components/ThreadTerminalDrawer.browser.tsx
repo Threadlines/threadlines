@@ -16,6 +16,7 @@ const {
   readEnvironmentApiMock,
   readLocalApiMock,
   onTerminalWriteRef,
+  terminalOnDataRef,
   pendingTerminalWriteCallbacks,
   deferTerminalWriteCallbacksRef,
 } = vi.hoisted(() => ({
@@ -39,6 +40,9 @@ const {
     shell: { openExternal: vi.fn(async () => undefined) },
   })),
   onTerminalWriteRef: {
+    current: null as ((data: string) => void) | null,
+  },
+  terminalOnDataRef: {
     current: null as ((data: string) => void) | null,
   },
   pendingTerminalWriteCallbacks: [] as Array<() => void>,
@@ -119,7 +123,8 @@ vi.mock("@xterm/xterm", () => ({
       return { dispose: vi.fn() };
     }
 
-    onData() {
+    onData(listener: (data: string) => void) {
+      terminalOnDataRef.current = listener;
       return { dispose: vi.fn() };
     }
 
@@ -145,7 +150,7 @@ vi.mock("~/localApi", () => ({
 }));
 
 import { TerminalViewport } from "./ThreadTerminalDrawer";
-import { useTerminalStateStore } from "../terminalStateStore";
+import { selectTerminalSubmittedCommand, useTerminalStateStore } from "../terminalStateStore";
 
 const THREAD_ID = ThreadId.make("thread-terminal-browser");
 
@@ -257,12 +262,14 @@ describe("TerminalViewport", () => {
     fitAddonFitSpy.mockClear();
     fitAddonLoadSpy.mockClear();
     onTerminalWriteRef.current = null;
+    terminalOnDataRef.current = null;
     pendingTerminalWriteCallbacks.length = 0;
     deferTerminalWriteCallbacksRef.current = false;
     useTerminalStateStore.setState({
       terminalStateByThreadKey: {},
       terminalLaunchContextByThreadKey: {},
       terminalEventEntriesByKey: {},
+      terminalSubmittedCommandByKey: {},
       nextTerminalEventId: 1,
     });
   });
@@ -361,6 +368,40 @@ describe("TerminalViewport", () => {
           }),
         }),
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("records submitted commands from terminal input", async () => {
+    const environment = createEnvironmentApi();
+    const threadRef = scopeThreadRef("environment-a" as never, THREAD_ID);
+    environmentApiById.set("environment-a", environment);
+
+    const mounted = await mountTerminalViewport({ threadRef });
+
+    try {
+      await vi.waitFor(() => {
+        expect(environment.terminal.open).toHaveBeenCalledTimes(1);
+        expect(terminalOnDataRef.current).not.toBeNull();
+      });
+
+      terminalOnDataRef.current?.("vp run dev:desktop\r");
+
+      await vi.waitFor(() => {
+        expect(environment.terminal.write).toHaveBeenCalledWith({
+          threadId: THREAD_ID,
+          terminalId: "default",
+          data: "vp run dev:desktop\r",
+        });
+      });
+      expect(
+        selectTerminalSubmittedCommand(
+          useTerminalStateStore.getState().terminalSubmittedCommandByKey,
+          threadRef,
+          "default",
+        ),
+      ).toBe("vp run dev:desktop");
     } finally {
       await mounted.cleanup();
     }

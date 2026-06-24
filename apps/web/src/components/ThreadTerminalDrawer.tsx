@@ -28,6 +28,7 @@ import {
 import { Popover, PopoverPopup, PopoverTrigger } from "~/components/ui/popover";
 import { type TerminalContextSelection } from "~/lib/terminalContext";
 import { openInPreferredEditor } from "../editorPreferences";
+import { applyTerminalInputData, createTerminalCommandInputState } from "../terminalCommandTracker";
 import {
   collectWrappedTerminalLinkLine,
   extractTerminalLinks,
@@ -338,6 +339,10 @@ export function TerminalViewport({
   const keybindingsRef = useRef(keybindings);
   const lastAppliedTerminalEventIdRef = useRef(0);
   const terminalHydratedRef = useRef(false);
+  const terminalCommandInputStateRef = useRef(createTerminalCommandInputState());
+  const storeSetTerminalSubmittedCommand = useTerminalStateStore(
+    (state) => state.setTerminalSubmittedCommand,
+  );
   const handleSessionExited = useEffectEvent(() => {
     onSessionExited();
   });
@@ -345,6 +350,16 @@ export function TerminalViewport({
     onAddTerminalContext(selection);
   });
   const readTerminalLabel = useEffectEvent(() => terminalLabel);
+  const recordTerminalCommandInput = useEffectEvent((data: string) => {
+    const result = applyTerminalInputData(terminalCommandInputStateRef.current, data);
+    terminalCommandInputStateRef.current = result.state;
+    if (result.submittedCommand) {
+      storeSetTerminalSubmittedCommand(threadRef, terminalId, result.submittedCommand);
+    }
+  });
+  const resetTerminalCommandInput = useEffectEvent(() => {
+    terminalCommandInputStateRef.current = createTerminalCommandInputState();
+  });
 
   useEffect(() => {
     keybindingsRef.current = keybindings;
@@ -457,6 +472,7 @@ export function TerminalViewport({
     const sendTerminalInput = async (data: string, fallbackError: string) => {
       const activeTerminal = terminalRef.current;
       if (!activeTerminal) return;
+      recordTerminalCommandInput(data);
       try {
         await api.terminal.write({ threadId, terminalId, data });
       } catch (error) {
@@ -563,6 +579,7 @@ export function TerminalViewport({
     });
 
     const inputDisposable = terminal.onData((data) => {
+      recordTerminalCommandInput(data);
       void api.terminal
         .write({ threadId, terminalId, data })
         .catch((err) =>
@@ -634,6 +651,7 @@ export function TerminalViewport({
 
       if (event.type === "started" || event.type === "restarted") {
         hasHandledExitRef.current = false;
+        resetTerminalCommandInput();
         clearSelectionAction();
         writeTerminalSnapshot(activeTerminal, event.snapshot, () =>
           isTerminalActive(activeTerminal),
@@ -670,6 +688,7 @@ export function TerminalViewport({
       if (hasHandledExitRef.current) {
         return;
       }
+      resetTerminalCommandInput();
       hasHandledExitRef.current = true;
       window.setTimeout(() => {
         if (!hasHandledExitRef.current) {
@@ -797,6 +816,7 @@ export function TerminalViewport({
 
     return () => {
       disposed = true;
+      resetTerminalCommandInput();
       terminalHydratedRef.current = false;
       lastAppliedTerminalEventIdRef.current = 0;
       unsubscribeTerminalEvents();

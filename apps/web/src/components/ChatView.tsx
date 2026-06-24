@@ -155,7 +155,11 @@ import {
   type TerminalContextDraft,
   type TerminalContextSelection,
 } from "../lib/terminalContext";
-import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
+import {
+  selectTerminalSubmittedCommand,
+  selectThreadTerminalState,
+  useTerminalStateStore,
+} from "../terminalStateStore";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { getComposerProviderState } from "./chat/composerProviderState";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
@@ -904,6 +908,9 @@ export default function ChatView(props: ChatViewProps) {
 
   const terminalState = useTerminalStateStore((state) =>
     selectThreadTerminalState(state.terminalStateByThreadKey, routeThreadRef),
+  );
+  const terminalSubmittedCommandByKey = useTerminalStateStore(
+    (state) => state.terminalSubmittedCommandByKey,
   );
   const openTerminalThreadKeys = useTerminalStateStore(
     useShallow((state) =>
@@ -2475,20 +2482,28 @@ export default function ChatView(props: ChatViewProps) {
       terminalState.terminalIds.map((terminalId, index) => [terminalId, `Terminal ${index + 1}`]),
     );
     const cwd = activeTerminalLaunchContext?.cwd ?? gitCwd ?? activeProject?.cwd ?? null;
-    const terminalRuns = terminalState.runningTerminalIds.map((terminalId) => ({
-      id: `terminal:${terminalId}`,
-      source: "terminal" as const,
-      terminalId,
-      pid: null,
-      port: null,
-      elapsed: null,
-      canStop: true,
-      label: terminalLabelById.get(terminalId) ?? "Terminal",
-      detail: cwd,
-      cwd,
-      statusLabel: "Running",
-      urls: [],
-    }));
+    const terminalRuns = terminalState.runningTerminalIds.map((terminalId) => {
+      const terminalLabel = terminalLabelById.get(terminalId) ?? "Terminal";
+      const submittedCommand = selectTerminalSubmittedCommand(
+        terminalSubmittedCommandByKey,
+        activeThreadRef,
+        terminalId,
+      );
+      return {
+        id: `terminal:${terminalId}`,
+        source: "terminal" as const,
+        terminalId,
+        pid: null,
+        port: null,
+        elapsed: null,
+        canStop: true,
+        label: submittedCommand ?? terminalLabel,
+        detail: submittedCommand && cwd ? `${terminalLabel} - ${cwd}` : cwd,
+        cwd,
+        statusLabel: "Running",
+        urls: [],
+      };
+    });
     const unresolvedProviderRuns = filterUnresolvedProviderBackgroundRuns({
       providerBackgroundRuns,
       detectedBackgroundRuns: [
@@ -2505,6 +2520,8 @@ export default function ChatView(props: ChatViewProps) {
     gitCwd,
     providerBackgroundRuns,
     stoppedBackgroundRunPids,
+    activeThreadRef,
+    terminalSubmittedCommandByKey,
     terminalState.runningTerminalIds,
     terminalState.terminalIds,
   ]);

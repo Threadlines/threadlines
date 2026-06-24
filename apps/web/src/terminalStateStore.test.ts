@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   migratePersistedTerminalStateStoreState,
   selectTerminalEventEntries,
+  selectTerminalSubmittedCommand,
   selectThreadTerminalState,
   useTerminalStateStore,
 } from "./terminalStateStore";
@@ -64,6 +65,7 @@ describe("terminalStateStore actions", () => {
       terminalStateByThreadKey: {},
       terminalLaunchContextByThreadKey: {},
       terminalEventEntriesByKey: {},
+      terminalSubmittedCommandByKey: {},
       nextTerminalEventId: 1,
     });
   });
@@ -82,6 +84,54 @@ describe("terminalStateStore actions", () => {
       terminalGroups: [{ id: "group-default", terminalIds: ["default"] }],
       activeTerminalGroupId: "group-default",
     });
+  });
+
+  it("stores submitted terminal commands outside persisted terminal layout state", () => {
+    const store = useTerminalStateStore.getState();
+    store.setTerminalSubmittedCommand(THREAD_REF, "default", "  vp   run dev:desktop  ");
+
+    expect(
+      selectTerminalSubmittedCommand(
+        useTerminalStateStore.getState().terminalSubmittedCommandByKey,
+        THREAD_REF,
+        "default",
+      ),
+    ).toBe("vp run dev:desktop");
+    expect(
+      migratePersistedTerminalStateStoreState(useTerminalStateStore.getState(), 2),
+    ).not.toHaveProperty("terminalSubmittedCommandByKey");
+  });
+
+  it("clears submitted terminal commands when subprocess activity stops", () => {
+    const store = useTerminalStateStore.getState();
+    store.setTerminalSubmittedCommand(THREAD_REF, "default", "vp run dev:desktop");
+    store.applyTerminalEvent(
+      THREAD_REF,
+      makeTerminalEvent("activity", { hasRunningSubprocess: false }),
+    );
+
+    expect(
+      selectTerminalSubmittedCommand(
+        useTerminalStateStore.getState().terminalSubmittedCommandByKey,
+        THREAD_REF,
+        "default",
+      ),
+    ).toBeNull();
+  });
+
+  it("clears submitted terminal commands when a terminal is closed", () => {
+    const store = useTerminalStateStore.getState();
+    store.splitTerminal(THREAD_REF, "terminal-2");
+    store.setTerminalSubmittedCommand(THREAD_REF, "terminal-2", "vp run dev:desktop");
+    store.closeTerminal(THREAD_REF, "terminal-2");
+
+    expect(
+      selectTerminalSubmittedCommand(
+        useTerminalStateStore.getState().terminalSubmittedCommandByKey,
+        THREAD_REF,
+        "terminal-2",
+      ),
+    ).toBeNull();
   });
 
   it("opens and splits terminals into the active group", () => {
