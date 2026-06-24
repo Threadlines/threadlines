@@ -543,20 +543,15 @@ describe("Keybindings update toast", () => {
     document.body.innerHTML = "";
   });
 
-  it("coalesces rapid consecutive keybinding update toasts with no issues", async () => {
+  it("does not show a toast when keybindings reload without issues", async () => {
     const mounted = await mountApp();
 
     try {
       sendServerConfigUpdatedPush([]);
-      await waitForToast("Keybindings updated", 1);
-
-      // A single edit can produce several reload notifications as the direct update and
-      // filesystem watcher settle, so avoid stacking identical success toasts.
       sendServerConfigUpdatedPush([]);
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      await new Promise((resolve) => setTimeout(resolve, 500));
 
-      const titles = queryToastTitles();
-      expect(titles.filter((title) => title === "Keybindings updated")).toHaveLength(1);
+      expect(queryToastTitles()).toHaveLength(0);
     } finally {
       await mounted.cleanup();
     }
@@ -575,13 +570,15 @@ describe("Keybindings update toast", () => {
     }
   });
 
-  it("does not show a toast from the replayed cached value on subscribe", async () => {
+  it("does not show a warning from the replayed cached value on subscribe", async () => {
     const mounted = await mountApp();
 
     try {
-      sendServerConfigUpdatedPush([]);
-      await waitForToast("Keybindings updated");
-      await waitForNoToast("Keybindings updated");
+      sendServerConfigUpdatedPush([
+        { kind: "keybindings.malformed-config", message: "Expected JSON array" },
+      ]);
+      await waitForToast("Invalid keybindings configuration");
+      await waitForNoToast("Invalid keybindings configuration");
 
       // Remount the app — onServerConfigUpdated replays the cached value
       // synchronously on subscribe. This should NOT produce a toast.
@@ -593,7 +590,7 @@ describe("Keybindings update toast", () => {
 
       const titles = queryToastTitles();
       expect(
-        titles.filter((t) => t === "Keybindings updated").length,
+        titles.filter((t) => t === "Invalid keybindings configuration").length,
         "Replayed cached value should not produce a toast",
       ).toBe(0);
 

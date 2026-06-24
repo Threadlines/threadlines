@@ -1,4 +1,4 @@
-import { describe, expect, it } from "@effect/vitest";
+import { describe, expect, it } from "vitest";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -10,6 +10,12 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import * as ProcessDiagnostics from "./ProcessDiagnostics.ts";
 
 const encoder = new TextEncoder();
+
+function itEffect(name: string, effect: () => Effect.Effect<void, unknown, never>): void {
+  it(name, async () => {
+    await Effect.runPromise(effect());
+  });
+}
 
 function mockHandle(result: {
   readonly stdout?: string;
@@ -32,7 +38,7 @@ function mockHandle(result: {
 }
 
 describe("ProcessDiagnostics", () => {
-  it.effect("parses POSIX ps rows with full commands", () =>
+  itEffect("parses POSIX ps rows with full commands", () =>
     Effect.sync(() => {
       const rows = ProcessDiagnostics.parsePosixProcessRows(
         [
@@ -66,7 +72,7 @@ describe("ProcessDiagnostics", () => {
     }),
   );
 
-  it.effect("aggregates only descendants of the server process", () =>
+  itEffect("aggregates only descendants of the server process", () =>
     Effect.sync(() => {
       const diagnostics = ProcessDiagnostics.aggregateProcessDiagnostics({
         serverPid: 100,
@@ -137,7 +143,7 @@ describe("ProcessDiagnostics", () => {
     }),
   );
 
-  it.effect("preserves ascending sibling order for nested descendants", () =>
+  itEffect("preserves ascending sibling order for nested descendants", () =>
     Effect.sync(() => {
       const diagnostics = ProcessDiagnostics.aggregateProcessDiagnostics({
         serverPid: 100,
@@ -180,7 +186,7 @@ describe("ProcessDiagnostics", () => {
     }),
   );
 
-  it.effect("queries processes through the ChildProcessSpawner service", () =>
+  itEffect("queries processes through the ChildProcessSpawner service", () =>
     Effect.gen(function* () {
       const commands: Array<{ readonly command: string; readonly args: ReadonlyArray<string> }> =
         [];
@@ -262,7 +268,133 @@ describe("ProcessDiagnostics", () => {
     expect(command).not.toContain('ParentProcessId = $parentPid"');
   });
 
-  it.effect("does not allow signaling the diagnostics query process", () =>
+  it("parses Windows listening port rows", () => {
+    const rows = ProcessDiagnostics.parseWindowsListeningPortRows(
+      JSON.stringify([
+        {
+          LocalPort: 5953,
+          OwningProcess: 4242,
+          Name: "node.exe",
+          CommandLine: "node scripts/dev-runner.ts dev",
+        },
+        {
+          LocalPort: 13993,
+          OwningProcess: 4343,
+          Name: "bun.exe",
+          CommandLine: "",
+        },
+      ]),
+    );
+
+    expect(rows).toEqual([
+      {
+        port: 5953,
+        pid: 4242,
+        command: "node scripts/dev-runner.ts dev",
+      },
+      {
+        port: 13993,
+        pid: 4343,
+        command: "bun.exe",
+      },
+    ]);
+  });
+
+  it("resolves mentioned localhost URLs to detected background runs", () => {
+    const result = ProcessDiagnostics.resolveBackgroundRunsFromListeningPorts({
+      urls: ["http://localhost:5953", "http://127.0.0.1:5953/api", "http://localhost:9999"],
+      portRows: [
+        {
+          port: 5953,
+          pid: 4242,
+          command: "node scripts/dev-runner.ts dev",
+        },
+      ],
+    });
+
+    expect(result.runs).toEqual([
+      {
+        id: "detected-localhost:5953:4242",
+        url: "http://localhost:5953",
+        urls: ["http://localhost:5953", "http://127.0.0.1:5953/api"],
+        port: 5953,
+        pid: 4242,
+        command: "node scripts/dev-runner.ts dev",
+        detail: "PID 4242 on localhost:5953 - node scripts/dev-runner.ts dev",
+        statusLabel: "Detected",
+        canStop: true,
+      },
+    ]);
+  });
+
+  it("uses command hints to resolve descendant-owned preview ports", () => {
+    const result = ProcessDiagnostics.resolveBackgroundRunsFromListeningPorts({
+      urls: ["http://localhost:6013", "http://localhost:14053"],
+      commandHints: [
+        "$env:THREADLINES_PORT_OFFSET='280'; node scripts/dev-runner.ts dev --home-dir C:\\Temp\\threadlines-activity-preview-280\\home",
+      ],
+      processRows: [
+        {
+          pid: 10,
+          ppid: 1,
+          pgid: null,
+          status: "Live",
+          cpuPercent: 0,
+          rssBytes: 100,
+          elapsed: "",
+          command:
+            "powershell.exe -Command $env:THREADLINES_PORT_OFFSET='280'; node scripts/dev-runner.ts dev --home-dir C:\\Temp\\threadlines-activity-preview-280\\home",
+        },
+        {
+          pid: 11,
+          ppid: 10,
+          pgid: null,
+          status: "Live",
+          cpuPercent: 0,
+          rssBytes: 100,
+          elapsed: "",
+          command:
+            "node.exe scripts/dev-runner.ts dev --home-dir C:\\Temp\\threadlines-activity-preview-280\\home",
+        },
+        {
+          pid: 12,
+          ppid: 11,
+          pgid: null,
+          status: "Live",
+          cpuPercent: 0,
+          rssBytes: 100,
+          elapsed: "",
+          command: "node vite cli.js dev",
+        },
+        {
+          pid: 13,
+          ppid: 11,
+          pgid: null,
+          status: "Live",
+          cpuPercent: 0,
+          rssBytes: 100,
+          elapsed: "",
+          command: "node apps/server/scripts/cli.ts",
+        },
+      ],
+      portRows: [
+        {
+          port: 6013,
+          pid: 12,
+          command: "node vite cli.js dev",
+        },
+        {
+          port: 14053,
+          pid: 13,
+          command: "node server",
+        },
+      ],
+    });
+
+    expect(result.runs.map((run) => `${run.port}:${run.pid}`)).toEqual(["6013:12", "14053:13"]);
+  });
+
+  itEffect("does not allow signaling the diagnostics query process", () =>
     Effect.gen(function* () {
       const spawnerLayer = Layer.succeed(
         ChildProcessSpawner.ChildProcessSpawner,

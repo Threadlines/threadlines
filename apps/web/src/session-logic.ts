@@ -1156,6 +1156,7 @@ export function deriveWorkLogEntries(
     );
   const entries = ordered
     .filter((activity) => activity.kind !== "task.started")
+    .filter((activity) => activity.kind !== "subagent.result")
     .filter((activity) => activity.kind !== "context-window.updated")
     // Account telemetry; belongs in a usage meter, not the work narrative.
     .filter((activity) => activity.kind !== "account.rate-limits.updated")

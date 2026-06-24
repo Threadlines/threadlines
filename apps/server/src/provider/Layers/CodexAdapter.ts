@@ -603,6 +603,7 @@ function providerRefsFromEvent(
   event: ProviderEvent,
 ): ProviderRuntimeEvent["providerRefs"] | undefined {
   const refs: Record<string, string> = {};
+  if (event.providerThreadId) refs.providerThreadId = event.providerThreadId;
   if (event.turnId) refs.providerTurnId = event.turnId;
   if (event.itemId) refs.providerItemId = event.itemId;
   if (event.requestId) refs.providerRequestId = event.requestId;

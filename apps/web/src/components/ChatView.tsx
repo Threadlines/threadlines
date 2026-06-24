@@ -31,6 +31,7 @@ import { createModelSelection } from "@threadlines/shared/model";
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@threadlines/shared/projectScripts";
 import { truncate } from "@threadlines/shared/String";
 import { Debouncer } from "@tanstack/react-pacer";
+import * as Option from "effect/Option";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useShallow } from "zustand/react/shallow";
@@ -43,7 +44,7 @@ import {
   needsMacTrafficLightClearance,
 } from "../desktopChrome";
 import { isElectron } from "../env";
-import { readLocalApi } from "../localApi";
+import { ensureLocalApi, readLocalApi } from "../localApi";
 import {
   closeRightPanelSearchParams,
   isSourceControlPanelOpen,
@@ -158,6 +159,7 @@ import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
 import { ChatHeader } from "./chat/ChatHeader";
+import type { ThreadBackgroundRunItem } from "./chat/ThreadActivityPopover";
 import { useSidebar } from "./ui/sidebar";
 import { type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import { NoActiveThreadState } from "./NoActiveThreadState";
@@ -171,6 +173,7 @@ import {
   buildLocalDraftThread,
   collectUserMessageBlobPreviewUrls,
   createLocalDispatchSnapshot,
+  deriveProviderBackgroundRuns,
   deriveComposerSendState,
   deriveProviderAuthReconnectPrompt,
   hasServerAcknowledgedLocalDispatch,
@@ -1473,6 +1476,7 @@ export default function ChatView(props: ChatViewProps) {
     isSendBusy ||
     isConnecting ||
     isRevertingCheckpoint;
+  const activeTurnInProgress = isWorking || (activeLatestTurn !== null && !latestTurnSettled);
   const activeStatusLabel = deriveActiveStatusLabel({
     phase,
     workLogEntries,
@@ -2182,6 +2186,184 @@ export default function ChatView(props: ChatViewProps) {
       performCloseTerminal(targetThreadRef, targetThreadId, terminalId);
     },
     [performCloseTerminal],
+  );
+  const providerBackgroundRuns = useMemo(
+    () =>
+      deriveProviderBackgroundRuns({
+        activities: threadActivities,
+        messages: timelineMessages,
+        pendingBackgroundTaskCount: activeThread?.session?.pendingBackgroundTaskCount ?? 0,
+      }).map((run) => ({
+        ...run,
+        terminalId: null,
+        pid: null,
+        port: null,
+        canStop: false,
+        cwd: null,
+      })),
+    [activeThread?.session?.pendingBackgroundTaskCount, threadActivities, timelineMessages],
+  );
+  const backgroundRunDetectionUrls = useMemo(
+    () => [...new Set(providerBackgroundRuns.flatMap((run) => run.urls))].sort(),
+    [providerBackgroundRuns],
+  );
+  const backgroundRunCommandHints = useMemo(
+    () => [...new Set(providerBackgroundRuns.flatMap((run) => run.commandHints))].slice(0, 12),
+    [providerBackgroundRuns],
+  );
+  const [detectedBackgroundRuns, setDetectedBackgroundRuns] = useState<ThreadBackgroundRunItem[]>(
+    [],
+  );
+  const [backgroundRunDetectionCheckedUrls, setBackgroundRunDetectionCheckedUrls] = useState<
+    string[]
+  >([]);
+
+  useEffect(() => {
+    if (
+      !activeThreadId ||
+      (backgroundRunDetectionUrls.length === 0 && backgroundRunCommandHints.length === 0)
+    ) {
+      setDetectedBackgroundRuns([]);
+      setBackgroundRunDetectionCheckedUrls([]);
+      return;
+    }
+
+    let localApi: ReturnType<typeof ensureLocalApi>;
+    try {
+      localApi = ensureLocalApi();
+    } catch {
+      setDetectedBackgroundRuns([]);
+      setBackgroundRunDetectionCheckedUrls([]);
+      return;
+    }
+
+    let cancelled = false;
+    void localApi.server
+      .resolveBackgroundRuns({
+        urls: backgroundRunDetectionUrls,
+        commandHints: backgroundRunCommandHints,
+      })
+      .then((result) => {
+        if (cancelled) return;
+        setBackgroundRunDetectionCheckedUrls(backgroundRunDetectionUrls);
+        setDetectedBackgroundRuns(
+          result.runs.map((run) => ({
+            id: run.id,
+            source: "detected",
+            terminalId: null,
+            pid: run.pid,
+            port: run.port,
+            canStop: run.canStop,
+            label: "Detected local preview",
+            detail: run.detail,
+            cwd: null,
+            statusLabel: run.statusLabel,
+            urls: run.urls,
+          })),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDetectedBackgroundRuns([]);
+          setBackgroundRunDetectionCheckedUrls([]);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeThreadId, backgroundRunCommandHints, backgroundRunDetectionUrls]);
+
+  const backgroundRuns = useMemo(() => {
+    const terminalLabelById = new Map(
+      terminalState.terminalIds.map((terminalId, index) => [terminalId, `Terminal ${index + 1}`]),
+    );
+    const cwd = activeTerminalLaunchContext?.cwd ?? gitCwd ?? activeProject?.cwd ?? null;
+    const terminalRuns = terminalState.runningTerminalIds.map((terminalId) => ({
+      id: `terminal:${terminalId}`,
+      source: "terminal" as const,
+      terminalId,
+      pid: null,
+      port: null,
+      canStop: true,
+      label: terminalLabelById.get(terminalId) ?? "Terminal",
+      detail: cwd,
+      cwd,
+      statusLabel: "Running",
+      urls: [],
+    }));
+    const detectedUrlSet = new Set(detectedBackgroundRuns.flatMap((run) => run.urls));
+    const checkedUrlSet = new Set(backgroundRunDetectionCheckedUrls);
+    const unresolvedProviderRuns = providerBackgroundRuns.filter(
+      (run) =>
+        (run.urls.length === 0 || !run.urls.every((url) => detectedUrlSet.has(url))) &&
+        !(
+          run.source === "mentioned-preview" &&
+          run.urls.length > 0 &&
+          run.urls.every((url) => checkedUrlSet.has(url))
+        ),
+    );
+
+    return [...terminalRuns, ...detectedBackgroundRuns, ...unresolvedProviderRuns];
+  }, [
+    activeProject?.cwd,
+    activeTerminalLaunchContext?.cwd,
+    backgroundRunDetectionCheckedUrls,
+    detectedBackgroundRuns,
+    gitCwd,
+    providerBackgroundRuns,
+    terminalState.runningTerminalIds,
+    terminalState.terminalIds,
+  ]);
+  const openBackgroundRunTerminal = useCallback(
+    (terminalId: string) => {
+      if (!activeThreadRef) return;
+      storeSetActiveTerminal(activeThreadRef, terminalId);
+      setTerminalOpen(true);
+      setTerminalFocusRequestId((value) => value + 1);
+    },
+    [activeThreadRef, setTerminalOpen, storeSetActiveTerminal],
+  );
+  const stopBackgroundRun = useCallback(
+    (run: ThreadBackgroundRunItem) => {
+      if (!activeThreadRef || !activeThreadId) return;
+      if (run.terminalId) {
+        requestCloseTerminal(activeThreadRef, activeThreadId, run.terminalId);
+        return;
+      }
+      if (run.pid === null || run.port === null) {
+        return;
+      }
+
+      let localApi: ReturnType<typeof ensureLocalApi>;
+      try {
+        localApi = ensureLocalApi();
+      } catch (error) {
+        setThreadError(
+          activeThreadId,
+          error instanceof Error ? error.message : `Could not stop ${run.label}.`,
+        );
+        return;
+      }
+
+      void localApi.server
+        .stopBackgroundRun({ pid: run.pid, port: run.port, signal: "SIGINT" })
+        .then((result) => {
+          if (result.signaled) {
+            setDetectedBackgroundRuns((current) => current.filter((item) => item.id !== run.id));
+            return;
+          }
+          const message = Option.getOrUndefined(result.message);
+          setThreadError(activeThreadId, message ?? `Could not stop ${run.label}.`);
+        })
+        .catch((error: unknown) => {
+          setThreadError(
+            activeThreadId,
+            error instanceof Error ? error.message : `Could not stop ${run.label}.`,
+          );
+        });
+    },
+    [activeThreadId, activeThreadRef, requestCloseTerminal, setThreadError],
   );
   const confirmPendingTerminalKill = useCallback(() => {
     if (!pendingTerminalKill) return;
@@ -4213,17 +4395,23 @@ export default function ChatView(props: ChatViewProps) {
           sourceControlOpen={sourceControlOpen}
           taskProgress={taskProgress}
           subagentProgress={subagentProgress}
+          backgroundRuns={backgroundRuns}
           onRunProjectScript={runProjectScript}
           onAddProjectScript={saveProjectScript}
           onUpdateProjectScript={updateProjectScript}
           onDeleteProjectScript={deleteProjectScript}
+          onOpenBackgroundRunTerminal={openBackgroundRunTerminal}
+          onStopBackgroundRun={stopBackgroundRun}
           onToggleTerminal={toggleTerminalVisibility}
           onToggleSourceControl={onToggleSourceControl}
         />
       </header>
 
       {/* Error banner */}
-      <ProviderStatusBanner status={activeProviderStatus} />
+      <ProviderStatusBanner
+        activeTurnInProgress={activeTurnInProgress}
+        status={activeProviderStatus}
+      />
       <ThreadErrorBanner
         error={activeThread.error}
         authReconnect={providerAuthReconnectPrompt}

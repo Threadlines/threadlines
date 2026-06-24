@@ -1016,6 +1016,22 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           observeRpcEffect(WS_METHODS.serverSignalProcess, processDiagnostics.signal(input), {
             "rpc.aggregate": "server",
           }),
+        [WS_METHODS.serverResolveBackgroundRuns]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverResolveBackgroundRuns,
+            processDiagnostics.resolveBackgroundRuns(input),
+            {
+              "rpc.aggregate": "server",
+            },
+          ),
+        [WS_METHODS.serverStopBackgroundRun]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverStopBackgroundRun,
+            processDiagnostics.stopBackgroundRun(input),
+            {
+              "rpc.aggregate": "server",
+            },
+          ),
         [WS_METHODS.serverGetProviderExtensions]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverGetProviderExtensions,

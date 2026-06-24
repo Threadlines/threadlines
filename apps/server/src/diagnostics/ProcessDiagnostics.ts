@@ -1,8 +1,10 @@
 import type {
   ServerProcessDiagnosticsEntry,
   ServerProcessDiagnosticsResult,
+  ServerResolveBackgroundRunsResult,
   ServerProcessSignal,
   ServerSignalProcessResult,
+  ServerStopBackgroundRunInput,
 } from "@threadlines/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -30,12 +32,25 @@ const PROCESS_QUERY_TIMEOUT_MS = 15_000;
 const POSIX_PROCESS_QUERY_COMMAND = "pid=,ppid=,pgid=,stat=,pcpu=,rss=,etime=,command=";
 const PROCESS_QUERY_MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
 
+export interface ListeningPortRow {
+  readonly port: number;
+  readonly pid: number;
+  readonly command: string;
+}
+
 export interface ProcessDiagnosticsShape {
   readonly read: Effect.Effect<ServerProcessDiagnosticsResult>;
   readonly signal: (input: {
     readonly pid: number;
     readonly signal: ServerProcessSignal;
   }) => Effect.Effect<ServerSignalProcessResult>;
+  readonly resolveBackgroundRuns: (input: {
+    readonly urls: ReadonlyArray<string>;
+    readonly commandHints?: ReadonlyArray<string> | undefined;
+  }) => Effect.Effect<ServerResolveBackgroundRunsResult>;
+  readonly stopBackgroundRun: (
+    input: ServerStopBackgroundRunInput,
+  ) => Effect.Effect<ServerSignalProcessResult>;
 }
 
 export class ProcessDiagnostics extends Context.Service<
@@ -184,6 +199,67 @@ function parseWindowsProcessRows(output: string): ReadonlyArray<ProcessRow> {
   } catch {
     return [];
   }
+}
+
+function normalizeListeningPortRow(value: unknown): ListeningPortRow | null {
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as Record<string, unknown>;
+  const port = typeof record.LocalPort === "number" ? record.LocalPort : null;
+  const pid = typeof record.OwningProcess === "number" ? record.OwningProcess : null;
+  const command =
+    typeof record.CommandLine === "string" && record.CommandLine.trim().length > 0
+      ? record.CommandLine.trim()
+      : typeof record.Name === "string" && record.Name.trim().length > 0
+        ? record.Name.trim()
+        : null;
+
+  if (!port || port <= 0 || !pid || pid <= 0 || !command) return null;
+  return { port, pid, command };
+}
+
+export function parseWindowsListeningPortRows(output: string): ReadonlyArray<ListeningPortRow> {
+  if (output.trim().length === 0) return [];
+  try {
+    const parsed = JSON.parse(output) as unknown;
+    const records = Array.isArray(parsed) ? parsed : [parsed];
+    return records.flatMap((record) => {
+      const row = normalizeListeningPortRow(record);
+      return row ? [row] : [];
+    });
+  } catch {
+    return [];
+  }
+}
+
+export function parsePosixLsofListeningPortRows(output: string): ReadonlyArray<ListeningPortRow> {
+  const rows: ListeningPortRow[] = [];
+  let currentPid: number | null = null;
+  let currentCommand: string | null = null;
+
+  for (const line of output.split(/\r?\n/)) {
+    if (line.length < 2) continue;
+    const tag = line[0];
+    const value = line.slice(1);
+    if (tag === "p") {
+      currentPid = parsePositiveInt(value);
+      currentCommand = null;
+      continue;
+    }
+    if (tag === "c") {
+      currentCommand = value.trim() || null;
+      continue;
+    }
+    if (tag !== "n" || currentPid === null || currentCommand === null) {
+      continue;
+    }
+    const portMatch = /:(\d+)(?:\s|$)/.exec(value);
+    const port = portMatch?.[1] ? parsePositiveInt(portMatch[1]) : null;
+    if (port !== null) {
+      rows.push({ port, pid: currentPid, command: currentCommand });
+    }
+  }
+
+  return rows;
 }
 
 export function buildDescendantEntries(
@@ -414,6 +490,155 @@ function readWindowsProcessRows(): Effect.Effect<
   );
 }
 
+function buildWindowsAllProcessQueryCommand(): string {
+  return [
+    "Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CommandLine,Status,WorkingSetSize -ErrorAction Stop | ForEach-Object {",
+    "[pscustomobject]@{ ProcessId = $_.ProcessId; ParentProcessId = $_.ParentProcessId; Name = $_.Name; CommandLine = $_.CommandLine; Status = $_.Status; WorkingSetSize = $_.WorkingSetSize; PercentProcessorTime = 0 }",
+    "} | ConvertTo-Json -Compress -Depth 3",
+  ].join(" ");
+}
+
+function readWindowsAllProcessRows(): Effect.Effect<
+  ReadonlyArray<ProcessRow>,
+  ProcessDiagnosticsError,
+  ChildProcessSpawner.ChildProcessSpawner
+> {
+  return runProcess({
+    command: "powershell.exe",
+    args: ["-NoProfile", "-NonInteractive", "-Command", buildWindowsAllProcessQueryCommand()],
+    errorMessage: "Failed to query process diagnostics.",
+  }).pipe(
+    Effect.flatMap((result) =>
+      result.exitCode !== 0
+        ? Effect.fail(
+            toProcessDiagnosticsError(result.stderr.trim() || "PowerShell process query failed."),
+          )
+        : Effect.succeed(parseWindowsProcessRows(result.stdout)),
+    ),
+  );
+}
+
+function readAllProcessRows(
+  platform = process.platform,
+): Effect.Effect<
+  ReadonlyArray<ProcessRow>,
+  ProcessDiagnosticsError,
+  ChildProcessSpawner.ChildProcessSpawner
+> {
+  return platform === "win32" ? readWindowsAllProcessRows() : readPosixProcessRows();
+}
+
+function uniquePositivePorts(ports: ReadonlyArray<number>): number[] {
+  return [...new Set(ports.filter((port) => Number.isInteger(port) && port > 0 && port <= 65535))]
+    .map((port) => Math.trunc(port))
+    .sort((left, right) => left - right);
+}
+
+export function buildWindowsListeningPortQueryCommand(
+  ports: ReadonlyArray<number>,
+  options?: { readonly all?: boolean },
+): string {
+  const safePorts = uniquePositivePorts(ports);
+  if (safePorts.length === 0 && options?.all !== true) {
+    return "@() | ConvertTo-Json -Compress -Depth 3";
+  }
+  const connectionQuery =
+    safePorts.length > 0
+      ? "$connections = @(Get-NetTCPConnection -State Listen -ErrorAction Stop | Where-Object { $ports -contains [int]$_.LocalPort });"
+      : "$connections = @(Get-NetTCPConnection -State Listen -ErrorAction Stop);";
+  return [
+    `$ports = @(${safePorts.join(",")});`,
+    connectionQuery,
+    "$processIds = [System.Collections.Generic.HashSet[int]]::new();",
+    "foreach ($connection in $connections) { [void]$processIds.Add([int]$connection.OwningProcess) }",
+    "$processesByPid = @{};",
+    "if ($processIds.Count -gt 0) {",
+    "Get-CimInstance Win32_Process -Property ProcessId,Name,CommandLine -ErrorAction SilentlyContinue | ForEach-Object {",
+    "$processId = [int]$_.ProcessId;",
+    "if ($processIds.Contains($processId)) { $processesByPid[$processId] = $_ }",
+    "}",
+    "}",
+    "@($connections | ForEach-Object {",
+    "$pid = [int]$_.OwningProcess;",
+    "$process = $processesByPid[$pid];",
+    "[pscustomobject]@{ LocalPort = [int]$_.LocalPort; OwningProcess = $pid; Name = if ($process) { $process.Name } else { '' }; CommandLine = if ($process -and $process.CommandLine) { $process.CommandLine } elseif ($process) { $process.Name } else { '' } }",
+    "}) | ConvertTo-Json -Compress -Depth 3",
+  ].join(" ");
+}
+
+function readWindowsListeningPortRows(
+  ports: ReadonlyArray<number>,
+  options?: { readonly all?: boolean },
+): Effect.Effect<
+  ReadonlyArray<ListeningPortRow>,
+  ProcessDiagnosticsError,
+  ChildProcessSpawner.ChildProcessSpawner
+> {
+  const safePorts = uniquePositivePorts(ports);
+  if (safePorts.length === 0 && options?.all !== true) return Effect.succeed([]);
+  return runProcess({
+    command: "powershell.exe",
+    args: [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      buildWindowsListeningPortQueryCommand(safePorts, options),
+    ],
+    errorMessage: "Failed to query local listening ports.",
+  }).pipe(
+    Effect.flatMap((result) =>
+      result.exitCode !== 0
+        ? Effect.fail(
+            toProcessDiagnosticsError(result.stderr.trim() || "PowerShell port query failed."),
+          )
+        : Effect.succeed(parseWindowsListeningPortRows(result.stdout)),
+    ),
+  );
+}
+
+function readPosixListeningPortRows(
+  ports: ReadonlyArray<number>,
+  options?: { readonly all?: boolean },
+): Effect.Effect<
+  ReadonlyArray<ListeningPortRow>,
+  ProcessDiagnosticsError,
+  ChildProcessSpawner.ChildProcessSpawner
+> {
+  const safePorts = uniquePositivePorts(ports);
+  if (safePorts.length === 0 && options?.all !== true) return Effect.succeed([]);
+  return runProcess({
+    command: "lsof",
+    args: ["-nP", "-iTCP", "-sTCP:LISTEN", "-Fpcn"],
+    errorMessage: "Failed to query local listening ports.",
+  }).pipe(
+    Effect.flatMap((result) =>
+      result.exitCode !== 0
+        ? Effect.succeed([])
+        : Effect.succeed(
+            options?.all === true
+              ? parsePosixLsofListeningPortRows(result.stdout)
+              : parsePosixLsofListeningPortRows(result.stdout).filter((row) =>
+                  safePorts.includes(row.port),
+                ),
+          ),
+    ),
+  );
+}
+
+function readListeningPortRows(
+  ports: ReadonlyArray<number>,
+  options?: { readonly all?: boolean },
+  platform = process.platform,
+): Effect.Effect<
+  ReadonlyArray<ListeningPortRow>,
+  ProcessDiagnosticsError,
+  ChildProcessSpawner.ChildProcessSpawner
+> {
+  return platform === "win32"
+    ? readWindowsListeningPortRows(ports, options)
+    : readPosixListeningPortRows(ports, options);
+}
+
 export const readProcessRows = (platform = process.platform) =>
   platform === "win32" ? readWindowsProcessRows() : readPosixProcessRows();
 
@@ -450,6 +675,165 @@ function assertDescendantPid(
           );
     }),
   );
+}
+
+function localhostPortFromUrl(value: string): number | null {
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.toLowerCase();
+    if (
+      hostname !== "localhost" &&
+      hostname !== "127.0.0.1" &&
+      hostname !== "[::1]" &&
+      hostname !== "::1"
+    ) {
+      return null;
+    }
+    if (url.port.length > 0) {
+      return parsePositiveInt(url.port);
+    }
+    if (url.protocol === "http:") return 80;
+    if (url.protocol === "https:") return 443;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function compactCommand(command: string): string {
+  const normalized = command.replace(/\s+/g, " ").trim();
+  return normalized.length <= 140 ? normalized : `${normalized.slice(0, 137)}...`;
+}
+
+function normalizeCommandSearchText(value: string): string {
+  return value.toLowerCase().replace(/\\/g, "/").replace(/\s+/g, " ").trim();
+}
+
+function commandHintTokens(hints: ReadonlyArray<string>): string[] {
+  const tokens: string[] = [];
+  const addToken = (value: string | undefined) => {
+    const normalized = value ? normalizeCommandSearchText(value) : "";
+    if (normalized.length < 6 || tokens.includes(normalized)) {
+      return;
+    }
+    tokens.push(normalized);
+  };
+
+  for (const hint of hints) {
+    const normalizedHint = normalizeCommandSearchText(hint);
+    const previewMatch = /\bthreadlines-activity-preview-\d+\b/i.exec(hint);
+    addToken(previewMatch?.[0]);
+    const offsetMatch = /\bthreadlines_port_offset\s*=\s*['"]?(\d+)/i.exec(normalizedHint);
+    if (offsetMatch?.[1]) {
+      addToken(`threadlines_port_offset='${offsetMatch[1]}`);
+      addToken(`threadlines_port_offset=${offsetMatch[1]}`);
+    }
+    const homeDirMatch = /--home-dir\s+['"]?([^'"\s]+)/i.exec(normalizedHint);
+    addToken(homeDirMatch?.[1]);
+    if (normalizedHint.includes("scripts/dev-runner.ts")) {
+      addToken("scripts/dev-runner.ts");
+    }
+    if (normalizedHint.includes("start-process")) {
+      addToken("start-process");
+    }
+  }
+
+  return tokens;
+}
+
+function descendantPidsForMatches(input: {
+  readonly processRows: ReadonlyArray<ProcessRow>;
+  readonly commandHints: ReadonlyArray<string>;
+}): Set<number> {
+  const tokens = commandHintTokens(input.commandHints);
+  if (tokens.length === 0) {
+    return new Set();
+  }
+
+  const childrenByParent = new Map<number, ProcessRow[]>();
+  for (const row of input.processRows) {
+    const children = childrenByParent.get(row.ppid) ?? [];
+    children.push(row);
+    childrenByParent.set(row.ppid, children);
+  }
+
+  const matchingPids = input.processRows
+    .filter((row) => {
+      const command = normalizeCommandSearchText(row.command);
+      return tokens.some((token) => command.includes(token));
+    })
+    .map((row) => row.pid);
+  const result = new Set<number>();
+  const stack = [...matchingPids];
+
+  while (stack.length > 0) {
+    const pid = stack.pop();
+    if (pid === undefined || result.has(pid)) {
+      continue;
+    }
+    result.add(pid);
+    for (const child of childrenByParent.get(pid) ?? []) {
+      stack.push(child.pid);
+    }
+  }
+
+  return result;
+}
+
+export function resolveBackgroundRunsFromListeningPorts(input: {
+  readonly urls: ReadonlyArray<string>;
+  readonly portRows: ReadonlyArray<ListeningPortRow>;
+  readonly processRows?: ReadonlyArray<ProcessRow>;
+  readonly commandHints?: ReadonlyArray<string>;
+}): ServerResolveBackgroundRunsResult {
+  const urlsByPort = new Map<number, string[]>();
+  for (const url of input.urls) {
+    const port = localhostPortFromUrl(url);
+    if (port === null) continue;
+    const urls = urlsByPort.get(port) ?? [];
+    if (!urls.includes(url)) {
+      urls.push(url);
+    }
+    urlsByPort.set(port, urls);
+  }
+
+  const hintedPids =
+    input.processRows && input.commandHints
+      ? descendantPidsForMatches({
+          processRows: input.processRows,
+          commandHints: input.commandHints,
+        })
+      : new Set<number>();
+  const processCommandByPid = new Map(
+    input.processRows?.map((row) => [row.pid, row.command]) ?? [],
+  );
+  const rowsByPort = new Map<number, ListeningPortRow>();
+  for (const row of input.portRows) {
+    const matchesUrl = urlsByPort.has(row.port);
+    const matchesHint = hintedPids.has(row.pid);
+    if ((!matchesUrl && !matchesHint) || rowsByPort.has(row.port)) continue;
+    rowsByPort.set(row.port, row);
+  }
+
+  return {
+    runs: [...rowsByPort.values()].map((row) => {
+      const urls = urlsByPort.get(row.port) ?? [];
+      const primaryUrl = urls[0] ?? `http://localhost:${row.port}`;
+      const command = compactCommand(processCommandByPid.get(row.pid) ?? row.command);
+      const canStop = row.pid !== process.pid;
+      return {
+        id: `detected-localhost:${row.port}:${row.pid}`,
+        url: primaryUrl,
+        urls,
+        port: row.port,
+        pid: row.pid,
+        command,
+        detail: `PID ${row.pid} on localhost:${row.port} - ${command}`,
+        statusLabel: canStop ? "Detected" : "Protected",
+        canStop,
+      };
+    }),
+  };
 }
 
 export const make = Effect.fn("makeProcessDiagnostics")(function* () {
@@ -506,7 +890,105 @@ export const make = Effect.fn("makeProcessDiagnostics")(function* () {
     },
   );
 
-  return ProcessDiagnostics.of({ read, signal });
+  const resolveBackgroundRuns: ProcessDiagnosticsShape["resolveBackgroundRuns"] = Effect.fn(
+    "ProcessDiagnostics.resolveBackgroundRuns",
+  )(function* (input) {
+    const commandHints = input.commandHints ?? [];
+    const ports = input.urls.flatMap((url) => {
+      const port = localhostPortFromUrl(url);
+      return port === null ? [] : [port];
+    });
+    const queryAllPorts = ports.length === 0 && commandHints.length > 0;
+    const [portRows, processRows] = yield* Effect.all(
+      [
+        readListeningPortRows(ports, { all: queryAllPorts }).pipe(
+          Effect.withTracerEnabled(false),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.catch(() => Effect.succeed([])),
+        ),
+        commandHints.length > 0
+          ? readAllProcessRows().pipe(
+              Effect.withTracerEnabled(false),
+              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+              Effect.catch(() => Effect.succeed([])),
+            )
+          : Effect.succeed([]),
+      ],
+      { concurrency: "unbounded" },
+    );
+    return resolveBackgroundRunsFromListeningPorts({
+      urls: input.urls,
+      portRows,
+      processRows,
+      commandHints,
+    });
+  });
+
+  const stopBackgroundRun: ProcessDiagnosticsShape["stopBackgroundRun"] = Effect.fn(
+    "ProcessDiagnostics.stopBackgroundRun",
+  )(function* (input) {
+    if (input.pid === process.pid) {
+      return {
+        pid: input.pid,
+        signal: input.signal,
+        signaled: false,
+        message: Option.some("Refusing to signal the Threadlines server process."),
+      };
+    }
+
+    const rows = yield* readListeningPortRows([input.port]).pipe(
+      Effect.withTracerEnabled(false),
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Effect.catch((error: ProcessDiagnosticsError) =>
+        Effect.succeed<ReadonlyArray<ListeningPortRow>>([]).pipe(
+          Effect.tap(() =>
+            Effect.logWarning("failed to verify detected background run before stop", {
+              pid: input.pid,
+              port: input.port,
+              error: error.message,
+            }),
+          ),
+        ),
+      ),
+    );
+    const stillOwnsPort = rows.some((row) => row.port === input.port && row.pid === input.pid);
+    if (!stillOwnsPort) {
+      return {
+        pid: input.pid,
+        signal: input.signal,
+        signaled: false,
+        message: Option.some(`Process ${input.pid} no longer owns localhost:${input.port}.`),
+      };
+    }
+
+    return yield* Effect.try({
+      try: () => {
+        process.kill(input.pid, input.signal);
+        return {
+          pid: input.pid,
+          signal: input.signal,
+          signaled: true,
+          message: Option.none(),
+        };
+      },
+      catch: (cause) =>
+        toProcessDiagnosticsError(
+          `Failed to signal process ${input.pid} with ${input.signal}.`,
+          cause,
+        ),
+    }).pipe(
+      Effect.catch((error: ProcessDiagnosticsError) =>
+        Effect.succeed({
+          pid: input.pid,
+          signal: input.signal,
+          signaled: false,
+          message: Option.some(error.message),
+        }),
+      ),
+    );
+  });
+
+  return ProcessDiagnostics.of({ read, signal, resolveBackgroundRuns, stopBackgroundRun });
 });
 
 export const layer = Layer.effect(ProcessDiagnostics, make());

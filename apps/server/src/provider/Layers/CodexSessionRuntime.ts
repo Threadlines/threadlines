@@ -1079,6 +1079,7 @@ export const makeCodexSessionRuntime = (
           kind: "notification",
           threadId: options.threadId,
           method: notification.method,
+          ...(providerConversationId ? { providerThreadId: providerConversationId } : {}),
           ...(turnId ? { turnId } : {}),
           ...(itemId ? { itemId } : {}),
           ...(requestId ? { requestId } : {}),

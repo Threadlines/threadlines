@@ -2590,9 +2590,10 @@ const SidebarChromeHeader = memo(function SidebarChromeHeader({
   const wordmark = (
     <div className="flex w-full min-w-0 items-center gap-2">
       <SidebarTrigger
-        className="size-7 shrink-0 text-muted-foreground/60 hover:text-foreground"
+        className="size-7 shrink-0 text-muted-foreground/60 hover:text-foreground md:hidden"
         tooltip="Collapse sidebar"
       />
+      <span aria-hidden="true" className="hidden size-7 shrink-0 md:block md:size-8" />
       <Tooltip>
         <TooltipTrigger
           render={

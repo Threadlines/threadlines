@@ -2,6 +2,7 @@ import { scopeThreadRef } from "@threadlines/client-runtime";
 import {
   EnvironmentId,
   EventId,
+  MessageId,
   type OrchestrationThreadActivity,
   ProjectId,
   ProviderDriverKind,
@@ -11,7 +12,7 @@ import {
 } from "@threadlines/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type EnvironmentState, useStore } from "../store";
-import { type Thread } from "../types";
+import { type ChatMessage, type Thread } from "../types";
 
 import {
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
@@ -20,6 +21,7 @@ import {
   createLocalDispatchSnapshot,
   deriveLockedProvider,
   deriveComposerSendState,
+  deriveProviderBackgroundRuns,
   deriveProviderAuthReconnectPrompt,
   desktopCapturedScreenshotToFile,
   hasServerAcknowledgedLocalDispatch,
@@ -374,6 +376,150 @@ describe("shouldConfirmTerminalKill", () => {
         sessionExited: true,
       }),
     ).toBe(false);
+  });
+});
+
+describe("deriveProviderBackgroundRuns", () => {
+  function taskActivity(
+    kind: "task.started" | "task.progress" | "task.completed",
+    payload: Record<string, unknown>,
+    sequence: number,
+  ): OrchestrationThreadActivity {
+    return {
+      id: EventId.make(`event-${kind}-${sequence}`),
+      tone: kind === "task.completed" ? "info" : "thinking",
+      kind,
+      summary: kind,
+      payload,
+      turnId: TurnId.make("turn-1"),
+      sequence,
+      createdAt: `2026-06-23T00:00:0${sequence}.000Z`,
+    };
+  }
+
+  function assistantMessage(text: string): ChatMessage {
+    return {
+      id: MessageId.make("message-preview"),
+      role: "assistant",
+      text,
+      createdAt: "2026-06-23T00:00:10.000Z",
+      streaming: false,
+    };
+  }
+
+  it("reconstructs active provider task rows from persisted task activity", () => {
+    const runs = deriveProviderBackgroundRuns({
+      activities: [
+        taskActivity(
+          "task.started",
+          {
+            taskId: "task-dev-server",
+            taskType: "background-command",
+            detail: "Starting local preview http://localhost:5953",
+          },
+          1,
+        ),
+        taskActivity(
+          "task.progress",
+          {
+            taskId: "task-dev-server",
+            detail: "Local preview ready at http://localhost:5953",
+          },
+          2,
+        ),
+      ],
+      messages: [],
+      pendingBackgroundTaskCount: 1,
+    });
+
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      id: "provider:task-dev-server",
+      source: "provider",
+      label: "Local preview ready at http://localhost:5953",
+      detail: "Background Command task",
+      statusLabel: "Running",
+      urls: ["http://localhost:5953"],
+    });
+  });
+
+  it("removes provider task rows when completion activity is present", () => {
+    const runs = deriveProviderBackgroundRuns({
+      activities: [
+        taskActivity("task.started", { taskId: "task-dev-server", detail: "Starting" }, 1),
+        taskActivity("task.completed", { taskId: "task-dev-server", status: "completed" }, 2),
+      ],
+      messages: [],
+      pendingBackgroundTaskCount: 0,
+    });
+
+    expect(runs).toEqual([]);
+  });
+
+  it("adds placeholder rows when only the provider pending count is known", () => {
+    const runs = deriveProviderBackgroundRuns({
+      activities: [],
+      messages: [],
+      pendingBackgroundTaskCount: 1,
+    });
+
+    expect(runs).toEqual([
+      {
+        id: "provider:unknown:1",
+        source: "provider",
+        label: "Provider background task",
+        detail: "Provider-managed; stop handle not exposed.",
+        statusLabel: "Tracked",
+        urls: [],
+        commandHints: [],
+      },
+    ]);
+  });
+
+  it("surfaces mentioned localhost preview URLs without a stop handle", () => {
+    const runs = deriveProviderBackgroundRuns({
+      activities: [],
+      messages: [
+        assistantMessage(
+          "Started the preview server. Web: http://localhost:5953 and API: http://localhost:13993",
+        ),
+      ],
+      pendingBackgroundTaskCount: 0,
+    });
+
+    expect(runs).toEqual([
+      {
+        id: "mentioned-preview:http://localhost:5953|http://localhost:13993",
+        source: "mentioned-preview",
+        label: "Mentioned local preview",
+        detail: "Mentioned only; no process handle.",
+        statusLabel: "No handle",
+        urls: ["http://localhost:5953", "http://localhost:13993"],
+        commandHints: [],
+      },
+    ]);
+  });
+
+  it("extracts command hints from mentioned detached preview messages", () => {
+    const runs = deriveProviderBackgroundRuns({
+      activities: [],
+      messages: [
+        assistantMessage(
+          [
+            "Started a detached preview.",
+            "$env:THREADLINES_PORT_OFFSET='280'",
+            "Set-Location -LiteralPath 'C:\\Users\\Will\\Desktop\\Projects\\badcode'",
+            "node scripts/dev-runner.ts dev --no-browser --home-dir '$env:TEMP\\threadlines-activity-preview-280\\home'",
+            "Web: http://localhost:6013",
+          ].join("\n"),
+        ),
+      ],
+      pendingBackgroundTaskCount: 0,
+    });
+
+    expect(runs[0]?.commandHints[0]).toContain("THREADLINES_PORT_OFFSET");
+    expect(runs[0]?.commandHints[0]).toContain("scripts/dev-runner.ts");
+    expect(runs[0]?.commandHints[0]).toContain("threadlines-activity-preview-280");
   });
 });
 

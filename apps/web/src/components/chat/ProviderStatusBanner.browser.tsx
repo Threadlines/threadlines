@@ -92,4 +92,37 @@ describe("ProviderStatusBanner", () => {
       await screen.unmount();
     }
   });
+
+  it("does not float provider probe warnings over an active turn", async () => {
+    const provider = makeProvider();
+    const screen = await renderWithTestRouter(
+      <ProviderStatusBanner activeTurnInProgress status={provider} />,
+    );
+
+    try {
+      await expect
+        .element(page.getByText("Codex provider status", { exact: true }))
+        .not.toBeInTheDocument();
+      expect(refreshProvidersMock).not.toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("still shows provider errors during an active turn", async () => {
+    const provider = makeProvider({
+      status: "error",
+      message: "Codex CLI is not authenticated.",
+    });
+    const screen = await renderWithTestRouter(
+      <ProviderStatusBanner activeTurnInProgress status={provider} />,
+    );
+
+    try {
+      await expect.element(page.getByText("Codex provider status", { exact: true })).toBeVisible();
+      await expect.element(page.getByText("Codex CLI is not authenticated.")).toBeVisible();
+    } finally {
+      await screen.unmount();
+    }
+  });
 });

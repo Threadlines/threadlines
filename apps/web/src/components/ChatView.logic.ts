@@ -161,6 +161,215 @@ export function shouldConfirmTerminalKill(input: {
   return input.runningTerminalIds.includes(input.terminalId);
 }
 
+export interface ProviderBackgroundRunState {
+  id: string;
+  source: "provider" | "mentioned-preview";
+  label: string;
+  detail: string | null;
+  statusLabel: string;
+  urls: ReadonlyArray<string>;
+  commandHints: ReadonlyArray<string>;
+}
+
+function asBackgroundRunRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
+
+function asBackgroundRunString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function humanizeTaskType(taskType: string | null): string | null {
+  if (!taskType) {
+    return null;
+  }
+  return taskType
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(" ");
+}
+
+function extractLocalPreviewUrls(text: string | null): string[] {
+  if (!text) {
+    return [];
+  }
+  const matches = text.match(
+    /\bhttps?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?[^\s`<>)\]}]*/gi,
+  );
+  if (!matches) {
+    return [];
+  }
+  return [...new Set(matches.map((url) => url.replace(/[.,;:]+$/, "")))];
+}
+
+function extractBackgroundCommandHints(text: string | null): string[] {
+  if (!text) {
+    return [];
+  }
+  const normalized = text.trim().replace(/\s+/g, " ");
+  if (normalized.length === 0) {
+    return [];
+  }
+  const hasBackgroundCommandSignal =
+    /\bStart-Process\b/i.test(text) ||
+    /\bTHREADLINES_PORT_OFFSET\b/i.test(text) ||
+    /\bthreadlines-activity-preview-\d+\b/i.test(text) ||
+    /\bscripts[\\/]+dev-runner\.ts\b/i.test(text) ||
+    /\b(?:node|bun|npm|pnpm|yarn|vp)\b.{0,120}\bdev\b/i.test(text);
+  if (!hasBackgroundCommandSignal) {
+    return [];
+  }
+  return [normalized.length <= 600 ? normalized : normalized.slice(0, 600)];
+}
+
+function collectBackgroundCommandHintsFromPayload(value: unknown, limit = 8): string[] {
+  const hints: string[] = [];
+  const visit = (next: unknown, depth: number) => {
+    if (hints.length >= limit || depth > 4) {
+      return;
+    }
+    if (typeof next === "string") {
+      for (const hint of extractBackgroundCommandHints(next)) {
+        if (!hints.includes(hint)) {
+          hints.push(hint);
+        }
+        if (hints.length >= limit) return;
+      }
+      return;
+    }
+    if (Array.isArray(next)) {
+      for (const item of next) {
+        visit(item, depth + 1);
+        if (hints.length >= limit) return;
+      }
+      return;
+    }
+    if (next && typeof next === "object") {
+      for (const item of Object.values(next as Record<string, unknown>)) {
+        visit(item, depth + 1);
+        if (hints.length >= limit) return;
+      }
+    }
+  };
+  visit(value, 0);
+  return hints;
+}
+
+function compareActivitiesByOrder(
+  left: OrchestrationThreadActivity,
+  right: OrchestrationThreadActivity,
+): number {
+  if (left.sequence !== undefined && right.sequence !== undefined) {
+    return left.sequence - right.sequence;
+  }
+  const createdAtComparison = left.createdAt.localeCompare(right.createdAt);
+  return createdAtComparison === 0 ? left.id.localeCompare(right.id) : createdAtComparison;
+}
+
+export function deriveProviderBackgroundRuns(input: {
+  activities: ReadonlyArray<OrchestrationThreadActivity>;
+  messages: ReadonlyArray<ChatMessage>;
+  pendingBackgroundTaskCount: number;
+}): ProviderBackgroundRunState[] {
+  const activeRunsByTaskId = new Map<string, ProviderBackgroundRunState>();
+
+  for (const activity of [...input.activities].toSorted(compareActivitiesByOrder)) {
+    const payload = asBackgroundRunRecord(activity.payload);
+    const taskId = asBackgroundRunString(payload?.taskId);
+    if (!taskId) {
+      continue;
+    }
+
+    if (activity.kind === "task.completed") {
+      activeRunsByTaskId.delete(taskId);
+      continue;
+    }
+
+    if (activity.kind !== "task.started" && activity.kind !== "task.progress") {
+      continue;
+    }
+
+    const previous = activeRunsByTaskId.get(taskId);
+    const detail =
+      asBackgroundRunString(payload?.detail) ??
+      asBackgroundRunString(payload?.summary) ??
+      previous?.detail ??
+      null;
+    const taskType = asBackgroundRunString(payload?.taskType);
+    const label =
+      detail ??
+      (taskType ? `${humanizeTaskType(taskType) ?? taskType} task` : null) ??
+      previous?.label ??
+      "Provider background task";
+    const urls = [...new Set([...(previous?.urls ?? []), ...extractLocalPreviewUrls(detail)])];
+    const commandHints = [
+      ...new Set([
+        ...(previous?.commandHints ?? []),
+        ...extractBackgroundCommandHints(activity.summary),
+        ...extractBackgroundCommandHints(detail),
+        ...collectBackgroundCommandHintsFromPayload(payload),
+      ]),
+    ].slice(0, 8);
+
+    activeRunsByTaskId.set(taskId, {
+      id: `provider:${taskId}`,
+      source: "provider",
+      label,
+      detail: taskType
+        ? `${humanizeTaskType(taskType) ?? taskType} task`
+        : (previous?.detail ?? "Provider-managed"),
+      statusLabel: "Running",
+      urls,
+      commandHints,
+    });
+  }
+
+  const runs = [...activeRunsByTaskId.values()];
+  const missingProviderCount = Math.max(0, input.pendingBackgroundTaskCount - runs.length);
+  for (let index = 0; index < missingProviderCount; index += 1) {
+    runs.push({
+      id: `provider:unknown:${index + 1}`,
+      source: "provider",
+      label:
+        missingProviderCount === 1
+          ? "Provider background task"
+          : `Provider background task ${index + 1}`,
+      detail: "Provider-managed; stop handle not exposed.",
+      statusLabel: "Tracked",
+      urls: [],
+      commandHints: [],
+    });
+  }
+
+  const knownUrls = new Set(runs.flatMap((run) => run.urls));
+  const previewMessage = input.messages
+    .toReversed()
+    .find(
+      (message) =>
+        message.role === "assistant" &&
+        /\b(localhost|127\.0\.0\.1|\[::1\])\b/i.test(message.text) &&
+        /\b(started|running|preview|server|localhost)\b/i.test(message.text),
+    );
+  const mentionedUrls = previewMessage
+    ? extractLocalPreviewUrls(previewMessage.text).filter((url) => !knownUrls.has(url))
+    : [];
+  if (mentionedUrls.length > 0) {
+    const commandHints = previewMessage ? extractBackgroundCommandHints(previewMessage.text) : [];
+    runs.push({
+      id: `mentioned-preview:${mentionedUrls.join("|")}`,
+      source: "mentioned-preview",
+      label: "Mentioned local preview",
+      detail: "Mentioned only; no process handle.",
+      statusLabel: "No handle",
+      urls: mentionedUrls,
+      commandHints,
+    });
+  }
+
+  return runs;
+}
+
 export function revokeBlobPreviewUrl(previewUrl: string | undefined): void {
   if (!previewUrl || typeof URL === "undefined" || !previewUrl.startsWith("blob:")) {
     return;

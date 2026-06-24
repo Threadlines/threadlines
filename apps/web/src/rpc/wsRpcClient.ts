@@ -157,6 +157,8 @@ export interface WsRpcClient {
       typeof WS_METHODS.serverGetProcessResourceHistory
     >;
     readonly signalProcess: RpcUnaryMethod<typeof WS_METHODS.serverSignalProcess>;
+    readonly resolveBackgroundRuns: RpcUnaryMethod<typeof WS_METHODS.serverResolveBackgroundRuns>;
+    readonly stopBackgroundRun: RpcUnaryMethod<typeof WS_METHODS.serverStopBackgroundRun>;
     readonly getProviderExtensions: RpcUnaryMethod<typeof WS_METHODS.serverGetProviderExtensions>;
     readonly startProviderExtensionMcpOAuth: RpcUnaryMethod<
       typeof WS_METHODS.serverStartProviderExtensionMcpOAuth
@@ -365,6 +367,16 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       signalProcess: (input) =>
         transport.request((client) =>
           client[WS_METHODS.serverSignalProcess](input).pipe(Effect.withTracerEnabled(false)),
+        ),
+      resolveBackgroundRuns: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverResolveBackgroundRuns](input).pipe(
+            Effect.withTracerEnabled(false),
+          ),
+        ),
+      stopBackgroundRun: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverStopBackgroundRun](input).pipe(Effect.withTracerEnabled(false)),
         ),
       getProviderExtensions: (input) =>
         transport.request((client) =>

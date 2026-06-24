@@ -14,14 +14,12 @@ import { SidebarOpenTrigger } from "../ui/sidebar";
 import { SourceControlIcon } from "../Icons";
 import { OpenInPicker } from "./OpenInPicker";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
-import { TaskProgressPopover } from "./TaskProgressPopover";
-import { SubagentProgressPopover } from "./SubagentProgressPopover";
-import type { PlanTaskBadgeState } from "../../planPanelState";
-import type {
-  ActivePlanState,
-  LatestProposedPlanState,
-  SubagentProgressState,
-} from "../../session-logic";
+import {
+  ThreadActivityPopover,
+  type ThreadBackgroundRunItem,
+  type ThreadTaskProgressState,
+} from "./ThreadActivityPopover";
+import type { SubagentProgressState } from "../../session-logic";
 
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
@@ -38,17 +36,15 @@ interface ChatHeaderProps {
   terminalToggleShortcutLabel: string | null;
   sourceControlToggleShortcutLabel: string | null;
   sourceControlOpen: boolean;
-  taskProgress: {
-    activePlan: ActivePlanState | null;
-    activeProposedPlan: LatestProposedPlanState | null;
-    badge: PlanTaskBadgeState | null;
-    label: string;
-  } | null;
+  taskProgress: ThreadTaskProgressState | null;
   subagentProgress: SubagentProgressState | null;
+  backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
   onRunProjectScript: (script: ProjectScript) => void;
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<void>;
   onUpdateProjectScript: (scriptId: string, input: NewProjectScriptInput) => Promise<void>;
   onDeleteProjectScript: (scriptId: string) => Promise<void>;
+  onOpenBackgroundRunTerminal: (terminalId: string) => void;
+  onStopBackgroundRun: (run: ThreadBackgroundRunItem) => void;
   onToggleTerminal: () => void;
   onToggleSourceControl: () => void;
 }
@@ -82,10 +78,13 @@ export const ChatHeader = memo(function ChatHeader({
   sourceControlOpen,
   taskProgress,
   subagentProgress,
+  backgroundRuns,
   onRunProjectScript,
   onAddProjectScript,
   onUpdateProjectScript,
   onDeleteProjectScript,
+  onOpenBackgroundRunTerminal,
+  onStopBackgroundRun,
   onToggleTerminal,
   onToggleSourceControl,
 }: ChatHeaderProps) {
@@ -126,15 +125,13 @@ export const ChatHeader = memo(function ChatHeader({
         )}
       </div>
       <div className="flex shrink-0 items-center justify-end gap-2 @3xl/header-actions:gap-3">
-        {taskProgress ? (
-          <TaskProgressPopover
-            activePlan={taskProgress.activePlan}
-            activeProposedPlan={taskProgress.activeProposedPlan}
-            badge={taskProgress.badge}
-            label={taskProgress.label}
-          />
-        ) : null}
-        {subagentProgress ? <SubagentProgressPopover state={subagentProgress} /> : null}
+        <ThreadActivityPopover
+          taskProgress={taskProgress}
+          subagentProgress={subagentProgress}
+          backgroundRuns={backgroundRuns}
+          onOpenBackgroundRunTerminal={onOpenBackgroundRunTerminal}
+          onStopBackgroundRun={onStopBackgroundRun}
+        />
         {activeProjectScripts && (
           <ProjectScriptsControl
             scripts={activeProjectScripts}

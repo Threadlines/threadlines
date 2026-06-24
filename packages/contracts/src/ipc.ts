@@ -87,8 +87,11 @@ import type {
   ServerProviderUpdateInput,
   ServerProviderUpdatedPayload,
   ServerRemoveKeybindingResult,
+  ServerResolveBackgroundRunsInput,
+  ServerResolveBackgroundRunsResult,
   ServerSignalProcessInput,
   ServerSignalProcessResult,
+  ServerStopBackgroundRunInput,
   ServerTraceDiagnosticsResult,
   ServerUpsertKeybindingResult,
 } from "./server.ts";
@@ -625,6 +628,10 @@ export interface LocalApi {
       input: ServerProcessResourceHistoryInput,
     ) => Promise<ServerProcessResourceHistoryResult>;
     signalProcess: (input: ServerSignalProcessInput) => Promise<ServerSignalProcessResult>;
+    resolveBackgroundRuns: (
+      input: ServerResolveBackgroundRunsInput,
+    ) => Promise<ServerResolveBackgroundRunsResult>;
+    stopBackgroundRun: (input: ServerStopBackgroundRunInput) => Promise<ServerSignalProcessResult>;
     getProviderExtensions: (
       input: ProviderExtensionsInventoryInput,
     ) => Promise<ProviderExtensionsInventoryResult>;

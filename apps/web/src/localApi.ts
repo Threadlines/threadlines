@@ -169,6 +169,14 @@ function createBrowserLocalApi(rpcClient?: WsRpcClient): LocalApi {
         rpcClient
           ? rpcClient.server.signalProcess(input)
           : Promise.reject(unavailableLocalBackendError()),
+      resolveBackgroundRuns: (input) =>
+        rpcClient
+          ? rpcClient.server.resolveBackgroundRuns(input)
+          : Promise.reject(unavailableLocalBackendError()),
+      stopBackgroundRun: (input) =>
+        rpcClient
+          ? rpcClient.server.stopBackgroundRun(input)
+          : Promise.reject(unavailableLocalBackendError()),
       getProviderExtensions: (input) =>
         rpcClient
           ? rpcClient.server.getProviderExtensions(input)

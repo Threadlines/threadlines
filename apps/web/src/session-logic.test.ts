@@ -3253,6 +3253,68 @@ describe("deriveSubagentResultEntries", () => {
     ]);
   });
 
+  it("extracts synthetic child-thread subagent results without duplicating work-log rows", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "spawn-completed",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.completed",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          data: {
+            item: {
+              id: "call-spawn",
+              type: "collabAgentToolCall",
+              tool: "spawnAgent",
+              status: "completed",
+              prompt: "reviewer: Inspect timeline rendering",
+              receiverThreadIds: ["agent-1"],
+              agentsStates: {
+                "agent-1": { status: "running", message: null },
+              },
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "synthetic-subagent-result",
+        createdAt: "2026-02-23T00:00:04.000Z",
+        kind: "subagent.result",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          data: {
+            item: {
+              id: "subagent-response:agent-1",
+              type: "collabAgentToolCall",
+              tool: "wait",
+              status: "completed",
+              receiverThreadIds: ["agent-1"],
+              agentsStates: {
+                "agent-1": {
+                  status: "completed",
+                  message: "**Finding:** streamed child output is styled.",
+                },
+              },
+            },
+          },
+        },
+      }),
+    ];
+
+    expect(deriveSubagentResultEntries(activities)).toEqual([
+      expect.objectContaining({
+        id: "subagent-result:turn-1:agent-1",
+        label: "Reviewer subagent",
+        body: "**Finding:** streamed child output is styled.",
+      }),
+    ]);
+    expect(deriveWorkLogEntries([activities[1]!])).toEqual([]);
+  });
+
   it("waits for terminal subagent state before exposing result markdown", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

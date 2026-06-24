@@ -2,7 +2,7 @@ import { useEffect, type CSSProperties, type ReactNode } from "react";
 import { useNavigate } from "@tanstack/react-router";
 
 import ThreadSidebar from "./Sidebar";
-import { Sidebar, SidebarProvider, SidebarRail } from "./ui/sidebar";
+import { Sidebar, SidebarFixedTrigger, SidebarProvider, SidebarRail } from "./ui/sidebar";
 import {
   clearShortcutModifierState,
   syncShortcutModifierStateFromKeyboardEvent,
@@ -62,6 +62,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
       defaultOpen
       style={{ "--sidebar-width": THREAD_SIDEBAR_DEFAULT_WIDTH } as CSSProperties}
     >
+      <SidebarFixedTrigger className="size-7" />
       <Sidebar
         side="left"
         collapsible="offcanvas"

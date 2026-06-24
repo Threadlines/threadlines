@@ -7,9 +7,23 @@ import { formatProviderDriverKindLabel } from "../../providerModels";
 import { ensureLocalApi } from "../../localApi";
 import { Button } from "../ui/button";
 
+export function shouldRenderProviderStatusBanner(
+  status: ServerProvider | null,
+  options?: {
+    readonly activeTurnInProgress?: boolean;
+  },
+): boolean {
+  if (!status || status.status === "ready" || status.status === "disabled") {
+    return false;
+  }
+  return !(options?.activeTurnInProgress === true && status.status === "warning");
+}
+
 export const ProviderStatusBanner = memo(function ProviderStatusBanner({
+  activeTurnInProgress = false,
   status,
 }: {
+  activeTurnInProgress?: boolean;
   status: ServerProvider | null;
 }) {
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -33,7 +47,10 @@ export const ProviderStatusBanner = memo(function ProviderStatusBanner({
       });
   }, [isRefreshing, status]);
 
-  if (!status || status.status === "ready" || status.status === "disabled") {
+  if (!shouldRenderProviderStatusBanner(status, { activeTurnInProgress })) {
+    return null;
+  }
+  if (!status) {
     return null;
   }
 

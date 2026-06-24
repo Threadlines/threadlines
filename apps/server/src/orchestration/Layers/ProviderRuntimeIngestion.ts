@@ -57,6 +57,8 @@ const TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY = 10_000;
 const TURN_MESSAGE_IDS_BY_TURN_TTL = Duration.minutes(120);
 const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_CACHE_CAPACITY = 20_000;
 const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_TTL = Duration.minutes(120);
+const BUFFERED_SUBAGENT_RESULT_TEXT_BY_KEY_CACHE_CAPACITY = 10_000;
+const BUFFERED_SUBAGENT_RESULT_TEXT_BY_KEY_TTL = Duration.minutes(120);
 const BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY = 10_000;
 const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
 const BUFFERED_ACTIVITY_STREAM_BY_KEY_CACHE_CAPACITY = 20_000;
@@ -84,6 +86,7 @@ const ACTIVITY_STREAM_EMIT_LINE_THRESHOLDS = {
   file_change_output: 8,
 } as const satisfies Record<ActivityStreamDeltaKind, number>;
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
+const MAX_BUFFERED_SUBAGENT_RESULT_CHARS = 120_000;
 const MAX_BUFFERED_ACTIVITY_STREAM_CHARS = 4_000;
 const STRICT_PROVIDER_LIFECYCLE_GUARD =
   (process.env.THREADLINES_STRICT_PROVIDER_LIFECYCLE_GUARD ??
@@ -707,6 +710,117 @@ function hasRenderableAssistantText(text: string | undefined): boolean {
   return (text?.trim().length ?? 0) > 0;
 }
 
+function providerThreadIdFromEvent(event: ProviderRuntimeEvent): string | undefined {
+  const providerThreadId = event.providerRefs?.providerThreadId?.trim();
+  return providerThreadId && providerThreadId.length > 0 ? providerThreadId : undefined;
+}
+
+function childProviderThreadIdForEvent(
+  event: ProviderRuntimeEvent,
+  thread: Pick<OrchestrationThread, "session">,
+): string | undefined {
+  const providerThreadId = providerThreadIdFromEvent(event);
+  const parentProviderThreadId = thread.session?.providerThreadId?.trim();
+  if (!providerThreadId || !parentProviderThreadId) {
+    return undefined;
+  }
+  return providerThreadId === parentProviderThreadId ? undefined : providerThreadId;
+}
+
+function appendSubagentResultText(existing: string | undefined, delta: string): string {
+  const nextText = `${existing ?? ""}${delta}`;
+  if (nextText.length <= MAX_BUFFERED_SUBAGENT_RESULT_CHARS) {
+    return nextText;
+  }
+
+  const prefix = "[earlier subagent output truncated]\n\n";
+  return `${prefix}${nextText.slice(nextText.length - MAX_BUFFERED_SUBAGENT_RESULT_CHARS + prefix.length)}`;
+}
+
+function subagentResultTextKey(input: {
+  readonly event: ProviderRuntimeEvent;
+  readonly childProviderThreadId: string;
+}): string {
+  return [
+    input.event.threadId,
+    input.event.turnId ?? "no-turn",
+    input.childProviderThreadId,
+    input.event.itemId ?? "no-item",
+  ].join(":");
+}
+
+function subagentResultActivityId(input: {
+  readonly event: ProviderRuntimeEvent;
+  readonly childProviderThreadId: string;
+}): EventId {
+  return EventId.make(
+    [
+      "activity",
+      "subagent-result",
+      input.event.threadId,
+      input.event.turnId ?? "no-turn",
+      input.childProviderThreadId,
+      input.event.itemId ?? "no-item",
+    ].join(":"),
+  );
+}
+
+function subagentResultToolCallId(input: {
+  readonly event: ProviderRuntimeEvent;
+  readonly childProviderThreadId: string;
+}): string {
+  return [
+    "subagent-response",
+    input.event.turnId ?? "no-turn",
+    input.childProviderThreadId,
+    input.event.itemId ?? "no-item",
+  ].join(":");
+}
+
+function subagentResultActivity(input: {
+  readonly event: ProviderRuntimeEvent;
+  readonly childProviderThreadId: string;
+  readonly parentProviderThreadId?: string | undefined;
+  readonly body: string;
+  readonly status: "inProgress" | "completed";
+  readonly createdAt: string;
+}): OrchestrationThreadActivity | undefined {
+  if (!hasRenderableAssistantText(input.body)) {
+    return undefined;
+  }
+
+  const turnId = toTurnId(input.event.turnId);
+  return {
+    id: subagentResultActivityId(input),
+    tone: "info",
+    kind: "subagent.result",
+    summary:
+      input.status === "completed" ? "Subagent response ready" : "Subagent response streaming",
+    payload: {
+      itemType: "collab_agent_tool_call",
+      status: input.status,
+      data: {
+        item: {
+          id: subagentResultToolCallId(input),
+          type: "collabAgentToolCall",
+          tool: "wait",
+          status: input.status,
+          receiverThreadIds: [input.childProviderThreadId],
+          ...(input.parentProviderThreadId ? { senderThreadId: input.parentProviderThreadId } : {}),
+          agentsStates: {
+            [input.childProviderThreadId]: {
+              status: input.status === "completed" ? "completed" : "running",
+              message: input.body,
+            },
+          },
+        },
+      },
+    },
+    turnId: turnId ?? null,
+    createdAt: input.createdAt,
+  };
+}
+
 function proposedPlanIdForTurn(threadId: ThreadId, turnId: TurnId): string {
   return `plan:${threadId}:turn:${turnId}`;
 }
@@ -860,6 +974,11 @@ const make = Effect.gen(function* () {
   const bufferedAssistantTextByMessageId = yield* Cache.make<MessageId, string>({
     capacity: BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_CACHE_CAPACITY,
     timeToLive: BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_TTL,
+    lookup: () => Effect.succeed(""),
+  });
+  const bufferedSubagentResultTextByKey = yield* Cache.make<string, string>({
+    capacity: BUFFERED_SUBAGENT_RESULT_TEXT_BY_KEY_CACHE_CAPACITY,
+    timeToLive: BUFFERED_SUBAGENT_RESULT_TEXT_BY_KEY_TTL,
     lookup: () => Effect.succeed(""),
   });
   const pendingStreamingAssistantMessages = yield* Ref.make(
@@ -1079,6 +1198,23 @@ const make = Effect.gen(function* () {
   const clearBufferedAssistantText = (messageId: MessageId) =>
     Cache.invalidate(bufferedAssistantTextByMessageId, messageId);
 
+  const appendBufferedSubagentResultText = (key: string, delta: string) =>
+    Cache.getOption(bufferedSubagentResultTextByKey, key).pipe(
+      Effect.flatMap((existingText) => {
+        const nextText = appendSubagentResultText(Option.getOrUndefined(existingText), delta);
+        return Cache.set(bufferedSubagentResultTextByKey, key, nextText).pipe(Effect.as(nextText));
+      }),
+    );
+
+  const takeBufferedSubagentResultText = (key: string) =>
+    Cache.getOption(bufferedSubagentResultTextByKey, key).pipe(
+      Effect.flatMap((existingText) =>
+        Cache.invalidate(bufferedSubagentResultTextByKey, key).pipe(
+          Effect.as(Option.getOrElse(existingText, () => "")),
+        ),
+      ),
+    );
+
   const dispatchAssistantDelta = (input: {
     event: ProviderRuntimeEvent;
     threadId: ThreadId;
@@ -1097,6 +1233,38 @@ const make = Effect.gen(function* () {
       ...(input.turnId ? { turnId: input.turnId } : {}),
       createdAt: input.createdAt,
     });
+
+  const dispatchSubagentResultActivity = (input: {
+    event: ProviderRuntimeEvent;
+    thread: Pick<OrchestrationThread, "id" | "session">;
+    childProviderThreadId: string;
+    body: string;
+    status: "inProgress" | "completed";
+    createdAt: string;
+  }) => {
+    const activity = subagentResultActivity({
+      event: input.event,
+      childProviderThreadId: input.childProviderThreadId,
+      parentProviderThreadId: input.thread.session?.providerThreadId ?? undefined,
+      body: input.body,
+      status: input.status,
+      createdAt: input.createdAt,
+    });
+    if (!activity) {
+      return Effect.void;
+    }
+
+    return orchestrationEngine.dispatch({
+      type: "thread.activity.append",
+      commandId: providerCommandId(
+        input.event,
+        input.status === "completed" ? "subagent-result-complete" : "subagent-result-update",
+      ),
+      threadId: input.thread.id,
+      activity,
+      createdAt: activity.createdAt,
+    });
+  };
 
   const queuePendingStreamingAssistantMessage = (input: PendingStreamingAssistantMessage) =>
     Ref.update(pendingStreamingAssistantMessages, (pending) => {
@@ -1857,42 +2025,59 @@ const make = Effect.gen(function* () {
         event.type === "turn.proposed.delta" ? event.payload.delta : undefined;
 
       if (assistantDelta && assistantDelta.length > 0) {
-        const turnId = toTurnId(event.turnId);
-        const assistantMessageId = yield* getOrCreateAssistantMessageId({
-          threadId: thread.id,
-          event,
-          ...(turnId ? { turnId } : {}),
-        });
-        if (turnId) {
-          yield* rememberAssistantMessageId(thread.id, turnId, assistantMessageId);
-        }
+        const childProviderThreadId = childProviderThreadIdForEvent(event, thread);
+        if (childProviderThreadId) {
+          const bufferKey = subagentResultTextKey({ event, childProviderThreadId });
+          const body = yield* appendBufferedSubagentResultText(bufferKey, assistantDelta);
+          yield* dispatchSubagentResultActivity({
+            event,
+            thread,
+            childProviderThreadId,
+            body,
+            status: "inProgress",
+            createdAt: now,
+          });
+        } else {
+          const turnId = toTurnId(event.turnId);
+          const assistantMessageId = yield* getOrCreateAssistantMessageId({
+            threadId: thread.id,
+            event,
+            ...(turnId ? { turnId } : {}),
+          });
+          if (turnId) {
+            yield* rememberAssistantMessageId(thread.id, turnId, assistantMessageId);
+          }
 
-        const assistantDeliveryMode: AssistantDeliveryMode = yield* Effect.map(
-          serverSettingsService.getSettings,
-          (settings) => (settings.enableAssistantStreaming ? "streaming" : "buffered"),
-        );
-        if (assistantDeliveryMode === "buffered") {
-          const spillChunk = yield* appendBufferedAssistantText(assistantMessageId, assistantDelta);
-          if (spillChunk.length > 0) {
-            yield* orchestrationEngine.dispatch({
-              type: "thread.message.assistant.delta",
-              commandId: providerCommandId(event, "assistant-delta-buffer-spill"),
+          const assistantDeliveryMode: AssistantDeliveryMode = yield* Effect.map(
+            serverSettingsService.getSettings,
+            (settings) => (settings.enableAssistantStreaming ? "streaming" : "buffered"),
+          );
+          if (assistantDeliveryMode === "buffered") {
+            const spillChunk = yield* appendBufferedAssistantText(
+              assistantMessageId,
+              assistantDelta,
+            );
+            if (spillChunk.length > 0) {
+              yield* orchestrationEngine.dispatch({
+                type: "thread.message.assistant.delta",
+                commandId: providerCommandId(event, "assistant-delta-buffer-spill"),
+                threadId: thread.id,
+                messageId: assistantMessageId,
+                delta: spillChunk,
+                ...(turnId ? { turnId } : {}),
+                createdAt: now,
+              });
+            }
+          } else {
+            yield* queueStreamingAssistantDelta({
+              event,
               threadId: thread.id,
               messageId: assistantMessageId,
-              delta: spillChunk,
+              delta: assistantDelta,
               ...(turnId ? { turnId } : {}),
               createdAt: now,
             });
           }
-        } else {
-          yield* queueStreamingAssistantDelta({
-            event,
-            threadId: thread.id,
-            messageId: assistantMessageId,
-            delta: assistantDelta,
-            ...(turnId ? { turnId } : {}),
-            createdAt: now,
-          });
         }
       }
 
@@ -1958,54 +2143,75 @@ const make = Effect.gen(function* () {
           : undefined;
 
       if (assistantCompletion) {
-        const detailedThread = yield* getLoadedThreadDetail();
-        const messages = detailedThread?.messages ?? [];
-        const turnId = toTurnId(event.turnId);
-        const activeAssistantMessageId = turnId
-          ? yield* getActiveAssistantMessageIdForTurn(thread.id, turnId)
-          : Option.none<MessageId>();
-        const hasAssistantMessagesForTurn =
-          turnId !== undefined ? hasAssistantMessageForTurn(messages, turnId) : false;
-        const assistantMessageId = Option.getOrElse(
-          activeAssistantMessageId,
-          () => assistantCompletion.messageId,
-        );
-        const existingAssistantMessage = findMessageById(messages, assistantMessageId);
-        const shouldApplyFallbackCompletionText =
-          !existingAssistantMessage || existingAssistantMessage.text.length === 0;
-
-        const shouldSkipRedundantCompletion =
-          Option.isNone(activeAssistantMessageId) &&
-          turnId !== undefined &&
-          hasAssistantMessagesForTurn &&
-          (assistantCompletion.fallbackText?.trim().length ?? 0) === 0;
-
-        if (!shouldSkipRedundantCompletion) {
-          if (turnId && Option.isNone(activeAssistantMessageId)) {
-            yield* rememberAssistantMessageId(thread.id, turnId, assistantMessageId);
-          }
-
-          yield* finalizeAssistantMessage({
+        const childProviderThreadId = childProviderThreadIdForEvent(event, thread);
+        if (childProviderThreadId) {
+          const bufferKey = subagentResultTextKey({ event, childProviderThreadId });
+          const bufferedText = yield* takeBufferedSubagentResultText(bufferKey);
+          const body =
+            bufferedText.length > 0
+              ? bufferedText
+              : (assistantCompletion.fallbackText?.trim().length ?? 0) > 0
+                ? assistantCompletion.fallbackText!
+                : "";
+          yield* dispatchSubagentResultActivity({
             event,
-            threadId: thread.id,
-            messageId: assistantMessageId,
-            ...(turnId ? { turnId } : {}),
+            thread,
+            childProviderThreadId,
+            body,
+            status: "completed",
             createdAt: now,
-            commandTag: "assistant-complete",
-            finalDeltaCommandTag: "assistant-delta-finalize",
-            hasProjectedMessage: existingAssistantMessage !== undefined,
-            ...(assistantCompletion.fallbackText !== undefined && shouldApplyFallbackCompletionText
-              ? { fallbackText: assistantCompletion.fallbackText }
-              : {}),
           });
+        } else {
+          const detailedThread = yield* getLoadedThreadDetail();
+          const messages = detailedThread?.messages ?? [];
+          const turnId = toTurnId(event.turnId);
+          const activeAssistantMessageId = turnId
+            ? yield* getActiveAssistantMessageIdForTurn(thread.id, turnId)
+            : Option.none<MessageId>();
+          const hasAssistantMessagesForTurn =
+            turnId !== undefined ? hasAssistantMessageForTurn(messages, turnId) : false;
+          const assistantMessageId = Option.getOrElse(
+            activeAssistantMessageId,
+            () => assistantCompletion.messageId,
+          );
+          const existingAssistantMessage = findMessageById(messages, assistantMessageId);
+          const shouldApplyFallbackCompletionText =
+            !existingAssistantMessage || existingAssistantMessage.text.length === 0;
+
+          const shouldSkipRedundantCompletion =
+            Option.isNone(activeAssistantMessageId) &&
+            turnId !== undefined &&
+            hasAssistantMessagesForTurn &&
+            (assistantCompletion.fallbackText?.trim().length ?? 0) === 0;
+
+          if (!shouldSkipRedundantCompletion) {
+            if (turnId && Option.isNone(activeAssistantMessageId)) {
+              yield* rememberAssistantMessageId(thread.id, turnId, assistantMessageId);
+            }
+
+            yield* finalizeAssistantMessage({
+              event,
+              threadId: thread.id,
+              messageId: assistantMessageId,
+              ...(turnId ? { turnId } : {}),
+              createdAt: now,
+              commandTag: "assistant-complete",
+              finalDeltaCommandTag: "assistant-delta-finalize",
+              hasProjectedMessage: existingAssistantMessage !== undefined,
+              ...(assistantCompletion.fallbackText !== undefined &&
+              shouldApplyFallbackCompletionText
+                ? { fallbackText: assistantCompletion.fallbackText }
+                : {}),
+            });
+
+            if (turnId) {
+              yield* forgetAssistantMessageId(thread.id, turnId, assistantMessageId);
+            }
+          }
 
           if (turnId) {
-            yield* forgetAssistantMessageId(thread.id, turnId, assistantMessageId);
+            yield* clearAssistantSegmentStateForTurn(thread.id, turnId);
           }
-        }
-
-        if (turnId) {
-          yield* clearAssistantSegmentStateForTurn(thread.id, turnId);
         }
       }
 

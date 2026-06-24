@@ -403,6 +403,37 @@ export type ServerTraceDiagnosticsResult = typeof ServerTraceDiagnosticsResult.T
 export const ServerProcessSignal = Schema.Literals(["SIGINT", "SIGKILL"]);
 export type ServerProcessSignal = typeof ServerProcessSignal.Type;
 
+export const ServerResolveBackgroundRunsInput = Schema.Struct({
+  urls: Schema.Array(TrimmedNonEmptyString),
+  commandHints: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+});
+export type ServerResolveBackgroundRunsInput = typeof ServerResolveBackgroundRunsInput.Type;
+
+export const ServerResolvedBackgroundRun = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  url: TrimmedNonEmptyString,
+  urls: Schema.Array(TrimmedNonEmptyString),
+  port: PositiveInt,
+  pid: PositiveInt,
+  command: TrimmedNonEmptyString,
+  detail: TrimmedNonEmptyString,
+  statusLabel: TrimmedNonEmptyString,
+  canStop: Schema.Boolean,
+});
+export type ServerResolvedBackgroundRun = typeof ServerResolvedBackgroundRun.Type;
+
+export const ServerResolveBackgroundRunsResult = Schema.Struct({
+  runs: Schema.Array(ServerResolvedBackgroundRun),
+});
+export type ServerResolveBackgroundRunsResult = typeof ServerResolveBackgroundRunsResult.Type;
+
+export const ServerStopBackgroundRunInput = Schema.Struct({
+  pid: PositiveInt,
+  port: PositiveInt,
+  signal: ServerProcessSignal,
+});
+export type ServerStopBackgroundRunInput = typeof ServerStopBackgroundRunInput.Type;
+
 export const ServerProcessDiagnosticsEntry = Schema.Struct({
   pid: PositiveInt,
   ppid: NonNegativeInt,

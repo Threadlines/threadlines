@@ -17,6 +17,8 @@ import {
 } from "~/components/ui/sheet";
 import { Skeleton } from "~/components/ui/skeleton";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
+import { isMacElectron } from "~/desktopChrome";
+import { isElectron } from "~/env";
 import { useIsMobile } from "~/hooks/useMediaQuery";
 import { getLocalStorageItem, setLocalStorageItem } from "~/hooks/useLocalStorage";
 import * as Schema from "effect/Schema";
@@ -27,6 +29,8 @@ const SIDEBAR_WIDTH = "16rem";
 const SIDEBAR_WIDTH_MOBILE = "calc(100vw - var(--spacing(3)))";
 const SIDEBAR_WIDTH_ICON = "3rem";
 const SIDEBAR_RESIZE_DEFAULT_MIN_WIDTH = 16 * 16;
+const WINDOWS_ELECTRON_TRIGGER_TOP_CLASS = "top-2";
+const MAC_ELECTRON_TRIGGER_TOP_CLASS = "top-[38px]";
 
 type SidebarContextProps = {
   state: "expanded" | "collapsed";
@@ -321,6 +325,7 @@ type SidebarTriggerProps = React.ComponentProps<typeof Button> & {
 function SidebarTrigger({ className, onClick, tooltip, ...props }: SidebarTriggerProps) {
   const { toggleSidebar, openMobile, open, isMobile } = useSidebar();
   const isOpen = isMobile ? openMobile : open;
+  const tooltipContent = tooltip ?? (isOpen ? "Collapse sidebar" : "Open sidebar");
 
   const trigger = (
     <Button
@@ -340,13 +345,11 @@ function SidebarTrigger({ className, onClick, tooltip, ...props }: SidebarTrigge
     </Button>
   );
 
-  return tooltip ? (
+  return (
     <Tooltip>
       <TooltipTrigger render={trigger} />
-      <TooltipPopup side="bottom">{tooltip}</TooltipPopup>
+      <TooltipPopup side="bottom">{tooltipContent}</TooltipPopup>
     </Tooltip>
-  ) : (
-    trigger
   );
 }
 
@@ -355,13 +358,34 @@ function SidebarTrigger({ className, onClick, tooltip, ...props }: SidebarTrigge
  * mobile, and on desktop only while the sidebar is collapsed (it is the only
  * way back once an offcanvas sidebar is hidden).
  */
-function SidebarOpenTrigger({ className, ...props }: React.ComponentProps<typeof Button>) {
+function SidebarOpenTrigger({ className, style, ...props }: React.ComponentProps<typeof Button>) {
   const { open } = useSidebar();
 
   return (
+    <>
+      <SidebarTrigger className={cn(className, "md:hidden")} style={style} {...props} />
+      <span
+        aria-hidden="true"
+        className={cn("hidden size-7 shrink-0 md:block md:size-8", open && "md:hidden", className)}
+      />
+    </>
+  );
+}
+
+function SidebarFixedTrigger({ className, ...props }: React.ComponentProps<typeof Button>) {
+  const fixedPositionClass = isElectron
+    ? isMacElectron
+      ? MAC_ELECTRON_TRIGGER_TOP_CLASS
+      : WINDOWS_ELECTRON_TRIGGER_TOP_CLASS
+    : "top-2 sm:top-3";
+
+  return (
     <SidebarTrigger
-      className={cn(className, open && "md:hidden")}
-      tooltip="Open sidebar"
+      className={cn(
+        "fixed left-3 z-50 hidden shrink-0 text-muted-foreground/60 hover:text-foreground md:flex sm:left-5",
+        fixedPositionClass,
+        className,
+      )}
       {...props}
     />
   );
@@ -1015,6 +1039,7 @@ export {
   Sidebar,
   SidebarContent,
   SidebarFooter,
+  SidebarFixedTrigger,
   SidebarGroup,
   SidebarGroupAction,
   SidebarGroupContent,

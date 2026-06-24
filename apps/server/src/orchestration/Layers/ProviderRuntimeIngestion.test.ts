@@ -1062,6 +1062,122 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
+  it("projects child provider-thread assistant output as a subagent result activity", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-provider-thread"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-parent"),
+          providerThreadId: "parent-provider-thread",
+          updatedAt: now,
+          lastError: null,
+        },
+        createdAt: now,
+      }),
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-child-message-delta-1"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-parent"),
+      itemId: asItemId("child-message-1"),
+      providerRefs: {
+        providerThreadId: "child-provider-thread",
+        providerTurnId: "child-turn-1",
+        providerItemId: asItemId("child-message-1"),
+      },
+      payload: {
+        streamKind: "assistant_text",
+        delta: "Read-only investigation only. ",
+      },
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-child-message-delta-2"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-parent"),
+      itemId: asItemId("child-message-1"),
+      providerRefs: {
+        providerThreadId: "child-provider-thread",
+        providerTurnId: "child-turn-1",
+        providerItemId: asItemId("child-message-1"),
+      },
+      payload: {
+        streamKind: "assistant_text",
+        delta: "Findings are complete.",
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-child-message-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-parent"),
+      itemId: asItemId("child-message-1"),
+      providerRefs: {
+        providerThreadId: "child-provider-thread",
+        providerTurnId: "child-turn-1",
+        providerItemId: asItemId("child-message-1"),
+      },
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+      },
+    });
+
+    await harness.drain();
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some((activity) => {
+        const payload =
+          activity.payload && typeof activity.payload === "object"
+            ? (activity.payload as Record<string, unknown>)
+            : null;
+        return activity.kind === "subagent.result" && payload?.status === "completed";
+      }),
+    );
+
+    expect(
+      thread.messages.some((message) =>
+        message.text.includes("Read-only investigation only. Findings are complete."),
+      ),
+    ).toBe(false);
+
+    const activity = thread.activities.find((entry) => entry.kind === "subagent.result");
+    expect(activity).toBeDefined();
+    expect(activity?.turnId).toBe("turn-parent");
+    const payload = activity?.payload as {
+      status?: string;
+      data?: {
+        item?: {
+          receiverThreadIds?: string[];
+          agentsStates?: Record<string, { status?: string; message?: string }>;
+        };
+      };
+    };
+    expect(payload.status).toBe("completed");
+    expect(payload.data?.item?.receiverThreadIds).toEqual(["child-provider-thread"]);
+    expect(payload.data?.item?.agentsStates?.["child-provider-thread"]).toMatchObject({
+      status: "completed",
+      message: "Read-only investigation only. Findings are complete.",
+    });
+  });
+
   it("uses assistant item completion detail when no assistant deltas were streamed", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
