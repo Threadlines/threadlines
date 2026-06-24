@@ -429,7 +429,7 @@ export function gitRunStackedActionMutationOptions(input: {
         ...(onProgress ? [{ onProgress }] : []),
       );
     },
-    onSuccess: async () => {
+    onSettled: async () => {
       await invalidateGitBranchQueries(input.queryClient, input.environmentId, input.cwd);
     },
   });

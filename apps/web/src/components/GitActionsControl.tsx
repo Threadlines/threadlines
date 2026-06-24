@@ -26,6 +26,7 @@ import {
   GlobeIcon,
 } from "lucide-react";
 import { Radio as RadioPrimitive } from "@base-ui/react/radio";
+import { formatGitErrorMessage } from "@threadlines/shared/git";
 import { AzureDevOpsIcon, BitbucketIcon, GitHubIcon, GitLabIcon } from "~/components/Icons";
 import { RadioGroup } from "~/components/ui/radio-group";
 import { Spinner } from "~/components/ui/spinner";
@@ -1304,6 +1305,11 @@ export default function GitActionsControl({
       try {
         const result = await promise;
         activeGitActionProgressRef.current = null;
+        if (gitCwd !== null) {
+          void refreshGitStatus({ environmentId: activeEnvironmentId, cwd: gitCwd }, undefined, {
+            force: true,
+          }).catch(() => undefined);
+        }
         syncThreadBranchAfterGitAction(result);
         const closeResultToast = () => {
           toastManager.close(resolvedProgressToastId);
@@ -1364,12 +1370,17 @@ export default function GitActionsControl({
         }
       } catch (err) {
         activeGitActionProgressRef.current = null;
+        if (gitCwd !== null) {
+          void refreshGitStatus({ environmentId: activeEnvironmentId, cwd: gitCwd }, undefined, {
+            force: true,
+          }).catch(() => undefined);
+        }
         toastManager.update(
           resolvedProgressToastId,
           stackedThreadToast({
             type: "error",
             title: "Action failed",
-            description: err instanceof Error ? err.message : "An error occurred.",
+            description: formatGitErrorMessage(err),
             ...(scopedToastData !== undefined ? { data: scopedToastData } : {}),
           }),
         );

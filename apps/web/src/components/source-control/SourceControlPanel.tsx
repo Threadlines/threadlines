@@ -9,6 +9,7 @@ import {
   type VcsStatusResult,
   type VcsWorkingTreeFileChangeKind,
 } from "@threadlines/contracts";
+import { formatGitErrorMessage } from "@threadlines/shared/git";
 import {
   useInfiniteQuery,
   useIsMutating,
@@ -1024,7 +1025,7 @@ function DelayedSourceControlNameTooltip({
 }
 
 function toGitActionErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "An error occurred.";
+  return formatGitErrorMessage(error);
 }
 
 function isRefOnCurrentBranch(refName: string, currentBranch: string | null | undefined): boolean {
@@ -1857,17 +1858,22 @@ export function SourceControlPanel({
             dismissAfterVisibleMs: 10_000,
           },
         });
-        void refreshGitStatus({ environmentId, cwd }).catch(() => undefined);
+        void refreshGitStatus({ environmentId, cwd }, undefined, { force: true }).catch(
+          () => undefined,
+        );
         void queryClient.invalidateQueries({
           queryKey: gitQueryKeys.commitGraphPrefix(environmentId, cwd),
         });
       } catch (error) {
         finishGitActionProgress(progressTarget, actionId);
+        void refreshGitStatus({ environmentId, cwd }, undefined, { force: true }).catch(
+          () => undefined,
+        );
         toastManager.add(
           stackedThreadToast({
             type: "error",
             title: "Action failed",
-            description: error instanceof Error ? error.message : "An error occurred.",
+            description: toGitActionErrorMessage(error),
             ...(scopedToastData !== undefined ? { data: scopedToastData } : {}),
           }),
         );

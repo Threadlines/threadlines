@@ -40,6 +40,10 @@ interface GitStatusTarget {
   readonly cwd: string | null;
 }
 
+interface GitStatusRefreshOptions {
+  readonly force?: boolean;
+}
+
 const EMPTY_GIT_STATUS_STATE = Object.freeze<GitStatusState>({
   data: null,
   error: null,
@@ -122,6 +126,7 @@ export function watchGitStatus(target: GitStatusTarget, client?: GitStatusClient
 export function refreshGitStatus(
   target: GitStatusTarget,
   client?: GitStatusClient,
+  options?: GitStatusRefreshOptions,
 ): Promise<VcsStatusResult | null> {
   const targetKey = getGitStatusTargetKey(target);
   if (targetKey === null || target.cwd === null) {
@@ -139,7 +144,7 @@ export function refreshGitStatus(
   }
 
   const lastRequestedAt = gitStatusLastRefreshAtByKey.get(targetKey) ?? 0;
-  if (Date.now() - lastRequestedAt < GIT_STATUS_REFRESH_DEBOUNCE_MS) {
+  if (options?.force !== true && Date.now() - lastRequestedAt < GIT_STATUS_REFRESH_DEBOUNCE_MS) {
     return Promise.resolve(getGitStatusSnapshot(target).data);
   }
 
@@ -154,6 +159,7 @@ export function refreshGitStatus(
 export function refreshLocalGitStatus(
   target: GitStatusTarget,
   client?: GitStatusClient,
+  options?: GitStatusRefreshOptions,
 ): Promise<VcsStatusLocalResult | null> {
   const targetKey = getGitStatusTargetKey(target);
   if (targetKey === null || target.cwd === null) {
@@ -171,7 +177,7 @@ export function refreshLocalGitStatus(
   }
 
   const lastRequestedAt = gitStatusLastRefreshAtByKey.get(targetKey) ?? 0;
-  if (Date.now() - lastRequestedAt < GIT_STATUS_REFRESH_DEBOUNCE_MS) {
+  if (options?.force !== true && Date.now() - lastRequestedAt < GIT_STATUS_REFRESH_DEBOUNCE_MS) {
     return Promise.resolve(getGitStatusSnapshot(target).data);
   }
 

@@ -5,6 +5,8 @@ import {
   applyGitStatusStreamEvent,
   buildTemporaryWorktreeBranchName,
   deriveRepositoryDirectoryName,
+  formatGitErrorMessage,
+  isGitHubHttpsCredentialPromptErrorMessage,
   isTemporaryWorktreeBranch,
   normalizeGitRemoteUrl,
   parseGitHubRepositoryNameWithOwnerFromRemoteUrl,
@@ -69,6 +71,24 @@ describe("deriveRepositoryDirectoryName", () => {
       "bad-name",
     );
     expect(deriveRepositoryDirectoryName("   ")).toBeNull();
+  });
+});
+
+describe("formatGitErrorMessage", () => {
+  it("recognizes GitHub HTTPS credential prompt failures", () => {
+    const message =
+      "Git command failed in GitVcsDriver.pushCurrentBranch.pushUpstream: git push origin HEAD:refs/heads/main (/repo) - fatal: could not read Username for 'https://github.com': Device not configured";
+
+    expect(isGitHubHttpsCredentialPromptErrorMessage(message)).toBe(true);
+    expect(formatGitErrorMessage(new Error(message))).toBe(
+      "GitHub could not prompt for HTTPS credentials from Threadlines. Sign in for Git HTTPS or switch origin to SSH, then retry Push.",
+    );
+  });
+
+  it("keeps unrelated git errors intact", () => {
+    expect(formatGitErrorMessage(new Error("Branch is behind upstream."))).toBe(
+      "Branch is behind upstream.",
+    );
   });
 });
 

@@ -250,6 +250,19 @@ describe("gitStatusState", () => {
     release();
   });
 
+  it("can force a git status refresh through the debounce window", async () => {
+    const release = watchGitStatus(TARGET, gitClient);
+
+    emitGitStatus(BASE_STATUS);
+    await refreshGitStatus(TARGET, gitClient);
+    await refreshGitStatus(TARGET, gitClient);
+    await refreshGitStatus(TARGET, gitClient, { force: true });
+
+    expect(gitClient.refreshStatus).toHaveBeenCalledTimes(2);
+
+    release();
+  });
+
   it("refreshes local git status without using the full remote refresh RPC", async () => {
     const release = watchGitStatus(TARGET, gitClient);
 

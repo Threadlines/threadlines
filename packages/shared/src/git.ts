@@ -133,6 +133,33 @@ export function normalizeGitRemoteUrl(value: string): string {
   return normalized;
 }
 
+export function isGitHubHttpsCredentialPromptErrorMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("could not read username for 'https://github.com'") ||
+    normalized.includes('could not read username for "https://github.com"') ||
+    normalized.includes("could not read password for 'https://github.com'") ||
+    normalized.includes('could not read password for "https://github.com"') ||
+    (normalized.includes("authentication failed") && normalized.includes("https://github.com")) ||
+    (normalized.includes("terminal prompts disabled") && normalized.includes("github.com"))
+  );
+}
+
+export function formatGitErrorMessage(error: unknown): string {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : "An error occurred.";
+
+  if (isGitHubHttpsCredentialPromptErrorMessage(message)) {
+    return "GitHub could not prompt for HTTPS credentials from Threadlines. Sign in for Git HTTPS or switch origin to SSH, then retry Push.";
+  }
+
+  return message;
+}
+
 function getLastRepositoryPathSegment(value: string): string | null {
   let lastSegment: string | null = null;
   for (const segment of value.split(/[\\/]+/)) {
