@@ -5,14 +5,17 @@ import {
   createExtensionInventoryMemoryCache,
   deriveDetectedProviderThreadId,
   deriveExtensionJsonSchemaFormFields,
+  deriveExtensionPluginGroupLabel,
   extensionMcpNeedsAuthStatus,
   extensionMcpOAuthActionIntent,
   extensionMcpOAuthActionLabel,
   extensionTextMatchesFilter,
   extensionProviderDriverSortRank,
+  formatExtensionGroupLabel,
   isLikelyLocalPath,
   makeExtensionInventoryCacheKey,
   makeExtensionJsonSchemaFormDefaults,
+  shouldRenderExtensionBrowserGroups,
 } from "./ExtensionsSettings.logic";
 
 describe("ExtensionsSettings logic", () => {
@@ -40,6 +43,58 @@ describe("ExtensionsSettings logic", () => {
     );
 
     expect(providers).toEqual(["codex", "claudeAgent", "other"]);
+  });
+
+  it("derives plugin browser groups from stable metadata instead of descriptions", () => {
+    const longMarketplaceDescription =
+      "Automate API security directly in Claude Code with 42Crunch";
+
+    expect(formatExtensionGroupLabel("project-local")).toBe("Project Local");
+    expect(
+      deriveExtensionPluginGroupLabel({
+        scope: "user",
+        isOfficial: true,
+        isLocal: true,
+      }),
+    ).toBe("User");
+    expect(
+      deriveExtensionPluginGroupLabel({
+        isOfficial: true,
+        isLocal: false,
+        availability: longMarketplaceDescription,
+      }),
+    ).toBe("Official catalog");
+    expect(
+      deriveExtensionPluginGroupLabel({
+        marketplaceName: "team-marketplace",
+        isOfficial: false,
+        isLocal: false,
+      }),
+    ).toBe("Team Marketplace");
+  });
+
+  it("renders browser group headers only when grouping is meaningfully dense", () => {
+    expect(
+      shouldRenderExtensionBrowserGroups(
+        [{ items: ["a"] }, { items: ["b"] }, { items: ["c"] }, { items: ["d"] }],
+        "category",
+      ),
+    ).toBe(false);
+    expect(
+      shouldRenderExtensionBrowserGroups(
+        [{ items: ["user-plugin"] }, { items: ["official-a", "official-b", "official-c"] }],
+        "category",
+      ),
+    ).toBe(true);
+    expect(
+      shouldRenderExtensionBrowserGroups([{ items: ["official-a", "official-b"] }], "category"),
+    ).toBe(false);
+    expect(
+      shouldRenderExtensionBrowserGroups(
+        [{ items: ["user-plugin"] }, { items: ["official-a", "official-b", "official-c"] }],
+        "recommended",
+      ),
+    ).toBe(false);
   });
 
   it("builds stable extension inventory cache keys from project, provider, and context", () => {

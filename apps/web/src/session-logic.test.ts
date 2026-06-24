@@ -1,6 +1,7 @@
 import {
   EventId,
   MessageId,
+  ProviderDriverKind,
   ThreadId,
   TurnId,
   type OrchestrationThreadActivity,
@@ -743,11 +744,48 @@ describe("deriveWorkLogEntries", () => {
       id: "mcp-startup-failed",
       tone: "warning",
       mcpAuthReconnect: {
+        provider: ProviderDriverKind.make("codex"),
         serverName: "supabase",
         serverLabel: "Supabase",
         intent: "authorize",
         actionLabel: "Authorize",
         terminalCommand: "codex mcp login supabase",
+      },
+    });
+  });
+
+  it("adds provider-aware Claude MCP auth reconnect actions", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "claude-mcp-startup-failed",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "mcp.status.updated",
+        summary: "MCP startup failed",
+        tone: "warning",
+        payload: {
+          provider: "claudeAgent",
+          providerInstanceId: "claude-work",
+          status: {
+            name: "supabase",
+            status: "Needs authentication",
+            error: "The supabase MCP server needs authentication.",
+          },
+        },
+      }),
+    ]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      id: "claude-mcp-startup-failed",
+      tone: "warning",
+      mcpAuthReconnect: {
+        provider: ProviderDriverKind.make("claudeAgent"),
+        providerInstanceId: "claude-work",
+        serverName: "supabase",
+        serverLabel: "Supabase",
+        intent: "authorize",
+        actionLabel: "Authorize",
+        terminalCommand: "claude mcp login supabase",
       },
     });
   });

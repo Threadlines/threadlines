@@ -46,6 +46,7 @@ import { ensureLocalApi } from "../../localApi";
 import {
   buildExtensionJsonSchemaFormArguments,
   createExtensionInventoryMemoryCache,
+  deriveExtensionPluginGroupLabel,
   deriveDetectedProviderThreadId,
   deriveExtensionJsonSchemaFormFields,
   extensionMcpNeedsAuthStatus,
@@ -53,9 +54,11 @@ import {
   extensionMcpOAuthActionLabel,
   extensionTextMatchesFilter,
   extensionProviderDriverSortRank,
+  formatExtensionGroupLabel,
   isLikelyLocalPath,
   makeExtensionInventoryCacheKey,
   makeExtensionJsonSchemaFormDefaults,
+  shouldRenderExtensionBrowserGroups,
   type ExtensionItemKind,
 } from "./ExtensionsSettings.logic";
 import {
@@ -69,7 +72,7 @@ import {
   useStore,
 } from "../../store";
 import { useUiStateStore } from "../../uiStateStore";
-import { codexMcpLoginCommand } from "../../mcpAuthStatus";
+import { providerMcpLoginCommand, type ExtensionMcpLoginProvider } from "../../mcpAuthStatus";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import {
@@ -536,20 +539,23 @@ function extensionItemGroupLabel(item: ExtensionItem): string {
   }
 
   if (item.kind === "plugin") {
-    const value =
-      item.plugin.description ??
-      item.plugin.scope ??
-      item.plugin.installPolicy ??
-      item.plugin.availability ??
-      item.plugin.source;
-    if (value && !value.includes("://") && !isLikelyLocalPath(value)) return value;
-    if (extensionItemIsOfficial(item)) return "Official";
-    if (extensionItemIsLocal(item)) return "Local";
-    return "Plugins";
+    return deriveExtensionPluginGroupLabel({
+      scope: item.plugin.scope,
+      marketplaceName: item.plugin.marketplaceName,
+      remoteMarketplaceName: item.plugin.remoteMarketplaceName,
+      installPolicy: item.plugin.installPolicy,
+      availability: item.plugin.availability,
+      isOfficial: extensionItemIsOfficial(item),
+      isLocal: extensionItemIsLocal(item),
+    });
   }
 
   if (item.kind === "skill") {
-    return item.skill.scope ?? item.skill.source ?? "Skills";
+    return item.skill.scope
+      ? formatExtensionGroupLabel(item.skill.scope)
+      : item.skill.source
+        ? formatExtensionGroupLabel(item.skill.source)
+        : "Skills";
   }
 
   if (item.kind === "app") {
@@ -621,9 +627,13 @@ function extensionItemMatchesBrowserFilter(
   }
 }
 
-function codexMcpOAuthActionIntent(item: ExtensionItem) {
+function mcpOAuthActionIntent(item: ExtensionItem) {
   if (item.kind !== "mcp") return null;
   return extensionMcpOAuthActionIntent(item.server);
+}
+
+function mcpLoginProviderForItem(item: ExtensionItem): ExtensionMcpLoginProvider {
+  return item.provider.driver === EXTENSIONS_CLAUDE_DRIVER ? "claudeAgent" : "codex";
 }
 
 function ExtensionItemBadges({ item }: { item: ExtensionItem }) {
@@ -1202,9 +1212,9 @@ function ExtensionDetailDialog({
     [item, onActionHistoryChange],
   );
 
-  const mcpOAuthActionIntent = item ? codexMcpOAuthActionIntent(item) : null;
-  const mcpOAuthActionLabel = extensionMcpOAuthActionLabel(mcpOAuthActionIntent);
-  const codexMcpOAuthActionAvailable = mcpOAuthActionIntent !== null;
+  const mcpOAuthIntent = item ? mcpOAuthActionIntent(item) : null;
+  const mcpOAuthActionLabel = extensionMcpOAuthActionLabel(mcpOAuthIntent);
+  const mcpOAuthActionAvailable = mcpOAuthIntent !== null;
 
   const startMcpOAuth = useCallback(() => {
     if (!item || item.kind !== "mcp") return;
@@ -1215,11 +1225,15 @@ function ExtensionDetailDialog({
         serverName: item.server.name,
         timeoutSecs: 300,
       });
-      await api.shell.openExternal(result.authorizationUrl);
+      if (result.authorizationUrl) {
+        await api.shell.openExternal(result.authorizationUrl);
+      }
       const pollId = pollRef.current + 1;
       pollRef.current = pollId;
       setActionOutput(
-        `Opened OAuth for ${item.server.name}.\n\nFallback:\n${result.terminalCommand}`,
+        result.authorizationUrl
+          ? `Opened OAuth for ${item.server.name}.\n\nFallback:\n${result.terminalCommand}`
+          : `Started login for ${item.server.name}. Complete the browser prompt if Claude opens one.\n\nFallback:\n${result.terminalCommand}`,
       );
 
       const expiresAt = Date.parse(result.expiresAt);
@@ -1240,13 +1254,15 @@ function ExtensionDetailDialog({
               description: item.server.name,
             });
             await onInventoryMutated();
+            return status.message ?? status.status;
           }
-          return status.error
+          const message = status.error
             ? `${status.message ?? status.status}\n\n${status.error}`
             : (status.message ?? status.status);
+          throw new Error(message);
         }
       }
-      return `OAuth timed out.\n\nFallback:\n${result.terminalCommand}`;
+      throw new Error(`OAuth timed out.\n\nFallback:\n${result.terminalCommand}`);
     });
   }, [cwd, item, mcpOAuthActionLabel, onInventoryMutated, runDialogAction]);
 
@@ -1737,9 +1753,9 @@ function ExtensionDetailDialog({
             <ExtensionActionOutput value={actionOutput} />
           </DialogPanel>
           <DialogFooter>
-            {codexActionsAvailable && item.kind === "mcp" ? (
+            {(codexActionsAvailable || claudeActionsAvailable) && item.kind === "mcp" ? (
               <>
-                {codexMcpOAuthActionAvailable ? (
+                {mcpOAuthActionAvailable ? (
                   <Button
                     size="xs"
                     variant="outline"
@@ -1754,25 +1770,30 @@ function ExtensionDetailDialog({
                     {mcpOAuthActionLabel}
                   </Button>
                 ) : null}
-                <Button
-                  size="xs"
-                  variant="outline"
-                  disabled={busyAction !== null}
-                  onClick={reloadMcp}
-                >
-                  {busyAction === "Reload MCP" ? (
-                    <LoaderIcon className="size-3.5 animate-spin" />
-                  ) : (
-                    <RefreshCwIcon className="size-3.5" />
-                  )}
-                  Reload MCP
-                </Button>
-                {codexMcpOAuthActionAvailable ? (
+                {codexActionsAvailable ? (
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    disabled={busyAction !== null}
+                    onClick={reloadMcp}
+                  >
+                    {busyAction === "Reload MCP" ? (
+                      <LoaderIcon className="size-3.5 animate-spin" />
+                    ) : (
+                      <RefreshCwIcon className="size-3.5" />
+                    )}
+                    Reload MCP
+                  </Button>
+                ) : null}
+                {mcpOAuthActionAvailable ? (
                   <Button
                     size="xs"
                     variant="outline"
                     onClick={() =>
-                      copyText(codexMcpLoginCommand(item.server.name), "Terminal login command")
+                      copyText(
+                        providerMcpLoginCommand(mcpLoginProviderForItem(item), item.server.name),
+                        "Terminal login command",
+                      )
                     }
                   >
                     <TerminalIcon className="size-3.5" />
@@ -2141,6 +2162,40 @@ function groupExtensionItems(
   }));
 }
 
+function ExtensionBrowserItemRow({
+  item,
+  groupLabel,
+  onSelect,
+}: {
+  item: ExtensionItem;
+  groupLabel?: string | undefined;
+  onSelect: (item: ExtensionItem) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="group grid min-h-12 w-full grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-accent/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      onClick={() => onSelect(item)}
+    >
+      <div className="min-w-0 space-y-1">
+        <div className="flex min-w-0 items-center gap-2">
+          <div className="truncate text-xs font-medium text-foreground">{item.title}</div>
+          {groupLabel ? (
+            <span className="hidden max-w-44 shrink-0 truncate rounded-sm bg-muted/45 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground/75 sm:inline-block">
+              {groupLabel}
+            </span>
+          ) : null}
+        </div>
+        {item.detail ? (
+          <div className="truncate text-[11px] text-muted-foreground/70">{item.detail}</div>
+        ) : null}
+      </div>
+      <ExtensionItemBadges item={item} />
+      <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground/45 transition-colors group-hover:text-muted-foreground" />
+    </button>
+  );
+}
+
 function ExtensionBrowserDialog({
   section,
   providerLabel,
@@ -2193,6 +2248,7 @@ function ExtensionBrowserDialog({
   );
   const visibleItems = browserItems.slice(0, visibleLimit);
   const groups = useMemo(() => groupExtensionItems(visibleItems, sort), [sort, visibleItems]);
+  const renderGroups = shouldRenderExtensionBrowserGroups(groups, sort);
   const hiddenCount = Math.max(0, browserItems.length - visibleItems.length);
   const nextVisibleCount = Math.min(EXTENSION_BROWSER_PAGE_SIZE, hiddenCount);
   const hasActiveRefinement = query.trim().length > 0 || filter !== "all" || sort !== "recommended";
@@ -2309,59 +2365,66 @@ function ExtensionBrowserDialog({
           <div className="min-h-0 p-0">
             {visibleItems.length > 0 ? (
               <div className="max-h-[min(58vh,36rem)] overflow-y-auto overscroll-contain">
-                {groups.map((group) => {
-                  const collapsed = collapsedGroups[group.key] === true;
-                  return (
-                    <div key={group.key} className="border-b border-border/50 last:border-b-0">
-                      <button
-                        type="button"
-                        className="sticky top-0 z-10 flex min-h-8 w-full items-center justify-between gap-3 border-b border-border/50 bg-background/95 px-4 py-1.5 text-left backdrop-blur"
-                        onClick={() => toggleGroup(group.key)}
-                      >
-                        <span className="min-w-0 truncate text-[11px] font-semibold uppercase text-muted-foreground/75">
-                          {group.label}
-                        </span>
-                        <span className="flex items-center gap-2 text-[10px] text-muted-foreground/60">
-                          <span className="font-mono tabular-nums">{group.items.length}</span>
-                          <ChevronDownIcon
-                            className={cn(
-                              "size-3 transition-transform",
-                              collapsed ? "-rotate-90" : "",
-                            )}
-                          />
-                        </span>
-                      </button>
-                      {!collapsed ? (
-                        <div className="divide-y divide-border/50">
-                          {group.items.map((item) => (
-                            <button
-                              key={`${item.kind}:${item.id}`}
-                              type="button"
-                              className="group flex min-h-11 w-full items-center gap-3 px-4 py-2 text-left transition-colors hover:bg-accent/55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                              onClick={() => {
-                                onClose();
-                                onSelect(item);
-                              }}
-                            >
-                              <div className="min-w-0 flex-1">
-                                <div className="truncate text-xs font-medium text-foreground">
-                                  {item.title}
-                                </div>
-                                {item.detail ? (
-                                  <div className="truncate text-[11px] text-muted-foreground/70">
-                                    {item.detail}
-                                  </div>
-                                ) : null}
-                              </div>
-                              <ExtensionItemBadges item={item} />
-                              <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground/45 transition-colors group-hover:text-muted-foreground" />
-                            </button>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-                  );
-                })}
+                {renderGroups ? (
+                  <div className="divide-y divide-border/45">
+                    {groups.map((group) => {
+                      const collapsed = collapsedGroups[group.key] === true;
+                      return (
+                        <section key={group.key}>
+                          <button
+                            type="button"
+                            className="sticky top-0 z-10 flex min-h-8 w-full items-center justify-between gap-3 border-b border-border/35 bg-popover/95 px-4 py-1.5 text-left backdrop-blur transition-colors hover:bg-accent/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            onClick={() => toggleGroup(group.key)}
+                            aria-expanded={!collapsed}
+                          >
+                            <span className="min-w-0 truncate text-[11px] font-semibold uppercase text-muted-foreground/70">
+                              {group.label}
+                            </span>
+                            <span className="flex items-center gap-2 text-[10px] text-muted-foreground/60">
+                              <span className="font-mono tabular-nums">{group.items.length}</span>
+                              <ChevronDownIcon
+                                className={cn(
+                                  "size-3 transition-transform",
+                                  collapsed ? "-rotate-90" : "",
+                                )}
+                              />
+                            </span>
+                          </button>
+                          {!collapsed ? (
+                            <div className="divide-y divide-border/35">
+                              {group.items.map((item) => (
+                                <ExtensionBrowserItemRow
+                                  key={`${item.kind}:${item.id}`}
+                                  item={item}
+                                  onSelect={(selectedItem) => {
+                                    onClose();
+                                    onSelect(selectedItem);
+                                  }}
+                                />
+                              ))}
+                            </div>
+                          ) : null}
+                        </section>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="divide-y divide-border/35">
+                    {visibleItems.map((item) => (
+                      <ExtensionBrowserItemRow
+                        key={`${item.kind}:${item.id}`}
+                        item={item}
+                        groupLabel={
+                          sort === "recommended" ? undefined : extensionItemGroupLabel(item)
+                        }
+                        onSelect={(selectedItem) => {
+                          onClose();
+                          onSelect(selectedItem);
+                        }}
+                      />
+                    ))}
+                  </div>
+                )}
                 {hiddenCount > 0 ? (
                   <button
                     className="w-full border-t border-border/50 px-4 py-2 text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -2378,7 +2441,9 @@ function ExtensionBrowserDialog({
               </div>
             ) : (
               <div className="px-6 py-5">
-                <EmptyList label="No plugins match the current browser filters." />
+                <EmptyList
+                  label={`No ${section.title.toLowerCase()} match the current browser filters.`}
+                />
               </div>
             )}
           </div>

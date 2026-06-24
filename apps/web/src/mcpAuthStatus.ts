@@ -5,6 +5,7 @@ export interface ExtensionMcpAuthStatusInput {
 }
 
 export type ExtensionMcpOAuthActionIntent = "authorize" | "reauth";
+export type ExtensionMcpLoginProvider = "codex" | "claudeAgent";
 
 const MCP_AUTH_REQUIRED_MARKERS = [
   "unauth",
@@ -50,6 +51,18 @@ export function codexMcpLoginCommand(
   serverName: string,
   scopes: ReadonlyArray<string> = [],
 ): string {
+  return providerMcpLoginCommand("codex", serverName, scopes);
+}
+
+export function providerMcpLoginCommand(
+  provider: ExtensionMcpLoginProvider,
+  serverName: string,
+  scopes: ReadonlyArray<string> = [],
+): string {
+  if (provider === "claudeAgent") {
+    return ["claude", "mcp", "login", serverName].map(commandArg).join(" ");
+  }
+
   const args = ["codex", "mcp", "login", serverName];
   if (scopes.length > 0) {
     args.push("--scopes", scopes.join(","));

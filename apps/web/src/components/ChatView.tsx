@@ -2720,13 +2720,22 @@ export default function ChatView(props: ChatViewProps) {
 
   const runMcpAuthReconnect = useCallback(
     async (action: McpAuthReconnectAction) => {
-      if (activeProviderDriver !== CODEX_PROVIDER_DRIVER) {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "MCP authorization is unavailable",
-            description: "Inline MCP OAuth is currently available for Codex providers only.",
-          }),
+      if (action.provider !== CODEX_PROVIDER_DRIVER) {
+        const providerLabel =
+          action.provider === activeProviderDriver
+            ? activeProviderLabel
+            : formatProviderDriverKindLabel(action.provider);
+        await runProjectScript(
+          {
+            id: `mcp-auth:${action.provider}:${action.serverName}`,
+            name: `${providerLabel} ${action.serverLabel} MCP login`,
+            command: action.terminalCommand,
+            icon: "configure",
+            runOnWorktreeCreate: false,
+          },
+          {
+            rememberAsLastInvoked: false,
+          },
         );
         return;
       }
@@ -2744,7 +2753,10 @@ export default function ChatView(props: ChatViewProps) {
       }
 
       const providerInstanceId =
-        activeProviderInstanceId ?? defaultInstanceIdForDriver(CODEX_PROVIDER_DRIVER);
+        action.providerInstanceId ??
+        (activeProviderDriver === action.provider && activeProviderInstanceId
+          ? activeProviderInstanceId
+          : defaultInstanceIdForDriver(action.provider));
       const statusKey = mcpAuthReconnectStateKey(providerInstanceId, action.serverName);
       let fallbackCommand = action.terminalCommand;
 
@@ -2764,7 +2776,9 @@ export default function ChatView(props: ChatViewProps) {
           timeoutSecs: 300,
         });
         fallbackCommand = result.terminalCommand || fallbackCommand;
-        await api.shell.openExternal(result.authorizationUrl);
+        if (result.authorizationUrl) {
+          await api.shell.openExternal(result.authorizationUrl);
+        }
 
         const expiresAtMs = Date.parse(result.expiresAt);
         const deadlineMs =
@@ -2834,7 +2848,13 @@ export default function ChatView(props: ChatViewProps) {
         );
       }
     },
-    [activeProviderDriver, activeProviderInstanceId, activeWorkspaceRoot],
+    [
+      activeProviderDriver,
+      activeProviderInstanceId,
+      activeProviderLabel,
+      activeWorkspaceRoot,
+      runProjectScript,
+    ],
   );
 
   const composerBannerItems = infrastructureComposerBannerItems;

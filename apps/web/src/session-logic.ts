@@ -8,6 +8,7 @@ import {
   type OrchestrationThreadActivity,
   type OrchestrationProposedPlanId,
   ProviderDriverKind,
+  ProviderInstanceId,
   type ThreadForkContextPayload,
   type ToolLifecycleItemType,
   type UserInputQuestion,
@@ -20,9 +21,10 @@ import {
   providerAuthReconnectCommand,
 } from "@threadlines/shared/providerAuth";
 import {
-  codexMcpLoginCommand,
   extensionMcpOAuthActionIntent,
   extensionMcpOAuthActionLabel,
+  providerMcpLoginCommand,
+  type ExtensionMcpLoginProvider,
   type ExtensionMcpOAuthActionIntent,
 } from "./mcpAuthStatus";
 import { filterSupersededManualContextCompactionActivities } from "./lib/contextCompactionActivities";
@@ -62,6 +64,8 @@ export interface ProviderAuthReconnectAction {
 }
 
 export interface McpAuthReconnectAction {
+  provider: ProviderDriverKind;
+  providerInstanceId?: ProviderInstanceId | undefined;
   serverName: string;
   serverLabel: string;
   intent: ExtensionMcpOAuthActionIntent;
@@ -1994,13 +1998,23 @@ function deriveMcpAuthReconnectAction(
     return undefined;
   }
 
+  const provider = ProviderDriverKind.make(asTrimmedString(payload?.provider) ?? "codex");
+  const providerInstanceIdValue = asTrimmedString(payload?.providerInstanceId);
+  const providerInstanceId = providerInstanceIdValue
+    ? ProviderInstanceId.make(providerInstanceIdValue)
+    : undefined;
+  const loginProvider: ExtensionMcpLoginProvider =
+    provider === ProviderDriverKind.make("claudeAgent") ? "claudeAgent" : "codex";
+
   return {
+    provider,
+    ...(providerInstanceId ? { providerInstanceId } : {}),
     serverName,
     serverLabel: mcpServerDisplayName(serverName),
     intent,
     actionLabel: extensionMcpOAuthActionLabel(intent),
     message: error ?? "This MCP server needs authorization.",
-    terminalCommand: codexMcpLoginCommand(serverName),
+    terminalCommand: providerMcpLoginCommand(loginProvider, serverName),
   };
 }
 

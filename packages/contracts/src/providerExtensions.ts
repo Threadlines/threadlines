@@ -193,7 +193,7 @@ export type ProviderExtensionMcpOAuthStartInput = typeof ProviderExtensionMcpOAu
 export const ProviderExtensionMcpOAuthStartResult = Schema.Struct({
   operationId: TrimmedNonEmptyString,
   serverName: TrimmedNonEmptyString,
-  authorizationUrl: TrimmedNonEmptyString,
+  authorizationUrl: Schema.optional(TrimmedNonEmptyString),
   terminalCommand: TrimmedNonEmptyString,
   expiresAt: IsoDateTime,
 });

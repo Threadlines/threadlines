@@ -14,6 +14,58 @@ export function extensionProviderDriverSortRank(driverKind: string): number {
   return 2;
 }
 
+const EXTENSION_BROWSER_MAX_SINGLETON_GROUP_RATIO = 0.6;
+
+export function formatExtensionGroupLabel(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  const spaced = trimmed.replace(/[-_]+/g, " ");
+  if (spaced === spaced.toUpperCase()) return spaced;
+  return spaced.replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
+}
+
+export interface ExtensionPluginGroupLabelInput {
+  readonly scope?: string | undefined;
+  readonly marketplaceName?: string | undefined;
+  readonly remoteMarketplaceName?: string | undefined;
+  readonly installPolicy?: string | undefined;
+  readonly availability?: string | undefined;
+  readonly isOfficial: boolean;
+  readonly isLocal: boolean;
+}
+
+export function deriveExtensionPluginGroupLabel({
+  scope,
+  marketplaceName,
+  remoteMarketplaceName,
+  installPolicy,
+  availability,
+  isOfficial,
+  isLocal,
+}: ExtensionPluginGroupLabelInput): string {
+  if (scope) return formatExtensionGroupLabel(scope);
+  if (isOfficial) return "Official catalog";
+  if (isLocal) return "Local";
+  const catalogName = marketplaceName ?? remoteMarketplaceName;
+  if (catalogName) return formatExtensionGroupLabel(catalogName);
+  if (installPolicy) return formatExtensionGroupLabel(installPolicy);
+  if (availability) return formatExtensionGroupLabel(availability);
+  return "Plugins";
+}
+
+export function shouldRenderExtensionBrowserGroups(
+  groups: ReadonlyArray<{ readonly items: ReadonlyArray<unknown> }>,
+  sort: string,
+): boolean {
+  if (sort === "recommended" || groups.length <= 1) return false;
+  const singletonGroupCount = groups.filter((group) => group.items.length === 1).length;
+  const singletonGroupRatio = singletonGroupCount / groups.length;
+  return (
+    groups.some((group) => group.items.length > 1) &&
+    singletonGroupRatio <= EXTENSION_BROWSER_MAX_SINGLETON_GROUP_RATIO
+  );
+}
+
 export interface ExtensionProviderThreadProject {
   readonly environmentId: string;
   readonly id: string;

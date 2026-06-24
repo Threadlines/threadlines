@@ -81,8 +81,29 @@ const CLAUDE_PLUGIN_ACTION_TIMEOUT = Duration.seconds(120);
 const CODEX_PLUGIN_MARKETPLACE_ACTION_TIMEOUT = Duration.seconds(120);
 const CODEX_MCP_OAUTH_DEFAULT_TIMEOUT_SECONDS = 300;
 const CODEX_MCP_OAUTH_MAX_TIMEOUT_SECONDS = 900;
+const CLAUDE_MCP_LOGIN_VERIFY_INTERVAL_SECONDS = 3;
 const MAX_SKILL_FILE_BYTES = 32_000;
+const MAX_SKILL_ROOT_SCAN_DIRECTORIES = 250;
+const MAX_SKILL_ROOT_SCAN_DEPTH = 6;
+const MAX_CLAUDE_NESTED_SKILL_ROOT_SCAN_DIRECTORIES = 400;
+const MAX_CLAUDE_NESTED_SKILL_ROOT_SCAN_DEPTH = 5;
 const MAX_ERROR_MESSAGE_LENGTH = 240;
+
+const CLAUDE_NESTED_SKILL_ROOT_SKIP_DIRECTORIES = new Set([
+  ".git",
+  ".hg",
+  ".svn",
+  ".claude",
+  ".codex",
+  ".next",
+  ".turbo",
+  ".vercel",
+  "coverage",
+  "dist",
+  "node_modules",
+  "out",
+  "target",
+]);
 
 const decodeCodexSettings = Schema.decodeUnknownSync(CodexSettings);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
@@ -601,6 +622,14 @@ function codexMcpLoginCommand(serverName: string, scopes: ReadonlyArray<string> 
     args.push("--scopes", scopes.join(","));
   }
   return args.map(commandArg).join(" ");
+}
+
+function claudeMcpLoginCommand(serverName: string): string {
+  return ["claude", "mcp", "login", serverName].map(commandArg).join(" ");
+}
+
+function claudeShellArg(value: string): string {
+  return process.platform === "win32" ? commandArg(value) : value;
 }
 
 function compactProcessEnv(environment: NodeJS.ProcessEnv): Record<string, string> {
@@ -1183,6 +1212,106 @@ export function parseClaudeMcpList(output: string): ProviderExtensionMcpServer[]
   return servers.toSorted((left, right) => left.name.localeCompare(right.name));
 }
 
+function providerExtensionMcpNeedsAuthStatus(
+  input: Pick<ProviderExtensionMcpServer, "authStatus" | "status" | "detail">,
+): boolean {
+  return [input.authStatus, input.status, input.detail]
+    .map((value) => value?.trim().toLowerCase() ?? "")
+    .some(
+      (value) =>
+        value.includes("unauth") ||
+        value.includes("not logged in") ||
+        value.includes("not authenticated") ||
+        value.includes("needs auth") ||
+        value.includes("login required") ||
+        value.includes("expired"),
+    );
+}
+
+const verifyClaudeMcpLoginStatus = Effect.fn("providerExtensions.verifyClaudeMcpLoginStatus")(
+  function* (
+    context: ClaudeProviderExtensionActionContext,
+    serverName: string,
+  ): Effect.fn.Return<
+    { readonly authenticated: boolean; readonly message: string },
+    ProviderExtensionsError,
+    ChildProcessSpawner.ChildProcessSpawner
+  > {
+    const result = yield* runClaudeCommand({
+      binaryPath: context.config.binaryPath,
+      args: ["mcp", "list"],
+      cwd: context.cwd,
+      env: context.environment,
+      timeout: INVENTORY_COMMAND_TIMEOUT,
+    }).pipe(Effect.mapError(toProviderExtensionsError));
+    if (result.code !== 0) {
+      return yield* new ProviderExtensionsError({
+        message: claudeCommandFailureMessage({ args: ["mcp", "list"], ...result }),
+      });
+    }
+
+    const servers = parseClaudeMcpList(result.stdout);
+    const server = servers.find((entry) => entry.name === serverName);
+    if (!server) {
+      return {
+        authenticated: false,
+        message: `Claude login command exited, but ${serverName} was not reported by \`claude mcp list\`.`,
+      };
+    }
+
+    if (providerExtensionMcpNeedsAuthStatus(server)) {
+      return {
+        authenticated: false,
+        message: `${serverName} still needs authentication after the browser login flow. The browser sign-in may have been cancelled or not completed.`,
+      };
+    }
+
+    return {
+      authenticated: true,
+      message: `${serverName} login completed.`,
+    };
+  },
+);
+
+const waitForClaudeMcpLoginStatus = Effect.fn("providerExtensions.waitForClaudeMcpLoginStatus")(
+  function* (input: {
+    readonly context: ClaudeProviderExtensionActionContext;
+    readonly serverName: string;
+    readonly operationId: string;
+    readonly timeoutSecs: number;
+  }): Effect.fn.Return<
+    { readonly authenticated: boolean; readonly message: string },
+    ProviderExtensionsError,
+    ChildProcessSpawner.ChildProcessSpawner
+  > {
+    const maxAttempts = Math.max(
+      1,
+      Math.ceil(input.timeoutSecs / CLAUDE_MCP_LOGIN_VERIFY_INTERVAL_SECONDS),
+    );
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const verification = yield* verifyClaudeMcpLoginStatus(input.context, input.serverName);
+      if (verification.authenticated) return verification;
+
+      recordProviderExtensionOperation({
+        operationId: input.operationId,
+        kind: "mcp-oauth",
+        status: "running",
+        message: `Waiting for ${input.serverName} browser sign-in to complete.`,
+      });
+
+      if (attempt < maxAttempts - 1) {
+        yield* Effect.sleep(Duration.seconds(CLAUDE_MCP_LOGIN_VERIFY_INTERVAL_SECONDS));
+      }
+    }
+
+    return {
+      authenticated: false,
+      message: `${input.serverName} still needs authentication after waiting for the browser login flow. The browser sign-in may have been cancelled or not completed.`,
+    };
+  },
+);
+
 function parseSkillMarkdown(input: {
   readonly name: string;
   readonly path: string;
@@ -1192,30 +1321,55 @@ function parseSkillMarkdown(input: {
   const metadata = new Map<string, string>();
   if (frontMatter) {
     for (const line of frontMatter[1]!.split(/\r?\n/g)) {
-      const match = line.match(/^([a-zA-Z0-9_-]+):\s*"?(.+?)"?\s*$/);
-      if (match) metadata.set(match[1]!.toLowerCase(), match[2]!.trim());
+      const match = line.match(/^([a-zA-Z0-9_-]+):\s*(.*?)\s*$/);
+      if (!match) continue;
+      metadata.set(normalizeSkillMetadataKey(match[1]!), parseSkillMetadataValue(match[2] ?? ""));
     }
   }
+  const enabled = parseSkillMetadataBoolean(metadata.get("defaultenabled")) ?? true;
   return {
     name: optionalText(metadata.get("name")) ?? input.name,
     path: input.path,
-    ...(optionalText(metadata.get("display_name"))
-      ? { displayName: optionalText(metadata.get("display_name")) }
+    ...(optionalText(metadata.get("displayname"))
+      ? { displayName: optionalText(metadata.get("displayname")) }
       : {}),
     ...(optionalText(metadata.get("description"))
       ? { description: optionalText(metadata.get("description")) }
       : {}),
-    ...(optionalText(metadata.get("short_description"))
-      ? { shortDescription: optionalText(metadata.get("short_description")) }
+    ...(optionalText(metadata.get("shortdescription"))
+      ? { shortDescription: optionalText(metadata.get("shortdescription")) }
       : {}),
-    enabled: true,
+    enabled,
     source: "Filesystem",
   } satisfies ProviderExtensionSkill;
 }
 
-function withSkillScope(
+function normalizeSkillMetadataKey(value: string): string {
+  return value.replace(/[-_]/g, "").toLowerCase();
+}
+
+function parseSkillMetadataValue(value: string): string {
+  const trimmed = value.trim();
+  if (
+    trimmed.length >= 2 &&
+    ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'")))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
+function parseSkillMetadataBoolean(value: string | undefined): boolean | undefined {
+  const normalized = optionalText(value)?.toLowerCase();
+  if (normalized === "true") return true;
+  if (normalized === "false") return false;
+  return undefined;
+}
+
+function withSkillInventoryMetadata(
   skill: ProviderExtensionSkill,
-  scope: "project" | "user",
+  input: { readonly scope: "project" | "user"; readonly source: string },
 ): ProviderExtensionSkill {
   return {
     name: skill.name,
@@ -1224,67 +1378,321 @@ function withSkillScope(
     ...(skill.description !== undefined ? { description: skill.description } : {}),
     ...(skill.shortDescription !== undefined ? { shortDescription: skill.shortDescription } : {}),
     ...(skill.enabled !== undefined ? { enabled: skill.enabled } : {}),
-    scope,
-    ...(skill.source !== undefined ? { source: skill.source } : {}),
+    scope: input.scope,
+    source: input.source,
   };
 }
 
+interface DiscoveredClaudeSkill {
+  readonly skill: ProviderExtensionSkill;
+  readonly scope: "project" | "user";
+  readonly source: string;
+  readonly priority: number;
+  readonly namespace?: string | undefined;
+  readonly relativeDirectory: string;
+}
+
+interface ClaudeSkillRoot {
+  readonly root: string;
+  readonly scope: "project" | "user";
+  readonly source: string;
+  readonly priority: number;
+  readonly namespace?: string | undefined;
+}
+
+function posixRelativePath(value: string): string {
+  return value.replaceAll("\\", "/").replace(/^\.\//, "");
+}
+
+function normalizedPathKey(value: string): string {
+  const normalized = value.replaceAll("\\", "/");
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function skillNamespace(input: {
+  readonly rootNamespace?: string | undefined;
+  readonly relativeDirectory: string;
+}): string | undefined {
+  const parent = input.relativeDirectory.split("/").slice(0, -1).join("/");
+  const parts = [input.rootNamespace, parent].flatMap((value) => {
+    const trimmed = optionalText(value);
+    return trimmed ? [trimmed] : [];
+  });
+  return parts.length > 0 ? parts.join("/") : undefined;
+}
+
+function namespaceSkillName(
+  skill: ProviderExtensionSkill,
+  namespace: string,
+): ProviderExtensionSkill {
+  return {
+    ...skill,
+    name: `${namespace}:${skill.name}`,
+  };
+}
+
+function finalizeClaudeSkills(
+  discovered: ReadonlyArray<DiscoveredClaudeSkill>,
+): ProviderExtensionSkill[] {
+  const byName = new Map<string, DiscoveredClaudeSkill[]>();
+  for (const entry of discovered) {
+    const group = byName.get(entry.skill.name) ?? [];
+    group.push(entry);
+    byName.set(entry.skill.name, group);
+  }
+
+  const output: ProviderExtensionSkill[] = [];
+  for (const group of byName.values()) {
+    if (group.length === 1) {
+      output.push(group[0]!.skill);
+      continue;
+    }
+
+    const namespaceEntries: ProviderExtensionSkill[] = [];
+    const unprefixedEntries: DiscoveredClaudeSkill[] = [];
+    for (const entry of group) {
+      if (entry.namespace) {
+        namespaceEntries.push(namespaceSkillName(entry.skill, entry.namespace));
+      } else {
+        unprefixedEntries.push(entry);
+      }
+    }
+
+    if (unprefixedEntries.length > 0) {
+      const winner = unprefixedEntries.toSorted(
+        (left, right) => right.priority - left.priority,
+      )[0]!;
+      output.push(winner.skill);
+    }
+    output.push(...namespaceEntries);
+  }
+
+  const uniqueByNameAndPath = new Map<string, ProviderExtensionSkill>();
+  for (const skill of output) {
+    uniqueByNameAndPath.set(`${skill.name}\0${skill.path}`, skill);
+  }
+  return [...uniqueByNameAndPath.values()].toSorted((left, right) =>
+    left.name.localeCompare(right.name),
+  );
+}
+
 const readSkillsFromRoot = Effect.fn("providerExtensions.readSkillsFromRoot")(function* (
-  root: string,
-): Effect.fn.Return<ProviderExtensionSkill[], never, FileSystem.FileSystem | Path.Path> {
+  rootInput: ClaudeSkillRoot,
+): Effect.fn.Return<DiscoveredClaudeSkill[], never, FileSystem.FileSystem | Path.Path> {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const root = path.resolve(rootInput.root);
   const stat = yield* fileSystem.stat(root).pipe(Effect.catch(() => Effect.succeed(null)));
   if (!stat || stat.type !== "Directory") return [];
 
-  const entries = yield* fileSystem
-    .readDirectory(root)
-    .pipe(Effect.catch(() => Effect.succeed([])));
-  const skills: Array<ProviderExtensionSkill | null> = yield* Effect.forEach(
-    entries,
-    (entry) =>
-      Effect.gen(function* () {
-        const skillPath = path.join(root, entry, "SKILL.md");
-        const skillStat = yield* fileSystem
-          .stat(skillPath)
+  let scannedDirectories = 0;
+  const skillDirectories: Array<{
+    readonly directory: string;
+    readonly skillPath: string;
+    readonly size: number;
+  }> = [];
+
+  const walk = (directory: string, depth: number): Effect.Effect<void, never> =>
+    Effect.gen(function* () {
+      if (depth > MAX_SKILL_ROOT_SCAN_DEPTH) return;
+      if (scannedDirectories >= MAX_SKILL_ROOT_SCAN_DIRECTORIES) return;
+      scannedDirectories += 1;
+
+      const skillPath = path.join(directory, "SKILL.md");
+      const skillStat = yield* fileSystem
+        .stat(skillPath)
+        .pipe(Effect.catch(() => Effect.succeed(null)));
+      if (directory !== root && skillStat?.type === "File") {
+        skillDirectories.push({ directory, skillPath, size: Number(skillStat.size) });
+        return;
+      }
+
+      const entries = yield* fileSystem
+        .readDirectory(directory)
+        .pipe(Effect.catch(() => Effect.succeed([])));
+      for (const entry of entries) {
+        const child = path.join(directory, entry);
+        const childStat = yield* fileSystem
+          .stat(child)
           .pipe(Effect.catch(() => Effect.succeed(null)));
-        if (!skillStat || skillStat.type !== "File") return null;
-        if (skillStat.size > MAX_SKILL_FILE_BYTES) {
+        if (childStat?.type === "Directory") {
+          yield* walk(child, depth + 1);
+        }
+      }
+    });
+
+  yield* walk(root, 0);
+
+  const skills: Array<DiscoveredClaudeSkill | null> = yield* Effect.forEach(
+    skillDirectories,
+    ({ directory, skillPath, size }) =>
+      Effect.gen(function* () {
+        const entry = path.basename(directory);
+        const relativeDirectory = posixRelativePath(path.relative(root, directory));
+        const namespace = skillNamespace({
+          rootNamespace: rootInput.namespace,
+          relativeDirectory,
+        });
+        if (size > MAX_SKILL_FILE_BYTES) {
+          const skill = withSkillInventoryMetadata(
+            {
+              name: entry,
+              path: skillPath,
+              enabled: true,
+            },
+            rootInput,
+          );
           return {
-            name: entry,
-            path: skillPath,
-            enabled: true,
-            source: "Filesystem",
-          } satisfies ProviderExtensionSkill;
+            skill,
+            scope: rootInput.scope,
+            source: rootInput.source,
+            priority: rootInput.priority,
+            namespace,
+            relativeDirectory,
+          } satisfies DiscoveredClaudeSkill;
         }
         const contents = yield* fileSystem
           .readFileString(skillPath)
           .pipe(Effect.catch(() => Effect.succeed("")));
-        return parseSkillMarkdown({ name: entry, path: skillPath, contents });
+        const skill = withSkillInventoryMetadata(
+          parseSkillMarkdown({ name: entry, path: skillPath, contents }),
+          rootInput,
+        );
+        return {
+          skill,
+          scope: rootInput.scope,
+          source: rootInput.source,
+          priority: rootInput.priority,
+          namespace,
+          relativeDirectory,
+        } satisfies DiscoveredClaudeSkill;
       }),
     { concurrency: 8 },
   );
 
   return skills
-    .filter((skill): skill is ProviderExtensionSkill => skill !== null)
-    .toSorted((left, right) => left.name.localeCompare(right.name));
+    .filter((skill): skill is DiscoveredClaudeSkill => skill !== null)
+    .toSorted((left, right) => left.skill.name.localeCompare(right.skill.name));
 });
+
+const discoverNestedClaudeSkillRoots = Effect.fn(
+  "providerExtensions.discoverNestedClaudeSkillRoots",
+)(function* (
+  cwd: string,
+): Effect.fn.Return<ClaudeSkillRoot[], never, FileSystem.FileSystem | Path.Path> {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const root = path.resolve(cwd);
+  const roots: ClaudeSkillRoot[] = [];
+  let scannedDirectories = 0;
+
+  const walk = (directory: string, depth: number): Effect.Effect<void, never> =>
+    Effect.gen(function* () {
+      if (depth > MAX_CLAUDE_NESTED_SKILL_ROOT_SCAN_DEPTH) return;
+      if (scannedDirectories >= MAX_CLAUDE_NESTED_SKILL_ROOT_SCAN_DIRECTORIES) return;
+      scannedDirectories += 1;
+
+      const skillRoot = path.join(directory, ".claude", "skills");
+      const skillRootStat = yield* fileSystem
+        .stat(skillRoot)
+        .pipe(Effect.catch(() => Effect.succeed(null)));
+      if (skillRootStat?.type === "Directory") {
+        const relativeDirectory = posixRelativePath(path.relative(root, directory));
+        const namespace =
+          relativeDirectory.length > 0 && relativeDirectory !== "." ? relativeDirectory : undefined;
+        roots.push({
+          root: skillRoot,
+          scope: "project",
+          source: namespace ? `Claude project: ${namespace}` : "Claude project",
+          priority: 1_500 - depth,
+          namespace,
+        });
+      }
+
+      const entries = yield* fileSystem
+        .readDirectory(directory)
+        .pipe(Effect.catch(() => Effect.succeed([])));
+      for (const entry of entries) {
+        if (CLAUDE_NESTED_SKILL_ROOT_SKIP_DIRECTORIES.has(entry)) continue;
+        const child = path.join(directory, entry);
+        const childStat = yield* fileSystem
+          .stat(child)
+          .pipe(Effect.catch(() => Effect.succeed(null)));
+        if (childStat?.type === "Directory") {
+          yield* walk(child, depth + 1);
+        }
+      }
+    });
+
+  yield* walk(root, 0);
+  return roots;
+});
+
+function claudeAncestorSkillRoots(path: Path.Path, cwd: string): ClaudeSkillRoot[] {
+  const roots: ClaudeSkillRoot[] = [];
+  const startingDirectory = path.resolve(cwd);
+  let current = startingDirectory;
+  let depth = 0;
+
+  while (true) {
+    const relativeDirectory = posixRelativePath(path.relative(startingDirectory, current));
+    const label =
+      relativeDirectory.length > 0 && relativeDirectory !== "." ? relativeDirectory : undefined;
+    roots.push({
+      root: path.join(current, ".claude", "skills"),
+      scope: "project",
+      source: label ? `Claude project: ${label}` : "Claude project",
+      priority: 1_000 - depth,
+    });
+
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+    depth += 1;
+  }
+
+  return roots;
+}
+
+function uniqueClaudeSkillRoots(
+  roots: ReadonlyArray<ClaudeSkillRoot>,
+  path: Path.Path,
+): ClaudeSkillRoot[] {
+  const byPath = new Map<string, ClaudeSkillRoot>();
+  for (const root of roots) {
+    const resolved = path.resolve(root.root);
+    const key = normalizedPathKey(resolved);
+    const existing = byPath.get(key);
+    if (!existing || root.priority > existing.priority) {
+      byPath.set(key, { ...root, root: resolved });
+    }
+  }
+  return [...byPath.values()].toSorted((left, right) => right.priority - left.priority);
+}
 
 const readClaudeSkills = Effect.fn("providerExtensions.readClaudeSkills")(function* (
   claudeHome: string,
   cwd: string,
 ) {
   const path = yield* Path.Path;
-  const [userSkills, projectSkills] = yield* Effect.all(
+  const nestedProjectRoots = yield* discoverNestedClaudeSkillRoots(cwd);
+  const skillRoots = uniqueClaudeSkillRoots(
     [
-      readSkillsFromRoot(path.join(claudeHome, ".claude", "skills")),
-      readSkillsFromRoot(path.join(cwd, ".claude", "skills")),
+      ...nestedProjectRoots,
+      ...claudeAncestorSkillRoots(path, cwd),
+      {
+        root: path.join(claudeHome, ".claude", "skills"),
+        scope: "user",
+        source: "Claude user",
+        priority: 0,
+      },
     ],
-    { concurrency: "unbounded" },
+    path,
   );
-  const userTagged = userSkills.map((skill) => withSkillScope(skill, "user"));
-  const projectTagged = projectSkills.map((skill) => withSkillScope(skill, "project"));
-  return [...projectTagged, ...userTagged];
+  const discovered = yield* Effect.forEach(skillRoots, readSkillsFromRoot, {
+    concurrency: 8,
+  });
+  return finalizeClaudeSkills(discovered.flat());
 });
 
 const runClaudeCommand = Effect.fn("providerExtensions.runClaudeCommand")(function* (input: {
@@ -1321,6 +1729,26 @@ function claudeCommandFailureMessage(input: {
   return detail
     ? `${command} failed: ${detail}`
     : `${command} failed with exit code ${input.code}.`;
+}
+
+function claudeMcpLoginFailureMessage(input: {
+  readonly serverName: string;
+  readonly args: ReadonlyArray<string>;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly code: number;
+}): string {
+  const base = claudeCommandFailureMessage(input);
+  if (
+    /\b(awaiting|pending) approval\b/i.test(base) ||
+    /\.mcp\.json servers are awaiting approval/i.test(base)
+  ) {
+    return `${base}\n\nClaude has not approved one or more .mcp.json servers for this project yet. Run \`claude\` in this project, approve the MCP configuration, then retry authorization in Threadlines.`;
+  }
+  if (/\bNo MCP server named\b/i.test(base) && /\s/.test(input.serverName)) {
+    return `${base}\n\nThreadlines tried to log in to "${input.serverName}". If Claude still cannot find it after refreshing, run \`claude mcp list\` in this project and use the exact server name reported by Claude.`;
+  }
+  return base;
 }
 
 const runClaudePluginAction = Effect.fn("providerExtensions.runClaudePluginAction")(function* (
@@ -1551,6 +1979,110 @@ export const startProviderExtensionMcpOAuth = Effect.fn(
   ProviderExtensionsError,
   FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
 > {
+  const providerConfig = yield* resolveProviderActionConfig({
+    providerInstanceId: input.request.providerInstanceId,
+    settings: input.settings,
+  });
+  if (providerConfig.driver === CLAUDE_DRIVER) {
+    const context = yield* resolveClaudeActionContext({
+      cwd: input.request.cwd,
+      providerInstanceId: input.request.providerInstanceId,
+      settings: input.settings,
+    });
+    const timeoutSecs = boundedOAuthTimeoutSeconds(input.request.timeoutSecs);
+    const operationId = randomUUID();
+    const expiresAt = yield* isoStringAfterSeconds(timeoutSecs);
+    const args = ["mcp", "login", claudeShellArg(input.request.serverName)];
+    const terminalCommand = claudeMcpLoginCommand(input.request.serverName);
+
+    recordProviderExtensionOperation({
+      operationId,
+      kind: "mcp-oauth",
+      status: "running",
+      message: `Opening ${input.request.serverName} login with Claude.`,
+    });
+
+    yield* runClaudeCommand({
+      binaryPath: context.config.binaryPath,
+      args,
+      cwd: context.cwd,
+      env: context.environment,
+      timeout: Duration.seconds(timeoutSecs),
+    }).pipe(
+      Effect.tap((result) =>
+        Effect.gen(function* () {
+          const completedAt = yield* nowIsoString;
+          if (result.code === 0) {
+            const verification = yield* waitForClaudeMcpLoginStatus({
+              context,
+              serverName: input.request.serverName,
+              operationId,
+              timeoutSecs,
+            });
+            if (verification.authenticated) {
+              recordProviderExtensionOperation({
+                operationId,
+                kind: "mcp-oauth",
+                status: "completed",
+                message: verification.message,
+                completedAt,
+              });
+            } else {
+              recordProviderExtensionOperation({
+                operationId,
+                kind: "mcp-oauth",
+                status: "failed",
+                message: `${input.request.serverName} login was not completed.`,
+                error: verification.message,
+                completedAt,
+              });
+            }
+            return;
+          }
+
+          recordProviderExtensionOperation({
+            operationId,
+            kind: "mcp-oauth",
+            status: "failed",
+            message: `${input.request.serverName} login failed.`,
+            error: claudeMcpLoginFailureMessage({
+              serverName: input.request.serverName,
+              args,
+              ...result,
+            }),
+            completedAt,
+          });
+        }),
+      ),
+      Effect.catch((cause) =>
+        Effect.gen(function* () {
+          const message = toErrorMessage(cause);
+          const completedAt = yield* nowIsoString;
+          recordProviderExtensionOperation({
+            operationId,
+            kind: "mcp-oauth",
+            status: message.toLowerCase().includes("timed out") ? "expired" : "failed",
+            message: `${input.request.serverName} login failed.`,
+            error: message,
+            completedAt,
+          });
+        }),
+      ),
+      Effect.forkDetach,
+    );
+
+    return {
+      operationId,
+      serverName: input.request.serverName,
+      terminalCommand,
+      expiresAt,
+    } satisfies ProviderExtensionMcpOAuthStartResult;
+  }
+
+  if (providerConfig.driver !== CODEX_DRIVER) {
+    return yield* unsupportedProviderExtensionAction(providerConfig.driver, "MCP OAuth");
+  }
+
   const context = yield* resolveCodexActionContext({
     cwd: input.request.cwd,
     providerInstanceId: input.request.providerInstanceId,

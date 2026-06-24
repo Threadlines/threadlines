@@ -370,6 +370,7 @@ describe("MessagesTimeline", () => {
               detail: "The supabase MCP server is not logged in.",
               tone: "warning",
               mcpAuthReconnect: {
+                provider: ProviderDriverKind.make("codex"),
                 serverName: "supabase",
                 serverLabel: "Supabase",
                 intent: "authorize",
@@ -409,6 +410,7 @@ describe("MessagesTimeline", () => {
               detail: "The supabase MCP server is not logged in.",
               tone: "warning",
               mcpAuthReconnect: {
+                provider: ProviderDriverKind.make("codex"),
                 serverName: "supabase",
                 serverLabel: "Supabase",
                 intent: "authorize",

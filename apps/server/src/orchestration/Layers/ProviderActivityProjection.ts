@@ -1088,6 +1088,8 @@ export function projectRuntimeEventToActivities(
           kind: "mcp.status.updated",
           summary: mcpStatusSummary(event.payload.status),
           payload: {
+            provider: event.provider,
+            ...(event.providerInstanceId ? { providerInstanceId: event.providerInstanceId } : {}),
             status: event.payload.status,
             ...(compactUnknownDetail(event.payload.status)
               ? { detail: compactUnknownDetail(event.payload.status) }

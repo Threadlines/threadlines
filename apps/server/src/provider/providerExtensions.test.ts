@@ -23,9 +23,11 @@ import {
   mapCodexMcpServers,
   parseClaudeMcpList,
   parseClaudePluginList,
+  getProviderExtensionOperationStatus,
   readProviderInstructionFiles,
   readProviderExtensionsInventory,
   refreshProviderExtensionPluginMarketplaces,
+  startProviderExtensionMcpOAuth,
   writeInstructionFile,
 } from "./providerExtensions.ts";
 
@@ -83,6 +85,16 @@ function makeSettings(overrides: Record<string, unknown> = {}): ServerSettingsCo
     },
     ...overrides,
   });
+}
+
+function claudeInventoryProcessFor(args: ReadonlyArray<string>) {
+  if (args[0] === "plugin" && args[1] === "list") {
+    return makeProcessResult('{"installed":[],"available":[]}');
+  }
+  if (args[0] === "mcp" && args[1] === "list") {
+    return makeProcessResult("");
+  }
+  return makeProcessResult("", `unexpected claude command: ${args.join(" ")}`, 1);
 }
 
 describe("provider extensions inventory", () => {
@@ -280,6 +292,296 @@ describe("provider extensions inventory", () => {
         [ProviderInstanceId.make("claudeAgent")],
       );
       assert.equal(result.providers[0]?.status, "disabled");
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
+  it.effect("discovers Claude skills from user, ancestor, current, and nested roots", () => {
+    const spawner = ChildProcessSpawner.make((command) => {
+      const childProcess = command as unknown as {
+        readonly args: ReadonlyArray<string>;
+      };
+      return Effect.succeed(claudeInventoryProcessFor(childProcess.args));
+    });
+    const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner);
+
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const repoDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-claude-skills-repo-",
+      });
+      const claudeHome = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-claude-skills-home-",
+      });
+      const packageDir = path.join(repoDir, "packages", "api");
+
+      const writeSkill = (skillPath: string, contents: string) =>
+        Effect.gen(function* () {
+          yield* fileSystem.makeDirectory(path.dirname(skillPath), { recursive: true });
+          yield* fileSystem.writeFileString(skillPath, contents);
+        });
+
+      yield* writeSkill(
+        path.join(claudeHome, ".claude", "skills", "user-only", "SKILL.md"),
+        [
+          "---",
+          "name: user-only",
+          "display-name: User Skill",
+          "short-description: From user home",
+          "---",
+          "Use this from the user skill root.",
+        ].join("\n"),
+      );
+      yield* writeSkill(
+        path.join(repoDir, ".claude", "skills", "shared", "SKILL.md"),
+        ["---", "name: shared", "displayName: Repo Shared", "---", "Parent project skill."].join(
+          "\n",
+        ),
+      );
+      yield* writeSkill(
+        path.join(packageDir, ".claude", "skills", "shared", "SKILL.md"),
+        [
+          "---",
+          "name: shared",
+          "display-name: Package Shared",
+          "shortDescription: Closest project wins",
+          "default-enabled: false",
+          "---",
+          "Package project skill.",
+        ].join("\n"),
+      );
+      yield* writeSkill(
+        path.join(packageDir, ".claude", "skills", "category", "deploy", "SKILL.md"),
+        [
+          "---",
+          "name: deploy",
+          "displayName: Deploy Skill",
+          "short-description: Nested under the skills root",
+          "defaultEnabled: true",
+          "---",
+          "Nested skill directory.",
+        ].join("\n"),
+      );
+      yield* writeSkill(
+        path.join(packageDir, "feature", ".claude", "skills", "shared", "SKILL.md"),
+        [
+          "---",
+          "name: shared",
+          "display-name: Feature Shared",
+          "---",
+          "Nested project skill.",
+        ].join("\n"),
+      );
+
+      const result = yield* readProviderExtensionsInventory({
+        request: {
+          cwd: packageDir,
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        },
+        settings: makeSettings({
+          providers: {
+            codex: { enabled: false },
+            claudeAgent: { enabled: true, binaryPath: "claude", homePath: claudeHome },
+            cursor: { enabled: false },
+            opencode: { enabled: false },
+          },
+        }),
+        providers: [],
+      });
+
+      const claude = result.providers[0];
+      const skillsByName = new Map(claude?.skills.map((skill) => [skill.name, skill]));
+
+      assert.deepEqual(
+        [...skillsByName.keys()].toSorted((left, right) => left.localeCompare(right)),
+        ["deploy", "feature:shared", "shared", "user-only"],
+      );
+      assert.equal(skillsByName.get("shared")?.displayName, "Package Shared");
+      assert.equal(skillsByName.get("shared")?.shortDescription, "Closest project wins");
+      assert.equal(skillsByName.get("shared")?.enabled, false);
+      assert.equal(skillsByName.get("feature:shared")?.displayName, "Feature Shared");
+      assert.equal(skillsByName.get("deploy")?.displayName, "Deploy Skill");
+      assert.equal(skillsByName.get("deploy")?.shortDescription, "Nested under the skills root");
+      assert.equal(skillsByName.get("deploy")?.enabled, true);
+      assert.equal(skillsByName.get("user-only")?.scope, "user");
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
+  it.effect("starts Claude MCP login through the configured Claude CLI", () => {
+    const calls: Array<{
+      readonly command: string;
+      readonly args: ReadonlyArray<string>;
+      readonly cwd: string | undefined;
+    }> = [];
+    const spawner = ChildProcessSpawner.make((command) => {
+      const childProcess = command as unknown as {
+        readonly command: string;
+        readonly args: ReadonlyArray<string>;
+        readonly options: { readonly cwd?: string };
+      };
+      calls.push({
+        command: childProcess.command,
+        args: childProcess.args,
+        cwd: childProcess.options.cwd,
+      });
+      if (childProcess.args[0] === "mcp" && childProcess.args[1] === "list") {
+        return Effect.succeed(
+          makeProcessResult(
+            "claude.ai Google Drive: https://drivemcp.googleapis.com/mcp/v1 (HTTP) - Connected",
+          ),
+        );
+      }
+      return Effect.succeed(makeProcessResult("Login completed"));
+    });
+    const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner);
+
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-claude-mcp-login-",
+      });
+      const result = yield* startProviderExtensionMcpOAuth({
+        request: {
+          cwd,
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          serverName: "claude.ai Google Drive",
+          timeoutSecs: 30,
+        },
+        settings: makeSettings({
+          providers: {
+            codex: { enabled: false },
+            claudeAgent: { enabled: true, binaryPath: "custom-claude" },
+            cursor: { enabled: false },
+            opencode: { enabled: false },
+          },
+        }),
+      });
+
+      yield* Effect.yieldNow;
+
+      const status = yield* getProviderExtensionOperationStatus({
+        operationId: result.operationId,
+      });
+
+      assert.equal(result.authorizationUrl, undefined);
+      assert.equal(result.terminalCommand, 'claude mcp login "claude.ai Google Drive"');
+      assert.equal(calls[0]?.command, "custom-claude");
+      assert.deepEqual(calls[0]?.args, [
+        "mcp",
+        "login",
+        process.platform === "win32" ? '"claude.ai Google Drive"' : "claude.ai Google Drive",
+      ]);
+      assert.equal(calls[0]?.cwd, cwd);
+      assert.deepEqual(calls[1]?.args, ["mcp", "list"]);
+      assert.equal(status.status, "completed");
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
+  });
+
+  it.effect("keeps Claude MCP login failed when post-login status still needs auth", () => {
+    const spawner = ChildProcessSpawner.make((command) => {
+      const childProcess = command as unknown as {
+        readonly args: ReadonlyArray<string>;
+      };
+      if (childProcess.args[0] === "mcp" && childProcess.args[1] === "list") {
+        return Effect.succeed(
+          makeProcessResult(
+            "claude.ai Google Drive: https://drivemcp.googleapis.com/mcp/v1 (HTTP) - ! Needs authentication",
+          ),
+        );
+      }
+      return Effect.succeed(makeProcessResult("Login completed"));
+    });
+    const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner);
+
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-claude-mcp-login-cancelled-",
+      });
+      const result = yield* startProviderExtensionMcpOAuth({
+        request: {
+          cwd,
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          serverName: "claude.ai Google Drive",
+          timeoutSecs: 30,
+        },
+        settings: makeSettings({
+          providers: {
+            codex: { enabled: false },
+            claudeAgent: { enabled: true, binaryPath: "custom-claude" },
+            cursor: { enabled: false },
+            opencode: { enabled: false },
+          },
+        }),
+      });
+
+      yield* Effect.yieldNow;
+
+      const runningStatus = yield* getProviderExtensionOperationStatus({
+        operationId: result.operationId,
+      });
+
+      assert.equal(runningStatus.status, "running");
+      assert.match(runningStatus.message ?? "", /Waiting for .*browser sign-in/i);
+
+      yield* TestClock.adjust(Duration.seconds(30));
+
+      const status = yield* getProviderExtensionOperationStatus({
+        operationId: result.operationId,
+      });
+
+      assert.equal(status.status, "failed");
+      assert.match(status.message ?? "", /not completed/i);
+      assert.match(status.error ?? "", /still needs authentication after waiting/i);
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer, TestClock.layer())));
+  });
+
+  it.effect("explains Claude MCP approval failures", () => {
+    const spawner = ChildProcessSpawner.make(() =>
+      Effect.succeed(
+        makeProcessResult(
+          "",
+          [
+            'No MCP server named "claude.ai".',
+            "Configured servers: claude.ai Google Drive (.mcp.json servers are awaiting approval — run `claude` in this directory to review them.)",
+          ].join(" "),
+          1,
+        ),
+      ),
+    );
+    const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner);
+
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "threadlines-claude-mcp-login-failed-",
+      });
+      const result = yield* startProviderExtensionMcpOAuth({
+        request: {
+          cwd,
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          serverName: "claude.ai Google Drive",
+          timeoutSecs: 30,
+        },
+        settings: makeSettings({
+          providers: {
+            codex: { enabled: false },
+            claudeAgent: { enabled: true, binaryPath: "custom-claude" },
+            cursor: { enabled: false },
+            opencode: { enabled: false },
+          },
+        }),
+      });
+
+      yield* Effect.yieldNow;
+
+      const status = yield* getProviderExtensionOperationStatus({
+        operationId: result.operationId,
+      });
+
+      assert.equal(status.status, "failed");
+      assert.match(status.error ?? "", /approve the MCP configuration/i);
+      assert.match(status.error ?? "", /retry authorization in Threadlines/i);
     }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, spawnerLayer)));
   });
 

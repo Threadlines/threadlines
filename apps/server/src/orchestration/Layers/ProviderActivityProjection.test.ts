@@ -1,6 +1,7 @@
 import {
   EventId,
   ProviderDriverKind,
+  ProviderInstanceId,
   type ProviderRuntimeEvent,
   RuntimeItemId,
   ThreadId,
@@ -11,11 +12,17 @@ import { describe, expect, it } from "vitest";
 
 import { projectRuntimeEventToActivities } from "./ProviderActivityProjection.ts";
 
-function mcpStatusEvent(status: unknown): ProviderRuntimeEvent {
+function mcpStatusEvent(
+  status: unknown,
+  options: { readonly providerInstanceId?: string | undefined } = {},
+): ProviderRuntimeEvent {
   return {
     type: "mcp.status.updated",
     eventId: EventId.make("evt-mcp-status"),
     provider: ProviderDriverKind.make("codex"),
+    ...(options.providerInstanceId
+      ? { providerInstanceId: ProviderInstanceId.make(options.providerInstanceId) }
+      : {}),
     threadId: ThreadId.make("thread-1"),
     createdAt: "2026-06-01T12:00:00.000Z",
     payload: {
@@ -137,11 +144,32 @@ describe("ProviderActivityProjection", () => {
       summary: "MCP startup failed",
       payload: {
         detail: "OAuth token expired",
+        provider: "codex",
         status: {
           name: "github",
           status: "failed",
           error: "OAuth token expired",
         },
+      },
+    });
+  });
+
+  it("preserves provider instance metadata on MCP startup failures", () => {
+    const activities = projectRuntimeEventToActivities(
+      mcpStatusEvent(
+        {
+          name: "github",
+          status: "failed",
+          error: "OAuth token expired",
+        },
+        { providerInstanceId: "codex-work" },
+      ),
+    );
+
+    expect(activities[0]).toMatchObject({
+      payload: {
+        provider: "codex",
+        providerInstanceId: "codex-work",
       },
     });
   });
