@@ -12,6 +12,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
@@ -46,6 +47,7 @@ export interface ProcessDiagnosticsShape {
   }) => Effect.Effect<ServerSignalProcessResult>;
   readonly resolveBackgroundRuns: (input: {
     readonly urls: ReadonlyArray<string>;
+    readonly pids?: ReadonlyArray<number> | undefined;
     readonly commandHints?: ReadonlyArray<string> | undefined;
   }) => Effect.Effect<ServerResolveBackgroundRunsResult>;
   readonly stopBackgroundRun: (
@@ -562,6 +564,12 @@ function uniquePositivePorts(ports: ReadonlyArray<number>): number[] {
     .sort((left, right) => left - right);
 }
 
+function uniquePositivePids(pids: ReadonlyArray<number>): number[] {
+  return [...new Set(pids.filter((pid) => Number.isInteger(pid) && pid > 0))]
+    .map((pid) => Math.trunc(pid))
+    .sort((left, right) => left - right);
+}
+
 export function buildWindowsListeningPortQueryCommand(
   ports: ReadonlyArray<number>,
   options?: { readonly all?: boolean },
@@ -838,6 +846,7 @@ function descendantPidsForMatches(input: {
 
 export function resolveBackgroundRunsFromListeningPorts(input: {
   readonly urls: ReadonlyArray<string>;
+  readonly pids?: ReadonlyArray<number> | undefined;
   readonly portRows: ReadonlyArray<ListeningPortRow>;
   readonly processRows?: ReadonlyArray<ProcessRow>;
   readonly commandHints?: ReadonlyArray<string>;
@@ -868,6 +877,7 @@ export function resolveBackgroundRunsFromListeningPorts(input: {
       ?.filter((row) => row.elapsed.trim().length > 0)
       .map((row) => [row.pid, row.elapsed]) ?? [],
   );
+  const processRowsByPid = new Map(input.processRows?.map((row) => [row.pid, row]) ?? []);
   const rowsByPort = new Map<number, ListeningPortRow>();
   for (const row of input.portRows) {
     const matchesUrl = urlsByPort.has(row.port);
@@ -876,30 +886,61 @@ export function resolveBackgroundRunsFromListeningPorts(input: {
     rowsByPort.set(row.port, row);
   }
 
+  const portRunPids = new Set([...rowsByPort.values()].map((row) => row.pid));
+  const processOnlyRows = uniquePositivePids(input.pids ?? [])
+    .filter((pid) => !portRunPids.has(pid))
+    .flatMap((pid) => {
+      const row = processRowsByPid.get(pid);
+      return row ? [row] : [];
+    });
+
   return {
-    runs: [...rowsByPort.values()].map((row) => {
-      const urls = urlsByPort.get(row.port) ?? [];
-      const primaryUrl = urls[0] ?? `http://localhost:${row.port}`;
-      const command = compactCommand(processCommandByPid.get(row.pid) ?? row.command);
-      const canStop = row.pid !== process.pid;
-      return {
-        id: `detected-localhost:${row.port}:${row.pid}`,
-        url: primaryUrl,
-        urls,
-        port: row.port,
-        pid: row.pid,
-        command,
-        detail: `PID ${row.pid} on localhost:${row.port} - ${command}`,
-        ...(processElapsedByPid.get(row.pid) ? { elapsed: processElapsedByPid.get(row.pid) } : {}),
-        statusLabel: canStop ? "Detected" : "Protected",
-        canStop,
-      };
-    }),
+    runs: [
+      ...[...rowsByPort.values()].map((row) => {
+        const urls = urlsByPort.get(row.port) ?? [];
+        const primaryUrl = urls[0] ?? `http://localhost:${row.port}`;
+        const command = compactCommand(processCommandByPid.get(row.pid) ?? row.command);
+        const canStop = row.pid !== process.pid;
+        return {
+          id: `detected-localhost:${row.port}:${row.pid}`,
+          url: primaryUrl,
+          urls,
+          port: row.port,
+          pid: row.pid,
+          command,
+          detail: `PID ${row.pid} on localhost:${row.port} - ${command}`,
+          ...(processElapsedByPid.get(row.pid)
+            ? { elapsed: processElapsedByPid.get(row.pid) }
+            : {}),
+          statusLabel: canStop ? "Detected" : "Protected",
+          canStop,
+        };
+      }),
+      ...processOnlyRows.map((row) => {
+        const command = compactCommand(row.command);
+        const canStop = row.pid !== process.pid;
+        return {
+          id: `detected-process:${row.pid}`,
+          url: `process:${row.pid}`,
+          urls: [],
+          port: null,
+          pid: row.pid,
+          command,
+          detail: `PID ${row.pid} - ${command}`,
+          ...(processElapsedByPid.get(row.pid)
+            ? { elapsed: processElapsedByPid.get(row.pid) }
+            : {}),
+          statusLabel: canStop ? "Detected" : "Protected",
+          canStop,
+        };
+      }),
+    ],
   };
 }
 
 export const make = Effect.fn("makeProcessDiagnostics")(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const detectedCommandRunFingerprints = yield* Ref.make(new Map<number, string>());
 
   const read: ProcessDiagnosticsShape["read"] = Effect.gen(function* () {
     const readAt = yield* DateTime.now;
@@ -956,6 +997,7 @@ export const make = Effect.fn("makeProcessDiagnostics")(function* () {
     "ProcessDiagnostics.resolveBackgroundRuns",
   )(function* (input) {
     const commandHints = input.commandHints ?? [];
+    const pids = uniquePositivePids(input.pids ?? []);
     const ports = input.urls.flatMap((url) => {
       const port = localhostPortFromUrl(url);
       return port === null ? [] : [port];
@@ -968,7 +1010,7 @@ export const make = Effect.fn("makeProcessDiagnostics")(function* () {
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
           Effect.catch(() => Effect.succeed([])),
         ),
-        commandHints.length > 0
+        commandHints.length > 0 || pids.length > 0
           ? readAllProcessRows().pipe(
               Effect.withTracerEnabled(false),
               Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
@@ -978,12 +1020,23 @@ export const make = Effect.fn("makeProcessDiagnostics")(function* () {
       ],
       { concurrency: "unbounded" },
     );
-    return resolveBackgroundRunsFromListeningPorts({
+    const result = resolveBackgroundRunsFromListeningPorts({
       urls: input.urls,
+      pids,
       portRows,
       processRows,
       commandHints,
     });
+    yield* Ref.update(detectedCommandRunFingerprints, (fingerprints) => {
+      const next = new Map(fingerprints);
+      for (const run of result.runs) {
+        if (run.port === null) {
+          next.set(run.pid, run.command);
+        }
+      }
+      return next;
+    });
+    return result;
   });
 
   const stopBackgroundRun: ProcessDiagnosticsShape["stopBackgroundRun"] = Effect.fn(
@@ -998,29 +1051,65 @@ export const make = Effect.fn("makeProcessDiagnostics")(function* () {
       };
     }
 
-    const rows = yield* readListeningPortRows([input.port]).pipe(
-      Effect.withTracerEnabled(false),
-      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-      Effect.catch((error: ProcessDiagnosticsError) =>
-        Effect.succeed<ReadonlyArray<ListeningPortRow>>([]).pipe(
-          Effect.tap(() =>
-            Effect.logWarning("failed to verify detected background run before stop", {
-              pid: input.pid,
-              port: input.port,
-              error: error.message,
-            }),
+    if (input.port === null) {
+      const rows = yield* readAllProcessRows().pipe(
+        Effect.withTracerEnabled(false),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.catch((error: ProcessDiagnosticsError) =>
+          Effect.succeed<ReadonlyArray<ProcessRow>>([]).pipe(
+            Effect.tap(() =>
+              Effect.logWarning("failed to verify detected background process before stop", {
+                pid: input.pid,
+                error: error.message,
+              }),
+            ),
           ),
         ),
-      ),
-    );
-    const stillOwnsPort = rows.some((row) => row.port === input.port && row.pid === input.pid);
-    if (!stillOwnsPort) {
-      return {
-        pid: input.pid,
-        signal: input.signal,
-        signaled: false,
-        message: Option.some(`Process ${input.pid} no longer owns localhost:${input.port}.`),
-      };
+      );
+      const row = rows.find((processRow) => processRow.pid === input.pid);
+      if (!row) {
+        return {
+          pid: input.pid,
+          signal: input.signal,
+          signaled: false,
+          message: Option.some(`Process ${input.pid} is no longer running.`),
+        };
+      }
+      const fingerprints = yield* Ref.get(detectedCommandRunFingerprints);
+      const detectedCommand = fingerprints.get(input.pid);
+      if (!detectedCommand || compactCommand(row.command) !== detectedCommand) {
+        return {
+          pid: input.pid,
+          signal: input.signal,
+          signaled: false,
+          message: Option.some(`Process ${input.pid} is no longer the detected background run.`),
+        };
+      }
+    } else {
+      const rows = yield* readListeningPortRows([input.port]).pipe(
+        Effect.withTracerEnabled(false),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.catch((error: ProcessDiagnosticsError) =>
+          Effect.succeed<ReadonlyArray<ListeningPortRow>>([]).pipe(
+            Effect.tap(() =>
+              Effect.logWarning("failed to verify detected background run before stop", {
+                pid: input.pid,
+                port: input.port,
+                error: error.message,
+              }),
+            ),
+          ),
+        ),
+      );
+      const stillOwnsPort = rows.some((row) => row.port === input.port && row.pid === input.pid);
+      if (!stillOwnsPort) {
+        return {
+          pid: input.pid,
+          signal: input.signal,
+          signaled: false,
+          message: Option.some(`Process ${input.pid} no longer owns localhost:${input.port}.`),
+        };
+      }
     }
 
     return yield* Effect.try({

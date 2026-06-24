@@ -2353,9 +2353,28 @@ export default function ChatView(props: ChatViewProps) {
     () => [...new Set(providerBackgroundRuns.flatMap((run) => run.urls))].sort(),
     [providerBackgroundRuns],
   );
+  const backgroundRunDetectionPids = useMemo(
+    () =>
+      [...new Set(providerBackgroundRuns.flatMap((run) => run.pids))].sort(
+        (left, right) => left - right,
+      ),
+    [providerBackgroundRuns],
+  );
   const backgroundRunCommandHints = useMemo(
     () => [...new Set(providerBackgroundRuns.flatMap((run) => run.commandHints))].slice(0, 12),
     [providerBackgroundRuns],
+  );
+  const [stoppedBackgroundRunPids, setStoppedBackgroundRunPids] = useState<number[]>([]);
+  useEffect(() => {
+    setStoppedBackgroundRunPids([]);
+  }, [activeThreadId]);
+  const stoppedBackgroundRunPidSet = useMemo(
+    () => new Set(stoppedBackgroundRunPids),
+    [stoppedBackgroundRunPids],
+  );
+  const unresolvedBackgroundRunDetectionPids = useMemo(
+    () => backgroundRunDetectionPids.filter((pid) => !stoppedBackgroundRunPidSet.has(pid)),
+    [backgroundRunDetectionPids, stoppedBackgroundRunPidSet],
   );
   const [detectedBackgroundRuns, setDetectedBackgroundRuns] = useState<ThreadBackgroundRunItem[]>(
     [],
@@ -2364,7 +2383,9 @@ export default function ChatView(props: ChatViewProps) {
   useEffect(() => {
     if (
       !activeThreadId ||
-      (backgroundRunDetectionUrls.length === 0 && backgroundRunCommandHints.length === 0)
+      (backgroundRunDetectionUrls.length === 0 &&
+        unresolvedBackgroundRunDetectionPids.length === 0 &&
+        backgroundRunCommandHints.length === 0)
     ) {
       setDetectedBackgroundRuns([]);
       return;
@@ -2398,6 +2419,7 @@ export default function ChatView(props: ChatViewProps) {
       try {
         const result = await localApi.server.resolveBackgroundRuns({
           urls: backgroundRunDetectionUrls,
+          pids: unresolvedBackgroundRunDetectionPids,
           commandHints: backgroundRunCommandHints,
         });
         if (cancelled) return;
@@ -2410,16 +2432,21 @@ export default function ChatView(props: ChatViewProps) {
             port: run.port,
             elapsed: run.elapsed ?? null,
             canStop: run.canStop,
-            label: "Detected local preview",
+            label: run.port === null ? "Detected background process" : "Detected local preview",
             detail: run.detail,
             cwd: null,
             statusLabel: run.statusLabel,
             urls: run.urls,
+            pids: [run.pid],
           })),
         );
         const detectedUrlSet = new Set(result.runs.flatMap((run) => run.urls));
+        const detectedPidSet = new Set(result.runs.map((run) => run.pid));
         const hasUndetectedUrl = backgroundRunDetectionUrls.some((url) => !detectedUrlSet.has(url));
-        if ((result.runs.length === 0 || hasUndetectedUrl) && !cancelled) {
+        const hasUndetectedPid = unresolvedBackgroundRunDetectionPids.some(
+          (pid) => !detectedPidSet.has(pid),
+        );
+        if ((result.runs.length === 0 || hasUndetectedUrl || hasUndetectedPid) && !cancelled) {
           scheduleRetry(attemptIndex + 1);
         }
       } catch {
@@ -2436,7 +2463,12 @@ export default function ChatView(props: ChatViewProps) {
         window.clearTimeout(timer);
       }
     };
-  }, [activeThreadId, backgroundRunCommandHints, backgroundRunDetectionUrls]);
+  }, [
+    activeThreadId,
+    backgroundRunCommandHints,
+    backgroundRunDetectionUrls,
+    unresolvedBackgroundRunDetectionPids,
+  ]);
 
   const backgroundRuns = useMemo(() => {
     const terminalLabelById = new Map(
@@ -2459,7 +2491,10 @@ export default function ChatView(props: ChatViewProps) {
     }));
     const unresolvedProviderRuns = filterUnresolvedProviderBackgroundRuns({
       providerBackgroundRuns,
-      detectedBackgroundRuns,
+      detectedBackgroundRuns: [
+        ...detectedBackgroundRuns,
+        ...stoppedBackgroundRunPids.map((pid) => ({ urls: [], pids: [pid] })),
+      ],
     });
 
     return [...terminalRuns, ...detectedBackgroundRuns, ...unresolvedProviderRuns];
@@ -2469,6 +2504,7 @@ export default function ChatView(props: ChatViewProps) {
     detectedBackgroundRuns,
     gitCwd,
     providerBackgroundRuns,
+    stoppedBackgroundRunPids,
     terminalState.runningTerminalIds,
     terminalState.terminalIds,
   ]);
@@ -2488,7 +2524,8 @@ export default function ChatView(props: ChatViewProps) {
         requestCloseTerminal(activeThreadRef, activeThreadId, run.terminalId);
         return;
       }
-      if (run.pid === null || run.port === null) {
+      const pid = run.pid;
+      if (pid === null) {
         return;
       }
 
@@ -2504,9 +2541,12 @@ export default function ChatView(props: ChatViewProps) {
       }
 
       void localApi.server
-        .stopBackgroundRun({ pid: run.pid, port: run.port, signal: "SIGINT" })
+        .stopBackgroundRun({ pid, port: run.port, signal: "SIGINT" })
         .then((result) => {
           if (result.signaled) {
+            setStoppedBackgroundRunPids((current) =>
+              current.includes(pid) ? current : [...current, pid],
+            );
             setDetectedBackgroundRuns((current) => current.filter((item) => item.id !== run.id));
             return;
           }

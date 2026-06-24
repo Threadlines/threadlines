@@ -516,6 +516,7 @@ describe("deriveProviderBackgroundRuns", () => {
         detail: "Provider-managed; stop handle not exposed.",
         statusLabel: "Tracked",
         urls: [],
+        pids: [],
         commandHints: [],
       },
     ]);
@@ -582,6 +583,28 @@ describe("deriveProviderBackgroundRuns", () => {
         detail: "Mentioned only; no process handle.",
         statusLabel: "No handle",
         urls: ["http://localhost:5953", "http://localhost:13993"],
+        pids: [],
+        commandHints: [],
+      },
+    ]);
+  });
+
+  it("surfaces mentioned background process PIDs for server resolution", () => {
+    const runs = deriveProviderBackgroundRuns({
+      activities: [],
+      messages: [assistantMessage("Left a live background process running. PID 21820")],
+      pendingBackgroundTaskCount: 0,
+    });
+
+    expect(runs).toEqual([
+      {
+        id: "mentioned-preview:21820",
+        source: "mentioned-preview",
+        label: "Mentioned background process",
+        detail: "Mentioned PID; resolving process handle.",
+        statusLabel: "No handle",
+        urls: [],
+        pids: [21820],
         commandHints: [],
       },
     ]);
@@ -618,6 +641,7 @@ describe("filterUnresolvedProviderBackgroundRuns", () => {
     detail: "Mentioned only; no process handle.",
     statusLabel: "No handle",
     urls: ["http://localhost:5953"],
+    pids: [],
     commandHints: [],
   };
 
@@ -647,6 +671,7 @@ describe("filterUnresolvedProviderBackgroundRuns", () => {
       detail: "Provider-managed; stop handle not exposed.",
       statusLabel: "Tracked",
       urls: [],
+      pids: [],
       commandHints: [],
     };
 
@@ -656,6 +681,46 @@ describe("filterUnresolvedProviderBackgroundRuns", () => {
         detectedBackgroundRuns: [{ urls: ["http://localhost:5953"] }],
       }),
     ).toEqual([providerRun]);
+  });
+
+  it("removes mentioned process rows after a detected run covers their PID", () => {
+    const mentionedProcessRun = {
+      id: "mentioned-preview:21820",
+      source: "mentioned-preview" as const,
+      label: "Mentioned background process",
+      detail: "Mentioned PID; resolving process handle.",
+      statusLabel: "No handle",
+      urls: [],
+      pids: [21820],
+      commandHints: [],
+    };
+
+    expect(
+      filterUnresolvedProviderBackgroundRuns({
+        providerBackgroundRuns: [mentionedProcessRun],
+        detectedBackgroundRuns: [{ urls: [], pids: [21820] }],
+      }),
+    ).toEqual([]);
+  });
+
+  it("hides PID-only mentioned process rows when no live process is detected", () => {
+    const mentionedProcessRun = {
+      id: "mentioned-preview:21820",
+      source: "mentioned-preview" as const,
+      label: "Mentioned background process",
+      detail: "Mentioned PID; resolving process handle.",
+      statusLabel: "No handle",
+      urls: [],
+      pids: [21820],
+      commandHints: [],
+    };
+
+    expect(
+      filterUnresolvedProviderBackgroundRuns({
+        providerBackgroundRuns: [mentionedProcessRun],
+        detectedBackgroundRuns: [],
+      }),
+    ).toEqual([]);
   });
 });
 

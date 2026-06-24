@@ -197,11 +197,13 @@ export interface ProviderBackgroundRunState {
   detail: string | null;
   statusLabel: string;
   urls: ReadonlyArray<string>;
+  pids: ReadonlyArray<number>;
   commandHints: ReadonlyArray<string>;
 }
 
 export interface DetectedBackgroundRunState {
   urls: ReadonlyArray<string>;
+  pids?: ReadonlyArray<number> | undefined;
 }
 
 export function filterUnresolvedProviderBackgroundRuns<
@@ -211,9 +213,19 @@ export function filterUnresolvedProviderBackgroundRuns<
   detectedBackgroundRuns: ReadonlyArray<DetectedBackgroundRunState>;
 }): T[] {
   const detectedUrlSet = new Set(input.detectedBackgroundRuns.flatMap((run) => run.urls));
-  return input.providerBackgroundRuns.filter(
-    (run) => run.urls.length === 0 || !run.urls.every((url) => detectedUrlSet.has(url)),
-  );
+  const detectedPidSet = new Set(input.detectedBackgroundRuns.flatMap((run) => run.pids ?? []));
+  return input.providerBackgroundRuns.filter((run) => {
+    if (run.source === "mentioned-preview" && run.urls.length === 0 && run.pids.length > 0) {
+      return false;
+    }
+    if (run.urls.length > 0) {
+      return !run.urls.every((url) => detectedUrlSet.has(url));
+    }
+    if (run.pids.length > 0) {
+      return !run.pids.every((pid) => detectedPidSet.has(pid));
+    }
+    return true;
+  });
 }
 
 function asBackgroundRunRecord(value: unknown): Record<string, unknown> | null {
@@ -268,6 +280,28 @@ function extractBackgroundCommandHints(text: string | null): string[] {
   return [normalized.length <= 600 ? normalized : normalized.slice(0, 600)];
 }
 
+function extractBackgroundPidHints(text: string | null): number[] {
+  if (!text) {
+    return [];
+  }
+  if (!/\b(?:background|running|started|active|live|process|pid|stop)\b/i.test(text)) {
+    return [];
+  }
+
+  const pids = new Set<number>();
+  const patterns = [/\bPID\s*[:=]?\s*(\d{1,10})\b/gi, /\bProcessId\s*[:=]?\s*(\d{1,10})\b/gi];
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      const pidText = match[1];
+      const pid = pidText ? Number.parseInt(pidText, 10) : Number.NaN;
+      if (Number.isInteger(pid) && pid > 0) {
+        pids.add(pid);
+      }
+    }
+  }
+  return [...pids].slice(0, 8);
+}
+
 function collectBackgroundCommandHintsFromPayload(value: unknown, limit = 8): string[] {
   const hints: string[] = [];
   const visit = (next: unknown, depth: number) => {
@@ -299,6 +333,39 @@ function collectBackgroundCommandHintsFromPayload(value: unknown, limit = 8): st
   };
   visit(value, 0);
   return hints;
+}
+
+function collectBackgroundPidHintsFromPayload(value: unknown, limit = 8): number[] {
+  const pids: number[] = [];
+  const visit = (next: unknown, depth: number) => {
+    if (pids.length >= limit || depth > 4) {
+      return;
+    }
+    if (typeof next === "string") {
+      for (const pid of extractBackgroundPidHints(next)) {
+        if (!pids.includes(pid)) {
+          pids.push(pid);
+        }
+        if (pids.length >= limit) return;
+      }
+      return;
+    }
+    if (Array.isArray(next)) {
+      for (const item of next) {
+        visit(item, depth + 1);
+        if (pids.length >= limit) return;
+      }
+      return;
+    }
+    if (next && typeof next === "object") {
+      for (const item of Object.values(next as Record<string, unknown>)) {
+        visit(item, depth + 1);
+        if (pids.length >= limit) return;
+      }
+    }
+  };
+  visit(value, 0);
+  return pids;
 }
 
 function compareActivitiesByOrder(
@@ -354,11 +421,20 @@ export function deriveProviderBackgroundRuns(input: {
         ...collectBackgroundCommandHintsFromPayload(payload),
       ]),
     ].slice(0, 8);
+    const pids = [
+      ...new Set([
+        ...(previous?.pids ?? []),
+        ...extractBackgroundPidHints(activity.summary),
+        ...extractBackgroundPidHints(detail),
+        ...collectBackgroundPidHintsFromPayload(payload),
+      ]),
+    ].slice(0, 8);
     if (
       isSubagentProviderTask({
         payload,
         activitySummary: activity.summary,
         urls,
+        pids,
         commandHints,
         activeSubagentCount: input.activeSubagentCount ?? 0,
       })
@@ -383,6 +459,7 @@ export function deriveProviderBackgroundRuns(input: {
         : (previous?.detail ?? "Provider-managed"),
       statusLabel: "Running",
       urls,
+      pids,
       commandHints,
     });
   }
@@ -407,31 +484,41 @@ export function deriveProviderBackgroundRuns(input: {
       detail: "Provider-managed; stop handle not exposed.",
       statusLabel: "Tracked",
       urls: [],
+      pids: [],
       commandHints: [],
     });
   }
 
   const knownUrls = new Set(runs.flatMap((run) => run.urls));
+  const knownPids = new Set(runs.flatMap((run) => run.pids));
   const previewMessage = input.messages
     .toReversed()
     .find(
       (message) =>
         message.role === "assistant" &&
-        /\b(localhost|127\.0\.0\.1|\[::1\])\b/i.test(message.text) &&
-        /\b(started|running|preview|server|localhost)\b/i.test(message.text),
+        ((/\b(localhost|127\.0\.0\.1|\[::1\])\b/i.test(message.text) &&
+          /\b(started|running|preview|server|localhost)\b/i.test(message.text)) ||
+          extractBackgroundPidHints(message.text).length > 0),
     );
   const mentionedUrls = previewMessage
     ? extractLocalPreviewUrls(previewMessage.text).filter((url) => !knownUrls.has(url))
     : [];
-  if (mentionedUrls.length > 0) {
+  const mentionedPids = previewMessage
+    ? extractBackgroundPidHints(previewMessage.text).filter((pid) => !knownPids.has(pid))
+    : [];
+  if (mentionedUrls.length > 0 || mentionedPids.length > 0) {
     const commandHints = previewMessage ? extractBackgroundCommandHints(previewMessage.text) : [];
     runs.push({
-      id: `mentioned-preview:${mentionedUrls.join("|")}`,
+      id: `mentioned-preview:${[...mentionedUrls, ...mentionedPids.map(String)].join("|")}`,
       source: "mentioned-preview",
-      label: "Mentioned local preview",
-      detail: "Mentioned only; no process handle.",
+      label: mentionedUrls.length > 0 ? "Mentioned local preview" : "Mentioned background process",
+      detail:
+        mentionedUrls.length > 0
+          ? "Mentioned only; no process handle."
+          : "Mentioned PID; resolving process handle.",
       statusLabel: "No handle",
       urls: mentionedUrls,
+      pids: mentionedPids,
       commandHints,
     });
   }
@@ -443,6 +530,7 @@ function isSubagentProviderTask(input: {
   payload: Record<string, unknown>;
   activitySummary: string;
   urls: ReadonlyArray<string>;
+  pids: ReadonlyArray<number>;
   commandHints: ReadonlyArray<string>;
   activeSubagentCount: number;
 }): boolean {
@@ -469,7 +557,7 @@ function isSubagentProviderTask(input: {
     /\bpreview\b/u.test(normalizedTaskType) ||
     /\bserver\b/u.test(normalizedTaskType) ||
     /\bcommand\b/u.test(normalizedTaskType);
-  if (explicitBackgroundTask) {
+  if (explicitBackgroundTask || input.pids.length > 0) {
     return false;
   }
 

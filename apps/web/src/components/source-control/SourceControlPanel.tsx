@@ -1521,6 +1521,7 @@ export function SourceControlPanel({
   const graphHasData = graphQuery.data !== undefined;
   const isCommitGraphInitialLoading = graphQueryEnabled && !graphHasData && graphQuery.isPending;
   const isCommitGraphRefreshing = graphHasData && graphQuery.isFetching;
+  const isSourceControlRefreshing = gitStatus.isPending || isCommitGraphRefreshing;
   const isCommitGraphLoadingMore =
     graphQuery.isFetching &&
     graphQuery.data?.truncated === true &&
@@ -2724,14 +2725,20 @@ export function SourceControlPanel({
               render={
                 <Button
                   type="button"
-                  aria-label="Refresh source control"
+                  aria-label={
+                    isSourceControlRefreshing
+                      ? "Refreshing source control"
+                      : "Refresh source control"
+                  }
                   variant="ghost"
                   size="icon-xs"
                   onClick={refreshPanel}
                 />
               }
             >
-              <RefreshCwIcon className={cn("size-3.5", gitStatus.isPending && "animate-spin")} />
+              <RefreshCwIcon
+                className={cn("size-3.5", isSourceControlRefreshing && "animate-spin")}
+              />
             </TooltipTrigger>
             <TooltipPopup side="top">Refresh</TooltipPopup>
           </Tooltip>

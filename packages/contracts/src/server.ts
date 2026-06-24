@@ -405,6 +405,7 @@ export type ServerProcessSignal = typeof ServerProcessSignal.Type;
 
 export const ServerResolveBackgroundRunsInput = Schema.Struct({
   urls: Schema.Array(TrimmedNonEmptyString),
+  pids: Schema.optional(Schema.Array(PositiveInt)),
   commandHints: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
 });
 export type ServerResolveBackgroundRunsInput = typeof ServerResolveBackgroundRunsInput.Type;
@@ -413,7 +414,7 @@ export const ServerResolvedBackgroundRun = Schema.Struct({
   id: TrimmedNonEmptyString,
   url: TrimmedNonEmptyString,
   urls: Schema.Array(TrimmedNonEmptyString),
-  port: PositiveInt,
+  port: Schema.NullOr(PositiveInt),
   pid: PositiveInt,
   command: TrimmedNonEmptyString,
   detail: TrimmedNonEmptyString,
@@ -430,7 +431,7 @@ export type ServerResolveBackgroundRunsResult = typeof ServerResolveBackgroundRu
 
 export const ServerStopBackgroundRunInput = Schema.Struct({
   pid: PositiveInt,
-  port: PositiveInt,
+  port: Schema.NullOr(PositiveInt),
   signal: ServerProcessSignal,
 });
 export type ServerStopBackgroundRunInput = typeof ServerStopBackgroundRunInput.Type;

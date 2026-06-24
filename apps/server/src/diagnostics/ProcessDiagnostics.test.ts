@@ -423,6 +423,43 @@ describe("ProcessDiagnostics", () => {
     expect(result.runs.map((run) => run.elapsed)).toEqual(["02:13", "00:37"]);
   });
 
+  it("resolves explicitly mentioned live PIDs without requiring a listening port", () => {
+    const result = ProcessDiagnostics.resolveBackgroundRunsFromListeningPorts({
+      urls: [],
+      pids: [4242, 9999],
+      portRows: [],
+      processRows: [
+        {
+          pid: 4242,
+          ppid: 1,
+          pgid: null,
+          status: "Live",
+          cpuPercent: 0,
+          rssBytes: 100,
+          elapsed: "",
+          command:
+            "powershell.exe -Command $marker = 'threadlines-background-runs-test'; while ($true) { Start-Sleep -Seconds 5 }",
+        },
+      ],
+    });
+
+    expect(result.runs).toEqual([
+      {
+        id: "detected-process:4242",
+        url: "process:4242",
+        urls: [],
+        port: null,
+        pid: 4242,
+        command:
+          "powershell.exe -Command $marker = 'threadlines-background-runs-test'; while ($true) { Start-Sleep -Seconds 5 }",
+        detail:
+          "PID 4242 - powershell.exe -Command $marker = 'threadlines-background-runs-test'; while ($true) { Start-Sleep -Seconds 5 }",
+        statusLabel: "Detected",
+        canStop: true,
+      },
+    ]);
+  });
+
   itEffect("does not allow signaling the diagnostics query process", () =>
     Effect.gen(function* () {
       const spawnerLayer = Layer.succeed(

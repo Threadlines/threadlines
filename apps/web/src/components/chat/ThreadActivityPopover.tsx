@@ -44,6 +44,7 @@ export interface ThreadBackgroundRunItem {
   cwd: string | null;
   statusLabel: string;
   urls: ReadonlyArray<string>;
+  pids?: ReadonlyArray<number> | undefined;
   terminalId: string | null;
   pid: number | null;
   port: number | null;
