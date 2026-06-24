@@ -175,6 +175,7 @@ import { CommandDialogTrigger } from "./ui/command";
 import { readEnvironmentApi } from "../environmentApi";
 import { useSettings, useUpdateSettings } from "~/hooks/useSettings";
 import { useServerKeybindings } from "../rpc/serverState";
+import { resolveElectronSidebarWordmarkLayout } from "../desktopChrome";
 import {
   derivePhysicalProjectKey,
   deriveProjectGroupingOverrideKey,
@@ -2617,6 +2618,9 @@ const SidebarChromeHeader = memo(function SidebarChromeHeader({
 }: {
   isElectron: boolean;
 }) {
+  const electronWordmarkLayout = resolveElectronSidebarWordmarkLayout(
+    typeof navigator === "undefined" ? "" : navigator.platform,
+  );
   const wordmark = (
     <div className="flex min-w-0 items-center gap-2">
       <SidebarTrigger
@@ -2650,8 +2654,10 @@ const SidebarChromeHeader = memo(function SidebarChromeHeader({
 
   return isElectron ? (
     <SidebarHeader className="drag-region shrink-0 gap-0 px-0 py-0">
-      <div aria-hidden="true" className="h-10 shrink-0" />
-      <div className="flex h-8 min-h-8 items-center px-3">{wordmark}</div>
+      {electronWordmarkLayout.spacerClassName ? (
+        <div aria-hidden="true" className={electronWordmarkLayout.spacerClassName} />
+      ) : null}
+      <div className={electronWordmarkLayout.wordmarkRowClassName}>{wordmark}</div>
     </SidebarHeader>
   ) : (
     <SidebarHeader className="gap-3 px-3 py-2 sm:gap-2.5 sm:px-5 sm:py-3">{wordmark}</SidebarHeader>

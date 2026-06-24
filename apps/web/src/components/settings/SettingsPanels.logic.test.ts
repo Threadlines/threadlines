@@ -160,6 +160,27 @@ describe("buildProviderInstanceUpdatePatch", () => {
     expect(patch.providerInstances?.[instanceId]).toEqual(nextInstance);
     expect(patch.providers).toBeUndefined();
   });
+
+  it("can include backup text generation cleanup with provider instance updates", () => {
+    const instanceId = ProviderInstanceId.make("claudeAgent");
+    const nextInstance = {
+      driver: ProviderDriverKind.make("claudeAgent"),
+      enabled: false,
+      config: {},
+    } satisfies ProviderInstanceConfig;
+
+    const patch = buildProviderInstanceUpdatePatch({
+      settings: DEFAULT_SERVER_SETTINGS,
+      instanceId,
+      instance: nextInstance,
+      driver: ProviderDriverKind.make("claudeAgent"),
+      isDefault: true,
+      textGenerationBackupModelSelection: null,
+    });
+
+    expect(patch.providerInstances?.[instanceId]).toEqual(nextInstance);
+    expect(patch.textGenerationBackupModelSelection).toBeNull();
+  });
 });
 
 describe("deriveProviderSettingsRows", () => {

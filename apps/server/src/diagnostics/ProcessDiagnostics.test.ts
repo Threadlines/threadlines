@@ -300,6 +300,34 @@ describe("ProcessDiagnostics", () => {
     ]);
   });
 
+  it("parses Windows netstat listening port rows as a fallback", () => {
+    const rows = ProcessDiagnostics.parseWindowsNetstatListeningPortRows(
+      [
+        "Active Connections",
+        "",
+        "  Proto  Local Address          Foreign Address        State           PID",
+        "  TCP    0.0.0.0:135            0.0.0.0:0              LISTENING       1776",
+        "  TCP    127.0.0.1:5953         0.0.0.0:0              LISTENING       4242",
+        "  TCP    [::1]:13993            [::]:0                 LISTENING       4343",
+        "  TCP    127.0.0.1:5953         127.0.0.1:53000        ESTABLISHED     4242",
+      ].join("\n"),
+      [5953, 13993],
+    );
+
+    expect(rows).toEqual([
+      {
+        port: 5953,
+        pid: 4242,
+        command: "PID 4242",
+      },
+      {
+        port: 13993,
+        pid: 4343,
+        command: "PID 4343",
+      },
+    ]);
+  });
+
   it("resolves mentioned localhost URLs to detected background runs", () => {
     const result = ProcessDiagnostics.resolveBackgroundRunsFromListeningPorts({
       urls: ["http://localhost:5953", "http://127.0.0.1:5953/api", "http://localhost:9999"],

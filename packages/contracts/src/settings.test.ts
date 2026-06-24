@@ -57,6 +57,11 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
     expect(decodeServerSettings({}).enableAssistantStreaming).toBe(true);
   });
 
+  it("keeps the backup text generation model unset by default", () => {
+    expect(DEFAULT_SERVER_SETTINGS.textGenerationBackupModelSelection).toBeNull();
+    expect(decodeServerSettings({}).textGenerationBackupModelSelection).toBeNull();
+  });
+
   it("uses a slower automatic Git fetch default for background remote freshness", () => {
     expect(Duration.toMillis(DEFAULT_SERVER_SETTINGS.automaticGitFetchInterval)).toBe(120_000);
     expect(Duration.toMillis(decodeServerSettings({}).automaticGitFetchInterval)).toBe(120_000);
@@ -148,6 +153,10 @@ describe("ServerSettingsPatch string normalization", () => {
     const patch = decodeServerSettingsPatch({
       addProjectBaseDirectory: "  ~/Development  ",
       textGenerationModelSelection: { model: "  gpt-5.4-mini  " },
+      textGenerationBackupModelSelection: {
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        model: "  claude-haiku-4-5  ",
+      },
       observability: {
         otlpTracesUrl: "  http://localhost:4318/v1/traces  ",
       },
@@ -168,6 +177,10 @@ describe("ServerSettingsPatch string normalization", () => {
 
     expect(patch.addProjectBaseDirectory).toBe("~/Development");
     expect(patch.textGenerationModelSelection?.model).toBe("gpt-5.4-mini");
+    expect(patch.textGenerationBackupModelSelection).toEqual({
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+      model: "claude-haiku-4-5",
+    });
     expect(patch.observability?.otlpTracesUrl).toBe("http://localhost:4318/v1/traces");
     expect(patch.providers?.codex?.binaryPath).toBe("/opt/homebrew/bin/codex");
     expect(patch.providers?.codex?.homePath).toBe("~/.codex");

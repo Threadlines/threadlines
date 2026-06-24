@@ -8,8 +8,10 @@ import { describe, expect, it } from "vitest";
 import { deriveProviderInstanceEntries } from "./providerInstances";
 import {
   getAppModelOptionsForInstance,
+  resolveDefaultTextGenerationBackupModelSelectionState,
   resolveAppModelSelectionForInstance,
   resolveAppModelSelectionState,
+  resolveTextGenerationBackupModelSelectionState,
 } from "./modelSelection";
 
 function provider(input: {
@@ -281,5 +283,89 @@ describe("instance-scoped model selection", () => {
       instanceId: ProviderInstanceId.make("claude_openrouter"),
       model: "openai/gpt-5.5",
     });
+  });
+
+  it("resolves the default backup text generation model to a different provider", () => {
+    const providers = [
+      provider({
+        provider: ProviderDriverKind.make("codex"),
+        instanceId: "codex",
+        models: ["gpt-5.4-mini"],
+      }),
+      provider({
+        provider: ProviderDriverKind.make("claudeAgent"),
+        instanceId: "claudeAgent",
+        models: ["claude-haiku-4-5"],
+      }),
+    ];
+    const primarySelection = resolveAppModelSelectionState(DEFAULT_UNIFIED_SETTINGS, providers);
+
+    expect(
+      resolveDefaultTextGenerationBackupModelSelectionState(
+        DEFAULT_UNIFIED_SETTINGS,
+        providers,
+        primarySelection,
+      ),
+    ).toEqual({
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+      model: "claude-haiku-4-5",
+    });
+  });
+
+  it("preserves a configured backup text generation instance on a different provider", () => {
+    const providers = [
+      provider({
+        provider: ProviderDriverKind.make("codex"),
+        instanceId: "codex",
+        models: ["gpt-5.4-mini"],
+      }),
+      provider({
+        provider: ProviderDriverKind.make("claudeAgent"),
+        instanceId: "claude_openrouter",
+        models: ["claude-sonnet-4-6"],
+      }),
+    ];
+    const primarySelection = resolveAppModelSelectionState(DEFAULT_UNIFIED_SETTINGS, providers);
+    const settings: UnifiedSettings = {
+      ...settingsWithProviderInstances(),
+      textGenerationBackupModelSelection: {
+        instanceId: ProviderInstanceId.make("claude_openrouter"),
+        model: "openai/gpt-5.5",
+      },
+    };
+
+    expect(
+      resolveTextGenerationBackupModelSelectionState(settings, providers, primarySelection),
+    ).toEqual({
+      instanceId: ProviderInstanceId.make("claude_openrouter"),
+      model: "openai/gpt-5.5",
+    });
+  });
+
+  it("clears backup text generation when only same-provider instances are available", () => {
+    const providers = [
+      provider({
+        provider: ProviderDriverKind.make("codex"),
+        instanceId: "codex",
+        models: ["gpt-5.4-mini"],
+      }),
+      provider({
+        provider: ProviderDriverKind.make("codex"),
+        instanceId: "codex_work",
+        models: ["gpt-5.4"],
+      }),
+    ];
+    const primarySelection = resolveAppModelSelectionState(DEFAULT_UNIFIED_SETTINGS, providers);
+    const settings: UnifiedSettings = {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      textGenerationBackupModelSelection: {
+        instanceId: ProviderInstanceId.make("codex_work"),
+        model: "gpt-5.4",
+      },
+    };
+
+    expect(
+      resolveTextGenerationBackupModelSelectionState(settings, providers, primarySelection),
+    ).toBeNull();
   });
 });

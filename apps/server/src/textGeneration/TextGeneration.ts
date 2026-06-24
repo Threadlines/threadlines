@@ -21,6 +21,8 @@ export interface CommitMessageGenerationInput {
   includeBranch?: boolean;
   /** What model and provider to use for generation. */
   modelSelection: ModelSelection;
+  /** Optional backup model on a different provider. Used only after the primary fails. */
+  backupModelSelection?: ModelSelection | null;
 }
 
 export interface CommitMessageGenerationResult {
@@ -39,6 +41,8 @@ export interface PrContentGenerationInput {
   diffPatch: string;
   /** What model and provider to use for generation. */
   modelSelection: ModelSelection;
+  /** Optional backup model on a different provider. Used only after the primary fails. */
+  backupModelSelection?: ModelSelection | null;
 }
 
 export interface PrContentGenerationResult {
@@ -52,6 +56,8 @@ export interface BranchNameGenerationInput {
   attachments?: ReadonlyArray<ChatAttachment> | undefined;
   /** What model and provider to use for generation. */
   modelSelection: ModelSelection;
+  /** Optional backup model on a different provider. Used only after the primary fails. */
+  backupModelSelection?: ModelSelection | null;
 }
 
 export interface BranchNameGenerationResult {
@@ -64,6 +70,8 @@ export interface ThreadTitleGenerationInput {
   attachments?: ReadonlyArray<ChatAttachment> | undefined;
   /** What model and provider to use for generation. */
   modelSelection: ModelSelection;
+  /** Optional backup model on a different provider. Used only after the primary fails. */
+  backupModelSelection?: ModelSelection | null;
 }
 
 export interface ThreadTitleGenerationResult {
@@ -129,11 +137,11 @@ const resolveInstance = (
   registry: ProviderInstanceRegistryShape,
   operation: TextGenerationOp,
   instanceId: ProviderInstanceId,
-): Effect.Effect<ProviderInstance["textGeneration"], TextGenerationError> =>
+): Effect.Effect<ProviderInstance, TextGenerationError> =>
   registry.getInstance(instanceId).pipe(
     Effect.flatMap((instance) =>
       instance
-        ? Effect.succeed(instance.textGeneration)
+        ? Effect.succeed(instance)
         : Effect.fail(
             new TextGenerationError({
               operation,
@@ -143,24 +151,94 @@ const resolveInstance = (
     ),
   );
 
+type TextGenerationInput =
+  | CommitMessageGenerationInput
+  | PrContentGenerationInput
+  | BranchNameGenerationInput
+  | ThreadTitleGenerationInput;
+
+type TextGenerationResult =
+  | CommitMessageGenerationResult
+  | PrContentGenerationResult
+  | BranchNameGenerationResult
+  | ThreadTitleGenerationResult;
+
+const withBackupFallback = <Input extends TextGenerationInput, Output extends TextGenerationResult>(
+  registry: ProviderInstanceRegistryShape,
+  operation: TextGenerationOp,
+  input: Input,
+  run: (
+    textGeneration: ProviderInstance["textGeneration"],
+    nextInput: Input,
+  ) => Effect.Effect<Output, TextGenerationError>,
+): Effect.Effect<Output, TextGenerationError> =>
+  resolveInstance(registry, operation, input.modelSelection.instanceId).pipe(
+    Effect.flatMap((primaryInstance) =>
+      run(primaryInstance.textGeneration, input).pipe(
+        Effect.catch((primaryError: TextGenerationError) => {
+          const backupSelection = input.backupModelSelection;
+          if (!backupSelection) {
+            return Effect.fail(primaryError);
+          }
+
+          return resolveInstance(registry, operation, backupSelection.instanceId).pipe(
+            Effect.catch(() => Effect.succeed(null as ProviderInstance | null)),
+            Effect.flatMap((backupInstance) => {
+              if (!backupInstance) {
+                return Effect.fail(primaryError);
+              }
+              if (backupInstance.driverKind === primaryInstance.driverKind) {
+                return Effect.fail(primaryError);
+              }
+
+              const backupInput = {
+                ...input,
+                modelSelection: backupSelection,
+                backupModelSelection: null,
+              } as Input;
+
+              return Effect.logWarning("text generation primary failed; retrying backup provider", {
+                operation,
+                primaryInstanceId: primaryInstance.instanceId,
+                backupInstanceId: backupInstance.instanceId,
+                primaryDetail: primaryError.detail,
+              }).pipe(
+                Effect.andThen(run(backupInstance.textGeneration, backupInput)),
+                Effect.catch((backupError: TextGenerationError) =>
+                  Effect.fail(
+                    new TextGenerationError({
+                      operation,
+                      detail: `Primary provider failed: ${primaryError.detail} Backup provider failed: ${backupError.detail}`,
+                      cause: { primaryError, backupError },
+                    }),
+                  ),
+                ),
+              );
+            }),
+          );
+        }),
+      ),
+    ),
+  );
+
 export const makeTextGenerationFromRegistry = (
   registry: ProviderInstanceRegistryShape,
 ): TextGenerationShape => ({
   generateCommitMessage: (input) =>
-    resolveInstance(registry, "generateCommitMessage", input.modelSelection.instanceId).pipe(
-      Effect.flatMap((textGeneration) => textGeneration.generateCommitMessage(input)),
+    withBackupFallback(registry, "generateCommitMessage", input, (textGeneration, nextInput) =>
+      textGeneration.generateCommitMessage(nextInput),
     ),
   generatePrContent: (input) =>
-    resolveInstance(registry, "generatePrContent", input.modelSelection.instanceId).pipe(
-      Effect.flatMap((textGeneration) => textGeneration.generatePrContent(input)),
+    withBackupFallback(registry, "generatePrContent", input, (textGeneration, nextInput) =>
+      textGeneration.generatePrContent(nextInput),
     ),
   generateBranchName: (input) =>
-    resolveInstance(registry, "generateBranchName", input.modelSelection.instanceId).pipe(
-      Effect.flatMap((textGeneration) => textGeneration.generateBranchName(input)),
+    withBackupFallback(registry, "generateBranchName", input, (textGeneration, nextInput) =>
+      textGeneration.generateBranchName(nextInput),
     ),
   generateThreadTitle: (input) =>
-    resolveInstance(registry, "generateThreadTitle", input.modelSelection.instanceId).pipe(
-      Effect.flatMap((textGeneration) => textGeneration.generateThreadTitle(input)),
+    withBackupFallback(registry, "generateThreadTitle", input, (textGeneration, nextInput) =>
+      textGeneration.generateThreadTitle(nextInput),
     ),
 });
 

@@ -161,6 +161,74 @@ describe("serverSettings helpers", () => {
     });
   });
 
+  it("replaces backup text generation selection without leaking stale options", () => {
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      textGenerationBackupModelSelection: createModelSelection(
+        ProviderInstanceId.make("claudeAgent"),
+        "claude-haiku-4-5",
+        [{ id: "effort", value: "low" }],
+      ),
+    };
+
+    expect(
+      applyServerSettingsPatch(current, {
+        textGenerationBackupModelSelection: {
+          instanceId: ProviderInstanceId.make("opencode"),
+          model: "openai/gpt-5",
+        },
+      }).textGenerationBackupModelSelection,
+    ).toEqual({
+      instanceId: "opencode",
+      model: "openai/gpt-5",
+    });
+  });
+
+  it("merges backup text generation options when only options are provided", () => {
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      textGenerationBackupModelSelection: createModelSelection(
+        ProviderInstanceId.make("claudeAgent"),
+        "claude-haiku-4-5",
+        [
+          { id: "effort", value: "low" },
+          { id: "fastMode", value: true },
+        ],
+      ),
+    };
+
+    expect(
+      applyServerSettingsPatch(current, {
+        textGenerationBackupModelSelection: {
+          options: [{ id: "fastMode", value: false }],
+        },
+      }).textGenerationBackupModelSelection,
+    ).toEqual({
+      instanceId: "claudeAgent",
+      model: "claude-haiku-4-5",
+      options: [
+        { id: "effort", value: "low" },
+        { id: "fastMode", value: false },
+      ],
+    });
+  });
+
+  it("clears backup text generation selection with null", () => {
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      textGenerationBackupModelSelection: createModelSelection(
+        ProviderInstanceId.make("claudeAgent"),
+        "claude-haiku-4-5",
+      ),
+    };
+
+    expect(
+      applyServerSettingsPatch(current, {
+        textGenerationBackupModelSelection: null,
+      }).textGenerationBackupModelSelection,
+    ).toBeNull();
+  });
+
   it("replaces providerInstances maps so omitted instance fields are cleared", () => {
     const codexId = ProviderInstanceId.make("codex");
     const current = {

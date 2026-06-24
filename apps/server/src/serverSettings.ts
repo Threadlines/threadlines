@@ -172,44 +172,89 @@ const getLegacyProviderSettings = (
 ): LegacyProviderSettings | undefined =>
   (settings.providers as Record<string, LegacyProviderSettings | undefined>)[provider];
 
-/**
- * Ensure the `textGenerationModelSelection` points to an enabled provider.
- * If the selected provider is disabled, fall back to the first enabled
- * provider with its default model.  This is applied at read-time so the
- * persisted preference is preserved for when a provider is re-enabled.
- */
-function resolveTextGenerationProvider(settings: ServerSettings): ServerSettings {
-  const selection = settings.textGenerationModelSelection;
+function resolveTextGenerationDriver(
+  settings: ServerSettings,
+  selection: ModelSelection,
+): ProviderDriverKind | null {
   const instanceConfig = settings.providerInstances[selection.instanceId];
   if (instanceConfig !== undefined) {
-    return (instanceConfig.enabled ?? true) ? settings : fallbackTextGenerationProvider(settings);
+    return (instanceConfig.enabled ?? true) ? instanceConfig.driver : null;
   }
 
   if (
     isProviderDriverKind(selection.instanceId) &&
     getLegacyProviderSettings(settings, selection.instanceId)?.enabled
   ) {
-    return settings;
+    return ProviderDriverKind.make(selection.instanceId);
   }
 
-  return fallbackTextGenerationProvider(settings);
+  return null;
 }
 
-function fallbackTextGenerationProvider(settings: ServerSettings): ServerSettings {
-  const fallbackEntry = Object.entries(settings.providers).find(([, provider]) => provider.enabled);
+function textGenerationSelectionIsEnabled(
+  settings: ServerSettings,
+  selection: ModelSelection,
+): boolean {
+  return resolveTextGenerationDriver(settings, selection) !== null;
+}
+
+function fallbackTextGenerationSelection(
+  settings: ServerSettings,
+  options: { readonly excludeDriver?: ProviderDriverKind | null } = {},
+): ModelSelection | null {
+  const fallbackEntry = Object.entries(settings.providers).find(([driver, provider]) => {
+    if (!provider.enabled) return false;
+    return options.excludeDriver === undefined || driver !== options.excludeDriver;
+  });
   const fallback = fallbackEntry ? ProviderDriverKind.make(fallbackEntry[0]) : undefined;
   if (!fallback) {
-    return settings;
+    return null;
   }
 
   return {
-    ...settings,
-    textGenerationModelSelection: {
-      instanceId: ProviderInstanceId.make(fallback),
-      model:
-        DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER[fallback] ??
-        DEFAULT_GIT_TEXT_GENERATION_MODEL,
-    } satisfies ModelSelection,
+    instanceId: ProviderInstanceId.make(fallback),
+    model:
+      DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER[fallback] ?? DEFAULT_GIT_TEXT_GENERATION_MODEL,
+  } satisfies ModelSelection;
+}
+
+/**
+ * Ensure text generation selections point at enabled providers. The primary
+ * selection falls back to the first enabled provider. A configured backup is
+ * kept only when it resolves to a different provider driver than the primary.
+ * This is applied at read-time so persisted preferences are preserved for
+ * when a provider is re-enabled.
+ */
+function resolveTextGenerationProviders(settings: ServerSettings): ServerSettings {
+  let resolved = settings;
+  if (!textGenerationSelectionIsEnabled(settings, settings.textGenerationModelSelection)) {
+    const fallback = fallbackTextGenerationSelection(settings);
+    if (fallback) {
+      resolved = {
+        ...resolved,
+        textGenerationModelSelection: fallback,
+      };
+    }
+  }
+
+  const backupSelection = resolved.textGenerationBackupModelSelection;
+  if (backupSelection === null) {
+    return resolved;
+  }
+
+  const primaryDriver = resolveTextGenerationDriver(
+    resolved,
+    resolved.textGenerationModelSelection,
+  );
+  const backupDriver = resolveTextGenerationDriver(resolved, backupSelection);
+  if (backupDriver !== null && backupDriver !== primaryDriver) {
+    return resolved;
+  }
+
+  return {
+    ...resolved,
+    textGenerationBackupModelSelection:
+      fallbackTextGenerationSelection(resolved, { excludeDriver: primaryDriver }) ?? null,
   };
 }
 
@@ -217,6 +262,7 @@ function fallbackTextGenerationProvider(settings: ServerSettings): ServerSetting
 const ATOMIC_SETTINGS_KEYS: ReadonlySet<string> = new Set([
   "automaticGitFetchInterval",
   "textGenerationModelSelection",
+  "textGenerationBackupModelSelection",
 ]);
 
 function stripDefaultServerSettings(current: unknown, defaults: unknown): unknown | undefined {
@@ -544,7 +590,7 @@ const makeServerSettings = Effect.gen(function* () {
     ready: Deferred.await(startedDeferred),
     getSettings: getSettingsFromCache.pipe(
       Effect.flatMap(materializeProviderEnvironmentSecrets),
-      Effect.map(resolveTextGenerationProvider),
+      Effect.map(resolveTextGenerationProviders),
     ),
     updateSettings: (patch) =>
       writeSemaphore.withPermits(1)(
@@ -559,7 +605,7 @@ const makeServerSettings = Effect.gen(function* () {
           yield* Cache.set(settingsCache, cacheKey, next);
           yield* emitChange(next);
           const materialized = yield* materializeProviderEnvironmentSecrets(next);
-          return resolveTextGenerationProvider(materialized);
+          return resolveTextGenerationProviders(materialized);
         }),
       ),
     get streamChanges() {
@@ -573,7 +619,7 @@ const makeServerSettings = Effect.gen(function* () {
             ),
           ),
         ),
-        Stream.map(resolveTextGenerationProvider),
+        Stream.map(resolveTextGenerationProviders),
       );
     },
   } satisfies ServerSettingsShape;

@@ -327,3 +327,101 @@ export function resolveAppModelSelectionState(
 
   return createModelSelection(defaultInstanceIdForDriver(provider), model, modelOptionsForDispatch);
 }
+
+function resolveModelSelectionForEntry(input: {
+  readonly entry: ProviderInstanceEntry;
+  readonly selectedEntry: ProviderInstanceEntry | null;
+  readonly selectedModel: string | null | undefined;
+  readonly selectedOptions: ModelSelection["options"] | undefined;
+  readonly settings: UnifiedSettings;
+  readonly providers: ReadonlyArray<ServerProvider>;
+}): ModelSelection | null {
+  const model =
+    resolveAppModelSelectionForInstance(
+      input.entry.instanceId,
+      input.settings,
+      input.providers,
+      input.selectedEntry ? input.selectedModel : null,
+    ) ??
+    input.entry.models[0]?.slug ??
+    DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER[input.entry.driverKind];
+  if (!model) {
+    return null;
+  }
+
+  const { modelOptionsForDispatch } = getComposerProviderState({
+    provider: input.entry.driverKind,
+    model,
+    models: input.entry.models,
+    prompt: "",
+    modelOptions: input.selectedEntry ? input.selectedOptions : undefined,
+  });
+
+  return createModelSelection(input.entry.instanceId, model, modelOptionsForDispatch);
+}
+
+function resolveBackupTextGenerationModelSelection(input: {
+  readonly settings: UnifiedSettings;
+  readonly providers: ReadonlyArray<ServerProvider>;
+  readonly primarySelection: ModelSelection;
+  readonly backupSelection: ModelSelection | null;
+}): ModelSelection | null {
+  const entries = deriveProviderInstanceEntries(input.providers);
+  const primaryEntry = entries.find(
+    (entry) => entry.instanceId === input.primarySelection.instanceId,
+  );
+  const eligibleEntries = entries.filter(
+    (entry) =>
+      entry.enabled &&
+      entry.isAvailable &&
+      (primaryEntry ? entry.driverKind !== primaryEntry.driverKind : true),
+  );
+  const selectedEntry =
+    input.backupSelection === null
+      ? null
+      : (eligibleEntries.find((entry) => entry.instanceId === input.backupSelection?.instanceId) ??
+        null);
+  const entry = selectedEntry ?? eligibleEntries[0] ?? null;
+  if (!entry) {
+    return null;
+  }
+
+  return resolveModelSelectionForEntry({
+    entry,
+    selectedEntry,
+    selectedModel: input.backupSelection?.model,
+    selectedOptions: input.backupSelection?.options,
+    settings: input.settings,
+    providers: input.providers,
+  });
+}
+
+export function resolveTextGenerationBackupModelSelectionState(
+  settings: UnifiedSettings,
+  providers: ReadonlyArray<ServerProvider>,
+  primarySelection: ModelSelection = resolveAppModelSelectionState(settings, providers),
+): ModelSelection | null {
+  const backupSelection = settings.textGenerationBackupModelSelection;
+  if (backupSelection === null) {
+    return null;
+  }
+  return resolveBackupTextGenerationModelSelection({
+    settings,
+    providers,
+    primarySelection,
+    backupSelection,
+  });
+}
+
+export function resolveDefaultTextGenerationBackupModelSelectionState(
+  settings: UnifiedSettings,
+  providers: ReadonlyArray<ServerProvider>,
+  primarySelection: ModelSelection = resolveAppModelSelectionState(settings, providers),
+): ModelSelection | null {
+  return resolveBackupTextGenerationModelSelection({
+    settings,
+    providers,
+    primarySelection,
+    backupSelection: null,
+  });
+}

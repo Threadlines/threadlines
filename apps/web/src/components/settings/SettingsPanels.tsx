@@ -50,7 +50,9 @@ import {
 } from "../../lib/desktopUpdateReactQuery";
 import {
   getCustomModelOptionsByInstance,
+  resolveDefaultTextGenerationBackupModelSelectionState,
   resolveAppModelSelectionState,
+  resolveTextGenerationBackupModelSelectionState,
 } from "../../modelSelection";
 import {
   deriveProviderInstanceEntries,
@@ -409,6 +411,10 @@ export function useSettingsRestore(onRestored?: () => void) {
     settings.textGenerationModelSelection ?? null,
     DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection ?? null,
   );
+  const isGitWritingBackupModelDirty = !Equal.equals(
+    settings.textGenerationBackupModelSelection ?? null,
+    DEFAULT_UNIFIED_SETTINGS.textGenerationBackupModelSelection ?? null,
+  );
 
   const changedSettingLabels = useMemo(
     () => [
@@ -456,8 +462,10 @@ export function useSettingsRestore(onRestored?: () => void) {
         ? ["Delete confirmation"]
         : []),
       ...(isGitWritingModelDirty ? ["Git writing model"] : []),
+      ...(isGitWritingBackupModelDirty ? ["Backup git writing model"] : []),
     ],
     [
+      isGitWritingBackupModelDirty,
       isGitWritingModelDirty,
       settings.autoArchiveInactiveThreadsDays,
       settings.chatChangedFilesDefaultExpanded,
@@ -502,6 +510,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
       confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
       textGenerationModelSelection: DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
+      textGenerationBackupModelSelection:
+        DEFAULT_UNIFIED_SETTINGS.textGenerationBackupModelSelection,
     });
     onRestored?.();
   }, [changedSettingLabels, onRestored, setTheme, updateSettings]);
@@ -539,6 +549,28 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
   );
   const textGenProvider: ProviderDriverKind =
     textGenInstanceEntry?.driverKind ?? DEFAULT_DRIVER_KIND;
+  const textGenerationBackupModelSelection = resolveTextGenerationBackupModelSelectionState(
+    settings,
+    serverProviders,
+    textGenerationModelSelection,
+  );
+  const defaultTextGenerationBackupModelSelection =
+    resolveDefaultTextGenerationBackupModelSelectionState(
+      settings,
+      serverProviders,
+      textGenerationModelSelection,
+    );
+  const textGenBackupInstanceId = textGenerationBackupModelSelection?.instanceId ?? null;
+  const textGenBackupModel = textGenerationBackupModelSelection?.model ?? null;
+  const textGenBackupModelOptions = textGenerationBackupModelSelection?.options;
+  const gitBackupModelInstanceEntries = gitModelInstanceEntries.filter(
+    (entry) => entry.driverKind !== textGenProvider,
+  );
+  const textGenBackupInstanceEntry = textGenBackupInstanceId
+    ? gitBackupModelInstanceEntries.find((entry) => entry.instanceId === textGenBackupInstanceId)
+    : undefined;
+  const textGenBackupProvider: ProviderDriverKind =
+    textGenBackupInstanceEntry?.driverKind ?? DEFAULT_DRIVER_KIND;
   const gitModelOptionsByInstance = getCustomModelOptionsByInstance(
     settings,
     serverProviders,
@@ -548,6 +580,10 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
   const isGitWritingModelDirty = !Equal.equals(
     settings.textGenerationModelSelection ?? null,
     DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection ?? null,
+  );
+  const isGitWritingBackupModelDirty = !Equal.equals(
+    settings.textGenerationBackupModelSelection ?? null,
+    DEFAULT_UNIFIED_SETTINGS.textGenerationBackupModelSelection ?? null,
   );
 
   return (
@@ -765,14 +801,28 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
                   triggerVariant="outline"
                   triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
                   onInstanceModelChange={(instanceId, model) => {
+                    const nextPrimarySelection = resolveAppModelSelectionState(
+                      {
+                        ...settings,
+                        textGenerationModelSelection: createModelSelection(instanceId, model),
+                      },
+                      serverProviders,
+                    );
                     updateSettings({
-                      textGenerationModelSelection: resolveAppModelSelectionState(
-                        {
-                          ...settings,
-                          textGenerationModelSelection: createModelSelection(instanceId, model),
-                        },
-                        serverProviders,
-                      ),
+                      textGenerationModelSelection: nextPrimarySelection,
+                      ...(settings.textGenerationBackupModelSelection !== null
+                        ? {
+                            textGenerationBackupModelSelection:
+                              resolveTextGenerationBackupModelSelectionState(
+                                {
+                                  ...settings,
+                                  textGenerationModelSelection: nextPrimarySelection,
+                                },
+                                serverProviders,
+                                nextPrimarySelection,
+                              ),
+                          }
+                        : {}),
                     });
                   }}
                 />
@@ -805,6 +855,103 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
                     });
                   }}
                 />
+              </div>
+            }
+          />
+
+          <SettingsRow
+            title="Backup text generation model"
+            description="Retry generated thread titles, branch names, commit messages, and PR text with a different provider when the primary provider fails."
+            resetAction={
+              isGitWritingBackupModelDirty ? (
+                <SettingResetButton
+                  label="backup text generation model"
+                  onClick={() =>
+                    updateSettings({
+                      textGenerationBackupModelSelection:
+                        DEFAULT_UNIFIED_SETTINGS.textGenerationBackupModelSelection,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <div className="flex flex-wrap items-center justify-end gap-1.5">
+                {textGenerationBackupModelSelection &&
+                textGenBackupInstanceId &&
+                textGenBackupModel ? (
+                  <>
+                    <ProviderModelPicker
+                      activeInstanceId={textGenBackupInstanceId}
+                      model={textGenBackupModel}
+                      lockedProvider={null}
+                      instanceEntries={gitBackupModelInstanceEntries}
+                      modelOptionsByInstance={gitModelOptionsByInstance}
+                      triggerVariant="outline"
+                      triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
+                      onInstanceModelChange={(instanceId, model) => {
+                        const nextBackupSelection = resolveTextGenerationBackupModelSelectionState(
+                          {
+                            ...settings,
+                            textGenerationBackupModelSelection: createModelSelection(
+                              instanceId,
+                              model,
+                            ),
+                          },
+                          serverProviders,
+                          textGenerationModelSelection,
+                        );
+                        if (!nextBackupSelection) return;
+                        updateSettings({
+                          textGenerationBackupModelSelection: nextBackupSelection,
+                        });
+                      }}
+                    />
+                    <TraitsPicker
+                      provider={textGenBackupProvider}
+                      models={textGenBackupInstanceEntry?.models ?? []}
+                      model={textGenBackupModel}
+                      modelOptions={textGenBackupModelOptions}
+                      triggerVariant="outline"
+                      triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
+                      onModelOptionsChange={(nextOptions) => {
+                        const nextBackupSelection = resolveTextGenerationBackupModelSelectionState(
+                          {
+                            ...settings,
+                            textGenerationBackupModelSelection: createModelSelection(
+                              textGenBackupInstanceId,
+                              textGenBackupModel,
+                              nextOptions,
+                            ),
+                          },
+                          serverProviders,
+                          textGenerationModelSelection,
+                        );
+                        if (!nextBackupSelection) return;
+                        updateSettings({
+                          textGenerationBackupModelSelection: nextBackupSelection,
+                        });
+                      }}
+                    />
+                  </>
+                ) : defaultTextGenerationBackupModelSelection ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1.5"
+                    onClick={() =>
+                      updateSettings({
+                        textGenerationBackupModelSelection:
+                          defaultTextGenerationBackupModelSelection,
+                      })
+                    }
+                  >
+                    <PlusIcon className="size-3.5" />
+                    <span>Add backup</span>
+                  </Button>
+                ) : (
+                  <span className="text-xs text-muted-foreground">No different provider ready</span>
+                )}
               </div>
             }
           />
@@ -996,6 +1143,12 @@ export function ProviderSettingsPanel() {
   );
   const textGenerationModelSelection = resolveAppModelSelectionState(settings, serverProviders);
   const textGenInstanceId = textGenerationModelSelection.instanceId;
+  const textGenerationBackupModelSelection = resolveTextGenerationBackupModelSelectionState(
+    settings,
+    serverProviders,
+    textGenerationModelSelection,
+  );
+  const textGenBackupInstanceId = textGenerationBackupModelSelection?.instanceId ?? null;
   const lastCheckedAt =
     serverProviders.length > 0
       ? serverProviders.reduce(
@@ -1078,6 +1231,9 @@ export function ProviderSettingsPanel() {
       readonly textGenerationModelSelection?: Parameters<
         typeof buildProviderInstanceUpdatePatch
       >[0]["textGenerationModelSelection"];
+      readonly textGenerationBackupModelSelection?: Parameters<
+        typeof buildProviderInstanceUpdatePatch
+      >[0]["textGenerationBackupModelSelection"];
     },
   ) => {
     updateSettings(
@@ -1088,6 +1244,7 @@ export function ProviderSettingsPanel() {
         driver: row.driver,
         isDefault: row.isDefault,
         textGenerationModelSelection: options?.textGenerationModelSelection,
+        textGenerationBackupModelSelection: options?.textGenerationBackupModelSelection,
       }),
     );
   };
@@ -1097,6 +1254,7 @@ export function ProviderSettingsPanel() {
       providerInstances: withoutProviderInstanceKey(settings.providerInstances, id),
       providerModelPreferences: withoutProviderInstanceKey(settings.providerModelPreferences, id),
       favorites: withoutProviderInstanceFavorites(settings.favorites ?? [], id),
+      ...(textGenBackupInstanceId === id ? { textGenerationBackupModelSelection: null } : {}),
     });
   };
 
@@ -1270,10 +1428,19 @@ export function ProviderSettingsPanel() {
                   const wasEnabled = row.instance.enabled ?? true;
                   const isDisabling = next.enabled === false && wasEnabled;
                   const shouldClearTextGen = isDisabling && textGenInstanceId === row.instanceId;
+                  const shouldClearBackupTextGen =
+                    isDisabling && textGenBackupInstanceId === row.instanceId;
                   if (shouldClearTextGen) {
                     updateProviderInstance(row, next, {
                       textGenerationModelSelection:
                         DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
+                      ...(shouldClearBackupTextGen
+                        ? { textGenerationBackupModelSelection: null }
+                        : {}),
+                    });
+                  } else if (shouldClearBackupTextGen) {
+                    updateProviderInstance(row, next, {
+                      textGenerationBackupModelSelection: null,
                     });
                   } else {
                     updateProviderInstance(row, next);

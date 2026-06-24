@@ -24,6 +24,7 @@ import {
   deriveProviderBackgroundRuns,
   deriveProviderAuthReconnectPrompt,
   desktopCapturedScreenshotToFile,
+  filterUnresolvedProviderBackgroundRuns,
   hasServerAcknowledgedLocalDispatch,
   isScrollMetricsAtEnd,
   mergeLocalDraftThreadWithServerThread,
@@ -606,6 +607,55 @@ describe("deriveProviderBackgroundRuns", () => {
     expect(runs[0]?.commandHints[0]).toContain("THREADLINES_PORT_OFFSET");
     expect(runs[0]?.commandHints[0]).toContain("scripts/dev-runner.ts");
     expect(runs[0]?.commandHints[0]).toContain("threadlines-activity-preview-280");
+  });
+});
+
+describe("filterUnresolvedProviderBackgroundRuns", () => {
+  const mentionedPreviewRun = {
+    id: "mentioned-preview:http://localhost:5953",
+    source: "mentioned-preview" as const,
+    label: "Mentioned local preview",
+    detail: "Mentioned only; no process handle.",
+    statusLabel: "No handle",
+    urls: ["http://localhost:5953"],
+    commandHints: [],
+  };
+
+  it("keeps mentioned preview rows when detection checked but found no replacement", () => {
+    expect(
+      filterUnresolvedProviderBackgroundRuns({
+        providerBackgroundRuns: [mentionedPreviewRun],
+        detectedBackgroundRuns: [],
+      }),
+    ).toEqual([mentionedPreviewRun]);
+  });
+
+  it("removes provider fallback rows only after detected runs cover their URLs", () => {
+    expect(
+      filterUnresolvedProviderBackgroundRuns({
+        providerBackgroundRuns: [mentionedPreviewRun],
+        detectedBackgroundRuns: [{ urls: ["http://localhost:5953"] }],
+      }),
+    ).toEqual([]);
+  });
+
+  it("keeps provider rows without URLs until the provider task settles", () => {
+    const providerRun = {
+      id: "provider:unknown:1",
+      source: "provider" as const,
+      label: "Provider background task",
+      detail: "Provider-managed; stop handle not exposed.",
+      statusLabel: "Tracked",
+      urls: [],
+      commandHints: [],
+    };
+
+    expect(
+      filterUnresolvedProviderBackgroundRuns({
+        providerBackgroundRuns: [providerRun],
+        detectedBackgroundRuns: [{ urls: ["http://localhost:5953"] }],
+      }),
+    ).toEqual([providerRun]);
   });
 });
 

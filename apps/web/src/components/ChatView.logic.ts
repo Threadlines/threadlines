@@ -200,6 +200,22 @@ export interface ProviderBackgroundRunState {
   commandHints: ReadonlyArray<string>;
 }
 
+export interface DetectedBackgroundRunState {
+  urls: ReadonlyArray<string>;
+}
+
+export function filterUnresolvedProviderBackgroundRuns<
+  T extends ProviderBackgroundRunState,
+>(input: {
+  providerBackgroundRuns: ReadonlyArray<T>;
+  detectedBackgroundRuns: ReadonlyArray<DetectedBackgroundRunState>;
+}): T[] {
+  const detectedUrlSet = new Set(input.detectedBackgroundRuns.flatMap((run) => run.urls));
+  return input.providerBackgroundRuns.filter(
+    (run) => run.urls.length === 0 || !run.urls.every((url) => detectedUrlSet.has(url)),
+  );
+}
+
 function asBackgroundRunRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
 }

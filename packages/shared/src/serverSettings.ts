@@ -42,8 +42,12 @@ export function parsePersistedServerObservabilitySettings(
   return { otlpTracesUrl: undefined, otlpMetricsUrl: undefined };
 }
 
+type ModelSelectionPatch = NonNullable<ServerSettingsPatch["textGenerationModelSelection"]>;
+type NullableModelSelectionPatch = ModelSelectionPatch | null | undefined;
+type ModelSelectionValue = ServerSettings["textGenerationModelSelection"];
+
 function shouldReplaceTextGenerationModelSelection(
-  patch: ServerSettingsPatch["textGenerationModelSelection"] | undefined,
+  patch: ModelSelectionPatch | undefined,
 ): boolean {
   return Boolean(patch && (patch.instanceId !== undefined || patch.model !== undefined));
 }
@@ -76,30 +80,69 @@ export function applyServerSettingsPatch(
   patch: ServerSettingsPatch,
 ): ServerSettings {
   const selectionPatch = patch.textGenerationModelSelection;
+  const backupSelectionPatch = patch.textGenerationBackupModelSelection;
   const { automaticGitFetchInterval, ...patchForMerge } = patch;
   const next = deepMerge(current, patchForMerge);
-  const nextWithReplacements = {
+  let nextWithReplacements = {
     ...next,
     ...(patch.providerInstances !== undefined
       ? { providerInstances: patch.providerInstances }
       : {}),
     ...(automaticGitFetchInterval !== undefined ? { automaticGitFetchInterval } : {}),
   };
-  if (!selectionPatch) {
-    return nextWithReplacements;
+
+  const applyModelSelectionPatch = (
+    currentSelection: ModelSelectionValue,
+    modelSelectionPatch: ModelSelectionPatch,
+  ): ModelSelectionValue => {
+    const instanceId = modelSelectionPatch.instanceId ?? currentSelection.instanceId;
+    const model = modelSelectionPatch.model ?? currentSelection.model;
+    const options = shouldReplaceTextGenerationModelSelection(modelSelectionPatch)
+      ? modelSelectionPatch.options
+      : mergeModelSelectionOptionsById({
+          current: currentSelection.options,
+          patch: modelSelectionPatch.options,
+        });
+
+    return createModelSelection(instanceId, model, options);
+  };
+
+  const applyNullableModelSelectionPatch = (
+    currentSelection: ModelSelectionValue | null,
+    modelSelectionPatch: NullableModelSelectionPatch,
+  ): ModelSelectionValue | null | undefined => {
+    if (modelSelectionPatch === undefined) {
+      return undefined;
+    }
+    if (modelSelectionPatch === null) {
+      return null;
+    }
+    return applyModelSelectionPatch(
+      currentSelection ?? current.textGenerationModelSelection,
+      modelSelectionPatch,
+    );
+  };
+
+  if (selectionPatch) {
+    nextWithReplacements = {
+      ...nextWithReplacements,
+      textGenerationModelSelection: applyModelSelectionPatch(
+        current.textGenerationModelSelection,
+        selectionPatch,
+      ),
+    };
   }
 
-  const instanceId = selectionPatch.instanceId ?? current.textGenerationModelSelection.instanceId;
-  const model = selectionPatch.model ?? current.textGenerationModelSelection.model;
-  const options = shouldReplaceTextGenerationModelSelection(selectionPatch)
-    ? selectionPatch.options
-    : mergeModelSelectionOptionsById({
-        current: current.textGenerationModelSelection.options,
-        patch: selectionPatch.options,
-      });
+  const backupSelection = applyNullableModelSelectionPatch(
+    current.textGenerationBackupModelSelection,
+    backupSelectionPatch,
+  );
+  if (backupSelection !== undefined) {
+    nextWithReplacements = {
+      ...nextWithReplacements,
+      textGenerationBackupModelSelection: backupSelection,
+    };
+  }
 
-  return {
-    ...nextWithReplacements,
-    textGenerationModelSelection: createModelSelection(instanceId, model, options),
-  };
+  return nextWithReplacements;
 }

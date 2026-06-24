@@ -183,6 +183,7 @@ import {
   deriveProviderBackgroundRuns,
   deriveComposerSendState,
   deriveProviderAuthReconnectPrompt,
+  filterUnresolvedProviderBackgroundRuns,
   hasServerAcknowledgedLocalDispatch,
   isScrollMetricsAtEnd,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
@@ -324,6 +325,9 @@ function mcpAuthReconnectStateKey(providerInstanceId: ProviderInstanceId, server
 function wait(milliseconds: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
+
+const BACKGROUND_RUN_DETECTION_RETRY_DELAYS_MS = [0, 750, 2_000, 4_000] as const;
+
 type EnvironmentUnavailableState = {
   readonly environmentId: EnvironmentId;
   readonly label: string;
@@ -2356,9 +2360,6 @@ export default function ChatView(props: ChatViewProps) {
   const [detectedBackgroundRuns, setDetectedBackgroundRuns] = useState<ThreadBackgroundRunItem[]>(
     [],
   );
-  const [backgroundRunDetectionCheckedUrls, setBackgroundRunDetectionCheckedUrls] = useState<
-    string[]
-  >([]);
 
   useEffect(() => {
     if (
@@ -2366,7 +2367,6 @@ export default function ChatView(props: ChatViewProps) {
       (backgroundRunDetectionUrls.length === 0 && backgroundRunCommandHints.length === 0)
     ) {
       setDetectedBackgroundRuns([]);
-      setBackgroundRunDetectionCheckedUrls([]);
       return;
     }
 
@@ -2375,19 +2375,32 @@ export default function ChatView(props: ChatViewProps) {
       localApi = ensureLocalApi();
     } catch {
       setDetectedBackgroundRuns([]);
-      setBackgroundRunDetectionCheckedUrls([]);
       return;
     }
 
     let cancelled = false;
-    void localApi.server
-      .resolveBackgroundRuns({
-        urls: backgroundRunDetectionUrls,
-        commandHints: backgroundRunCommandHints,
-      })
-      .then((result) => {
+    const retryTimers: number[] = [];
+    function scheduleRetry(attemptIndex: number) {
+      const delay = BACKGROUND_RUN_DETECTION_RETRY_DELAYS_MS[attemptIndex];
+      if (delay === undefined) {
+        return;
+      }
+      const timer = window.setTimeout(() => {
+        const timerIndex = retryTimers.indexOf(timer);
+        if (timerIndex >= 0) {
+          retryTimers.splice(timerIndex, 1);
+        }
+        void resolveAttempt(attemptIndex);
+      }, delay);
+      retryTimers.push(timer);
+    }
+    async function resolveAttempt(attemptIndex: number) {
+      try {
+        const result = await localApi.server.resolveBackgroundRuns({
+          urls: backgroundRunDetectionUrls,
+          commandHints: backgroundRunCommandHints,
+        });
         if (cancelled) return;
-        setBackgroundRunDetectionCheckedUrls(backgroundRunDetectionUrls);
         setDetectedBackgroundRuns(
           result.runs.map((run) => ({
             id: run.id,
@@ -2404,16 +2417,24 @@ export default function ChatView(props: ChatViewProps) {
             urls: run.urls,
           })),
         );
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setDetectedBackgroundRuns([]);
-          setBackgroundRunDetectionCheckedUrls([]);
+        const detectedUrlSet = new Set(result.runs.flatMap((run) => run.urls));
+        const hasUndetectedUrl = backgroundRunDetectionUrls.some((url) => !detectedUrlSet.has(url));
+        if ((result.runs.length === 0 || hasUndetectedUrl) && !cancelled) {
+          scheduleRetry(attemptIndex + 1);
         }
-      });
+      } catch {
+        if (cancelled) return;
+        setDetectedBackgroundRuns([]);
+        scheduleRetry(attemptIndex + 1);
+      }
+    }
+    scheduleRetry(0);
 
     return () => {
       cancelled = true;
+      for (const timer of retryTimers) {
+        window.clearTimeout(timer);
+      }
     };
   }, [activeThreadId, backgroundRunCommandHints, backgroundRunDetectionUrls]);
 
@@ -2436,23 +2457,15 @@ export default function ChatView(props: ChatViewProps) {
       statusLabel: "Running",
       urls: [],
     }));
-    const detectedUrlSet = new Set(detectedBackgroundRuns.flatMap((run) => run.urls));
-    const checkedUrlSet = new Set(backgroundRunDetectionCheckedUrls);
-    const unresolvedProviderRuns = providerBackgroundRuns.filter(
-      (run) =>
-        (run.urls.length === 0 || !run.urls.every((url) => detectedUrlSet.has(url))) &&
-        !(
-          run.source === "mentioned-preview" &&
-          run.urls.length > 0 &&
-          run.urls.every((url) => checkedUrlSet.has(url))
-        ),
-    );
+    const unresolvedProviderRuns = filterUnresolvedProviderBackgroundRuns({
+      providerBackgroundRuns,
+      detectedBackgroundRuns,
+    });
 
     return [...terminalRuns, ...detectedBackgroundRuns, ...unresolvedProviderRuns];
   }, [
     activeProject?.cwd,
     activeTerminalLaunchContext?.cwd,
-    backgroundRunDetectionCheckedUrls,
     detectedBackgroundRuns,
     gitCwd,
     providerBackgroundRuns,

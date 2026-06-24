@@ -430,6 +430,11 @@ interface CommitAndBranchSuggestion {
   commitMessage: string;
 }
 
+interface TextGenerationSelections {
+  readonly modelSelection: ModelSelection;
+  readonly backupModelSelection: ModelSelection | null;
+}
+
 function isCommitAction(
   action: GitStackedAction,
 ): action is "commit" | "commit_push" | "commit_push_pr" {
@@ -1223,7 +1228,7 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
       includeBranch?: boolean;
       filePaths?: readonly string[];
       preview?: boolean;
-      modelSelection: ModelSelection;
+      textGenerationSelections: TextGenerationSelections;
     }) {
       const context = yield* input.preview
         ? gitCore.previewCommitContext(input.cwd, input.filePaths)
@@ -1254,7 +1259,8 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
           ),
           stagedPatch: limitContext(context.stagedPatch, COMMIT_MESSAGE_PATCH_CONTEXT_MAX_CHARS),
           ...(input.includeBranch ? { includeBranch: true } : {}),
-          modelSelection: input.modelSelection,
+          modelSelection: input.textGenerationSelections.modelSelection,
+          backupModelSelection: input.textGenerationSelections.backupModelSelection,
         })
         .pipe(Effect.map((result) => sanitizeCommitMessage(result)));
 
@@ -1271,8 +1277,11 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
     "generateCommitMessage",
   )(function* (input) {
     const status = yield* readBranchOnlyStatus(input.cwd);
-    const modelSelection = yield* serverSettingsService.getSettings.pipe(
-      Effect.map((settings) => settings.textGenerationModelSelection),
+    const textGenerationSelections = yield* serverSettingsService.getSettings.pipe(
+      Effect.map((settings) => ({
+        modelSelection: settings.textGenerationModelSelection,
+        backupModelSelection: settings.textGenerationBackupModelSelection,
+      })),
       Effect.mapError((cause) =>
         gitManagerError("generateCommitMessage", "Failed to get server settings.", cause),
       ),
@@ -1282,7 +1291,7 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
       branch: status.branch,
       ...(input.filePaths ? { filePaths: input.filePaths } : {}),
       preview: true,
-      modelSelection,
+      textGenerationSelections,
     });
     if (!suggestion) {
       return yield* gitManagerError(
@@ -1299,7 +1308,7 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
   });
 
   const runCommitStep = Effect.fn("runCommitStep")(function* (
-    modelSelection: ModelSelection,
+    textGenerationSelections: TextGenerationSelections,
     cwd: string,
     action: "commit" | "commit_push" | "commit_push_pr",
     branch: string | null,
@@ -1335,7 +1344,7 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
         ...(commitMessage ? { commitMessage } : {}),
         ...(filePaths ? { filePaths } : {}),
         preview: true,
-        modelSelection,
+        textGenerationSelections,
       });
     }
     if (!suggestion) {
@@ -1429,7 +1438,7 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
   });
 
   const runPrStep = Effect.fn("runPrStep")(function* (
-    modelSelection: ModelSelection,
+    textGenerationSelections: TextGenerationSelections,
     cwd: string,
     fallbackBranch: string | null,
     emit: GitActionProgressEmitter,
@@ -1483,7 +1492,8 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
       commitSummary: limitContext(rangeContext.commitSummary, 20_000),
       diffSummary: limitContext(rangeContext.diffSummary, 20_000),
       diffPatch: limitContext(rangeContext.diffPatch, 60_000),
-      modelSelection,
+      modelSelection: textGenerationSelections.modelSelection,
+      backupModelSelection: textGenerationSelections.backupModelSelection,
     });
 
     const bodyFile = path.join(tempDir, `threadlines-pr-body-${process.pid}-${randomUUID()}.md`);
@@ -1742,7 +1752,7 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
   });
 
   const runFeatureBranchStep = Effect.fn("runFeatureBranchStep")(function* (
-    modelSelection: ModelSelection,
+    textGenerationSelections: TextGenerationSelections,
     cwd: string,
     branch: string | null,
     commitMessage?: string,
@@ -1755,7 +1765,7 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
       ...(filePaths ? { filePaths } : {}),
       includeBranch: true,
       preview: true,
-      modelSelection,
+      textGenerationSelections,
     });
     if (!suggestion) {
       return yield* gitManagerError(
@@ -1840,8 +1850,11 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
         let commitMessageForStep = input.commitMessage;
         let preResolvedCommitSuggestion: CommitAndBranchSuggestion | undefined = undefined;
 
-        const modelSelection = yield* serverSettingsService.getSettings.pipe(
-          Effect.map((settings) => settings.textGenerationModelSelection),
+        const textGenerationSelections = yield* serverSettingsService.getSettings.pipe(
+          Effect.map((settings) => ({
+            modelSelection: settings.textGenerationModelSelection,
+            backupModelSelection: settings.textGenerationBackupModelSelection,
+          })),
           Effect.mapError((cause) =>
             gitManagerError("runStackedAction", "Failed to get server settings.", cause),
           ),
@@ -1855,7 +1868,7 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
             label: "Preparing feature branch...",
           });
           const result = yield* runFeatureBranchStep(
-            modelSelection,
+            textGenerationSelections,
             input.cwd,
             initialStatus.branch,
             input.commitMessage,
@@ -1881,7 +1894,7 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
           ? yield* Ref.set(currentPhase, Option.some("commit")).pipe(
               Effect.flatMap(() =>
                 runCommitStep(
-                  modelSelection,
+                  textGenerationSelections,
                   input.cwd,
                   commitAction,
                   currentBranch,
@@ -1918,7 +1931,7 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
               .pipe(
                 Effect.tap(() => Ref.set(currentPhase, Option.some("pr"))),
                 Effect.flatMap(() =>
-                  runPrStep(modelSelection, input.cwd, currentBranch, progress.emit),
+                  runPrStep(textGenerationSelections, input.cwd, currentBranch, progress.emit),
                 ),
               )
           : { status: "skipped_not_requested" as const };

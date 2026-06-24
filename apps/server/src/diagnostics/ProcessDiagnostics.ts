@@ -231,6 +231,34 @@ export function parseWindowsListeningPortRows(output: string): ReadonlyArray<Lis
   }
 }
 
+export function parseWindowsNetstatListeningPortRows(
+  output: string,
+  ports: ReadonlyArray<number>,
+  options?: { readonly all?: boolean },
+): ReadonlyArray<ListeningPortRow> {
+  const safePorts = uniquePositivePorts(ports);
+  const rows: ListeningPortRow[] = [];
+  const seen = new Set<string>();
+  for (const line of output.split(/\r?\n/)) {
+    const parts = line.trim().split(/\s+/);
+    if (parts.length < 5 || parts[0]?.toUpperCase() !== "TCP") continue;
+    const localAddress = parts[1];
+    const state = parts[3];
+    const pidText = parts[4];
+    if (!localAddress || state?.toUpperCase() !== "LISTENING" || !pidText) continue;
+    const portMatch = /:(\d+)$/.exec(localAddress);
+    const port = portMatch?.[1] ? parsePositiveInt(portMatch[1]) : null;
+    const pid = parsePositiveInt(pidText);
+    if (port === null || pid === null) continue;
+    if (options?.all !== true && !safePorts.includes(port)) continue;
+    const key = `${port}:${pid}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push({ port, pid, command: `PID ${pid}` });
+  }
+  return rows;
+}
+
 export function parsePosixLsofListeningPortRows(output: string): ReadonlyArray<ListeningPortRow> {
   const rows: ListeningPortRow[] = [];
   let currentPid: number | null = null;
@@ -576,7 +604,7 @@ function readWindowsListeningPortRows(
 > {
   const safePorts = uniquePositivePorts(ports);
   if (safePorts.length === 0 && options?.all !== true) return Effect.succeed([]);
-  return runProcess({
+  const readPowerShellRows = runProcess({
     command: "powershell.exe",
     args: [
       "-NoProfile",
@@ -592,6 +620,34 @@ function readWindowsListeningPortRows(
             toProcessDiagnosticsError(result.stderr.trim() || "PowerShell port query failed."),
           )
         : Effect.succeed(parseWindowsListeningPortRows(result.stdout)),
+    ),
+  );
+  const readNetstatRows = readWindowsNetstatListeningPortRows(safePorts, options);
+  return readPowerShellRows.pipe(
+    Effect.catch(() => readNetstatRows),
+    Effect.flatMap((rows) => (rows.length > 0 ? Effect.succeed(rows) : readNetstatRows)),
+  );
+}
+
+function readWindowsNetstatListeningPortRows(
+  ports: ReadonlyArray<number>,
+  options?: { readonly all?: boolean },
+): Effect.Effect<
+  ReadonlyArray<ListeningPortRow>,
+  ProcessDiagnosticsError,
+  ChildProcessSpawner.ChildProcessSpawner
+> {
+  const safePorts = uniquePositivePorts(ports);
+  if (safePorts.length === 0 && options?.all !== true) return Effect.succeed([]);
+  return runProcess({
+    command: "netstat.exe",
+    args: ["-ano", "-p", "tcp"],
+    errorMessage: "Failed to query local listening ports with netstat.",
+  }).pipe(
+    Effect.flatMap((result) =>
+      result.exitCode !== 0
+        ? Effect.fail(toProcessDiagnosticsError(result.stderr.trim() || "netstat failed."))
+        : Effect.succeed(parseWindowsNetstatListeningPortRows(result.stdout, safePorts, options)),
     ),
   );
 }
