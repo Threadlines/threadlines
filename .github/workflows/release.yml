@@ -31,12 +31,6 @@ on:
           - mac-arm64-windows
           - mac-all
           - all
-      dry_run:
-        description: "Validate release metadata and release-only checks without creating releases or building desktop artifacts."
-        required: false
-        default: false
-        type: boolean
-
 permissions:
   contents: write
 
@@ -59,7 +53,6 @@ jobs:
       build_scope: ${{ steps.release_meta.outputs.build_scope }}
       build_windows: ${{ steps.release_meta.outputs.build_windows }}
       macos_matrix: ${{ steps.release_meta.outputs.macos_matrix }}
-      dry_run: ${{ steps.release_meta.outputs.dry_run }}
       ref: ${{ github.sha }}
     steps:
       - name: Checkout
@@ -88,17 +81,10 @@ jobs:
           DISPATCH_CHANNEL: ${{ inputs.channel }}
           DISPATCH_VERSION: ${{ inputs.version }}
           DISPATCH_BUILD_SCOPE: ${{ inputs.build_scope }}
-          DISPATCH_DRY_RUN: ${{ inputs.dry_run }}
         run: |
           plain_stable_pattern='^[0-9]+\.[0-9]+\.[0-9]+$'
           nightly_pattern='^[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9]{8}\.[0-9]+$'
           build_scope="${DISPATCH_BUILD_SCOPE:-auto}"
-          dry_run="${DISPATCH_DRY_RUN:-false}"
-
-          if [[ "$dry_run" != "true" && "$dry_run" != "false" ]]; then
-            echo "Invalid dry_run value: $dry_run" >&2
-            exit 1
-          fi
 
           resolve_next_stable_version() {
             git fetch --force --tags origin "refs/tags/*:refs/tags/*"
@@ -259,7 +245,6 @@ jobs:
           echo "build_scope=$build_scope" >> "$GITHUB_OUTPUT"
           echo "build_windows=$build_windows" >> "$GITHUB_OUTPUT"
           echo "macos_matrix=$macos_matrix" >> "$GITHUB_OUTPUT"
-          echo "dry_run=$dry_run" >> "$GITHUB_OUTPUT"
 
       - name: Release smoke
         run: node scripts/release-smoke.ts
@@ -276,24 +261,9 @@ jobs:
       - name: Test
         run: vp exec vp run test
 
-      - name: Dry-run summary
-        if: ${{ steps.release_meta.outputs.dry_run == 'true' }}
-        run: |
-          {
-            echo "## Desktop release dry run"
-            echo ""
-            echo "- Version: \`${{ steps.release_meta.outputs.version }}\`"
-            echo "- Tag: \`${{ steps.release_meta.outputs.tag }}\`"
-            echo "- Channel: \`${{ steps.release_meta.outputs.channel }}\`"
-            echo "- Build scope: \`${{ steps.release_meta.outputs.build_scope }}\`"
-            echo "- Artifact builds: skipped"
-            echo "- Draft release: skipped"
-          } >> "$GITHUB_STEP_SUMMARY"
-
   prepare_release:
     name: Prepare draft GitHub Release
     needs: preflight
-    if: ${{ needs.preflight.outputs.dry_run != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
