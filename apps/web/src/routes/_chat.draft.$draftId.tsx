@@ -5,10 +5,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo } from "react";
 import ChatView from "../components/ChatView";
 import { threadHasPromotableServerActivity } from "../components/ChatView.logic";
-import {
-  ChatRightPanelInlineSidebar,
-  RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
-} from "../components/ChatRightPanelInlineSidebar";
+import { ChatRightPanelInlineSidebar } from "../components/ChatRightPanelInlineSidebar";
 import { useComposerDraftStore, DraftId } from "../composerDraftStore";
 import {
   closeRightPanelSearchParams,
@@ -20,6 +17,10 @@ import { preloadDiffPanel, schedulePreloadDiffPanel } from "../diffPanelPreload"
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useSettings } from "../hooks/useSettings";
 import { gitWorkingTreeDiffQueryOptions } from "../lib/gitReactQuery";
+import {
+  RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
+  useAutoHideSourceControlSheet,
+} from "../rightPanelLayout";
 import { SidebarInset } from "../components/ui/sidebar";
 import { RightPanelSheet } from "../components/RightPanelSheet";
 import {
@@ -65,7 +66,7 @@ function DraftChatThreadRouteView() {
       }),
     [draftSession?.promotedTo, serverThread, serverThreadHasTurnActivity, serverThreadRef],
   );
-  const sourceControlOpen = isSourceControlPanelOpen(search, {
+  const rawSourceControlOpen = isSourceControlPanelOpen(search, {
     defaultOpen: !shouldUseSourceControlSheet,
   });
   const draftProjectRef = draftSession
@@ -98,6 +99,13 @@ function DraftChatThreadRouteView() {
       search: (previous) => closeRightPanelSearchParams(previous),
     });
   }, [draftId, navigate]);
+  const sourceControlAutoHidden = useAutoHideSourceControlSheet({
+    enabled: shouldUseSourceControlSheet,
+    resetKey: draftId,
+    sourceControl: search.sourceControl,
+    onAutoHide: closeRightPanel,
+  });
+  const sourceControlOpen = rawSourceControlOpen && !sourceControlAutoHidden;
   const openSourceControl = useCallback(() => {
     void navigate({
       to: "/draft/$draftId",
@@ -233,7 +241,7 @@ function DraftChatThreadRouteView() {
           routeKind="draft"
         />
       </SidebarInset>
-      <RightPanelSheet open={sourceControlOpen} onClose={closeRightPanel}>
+      <RightPanelSheet open={sourceControlOpen} onClose={closeRightPanel} size="sourceControl">
         {sourceControlPanel}
       </RightPanelSheet>
     </>

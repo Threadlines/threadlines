@@ -44,6 +44,9 @@ function instructionFileStatus(file: ProviderInstructionFile, dirty: boolean) {
   if (dirty) {
     return { label: "Edited", variant: "warning" as const };
   }
+  if (file.readOnlyReason === "symbolic-link") {
+    return { label: "Symbolic link", variant: "outline" as const };
+  }
   if (!file.editable) {
     return { label: "Read-only", variant: "outline" as const };
   }
@@ -55,6 +58,15 @@ function instructionFileStatus(file: ProviderInstructionFile, dirty: boolean) {
 
 function instructionFileDescription(file: ProviderInstructionFile): string {
   const provider = instructionProviderLabel(file.kind);
+  if (file.readOnlyReason === "symbolic-link") {
+    return "This instruction file is a symbolic link and cannot be edited from settings.";
+  }
+  if (file.readOnlyReason === "not-regular-file") {
+    return "This path is not a regular file and cannot be edited from settings.";
+  }
+  if (file.readOnlyReason === "unreadable") {
+    return "This instruction file could not be read and cannot be edited from settings.";
+  }
   if (!file.editable) {
     return "This path is not editable from settings.";
   }
@@ -177,9 +189,7 @@ function InstructionFileEditor({
         </div>
       ) : (
         <div className="flex flex-1 items-center justify-center px-4 py-12 text-center text-sm text-muted-foreground">
-          {cwd
-            ? "This instruction file is outside the editable project scope."
-            : "No project selected."}
+          {cwd ? instructionFileDescription(file) : "No project selected."}
         </div>
       )}
     </div>

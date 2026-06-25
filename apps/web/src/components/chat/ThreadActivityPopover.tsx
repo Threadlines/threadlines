@@ -1,11 +1,13 @@
 import {
   memo,
+  useCallback,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type CSSProperties,
   type ReactNode,
+  type RefCallback,
   type RefObject,
 } from "react";
 import {
@@ -102,12 +104,12 @@ interface SubagentDisplayDetails {
 
 const COLLAPSED_TASK_LIMIT = 3;
 const COLLAPSED_SUBAGENT_LIMIT = 3;
-const SUMMARY_DISCLOSURE_MIN_LENGTH = 44;
 const ACTIVITY_POPOVER_MIN_WIDTH_PX = 256;
 const ACTIVITY_POPOVER_PREFERRED_MIN_WIDTH_PX = 320;
 const ACTIVITY_POPOVER_MAX_WIDTH_PX = 480;
 const ACTIVITY_POPOVER_VIEWPORT_WIDTH_RATIO = 0.36;
 const ACTIVITY_POPOVER_BOUNDARY_GUTTER_PX = 12;
+const OVERFLOW_MEASUREMENT_EPSILON_PX = 1;
 
 type ActivityPopoverWidthStyle = CSSProperties & {
   "--thread-activity-popover-width": string;
@@ -151,6 +153,70 @@ function resolveActivityPopoverWidth(input: {
     input.triggerRight - input.boundaryLeft - ACTIVITY_POPOVER_BOUNDARY_GUTTER_PX;
   const usableWidth = Math.max(ACTIVITY_POPOVER_MIN_WIDTH_PX, availableBeforeBoundary);
   return Math.round(Math.min(preferredWidth, usableWidth));
+}
+
+function hasHorizontalOverflow(element: HTMLElement): boolean {
+  return element.scrollWidth - element.clientWidth > OVERFLOW_MEASUREMENT_EPSILON_PX;
+}
+
+function useHorizontalOverflow(
+  contentKey: string,
+  enabled: boolean,
+): {
+  elementRef: RefCallback<HTMLSpanElement>;
+  overflows: boolean;
+} {
+  const [element, setElement] = useState<HTMLSpanElement | null>(null);
+  const [overflows, setOverflows] = useState(false);
+  const elementRef = useCallback<RefCallback<HTMLSpanElement>>((node) => {
+    setElement(node);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!enabled || typeof window === "undefined") {
+      return;
+    }
+
+    if (!element) {
+      setOverflows(false);
+      return;
+    }
+
+    let frameId: number | null = null;
+
+    const measure = () => {
+      frameId = null;
+      const nextOverflows = hasHorizontalOverflow(element);
+      setOverflows((current) => (current === nextOverflows ? current : nextOverflows));
+    };
+
+    const scheduleMeasure = () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+      }
+      frameId = window.requestAnimationFrame(measure);
+    };
+
+    measure();
+
+    const resizeObserver =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(scheduleMeasure);
+    resizeObserver?.observe(element);
+    if (element.parentElement) {
+      resizeObserver?.observe(element.parentElement);
+    }
+    window.addEventListener("resize", scheduleMeasure);
+
+    return () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+      }
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", scheduleMeasure);
+    };
+  }, [contentKey, element, enabled]);
+
+  return { elementRef, overflows };
 }
 
 function useActivityPopoverAnchorLayout(open: boolean): {
@@ -610,7 +676,8 @@ function TaskSection({ taskProgress }: { taskProgress: ThreadTaskProgressState }
   );
   const headerLabel = activePlan ? "Current tasks" : taskProgress.label;
   const summary = taskSummary(activePlan, activeProposedPlan !== null);
-  const summaryCanExpand = summary.length > SUMMARY_DISCLOSURE_MIN_LENGTH;
+  const summaryOverflow = useHorizontalOverflow(summary, !summaryExpanded);
+  const summaryCanExpand = summaryExpanded || summaryOverflow.overflows;
   const planTitle = activeProposedPlan
     ? (proposedPlanTitle(activeProposedPlan.planMarkdown) ?? "Plan ready")
     : null;
@@ -641,14 +708,17 @@ function TaskSection({ taskProgress }: { taskProgress: ThreadTaskProgressState }
               aria-expanded={summaryExpanded}
               title={summary}
               onClick={() => setSummaryExpanded((value) => !value)}
+              data-task-summary-toggle="true"
             >
               <span
+                ref={summaryOverflow.elementRef}
                 className={cn(
                   "min-w-0",
                   summaryExpanded
                     ? "max-h-20 overflow-y-auto whitespace-normal break-words"
                     : "truncate",
                 )}
+                data-task-summary-text="true"
               >
                 {summary}
               </span>
@@ -661,8 +731,14 @@ function TaskSection({ taskProgress }: { taskProgress: ThreadTaskProgressState }
               />
             </button>
           ) : (
-            <div className="mt-0.5 truncate text-[11px] text-muted-foreground/80" title={summary}>
-              {summary}
+            <div className="mt-0.5 text-[11px] text-muted-foreground/80">
+              <span
+                ref={summaryOverflow.elementRef}
+                className="block min-w-0 truncate"
+                data-task-summary-text="true"
+              >
+                {summary}
+              </span>
             </div>
           )}
         </div>

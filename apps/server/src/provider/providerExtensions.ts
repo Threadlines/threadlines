@@ -58,6 +58,7 @@ import {
   type ProviderInstructionFilesInput,
   type ProviderInstructionFilesResult,
   type ProviderInstructionFileKind,
+  type ProviderInstructionFileReadOnlyReason,
   type ProviderInstructionWriteInput,
   type ProviderInstructionWriteResult,
   type ServerProvider,
@@ -191,6 +192,7 @@ function makeInstructionFile(input: {
   readonly relativePath: string;
   readonly exists: boolean;
   readonly editable: boolean;
+  readonly readOnlyReason?: ProviderInstructionFileReadOnlyReason | undefined;
   readonly contents?: string | undefined;
 }): ProviderInstructionFile {
   return {
@@ -200,6 +202,7 @@ function makeInstructionFile(input: {
     relativePath: input.relativePath,
     exists: input.exists,
     editable: input.editable,
+    ...(input.readOnlyReason !== undefined ? { readOnlyReason: input.readOnlyReason } : {}),
     ...(input.contents !== undefined ? { contents: input.contents } : {}),
   };
 }
@@ -236,6 +239,7 @@ const readInstructionFile = Effect.fn("providerExtensions.readInstructionFile")(
       relativePath: target.relativePath,
       exists: true,
       editable: false,
+      readOnlyReason: "symbolic-link",
       ...(contents !== undefined ? { contents } : {}),
     });
   }
@@ -260,6 +264,7 @@ const readInstructionFile = Effect.fn("providerExtensions.readInstructionFile")(
       relativePath: target.relativePath,
       exists: true,
       editable: false,
+      readOnlyReason: "not-regular-file",
     });
   }
 
@@ -272,6 +277,7 @@ const readInstructionFile = Effect.fn("providerExtensions.readInstructionFile")(
     relativePath: target.relativePath,
     exists: true,
     editable: contents !== undefined,
+    ...(contents === undefined ? { readOnlyReason: "unreadable" as const } : {}),
     ...(contents !== undefined ? { contents } : {}),
   });
 });

@@ -671,6 +671,7 @@ describe("provider extensions inventory", () => {
       assert.equal(claudeFile?.relativePath, "CLAUDE.md");
       assert.equal(claudeFile?.exists, true);
       assert.equal(claudeFile?.editable, false);
+      assert.equal(claudeFile?.readOnlyReason, "symbolic-link");
 
       const writeError = yield* writeInstructionFile({
         cwd,

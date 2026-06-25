@@ -1053,10 +1053,10 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
   it.effect("adds login guidance to Codex authentication runtime errors", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();
-      const firstEventFiber = yield* Stream.filter(
+      const authRecoveryEventsFiber = yield* Stream.filter(
         adapter.streamEvents,
-        (event) => event.type === "runtime.error",
-      ).pipe(Stream.runHead, Effect.forkChild);
+        (event) => event.type === "runtime.error" || event.type === "session.exited",
+      ).pipe(Stream.take(2), Stream.runCollect, Effect.forkChild);
 
       yield* runtime.emit({
         id: asEventId("evt-codex-auth-error"),
@@ -1068,20 +1068,29 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         message: "Not logged in",
       } satisfies ProviderEvent);
 
-      const firstEvent = yield* Fiber.join(firstEventFiber);
+      const authRecoveryEvents = Array.from(yield* Fiber.join(authRecoveryEventsFiber));
+      const runtimeError = authRecoveryEvents.find((event) => event.type === "runtime.error");
+      const sessionExited = authRecoveryEvents.find((event) => event.type === "session.exited");
 
-      assert.equal(firstEvent._tag, "Some");
-      if (firstEvent._tag !== "Some") {
-        return;
-      }
-      assert.equal(firstEvent.value.type, "runtime.error");
-      if (firstEvent.value.type !== "runtime.error") {
+      assert.equal(runtimeError?.type, "runtime.error");
+      if (runtimeError?.type !== "runtime.error") {
         return;
       }
       assert.equal(
-        firstEvent.value.payload.message,
+        runtimeError.payload.message,
         "Not logged in Run `codex login` in a terminal, then retry.",
       );
+      assert.equal(runtimeError.payload.class, "authentication_error");
+      assert.equal(sessionExited?.type, "session.exited");
+      if (sessionExited?.type !== "session.exited") {
+        return;
+      }
+      assert.deepEqual(sessionExited.payload, {
+        reason: "Authentication failed",
+        recoverable: true,
+        exitKind: "error",
+      });
+      assert.equal(runtime.closeImpl.mock.calls.length, 1);
     }),
   );
 

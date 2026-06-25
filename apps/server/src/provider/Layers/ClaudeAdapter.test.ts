@@ -1310,10 +1310,10 @@ describe("ClaudeAdapterLive", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
-      const runtimeErrorFiber = yield* Stream.filter(
+      const authRecoveryEventsFiber = yield* Stream.filter(
         adapter.streamEvents,
-        (event) => event.type === "runtime.error",
-      ).pipe(Stream.runHead, Effect.forkChild);
+        (event) => event.type === "runtime.error" || event.type === "session.exited",
+      ).pipe(Stream.take(2), Stream.runCollect, Effect.forkChild);
 
       const session = yield* adapter.startSession({
         threadId: THREAD_ID,
@@ -1336,20 +1336,28 @@ describe("ClaudeAdapterLive", () => {
         uuid: "result-auth-error",
       } as unknown as SDKMessage);
 
-      const runtimeError = yield* Fiber.join(runtimeErrorFiber);
-      assert.equal(runtimeError._tag, "Some");
-      if (runtimeError._tag !== "Some") {
-        return;
-      }
-      assert.equal(runtimeError.value.type, "runtime.error");
-      if (runtimeError.value.type !== "runtime.error") {
+      const authRecoveryEvents = Array.from(yield* Fiber.join(authRecoveryEventsFiber));
+      const runtimeError = authRecoveryEvents.find((event) => event.type === "runtime.error");
+      const sessionExited = authRecoveryEvents.find((event) => event.type === "session.exited");
+      assert.equal(runtimeError?.type, "runtime.error");
+      if (runtimeError?.type !== "runtime.error") {
         return;
       }
       assert.equal(
-        runtimeError.value.payload.message,
+        runtimeError.payload.message,
         "Failed to authenticate. API Error: 401 Invalid authentication credentials Run `claude auth login` in a terminal, then retry.",
       );
-      assert.equal(runtimeError.value.payload.class, "authentication_error");
+      assert.equal(runtimeError.payload.class, "authentication_error");
+      assert.equal(sessionExited?.type, "session.exited");
+      if (sessionExited?.type !== "session.exited") {
+        return;
+      }
+      assert.deepEqual(sessionExited.payload, {
+        reason: "Authentication failed",
+        recoverable: true,
+        exitKind: "error",
+      });
+      assert.equal(harness.query.closeCalls, 1);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

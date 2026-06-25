@@ -5,10 +5,7 @@ import { createFileRoute, retainSearchParams, useNavigate } from "@tanstack/reac
 import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
 
 import ChatView from "../components/ChatView";
-import {
-  ChatRightPanelInlineSidebar,
-  RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
-} from "../components/ChatRightPanelInlineSidebar";
+import { ChatRightPanelInlineSidebar } from "../components/ChatRightPanelInlineSidebar";
 import { threadHasPromotableServerActivity } from "../components/ChatView.logic";
 import { DiffWorkerPoolProvider } from "../components/DiffWorkerPoolProvider";
 import {
@@ -29,6 +26,10 @@ import { preloadDiffPanel, schedulePreloadDiffPanel } from "../diffPanelPreload"
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useSettings } from "../hooks/useSettings";
 import { gitWorkingTreeDiffQueryOptions } from "../lib/gitReactQuery";
+import {
+  RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
+  useAutoHideSourceControlSheet,
+} from "../rightPanelLayout";
 import { selectEnvironmentState, selectThreadExistsByRef, useStore } from "../store";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
 import { resolveThreadRouteRef, buildThreadRouteParams } from "../threadRoutes";
@@ -94,10 +95,9 @@ function ChatThreadRouteView() {
   const serverThreadHasPromotableActivity = threadHasPromotableServerActivity(serverThread);
   const environmentHasAnyThreads = environmentHasServerThreads || environmentHasDraftThreads;
   const diffOpen = search.diff === "1";
-  const sourceControlOpen = isSourceControlPanelOpen(search, {
+  const rawSourceControlOpen = isSourceControlPanelOpen(search, {
     defaultOpen: !shouldUseDiffSheet,
   });
-  const rightPanelOpen = diffOpen || sourceControlOpen;
   const sourceControlThread = serverThread ?? draftThread;
   const sourceControlProjectRef = sourceControlThread
     ? scopeProjectRef(sourceControlThread.environmentId, sourceControlThread.projectId)
@@ -181,6 +181,15 @@ function ChatThreadRouteView() {
       search: (previous) => closeRightPanelSearchParams(previous),
     });
   }, [navigate, threadRef]);
+  const sourceControlAutoHidden = useAutoHideSourceControlSheet({
+    enabled: shouldUseDiffSheet,
+    resetKey: currentThreadKey,
+    sourceControl: search.sourceControl,
+    blocked: diffOpen,
+    onAutoHide: closeRightPanel,
+  });
+  const sourceControlOpen = rawSourceControlOpen && !sourceControlAutoHidden;
+  const rightPanelOpen = diffOpen || sourceControlOpen;
   const openSourceControl = useCallback(() => {
     if (!threadRef) {
       return;
@@ -337,7 +346,11 @@ function ChatThreadRouteView() {
           routeKind="server"
         />
       </SidebarInset>
-      <RightPanelSheet open={rightPanelOpen} onClose={closeRightPanel}>
+      <RightPanelSheet
+        open={rightPanelOpen}
+        onClose={closeRightPanel}
+        size={sourceControlOpen && !diffOpen ? "sourceControl" : "default"}
+      >
         {rightPanelContent}
       </RightPanelSheet>
     </>

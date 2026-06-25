@@ -12,6 +12,7 @@ import {
   type CanonicalItemType,
   type CanonicalRequestType,
   type CodexSettings,
+  EventId,
   ProviderDriverKind,
   type ProviderEvent,
   ProviderInstanceId,
@@ -54,7 +55,7 @@ import {
   type ProviderAdapterError,
 } from "../Errors.ts";
 import { type CodexAdapterShape } from "../Services/CodexAdapter.ts";
-import { addProviderAuthHint } from "../providerAuthHints.ts";
+import { addProviderAuthHint, isProviderAuthErrorMessage } from "../providerAuthHints.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import {
@@ -74,6 +75,10 @@ const isCodexSessionRuntimeThreadIdMissingError = Schema.is(
 const isCodexResumeCursorSchema = Schema.is(CodexResumeCursorSchema);
 
 const PROVIDER = ProviderDriverKind.make("codex");
+
+function providerErrorClass(message: string): "authentication_error" | "provider_error" {
+  return isProviderAuthErrorMessage(message) ? "authentication_error" : "provider_error";
+}
 
 export interface CodexAdapterLiveOptions {
   readonly instanceId?: ProviderInstanceId;
@@ -709,7 +714,7 @@ function mapToRuntimeEvents(
         type: "runtime.error",
         payload: {
           message: addProviderAuthHint(PROVIDER, event.message),
-          class: "provider_error",
+          class: providerErrorClass(event.message),
           ...(event.payload !== undefined ? { detail: event.payload } : {}),
         },
       },
@@ -1786,13 +1791,14 @@ function mapToRuntimeEvents(
     const payload = readPayload(EffectCodexSchema.V2ErrorNotification, event.payload);
     const message = payload?.error.message ?? event.message ?? "Provider runtime error";
     const willRetry = payload?.willRetry === true;
+    const errorClass = providerErrorClass(message);
     return [
       {
         type: willRetry ? "runtime.warning" : "runtime.error",
         ...runtimeEventBase(event, canonicalThreadId),
         payload: {
           message: addProviderAuthHint(PROVIDER, message),
-          ...(!willRetry ? { class: "provider_error" as const } : {}),
+          ...(!willRetry ? { class: errorClass } : {}),
           ...(willRetry ? { warningKind: "api-retry" } : {}),
           ...(event.payload !== undefined ? { detail: event.payload } : {}),
         },
@@ -1810,7 +1816,7 @@ function mapToRuntimeEvents(
             ...runtimeEventBase(event, canonicalThreadId),
             payload: {
               message: addProviderAuthHint(PROVIDER, message),
-              class: "provider_error" as const,
+              class: providerErrorClass(message),
               ...(event.payload !== undefined ? { detail: event.payload } : {}),
             },
           }
@@ -1878,6 +1884,25 @@ function mapToRuntimeEvents(
   }
 
   return [];
+}
+
+function hasAuthenticationRuntimeError(events: ReadonlyArray<ProviderRuntimeEvent>): boolean {
+  return events.some(
+    (event) => event.type === "runtime.error" && event.payload.class === "authentication_error",
+  );
+}
+
+function makeAuthenticationSessionExitedEvent(event: ProviderEvent): ProviderRuntimeEvent {
+  return {
+    ...runtimeEventBase(event, event.threadId),
+    eventId: EventId.make(`${event.id}:auth-session-exited`),
+    type: "session.exited",
+    payload: {
+      reason: "Authentication failed",
+      recoverable: true,
+      exitKind: "error",
+    },
+  };
 }
 
 /**
@@ -1978,6 +2003,15 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               return;
             }
             yield* Queue.offerAll(runtimeEventQueue, runtimeEvents);
+            if (hasAuthenticationRuntimeError(runtimeEvents)) {
+              yield* Queue.offer(runtimeEventQueue, makeAuthenticationSessionExitedEvent(event));
+              const session = sessions.get(event.threadId);
+              if (session && !session.stopped) {
+                yield* stopSessionInternal(session, {
+                  interruptEventFiber: false,
+                });
+              }
+            }
           }),
         ).pipe(Effect.forkChild);
 
@@ -2231,6 +2265,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
 
   const stopSessionInternal = Effect.fn("stopSessionInternal")(function* (
     session: CodexAdapterSessionContext,
+    options?: { readonly interruptEventFiber?: boolean },
   ) {
     if (session.stopped) {
       return;
@@ -2239,7 +2274,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     sessions.delete(session.threadId);
     yield* session.runtime.close.pipe(Effect.ignore);
     yield* Effect.ignore(Scope.close(session.scope, Exit.void));
-    yield* Fiber.interrupt(session.eventFiber).pipe(Effect.ignore);
+    if (options?.interruptEventFiber !== false) {
+      yield* Fiber.interrupt(session.eventFiber).pipe(Effect.ignore);
+    }
   });
 
   const stopSession: CodexAdapterShape["stopSession"] = (threadId) =>
@@ -2262,7 +2299,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     Effect.succeed(Boolean(sessions.get(threadId) && !sessions.get(threadId)?.stopped));
 
   const stopAll: CodexAdapterShape["stopAll"] = () =>
-    Effect.forEach(Array.from(sessions.values()), stopSessionInternal, {
+    Effect.forEach(Array.from(sessions.values()), (session) => stopSessionInternal(session), {
       concurrency: 1,
       discard: true,
     }).pipe(Effect.asVoid);

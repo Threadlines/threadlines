@@ -134,6 +134,14 @@ export type ProviderInstructionFileKind = typeof ProviderInstructionFileKind.Typ
 export const ProviderInstructionFileScope = Schema.Literals(["project", "project-local", "user"]);
 export type ProviderInstructionFileScope = typeof ProviderInstructionFileScope.Type;
 
+export const ProviderInstructionFileReadOnlyReason = Schema.Literals([
+  "symbolic-link",
+  "not-regular-file",
+  "unreadable",
+]);
+export type ProviderInstructionFileReadOnlyReason =
+  typeof ProviderInstructionFileReadOnlyReason.Type;
+
 export const ProviderInstructionFile = Schema.Struct({
   kind: ProviderInstructionFileKind,
   scope: ProviderInstructionFileScope,
@@ -141,6 +149,7 @@ export const ProviderInstructionFile = Schema.Struct({
   relativePath: Schema.optional(TrimmedNonEmptyString),
   exists: Schema.Boolean,
   editable: Schema.Boolean,
+  readOnlyReason: Schema.optional(ProviderInstructionFileReadOnlyReason),
   contents: Schema.optional(Schema.String),
 });
 export type ProviderInstructionFile = typeof ProviderInstructionFile.Type;

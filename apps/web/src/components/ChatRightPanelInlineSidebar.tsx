@@ -2,30 +2,19 @@ import { type CSSProperties, type ReactNode, useCallback } from "react";
 
 import { isElectron } from "../env";
 import { cn } from "../lib/utils";
-import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
+import {
+  RIGHT_PANEL_INLINE_DEFAULT_WIDTH,
+  RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
+  RIGHT_PANEL_INLINE_SIDEBAR_MAX_WIDTH,
+  RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH,
+  RIGHT_PANEL_INLINE_SIDEBAR_WIDTH_STORAGE_KEY,
+  normalizeRightPanelStoredWidth,
+} from "../rightPanelLayout";
 import { Sidebar, SidebarProvider, SidebarRail } from "./ui/sidebar";
 
 export { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY };
 
-const RIGHT_PANEL_INLINE_SIDEBAR_WIDTH_STORAGE_KEY = "chat_right_panel_sidebar_width";
-const RIGHT_PANEL_INLINE_LEGACY_DEFAULT_WIDTH = 17 * 16;
-const RIGHT_PANEL_INLINE_SIDEBAR_MIN_CONTENT_WIDTH = 15 * 16;
-// Keep in sync with --app-window-resize-edge-inset in index.css. The right
-// panel reserves this space inside its border box in Electron, so the outer
-// min width needs to include it for the visible content area to match the left.
-const RIGHT_PANEL_INLINE_ELECTRON_RESIZE_EDGE_INSET_WIDTH = 6;
-const RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH =
-  RIGHT_PANEL_INLINE_SIDEBAR_MIN_CONTENT_WIDTH +
-  (isElectron ? RIGHT_PANEL_INLINE_ELECTRON_RESIZE_EDGE_INSET_WIDTH : 0);
-// Chat is the main focus: the panel starts at its minimum width and only
-// grows if the user drags it wider (which is then persisted).
-const RIGHT_PANEL_INLINE_DEFAULT_WIDTH = `${RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH}px`;
-const RIGHT_PANEL_INLINE_SIDEBAR_MAX_WIDTH = 256 * 16;
 const COMPOSER_COMPACT_MIN_LEFT_CONTROLS_WIDTH_PX = 208;
-
-function normalizeRightPanelStoredWidth(width: number) {
-  return width <= RIGHT_PANEL_INLINE_LEGACY_DEFAULT_WIDTH ? null : width;
-}
 
 export function ChatRightPanelInlineSidebar(props: {
   open: boolean;

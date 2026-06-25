@@ -55,6 +55,7 @@ import { isMacPlatform } from "../lib/utils";
 import { __resetLocalApiForTests } from "../localApi";
 import { AppAtomRegistryProvider } from "../rpc/atomRegistry";
 import { getServerConfig } from "../rpc/serverState";
+import { RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH } from "../rightPanelLayout";
 import { getRouter } from "../router";
 import { deriveLogicalProjectKeyFromSettings } from "../logicalProject";
 import { selectBootstrapCompleteForActiveEnvironment, useStore } from "../store";
@@ -2396,6 +2397,75 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await expect
         .element(page.getByRole("heading", { name: "Source Control" }))
         .not.toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("auto-hides explicit source control on compact routes and reopens at desktop panel width", async () => {
+    const draftId = DraftId.make("draft-source-control-compact-reopen");
+    useComposerDraftStore.setState({
+      draftThreadsByThreadKey: {
+        [draftId]: {
+          threadId: THREAD_ID,
+          environmentId: LOCAL_ENVIRONMENT_ID,
+          projectId: PROJECT_ID,
+          logicalProjectKey: PROJECT_DRAFT_KEY,
+          createdAt: NOW_ISO,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          envMode: "local",
+        },
+      },
+      logicalProjectDraftThreadKeyByLogicalProjectKey: {
+        [PROJECT_DRAFT_KEY]: draftId,
+      },
+    });
+
+    const mounted = await mountChatView({
+      viewport: COMPACT_FOOTER_VIEWPORT,
+      snapshot: createDraftOnlySnapshot(),
+      initialPath: `/draft/${draftId}?sourceControl=1`,
+      sourceControlDefault: "open",
+    });
+
+    try {
+      const sourceControlToggle = await waitForElement(
+        () =>
+          document.querySelector(
+            'button[aria-label="Toggle source control panel"]',
+          ) as HTMLButtonElement | null,
+        "Unable to find source control toggle.",
+      );
+
+      await vi.waitFor(
+        () => {
+          expect(mounted.router.state.location.search).toMatchObject({ sourceControl: "0" });
+          expect(sourceControlToggle.hasAttribute("data-pressed")).toBe(false);
+          expect(document.querySelector('h2[aria-label="Source Control"]')).toBeNull();
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      sourceControlToggle.click();
+
+      const sourceControlHeading = await waitForElement(
+        () =>
+          document.querySelector('h2[aria-label="Source Control"]') as HTMLHeadingElement | null,
+        "Unable to find source control panel heading.",
+      );
+      const sheetPopup = sourceControlHeading.closest(
+        '[data-slot="sheet-popup"]',
+      ) as HTMLElement | null;
+      expect(sheetPopup).not.toBeNull();
+      await waitForLayout();
+
+      expect(mounted.router.state.location.search).toMatchObject({ sourceControl: "1" });
+      expect(Math.round(sheetPopup?.getBoundingClientRect().width ?? 0)).toBe(
+        RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH,
+      );
     } finally {
       await mounted.cleanup();
     }

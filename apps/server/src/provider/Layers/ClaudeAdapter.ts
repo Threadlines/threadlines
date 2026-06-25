@@ -42,6 +42,7 @@ import {
   type ProviderSteerTurnInput,
   type ThreadTokenUsageSnapshot,
   type ProviderUserInputAnswers,
+  type RuntimeSessionExitKind,
   type RuntimeContentStreamKind,
   RuntimeItemId,
   RuntimeRequestId,
@@ -3014,6 +3015,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     yield* completeTurn(context, status, errorMessage, message);
+
+    if (status === "failed" && isProviderAuthErrorMessage(errorMessage)) {
+      yield* stopSessionInternal(context, {
+        emitExitEvent: true,
+        exitKind: "error",
+        exitReason: "Authentication failed",
+        interruptStreamFiber: false,
+        recoverable: true,
+      });
+    }
   });
 
   const handlePromptSuggestionMessage = Effect.fn("handlePromptSuggestionMessage")(function* (
@@ -3526,7 +3537,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
   const stopSessionInternal = Effect.fn("stopSessionInternal")(function* (
     context: ClaudeSessionContext,
-    options?: { readonly emitExitEvent?: boolean },
+    options?: {
+      readonly emitExitEvent?: boolean;
+      readonly exitKind?: RuntimeSessionExitKind;
+      readonly exitReason?: string;
+      readonly interruptStreamFiber?: boolean;
+      readonly recoverable?: boolean;
+    },
   ) {
     if (context.stopped) return;
 
@@ -3560,7 +3577,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
     const streamFiber = context.streamFiber;
     context.streamFiber = undefined;
-    if (streamFiber && streamFiber.pollUnsafe() === undefined) {
+    if (
+      options?.interruptStreamFiber !== false &&
+      streamFiber &&
+      streamFiber.pollUnsafe() === undefined
+    ) {
       yield* Fiber.interrupt(streamFiber);
     }
 
@@ -3596,8 +3617,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         createdAt: stamp.createdAt,
         threadId: context.session.threadId,
         payload: {
-          reason: "Session stopped",
-          exitKind: "graceful",
+          reason: options?.exitReason ?? "Session stopped",
+          ...(options?.recoverable !== undefined ? { recoverable: options.recoverable } : {}),
+          exitKind: options?.exitKind ?? "graceful",
         },
         providerRefs: {},
       });
