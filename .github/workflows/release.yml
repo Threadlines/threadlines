@@ -32,6 +32,8 @@ on:
           - mac-all
           - all
 permissions:
+  actions: read
+  checks: read
   contents: write
 
 concurrency:
@@ -67,6 +69,11 @@ jobs:
           cache: true
           version: "0.1.24"
           run-install: false
+
+      - name: Verify required CI checks passed
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/verify-release-ci.ts
 
       - name: Install dependencies
         run: vp install --frozen-lockfile
@@ -248,18 +255,6 @@ jobs:
 
       - name: Release smoke
         run: node scripts/release-smoke.ts
-
-      - name: Format check
-        run: vp exec vp fmt --check
-
-      - name: Lint
-        run: vp exec vp lint --report-unused-disable-directives
-
-      - name: Typecheck
-        run: vp exec vp run -r --concurrency-limit 2 typecheck
-
-      - name: Test
-        run: vp exec vp run test
 
   prepare_release:
     name: Prepare draft GitHub Release
