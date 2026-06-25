@@ -68,6 +68,7 @@ import { ProviderModelPicker } from "./ProviderModelPicker";
 import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommandMenu";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
+import { ComposerAttachmentMenu } from "./ComposerAttachmentMenu";
 import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
 import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
@@ -93,7 +94,7 @@ import {
   canRequestProviderRateLimitResetCredit,
   useProviderRateLimitResetCredit,
 } from "../ProviderRateLimitResetCredit";
-import { CameraIcon, CircleAlertIcon, LoaderCircleIcon, SparklesIcon, XIcon } from "lucide-react";
+import { CircleAlertIcon, SparklesIcon, XIcon } from "lucide-react";
 import { proposedPlanTitle } from "../../proposedPlan";
 import {
   getProviderInteractionModeToggle,
@@ -891,6 +892,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // Refs
   // ------------------------------------------------------------------
   const composerEditorRef = useRef<ComposerPromptEditorHandle>(null);
+  const attachmentFileInputRef = useRef<HTMLInputElement>(null);
   const composerFormRef = useRef<HTMLFormElement>(null);
   const composerSurfaceRef = useRef<HTMLDivElement>(null);
   const composerFormHeightRef = useRef(0);
@@ -1156,18 +1158,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const collapsedComposerPrimaryActionLabel = "Send message";
   const showMobilePendingAnswerActions =
     isMobileViewport && !isComposerCollapsedMobile && pendingPrimaryAction !== null;
-  const screenshotCaptureDisabled =
-    isCapturingScreenshot ||
-    isComposerApprovalState ||
-    pendingUserInputs.length > 0 ||
-    !selectedModelSupportsImages;
-  const screenshotCaptureTooltip = isCapturingScreenshot
-    ? "Capturing screenshot..."
-    : isComposerApprovalState || pendingUserInputs.length > 0
-      ? "Finish the pending prompt before attaching screenshots"
+  // Shared gate for every "Add" action (upload + screenshot). The in-flight
+  // capture only blocks the screenshot item, not uploading images, so it is
+  // handled inside the menu rather than here.
+  const attachmentsDisabled =
+    isComposerApprovalState || pendingUserInputs.length > 0 || !selectedModelSupportsImages;
+  const attachmentsDisabledReason =
+    isComposerApprovalState || pendingUserInputs.length > 0
+      ? "Finish the pending prompt before adding attachments"
       : !selectedModelSupportsImages
         ? "Selected model does not accept images"
-        : "Capture screenshot";
+        : null;
 
   // ------------------------------------------------------------------
   // Prompt helpers
@@ -1879,10 +1880,24 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     setThreadError(activeThreadId, error);
   };
 
+  const openImageFilePicker = () => {
+    if (attachmentsDisabled) return;
+    attachmentFileInputRef.current?.click();
+  };
+
+  const onAttachmentFileInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    // Reset so selecting the same file again still fires a change event.
+    event.target.value = "";
+    if (files.length === 0) return;
+    addComposerImages(files);
+    focusComposer();
+  };
+
   const onCaptureScreenshot = () => {
     const captureScreenshot = window.desktopBridge?.captureScreenshot;
     if (!captureScreenshot || isCapturingScreenshot) return;
-    if (screenshotCaptureDisabled) return;
+    if (attachmentsDisabled) return;
 
     setIsCapturingScreenshot(true);
     void captureScreenshot({ mode: "interactive" })
@@ -2621,7 +2636,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 )}
               </div>
 
-              {/* Right side: send / stop button */}
+              {/* Right side: add attachments + send / stop button */}
               <div
                 data-chat-composer-actions="right"
                 data-chat-composer-primary-actions-compact={
@@ -2629,30 +2644,24 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 }
                 className="flex shrink-0 flex-nowrap items-center justify-end gap-2"
               >
-                {canCaptureScreenshot ? (
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon-sm"
-                          className="rounded-full text-muted-foreground/70 hover:text-foreground/80"
-                          aria-label="Capture screenshot"
-                          disabled={screenshotCaptureDisabled}
-                          onClick={onCaptureScreenshot}
-                        />
-                      }
-                    >
-                      {isCapturingScreenshot ? (
-                        <LoaderCircleIcon className="size-4 animate-spin" aria-hidden="true" />
-                      ) : (
-                        <CameraIcon className="size-4" aria-hidden="true" />
-                      )}
-                    </TooltipTrigger>
-                    <TooltipPopup side="top">{screenshotCaptureTooltip}</TooltipPopup>
-                  </Tooltip>
-                ) : null}
+                <input
+                  ref={attachmentFileInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="sr-only"
+                  tabIndex={-1}
+                  aria-hidden="true"
+                  onChange={onAttachmentFileInputChange}
+                />
+                <ComposerAttachmentMenu
+                  canCaptureScreenshot={canCaptureScreenshot}
+                  isCapturingScreenshot={isCapturingScreenshot}
+                  disabled={attachmentsDisabled}
+                  disabledReason={attachmentsDisabledReason}
+                  onUploadImage={openImageFilePicker}
+                  onCaptureScreenshot={onCaptureScreenshot}
+                />
                 <ComposerFooterPrimaryActions
                   compact={isComposerPrimaryActionsCompact}
                   activeContextWindow={activeContextWindow}
