@@ -56,6 +56,7 @@ const REMOTE_REFS_REFRESH_INTERVAL = Duration.minutes(2);
 const REMOTE_REFS_REFRESH_TIMEOUT = Duration.seconds(15);
 const REMOTE_REFS_REFRESH_FAILURE_COOLDOWN = Duration.minutes(10);
 const REMOTE_REFS_REFRESH_CACHE_CAPACITY = 2_048;
+const GIT_FETCH_NO_WRITE_FETCH_HEAD = "--no-write-fetch-head";
 const BACKGROUND_GIT_FETCH_ENV = Object.freeze({
   GCM_INTERACTIVE: "Never",
   GIT_TERMINAL_PROMPT: "0",
@@ -609,6 +610,14 @@ function quoteGitCommand(args: ReadonlyArray<string>): string {
   return `git ${args.join(" ")}`;
 }
 
+function remoteTrackingRef(remoteName: string, branchName: string): string {
+  return `refs/remotes/${remoteName}/${branchName}`;
+}
+
+function remoteBranchFetchRefspec(remoteName: string, branchName: string): string {
+  return `+refs/heads/${branchName}:${remoteTrackingRef(remoteName, branchName)}`;
+}
+
 function isMissingGitCwdError(error: GitCommandError): boolean {
   const normalized = `${error.detail}\n${error.message}`.toLowerCase();
   return (
@@ -1088,6 +1097,26 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       Effect.map((result) => result.stdout),
     );
 
+  const gitFetchSemaphores = new Map<string, Semaphore.Semaphore>();
+  const gitFetchSemaphoreForCommonDir = (
+    gitCommonDir: string,
+  ): Effect.Effect<Semaphore.Semaphore> =>
+    Effect.sync(() => {
+      const existing = gitFetchSemaphores.get(gitCommonDir);
+      if (existing) return existing;
+      const semaphore = Semaphore.makeUnsafe(1);
+      gitFetchSemaphores.set(gitCommonDir, semaphore);
+      return semaphore;
+    });
+
+  const withGitFetchPermitForCommonDir = <A, E, R>(
+    gitCommonDir: string,
+    effect: Effect.Effect<A, E, R>,
+  ): Effect.Effect<A, E, R> =>
+    gitFetchSemaphoreForCommonDir(gitCommonDir).pipe(
+      Effect.flatMap((semaphore) => semaphore.withPermit(effect)),
+    );
+
   const hasHeadCommit = (cwd: string): Effect.Effect<boolean, GitCommandError> =>
     executeGit("GitVcsDriver.hasHeadCommit", cwd, ["rev-parse", "--verify", "HEAD"], {
       allowNonZeroExit: true,
@@ -1169,25 +1198,28 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   ): Effect.Effect<void, GitCommandError> => {
     const fetchCwd =
       path.basename(gitCommonDir) === ".git" ? path.dirname(gitCommonDir) : gitCommonDir;
-    const remoteTrackingRef = `refs/remotes/${upstream.remoteName}/${upstream.branchName}`;
-    return executeGit(
-      "GitVcsDriver.fetchRemoteForStatus",
-      fetchCwd,
-      [
-        "--git-dir",
-        gitCommonDir,
-        "fetch",
-        "--quiet",
-        "--no-tags",
-        upstream.remoteName,
-        `+refs/heads/${upstream.branchName}:${remoteTrackingRef}`,
-      ],
-      {
-        allowNonZeroExit: true,
-        env: BACKGROUND_GIT_FETCH_ENV,
-        timeoutMs: Duration.toMillis(STATUS_UPSTREAM_REFRESH_TIMEOUT),
-      },
-    ).pipe(Effect.asVoid);
+    return withGitFetchPermitForCommonDir(
+      gitCommonDir,
+      executeGit(
+        "GitVcsDriver.fetchRemoteForStatus",
+        fetchCwd,
+        [
+          "--git-dir",
+          gitCommonDir,
+          "fetch",
+          GIT_FETCH_NO_WRITE_FETCH_HEAD,
+          "--quiet",
+          "--no-tags",
+          upstream.remoteName,
+          remoteBranchFetchRefspec(upstream.remoteName, upstream.branchName),
+        ],
+        {
+          allowNonZeroExit: true,
+          env: BACKGROUND_GIT_FETCH_ENV,
+          timeoutMs: Duration.toMillis(STATUS_UPSTREAM_REFRESH_TIMEOUT),
+        },
+      ).pipe(Effect.asVoid),
+    );
   };
 
   const resolveGitCommonDir = Effect.fn("resolveGitCommonDir")(function* (cwd: string) {
@@ -1197,6 +1229,14 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     ]).pipe(Effect.map((stdout) => stdout.trim()));
     return path.isAbsolute(gitCommonDir) ? gitCommonDir : path.resolve(cwd, gitCommonDir);
   });
+
+  const withGitFetchPermitForCwd = <A, E, R>(
+    cwd: string,
+    effect: Effect.Effect<A, E, R>,
+  ): Effect.Effect<A, E | GitCommandError, R> =>
+    resolveGitCommonDir(cwd).pipe(
+      Effect.flatMap((gitCommonDir) => withGitFetchPermitForCommonDir(gitCommonDir, effect)),
+    );
 
   const gitCommonDirMetadataCwd = (gitCommonDir: string): string =>
     path.basename(gitCommonDir) === ".git"
@@ -1254,67 +1294,74 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     remoteName: string,
     options?: { readonly includeTags?: boolean },
   ) {
-    const fetchCwd =
-      path.basename(gitCommonDir) === ".git" ? path.dirname(gitCommonDir) : gitCommonDir;
-    const branchArgs = [
-      "--git-dir",
+    yield* withGitFetchPermitForCommonDir(
       gitCommonDir,
-      "fetch",
-      "--quiet",
-      "--no-tags",
-      "--prune",
-      remoteName,
-      `+refs/heads/*:refs/remotes/${remoteName}/*`,
-    ];
-    const result = yield* executeGit(
-      "GitVcsDriver.fetchRemoteRefsForRemote",
-      fetchCwd,
-      branchArgs,
-      {
-        allowNonZeroExit: true,
-        env: BACKGROUND_GIT_FETCH_ENV,
-        timeoutMs: Duration.toMillis(REMOTE_REFS_REFRESH_TIMEOUT),
-      },
-    );
-    if (result.exitCode !== 0) {
-      return yield* createGitCommandError(
-        "GitVcsDriver.fetchRemoteRefsForRemote",
-        fetchCwd,
-        branchArgs,
-        result.stderr.trim() || "git fetch remote refs failed",
-      );
-    }
+      Effect.gen(function* () {
+        const fetchCwd =
+          path.basename(gitCommonDir) === ".git" ? path.dirname(gitCommonDir) : gitCommonDir;
+        const branchArgs = [
+          "--git-dir",
+          gitCommonDir,
+          "fetch",
+          GIT_FETCH_NO_WRITE_FETCH_HEAD,
+          "--quiet",
+          "--no-tags",
+          "--prune",
+          remoteName,
+          `+refs/heads/*:refs/remotes/${remoteName}/*`,
+        ];
+        const result = yield* executeGit(
+          "GitVcsDriver.fetchRemoteRefsForRemote",
+          fetchCwd,
+          branchArgs,
+          {
+            allowNonZeroExit: true,
+            env: BACKGROUND_GIT_FETCH_ENV,
+            timeoutMs: Duration.toMillis(REMOTE_REFS_REFRESH_TIMEOUT),
+          },
+        );
+        if (result.exitCode !== 0) {
+          return yield* createGitCommandError(
+            "GitVcsDriver.fetchRemoteRefsForRemote",
+            fetchCwd,
+            branchArgs,
+            result.stderr.trim() || "git fetch remote refs failed",
+          );
+        }
 
-    if (options?.includeTags !== true) {
-      return;
-    }
+        if (options?.includeTags !== true) {
+          return;
+        }
 
-    const tagArgs = [
-      "--git-dir",
-      gitCommonDir,
-      "fetch",
-      "--quiet",
-      "--no-tags",
-      remoteName,
-      "refs/tags/*:refs/tags/*",
-    ];
-    const tagResult = yield* executeGit(
-      "GitVcsDriver.fetchRemoteTagsForRemote",
-      fetchCwd,
-      tagArgs,
-      {
-        allowNonZeroExit: true,
-        env: BACKGROUND_GIT_FETCH_ENV,
-        timeoutMs: Duration.toMillis(REMOTE_REFS_REFRESH_TIMEOUT),
-      },
+        const tagArgs = [
+          "--git-dir",
+          gitCommonDir,
+          "fetch",
+          GIT_FETCH_NO_WRITE_FETCH_HEAD,
+          "--quiet",
+          "--no-tags",
+          remoteName,
+          "refs/tags/*:refs/tags/*",
+        ];
+        const tagResult = yield* executeGit(
+          "GitVcsDriver.fetchRemoteTagsForRemote",
+          fetchCwd,
+          tagArgs,
+          {
+            allowNonZeroExit: true,
+            env: BACKGROUND_GIT_FETCH_ENV,
+            timeoutMs: Duration.toMillis(REMOTE_REFS_REFRESH_TIMEOUT),
+          },
+        );
+        if (tagResult.exitCode !== 0) {
+          yield* Effect.logWarning(
+            `GitVcsDriver.fetchRemoteTagsForRemote: tag ref refresh failed for ${fetchCwd}: ${
+              tagResult.stderr.trim() || "git fetch remote tags failed"
+            }`,
+          );
+        }
+      }),
     );
-    if (tagResult.exitCode !== 0) {
-      yield* Effect.logWarning(
-        `GitVcsDriver.fetchRemoteTagsForRemote: tag ref refresh failed for ${fetchCwd}: ${
-          tagResult.stderr.trim() || "git fetch remote tags failed"
-        }`,
-      );
-    }
   });
 
   const refreshRemoteRefsCacheEntry = Effect.fn("refreshRemoteRefsCacheEntry")(function* (
@@ -2608,14 +2655,37 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       ["rev-parse", "HEAD"],
       true,
     ).pipe(Effect.map((stdout) => stdout.trim()));
-    yield* executeGit(
-      "GitVcsDriver.pullCurrentBranch.pull",
+    const upstreamTrackingRef = remoteTrackingRef(
+      currentUpstream.remoteName,
+      currentUpstream.branchName,
+    );
+    yield* withGitFetchPermitForCwd(
       cwd,
-      ["pull", "--ff-only", currentUpstream.remoteName, `refs/heads/${currentUpstream.branchName}`],
-      {
-        timeoutMs: 30_000,
-        fallbackErrorMessage: "git pull failed",
-      },
+      Effect.gen(function* () {
+        yield* executeGit(
+          "GitVcsDriver.pullCurrentBranch.fetch",
+          cwd,
+          [
+            "fetch",
+            GIT_FETCH_NO_WRITE_FETCH_HEAD,
+            currentUpstream.remoteName,
+            remoteBranchFetchRefspec(currentUpstream.remoteName, currentUpstream.branchName),
+          ],
+          {
+            timeoutMs: 30_000,
+            fallbackErrorMessage: "git fetch upstream failed",
+          },
+        );
+        yield* executeGit(
+          "GitVcsDriver.pullCurrentBranch.merge",
+          cwd,
+          ["merge", "--ff-only", upstreamTrackingRef],
+          {
+            timeoutMs: 30_000,
+            fallbackErrorMessage: "git fast-forward merge failed",
+          },
+        );
+      }),
     );
     const afterSha = yield* runGitStdout(
       "GitVcsDriver.pullCurrentBranch.afterSha",
@@ -3042,32 +3112,40 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const fetchPullRequestBranch: GitVcsDriver.GitVcsDriverShape["fetchPullRequestBranch"] =
     Effect.fn("fetchPullRequestBranch")(function* (input) {
       const remoteName = yield* resolvePrimaryRemoteName(input.cwd);
-      yield* executeGit(
-        "GitVcsDriver.fetchPullRequestBranch",
+      yield* withGitFetchPermitForCwd(
         input.cwd,
-        [
-          "fetch",
-          "--quiet",
-          "--no-tags",
-          remoteName,
-          `+refs/pull/${input.prNumber}/head:refs/heads/${input.branch}`,
-        ],
-        {
-          fallbackErrorMessage: "git fetch pull request branch failed",
-        },
+        executeGit(
+          "GitVcsDriver.fetchPullRequestBranch",
+          input.cwd,
+          [
+            "fetch",
+            GIT_FETCH_NO_WRITE_FETCH_HEAD,
+            "--quiet",
+            "--no-tags",
+            remoteName,
+            `+refs/pull/${input.prNumber}/head:refs/heads/${input.branch}`,
+          ],
+          {
+            fallbackErrorMessage: "git fetch pull request branch failed",
+          },
+        ),
       );
     });
 
   const fetchRemoteBranch: GitVcsDriver.GitVcsDriverShape["fetchRemoteBranch"] = Effect.fn(
     "fetchRemoteBranch",
   )(function* (input) {
-    yield* runGit("GitVcsDriver.fetchRemoteBranch.fetch", input.cwd, [
-      "fetch",
-      "--quiet",
-      "--no-tags",
-      input.remoteName,
-      `+refs/heads/${input.remoteBranch}:refs/remotes/${input.remoteName}/${input.remoteBranch}`,
-    ]);
+    yield* withGitFetchPermitForCwd(
+      input.cwd,
+      runGit("GitVcsDriver.fetchRemoteBranch.fetch", input.cwd, [
+        "fetch",
+        GIT_FETCH_NO_WRITE_FETCH_HEAD,
+        "--quiet",
+        "--no-tags",
+        input.remoteName,
+        remoteBranchFetchRefspec(input.remoteName, input.remoteBranch),
+      ]),
+    );
 
     const localBranchAlreadyExists = yield* branchExists(input.cwd, input.localBranch);
     const targetRef = `${input.remoteName}/${input.remoteBranch}`;
@@ -3082,13 +3160,17 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
 
   const fetchRemoteTrackingBranch: GitVcsDriver.GitVcsDriverShape["fetchRemoteTrackingBranch"] =
     Effect.fn("fetchRemoteTrackingBranch")(function* (input) {
-      yield* runGit("GitVcsDriver.fetchRemoteTrackingBranch", input.cwd, [
-        "fetch",
-        "--quiet",
-        "--no-tags",
-        input.remoteName,
-        `+refs/heads/${input.remoteBranch}:refs/remotes/${input.remoteName}/${input.remoteBranch}`,
-      ]);
+      yield* withGitFetchPermitForCwd(
+        input.cwd,
+        runGit("GitVcsDriver.fetchRemoteTrackingBranch", input.cwd, [
+          "fetch",
+          GIT_FETCH_NO_WRITE_FETCH_HEAD,
+          "--quiet",
+          "--no-tags",
+          input.remoteName,
+          remoteBranchFetchRefspec(input.remoteName, input.remoteBranch),
+        ]),
+      );
     });
 
   const setBranchUpstream: GitVcsDriver.GitVcsDriverShape["setBranchUpstream"] = (input) =>
