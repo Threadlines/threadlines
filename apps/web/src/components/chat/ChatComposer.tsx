@@ -2156,18 +2156,20 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     <form
       ref={composerFormRef}
       onSubmit={submitComposer}
-      className="mx-auto w-full min-w-0 max-w-208"
+      className="relative mx-auto w-full min-w-0 max-w-208"
       data-chat-composer-form="true"
     >
+      {/* Float the suggestion above the composer (like the scroll-to-bottom pill) so it
+          overlays the bottom of the message list instead of consuming input-bar height. */}
       {latestPromptSuggestion && latestPromptSuggestionDisplayText && !isComposerCollapsedMobile ? (
-        <div className="mb-2 flex px-1">
+        <div className="absolute inset-x-0 bottom-full z-20 mb-2 flex px-1">
           <Tooltip>
             <TooltipTrigger
               render={
                 <button
                   type="button"
                   data-prompt-suggestion="true"
-                  className="inline-flex max-w-full cursor-pointer items-center gap-2 rounded-md border border-border/55 bg-card/95 px-2.5 py-1.5 text-left text-muted-foreground text-xs shadow-sm shadow-black/5 transition-colors hover:border-border hover:bg-card hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/35"
+                  className="inline-flex max-w-full cursor-pointer items-center gap-2 rounded-md border border-border/55 bg-card px-2.5 py-1.5 text-left text-muted-foreground text-xs shadow-sm shadow-black/5 transition-colors hover:border-border hover:bg-card hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/35"
                   aria-label={`Use Claude suggested prompt: ${latestPromptSuggestion}`}
                   onClick={() => applyPromptSuggestion(latestPromptSuggestion)}
                 >

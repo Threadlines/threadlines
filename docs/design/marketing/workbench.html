@@ -1,0 +1,1674 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Threadlines — The workspace for coding agents</title>
+    <meta
+      name="description"
+      content="Threadlines runs Claude Code and Codex in parallel threads with real source control at the center. Review, commit, and ship without leaving the workspace."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      /* ============================================================
+         DIRECTION C — "Workbench"
+         Light, product-forward. Proves the light palette and leads
+         with the working app (dark window on a bright page). Bento
+         features, warm and confident. Same brand DNA, hue 264.
+         ============================================================ */
+      :root {
+        --bg: #f4f4f7;
+        --bg-soft: #ededf2;
+        --card: #ffffff;
+        --fg: #111115;
+        --fg-muted: #52525b;
+        --fg-dim: #71717a;
+        --fg-faint: #a1a1aa;
+        --border: rgba(9, 9, 11, 0.09);
+        --border-strong: rgba(9, 9, 11, 0.15);
+        --accent-h: 264;
+        --accent: oklch(0.52 0.2 var(--accent-h));
+        --accent-bright: oklch(0.62 0.19 var(--accent-h));
+        --accent-soft: oklch(0.52 0.2 var(--accent-h) / 0.1);
+        --ok: oklch(0.56 0.14 150);
+        --warn: oklch(0.64 0.15 68);
+        --del: oklch(0.56 0.2 22);
+        --ink: #111115;
+        --font-sans: "Hanken Grotesk", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+        --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        --maxw: 1160px;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      html {
+        color-scheme: light;
+        scroll-behavior: smooth;
+      }
+      body {
+        background: var(--bg);
+        color: var(--fg);
+        font-family: var(--font-sans);
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        line-height: 1.5;
+        overflow-x: hidden;
+        position: relative;
+      }
+      /* soft atmosphere: accent bloom up top + faint dotted grid */
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        z-index: 0;
+        pointer-events: none;
+        background:
+          radial-gradient(820px 520px at 50% -8%, oklch(0.62 0.19 var(--accent-h) / 0.12), transparent 64%),
+          radial-gradient(700px 600px at 92% 8%, oklch(0.7 0.16 200 / 0.06), transparent 70%);
+      }
+      body::after {
+        content: "";
+        position: fixed;
+        inset: 0;
+        z-index: 0;
+        pointer-events: none;
+        opacity: 0.5;
+        background-image: radial-gradient(rgba(9, 9, 11, 0.045) 1px, transparent 1px);
+        background-size: 24px 24px;
+        -webkit-mask-image: radial-gradient(70% 60% at 50% 20%, #000, transparent 80%);
+        mask-image: radial-gradient(70% 60% at 50% 20%, #000, transparent 80%);
+      }
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+      svg {
+        display: block;
+      }
+      .wrap {
+        position: relative;
+        z-index: 1;
+        width: 100%;
+        max-width: var(--maxw);
+        margin: 0 auto;
+        padding: 0 32px;
+      }
+      .eyebrow {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        letter-spacing: 0.15em;
+        text-transform: uppercase;
+        color: var(--accent);
+        font-weight: 600;
+      }
+
+      /* ---------- nav ---------- */
+      .nav {
+        position: sticky;
+        top: 0;
+        z-index: 100;
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
+        background: color-mix(in srgb, var(--bg) 78%, transparent);
+        border-bottom: 1px solid transparent;
+        transition: border-color 0.3s ease;
+      }
+      .nav.scrolled {
+        border-bottom-color: var(--border);
+      }
+      .nav-inner {
+        max-width: var(--maxw);
+        margin: 0 auto;
+        padding: 15px 32px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 22px;
+      }
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .brand-glyph {
+        height: 16px;
+        width: auto;
+      }
+      .brand-name {
+        font-size: 17px;
+        font-weight: 700;
+        letter-spacing: -0.03em;
+        color: var(--ink);
+      }
+      .nav-links {
+        display: flex;
+        gap: 28px;
+      }
+      .nav-links a {
+        font-size: 14px;
+        color: var(--fg-muted);
+        transition: color 0.18s ease;
+      }
+      .nav-links a:hover {
+        color: var(--ink);
+      }
+      .nav-cta {
+        display: inline-flex;
+        align-items: center;
+        gap: 9px;
+      }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 14px;
+        font-weight: 600;
+        padding: 9px 16px;
+        border-radius: 9px;
+        border: 1px solid var(--border-strong);
+        color: var(--ink);
+        background: var(--card);
+        transition: all 0.18s ease;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .btn:hover {
+        border-color: rgba(9, 9, 11, 0.28);
+        box-shadow: 0 2px 8px rgba(9, 9, 11, 0.05);
+      }
+      .btn-primary {
+        background: var(--ink);
+        color: #fff;
+        border-color: var(--ink);
+      }
+      .btn-primary:hover {
+        background: #000;
+        transform: translateY(-1px);
+        box-shadow: 0 10px 30px oklch(0.52 0.2 var(--accent-h) / 0.28);
+      }
+      .btn-ghost {
+        background: transparent;
+        border-color: transparent;
+        color: var(--fg-muted);
+      }
+      .btn-ghost:hover {
+        background: rgba(9, 9, 11, 0.04);
+        box-shadow: none;
+      }
+      .btn-sm {
+        padding: 7px 13px;
+        font-size: 13px;
+      }
+      .btn-lg {
+        padding: 13px 22px;
+        font-size: 15px;
+      }
+
+      /* ---------- hero ---------- */
+      .hero {
+        text-align: center;
+        padding: 76px 0 0;
+      }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 9px;
+        padding: 6px 15px 6px 12px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: var(--fg-muted);
+        background: var(--card);
+        box-shadow: 0 1px 3px rgba(9, 9, 11, 0.04);
+      }
+      .pill .dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 999px;
+        background: var(--accent);
+        box-shadow: 0 0 0 0 oklch(0.52 0.2 var(--accent-h) / 0.45);
+        animation: pulse 3.2s cubic-bezier(0.33, 0, 0.2, 1) infinite;
+      }
+      h1.hero-title {
+        font-size: clamp(42px, 6.4vw, 82px);
+        font-weight: 700;
+        letter-spacing: -0.04em;
+        line-height: 1.02;
+        margin: 24px auto 0;
+        max-width: 14ch;
+        text-wrap: balance;
+        color: var(--ink);
+      }
+      h1.hero-title .em {
+        background: linear-gradient(120deg, var(--accent), oklch(0.6 0.19 290));
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+      .hero-sub {
+        color: var(--fg-muted);
+        font-size: clamp(16px, 1.55vw, 20px);
+        line-height: 1.6;
+        max-width: 600px;
+        margin: 22px auto 0;
+        text-wrap: pretty;
+      }
+      .hero-actions {
+        display: inline-flex;
+        gap: 12px;
+        margin-top: 30px;
+        flex-wrap: wrap;
+        justify-content: center;
+      }
+      .hero-meta {
+        margin-top: 16px;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: var(--fg-dim);
+      }
+
+      /* ---------- the big app window ---------- */
+      .shot-stage {
+        margin-top: 52px;
+        padding-bottom: 84px;
+      }
+      .shot-frame {
+        position: relative;
+        margin: 0 auto;
+        max-width: 1060px;
+        border-radius: 18px;
+        border: 1px solid rgba(9, 9, 11, 0.5);
+        overflow: hidden;
+        box-shadow:
+          0 2px 4px rgba(9, 9, 11, 0.06),
+          0 30px 60px -24px rgba(9, 9, 11, 0.4),
+          0 60px 120px -40px oklch(0.52 0.2 var(--accent-h) / 0.45);
+      }
+      .shot-frame::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        z-index: 5;
+        pointer-events: none;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+        border-radius: 18px;
+      }
+
+      /* ===== dark app window tokens scoped here ===== */
+      .appwin {
+        --bg: #09090b;
+        --bg-elev: #0c0c0e;
+        --bg-card: #111114;
+        --bg-card-2: #161619;
+        --fg: #fafafa;
+        --fg-muted: #a1a1aa;
+        --fg-dim: #71717a;
+        --fg-faint: #52525b;
+        --border: rgba(255, 255, 255, 0.08);
+        --border-strong: rgba(255, 255, 255, 0.14);
+        --accent: oklch(0.62 0.19 var(--accent-h));
+        --accent-bright: oklch(0.72 0.17 var(--accent-h));
+        --accent-dim: oklch(0.62 0.19 var(--accent-h) / 0.16);
+        --ok: oklch(0.74 0.16 150);
+        --warn: oklch(0.78 0.15 75);
+        --del: oklch(0.66 0.2 22);
+        background: #0a0a0c;
+        color: var(--fg);
+        display: grid;
+        grid-template-rows: auto 1fr;
+        height: 560px;
+        font-size: 13px;
+      }
+      .titlebar {
+        height: 42px;
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 0 13px;
+        border-bottom: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.015);
+      }
+      .traffic {
+        display: flex;
+        gap: 7px;
+      }
+      .traffic i {
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+        display: block;
+      }
+      .traffic i:nth-child(1) {
+        background: #ff5f57;
+      }
+      .traffic i:nth-child(2) {
+        background: #febc2e;
+      }
+      .traffic i:nth-child(3) {
+        background: #28c840;
+      }
+      .crumb {
+        margin: 0 auto;
+        font-family: var(--font-mono);
+        font-size: 11.5px;
+        color: var(--fg-dim);
+      }
+      .crumb b {
+        color: var(--fg-muted);
+        font-weight: 500;
+      }
+      .crumb .sep {
+        opacity: 0.4;
+        margin: 0 5px;
+      }
+      .win-actions {
+        display: flex;
+        gap: 7px;
+        color: var(--fg-faint);
+      }
+      .win-actions span {
+        width: 23px;
+        height: 23px;
+        display: grid;
+        place-items: center;
+        border-radius: 6px;
+      }
+      .win-actions .on {
+        color: var(--accent-bright);
+        background: var(--accent-dim);
+      }
+      .app {
+        display: grid;
+        grid-template-columns: 212px 1fr 276px;
+        min-height: 0;
+      }
+      .rail {
+        border-right: 1px solid var(--border);
+        background: rgba(0, 0, 0, 0.2);
+        display: flex;
+        flex-direction: column;
+      }
+      .rail-top {
+        padding: 12px 13px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .rail-top .brand-name {
+        font-size: 13px;
+        color: var(--fg);
+      }
+      .search {
+        margin: 0 11px 9px;
+        height: 29px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding: 0 9px;
+        color: var(--fg-faint);
+        font-size: 12px;
+      }
+      .rail-label {
+        font-family: var(--font-mono);
+        font-size: 9.5px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--fg-faint);
+        padding: 6px 15px;
+      }
+      .threads {
+        padding: 0 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+        position: relative;
+      }
+      .threads::before {
+        content: "";
+        position: absolute;
+        left: 17px;
+        top: 5px;
+        bottom: 8px;
+        width: 1px;
+        background: var(--border);
+      }
+      .thread {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 7px 9px 7px 20px;
+        border-radius: 7px;
+        position: relative;
+        color: var(--fg-muted);
+        font-size: 12.5px;
+      }
+      .thread .node-dot {
+        position: absolute;
+        left: 14px;
+        width: 6px;
+        height: 6px;
+        border-radius: 999px;
+        background: var(--fg-faint);
+      }
+      .thread.on {
+        background: rgba(255, 255, 255, 0.04);
+        color: var(--fg);
+      }
+      .thread.on .node-dot {
+        background: var(--accent-bright);
+        box-shadow: 0 0 0 3px oklch(0.72 0.17 var(--accent-h) / 0.18);
+      }
+      .thread .t-name {
+        flex: 1;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .tag {
+        font-family: var(--font-mono);
+        font-size: 9px;
+        padding: 2px 5px;
+        border-radius: 5px;
+        border: 1px solid var(--border);
+        color: var(--fg-dim);
+      }
+      .tag.claude {
+        color: oklch(0.78 0.13 55);
+        border-color: oklch(0.78 0.13 55 / 0.3);
+      }
+      .tag.codex {
+        color: oklch(0.8 0.05 200);
+        border-color: oklch(0.8 0.05 200 / 0.3);
+      }
+      .chat {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        background: #0a0a0c;
+      }
+      .chat-head {
+        height: 42px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 0 15px;
+      }
+      .chat-head .title {
+        font-size: 12.5px;
+        font-weight: 600;
+        color: var(--fg);
+      }
+      .chat-head .lp {
+        margin-left: auto;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-family: var(--font-mono);
+        font-size: 10.5px;
+        color: var(--accent-bright);
+      }
+      .chat-head .lp .d {
+        width: 6px;
+        height: 6px;
+        border-radius: 999px;
+        background: var(--accent-bright);
+        box-shadow: 0 0 0 0 oklch(0.72 0.17 var(--accent-h) / 0.5);
+        animation: pulse 2.6s cubic-bezier(0.33, 0, 0.2, 1) infinite;
+      }
+      .stream {
+        flex: 1;
+        overflow: hidden;
+        padding: 16px 16px 6px;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+      .who {
+        font-family: var(--font-mono);
+        font-size: 10px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--fg-faint);
+        margin-bottom: 6px;
+      }
+      .bubble {
+        background: var(--bg-card-2);
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        padding: 9px 12px;
+        font-size: 12.5px;
+        max-width: 82%;
+        color: var(--fg);
+      }
+      .body {
+        color: var(--fg-muted);
+        font-size: 12.5px;
+        line-height: 1.6;
+      }
+      .body b {
+        color: var(--fg);
+        font-weight: 600;
+      }
+      .work {
+        margin-top: 11px;
+        border-left: 1.5px solid var(--border-strong);
+        padding: 2px 0 2px 15px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .work-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 11.5px;
+        color: var(--fg-dim);
+        position: relative;
+      }
+      .work-row::before {
+        content: "";
+        position: absolute;
+        left: -19.5px;
+        width: 6px;
+        height: 6px;
+        border-radius: 999px;
+        background: var(--fg-faint);
+        outline: 3px solid #0a0a0c;
+      }
+      .work-row.done::before {
+        background: var(--ok);
+      }
+      .work-row.live {
+        color: var(--fg);
+      }
+      .work-row.live::before {
+        background: var(--accent-bright);
+        box-shadow: 0 0 0 3px oklch(0.72 0.17 var(--accent-h) / 0.2);
+      }
+      .work-row code {
+        font-family: var(--font-mono);
+        font-size: 10.5px;
+        color: var(--fg-muted);
+        background: rgba(255, 255, 255, 0.04);
+        padding: 1px 5px;
+        border-radius: 4px;
+      }
+      .work-row .plus {
+        color: var(--ok);
+        font-family: var(--font-mono);
+        font-size: 10.5px;
+      }
+      .work-row .minus {
+        color: var(--del);
+        font-family: var(--font-mono);
+        font-size: 10.5px;
+      }
+      .composer {
+        margin: 0 15px 15px;
+        border: 1px solid var(--border-strong);
+        border-radius: 11px;
+        background: var(--bg-card);
+        padding: 10px 11px;
+        display: flex;
+        flex-direction: column;
+        gap: 9px;
+      }
+      .composer .ph {
+        color: var(--fg-faint);
+        font-size: 12.5px;
+      }
+      .composer .row {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+      }
+      .composer .model {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11.5px;
+        color: var(--fg-muted);
+        border: 1px solid var(--border);
+        padding: 3px 8px;
+        border-radius: 7px;
+      }
+      .composer .model .d {
+        width: 5px;
+        height: 5px;
+        border-radius: 999px;
+        background: oklch(0.78 0.13 55);
+      }
+      .composer .send {
+        margin-left: auto;
+        width: 26px;
+        height: 26px;
+        border-radius: 7px;
+        background: var(--accent);
+        display: grid;
+        place-items: center;
+        color: #fff;
+      }
+      .composer .plus-btn {
+        width: 26px;
+        height: 26px;
+        border-radius: 7px;
+        border: 1px solid var(--border);
+        display: grid;
+        place-items: center;
+        color: var(--fg-dim);
+      }
+      .scp {
+        border-left: 1px solid var(--border);
+        background: rgba(0, 0, 0, 0.24);
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .scp-head {
+        height: 42px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 13px;
+      }
+      .scp-head .ico {
+        color: var(--accent-bright);
+      }
+      .scp-head .title {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--fg);
+      }
+      .branch {
+        margin-left: auto;
+        font-family: var(--font-mono);
+        font-size: 10px;
+        color: var(--fg-muted);
+        border: 1px solid var(--border);
+        padding: 3px 7px;
+        border-radius: 999px;
+      }
+      .scp-body {
+        padding: 13px;
+        display: flex;
+        flex-direction: column;
+        gap: 13px;
+        overflow: hidden;
+      }
+      .graph-card {
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        padding: 11px;
+        background: rgba(255, 255, 255, 0.015);
+      }
+      .graph-card .gh {
+        font-family: var(--font-mono);
+        font-size: 9px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--fg-faint);
+        margin-bottom: 7px;
+      }
+      .scp-label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-family: var(--font-mono);
+        font-size: 9.5px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--fg-dim);
+      }
+      .scp-label .count {
+        margin-left: auto;
+        color: var(--fg-faint);
+      }
+      .file {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 5px 6px;
+        border-radius: 6px;
+        font-size: 11.5px;
+        color: var(--fg-muted);
+      }
+      .file .st {
+        font-family: var(--font-mono);
+        font-size: 10.5px;
+        width: 11px;
+        text-align: center;
+      }
+      .file .st.m {
+        color: var(--warn);
+      }
+      .file .st.a {
+        color: var(--ok);
+      }
+      .file .path {
+        flex: 1;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        font-family: var(--font-mono);
+        font-size: 11px;
+      }
+      .file .diffnums {
+        font-family: var(--font-mono);
+        font-size: 10px;
+        display: flex;
+        gap: 5px;
+      }
+      .file .diffnums .p {
+        color: var(--ok);
+      }
+      .file .diffnums .m {
+        color: var(--del);
+      }
+      .scp-actions {
+        margin-top: auto;
+        padding: 11px 13px;
+        border-top: 1px solid var(--border);
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .commit-input {
+        height: 29px;
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        display: flex;
+        align-items: center;
+        padding: 0 9px;
+        color: var(--fg-faint);
+        font-size: 11.5px;
+      }
+      .scp-btns {
+        display: flex;
+        gap: 7px;
+      }
+      .scp-btns .b {
+        flex: 1;
+        height: 30px;
+        border-radius: 7px;
+        display: grid;
+        place-items: center;
+        font-size: 11.5px;
+        font-weight: 600;
+        border: 1px solid var(--border-strong);
+        color: var(--fg);
+      }
+      .scp-btns .b.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+      }
+      .pr-card {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 8px 10px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 11px;
+        color: var(--fg-muted);
+        background: rgba(255, 255, 255, 0.015);
+      }
+      .pr-card .open {
+        margin-left: auto;
+        color: var(--ok);
+        font-family: var(--font-mono);
+        font-size: 9.5px;
+        border: 1px solid oklch(0.74 0.16 150 / 0.3);
+        padding: 2px 7px;
+        border-radius: 999px;
+      }
+
+      /* ---------- provider band ---------- */
+      .band {
+        text-align: center;
+        padding: 10px 0 64px;
+      }
+      .band .label {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--fg-dim);
+      }
+      .band-row {
+        margin-top: 22px;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 40px;
+        flex-wrap: wrap;
+      }
+      .prov {
+        display: inline-flex;
+        align-items: center;
+        gap: 11px;
+        color: var(--ink);
+        font-size: 16px;
+        font-weight: 600;
+      }
+      .prov .glyph {
+        width: 28px;
+        height: 28px;
+        border-radius: 8px;
+        display: grid;
+        place-items: center;
+        font-family: var(--font-mono);
+        font-size: 14px;
+        font-weight: 700;
+        color: #fff;
+      }
+      .prov.claude .glyph {
+        background: oklch(0.66 0.16 50);
+      }
+      .prov.codex .glyph {
+        background: var(--ink);
+      }
+      .prov .byos {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        font-weight: 400;
+        color: var(--fg-dim);
+      }
+
+      /* ---------- sections ---------- */
+      section {
+        position: relative;
+        z-index: 1;
+      }
+      .sec {
+        padding: 30px 0;
+      }
+      .sec-head {
+        max-width: 680px;
+        margin: 0 auto;
+        text-align: center;
+      }
+      .sec-head h2 {
+        font-size: clamp(30px, 4vw, 48px);
+        font-weight: 700;
+        letter-spacing: -0.035em;
+        line-height: 1.05;
+        margin-top: 14px;
+        color: var(--ink);
+      }
+      .sec-head p {
+        color: var(--fg-muted);
+        font-size: 17px;
+        line-height: 1.6;
+        margin-top: 16px;
+      }
+
+      /* bento */
+      .bento {
+        margin-top: 44px;
+        display: grid;
+        grid-template-columns: repeat(6, 1fr);
+        grid-auto-rows: minmax(0, auto);
+        gap: 16px;
+      }
+      .tile {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 26px;
+        box-shadow: 0 1px 2px rgba(9, 9, 11, 0.04);
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+      }
+      .tile:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 12px 30px -12px rgba(9, 9, 11, 0.15);
+      }
+      .tile .ic {
+        width: 40px;
+        height: 40px;
+        border-radius: 11px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        display: grid;
+        place-items: center;
+        margin-bottom: 16px;
+      }
+      .tile h3 {
+        font-size: 19px;
+        font-weight: 650;
+        letter-spacing: -0.015em;
+        color: var(--ink);
+      }
+      .tile p {
+        color: var(--fg-muted);
+        font-size: 14.5px;
+        line-height: 1.6;
+        margin-top: 10px;
+      }
+      /* the hero source-control tile spans wide and embeds the dark panel */
+      .tile.hero-tile {
+        grid-column: span 4;
+        grid-row: span 2;
+        padding: 0;
+        overflow: hidden;
+        display: grid;
+        grid-template-rows: auto 1fr;
+      }
+      .tile.hero-tile .ht-copy {
+        padding: 28px 28px 22px;
+      }
+      .tile.hero-tile .ht-copy .eyebrow {
+        margin-bottom: 12px;
+        display: block;
+      }
+      .tile.hero-tile .ht-copy h3 {
+        font-size: clamp(22px, 2.4vw, 30px);
+        letter-spacing: -0.025em;
+      }
+      .tile.hero-tile .ht-copy p {
+        max-width: 46ch;
+      }
+      .scp-embed {
+        margin: 0 28px;
+        border: 1px solid rgba(9, 9, 11, 0.5);
+        border-top-left-radius: 14px;
+        border-top-right-radius: 14px;
+        border-bottom: none;
+        overflow: hidden;
+        box-shadow: 0 -2px 30px -10px rgba(9, 9, 11, 0.25);
+        align-self: end;
+      }
+      .scp-embed .appwin {
+        height: 318px;
+        grid-template-rows: auto 1fr;
+      }
+      .scp-embed .app {
+        grid-template-columns: 1fr;
+      }
+      .tile.tall {
+        grid-column: span 2;
+        grid-row: span 2;
+        display: flex;
+        flex-direction: column;
+      }
+      .tile.span2 {
+        grid-column: span 2;
+      }
+      .tile.span3 {
+        grid-column: span 3;
+      }
+      .tile.span6 {
+        grid-column: span 6;
+      }
+
+      /* lanes inside the tall tile */
+      .mini-lanes {
+        margin-top: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 9px;
+        padding-top: 22px;
+      }
+      .mlane {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 12.5px;
+      }
+      .mlane .mn {
+        flex: 1;
+        color: var(--fg-muted);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .mlane .ms {
+        font-family: var(--font-mono);
+        font-size: 10px;
+        padding: 2px 7px;
+        border-radius: 999px;
+      }
+      .mlane.w .ms {
+        color: var(--accent);
+        background: var(--accent-soft);
+      }
+      .mlane.r .ms {
+        color: var(--ok);
+        background: oklch(0.56 0.14 150 / 0.12);
+      }
+      .mlane.n .ms {
+        color: var(--warn);
+        background: oklch(0.64 0.15 68 / 0.14);
+      }
+      .mlane .mdot {
+        width: 7px;
+        height: 7px;
+        border-radius: 999px;
+      }
+      .mlane.w .mdot {
+        background: var(--accent);
+      }
+      .mlane.r .mdot {
+        background: var(--ok);
+      }
+      .mlane.n .mdot {
+        background: var(--warn);
+      }
+
+      /* split feature row */
+      .split {
+        margin-top: 64px;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 48px;
+        align-items: center;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 20px;
+        padding: 40px;
+        box-shadow: 0 1px 2px rgba(9, 9, 11, 0.04);
+      }
+      .split .eyebrow {
+        display: block;
+        margin-bottom: 12px;
+      }
+      .split h3 {
+        font-size: clamp(24px, 3vw, 34px);
+        font-weight: 700;
+        letter-spacing: -0.03em;
+        line-height: 1.08;
+        color: var(--ink);
+      }
+      .f-list {
+        margin-top: 22px;
+        display: flex;
+        flex-direction: column;
+        gap: 13px;
+      }
+      .f-list li {
+        list-style: none;
+        display: flex;
+        gap: 12px;
+        font-size: 15px;
+        color: var(--fg-muted);
+        line-height: 1.5;
+      }
+      .f-list li b {
+        color: var(--ink);
+        font-weight: 600;
+      }
+      .f-list .ck {
+        flex-shrink: 0;
+        width: 19px;
+        height: 19px;
+        border-radius: 6px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        display: grid;
+        place-items: center;
+        margin-top: 1px;
+      }
+      /* terminal mock for split */
+      .term {
+        border-radius: 13px;
+        overflow: hidden;
+        border: 1px solid rgba(9, 9, 11, 0.5);
+        box-shadow: 0 20px 50px -22px rgba(9, 9, 11, 0.35);
+        background: #0a0a0c;
+        font-family: var(--font-mono);
+        font-size: 12.5px;
+      }
+      .term .tbar {
+        height: 36px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        display: flex;
+        align-items: center;
+        padding: 0 12px;
+        gap: 7px;
+      }
+      .term .tbar i {
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+        display: block;
+      }
+      .term .tbar i:nth-child(1) {
+        background: #ff5f57;
+      }
+      .term .tbar i:nth-child(2) {
+        background: #febc2e;
+      }
+      .term .tbar i:nth-child(3) {
+        background: #28c840;
+      }
+      .term .tbody {
+        padding: 16px;
+        color: #c9c9d1;
+        line-height: 1.85;
+      }
+      .term .pr {
+        color: oklch(0.72 0.17 264);
+      }
+      .term .ok {
+        color: oklch(0.74 0.16 150);
+      }
+      .term .dim {
+        color: #6b6b76;
+      }
+
+      /* closing */
+      .closing {
+        margin: 72px 0 0;
+        text-align: center;
+        background: var(--ink);
+        color: #fff;
+        border-radius: 24px;
+        padding: 72px 32px;
+        position: relative;
+        overflow: hidden;
+      }
+      .closing::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(700px 360px at 50% -10%, oklch(0.62 0.19 var(--accent-h) / 0.4), transparent 62%);
+        pointer-events: none;
+      }
+      .closing .tlf {
+        width: min(420px, 80%);
+        margin: 0 auto 26px;
+        position: relative;
+      }
+      .closing h2 {
+        font-size: clamp(32px, 5vw, 56px);
+        font-weight: 700;
+        letter-spacing: -0.035em;
+        position: relative;
+      }
+      .closing p {
+        color: rgba(255, 255, 255, 0.66);
+        font-size: 18px;
+        margin-top: 16px;
+        position: relative;
+      }
+      .closing .hero-actions {
+        margin-top: 30px;
+        position: relative;
+      }
+      .closing .btn {
+        background: rgba(255, 255, 255, 0.08);
+        border-color: rgba(255, 255, 255, 0.16);
+        color: #fff;
+      }
+      .closing .btn:hover {
+        background: rgba(255, 255, 255, 0.14);
+      }
+      .closing .btn-primary {
+        background: #fff;
+        color: var(--ink);
+        border-color: #fff;
+      }
+      .closing .btn-primary:hover {
+        background: #fff;
+      }
+
+      /* footer */
+      footer {
+        padding: 44px 0 56px;
+        position: relative;
+        z-index: 1;
+      }
+      .foot-inner {
+        max-width: var(--maxw);
+        margin: 0 auto;
+        padding: 0 32px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+        flex-wrap: wrap;
+        border-top: 1px solid var(--border);
+        padding-top: 28px;
+      }
+      .foot-left {
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        color: var(--fg-dim);
+        font-size: 13px;
+      }
+      .foot-links {
+        display: flex;
+        gap: 22px;
+        font-family: var(--font-mono);
+        font-size: 12px;
+      }
+      .foot-links a {
+        color: var(--fg-dim);
+        transition: color 0.18s ease;
+      }
+      .foot-links a:hover {
+        color: var(--ink);
+      }
+
+      @keyframes pulse {
+        0% {
+          box-shadow: 0 0 0 0 oklch(0.52 0.2 var(--accent-h) / 0.45);
+        }
+        70%,
+        100% {
+          box-shadow: 0 0 0 8px transparent;
+        }
+      }
+      @media (prefers-reduced-motion: no-preference) {
+        .rise {
+          opacity: 0;
+          animation: rise 0.8s cubic-bezier(0.22, 1, 0.36, 1) both;
+          animation-delay: var(--d, 0s);
+        }
+        .reveal {
+          opacity: 0;
+          transform: translateY(22px);
+          transition: opacity 0.8s ease, transform 0.8s cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        .reveal.in {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      @keyframes rise {
+        from {
+          opacity: 0;
+          transform: translateY(12px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+
+      @media (max-width: 940px) {
+        .nav-links {
+          display: none;
+        }
+        .bento {
+          grid-template-columns: 1fr;
+        }
+        .tile.hero-tile,
+        .tile.tall,
+        .tile.span2,
+        .tile.span3,
+        .tile.span6 {
+          grid-column: span 1;
+          grid-row: auto;
+        }
+        .split {
+          grid-template-columns: 1fr;
+          gap: 28px;
+          padding: 28px;
+        }
+        .appwin {
+          height: auto;
+        }
+        .app {
+          grid-template-columns: 1fr;
+        }
+        .rail,
+        .scp {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <nav class="nav" id="nav">
+      <div class="nav-inner">
+        <a class="brand" href="#top">
+          <svg class="brand-glyph" viewBox="36 86 184 100" fill="none" aria-hidden="true">
+            <defs>
+              <linearGradient id="ng" gradientUnits="userSpaceOnUse" x1="108" y1="98" x2="194" y2="162">
+                <stop offset="0" stop-color="#9a9aa5" stop-opacity="0.7" />
+                <stop offset="1" stop-color="#5a44d6" />
+              </linearGradient>
+            </defs>
+            <g stroke-linecap="round" stroke-width="10">
+              <path d="M 44 98 L 212 98" stroke="#111115" stroke-opacity="0.4" />
+              <path d="M 108 98 C 134 98 134 162 160 162 L 188 162" stroke="url(#ng)" />
+            </g>
+            <g fill="#111115" fill-opacity="0.5">
+              <circle cx="70" cy="98" r="7" /><circle cx="108" cy="98" r="8.5" /><circle cx="178" cy="98" r="7" />
+            </g>
+            <circle cx="194" cy="162" r="21" fill="#5a44d6" fill-opacity="0.16" />
+            <circle cx="194" cy="162" r="12.5" fill="#5a44d6" />
+          </svg>
+          <span class="brand-name">Threadlines</span>
+        </a>
+        <div class="nav-links">
+          <a href="#features">Features</a>
+          <a href="#source-control">Source control</a>
+          <a href="#providers">Providers</a>
+          <a href="#open">Open source</a>
+        </div>
+        <div class="nav-cta">
+          <a class="btn btn-ghost btn-sm" href="https://github.com/threadlines">GitHub</a>
+          <a class="btn btn-primary btn-sm" href="#">Download</a>
+        </div>
+      </div>
+    </nav>
+
+    <main id="top">
+      <!-- ===== HERO ===== -->
+      <section class="hero">
+        <div class="wrap">
+          <span class="pill rise" style="--d: 0s"><span class="dot"></span> Now open source &middot; v1.0</span>
+          <h1 class="hero-title rise" style="--d: 0.08s">
+            The workspace where agents <span class="em">ship</span>.
+          </h1>
+          <p class="hero-sub rise" style="--d: 0.16s">
+            Threadlines runs Claude Code and Codex in parallel threads, with a real source control panel
+            at the center. Review every change, commit, and open a pull request without leaving the app.
+          </p>
+          <div class="hero-actions rise" style="--d: 0.24s">
+            <a class="btn btn-primary btn-lg" href="#"
+              ><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 16l-5-5h3V4h4v7h3l-5 5zm-7 2h14v2H5v-2z" /></svg
+              >Download for macOS</a
+            >
+            <a class="btn btn-lg" href="https://github.com/threadlines"
+              ><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.65.5.5 5.65.5 12a11.5 11.5 0 007.86 10.93c.58.1.79-.25.79-.56v-2c-3.2.69-3.88-1.37-3.88-1.37-.52-1.33-1.27-1.69-1.27-1.69-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.76 2.68 1.25 3.33.96.1-.75.4-1.25.72-1.54-2.55-.29-5.24-1.27-5.24-5.67 0-1.25.45-2.28 1.18-3.08-.12-.29-.51-1.45.11-3.02 0 0 .96-.31 3.15 1.18a10.96 10.96 0 015.74 0c2.19-1.49 3.15-1.18 3.15-1.18.62 1.57.23 2.73.11 3.02.74.8 1.18 1.83 1.18 3.08 0 4.41-2.7 5.38-5.27 5.66.41.36.78 1.06.78 2.13v3.16c0 .31.21.67.8.56A11.5 11.5 0 0023.5 12C23.5 5.65 18.35.5 12 .5z" /></svg
+              >Star on GitHub</a
+            >
+          </div>
+          <p class="hero-meta rise" style="--d: 0.32s">Free forever &middot; bring your own Claude and Codex accounts</p>
+        </div>
+
+        <!-- big app window -->
+        <div class="shot-stage">
+          <div class="wrap">
+            <div class="shot-frame reveal">
+              <div class="appwin">
+                <div class="titlebar">
+                  <div class="traffic"><i></i><i></i><i></i></div>
+                  <div class="crumb"><b>threadlines</b><span class="sep">/</span>web<span class="sep">/</span>Refine source control panel</div>
+                  <div class="win-actions">
+                    <span title="Terminal"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 7l4 4-4 4M12 16h6" /></svg></span>
+                    <span class="on" title="Source control"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="2.4" /><circle cx="6" cy="18" r="2.4" /><circle cx="18" cy="9" r="2.4" /><path d="M6 8.4v7.2M8.3 6.6c5 0 7.7.6 7.7 2.4v.5" stroke-linecap="round" /></svg></span>
+                  </div>
+                </div>
+                <div class="app">
+                  <aside class="rail">
+                    <div class="rail-top">
+                      <svg class="brand-glyph" style="height: 13px" viewBox="36 86 184 100" fill="none" aria-hidden="true">
+                        <g stroke-linecap="round" stroke-width="10">
+                          <path d="M 44 98 L 212 98" stroke="#ffffff" stroke-opacity="0.32" />
+                          <path d="M 108 98 C 134 98 134 162 160 162 L 188 162" stroke="#6e94fa" />
+                        </g>
+                        <g fill="#ffffff" fill-opacity="0.45"><circle cx="70" cy="98" r="7" /><circle cx="108" cy="98" r="8.5" /><circle cx="178" cy="98" r="7" /></g>
+                        <circle cx="194" cy="162" r="12.5" fill="#6e94fa" />
+                      </svg>
+                      <span class="brand-name">Threadlines</span>
+                    </div>
+                    <div class="search"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4-4" stroke-linecap="round" /></svg> Search</div>
+                    <div class="rail-label">threadlines</div>
+                    <div class="threads">
+                      <div class="thread on"><span class="node-dot"></span><span class="t-name">Refine source control</span><span class="tag claude">Claude</span></div>
+                      <div class="thread"><span class="node-dot"></span><span class="t-name">Windows pty kill</span><span class="tag codex">Codex</span></div>
+                      <div class="thread"><span class="node-dot"></span><span class="t-name">Attachment menu</span><span class="tag claude">Claude</span></div>
+                      <div class="thread"><span class="node-dot"></span><span class="t-name">Release CI gate</span><span class="tag codex">Codex</span></div>
+                      <div class="thread"><span class="node-dot"></span><span class="t-name">Diff context lines</span><span class="tag claude">Claude</span></div>
+                    </div>
+                  </aside>
+                  <section class="chat">
+                    <div class="chat-head"><span class="title">Refine source control panel</span><span class="lp"><span class="d"></span> Working</span></div>
+                    <div class="stream">
+                      <div class="msg user"><div class="who">You</div><div class="bubble">Group the changed files by status and show per-file +/- counts.</div></div>
+                      <div class="msg bot">
+                        <div class="who">Claude Opus 4.8</div>
+                        <div class="body">
+                          Adding diff stats to <b>SourceControlPanel</b> and sorting entries into modified,
+                          added, and deleted. The counts come from the live git status poll.
+                          <div class="work">
+                            <div class="work-row done">Read <code>sourceControlPresentation.ts</code></div>
+                            <div class="work-row done">Edited <code>SourceControlPanel.tsx</code> <span class="plus">+48</span> <span class="minus">-12</span></div>
+                            <div class="work-row done">Ran <code>vp lint</code> &middot; passed</div>
+                            <div class="work-row live">Running <code>vp run typecheck</code></div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="composer">
+                      <span class="ph">Message Claude</span>
+                      <div class="row">
+                        <span class="plus-btn">+</span>
+                        <span class="model"><span class="d"></span> Claude Opus 4.8</span>
+                        <span class="send"><svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M4 12l16-8-6 8 6 8z" /></svg></span>
+                      </div>
+                    </div>
+                  </section>
+                  <aside class="scp">
+                    <div class="scp-head">
+                      <span class="ico"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="2.4" /><circle cx="6" cy="18" r="2.4" /><circle cx="18" cy="9" r="2.4" /><path d="M6 8.4v7.2M8.3 6.6c5 0 7.7.6 7.7 2.4v.5" stroke-linecap="round" /></svg></span>
+                      <span class="title">Source control</span>
+                      <span class="branch">thread/refine-scp</span>
+                    </div>
+                    <div class="scp-body">
+                      <div class="graph-card">
+                        <div class="gh">Commit graph</div>
+                        <svg viewBox="0 0 250 74" fill="none" style="width: 100%; height: auto">
+                          <g stroke-linecap="round" stroke-width="1.5">
+                            <path d="M 13 15 L 237 15" stroke="rgba(255,255,255,0.16)" />
+                            <path d="M 67 15 C 84 15 84 38 101 38 L 200 38" stroke="rgba(255,255,255,0.12)" />
+                            <path d="M 115 15 C 132 15 132 59 149 59 L 224 59" stroke="#6e94fa" stroke-opacity="0.85" />
+                          </g>
+                          <g fill="rgba(255,255,255,0.4)"><circle cx="30" cy="15" r="3" /><circle cx="67" cy="15" r="3.4" /><circle cx="115" cy="15" r="3.4" /><circle cx="173" cy="38" r="2.8" /><circle cx="200" cy="15" r="2.8" /></g>
+                          <circle cx="224" cy="59" r="6.5" fill="#6e94fa" fill-opacity="0.18" /><circle cx="224" cy="59" r="4" fill="#6e94fa" />
+                        </svg>
+                      </div>
+                      <div>
+                        <div class="scp-label">Changes <span class="count">3 &middot; +177 -15</span></div>
+                        <div style="margin-top: 7px">
+                          <div class="file"><span class="st m">M</span><span class="path">SourceControlPanel.tsx</span><span class="diffnums"><span class="p">+48</span><span class="m">-12</span></span></div>
+                          <div class="file"><span class="st m">M</span><span class="path">sourceControlPresentation.ts</span><span class="diffnums"><span class="p">+9</span><span class="m">-3</span></span></div>
+                          <div class="file"><span class="st a">A</span><span class="path">shared/sourceControl.ts</span><span class="diffnums"><span class="p">+120</span></span></div>
+                        </div>
+                      </div>
+                      <div class="pr-card">PR #128 &middot; github.com/threadlines<span class="open">Open</span></div>
+                    </div>
+                    <div class="scp-actions">
+                      <div class="commit-input">Refine source control panel</div>
+                      <div class="scp-btns"><div class="b">Commit</div><div class="b primary">Commit &amp; PR</div></div>
+                    </div>
+                  </aside>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== PROVIDER BAND ===== -->
+      <section class="band">
+        <div class="wrap">
+          <div class="label">First-class providers, your own accounts</div>
+          <div class="band-row">
+            <span class="prov claude"><span class="glyph">C</span> Claude Code</span>
+            <span class="prov codex"><span class="glyph">‹›</span> Codex</span>
+            <span class="prov"><span class="byos">+ bring your own subscription</span></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== BENTO FEATURES ===== -->
+      <section class="sec" id="features">
+        <div class="wrap">
+          <div class="sec-head reveal">
+            <span class="eyebrow">Why Threadlines</span>
+            <h2>A t3 fork that went deep on the things that ship code.</h2>
+            <p>
+              Same minimal workspace you liked, rebuilt around source control and genuine, first-class
+              support for the two agents you actually use.
+            </p>
+          </div>
+
+          <div class="bento">
+            <!-- hero source-control tile -->
+            <div class="tile hero-tile reveal" id="source-control">
+              <div class="ht-copy">
+                <span class="eyebrow">The source control panel</span>
+                <h3>Review, commit, and open a PR in place.</h3>
+                <p>
+                  A live panel beside every conversation shows per-file diff stats grouped by status,
+                  polled as the agent works. Commit, push, and open pull requests against GitHub, GitLab,
+                  Azure DevOps, or Bitbucket without switching windows.
+                </p>
+              </div>
+              <div class="scp-embed">
+                <div class="appwin">
+                  <div class="titlebar"><div class="traffic"><i></i><i></i><i></i></div><div class="crumb"><b>Source control</b><span class="sep">·</span>thread/refine-scp</div></div>
+                  <div class="app">
+                    <aside class="scp" style="border-left: none">
+                      <div class="scp-body" style="padding-top: 14px">
+                        <div class="graph-card">
+                          <div class="gh">Commit graph</div>
+                          <svg viewBox="0 0 250 70" fill="none" style="width: 100%; height: auto">
+                            <g stroke-linecap="round" stroke-width="1.5">
+                              <path d="M 13 14 L 237 14" stroke="rgba(255,255,255,0.16)" />
+                              <path d="M 67 14 C 84 14 84 36 101 36 L 200 36" stroke="rgba(255,255,255,0.12)" />
+                              <path d="M 115 14 C 132 14 132 56 149 56 L 224 56" stroke="#6e94fa" stroke-opacity="0.85" />
+                            </g>
+                            <g fill="rgba(255,255,255,0.4)"><circle cx="30" cy="14" r="3" /><circle cx="67" cy="14" r="3.4" /><circle cx="115" cy="14" r="3.4" /><circle cx="173" cy="36" r="2.8" /></g>
+                            <circle cx="224" cy="56" r="6.5" fill="#6e94fa" fill-opacity="0.18" /><circle cx="224" cy="56" r="4" fill="#6e94fa" />
+                          </svg>
+                        </div>
+                        <div>
+                          <div class="scp-label">Changes <span class="count">3 &middot; +177 -15</span></div>
+                          <div style="margin-top: 7px">
+                            <div class="file"><span class="st m">M</span><span class="path">SourceControlPanel.tsx</span><span class="diffnums"><span class="p">+48</span><span class="m">-12</span></span></div>
+                            <div class="file"><span class="st m">M</span><span class="path">sourceControlPresentation.ts</span><span class="diffnums"><span class="p">+9</span><span class="m">-3</span></span></div>
+                            <div class="file"><span class="st a">A</span><span class="path">shared/sourceControl.ts</span><span class="diffnums"><span class="p">+120</span></span></div>
+                          </div>
+                        </div>
+                      </div>
+                    </aside>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- tall parallel-threads tile -->
+            <div class="tile tall reveal" style="--d: 0.05s">
+              <div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v6a3 3 0 003 3h6M18 3v18M6 3v18" /></svg></div>
+              <h3>Parallel threads</h3>
+              <p>Run many agents at once, each isolated on its own branch. A glance shows what is live and what needs you.</p>
+              <div class="mini-lanes">
+                <div class="mlane w"><span class="mdot"></span><span class="mn">Refine SCP</span><span class="ms">working</span></div>
+                <div class="mlane w"><span class="mdot"></span><span class="mn">Windows pty kill</span><span class="ms">working</span></div>
+                <div class="mlane r"><span class="mdot"></span><span class="mn">Attachment menu</span><span class="ms">ready</span></div>
+                <div class="mlane n"><span class="mdot"></span><span class="mn">Release CI gate</span><span class="ms">needs you</span></div>
+              </div>
+            </div>
+
+            <!-- small tiles -->
+            <div class="tile span3 reveal" style="--d: 0.1s">
+              <div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7l4 4-4 4M13 17h6" /></svg></div>
+              <h3>Terminal and diffs</h3>
+              <p>A built-in xterm terminal and changes-only diffs, right inside the workspace.</p>
+            </div>
+            <div class="tile span3 reveal" style="--d: 0.15s" id="open">
+              <div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.65.5.5 5.65.5 12a11.5 11.5 0 007.86 10.93c.58.1.79-.25.79-.56v-2c-3.2.69-3.88-1.37-3.88-1.37-.52-1.33-1.27-1.69-1.27-1.69-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.76 2.68 1.25 3.33.96.1-.75.4-1.25.72-1.54-2.55-.29-5.24-1.27-5.24-5.67 0-1.25.45-2.28 1.18-3.08-.12-.29-.51-1.45.11-3.02 0 0 .96-.31 3.15 1.18a10.96 10.96 0 015.74 0c2.19-1.49 3.15-1.18 3.15-1.18.62 1.57.23 2.73.11 3.02.74.8 1.18 1.83 1.18 3.08 0 4.41-2.7 5.38-5.27 5.66.41.36.78 1.06.78 2.13v3.16c0 .31.21.67.8.56A11.5 11.5 0 0023.5 12C23.5 5.65 18.35.5 12 .5z" /></svg></div>
+              <h3>Open source</h3>
+              <p>MIT licensed and yours to fork. Read every line, ship your own build.</p>
+            </div>
+          </div>
+
+          <!-- ===== PROVIDERS SPLIT ===== -->
+          <div class="split reveal" id="providers">
+            <div>
+              <span class="eyebrow">Providers</span>
+              <h3>Codex and Claude, both first class.</h3>
+              <ul class="f-list">
+                <li><span class="ck"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5" /></svg></span><span><b>Native, not flattened.</b> Each provider keeps its own features instead of a shared denominator.</span></li>
+                <li><span class="ck"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5" /></svg></span><span><b>Permission modes</b> from full access to a guarded auto tier with review.</span></li>
+                <li><span class="ck"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5" /></svg></span><span><b>Resilient sessions</b> that survive reconnects, restarts, and partial streams.</span></li>
+              </ul>
+            </div>
+            <div class="term">
+              <div class="tbar"><i></i><i></i><i></i></div>
+              <div class="tbody">
+                <div><span class="pr">$</span> claude login</div>
+                <div><span class="ok">✓</span> signed in &middot; using your subscription</div>
+                <div><span class="pr">$</span> codex login</div>
+                <div><span class="ok">✓</span> signed in &middot; using your account</div>
+                <div class="dim"># start a thread, pick a model per task</div>
+                <div><span class="pr">$</span> threadlines new "Refine source control panel"</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== CLOSING ===== -->
+      <section class="wrap">
+        <div class="closing reveal">
+          <svg class="tlf" viewBox="0 48 960 152" fill="none" aria-hidden="true">
+            <g stroke-linecap="round" stroke-width="1.5">
+              <path d="M -8 128 L 968 128" stroke="rgba(255,255,255,0.22)" />
+              <path d="M 432 128 C 458 128 458 180 484 180 L 812 180" stroke="#9db4ff" />
+            </g>
+            <g fill="rgba(255,255,255,0.4)"><circle cx="140" cy="128" r="3" /><circle cx="432" cy="128" r="3.5" /><circle cx="652" cy="128" r="3" /></g>
+            <circle cx="816" cy="180" r="6" fill="#9db4ff" fill-opacity="0.4" /><circle cx="816" cy="180" r="4" fill="#9db4ff" />
+          </svg>
+          <h2>Every thread leaves a line.</h2>
+          <p>Free, open source, and ready when you are.</p>
+          <div class="hero-actions">
+            <a class="btn btn-primary btn-lg" href="#">Download for macOS</a>
+            <a class="btn btn-lg" href="https://github.com/threadlines">View on GitHub</a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="foot-inner">
+        <div class="foot-left">
+          <svg class="brand-glyph" style="height: 14px" viewBox="36 86 184 100" fill="none" aria-hidden="true">
+            <g stroke-linecap="round" stroke-width="10">
+              <path d="M 44 98 L 212 98" stroke="#111115" stroke-opacity="0.4" />
+              <path d="M 108 98 C 134 98 134 162 160 162 L 188 162" stroke="#5a44d6" />
+            </g>
+            <g fill="#111115" fill-opacity="0.5"><circle cx="70" cy="98" r="7" /><circle cx="108" cy="98" r="8.5" /><circle cx="178" cy="98" r="7" /></g>
+            <circle cx="194" cy="162" r="12.5" fill="#5a44d6" />
+          </svg>
+          <span>&copy; 2026 Threadlines &middot; MIT licensed</span>
+        </div>
+        <div class="foot-links">
+          <a href="https://github.com/threadlines">GitHub</a>
+          <a href="#">Docs</a>
+          <a href="#">Changelog</a>
+          <a href="#">Discord</a>
+        </div>
+      </div>
+    </footer>
+
+    <script>
+      const nav = document.getElementById("nav");
+      addEventListener("scroll", () => nav.classList.toggle("scrolled", scrollY > 8), { passive: true });
+      const io = new IntersectionObserver(
+        (es) => es.forEach((e) => e.isIntersecting && (e.target.classList.add("in"), io.unobserve(e.target))),
+        { threshold: 0.12 }
+      );
+      document.querySelectorAll(".reveal").forEach((el) => io.observe(el));
+    </script>
+  </body>
+</html>
