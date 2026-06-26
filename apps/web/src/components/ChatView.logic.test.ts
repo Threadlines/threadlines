@@ -453,7 +453,7 @@ describe("deriveProviderBackgroundRuns", () => {
   }
 
   it("reconstructs active provider task rows from persisted task activity", () => {
-    const runs = deriveProviderBackgroundRuns({
+    const { runs, detectionSeeds } = deriveProviderBackgroundRuns({
       activities: [
         taskActivity(
           "task.started",
@@ -486,10 +486,11 @@ describe("deriveProviderBackgroundRuns", () => {
       statusLabel: "Running",
       urls: ["http://localhost:5953"],
     });
+    expect(detectionSeeds.urls).toEqual(["http://localhost:5953"]);
   });
 
   it("removes provider task rows when completion activity is present", () => {
-    const runs = deriveProviderBackgroundRuns({
+    const { runs } = deriveProviderBackgroundRuns({
       activities: [
         taskActivity("task.started", { taskId: "task-dev-server", detail: "Starting" }, 1),
         taskActivity("task.completed", { taskId: "task-dev-server", status: "completed" }, 2),
@@ -502,7 +503,7 @@ describe("deriveProviderBackgroundRuns", () => {
   });
 
   it("adds placeholder rows when only the provider pending count is known", () => {
-    const runs = deriveProviderBackgroundRuns({
+    const { runs } = deriveProviderBackgroundRuns({
       activities: [],
       messages: [],
       pendingBackgroundTaskCount: 1,
@@ -523,7 +524,7 @@ describe("deriveProviderBackgroundRuns", () => {
   });
 
   it("does not duplicate active subagents as anonymous provider background rows", () => {
-    const runs = deriveProviderBackgroundRuns({
+    const { runs } = deriveProviderBackgroundRuns({
       activities: [],
       messages: [],
       pendingBackgroundTaskCount: 1,
@@ -534,7 +535,7 @@ describe("deriveProviderBackgroundRuns", () => {
   });
 
   it("does not surface Claude subagent task progress as a background run", () => {
-    const runs = deriveProviderBackgroundRuns({
+    const { runs } = deriveProviderBackgroundRuns({
       activities: [
         taskActivity(
           "task.started",
@@ -564,8 +565,8 @@ describe("deriveProviderBackgroundRuns", () => {
     expect(runs).toEqual([]);
   });
 
-  it("surfaces mentioned localhost preview URLs without a stop handle", () => {
-    const runs = deriveProviderBackgroundRuns({
+  it("seeds detection from mentioned localhost preview URLs without rendering a run", () => {
+    const { runs, detectionSeeds } = deriveProviderBackgroundRuns({
       activities: [],
       messages: [
         assistantMessage(
@@ -575,43 +576,38 @@ describe("deriveProviderBackgroundRuns", () => {
       pendingBackgroundTaskCount: 0,
     });
 
-    expect(runs).toEqual([
-      {
-        id: "mentioned-preview:http://localhost:5953|http://localhost:13993",
-        source: "mentioned-preview",
-        label: "Mentioned local preview",
-        detail: "Mentioned only; no process handle.",
-        statusLabel: "No handle",
-        urls: ["http://localhost:5953", "http://localhost:13993"],
-        pids: [],
-        commandHints: [],
-      },
-    ]);
+    expect(runs).toEqual([]);
+    expect(detectionSeeds.urls).toEqual(["http://localhost:5953", "http://localhost:13993"]);
+    expect(detectionSeeds.pids).toEqual([]);
   });
 
-  it("surfaces mentioned background process PIDs for server resolution", () => {
-    const runs = deriveProviderBackgroundRuns({
+  it("seeds detection from mentioned background process PIDs without rendering a run", () => {
+    const { runs, detectionSeeds } = deriveProviderBackgroundRuns({
       activities: [],
       messages: [assistantMessage("Left a live background process running. PID 21820")],
       pendingBackgroundTaskCount: 0,
     });
 
-    expect(runs).toEqual([
-      {
-        id: "mentioned-preview:21820",
-        source: "mentioned-preview",
-        label: "Mentioned background process",
-        detail: "Mentioned PID; resolving process handle.",
-        statusLabel: "No handle",
-        urls: [],
-        pids: [21820],
-        commandHints: [],
-      },
-    ]);
+    expect(runs).toEqual([]);
+    expect(detectionSeeds.pids).toEqual([21820]);
+    expect(detectionSeeds.urls).toEqual([]);
+  });
+
+  it("does not seed detection from instructional localhost prose", () => {
+    const { runs, detectionSeeds } = deriveProviderBackgroundRuns({
+      activities: [],
+      messages: [assistantMessage("To preview, run `npm run dev` and open http://localhost:3000.")],
+      pendingBackgroundTaskCount: 0,
+    });
+
+    expect(runs).toEqual([]);
+    // The URL is still mined as a detection seed; nothing renders unless the
+    // server later confirms a live listener on that port.
+    expect(detectionSeeds.urls).toEqual(["http://localhost:3000"]);
   });
 
   it("extracts command hints from mentioned detached preview messages", () => {
-    const runs = deriveProviderBackgroundRuns({
+    const { detectionSeeds } = deriveProviderBackgroundRuns({
       activities: [],
       messages: [
         assistantMessage(
@@ -627,37 +623,37 @@ describe("deriveProviderBackgroundRuns", () => {
       pendingBackgroundTaskCount: 0,
     });
 
-    expect(runs[0]?.commandHints[0]).toContain("THREADLINES_PORT_OFFSET");
-    expect(runs[0]?.commandHints[0]).toContain("scripts/dev-runner.ts");
-    expect(runs[0]?.commandHints[0]).toContain("threadlines-activity-preview-280");
+    expect(detectionSeeds.commandHints[0]).toContain("THREADLINES_PORT_OFFSET");
+    expect(detectionSeeds.commandHints[0]).toContain("scripts/dev-runner.ts");
+    expect(detectionSeeds.commandHints[0]).toContain("threadlines-activity-preview-280");
   });
 });
 
 describe("filterUnresolvedProviderBackgroundRuns", () => {
-  const mentionedPreviewRun = {
-    id: "mentioned-preview:http://localhost:5953",
-    source: "mentioned-preview" as const,
-    label: "Mentioned local preview",
-    detail: "Mentioned only; no process handle.",
-    statusLabel: "No handle",
+  const providerUrlRun = {
+    id: "provider:task-dev-server",
+    source: "provider" as const,
+    label: "Local preview ready at http://localhost:5953",
+    detail: "Background Command task",
+    statusLabel: "Running",
     urls: ["http://localhost:5953"],
     pids: [],
     commandHints: [],
   };
 
-  it("keeps mentioned preview rows when detection checked but found no replacement", () => {
+  it("keeps provider runs while detection has not covered their URL yet", () => {
     expect(
       filterUnresolvedProviderBackgroundRuns({
-        providerBackgroundRuns: [mentionedPreviewRun],
+        providerBackgroundRuns: [providerUrlRun],
         detectedBackgroundRuns: [],
       }),
-    ).toEqual([mentionedPreviewRun]);
+    ).toEqual([providerUrlRun]);
   });
 
-  it("removes provider fallback rows only after detected runs cover their URLs", () => {
+  it("removes provider runs once a detected run covers their URL", () => {
     expect(
       filterUnresolvedProviderBackgroundRuns({
-        providerBackgroundRuns: [mentionedPreviewRun],
+        providerBackgroundRuns: [providerUrlRun],
         detectedBackgroundRuns: [{ urls: ["http://localhost:5953"] }],
       }),
     ).toEqual([]);
@@ -683,13 +679,13 @@ describe("filterUnresolvedProviderBackgroundRuns", () => {
     ).toEqual([providerRun]);
   });
 
-  it("removes mentioned process rows after a detected run covers their PID", () => {
-    const mentionedProcessRun = {
-      id: "mentioned-preview:21820",
-      source: "mentioned-preview" as const,
-      label: "Mentioned background process",
-      detail: "Mentioned PID; resolving process handle.",
-      statusLabel: "No handle",
+  it("removes provider runs once a detected run covers their PID", () => {
+    const providerPidRun = {
+      id: "provider:task-process",
+      source: "provider" as const,
+      label: "Background process",
+      detail: "Provider-managed",
+      statusLabel: "Running",
       urls: [],
       pids: [21820],
       commandHints: [],
@@ -697,28 +693,8 @@ describe("filterUnresolvedProviderBackgroundRuns", () => {
 
     expect(
       filterUnresolvedProviderBackgroundRuns({
-        providerBackgroundRuns: [mentionedProcessRun],
+        providerBackgroundRuns: [providerPidRun],
         detectedBackgroundRuns: [{ urls: [], pids: [21820] }],
-      }),
-    ).toEqual([]);
-  });
-
-  it("hides PID-only mentioned process rows when no live process is detected", () => {
-    const mentionedProcessRun = {
-      id: "mentioned-preview:21820",
-      source: "mentioned-preview" as const,
-      label: "Mentioned background process",
-      detail: "Mentioned PID; resolving process handle.",
-      statusLabel: "No handle",
-      urls: [],
-      pids: [21820],
-      commandHints: [],
-    };
-
-    expect(
-      filterUnresolvedProviderBackgroundRuns({
-        providerBackgroundRuns: [mentionedProcessRun],
-        detectedBackgroundRuns: [],
       }),
     ).toEqual([]);
   });

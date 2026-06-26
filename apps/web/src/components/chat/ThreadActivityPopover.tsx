@@ -49,7 +49,7 @@ export interface ThreadTaskProgressState {
 
 export interface ThreadBackgroundRunItem {
   id: string;
-  source: "terminal" | "provider" | "detected" | "mentioned-preview";
+  source: "terminal" | "provider" | "detected";
   label: string;
   detail: string | null;
   cwd: string | null;
@@ -573,13 +573,11 @@ function backgroundSummary(backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem
 function backgroundRunSectionSummary(
   backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>,
 ): string {
-  const mentionedCount = backgroundRuns.filter((run) => run.source === "mentioned-preview").length;
-  const trackedCount = backgroundRuns.length - mentionedCount;
+  const stoppableCount = backgroundRuns.filter((run) => run.canStop).length;
+  const trackedCount = backgroundRuns.length - stoppableCount;
   const parts = [
+    stoppableCount > 0 ? formatCount(stoppableCount, "active run", "active runs") : null,
     trackedCount > 0 ? formatCount(trackedCount, "tracked run", "tracked runs") : null,
-    mentionedCount > 0
-      ? formatCount(mentionedCount, "mentioned preview", "mentioned previews")
-      : null,
   ].filter((part): part is string => part !== null);
   return parts.join(" / ");
 }
@@ -934,9 +932,6 @@ function backgroundRunFallbackDetail(run: ThreadBackgroundRunItem): string {
   if (run.source === "detected") {
     return "Detected local process";
   }
-  if (run.source === "mentioned-preview") {
-    return "Mentioned only; no process handle.";
-  }
   return "Provider-managed";
 }
 
@@ -1051,9 +1046,7 @@ function BackgroundRunsSection({
                         ? "Local preview"
                         : run.source === "terminal"
                           ? "Terminal"
-                          : run.source === "mentioned-preview"
-                            ? "Preview mention"
-                            : "Provider task"}
+                          : "Provider task"}
                     </span>
                     {metaItems.map((item) => (
                       <span

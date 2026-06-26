@@ -2333,14 +2333,24 @@ export default function ChatView(props: ChatViewProps) {
     },
     [performCloseTerminal],
   );
-  const providerBackgroundRuns = useMemo(
+  const providerBackgroundSnapshot = useMemo(
     () =>
       deriveProviderBackgroundRuns({
         activities: threadActivities,
         messages: timelineMessages,
         pendingBackgroundTaskCount: activeThread?.session?.pendingBackgroundTaskCount ?? 0,
         activeSubagentCount: subagentProgress?.activeCount ?? 0,
-      }).map((run) => ({
+      }),
+    [
+      activeThread?.session?.pendingBackgroundTaskCount,
+      subagentProgress?.activeCount,
+      threadActivities,
+      timelineMessages,
+    ],
+  );
+  const providerBackgroundRuns = useMemo(
+    () =>
+      providerBackgroundSnapshot.runs.map((run) => ({
         ...run,
         terminalId: null,
         pid: null,
@@ -2349,27 +2359,19 @@ export default function ChatView(props: ChatViewProps) {
         canStop: false,
         cwd: null,
       })),
-    [
-      activeThread?.session?.pendingBackgroundTaskCount,
-      subagentProgress?.activeCount,
-      threadActivities,
-      timelineMessages,
-    ],
+    [providerBackgroundSnapshot],
   );
   const backgroundRunDetectionUrls = useMemo(
-    () => [...new Set(providerBackgroundRuns.flatMap((run) => run.urls))].sort(),
-    [providerBackgroundRuns],
+    () => [...providerBackgroundSnapshot.detectionSeeds.urls].sort(),
+    [providerBackgroundSnapshot],
   );
   const backgroundRunDetectionPids = useMemo(
-    () =>
-      [...new Set(providerBackgroundRuns.flatMap((run) => run.pids))].sort(
-        (left, right) => left - right,
-      ),
-    [providerBackgroundRuns],
+    () => [...providerBackgroundSnapshot.detectionSeeds.pids].sort((left, right) => left - right),
+    [providerBackgroundSnapshot],
   );
   const backgroundRunCommandHints = useMemo(
-    () => [...new Set(providerBackgroundRuns.flatMap((run) => run.commandHints))].slice(0, 12),
-    [providerBackgroundRuns],
+    () => providerBackgroundSnapshot.detectionSeeds.commandHints.slice(0, 12),
+    [providerBackgroundSnapshot],
   );
   const [stoppedBackgroundRunPids, setStoppedBackgroundRunPids] = useState<number[]>([]);
   useEffect(() => {

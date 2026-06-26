@@ -192,13 +192,31 @@ export function shouldConfirmTerminalKill(input: {
 
 export interface ProviderBackgroundRunState {
   id: string;
-  source: "provider" | "mentioned-preview";
+  source: "provider";
   label: string;
   detail: string | null;
   statusLabel: string;
   urls: ReadonlyArray<string>;
   pids: ReadonlyArray<number>;
   commandHints: ReadonlyArray<string>;
+}
+
+export interface BackgroundRunDetectionSeeds {
+  urls: ReadonlyArray<string>;
+  pids: ReadonlyArray<number>;
+  commandHints: ReadonlyArray<string>;
+}
+
+export interface ProviderBackgroundRunsResult {
+  /** Provider-tracked background runs that are safe to render in the header. */
+  runs: ProviderBackgroundRunState[];
+  /**
+   * URLs, PIDs, and command hints used to seed server-side process detection.
+   * Includes unconfirmed prose mentions: those feed detection so a real
+   * listener gets promoted to a stoppable `detected` run, but they are never
+   * rendered as runs on their own.
+   */
+  detectionSeeds: BackgroundRunDetectionSeeds;
 }
 
 export interface DetectedBackgroundRunState {
@@ -215,9 +233,6 @@ export function filterUnresolvedProviderBackgroundRuns<
   const detectedUrlSet = new Set(input.detectedBackgroundRuns.flatMap((run) => run.urls));
   const detectedPidSet = new Set(input.detectedBackgroundRuns.flatMap((run) => run.pids ?? []));
   return input.providerBackgroundRuns.filter((run) => {
-    if (run.source === "mentioned-preview" && run.urls.length === 0 && run.pids.length > 0) {
-      return false;
-    }
     if (run.urls.length > 0) {
       return !run.urls.every((url) => detectedUrlSet.has(url));
     }
@@ -384,7 +399,7 @@ export function deriveProviderBackgroundRuns(input: {
   messages: ReadonlyArray<ChatMessage>;
   pendingBackgroundTaskCount: number;
   activeSubagentCount?: number | undefined;
-}): ProviderBackgroundRunState[] {
+}): ProviderBackgroundRunsResult {
   const activeRunsByTaskId = new Map<string, ProviderBackgroundRunState>();
   const suppressedSubagentTaskIds = new Set<string>();
 
@@ -489,6 +504,11 @@ export function deriveProviderBackgroundRuns(input: {
     });
   }
 
+  // Mine the latest assistant message for localhost URLs and PIDs the provider
+  // runs did not already surface. These only seed server-side detection: a
+  // confirmed listener is promoted to a stoppable `detected` run elsewhere. We
+  // deliberately never render the mention itself, because an unverified
+  // localhost reference in prose is not a live background process.
   const knownUrls = new Set(runs.flatMap((run) => run.urls));
   const knownPids = new Set(runs.flatMap((run) => run.pids));
   const previewMessage = input.messages
@@ -506,24 +526,20 @@ export function deriveProviderBackgroundRuns(input: {
   const mentionedPids = previewMessage
     ? extractBackgroundPidHints(previewMessage.text).filter((pid) => !knownPids.has(pid))
     : [];
-  if (mentionedUrls.length > 0 || mentionedPids.length > 0) {
-    const commandHints = previewMessage ? extractBackgroundCommandHints(previewMessage.text) : [];
-    runs.push({
-      id: `mentioned-preview:${[...mentionedUrls, ...mentionedPids.map(String)].join("|")}`,
-      source: "mentioned-preview",
-      label: mentionedUrls.length > 0 ? "Mentioned local preview" : "Mentioned background process",
-      detail:
-        mentionedUrls.length > 0
-          ? "Mentioned only; no process handle."
-          : "Mentioned PID; resolving process handle.",
-      statusLabel: "No handle",
-      urls: mentionedUrls,
-      pids: mentionedPids,
-      commandHints,
-    });
-  }
+  const mentionedCommandHints =
+    previewMessage && (mentionedUrls.length > 0 || mentionedPids.length > 0)
+      ? extractBackgroundCommandHints(previewMessage.text)
+      : [];
 
-  return runs;
+  const detectionSeeds: BackgroundRunDetectionSeeds = {
+    urls: [...new Set([...knownUrls, ...mentionedUrls])],
+    pids: [...new Set([...knownPids, ...mentionedPids])],
+    commandHints: [
+      ...new Set([...runs.flatMap((run) => run.commandHints), ...mentionedCommandHints]),
+    ],
+  };
+
+  return { runs, detectionSeeds };
 }
 
 function isSubagentProviderTask(input: {
