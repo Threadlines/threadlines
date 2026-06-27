@@ -38,7 +38,7 @@ import {
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { Tooltip, TooltipPopup, TooltipTrigger, TooltipWrapper } from "../ui/tooltip";
 
 export interface ThreadTaskProgressState {
   activePlan: ActivePlanState | null;
@@ -313,7 +313,7 @@ function TriggerIcon({ mode }: { mode: ActivityTriggerState["mode"] }) {
 
 function TriggerChip({ chip }: { chip: ActivityBadgeState }) {
   return (
-    <span className="inline-flex min-w-0 items-center gap-0.5" title={chip.ariaLabel}>
+    <span className="inline-flex min-w-0 items-center gap-0.5">
       {chip.kind === "subagents" ? (
         <BotIcon className="size-3 text-foreground/80" aria-hidden="true" />
       ) : null}
@@ -1009,33 +1009,35 @@ function BackgroundRunsSection({
                         {run.statusLabel}
                       </span>
                       {run.terminalId ? (
-                        <button
-                          type="button"
-                          className="inline-flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-background/70 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring/50"
-                          aria-label={`Open ${run.label}`}
-                          title={`Open ${run.label}`}
-                          onClick={() => {
-                            if (run.terminalId) {
-                              onOpenBackgroundRunTerminal(run.terminalId);
-                            }
-                          }}
-                        >
-                          <TerminalSquareIcon className="size-3" aria-hidden="true" />
-                        </button>
+                        <TooltipWrapper tooltip={`Open ${run.label}`}>
+                          <button
+                            type="button"
+                            className="inline-flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-background/70 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring/50"
+                            aria-label={`Open ${run.label}`}
+                            onClick={() => {
+                              if (run.terminalId) {
+                                onOpenBackgroundRunTerminal(run.terminalId);
+                              }
+                            }}
+                          >
+                            <TerminalSquareIcon className="size-3" aria-hidden="true" />
+                          </button>
+                        </TooltipWrapper>
                       ) : null}
                       {run.canStop ? (
-                        <button
-                          type="button"
-                          className="inline-flex h-6 cursor-pointer items-center gap-1 rounded-md bg-destructive/10 px-1.5 text-[10px] font-medium text-destructive transition-colors hover:bg-destructive/15 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-destructive/40"
-                          aria-label={`Stop ${run.label}`}
-                          title={`Stop ${run.label}`}
-                          onClick={() => {
-                            onStopBackgroundRun(run);
-                          }}
-                        >
-                          <SquareIcon className="size-2.5 fill-current" aria-hidden="true" />
-                          <span>Stop</span>
-                        </button>
+                        <TooltipWrapper tooltip={`Stop ${run.label}`}>
+                          <button
+                            type="button"
+                            className="inline-flex h-6 cursor-pointer items-center gap-1 rounded-md bg-destructive/10 px-1.5 text-[10px] font-medium text-destructive transition-colors hover:bg-destructive/15 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-destructive/40"
+                            aria-label={`Stop ${run.label}`}
+                            onClick={() => {
+                              onStopBackgroundRun(run);
+                            }}
+                          >
+                            <SquareIcon className="size-2.5 fill-current" aria-hidden="true" />
+                            <span>Stop</span>
+                          </button>
+                        </TooltipWrapper>
                       ) : null}
                     </div>
                   </div>
@@ -1069,7 +1071,7 @@ function BackgroundRunsSection({
                           variant="ghost"
                           size="xs"
                           className="h-5 min-w-0 flex-1 justify-start gap-1 rounded-md bg-background/40 px-1.5 text-[10px] text-muted-foreground hover:bg-background/75 hover:text-foreground"
-                          title={primaryUrl}
+                          tooltip={primaryUrl}
                         >
                           <ExternalLinkIcon className="size-2.5 shrink-0" aria-hidden="true" />
                           <span className="truncate">{primaryUrl}</span>
@@ -1081,12 +1083,11 @@ function BackgroundRunsSection({
                         </Button>
                       ) : null}
                       {showCommandText ? (
-                        <div
-                          className="min-w-0 flex-1 truncate rounded-md bg-background/30 px-1.5 py-1 font-mono text-[10px] leading-3 text-muted-foreground/60"
-                          title={commandText}
-                        >
-                          {commandText}
-                        </div>
+                        <TooltipWrapper tooltip={commandText}>
+                          <div className="min-w-0 flex-1 truncate rounded-md bg-background/30 px-1.5 py-1 font-mono text-[10px] leading-3 text-muted-foreground/60">
+                            {commandText}
+                          </div>
+                        </TooltipWrapper>
                       ) : null}
                     </div>
                   ) : null}

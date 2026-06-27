@@ -22,6 +22,7 @@ import {
   stripInlineTerminalContextPlaceholders,
   type TerminalContextDraft,
 } from "../lib/terminalContext";
+import type { TranscriptHighlightContextDraft } from "../lib/transcriptHighlightContext";
 import type { DraftThreadEnvMode } from "../composerDraftStore";
 
 export const LAST_INVOKED_SCRIPT_BY_PROJECT_KEY = "threadlines:last-invoked-script-by-project";
@@ -694,22 +695,29 @@ export function deriveComposerSendState(options: {
   prompt: string;
   imageCount: number;
   terminalContexts: ReadonlyArray<TerminalContextDraft>;
+  transcriptHighlightContexts?: ReadonlyArray<TranscriptHighlightContextDraft> | undefined;
 }): {
   trimmedPrompt: string;
   sendableTerminalContexts: TerminalContextDraft[];
+  sendableTranscriptHighlightContexts: ReadonlyArray<TranscriptHighlightContextDraft>;
   expiredTerminalContextCount: number;
   hasSendableContent: boolean;
 } {
   const trimmedPrompt = stripInlineTerminalContextPlaceholders(options.prompt).trim();
   const sendableTerminalContexts = filterTerminalContextsWithText(options.terminalContexts);
+  const sendableTranscriptHighlightContexts = options.transcriptHighlightContexts ?? [];
   const expiredTerminalContextCount =
     options.terminalContexts.length - sendableTerminalContexts.length;
   return {
     trimmedPrompt,
     sendableTerminalContexts,
+    sendableTranscriptHighlightContexts,
     expiredTerminalContextCount,
     hasSendableContent:
-      trimmedPrompt.length > 0 || options.imageCount > 0 || sendableTerminalContexts.length > 0,
+      trimmedPrompt.length > 0 ||
+      options.imageCount > 0 ||
+      sendableTerminalContexts.length > 0 ||
+      sendableTranscriptHighlightContexts.length > 0,
   };
 }
 

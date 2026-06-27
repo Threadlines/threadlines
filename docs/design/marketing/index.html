@@ -54,7 +54,11 @@
         inset: 0;
         z-index: 0;
         pointer-events: none;
-        background: radial-gradient(680px 460px at 80% -4%, oklch(0.62 0.19 var(--accent-h) / 0.14), transparent 68%);
+        background: radial-gradient(
+          680px 460px at 80% -4%,
+          oklch(0.62 0.19 var(--accent-h) / 0.14),
+          transparent 68%
+        );
       }
       a {
         color: inherit;
@@ -150,7 +154,9 @@
         background: var(--bg-card);
         display: flex;
         flex-direction: column;
-        transition: border-color 0.2s ease, transform 0.2s ease;
+        transition:
+          border-color 0.2s ease,
+          transform 0.2s ease;
       }
       .card:hover {
         border-color: var(--border-strong);
@@ -419,7 +425,9 @@
               <path d="M 108 98 C 134 98 134 162 160 162 L 188 162" stroke="#6e94fa" />
             </g>
             <g fill="#ffffff" fill-opacity="0.45">
-              <circle cx="70" cy="98" r="7" /><circle cx="108" cy="98" r="8.5" /><circle cx="178" cy="98" r="7" />
+              <circle cx="70" cy="98" r="7" />
+              <circle cx="108" cy="98" r="8.5" />
+              <circle cx="178" cy="98" r="7" />
             </g>
             <circle cx="194" cy="162" r="12.5" fill="#6e94fa" />
           </svg>
@@ -430,17 +438,29 @@
         <p class="lead">
           Each is a full, standalone landing page that leans into the source control panel and
           first-class Codex and Claude support, using Conductor and t3 as loose references without
-          copying either. Same brand DNA as the live teaser: Hanken Grotesk, JetBrains Mono, the hue-264
-          accent, and the threadline graph.
+          copying either. Same brand DNA as the live teaser: Hanken Grotesk, JetBrains Mono, the
+          hue-264 accent, and the threadline graph.
         </p>
         <div class="note">
           <span class="k"
-            ><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" /></svg
+            ><svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path
+                d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"
+              /></svg
           ></span>
           <span
-            >These are throwaway explorations under <code>docs/design/marketing/</code>. The live site at
-            <code>apps/marketing/</code> is untouched. The app screenshots are faux frames built in
-            HTML/CSS, ready to swap for a real capture (see below).</span
+            >These are throwaway explorations under <code>docs/design/marketing/</code>. The live
+            site at <code>apps/marketing/</code> is untouched. The app screenshots are faux frames
+            built in HTML/CSS, ready to swap for a real capture (see below).</span
           >
         </div>
       </header>
@@ -455,14 +475,30 @@
             </div>
           </div>
           <div class="body">
-            <div class="tagrow"><span class="num">01</span><span class="chip">Dark</span><span class="chip">Centered</span></div>
+            <div class="tagrow">
+              <span class="num">01</span><span class="chip">Dark</span
+              ><span class="chip">Centered</span>
+            </div>
             <h3>Thread</h3>
             <p>
-              The refined-minimal flagship. Centered editorial hero, the full app window floating below,
-              source control as the biggest feature block. The safest evolution of the current teaser.
+              The refined-minimal flagship. Centered editorial hero, the full app window floating
+              below, source control as the biggest feature block. The safest evolution of the
+              current teaser.
             </p>
-            <span class="open">Open mockup
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17L17 7M7 7h10v10" /></svg>
+            <span class="open"
+              >Open mockup
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M7 17L17 7M7 7h10v10" />
+              </svg>
             </span>
           </div>
         </a>
@@ -471,18 +507,36 @@
         <a class="card" href="./spine.html">
           <div class="preview pv-dark">
             <div class="pv-spine"></div>
-            <span class="pv-node a"></span><span class="pv-node b"></span><span class="pv-node c"></span>
-            <div class="pv-spine-bars"><i style="width: 78%"></i><i style="width: 92%"></i><i style="width: 55%"></i></div>
+            <span class="pv-node a"></span><span class="pv-node b"></span
+            ><span class="pv-node c"></span>
+            <div class="pv-spine-bars">
+              <i style="width: 78%"></i><i style="width: 92%"></i><i style="width: 55%"></i>
+            </div>
           </div>
           <div class="body">
-            <div class="tagrow"><span class="num">02</span><span class="chip">Dark</span><span class="chip">Structural</span></div>
+            <div class="tagrow">
+              <span class="num">02</span><span class="chip">Dark</span
+              ><span class="chip">Structural</span>
+            </div>
             <h3>Spine</h3>
             <p>
-              The boldest concept. The thread graph becomes the page skeleton: one branch runs down the
-              left and every section is a commit node on it. Most distinctive, most on-brand.
+              The boldest concept. The thread graph becomes the page skeleton: one branch runs down
+              the left and every section is a commit node on it. Most distinctive, most on-brand.
             </p>
-            <span class="open">Open mockup
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17L17 7M7 7h10v10" /></svg>
+            <span class="open"
+              >Open mockup
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M7 17L17 7M7 7h10v10" />
+              </svg>
             </span>
           </div>
         </a>
@@ -495,14 +549,29 @@
             </div>
           </div>
           <div class="body">
-            <div class="tagrow"><span class="num">03</span><span class="chip">Light</span><span class="chip">Product-forward</span></div>
+            <div class="tagrow">
+              <span class="num">03</span><span class="chip">Light</span
+              ><span class="chip">Product-forward</span>
+            </div>
             <h3>Workbench</h3>
             <p>
-              The light, product-first option. Proves the light palette and leads with the working app
-              the way Conductor and t3 do, then a bento grid of features. Bright and confident.
+              The light, product-first option. Proves the light palette and leads with the working
+              app the way Conductor and t3 do, then a bento grid of features. Bright and confident.
             </p>
-            <span class="open">Open mockup
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17L17 7M7 7h10v10" /></svg>
+            <span class="open"
+              >Open mockup
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M7 17L17 7M7 7h10v10" />
+              </svg>
             </span>
           </div>
         </a>
@@ -513,53 +582,103 @@
         <span class="eyebrow">Setting up the hero screenshot</span>
         <h2>How to capture the real "app working" shot.</h2>
         <p class="sub">
-          Both reference sites sell with one strong screenshot of the product mid-task. The mockups above
-          fake that frame so you can judge the layout. To shoot the real one, stage the app like this.
+          Both reference sites sell with one strong screenshot of the product mid-task. The mockups
+          above fake that frame so you can judge the layout. To shoot the real one, stage the app
+          like this.
         </p>
 
         <div class="shot-guide">
           <div class="gcard">
             <h4><span class="n">1</span> What to show</h4>
             <ul>
-              <li>All three columns visible at once: threads rail, chat, and the <b>source control panel</b>. The panel is the differentiator, so keep it open.</li>
-              <li>One thread <b>actively running</b> so the live node and a "Working" row are on screen.</li>
-              <li>A real diff in the panel: a few changed files with per-file +/- counts and a branch name like <code>thread/refine-scp</code>.</li>
-              <li>A recognizable model in the composer (<b>Claude Opus 4.8</b> or a Codex model) so providers read instantly.</li>
+              <li>
+                All three columns visible at once: threads rail, chat, and the
+                <b>source control panel</b>. The panel is the differentiator, so keep it open.
+              </li>
+              <li>
+                One thread <b>actively running</b> so the live node and a "Working" row are on
+                screen.
+              </li>
+              <li>
+                A real diff in the panel: a few changed files with per-file +/- counts and a branch
+                name like <code>thread/refine-scp</code>.
+              </li>
+              <li>
+                A recognizable model in the composer (<b>Claude Opus 4.8</b> or a Codex model) so
+                providers read instantly.
+              </li>
             </ul>
           </div>
           <div class="gcard">
             <h4><span class="n">2</span> Staging</h4>
             <ul>
-              <li>Use a clean demo repo with believable thread titles. Avoid private paths and real tokens.</li>
-              <li>Mid-turn beats finished: an agent partway through editing tells the story better than an idle screen.</li>
-              <li>Keep the prose short and legible at the size it renders. Long messages turn to grey mush when scaled down.</li>
-              <li>Dark theme for Thread and Spine; for Workbench either dark (high contrast on the light page) or a light capture if you want to prove light mode.</li>
+              <li>
+                Use a clean demo repo with believable thread titles. Avoid private paths and real
+                tokens.
+              </li>
+              <li>
+                Mid-turn beats finished: an agent partway through editing tells the story better
+                than an idle screen.
+              </li>
+              <li>
+                Keep the prose short and legible at the size it renders. Long messages turn to grey
+                mush when scaled down.
+              </li>
+              <li>
+                Dark theme for Thread and Spine; for Workbench either dark (high contrast on the
+                light page) or a light capture if you want to prove light mode.
+              </li>
             </ul>
           </div>
           <div class="gcard">
             <h4><span class="n">3</span> Capture</h4>
             <ul>
-              <li>Shoot at <code>2x</code> for retina. Target a 16:10-ish window around <code>1440&times;900</code> or <code>1600&times;1000</code>.</li>
-              <li>Headless Edge works well here: <code>--force-device-scale-factor=1</code> on scaled displays, per the brand-kit recipe.</li>
-              <li>Export a transparent or trimmed PNG, then let the page supply the window frame and shadow.</li>
-              <li>Hide OS chrome and personal data. The faux titlebar in these mockups can stand in for the real one.</li>
+              <li>
+                Shoot at <code>2x</code> for retina. Target a 16:10-ish window around
+                <code>1440&times;900</code> or <code>1600&times;1000</code>.
+              </li>
+              <li>
+                Headless Edge works well here: <code>--force-device-scale-factor=1</code> on scaled
+                displays, per the brand-kit recipe.
+              </li>
+              <li>
+                Export a transparent or trimmed PNG, then let the page supply the window frame and
+                shadow.
+              </li>
+              <li>
+                Hide OS chrome and personal data. The faux titlebar in these mockups can stand in
+                for the real one.
+              </li>
             </ul>
           </div>
           <div class="gcard">
             <h4><span class="n">4</span> Swapping it in</h4>
             <ul>
-              <li>Each mockup's app window is one <code>.shot-frame</code> / <code>.appwin</code> block. Replace its inner markup with an <code>&lt;img&gt;</code> of the capture.</li>
-              <li>Keep the rounded frame, border, and shadow. They do the heavy lifting and stay consistent across directions.</li>
-              <li>Consider a short looping clip later: a thread finishing, the diff updating, the commit landing on the graph.</li>
-              <li>Whatever you pick moves into <code>apps/marketing/</code> as the real implementation. Nothing here touches it yet.</li>
+              <li>
+                Each mockup's app window is one <code>.shot-frame</code> /
+                <code>.appwin</code> block. Replace its inner markup with an
+                <code>&lt;img&gt;</code> of the capture.
+              </li>
+              <li>
+                Keep the rounded frame, border, and shadow. They do the heavy lifting and stay
+                consistent across directions.
+              </li>
+              <li>
+                Consider a short looping clip later: a thread finishing, the diff updating, the
+                commit landing on the graph.
+              </li>
+              <li>
+                Whatever you pick moves into <code>apps/marketing/</code> as the real
+                implementation. Nothing here touches it yet.
+              </li>
             </ul>
           </div>
         </div>
       </section>
 
       <footer>
-        Threadlines &middot; marketing mockups &middot; open in a browser, no build step. Pick a direction and
-        I can refine it or wire it into the Astro site.
+        Threadlines &middot; marketing mockups &middot; open in a browser, no build step. Pick a
+        direction and I can refine it or wire it into the Astro site.
       </footer>
     </div>
   </body>

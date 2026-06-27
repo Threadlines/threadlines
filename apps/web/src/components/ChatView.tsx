@@ -156,6 +156,12 @@ import {
   type TerminalContextSelection,
 } from "../lib/terminalContext";
 import {
+  appendTranscriptHighlightContextsToPrompt,
+  formatTranscriptHighlightContextLabel,
+  type TranscriptHighlightContextDraft,
+  type TranscriptHighlightContextSelection,
+} from "../lib/transcriptHighlightContext";
+import {
   selectTerminalSubmittedCommand,
   selectThreadTerminalState,
   useTerminalStateStore,
@@ -834,6 +840,9 @@ export default function ChatView(props: ChatViewProps) {
   const setComposerDraftTerminalContexts = useComposerDraftStore(
     (store) => store.setTerminalContexts,
   );
+  const setComposerDraftTranscriptHighlightContexts = useComposerDraftStore(
+    (store) => store.setTranscriptHighlightContexts,
+  );
   const setComposerDraftModelSelection = useComposerDraftStore((store) => store.setModelSelection);
   const setComposerDraftRuntimeMode = useComposerDraftStore((store) => store.setRuntimeMode);
   const setComposerDraftInteractionMode = useComposerDraftStore(
@@ -858,6 +867,7 @@ export default function ChatView(props: ChatViewProps) {
   const promptRef = useRef("");
   const composerImagesRef = useRef<ComposerImageAttachment[]>([]);
   const composerTerminalContextsRef = useRef<TerminalContextDraft[]>([]);
+  const composerTranscriptHighlightContextsRef = useRef<TranscriptHighlightContextDraft[]>([]);
   const localComposerRef = useRef<ChatComposerHandle | null>(null);
   const composerRef = useComposerHandleContext() ?? localComposerRef;
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
@@ -2238,6 +2248,12 @@ export default function ChatView(props: ChatViewProps) {
   const addTerminalContextToDraft = useCallback((selection: TerminalContextSelection) => {
     composerRef.current?.addTerminalContext(selection);
   }, []);
+  const addTranscriptHighlightContextToDraft = useCallback(
+    (selection: TranscriptHighlightContextSelection) => {
+      composerRef.current?.addTranscriptHighlightContext(selection);
+    },
+    [],
+  );
   const setTerminalOpen = useCallback(
     (open: boolean) => {
       if (!activeThreadRef) return;
@@ -3556,6 +3572,7 @@ export default function ChatView(props: ChatViewProps) {
     const {
       images: composerImages,
       terminalContexts: composerTerminalContexts,
+      transcriptHighlightContexts: composerTranscriptHighlightContexts,
       selectedModel: ctxSelectedModel,
       selectedModelSelection: ctxSelectedModelSelection,
     } = sendCtx;
@@ -3563,12 +3580,14 @@ export default function ChatView(props: ChatViewProps) {
     const {
       trimmedPrompt: trimmed,
       sendableTerminalContexts: sendableComposerTerminalContexts,
+      sendableTranscriptHighlightContexts,
       expiredTerminalContextCount,
       hasSendableContent,
     } = deriveComposerSendState({
       prompt: promptForSend,
       imageCount: composerImages.length,
       terminalContexts: composerTerminalContexts,
+      transcriptHighlightContexts: composerTranscriptHighlightContexts,
     });
     if (showPlanFollowUpPrompt && activeProposedPlan) {
       const followUp = resolvePlanFollowUpSubmission({
@@ -3585,7 +3604,9 @@ export default function ChatView(props: ChatViewProps) {
       return;
     }
     const standaloneSlashCommand =
-      composerImages.length === 0 && sendableComposerTerminalContexts.length === 0
+      composerImages.length === 0 &&
+      sendableComposerTerminalContexts.length === 0 &&
+      sendableTranscriptHighlightContexts.length === 0
         ? parseStandaloneComposerSlashCommand(trimmed)
         : null;
     if (standaloneSlashCommand) {
@@ -3637,9 +3658,14 @@ export default function ChatView(props: ChatViewProps) {
 
     const composerImagesSnapshot = [...composerImages];
     const composerTerminalContextsSnapshot = [...sendableComposerTerminalContexts];
-    const messageTextForSend = appendTerminalContextsToPrompt(
+    const composerTranscriptHighlightContextsSnapshot = [...sendableTranscriptHighlightContexts];
+    const messageTextWithTerminalContexts = appendTerminalContextsToPrompt(
       promptForSend,
       composerTerminalContextsSnapshot,
+    );
+    const messageTextForSend = appendTranscriptHighlightContextsToPrompt(
+      messageTextWithTerminalContexts,
+      composerTranscriptHighlightContextsSnapshot,
     );
     const messageIdForSend = newMessageId();
     const messageCreatedAt = new Date().toISOString();
@@ -3729,6 +3755,10 @@ export default function ChatView(props: ChatViewProps) {
           titleSeed = `Image: ${firstComposerImageName}`;
         } else if (composerTerminalContextsSnapshot.length > 0) {
           titleSeed = formatTerminalContextLabel(composerTerminalContextsSnapshot[0]!);
+        } else if (composerTranscriptHighlightContextsSnapshot.length > 0) {
+          titleSeed = formatTranscriptHighlightContextLabel(
+            composerTranscriptHighlightContextsSnapshot[0]!,
+          );
         } else {
           titleSeed = "New thread";
         }
@@ -3843,7 +3873,8 @@ export default function ChatView(props: ChatViewProps) {
         !dispatchSucceeded &&
         promptRef.current.length === 0 &&
         composerImagesRef.current.length === 0 &&
-        composerTerminalContextsRef.current.length === 0
+        composerTerminalContextsRef.current.length === 0 &&
+        composerTranscriptHighlightContextsRef.current.length === 0
       ) {
         if (isSteeringFollowUp) {
           setSteeringMessagesById((existing) => {
@@ -3863,9 +3894,15 @@ export default function ChatView(props: ChatViewProps) {
         const retryComposerImages = composerImagesSnapshot.map(cloneComposerImageForRetry);
         composerImagesRef.current = retryComposerImages;
         composerTerminalContextsRef.current = composerTerminalContextsSnapshot;
+        composerTranscriptHighlightContextsRef.current =
+          composerTranscriptHighlightContextsSnapshot;
         setComposerDraftPrompt(composerDraftTarget, promptForSend);
         addComposerDraftImages(composerDraftTarget, retryComposerImages);
         setComposerDraftTerminalContexts(composerDraftTarget, composerTerminalContextsSnapshot);
+        setComposerDraftTranscriptHighlightContexts(
+          composerDraftTarget,
+          composerTranscriptHighlightContextsSnapshot,
+        );
         composerRef.current?.resetCursorState({
           cursor: collapseExpandedComposerCursor(promptForSend, promptForSend.length),
           prompt: promptForSend,
@@ -4864,6 +4901,7 @@ export default function ChatView(props: ChatViewProps) {
               revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
               onRevertUserMessage={onRevertUserMessage}
               onContinueInNewThread={onContinueMessageInNewThread}
+              onAddTranscriptHighlightContext={addTranscriptHighlightContextToDraft}
               isRevertingCheckpoint={isRevertingCheckpoint}
               onImageExpand={onExpandTimelineImage}
               markdownCwd={gitCwd ?? undefined}
@@ -4952,6 +4990,7 @@ export default function ChatView(props: ChatViewProps) {
                   promptRef={promptRef}
                   composerImagesRef={composerImagesRef}
                   composerTerminalContextsRef={composerTerminalContextsRef}
+                  composerTranscriptHighlightContextsRef={composerTranscriptHighlightContextsRef}
                   shouldAutoScrollRef={isAtEndRef}
                   scheduleStickToBottom={scrollToEnd}
                   onSend={onSend}

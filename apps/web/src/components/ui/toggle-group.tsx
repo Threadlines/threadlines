@@ -8,6 +8,7 @@ import * as React from "react";
 import { cn } from "~/lib/utils";
 import { Separator } from "~/components/ui/separator";
 import { Toggle as ToggleComponent, type toggleVariants } from "~/components/ui/toggle";
+import { type TooltipSide } from "~/components/ui/tooltip";
 
 const ToggleGroupContext = React.createContext<VariantProps<typeof toggleVariants>>({
   size: "default",
@@ -54,7 +55,11 @@ function Toggle({
   variant,
   size,
   ...props
-}: TogglePrimitive.Props & VariantProps<typeof toggleVariants>) {
+}: TogglePrimitive.Props &
+  VariantProps<typeof toggleVariants> & {
+    tooltip?: React.ReactNode;
+    tooltipSide?: TooltipSide;
+  }) {
   const context = React.use(ToggleGroupContext);
 
   const resolvedVariant = variant ?? context.variant;

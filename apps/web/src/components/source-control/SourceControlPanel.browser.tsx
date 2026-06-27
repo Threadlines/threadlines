@@ -378,10 +378,10 @@ describe("SourceControlPanel changes", () => {
 
     try {
       await expect.element(page.getByText("app.ts")).toBeVisible();
-      const statusBadge = document.querySelector('[title="Working tree: Modified"]');
+      const statusBadge = document.querySelector('[aria-label="Working tree: Modified"]');
       expect(statusBadge).toBeInstanceOf(HTMLElement);
       expect(statusBadge?.textContent).toBe("M");
-      const untrackedBadge = document.querySelector('[title="Untracked"]');
+      const untrackedBadge = document.querySelector('[aria-label="Untracked"]');
       expect(untrackedBadge).toBeInstanceOf(HTMLElement);
       expect(untrackedBadge?.textContent).toBe("U");
 

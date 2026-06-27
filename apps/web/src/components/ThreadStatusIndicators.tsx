@@ -15,7 +15,7 @@ import { resolveChangeRequestPresentation } from "../sourceControlPresentation";
 import { resolveThreadStatusPill, type ThreadStatusPill } from "./Sidebar.logic";
 import type { SidebarThreadSummary } from "../types";
 import { LiveNode } from "./ui/threadline";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
+import { Tooltip, TooltipPopup, TooltipTrigger, TooltipWrapper } from "./ui/tooltip";
 
 export interface PrStatusIndicator {
   label: string;
@@ -103,40 +103,40 @@ export function ThreadStatusLabel({
 }) {
   if (compact) {
     return (
-      <span
-        title={status.label}
-        className={`inline-flex size-3.5 shrink-0 items-center justify-center ${status.colorClass}`}
-      >
-        {status.pulse ? (
-          <LiveNode
-            className="size-[9px]"
-            dotClassName={status.dotClass}
-            haloClassName={status.dotClass}
-          />
-        ) : (
-          <span className={`size-[9px] rounded-full ${status.dotClass}`} />
-        )}
-        <span className="sr-only">{status.label}</span>
-      </span>
+      <TooltipWrapper tooltip={status.label}>
+        <span
+          className={`inline-flex size-3.5 shrink-0 items-center justify-center ${status.colorClass}`}
+        >
+          {status.pulse ? (
+            <LiveNode
+              className="size-[9px]"
+              dotClassName={status.dotClass}
+              haloClassName={status.dotClass}
+            />
+          ) : (
+            <span className={`size-[9px] rounded-full ${status.dotClass}`} />
+          )}
+          <span className="sr-only">{status.label}</span>
+        </span>
+      </TooltipWrapper>
     );
   }
 
   return (
-    <span
-      title={status.label}
-      className={`inline-flex items-center text-[10px] ${status.colorClass}`}
-    >
-      {status.pulse ? (
-        <LiveNode
-          className="size-1.5"
-          dotClassName={status.dotClass}
-          haloClassName={status.dotClass}
-        />
-      ) : (
-        <span className={`h-1.5 w-1.5 rounded-full ${status.dotClass}`} />
-      )}
-      <span className="sr-only">{status.label}</span>
-    </span>
+    <TooltipWrapper tooltip={status.label}>
+      <span className={`inline-flex items-center text-[10px] ${status.colorClass}`}>
+        {status.pulse ? (
+          <LiveNode
+            className="size-1.5"
+            dotClassName={status.dotClass}
+            haloClassName={status.dotClass}
+          />
+        ) : (
+          <span className={`h-1.5 w-1.5 rounded-full ${status.dotClass}`} />
+        )}
+        <span className="sr-only">{status.label}</span>
+      </span>
+    </TooltipWrapper>
   );
 }
 
@@ -290,14 +290,15 @@ export function ThreadRowTrailingStatus({ thread }: { thread: SidebarThreadSumma
   return (
     <span className="inline-flex shrink-0 items-center gap-1.5">
       {terminalStatus ? (
-        <span
-          role="img"
-          aria-label={terminalStatus.label}
-          title={terminalStatus.label}
-          className={`inline-flex items-center justify-center ${terminalStatus.colorClass}`}
-        >
-          <TerminalIcon className={`size-3 ${terminalStatus.pulse ? "animate-pulse" : ""}`} />
-        </span>
+        <TooltipWrapper tooltip={terminalStatus.label}>
+          <span
+            role="img"
+            aria-label={terminalStatus.label}
+            className={`inline-flex items-center justify-center ${terminalStatus.colorClass}`}
+          >
+            <TerminalIcon className={`size-3 ${terminalStatus.pulse ? "animate-pulse" : ""}`} />
+          </span>
+        </TooltipWrapper>
       ) : null}
       {isRemoteThread ? (
         <Tooltip>

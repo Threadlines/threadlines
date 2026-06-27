@@ -73,7 +73,11 @@ const spawnAndCollectOutput = Effect.fnUntraced(function* (command: ChildProcess
   return { exitCode, stdout, stderr };
 }, Effect.scoped);
 
-export const createOxlintRuleHarness = (ruleName: string): RuleHarness => {
+export const createOxlintRuleHarness = (
+  ruleName: string,
+  options?: { readonly extension?: "ts" | "tsx" },
+): RuleHarness => {
+  const extension = options?.extension ?? "ts";
   const [pluginName, shortRuleName] = ruleName.split("/");
   const diagnosticRuleName =
     pluginName && shortRuleName ? `${pluginName}\\(${shortRuleName}\\)` : ruleName;
@@ -84,7 +88,7 @@ export const createOxlintRuleHarness = (ruleName: string): RuleHarness => {
     const path = yield* Path.Path;
     const fixtureDir = yield* fs.makeTempDirectoryScoped({ prefix: "threadlines-oxlint-" });
     const configPath = path.join(fixtureDir, ".oxlintrc.json");
-    const sourcePath = path.join(fixtureDir, "fixture.ts");
+    const sourcePath = path.join(fixtureDir, `fixture.${extension}`);
     const repoRoot = path.join(import.meta.dirname, "..", "..");
     const pluginRoot = path.join(repoRoot, "oxlint-plugin-threadlines");
     const oxlintBin = path.join(pluginRoot, "node_modules", ".bin", "oxlint");

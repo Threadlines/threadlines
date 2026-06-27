@@ -10,6 +10,7 @@ import type {
   ScopedThreadRef,
   ServerProvider,
   ThreadId,
+  TurnId,
 } from "@threadlines/contracts";
 import {
   ProviderDriverKind,
@@ -59,6 +60,10 @@ import {
   insertInlineTerminalContextPlaceholder,
   removeInlineTerminalContextPlaceholder,
 } from "../../lib/terminalContext";
+import type {
+  TranscriptHighlightContextDraft,
+  TranscriptHighlightContextSelection,
+} from "../../lib/transcriptHighlightContext";
 import {
   shouldUseCompactComposerPrimaryActions,
   shouldUseCompactComposerFooter,
@@ -73,6 +78,7 @@ import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
 import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
+import { ComposerPendingTranscriptHighlightContexts } from "./ComposerPendingTranscriptHighlightContexts";
 import { resolveComposerMenuActiveItemId } from "./composerMenuHighlight";
 import { searchSlashCommandItems } from "./composerSlashCommandSearch";
 import {
@@ -122,7 +128,7 @@ import {
   type PendingUserInput,
 } from "../../session-logic";
 import { deriveLatestContextWindowSnapshot } from "../../lib/contextWindow";
-import { deriveLatestPromptSuggestion } from "../../lib/promptSuggestions";
+import { selectPromptSuggestion } from "../../lib/promptSuggestions";
 import {
   deriveProviderAccountUsagePresentationForProvider,
   type ProviderAccountUsagePresentation,
@@ -223,7 +229,7 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
             size="sm"
             type="button"
             onClick={props.onToggleInteractionMode}
-            title={getInteractionModeToggleTitle(props.interactionMode)}
+            tooltip={getInteractionModeToggleTitle(props.interactionMode)}
           >
             <InteractionModeIcon
               className={cn(isPlanInteraction && "text-primary-readable opacity-100")}
@@ -382,11 +388,14 @@ export interface ChatComposerHandle {
   }) => void;
   /** Insert a terminal context from the terminal drawer. */
   addTerminalContext: (selection: TerminalContextSelection) => void;
+  /** Add a note attached to selected transcript text. */
+  addTranscriptHighlightContext: (selection: TranscriptHighlightContextSelection) => void;
   /** Get the current prompt/effort/model state for use in send. */
   getSendContext: () => {
     prompt: string;
     images: ComposerImageAttachment[];
     terminalContexts: TerminalContextDraft[];
+    transcriptHighlightContexts: TranscriptHighlightContextDraft[];
     selectedPromptEffort: string | null;
     selectedModelOptionsForDispatch: unknown;
     selectedModelSelection: ModelSelection;
@@ -469,6 +478,7 @@ export interface ChatComposerProps {
   promptRef: React.RefObject<string>;
   composerImagesRef: React.RefObject<ComposerImageAttachment[]>;
   composerTerminalContextsRef: React.RefObject<TerminalContextDraft[]>;
+  composerTranscriptHighlightContextsRef: React.RefObject<TranscriptHighlightContextDraft[]>;
   composerRef: React.RefObject<ChatComposerHandle | null>;
 
   // Scroll
@@ -556,6 +566,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     composerRef,
     composerImagesRef,
     composerTerminalContextsRef,
+    composerTranscriptHighlightContextsRef,
     shouldAutoScrollRef,
     scheduleStickToBottom,
     onSend,
@@ -586,6 +597,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const prompt = composerDraft.prompt;
   const composerImages = composerDraft.images;
   const composerTerminalContexts = composerDraft.terminalContexts;
+  const composerTranscriptHighlightContexts = composerDraft.transcriptHighlightContexts;
   const nonPersistedComposerImageIds = composerDraft.nonPersistedImageIds;
 
   const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);
@@ -600,6 +612,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   );
   const setComposerDraftTerminalContexts = useComposerDraftStore(
     (store) => store.setTerminalContexts,
+  );
+  const addComposerDraftTranscriptHighlightContext = useComposerDraftStore(
+    (store) => store.addTranscriptHighlightContext,
+  );
+  const removeComposerDraftTranscriptHighlightContext = useComposerDraftStore(
+    (store) => store.removeTranscriptHighlightContext,
+  );
+  const updateComposerDraftTranscriptHighlightContextNote = useComposerDraftStore(
+    (store) => store.updateTranscriptHighlightContextNote,
   );
   const clearComposerDraftPersistedAttachments = useComposerDraftStore(
     (store) => store.clearPersistedAttachments,
@@ -915,8 +936,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         prompt,
         imageCount: composerImages.length,
         terminalContexts: composerTerminalContexts,
+        transcriptHighlightContexts: composerTranscriptHighlightContexts,
       }),
-    [composerImages.length, composerTerminalContexts, prompt],
+    [composerImages.length, composerTerminalContexts, composerTranscriptHighlightContexts, prompt],
   );
 
   // ------------------------------------------------------------------
@@ -1049,34 +1071,37 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     (showPlanFollowUpPrompt && activeProposedPlan !== null);
   const showCollapsedMobilePromptRow =
     isComposerCollapsedMobile && !isComposerApprovalState && pendingUserInputs.length === 0;
-  const latestPromptSuggestion = useMemo(() => {
-    if (selectedProvider !== CLAUDE_AGENT_PROVIDER) return null;
-    if (prompt.trim().length > 0) return null;
-    if (
-      phase === "running" ||
-      isSendBusy ||
-      isComposerApprovalState ||
-      pendingUserInputs.length > 0
-    ) {
-      return null;
-    }
-    if (showPlanFollowUpPrompt) return null;
-    if (activeThread?.latestTurn?.state !== "completed") return null;
-
-    return deriveLatestPromptSuggestion(activeThreadActivities ?? [], {
-      turnId: activeThread.latestTurn.turnId,
-    });
-  }, [
-    activeThread?.latestTurn,
-    activeThreadActivities,
-    isComposerApprovalState,
-    isSendBusy,
-    pendingUserInputs.length,
-    phase,
-    prompt,
-    selectedProvider,
-    showPlanFollowUpPrompt,
-  ]);
+  // Turn whose suggestion the user already responded to. Suppresses the stale
+  // suggestion from flashing back over an empty composer while the next turn is
+  // connecting / starting (before it registers as the latest turn).
+  const [dismissedSuggestionTurnId, setDismissedSuggestionTurnId] = useState<TurnId | null>(null);
+  const latestPromptSuggestion = useMemo(
+    () =>
+      selectPromptSuggestion({
+        isSuggestionProvider: selectedProvider === CLAUDE_AGENT_PROVIDER,
+        composerIsEmpty: prompt.trim().length === 0,
+        phase,
+        isSendBusy,
+        hasComposerApproval: isComposerApprovalState,
+        pendingUserInputCount: pendingUserInputs.length,
+        showPlanFollowUpPrompt,
+        latestTurn: activeThread?.latestTurn ?? null,
+        dismissedTurnId: dismissedSuggestionTurnId,
+        activities: activeThreadActivities ?? [],
+      }),
+    [
+      activeThread?.latestTurn,
+      activeThreadActivities,
+      dismissedSuggestionTurnId,
+      isComposerApprovalState,
+      isSendBusy,
+      pendingUserInputs.length,
+      phase,
+      prompt,
+      selectedProvider,
+      showPlanFollowUpPrompt,
+    ],
+  );
   const latestPromptSuggestionDisplayText = latestPromptSuggestion
     ? formatPromptSuggestionDisplayText(latestPromptSuggestion)
     : null;
@@ -1240,6 +1265,20 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     ],
   );
 
+  const removeComposerTranscriptHighlightContextFromDraft = useCallback(
+    (contextId: string) => {
+      removeComposerDraftTranscriptHighlightContext(composerDraftTarget, contextId);
+    },
+    [composerDraftTarget, removeComposerDraftTranscriptHighlightContext],
+  );
+
+  const updateComposerTranscriptHighlightContextNote = useCallback(
+    (contextId: string, note: string) => {
+      updateComposerDraftTranscriptHighlightContextNote(composerDraftTarget, contextId, note);
+    },
+    [composerDraftTarget, updateComposerDraftTranscriptHighlightContextNote],
+  );
+
   // ------------------------------------------------------------------
   // Sync refs back to parent
   // ------------------------------------------------------------------
@@ -1255,6 +1294,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   useEffect(() => {
     composerTerminalContextsRef.current = composerTerminalContexts;
   }, [composerTerminalContexts, composerTerminalContextsRef]);
+
+  useEffect(() => {
+    composerTranscriptHighlightContextsRef.current = composerTranscriptHighlightContexts;
+  }, [composerTranscriptHighlightContexts, composerTranscriptHighlightContextsRef]);
 
   // ------------------------------------------------------------------
   // Composer menu highlight sync
@@ -1753,14 +1796,22 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         });
         return;
       }
+      // Sending a follow-up to a completed turn consumes that turn's suggestion;
+      // keep it hidden until a newer turn produces its own.
+      const latestTurn = activeThread?.latestTurn ?? null;
+      if (composerSendState.hasSendableContent && latestTurn?.state === "completed") {
+        setDismissedSuggestionTurnId(latestTurn.turnId);
+      }
       onSend(event);
       if (shouldBlurMobileComposerOnSubmit()) {
         blurMobileComposerAfterSend();
       }
     },
     [
+      activeThread?.latestTurn,
       blurMobileComposerAfterSend,
       composerImages.length,
+      composerSendState.hasSendableContent,
       onSend,
       selectedModelSupportsImages,
       shouldBlurMobileComposerOnSubmit,
@@ -2118,10 +2169,23 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           composerEditorRef.current?.focusAt(nextCollapsedCursor);
         });
       },
+      addTranscriptHighlightContext: (selection: TranscriptHighlightContextSelection) => {
+        if (!activeThread) return;
+        addComposerDraftTranscriptHighlightContext(composerDraftTarget, {
+          ...selection,
+          id: randomUUID(),
+          threadId: activeThread.id,
+          createdAt: new Date().toISOString(),
+        });
+        window.requestAnimationFrame(() => {
+          composerEditorRef.current?.focusAtEnd();
+        });
+      },
       getSendContext: () => ({
         prompt: promptRef.current,
         images: composerImagesRef.current,
         terminalContexts: composerTerminalContextsRef.current,
+        transcriptHighlightContexts: composerTranscriptHighlightContextsRef.current,
         selectedPromptEffort,
         selectedModelOptionsForDispatch,
         selectedModelSelection,
@@ -2132,6 +2196,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     }),
     [
       activeThread,
+      addComposerDraftTranscriptHighlightContext,
       composerDraftTarget,
       composerCursor,
       composerTerminalContexts,
@@ -2139,6 +2204,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       promptRef,
       composerImagesRef,
       composerTerminalContextsRef,
+      composerTranscriptHighlightContextsRef,
       isComposerModelPickerOpen,
       readComposerSnapshot,
       selectedModel,
@@ -2463,6 +2529,18 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     </div>
                   ))}
                 </div>
+              )}
+
+            {!isComposerCollapsedMobile &&
+              !isComposerApprovalState &&
+              pendingUserInputs.length === 0 &&
+              composerTranscriptHighlightContexts.length > 0 && (
+                <ComposerPendingTranscriptHighlightContexts
+                  contexts={composerTranscriptHighlightContexts}
+                  onRemove={removeComposerTranscriptHighlightContextFromDraft}
+                  onUpdateNote={updateComposerTranscriptHighlightContextNote}
+                  className="mb-2"
+                />
               )}
 
             <div className="relative">

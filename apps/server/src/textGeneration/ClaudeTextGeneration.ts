@@ -43,6 +43,7 @@ import {
   resolveClaudeEffort,
 } from "../provider/Layers/ClaudeProvider.ts";
 import { makeClaudeEnvironment } from "../provider/Drivers/ClaudeHome.ts";
+import { cliSpawnNeedsShell } from "../cliSpawn.ts";
 
 const CLAUDE_TIMEOUT_MS = 180_000;
 
@@ -156,8 +157,9 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         : undefined;
 
     const runClaudeCommand = Effect.fn("runClaudeJson.runClaudeCommand")(function* () {
+      const claudeBinary = claudeSettings.binaryPath || "claude";
       const command = ChildProcess.make(
-        claudeSettings.binaryPath || "claude",
+        claudeBinary,
         [
           "-p",
           "--output-format",
@@ -173,7 +175,12 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         {
           env: claudeEnvironment,
           cwd,
-          shell: process.platform === "win32",
+          // `--json-schema` (and `--settings`) carry inline JSON. A Windows
+          // shell concatenates argv without escaping (Node DEP0190), which
+          // corrupts the quotes and makes the CLI reject the schema as invalid
+          // JSON, so we spawn the native executable directly and only fall back
+          // to a shell for batch shims that cannot run otherwise.
+          shell: cliSpawnNeedsShell(claudeBinary, claudeEnvironment),
           stdin: {
             stream: Stream.encodeText(Stream.make(prompt)),
           },

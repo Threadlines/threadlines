@@ -1,4 +1,5 @@
 import { Tooltip as TooltipPrimitive } from "@base-ui/react/tooltip";
+import type { ReactElement, ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
 
@@ -61,4 +62,44 @@ function TooltipPopup({
   );
 }
 
-export { TooltipCreateHandle, TooltipProvider, Tooltip, TooltipTrigger, TooltipPopup };
+type TooltipSide = TooltipPrimitive.Positioner.Props["side"];
+
+/**
+ * Wraps a single interactive element in the app's styled tooltip. Prefer the
+ * `tooltip` prop on `Button`/`Toggle`; reach for this directly only when
+ * attaching a styled tooltip to a bare element that has no `tooltip` prop.
+ * Always use this over the native `title` attribute, which renders an
+ * unstyled OS tooltip.
+ */
+function TooltipWrapper({
+  tooltip,
+  side,
+  align,
+  sideOffset,
+  children,
+}: {
+  tooltip: ReactNode;
+  side?: TooltipSide;
+  align?: TooltipPrimitive.Positioner.Props["align"];
+  sideOffset?: TooltipPrimitive.Positioner.Props["sideOffset"];
+  children: ReactElement;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger render={children} />
+      <TooltipPopup align={align} side={side} sideOffset={sideOffset}>
+        {typeof tooltip === "string" ? <p>{tooltip}</p> : tooltip}
+      </TooltipPopup>
+    </Tooltip>
+  );
+}
+
+export {
+  TooltipCreateHandle,
+  TooltipProvider,
+  Tooltip,
+  TooltipTrigger,
+  TooltipPopup,
+  TooltipWrapper,
+};
+export type { TooltipSide };

@@ -209,6 +209,29 @@ describe("deriveComposerSendState", () => {
     expect(state.expiredTerminalContextCount).toBe(1);
     expect(state.hasSendableContent).toBe(true);
   });
+
+  it("treats transcript highlight contexts as sendable content", () => {
+    const state = deriveComposerSendState({
+      prompt: "",
+      imageCount: 0,
+      terminalContexts: [],
+      transcriptHighlightContexts: [
+        {
+          id: "highlight-1",
+          threadId: ThreadId.make("thread-1"),
+          sourceMessageId: MessageId.make("assistant-1"),
+          sourceRole: "assistant",
+          selectedText: "selected text",
+          note: "my answer",
+          createdAt: "2026-03-17T12:52:29.000Z",
+        },
+      ],
+    });
+
+    expect(state.trimmedPrompt).toBe("");
+    expect(state.sendableTranscriptHighlightContexts).toHaveLength(1);
+    expect(state.hasSendableContent).toBe(true);
+  });
 });
 
 describe("desktopCapturedScreenshotToFile", () => {

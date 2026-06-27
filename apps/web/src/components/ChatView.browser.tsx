@@ -2767,7 +2767,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       (kiroItem as HTMLElement).click();
 
       const openInKiroButton = await waitForElement(
-        () => document.querySelector<HTMLButtonElement>('button[title="Open in Kiro"]'),
+        () => document.querySelector<HTMLButtonElement>('button[aria-label="Open in Kiro"]'),
         "Unable to find Open in Kiro button.",
       );
       openInKiroButton.click();
@@ -2836,7 +2836,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       (vscodiumItem as HTMLElement).click();
 
       const openInVscodiumButton = await waitForElement(
-        () => document.querySelector<HTMLButtonElement>('button[title="Open in VSCodium"]'),
+        () => document.querySelector<HTMLButtonElement>('button[aria-label="Open in VSCodium"]'),
         "Unable to find Open in VSCodium button.",
       );
       openInVscodiumButton.click();

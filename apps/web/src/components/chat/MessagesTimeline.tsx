@@ -19,6 +19,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  type SyntheticEvent as ReactSyntheticEvent,
   type TouchEvent as ReactTouchEvent,
   type WheelEvent as ReactWheelEvent,
 } from "react";
@@ -41,6 +42,7 @@ import {
   CheckIcon,
   ChevronDownIcon,
   CircleAlertIcon,
+  CopyIcon,
   EyeIcon,
   GlobeIcon,
   HammerIcon,
@@ -58,6 +60,8 @@ import {
   ZapIcon,
 } from "lucide-react";
 import { Button } from "../ui/button";
+import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
+import { Textarea } from "../ui/textarea";
 import { LiveNode, SpineRow } from "../ui/threadline";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
 import { ProposedPlanCard } from "./ProposedPlanCard";
@@ -74,6 +78,11 @@ import {
   type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
+import {
+  handleTranscriptHighlightNoteKeyDown,
+  TRANSCRIPT_HIGHLIGHT_CARD_LABEL_CLASS_NAME,
+  TranscriptHighlightContextCard,
+} from "./TranscriptHighlightContextCard";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   deriveDisplayedUserMessageState,
@@ -93,6 +102,13 @@ import {
 import { SkillInlineText } from "./SkillInlineText";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
 import { formatProviderDriverKindLabel } from "../../providerModels";
+import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
+import type {
+  ParsedTranscriptHighlightContextEntry,
+  TranscriptHighlightContextSelection,
+  TranscriptHighlightSourceRole,
+} from "~/lib/transcriptHighlightContext";
+import { formatTranscriptHighlightContextPreview } from "~/lib/transcriptHighlightContext";
 
 // ---------------------------------------------------------------------------
 // Context — shared state consumed by every row component via Context.
@@ -138,6 +154,19 @@ const INITIAL_STICK_TO_BOTTOM_FRAME_COUNT = 3;
 const USER_SCROLL_STICK_LOCK_MS = 450;
 const TIMELINE_MAINTAIN_END_THRESHOLD_RATIO = 0.01;
 const SCROLLBAR_POINTER_GUTTER_PX = 18;
+const TRANSCRIPT_SELECTION_TEXT_MAX_CHARS = 8_000;
+const TRANSCRIPT_SELECTION_POPOVER_WIDTH_PX = 320;
+const TRANSCRIPT_SELECTION_POPOVER_MARGIN_PX = 12;
+
+type TranscriptSelectionPopoverState = {
+  sourceMessageId: MessageId;
+  sourceRole: TranscriptHighlightSourceRole;
+  selectedText: string;
+  left: number;
+  top: number;
+  mode: "actions" | "note";
+  note: string;
+};
 const TOUCH_SCROLL_INTENT_THRESHOLD_PX = 4;
 const MAINTAIN_SCROLL_AT_END = { animated: false } as const;
 type TimelineScrollEvent = {
@@ -233,6 +262,7 @@ interface MessagesTimelineProps {
   revertTurnCountByUserMessageId: Map<MessageId, number>;
   onRevertUserMessage: (messageId: MessageId) => void;
   onContinueInNewThread?: (messageId: MessageId) => void;
+  onAddTranscriptHighlightContext?: (selection: TranscriptHighlightContextSelection) => void;
   isRevertingCheckpoint: boolean;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   activeThreadEnvironmentId: EnvironmentId;
@@ -268,6 +298,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   revertTurnCountByUserMessageId,
   onRevertUserMessage,
   onContinueInNewThread,
+  onAddTranscriptHighlightContext,
   isRevertingCheckpoint,
   onImageExpand,
   activeThreadEnvironmentId,
@@ -325,6 +356,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const autoStickToBottomRef = useRef(true);
   const userScrollLockTimerRef = useRef<number | null>(null);
   const touchStartYRef = useRef<number | null>(null);
+  const timelineContainerRef = useRef<HTMLDivElement | null>(null);
+  const [transcriptSelection, setTranscriptSelection] =
+    useState<TranscriptSelectionPopoverState | null>(null);
 
   const setAutoStickToBottomState = useCallback((next: boolean) => {
     if (autoStickToBottomRef.current === next) {
@@ -367,6 +401,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   const handleScroll = useCallback(
     (event: TimelineScrollEvent) => {
+      setTranscriptSelection(null);
       const eventAtEnd = isTimelineScrollEventAtEnd(event);
       const nextIsAtEnd =
         eventAtEnd !== null ? eventAtEnd : Boolean(listRef.current?.getState?.().isAtEnd);
@@ -378,6 +413,58 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     },
     [clearUserScrollLockTimer, listRef, onIsAtEndChange, setAutoStickToBottomState],
   );
+
+  const refreshTranscriptSelectionPopover = useCallback(() => {
+    if (!onAddTranscriptHighlightContext) {
+      setTranscriptSelection(null);
+      return;
+    }
+    const nextSelection = readTranscriptSelectionPopoverState(timelineContainerRef.current);
+    setTranscriptSelection(nextSelection);
+  }, [onAddTranscriptHighlightContext]);
+
+  const handleTranscriptSelectionEnd = useCallback(
+    (event: ReactSyntheticEvent<HTMLElement>) => {
+      if (
+        event.target instanceof Element &&
+        event.target.closest("[data-transcript-selection-popover='true']")
+      ) {
+        return;
+      }
+      window.requestAnimationFrame(refreshTranscriptSelectionPopover);
+    },
+    [refreshTranscriptSelectionPopover],
+  );
+
+  const updateTranscriptSelectionNote = useCallback((note: string) => {
+    setTranscriptSelection((current) => (current ? { ...current, note } : current));
+  }, []);
+
+  const openTranscriptSelectionNote = useCallback(() => {
+    setTranscriptSelection((current) => (current ? { ...current, mode: "note" } : current));
+  }, []);
+
+  const dismissTranscriptSelection = useCallback(() => {
+    setTranscriptSelection(null);
+  }, []);
+
+  const submitTranscriptSelectionNote = useCallback(() => {
+    if (!transcriptSelection || !onAddTranscriptHighlightContext) {
+      return;
+    }
+    const note = transcriptSelection.note.trim();
+    if (note.length === 0) {
+      return;
+    }
+    onAddTranscriptHighlightContext({
+      sourceMessageId: transcriptSelection.sourceMessageId,
+      sourceRole: transcriptSelection.sourceRole,
+      selectedText: transcriptSelection.selectedText,
+      note,
+    });
+    window.getSelection()?.removeAllRanges();
+    setTranscriptSelection(null);
+  }, [onAddTranscriptHighlightContext, transcriptSelection]);
 
   const handleWheelCapture = useCallback(
     (event: ReactWheelEvent) => {
@@ -551,33 +638,235 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   return (
     <TimelineRowCtx value={sharedState}>
       <TimelineRowActivityCtx value={activityState}>
-        <LegendList<MessagesTimelineRow>
-          ref={listRef}
-          data={rows}
-          keyExtractor={keyExtractor}
-          renderItem={renderItem}
-          estimatedItemSize={90}
-          initialScrollAtEnd
-          maintainScrollAtEnd={autoStickToBottom ? MAINTAIN_SCROLL_AT_END : false}
-          maintainScrollAtEndThreshold={TIMELINE_MAINTAIN_END_THRESHOLD_RATIO}
-          maintainVisibleContentPosition
-          onScroll={handleScroll}
-          onWheelCapture={handleWheelCapture}
-          onPointerDownCapture={handlePointerDownCapture}
-          onTouchStartCapture={handleTouchStartCapture}
-          onTouchMoveCapture={handleTouchMoveCapture}
-          onTouchEndCapture={handleTouchEndCapture}
-          onTouchCancelCapture={handleTouchEndCapture}
-          onKeyDownCapture={handleKeyDownCapture}
-          data-chat-messages-list="true"
-          className="h-full overflow-x-hidden overscroll-y-contain px-3 sm:px-5"
-          ListHeaderComponent={TIMELINE_LIST_HEADER}
-          ListFooterComponent={TIMELINE_LIST_FOOTER}
-        />
+        <div
+          ref={timelineContainerRef}
+          className="relative h-full"
+          onMouseUpCapture={handleTranscriptSelectionEnd}
+          onKeyUpCapture={handleTranscriptSelectionEnd}
+        >
+          <LegendList<MessagesTimelineRow>
+            ref={listRef}
+            data={rows}
+            keyExtractor={keyExtractor}
+            renderItem={renderItem}
+            estimatedItemSize={90}
+            initialScrollAtEnd
+            maintainScrollAtEnd={autoStickToBottom ? MAINTAIN_SCROLL_AT_END : false}
+            maintainScrollAtEndThreshold={TIMELINE_MAINTAIN_END_THRESHOLD_RATIO}
+            maintainVisibleContentPosition
+            onScroll={handleScroll}
+            onWheelCapture={handleWheelCapture}
+            onPointerDownCapture={handlePointerDownCapture}
+            onTouchStartCapture={handleTouchStartCapture}
+            onTouchMoveCapture={handleTouchMoveCapture}
+            onTouchEndCapture={handleTouchEndCapture}
+            onTouchCancelCapture={handleTouchEndCapture}
+            onKeyDownCapture={handleKeyDownCapture}
+            data-chat-messages-list="true"
+            className="h-full overflow-x-hidden overscroll-y-contain px-3 sm:px-5"
+            ListHeaderComponent={TIMELINE_LIST_HEADER}
+            ListFooterComponent={TIMELINE_LIST_FOOTER}
+          />
+          {transcriptSelection && onAddTranscriptHighlightContext ? (
+            <TranscriptSelectionPopover
+              state={transcriptSelection}
+              onCopyDismiss={dismissTranscriptSelection}
+              onOpenNote={openTranscriptSelectionNote}
+              onNoteChange={updateTranscriptSelectionNote}
+              onSubmitNote={submitTranscriptSelectionNote}
+              onCancel={dismissTranscriptSelection}
+            />
+          ) : null}
+        </div>
       </TimelineRowActivityCtx>
     </TimelineRowCtx>
   );
 });
+
+function TranscriptSelectionPopover({
+  state,
+  onCopyDismiss,
+  onOpenNote,
+  onNoteChange,
+  onSubmitNote,
+  onCancel,
+}: {
+  state: TranscriptSelectionPopoverState;
+  onCopyDismiss: () => void;
+  onOpenNote: () => void;
+  onNoteChange: (note: string) => void;
+  onSubmitNote: () => void;
+  onCancel: () => void;
+}) {
+  const noteInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const { copyToClipboard, isCopied } = useCopyToClipboard<void>({
+    timeout: 1000,
+    onCopy: onCopyDismiss,
+  });
+  const noteIsEmpty = state.note.trim().length === 0;
+
+  useEffect(() => {
+    if (state.mode !== "note") {
+      return;
+    }
+    const frameId = window.requestAnimationFrame(() => {
+      noteInputRef.current?.focus();
+    });
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [state.mode]);
+
+  return (
+    <div
+      className="absolute z-40"
+      style={{ left: state.left, top: state.top, width: TRANSCRIPT_SELECTION_POPOVER_WIDTH_PX }}
+      data-transcript-selection-popover="true"
+      onMouseDown={(event) => {
+        if (state.mode === "actions") {
+          event.preventDefault();
+        }
+        event.stopPropagation();
+      }}
+    >
+      {state.mode === "actions" ? (
+        <div className="inline-flex items-center gap-1 rounded-lg border border-border/75 bg-popover/96 px-1.5 py-1 text-popover-foreground shadow-lg shadow-black/10 backdrop-blur">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label="Copy selected text"
+                  onClick={() => copyToClipboard(state.selectedText, undefined)}
+                />
+              }
+            >
+              {isCopied ? (
+                <CheckIcon className="size-3 text-success" />
+              ) : (
+                <CopyIcon className="size-3" />
+              )}
+            </TooltipTrigger>
+            <TooltipPopup side="top">Copy selected text</TooltipPopup>
+          </Tooltip>
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            onClick={onOpenNote}
+            className="h-6 px-2 text-xs"
+          >
+            <SquarePenIcon className="size-3" />
+            Add note
+          </Button>
+        </div>
+      ) : (
+        <form
+          className="rounded-lg border border-border/75 bg-popover/96 p-2 text-popover-foreground shadow-lg shadow-black/10 backdrop-blur"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onSubmitNote();
+          }}
+        >
+          <p className="mb-1 line-clamp-2 text-[11px] leading-snug text-muted-foreground">
+            {state.selectedText}
+          </p>
+          <Textarea
+            ref={noteInputRef}
+            size="sm"
+            value={state.note}
+            onChange={(event) => onNoteChange(event.currentTarget.value)}
+            placeholder="Add context for this highlight"
+            className="text-xs"
+            onKeyDown={(event) =>
+              handleTranscriptHighlightNoteKeyDown(event, {
+                onSubmit: onSubmitNote,
+                onCancel,
+              })
+            }
+          />
+          <div className="mt-2 flex justify-end gap-1.5">
+            <Button type="button" variant="ghost" size="xs" onClick={onCancel}>
+              Cancel
+            </Button>
+            <Button type="submit" size="xs" disabled={noteIsEmpty}>
+              Add
+            </Button>
+          </div>
+        </form>
+      )}
+    </div>
+  );
+}
+
+function readTranscriptSelectionPopoverState(
+  container: HTMLDivElement | null,
+): TranscriptSelectionPopoverState | null {
+  if (!container || typeof window === "undefined") {
+    return null;
+  }
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+    return null;
+  }
+  const selectedText = selection.toString().trim();
+  if (selectedText.length === 0) {
+    return null;
+  }
+  const range = selection.getRangeAt(0);
+  const startBody = findTranscriptMessageBody(range.startContainer);
+  const endBody = findTranscriptMessageBody(range.endContainer);
+  if (!startBody || startBody !== endBody) {
+    return null;
+  }
+  if (startBody.dataset.transcriptMessageStreaming === "true") {
+    return null;
+  }
+  const sourceMessageId = startBody.dataset.transcriptMessageId;
+  const sourceRole = startBody.dataset.transcriptMessageRole;
+  if (!sourceMessageId || (sourceRole !== "assistant" && sourceRole !== "user")) {
+    return null;
+  }
+
+  const rect = range.getBoundingClientRect();
+  if (rect.width === 0 && rect.height === 0) {
+    return null;
+  }
+  const containerRect = container.getBoundingClientRect();
+  const unclampedLeft =
+    rect.left - containerRect.left + rect.width / 2 - TRANSCRIPT_SELECTION_POPOVER_WIDTH_PX / 2;
+  const maxLeft = Math.max(
+    TRANSCRIPT_SELECTION_POPOVER_MARGIN_PX,
+    containerRect.width -
+      TRANSCRIPT_SELECTION_POPOVER_WIDTH_PX -
+      TRANSCRIPT_SELECTION_POPOVER_MARGIN_PX,
+  );
+  const left = Math.min(Math.max(TRANSCRIPT_SELECTION_POPOVER_MARGIN_PX, unclampedLeft), maxLeft);
+  const top = Math.max(TRANSCRIPT_SELECTION_POPOVER_MARGIN_PX, rect.top - containerRect.top - 40);
+
+  return {
+    sourceMessageId: sourceMessageId as MessageId,
+    sourceRole,
+    selectedText:
+      selectedText.length > TRANSCRIPT_SELECTION_TEXT_MAX_CHARS
+        ? selectedText.slice(0, TRANSCRIPT_SELECTION_TEXT_MAX_CHARS)
+        : selectedText,
+    left,
+    top,
+    mode: "actions",
+    note: "",
+  };
+}
+
+function findTranscriptMessageBody(node: Node): HTMLElement | null {
+  const element = node instanceof Element ? node : node.parentNode;
+  if (!(element instanceof Element)) {
+    return null;
+  }
+  return element?.closest<HTMLElement>("[data-transcript-message-body='true']") ?? null;
+}
 
 function keyExtractor(item: MessagesTimelineRow) {
   return item.id;
@@ -736,6 +1025,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   const userImages = row.message.attachments ?? [];
   const displayedUserMessage = deriveDisplayedUserMessageState(row.message.text);
   const terminalContexts = displayedUserMessage.contexts;
+  const transcriptHighlights = displayedUserMessage.transcriptHighlights;
   const canRevertAgentWork = typeof row.revertTurnCount === "number";
 
   return (
@@ -749,6 +1039,11 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
         <CollapsibleUserMessageBody
           text={displayedUserMessage.visibleText}
           terminalContexts={terminalContexts}
+          transcriptHighlights={transcriptHighlights}
+          transcriptMessage={{
+            id: row.message.id,
+            role: "user",
+          }}
           skills={ctx.skills}
           footer={
             <>
@@ -834,7 +1129,8 @@ function RevertUserMessageButton({ messageId }: { messageId: MessageId }) {
       variant="outline"
       disabled={activity.isRevertingCheckpoint || activity.isWorking}
       onClick={() => ctx.onRevertUserMessage(messageId)}
-      title="Revert to this message"
+      aria-label="Revert to this message"
+      tooltip="Revert to this message"
     >
       <Undo2Icon className="size-3" />
     </Button>
@@ -855,25 +1151,17 @@ function ContinueInNewThreadButton({
   }
 
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <Button
-            type="button"
-            size="xs"
-            variant="outline"
-            onClick={() => ctx.onContinueInNewThread?.(messageId)}
-            aria-label="Continue in new thread"
-            className={cn("enabled:cursor-pointer", className)}
-          />
-        }
-      >
-        <SplitIcon className="size-3 rotate-90" />
-      </TooltipTrigger>
-      <TooltipPopup>
-        <p>Continue in new thread</p>
-      </TooltipPopup>
-    </Tooltip>
+    <Button
+      type="button"
+      size="xs"
+      variant="outline"
+      onClick={() => ctx.onContinueInNewThread?.(messageId)}
+      aria-label="Continue in new thread"
+      tooltip="Continue in new thread"
+      className={cn("enabled:cursor-pointer", className)}
+    >
+      <SplitIcon className="size-3 rotate-90" />
+    </Button>
   );
 }
 
@@ -973,7 +1261,14 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
             />
           ) : (
             <FallbackAssistantResponseContainer row={row}>
-              <div data-agent-response-body="true" data-assistant-message-body="true">
+              <div
+                data-agent-response-body="true"
+                data-assistant-message-body="true"
+                data-transcript-message-body="true"
+                data-transcript-message-id={row.message.id}
+                data-transcript-message-role="assistant"
+                data-transcript-message-streaming={row.message.streaming ? "true" : undefined}
+              >
                 <ChatMarkdown
                   text={messageText}
                   cwd={ctx.markdownCwd}
@@ -2543,6 +2838,45 @@ const UserMessageTerminalContextInlineLabel = memo(
   },
 );
 
+const UserMessageTranscriptHighlightInlineLabel = memo(
+  function UserMessageTranscriptHighlightInlineLabel(props: {
+    context: ParsedTranscriptHighlightContextEntry;
+  }) {
+    const preview = formatTranscriptHighlightContextPreview(props.context);
+    const roleWord = props.context.sourceRole === "assistant" ? "assistant" : "your";
+
+    return (
+      <Popover>
+        <PopoverTrigger
+          openOnHover
+          delay={200}
+          closeDelay={0}
+          render={
+            <button
+              type="button"
+              aria-label={`View note on highlighted ${roleWord} text`}
+              className="inline-flex max-w-56 cursor-pointer items-center gap-1 rounded-md border border-border/70 bg-background/55 px-2 py-0.5 text-[11px] leading-5 text-muted-foreground/85 outline-none transition-colors hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              <SquarePenIcon className="size-3.5 shrink-0 opacity-70" />
+              <span className="min-w-0 truncate">{`"${preview}"`}</span>
+            </button>
+          }
+        />
+        <PopoverPopup align="start" sideOffset={6} className="w-72 max-w-[calc(100vw-2rem)]">
+          <TranscriptHighlightContextCard context={props.context}>
+            <div className="flex flex-col gap-1.5">
+              <span className={TRANSCRIPT_HIGHLIGHT_CARD_LABEL_CLASS_NAME}>Your note</span>
+              <p className="max-h-32 overflow-y-auto whitespace-pre-wrap text-xs leading-snug text-foreground">
+                {props.context.note}
+              </p>
+            </div>
+          </TranscriptHighlightContextCard>
+        </PopoverPopup>
+      </Popover>
+    );
+  },
+);
+
 const MAX_COLLAPSED_USER_MESSAGE_LINES = 8;
 const MAX_COLLAPSED_USER_MESSAGE_LENGTH = 600;
 const COLLAPSED_USER_MESSAGE_FADE_HEIGHT_REM = 1.75;
@@ -2562,11 +2896,16 @@ function shouldCollapseUserMessage(text: string): boolean {
 const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(props: {
   text: string;
   terminalContexts: ParsedTerminalContextEntry[];
+  transcriptHighlights: ParsedTranscriptHighlightContextEntry[];
+  transcriptMessage?: { id: MessageId; role: TranscriptHighlightSourceRole } | undefined;
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   footer?: ReactNode;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const hasVisibleBody = props.text.trim().length > 0 || props.terminalContexts.length > 0;
+  const hasVisibleBody =
+    props.text.trim().length > 0 ||
+    props.terminalContexts.length > 0 ||
+    props.transcriptHighlights.length > 0;
   const canCollapse = hasVisibleBody && shouldCollapseUserMessage(props.text);
   const isCollapsed = canCollapse && !expanded;
 
@@ -2576,6 +2915,9 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
         <div
           className={cn("relative", isCollapsed && "max-h-44 overflow-hidden")}
           data-user-message-body="true"
+          data-transcript-message-body={props.transcriptMessage ? "true" : undefined}
+          data-transcript-message-id={props.transcriptMessage?.id}
+          data-transcript-message-role={props.transcriptMessage?.role}
           data-user-message-collapsed={isCollapsed ? "true" : "false"}
           data-user-message-collapsible={canCollapse ? "true" : "false"}
           data-user-message-fade={isCollapsed ? "true" : "false"}
@@ -2591,6 +2933,7 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
           <UserMessageBody
             text={props.text}
             terminalContexts={props.terminalContexts}
+            transcriptHighlights={props.transcriptHighlights}
             skills={props.skills}
           />
         </div>
@@ -2628,8 +2971,21 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
 const UserMessageBody = memo(function UserMessageBody(props: {
   text: string;
   terminalContexts: ParsedTerminalContextEntry[];
+  transcriptHighlights: ParsedTranscriptHighlightContextEntry[];
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
 }) {
+  const transcriptHighlightNodes =
+    props.transcriptHighlights.length > 0 ? (
+      <div className="mb-1.5 flex flex-wrap gap-1.5">
+        {props.transcriptHighlights.map((context) => (
+          <UserMessageTranscriptHighlightInlineLabel
+            key={`user-transcript-highlight:${context.sourceRole}:${context.sourceMessageId}:${context.selectedText}:${context.note}`}
+            context={context}
+          />
+        ))}
+      </div>
+    ) : null;
+
   if (props.terminalContexts.length > 0) {
     const hasEmbeddedInlineLabels = textContainsInlineTerminalContextLabels(
       props.text,
@@ -2674,9 +3030,12 @@ const UserMessageBody = memo(function UserMessageBody(props: {
         }
 
         return (
-          <div className="whitespace-pre-wrap wrap-break-word text-sm leading-relaxed text-foreground">
-            {inlineNodes}
-          </div>
+          <>
+            {transcriptHighlightNodes}
+            <div className="whitespace-pre-wrap wrap-break-word text-sm leading-relaxed text-foreground">
+              {inlineNodes}
+            </div>
+          </>
         );
       }
     }
@@ -2706,20 +3065,28 @@ const UserMessageBody = memo(function UserMessageBody(props: {
     }
 
     return (
-      <div className="whitespace-pre-wrap wrap-break-word text-sm leading-relaxed text-foreground">
-        {inlineNodes}
-      </div>
+      <>
+        {transcriptHighlightNodes}
+        <div className="whitespace-pre-wrap wrap-break-word text-sm leading-relaxed text-foreground">
+          {inlineNodes}
+        </div>
+      </>
     );
   }
 
-  if (props.text.length === 0) {
+  if (props.text.length === 0 && transcriptHighlightNodes === null) {
     return null;
   }
 
   return (
-    <div className="whitespace-pre-wrap wrap-break-word text-sm leading-relaxed text-foreground">
-      <SkillInlineText text={props.text} skills={props.skills} />
-    </div>
+    <>
+      {transcriptHighlightNodes}
+      {props.text.length > 0 ? (
+        <div className="whitespace-pre-wrap wrap-break-word text-sm leading-relaxed text-foreground">
+          <SkillInlineText text={props.text} skills={props.skills} />
+        </div>
+      ) : null}
+    </>
   );
 });
 
@@ -3357,7 +3724,6 @@ function WorkEntryPreviewText({ preview }: { preview: string }) {
 }
 
 function WorkEntrySummaryLine({
-  displayText,
   heading,
   isRunningTool,
   preview,
@@ -3368,7 +3734,6 @@ function WorkEntrySummaryLine({
   className,
   inSpine = false,
 }: {
-  displayText: string;
   heading: string;
   isRunningTool: boolean;
   preview: string | null;
@@ -3390,7 +3755,6 @@ function WorkEntrySummaryLine({
         preview ? "text-muted-foreground/70" : "",
         className,
       )}
-      title={displayText}
     >
       {isRunningTool && !inSpine ? <RunningToolIndicator className="mr-1.5 shrink-0" /> : null}
       <span
@@ -3835,7 +4199,6 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
             <div className="max-w-full">
               <WorkEntrySummaryLine
                 className="text-xs"
-                displayText={displayText}
                 heading={heading}
                 isRunningTool={isRunningTool}
                 inSpine={inSpine}
@@ -3848,14 +4211,9 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
             </div>
           ) : (
             <Tooltip>
-              <TooltipTrigger
-                className="block min-w-0 w-full text-left"
-                title={displayText}
-                aria-label={displayText}
-              >
+              <TooltipTrigger className="block min-w-0 w-full text-left" aria-label={displayText}>
                 <WorkEntrySummaryLine
                   className="text-[11px]"
-                  displayText={displayText}
                   heading={heading}
                   isRunningTool={isRunningTool}
                   inSpine={inSpine}

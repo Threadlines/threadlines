@@ -2,8 +2,10 @@
 
 import { Toggle as TogglePrimitive } from "@base-ui/react/toggle";
 import { cva, type VariantProps } from "class-variance-authority";
+import type * as React from "react";
 
 import { cn } from "~/lib/utils";
+import { TooltipWrapper, type TooltipSide } from "./tooltip";
 
 const toggleVariants = cva(
   "[&_svg]:-mx-0.5 relative inline-flex shrink-0 cursor-pointer select-none items-center justify-center gap-2 whitespace-nowrap rounded-lg border font-medium text-base text-foreground outline-none transition-shadow before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] pointer-coarse:after:absolute pointer-coarse:after:size-full pointer-coarse:after:min-h-11 pointer-coarse:after:min-w-11 hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-64 data-pressed:border-foreground/16 data-pressed:bg-control-active data-pressed:text-foreground sm:text-sm dark:data-pressed:border-foreground/18 [&_svg:not([class*='opacity-'])]:opacity-80 data-pressed:[&_svg:not([class*='opacity-'])]:opacity-100 [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4 [&_svg]:pointer-events-none [&_svg]:shrink-0",
@@ -32,14 +34,34 @@ function Toggle({
   className,
   variant,
   size,
+  tooltip,
+  tooltipSide,
   ...props
-}: TogglePrimitive.Props & VariantProps<typeof toggleVariants>) {
-  return (
+}: TogglePrimitive.Props &
+  VariantProps<typeof toggleVariants> & {
+    /**
+     * Renders the toggle inside the app's styled tooltip. Prefer this over the
+     * native `title` attribute so tooltips stay visually consistent.
+     */
+    tooltip?: React.ReactNode;
+    tooltipSide?: TooltipSide;
+  }) {
+  const element = (
     <TogglePrimitive
       className={cn(toggleVariants({ className, size, variant }))}
       data-slot="toggle"
       {...props}
     />
+  );
+
+  if (tooltip == null) {
+    return element;
+  }
+
+  return (
+    <TooltipWrapper side={tooltipSide} tooltip={tooltip}>
+      {element}
+    </TooltipWrapper>
   );
 }
 

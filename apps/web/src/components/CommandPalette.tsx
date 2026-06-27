@@ -1814,7 +1814,6 @@ function OpenCommandPaletteDialog() {
               onClick={() => {
                 void submitAddProjectCloneFlow();
               }}
-              title={`${remoteProjectButtonLabel ?? "Continue"} (Enter)`}
             >
               <span>{isRemoteProjectPending ? "Working" : remoteProjectButtonLabel}</span>
               <KbdGroup className="pointer-events-none -me-0.5 items-center gap-1">
@@ -1847,7 +1846,6 @@ function OpenCommandPaletteDialog() {
                   void handleAddProject(resolvedAddProjectPath);
                 }
               }}
-              title={`${submitActionLabel} (${addShortcutLabel})`}
             >
               <span>
                 {isCloneDestinationStep && isRemoteProjectPending ? "Cloning" : submitActionLabel}

@@ -70,7 +70,11 @@
         z-index: 0;
         pointer-events: none;
         background:
-          radial-gradient(820px 520px at 50% -8%, oklch(0.62 0.19 var(--accent-h) / 0.12), transparent 64%),
+          radial-gradient(
+            820px 520px at 50% -8%,
+            oklch(0.62 0.19 var(--accent-h) / 0.12),
+            transparent 64%
+          ),
           radial-gradient(700px 600px at 92% 8%, oklch(0.7 0.16 200 / 0.06), transparent 70%);
       }
       body::after {
@@ -929,7 +933,9 @@
         border-radius: 16px;
         padding: 26px;
         box-shadow: 0 1px 2px rgba(9, 9, 11, 0.04);
-        transition: transform 0.2s ease, box-shadow 0.2s ease;
+        transition:
+          transform 0.2s ease,
+          box-shadow 0.2s ease;
       }
       .tile:hover {
         transform: translateY(-2px);
@@ -1183,7 +1189,11 @@
         content: "";
         position: absolute;
         inset: 0;
-        background: radial-gradient(700px 360px at 50% -10%, oklch(0.62 0.19 var(--accent-h) / 0.4), transparent 62%);
+        background: radial-gradient(
+          700px 360px at 50% -10%,
+          oklch(0.62 0.19 var(--accent-h) / 0.4),
+          transparent 62%
+        );
         pointer-events: none;
       }
       .closing .tlf {
@@ -1281,7 +1291,9 @@
         .reveal {
           opacity: 0;
           transform: translateY(22px);
-          transition: opacity 0.8s ease, transform 0.8s cubic-bezier(0.22, 1, 0.36, 1);
+          transition:
+            opacity 0.8s ease,
+            transform 0.8s cubic-bezier(0.22, 1, 0.36, 1);
         }
         .reveal.in {
           opacity: 1;
@@ -1338,7 +1350,14 @@
         <a class="brand" href="#top">
           <svg class="brand-glyph" viewBox="36 86 184 100" fill="none" aria-hidden="true">
             <defs>
-              <linearGradient id="ng" gradientUnits="userSpaceOnUse" x1="108" y1="98" x2="194" y2="162">
+              <linearGradient
+                id="ng"
+                gradientUnits="userSpaceOnUse"
+                x1="108"
+                y1="98"
+                x2="194"
+                y2="162"
+              >
                 <stop offset="0" stop-color="#9a9aa5" stop-opacity="0.7" />
                 <stop offset="1" stop-color="#5a44d6" />
               </linearGradient>
@@ -1348,7 +1367,9 @@
               <path d="M 108 98 C 134 98 134 162 160 162 L 188 162" stroke="url(#ng)" />
             </g>
             <g fill="#111115" fill-opacity="0.5">
-              <circle cx="70" cy="98" r="7" /><circle cx="108" cy="98" r="8.5" /><circle cx="178" cy="98" r="7" />
+              <circle cx="70" cy="98" r="7" />
+              <circle cx="108" cy="98" r="8.5" />
+              <circle cx="178" cy="98" r="7" />
             </g>
             <circle cx="194" cy="162" r="21" fill="#5a44d6" fill-opacity="0.16" />
             <circle cx="194" cy="162" r="12.5" fill="#5a44d6" />
@@ -1372,25 +1393,34 @@
       <!-- ===== HERO ===== -->
       <section class="hero">
         <div class="wrap">
-          <span class="pill rise" style="--d: 0s"><span class="dot"></span> Now open source &middot; v1.0</span>
+          <span class="pill rise" style="--d: 0s"
+            ><span class="dot"></span> Now open source &middot; v1.0</span
+          >
           <h1 class="hero-title rise" style="--d: 0.08s">
             The workspace where agents <span class="em">ship</span>.
           </h1>
           <p class="hero-sub rise" style="--d: 0.16s">
-            Threadlines runs Claude Code and Codex in parallel threads, with a real source control panel
-            at the center. Review every change, commit, and open a pull request without leaving the app.
+            Threadlines runs Claude Code and Codex in parallel threads, with a real source control
+            panel at the center. Review every change, commit, and open a pull request without
+            leaving the app.
           </p>
           <div class="hero-actions rise" style="--d: 0.24s">
             <a class="btn btn-primary btn-lg" href="#"
-              ><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 16l-5-5h3V4h4v7h3l-5 5zm-7 2h14v2H5v-2z" /></svg
+              ><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 16l-5-5h3V4h4v7h3l-5 5zm-7 2h14v2H5v-2z" /></svg
               >Download for macOS</a
             >
             <a class="btn btn-lg" href="https://github.com/threadlines"
-              ><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.65.5.5 5.65.5 12a11.5 11.5 0 007.86 10.93c.58.1.79-.25.79-.56v-2c-3.2.69-3.88-1.37-3.88-1.37-.52-1.33-1.27-1.69-1.27-1.69-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.76 2.68 1.25 3.33.96.1-.75.4-1.25.72-1.54-2.55-.29-5.24-1.27-5.24-5.67 0-1.25.45-2.28 1.18-3.08-.12-.29-.51-1.45.11-3.02 0 0 .96-.31 3.15 1.18a10.96 10.96 0 015.74 0c2.19-1.49 3.15-1.18 3.15-1.18.62 1.57.23 2.73.11 3.02.74.8 1.18 1.83 1.18 3.08 0 4.41-2.7 5.38-5.27 5.66.41.36.78 1.06.78 2.13v3.16c0 .31.21.67.8.56A11.5 11.5 0 0023.5 12C23.5 5.65 18.35.5 12 .5z" /></svg
+              ><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+                <path
+                  d="M12 .5C5.65.5.5 5.65.5 12a11.5 11.5 0 007.86 10.93c.58.1.79-.25.79-.56v-2c-3.2.69-3.88-1.37-3.88-1.37-.52-1.33-1.27-1.69-1.27-1.69-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.76 2.68 1.25 3.33.96.1-.75.4-1.25.72-1.54-2.55-.29-5.24-1.27-5.24-5.67 0-1.25.45-2.28 1.18-3.08-.12-.29-.51-1.45.11-3.02 0 0 .96-.31 3.15 1.18a10.96 10.96 0 015.74 0c2.19-1.49 3.15-1.18 3.15-1.18.62 1.57.23 2.73.11 3.02.74.8 1.18 1.83 1.18 3.08 0 4.41-2.7 5.38-5.27 5.66.41.36.78 1.06.78 2.13v3.16c0 .31.21.67.8.56A11.5 11.5 0 0023.5 12C23.5 5.65 18.35.5 12 .5z"
+                /></svg
               >Star on GitHub</a
             >
           </div>
-          <p class="hero-meta rise" style="--d: 0.32s">Free forever &middot; bring your own Claude and Codex accounts</p>
+          <p class="hero-meta rise" style="--d: 0.32s">
+            Free forever &middot; bring your own Claude and Codex accounts
+          </p>
         </div>
 
         <!-- big app window -->
@@ -1400,48 +1430,133 @@
               <div class="appwin">
                 <div class="titlebar">
                   <div class="traffic"><i></i><i></i><i></i></div>
-                  <div class="crumb"><b>threadlines</b><span class="sep">/</span>web<span class="sep">/</span>Refine source control panel</div>
+                  <div class="crumb">
+                    <b>threadlines</b><span class="sep">/</span>web<span class="sep">/</span>Refine
+                    source control panel
+                  </div>
                   <div class="win-actions">
-                    <span title="Terminal"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 7l4 4-4 4M12 16h6" /></svg></span>
-                    <span class="on" title="Source control"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="2.4" /><circle cx="6" cy="18" r="2.4" /><circle cx="18" cy="9" r="2.4" /><path d="M6 8.4v7.2M8.3 6.6c5 0 7.7.6 7.7 2.4v.5" stroke-linecap="round" /></svg></span>
+                    <span title="Terminal"
+                      ><svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                      >
+                        <path d="M5 7l4 4-4 4M12 16h6" /></svg
+                    ></span>
+                    <span class="on" title="Source control"
+                      ><svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <circle cx="6" cy="6" r="2.4" />
+                        <circle cx="6" cy="18" r="2.4" />
+                        <circle cx="18" cy="9" r="2.4" />
+                        <path
+                          d="M6 8.4v7.2M8.3 6.6c5 0 7.7.6 7.7 2.4v.5"
+                          stroke-linecap="round"
+                        /></svg
+                    ></span>
                   </div>
                 </div>
                 <div class="app">
                   <aside class="rail">
                     <div class="rail-top">
-                      <svg class="brand-glyph" style="height: 13px" viewBox="36 86 184 100" fill="none" aria-hidden="true">
+                      <svg
+                        class="brand-glyph"
+                        style="height: 13px"
+                        viewBox="36 86 184 100"
+                        fill="none"
+                        aria-hidden="true"
+                      >
                         <g stroke-linecap="round" stroke-width="10">
                           <path d="M 44 98 L 212 98" stroke="#ffffff" stroke-opacity="0.32" />
                           <path d="M 108 98 C 134 98 134 162 160 162 L 188 162" stroke="#6e94fa" />
                         </g>
-                        <g fill="#ffffff" fill-opacity="0.45"><circle cx="70" cy="98" r="7" /><circle cx="108" cy="98" r="8.5" /><circle cx="178" cy="98" r="7" /></g>
+                        <g fill="#ffffff" fill-opacity="0.45">
+                          <circle cx="70" cy="98" r="7" />
+                          <circle cx="108" cy="98" r="8.5" />
+                          <circle cx="178" cy="98" r="7" />
+                        </g>
                         <circle cx="194" cy="162" r="12.5" fill="#6e94fa" />
                       </svg>
                       <span class="brand-name">Threadlines</span>
                     </div>
-                    <div class="search"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4-4" stroke-linecap="round" /></svg> Search</div>
+                    <div class="search">
+                      <svg
+                        width="12"
+                        height="12"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <circle cx="11" cy="11" r="7" />
+                        <path d="M21 21l-4-4" stroke-linecap="round" />
+                      </svg>
+                      Search
+                    </div>
                     <div class="rail-label">threadlines</div>
                     <div class="threads">
-                      <div class="thread on"><span class="node-dot"></span><span class="t-name">Refine source control</span><span class="tag claude">Claude</span></div>
-                      <div class="thread"><span class="node-dot"></span><span class="t-name">Windows pty kill</span><span class="tag codex">Codex</span></div>
-                      <div class="thread"><span class="node-dot"></span><span class="t-name">Attachment menu</span><span class="tag claude">Claude</span></div>
-                      <div class="thread"><span class="node-dot"></span><span class="t-name">Release CI gate</span><span class="tag codex">Codex</span></div>
-                      <div class="thread"><span class="node-dot"></span><span class="t-name">Diff context lines</span><span class="tag claude">Claude</span></div>
+                      <div class="thread on">
+                        <span class="node-dot"></span
+                        ><span class="t-name">Refine source control</span
+                        ><span class="tag claude">Claude</span>
+                      </div>
+                      <div class="thread">
+                        <span class="node-dot"></span><span class="t-name">Windows pty kill</span
+                        ><span class="tag codex">Codex</span>
+                      </div>
+                      <div class="thread">
+                        <span class="node-dot"></span><span class="t-name">Attachment menu</span
+                        ><span class="tag claude">Claude</span>
+                      </div>
+                      <div class="thread">
+                        <span class="node-dot"></span><span class="t-name">Release CI gate</span
+                        ><span class="tag codex">Codex</span>
+                      </div>
+                      <div class="thread">
+                        <span class="node-dot"></span><span class="t-name">Diff context lines</span
+                        ><span class="tag claude">Claude</span>
+                      </div>
                     </div>
                   </aside>
                   <section class="chat">
-                    <div class="chat-head"><span class="title">Refine source control panel</span><span class="lp"><span class="d"></span> Working</span></div>
+                    <div class="chat-head">
+                      <span class="title">Refine source control panel</span
+                      ><span class="lp"><span class="d"></span> Working</span>
+                    </div>
                     <div class="stream">
-                      <div class="msg user"><div class="who">You</div><div class="bubble">Group the changed files by status and show per-file +/- counts.</div></div>
+                      <div class="msg user">
+                        <div class="who">You</div>
+                        <div class="bubble">
+                          Group the changed files by status and show per-file +/- counts.
+                        </div>
+                      </div>
                       <div class="msg bot">
                         <div class="who">Claude Opus 4.8</div>
                         <div class="body">
-                          Adding diff stats to <b>SourceControlPanel</b> and sorting entries into modified,
-                          added, and deleted. The counts come from the live git status poll.
+                          Adding diff stats to <b>SourceControlPanel</b> and sorting entries into
+                          modified, added, and deleted. The counts come from the live git status
+                          poll.
                           <div class="work">
-                            <div class="work-row done">Read <code>sourceControlPresentation.ts</code></div>
-                            <div class="work-row done">Edited <code>SourceControlPanel.tsx</code> <span class="plus">+48</span> <span class="minus">-12</span></div>
-                            <div class="work-row done">Ran <code>vp lint</code> &middot; passed</div>
+                            <div class="work-row done">
+                              Read <code>sourceControlPresentation.ts</code>
+                            </div>
+                            <div class="work-row done">
+                              Edited <code>SourceControlPanel.tsx</code>
+                              <span class="plus">+48</span> <span class="minus">-12</span>
+                            </div>
+                            <div class="work-row done">
+                              Ran <code>vp lint</code> &middot; passed
+                            </div>
                             <div class="work-row live">Running <code>vp run typecheck</code></div>
                           </div>
                         </div>
@@ -1452,13 +1567,32 @@
                       <div class="row">
                         <span class="plus-btn">+</span>
                         <span class="model"><span class="d"></span> Claude Opus 4.8</span>
-                        <span class="send"><svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M4 12l16-8-6 8 6 8z" /></svg></span>
+                        <span class="send"
+                          ><svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M4 12l16-8-6 8 6 8z" /></svg
+                        ></span>
                       </div>
                     </div>
                   </section>
                   <aside class="scp">
                     <div class="scp-head">
-                      <span class="ico"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="2.4" /><circle cx="6" cy="18" r="2.4" /><circle cx="18" cy="9" r="2.4" /><path d="M6 8.4v7.2M8.3 6.6c5 0 7.7.6 7.7 2.4v.5" stroke-linecap="round" /></svg></span>
+                      <span class="ico"
+                        ><svg
+                          width="13"
+                          height="13"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <circle cx="6" cy="6" r="2.4" />
+                          <circle cx="6" cy="18" r="2.4" />
+                          <circle cx="18" cy="9" r="2.4" />
+                          <path
+                            d="M6 8.4v7.2M8.3 6.6c5 0 7.7.6 7.7 2.4v.5"
+                            stroke-linecap="round"
+                          /></svg
+                      ></span>
                       <span class="title">Source control</span>
                       <span class="branch">thread/refine-scp</span>
                     </div>
@@ -1468,26 +1602,63 @@
                         <svg viewBox="0 0 250 74" fill="none" style="width: 100%; height: auto">
                           <g stroke-linecap="round" stroke-width="1.5">
                             <path d="M 13 15 L 237 15" stroke="rgba(255,255,255,0.16)" />
-                            <path d="M 67 15 C 84 15 84 38 101 38 L 200 38" stroke="rgba(255,255,255,0.12)" />
-                            <path d="M 115 15 C 132 15 132 59 149 59 L 224 59" stroke="#6e94fa" stroke-opacity="0.85" />
+                            <path
+                              d="M 67 15 C 84 15 84 38 101 38 L 200 38"
+                              stroke="rgba(255,255,255,0.12)"
+                            />
+                            <path
+                              d="M 115 15 C 132 15 132 59 149 59 L 224 59"
+                              stroke="#6e94fa"
+                              stroke-opacity="0.85"
+                            />
                           </g>
-                          <g fill="rgba(255,255,255,0.4)"><circle cx="30" cy="15" r="3" /><circle cx="67" cy="15" r="3.4" /><circle cx="115" cy="15" r="3.4" /><circle cx="173" cy="38" r="2.8" /><circle cx="200" cy="15" r="2.8" /></g>
-                          <circle cx="224" cy="59" r="6.5" fill="#6e94fa" fill-opacity="0.18" /><circle cx="224" cy="59" r="4" fill="#6e94fa" />
+                          <g fill="rgba(255,255,255,0.4)">
+                            <circle cx="30" cy="15" r="3" />
+                            <circle cx="67" cy="15" r="3.4" />
+                            <circle cx="115" cy="15" r="3.4" />
+                            <circle cx="173" cy="38" r="2.8" />
+                            <circle cx="200" cy="15" r="2.8" />
+                          </g>
+                          <circle cx="224" cy="59" r="6.5" fill="#6e94fa" fill-opacity="0.18" />
+                          <circle cx="224" cy="59" r="4" fill="#6e94fa" />
                         </svg>
                       </div>
                       <div>
-                        <div class="scp-label">Changes <span class="count">3 &middot; +177 -15</span></div>
+                        <div class="scp-label">
+                          Changes <span class="count">3 &middot; +177 -15</span>
+                        </div>
                         <div style="margin-top: 7px">
-                          <div class="file"><span class="st m">M</span><span class="path">SourceControlPanel.tsx</span><span class="diffnums"><span class="p">+48</span><span class="m">-12</span></span></div>
-                          <div class="file"><span class="st m">M</span><span class="path">sourceControlPresentation.ts</span><span class="diffnums"><span class="p">+9</span><span class="m">-3</span></span></div>
-                          <div class="file"><span class="st a">A</span><span class="path">shared/sourceControl.ts</span><span class="diffnums"><span class="p">+120</span></span></div>
+                          <div class="file">
+                            <span class="st m">M</span
+                            ><span class="path">SourceControlPanel.tsx</span
+                            ><span class="diffnums"
+                              ><span class="p">+48</span><span class="m">-12</span></span
+                            >
+                          </div>
+                          <div class="file">
+                            <span class="st m">M</span
+                            ><span class="path">sourceControlPresentation.ts</span
+                            ><span class="diffnums"
+                              ><span class="p">+9</span><span class="m">-3</span></span
+                            >
+                          </div>
+                          <div class="file">
+                            <span class="st a">A</span
+                            ><span class="path">shared/sourceControl.ts</span
+                            ><span class="diffnums"><span class="p">+120</span></span>
+                          </div>
                         </div>
                       </div>
-                      <div class="pr-card">PR #128 &middot; github.com/threadlines<span class="open">Open</span></div>
+                      <div class="pr-card">
+                        PR #128 &middot; github.com/threadlines<span class="open">Open</span>
+                      </div>
                     </div>
                     <div class="scp-actions">
                       <div class="commit-input">Refine source control panel</div>
-                      <div class="scp-btns"><div class="b">Commit</div><div class="b primary">Commit &amp; PR</div></div>
+                      <div class="scp-btns">
+                        <div class="b">Commit</div>
+                        <div class="b primary">Commit &amp; PR</div>
+                      </div>
                     </div>
                   </aside>
                 </div>
@@ -1516,8 +1687,8 @@
             <span class="eyebrow">Why Threadlines</span>
             <h2>A t3 fork that went deep on the things that ship code.</h2>
             <p>
-              Same minimal workspace you liked, rebuilt around source control and genuine, first-class
-              support for the two agents you actually use.
+              Same minimal workspace you liked, rebuilt around source control and genuine,
+              first-class support for the two agents you actually use.
             </p>
           </div>
 
@@ -1528,14 +1699,19 @@
                 <span class="eyebrow">The source control panel</span>
                 <h3>Review, commit, and open a PR in place.</h3>
                 <p>
-                  A live panel beside every conversation shows per-file diff stats grouped by status,
-                  polled as the agent works. Commit, push, and open pull requests against GitHub, GitLab,
-                  Azure DevOps, or Bitbucket without switching windows.
+                  A live panel beside every conversation shows per-file diff stats grouped by
+                  status, polled as the agent works. Commit, push, and open pull requests against
+                  GitHub, GitLab, Azure DevOps, or Bitbucket without switching windows.
                 </p>
               </div>
               <div class="scp-embed">
                 <div class="appwin">
-                  <div class="titlebar"><div class="traffic"><i></i><i></i><i></i></div><div class="crumb"><b>Source control</b><span class="sep">·</span>thread/refine-scp</div></div>
+                  <div class="titlebar">
+                    <div class="traffic"><i></i><i></i><i></i></div>
+                    <div class="crumb">
+                      <b>Source control</b><span class="sep">·</span>thread/refine-scp
+                    </div>
+                  </div>
                   <div class="app">
                     <aside class="scp" style="border-left: none">
                       <div class="scp-body" style="padding-top: 14px">
@@ -1544,19 +1720,50 @@
                           <svg viewBox="0 0 250 70" fill="none" style="width: 100%; height: auto">
                             <g stroke-linecap="round" stroke-width="1.5">
                               <path d="M 13 14 L 237 14" stroke="rgba(255,255,255,0.16)" />
-                              <path d="M 67 14 C 84 14 84 36 101 36 L 200 36" stroke="rgba(255,255,255,0.12)" />
-                              <path d="M 115 14 C 132 14 132 56 149 56 L 224 56" stroke="#6e94fa" stroke-opacity="0.85" />
+                              <path
+                                d="M 67 14 C 84 14 84 36 101 36 L 200 36"
+                                stroke="rgba(255,255,255,0.12)"
+                              />
+                              <path
+                                d="M 115 14 C 132 14 132 56 149 56 L 224 56"
+                                stroke="#6e94fa"
+                                stroke-opacity="0.85"
+                              />
                             </g>
-                            <g fill="rgba(255,255,255,0.4)"><circle cx="30" cy="14" r="3" /><circle cx="67" cy="14" r="3.4" /><circle cx="115" cy="14" r="3.4" /><circle cx="173" cy="36" r="2.8" /></g>
-                            <circle cx="224" cy="56" r="6.5" fill="#6e94fa" fill-opacity="0.18" /><circle cx="224" cy="56" r="4" fill="#6e94fa" />
+                            <g fill="rgba(255,255,255,0.4)">
+                              <circle cx="30" cy="14" r="3" />
+                              <circle cx="67" cy="14" r="3.4" />
+                              <circle cx="115" cy="14" r="3.4" />
+                              <circle cx="173" cy="36" r="2.8" />
+                            </g>
+                            <circle cx="224" cy="56" r="6.5" fill="#6e94fa" fill-opacity="0.18" />
+                            <circle cx="224" cy="56" r="4" fill="#6e94fa" />
                           </svg>
                         </div>
                         <div>
-                          <div class="scp-label">Changes <span class="count">3 &middot; +177 -15</span></div>
+                          <div class="scp-label">
+                            Changes <span class="count">3 &middot; +177 -15</span>
+                          </div>
                           <div style="margin-top: 7px">
-                            <div class="file"><span class="st m">M</span><span class="path">SourceControlPanel.tsx</span><span class="diffnums"><span class="p">+48</span><span class="m">-12</span></span></div>
-                            <div class="file"><span class="st m">M</span><span class="path">sourceControlPresentation.ts</span><span class="diffnums"><span class="p">+9</span><span class="m">-3</span></span></div>
-                            <div class="file"><span class="st a">A</span><span class="path">shared/sourceControl.ts</span><span class="diffnums"><span class="p">+120</span></span></div>
+                            <div class="file">
+                              <span class="st m">M</span
+                              ><span class="path">SourceControlPanel.tsx</span
+                              ><span class="diffnums"
+                                ><span class="p">+48</span><span class="m">-12</span></span
+                              >
+                            </div>
+                            <div class="file">
+                              <span class="st m">M</span
+                              ><span class="path">sourceControlPresentation.ts</span
+                              ><span class="diffnums"
+                                ><span class="p">+9</span><span class="m">-3</span></span
+                              >
+                            </div>
+                            <div class="file">
+                              <span class="st a">A</span
+                              ><span class="path">shared/sourceControl.ts</span
+                              ><span class="diffnums"><span class="p">+120</span></span>
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -1568,25 +1775,72 @@
 
             <!-- tall parallel-threads tile -->
             <div class="tile tall reveal" style="--d: 0.05s">
-              <div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v6a3 3 0 003 3h6M18 3v18M6 3v18" /></svg></div>
+              <div class="ic">
+                <svg
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M6 3v6a3 3 0 003 3h6M18 3v18M6 3v18" />
+                </svg>
+              </div>
               <h3>Parallel threads</h3>
-              <p>Run many agents at once, each isolated on its own branch. A glance shows what is live and what needs you.</p>
+              <p>
+                Run many agents at once, each isolated on its own branch. A glance shows what is
+                live and what needs you.
+              </p>
               <div class="mini-lanes">
-                <div class="mlane w"><span class="mdot"></span><span class="mn">Refine SCP</span><span class="ms">working</span></div>
-                <div class="mlane w"><span class="mdot"></span><span class="mn">Windows pty kill</span><span class="ms">working</span></div>
-                <div class="mlane r"><span class="mdot"></span><span class="mn">Attachment menu</span><span class="ms">ready</span></div>
-                <div class="mlane n"><span class="mdot"></span><span class="mn">Release CI gate</span><span class="ms">needs you</span></div>
+                <div class="mlane w">
+                  <span class="mdot"></span><span class="mn">Refine SCP</span
+                  ><span class="ms">working</span>
+                </div>
+                <div class="mlane w">
+                  <span class="mdot"></span><span class="mn">Windows pty kill</span
+                  ><span class="ms">working</span>
+                </div>
+                <div class="mlane r">
+                  <span class="mdot"></span><span class="mn">Attachment menu</span
+                  ><span class="ms">ready</span>
+                </div>
+                <div class="mlane n">
+                  <span class="mdot"></span><span class="mn">Release CI gate</span
+                  ><span class="ms">needs you</span>
+                </div>
               </div>
             </div>
 
             <!-- small tiles -->
             <div class="tile span3 reveal" style="--d: 0.1s">
-              <div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7l4 4-4 4M13 17h6" /></svg></div>
+              <div class="ic">
+                <svg
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M5 7l4 4-4 4M13 17h6" />
+                </svg>
+              </div>
               <h3>Terminal and diffs</h3>
               <p>A built-in xterm terminal and changes-only diffs, right inside the workspace.</p>
             </div>
             <div class="tile span3 reveal" style="--d: 0.15s" id="open">
-              <div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.65.5.5 5.65.5 12a11.5 11.5 0 007.86 10.93c.58.1.79-.25.79-.56v-2c-3.2.69-3.88-1.37-3.88-1.37-.52-1.33-1.27-1.69-1.27-1.69-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.76 2.68 1.25 3.33.96.1-.75.4-1.25.72-1.54-2.55-.29-5.24-1.27-5.24-5.67 0-1.25.45-2.28 1.18-3.08-.12-.29-.51-1.45.11-3.02 0 0 .96-.31 3.15 1.18a10.96 10.96 0 015.74 0c2.19-1.49 3.15-1.18 3.15-1.18.62 1.57.23 2.73.11 3.02.74.8 1.18 1.83 1.18 3.08 0 4.41-2.7 5.38-5.27 5.66.41.36.78 1.06.78 2.13v3.16c0 .31.21.67.8.56A11.5 11.5 0 0023.5 12C23.5 5.65 18.35.5 12 .5z" /></svg></div>
+              <div class="ic">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                  <path
+                    d="M12 .5C5.65.5.5 5.65.5 12a11.5 11.5 0 007.86 10.93c.58.1.79-.25.79-.56v-2c-3.2.69-3.88-1.37-3.88-1.37-.52-1.33-1.27-1.69-1.27-1.69-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.76 2.68 1.25 3.33.96.1-.75.4-1.25.72-1.54-2.55-.29-5.24-1.27-5.24-5.67 0-1.25.45-2.28 1.18-3.08-.12-.29-.51-1.45.11-3.02 0 0 .96-.31 3.15 1.18a10.96 10.96 0 015.74 0c2.19-1.49 3.15-1.18 3.15-1.18.62 1.57.23 2.73.11 3.02.74.8 1.18 1.83 1.18 3.08 0 4.41-2.7 5.38-5.27 5.66.41.36.78 1.06.78 2.13v3.16c0 .31.21.67.8.56A11.5 11.5 0 0023.5 12C23.5 5.65 18.35.5 12 .5z"
+                  />
+                </svg>
+              </div>
               <h3>Open source</h3>
               <p>MIT licensed and yours to fork. Read every line, ship your own build.</p>
             </div>
@@ -1598,9 +1852,60 @@
               <span class="eyebrow">Providers</span>
               <h3>Codex and Claude, both first class.</h3>
               <ul class="f-list">
-                <li><span class="ck"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5" /></svg></span><span><b>Native, not flattened.</b> Each provider keeps its own features instead of a shared denominator.</span></li>
-                <li><span class="ck"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5" /></svg></span><span><b>Permission modes</b> from full access to a guarded auto tier with review.</span></li>
-                <li><span class="ck"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5" /></svg></span><span><b>Resilient sessions</b> that survive reconnects, restarts, and partial streams.</span></li>
+                <li>
+                  <span class="ck"
+                    ><svg
+                      width="11"
+                      height="11"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="3"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <path d="M20 6L9 17l-5-5" /></svg></span
+                  ><span
+                    ><b>Native, not flattened.</b> Each provider keeps its own features instead of a
+                    shared denominator.</span
+                  >
+                </li>
+                <li>
+                  <span class="ck"
+                    ><svg
+                      width="11"
+                      height="11"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="3"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <path d="M20 6L9 17l-5-5" /></svg></span
+                  ><span
+                    ><b>Permission modes</b> from full access to a guarded auto tier with
+                    review.</span
+                  >
+                </li>
+                <li>
+                  <span class="ck"
+                    ><svg
+                      width="11"
+                      height="11"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="3"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <path d="M20 6L9 17l-5-5" /></svg></span
+                  ><span
+                    ><b>Resilient sessions</b> that survive reconnects, restarts, and partial
+                    streams.</span
+                  >
+                </li>
               </ul>
             </div>
             <div class="term">
@@ -1626,8 +1931,13 @@
               <path d="M -8 128 L 968 128" stroke="rgba(255,255,255,0.22)" />
               <path d="M 432 128 C 458 128 458 180 484 180 L 812 180" stroke="#9db4ff" />
             </g>
-            <g fill="rgba(255,255,255,0.4)"><circle cx="140" cy="128" r="3" /><circle cx="432" cy="128" r="3.5" /><circle cx="652" cy="128" r="3" /></g>
-            <circle cx="816" cy="180" r="6" fill="#9db4ff" fill-opacity="0.4" /><circle cx="816" cy="180" r="4" fill="#9db4ff" />
+            <g fill="rgba(255,255,255,0.4)">
+              <circle cx="140" cy="128" r="3" />
+              <circle cx="432" cy="128" r="3.5" />
+              <circle cx="652" cy="128" r="3" />
+            </g>
+            <circle cx="816" cy="180" r="6" fill="#9db4ff" fill-opacity="0.4" />
+            <circle cx="816" cy="180" r="4" fill="#9db4ff" />
           </svg>
           <h2>Every thread leaves a line.</h2>
           <p>Free, open source, and ready when you are.</p>
@@ -1642,12 +1952,22 @@
     <footer>
       <div class="foot-inner">
         <div class="foot-left">
-          <svg class="brand-glyph" style="height: 14px" viewBox="36 86 184 100" fill="none" aria-hidden="true">
+          <svg
+            class="brand-glyph"
+            style="height: 14px"
+            viewBox="36 86 184 100"
+            fill="none"
+            aria-hidden="true"
+          >
             <g stroke-linecap="round" stroke-width="10">
               <path d="M 44 98 L 212 98" stroke="#111115" stroke-opacity="0.4" />
               <path d="M 108 98 C 134 98 134 162 160 162 L 188 162" stroke="#5a44d6" />
             </g>
-            <g fill="#111115" fill-opacity="0.5"><circle cx="70" cy="98" r="7" /><circle cx="108" cy="98" r="8.5" /><circle cx="178" cy="98" r="7" /></g>
+            <g fill="#111115" fill-opacity="0.5">
+              <circle cx="70" cy="98" r="7" />
+              <circle cx="108" cy="98" r="8.5" />
+              <circle cx="178" cy="98" r="7" />
+            </g>
             <circle cx="194" cy="162" r="12.5" fill="#5a44d6" />
           </svg>
           <span>&copy; 2026 Threadlines &middot; MIT licensed</span>
@@ -1663,10 +1983,15 @@
 
     <script>
       const nav = document.getElementById("nav");
-      addEventListener("scroll", () => nav.classList.toggle("scrolled", scrollY > 8), { passive: true });
+      addEventListener("scroll", () => nav.classList.toggle("scrolled", scrollY > 8), {
+        passive: true,
+      });
       const io = new IntersectionObserver(
-        (es) => es.forEach((e) => e.isIntersecting && (e.target.classList.add("in"), io.unobserve(e.target))),
-        { threshold: 0.12 }
+        (es) =>
+          es.forEach(
+            (e) => e.isIntersecting && (e.target.classList.add("in"), io.unobserve(e.target)),
+          ),
+        { threshold: 0.12 },
       );
       document.querySelectorAll(".reveal").forEach((el) => io.observe(el));
     </script>

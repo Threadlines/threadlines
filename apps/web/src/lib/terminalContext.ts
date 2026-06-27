@@ -1,4 +1,8 @@
 import { type ThreadId } from "@threadlines/contracts";
+import {
+  extractTrailingTranscriptHighlightContexts,
+  type ParsedTranscriptHighlightContextEntry,
+} from "./transcriptHighlightContext";
 
 export interface TerminalContextSelection {
   terminalId: string;
@@ -27,6 +31,7 @@ export interface DisplayedUserMessageState {
   contextCount: number;
   previewTitle: string | null;
   contexts: ParsedTerminalContextEntry[];
+  transcriptHighlights: ParsedTranscriptHighlightContextEntry[];
 }
 
 export interface ParsedTerminalContextEntry {
@@ -235,13 +240,15 @@ export function extractTrailingTerminalContexts(prompt: string): ExtractedTermin
 }
 
 export function deriveDisplayedUserMessageState(prompt: string): DisplayedUserMessageState {
-  const extractedContexts = extractTrailingTerminalContexts(prompt);
+  const extractedHighlights = extractTrailingTranscriptHighlightContexts(prompt);
+  const extractedContexts = extractTrailingTerminalContexts(extractedHighlights.promptText);
   return {
     visibleText: extractedContexts.promptText,
     copyText: prompt,
     contextCount: extractedContexts.contextCount,
     previewTitle: extractedContexts.previewTitle,
     contexts: extractedContexts.contexts,
+    transcriptHighlights: extractedHighlights.contexts,
   };
 }
 

@@ -95,6 +95,7 @@ export default defineConfig({
       "typescript/restrict-template-expressions": "off",
       "typescript/unbound-method": "off",
       "threadlines/no-inline-schema-compile": "warn",
+      "threadlines/prefer-tooltip-prop": "warn",
     },
     options: {
       typeAware: false,

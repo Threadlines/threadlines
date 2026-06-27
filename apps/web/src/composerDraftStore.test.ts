@@ -8,6 +8,7 @@ import * as Schema from "effect/Schema";
 import {
   defaultInstanceIdForDriver,
   EnvironmentId,
+  MessageId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -74,6 +75,7 @@ import {
   insertInlineTerminalContextPlaceholder,
   type TerminalContextDraft,
 } from "./lib/terminalContext";
+import type { TranscriptHighlightContextDraft } from "./lib/transcriptHighlightContext";
 import { createDebouncedStorage } from "./lib/storage";
 
 function makeImage(input: {
@@ -119,6 +121,24 @@ function makeTerminalContext(input: {
     lineStart: input.lineStart ?? 4,
     lineEnd: input.lineEnd ?? 5,
     text: input.text ?? "git status\nOn branch main",
+    createdAt: "2026-03-13T12:00:00.000Z",
+  };
+}
+
+function makeTranscriptHighlightContext(input: {
+  id: string;
+  selectedText?: string;
+  note?: string;
+  sourceMessageId?: string;
+  sourceRole?: "assistant" | "user";
+}): TranscriptHighlightContextDraft {
+  return {
+    id: input.id,
+    threadId: ThreadId.make("thread-dedupe"),
+    sourceMessageId: MessageId.make(input.sourceMessageId ?? "assistant-message-1"),
+    sourceRole: input.sourceRole ?? "assistant",
+    selectedText: input.selectedText ?? "selected assistant text",
+    note: input.note ?? "this is my reply",
     createdAt: "2026-03-13T12:00:00.000Z",
   };
 }
@@ -519,6 +539,157 @@ describe("composerDraftStore terminal contexts", () => {
     expect(mergedState.draftsByThreadKey[threadKeyFor(threadId)]).toBeUndefined();
     expect(mergedState.draftThreadsByThreadKey).toEqual({});
     expect(mergedState.logicalProjectDraftThreadKeyByLogicalProjectKey).toEqual({});
+  });
+});
+
+describe("composerDraftStore transcript highlight contexts", () => {
+  const threadId = ThreadId.make("thread-highlight");
+  const threadRef = scopeThreadRef(TEST_ENVIRONMENT_ID, threadId);
+
+  beforeEach(() => {
+    resetComposerDraftStore();
+  });
+
+  it("deduplicates identical transcript highlight contexts", () => {
+    const first = makeTranscriptHighlightContext({ id: "highlight-1" });
+    const duplicate = makeTranscriptHighlightContext({ id: "highlight-2" });
+
+    useComposerDraftStore.getState().addTranscriptHighlightContexts(threadRef, [first, duplicate]);
+
+    const draft = draftFor(threadId, TEST_ENVIRONMENT_ID);
+    expect(draft?.transcriptHighlightContexts.map((context) => context.id)).toEqual([
+      "highlight-1",
+    ]);
+  });
+
+  it("clears transcript highlight contexts when clearing composer content", () => {
+    useComposerDraftStore
+      .getState()
+      .addTranscriptHighlightContext(
+        threadRef,
+        makeTranscriptHighlightContext({ id: "highlight-1" }),
+      );
+
+    useComposerDraftStore.getState().clearComposerContent(threadRef);
+
+    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toBeUndefined();
+  });
+
+  it("persists transcript highlight context text and note", () => {
+    useComposerDraftStore.getState().addTranscriptHighlightContext(
+      threadRef,
+      makeTranscriptHighlightContext({
+        id: "highlight-persist",
+        selectedText: "selected quote",
+        note: "my note",
+      }),
+    );
+
+    const persistApi = useComposerDraftStore.persist as unknown as {
+      getOptions: () => {
+        partialize: (state: ReturnType<typeof useComposerDraftStore.getState>) => unknown;
+      };
+    };
+    const persistedState = persistApi.getOptions().partialize(useComposerDraftStore.getState()) as {
+      draftsByThreadKey?: Record<
+        string,
+        { transcriptHighlightContexts?: Array<Record<string, unknown>> }
+      >;
+    };
+
+    expect(
+      persistedState.draftsByThreadKey?.[threadKeyFor(threadId, TEST_ENVIRONMENT_ID)]
+        ?.transcriptHighlightContexts?.[0],
+    ).toMatchObject({
+      id: "highlight-persist",
+      sourceRole: "assistant",
+      sourceMessageId: "assistant-message-1",
+      selectedText: "selected quote",
+      note: "my note",
+    });
+  });
+
+  it("updates a transcript highlight context note in place", () => {
+    useComposerDraftStore
+      .getState()
+      .addTranscriptHighlightContext(
+        threadRef,
+        makeTranscriptHighlightContext({ id: "highlight-edit", note: "first note" }),
+      );
+
+    useComposerDraftStore
+      .getState()
+      .updateTranscriptHighlightContextNote(threadRef, "highlight-edit", "\nrevised note\n");
+
+    const updated = draftFor(threadId, TEST_ENVIRONMENT_ID)?.transcriptHighlightContexts.find(
+      (context) => context.id === "highlight-edit",
+    );
+    expect(updated?.note).toBe("revised note");
+  });
+
+  it("ignores empty transcript highlight note edits", () => {
+    useComposerDraftStore
+      .getState()
+      .addTranscriptHighlightContext(
+        threadRef,
+        makeTranscriptHighlightContext({ id: "highlight-edit", note: "keep me" }),
+      );
+
+    useComposerDraftStore
+      .getState()
+      .updateTranscriptHighlightContextNote(threadRef, "highlight-edit", "   ");
+
+    const updated = draftFor(threadId, TEST_ENVIRONMENT_ID)?.transcriptHighlightContexts.find(
+      (context) => context.id === "highlight-edit",
+    );
+    expect(updated?.note).toBe("keep me");
+  });
+
+  it("hydrates persisted transcript highlight contexts", () => {
+    const persistApi = useComposerDraftStore.persist as unknown as {
+      getOptions: () => {
+        merge: (
+          persistedState: unknown,
+          currentState: ReturnType<typeof useComposerDraftStore.getState>,
+        ) => ReturnType<typeof useComposerDraftStore.getState>;
+      };
+    };
+    const mergedState = persistApi.getOptions().merge(
+      {
+        draftsByThreadId: {
+          [threadId]: {
+            prompt: "",
+            attachments: [],
+            transcriptHighlightContexts: [
+              {
+                id: "highlight-rehydrated",
+                threadId,
+                createdAt: "2026-03-13T12:00:00.000Z",
+                sourceMessageId: "assistant-message-1",
+                sourceRole: "assistant",
+                selectedText: "selected quote",
+                note: "my note",
+              },
+            ],
+          },
+        },
+        draftThreadsByThreadId: {},
+        projectDraftThreadIdByProjectKey: {},
+      },
+      useComposerDraftStore.getInitialState(),
+    );
+
+    expect(
+      mergedState.draftsByThreadKey[threadKeyFor(threadId)]?.transcriptHighlightContexts,
+    ).toMatchObject([
+      {
+        id: "highlight-rehydrated",
+        sourceMessageId: MessageId.make("assistant-message-1"),
+        sourceRole: "assistant",
+        selectedText: "selected quote",
+        note: "my note",
+      },
+    ]);
   });
 });
 

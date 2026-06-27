@@ -81,6 +81,7 @@ import {
 } from "./ui/menu";
 import { toastManager } from "./ui/toast";
 import { ToggleGroup, Toggle } from "./ui/toggle-group";
+import { TooltipWrapper } from "./ui/tooltip";
 
 type DiffThemeType = "light" | "dark";
 
@@ -1190,20 +1191,21 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
   const headerRow = (
     <div className="flex min-w-0 flex-1 items-center gap-1">
       {onBackToSourceControl ? (
-        <button
-          type="button"
-          aria-label="Back to source control"
-          title="Back to source control (Esc)"
-          className="-ml-1.5 flex min-w-0 cursor-pointer items-center gap-1 rounded-sm border-0 bg-transparent py-0.5 pl-0.5 pr-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70 transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
-          onClick={onBackToSourceControl}
-        >
-          <ChevronLeftIcon className="size-3.5 shrink-0 opacity-80" />
-          <SourceControlIcon className="size-3.5 shrink-0 opacity-70" />
-          <span className="min-w-0 truncate">
-            <span className="source-control-title-short">SC</span>
-            <span className="source-control-title-full">Source Control</span>
-          </span>
-        </button>
+        <TooltipWrapper tooltip="Back to source control (Esc)">
+          <button
+            type="button"
+            aria-label="Back to source control"
+            className="-ml-1.5 flex min-w-0 cursor-pointer items-center gap-1 rounded-sm border-0 bg-transparent py-0.5 pl-0.5 pr-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70 transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+            onClick={onBackToSourceControl}
+          >
+            <ChevronLeftIcon className="size-3.5 shrink-0 opacity-80" />
+            <SourceControlIcon className="size-3.5 shrink-0 opacity-70" />
+            <span className="min-w-0 truncate">
+              <span className="source-control-title-short">SC</span>
+              <span className="source-control-title-full">Source Control</span>
+            </span>
+          </button>
+        </TooltipWrapper>
       ) : (
         <span className="flex min-w-0 items-center gap-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70">
           <SourceControlIcon className="size-3.5 shrink-0 opacity-70" />
@@ -1341,7 +1343,7 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
           )}
           <Toggle
             aria-label={diffChangesOnly ? "Show context lines" : "Show changes only"}
-            title={diffChangesOnly ? "Show context lines" : "Show changes only"}
+            tooltip={diffChangesOnly ? "Show context lines" : "Show changes only"}
             variant="outline"
             size="xs"
             pressed={diffChangesOnly}
@@ -1353,7 +1355,7 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
           </Toggle>
           <Toggle
             aria-label={diffWordWrap ? "Disable diff line wrapping" : "Enable diff line wrapping"}
-            title={diffWordWrap ? "Disable line wrapping" : "Enable line wrapping"}
+            tooltip={diffWordWrap ? "Disable line wrapping" : "Enable line wrapping"}
             variant="outline"
             size="xs"
             pressed={diffWordWrap}
@@ -1367,7 +1369,7 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
             aria-label={
               diffIgnoreWhitespace ? "Show whitespace changes" : "Hide whitespace changes"
             }
-            title={diffIgnoreWhitespace ? "Show whitespace changes" : "Hide whitespace changes"}
+            tooltip={diffIgnoreWhitespace ? "Show whitespace changes" : "Hide whitespace changes"}
             variant="outline"
             size="xs"
             pressed={diffIgnoreWhitespace}
@@ -1386,7 +1388,7 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
             variant="ghost"
             size="icon-xs"
             aria-label="Previous file"
-            title="Previous file"
+            tooltip="Previous file"
             className="text-muted-foreground/70 hover:text-foreground"
             disabled={activeFileIndex <= 0}
             onClick={() => goToAdjacentFile(-1)}
@@ -1398,7 +1400,7 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
             variant="ghost"
             size="icon-xs"
             aria-label="Next file"
-            title="Next file"
+            tooltip="Next file"
             className="text-muted-foreground/70 hover:text-foreground"
             disabled={activeFileIndex >= renderableFiles.length - 1}
             onClick={() => goToAdjacentFile(1)}
@@ -1507,7 +1509,7 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
               variant="ghost"
               size="icon-xs"
               aria-label="Show all files"
-              title={`Show all ${renderableFiles.length} files`}
+              tooltip={`Show all ${renderableFiles.length} files`}
               className="text-muted-foreground/70 hover:text-foreground"
               onClick={clearFileFilter}
             >
@@ -1519,7 +1521,7 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
             variant="ghost"
             size="icon-xs"
             aria-label={allDiffFilesCollapsed ? "Expand all files" : "Collapse all files"}
-            title={allDiffFilesCollapsed ? "Expand all files" : "Collapse all files"}
+            tooltip={allDiffFilesCollapsed ? "Expand all files" : "Collapse all files"}
             className="text-muted-foreground/70 hover:text-foreground"
             onClick={toggleAllDiffFilesCollapsed}
           >
@@ -1687,25 +1689,28 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
                               : null;
                             return (
                               <div className="flex h-9 min-w-0 items-center gap-1.5 pl-1.5 pr-2">
-                                <button
-                                  type="button"
-                                  className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0 text-muted-foreground/60 transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:outline-hidden"
-                                  aria-label={
-                                    collapsed ? `Expand ${filePath}` : `Collapse ${filePath}`
-                                  }
-                                  aria-expanded={!collapsed}
-                                  title={collapsed ? "Expand diff" : "Collapse diff"}
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    toggleDiffFileCollapsed(fileKey);
-                                  }}
+                                <TooltipWrapper
+                                  tooltip={collapsed ? "Expand diff" : "Collapse diff"}
                                 >
-                                  {collapsed ? (
-                                    <ChevronRightIcon className="size-4" />
-                                  ) : (
-                                    <ChevronDownIcon className="size-4" />
-                                  )}
-                                </button>
+                                  <button
+                                    type="button"
+                                    className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0 text-muted-foreground/60 transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:outline-hidden"
+                                    aria-label={
+                                      collapsed ? `Expand ${filePath}` : `Collapse ${filePath}`
+                                    }
+                                    aria-expanded={!collapsed}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      toggleDiffFileCollapsed(fileKey);
+                                    }}
+                                  >
+                                    {collapsed ? (
+                                      <ChevronRightIcon className="size-4" />
+                                    ) : (
+                                      <ChevronDownIcon className="size-4" />
+                                    )}
+                                  </button>
+                                </TooltipWrapper>
                                 <span
                                   className={cn(
                                     "inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded border px-1 font-mono text-[10px] leading-none",
@@ -1741,18 +1746,19 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
                                     />
                                   </span>
                                 ) : null}
-                                <button
-                                  type="button"
-                                  aria-label={`Open ${filePath} in editor`}
-                                  title="Open in editor"
-                                  className="inline-flex h-5 shrink-0 cursor-pointer items-center justify-center rounded-md border border-border/70 bg-transparent px-1.5 text-muted-foreground/70 transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-hidden"
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    openDiffFileInEditor(filePath);
-                                  }}
-                                >
-                                  <SquareArrowOutUpRightIcon className="size-3" />
-                                </button>
+                                <TooltipWrapper tooltip="Open in editor">
+                                  <button
+                                    type="button"
+                                    aria-label={`Open ${filePath} in editor`}
+                                    className="inline-flex h-5 shrink-0 cursor-pointer items-center justify-center rounded-md border border-border/70 bg-transparent px-1.5 text-muted-foreground/70 transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-hidden"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      openDiffFileInEditor(filePath);
+                                    }}
+                                  >
+                                    <SquareArrowOutUpRightIcon className="size-3" />
+                                  </button>
+                                </TooltipWrapper>
                               </div>
                             );
                           }}

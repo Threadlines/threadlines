@@ -205,7 +205,8 @@ export const OpenInPicker = memo(function OpenInPicker({
         variant="outline"
         disabled={!preferredEditor || !openInCwd}
         onClick={openPreferredEditor}
-        title={primaryOption ? `Open in ${primaryOption.label}` : "Open"}
+        aria-label={primaryOption ? `Open in ${primaryOption.label}` : "Open"}
+        tooltip={primaryOption ? `Open in ${primaryOption.label}` : "Open"}
       >
         {primaryOption?.Icon && <primaryOption.Icon aria-hidden="true" className="size-3.5" />}
         <span className="sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5">

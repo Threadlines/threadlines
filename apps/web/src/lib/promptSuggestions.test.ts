@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { EventId, type OrchestrationThreadActivity, TurnId } from "@threadlines/contracts";
 
-import { deriveLatestPromptSuggestion } from "./promptSuggestions";
+import {
+  deriveLatestPromptSuggestion,
+  type PromptSuggestionSelectionInput,
+  selectPromptSuggestion,
+} from "./promptSuggestions";
 
 function makeActivity(
   id: string,
@@ -65,5 +69,85 @@ describe("promptSuggestions", () => {
         makeActivity("activity-2", "prompt-suggestion.updated", {}),
       ]),
     ).toBeNull();
+  });
+});
+
+describe("selectPromptSuggestion", () => {
+  function makeInput(
+    overrides?: Partial<PromptSuggestionSelectionInput>,
+  ): PromptSuggestionSelectionInput {
+    return {
+      isSuggestionProvider: true,
+      composerIsEmpty: true,
+      phase: "ready",
+      isSendBusy: false,
+      hasComposerApproval: false,
+      pendingUserInputCount: 0,
+      showPlanFollowUpPrompt: false,
+      latestTurn: { turnId: TurnId.make("turn-1"), state: "completed" },
+      dismissedTurnId: null,
+      activities: [
+        makeActivity("activity-1", "prompt-suggestion.updated", { suggestion: "Add tests." }),
+      ],
+      ...overrides,
+    };
+  }
+
+  it("surfaces the suggestion for a completed turn on an idle, empty composer", () => {
+    expect(selectPromptSuggestion(makeInput())).toBe("Add tests.");
+  });
+
+  it("hides the suggestion for other providers", () => {
+    expect(selectPromptSuggestion(makeInput({ isSuggestionProvider: false }))).toBeNull();
+  });
+
+  it("hides the suggestion while the composer has text", () => {
+    expect(selectPromptSuggestion(makeInput({ composerIsEmpty: false }))).toBeNull();
+  });
+
+  it.each([
+    ["running phase", { phase: "running" } as const],
+    ["send in flight", { isSendBusy: true }],
+    ["pending approval", { hasComposerApproval: true }],
+    ["pending user input", { pendingUserInputCount: 1 }],
+    ["plan follow-up", { showPlanFollowUpPrompt: true }],
+  ])("hides the suggestion during %s", (_label, overrides) => {
+    expect(selectPromptSuggestion(makeInput(overrides))).toBeNull();
+  });
+
+  it("hides the suggestion until the latest turn has completed", () => {
+    expect(
+      selectPromptSuggestion(
+        makeInput({ latestTurn: { turnId: TurnId.make("turn-1"), state: "running" } }),
+      ),
+    ).toBeNull();
+  });
+
+  it("hides the suggestion the user already responded to, even once the composer empties", () => {
+    // Reproduces the post-submit flash: composer is empty again and the dispatch
+    // has been acknowledged (isSendBusy false), but the next turn has not yet
+    // registered so the latest turn is still the dismissed completed one.
+    expect(
+      selectPromptSuggestion(makeInput({ dismissedTurnId: TurnId.make("turn-1") })),
+    ).toBeNull();
+  });
+
+  it("surfaces a fresh suggestion once a newer turn completes", () => {
+    expect(
+      selectPromptSuggestion(
+        makeInput({
+          latestTurn: { turnId: TurnId.make("turn-2"), state: "completed" },
+          dismissedTurnId: TurnId.make("turn-1"),
+          activities: [
+            makeActivity(
+              "activity-2",
+              "prompt-suggestion.updated",
+              { suggestion: "Ship it." },
+              "turn-2",
+            ),
+          ],
+        }),
+      ),
+    ).toBe("Ship it.");
   });
 });

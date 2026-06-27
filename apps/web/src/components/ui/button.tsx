@@ -6,6 +6,7 @@ import { cva, type VariantProps } from "class-variance-authority";
 import type * as React from "react";
 
 import { cn } from "~/lib/utils";
+import { TooltipWrapper, type TooltipSide } from "./tooltip";
 
 const buttonVariants = cva(
   "[&_svg]:-mx-0.5 relative inline-flex shrink-0 cursor-pointer items-center justify-center gap-2 whitespace-nowrap rounded-lg border font-medium text-base outline-none transition-shadow before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] pointer-coarse:after:absolute pointer-coarse:after:size-full pointer-coarse:after:min-h-11 pointer-coarse:after:min-w-11 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-64 sm:text-sm [&_svg:not([class*='opacity-'])]:opacity-80 [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4 [&_svg]:pointer-events-none [&_svg]:shrink-0",
@@ -51,9 +52,15 @@ const buttonVariants = cva(
 interface ButtonProps extends useRender.ComponentProps<"button"> {
   variant?: VariantProps<typeof buttonVariants>["variant"];
   size?: VariantProps<typeof buttonVariants>["size"];
+  /**
+   * Renders the button inside the app's styled tooltip. Prefer this over the
+   * native `title` attribute so tooltips stay visually consistent.
+   */
+  tooltip?: React.ReactNode;
+  tooltipSide?: TooltipSide;
 }
 
-function Button({ className, variant, size, render, ...props }: ButtonProps) {
+function Button({ className, variant, size, render, tooltip, tooltipSide, ...props }: ButtonProps) {
   const typeValue: React.ButtonHTMLAttributes<HTMLButtonElement>["type"] = render
     ? undefined
     : "button";
@@ -64,11 +71,21 @@ function Button({ className, variant, size, render, ...props }: ButtonProps) {
     type: typeValue,
   };
 
-  return useRender({
+  const element = useRender({
     defaultTagName: "button",
     props: mergeProps<"button">(defaultProps, props),
     render,
   });
+
+  if (tooltip == null) {
+    return element;
+  }
+
+  return (
+    <TooltipWrapper side={tooltipSide} tooltip={tooltip}>
+      {element}
+    </TooltipWrapper>
+  );
 }
 
 export { Button, buttonVariants };

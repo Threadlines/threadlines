@@ -905,7 +905,7 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
                       size="xs"
                       variant="outline"
                       className="max-w-56"
-                      title={`Copy link for: ${defaultEndpointCopyLabel}`}
+                      tooltip={`Copy link for: ${defaultEndpointCopyLabel}`}
                       onClick={handleCopyDefaultLink}
                     >
                       <span className="truncate">Copy link for: {defaultEndpointCopyLabel}</span>

@@ -1,4 +1,4 @@
-import { ThreadId } from "@threadlines/contracts";
+import { MessageId, ThreadId } from "@threadlines/contracts";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -21,6 +21,7 @@ import {
   stripInlineTerminalContextPlaceholders,
   type TerminalContextDraft,
 } from "./terminalContext";
+import { appendTranscriptHighlightContextsToPrompt } from "./transcriptHighlightContext";
 
 function makeContext(overrides?: Partial<TerminalContextDraft>): TerminalContextDraft {
   return {
@@ -109,6 +110,38 @@ describe("terminalContext", () => {
     });
   });
 
+  it("derives displayed user message state from terminal and highlight context prompts", () => {
+    const terminalPrompt = appendTerminalContextsToPrompt("Investigate this", [makeContext()]);
+    const prompt = appendTranscriptHighlightContextsToPrompt(terminalPrompt, [
+      {
+        sourceMessageId: MessageId.make("assistant-1"),
+        sourceRole: "assistant",
+        selectedText: "What does this part mean?",
+        note: "I mean the last sentence.",
+      },
+    ]);
+
+    expect(deriveDisplayedUserMessageState(prompt)).toMatchObject({
+      visibleText: "Investigate this",
+      copyText: prompt,
+      contextCount: 1,
+      contexts: [
+        {
+          header: "Terminal 1 lines 12-13",
+          body: "12 | git status\n13 | On branch main",
+        },
+      ],
+      transcriptHighlights: [
+        {
+          sourceRole: "assistant",
+          sourceMessageId: "assistant-1",
+          selectedText: "What does this part mean?",
+          note: "I mean the last sentence.",
+        },
+      ],
+    });
+  });
+
   it("derives displayed user message state from terminal context prompts", () => {
     const prompt = appendTerminalContextsToPrompt("Investigate this", [makeContext()]);
     expect(deriveDisplayedUserMessageState(prompt)).toEqual({
@@ -122,6 +155,7 @@ describe("terminalContext", () => {
           body: "12 | git status\n13 | On branch main",
         },
       ],
+      transcriptHighlights: [],
     });
   });
 

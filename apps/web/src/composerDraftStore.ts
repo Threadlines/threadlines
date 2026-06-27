@@ -3,6 +3,7 @@ import {
   DEFAULT_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
   type EnvironmentId,
+  MessageId,
   ModelSelection,
   ProjectId,
   ProviderInstanceId,
@@ -36,6 +37,10 @@ import {
   ensureInlineTerminalContextPlaceholders,
   normalizeTerminalContextText,
 } from "./lib/terminalContext";
+import {
+  type TranscriptHighlightContextDraft,
+  normalizeTranscriptHighlightContextDraft,
+} from "./lib/transcriptHighlightContext";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { useShallow } from "zustand/react/shallow";
@@ -101,10 +106,25 @@ const PersistedTerminalContextDraft = Schema.Struct({
 });
 type PersistedTerminalContextDraft = typeof PersistedTerminalContextDraft.Type;
 
+const PersistedTranscriptHighlightContextDraft = Schema.Struct({
+  id: Schema.String,
+  threadId: ThreadId,
+  createdAt: Schema.String,
+  sourceMessageId: MessageId,
+  sourceRole: Schema.Literals(["assistant", "user"]),
+  selectedText: Schema.String,
+  note: Schema.String,
+});
+type PersistedTranscriptHighlightContextDraft =
+  typeof PersistedTranscriptHighlightContextDraft.Type;
+
 const PersistedComposerThreadDraftState = Schema.Struct({
   prompt: Schema.String,
   attachments: Schema.Array(PersistedComposerImageAttachment),
   terminalContexts: Schema.optionalKey(Schema.Array(PersistedTerminalContextDraft)),
+  transcriptHighlightContexts: Schema.optionalKey(
+    Schema.Array(PersistedTranscriptHighlightContextDraft),
+  ),
   // Keyed by `ProviderInstanceId` (open branded slug) so custom provider
   // instances (e.g. `codex_personal`) round-trip alongside the built-in
   // `codex` / `claudeAgent` / ... entries. Every prior `ProviderDriverKind`
@@ -225,6 +245,7 @@ export interface ComposerThreadDraftState {
   nonPersistedImageIds: string[];
   persistedAttachments: PersistedComposerImageAttachment[];
   terminalContexts: TerminalContextDraft[];
+  transcriptHighlightContexts: TranscriptHighlightContextDraft[];
   /**
    * Per-instance model selection. Keyed by `ProviderInstanceId` (open
    * branded slug) so a default `codex` instance and a user-authored
@@ -362,6 +383,10 @@ interface ComposerDraftStoreState {
   setStickyModelSelection: (modelSelection: ModelSelection | null | undefined) => void;
   setPrompt: (threadRef: ComposerThreadTarget, prompt: string) => void;
   setTerminalContexts: (threadRef: ComposerThreadTarget, contexts: TerminalContextDraft[]) => void;
+  setTranscriptHighlightContexts: (
+    threadRef: ComposerThreadTarget,
+    contexts: TranscriptHighlightContextDraft[],
+  ) => void;
   setModelSelection: (
     threadRef: ComposerThreadTarget,
     modelSelection: ModelSelection | null | undefined,
@@ -406,6 +431,21 @@ interface ComposerDraftStoreState {
   addTerminalContexts: (threadRef: ComposerThreadTarget, contexts: TerminalContextDraft[]) => void;
   removeTerminalContext: (threadRef: ComposerThreadTarget, contextId: string) => void;
   clearTerminalContexts: (threadRef: ComposerThreadTarget) => void;
+  addTranscriptHighlightContext: (
+    threadRef: ComposerThreadTarget,
+    context: TranscriptHighlightContextDraft,
+  ) => void;
+  addTranscriptHighlightContexts: (
+    threadRef: ComposerThreadTarget,
+    contexts: TranscriptHighlightContextDraft[],
+  ) => void;
+  removeTranscriptHighlightContext: (threadRef: ComposerThreadTarget, contextId: string) => void;
+  updateTranscriptHighlightContextNote: (
+    threadRef: ComposerThreadTarget,
+    contextId: string,
+    note: string,
+  ) => void;
+  clearTranscriptHighlightContexts: (threadRef: ComposerThreadTarget) => void;
   clearPersistedAttachments: (threadRef: ComposerThreadTarget) => void;
   syncPersistedAttachments: (
     threadRef: ComposerThreadTarget,
@@ -479,9 +519,11 @@ const EMPTY_IMAGES: ComposerImageAttachment[] = [];
 const EMPTY_IDS: string[] = [];
 const EMPTY_PERSISTED_ATTACHMENTS: PersistedComposerImageAttachment[] = [];
 const EMPTY_TERMINAL_CONTEXTS: TerminalContextDraft[] = [];
+const EMPTY_TRANSCRIPT_HIGHLIGHT_CONTEXTS: TranscriptHighlightContextDraft[] = [];
 Object.freeze(EMPTY_IMAGES);
 Object.freeze(EMPTY_IDS);
 Object.freeze(EMPTY_PERSISTED_ATTACHMENTS);
+Object.freeze(EMPTY_TRANSCRIPT_HIGHLIGHT_CONTEXTS);
 const EMPTY_MODEL_SELECTION_BY_PROVIDER: Partial<Record<ProviderDriverKind, ModelSelection>> =
   Object.freeze({});
 const EMPTY_COMPOSER_DRAFT_MODEL_STATE = Object.freeze<ComposerDraftModelState>({
@@ -495,6 +537,7 @@ const EMPTY_THREAD_DRAFT = Object.freeze<ComposerThreadDraftState>({
   nonPersistedImageIds: EMPTY_IDS,
   persistedAttachments: EMPTY_PERSISTED_ATTACHMENTS,
   terminalContexts: EMPTY_TERMINAL_CONTEXTS,
+  transcriptHighlightContexts: EMPTY_TRANSCRIPT_HIGHLIGHT_CONTEXTS,
   modelSelectionByProvider: EMPTY_MODEL_SELECTION_BY_PROVIDER,
   activeProvider: null,
   runtimeMode: null,
@@ -508,6 +551,7 @@ function createEmptyThreadDraft(): ComposerThreadDraftState {
     nonPersistedImageIds: [],
     persistedAttachments: [],
     terminalContexts: [],
+    transcriptHighlightContexts: [],
     modelSelectionByProvider: {},
     activeProvider: null,
     runtimeMode: null,
@@ -523,6 +567,10 @@ function composerImageDedupKey(image: ComposerImageAttachment): string {
 
 function terminalContextDedupKey(context: TerminalContextDraft): string {
   return `${context.terminalId}\u0000${context.lineStart}\u0000${context.lineEnd}`;
+}
+
+function transcriptHighlightContextDedupKey(context: TranscriptHighlightContextDraft): string {
+  return `${context.sourceMessageId}\u0000${context.selectedText}\u0000${context.note}`;
 }
 
 function normalizeTerminalContextForThread(
@@ -572,12 +620,38 @@ function normalizeTerminalContextsForThread(
   return normalizedContexts;
 }
 
+function normalizeTranscriptHighlightContextsForThread(
+  threadId: ThreadId,
+  contexts: ReadonlyArray<TranscriptHighlightContextDraft>,
+): TranscriptHighlightContextDraft[] {
+  const existingIds = new Set<string>();
+  const existingDedupKeys = new Set<string>();
+  const normalizedContexts: TranscriptHighlightContextDraft[] = [];
+
+  for (const context of contexts) {
+    const normalizedContext = normalizeTranscriptHighlightContextDraft(threadId, context);
+    if (!normalizedContext) {
+      continue;
+    }
+    const dedupKey = transcriptHighlightContextDedupKey(normalizedContext);
+    if (existingIds.has(normalizedContext.id) || existingDedupKeys.has(dedupKey)) {
+      continue;
+    }
+    normalizedContexts.push(normalizedContext);
+    existingIds.add(normalizedContext.id);
+    existingDedupKeys.add(dedupKey);
+  }
+
+  return normalizedContexts;
+}
+
 function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
   return (
     draft.prompt.length === 0 &&
     draft.images.length === 0 &&
     draft.persistedAttachments.length === 0 &&
     draft.terminalContexts.length === 0 &&
+    draft.transcriptHighlightContexts.length === 0 &&
     Object.keys(draft.modelSelectionByProvider).length === 0 &&
     draft.activeProvider === null &&
     draft.runtimeMode === null &&
@@ -1016,6 +1090,44 @@ function normalizePersistedTerminalContextDraft(
     terminalLabel,
     lineStart: normalizedLineStart,
     lineEnd: normalizedLineEnd,
+  };
+}
+
+function normalizePersistedTranscriptHighlightContextDraft(
+  value: unknown,
+): PersistedTranscriptHighlightContextDraft | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const candidate = value as Record<string, unknown>;
+  const id = typeof candidate.id === "string" ? candidate.id.trim() : "";
+  const threadId = typeof candidate.threadId === "string" ? candidate.threadId.trim() : "";
+  const createdAt = typeof candidate.createdAt === "string" ? candidate.createdAt.trim() : "";
+  const sourceMessageId =
+    typeof candidate.sourceMessageId === "string" ? candidate.sourceMessageId.trim() : "";
+  const sourceRole = candidate.sourceRole;
+  const selectedText =
+    typeof candidate.selectedText === "string" ? candidate.selectedText.trim() : "";
+  const note = typeof candidate.note === "string" ? candidate.note.trim() : "";
+  if (
+    id.length === 0 ||
+    threadId.length === 0 ||
+    createdAt.length === 0 ||
+    sourceMessageId.length === 0 ||
+    (sourceRole !== "assistant" && sourceRole !== "user") ||
+    selectedText.length === 0 ||
+    note.length === 0
+  ) {
+    return null;
+  }
+  return {
+    id,
+    threadId: threadId as ThreadId,
+    createdAt,
+    sourceMessageId: MessageId.make(sourceMessageId),
+    sourceRole,
+    selectedText,
+    note,
   };
 }
 
@@ -1488,6 +1600,12 @@ function normalizePersistedDraftsByThreadId(
           return normalized ? [normalized] : [];
         })
       : [];
+    const transcriptHighlightContexts = Array.isArray(draftCandidate.transcriptHighlightContexts)
+      ? draftCandidate.transcriptHighlightContexts.flatMap((entry) => {
+          const normalized = normalizePersistedTranscriptHighlightContextDraft(entry);
+          return normalized ? [normalized] : [];
+        })
+      : [];
     const runtimeMode = isRuntimeMode(draftCandidate.runtimeMode)
       ? draftCandidate.runtimeMode
       : null;
@@ -1551,6 +1669,7 @@ function normalizePersistedDraftsByThreadId(
       promptCandidate.length === 0 &&
       attachments.length === 0 &&
       terminalContexts.length === 0 &&
+      transcriptHighlightContexts.length === 0 &&
       !hasModelData &&
       !runtimeMode &&
       !interactionMode
@@ -1573,6 +1692,7 @@ function normalizePersistedDraftsByThreadId(
       prompt,
       attachments,
       ...(terminalContexts.length > 0 ? { terminalContexts } : {}),
+      ...(transcriptHighlightContexts.length > 0 ? { transcriptHighlightContexts } : {}),
       ...(hasModelData
         ? {
             modelSelectionByProvider: compactModelSelectionByProvider(modelSelectionByProvider),
@@ -1655,6 +1775,7 @@ function partializeComposerDraftStoreState(
       draft.prompt.length === 0 &&
       draft.persistedAttachments.length === 0 &&
       draft.terminalContexts.length === 0 &&
+      draft.transcriptHighlightContexts.length === 0 &&
       !hasModelData &&
       draft.runtimeMode === null &&
       draft.interactionMode === null
@@ -1674,6 +1795,19 @@ function partializeComposerDraftStoreState(
               terminalLabel: context.terminalLabel,
               lineStart: context.lineStart,
               lineEnd: context.lineEnd,
+            })),
+          }
+        : {}),
+      ...(draft.transcriptHighlightContexts.length > 0
+        ? {
+            transcriptHighlightContexts: draft.transcriptHighlightContexts.map((context) => ({
+              id: context.id,
+              threadId: context.threadId,
+              createdAt: context.createdAt,
+              sourceMessageId: context.sourceMessageId,
+              sourceRole: context.sourceRole,
+              selectedText: context.selectedText,
+              note: context.note,
             })),
           }
         : {}),
@@ -1911,6 +2045,8 @@ function toHydratedThreadDraft(
         ...context,
         text: "",
       })) ?? [],
+    transcriptHighlightContexts:
+      persistedDraft.transcriptHighlightContexts?.map((context) => ({ ...context })) ?? [],
     modelSelectionByProvider,
     activeProvider,
     runtimeMode: persistedDraft.runtimeMode ?? null,
@@ -2358,6 +2494,31 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                 normalizedContexts.length,
               ),
               terminalContexts: normalizedContexts,
+            };
+            const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
+            if (shouldRemoveDraft(nextDraft)) {
+              delete nextDraftsByThreadKey[threadKey];
+            } else {
+              nextDraftsByThreadKey[threadKey] = nextDraft;
+            }
+            return { draftsByThreadKey: nextDraftsByThreadKey };
+          });
+        },
+        setTranscriptHighlightContexts: (threadRef, contexts) => {
+          const threadKey = resolveComposerDraftKey(get(), threadRef);
+          const threadId = resolveComposerThreadId(get(), threadRef);
+          if (!threadKey || !threadId) {
+            return;
+          }
+          const normalizedContexts = normalizeTranscriptHighlightContextsForThread(
+            threadId,
+            contexts,
+          );
+          set((state) => {
+            const existing = state.draftsByThreadKey[threadKey] ?? createEmptyThreadDraft();
+            const nextDraft: ComposerThreadDraftState = {
+              ...existing,
+              transcriptHighlightContexts: normalizedContexts,
             };
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
             if (shouldRemoveDraft(nextDraft)) {
@@ -2823,6 +2984,132 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             return { draftsByThreadKey: nextDraftsByThreadKey };
           });
         },
+        addTranscriptHighlightContext: (threadRef, context) => {
+          get().addTranscriptHighlightContexts(threadRef, [context]);
+        },
+        addTranscriptHighlightContexts: (threadRef, contexts) => {
+          const threadKey = resolveComposerDraftKey(get(), threadRef);
+          const threadId = resolveComposerThreadId(get(), threadRef);
+          if (!threadKey || !threadId || contexts.length === 0) {
+            return;
+          }
+          set((state) => {
+            const existing = state.draftsByThreadKey[threadKey] ?? createEmptyThreadDraft();
+            const acceptedContexts = normalizeTranscriptHighlightContextsForThread(threadId, [
+              ...existing.transcriptHighlightContexts,
+              ...contexts,
+            ]).slice(existing.transcriptHighlightContexts.length);
+            if (acceptedContexts.length === 0) {
+              return state;
+            }
+            return {
+              draftsByThreadKey: {
+                ...state.draftsByThreadKey,
+                [threadKey]: {
+                  ...existing,
+                  transcriptHighlightContexts: [
+                    ...existing.transcriptHighlightContexts,
+                    ...acceptedContexts,
+                  ],
+                },
+              },
+            };
+          });
+        },
+        removeTranscriptHighlightContext: (threadRef, contextId) => {
+          const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";
+          if (threadKey.length === 0 || contextId.length === 0) {
+            return;
+          }
+          set((state) => {
+            const current = state.draftsByThreadKey[threadKey];
+            if (!current) {
+              return state;
+            }
+            const nextDraft: ComposerThreadDraftState = {
+              ...current,
+              transcriptHighlightContexts: current.transcriptHighlightContexts.filter(
+                (context) => context.id !== contextId,
+              ),
+            };
+            const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
+            if (shouldRemoveDraft(nextDraft)) {
+              delete nextDraftsByThreadKey[threadKey];
+            } else {
+              nextDraftsByThreadKey[threadKey] = nextDraft;
+            }
+            return { draftsByThreadKey: nextDraftsByThreadKey };
+          });
+        },
+        updateTranscriptHighlightContextNote: (threadRef, contextId, note) => {
+          const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";
+          const threadId = resolveComposerThreadId(get(), threadRef);
+          if (threadKey.length === 0 || !threadId || contextId.length === 0) {
+            return;
+          }
+          set((state) => {
+            const current = state.draftsByThreadKey[threadKey];
+            if (!current) {
+              return state;
+            }
+            const target = current.transcriptHighlightContexts.find(
+              (context) => context.id === contextId,
+            );
+            if (!target) {
+              return state;
+            }
+            const normalized = normalizeTranscriptHighlightContextDraft(threadId, {
+              ...target,
+              note,
+            });
+            if (!normalized || normalized.note === target.note) {
+              return state;
+            }
+            const nextDedupKey = transcriptHighlightContextDedupKey(normalized);
+            const collidesWithOther = current.transcriptHighlightContexts.some(
+              (context) =>
+                context.id !== contextId &&
+                transcriptHighlightContextDedupKey(context) === nextDedupKey,
+            );
+            if (collidesWithOther) {
+              return state;
+            }
+            return {
+              draftsByThreadKey: {
+                ...state.draftsByThreadKey,
+                [threadKey]: {
+                  ...current,
+                  transcriptHighlightContexts: current.transcriptHighlightContexts.map((context) =>
+                    context.id === contextId ? normalized : context,
+                  ),
+                },
+              },
+            };
+          });
+        },
+        clearTranscriptHighlightContexts: (threadRef) => {
+          const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";
+          if (threadKey.length === 0) {
+            return;
+          }
+          set((state) => {
+            const current = state.draftsByThreadKey[threadKey];
+            if (!current || current.transcriptHighlightContexts.length === 0) {
+              return state;
+            }
+            const nextDraft: ComposerThreadDraftState = {
+              ...current,
+              transcriptHighlightContexts: [],
+            };
+            const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
+            if (shouldRemoveDraft(nextDraft)) {
+              delete nextDraftsByThreadKey[threadKey];
+            } else {
+              nextDraftsByThreadKey[threadKey] = nextDraft;
+            }
+            return { draftsByThreadKey: nextDraftsByThreadKey };
+          });
+        },
         clearPersistedAttachments: (threadRef) => {
           const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";
           if (threadKey.length === 0) {
@@ -2895,6 +3182,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               nonPersistedImageIds: [],
               persistedAttachments: [],
               terminalContexts: [],
+              transcriptHighlightContexts: [],
             };
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
             if (shouldRemoveDraft(nextDraft)) {

@@ -128,7 +128,7 @@ import { Skeleton } from "../ui/skeleton";
 import { Textarea } from "../ui/textarea";
 import { SectionLabel } from "../ui/threadline";
 import { stackedThreadToast, toastManager } from "../ui/toast";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { Tooltip, TooltipPopup, TooltipTrigger, TooltipWrapper } from "../ui/tooltip";
 import {
   buildCommitGraphRows,
   buildSourceControlFileTree,
@@ -2495,15 +2495,17 @@ export function SourceControlPanel({
           className="grid min-w-0 cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-center gap-x-1.5 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
           onClick={() => openChangedFileDiff(entry.path)}
         >
-          <span
-            className={cn(
-              "inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded border px-1 font-mono text-[10px] leading-none",
-              workingTreeFileStatusClassName(entry),
-            )}
-            title={statusDescription}
-          >
-            {statusLabel}
-          </span>
+          <TooltipWrapper tooltip={statusDescription}>
+            <span
+              aria-label={statusDescription}
+              className={cn(
+                "inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded border px-1 font-mono text-[10px] leading-none",
+                workingTreeFileStatusClassName(entry),
+              )}
+            >
+              {statusLabel}
+            </span>
+          </TooltipWrapper>
           <span className="min-w-0">
             <DelayedSourceControlNameTooltip
               label={pathParts.name}
@@ -2751,13 +2753,12 @@ export function SourceControlPanel({
             {target.name}
           </span>
           {status?.refName ? (
-            <span
-              className="inline-flex min-w-0 max-w-[45%] shrink-0 items-center gap-1 rounded-sm border border-border/70 bg-muted/45 px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground/80"
-              title={`Branch: ${status.refName}`}
-            >
-              <GitBranchIcon className="size-3 shrink-0 opacity-70" />
-              <span className="min-w-0 truncate">{status.refName}</span>
-            </span>
+            <TooltipWrapper tooltip={`Branch: ${status.refName}`}>
+              <span className="inline-flex min-w-0 max-w-[45%] shrink-0 items-center gap-1 rounded-sm border border-border/70 bg-muted/45 px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground/80">
+                <GitBranchIcon className="size-3 shrink-0 opacity-70" />
+                <span className="min-w-0 truncate">{status.refName}</span>
+              </span>
+            </TooltipWrapper>
           ) : null}
         </div>
       </div>
