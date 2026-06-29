@@ -1,7 +1,6 @@
 import {
   EventId,
   MessageId,
-  ProviderDriverKind,
   ThreadId,
   TurnId,
   type OrchestrationThreadActivity,
@@ -721,7 +720,7 @@ describe("deriveWorkLogEntries", () => {
     expect(entries.map((entry) => entry.id)).toEqual(["tool-start"]);
   });
 
-  it("adds MCP auth reconnect actions to auth-related startup failures", () => {
+  it("omits passive MCP auth startup failures from the work log", () => {
     const entries = deriveWorkLogEntries([
       makeActivity({
         id: "mcp-startup-failed",
@@ -739,22 +738,10 @@ describe("deriveWorkLogEntries", () => {
       }),
     ]);
 
-    expect(entries).toHaveLength(1);
-    expect(entries[0]).toMatchObject({
-      id: "mcp-startup-failed",
-      tone: "warning",
-      mcpAuthReconnect: {
-        provider: ProviderDriverKind.make("codex"),
-        serverName: "supabase",
-        serverLabel: "Supabase",
-        intent: "authorize",
-        actionLabel: "Authorize",
-        terminalCommand: "codex mcp login supabase",
-      },
-    });
+    expect(entries).toEqual([]);
   });
 
-  it("adds provider-aware Claude MCP auth reconnect actions", () => {
+  it("omits provider-aware Claude MCP auth startup failures from the work log", () => {
     const entries = deriveWorkLogEntries([
       makeActivity({
         id: "claude-mcp-startup-failed",
@@ -774,20 +761,7 @@ describe("deriveWorkLogEntries", () => {
       }),
     ]);
 
-    expect(entries).toHaveLength(1);
-    expect(entries[0]).toMatchObject({
-      id: "claude-mcp-startup-failed",
-      tone: "warning",
-      mcpAuthReconnect: {
-        provider: ProviderDriverKind.make("claudeAgent"),
-        providerInstanceId: "claude-work",
-        serverName: "supabase",
-        serverLabel: "Supabase",
-        intent: "authorize",
-        actionLabel: "Authorize",
-        terminalCommand: "claude mcp login supabase",
-      },
-    });
+    expect(entries).toEqual([]);
   });
 
   it("omits task.started but shows task.progress and task.completed", () => {

@@ -1427,6 +1427,10 @@ export function deriveWorkLogEntries(
     .filter((activity) => activity.kind !== "context-window.updated")
     // Account telemetry; belongs in a usage meter, not the work narrative.
     .filter((activity) => activity.kind !== "account.rate-limits.updated")
+    // MCP startup and OAuth status is ambient extension health. It belongs in
+    // plugin settings unless an actual tool call or provider turn is blocked.
+    .filter((activity) => activity.kind !== "mcp.status.updated")
+    .filter((activity) => activity.kind !== "mcp.oauth.completed")
     .filter((activity) => activity.kind !== "prompt-suggestion.updated")
     .filter((activity) => activity.summary !== "Checkpoint captured")
     .filter((activity) => !isPlanBoundaryToolActivity(activity))

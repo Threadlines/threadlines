@@ -352,7 +352,7 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("complete the browser sign-in");
   });
 
-  it("renders MCP startup auth warnings with an inline authorize action", async () => {
+  it("renders explicit MCP auth reconnect actions with an inline authorize action", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(
       <MessagesTimeline
@@ -391,7 +391,7 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("codex mcp login supabase");
   });
 
-  it("marks MCP startup auth warnings authorized after OAuth completes", async () => {
+  it("marks explicit MCP auth reconnect actions authorized after OAuth completes", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(
       <MessagesTimeline

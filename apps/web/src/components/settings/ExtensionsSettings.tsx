@@ -716,6 +716,139 @@ function ExtensionItemBadges({ item }: { item: ExtensionItem }) {
   );
 }
 
+function extensionAuthIssueDetail(item: ExtensionItem): string {
+  if (item.kind === "mcp") {
+    return (
+      optionalDetail([item.server.authStatus, item.server.status, item.server.detail]) ??
+      "MCP authentication needs attention."
+    );
+  }
+
+  if (item.kind === "plugin") {
+    return (
+      optionalDetail([item.plugin.authPolicy, item.plugin.availability]) ??
+      "Plugin authentication needs attention."
+    );
+  }
+
+  return `${extensionKindLabel(item.kind)} authentication needs attention.`;
+}
+
+function ExtensionAuthenticationIssues({
+  provider,
+  items,
+  isLoadingMcpServers,
+  onLoadMcpServers,
+  onSelect,
+}: {
+  provider: ProviderExtensionProviderInventory;
+  items: ReadonlyArray<ExtensionItem>;
+  isLoadingMcpServers: boolean;
+  onLoadMcpServers: (provider: ProviderExtensionProviderInventory) => Promise<void>;
+  onSelect: (item: ExtensionItem) => void;
+}) {
+  const mcpStatus = provider.mcpServersStatus;
+  const canCheckMcpAuth = mcpStatus === "deferred" || mcpStatus === "error";
+  const hasAuthIssue = items.length > 0 || mcpStatus === "error";
+  if (items.length === 0 && !canCheckMcpAuth) return null;
+
+  return (
+    <div
+      className={cn(
+        "rounded-md border",
+        hasAuthIssue ? "border-warning/25 bg-warning/5" : "border-border/60 bg-background/35",
+      )}
+    >
+      <div
+        className={cn(
+          "flex min-w-0 items-start justify-between gap-3 border-b px-3 py-2",
+          hasAuthIssue ? "border-warning/15" : "border-border/50",
+        )}
+      >
+        <div className="min-w-0">
+          <div className="flex min-w-0 items-center gap-2">
+            <KeyRoundIcon
+              className={cn(
+                "size-3.5 shrink-0",
+                hasAuthIssue ? "text-warning" : "text-muted-foreground/70",
+              )}
+            />
+            <div className="text-[11px] font-semibold uppercase text-foreground/85">
+              Authentication
+            </div>
+            {items.length > 0 ? (
+              <Badge size="sm" variant="warning">
+                {items.length}
+              </Badge>
+            ) : null}
+          </div>
+          <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground/75">
+            Extension sign-in issues are shown here unless they directly block a chat turn.
+          </p>
+        </div>
+        {canCheckMcpAuth ? (
+          <Button
+            size="xs"
+            variant="outline"
+            className="shrink-0"
+            disabled={isLoadingMcpServers}
+            onClick={() => void onLoadMcpServers(provider)}
+          >
+            {isLoadingMcpServers ? (
+              <LoaderIcon className="size-3.5 animate-spin" />
+            ) : (
+              <RefreshCwIcon className="size-3.5" />
+            )}
+            {mcpStatus === "error" ? "Retry MCP auth" : "Check MCP auth"}
+          </Button>
+        ) : null}
+      </div>
+      {items.length > 0 ? (
+        <div className="divide-y divide-warning/15">
+          {items.map((item) => (
+            <button
+              key={`${item.kind}:${item.id}`}
+              type="button"
+              className="group flex min-h-11 w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-warning/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              onClick={() => onSelect(item)}
+            >
+              <span className="flex size-6 shrink-0 items-center justify-center rounded-sm bg-warning/10 text-warning">
+                <KeyRoundIcon className="size-3.5" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-xs font-medium text-foreground">{item.title}</div>
+                <div className="truncate text-[11px] text-muted-foreground/75">
+                  {extensionAuthIssueDetail(item)}
+                </div>
+              </div>
+              <ExtensionItemBadges item={item} />
+              <span className="hidden shrink-0 text-[11px] font-medium text-muted-foreground/70 transition-colors group-hover:text-foreground sm:inline">
+                Review auth
+              </span>
+              <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground/45 transition-colors group-hover:text-muted-foreground" />
+            </button>
+          ))}
+        </div>
+      ) : (
+        <div className="px-3 py-2">
+          <EmptyList
+            label={
+              mcpStatus === "error"
+                ? "MCP authentication status could not be checked."
+                : "MCP authentication status has not been checked."
+            }
+          />
+          {provider.mcpServersMessage ? (
+            <div className="mt-1 text-[11px] text-muted-foreground/70">
+              {provider.mcpServersMessage}
+            </div>
+          ) : null}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function extensionOpenPath(item: ExtensionItem): string | null {
   if (item.kind === "skill") return item.skill.path;
   if (item.kind === "plugin" && isLikelyLocalPath(item.plugin.installPath)) {
@@ -2772,6 +2905,14 @@ function ProviderInventoryRow({
     }),
     [allItems, filterProviderItems],
   );
+  const authenticationIssueItems = useMemo(
+    () =>
+      sortExtensionItems(
+        [...allItems.plugins, ...allItems.mcpServers].filter(extensionItemNeedsAuth),
+        "recommended",
+      ),
+    [allItems],
+  );
   const panelIdBase = useMemo(
     () => `extensions-${String(provider.instanceId).replace(/[^a-zA-Z0-9_-]/g, "-")}`,
     [provider.instanceId],
@@ -2911,6 +3052,13 @@ function ProviderInventoryRow({
       }
     >
       <div className="mt-3 space-y-3 border-t border-border/50 py-3">
+        <ExtensionAuthenticationIssues
+          provider={provider}
+          items={authenticationIssueItems}
+          isLoadingMcpServers={isLoadingMcpServers}
+          onLoadMcpServers={onLoadMcpServers}
+          onSelect={onSelectItem}
+        />
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <div className="relative min-w-0 flex-1">
             <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground/60" />
