@@ -23,8 +23,9 @@ export function handleTranscriptHighlightNoteKeyDown(
   }
 }
 
-export const TRANSCRIPT_HIGHLIGHT_CARD_LABEL_CLASS_NAME =
+export const CONTEXT_PREVIEW_CARD_LABEL_CLASS_NAME =
   "font-medium text-[11px] text-muted-foreground uppercase tracking-wide";
+export const TRANSCRIPT_HIGHLIGHT_CARD_LABEL_CLASS_NAME = CONTEXT_PREVIEW_CARD_LABEL_CLASS_NAME;
 
 const TRANSCRIPT_HIGHLIGHT_CARD_QUOTE_CLASS_NAME =
   "max-h-24 overflow-y-auto whitespace-pre-wrap rounded-md border border-border/60 bg-muted/40 px-2.5 py-1.5 text-xs leading-snug text-muted-foreground";

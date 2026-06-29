@@ -871,6 +871,7 @@ export default function ChatView(props: ChatViewProps) {
   const localComposerRef = useRef<ChatComposerHandle | null>(null);
   const composerRef = useComposerHandleContext() ?? localComposerRef;
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const [stickToBottomRequestKey, setStickToBottomRequestKey] = useState(0);
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
   const [steeringMessagesById, setSteeringMessagesById] = useState<
     Record<string, SteeringMessageHandoff>
@@ -934,6 +935,9 @@ export default function ChatView(props: ChatViewProps) {
   const storeNewTerminal = useTerminalStateStore((s) => s.newTerminal);
   const storeSetActiveTerminal = useTerminalStateStore((s) => s.setActiveTerminal);
   const storeCloseTerminal = useTerminalStateStore((s) => s.closeTerminal);
+  const removeComposerDraftTerminalContextsForTerminal = useComposerDraftStore(
+    (store) => store.removeTerminalContextsForTerminal,
+  );
   const serverThreadKeys = useStore(
     useShallow((state) =>
       selectThreadsAcrossEnvironments(state).map((thread) =>
@@ -2311,9 +2315,10 @@ export default function ChatView(props: ChatViewProps) {
         void fallbackExitWrite();
       }
       storeCloseTerminal(targetThreadRef, terminalId);
+      removeComposerDraftTerminalContextsForTerminal(targetThreadRef, terminalId);
       setTerminalFocusRequestId((value) => value + 1);
     },
-    [storeCloseTerminal],
+    [removeComposerDraftTerminalContextsForTerminal, storeCloseTerminal],
   );
   const [pendingTerminalKill, setPendingTerminalKill] = useState<{
     threadRef: { environmentId: EnvironmentId; threadId: ThreadId };
@@ -3109,11 +3114,6 @@ export default function ChatView(props: ChatViewProps) {
     [environmentId, serverThread],
   );
 
-  // Scroll helpers — LegendList handles auto-scroll via maintainScrollAtEnd.
-  const scrollToEnd = useCallback((animated = false) => {
-    legendListRef.current?.scrollToEnd?.({ animated });
-  }, []);
-
   // Debounce *showing* the scroll-to-bottom pill so it doesn't flash during
   // thread switches.  LegendList fires scroll events with isAtEnd=false while
   // initialScrollAtEnd is settling; hiding is always immediate.
@@ -3130,6 +3130,18 @@ export default function ChatView(props: ChatViewProps) {
       { wait: 150 },
     ),
   );
+
+  const requestTimelineStickToBottom = useCallback(async (animated = false) => {
+    isAtEndRef.current = true;
+    showScrollDebouncer.current.cancel();
+    setShowScrollToBottom(false);
+    setStickToBottomRequestKey((current) => current + 1);
+    await legendListRef.current?.scrollToEnd?.({ animated });
+  }, []);
+  const scheduleTimelineStickToBottom = useCallback(() => {
+    void requestTimelineStickToBottom(false);
+  }, [requestTimelineStickToBottom]);
+
   const onIsAtEndChange = useCallback((isAtEnd: boolean) => {
     const nextIsAtEnd = isAtEnd || isLegendListVisiblyAtEnd(legendListRef.current);
     if (isAtEndRef.current === nextIsAtEnd) return;
@@ -3712,12 +3724,9 @@ export default function ChatView(props: ChatViewProps) {
       }));
     } else {
       // Scroll to the current end *before* adding the optimistic message.
-      // This sets LegendList's internal isAtEnd=true so maintainScrollAtEnd
-      // automatically pins to the new item when the data changes.
-      isAtEndRef.current = true;
-      showScrollDebouncer.current.cancel();
-      setShowScrollToBottom(false);
-      await legendListRef.current?.scrollToEnd?.({ animated: false });
+      // This sets LegendList's internal isAtEnd=true and tells the timeline to
+      // re-arm maintainScrollAtEnd before the new item lands.
+      await requestTimelineStickToBottom(false);
 
       addOptimisticThreadMessage(threadRefForSend, optimisticMessage);
     }
@@ -4173,10 +4182,7 @@ export default function ChatView(props: ChatViewProps) {
       setThreadError(threadIdForSend, null);
 
       // Scroll to the current end *before* adding the optimistic message.
-      isAtEndRef.current = true;
-      showScrollDebouncer.current.cancel();
-      setShowScrollToBottom(false);
-      await legendListRef.current?.scrollToEnd?.({ animated: false });
+      await requestTimelineStickToBottom(false);
 
       const optimisticMessage: ChatMessage = {
         id: messageIdForSend,
@@ -4891,6 +4897,7 @@ export default function ChatView(props: ChatViewProps) {
               activeTurnId={activeLatestTurn?.turnId ?? null}
               activeTurnStartedAt={activeWorkStartedAt}
               listRef={legendListRef}
+              stickToBottomRequestKey={stickToBottomRequestKey}
               timelineEntries={timelineEntries}
               completionDividerBeforeEntryId={completionDividerBeforeEntryId}
               completionSummary={completionSummary}
@@ -4921,7 +4928,9 @@ export default function ChatView(props: ChatViewProps) {
               <div className="pointer-events-none absolute bottom-1 left-1/2 z-30 flex -translate-x-1/2 justify-center py-1.5">
                 <button
                   type="button"
-                  onClick={() => scrollToEnd(true)}
+                  onClick={() => {
+                    void requestTimelineStickToBottom(true);
+                  }}
                   className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-border/60 bg-card px-3 py-1 text-muted-foreground text-xs shadow-sm transition-colors hover:border-border hover:text-foreground hover:cursor-pointer"
                 >
                   <ChevronDownIcon className="size-3.5" />
@@ -4992,7 +5001,7 @@ export default function ChatView(props: ChatViewProps) {
                   composerTerminalContextsRef={composerTerminalContextsRef}
                   composerTranscriptHighlightContextsRef={composerTranscriptHighlightContextsRef}
                   shouldAutoScrollRef={isAtEndRef}
-                  scheduleStickToBottom={scrollToEnd}
+                  scheduleStickToBottom={scheduleTimelineStickToBottom}
                   onSend={onSend}
                   onInterrupt={onInterrupt}
                   onCompactContext={contextCompactControlVisible ? onCompactContext : undefined}

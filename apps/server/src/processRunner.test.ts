@@ -7,7 +7,7 @@ import * as Layer from "effect/Layer";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import {
   isWindowsCommandNotFound,
@@ -21,6 +21,7 @@ import {
 type ChildProcessCommand = {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
+  readonly options: ChildProcess.CommandOptions & { readonly windowsHide?: boolean | undefined };
 };
 
 // Accesses private properties of ChildProcessCommand for testing purposes
@@ -60,6 +61,26 @@ function makeSpawner(
   f: (command: ChildProcessCommand) => Effect.Effect<ChildProcessSpawner.ChildProcessHandle>,
 ) {
   return ChildProcessSpawner.make((command) => f(asChildProcessCommand(command)));
+}
+
+function withProcessPlatform<A, E, R>(
+  platform: NodeJS.Platform,
+  effect: Effect.Effect<A, E, R>,
+): Effect.Effect<A, E, R> {
+  return Effect.acquireUseRelease(
+    Effect.sync(() => {
+      const descriptor = Object.getOwnPropertyDescriptor(process, "platform");
+      Object.defineProperty(process, "platform", { value: platform });
+      return descriptor;
+    }),
+    () => effect,
+    (descriptor) =>
+      Effect.sync(() => {
+        if (descriptor) {
+          Object.defineProperty(process, "platform", descriptor);
+        }
+      }),
+  );
 }
 
 const runWith =
@@ -122,6 +143,27 @@ describe("runProcess", () => {
       expect(result.stdout).toBe("service ok");
     }).pipe(Effect.provide(layer));
   });
+
+  it.effect("hides transient child process consoles on Windows", () =>
+    withProcessPlatform(
+      "win32",
+      Effect.gen(function* () {
+        const spawner = makeSpawner((command) =>
+          Effect.sync(() => {
+            expect(command.options.windowsHide).toBe(true);
+            return makeHandle({ stdout: "hidden" });
+          }),
+        );
+
+        const result = yield* runWith(spawner)({
+          command: "fake",
+          args: ["--hidden"],
+        });
+
+        expect(result.stdout).toBe("hidden");
+      }),
+    ),
+  );
 
   it.effect("fails when output exceeds max buffer in default mode", () =>
     Effect.gen(function* () {

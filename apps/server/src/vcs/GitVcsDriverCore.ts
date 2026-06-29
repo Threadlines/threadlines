@@ -17,6 +17,7 @@ import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 
 import {
   GitCommandError,
@@ -933,14 +934,18 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         );
         const child = yield* commandSpawner
           .spawn(
-            ChildProcess.make("git", commandInput.args, {
-              cwd: commandInput.cwd,
-              env: {
-                ...process.env,
-                ...input.env,
-                ...trace2Monitor.env,
-              },
-            }),
+            ChildProcess.make(
+              "git",
+              commandInput.args,
+              hideWindowsConsole({
+                cwd: commandInput.cwd,
+                env: {
+                  ...process.env,
+                  ...input.env,
+                  ...trace2Monitor.env,
+                },
+              }),
+            ),
           )
           .pipe(Effect.mapError(toGitCommandError(commandInput, "failed to spawn.")));
 

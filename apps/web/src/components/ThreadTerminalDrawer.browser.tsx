@@ -2,6 +2,7 @@ import "../index.css";
 
 import { scopeThreadRef } from "@threadlines/client-runtime";
 import { ThreadId, type TerminalEvent, type TerminalSessionSnapshot } from "@threadlines/contracts";
+import { page } from "vitest/browser";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
@@ -9,6 +10,8 @@ const {
   terminalConstructorSpy,
   terminalDisposeSpy,
   terminalWriteSpy,
+  terminalClearSelectionSpy,
+  terminalFocusSpy,
   terminalScrollToBottomSpy,
   fitAddonFitSpy,
   fitAddonLoadSpy,
@@ -19,10 +22,13 @@ const {
   terminalOnDataRef,
   pendingTerminalWriteCallbacks,
   deferTerminalWriteCallbacksRef,
+  terminalSelectionStateRef,
 } = vi.hoisted(() => ({
   terminalConstructorSpy: vi.fn(),
   terminalDisposeSpy: vi.fn(),
   terminalWriteSpy: vi.fn(),
+  terminalClearSelectionSpy: vi.fn(),
+  terminalFocusSpy: vi.fn(),
   terminalScrollToBottomSpy: vi.fn(),
   fitAddonFitSpy: vi.fn(),
   fitAddonLoadSpy: vi.fn(),
@@ -48,6 +54,12 @@ const {
   pendingTerminalWriteCallbacks: [] as Array<() => void>,
   deferTerminalWriteCallbacksRef: {
     current: false,
+  },
+  terminalSelectionStateRef: {
+    current: null as {
+      text: string;
+      position: { start: { y: number } };
+    } | null,
   },
 }));
 
@@ -93,9 +105,14 @@ vi.mock("@xterm/xterm", () => ({
 
     clear() {}
 
-    clearSelection() {}
+    clearSelection() {
+      terminalClearSelectionSpy();
+      terminalSelectionStateRef.current = null;
+    }
 
-    focus() {}
+    focus() {
+      terminalFocusSpy();
+    }
 
     refresh() {}
 
@@ -104,15 +121,15 @@ vi.mock("@xterm/xterm", () => ({
     }
 
     hasSelection() {
-      return false;
+      return terminalSelectionStateRef.current !== null;
     }
 
     getSelection() {
-      return "";
+      return terminalSelectionStateRef.current?.text ?? "";
     }
 
     getSelectionPosition() {
-      return null;
+      return terminalSelectionStateRef.current?.position ?? null;
     }
 
     attachCustomKeyEventHandler() {
@@ -190,6 +207,7 @@ async function mountTerminalViewport(props: {
   threadRef: ReturnType<typeof scopeThreadRef>;
   drawerBackgroundColor?: string;
   drawerTextColor?: string;
+  onAddTerminalContext?: Parameters<typeof TerminalViewport>[0]["onAddTerminalContext"];
 }) {
   const drawer = document.createElement("div");
   drawer.className = "thread-terminal-drawer";
@@ -214,7 +232,7 @@ async function mountTerminalViewport(props: {
       terminalLabel="Terminal"
       cwd="/repo/project"
       onSessionExited={() => undefined}
-      onAddTerminalContext={() => undefined}
+      onAddTerminalContext={props.onAddTerminalContext ?? (() => undefined)}
       focusRequestId={0}
       autoFocus={false}
       resizeEpoch={0}
@@ -234,7 +252,7 @@ async function mountTerminalViewport(props: {
           terminalLabel="Terminal"
           cwd="/repo/project"
           onSessionExited={() => undefined}
-          onAddTerminalContext={() => undefined}
+          onAddTerminalContext={props.onAddTerminalContext ?? (() => undefined)}
           focusRequestId={0}
           autoFocus={false}
           resizeEpoch={0}
@@ -258,6 +276,8 @@ describe("TerminalViewport", () => {
     terminalConstructorSpy.mockClear();
     terminalDisposeSpy.mockClear();
     terminalWriteSpy.mockClear();
+    terminalClearSelectionSpy.mockClear();
+    terminalFocusSpy.mockClear();
     terminalScrollToBottomSpy.mockClear();
     fitAddonFitSpy.mockClear();
     fitAddonLoadSpy.mockClear();
@@ -265,6 +285,7 @@ describe("TerminalViewport", () => {
     terminalOnDataRef.current = null;
     pendingTerminalWriteCallbacks.length = 0;
     deferTerminalWriteCallbacksRef.current = false;
+    terminalSelectionStateRef.current = null;
     useTerminalStateStore.setState({
       terminalStateByThreadKey: {},
       terminalLaunchContextByThreadKey: {},
@@ -402,6 +423,60 @@ describe("TerminalViewport", () => {
           "default",
         ),
       ).toBe("vp run dev:desktop");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("renders terminal selection actions and attaches selected output to chat", async () => {
+    const environment = createEnvironmentApi();
+    const threadRef = scopeThreadRef("environment-a" as never, THREAD_ID);
+    const onAddTerminalContext = vi.fn();
+    environmentApiById.set("environment-a", environment);
+
+    const mounted = await mountTerminalViewport({ threadRef, onAddTerminalContext });
+
+    try {
+      await vi.waitFor(() => {
+        expect(environment.terminal.open).toHaveBeenCalledTimes(1);
+      });
+
+      terminalSelectionStateRef.current = {
+        text: "vp lint\nFound 0 warnings",
+        position: { start: { y: 6 } },
+      };
+
+      const terminalMount = document.querySelector<HTMLElement>(
+        "[data-terminal-viewport-mount='true']",
+      );
+      expect(terminalMount).not.toBeNull();
+      terminalMount?.dispatchEvent(new PointerEvent("pointerdown", { button: 0, bubbles: true }));
+      window.dispatchEvent(
+        new MouseEvent("mouseup", {
+          button: 0,
+          bubbles: true,
+          clientX: 260,
+          clientY: 180,
+          detail: 1,
+        }),
+      );
+
+      await expect
+        .element(page.getByRole("button", { name: "Copy selected terminal text" }))
+        .toBeInTheDocument();
+      await page.getByRole("button", { name: "Add to chat" }).click();
+
+      await vi.waitFor(() => {
+        expect(onAddTerminalContext).toHaveBeenCalledWith({
+          terminalId: "default",
+          terminalLabel: "Terminal",
+          lineStart: 7,
+          lineEnd: 8,
+          text: "vp lint\nFound 0 warnings",
+        });
+      });
+      expect(terminalClearSelectionSpy).toHaveBeenCalledTimes(1);
+      expect(terminalFocusSpy).toHaveBeenCalledTimes(1);
     } finally {
       await mounted.cleanup();
     }

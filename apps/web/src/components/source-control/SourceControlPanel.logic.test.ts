@@ -9,6 +9,7 @@ import {
   getCommitGraphRefKind,
   getVisibleCommitGraphRefs,
   normalizeCommitGraphRefName,
+  resolveCommitGraphErrorPresentation,
   resolveSourceControlPrimaryAction,
 } from "./SourceControlPanel.logic";
 import type { VcsStatusResult } from "@threadlines/contracts";
@@ -79,6 +80,28 @@ describe("SourceControlPanel.logic", () => {
       label: "Publish branch",
       disabledReason: null,
       icon: "upload",
+    });
+  });
+
+  it("keeps ordinary commit graph failures generic", () => {
+    expect(resolveCommitGraphErrorPresentation(new Error("graph unavailable"))).toEqual({
+      title: "Graph failed to load",
+      description: null,
+      repairCommand: null,
+    });
+  });
+
+  it("explains local Git metadata corruption for commit graph failures", () => {
+    expect(
+      resolveCommitGraphErrorPresentation(
+        new Error(
+          "Git command failed in GitVcsDriver.commitGraph: git log --all --topo-order (C:\\repo) - fatal: bad object refs/remotes/origin/HEAD",
+        ),
+      ),
+    ).toEqual({
+      title: "Local Git metadata needs repair",
+      description: "Git reported corrupt or missing objects. Repair the repository, then retry.",
+      repairCommand: "git fetch --refetch --prune origin",
     });
   });
 

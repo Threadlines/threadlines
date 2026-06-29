@@ -57,7 +57,7 @@ import {
 import {
   type TerminalContextDraft,
   type TerminalContextSelection,
-  insertInlineTerminalContextPlaceholder,
+  INLINE_TERMINAL_CONTEXT_PLACEHOLDER,
   removeInlineTerminalContextPlaceholder,
 } from "../../lib/terminalContext";
 import type {
@@ -79,6 +79,7 @@ import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
 import { ComposerPendingTranscriptHighlightContexts } from "./ComposerPendingTranscriptHighlightContexts";
+import { ComposerPendingTerminalContexts } from "./ComposerPendingTerminalContexts";
 import { resolveComposerMenuActiveItemId } from "./composerMenuHighlight";
 import { searchSlashCommandItems } from "./composerSlashCommandSearch";
 import {
@@ -604,8 +605,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const addComposerDraftImage = useComposerDraftStore((store) => store.addImage);
   const addComposerDraftImages = useComposerDraftStore((store) => store.addImages);
   const removeComposerDraftImage = useComposerDraftStore((store) => store.removeImage);
-  const insertComposerDraftTerminalContext = useComposerDraftStore(
-    (store) => store.insertTerminalContext,
+  const addComposerDraftTerminalContext = useComposerDraftStore(
+    (store) => store.addTerminalContext,
   );
   const removeComposerDraftTerminalContext = useComposerDraftStore(
     (store) => store.removeTerminalContext,
@@ -1249,12 +1250,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       );
       if (contextIndex < 0) return;
       const removal = removeInlineTerminalContextPlaceholder(promptRef.current, contextIndex);
-      promptRef.current = removal.prompt;
-      setPrompt(removal.prompt);
       removeComposerDraftTerminalContext(composerDraftTarget, contextId);
-      const nextCursor = collapseExpandedComposerCursor(removal.prompt, removal.cursor);
-      setComposerCursor(nextCursor);
-      setComposerTrigger(detectComposerTrigger(removal.prompt, removal.cursor));
+      if (removal.prompt !== promptRef.current) {
+        promptRef.current = removal.prompt;
+        setPrompt(removal.prompt);
+        const nextCursor = collapseExpandedComposerCursor(removal.prompt, removal.cursor);
+        setComposerCursor(nextCursor);
+        setComposerTrigger(detectComposerTrigger(removal.prompt, removal.cursor));
+      }
     },
     [
       composerDraftTarget,
@@ -1535,9 +1538,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         );
         return;
       }
+      const previousPrompt = promptRef.current;
       promptRef.current = nextPrompt;
       setPrompt(nextPrompt);
-      if (!terminalContextIdListsEqual(composerTerminalContexts, terminalContextIds)) {
+      const shouldSyncInlineTerminalContexts =
+        previousPrompt.includes(INLINE_TERMINAL_CONTEXT_PLACEHOLDER) ||
+        nextPrompt.includes(INLINE_TERMINAL_CONTEXT_PLACEHOLDER) ||
+        terminalContextIds.length > 0;
+      if (
+        shouldSyncInlineTerminalContexts &&
+        !terminalContextIdListsEqual(composerTerminalContexts, terminalContextIds)
+      ) {
         setComposerDraftTerminalContexts(
           composerDraftTarget,
           syncTerminalContextsByIds(composerTerminalContexts, terminalContextIds),
@@ -2136,37 +2147,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       },
       addTerminalContext: (selection: TerminalContextSelection) => {
         if (!activeThread) return;
-        const snapshot = composerEditorRef.current?.readSnapshot() ?? {
-          value: promptRef.current,
-          cursor: composerCursor,
-          expandedCursor: expandCollapsedComposerCursor(promptRef.current, composerCursor),
-          terminalContextIds: composerTerminalContexts.map((context) => context.id),
-        };
-        const insertion = insertInlineTerminalContextPlaceholder(
-          snapshot.value,
-          snapshot.expandedCursor,
-        );
-        const nextCollapsedCursor = collapseExpandedComposerCursor(
-          insertion.prompt,
-          insertion.cursor,
-        );
-        const inserted = insertComposerDraftTerminalContext(
-          composerDraftTarget,
-          insertion.prompt,
-          {
-            id: randomUUID(),
-            threadId: activeThread.id,
-            createdAt: new Date().toISOString(),
-            ...selection,
-          },
-          insertion.contextIndex,
-        );
-        if (!inserted) return;
-        promptRef.current = insertion.prompt;
-        setComposerCursor(nextCollapsedCursor);
-        setComposerTrigger(detectComposerTrigger(insertion.prompt, insertion.cursor));
+        addComposerDraftTerminalContext(composerDraftTarget, {
+          id: randomUUID(),
+          threadId: activeThread.id,
+          createdAt: new Date().toISOString(),
+          ...selection,
+        });
         window.requestAnimationFrame(() => {
-          composerEditorRef.current?.focusAt(nextCollapsedCursor);
+          composerEditorRef.current?.focusAtEnd();
         });
       },
       addTranscriptHighlightContext: (selection: TranscriptHighlightContextSelection) => {
@@ -2196,11 +2184,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     }),
     [
       activeThread,
+      addComposerDraftTerminalContext,
       addComposerDraftTranscriptHighlightContext,
       composerDraftTarget,
-      composerCursor,
-      composerTerminalContexts,
-      insertComposerDraftTerminalContext,
       promptRef,
       composerImagesRef,
       composerTerminalContextsRef,
@@ -2534,6 +2520,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             {!isComposerCollapsedMobile &&
               !isComposerApprovalState &&
               pendingUserInputs.length === 0 &&
+              composerTerminalContexts.length > 0 && (
+                <ComposerPendingTerminalContexts
+                  contexts={composerTerminalContexts}
+                  onRemove={removeComposerTerminalContextFromDraft}
+                  className="mb-2"
+                />
+              )}
+
+            {!isComposerCollapsedMobile &&
+              !isComposerApprovalState &&
+              pendingUserInputs.length === 0 &&
               composerTranscriptHighlightContexts.length > 0 && (
                 <ComposerPendingTranscriptHighlightContexts
                   contexts={composerTranscriptHighlightContexts}
@@ -2554,11 +2551,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       : prompt
                 }
                 cursor={composerCursor}
-                terminalContexts={
-                  !isComposerApprovalState && pendingUserInputs.length === 0
-                    ? composerTerminalContexts
-                    : []
-                }
+                terminalContexts={[]}
                 skills={selectedProviderStatus?.skills ?? []}
                 {...(showMobilePendingAnswerActions ? { className: "max-sm:pb-11" } : {})}
                 onRemoveTerminalContext={removeComposerTerminalContextFromDraft}

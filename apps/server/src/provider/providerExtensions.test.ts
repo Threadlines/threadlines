@@ -19,6 +19,9 @@ import {
 } from "@threadlines/contracts";
 
 import {
+  codexMcpLoginCommandForDisplay,
+  codexSkillConfigWriteParams,
+  derivePluginBackedSkillBundle,
   isCodexAppsDirectoryAccessDeniedError,
   mapCodexMcpServers,
   parseClaudeMcpList,
@@ -204,6 +207,69 @@ describe("provider extensions inventory", () => {
     assert.equal(servers[0]?.authStatus, "Needs authentication");
     assert.equal(servers[0]?.transport, "HTTP");
     assert.equal(servers[0]?.detail, "https://mcp.supabase.com/mcp");
+  });
+
+  it("derives plugin bundle metadata from cached skill paths", () => {
+    assert.deepEqual(
+      derivePluginBackedSkillBundle(
+        "C:\\Users\\wilfr\\.codex\\plugins\\cache\\openai-curated\\vercel\\3fdeeb49\\skills\\ai-sdk\\SKILL.md",
+      ),
+      {
+        bundleId: "vercel@openai-curated",
+        bundleName: "vercel",
+      },
+    );
+
+    assert.deepEqual(
+      derivePluginBackedSkillBundle(
+        "/Users/wilfr/.codex/plugins/cache/claude-plugins-official/cloudflare/1.0.0/skills/wrangler/SKILL.md",
+      ),
+      {
+        bundleId: "cloudflare@claude-plugins-official",
+        bundleName: "cloudflare",
+      },
+    );
+
+    assert.equal(
+      derivePluginBackedSkillBundle("/Users/wilfr/.codex/skills/openai-docs/SKILL.md"),
+      null,
+    );
+  });
+
+  it("renders Codex MCP login fallback with provider binary and CODEX_HOME", () => {
+    const command = codexMcpLoginCommandForDisplay({
+      binaryPath: "custom-codex",
+      codexHomePath: "/tmp/codex work",
+      serverName: "supabase",
+      scopes: ["projects:read", "projects:write"],
+    });
+
+    assert.equal(
+      command,
+      process.platform === "win32"
+        ? "$env:CODEX_HOME='/tmp/codex work'; custom-codex mcp login supabase --scopes projects:read,projects:write"
+        : "CODEX_HOME='/tmp/codex work' custom-codex mcp login supabase --scopes projects:read,projects:write",
+    );
+  });
+
+  it("builds Codex skill config writes with exactly one selector", () => {
+    assert.deepEqual(
+      codexSkillConfigWriteParams({
+        enabled: false,
+        name: "vercel:nextjs",
+        path: "C:\\Users\\wilfr\\.codex\\plugins\\cache\\openai-curated\\vercel\\skills\\nextjs\\SKILL.md",
+      }),
+      {
+        enabled: false,
+        path: "C:\\Users\\wilfr\\.codex\\plugins\\cache\\openai-curated\\vercel\\skills\\nextjs\\SKILL.md",
+      },
+    );
+
+    assert.deepEqual(codexSkillConfigWriteParams({ enabled: true, name: "openai-docs" }), {
+      enabled: true,
+      name: "openai-docs",
+    });
+    assert.equal(codexSkillConfigWriteParams({ enabled: true }), null);
   });
 
   it.effect(

@@ -7,6 +7,7 @@ import {
   deriveRepositoryDirectoryName,
   formatGitErrorMessage,
   isGitHubHttpsCredentialPromptErrorMessage,
+  isGitRepositoryMetadataCorruptionErrorMessage,
   isTemporaryWorktreeBranch,
   normalizeGitRemoteUrl,
   parseGitHubRepositoryNameWithOwnerFromRemoteUrl,
@@ -71,6 +72,38 @@ describe("deriveRepositoryDirectoryName", () => {
       "bad-name",
     );
     expect(deriveRepositoryDirectoryName("   ")).toBeNull();
+  });
+});
+
+describe("isGitRepositoryMetadataCorruptionErrorMessage", () => {
+  it("recognizes broken Git ref and object database failures", () => {
+    expect(
+      isGitRepositoryMetadataCorruptionErrorMessage(
+        "Git command failed in GitVcsDriver.commitGraph: git log --all --topo-order (C:\\repo) - fatal: bad object refs/remotes/origin/HEAD",
+      ),
+    ).toBe(true);
+    expect(
+      isGitRepositoryMetadataCorruptionErrorMessage(
+        "error: refs/remotes/origin/main: invalid sha1 pointer 3822d219c70a1a5deaee482ca6e796d85f01e8b3",
+      ),
+    ).toBe(true);
+    expect(
+      isGitRepositoryMetadataCorruptionErrorMessage("fatal: pack has 87 unresolved deltas"),
+    ).toBe(true);
+    expect(
+      isGitRepositoryMetadataCorruptionErrorMessage(
+        "missing tree 32d1aadc5c78d47a77066515ea21fb038d7c85c7",
+      ),
+    ).toBe(true);
+  });
+
+  it("does not classify ordinary Git command failures as repository corruption", () => {
+    expect(isGitRepositoryMetadataCorruptionErrorMessage("Branch is behind upstream.")).toBe(false);
+    expect(
+      isGitRepositoryMetadataCorruptionErrorMessage(
+        "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+      ),
+    ).toBe(false);
   });
 });
 

@@ -27,6 +27,7 @@ import * as Scope from "effect/Scope";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 
 import { isWindowsCommandNotFound } from "../processRunner.ts";
 import { collectStreamAsString } from "./providerSnapshot.ts";
@@ -280,10 +281,14 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
   const runOpenCodeCommand: OpenCodeRuntimeShape["runOpenCodeCommand"] = (input) =>
     Effect.gen(function* () {
       const child = yield* spawner.spawn(
-        ChildProcess.make(input.binaryPath, [...input.args], {
-          shell: process.platform === "win32",
-          env: input.environment ?? process.env,
-        }),
+        ChildProcess.make(
+          input.binaryPath,
+          [...input.args],
+          hideWindowsConsole({
+            shell: process.platform === "win32",
+            env: input.environment ?? process.env,
+          }),
+        ),
       );
       const [stdout, stderr, code] = yield* Effect.all(
         [collectStreamAsString(child.stdout), collectStreamAsString(child.stderr), child.exitCode],
@@ -337,14 +342,18 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
 
       const child = yield* spawner
         .spawn(
-          ChildProcess.make(input.binaryPath, args, {
-            detached: process.platform !== "win32",
-            shell: process.platform === "win32",
-            env: {
-              ...(input.environment ?? process.env),
-              OPENCODE_CONFIG_CONTENT: OPENCODE_EMPTY_CONFIG_CONTENT,
-            },
-          }),
+          ChildProcess.make(
+            input.binaryPath,
+            args,
+            hideWindowsConsole({
+              detached: process.platform !== "win32",
+              shell: process.platform === "win32",
+              env: {
+                ...(input.environment ?? process.env),
+                OPENCODE_CONFIG_CONTENT: OPENCODE_EMPTY_CONFIG_CONTENT,
+              },
+            }),
+          ),
         )
         .pipe(
           Effect.provideService(Scope.Scope, runtimeScope),

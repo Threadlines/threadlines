@@ -141,6 +141,7 @@ import {
   getCommitGraphRefKind,
   getVisibleCommitGraphRefs,
   normalizeCommitGraphRefName,
+  resolveCommitGraphErrorPresentation,
   resolveSourceControlPrimaryAction,
   type SourceControlFileTreeNode,
 } from "./SourceControlPanel.logic";
@@ -1521,6 +1522,10 @@ export function SourceControlPanel({
   const graphHasData = graphQuery.data !== undefined;
   const isCommitGraphInitialLoading = graphQueryEnabled && !graphHasData && graphQuery.isPending;
   const isCommitGraphRefreshing = graphHasData && graphQuery.isFetching;
+  const commitGraphErrorPresentation =
+    graphQuery.isError && !graphHasData
+      ? resolveCommitGraphErrorPresentation(graphQuery.error)
+      : null;
   const isSourceControlRefreshing = gitStatus.isPending || isCommitGraphRefreshing;
   const isCommitGraphLoadingMore =
     graphQuery.isFetching &&
@@ -3146,7 +3151,19 @@ export function SourceControlPanel({
                     </Button>
                   }
                 >
-                  Graph failed to load
+                  <div className="max-w-full space-y-1 leading-snug">
+                    <div>{commitGraphErrorPresentation?.title ?? "Graph failed to load"}</div>
+                    {commitGraphErrorPresentation?.description ? (
+                      <div className="text-muted-foreground/60">
+                        {commitGraphErrorPresentation.description}
+                      </div>
+                    ) : null}
+                    {commitGraphErrorPresentation?.repairCommand ? (
+                      <code className="block max-w-full rounded-sm bg-muted/45 px-1.5 py-1 font-mono text-[11px] break-all text-muted-foreground/90">
+                        {commitGraphErrorPresentation.repairCommand}
+                      </code>
+                    ) : null}
+                  </div>
                 </CommitGraphMessage>
               ) : commitGraphRows.length === 0 ? (
                 <CommitGraphMessage>No commits yet</CommitGraphMessage>

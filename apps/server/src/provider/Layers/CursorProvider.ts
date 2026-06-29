@@ -21,6 +21,7 @@ import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import { HttpClient } from "effect/unstable/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import {
   createModelCapabilities,
   getProviderOptionBooleanSelectionValue,
@@ -1052,10 +1053,14 @@ const runCursorCommand = (
 ) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const command = ChildProcess.make(cursorSettings.binaryPath, [...args], {
-      env: environment,
-      shell: process.platform === "win32",
-    });
+    const command = ChildProcess.make(
+      cursorSettings.binaryPath,
+      [...args],
+      hideWindowsConsole({
+        env: environment,
+        shell: process.platform === "win32",
+      }),
+    );
 
     const child = yield* spawner.spawn(command);
     const [stdout, stderr, exitCode] = yield* Effect.all(

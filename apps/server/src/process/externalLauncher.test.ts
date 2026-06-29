@@ -49,6 +49,10 @@ function makeMockDetachedHandle(onUnref: () => void = () => undefined) {
   });
 }
 
+function expectedHiddenWindowsOptions<T extends ChildProcess.CommandOptions>(options: T): T {
+  return process.platform === "win32" ? ({ ...options, windowsHide: true } as T) : options;
+}
+
 it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
   it.effect("returns commands for command-based editors", () =>
     Effect.gen(function* () {
@@ -676,7 +680,10 @@ it.layer(NodeServices.layer)("launchBrowser", (it) => {
       const expectedLaunch = resolveBrowserLaunch("https://example.com");
       assert.equal(spawnedCommand.command, expectedLaunch.command);
       assert.deepEqual(spawnedCommand.args, expectedLaunch.args);
-      assert.deepEqual(spawnedCommand.options, expectedLaunch.options);
+      assert.deepEqual(
+        spawnedCommand.options,
+        expectedHiddenWindowsOptions(expectedLaunch.options),
+      );
       assert.equal(didUnref, true);
     }),
   );
@@ -715,13 +722,16 @@ it.layer(NodeServices.layer)("launchEditorProcess", (it) => {
         spawnedCommand.args,
         process.platform === "win32" ? expectedArgs.map((arg) => `"${arg}"`) : expectedArgs,
       );
-      assert.deepEqual(spawnedCommand.options, {
-        detached: true,
-        shell: process.platform === "win32",
-        stdin: "ignore",
-        stdout: "ignore",
-        stderr: "ignore",
-      });
+      assert.deepEqual(
+        spawnedCommand.options,
+        expectedHiddenWindowsOptions({
+          detached: true,
+          shell: process.platform === "win32",
+          stdin: "ignore",
+          stdout: "ignore",
+          stderr: "ignore",
+        }),
+      );
       assert.equal(didUnref, true);
     }),
   );
@@ -753,13 +763,16 @@ it.layer(NodeServices.layer)("launchEditorProcess", (it) => {
       assert.ok(spawnedCommand);
       assert.equal(spawnedCommand.command, process.execPath);
       assert.deepEqual(spawnedCommand.args, expectedArgs);
-      assert.deepEqual(spawnedCommand.options, {
-        detached: true,
-        shell: false,
-        stdin: "ignore",
-        stdout: "ignore",
-        stderr: "ignore",
-      });
+      assert.deepEqual(
+        spawnedCommand.options,
+        expectedHiddenWindowsOptions({
+          detached: true,
+          shell: false,
+          stdin: "ignore",
+          stdout: "ignore",
+          stderr: "ignore",
+        }),
+      );
     }),
   );
 

@@ -46,11 +46,7 @@ import {
   useSavedEnvironmentRegistryStore,
   useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
-import {
-  INLINE_TERMINAL_CONTEXT_PLACEHOLDER,
-  removeInlineTerminalContextPlaceholder,
-  type TerminalContextDraft,
-} from "../lib/terminalContext";
+import { type TerminalContextDraft } from "../lib/terminalContext";
 import { isMacPlatform } from "../lib/utils";
 import { __resetLocalApiForTests } from "../localApi";
 import { AppAtomRegistryProvider } from "../rpc/atomRegistry";
@@ -4355,11 +4351,12 @@ describe("ChatView timeline estimator parity (full app)", () => {
         { timeout: 8_000, interval: 16 },
       );
 
-      const store = useComposerDraftStore.getState();
-      const currentPrompt = store.draftsByThreadKey[THREAD_KEY]?.prompt ?? "";
-      const nextPrompt = removeInlineTerminalContextPlaceholder(currentPrompt, 0);
-      store.setPrompt(THREAD_REF, nextPrompt.prompt);
-      store.removeTerminalContext(THREAD_REF, "ctx-removed");
+      const removeButton = await waitForElement(
+        () =>
+          document.querySelector<HTMLButtonElement>(`button[aria-label="Remove ${removedLabel}"]`),
+        "Unable to find terminal context remove button.",
+      );
+      removeButton.click();
 
       await vi.waitFor(
         () => {
@@ -4385,6 +4382,122 @@ describe("ChatView timeline estimator parity (full app)", () => {
           const draft = useComposerDraftStore.getState().draftsByThreadKey[THREAD_KEY];
           expect(draft?.terminalContexts.map((context) => context.id)).toEqual(["ctx-added"]);
           expect(document.body.textContent).toContain(addedLabel);
+          expect(document.body.textContent).not.toContain(removedLabel);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the scroll-to-bottom affordance hidden when a terminal attachment grows the composer", async () => {
+    const terminalLabel = "Terminal 1 line 7";
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-terminal-attachment-scroll-target" as MessageId,
+        targetText: "terminal attachment scroll target",
+      }),
+    });
+
+    try {
+      const messagesList = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-chat-messages-list="true"]'),
+        "Unable to find messages list.",
+      );
+
+      messagesList.scrollTop = messagesList.scrollHeight;
+      messagesList.dispatchEvent(new Event("scroll", { bubbles: true }));
+      await waitForLayout();
+
+      useComposerDraftStore.getState().addTerminalContext(
+        THREAD_REF,
+        createTerminalContext({
+          id: "ctx-scroll-stable",
+          terminalLabel: "Terminal 1",
+          lineStart: 7,
+          lineEnd: 7,
+          text: "received",
+        }),
+      );
+
+      await vi.waitFor(
+        () => {
+          expect(document.body.textContent).toContain(terminalLabel);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      await waitForLayout();
+      await new Promise((resolve) => window.setTimeout(resolve, 220));
+      await waitForLayout();
+
+      expect(
+        Array.from(document.querySelectorAll("button")).some(
+          (button) => button.textContent?.trim() === "Scroll to bottom",
+        ),
+      ).toBe(false);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("removes terminal context attachments when their terminal is killed", async () => {
+    const terminalId = "terminal-killed-context";
+    const removedLabel = "Terminal 1 line 7";
+    useTerminalStateStore.setState({
+      terminalStateByThreadKey: {
+        [THREAD_KEY]: {
+          terminalOpen: true,
+          terminalHeight: 280,
+          terminalIds: [terminalId],
+          runningTerminalIds: [],
+          activeTerminalId: terminalId,
+          terminalGroups: [{ id: "group-terminal-killed-context", terminalIds: [terminalId] }],
+          activeTerminalGroupId: "group-terminal-killed-context",
+        },
+      },
+      terminalLaunchContextByThreadKey: {},
+    });
+    useComposerDraftStore.getState().addTerminalContext(THREAD_REF, {
+      ...createTerminalContext({
+        id: "ctx-terminal-killed",
+        terminalLabel: "Terminal 1",
+        lineStart: 7,
+        lineEnd: 7,
+        text: "received",
+      }),
+      terminalId,
+    });
+
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-terminal-kill-context" as MessageId,
+        targetText: "terminal kill context target",
+      }),
+    });
+
+    try {
+      await vi.waitFor(
+        () => {
+          expect(document.body.textContent).toContain(removedLabel);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      const killTerminalButton = await waitForElement(
+        () =>
+          Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+            button.getAttribute("aria-label")?.startsWith("Kill Terminal"),
+          ) ?? null,
+        "Unable to find terminal kill button.",
+      );
+      killTerminalButton.click();
+
+      await vi.waitFor(
+        () => {
+          expect(useComposerDraftStore.getState().draftsByThreadKey[THREAD_KEY]).toBeUndefined();
           expect(document.body.textContent).not.toContain(removedLabel);
         },
         { timeout: 8_000, interval: 16 },
@@ -4442,9 +4555,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
         text: "",
       }),
     );
-    useComposerDraftStore
-      .getState()
-      .setPrompt(THREAD_REF, `yoo${INLINE_TERMINAL_CONTEXT_PLACEHOLDER}waddup`);
+    useComposerDraftStore.getState().setPrompt(THREAD_REF, "yoowaddup");
 
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,

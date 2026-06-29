@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  resolveTerminalSelectionActionPopoverPosition,
   resolveTerminalSelectionActionPosition,
   selectPendingTerminalEventEntries,
   selectTerminalEventEntriesAfterSnapshot,
@@ -60,6 +61,32 @@ describe("resolveTerminalSelectionActionPosition", () => {
     ).toEqual({
       x: 100,
       y: 50,
+    });
+  });
+
+  it("right-aligns and clamps the selection action popover into the viewport", () => {
+    expect(
+      resolveTerminalSelectionActionPopoverPosition({
+        position: { x: 260, y: 144 },
+        viewport: { width: 500, height: 300 },
+        width: 148,
+        height: 34,
+      }),
+    ).toEqual({
+      left: 112,
+      top: 144,
+    });
+
+    expect(
+      resolveTerminalSelectionActionPopoverPosition({
+        position: { x: 40, y: 290 },
+        viewport: { width: 500, height: 300 },
+        width: 148,
+        height: 34,
+      }),
+    ).toEqual({
+      left: 8,
+      top: 258,
     });
   });
 

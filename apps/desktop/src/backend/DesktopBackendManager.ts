@@ -18,6 +18,7 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/unstable/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 
 import {
   DesktopBackendBootstrap,
@@ -239,7 +240,7 @@ const runBackendProcess = Effect.fn("runBackendProcess")(function* (
   const command = ChildProcess.make(
     options.executablePath,
     [options.entryPath, "--bootstrap-fd", "3"],
-    {
+    hideWindowsConsole({
       cwd: options.cwd,
       env: options.env,
       extendEnv: true,
@@ -256,7 +257,7 @@ const runBackendProcess = Effect.fn("runBackendProcess")(function* (
           stream: Stream.encodeText(Stream.make(`${bootstrapJson}\n`)),
         },
       },
-    },
+    }),
   );
 
   const handle = yield* spawner

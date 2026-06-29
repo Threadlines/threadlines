@@ -6,6 +6,8 @@ import {
   deriveDetectedProviderThreadId,
   deriveExtensionJsonSchemaFormFields,
   deriveExtensionPluginGroupLabel,
+  deriveExtensionSkillBundleKey,
+  deriveExtensionSkillBundleLabel,
   extensionMcpNeedsAuthStatus,
   extensionMcpOAuthActionIntent,
   extensionMcpOAuthActionLabel,
@@ -95,6 +97,28 @@ describe("ExtensionsSettings logic", () => {
         "recommended",
       ),
     ).toBe(false);
+  });
+
+  it("derives stable skill bundle labels and keys", () => {
+    expect(
+      deriveExtensionSkillBundleLabel({
+        bundleId: "cloudflare@openai-curated",
+        bundleName: "cloudflare",
+      }),
+    ).toBe("Cloudflare (openai-curated)");
+    expect(
+      deriveExtensionSkillBundleLabel({
+        bundleId: "vercel@openai-curated",
+        bundleDisplayName: "Vercel",
+      }),
+    ).toBe("Vercel (openai-curated)");
+    expect(deriveExtensionSkillBundleLabel({ scope: "user" })).toBe("User");
+    expect(
+      deriveExtensionSkillBundleKey({
+        bundleId: "Cloudflare@OpenAI-Curated",
+        scope: "user",
+      }),
+    ).toBe("bundle:cloudflare@openai-curated");
   });
 
   it("builds stable extension inventory cache keys from project, provider, and context", () => {

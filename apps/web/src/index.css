@@ -836,9 +836,30 @@ label:has(> select#reasoning-effort) select {
   animation: diff-panel-enter 150ms ease-out;
 }
 
+@keyframes terminal-context-attachment-updated {
+  0% {
+    border-color: color-mix(in srgb, var(--primary-readable) 52%, var(--border));
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary-readable) 24%, transparent);
+    filter: brightness(1.04);
+  }
+  42% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-readable) 10%, transparent);
+    filter: brightness(1.03);
+  }
+  100% {
+    box-shadow: 0 0 0 5px transparent;
+    filter: brightness(1);
+  }
+}
+
+.terminal-context-attachment-updated {
+  animation: terminal-context-attachment-updated 950ms cubic-bezier(0.18, 0.78, 0.2, 1);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .diff-file-flash,
-  .diff-panel-enter {
+  .diff-panel-enter,
+  .terminal-context-attachment-updated {
     animation: none;
   }
 }

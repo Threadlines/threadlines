@@ -13,6 +13,7 @@ import * as EffectAcpClient from "effect-acp/client";
 import * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
 import type * as EffectAcpProtocol from "effect-acp/protocol";
+import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 
 import {
   collectSessionConfigOptionValues,
@@ -199,11 +200,15 @@ const makeAcpSessionRuntime = (
 
     const child = yield* spawner
       .spawn(
-        ChildProcess.make(options.spawn.command, [...options.spawn.args], {
-          ...(options.spawn.cwd ? { cwd: options.spawn.cwd } : {}),
-          ...(options.spawn.env ? { env: { ...process.env, ...options.spawn.env } } : {}),
-          shell: process.platform === "win32",
-        }),
+        ChildProcess.make(
+          options.spawn.command,
+          [...options.spawn.args],
+          hideWindowsConsole({
+            ...(options.spawn.cwd ? { cwd: options.spawn.cwd } : {}),
+            ...(options.spawn.env ? { env: { ...process.env, ...options.spawn.env } } : {}),
+            shell: process.platform === "win32",
+          }),
+        ),
       )
       .pipe(
         Effect.provideService(Scope.Scope, runtimeScope),

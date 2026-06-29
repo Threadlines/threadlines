@@ -1,6 +1,13 @@
 import type { GitStackedAction, VcsStatusResult } from "@threadlines/contracts";
+import { isGitRepositoryMetadataCorruptionErrorMessage } from "@threadlines/shared/git";
 
 export type SourceControlPrimaryActionIcon = "sparkles" | "upload";
+
+export interface CommitGraphErrorPresentation {
+  readonly title: string;
+  readonly description: string | null;
+  readonly repairCommand: string | null;
+}
 
 export interface SourceControlPrimaryAction {
   readonly action: Extract<GitStackedAction, "commit_push" | "push">;
@@ -37,6 +44,27 @@ export interface SourceControlFileTreeFileNode<TFile extends SourceControlFileTr
 export type SourceControlFileTreeNode<TFile extends SourceControlFileTreeFileInput> =
   | SourceControlFileTreeDirectoryNode<TFile>
   | SourceControlFileTreeFileNode<TFile>;
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : typeof error === "string" ? error : "";
+}
+
+export function resolveCommitGraphErrorPresentation(error: unknown): CommitGraphErrorPresentation {
+  const message = errorMessage(error);
+  if (isGitRepositoryMetadataCorruptionErrorMessage(message)) {
+    return {
+      title: "Local Git metadata needs repair",
+      description: "Git reported corrupt or missing objects. Repair the repository, then retry.",
+      repairCommand: "git fetch --refetch --prune origin",
+    };
+  }
+
+  return {
+    title: "Graph failed to load",
+    description: null,
+    repairCommand: null,
+  };
+}
 
 interface MutableSourceControlFileTreeDirectory<TFile extends SourceControlFileTreeFileInput> {
   name: string;

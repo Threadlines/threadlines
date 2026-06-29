@@ -55,6 +55,35 @@ function withProcessEnv<A, E, R>(
   );
 }
 
+function withProcessPlatform<A, E, R>(
+  platform: NodeJS.Platform,
+  effect: Effect.Effect<A, E, R>,
+): Effect.Effect<A, E, R> {
+  return Effect.acquireUseRelease(
+    Effect.sync(() => {
+      const descriptor = Object.getOwnPropertyDescriptor(process, "platform");
+      Object.defineProperty(process, "platform", { value: platform });
+      return descriptor;
+    }),
+    () => effect,
+    (descriptor) =>
+      Effect.sync(() => {
+        if (descriptor) {
+          Object.defineProperty(process, "platform", descriptor);
+        }
+      }),
+  );
+}
+
+function commandWindowsHide(command: ChildProcess.Command): boolean | undefined {
+  if (command._tag !== "StandardCommand") return undefined;
+  return (
+    command.options as ChildProcess.CommandOptions & {
+      readonly windowsHide?: boolean | undefined;
+    }
+  ).windowsHide;
+}
+
 function runShellEnvironment(input: {
   readonly env: NodeJS.ProcessEnv;
   readonly platform: NodeJS.Platform;
@@ -184,49 +213,55 @@ describe("DesktopShellEnvironment", () => {
   );
 
   it.effect("loads PowerShell profile environment on Windows", () =>
-    Effect.gen(function* () {
-      const env: NodeJS.ProcessEnv = {
-        PATH: "C:\\Windows\\System32",
-        APPDATA: "C:\\Users\\testuser\\AppData\\Roaming",
-        LOCALAPPDATA: "C:\\Users\\testuser\\AppData\\Local",
-        USERPROFILE: "C:\\Users\\testuser",
-      };
+    withProcessPlatform(
+      "win32",
+      Effect.gen(function* () {
+        const env: NodeJS.ProcessEnv = {
+          PATH: "C:\\Windows\\System32",
+          APPDATA: "C:\\Users\\testuser\\AppData\\Roaming",
+          LOCALAPPDATA: "C:\\Users\\testuser\\AppData\\Local",
+          USERPROFILE: "C:\\Users\\testuser",
+        };
+        const commands: ChildProcess.Command[] = [];
 
-      yield* runShellEnvironment({
-        env,
-        platform: "win32",
-        handler: (command) => {
-          if (command._tag !== "StandardCommand") return "";
-          const loadProfile = !command.args.includes("-NoProfile");
-          return loadProfile
-            ? envOutput({
-                PATH: "C:\\Profile\\Node;C:\\Windows\\System32",
-                FNM_DIR: "C:\\Users\\testuser\\AppData\\Roaming\\fnm",
-                FNM_MULTISHELL_PATH: "C:\\Users\\testuser\\AppData\\Local\\fnm_multishells\\123",
-              })
-            : envOutput({ PATH: "C:\\Custom\\Bin;C:\\Windows\\System32" });
-        },
-      });
+        yield* runShellEnvironment({
+          env,
+          platform: "win32",
+          handler: (command) => {
+            commands.push(command);
+            if (command._tag !== "StandardCommand") return "";
+            const loadProfile = !command.args.includes("-NoProfile");
+            return loadProfile
+              ? envOutput({
+                  PATH: "C:\\Profile\\Node;C:\\Windows\\System32",
+                  FNM_DIR: "C:\\Users\\testuser\\AppData\\Roaming\\fnm",
+                  FNM_MULTISHELL_PATH: "C:\\Users\\testuser\\AppData\\Local\\fnm_multishells\\123",
+                })
+              : envOutput({ PATH: "C:\\Custom\\Bin;C:\\Windows\\System32" });
+          },
+        });
 
-      assert.equal(
-        env.PATH,
-        [
-          "C:\\Profile\\Node",
-          "C:\\Windows\\System32",
-          "C:\\Users\\testuser\\AppData\\Roaming\\npm",
-          "C:\\Users\\testuser\\AppData\\Local\\Programs\\nodejs",
-          "C:\\Users\\testuser\\AppData\\Local\\Volta\\bin",
-          "C:\\Users\\testuser\\AppData\\Local\\pnpm",
-          "C:\\Users\\testuser\\.bun\\bin",
-          "C:\\Users\\testuser\\scoop\\shims",
-          "C:\\Custom\\Bin",
-        ].join(";"),
-      );
-      assert.equal(env.FNM_DIR, "C:\\Users\\testuser\\AppData\\Roaming\\fnm");
-      assert.equal(
-        env.FNM_MULTISHELL_PATH,
-        "C:\\Users\\testuser\\AppData\\Local\\fnm_multishells\\123",
-      );
-    }),
+        assert.equal(
+          env.PATH,
+          [
+            "C:\\Profile\\Node",
+            "C:\\Windows\\System32",
+            "C:\\Users\\testuser\\AppData\\Roaming\\npm",
+            "C:\\Users\\testuser\\AppData\\Local\\Programs\\nodejs",
+            "C:\\Users\\testuser\\AppData\\Local\\Volta\\bin",
+            "C:\\Users\\testuser\\AppData\\Local\\pnpm",
+            "C:\\Users\\testuser\\.bun\\bin",
+            "C:\\Users\\testuser\\scoop\\shims",
+            "C:\\Custom\\Bin",
+          ].join(";"),
+        );
+        assert.equal(env.FNM_DIR, "C:\\Users\\testuser\\AppData\\Roaming\\fnm");
+        assert.equal(
+          env.FNM_MULTISHELL_PATH,
+          "C:\\Users\\testuser\\AppData\\Local\\fnm_multishells\\123",
+        );
+        assert.deepEqual(commands.map(commandWindowsHide), [true, true]);
+      }),
+    ),
   );
 });

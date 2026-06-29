@@ -11,6 +11,7 @@ export const ProviderExtensionsInventoryInput = Schema.Struct({
   cwd: Schema.optional(TrimmedNonEmptyString),
   providerInstanceId: Schema.optional(ProviderInstanceId),
   providerThreadId: Schema.optional(TrimmedNonEmptyString),
+  includeMcpServers: Schema.optional(Schema.Boolean),
 });
 export type ProviderExtensionsInventoryInput = typeof ProviderExtensionsInventoryInput.Type;
 
@@ -56,6 +57,9 @@ export const ProviderExtensionSkill = Schema.Struct({
   enabled: Schema.optional(Schema.Boolean),
   scope: Schema.optional(TrimmedNonEmptyString),
   source: Schema.optional(TrimmedNonEmptyString),
+  bundleId: Schema.optional(TrimmedNonEmptyString),
+  bundleName: Schema.optional(TrimmedNonEmptyString),
+  bundleDisplayName: Schema.optional(TrimmedNonEmptyString),
 });
 export type ProviderExtensionSkill = typeof ProviderExtensionSkill.Type;
 
@@ -105,6 +109,9 @@ export const ProviderExtensionMcpServer = Schema.Struct({
 });
 export type ProviderExtensionMcpServer = typeof ProviderExtensionMcpServer.Type;
 
+export const ProviderExtensionMcpInventoryStatus = Schema.Literals(["deferred", "ready", "error"]);
+export type ProviderExtensionMcpInventoryStatus = typeof ProviderExtensionMcpInventoryStatus.Type;
+
 export const ProviderExtensionApp = Schema.Struct({
   id: TrimmedNonEmptyString,
   name: TrimmedNonEmptyString,
@@ -124,6 +131,8 @@ export const ProviderExtensionProviderInventory = Schema.Struct({
   plugins: Schema.Array(ProviderExtensionPlugin),
   skills: Schema.Array(ProviderExtensionSkill),
   mcpServers: Schema.Array(ProviderExtensionMcpServer),
+  mcpServersStatus: Schema.optional(ProviderExtensionMcpInventoryStatus),
+  mcpServersMessage: Schema.optional(TrimmedString),
   apps: Schema.Array(ProviderExtensionApp),
 });
 export type ProviderExtensionProviderInventory = typeof ProviderExtensionProviderInventory.Type;

@@ -12,6 +12,7 @@ import {
   type EditorId,
   type LaunchEditorInput,
 } from "@threadlines/contracts";
+import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import { isCommandAvailable, type CommandAvailabilityOptions } from "@threadlines/shared/shell";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -388,7 +389,11 @@ const launchAndUnref = Effect.fn("externalLauncher.launchAndUnref")(function* (
   errorMessage: string,
 ): Effect.fn.Return<void, ExternalLauncherError, ChildProcessSpawner.ChildProcessSpawner> {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const command = ChildProcess.make(launch.command, launch.args, launch.options);
+  const command = ChildProcess.make(
+    launch.command,
+    launch.args,
+    hideWindowsConsole(launch.options),
+  );
 
   yield* spawner.spawn(command).pipe(
     Effect.flatMap((handle) => handle.unref),
@@ -419,13 +424,13 @@ export const launchEditorProcess = Effect.fn("externalLauncher.launchEditorProce
     {
       command: launch.command,
       args: isWin32 && shell ? launch.args.map((arg) => `"${arg}"`) : [...launch.args],
-      options: {
+      options: hideWindowsConsole({
         detached: true,
         shell,
         stdin: "ignore",
         stdout: "ignore",
         stderr: "ignore",
-      },
+      }),
     },
     "failed to spawn detached process",
   );

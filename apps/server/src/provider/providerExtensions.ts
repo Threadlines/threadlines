@@ -10,6 +10,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import { randomUUID } from "node:crypto";
 import * as CodexClient from "effect-codex-app-server/client";
 import type * as CodexSchema from "effect-codex-app-server/schema";
@@ -116,6 +117,14 @@ function optionalText(value: string | null | undefined): string | undefined {
 
 function requiredText(value: string | null | undefined): string | null {
   return optionalText(value) ?? null;
+}
+
+function quotedCodexConfigPathSegment(value: string): string {
+  return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+}
+
+function codexPluginEnabledConfigPath(pluginId: string): string {
+  return ["plugins", quotedCodexConfigPathSegment(pluginId), "enabled"].join(".");
 }
 
 function sanitizeErrorMessage(message: string): string {
@@ -622,12 +631,52 @@ function commandArg(value: string): string {
   return /^[A-Za-z0-9._:/?=&,-]+$/.test(value) ? value : `"${value.replaceAll('"', '\\"')}"`;
 }
 
-function codexMcpLoginCommand(serverName: string, scopes: ReadonlyArray<string> = []): string {
-  const args = ["codex", "mcp", "login", serverName];
+function powerShellSingleQuote(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+function posixSingleQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function codexHomeCommandPrefix(codexHomePath: string | undefined): ReadonlyArray<string> {
+  const normalized = optionalText(codexHomePath);
+  if (!normalized) return [];
+  return process.platform === "win32"
+    ? [`$env:CODEX_HOME=${powerShellSingleQuote(normalized)};`]
+    : [`CODEX_HOME=${posixSingleQuote(normalized)}`];
+}
+
+export function codexMcpLoginCommandForDisplay(input: {
+  readonly serverName: string;
+  readonly scopes?: ReadonlyArray<string> | undefined;
+  readonly binaryPath?: string | undefined;
+  readonly codexHomePath?: string | undefined;
+}): string {
+  const prefix = codexHomeCommandPrefix(input.codexHomePath);
+  const args = [
+    commandArg(optionalText(input.binaryPath) ?? "codex"),
+    "mcp",
+    "login",
+    commandArg(input.serverName),
+  ];
+  const scopes = input.scopes ?? [];
   if (scopes.length > 0) {
-    args.push("--scopes", scopes.join(","));
+    args.push("--scopes", commandArg(scopes.join(",")));
   }
-  return args.map(commandArg).join(" ");
+  return [...prefix, ...args].join(" ");
+}
+
+export function codexSkillConfigWriteParams(
+  input: Pick<ProviderExtensionSkillToggleInput, "enabled" | "name" | "path">,
+): CodexSchema.V2SkillsConfigWriteParams | null {
+  const path = optionalText(input.path);
+  if (path) return { enabled: input.enabled, path };
+
+  const name = optionalText(input.name);
+  if (name) return { enabled: input.enabled, name };
+
+  return null;
 }
 
 function claudeMcpLoginCommand(serverName: string): string {
@@ -823,11 +872,15 @@ const runCodexCommand = Effect.fn("providerExtensions.runCodexCommand")(function
 }) {
   const result = yield* spawnAndCollect(
     input.binaryPath,
-    ChildProcess.make(input.binaryPath, [...input.args], {
-      cwd: input.cwd,
-      env: input.env,
-      shell: process.platform === "win32",
-    }),
+    ChildProcess.make(
+      input.binaryPath,
+      [...input.args],
+      hideWindowsConsole({
+        cwd: input.cwd,
+        env: input.env,
+        shell: process.platform === "win32",
+      }),
+    ),
   ).pipe(Effect.timeoutOption(input.timeout ?? INVENTORY_COMMAND_TIMEOUT));
   if (Option.isNone(result)) {
     return yield* new ProviderExtensionsError({
@@ -857,10 +910,18 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
     readonly cwd: string;
     readonly environment: NodeJS.ProcessEnv;
     readonly providerThreadId?: string | undefined;
+    readonly includeMcpServers?: boolean | undefined;
   }): Effect.fn.Return<
     Pick<
       ProviderExtensionProviderInventory,
-      "plugins" | "skills" | "mcpServers" | "apps" | "status" | "message"
+      | "plugins"
+      | "skills"
+      | "mcpServers"
+      | "mcpServersStatus"
+      | "mcpServersMessage"
+      | "apps"
+      | "status"
+      | "message"
     >,
     never,
     FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
@@ -915,6 +976,19 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
           limit: 100,
         };
 
+        const includeMcpServers = input.includeMcpServers ?? true;
+        const mcpServersEffect = includeMcpServers
+          ? client.request("mcpServerStatus/list", mcpStatusParams).pipe(
+              Effect.catch((cause) =>
+                input.providerThreadId !== undefined && isThreadNotFoundError(cause)
+                  ? client.request("mcpServerStatus/list", mcpStatusWithoutThreadParams)
+                  : Effect.fail(cause),
+              ),
+              Effect.map(mapCodexMcpServers),
+              collectCodexRequest("MCP servers"),
+            )
+          : Effect.succeed(Result.succeed([] as ProviderExtensionMcpServer[]));
+
         const [plugins, skills, mcpServers, apps] = yield* Effect.all(
           [
             client
@@ -924,15 +998,7 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
               Effect.map((response) => mapCodexSkills(response, input.cwd)),
               collectCodexRequest("skills"),
             ),
-            client.request("mcpServerStatus/list", mcpStatusParams).pipe(
-              Effect.catch((cause) =>
-                input.providerThreadId !== undefined && isThreadNotFoundError(cause)
-                  ? client.request("mcpServerStatus/list", mcpStatusWithoutThreadParams)
-                  : Effect.fail(cause),
-              ),
-              Effect.map(mapCodexMcpServers),
-              collectCodexRequest("MCP servers"),
-            ),
+            mcpServersEffect,
             client.request("app/list", appListParams).pipe(
               Effect.catch((cause) =>
                 input.providerThreadId !== undefined && isThreadNotFoundError(cause)
@@ -950,7 +1016,7 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
           ],
           { concurrency: 2 },
         );
-        return { plugins, skills, mcpServers, apps };
+        return { includeMcpServers, plugins, skills, mcpServers, apps };
       }),
     ).pipe(Effect.result, Effect.timeoutOption(CODEX_APP_SERVER_INVENTORY_TIMEOUT));
 
@@ -980,16 +1046,30 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
     const messages = [
       resultMessage(data.plugins),
       resultMessage(data.skills),
-      resultMessage(data.mcpServers),
       resultMessage(data.apps),
     ].filter((message): message is string => Boolean(message));
+    const mcpServersMessage = Result.isFailure(data.mcpServers)
+      ? resultMessage(data.mcpServers)
+      : undefined;
+
+    const plugins = Result.isSuccess(data.plugins) ? data.plugins.success : [];
+    const skills = Result.isSuccess(data.skills)
+      ? annotatePluginBackedSkills(data.skills.success, plugins)
+      : [];
+    const mcpServersStatus = data.includeMcpServers
+      ? Result.isSuccess(data.mcpServers)
+        ? "ready"
+        : "error"
+      : "deferred";
 
     return {
       status: messages.length > 0 ? "partial" : "ready",
       ...(messages.length > 0 ? { message: messages.join(" ") } : {}),
-      plugins: Result.isSuccess(data.plugins) ? data.plugins.success : [],
-      skills: Result.isSuccess(data.skills) ? data.skills.success : [],
+      plugins,
+      skills,
       mcpServers: Result.isSuccess(data.mcpServers) ? data.mcpServers.success : [],
+      mcpServersStatus,
+      ...(mcpServersMessage ? { mcpServersMessage } : {}),
       apps: Result.isSuccess(data.apps) ? data.apps.success : [],
     };
   },
@@ -1386,6 +1466,11 @@ function withSkillInventoryMetadata(
     ...(skill.enabled !== undefined ? { enabled: skill.enabled } : {}),
     scope: input.scope,
     source: input.source,
+    ...(skill.bundleId !== undefined ? { bundleId: skill.bundleId } : {}),
+    ...(skill.bundleName !== undefined ? { bundleName: skill.bundleName } : {}),
+    ...(skill.bundleDisplayName !== undefined
+      ? { bundleDisplayName: skill.bundleDisplayName }
+      : {}),
   };
 }
 
@@ -1413,6 +1498,59 @@ function posixRelativePath(value: string): string {
 function normalizedPathKey(value: string): string {
   const normalized = value.replaceAll("\\", "/");
   return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+export interface PluginBackedSkillBundle {
+  readonly bundleId: string;
+  readonly bundleName: string;
+}
+
+export function derivePluginBackedSkillBundle(skillPath: string): PluginBackedSkillBundle | null {
+  const normalized = skillPath.replaceAll("\\", "/");
+  const pluginCacheMatch = normalized.match(/\/plugins\/cache\/([^/]+)\/([^/]+)\/[^/]+\/skills\//i);
+  if (pluginCacheMatch) {
+    const marketplaceName = optionalText(pluginCacheMatch[1]);
+    const pluginName = optionalText(pluginCacheMatch[2]);
+    if (marketplaceName && pluginName) {
+      return {
+        bundleId: `${pluginName}@${marketplaceName}`,
+        bundleName: pluginName,
+      };
+    }
+  }
+
+  const runtimePluginMatch = normalized.match(/\/plugins\/([^/]+)\/plugins\/([^/]+)\/skills\//i);
+  if (runtimePluginMatch) {
+    const marketplaceName = optionalText(runtimePluginMatch[1]);
+    const pluginName = optionalText(runtimePluginMatch[2]);
+    if (marketplaceName && pluginName) {
+      return {
+        bundleId: `${pluginName}@${marketplaceName}`,
+        bundleName: pluginName,
+      };
+    }
+  }
+
+  return null;
+}
+
+function annotatePluginBackedSkills(
+  skills: ReadonlyArray<ProviderExtensionSkill>,
+  plugins: ReadonlyArray<ProviderExtensionPlugin>,
+): ProviderExtensionSkill[] {
+  const pluginsById = new Map(plugins.map((plugin) => [plugin.id, plugin]));
+  return skills.map((skill) => {
+    const bundle = derivePluginBackedSkillBundle(skill.path);
+    if (!bundle) return skill;
+
+    const plugin = pluginsById.get(bundle.bundleId);
+    return {
+      ...skill,
+      bundleId: plugin?.id ?? bundle.bundleId,
+      bundleName: plugin?.name ?? bundle.bundleName,
+      ...(plugin?.displayName !== undefined ? { bundleDisplayName: plugin.displayName } : {}),
+    };
+  });
 }
 
 function skillNamespace(input: {
@@ -1710,11 +1848,15 @@ const runClaudeCommand = Effect.fn("providerExtensions.runClaudeCommand")(functi
 }) {
   const result = yield* spawnAndCollect(
     input.binaryPath,
-    ChildProcess.make(input.binaryPath, [...input.args], {
-      cwd: input.cwd,
-      env: input.env,
-      shell: process.platform === "win32",
-    }),
+    ChildProcess.make(
+      input.binaryPath,
+      [...input.args],
+      hideWindowsConsole({
+        cwd: input.cwd,
+        env: input.env,
+        shell: process.platform === "win32",
+      }),
+    ),
   ).pipe(Effect.timeoutOption(input.timeout ?? INVENTORY_COMMAND_TIMEOUT));
   if (Option.isNone(result)) {
     return yield* new ProviderExtensionsError({
@@ -1851,11 +1993,15 @@ const readClaudeInventory = Effect.fn("providerExtensions.readClaudeInventory")(
     resultMessage(mcpResult),
     resultMessage(skillsResult),
   ].filter((message): message is string => Boolean(message));
+  const plugins = Result.isSuccess(pluginResult) ? pluginResult.success : [];
+  const skills = Result.isSuccess(skillsResult)
+    ? annotatePluginBackedSkills(skillsResult.success, plugins)
+    : [];
   return {
     status: messages.length > 0 ? "partial" : "ready",
     ...(messages.length > 0 ? { message: messages.join(" ") } : {}),
-    plugins: Result.isSuccess(pluginResult) ? pluginResult.success : [],
-    skills: Result.isSuccess(skillsResult) ? skillsResult.success : [],
+    plugins,
+    skills,
     mcpServers: Result.isSuccess(mcpResult) ? mcpResult.success : [],
     apps: [],
   } satisfies Pick<
@@ -1886,6 +2032,7 @@ const readProviderInventory = Effect.fn("providerExtensions.readProviderInventor
     readonly snapshot: ServerProvider | undefined;
     readonly cwd: string;
     readonly providerThreadId?: string | undefined;
+    readonly includeMcpServers?: boolean | undefined;
   }) {
     const processEnv = mergeProviderInstanceEnvironment(input.config.environment ?? []);
     const base = {
@@ -1922,6 +2069,9 @@ const readProviderInventory = Effect.fn("providerExtensions.readProviderInventor
         environment: processEnv,
         ...(input.providerThreadId !== undefined
           ? { providerThreadId: input.providerThreadId }
+          : {}),
+        ...(input.includeMcpServers !== undefined
+          ? { includeMcpServers: input.includeMcpServers }
           : {}),
       });
       return {
@@ -2176,7 +2326,12 @@ export const startProviderExtensionMcpOAuth = Effect.fn(
       operationId,
       serverName: input.request.serverName,
       authorizationUrl: response.authorizationUrl,
-      terminalCommand: codexMcpLoginCommand(input.request.serverName, scopes),
+      terminalCommand: codexMcpLoginCommandForDisplay({
+        binaryPath: context.config.binaryPath,
+        codexHomePath: context.environment.CODEX_HOME,
+        serverName: input.request.serverName,
+        scopes,
+      }),
       expiresAt,
     } satisfies ProviderExtensionMcpOAuthStartResult;
   }).pipe(
@@ -2235,7 +2390,8 @@ export const setProviderExtensionSkillEnabled = Effect.fn(
   ProviderExtensionsError,
   FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
 > {
-  if (!input.request.name && !input.request.path) {
+  const params = codexSkillConfigWriteParams(input.request);
+  if (!params) {
     return yield* new ProviderExtensionsError({
       message: "Skill name or path is required.",
     });
@@ -2246,13 +2402,7 @@ export const setProviderExtensionSkillEnabled = Effect.fn(
     settings: input.settings,
   });
   const response = yield* runCodexAppServerAction(context, (client) =>
-    mapCodexRequestError(
-      client.request("skills/config/write", {
-        enabled: input.request.enabled,
-        ...(input.request.name ? { name: input.request.name } : {}),
-        ...(input.request.path ? { path: input.request.path } : {}),
-      }),
-    ),
+    mapCodexRequestError(client.request("skills/config/write", params)),
   );
   return { effectiveEnabled: response.effectiveEnabled };
 });
@@ -2421,12 +2571,29 @@ export const setProviderExtensionPluginEnabled = Effect.fn(
 }): Effect.fn.Return<
   ProviderExtensionPluginToggleResult,
   ProviderExtensionsError,
-  Path.Path | ChildProcessSpawner.ChildProcessSpawner
+  FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
 > {
   const providerConfig = yield* resolveProviderActionConfig({
     providerInstanceId: input.request.providerInstanceId,
     settings: input.settings,
   });
+  if (providerConfig.driver === CODEX_DRIVER) {
+    const context = yield* resolveCodexActionContext({
+      cwd: input.request.cwd,
+      providerInstanceId: input.request.providerInstanceId,
+      settings: input.settings,
+    });
+    yield* runCodexAppServerAction(context, (client) =>
+      mapCodexRequestError(
+        client.request("config/value/write", {
+          keyPath: codexPluginEnabledConfigPath(input.request.pluginId),
+          mergeStrategy: "upsert",
+          value: input.request.enabled,
+        }),
+      ),
+    );
+    return { effectiveEnabled: input.request.enabled };
+  }
   if (providerConfig.driver !== CLAUDE_DRIVER) {
     return yield* unsupportedProviderExtensionAction(providerConfig.driver, "Plugin enablement");
   }
@@ -2632,6 +2799,7 @@ export const readProviderExtensionsInventory = Effect.fn(
             snapshot: snapshotsByInstanceId.get(entry.instanceId),
             cwd,
             providerThreadId: scopedProviderThreadId,
+            includeMcpServers: input.request.includeMcpServers,
           }).pipe(
             Effect.catch((error: ProviderExtensionsError) =>
               Effect.succeed({

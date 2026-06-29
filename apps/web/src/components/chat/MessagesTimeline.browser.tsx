@@ -21,6 +21,8 @@ vi.mock("@legendapp/list/react", async () => {
     renderItem: (args: { item: { id: string } }) => React.ReactNode;
     ListHeaderComponent?: React.ReactNode;
     ListFooterComponent?: React.ReactNode;
+    maintainScrollAtEnd?: unknown;
+    onWheelCapture?: React.WheelEventHandler<HTMLDivElement>;
     ref?: React.Ref<LegendListRef>;
   }) {
     React.useImperativeHandle(
@@ -33,7 +35,11 @@ vi.mock("@legendapp/list/react", async () => {
     );
 
     return (
-      <div data-testid="legend-list">
+      <div
+        data-testid="legend-list"
+        data-maintain-scroll-at-end={props.maintainScrollAtEnd ? "true" : "false"}
+        onWheelCapture={props.onWheelCapture}
+      >
         {props.ListHeaderComponent}
         {props.data.map((item) => (
           <div key={props.keyExtractor(item)}>{props.renderItem({ item })}</div>
@@ -323,6 +329,56 @@ describe("MessagesTimeline", () => {
       expect(props.onIsAtEndChange).toHaveBeenCalledWith(true);
       expect(scrollToEndSpy).toHaveBeenCalledWith({ animated: false });
       expect(requestAnimationFrameSpy).toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("re-arms bottom sticking when a parent stick request follows user scroll intent", async () => {
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation(
+      (callback: FrameRequestCallback) => {
+        callback(0);
+        return 1;
+      },
+    );
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
+
+    const props = buildProps();
+    const timelineEntries = [buildUserTimelineEntry("Message before send.")];
+    const screen = await render(
+      <MessagesTimeline {...props} stickToBottomRequestKey={0} timelineEntries={timelineEntries} />,
+    );
+
+    try {
+      let legendList = document.querySelector<HTMLElement>('[data-testid="legend-list"]');
+      expect(legendList).not.toBeNull();
+      expect(legendList?.getAttribute("data-maintain-scroll-at-end")).toBe("true");
+
+      scrollToEndSpy.mockClear();
+      props.onIsAtEndChange.mockClear();
+
+      legendList?.dispatchEvent(new WheelEvent("wheel", { deltaY: -24, bubbles: true }));
+
+      await vi.waitFor(() => {
+        legendList = document.querySelector<HTMLElement>('[data-testid="legend-list"]');
+        expect(legendList?.getAttribute("data-maintain-scroll-at-end")).toBe("false");
+      });
+      expect(props.onIsAtEndChange).toHaveBeenCalledWith(false);
+
+      await screen.rerender(
+        <MessagesTimeline
+          {...props}
+          stickToBottomRequestKey={1}
+          timelineEntries={timelineEntries}
+        />,
+      );
+
+      await vi.waitFor(() => {
+        legendList = document.querySelector<HTMLElement>('[data-testid="legend-list"]');
+        expect(legendList?.getAttribute("data-maintain-scroll-at-end")).toBe("true");
+      });
+      expect(props.onIsAtEndChange).toHaveBeenCalledWith(true);
+      expect(scrollToEndSpy).toHaveBeenCalledWith({ animated: false });
     } finally {
       await screen.unmount();
     }

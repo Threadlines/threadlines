@@ -9,6 +9,7 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { DEFAULT_MODEL, type CodexSettings, type ModelSelection } from "@threadlines/contracts";
+import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@threadlines/shared/git";
 
 import { resolveAttachmentPath } from "../attachmentStore.ts";
@@ -256,7 +257,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
           ...imagePaths.flatMap((imagePath) => ["--image", imagePath]),
           "-",
         ],
-        {
+        hideWindowsConsole({
           env: {
             ...environment,
             ...(codexConfig.homePath ? { CODEX_HOME: expandHomePath(codexConfig.homePath) } : {}),
@@ -266,7 +267,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
           stdin: {
             stream: Stream.encodeText(Stream.make(prompt)),
           },
-        },
+        }),
       );
 
       const child = yield* commandSpawner

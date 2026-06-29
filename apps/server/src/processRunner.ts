@@ -8,6 +8,7 @@ import * as PlatformError from "effect/PlatformError";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import {
   collectUint8StreamText,
   type CollectedUint8StreamText,
@@ -234,16 +235,20 @@ const runProcessCore = Effect.fn("processRunner.runProcessCore")(function* (
 
   const child = yield* spawner
     .spawn(
-      ChildProcess.make(input.command, [...input.args], {
-        ...((input.spawnCwd ?? input.cwd) ? { cwd: input.spawnCwd ?? input.cwd } : {}),
-        ...(input.env !== undefined
-          ? {
-              env: input.env,
-              extendEnv: true,
-            }
-          : {}),
-        ...(input.shell !== undefined ? { shell: input.shell } : {}),
-      }),
+      ChildProcess.make(
+        input.command,
+        [...input.args],
+        hideWindowsConsole({
+          ...((input.spawnCwd ?? input.cwd) ? { cwd: input.spawnCwd ?? input.cwd } : {}),
+          ...(input.env !== undefined
+            ? {
+                env: input.env,
+                extendEnv: true,
+              }
+            : {}),
+          ...(input.shell !== undefined ? { shell: input.shell } : {}),
+        }),
+      ),
     )
     .pipe(
       Effect.mapError(

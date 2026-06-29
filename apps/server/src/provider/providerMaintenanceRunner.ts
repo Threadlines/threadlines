@@ -7,6 +7,7 @@ import {
   type ServerProviderUpdatedPayload,
   type ServerProviderUpdateState,
 } from "@threadlines/contracts";
+import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
@@ -80,7 +81,7 @@ const runProviderMaintenanceCommandWithSpawner = Effect.fn("ProviderMaintenanceR
             ChildProcess.make(
               input.command,
               [...input.args],
-              process.platform === "win32" ? { shell: true } : {},
+              hideWindowsConsole(process.platform === "win32" ? { shell: true } : {}),
             ),
           )
           .pipe(

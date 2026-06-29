@@ -16,6 +16,7 @@ import {
   ThreadId,
   TurnId,
 } from "@threadlines/contracts";
+import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import { normalizeModelSlug } from "@threadlines/shared/model";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -1076,12 +1077,16 @@ export const makeCodexSessionRuntime = (
     };
     const child = yield* spawner
       .spawn(
-        ChildProcess.make(options.binaryPath, ["app-server"], {
-          cwd: options.cwd,
-          env,
-          forceKillAfter: CODEX_APP_SERVER_FORCE_KILL_AFTER,
-          shell: process.platform === "win32",
-        }),
+        ChildProcess.make(
+          options.binaryPath,
+          ["app-server"],
+          hideWindowsConsole({
+            cwd: options.cwd,
+            env,
+            forceKillAfter: CODEX_APP_SERVER_FORCE_KILL_AFTER,
+            shell: process.platform === "win32",
+          }),
+        ),
       )
       .pipe(
         Effect.provideService(Scope.Scope, runtimeScope),

@@ -145,6 +145,21 @@ export function isGitHubHttpsCredentialPromptErrorMessage(message: string): bool
   );
 }
 
+export function isGitRepositoryMetadataCorruptionErrorMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    /\bbad object refs\/(?:remotes|heads|tags)\//.test(normalized) ||
+    normalized.includes("invalid sha1 pointer") ||
+    /\bpack has \d+ unresolved deltas\b/.test(normalized) ||
+    /\bmissing (?:blob|commit|tree) [0-9a-f]{7,40}\b/.test(normalized) ||
+    (normalized.includes("object file") && normalized.includes(" is empty")) ||
+    (normalized.includes("loose object") && normalized.includes(" is corrupt")) ||
+    normalized.includes("bad tree object") ||
+    normalized.includes("unable to read sha1 file") ||
+    normalized.includes("repository is corrupt")
+  );
+}
+
 export function formatGitErrorMessage(error: unknown): string {
   const message =
     error instanceof Error

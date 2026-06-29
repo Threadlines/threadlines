@@ -15,6 +15,7 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 
 import { collectUint8StreamText } from "../stream/collectUint8StreamText.ts";
 
@@ -389,10 +390,14 @@ const runProcess = Effect.fn("runProcess")(
   }) {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const child = yield* spawner.spawn(
-      ChildProcess.make(input.command, input.args, {
-        cwd: process.cwd(),
-        shell: false,
-      }),
+      ChildProcess.make(
+        input.command,
+        input.args,
+        hideWindowsConsole({
+          cwd: process.cwd(),
+          shell: false,
+        }),
+      ),
     );
     const [stdout, stderr, exitCode] = yield* Effect.all(
       [

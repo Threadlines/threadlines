@@ -385,6 +385,143 @@ describe("composerDraftStore terminal contexts", () => {
     useComposerDraftStore.getState().addTerminalContexts(threadRef, [first, duplicate]);
 
     const draft = draftFor(threadId, TEST_ENVIRONMENT_ID);
+    expect(draft?.prompt).toBe("");
+    expect(draft?.terminalContexts.map((context) => context.id)).toEqual(["ctx-1"]);
+  });
+
+  it("updates same-line terminal contexts to the latest selected text", () => {
+    useComposerDraftStore.getState().addTerminalContext(
+      threadRef,
+      makeTerminalContext({
+        id: "ctx-initial",
+        lineStart: 7,
+        lineEnd: 7,
+        text: "received",
+      }),
+    );
+    useComposerDraftStore.getState().addTerminalContext(
+      threadRef,
+      makeTerminalContext({
+        id: "ctx-latest",
+        lineStart: 7,
+        lineEnd: 7,
+        text: "received: test text",
+      }),
+    );
+
+    const draft = draftFor(threadId, TEST_ENVIRONMENT_ID);
+    expect(draft?.terminalContexts).toMatchObject([
+      {
+        id: "ctx-initial",
+        lineStart: 7,
+        lineEnd: 7,
+        text: "received: test text",
+      },
+    ]);
+  });
+
+  it("replaces overlapping terminal ranges with the latest selection", () => {
+    useComposerDraftStore.getState().addTerminalContexts(threadRef, [
+      makeTerminalContext({ id: "ctx-before", lineStart: 2, lineEnd: 3 }),
+      makeTerminalContext({ id: "ctx-overlap-a", lineStart: 7, lineEnd: 7 }),
+      makeTerminalContext({
+        id: "ctx-other-terminal",
+        terminalId: "terminal-2",
+        terminalLabel: "Terminal 2",
+        lineStart: 8,
+        lineEnd: 8,
+      }),
+      makeTerminalContext({ id: "ctx-overlap-b", lineStart: 9, lineEnd: 10 }),
+      makeTerminalContext({ id: "ctx-after", lineStart: 12, lineEnd: 13 }),
+    ]);
+
+    useComposerDraftStore.getState().addTerminalContext(
+      threadRef,
+      makeTerminalContext({
+        id: "ctx-latest",
+        lineStart: 7,
+        lineEnd: 10,
+        text: "expanded selected output",
+      }),
+    );
+
+    const draft = draftFor(threadId, TEST_ENVIRONMENT_ID);
+    expect(draft?.terminalContexts.map((context) => context.id)).toEqual([
+      "ctx-before",
+      "ctx-overlap-a",
+      "ctx-other-terminal",
+      "ctx-after",
+    ]);
+    expect(draft?.terminalContexts[1]).toMatchObject({
+      lineStart: 7,
+      lineEnd: 10,
+      text: "expanded selected output",
+    });
+  });
+
+  it("keeps non-overlapping terminal ranges as separate attachments", () => {
+    useComposerDraftStore
+      .getState()
+      .addTerminalContexts(threadRef, [
+        makeTerminalContext({ id: "ctx-first", lineStart: 7, lineEnd: 7 }),
+        makeTerminalContext({ id: "ctx-second", lineStart: 9, lineEnd: 9 }),
+      ]);
+
+    const draft = draftFor(threadId, TEST_ENVIRONMENT_ID);
+    expect(draft?.terminalContexts.map((context) => context.id)).toEqual([
+      "ctx-first",
+      "ctx-second",
+    ]);
+  });
+
+  it("removes pending terminal contexts for a closed terminal", () => {
+    useComposerDraftStore.getState().addTerminalContexts(threadRef, [
+      makeTerminalContext({ id: "ctx-terminal-1", terminalId: "terminal-1", lineStart: 7 }),
+      makeTerminalContext({
+        id: "ctx-terminal-2",
+        terminalId: "terminal-2",
+        terminalLabel: "Terminal 2",
+        lineStart: 7,
+      }),
+    ]);
+
+    useComposerDraftStore.getState().removeTerminalContextsForTerminal(threadRef, "terminal-1");
+
+    const draft = draftFor(threadId, TEST_ENVIRONMENT_ID);
+    expect(draft?.terminalContexts.map((context) => context.id)).toEqual(["ctx-terminal-2"]);
+  });
+
+  it("removes empty drafts when a closed terminal owned the only terminal context", () => {
+    useComposerDraftStore
+      .getState()
+      .addTerminalContext(
+        threadRef,
+        makeTerminalContext({ id: "ctx-terminal-1", terminalId: "terminal-1" }),
+      );
+
+    useComposerDraftStore.getState().removeTerminalContextsForTerminal(threadRef, "terminal-1");
+
+    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toBeUndefined();
+  });
+
+  it("adds terminal contexts as removable attachments without inline prompt placeholders", () => {
+    useComposerDraftStore
+      .getState()
+      .addTerminalContext(threadRef, makeTerminalContext({ id: "ctx-1" }));
+
+    const draft = draftFor(threadId, TEST_ENVIRONMENT_ID);
+    expect(draft?.prompt).toBe("");
+    expect(draft?.terminalContexts.map((context) => context.id)).toEqual(["ctx-1"]);
+  });
+
+  it("sets terminal contexts without rewriting the prompt", () => {
+    useComposerDraftStore.getState().setPrompt(threadRef, "please review");
+    useComposerDraftStore
+      .getState()
+      .setTerminalContexts(threadRef, [makeTerminalContext({ id: "ctx-1" })]);
+
+    const draft = draftFor(threadId, TEST_ENVIRONMENT_ID);
+    expect(draft?.prompt).toBe("please review");
     expect(draft?.terminalContexts.map((context) => context.id)).toEqual(["ctx-1"]);
   });
 
@@ -498,7 +635,9 @@ describe("composerDraftStore terminal contexts", () => {
       useComposerDraftStore.getInitialState(),
     );
 
-    expect(mergedState.draftsByThreadKey[threadKeyFor(threadId)]?.terminalContexts).toMatchObject([
+    const mergedDraft = mergedState.draftsByThreadKey[threadKeyFor(threadId)];
+    expect(mergedDraft?.prompt).toBe("");
+    expect(mergedDraft?.terminalContexts).toMatchObject([
       {
         id: "ctx-rehydrated",
         terminalId: "default",

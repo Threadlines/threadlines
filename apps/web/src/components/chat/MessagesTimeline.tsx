@@ -253,6 +253,7 @@ interface MessagesTimelineProps {
   activeTurnId?: TurnId | null;
   activeTurnStartedAt: string | null;
   listRef: React.RefObject<LegendListRef | null>;
+  stickToBottomRequestKey?: number;
   timelineEntries: ReturnType<typeof deriveTimelineEntries>;
   completionDividerBeforeEntryId: string | null;
   completionSummary: string | null;
@@ -289,6 +290,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   activeTurnId,
   activeTurnStartedAt,
   listRef,
+  stickToBottomRequestKey = 0,
   timelineEntries,
   completionDividerBeforeEntryId,
   completionSummary,
@@ -354,6 +356,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }, [turnDiffSummaryByAssistantMessageId]);
   const [autoStickToBottom, setAutoStickToBottom] = useState(true);
   const autoStickToBottomRef = useRef(true);
+  const lastHandledStickToBottomRequestKeyRef = useRef(stickToBottomRequestKey);
   const userScrollLockTimerRef = useRef<number | null>(null);
   const touchStartYRef = useRef<number | null>(null);
   const timelineContainerRef = useRef<HTMLDivElement | null>(null);
@@ -522,6 +525,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   );
 
   const hasRows = rows.length > 0;
+  const stickToBottomRequestPending =
+    stickToBottomRequestKey !== lastHandledStickToBottomRequestKeyRef.current;
+
   useEffect(() => {
     if (!hasRows) {
       return;
@@ -558,6 +564,46 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     onIsAtEndChange,
     routeThreadKey,
     setAutoStickToBottomState,
+  ]);
+
+  useEffect(() => {
+    if (!hasRows || stickToBottomRequestKey === lastHandledStickToBottomRequestKeyRef.current) {
+      return;
+    }
+
+    lastHandledStickToBottomRequestKeyRef.current = stickToBottomRequestKey;
+
+    const frameIds: number[] = [];
+    const stickToBottom = () => {
+      clearUserScrollLockTimer();
+      setAutoStickToBottomState(true);
+      onIsAtEndChange(true);
+      void listRef.current?.scrollToEnd?.({ animated: false });
+    };
+    const scheduleFrame = (remainingFrames: number) => {
+      const frameId = window.requestAnimationFrame(() => {
+        stickToBottom();
+        if (remainingFrames > 1) {
+          scheduleFrame(remainingFrames - 1);
+        }
+      });
+      frameIds.push(frameId);
+    };
+
+    scheduleFrame(INITIAL_STICK_TO_BOTTOM_FRAME_COUNT);
+
+    return () => {
+      for (const frameId of frameIds) {
+        window.cancelAnimationFrame(frameId);
+      }
+    };
+  }, [
+    clearUserScrollLockTimer,
+    hasRows,
+    listRef,
+    onIsAtEndChange,
+    setAutoStickToBottomState,
+    stickToBottomRequestKey,
   ]);
 
   useEffect(() => {
@@ -651,7 +697,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             renderItem={renderItem}
             estimatedItemSize={90}
             initialScrollAtEnd
-            maintainScrollAtEnd={autoStickToBottom ? MAINTAIN_SCROLL_AT_END : false}
+            maintainScrollAtEnd={
+              autoStickToBottom || stickToBottomRequestPending ? MAINTAIN_SCROLL_AT_END : false
+            }
             maintainScrollAtEndThreshold={TIMELINE_MAINTAIN_END_THRESHOLD_RATIO}
             maintainVisibleContentPosition
             onScroll={handleScroll}

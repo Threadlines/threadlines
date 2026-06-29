@@ -14,6 +14,7 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { type ClaudeSettings, type ModelSelection } from "@threadlines/contracts";
+import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@threadlines/shared/git";
 
 import { TextGenerationError } from "@threadlines/contracts";
@@ -172,7 +173,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           ...(settingsJson ? ["--settings", settingsJson] : []),
           "--dangerously-skip-permissions",
         ],
-        {
+        hideWindowsConsole({
           env: claudeEnvironment,
           cwd,
           // `--json-schema` (and `--settings`) carry inline JSON. A Windows
@@ -184,7 +185,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           stdin: {
             stream: Stream.encodeText(Stream.make(prompt)),
           },
-        },
+        }),
       );
 
       const child = yield* commandSpawner

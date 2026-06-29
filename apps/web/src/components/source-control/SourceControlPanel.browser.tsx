@@ -1266,6 +1266,32 @@ describe("SourceControlPanel commit graph", () => {
     }
   });
 
+  it("explains local Git metadata corruption when the commit graph fails", async () => {
+    const commitGraph: EnvironmentApi["vcs"]["commitGraph"] = vi.fn(async () => {
+      throw new Error(
+        "Git command failed in GitVcsDriver.commitGraph: git log --all --topo-order (C:\\repo) - fatal: bad object refs/remotes/origin/HEAD",
+      );
+    });
+    const mounted = await renderPanel({
+      environmentApi: makeEnvironmentApi({ vcs: { commitGraph } }),
+    });
+
+    try {
+      await expect.element(page.getByText("Local Git metadata needs repair")).toBeVisible();
+      await expect
+        .element(
+          page.getByText(
+            "Git reported corrupt or missing objects. Repair the repository, then retry.",
+          ),
+        )
+        .toBeVisible();
+      await expect.element(page.getByText("git fetch --refetch --prune origin")).toBeVisible();
+      await expect.element(page.getByRole("button", { name: "Retry" })).toBeVisible();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("marks truncated commit graph counts", async () => {
     const mounted = await renderPanel({
       environmentApi: makeEnvironmentApi({

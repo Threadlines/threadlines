@@ -49,12 +49,13 @@ import {
   deriveExtensionPluginGroupLabel,
   deriveDetectedProviderThreadId,
   deriveExtensionJsonSchemaFormFields,
+  deriveExtensionSkillBundleKey,
+  deriveExtensionSkillBundleLabel,
   extensionMcpNeedsAuthStatus,
   extensionMcpOAuthActionIntent,
   extensionMcpOAuthActionLabel,
   extensionTextMatchesFilter,
   extensionProviderDriverSortRank,
-  formatExtensionGroupLabel,
   isLikelyLocalPath,
   makeExtensionInventoryCacheKey,
   makeExtensionJsonSchemaFormDefaults,
@@ -109,7 +110,7 @@ type ExtensionBrowserFilter =
   | "needs-auth"
   | "official"
   | "local";
-type ExtensionBrowserSort = "recommended" | "name" | "status" | "category";
+type ExtensionBrowserSort = "recommended" | "bundle" | "name" | "status" | "category";
 
 type ExtensionItem =
   | {
@@ -162,6 +163,10 @@ interface ExtensionSectionConfig {
   readonly items: ReadonlyArray<ExtensionItem>;
   readonly totalCount: number;
   readonly emptyLabel: string;
+  readonly statusMessage?: string | undefined;
+  readonly loadLabel?: string | undefined;
+  readonly isLoading?: boolean | undefined;
+  readonly onLoad?: (() => void) | undefined;
 }
 
 type ExtensionActionStatus = "running" | "success" | "error";
@@ -224,6 +229,12 @@ function providerStatusLabel(status: ProviderExtensionProviderInventory["status"
 
 function providerTitle(provider: ProviderExtensionProviderInventory): string {
   return provider.displayName ?? (provider.driver === "claudeAgent" ? "Claude" : provider.driver);
+}
+
+function inventoryHasLoadedMcpServers(inventory: ProviderExtensionsInventoryResult): boolean {
+  return inventory.providers.some(
+    (provider) => provider.mcpServersStatus === "ready" || provider.mcpServers.length > 0,
+  );
 }
 
 function extensionKindLabel(kind: ExtensionItemKind): string {
@@ -350,6 +361,9 @@ function skillExtensionItem(
       skill.shortDescription,
       skill.scope,
       skill.source,
+      skill.bundleId,
+      skill.bundleName,
+      skill.bundleDisplayName,
       skill.path,
     ],
     skill,
@@ -414,6 +428,32 @@ function appExtensionItem(
   };
 }
 
+function skillBundlePlugin(item: ExtensionItem): ProviderExtensionPlugin | null {
+  if (item.kind !== "skill") return null;
+  const bundleId = item.skill.bundleId?.trim();
+  if (!bundleId) return null;
+  return item.provider.plugins.find((plugin) => plugin.id === bundleId) ?? null;
+}
+
+function skillBundleLabel(skill: ProviderExtensionSkill): string {
+  return deriveExtensionSkillBundleLabel({
+    bundleId: skill.bundleId,
+    bundleName: skill.bundleName,
+    bundleDisplayName: skill.bundleDisplayName,
+    scope: skill.scope,
+    source: skill.source,
+  });
+}
+
+function skillBundleKey(skill: ProviderExtensionSkill): string {
+  return deriveExtensionSkillBundleKey({
+    bundleId: skill.bundleId,
+    bundleName: skill.bundleName,
+    scope: skill.scope,
+    source: skill.source,
+  });
+}
+
 function findRefreshedExtensionItem(
   current: ExtensionItem,
   inventory: ProviderExtensionsInventoryResult,
@@ -455,6 +495,7 @@ function compareExtensionItemsByTitle(left: ExtensionItem, right: ExtensionItem)
 
 function extensionItemInstalled(item: ExtensionItem): boolean {
   if (item.kind === "plugin") return item.plugin.installed === true;
+  if (item.kind === "skill") return skillBundlePlugin(item)?.installed === true;
   if (item.kind === "app") return item.app.accessible === true;
   return false;
 }
@@ -551,11 +592,7 @@ function extensionItemGroupLabel(item: ExtensionItem): string {
   }
 
   if (item.kind === "skill") {
-    return item.skill.scope
-      ? formatExtensionGroupLabel(item.skill.scope)
-      : item.skill.source
-        ? formatExtensionGroupLabel(item.skill.source)
-        : "Skills";
+    return skillBundleLabel(item.skill);
   }
 
   if (item.kind === "app") {
@@ -579,6 +616,9 @@ function extensionItemGroupKey(item: ExtensionItem, sort: ExtensionBrowserSort):
     if (item.enabled === false) return "Disabled";
     return "Available";
   }
+  if (sort === "bundle" && item.kind === "skill") {
+    return skillBundleKey(item.skill);
+  }
   return extensionItemGroupLabel(item);
 }
 
@@ -599,6 +639,14 @@ function sortExtensionItems(
         { sensitivity: "base" },
       );
       return categoryRank || compareExtensionItemsByTitle(left, right);
+    }
+    if (sort === "bundle") {
+      const bundleRank = extensionItemGroupLabel(left).localeCompare(
+        extensionItemGroupLabel(right),
+        undefined,
+        { sensitivity: "base" },
+      );
+      return bundleRank || compareExtensionItemsByTitle(left, right);
     }
     const priorityRank = extensionItemPriorityRank(left) - extensionItemPriorityRank(right);
     return priorityRank || compareExtensionItemsByTitle(left, right);
@@ -721,6 +769,9 @@ function extensionClipboardDetails(item: ExtensionItem): string {
           enabled: item.skill.enabled,
           scope: item.skill.scope,
           source: item.skill.source,
+          bundleId: item.skill.bundleId,
+          bundleName: item.skill.bundleName,
+          bundleDisplayName: item.skill.bundleDisplayName,
           path: item.skill.path,
           provider: providerTitle(item.provider),
         },
@@ -1281,7 +1332,6 @@ function ExtensionDetailDialog({
     void runDialogAction(nextEnabled ? "Enable skill" : "Disable skill", async () => {
       const result = await ensureLocalApi().server.setProviderExtensionSkillEnabled({
         ...actionBaseInput(item, cwd),
-        name: item.skill.name,
         path: item.skill.path,
         enabled: nextEnabled,
       });
@@ -1562,6 +1612,15 @@ function ExtensionDetailDialog({
                   <DetailRow label="Summary" value={item.skill.shortDescription} />
                   <DetailRow label="Description" value={item.skill.description} />
                   <DetailRow label="Enabled" value={formatBoolean(item.skill.enabled)} />
+                  <DetailRow
+                    label="Bundle"
+                    value={item.skill.bundleId ? skillBundleLabel(item.skill) : undefined}
+                  />
+                  <DetailRow
+                    label="Bundle ID"
+                    value={item.skill.bundleId}
+                    copyValue={item.skill.bundleId}
+                  />
                   <DetailRow label="Scope" value={item.skill.scope} />
                   <DetailRow label="Source" value={item.skill.source} />
                   <DetailRow label="Path" value={item.skill.path} copyValue={item.skill.path} />
@@ -1833,19 +1892,34 @@ function ExtensionDetailDialog({
                   Details
                 </Button>
                 {item.plugin.installed === true ? (
-                  <Button
-                    size="xs"
-                    variant="outline"
-                    disabled={busyAction !== null}
-                    onClick={uninstallPlugin}
-                  >
-                    {busyAction === "Uninstall plugin" ? (
-                      <LoaderIcon className="size-3.5 animate-spin" />
-                    ) : (
-                      <PackageMinusIcon className="size-3.5" />
-                    )}
-                    Uninstall
-                  </Button>
+                  <>
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      disabled={busyAction !== null}
+                      onClick={togglePlugin}
+                    >
+                      {busyAction === "Enable plugin" || busyAction === "Disable plugin" ? (
+                        <LoaderIcon className="size-3.5 animate-spin" />
+                      ) : (
+                        <PowerIcon className="size-3.5" />
+                      )}
+                      {item.plugin.enabled === false ? "Enable" : "Disable"}
+                    </Button>
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      disabled={busyAction !== null}
+                      onClick={uninstallPlugin}
+                    >
+                      {busyAction === "Uninstall plugin" ? (
+                        <LoaderIcon className="size-3.5 animate-spin" />
+                      ) : (
+                        <PackageMinusIcon className="size-3.5" />
+                      )}
+                      Uninstall
+                    </Button>
+                  </>
                 ) : (
                   <Button
                     size="xs"
@@ -2021,6 +2095,10 @@ function ExtensionPreviewSection({
   items,
   totalCount,
   emptyLabel,
+  statusMessage,
+  loadLabel,
+  isLoading,
+  onLoad,
   filterText,
   onSelect,
   panelId,
@@ -2031,6 +2109,10 @@ function ExtensionPreviewSection({
   items: ReadonlyArray<ExtensionItem>;
   totalCount: number;
   emptyLabel: string;
+  statusMessage?: string | undefined;
+  loadLabel?: string | undefined;
+  isLoading?: boolean | undefined;
+  onLoad?: (() => void) | undefined;
   filterText: string;
   onSelect: (item: ExtensionItem) => void;
   panelId: string;
@@ -2058,7 +2140,12 @@ function ExtensionPreviewSection({
             </div>
           ) : null}
         </div>
-        {totalCount > 0 ? (
+        {isLoading ? (
+          <span className="inline-flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground/60">
+            <LoaderIcon className="size-3 animate-spin" />
+            Loading
+          </span>
+        ) : totalCount > 0 ? (
           <span className="font-mono text-[10px] text-muted-foreground/60">
             {visibleItems.length === items.length
               ? `${items.length}`
@@ -2102,6 +2189,25 @@ function ExtensionPreviewSection({
       ) : (
         <div className="px-3 py-2">
           <EmptyList label={isFiltering && totalCount > 0 ? "No matches." : emptyLabel} />
+          {statusMessage && !isFiltering ? (
+            <div className="mt-1 text-[11px] text-muted-foreground/70">{statusMessage}</div>
+          ) : null}
+          {loadLabel && !isFiltering ? (
+            <Button
+              size="xs"
+              variant="outline"
+              className="mt-2"
+              disabled={isLoading}
+              onClick={onLoad}
+            >
+              {isLoading ? (
+                <LoaderIcon className="size-3.5 animate-spin" />
+              ) : (
+                <RefreshCwIcon className="size-3.5" />
+              )}
+              {loadLabel}
+            </Button>
+          ) : null}
           {totalCount > 0 ? (
             <Button size="xs" variant="outline" className="mt-2" onClick={onBrowse}>
               {browseLabel}
@@ -2131,10 +2237,15 @@ const EXTENSION_BROWSER_SORT_OPTIONS: ReadonlyArray<{
   readonly label: string;
 }> = [
   { value: "recommended", label: "Recommended" },
+  { value: "bundle", label: "Bundle" },
   { value: "name", label: "Name" },
   { value: "status", label: "Status" },
   { value: "category", label: "Category" },
 ];
+
+function defaultExtensionBrowserSort(section: ExtensionSectionConfig | null): ExtensionBrowserSort {
+  return section?.key === "skills" ? "bundle" : "recommended";
+}
 
 function groupExtensionItems(
   items: ReadonlyArray<ExtensionItem>,
@@ -2157,9 +2268,91 @@ function groupExtensionItems(
 
   return [...groups.entries()].map(([key, groupItems]) => ({
     key,
-    label: key,
+    label: groupItems[0] ? extensionItemGroupLabel(groupItems[0]) : key,
     items: groupItems,
   }));
+}
+
+interface ExtensionSkillBundleControl {
+  readonly kind: "plugin" | "skills";
+  readonly provider: ProviderExtensionProviderInventory;
+  readonly plugin: ProviderExtensionPlugin;
+  readonly label: string;
+  readonly skillCount: number;
+  readonly busyKey: string;
+  readonly badgeLabel: string;
+  readonly badgeVariant: "outline" | "success";
+  readonly actionLabel: string;
+  readonly nextEnabled: boolean;
+  readonly skills?: ReadonlyArray<ProviderExtensionSkill> | undefined;
+}
+
+function skillBundleControlForGroup(
+  items: ReadonlyArray<ExtensionItem>,
+  filter: ExtensionBrowserFilter,
+): ExtensionSkillBundleControl | null {
+  const skillItems = items.filter(
+    (item): item is Extract<ExtensionItem, { kind: "skill" }> => item.kind === "skill",
+  );
+  if (skillItems.length !== items.length || skillItems.length === 0) return null;
+
+  const first = skillItems[0]!;
+  const bundleId = first.skill.bundleId?.trim();
+  if (!bundleId) return null;
+  if (skillItems.some((item) => item.skill.bundleId !== bundleId)) return null;
+
+  const plugin = skillBundlePlugin(first);
+  if (!plugin || plugin.installed !== true) return null;
+  const visibleDisabledCount = skillItems.filter((item) => item.skill.enabled === false).length;
+  const visibleEnabledCount = skillItems.filter((item) => item.skill.enabled !== false).length;
+  const label = skillBundleLabel(first.skill);
+
+  if (filter === "disabled" && visibleDisabledCount > 0) {
+    return {
+      kind: "skills",
+      provider: first.provider,
+      plugin,
+      label,
+      skillCount: visibleDisabledCount,
+      busyKey: `${plugin.id}:visible-disabled`,
+      badgeLabel: "Off",
+      badgeVariant: "outline",
+      actionLabel: "Enable",
+      nextEnabled: true,
+      skills: skillItems.map((item) => item.skill),
+    };
+  }
+
+  if (filter === "enabled" && visibleEnabledCount > 0) {
+    return {
+      kind: "skills",
+      provider: first.provider,
+      plugin,
+      label,
+      skillCount: visibleEnabledCount,
+      busyKey: `${plugin.id}:visible-enabled`,
+      badgeLabel: "On",
+      badgeVariant: "success",
+      actionLabel: "Disable",
+      nextEnabled: false,
+      skills: skillItems.map((item) => item.skill),
+    };
+  }
+
+  const pluginEnabled = plugin.enabled !== false;
+
+  return {
+    kind: "plugin",
+    provider: first.provider,
+    plugin,
+    label,
+    skillCount: skillItems.length,
+    busyKey: plugin.id,
+    badgeLabel: pluginEnabled ? "On" : "Off",
+    badgeVariant: pluginEnabled ? "success" : "outline",
+    actionLabel: pluginEnabled ? "Disable" : "Enable",
+    nextEnabled: !pluginEnabled,
+  };
 }
 
 function ExtensionBrowserItemRow({
@@ -2202,26 +2395,37 @@ function ExtensionBrowserDialog({
   initialQuery,
   onClose,
   onSelect,
+  onToggleSkillBundle,
 }: {
   section: ExtensionSectionConfig | null;
   providerLabel: string;
   initialQuery: string;
   onClose: () => void;
   onSelect: (item: ExtensionItem) => void;
+  onToggleSkillBundle: (bundle: ExtensionSkillBundleControl) => Promise<void>;
 }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<ExtensionBrowserFilter>("all");
   const [sort, setSort] = useState<ExtensionBrowserSort>("recommended");
   const [visibleLimit, setVisibleLimit] = useState(EXTENSION_BROWSER_PAGE_SIZE);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  const [busyBundleId, setBusyBundleId] = useState<string | null>(null);
+  const sortOptions = useMemo(
+    () =>
+      EXTENSION_BROWSER_SORT_OPTIONS.filter(
+        (option) => option.value !== "bundle" || section?.key === "skills",
+      ),
+    [section?.key],
+  );
 
   useEffect(() => {
     setQuery(initialQuery);
     setFilter("all");
-    setSort("recommended");
+    setSort(defaultExtensionBrowserSort(section));
     setVisibleLimit(EXTENSION_BROWSER_PAGE_SIZE);
     setCollapsedGroups({});
-  }, [initialQuery, section?.key, section?.totalCount]);
+    setBusyBundleId(null);
+  }, [initialQuery, section?.key]);
 
   const searchedItems = useMemo(
     () => filterExtensionItems(section?.items ?? [], query),
@@ -2248,14 +2452,53 @@ function ExtensionBrowserDialog({
   );
   const visibleItems = browserItems.slice(0, visibleLimit);
   const groups = useMemo(() => groupExtensionItems(visibleItems, sort), [sort, visibleItems]);
-  const renderGroups = shouldRenderExtensionBrowserGroups(groups, sort);
+  const renderGroups =
+    section?.key === "skills" && sort === "bundle"
+      ? groups.length > 0
+      : shouldRenderExtensionBrowserGroups(groups, sort);
   const hiddenCount = Math.max(0, browserItems.length - visibleItems.length);
   const nextVisibleCount = Math.min(EXTENSION_BROWSER_PAGE_SIZE, hiddenCount);
-  const hasActiveRefinement = query.trim().length > 0 || filter !== "all" || sort !== "recommended";
+  const hasActiveRefinement =
+    query.trim().length > 0 || filter !== "all" || sort !== defaultExtensionBrowserSort(section);
 
   const toggleGroup = useCallback((groupKey: string) => {
     setCollapsedGroups((current) => ({ ...current, [groupKey]: !current[groupKey] }));
   }, []);
+
+  const toggleSkillBundle = useCallback(
+    async (bundle: ExtensionSkillBundleControl) => {
+      setBusyBundleId(bundle.busyKey);
+      try {
+        await onToggleSkillBundle(bundle);
+        toastManager.add({
+          type: "success",
+          title:
+            bundle.kind === "skills"
+              ? bundle.nextEnabled
+                ? "Skills enabled"
+                : "Skills disabled"
+              : bundle.nextEnabled
+                ? "Bundle enabled"
+                : "Bundle disabled",
+          description:
+            bundle.kind === "skills"
+              ? `${bundle.label}: ${bundle.skillCount} visible skills updated.`
+              : `${bundle.label} controls ${bundle.skillCount} skills.`,
+        });
+      } catch (error) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Bundle toggle failed",
+            description: error instanceof Error ? error.message : "An error occurred.",
+          }),
+        );
+      } finally {
+        setBusyBundleId((current) => (current === bundle.busyKey ? null : current));
+      }
+    },
+    [onToggleSkillBundle],
+  );
 
   return (
     <Dialog
@@ -2307,12 +2550,11 @@ function ExtensionBrowserDialog({
               >
                 <SelectTrigger className="w-full" aria-label="Sort plugins">
                   <SelectValue>
-                    {EXTENSION_BROWSER_SORT_OPTIONS.find((option) => option.value === sort)
-                      ?.label ?? "Recommended"}
+                    {sortOptions.find((option) => option.value === sort)?.label ?? "Recommended"}
                   </SelectValue>
                 </SelectTrigger>
                 <SelectPopup align="end" alignItemWithTrigger={false}>
-                  {EXTENSION_BROWSER_SORT_OPTIONS.map((option) => (
+                  {sortOptions.map((option) => (
                     <SelectItem key={option.value} hideIndicator value={option.value}>
                       {option.label}
                     </SelectItem>
@@ -2352,7 +2594,7 @@ function ExtensionBrowserDialog({
                   onClick={() => {
                     setQuery("");
                     setFilter("all");
-                    setSort("recommended");
+                    setSort(defaultExtensionBrowserSort(section));
                     setVisibleLimit(EXTENSION_BROWSER_PAGE_SIZE);
                     setCollapsedGroups({});
                   }}
@@ -2369,37 +2611,74 @@ function ExtensionBrowserDialog({
                   <div className="divide-y divide-border/45">
                     {groups.map((group) => {
                       const collapsed = collapsedGroups[group.key] === true;
+                      const bundleControl =
+                        section.key === "skills"
+                          ? skillBundleControlForGroup(group.items, filter)
+                          : null;
+                      const bundleBusy =
+                        bundleControl !== null && busyBundleId === bundleControl.busyKey;
                       return (
                         <section key={group.key}>
-                          <button
-                            type="button"
-                            className="sticky top-0 z-10 flex min-h-8 w-full items-center justify-between gap-3 border-b border-border/35 bg-popover/95 px-4 py-1.5 text-left backdrop-blur transition-colors hover:bg-accent/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                            onClick={() => toggleGroup(group.key)}
-                            aria-expanded={!collapsed}
-                          >
-                            <span className="min-w-0 truncate text-[11px] font-semibold uppercase text-muted-foreground/70">
-                              {group.label}
-                            </span>
+                          <div className="sticky top-0 z-10 flex min-h-8 w-full items-center justify-between gap-3 border-b border-border/35 bg-popover/95 px-4 py-1.5 backdrop-blur">
+                            <button
+                              type="button"
+                              className="flex min-w-0 flex-1 items-center gap-2 text-left transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                              onClick={() => toggleGroup(group.key)}
+                              aria-expanded={!collapsed}
+                            >
+                              <span className="min-w-0 truncate text-[11px] font-semibold uppercase text-muted-foreground/70">
+                                {group.label}
+                              </span>
+                              {bundleControl ? (
+                                <Badge
+                                  size="sm"
+                                  variant={bundleControl.badgeVariant}
+                                  className="shrink-0"
+                                >
+                                  {bundleControl.badgeLabel}
+                                </Badge>
+                              ) : null}
+                            </button>
                             <span className="flex items-center gap-2 text-[10px] text-muted-foreground/60">
                               <span className="font-mono tabular-nums">{group.items.length}</span>
-                              <ChevronDownIcon
-                                className={cn(
-                                  "size-3 transition-transform",
-                                  collapsed ? "-rotate-90" : "",
-                                )}
-                              />
+                              {bundleControl ? (
+                                <Button
+                                  size="xs"
+                                  variant="outline"
+                                  className="h-6 rounded-sm px-2 text-[10px]"
+                                  disabled={bundleBusy}
+                                  onClick={() => void toggleSkillBundle(bundleControl)}
+                                >
+                                  {bundleBusy ? (
+                                    <LoaderIcon className="size-3 animate-spin" />
+                                  ) : (
+                                    <PowerIcon className="size-3" />
+                                  )}
+                                  {bundleControl.actionLabel}
+                                </Button>
+                              ) : null}
+                              <button
+                                type="button"
+                                className="rounded-sm p-0.5 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                onClick={() => toggleGroup(group.key)}
+                                aria-label={collapsed ? "Expand bundle" : "Collapse bundle"}
+                              >
+                                <ChevronDownIcon
+                                  className={cn(
+                                    "size-3 transition-transform",
+                                    collapsed ? "-rotate-90" : "",
+                                  )}
+                                />
+                              </button>
                             </span>
-                          </button>
+                          </div>
                           {!collapsed ? (
                             <div className="divide-y divide-border/35">
                               {group.items.map((item) => (
                                 <ExtensionBrowserItemRow
                                   key={`${item.kind}:${item.id}`}
                                   item={item}
-                                  onSelect={(selectedItem) => {
-                                    onClose();
-                                    onSelect(selectedItem);
-                                  }}
+                                  onSelect={onSelect}
                                 />
                               ))}
                             </div>
@@ -2417,10 +2696,7 @@ function ExtensionBrowserDialog({
                         groupLabel={
                           sort === "recommended" ? undefined : extensionItemGroupLabel(item)
                         }
-                        onSelect={(selectedItem) => {
-                          onClose();
-                          onSelect(selectedItem);
-                        }}
+                        onSelect={onSelect}
                       />
                     ))}
                   </div>
@@ -2455,10 +2731,18 @@ function ExtensionBrowserDialog({
 
 function ProviderInventoryRow({
   provider,
+  cwd,
   onSelectItem,
+  onInventoryMutated,
+  onLoadMcpServers,
+  isLoadingMcpServers,
 }: {
   provider: ProviderExtensionProviderInventory;
+  cwd: string;
   onSelectItem: (item: ExtensionItem) => void;
+  onInventoryMutated: () => Promise<void>;
+  onLoadMcpServers: (provider: ProviderExtensionProviderInventory) => Promise<void>;
+  isLoadingMcpServers: boolean;
 }) {
   const [activeSection, setActiveSection] = useState<ExtensionSectionKey>("plugins");
   const [browseSection, setBrowseSection] = useState<ExtensionSectionKey | null>(null);
@@ -2531,7 +2815,21 @@ function ProviderInventoryRow({
       icon: <DatabaseIcon className="size-3.5" />,
       items: filteredItems.mcpServers,
       totalCount: provider.mcpServers.length,
-      emptyLabel: "No MCP servers reported.",
+      emptyLabel:
+        provider.mcpServersStatus === "deferred"
+          ? "MCP servers not loaded."
+          : provider.mcpServersStatus === "error"
+            ? "MCP servers failed to load."
+            : "No MCP servers reported.",
+      statusMessage: provider.mcpServersMessage,
+      loadLabel:
+        provider.mcpServersStatus === "deferred"
+          ? "Load MCP servers"
+          : provider.mcpServersStatus === "error"
+            ? "Retry MCP servers"
+            : undefined,
+      isLoading: isLoadingMcpServers,
+      onLoad: () => void onLoadMcpServers(provider),
     },
     {
       key: "apps" as const,
@@ -2558,10 +2856,48 @@ function ProviderInventoryRow({
   }, [initialSection, provider.instanceId]);
 
   useEffect(() => {
+    if (activeSection === "mcpServers") return;
     if (activeSectionItemCount === 0 && firstFilteredSection !== activeSection) {
       setActiveSection(firstFilteredSection);
     }
   }, [activeSection, activeSectionItemCount, firstFilteredSection]);
+
+  useEffect(() => {
+    if (
+      activeSection === "mcpServers" &&
+      provider.mcpServersStatus === "deferred" &&
+      !isLoadingMcpServers
+    ) {
+      void onLoadMcpServers(provider);
+    }
+  }, [activeSection, isLoadingMcpServers, onLoadMcpServers, provider]);
+
+  const toggleSkillBundle = useCallback(
+    async (bundle: ExtensionSkillBundleControl) => {
+      if (bundle.kind === "skills") {
+        const skills = bundle.skills ?? [];
+        for (const skill of skills) {
+          await ensureLocalApi().server.setProviderExtensionSkillEnabled({
+            ...actionBaseInput(skillExtensionItem(bundle.provider, skill), cwd),
+            path: skill.path,
+            enabled: bundle.nextEnabled,
+          });
+        }
+        await onInventoryMutated();
+        return;
+      }
+
+      const pluginItem = pluginExtensionItem(bundle.provider, bundle.plugin);
+      await ensureLocalApi().server.setProviderExtensionPluginEnabled({
+        ...actionBaseInput(pluginItem, cwd),
+        pluginId: bundle.plugin.id,
+        ...(bundle.plugin.scope ? { scope: bundle.plugin.scope } : {}),
+        enabled: bundle.nextEnabled,
+      });
+      await onInventoryMutated();
+    },
+    [cwd, onInventoryMutated],
+  );
 
   return (
     <SettingsRow
@@ -2619,6 +2955,10 @@ function ProviderInventoryRow({
             items={activeSectionConfig.items}
             totalCount={activeSectionConfig.totalCount}
             emptyLabel={activeSectionConfig.emptyLabel}
+            statusMessage={activeSectionConfig.statusMessage}
+            loadLabel={activeSectionConfig.loadLabel}
+            isLoading={activeSectionConfig.isLoading}
+            onLoad={activeSectionConfig.onLoad}
             filterText={deferredProviderFilterText}
             onSelect={onSelectItem}
             panelId={`${panelIdBase}-${activeSectionConfig.key}`}
@@ -2633,6 +2973,7 @@ function ProviderInventoryRow({
         initialQuery={providerFilterText}
         onClose={() => setBrowseSection(null)}
         onSelect={onSelectItem}
+        onToggleSkillBundle={toggleSkillBundle}
       />
     </SettingsRow>
   );
@@ -2742,6 +3083,9 @@ export function ExtensionsSettingsPanel() {
   const initialCachedInventory = inventoryRequestKey
     ? extensionInventoryCache.peek(inventoryRequestKey)
     : null;
+  const initialMcpInventoryRequested = initialCachedInventory
+    ? inventoryHasLoadedMcpServers(initialCachedInventory.value)
+    : false;
   const [inventory, setInventory] = useState<ProviderExtensionsInventoryResult | null>(
     () => initialCachedInventory?.value ?? null,
   );
@@ -2750,19 +3094,23 @@ export function ExtensionsSettingsPanel() {
     Record<string, ExtensionActionHistoryEntry>
   >({});
   const [isLoading, setIsLoading] = useState(false);
+  const [mcpLoadingProviderId, setMcpLoadingProviderId] = useState<string | null>(null);
   const [isRefreshingMarketplaces, setIsRefreshingMarketplaces] = useState(false);
   const [lastInventoryLoadMs, setLastInventoryLoadMs] = useState<number | null>(
     () => initialCachedInventory?.loadDurationMs ?? null,
   );
   const [error, setError] = useState<string | null>(null);
   const projectProviderRef = useRef({ cwd, providerInstanceId });
+  const mcpInventoryRequestedRef = useRef(initialMcpInventoryRequested);
 
   const clearInventory = useCallback((options?: { readonly loading?: boolean }) => {
     refreshRequestRef.current += 1;
+    mcpInventoryRequestedRef.current = false;
     setInventory(null);
     setLastInventoryLoadMs(null);
     setError(null);
     setSelectedItem(null);
+    setMcpLoadingProviderId(null);
     setIsLoading(options?.loading ?? false);
   }, []);
 
@@ -2770,6 +3118,7 @@ export function ExtensionsSettingsPanel() {
     refreshRequestRef.current += 1;
     setError(null);
     setSelectedItem(null);
+    setMcpLoadingProviderId(null);
   }, []);
 
   useEffect(() => {
@@ -2827,6 +3176,8 @@ export function ExtensionsSettingsPanel() {
   }, [cwd, providerInstanceId]);
 
   useEffect(() => {
+    mcpInventoryRequestedRef.current = false;
+    setMcpLoadingProviderId(null);
     invalidateInventoryRefresh();
   }, [effectiveProviderThreadId, invalidateInventoryRefresh]);
 
@@ -2840,16 +3191,21 @@ export function ExtensionsSettingsPanel() {
     if (!cachedInventory) return;
 
     setInventory(cachedInventory.value);
+    mcpInventoryRequestedRef.current = inventoryHasLoadedMcpServers(cachedInventory.value);
     setLastInventoryLoadMs(cachedInventory.loadDurationMs);
     setError(null);
   }, [clearInventory, inventoryRequestKey]);
 
   const refresh = useCallback(
-    async (options?: { readonly invalidateCache?: boolean }) => {
+    async (options?: {
+      readonly invalidateCache?: boolean;
+      readonly includeMcpServers?: boolean;
+    }) => {
       const requestId = refreshRequestRef.current + 1;
       refreshRequestRef.current = requestId;
       const requestKey = inventoryRequestKey;
       const requestCwd = cwd.trim();
+      const includeMcpServers = options?.includeMcpServers ?? mcpInventoryRequestedRef.current;
       if (!requestCwd || !providerInstanceId) {
         setInventory(null);
         setLastInventoryLoadMs(null);
@@ -2860,6 +3216,9 @@ export function ExtensionsSettingsPanel() {
 
       setIsLoading(true);
       setError(null);
+      if (includeMcpServers) {
+        mcpInventoryRequestedRef.current = true;
+      }
       if (options?.invalidateCache && requestKey) {
         extensionInventoryCache.delete(requestKey);
       }
@@ -2869,6 +3228,7 @@ export function ExtensionsSettingsPanel() {
           cwd: requestCwd,
           providerInstanceId: providerInstanceId as ProviderInstanceId,
           ...(effectiveProviderThreadId ? { providerThreadId: effectiveProviderThreadId } : {}),
+          includeMcpServers,
         });
         if (
           refreshRequestRef.current === requestId &&
@@ -2955,6 +3315,20 @@ export function ExtensionsSettingsPanel() {
     [],
   );
   const refreshAfterMutation = useCallback(() => refresh({ invalidateCache: true }), [refresh]);
+  const loadMcpServers = useCallback(
+    async (provider: ProviderExtensionProviderInventory) => {
+      const providerId = String(provider.instanceId);
+      if (mcpLoadingProviderId === providerId) return;
+      setMcpLoadingProviderId(providerId);
+      mcpInventoryRequestedRef.current = true;
+      try {
+        await refresh({ includeMcpServers: true, invalidateCache: true });
+      } finally {
+        setMcpLoadingProviderId((current) => (current === providerId ? null : current));
+      }
+    },
+    [mcpLoadingProviderId, refresh],
+  );
 
   return (
     <SettingsPageContainer className="max-w-5xl">
@@ -3130,7 +3504,11 @@ export function ExtensionsSettingsPanel() {
             <ProviderInventoryRow
               key={provider.instanceId}
               provider={provider}
+              cwd={cwd}
               onSelectItem={setSelectedItem}
+              onInventoryMutated={refreshAfterMutation}
+              onLoadMcpServers={loadMcpServers}
+              isLoadingMcpServers={mcpLoadingProviderId === String(provider.instanceId)}
             />
           ))
         ) : (

@@ -1,6 +1,8 @@
 import { FitAddon } from "@xterm/addon-fit";
 import {
+  CheckIcon,
   ChevronDown,
+  CopyIcon,
   Plus,
   SquareSplitHorizontal,
   TerminalSquare,
@@ -25,7 +27,10 @@ import {
   useRef,
   useState,
 } from "react";
+import { Button } from "~/components/ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "~/components/ui/popover";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
+import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { type TerminalContextSelection } from "~/lib/terminalContext";
 import { openInPreferredEditor } from "../editorPreferences";
 import { applyTerminalInputData, createTerminalCommandInputState } from "../terminalCommandTracker";
@@ -60,6 +65,9 @@ import { selectTerminalEventEntries, useTerminalStateStore } from "../terminalSt
 const MIN_DRAWER_HEIGHT = DEFAULT_THREAD_TERMINAL_HEIGHT;
 const MAX_DRAWER_HEIGHT_RATIO = 0.75;
 const MULTI_CLICK_SELECTION_ACTION_DELAY_MS = 260;
+const TERMINAL_SELECTION_ACTION_POPOVER_WIDTH_PX = 148;
+const TERMINAL_SELECTION_ACTION_POPOVER_HEIGHT_PX = 34;
+const TERMINAL_SELECTION_ACTION_POPOVER_MARGIN_PX = 8;
 
 function maxDrawerHeight(): number {
   if (typeof window === "undefined") return DEFAULT_THREAD_TERMINAL_HEIGHT;
@@ -282,6 +290,41 @@ export function resolveTerminalSelectionActionPosition(options: {
   };
 }
 
+export function resolveTerminalSelectionActionPopoverPosition(options: {
+  position: { x: number; y: number };
+  viewport?: { width: number; height: number } | null;
+  width?: number;
+  height?: number;
+}): { left: number; top: number } {
+  const width = options.width ?? TERMINAL_SELECTION_ACTION_POPOVER_WIDTH_PX;
+  const height = options.height ?? TERMINAL_SELECTION_ACTION_POPOVER_HEIGHT_PX;
+  const viewportWidth =
+    options.viewport?.width ??
+    (typeof window === "undefined" ? options.position.x + width : window.innerWidth);
+  const viewportHeight =
+    options.viewport?.height ??
+    (typeof window === "undefined" ? options.position.y + height : window.innerHeight);
+  const maxLeft = Math.max(
+    TERMINAL_SELECTION_ACTION_POPOVER_MARGIN_PX,
+    viewportWidth - width - TERMINAL_SELECTION_ACTION_POPOVER_MARGIN_PX,
+  );
+  const maxTop = Math.max(
+    TERMINAL_SELECTION_ACTION_POPOVER_MARGIN_PX,
+    viewportHeight - height - TERMINAL_SELECTION_ACTION_POPOVER_MARGIN_PX,
+  );
+
+  return {
+    left: Math.max(
+      TERMINAL_SELECTION_ACTION_POPOVER_MARGIN_PX,
+      Math.min(Math.round(options.position.x - width), maxLeft),
+    ),
+    top: Math.max(
+      TERMINAL_SELECTION_ACTION_POPOVER_MARGIN_PX,
+      Math.min(Math.round(options.position.y), maxTop),
+    ),
+  };
+}
+
 export function terminalSelectionActionDelayForClickCount(clickCount: number): number {
   return clickCount >= 2 ? MULTI_CLICK_SELECTION_ACTION_DELAY_MS : 0;
 }
@@ -310,6 +353,74 @@ interface TerminalViewportProps {
   keybindings: ResolvedKeybindingsConfig;
 }
 
+interface TerminalSelectionActionState {
+  position: { x: number; y: number };
+  selection: TerminalContextSelection;
+}
+
+function TerminalSelectionActionPopover({
+  action,
+  onAddToChat,
+  onDismiss,
+}: {
+  action: TerminalSelectionActionState;
+  onAddToChat: (selection: TerminalContextSelection) => void;
+  onDismiss: (options?: { clearTerminalSelection?: boolean }) => void;
+}) {
+  const { copyToClipboard, isCopied } = useCopyToClipboard<void>({
+    timeout: 1000,
+    onCopy: () => onDismiss({ clearTerminalSelection: true }),
+  });
+  const position = resolveTerminalSelectionActionPopoverPosition({ position: action.position });
+
+  return (
+    <div
+      className="fixed z-50 inline-flex items-center gap-1 rounded-lg border border-border/75 bg-popover/96 px-1.5 py-1 text-popover-foreground shadow-lg shadow-black/10 backdrop-blur"
+      data-terminal-selection-popover="true"
+      style={{
+        left: position.left,
+        top: position.top,
+        width: TERMINAL_SELECTION_ACTION_POPOVER_WIDTH_PX,
+      }}
+      onMouseDown={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}
+    >
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              aria-label="Copy selected terminal text"
+              onClick={() => copyToClipboard(action.selection.text, undefined)}
+            />
+          }
+        >
+          {isCopied ? (
+            <CheckIcon className="size-3 text-success" />
+          ) : (
+            <CopyIcon className="size-3" />
+          )}
+        </TooltipTrigger>
+        <TooltipPopup side="top">Copy selected terminal text</TooltipPopup>
+      </Tooltip>
+      <Button
+        type="button"
+        variant="ghost"
+        size="xs"
+        onClick={() => onAddToChat(action.selection)}
+        className="h-6 flex-1 px-2 text-xs"
+      >
+        <Plus className="size-3" />
+        Add to chat
+      </Button>
+    </div>
+  );
+}
+
 export function TerminalViewport({
   threadRef,
   threadId,
@@ -327,8 +438,10 @@ export function TerminalViewport({
   keybindings,
 }: TerminalViewportProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const terminalMountRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const [selectionAction, setSelectionAction] = useState<TerminalSelectionActionState | null>(null);
   const environmentId = threadRef.environmentId;
   const hasHandledExitRef = useRef(false);
   const selectionPointerRef = useRef<{ x: number; y: number } | null>(null);
@@ -349,6 +462,26 @@ export function TerminalViewport({
   const handleAddTerminalContext = useEffectEvent((selection: TerminalContextSelection) => {
     onAddTerminalContext(selection);
   });
+  const dismissSelectionAction = useCallback((options?: { clearTerminalSelection?: boolean }) => {
+    selectionActionRequestIdRef.current += 1;
+    if (selectionActionTimerRef.current !== null) {
+      window.clearTimeout(selectionActionTimerRef.current);
+      selectionActionTimerRef.current = null;
+    }
+    setSelectionAction(null);
+    selectionActionOpenRef.current = false;
+    if (options?.clearTerminalSelection) {
+      terminalRef.current?.clearSelection();
+      terminalRef.current?.focus();
+    }
+  }, []);
+  const addSelectionActionToChat = useCallback(
+    (selection: TerminalContextSelection) => {
+      handleAddTerminalContext(selection);
+      dismissSelectionAction({ clearTerminalSelection: true });
+    },
+    [dismissSelectionAction, handleAddTerminalContext],
+  );
   const readTerminalLabel = useEffectEvent(() => terminalLabel);
   const recordTerminalCommandInput = useEffectEvent((data: string) => {
     const result = applyTerminalInputData(terminalCommandInputStateRef.current, data);
@@ -366,8 +499,9 @@ export function TerminalViewport({
   }, [keybindings]);
 
   useEffect(() => {
-    const mount = containerRef.current;
-    if (!mount) return;
+    const mount = terminalMountRef.current;
+    const container = containerRef.current;
+    if (!mount || !container) return;
 
     let disposed = false;
     const api = readEnvironmentApi(environmentId);
@@ -382,7 +516,7 @@ export function TerminalViewport({
       scrollback: 5_000,
       fontFamily:
         '"Cascadia Mono Variable", "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace',
-      theme: terminalThemeFromApp(mount),
+      theme: terminalThemeFromApp(container),
     });
     terminal.loadAddon(fitAddon);
     terminal.open(mount);
@@ -394,13 +528,7 @@ export function TerminalViewport({
     const isTerminalActive = (activeTerminal: Terminal) =>
       !disposed && terminalRef.current === activeTerminal;
 
-    const clearSelectionAction = () => {
-      selectionActionRequestIdRef.current += 1;
-      if (selectionActionTimerRef.current !== null) {
-        window.clearTimeout(selectionActionTimerRef.current);
-        selectionActionTimerRef.current = null;
-      }
-    };
+    const clearSelectionAction = () => dismissSelectionAction();
 
     const readSelectionAction = (): {
       position: { x: number; y: number };
@@ -408,7 +536,13 @@ export function TerminalViewport({
     } | null => {
       const activeTerminal = terminalRef.current;
       const mountElement = containerRef.current;
-      if (!activeTerminal || !mountElement || !activeTerminal.hasSelection()) {
+      const terminalMountElement = terminalMountRef.current;
+      if (
+        !activeTerminal ||
+        !mountElement ||
+        !terminalMountElement ||
+        !activeTerminal.hasSelection()
+      ) {
         return null;
       }
       const selectionText = activeTerminal.getSelection();
@@ -421,7 +555,7 @@ export function TerminalViewport({
       const lineCount = normalizedText.split("\n").length;
       const lineEnd = Math.max(lineStart, lineStart + lineCount - 1);
       const bounds = mountElement.getBoundingClientRect();
-      const selectionRect = getTerminalSelectionRect(mountElement);
+      const selectionRect = getTerminalSelectionRect(terminalMountElement);
       const position = resolveTerminalSelectionActionPosition({
         bounds,
         selectionRect:
@@ -442,7 +576,7 @@ export function TerminalViewport({
       };
     };
 
-    const showSelectionAction = async () => {
+    const showSelectionAction = () => {
       if (selectionActionOpenRef.current) {
         return;
       }
@@ -453,20 +587,10 @@ export function TerminalViewport({
       }
       const requestId = ++selectionActionRequestIdRef.current;
       selectionActionOpenRef.current = true;
-      try {
-        const clicked = await localApi.contextMenu.show(
-          [{ id: "add-to-chat", label: "Add to chat" }],
-          nextAction.position,
-        );
-        if (requestId !== selectionActionRequestIdRef.current || clicked !== "add-to-chat") {
-          return;
-        }
-        handleAddTerminalContext(nextAction.selection);
-        terminalRef.current?.clearSelection();
-        terminalRef.current?.focus();
-      } finally {
-        selectionActionOpenRef.current = false;
+      if (requestId !== selectionActionRequestIdRef.current) {
+        return;
       }
+      setSelectionAction(nextAction);
     };
 
     const sendTerminalInput = async (data: string, fallbackError: string) => {
@@ -830,13 +954,15 @@ export function TerminalViewport({
       window.removeEventListener("mouseup", handleMouseUp);
       mount.removeEventListener("pointerdown", handlePointerDown);
       themeObserver.disconnect();
+      setSelectionAction(null);
+      selectionActionOpenRef.current = false;
       terminalRef.current = null;
       fitAddonRef.current = null;
       terminal.dispose();
     };
     // autoFocus is intentionally omitted;
     // it is only read at mount time and must not trigger terminal teardown/recreation.
-  }, [cwd, environmentId, runtimeEnv, terminalId, threadId]);
+  }, [cwd, dismissSelectionAction, environmentId, runtimeEnv, terminalId, threadId]);
 
   useEffect(() => {
     if (!autoFocus) return;
@@ -878,7 +1004,16 @@ export function TerminalViewport({
     <div
       ref={containerRef}
       className="relative h-full w-full overflow-hidden rounded-[var(--app-radius-badge)] bg-background"
-    />
+    >
+      <div ref={terminalMountRef} className="h-full w-full" data-terminal-viewport-mount="true" />
+      {selectionAction ? (
+        <TerminalSelectionActionPopover
+          action={selectionAction}
+          onAddToChat={addSelectionActionToChat}
+          onDismiss={dismissSelectionAction}
+        />
+      ) : null}
+    </div>
   );
 }
 

@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 
@@ -184,14 +185,18 @@ const runCommandOutput = Effect.fn("desktop.shellEnvironment.runCommandOutput")(
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   return yield* spawner
     .string(
-      ChildProcess.make(input.command, input.args, {
-        shell: input.shell ?? false,
-        stdin: "ignore",
-        stdout: "pipe",
-        stderr: "pipe",
-        killSignal: "SIGTERM",
-        forceKillAfter: PROCESS_TERMINATE_GRACE,
-      }),
+      ChildProcess.make(
+        input.command,
+        input.args,
+        hideWindowsConsole({
+          shell: input.shell ?? false,
+          stdin: "ignore",
+          stdout: "pipe",
+          stderr: "pipe",
+          killSignal: "SIGTERM",
+          forceKillAfter: PROCESS_TERMINATE_GRACE,
+        }),
+      ),
     )
     .pipe(
       Effect.timeoutOption(input.timeout),

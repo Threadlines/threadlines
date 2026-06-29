@@ -53,6 +53,52 @@ export function deriveExtensionPluginGroupLabel({
   return "Plugins";
 }
 
+export interface ExtensionSkillBundleLabelInput {
+  readonly bundleId?: string | undefined;
+  readonly bundleName?: string | undefined;
+  readonly bundleDisplayName?: string | undefined;
+  readonly scope?: string | undefined;
+  readonly source?: string | undefined;
+}
+
+function marketplaceNameFromBundleId(bundleId: string | undefined): string | undefined {
+  const marketplaceName = bundleId?.split("@").slice(1).join("@").trim();
+  return marketplaceName && marketplaceName.length > 0 ? marketplaceName : undefined;
+}
+
+export function deriveExtensionSkillBundleLabel({
+  bundleId,
+  bundleName,
+  bundleDisplayName,
+  scope,
+  source,
+}: ExtensionSkillBundleLabelInput): string {
+  const bundleTitle =
+    bundleDisplayName?.trim() || bundleName?.trim() || bundleId?.split("@")[0]?.trim();
+  if (bundleTitle) {
+    const marketplaceName = marketplaceNameFromBundleId(bundleId);
+    return marketplaceName
+      ? `${formatExtensionGroupLabel(bundleTitle)} (${marketplaceName})`
+      : formatExtensionGroupLabel(bundleTitle);
+  }
+  if (scope) return formatExtensionGroupLabel(scope);
+  if (source) return formatExtensionGroupLabel(source);
+  return "Skills";
+}
+
+export function deriveExtensionSkillBundleKey({
+  bundleId,
+  bundleName,
+  scope,
+  source,
+}: ExtensionSkillBundleLabelInput): string {
+  if (bundleId?.trim()) return `bundle:${bundleId.trim().toLowerCase()}`;
+  if (bundleName?.trim()) return `bundle-name:${bundleName.trim().toLowerCase()}`;
+  if (scope?.trim()) return `scope:${scope.trim().toLowerCase()}`;
+  if (source?.trim()) return `source:${source.trim().toLowerCase()}`;
+  return "skills";
+}
+
 export function shouldRenderExtensionBrowserGroups(
   groups: ReadonlyArray<{ readonly items: ReadonlyArray<unknown> }>,
   sort: string,

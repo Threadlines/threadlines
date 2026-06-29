@@ -34,8 +34,8 @@ import { resolveAppModelSelection, resolveAppModelSelectionForInstance } from ".
 import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, type ChatImageAttachment } from "./types";
 import {
   type TerminalContextDraft,
-  ensureInlineTerminalContextPlaceholders,
   normalizeTerminalContextText,
+  stripInlineTerminalContextPlaceholders,
 } from "./lib/terminalContext";
 import {
   type TranscriptHighlightContextDraft,
@@ -430,6 +430,7 @@ interface ComposerDraftStoreState {
   addTerminalContext: (threadRef: ComposerThreadTarget, context: TerminalContextDraft) => void;
   addTerminalContexts: (threadRef: ComposerThreadTarget, contexts: TerminalContextDraft[]) => void;
   removeTerminalContext: (threadRef: ComposerThreadTarget, contextId: string) => void;
+  removeTerminalContextsForTerminal: (threadRef: ComposerThreadTarget, terminalId: string) => void;
   clearTerminalContexts: (threadRef: ComposerThreadTarget) => void;
   addTranscriptHighlightContext: (
     threadRef: ComposerThreadTarget,
@@ -569,6 +570,30 @@ function terminalContextDedupKey(context: TerminalContextDraft): string {
   return `${context.terminalId}\u0000${context.lineStart}\u0000${context.lineEnd}`;
 }
 
+function terminalContextHasSameSelectionAndText(
+  left: TerminalContextDraft,
+  right: TerminalContextDraft,
+): boolean {
+  return (
+    left.terminalId === right.terminalId &&
+    left.terminalLabel === right.terminalLabel &&
+    left.lineStart === right.lineStart &&
+    left.lineEnd === right.lineEnd &&
+    left.text === right.text
+  );
+}
+
+function terminalContextSelectionsOverlap(
+  left: TerminalContextDraft,
+  right: TerminalContextDraft,
+): boolean {
+  return (
+    left.terminalId === right.terminalId &&
+    left.lineStart <= right.lineEnd &&
+    right.lineStart <= left.lineEnd
+  );
+}
+
 function transcriptHighlightContextDedupKey(context: TranscriptHighlightContextDraft): string {
   return `${context.sourceMessageId}\u0000${context.selectedText}\u0000${context.note}`;
 }
@@ -595,29 +620,60 @@ function normalizeTerminalContextForThread(
   };
 }
 
+function upsertNormalizedTerminalContext(
+  contexts: ReadonlyArray<TerminalContextDraft>,
+  incoming: TerminalContextDraft,
+): TerminalContextDraft[] | ReadonlyArray<TerminalContextDraft> {
+  if (contexts.some((context) => terminalContextHasSameSelectionAndText(context, incoming))) {
+    return contexts;
+  }
+
+  let insertionIndex = -1;
+  let replacementIdentity: Pick<TerminalContextDraft, "id" | "createdAt"> | null = null;
+  const nextContexts: TerminalContextDraft[] = [];
+  for (const context of contexts) {
+    const shouldReplace =
+      context.id === incoming.id || terminalContextSelectionsOverlap(context, incoming);
+    if (shouldReplace) {
+      if (insertionIndex < 0) {
+        insertionIndex = nextContexts.length;
+        replacementIdentity = {
+          id: context.id,
+          createdAt: context.createdAt,
+        };
+      }
+      continue;
+    }
+    nextContexts.push(context);
+  }
+
+  const nextIncoming = replacementIdentity
+    ? { ...incoming, id: replacementIdentity.id, createdAt: replacementIdentity.createdAt }
+    : incoming;
+
+  if (insertionIndex < 0) {
+    return [...contexts, nextIncoming];
+  }
+
+  nextContexts.splice(insertionIndex, 0, nextIncoming);
+  return nextContexts;
+}
+
 function normalizeTerminalContextsForThread(
   threadId: ThreadId,
   contexts: ReadonlyArray<TerminalContextDraft>,
 ): TerminalContextDraft[] {
-  const existingIds = new Set<string>();
-  const existingDedupKeys = new Set<string>();
-  const normalizedContexts: TerminalContextDraft[] = [];
+  let normalizedContexts: ReadonlyArray<TerminalContextDraft> = [];
 
   for (const context of contexts) {
     const normalizedContext = normalizeTerminalContextForThread(threadId, context);
     if (!normalizedContext) {
       continue;
     }
-    const dedupKey = terminalContextDedupKey(normalizedContext);
-    if (existingIds.has(normalizedContext.id) || existingDedupKeys.has(dedupKey)) {
-      continue;
-    }
-    normalizedContexts.push(normalizedContext);
-    existingIds.add(normalizedContext.id);
-    existingDedupKeys.add(dedupKey);
+    normalizedContexts = upsertNormalizedTerminalContext(normalizedContexts, normalizedContext);
   }
 
-  return normalizedContexts;
+  return [...normalizedContexts];
 }
 
 function normalizeTranscriptHighlightContextsForThread(
@@ -1613,10 +1669,7 @@ function normalizePersistedDraftsByThreadId(
       draftCandidate.interactionMode === "plan" || draftCandidate.interactionMode === "default"
         ? draftCandidate.interactionMode
         : null;
-    const prompt = ensureInlineTerminalContextPlaceholders(
-      promptCandidate,
-      terminalContexts.length,
-    );
+    const prompt = stripInlineTerminalContextPlaceholders(promptCandidate);
     // If the draft already has the v3 shape, use it directly
     const legacyDraftCandidate = draftValue as LegacyPersistedComposerThreadDraftState;
     let modelSelectionByProvider: Partial<Record<ProviderInstanceId, ModelSelection>> = {};
@@ -2489,10 +2542,6 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             const existing = state.draftsByThreadKey[threadKey] ?? createEmptyThreadDraft();
             const nextDraft: ComposerThreadDraftState = {
               ...existing,
-              prompt: ensureInlineTerminalContextPlaceholders(
-                existing.prompt,
-                normalizedContexts.length,
-              ),
               terminalContexts: normalizedContexts,
             };
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
@@ -2914,11 +2963,19 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
           }
           set((state) => {
             const existing = state.draftsByThreadKey[threadKey] ?? createEmptyThreadDraft();
-            const acceptedContexts = normalizeTerminalContextsForThread(threadId, [
-              ...existing.terminalContexts,
-              ...contexts,
-            ]).slice(existing.terminalContexts.length);
-            if (acceptedContexts.length === 0) {
+            let nextTerminalContexts: ReadonlyArray<TerminalContextDraft> =
+              existing.terminalContexts;
+            for (const context of contexts) {
+              const normalizedContext = normalizeTerminalContextForThread(threadId, context);
+              if (!normalizedContext) {
+                continue;
+              }
+              nextTerminalContexts = upsertNormalizedTerminalContext(
+                nextTerminalContexts,
+                normalizedContext,
+              );
+            }
+            if (nextTerminalContexts === existing.terminalContexts) {
               return state;
             }
             return {
@@ -2926,11 +2983,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                 ...state.draftsByThreadKey,
                 [threadKey]: {
                   ...existing,
-                  prompt: ensureInlineTerminalContextPlaceholders(
-                    existing.prompt,
-                    existing.terminalContexts.length + acceptedContexts.length,
-                  ),
-                  terminalContexts: [...existing.terminalContexts, ...acceptedContexts],
+                  terminalContexts: [...nextTerminalContexts],
                 },
               },
             };
@@ -2950,6 +3003,37 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               ...current,
               terminalContexts: current.terminalContexts.filter(
                 (context) => context.id !== contextId,
+              ),
+            };
+            const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
+            if (shouldRemoveDraft(nextDraft)) {
+              delete nextDraftsByThreadKey[threadKey];
+            } else {
+              nextDraftsByThreadKey[threadKey] = nextDraft;
+            }
+            return { draftsByThreadKey: nextDraftsByThreadKey };
+          });
+        },
+        removeTerminalContextsForTerminal: (threadRef, terminalId) => {
+          const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";
+          const normalizedTerminalId = terminalId.trim();
+          if (threadKey.length === 0 || normalizedTerminalId.length === 0) {
+            return;
+          }
+          set((state) => {
+            const current = state.draftsByThreadKey[threadKey];
+            if (
+              !current ||
+              !current.terminalContexts.some(
+                (context) => context.terminalId === normalizedTerminalId,
+              )
+            ) {
+              return state;
+            }
+            const nextDraft: ComposerThreadDraftState = {
+              ...current,
+              terminalContexts: current.terminalContexts.filter(
+                (context) => context.terminalId !== normalizedTerminalId,
               ),
             };
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };

@@ -1,0 +1,45 @@
+diff --git a/dist/NodeChildProcessSpawner.js b/dist/NodeChildProcessSpawner.js
+index 30011d88660c57a4337ad6afbd85011c0352ef18..1bdef71b12f834467c614d2440292c7dd1e68dc7 100644
+--- a/dist/NodeChildProcessSpawner.js
++++ b/dist/NodeChildProcessSpawner.js
+@@ -323,13 +323,15 @@ const make = /*#__PURE__*/Effect.gen(function* () {
+           let cleanupOnNonZeroExit = false;
+           const cwd = yield* resolveWorkingDirectory(cmd.options);
+           const env = resolveEnvironment(cmd.options);
++          const commandOptions = cmd.options;
+           const stdio = buildStdioArray(stdinConfig, stdoutConfig, stderrConfig, resolvedAdditionalFds);
+           const [childProcess, exitSignal] = yield* Effect.acquireRelease(spawn(cmd, {
+             cwd,
+             env,
+             stdio,
+             detached: cmd.options.detached ?? process.platform !== "win32",
+-            shell: cmd.options.shell
++            shell: cmd.options.shell,
++            windowsHide: commandOptions.windowsHide
+           }), Effect.fnUntraced(function* ([childProcess, exitSignal]) {
+             const exited = yield* Deferred.isDone(exitSignal);
+             const killWithTimeout = withTimeout(childProcess, cmd, cmd.options);
+diff --git a/src/NodeChildProcessSpawner.ts b/src/NodeChildProcessSpawner.ts
+index f111b7a86aed891e867fd6437e71cc13fda25d30..0780c01b84dbf366b52a784ca3704cc997354e71 100644
+--- a/src/NodeChildProcessSpawner.ts
++++ b/src/NodeChildProcessSpawner.ts
+@@ -441,6 +441,9 @@ const make = Effect.gen(function*() {
+ 
+         const cwd = yield* resolveWorkingDirectory(cmd.options)
+         const env = resolveEnvironment(cmd.options)
++        const commandOptions = cmd.options as ChildProcess.CommandOptions & {
++          readonly windowsHide?: boolean | undefined
++        }
+         const stdio = buildStdioArray(stdinConfig, stdoutConfig, stderrConfig, resolvedAdditionalFds)
+ 
+         const [childProcess, exitSignal] = yield* Effect.acquireRelease(
+@@ -449,7 +452,8 @@ const make = Effect.gen(function*() {
+             env,
+             stdio,
+             detached: cmd.options.detached ?? process.platform !== "win32",
+-            shell: cmd.options.shell
++            shell: cmd.options.shell,
++            windowsHide: commandOptions.windowsHide
+           }),
+           Effect.fnUntraced(function*([childProcess, exitSignal]) {
+             const exited = yield* Deferred.isDone(exitSignal)

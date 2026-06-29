@@ -20,6 +20,18 @@ import { makeChildStdio, makeTerminationError } from "./_internal/stdio.ts";
 
 const DEFAULT_APP_SERVER_FORCE_KILL_AFTER = "2 seconds" as const;
 
+type WindowsHiddenCommandOptions = ChildProcess.CommandOptions & {
+  readonly windowsHide?: boolean | undefined;
+};
+
+function hideWindowsConsole(options: ChildProcess.CommandOptions): ChildProcess.CommandOptions {
+  if (process.platform !== "win32") return options;
+  return {
+    ...options,
+    windowsHide: true,
+  } as WindowsHiddenCommandOptions;
+}
+
 export interface CodexAppServerClientOptions {
   readonly logIncoming?: boolean;
   readonly logOutgoing?: boolean;
@@ -284,12 +296,16 @@ export const layerCommand = (
     CodexAppServerClient,
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const command = ChildProcess.make(options.command, [...(options.args ?? [])], {
-        ...(options.cwd ? { cwd: options.cwd } : {}),
-        ...(options.env ? { env: { ...process.env, ...options.env } } : {}),
-        forceKillAfter: DEFAULT_APP_SERVER_FORCE_KILL_AFTER,
-        shell: process.platform === "win32",
-      });
+      const command = ChildProcess.make(
+        options.command,
+        [...(options.args ?? [])],
+        hideWindowsConsole({
+          ...(options.cwd ? { cwd: options.cwd } : {}),
+          ...(options.env ? { env: { ...process.env, ...options.env } } : {}),
+          forceKillAfter: DEFAULT_APP_SERVER_FORCE_KILL_AFTER,
+          shell: process.platform === "win32",
+        }),
+      );
       return yield* spawner.spawn(command).pipe(
         Effect.mapError(
           (cause) =>

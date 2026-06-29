@@ -352,6 +352,7 @@ describe("providerMaintenanceRunner", () => {
       command: string;
       args: ReadonlyArray<string>;
       shell: ChildProcess.CommandOptions["shell"];
+      windowsHide: boolean | undefined;
     }> = [];
     return withProcessPlatform(
       "win32",
@@ -366,6 +367,7 @@ describe("providerMaintenanceRunner", () => {
             command: "npm",
             args: ["install", "-g", "@openai/codex@latest"],
             shell: true,
+            windowsHide: true,
           },
         ]);
         assert.strictEqual(result.providers[0]?.updateState?.status, "succeeded");
@@ -375,7 +377,13 @@ describe("providerMaintenanceRunner", () => {
         Layer.mergeAll(
           latestVersionHttpClient("0.0.0"),
           mockSpawnerLayer((command, args, options) => {
-            calls.push({ command, args, shell: options.shell });
+            calls.push({
+              command,
+              args,
+              shell: options.shell,
+              windowsHide: (options as ChildProcess.CommandOptions & { windowsHide?: boolean })
+                .windowsHide,
+            });
             return { stdout: "updated" };
           }),
         ),
