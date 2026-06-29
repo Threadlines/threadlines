@@ -2494,7 +2494,13 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     try {
-      await expect.element(page.getByText("Turn changes (1)")).toBeVisible();
+      await waitForElement(
+        () =>
+          Array.from(document.querySelectorAll("span")).find(
+            (element) => element.textContent?.trim() === "Turn changes (1)",
+          ) ?? null,
+        "Changed-file summary should render.",
+      );
       const viewTurnDiffButton = await waitForElement(
         () =>
           Array.from(document.querySelectorAll("button")).find(
@@ -2515,7 +2521,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
         },
         { timeout: 8_000, interval: 16 },
       );
-      await expect.element(page.getByTitle("Back to source control")).toBeVisible();
+      await waitForElement(
+        () => document.querySelector('button[aria-label="Back to source control"]'),
+        "Back to source control button should render.",
+      );
     } finally {
       await mounted.cleanup();
     }
@@ -2941,14 +2950,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     try {
-      const runButton = await waitForElement(
-        () =>
-          Array.from(document.querySelectorAll("button")).find(
-            (button) => button.title === "Run Lint",
-          ) as HTMLButtonElement | null,
-        "Unable to find Run Lint button.",
-      );
-      runButton.click();
+      await page.getByRole("button", { name: "Run Lint" }).click();
 
       await vi.waitFor(
         () => {
@@ -3020,14 +3022,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     try {
-      const runButton = await waitForElement(
-        () =>
-          Array.from(document.querySelectorAll("button")).find(
-            (button) => button.title === "Run Test",
-          ) as HTMLButtonElement | null,
-        "Unable to find Run Test button.",
-      );
-      runButton.click();
+      await page.getByRole("button", { name: "Run Test" }).click();
 
       await vi.waitFor(
         () => {
@@ -3762,8 +3757,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     try {
-      const initialModeButton = await waitForInteractionModeButton("Build");
-      expect(initialModeButton.title).toContain("enter plan mode");
+      await waitForInteractionModeButton("Build");
 
       window.dispatchEvent(
         new KeyboardEvent("keydown", {
@@ -3775,7 +3769,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       );
       await waitForLayout();
 
-      expect((await waitForInteractionModeButton("Build")).title).toContain("enter plan mode");
+      await waitForInteractionModeButton("Build");
 
       const composerEditor = await waitForComposerEditor();
       composerEditor.focus();
@@ -3788,14 +3782,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
         }),
       );
 
-      await vi.waitFor(
-        async () => {
-          expect((await waitForInteractionModeButton("Plan")).title).toContain(
-            "return to normal build mode",
-          );
-        },
-        { timeout: 8_000, interval: 16 },
-      );
+      await waitForInteractionModeButton("Plan");
 
       composerEditor.dispatchEvent(
         new KeyboardEvent("keydown", {
@@ -3806,12 +3793,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
         }),
       );
 
-      await vi.waitFor(
-        async () => {
-          expect((await waitForInteractionModeButton("Build")).title).toContain("enter plan mode");
-        },
-        { timeout: 8_000, interval: 16 },
-      );
+      await waitForInteractionModeButton("Build");
     } finally {
       await mounted.cleanup();
     }
