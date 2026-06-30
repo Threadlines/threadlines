@@ -22,6 +22,7 @@ import {
   TerminalSessionStatus,
   TerminalWriteInput,
 } from "@threadlines/contracts";
+import type { TerminalCommandInputState } from "@threadlines/shared/terminalCommandTracker";
 import type { PtyProcess } from "./PTY.ts";
 import * as Effect from "effect/Effect";
 import * as Context from "effect/Context";
@@ -52,6 +53,9 @@ export interface TerminalSessionState {
   unsubscribeData: (() => void) | null;
   unsubscribeExit: (() => void) | null;
   hasRunningSubprocess: boolean;
+  runningSubprocessCommand: string | null;
+  submittedCommand: string | null;
+  terminalCommandInputState: TerminalCommandInputState;
   runtimeEnv: Record<string, string> | null;
 }
 

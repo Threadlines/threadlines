@@ -21,6 +21,7 @@ import {
   createLocalDispatchSnapshot,
   deriveLockedProvider,
   deriveComposerSendState,
+  deriveDetectedBackgroundRunLabel,
   deriveProviderBackgroundRuns,
   deriveProviderAuthReconnectPrompt,
   desktopCapturedScreenshotToFile,
@@ -447,11 +448,95 @@ describe("shouldConfirmTerminalKill", () => {
   });
 });
 
+describe("deriveDetectedBackgroundRunLabel", () => {
+  it("uses provider intent before command-derived fallbacks", () => {
+    const command =
+      "node -e \"let n=0; const t=setInterval(()=>console.log('background test', ++n), 1000); setTimeout(()=>{clearInterval(t); console.log('done')}, 120000)\"";
+
+    expect(
+      deriveDetectedBackgroundRunLabel({
+        command: `${command.slice(0, 96)}...`,
+        port: null,
+        providerBackgroundRuns: [
+          {
+            id: "provider:task-command",
+            source: "provider",
+            label: "Run a 2-minute counter that logs every second",
+            command,
+            detail: "Local Bash task",
+            statusLabel: "Running",
+            urls: [],
+            pids: [],
+            commandHints: [command],
+          },
+        ],
+      }),
+    ).toBe("Run a 2-minute counter that logs every second");
+  });
+
+  it("falls back to a compact command intent label", () => {
+    expect(
+      deriveDetectedBackgroundRunLabel({
+        command:
+          '"C:\\Program Files\\nodejs\\node.exe" -e "setInterval(() => console.log(1), 1000)"',
+        port: null,
+        providerBackgroundRuns: [],
+      }),
+    ).toBe("Node inline script");
+    expect(
+      deriveDetectedBackgroundRunLabel({
+        command: "C:\\repo\\node_modules\\.bin\\vp.cmd run dev:desktop",
+        port: 5733,
+        providerBackgroundRuns: [],
+      }),
+    ).toBe("vp run dev:desktop");
+  });
+
+  it("derives a compact intent label for timed Node counters", () => {
+    expect(
+      deriveDetectedBackgroundRunLabel({
+        command:
+          "node -e \"let n=0; const t=setInterval(()=>console.log('background test', ++n), 1000); setTimeout(()=>{clearInterval(t); console.log('done')}, 120000)\"",
+        port: null,
+        providerBackgroundRuns: [],
+      }),
+    ).toBe("2-minute Node counter");
+  });
+
+  it("derives command intent through shell launcher wrappers", () => {
+    expect(
+      deriveDetectedBackgroundRunLabel({
+        command: String.raw`powershell -Command "node -e \"setInterval(() => console.log(1), 1000)\""`,
+        port: null,
+        providerBackgroundRuns: [],
+      }),
+    ).toBe("Node inline script");
+  });
+
+  it("uses stable generic labels when no command intent exists", () => {
+    expect(
+      deriveDetectedBackgroundRunLabel({
+        command: null,
+        port: null,
+        providerBackgroundRuns: [],
+      }),
+    ).toBe("Agent background process");
+    expect(
+      deriveDetectedBackgroundRunLabel({
+        command: null,
+        port: 5733,
+        providerBackgroundRuns: [],
+      }),
+    ).toBe("Local preview");
+  });
+});
+
 describe("deriveProviderBackgroundRuns", () => {
   function taskActivity(
     kind: "task.started" | "task.progress" | "task.completed",
     payload: Record<string, unknown>,
     sequence: number,
+    turnId = TurnId.make("turn-1"),
   ): OrchestrationThreadActivity {
     return {
       id: EventId.make(`event-${kind}-${sequence}`),
@@ -459,7 +544,42 @@ describe("deriveProviderBackgroundRuns", () => {
       kind,
       summary: kind,
       payload,
-      turnId: TurnId.make("turn-1"),
+      turnId,
+      sequence,
+      createdAt: `2026-06-23T00:00:0${sequence}.000Z`,
+    };
+  }
+
+  function commandToolActivity(
+    command: string,
+    sequence: number,
+    turnId = TurnId.make("turn-1"),
+    kind: "tool.started" | "tool.updated" | "tool.completed" = "tool.completed",
+    toolCallId = "tool-command-1",
+  ): OrchestrationThreadActivity {
+    const status =
+      kind === "tool.completed" ? "completed" : kind === "tool.started" ? "inProgress" : undefined;
+    return {
+      id: EventId.make(`event-tool-${sequence}`),
+      tone: kind === "tool.completed" ? "info" : "tool",
+      kind,
+      summary: "Ran command",
+      payload: {
+        itemType: "command_execution",
+        title: "Ran command",
+        ...(status ? { status } : {}),
+        detail: command,
+        data: {
+          toolCallId,
+          toolName: "Bash",
+          input: { command },
+          item: {
+            id: toolCallId,
+            input: { command },
+          },
+        },
+      },
+      turnId,
       sequence,
       createdAt: `2026-06-23T00:00:0${sequence}.000Z`,
     };
@@ -512,6 +632,185 @@ describe("deriveProviderBackgroundRuns", () => {
     expect(detectionSeeds.urls).toEqual(["http://localhost:5953"]);
   });
 
+  it("keeps a normalized provider command when task payload exposes one", () => {
+    const { runs, detectionSeeds } = deriveProviderBackgroundRuns({
+      activities: [
+        taskActivity(
+          "task.started",
+          {
+            taskId: "task-dev-server",
+            taskType: "background-command",
+            command:
+              "C:\\Users\\Will\\AppData\\Local\\Programs\\node.exe scripts/dev-runner.ts dev",
+            detail: "Starting local preview http://localhost:5953",
+          },
+          1,
+        ),
+      ],
+      messages: [],
+      pendingBackgroundTaskCount: 1,
+    });
+
+    expect(runs[0]?.command).toBe("node scripts/dev-runner.ts dev");
+    expect(detectionSeeds.commandHints).toContain("node scripts/dev-runner.ts dev");
+  });
+
+  it("renders active command tool activities as provider command runs", () => {
+    const command =
+      'node -e "let n=0; const t=setInterval(()=>console.log(n++), 1000); setTimeout(()=>clearInterval(t), 120000)"';
+    const { runs, detectionSeeds } = deriveProviderBackgroundRuns({
+      activities: [commandToolActivity(command, 1, TurnId.make("turn-1"), "tool.started")],
+      messages: [],
+      pendingBackgroundTaskCount: 0,
+      activeCommandTurnId: TurnId.make("turn-1"),
+    });
+
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      id: "provider:command:tool-command-1",
+      source: "provider",
+      providerKind: "command",
+      label: "2-minute Node counter",
+      command,
+      detail: "Command tool",
+      statusLabel: "Running",
+    });
+    expect(detectionSeeds.commandHints).toContain(command);
+  });
+
+  it("ignores active command tool activities from inactive historical turns", () => {
+    const command =
+      'node -e "let n=0; const t=setInterval(()=>console.log(n++), 1000); setTimeout(()=>clearInterval(t), 120000)"';
+    const { runs, detectionSeeds } = deriveProviderBackgroundRuns({
+      activities: [
+        commandToolActivity(command, 1, TurnId.make("turn-old"), "tool.started", "old-command"),
+      ],
+      messages: [],
+      pendingBackgroundTaskCount: 0,
+      activeCommandTurnId: TurnId.make("turn-current"),
+    });
+
+    expect(runs).toEqual([]);
+    expect(detectionSeeds.commandHints).toEqual([]);
+  });
+
+  it("does not render command-only rows when there is no active command turn", () => {
+    const command =
+      'node -e "let n=0; const t=setInterval(()=>console.log(n++), 1000); setTimeout(()=>clearInterval(t), 120000)"';
+    const { runs, detectionSeeds } = deriveProviderBackgroundRuns({
+      activities: [commandToolActivity(command, 1, TurnId.make("turn-old"), "tool.started")],
+      messages: [],
+      pendingBackgroundTaskCount: 0,
+      activeCommandTurnId: null,
+    });
+
+    expect(runs).toEqual([]);
+    expect(detectionSeeds.commandHints).toEqual([]);
+  });
+
+  it("removes active command tool activities when the command completes", () => {
+    const command =
+      'node -e "let n=0; const t=setInterval(()=>console.log(n++), 1000); setTimeout(()=>clearInterval(t), 120000)"';
+    const { runs, detectionSeeds } = deriveProviderBackgroundRuns({
+      activities: [
+        commandToolActivity(command, 1, TurnId.make("turn-1"), "tool.started", "tool-command-1"),
+        commandToolActivity(command, 2, TurnId.make("turn-1"), "tool.completed", "tool-command-1"),
+      ],
+      messages: [],
+      pendingBackgroundTaskCount: 0,
+      activeCommandTurnId: TurnId.make("turn-1"),
+    });
+
+    expect(runs).toEqual([]);
+    expect(detectionSeeds.commandHints).toEqual([]);
+  });
+
+  it("uses command tool activity to seed detection for provider-only background tasks", () => {
+    const command =
+      'node -e "let n=0; const t=setInterval(()=>console.log(n++), 1000); setTimeout(()=>clearInterval(t), 120000)"';
+    const { runs, detectionSeeds } = deriveProviderBackgroundRuns({
+      activities: [
+        taskActivity(
+          "task.started",
+          {
+            taskId: "task-bash-background",
+            description: "Run a 2-minute counter that logs every second",
+          },
+          1,
+        ),
+        taskActivity(
+          "task.progress",
+          {
+            taskId: "task-bash-background",
+            description: "Run a 2-minute counter that logs every second",
+            summary: "Local Bash task",
+            lastToolName: "Bash",
+          },
+          2,
+        ),
+        commandToolActivity(command, 3),
+      ],
+      messages: [],
+      pendingBackgroundTaskCount: 1,
+    });
+
+    expect(runs[0]?.label).toBe("Run a 2-minute counter that logs every second");
+    expect(runs[0]?.command).toBe(command);
+    expect(detectionSeeds.commandHints).toContain(command);
+  });
+
+  it("does not duplicate a provider task when its command tool activity is still running", () => {
+    const command =
+      'node -e "let n=0; const t=setInterval(()=>console.log(n++), 1000); setTimeout(()=>clearInterval(t), 120000)"';
+    const { runs, detectionSeeds } = deriveProviderBackgroundRuns({
+      activities: [
+        taskActivity(
+          "task.started",
+          {
+            taskId: "task-bash-background",
+            description: "Run a 2-minute counter that logs every second",
+          },
+          1,
+        ),
+        commandToolActivity(command, 2, TurnId.make("turn-1"), "tool.started"),
+      ],
+      messages: [],
+      pendingBackgroundTaskCount: 1,
+    });
+
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.id).toBe("provider:task-bash-background");
+    expect(runs[0]?.command).toBe(command);
+    expect(detectionSeeds.commandHints).toContain(command);
+  });
+
+  it("does not seed active provider task detection from older command turns", () => {
+    const previousTurnId = TurnId.make("turn-previous");
+    const activeTurnId = TurnId.make("turn-active");
+    const command =
+      'node -e "let n=0; const t=setInterval(()=>console.log(n++), 1000); setTimeout(()=>clearInterval(t), 120000)"';
+    const { detectionSeeds } = deriveProviderBackgroundRuns({
+      activities: [
+        commandToolActivity("vp run dev:desktop", 1, previousTurnId),
+        taskActivity(
+          "task.started",
+          {
+            taskId: "task-bash-background",
+            description: "Run a 2-minute counter that logs every second",
+          },
+          2,
+          activeTurnId,
+        ),
+        commandToolActivity(command, 3, activeTurnId),
+      ],
+      messages: [],
+      pendingBackgroundTaskCount: 1,
+    });
+
+    expect(detectionSeeds.commandHints).toContain(command);
+    expect(detectionSeeds.commandHints).not.toContain("vp run dev:desktop");
+  });
+
   it("removes provider task rows when completion activity is present", () => {
     const { runs } = deriveProviderBackgroundRuns({
       activities: [
@@ -536,7 +835,9 @@ describe("deriveProviderBackgroundRuns", () => {
       {
         id: "provider:unknown:1",
         source: "provider",
+        providerKind: "task",
         label: "Provider background task",
+        command: null,
         detail: "Provider-managed; stop handle not exposed.",
         statusLabel: "Tracked",
         urls: [],
@@ -657,6 +958,7 @@ describe("filterUnresolvedProviderBackgroundRuns", () => {
     id: "provider:task-dev-server",
     source: "provider" as const,
     label: "Local preview ready at http://localhost:5953",
+    command: null,
     detail: "Background Command task",
     statusLabel: "Running",
     urls: ["http://localhost:5953"],
@@ -686,7 +988,9 @@ describe("filterUnresolvedProviderBackgroundRuns", () => {
     const providerRun = {
       id: "provider:unknown:1",
       source: "provider" as const,
+      providerKind: "task" as const,
       label: "Provider background task",
+      command: null,
       detail: "Provider-managed; stop handle not exposed.",
       statusLabel: "Tracked",
       urls: [],
@@ -707,6 +1011,7 @@ describe("filterUnresolvedProviderBackgroundRuns", () => {
       id: "provider:task-process",
       source: "provider" as const,
       label: "Background process",
+      command: null,
       detail: "Provider-managed",
       statusLabel: "Running",
       urls: [],
@@ -718,6 +1023,76 @@ describe("filterUnresolvedProviderBackgroundRuns", () => {
       filterUnresolvedProviderBackgroundRuns({
         providerBackgroundRuns: [providerPidRun],
         detectedBackgroundRuns: [{ urls: [], pids: [21820] }],
+      }),
+    ).toEqual([]);
+  });
+
+  it("removes provider command rows once a detected run covers their command", () => {
+    const command = 'node -e "let n=0; setInterval(() => console.log(n++), 1000)"';
+    const providerCommandRun = {
+      id: "provider:task-command",
+      source: "provider" as const,
+      label: "Run a 2-minute counter",
+      command,
+      detail: "Local Bash task",
+      statusLabel: "Running",
+      urls: [],
+      pids: [],
+      commandHints: [command],
+    };
+
+    expect(
+      filterUnresolvedProviderBackgroundRuns({
+        providerBackgroundRuns: [providerCommandRun],
+        detectedBackgroundRuns: [{ urls: [], pids: [4242], command }],
+      }),
+    ).toEqual([]);
+  });
+
+  it("removes provider command rows when the detected command is compacted", () => {
+    const command =
+      "node -e \"let n=0; const t=setInterval(()=>console.log('background test', ++n), 1000); setTimeout(()=>{clearInterval(t); console.log('done')}, 120000)\"";
+    const detectedCommand = `${command.slice(0, 96)}...`;
+    const providerCommandRun = {
+      id: "provider:task-command",
+      source: "provider" as const,
+      label: "Run a 2-minute counter",
+      command,
+      detail: "Local Bash task",
+      statusLabel: "Running",
+      urls: [],
+      pids: [],
+      commandHints: [command],
+    };
+
+    expect(
+      filterUnresolvedProviderBackgroundRuns({
+        providerBackgroundRuns: [providerCommandRun],
+        detectedBackgroundRuns: [{ urls: [], pids: [43748], command: detectedCommand }],
+      }),
+    ).toEqual([]);
+  });
+
+  it("removes provider command rows when the provider command is a shell launcher wrapper", () => {
+    const detectedCommand = 'node -e "let n=0; setInterval(() => console.log(n++), 1000)"';
+    const wrappedCommand = String.raw`powershell -Command "node -e \"let n=0; setInterval(() => console.log(n++), 1000)\""`;
+    const providerCommandRun = {
+      id: "provider:command:tool-command",
+      source: "provider" as const,
+      providerKind: "command" as const,
+      label: "Node inline script",
+      command: wrappedCommand,
+      detail: "Command tool",
+      statusLabel: "Running",
+      urls: [],
+      pids: [],
+      commandHints: [wrappedCommand],
+    };
+
+    expect(
+      filterUnresolvedProviderBackgroundRuns({
+        providerBackgroundRuns: [providerCommandRun],
+        detectedBackgroundRuns: [{ urls: [], pids: [4242], command: detectedCommand }],
       }),
     ).toEqual([]);
   });

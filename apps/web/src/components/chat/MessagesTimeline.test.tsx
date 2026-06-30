@@ -628,7 +628,7 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("View transcript");
   });
 
-  it("renders warning work activity with an amber spine circle", async () => {
+  it("renders warning and error work activity with solid threadline spine dots", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(
       <MessagesTimeline
@@ -645,12 +645,30 @@ describe("MessagesTimeline", () => {
               tone: "warning" as const,
             },
           },
+          {
+            id: "entry-error",
+            kind: "work" as const,
+            createdAt: "2026-03-17T19:12:30.000Z",
+            entry: {
+              id: "work-error",
+              createdAt: "2026-03-17T19:12:30.000Z",
+              label: "Runtime error",
+              detail:
+                "[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use",
+              tone: "error" as const,
+            },
+          },
         ]}
       />,
     );
 
     expect(markup).toContain("Claude API connection issue");
-    expect(markup).toContain("rounded-full border border-warning/65 bg-warning/30");
+    expect(markup).toContain("Runtime error");
+    expect(markup).toContain("size-[6px] rounded-full bg-warning");
+    expect(markup).toContain("size-[6px] rounded-full bg-destructive");
+    expect(markup).not.toContain("border-warning/65");
+    expect(markup).not.toContain("border-destructive/70");
+    expect(markup).not.toContain("lucide-circle-alert");
   });
 
   it("connects an untracked reasoning step to the single live terminus", async () => {

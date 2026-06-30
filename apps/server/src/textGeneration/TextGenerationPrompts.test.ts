@@ -26,8 +26,34 @@ describe("buildCommitMessagePrompt", () => {
     expect(result.prompt).toContain(
       "subject should be specific enough to make sense in release notes",
     );
+    expect(result.prompt).toContain("capture the primary user-visible or developer-visible change");
     // Should NOT include the branch generation instruction
     expect(result.prompt).not.toContain("branch must be a short semantic git branch fragment");
+  });
+
+  it("nudges multi-area diffs toward broader body coverage without a fixed bullet cap", () => {
+    const result = buildCommitMessagePrompt({
+      branch: "feature/activity-status",
+      stagedSummary: [
+        "M apps/desktop/src/window/DesktopStatusIndicator.ts",
+        "M apps/server/src/diagnostics/ProcessDiagnostics.ts",
+        "M apps/web/src/components/chat/ComposerPrimaryActions.tsx",
+        "M packages/contracts/src/terminal.ts",
+      ].join("\n"),
+      stagedPatch: "diff",
+      includeBranch: false,
+    });
+
+    expect(result.prompt).toContain(
+      "use as many body bullets as needed to cover distinct important changes",
+    );
+    expect(result.prompt).toContain(
+      "compare the staged files and patch for user-facing, runtime/server, shared contract, and test changes",
+    );
+    expect(result.prompt).toContain(
+      "broad multi-package diffs do not omit important secondary behavior",
+    );
+    expect(result.prompt).not.toContain("1-3 short bullet points");
   });
 
   it("includes branch generation instruction when includeBranch is true", () => {

@@ -28,6 +28,7 @@ import {
   scopeThreadRef,
 } from "@threadlines/client-runtime";
 import { createModelSelection, normalizeModelSlug } from "@threadlines/shared/model";
+import { normalizeTerminalActivityCommand } from "@threadlines/shared/terminalCommandTracker";
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@threadlines/shared/projectScripts";
 import { formatForkSourceExcerpt, truncate } from "@threadlines/shared/String";
 import { Debouncer } from "@tanstack/react-pacer";
@@ -162,6 +163,7 @@ import {
   type TranscriptHighlightContextSelection,
 } from "../lib/transcriptHighlightContext";
 import {
+  selectTerminalActivityCommand,
   selectTerminalSubmittedCommand,
   selectThreadTerminalState,
   useTerminalStateStore,
@@ -191,6 +193,7 @@ import {
   collectUserMessageBlobPreviewUrls,
   createLocalDispatchSnapshot,
   deriveProviderBackgroundRuns,
+  deriveDetectedBackgroundRunLabel,
   deriveComposerSendState,
   deriveProviderAuthReconnectPrompt,
   filterUnresolvedProviderBackgroundRuns,
@@ -337,6 +340,13 @@ function wait(milliseconds: number): Promise<void> {
 }
 
 const BACKGROUND_RUN_DETECTION_RETRY_DELAYS_MS = [0, 750, 2_000, 4_000] as const;
+
+function backgroundRunCommandFingerprint(command: string | null | undefined): string | null {
+  if (!command) return null;
+  const normalized =
+    normalizeTerminalActivityCommand(command) ?? command.replace(/\s+/g, " ").trim();
+  return normalized.length > 0 ? normalized.toLowerCase() : null;
+}
 
 type EnvironmentUnavailableState = {
   readonly environmentId: EnvironmentId;
@@ -922,6 +932,9 @@ export default function ChatView(props: ChatViewProps) {
   );
   const terminalSubmittedCommandByKey = useTerminalStateStore(
     (state) => state.terminalSubmittedCommandByKey,
+  );
+  const terminalActivityCommandByKey = useTerminalStateStore(
+    (state) => state.terminalActivityCommandByKey,
   );
   const openTerminalThreadKeys = useTerminalStateStore(
     useShallow((state) =>
@@ -2361,9 +2374,15 @@ export default function ChatView(props: ChatViewProps) {
         messages: timelineMessages,
         pendingBackgroundTaskCount: activeThread?.session?.pendingBackgroundTaskCount ?? 0,
         activeSubagentCount: subagentProgress?.activeCount ?? 0,
+        activeCommandTurnId: activeTurnInProgress
+          ? (activeThread?.session?.activeTurnId ?? activeLatestTurn?.turnId ?? null)
+          : null,
       }),
     [
+      activeLatestTurn?.turnId,
       activeThread?.session?.pendingBackgroundTaskCount,
+      activeThread?.session?.activeTurnId,
+      activeTurnInProgress,
       subagentProgress?.activeCount,
       threadActivities,
       timelineMessages,
@@ -2377,7 +2396,11 @@ export default function ChatView(props: ChatViewProps) {
         pid: null,
         port: null,
         elapsed: null,
-        canStop: false,
+        canStop:
+          run.command !== null ||
+          run.commandHints.length > 0 ||
+          run.urls.length > 0 ||
+          run.pids.length > 0,
         cwd: null,
       })),
     [providerBackgroundSnapshot],
@@ -2462,7 +2485,12 @@ export default function ChatView(props: ChatViewProps) {
             port: run.port,
             elapsed: run.elapsed ?? null,
             canStop: run.canStop,
-            label: run.port === null ? "Detected background process" : "Detected local preview",
+            label: deriveDetectedBackgroundRunLabel({
+              command: run.command,
+              port: run.port,
+              providerBackgroundRuns: providerBackgroundSnapshot.runs,
+            }),
+            command: run.command,
             detail: run.detail,
             cwd: null,
             statusLabel: run.statusLabel,
@@ -2497,6 +2525,7 @@ export default function ChatView(props: ChatViewProps) {
     activeThreadId,
     backgroundRunCommandHints,
     backgroundRunDetectionUrls,
+    providerBackgroundSnapshot.runs,
     unresolvedBackgroundRunDetectionPids,
   ]);
 
@@ -2512,6 +2541,12 @@ export default function ChatView(props: ChatViewProps) {
         activeThreadRef,
         terminalId,
       );
+      const activityCommand = selectTerminalActivityCommand(
+        terminalActivityCommandByKey,
+        activeThreadRef,
+        terminalId,
+      );
+      const command = submittedCommand ?? activityCommand;
       return {
         id: `terminal:${terminalId}`,
         source: "terminal" as const,
@@ -2520,9 +2555,12 @@ export default function ChatView(props: ChatViewProps) {
         port: null,
         elapsed: null,
         canStop: true,
-        label: submittedCommand ?? terminalLabel,
-        detail: submittedCommand && cwd ? `${terminalLabel} - ${cwd}` : cwd,
+        label: command ?? terminalLabel,
+        command,
+        detail: command ? (cwd ? `${terminalLabel} - ${cwd}` : terminalLabel) : cwd,
         cwd,
+        terminalVisible:
+          terminalState.terminalOpen && terminalState.activeTerminalId === terminalId,
         statusLabel: "Running",
         urls: [],
       };
@@ -2544,28 +2582,37 @@ export default function ChatView(props: ChatViewProps) {
     providerBackgroundRuns,
     stoppedBackgroundRunPids,
     activeThreadRef,
+    terminalActivityCommandByKey,
     terminalSubmittedCommandByKey,
+    terminalState.activeTerminalId,
     terminalState.runningTerminalIds,
+    terminalState.terminalOpen,
     terminalState.terminalIds,
   ]);
-  const openBackgroundRunTerminal = useCallback(
+  const toggleBackgroundRunTerminal = useCallback(
     (terminalId: string) => {
       if (!activeThreadRef) return;
+      if (terminalState.terminalOpen && terminalState.activeTerminalId === terminalId) {
+        setTerminalOpen(false);
+        return;
+      }
       storeSetActiveTerminal(activeThreadRef, terminalId);
       setTerminalOpen(true);
       setTerminalFocusRequestId((value) => value + 1);
     },
-    [activeThreadRef, setTerminalOpen, storeSetActiveTerminal],
+    [
+      activeThreadRef,
+      setTerminalOpen,
+      storeSetActiveTerminal,
+      terminalState.activeTerminalId,
+      terminalState.terminalOpen,
+    ],
   );
   const stopBackgroundRun = useCallback(
     (run: ThreadBackgroundRunItem) => {
       if (!activeThreadRef || !activeThreadId) return;
       if (run.terminalId) {
         requestCloseTerminal(activeThreadRef, activeThreadId, run.terminalId);
-        return;
-      }
-      const pid = run.pid;
-      if (pid === null) {
         return;
       }
 
@@ -2580,18 +2627,67 @@ export default function ChatView(props: ChatViewProps) {
         return;
       }
 
-      void localApi.server
-        .stopBackgroundRun({ pid, port: run.port, signal: "SIGINT" })
-        .then((result) => {
+      const stopResolvedRun = (pid: number, port: number | null, id: string) =>
+        localApi.server.stopBackgroundRun({ pid, port, signal: "SIGINT" }).then((result) => {
           if (result.signaled) {
             setStoppedBackgroundRunPids((current) =>
               current.includes(pid) ? current : [...current, pid],
             );
-            setDetectedBackgroundRuns((current) => current.filter((item) => item.id !== run.id));
+            setDetectedBackgroundRuns((current) => current.filter((item) => item.id !== id));
             return;
           }
           const message = Option.getOrUndefined(result.message);
           setThreadError(activeThreadId, message ?? `Could not stop ${run.label}.`);
+        });
+
+      if (run.pid !== null) {
+        void stopResolvedRun(run.pid, run.port, run.id).catch((error: unknown) => {
+          setThreadError(
+            activeThreadId,
+            error instanceof Error ? error.message : `Could not stop ${run.label}.`,
+          );
+        });
+        return;
+      }
+
+      const commandHints = [
+        ...new Set(
+          [run.command, ...(run.commandHints ?? [])].filter((hint): hint is string =>
+            Boolean(hint && hint.trim().length > 0),
+          ),
+        ),
+      ];
+      if (commandHints.length === 0 && run.urls.length === 0 && (run.pids ?? []).length === 0) {
+        setThreadError(activeThreadId, `Could not find a live process for ${run.label}.`);
+        return;
+      }
+
+      void localApi.server
+        .resolveBackgroundRuns({
+          urls: [...run.urls],
+          pids: [...(run.pids ?? [])],
+          commandHints,
+        })
+        .then((result) => {
+          const expectedCommand = backgroundRunCommandFingerprint(run.command);
+          const resolvedRun =
+            result.runs.find(
+              (item) =>
+                expectedCommand !== null &&
+                backgroundRunCommandFingerprint(item.command) === expectedCommand,
+            ) ??
+            result.runs.find((item) => item.canStop) ??
+            result.runs[0] ??
+            null;
+          if (!resolvedRun) {
+            setThreadError(activeThreadId, `Could not find a live process for ${run.label}.`);
+            return undefined;
+          }
+          if (!resolvedRun.canStop) {
+            setThreadError(activeThreadId, `${run.label} is protected and cannot be stopped.`);
+            return undefined;
+          }
+          return stopResolvedRun(resolvedRun.pid, resolvedRun.port, resolvedRun.id);
         })
         .catch((error: unknown) => {
           setThreadError(
@@ -4844,7 +4940,7 @@ export default function ChatView(props: ChatViewProps) {
           onAddProjectScript={saveProjectScript}
           onUpdateProjectScript={updateProjectScript}
           onDeleteProjectScript={deleteProjectScript}
-          onOpenBackgroundRunTerminal={openBackgroundRunTerminal}
+          onToggleBackgroundRunTerminal={toggleBackgroundRunTerminal}
           onStopBackgroundRun={stopBackgroundRun}
           onOpenForkSourceThread={onOpenForkSourceThread}
           onToggleTerminal={toggleTerminalVisibility}

@@ -291,6 +291,7 @@ describe("TerminalViewport", () => {
       terminalLaunchContextByThreadKey: {},
       terminalEventEntriesByKey: {},
       terminalSubmittedCommandByKey: {},
+      terminalActivityCommandByKey: {},
       nextTerminalEventId: 1,
     });
   });

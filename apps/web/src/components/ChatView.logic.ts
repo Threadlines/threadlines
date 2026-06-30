@@ -12,6 +12,7 @@ import {
   isProviderAuthErrorMessage,
   providerAuthReconnectCommand,
 } from "@threadlines/shared/providerAuth";
+import { normalizeTerminalActivityCommand } from "@threadlines/shared/terminalCommandTracker";
 import type { DesktopCapturedScreenshot } from "@threadlines/contracts";
 import { type ChatMessage, type SessionPhase, type Thread, type ThreadSession } from "../types";
 import { type ComposerImageAttachment, type DraftThreadState } from "../composerDraftStore";
@@ -194,7 +195,9 @@ export function shouldConfirmTerminalKill(input: {
 export interface ProviderBackgroundRunState {
   id: string;
   source: "provider";
+  providerKind?: "task" | "command";
   label: string;
+  command: string | null;
   detail: string | null;
   statusLabel: string;
   urls: ReadonlyArray<string>;
@@ -223,6 +226,227 @@ export interface ProviderBackgroundRunsResult {
 export interface DetectedBackgroundRunState {
   urls: ReadonlyArray<string>;
   pids?: ReadonlyArray<number> | undefined;
+  command?: string | null | undefined;
+}
+
+function stripOuterCommandQuotes(command: string): string {
+  const trimmed = command.trim();
+  if (trimmed.length < 2) {
+    return trimmed;
+  }
+  const quote = trimmed[0];
+  if ((quote === `"` || quote === "'") && trimmed.endsWith(quote)) {
+    return trimmed.slice(1, -1).replace(/\\"/g, `"`).replace(/\\'/g, "'").trim();
+  }
+  return trimmed;
+}
+
+function unwrapShellLauncherCommand(command: string): string | null {
+  const normalized =
+    normalizeTerminalActivityCommand(command) ?? command.replace(/\s+/g, " ").trim();
+  const shellLaunchMatch =
+    /^(?:powershell|pwsh)\s+[\s\S]*?-(?:command|c)\s+([\s\S]+)$/i.exec(normalized) ??
+    /^(?:cmd)\s+\/c\s+([\s\S]+)$/i.exec(normalized) ??
+    /^(?:bash|sh|zsh)\s+-c\s+([\s\S]+)$/i.exec(normalized);
+  const inner = shellLaunchMatch?.[1] ? stripOuterCommandQuotes(shellLaunchMatch[1]) : null;
+  return inner && inner.length > 0
+    ? (normalizeTerminalActivityCommand(inner) ?? inner.replace(/\s+/g, " ").trim())
+    : null;
+}
+
+function normalizeBackgroundRunCommand(command: string | null | undefined): string | null {
+  if (!command) {
+    return null;
+  }
+  const normalized =
+    normalizeTerminalActivityCommand(command) ?? command.replace(/\s+/g, " ").trim();
+  if (normalized.length === 0) {
+    return null;
+  }
+  return unwrapShellLauncherCommand(normalized) ?? normalized;
+}
+
+function commandFingerprint(command: string | null | undefined): string | null {
+  const normalized = normalizeBackgroundRunCommand(command);
+  return normalized ? normalized.toLowerCase() : null;
+}
+
+function stripInlineCommandArgument(value: string): string {
+  const trimmed = value.trim().replace(/\\"/g, `"`).replace(/\\'/g, "'");
+  if (trimmed.length === 0) {
+    return "";
+  }
+
+  const quote = trimmed[0];
+  if (quote !== `"` && quote !== "'") {
+    const whitespaceMatch = /\s/.exec(trimmed);
+    return whitespaceMatch ? trimmed.slice(0, whitespaceMatch.index) : trimmed;
+  }
+
+  let escaped = false;
+  let output = "";
+  for (let index = 1; index < trimmed.length; index += 1) {
+    const char = trimmed[index];
+    if (escaped) {
+      output += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === quote) {
+      return output.trim();
+    }
+    output += char;
+  }
+  return output.trim();
+}
+
+function nodeInlineScriptBody(command: string): string | null {
+  const match = /^node\s+(?:--eval|-e)\s+([\s\S]+)$/i.exec(command);
+  if (!match?.[1]) {
+    return null;
+  }
+  const script = stripInlineCommandArgument(match[1]);
+  return script.length > 0 ? script : null;
+}
+
+function formatInlineScriptDuration(milliseconds: number): string | null {
+  if (!Number.isFinite(milliseconds) || milliseconds < 1_000 || milliseconds > 86_400_000) {
+    return null;
+  }
+  const seconds = Math.round(milliseconds / 1_000);
+  if (Math.abs(milliseconds - seconds * 1_000) > 50) {
+    return null;
+  }
+  if (seconds >= 60 && seconds % 60 === 0) {
+    const minutes = seconds / 60;
+    return `${minutes}-minute`;
+  }
+  return `${seconds}-second`;
+}
+
+function extractSetTimeoutDuration(script: string): string | null {
+  const match = /\bsetTimeout\s*\([\s\S]+,\s*(\d{3,})\s*\)/i.exec(script);
+  const milliseconds = match?.[1] ? Number.parseInt(match[1], 10) : Number.NaN;
+  return formatInlineScriptDuration(milliseconds);
+}
+
+function nodeInlineScriptIntentLabel(command: string): string | null {
+  const script = nodeInlineScriptBody(command);
+  if (!script) {
+    return null;
+  }
+
+  const duration = extractSetTimeoutDuration(script);
+  if (!duration) {
+    return null;
+  }
+
+  const hasInterval = /\bsetInterval\s*\(/i.test(script);
+  const hasConsoleLog = /\bconsole\.log\s*\(/i.test(script);
+  const incrementsCounter = /(?:\+\+\s*[$A-Z_a-z][$\w]*|[$A-Z_a-z][$\w]*\s*\+\+)/.test(script);
+  if (hasInterval && hasConsoleLog && incrementsCounter) {
+    return `${duration} Node counter`;
+  }
+  if (hasInterval && hasConsoleLog) {
+    return `${duration} Node log loop`;
+  }
+  return `${duration} Node timer`;
+}
+
+export function backgroundRunCommandsMatch(
+  left: string | null | undefined,
+  right: string | null | undefined,
+): boolean {
+  const leftFingerprint = commandFingerprint(left);
+  const rightFingerprint = commandFingerprint(right);
+  if (!leftFingerprint || !rightFingerprint) {
+    return false;
+  }
+  if (leftFingerprint === rightFingerprint) {
+    return true;
+  }
+
+  const leftPrefix = leftFingerprint.endsWith("...")
+    ? leftFingerprint.slice(0, -3).trimEnd()
+    : leftFingerprint;
+  const rightPrefix = rightFingerprint.endsWith("...")
+    ? rightFingerprint.slice(0, -3).trimEnd()
+    : rightFingerprint;
+  if (leftPrefix.length < 48 || rightPrefix.length < 48) {
+    return false;
+  }
+  return leftPrefix.startsWith(rightPrefix) || rightPrefix.startsWith(leftPrefix);
+}
+
+export function backgroundRunIntentLabelFromCommand(
+  command: string | null | undefined,
+): string | null {
+  const normalized = normalizeBackgroundRunCommand(command);
+  if (!normalized) {
+    return null;
+  }
+
+  const lower = normalized.toLowerCase();
+  if (/^node\s+-e(?:\s|$)/.test(lower)) {
+    return nodeInlineScriptIntentLabel(normalized) ?? "Node inline script";
+  }
+  if (/^node\s+--eval(?:\s|$)/.test(lower)) {
+    return nodeInlineScriptIntentLabel(normalized) ?? "Node inline script";
+  }
+  if (/^(?:python|python3|py)\s+-c(?:\s|$)/.test(lower)) {
+    return "Python inline script";
+  }
+  if (/^ruby\s+-e(?:\s|$)/.test(lower)) {
+    return "Ruby inline script";
+  }
+  if (/^deno\s+eval(?:\s|$)/.test(lower)) {
+    return "Deno inline script";
+  }
+
+  const scriptMatch = /^(npm|pnpm|yarn|bun|vp)\s+(run\s+)?([@.\w:/-]+)/i.exec(normalized);
+  if (scriptMatch?.[1] && scriptMatch[3]) {
+    const runner = scriptMatch[1];
+    const run = scriptMatch[2] ?? "";
+    const script = scriptMatch[3];
+    return `${runner} ${run}${script}`.trim();
+  }
+
+  if (/\bvite\b/i.test(normalized) && /\bdev\b/i.test(normalized)) {
+    return "Vite dev server";
+  }
+
+  if (normalized.length <= 54) {
+    return normalized;
+  }
+
+  const executable = normalized.split(/\s+/, 1)[0];
+  return executable ? `${executable} command` : null;
+}
+
+export function deriveDetectedBackgroundRunLabel(input: {
+  readonly command: string | null | undefined;
+  readonly port: number | null;
+  readonly providerBackgroundRuns: ReadonlyArray<ProviderBackgroundRunState>;
+}): string {
+  const matchedProviderRun = input.providerBackgroundRuns.find(
+    (run) =>
+      backgroundRunCommandsMatch(run.command, input.command) ||
+      run.commandHints.some((hint) => backgroundRunCommandsMatch(hint, input.command)),
+  );
+  if (matchedProviderRun) {
+    return matchedProviderRun.label;
+  }
+
+  const commandLabel = backgroundRunIntentLabelFromCommand(input.command);
+  if (commandLabel) {
+    return commandLabel;
+  }
+
+  return input.port === null ? "Agent background process" : "Local preview";
 }
 
 export function filterUnresolvedProviderBackgroundRuns<
@@ -233,12 +457,36 @@ export function filterUnresolvedProviderBackgroundRuns<
 }): T[] {
   const detectedUrlSet = new Set(input.detectedBackgroundRuns.flatMap((run) => run.urls));
   const detectedPidSet = new Set(input.detectedBackgroundRuns.flatMap((run) => run.pids ?? []));
+  const detectedCommandSet = new Set(
+    input.detectedBackgroundRuns
+      .map((run) => commandFingerprint(run.command))
+      .filter((command): command is string => command !== null),
+  );
+  const detectedCommands = input.detectedBackgroundRuns
+    .map((run) => run.command)
+    .filter((command): command is string => Boolean(command));
   return input.providerBackgroundRuns.filter((run) => {
     if (run.urls.length > 0) {
       return !run.urls.every((url) => detectedUrlSet.has(url));
     }
     if (run.pids.length > 0) {
       return !run.pids.every((pid) => detectedPidSet.has(pid));
+    }
+    const runCommand = commandFingerprint(run.command);
+    if (runCommand && detectedCommandSet.has(runCommand)) {
+      return false;
+    }
+    if (run.commandHints.some((hint) => detectedCommandSet.has(commandFingerprint(hint) ?? ""))) {
+      return false;
+    }
+    if (
+      detectedCommands.some(
+        (detectedCommand) =>
+          backgroundRunCommandsMatch(run.command, detectedCommand) ||
+          run.commandHints.some((hint) => backgroundRunCommandsMatch(hint, detectedCommand)),
+      )
+    ) {
+      return false;
     }
     return true;
   });
@@ -250,6 +498,253 @@ function asBackgroundRunRecord(value: unknown): Record<string, unknown> | null {
 
 function asBackgroundRunString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function rawCommandFromBackgroundPayload(payload: Record<string, unknown>): string | null {
+  const command =
+    asBackgroundRunString(payload.command) ??
+    asBackgroundRunString(payload.cmd) ??
+    asBackgroundRunString(payload.shellCommand) ??
+    asBackgroundRunString(payload.commandLine);
+  if (command) {
+    return command;
+  }
+
+  const toolInput = asBackgroundRunRecord(payload.toolInput);
+  return toolInput
+    ? (asBackgroundRunString(toolInput.command) ??
+        asBackgroundRunString(toolInput.cmd) ??
+        asBackgroundRunString(toolInput.shellCommand) ??
+        asBackgroundRunString(toolInput.commandLine))
+    : null;
+}
+
+function addCommandHintVariants(hints: string[], command: string | null): void {
+  if (!command) {
+    return;
+  }
+  if (!hints.includes(command)) {
+    hints.push(command);
+  }
+  const normalized = normalizeTerminalActivityCommand(command);
+  if (normalized && !hints.includes(normalized)) {
+    hints.push(normalized);
+  }
+}
+
+function commandHintsFromToolActivity(activity: OrchestrationThreadActivity): string[] {
+  if (
+    activity.kind !== "tool.started" &&
+    activity.kind !== "tool.updated" &&
+    activity.kind !== "tool.completed"
+  ) {
+    return [];
+  }
+
+  const payload = asBackgroundRunRecord(activity.payload);
+  const data = asBackgroundRunRecord(payload?.data);
+  const item = asBackgroundRunRecord(data?.item);
+  const input =
+    asBackgroundRunRecord(data?.input) ??
+    asBackgroundRunRecord(item?.input) ??
+    asBackgroundRunRecord(item?.arguments) ??
+    asBackgroundRunRecord(data?.arguments);
+  const itemType =
+    asBackgroundRunString(payload?.itemType) ?? asBackgroundRunString(data?.itemType);
+  const title = asBackgroundRunString(payload?.title ?? data?.title);
+  const toolName = asBackgroundRunString(data?.toolName ?? item?.toolName ?? item?.tool);
+  const isCommandActivity =
+    itemType === "command_execution" ||
+    title?.toLowerCase() === "ran command" ||
+    toolName?.toLowerCase() === "bash";
+  if (!isCommandActivity) {
+    return [];
+  }
+
+  const hints: string[] = [];
+  addCommandHintVariants(hints, input ? rawCommandFromBackgroundPayload(input) : null);
+  addCommandHintVariants(hints, item ? rawCommandFromBackgroundPayload(item) : null);
+  addCommandHintVariants(hints, data ? rawCommandFromBackgroundPayload(data) : null);
+  addCommandHintVariants(hints, payload ? rawCommandFromBackgroundPayload(payload) : null);
+  if (itemType === "command_execution") {
+    addCommandHintVariants(hints, asBackgroundRunString(payload?.detail));
+  }
+  return hints.slice(0, 4);
+}
+
+function normalizedToolActivityStatus(
+  activity: OrchestrationThreadActivity,
+  payload: Record<string, unknown> | null,
+): "running" | "completed" | "failed" | null {
+  const data = asBackgroundRunRecord(payload?.data);
+  const item = asBackgroundRunRecord(data?.item);
+  const status =
+    asBackgroundRunString(payload?.status) ??
+    asBackgroundRunString(data?.status) ??
+    asBackgroundRunString(item?.status);
+  const normalized = status?.toLowerCase().replace(/[_\s-]+/g, "");
+  if (normalized) {
+    if (normalized === "running" || normalized === "inprogress" || normalized === "pending") {
+      return "running";
+    }
+    if (normalized === "completed" || normalized === "complete" || normalized === "success") {
+      return "completed";
+    }
+    if (
+      normalized === "failed" ||
+      normalized === "failure" ||
+      normalized === "error" ||
+      normalized === "cancelled" ||
+      normalized === "canceled" ||
+      normalized === "declined"
+    ) {
+      return "failed";
+    }
+  }
+  if (activity.kind === "tool.completed") {
+    return activity.tone === "error" ? "failed" : "completed";
+  }
+  if (activity.kind === "tool.started" || activity.kind === "tool.updated") {
+    return "running";
+  }
+  return null;
+}
+
+function commandToolActivityKey(
+  activity: OrchestrationThreadActivity,
+  payload: Record<string, unknown> | null,
+  command: string | null,
+): string | null {
+  const data = asBackgroundRunRecord(payload?.data);
+  const item = asBackgroundRunRecord(data?.item);
+  const explicitKey =
+    asBackgroundRunString(payload?.toolCallId) ??
+    asBackgroundRunString(data?.toolCallId) ??
+    asBackgroundRunString(payload?.itemId) ??
+    asBackgroundRunString(data?.itemId) ??
+    asBackgroundRunString(item?.id) ??
+    asBackgroundRunString(data?.id);
+  if (explicitKey) {
+    return explicitKey;
+  }
+
+  const commandKey = commandFingerprint(command);
+  if (activity.turnId !== null && commandKey) {
+    return `${activity.turnId}:${commandKey}`;
+  }
+  return null;
+}
+
+function providerCommandRunFromToolActivity(
+  activity: OrchestrationThreadActivity,
+): { key: string; run: ProviderBackgroundRunState | null } | null {
+  if (
+    activity.kind !== "tool.started" &&
+    activity.kind !== "tool.updated" &&
+    activity.kind !== "tool.completed"
+  ) {
+    return null;
+  }
+
+  const payload = asBackgroundRunRecord(activity.payload);
+  const data = asBackgroundRunRecord(payload?.data);
+  const item = asBackgroundRunRecord(data?.item);
+  const itemType =
+    asBackgroundRunString(payload?.itemType) ?? asBackgroundRunString(data?.itemType);
+  const title = asBackgroundRunString(payload?.title ?? data?.title);
+  const toolName = asBackgroundRunString(data?.toolName ?? item?.toolName ?? item?.tool);
+  const commandHints = commandHintsFromToolActivity(activity);
+  const isCommandActivity =
+    itemType === "command_execution" ||
+    title?.toLowerCase() === "ran command" ||
+    toolName?.toLowerCase() === "bash" ||
+    commandHints.length > 0;
+  if (!isCommandActivity) {
+    return null;
+  }
+
+  const commandHint = commandHints[0] ?? null;
+  const command = commandHint
+    ? (normalizeTerminalActivityCommand(commandHint) ?? commandHint)
+    : null;
+  const key = commandToolActivityKey(activity, payload, command);
+  if (!key) {
+    return null;
+  }
+
+  const status = normalizedToolActivityStatus(activity, payload);
+  if (status === "completed" || status === "failed") {
+    return { key, run: null };
+  }
+  if (!command) {
+    return null;
+  }
+
+  const detailText =
+    title && title.toLowerCase() !== "ran command"
+      ? title
+      : (asBackgroundRunString(payload?.summary ?? data?.summary) ?? "Command tool");
+
+  return {
+    key,
+    run: {
+      id: `provider:command:${key}`,
+      source: "provider",
+      providerKind: "command",
+      label: backgroundRunIntentLabelFromCommand(command) ?? "Agent command",
+      command,
+      detail: detailText,
+      statusLabel: "Running",
+      urls: [
+        ...new Set([
+          ...extractLocalPreviewUrls(command),
+          ...extractLocalPreviewUrls(asBackgroundRunString(payload?.detail)),
+        ]),
+      ],
+      pids: [],
+      commandHints,
+    },
+  };
+}
+
+interface BackgroundTaskActivityScope {
+  readonly turnIds: ReadonlySet<string>;
+  readonly minSequence: number | null;
+  readonly maxSequence: number | null;
+}
+
+function activityMatchesBackgroundTaskScope(
+  activity: OrchestrationThreadActivity,
+  scope: BackgroundTaskActivityScope,
+): boolean {
+  if (scope.turnIds.size > 0) {
+    return activity.turnId !== null && scope.turnIds.has(String(activity.turnId));
+  }
+  if (activity.sequence === undefined || scope.minSequence === null || scope.maxSequence === null) {
+    return false;
+  }
+  return activity.sequence >= scope.minSequence - 8 && activity.sequence <= scope.maxSequence + 8;
+}
+
+function collectCommandActivityHints(input: {
+  activities: ReadonlyArray<OrchestrationThreadActivity>;
+  scope: BackgroundTaskActivityScope;
+}): string[] {
+  const hints: string[] = [];
+  for (const activity of input.activities.toSorted(compareActivitiesByOrder).toReversed()) {
+    if (!activityMatchesBackgroundTaskScope(activity, input.scope)) {
+      continue;
+    }
+    for (const hint of commandHintsFromToolActivity(activity)) {
+      if (!hints.includes(hint)) {
+        hints.push(hint);
+      }
+      if (hints.length >= 8) {
+        return hints;
+      }
+    }
+  }
+  return hints;
 }
 
 function humanizeTaskType(taskType: string | null): string | null {
@@ -400,12 +895,36 @@ export function deriveProviderBackgroundRuns(input: {
   messages: ReadonlyArray<ChatMessage>;
   pendingBackgroundTaskCount: number;
   activeSubagentCount?: number | undefined;
+  activeCommandTurnId?: TurnId | null | undefined;
 }): ProviderBackgroundRunsResult {
   const activeRunsByTaskId = new Map<string, ProviderBackgroundRunState>();
+  const activeCommandRunsByKey = new Map<string, ProviderBackgroundRunState>();
   const suppressedSubagentTaskIds = new Set<string>();
+  const activeTaskScopesByTaskId = new Map<
+    string,
+    {
+      turnIds: Set<string>;
+      minSequence: number | null;
+      maxSequence: number | null;
+    }
+  >();
 
   for (const activity of [...input.activities].toSorted(compareActivitiesByOrder)) {
     const payload = asBackgroundRunRecord(activity.payload);
+    const commandActivityRun =
+      input.activeCommandTurnId !== null &&
+      input.activeCommandTurnId !== undefined &&
+      activity.turnId === input.activeCommandTurnId
+        ? providerCommandRunFromToolActivity(activity)
+        : null;
+    if (commandActivityRun) {
+      if (commandActivityRun.run) {
+        activeCommandRunsByKey.set(commandActivityRun.key, commandActivityRun.run);
+      } else {
+        activeCommandRunsByKey.delete(commandActivityRun.key);
+      }
+    }
+
     const taskId = asBackgroundRunString(payload?.taskId);
     if (!payload || !taskId) {
       continue;
@@ -414,6 +933,7 @@ export function deriveProviderBackgroundRuns(input: {
     if (activity.kind === "task.completed") {
       activeRunsByTaskId.delete(taskId);
       suppressedSubagentTaskIds.delete(taskId);
+      activeTaskScopesByTaskId.delete(taskId);
       continue;
     }
 
@@ -421,17 +941,50 @@ export function deriveProviderBackgroundRuns(input: {
       continue;
     }
 
+    const taskScope = activeTaskScopesByTaskId.get(taskId) ?? {
+      turnIds: new Set<string>(),
+      minSequence: null,
+      maxSequence: null,
+    };
+    if (activity.turnId !== null) {
+      taskScope.turnIds.add(String(activity.turnId));
+    }
+    if (activity.sequence !== undefined) {
+      taskScope.minSequence =
+        taskScope.minSequence === null
+          ? activity.sequence
+          : Math.min(taskScope.minSequence, activity.sequence);
+      taskScope.maxSequence =
+        taskScope.maxSequence === null
+          ? activity.sequence
+          : Math.max(taskScope.maxSequence, activity.sequence);
+    }
+    activeTaskScopesByTaskId.set(taskId, taskScope);
+
     const previous = activeRunsByTaskId.get(taskId);
+    const description = asBackgroundRunString(payload?.description);
     const detail =
       asBackgroundRunString(payload?.detail) ??
       asBackgroundRunString(payload?.summary) ??
       previous?.detail ??
       null;
     const taskType = asBackgroundRunString(payload?.taskType);
+    const rawCommand = rawCommandFromBackgroundPayload(payload);
+    const command = rawCommand
+      ? (normalizeTerminalActivityCommand(rawCommand) ?? rawCommand)
+      : (previous?.command ?? null);
+    const commandHintsFromPayload: string[] = [];
+    if (rawCommand) {
+      commandHintsFromPayload.push(rawCommand);
+    }
+    if (command && command !== rawCommand) {
+      commandHintsFromPayload.push(command);
+    }
     const urls = [...new Set([...(previous?.urls ?? []), ...extractLocalPreviewUrls(detail)])];
     const commandHints = [
       ...new Set([
         ...(previous?.commandHints ?? []),
+        ...commandHintsFromPayload,
         ...extractBackgroundCommandHints(activity.summary),
         ...extractBackgroundCommandHints(detail),
         ...collectBackgroundCommandHintsFromPayload(payload),
@@ -457,10 +1010,12 @@ export function deriveProviderBackgroundRuns(input: {
     ) {
       activeRunsByTaskId.delete(taskId);
       suppressedSubagentTaskIds.add(taskId);
+      activeTaskScopesByTaskId.delete(taskId);
       continue;
     }
 
     const label =
+      description ??
       detail ??
       (taskType ? `${humanizeTaskType(taskType) ?? taskType} task` : null) ??
       previous?.label ??
@@ -469,7 +1024,9 @@ export function deriveProviderBackgroundRuns(input: {
     activeRunsByTaskId.set(taskId, {
       id: `provider:${taskId}`,
       source: "provider",
+      providerKind: "task",
       label,
+      command,
       detail: taskType
         ? `${humanizeTaskType(taskType) ?? taskType} task`
         : (previous?.detail ?? "Provider-managed"),
@@ -480,7 +1037,51 @@ export function deriveProviderBackgroundRuns(input: {
     });
   }
 
-  const runs = [...activeRunsByTaskId.values()];
+  const activeTaskScopes = [...activeTaskScopesByTaskId.values()];
+  const commandActivityHints =
+    activeRunsByTaskId.size === 1
+      ? collectCommandActivityHints({
+          activities: input.activities,
+          scope: {
+            turnIds: new Set(activeTaskScopes.flatMap((scope) => [...scope.turnIds])),
+            minSequence:
+              activeTaskScopes
+                .map((scope) => scope.minSequence)
+                .filter((sequence): sequence is number => sequence !== null)
+                .toSorted((left, right) => left - right)[0] ?? null,
+            maxSequence:
+              activeTaskScopes
+                .map((scope) => scope.maxSequence)
+                .filter((sequence): sequence is number => sequence !== null)
+                .toSorted((left, right) => right - left)[0] ?? null,
+          },
+        })
+      : [];
+
+  let runs = [...activeRunsByTaskId.values()];
+  const singleRun = runs.length === 1 ? runs[0] : undefined;
+  if (singleRun && !singleRun.command && commandActivityHints.length > 0) {
+    runs = [
+      {
+        ...singleRun,
+        command: commandActivityHints[0] ?? null,
+        commandHints: [...new Set([...singleRun.commandHints, ...commandActivityHints])].slice(
+          0,
+          8,
+        ),
+      },
+    ];
+  }
+  const taskBackedRuns = runs;
+  const commandOnlyRuns = [...activeCommandRunsByKey.values()].filter(
+    (commandRun) =>
+      !taskBackedRuns.some(
+        (taskRun) =>
+          backgroundRunCommandsMatch(taskRun.command, commandRun.command) ||
+          taskRun.commandHints.some((hint) => backgroundRunCommandsMatch(hint, commandRun.command)),
+      ),
+  );
+  runs = [...taskBackedRuns, ...commandOnlyRuns];
   const hiddenSubagentTaskCount = Math.max(
     suppressedSubagentTaskIds.size,
     input.activeSubagentCount ?? 0,
@@ -493,10 +1094,12 @@ export function deriveProviderBackgroundRuns(input: {
     runs.push({
       id: `provider:unknown:${index + 1}`,
       source: "provider",
+      providerKind: "task",
       label:
         missingProviderCount === 1
           ? "Provider background task"
           : `Provider background task ${index + 1}`,
+      command: null,
       detail: "Provider-managed; stop handle not exposed.",
       statusLabel: "Tracked",
       urls: [],
@@ -536,7 +1139,11 @@ export function deriveProviderBackgroundRuns(input: {
     urls: [...new Set([...knownUrls, ...mentionedUrls])],
     pids: [...new Set([...knownPids, ...mentionedPids])],
     commandHints: [
-      ...new Set([...runs.flatMap((run) => run.commandHints), ...mentionedCommandHints]),
+      ...new Set([
+        ...runs.flatMap((run) => run.commandHints),
+        ...(runs.length > 0 ? commandActivityHints : []),
+        ...mentionedCommandHints,
+      ]),
     ],
   };
 

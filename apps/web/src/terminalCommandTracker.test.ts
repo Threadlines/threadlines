@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { applyTerminalInputData, createTerminalCommandInputState } from "./terminalCommandTracker";
+import {
+  applyTerminalInputData,
+  createTerminalCommandInputState,
+  normalizeTerminalActivityCommand,
+} from "./terminalCommandTracker";
 
 function applyInput(...chunks: string[]) {
   let state = createTerminalCommandInputState();
@@ -43,5 +47,18 @@ describe("terminalCommandTracker", () => {
     const result = applyInput("\u001b[A", "\r");
 
     expect(result.submittedCommand).toBeNull();
+  });
+
+  it("removes absolute executable paths from detected terminal activity commands", () => {
+    expect(
+      normalizeTerminalActivityCommand(
+        `"C:\\Users\\wilfr\\OneDrive\\Desktop\\GitHubCode\\badcode\\.codex-local\\toolchain\\node.exe" -e "let n=0"`,
+      ),
+    ).toBe(`node -e "let n=0"`);
+    expect(
+      normalizeTerminalActivityCommand(
+        `C:\\Users\\wilfr\\OneDrive\\Desktop\\GitHubCode\\badcode\\node_modules\\.bin\\vp.cmd run dev:desktop`,
+      ),
+    ).toBe("vp run dev:desktop");
   });
 });

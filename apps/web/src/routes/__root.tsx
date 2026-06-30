@@ -176,7 +176,7 @@ function DesktopTaskbarStatusSync() {
       return;
     }
 
-    const statusKey = `${input.status}:${input.description ?? ""}`;
+    const statusKey = `${input.status}:${input.description ?? ""}:${input.runningThreadCount ?? ""}`;
     if (lastStatusKeyRef.current === statusKey) {
       return;
     }
@@ -196,6 +196,7 @@ function DesktopTaskbarStatusSync() {
       completionShownRef.current = false;
       setTaskbarStatus({
         status: "working",
+        runningThreadCount,
         description:
           runningThreadCount === 1
             ? "One chat is working"
@@ -232,6 +233,7 @@ function DesktopTaskbarStatusSync() {
         completionShownRef.current = false;
         setTaskbarStatus({
           status: "working",
+          runningThreadCount,
           description:
             runningThreadCount === 1
               ? "One chat is working"

@@ -1,6 +1,7 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
 
 import * as Electron from "electron";
@@ -31,6 +32,9 @@ export interface ElectronAppShape {
   readonly setAppUserModelId: (id: string) => Effect.Effect<void>;
   readonly setDesktopName: (desktopName: string) => Effect.Effect<void>;
   readonly setDockIcon: (iconPath: string) => Effect.Effect<void>;
+  readonly setDockBadge: (badge: string) => Effect.Effect<void>;
+  readonly bounceDock: (type: "critical" | "informational") => Effect.Effect<Option.Option<number>>;
+  readonly cancelDockBounce: (id: number) => Effect.Effect<void>;
   readonly appendCommandLineSwitch: (switchName: string, value?: string) => Effect.Effect<void>;
   readonly on: <Args extends ReadonlyArray<unknown>>(
     eventName: string,
@@ -103,6 +107,16 @@ const make = ElectronApp.of({
   setDockIcon: (iconPath) =>
     Effect.sync(() => {
       Electron.app.dock?.setIcon(iconPath);
+    }),
+  setDockBadge: (badge) =>
+    Effect.sync(() => {
+      Electron.app.dock?.setBadge(badge);
+    }),
+  bounceDock: (type) =>
+    Effect.sync(() => Option.fromNullishOr(Electron.app.dock?.bounce(type) ?? null)),
+  cancelDockBounce: (id) =>
+    Effect.sync(() => {
+      Electron.app.dock?.cancelBounce(id);
     }),
   appendCommandLineSwitch: (switchName, value) =>
     Effect.sync(() => {

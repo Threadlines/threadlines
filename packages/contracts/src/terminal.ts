@@ -141,6 +141,7 @@ const TerminalActivityEvent = Schema.Struct({
   ...TerminalEventBaseSchema.fields,
   type: Schema.Literal("activity"),
   hasRunningSubprocess: Schema.Boolean,
+  command: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
 });
 
 export const TerminalEvent = Schema.Union([

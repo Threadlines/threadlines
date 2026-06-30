@@ -45,11 +45,15 @@ export function buildCommitMessagePrompt(input: CommitMessagePromptInput) {
     "- subject must be imperative, <= 72 chars, and no trailing period",
     "- subject should be specific enough to make sense in release notes",
     '- avoid vague subjects like "update code" when a changed area is clear',
-    "- body can be empty string or 1-3 short bullet points for multi-area changes",
+    "- body can be empty string for narrow changes or concise bullet points for multi-area changes",
+    "- use as many body bullets as needed to cover distinct important changes; do not pad trivial details",
+    "- before writing the final message, compare the staged files and patch for user-facing, runtime/server, shared contract, and test changes",
+    "- make sure broad multi-package diffs do not omit important secondary behavior",
     ...(wantsBranch
       ? ["- branch must be a short semantic git branch fragment for this change"]
       : []),
-    "- capture the primary user-visible or developer-visible change",
+    "- capture the primary user-visible or developer-visible change in the subject",
+    "- prefer body bullets for additional behavior users or maintainers would notice",
     ...policyInstruction(input.policy?.commitInstructions),
     "",
     `Branch: ${input.branch ?? "(detached)"}`,

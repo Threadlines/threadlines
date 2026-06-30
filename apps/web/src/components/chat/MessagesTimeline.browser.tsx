@@ -244,6 +244,67 @@ describe("MessagesTimeline", () => {
     }
   });
 
+  it("copies expanded command output without making the output panel collapse the row", async () => {
+    const outputLines = Array.from({ length: 24 }, (_, index) => `line ${index + 1}`);
+    const expectedCopiedOutput = outputLines.slice(-20).join("\n");
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    const screen = await render(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-command",
+            kind: "work",
+            createdAt: "2026-04-13T12:00:00.000Z",
+            entry: {
+              id: "work-command",
+              createdAt: "2026-04-13T12:00:00.000Z",
+              label: "Ran command",
+              tone: "tool",
+              itemType: "command_execution",
+              command: "Get-Process",
+              rawCommand: "powershell -NoProfile -Command Get-Process",
+              executionState: "completed",
+              outputPreview: outputLines.join("\n"),
+            },
+          },
+        ]}
+      />,
+    );
+
+    try {
+      await page.getByRole("button", { name: "Show command output" }).click();
+
+      await expect.element(page.getByRole("button", { name: "Hide command output" })).toBeVisible();
+      await expect.element(page.getByText("line 24")).toBeVisible();
+
+      const outputPanel = document.querySelector<HTMLElement>('[data-command-output="true"]');
+      expect(outputPanel).not.toBeNull();
+      outputPanel!.click();
+
+      await expect.element(page.getByRole("button", { name: "Hide command output" })).toBeVisible();
+      await expect.element(page.getByText("line 24")).toBeVisible();
+
+      await page.getByRole("button", { name: "Copy command output" }).click();
+
+      await vi.waitFor(() => {
+        expect(writeText).toHaveBeenCalledWith(expectedCopiedOutput);
+      });
+
+      await page.getByRole("button", { name: "Hide command output" }).click();
+
+      await expect.element(page.getByRole("button", { name: "Show command output" })).toBeVisible();
+      await expect.element(page.getByText("line 24")).not.toBeInTheDocument();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("snaps to the bottom when timeline rows appear after an initially empty render", async () => {
     const requestAnimationFrameSpy = vi
       .spyOn(window, "requestAnimationFrame")

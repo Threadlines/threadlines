@@ -1685,24 +1685,21 @@ function LiveMessageMeta({
  *  State resets on unmount which is fine — work groups start collapsed. */
 type SpineNodeKind = "done" | "live" | "warning" | "error" | "group";
 
+const TONE_SPINE_DOT_CLASS_NAME = {
+  warning: "size-[6px] rounded-full bg-warning",
+  error: "size-[6px] rounded-full bg-destructive",
+} as const satisfies Record<"warning" | "error", string>;
+
 /** The glyph that sits on the activity spine for one row. The accent halo is
- *  reserved for the single live terminus; settled steps are quiet solid dots, a
- *  collapsed group of steps is a hollow ring (same family, reads as "openable"),
- *  and warnings and errors escalate to an icon so they still catch the eye. */
+ *  reserved for the single live terminus; settled steps are quiet solid dots,
+ *  warnings/errors are compact tone dots, and a collapsed group of steps is a
+ *  hollow ring (same family, reads as "openable"). */
 function SpineNode({ kind }: { kind: SpineNodeKind }) {
   if (kind === "live") {
     return <LiveNode className="size-1.5 [--thread-halo-delay:0.2s]" />;
   }
-  if (kind === "error") {
-    return <CircleAlertIcon aria-hidden="true" className="size-3 text-foreground/85" />;
-  }
-  if (kind === "warning") {
-    return (
-      <span
-        aria-hidden="true"
-        className="size-[7px] rounded-full border border-warning/65 bg-warning/30 shadow-[0_0_0_2px_color-mix(in_oklab,var(--warning)_16%,transparent)]"
-      />
-    );
+  if (kind === "warning" || kind === "error") {
+    return <span aria-hidden="true" className={TONE_SPINE_DOT_CLASS_NAME[kind]} />;
   }
   if (kind === "group") {
     return (
@@ -4121,6 +4118,28 @@ const McpAuthReconnectCard = memo(function McpAuthReconnectCard({
   );
 });
 
+const CommandOutputCopyButton = memo(function CommandOutputCopyButton({ text }: { text: string }) {
+  const { copyToClipboard, isCopied } = useCopyToClipboard<void>({ timeout: 1000 });
+
+  return (
+    <Button
+      type="button"
+      size="icon-xs"
+      variant="ghost"
+      aria-label="Copy command output"
+      tooltip={isCopied ? "Copied" : "Copy command output"}
+      className="absolute top-1.5 right-1.5 size-5 rounded-md border border-border/45 bg-background/85 text-muted-foreground/70 opacity-80 shadow-sm hover:bg-accent/75 hover:text-foreground hover:opacity-100 focus-visible:opacity-100 group-hover/command-output:opacity-100"
+      disabled={isCopied || text.length === 0}
+      onClick={(event) => {
+        event.stopPropagation();
+        copyToClipboard(text);
+      }}
+    >
+      {isCopied ? <CheckIcon className="size-3 text-success" /> : <CopyIcon className="size-3" />}
+    </Button>
+  );
+});
+
 const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   isLiveActivity: boolean;
   workEntry: TimelineWorkEntry;
@@ -4188,6 +4207,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   // place on click; failures additionally surface their first error line.
   const outputPreview = isCommandWorkEntry(workEntry) ? workEntry.outputPreview : undefined;
   const hasExpandableOutput = Boolean(outputPreview) && !isLiveActivity;
+  const commandOutputText = hasExpandableOutput ? commandOutputTail(outputPreview ?? "") : "";
   const failureLine = isOutputExpanded ? null : commandFailureLine(workEntry);
   const showExpandedDetails = !isLiveActivity;
   // On the spine the gutter owns the leading node, so the row drops its own
@@ -4215,80 +4235,79 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     );
   }
 
-  return (
-    <div
-      className={cn("rounded-lg px-1 py-1", hasExpandableOutput && "cursor-pointer")}
-      {...(hasExpandableOutput
-        ? {
-            role: "button" as const,
-            tabIndex: 0,
-            "aria-expanded": isOutputExpanded,
-            "aria-label": isOutputExpanded ? "Hide command output" : "Show command output",
-            onClick: () => setIsOutputExpanded((value) => !value),
-            onKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => {
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                setIsOutputExpanded((value) => !value);
-              }
-            },
-          }
-        : {})}
-    >
-      <div className="flex items-center gap-2 transition-[opacity,translate] duration-200">
-        {inSpine ? null : (
-          <span
-            className={cn("flex size-5 shrink-0 items-center justify-center", iconConfig.className)}
-          >
-            <EntryIcon className="size-3" />
-          </span>
-        )}
-        <div className="min-w-0 flex-1 overflow-hidden">
-          {rawCommand ? (
-            <div className="max-w-full">
+  const summaryContent = (
+    <>
+      {inSpine ? null : (
+        <span
+          className={cn("flex size-5 shrink-0 items-center justify-center", iconConfig.className)}
+        >
+          <EntryIcon className="size-3" />
+        </span>
+      )}
+      <div className="min-w-0 flex-1 overflow-hidden">
+        {rawCommand || hasExpandableOutput ? (
+          <div className="max-w-full">
+            <WorkEntrySummaryLine
+              className={rawCommand ? "text-xs" : "text-[11px]"}
+              heading={heading}
+              isRunningTool={isRunningTool}
+              inSpine={inSpine}
+              preview={preview}
+              rawCommand={rawCommand}
+              runningStartedAt={isRunningTool ? workEntry.createdAt : null}
+              tone={workEntry.tone}
+              visibleDiffStat={visibleDiffStat}
+            />
+          </div>
+        ) : (
+          <Tooltip>
+            <TooltipTrigger className="block min-w-0 w-full text-left" aria-label={displayText}>
               <WorkEntrySummaryLine
-                className="text-xs"
+                className="text-[11px]"
                 heading={heading}
                 isRunningTool={isRunningTool}
                 inSpine={inSpine}
                 preview={preview}
-                rawCommand={rawCommand}
+                rawCommand={null}
                 runningStartedAt={isRunningTool ? workEntry.createdAt : null}
                 tone={workEntry.tone}
                 visibleDiffStat={visibleDiffStat}
               />
-            </div>
-          ) : (
-            <Tooltip>
-              <TooltipTrigger className="block min-w-0 w-full text-left" aria-label={displayText}>
-                <WorkEntrySummaryLine
-                  className="text-[11px]"
-                  heading={heading}
-                  isRunningTool={isRunningTool}
-                  inSpine={inSpine}
-                  preview={preview}
-                  rawCommand={null}
-                  runningStartedAt={isRunningTool ? workEntry.createdAt : null}
-                  tone={workEntry.tone}
-                  visibleDiffStat={visibleDiffStat}
-                />
-              </TooltipTrigger>
-              <TooltipPopup className="max-w-[min(720px,calc(100vw-2rem))]">
-                <p className="whitespace-pre-wrap wrap-break-word text-xs leading-5">
-                  {displayText}
-                </p>
-              </TooltipPopup>
-            </Tooltip>
-          )}
-        </div>
-        {hasExpandableOutput ? (
-          <ChevronDownIcon
-            className={cn(
-              "size-3 shrink-0 text-muted-foreground/45 transition-transform duration-150",
-              !isOutputExpanded && "-rotate-90",
-            )}
-          />
-        ) : null}
+            </TooltipTrigger>
+            <TooltipPopup className="max-w-[min(720px,calc(100vw-2rem))]">
+              <p className="whitespace-pre-wrap wrap-break-word text-xs leading-5">{displayText}</p>
+            </TooltipPopup>
+          </Tooltip>
+        )}
       </div>
+      {hasExpandableOutput ? (
+        <ChevronDownIcon
+          className={cn(
+            "size-3 shrink-0 text-muted-foreground/45 transition-transform duration-150",
+            !isOutputExpanded && "-rotate-90",
+          )}
+        />
+      ) : null}
+    </>
+  );
+
+  return (
+    <div className="rounded-lg px-1 py-1">
+      {hasExpandableOutput ? (
+        <button
+          type="button"
+          className="flex w-full cursor-pointer items-center gap-2 rounded-md text-left transition-[opacity,translate] duration-200 outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+          aria-expanded={isOutputExpanded}
+          aria-label={isOutputExpanded ? "Hide command output" : "Show command output"}
+          onClick={() => setIsOutputExpanded((value) => !value)}
+        >
+          {summaryContent}
+        </button>
+      ) : (
+        <div className="flex items-center gap-2 transition-[opacity,translate] duration-200">
+          {summaryContent}
+        </div>
+      )}
       {failureLine ? (
         <p
           className={cn(
@@ -4319,9 +4338,12 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       ) : null}
       {hasExpandableOutput && isOutputExpanded ? (
         <div className={cn("mt-1", detailIndent)} data-command-output="true">
-          <pre className="max-h-52 overflow-y-auto rounded-md border border-border/45 bg-background/70 px-2 py-1.5 font-mono text-[11px] leading-4 whitespace-pre-wrap wrap-break-word text-muted-foreground/80">
-            {commandOutputTail(outputPreview ?? "")}
-          </pre>
+          <div className="group/command-output relative">
+            <pre className="max-h-52 overflow-y-auto rounded-md border border-border/45 bg-background/70 px-2 py-1.5 pr-8 font-mono text-[11px] leading-4 whitespace-pre-wrap wrap-break-word text-muted-foreground/80">
+              {commandOutputText}
+            </pre>
+            <CommandOutputCopyButton text={commandOutputText} />
+          </div>
           {workEntry.exitCode !== undefined ? (
             <p className="mt-0.5 text-[10px] tracking-wide text-muted-foreground/55">
               exit {workEntry.exitCode}

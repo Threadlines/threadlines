@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import type { SubagentProgressState } from "../../session-logic";
 import {
+  backgroundRunSourceLabel,
   deriveSubagentDisplayDetails,
   deriveThreadActivityTriggerState,
+  type ThreadBackgroundRunItem,
   type ThreadTaskProgressState,
 } from "./ThreadActivityPopover";
 
@@ -235,5 +237,63 @@ describe("deriveThreadActivityTriggerState", () => {
     expect(state?.summary).toContain("Wire the Activity popover");
     expect(state?.summary).toContain("2 subagents running");
     expect(state?.summary).toContain("2 background runs");
+  });
+});
+
+describe("backgroundRunSourceLabel", () => {
+  const baseRun: ThreadBackgroundRunItem = {
+    id: "terminal:default",
+    source: "terminal",
+    terminalId: "default",
+    pid: null,
+    port: null,
+    elapsed: null,
+    canStop: true,
+    label: "vp run dev:desktop",
+    detail: "Terminal 1",
+    cwd: "C:\\repo",
+    statusLabel: "Running",
+    urls: [],
+  };
+
+  it("distinguishes active terminals from agent-owned background runs", () => {
+    expect(backgroundRunSourceLabel({ ...baseRun, terminalVisible: true })).toBe("Active terminal");
+    expect(backgroundRunSourceLabel({ ...baseRun, terminalVisible: false })).toBe("Terminal");
+    expect(
+      backgroundRunSourceLabel({
+        ...baseRun,
+        id: "detected-localhost:5953:4242",
+        source: "detected",
+        terminalId: null,
+        port: 5953,
+      }),
+    ).toBe("Detected agent preview");
+    expect(
+      backgroundRunSourceLabel({
+        ...baseRun,
+        id: "detected-process:4242",
+        source: "detected",
+        terminalId: null,
+        port: null,
+      }),
+    ).toBe("Detected agent process");
+    expect(
+      backgroundRunSourceLabel({
+        ...baseRun,
+        id: "provider:task-1",
+        source: "provider",
+        providerKind: "task",
+        terminalId: null,
+      }),
+    ).toBe("Agent task");
+    expect(
+      backgroundRunSourceLabel({
+        ...baseRun,
+        id: "provider:command-1",
+        source: "provider",
+        providerKind: "command",
+        terminalId: null,
+      }),
+    ).toBe("Agent command");
   });
 });

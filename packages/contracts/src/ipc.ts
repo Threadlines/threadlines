@@ -290,11 +290,13 @@ export const DesktopUpdateCheckResultSchema = Schema.Struct({
 export interface DesktopTaskbarStatusInput {
   status: DesktopTaskbarStatus;
   description?: string;
+  runningThreadCount?: number;
 }
 
 export const DesktopTaskbarStatusInputSchema = Schema.Struct({
   status: DesktopTaskbarStatusSchema,
   description: Schema.optionalKey(Schema.String),
+  runningThreadCount: Schema.optionalKey(Schema.Number),
 });
 
 export const DesktopCaptureScreenshotInputSchema = Schema.Struct({

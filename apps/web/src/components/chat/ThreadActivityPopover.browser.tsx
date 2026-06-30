@@ -45,7 +45,7 @@ async function renderOpenPopover(activeStep: string) {
         taskProgress={buildTaskProgress(activeStep)}
         subagentProgress={null}
         backgroundRuns={[]}
-        onOpenBackgroundRunTerminal={vi.fn()}
+        onToggleBackgroundRunTerminal={vi.fn()}
         onStopBackgroundRun={vi.fn()}
       />
     </main>,
@@ -109,6 +109,55 @@ describe("ThreadActivityPopover", () => {
             ?.getAttribute("aria-expanded"),
         ).toBe("true");
       });
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("labels the terminal run button as close when the terminal is already visible", async () => {
+    const onToggleBackgroundRunTerminal = vi.fn();
+    const mounted = await render(
+      <main
+        style={{
+          boxSizing: "border-box",
+          display: "flex",
+          justifyContent: "flex-end",
+          minHeight: 360,
+          padding: 24,
+          width: 960,
+        }}
+      >
+        <ThreadActivityPopover
+          taskProgress={null}
+          subagentProgress={null}
+          backgroundRuns={[
+            {
+              id: "terminal:default",
+              source: "terminal",
+              terminalId: "default",
+              terminalVisible: true,
+              pid: null,
+              port: null,
+              elapsed: null,
+              canStop: true,
+              label: 'node -e "let n=0"',
+              command: 'node -e "let n=0"',
+              detail: "Terminal 1 - C:\\repo",
+              cwd: "C:\\repo",
+              statusLabel: "Running",
+              urls: [],
+            },
+          ]}
+          onToggleBackgroundRunTerminal={onToggleBackgroundRunTerminal}
+          onStopBackgroundRun={vi.fn()}
+        />
+      </main>,
+    );
+
+    try {
+      await page.getByRole("button", { name: "1 background run" }).click();
+      await page.getByRole("button", { name: 'Close node -e "let n=0"' }).click();
+      expect(onToggleBackgroundRunTerminal).toHaveBeenCalledWith("default");
     } finally {
       await mounted.unmount();
     }

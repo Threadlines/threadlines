@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   migratePersistedTerminalStateStoreState,
+  selectTerminalActivityCommand,
   selectTerminalEventEntries,
   selectTerminalSubmittedCommand,
   selectThreadTerminalState,
@@ -66,6 +67,7 @@ describe("terminalStateStore actions", () => {
       terminalLaunchContextByThreadKey: {},
       terminalEventEntriesByKey: {},
       terminalSubmittedCommandByKey: {},
+      terminalActivityCommandByKey: {},
       nextTerminalEventId: 1,
     });
   });
@@ -113,6 +115,38 @@ describe("terminalStateStore actions", () => {
     expect(
       selectTerminalSubmittedCommand(
         useTerminalStateStore.getState().terminalSubmittedCommandByKey,
+        THREAD_REF,
+        "default",
+      ),
+    ).toBeNull();
+  });
+
+  it("stores and clears terminal activity command fallbacks from activity events", () => {
+    const store = useTerminalStateStore.getState();
+    store.applyTerminalEvent(
+      THREAD_REF,
+      makeTerminalEvent("activity", {
+        hasRunningSubprocess: true,
+        command: "node scripts/dev-runner.ts dev:desktop",
+      }),
+    );
+
+    expect(
+      selectTerminalActivityCommand(
+        useTerminalStateStore.getState().terminalActivityCommandByKey,
+        THREAD_REF,
+        "default",
+      ),
+    ).toBe("node scripts/dev-runner.ts dev:desktop");
+
+    store.applyTerminalEvent(
+      THREAD_REF,
+      makeTerminalEvent("activity", { hasRunningSubprocess: false }),
+    );
+
+    expect(
+      selectTerminalActivityCommand(
+        useTerminalStateStore.getState().terminalActivityCommandByKey,
         THREAD_REF,
         "default",
       ),

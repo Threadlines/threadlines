@@ -1,9 +1,12 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import { beforeEach, vi } from "vitest";
 
 const {
   appendSwitchMock,
+  bounceDockMock,
+  cancelDockBounceMock,
   exitMock,
   getAppPathMock,
   getVersionMock,
@@ -14,12 +17,15 @@ const {
   setAboutPanelOptionsMock,
   setAppUserModelIdMock,
   setDesktopNameMock,
+  setDockBadgeMock,
   setDockIconMock,
   setNameMock,
   setPathMock,
   whenReadyMock,
 } = vi.hoisted(() => ({
   appendSwitchMock: vi.fn(),
+  bounceDockMock: vi.fn(() => 7),
+  cancelDockBounceMock: vi.fn(),
   exitMock: vi.fn(),
   getAppPathMock: vi.fn(() => "/app"),
   getVersionMock: vi.fn(() => "1.2.3"),
@@ -30,6 +36,7 @@ const {
   setAboutPanelOptionsMock: vi.fn(),
   setAppUserModelIdMock: vi.fn(),
   setDesktopNameMock: vi.fn(),
+  setDockBadgeMock: vi.fn(),
   setDockIconMock: vi.fn(),
   setNameMock: vi.fn(),
   setPathMock: vi.fn(),
@@ -42,6 +49,9 @@ vi.mock("electron", () => ({
       appendSwitch: appendSwitchMock,
     },
     dock: {
+      bounce: bounceDockMock,
+      cancelBounce: cancelDockBounceMock,
+      setBadge: setDockBadgeMock,
       setIcon: setDockIconMock,
     },
     getAppPath: getAppPathMock,
@@ -68,11 +78,14 @@ import * as ElectronApp from "./ElectronApp.ts";
 describe("ElectronApp", () => {
   beforeEach(() => {
     appendSwitchMock.mockClear();
+    bounceDockMock.mockClear();
+    cancelDockBounceMock.mockClear();
     exitMock.mockClear();
     onMock.mockClear();
     quitMock.mockClear();
     relaunchMock.mockClear();
     removeListenerMock.mockClear();
+    setDockBadgeMock.mockClear();
     setPathMock.mockClear();
   });
 
@@ -104,6 +117,24 @@ describe("ElectronApp", () => {
 
       assert.deepEqual(onMock.mock.calls, [["activate", listener]]);
       assert.deepEqual(removeListenerMock.mock.calls, [["activate", listener]]);
+    }).pipe(Effect.provide(ElectronApp.layer)),
+  );
+
+  it.effect("wraps macOS Dock status APIs", () =>
+    Effect.gen(function* () {
+      const electronApp = yield* ElectronApp.ElectronApp;
+
+      yield* electronApp.setDockBadge("1");
+      const bounceId = yield* electronApp.bounceDock("informational");
+      yield* electronApp.cancelDockBounce(7);
+
+      assert.deepEqual(setDockBadgeMock.mock.calls, [["1"]]);
+      assert.deepEqual(bounceDockMock.mock.calls, [["informational"]]);
+      assert.deepEqual(cancelDockBounceMock.mock.calls, [[7]]);
+      assert.isTrue(Option.isSome(bounceId));
+      if (Option.isSome(bounceId)) {
+        assert.equal(bounceId.value, 7);
+      }
     }).pipe(Effect.provide(ElectronApp.layer)),
   );
 });

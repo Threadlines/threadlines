@@ -58,6 +58,9 @@ const makeElectronAppLayer = (calls: ElectronAppCalls) =>
       Effect.sync(() => {
         calls.setDockIcon.push(iconPath);
       }),
+    setDockBadge: () => Effect.void,
+    bounceDock: () => Effect.succeed(Option.none()),
+    cancelDockBounce: () => Effect.void,
     appendCommandLineSwitch: () => Effect.void,
     on: () => Effect.void,
   } satisfies ElectronApp.ElectronAppShape);

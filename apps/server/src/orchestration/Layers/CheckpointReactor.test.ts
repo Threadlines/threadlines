@@ -620,7 +620,7 @@ describe("CheckpointReactor", () => {
     expect(thread.activities.some((activity) => activity.summary === "Changed files")).toBe(false);
   });
 
-  it("uses provider-reported changed files for shared-checkout checkpoint summaries", async () => {
+  it("uses provider-reported changed files for shared-checkout checkpoint summaries through completion", async () => {
     const harness = await createHarness({
       seedFilesystemCheckpoints: false,
       includeConcurrentSession: true,
@@ -686,10 +686,34 @@ describe("CheckpointReactor", () => {
         ? (fileActivity.payload as { data?: { files?: unknown } })
         : undefined;
     expect(payload?.data?.files).toEqual(providerFiles);
+
+    harness.provider.emit({
+      type: "turn.completed",
+      eventId: EventId.make("evt-turn-completed-shared-provider-summary"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId,
+      turnId,
+      payload: { state: "completed" },
+    });
+    await harness.drain();
+
+    const completedThread = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.latestTurn?.turnId === "turn-shared-provider-summary" &&
+        entry.checkpoints.length === 1 &&
+        entry.checkpoints[0]?.status === "ready",
+    );
+
+    expect(completedThread.checkpoints[0]?.files).toEqual(providerFiles);
   });
 
   it("does not replace an empty provider diff summary with shared-checkout Git changes", async () => {
-    const harness = await createHarness({ seedFilesystemCheckpoints: false });
+    const harness = await createHarness({
+      seedFilesystemCheckpoints: false,
+      includeConcurrentSession: true,
+    });
     const createdAt = "2026-01-01T00:00:00.000Z";
     const threadId = ThreadId.make("thread-1");
     const turnId = asTurnId("turn-empty-provider-summary");
@@ -888,6 +912,106 @@ describe("CheckpointReactor", () => {
         gitShowFileAtRef(harness.cwd, refreshedRef, "README.md") === "final\n",
     );
     expect(gitShowFileAtRef(harness.cwd, refreshedRef, "README.md")).toBe("final\n");
+  });
+
+  it("recomputes final changed-file summaries from the refreshed checkpoint", async () => {
+    const harness = await createHarness({ seedFilesystemCheckpoints: false });
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const turnId = asTurnId("turn-refresh-summary");
+    const providerFiles: OrchestrationCheckpointFile[] = [
+      {
+        path: "packages/contracts/src/ipc.ts",
+        kind: "modified",
+        additions: 2,
+        deletions: 0,
+      },
+    ];
+
+    harness.provider.emit({
+      type: "turn.started",
+      eventId: EventId.make("evt-turn-started-refresh-summary"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId,
+      turnId,
+    });
+    await waitForGitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 0));
+    await waitForGitRefExists(harness.cwd, checkpointPreTurnRefForThreadTurn(threadId, turnId));
+
+    const ipcPath = path.join(harness.cwd, "packages", "contracts", "src", "ipc.ts");
+    fs.mkdirSync(path.dirname(ipcPath), { recursive: true });
+    fs.writeFileSync(ipcPath, "export const one = 1;\nexport const two = 2;\n", "utf8");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.diff.complete",
+        commandId: CommandId.make("cmd-partial-provider-summary-placeholder"),
+        threadId,
+        turnId,
+        completedAt: createdAt,
+        checkpointRef: asCheckpointRef("provider-diff:evt-partial-provider-summary"),
+        status: "missing",
+        files: providerFiles,
+        checkpointTurnCount: 1,
+        createdAt,
+      }),
+    );
+
+    await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.latestTurn?.turnId === "turn-refresh-summary" &&
+        entry.checkpoints.length === 1 &&
+        entry.checkpoints[0]?.status === "ready",
+    );
+
+    fs.writeFileSync(path.join(harness.cwd, "README.md"), "final\n", "utf8");
+    const desktopMainPath = path.join(harness.cwd, "apps", "desktop", "src", "main.ts");
+    fs.mkdirSync(path.dirname(desktopMainPath), { recursive: true });
+    fs.writeFileSync(desktopMainPath, "export const main = true;\n", "utf8");
+
+    harness.provider.emit({
+      type: "turn.completed",
+      eventId: EventId.make("evt-turn-completed-refresh-summary"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId,
+      turnId,
+      payload: { state: "completed" },
+    });
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.latestTurn?.turnId === "turn-refresh-summary" &&
+        entry.checkpoints.length === 1 &&
+        entry.checkpoints[0]?.status === "ready" &&
+        (entry.checkpoints[0]?.files?.length ?? 0) > 1,
+    );
+
+    expect(thread.checkpoints[0]?.files).toEqual(
+      expect.arrayContaining([
+        {
+          path: "README.md",
+          kind: "modified",
+          additions: 1,
+          deletions: 1,
+        },
+        {
+          path: "apps/desktop/src/main.ts",
+          kind: "modified",
+          additions: 1,
+          deletions: 0,
+        },
+        {
+          path: "packages/contracts/src/ipc.ts",
+          kind: "modified",
+          additions: 2,
+          deletions: 0,
+        },
+      ]),
+    );
+    expect(thread.checkpoints[0]?.files).toHaveLength(3);
   });
 
   it("refreshes local git status state on turn completion using the session cwd", async () => {

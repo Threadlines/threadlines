@@ -50,13 +50,17 @@ export interface ThreadTaskProgressState {
 export interface ThreadBackgroundRunItem {
   id: string;
   source: "terminal" | "provider" | "detected";
+  providerKind?: "task" | "command" | undefined;
   label: string;
+  command?: string | null;
   detail: string | null;
   cwd: string | null;
   statusLabel: string;
   urls: ReadonlyArray<string>;
   pids?: ReadonlyArray<number> | undefined;
+  commandHints?: ReadonlyArray<string> | undefined;
   terminalId: string | null;
+  terminalVisible?: boolean | undefined;
   pid: number | null;
   port: number | null;
   elapsed: string | null;
@@ -67,7 +71,7 @@ interface ThreadActivityPopoverProps {
   taskProgress: ThreadTaskProgressState | null;
   subagentProgress: SubagentProgressState | null;
   backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
-  onOpenBackgroundRunTerminal: (terminalId: string) => void;
+  onToggleBackgroundRunTerminal: (terminalId: string) => void;
   onStopBackgroundRun: (run: ThreadBackgroundRunItem) => void;
 }
 
@@ -936,6 +940,9 @@ function backgroundRunFallbackDetail(run: ThreadBackgroundRunItem): string {
 }
 
 function backgroundRunCommandText(run: ThreadBackgroundRunItem): string {
+  if (run.command && run.command.trim().length > 0) {
+    return run.command;
+  }
   const detail = run.detail ?? run.cwd ?? backgroundRunFallbackDetail(run);
   const detectedCommandSeparator = " - ";
   if (run.source === "detected" && detail.includes(detectedCommandSeparator)) {
@@ -944,8 +951,23 @@ function backgroundRunCommandText(run: ThreadBackgroundRunItem): string {
   return detail;
 }
 
+export function backgroundRunSourceLabel(run: ThreadBackgroundRunItem): string {
+  if (run.source === "terminal") {
+    return run.terminalVisible ? "Active terminal" : "Terminal";
+  }
+  if (run.source === "detected") {
+    return run.port === null ? "Detected agent process" : "Detected agent preview";
+  }
+  return run.providerKind === "command" ? "Agent command" : "Agent task";
+}
+
 function isInformativeBackgroundRunCommand(commandText: string): boolean {
-  return commandText.includes(" ") || commandText.length > 18 || commandText.includes("/");
+  return (
+    commandText.includes(" ") ||
+    commandText.length > 18 ||
+    commandText.includes("/") ||
+    commandText.includes("\\")
+  );
 }
 
 function backgroundRunMetaItems(run: ThreadBackgroundRunItem): string[] {
@@ -958,11 +980,11 @@ function backgroundRunMetaItems(run: ThreadBackgroundRunItem): string[] {
 
 function BackgroundRunsSection({
   backgroundRuns,
-  onOpenBackgroundRunTerminal,
+  onToggleBackgroundRunTerminal,
   onStopBackgroundRun,
 }: {
   backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
-  onOpenBackgroundRunTerminal: (terminalId: string) => void;
+  onToggleBackgroundRunTerminal: (terminalId: string) => void;
   onStopBackgroundRun: (run: ThreadBackgroundRunItem) => void;
 }) {
   if (backgroundRuns.length === 0) {
@@ -993,7 +1015,13 @@ function BackgroundRunsSection({
           const extraUrlCount = Math.max(0, run.urls.length - 1);
 
           return (
-            <div key={run.id} className="rounded-md bg-primary/5 px-2.5 py-2">
+            <div
+              key={run.id}
+              className={cn(
+                "rounded-md bg-primary/5 px-2.5 py-2",
+                run.source === "terminal" && run.terminalVisible && "ring-1 ring-primary/25",
+              )}
+            >
               <div className="flex min-w-0 items-start gap-2">
                 <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary-readable ring-1 ring-primary/15">
                   <LoaderIcon className="size-3 animate-spin" aria-hidden="true" />
@@ -1009,14 +1037,20 @@ function BackgroundRunsSection({
                         {run.statusLabel}
                       </span>
                       {run.terminalId ? (
-                        <TooltipWrapper tooltip={`Open ${run.label}`}>
+                        <TooltipWrapper
+                          tooltip={`${run.terminalVisible ? "Close" : "Open"} ${run.label}`}
+                        >
                           <button
                             type="button"
-                            className="inline-flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-background/70 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring/50"
-                            aria-label={`Open ${run.label}`}
+                            className={cn(
+                              "inline-flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-background/70 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring/50",
+                              run.terminalVisible && "bg-background/70 text-foreground",
+                            )}
+                            aria-label={`${run.terminalVisible ? "Close" : "Open"} ${run.label}`}
+                            aria-pressed={run.terminalVisible}
                             onClick={() => {
                               if (run.terminalId) {
-                                onOpenBackgroundRunTerminal(run.terminalId);
+                                onToggleBackgroundRunTerminal(run.terminalId);
                               }
                             }}
                           >
@@ -1044,11 +1078,7 @@ function BackgroundRunsSection({
 
                   <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1">
                     <span className="text-[10px] leading-none text-muted-foreground/55">
-                      {run.source === "detected"
-                        ? "Local preview"
-                        : run.source === "terminal"
-                          ? "Terminal"
-                          : "Provider task"}
+                      {backgroundRunSourceLabel(run)}
                     </span>
                     {metaItems.map((item) => (
                       <span
@@ -1105,7 +1135,7 @@ export const ThreadActivityPopover = memo(function ThreadActivityPopover({
   taskProgress,
   subagentProgress,
   backgroundRuns,
-  onOpenBackgroundRunTerminal,
+  onToggleBackgroundRunTerminal,
   onStopBackgroundRun,
 }: ThreadActivityPopoverProps) {
   const [popoverOpen, setPopoverOpen] = useState(false);
@@ -1162,7 +1192,7 @@ export const ThreadActivityPopover = memo(function ThreadActivityPopover({
             {subagentProgress ? <SubagentSection state={subagentProgress} /> : null}
             <BackgroundRunsSection
               backgroundRuns={backgroundRuns}
-              onOpenBackgroundRunTerminal={onOpenBackgroundRunTerminal}
+              onToggleBackgroundRunTerminal={onToggleBackgroundRunTerminal}
               onStopBackgroundRun={onStopBackgroundRun}
             />
           </div>

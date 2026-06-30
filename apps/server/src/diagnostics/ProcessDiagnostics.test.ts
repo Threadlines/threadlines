@@ -355,6 +355,25 @@ describe("ProcessDiagnostics", () => {
     ]);
   });
 
+  it("normalizes detected background run commands before display", () => {
+    const result = ProcessDiagnostics.resolveBackgroundRunsFromListeningPorts({
+      urls: ["http://localhost:5953"],
+      portRows: [
+        {
+          port: 5953,
+          pid: 4242,
+          command:
+            '"C:\\Users\\Will\\AppData\\Local\\Programs\\node.exe" scripts/dev-runner.ts dev',
+        },
+      ],
+    });
+
+    expect(result.runs[0]).toMatchObject({
+      command: "node scripts/dev-runner.ts dev",
+      detail: "PID 4242 on localhost:5953 - node scripts/dev-runner.ts dev",
+    });
+  });
+
   it("uses command hints to resolve descendant-owned preview ports", () => {
     const result = ProcessDiagnostics.resolveBackgroundRunsFromListeningPorts({
       urls: ["http://localhost:6013", "http://localhost:14053"],
@@ -423,6 +442,107 @@ describe("ProcessDiagnostics", () => {
     expect(result.runs.map((run) => run.elapsed)).toEqual(["02:13", "00:37"]);
   });
 
+  it("uses structured command hints to resolve agent-owned background processes", () => {
+    const result = ProcessDiagnostics.resolveBackgroundRunsFromListeningPorts({
+      urls: [],
+      commandHints: ['"C:\\Tools\\node.exe" -e "setInterval(() => console.log(1), 1000)"'],
+      processRows: [
+        {
+          pid: 4242,
+          ppid: 1,
+          pgid: null,
+          status: "Live",
+          cpuPercent: 0,
+          rssBytes: 100,
+          elapsed: "00:11",
+          command: '"C:\\Tools\\node.exe" -e "setInterval(() => console.log(1), 1000)"',
+        },
+      ],
+      portRows: [
+        {
+          port: 5953,
+          pid: 4242,
+          command: "node",
+        },
+      ],
+    });
+
+    expect(result.runs).toEqual([
+      {
+        id: "detected-localhost:5953:4242",
+        url: "http://localhost:5953",
+        urls: [],
+        port: 5953,
+        pid: 4242,
+        command: 'node -e "setInterval(() => console.log(1), 1000)"',
+        detail: 'PID 4242 on localhost:5953 - node -e "setInterval(() => console.log(1), 1000)"',
+        elapsed: "00:11",
+        statusLabel: "Detected",
+        canStop: true,
+      },
+    ]);
+  });
+
+  it("uses command hints to resolve non-listening agent-owned background processes", () => {
+    const command =
+      "node -e \"let n=0; setInterval(() => console.log('background test', ++n), 1000)\"";
+    const processCommand =
+      '"C:\\Program Files\\nodejs\\node.exe" -e "let n=0; setInterval(() => console.log(\'background test\', ++n), 1000)"';
+    const result = ProcessDiagnostics.resolveBackgroundRunsFromListeningPorts({
+      urls: [],
+      commandHints: [command],
+      processRows: [
+        {
+          pid: 4100,
+          ppid: 1,
+          pgid: null,
+          status: "Live",
+          cpuPercent: 0,
+          rssBytes: 100,
+          elapsed: "00:20",
+          command:
+            'bash -c "source /c/Users/wilfr/.claude/shell-snapshots/snapshot.sh; node -e \\"let n=0; setInterval(() => console.log(\'background test\', ++n), 1000)\\""',
+        },
+        {
+          pid: 4242,
+          ppid: 4100,
+          pgid: null,
+          status: "Live",
+          cpuPercent: 0,
+          rssBytes: 100,
+          elapsed: "00:16",
+          command: processCommand,
+        },
+        {
+          pid: 4300,
+          ppid: 4100,
+          pgid: null,
+          status: "Live",
+          cpuPercent: 0,
+          rssBytes: 100,
+          elapsed: "00:16",
+          command: "conhost 0x4",
+        },
+      ],
+      portRows: [],
+    });
+
+    expect(result.runs).toEqual([
+      {
+        id: "detected-process:4242",
+        url: "process:4242",
+        urls: [],
+        port: null,
+        pid: 4242,
+        command,
+        detail: `PID 4242 - ${command}`,
+        elapsed: "00:16",
+        statusLabel: "Detected",
+        canStop: true,
+      },
+    ]);
+  });
+
   it("resolves explicitly mentioned live PIDs without requiring a listening port", () => {
     const result = ProcessDiagnostics.resolveBackgroundRunsFromListeningPorts({
       urls: [],
@@ -451,9 +571,9 @@ describe("ProcessDiagnostics", () => {
         port: null,
         pid: 4242,
         command:
-          "powershell.exe -Command $marker = 'threadlines-background-runs-test'; while ($true) { Start-Sleep -Seconds 5 }",
+          "powershell -Command $marker = 'threadlines-background-runs-test'; while ($true) { Start-Sleep -Seconds 5 }",
         detail:
-          "PID 4242 - powershell.exe -Command $marker = 'threadlines-background-runs-test'; while ($true) { Start-Sleep -Seconds 5 }",
+          "PID 4242 - powershell -Command $marker = 'threadlines-background-runs-test'; while ($true) { Start-Sleep -Seconds 5 }",
         statusLabel: "Detected",
         canStop: true,
       },

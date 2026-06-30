@@ -349,50 +349,49 @@ const make = Effect.gen(function* () {
       threadId: input.threadId,
       cwd: input.cwd,
     });
-    const files =
-      input.providerSummaryFiles !== undefined
+    const files = hasConcurrentSession
+      ? input.providerSummaryFiles !== undefined
         ? input.providerSummaryFiles.map((file) => ({ ...file }))
-        : hasConcurrentSession
-          ? yield* Effect.logWarning("skipping shared-checkout checkpoint file summary", {
-              threadId: input.threadId,
-              turnId: input.turnId,
-              turnCount: input.turnCount,
-              cwd: input.cwd,
-            }).pipe(Effect.as([]))
-          : yield* checkpointStore
-              .diffCheckpoints({
-                cwd: input.cwd,
-                fromCheckpointRef: summaryFromCheckpointRef,
-                toCheckpointRef: targetCheckpointRef,
-                fallbackFromToHead: false,
-                ignoreWhitespace: false,
-              })
-              .pipe(
-                Effect.map((diff) =>
-                  parseTurnDiffFilesFromUnifiedDiff(diff).map((file) => ({
-                    path: file.path,
-                    kind: "modified" as const,
-                    additions: file.additions,
-                    deletions: file.deletions,
-                  })),
-                ),
-                Effect.tapError((error) =>
-                  appendCaptureFailureActivity({
-                    threadId: input.threadId,
-                    turnId: input.turnId,
-                    detail: `Checkpoint captured, but turn diff summary is unavailable: ${error.message}`,
-                    createdAt: input.createdAt,
-                  }),
-                ),
-                Effect.catch((error) =>
-                  Effect.logWarning("failed to derive checkpoint file summary", {
-                    threadId: input.threadId,
-                    turnId: input.turnId,
-                    turnCount: input.turnCount,
-                    detail: error.message,
-                  }).pipe(Effect.as([])),
-                ),
-              );
+        : yield* Effect.logWarning("skipping shared-checkout checkpoint file summary", {
+            threadId: input.threadId,
+            turnId: input.turnId,
+            turnCount: input.turnCount,
+            cwd: input.cwd,
+          }).pipe(Effect.as([]))
+      : yield* checkpointStore
+          .diffCheckpoints({
+            cwd: input.cwd,
+            fromCheckpointRef: summaryFromCheckpointRef,
+            toCheckpointRef: targetCheckpointRef,
+            fallbackFromToHead: false,
+            ignoreWhitespace: false,
+          })
+          .pipe(
+            Effect.map((diff) =>
+              parseTurnDiffFilesFromUnifiedDiff(diff).map((file) => ({
+                path: file.path,
+                kind: "modified" as const,
+                additions: file.additions,
+                deletions: file.deletions,
+              })),
+            ),
+            Effect.tapError((error) =>
+              appendCaptureFailureActivity({
+                threadId: input.threadId,
+                turnId: input.turnId,
+                detail: `Checkpoint captured, but turn diff summary is unavailable: ${error.message}`,
+                createdAt: input.createdAt,
+              }),
+            ),
+            Effect.catch((error) =>
+              Effect.logWarning("failed to derive checkpoint file summary", {
+                threadId: input.threadId,
+                turnId: input.turnId,
+                turnCount: input.turnCount,
+                detail: error.message,
+              }).pipe(Effect.as([])),
+            ),
+          );
 
     const assistantMessageId =
       input.assistantMessageId ??
@@ -488,9 +487,9 @@ const make = Effect.gen(function* () {
       }
 
       // If an early diff event already created a placeholder or real checkpoint
-      // for this turn, refresh that same turn count. Preserve provider-reported
-      // file summaries so shared-checkout edits from elsewhere are not attributed
-      // to this turn.
+      // for this turn, refresh that same turn count. The capture path will only
+      // keep provider-reported summaries for shared checkouts; otherwise the
+      // final checkpoint diff is authoritative.
       const existingCheckpoint = thread.checkpoints.find(
         (checkpoint) => checkpoint.turnId === turnId,
       );

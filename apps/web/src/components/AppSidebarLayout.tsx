@@ -2,7 +2,11 @@ import { useEffect, type CSSProperties, type ReactNode } from "react";
 import { useNavigate } from "@tanstack/react-router";
 
 import { isElectron } from "../env";
+import { useHandleNewThread } from "../hooks/useHandleNewThread";
+import { useSettings } from "../hooks/useSettings";
+import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { isMacPlatform } from "../lib/utils";
+import { resolveSidebarNewThreadEnvMode } from "./Sidebar.logic";
 import ThreadSidebar from "./Sidebar";
 import { Sidebar, SidebarProvider, SidebarRail, SidebarTrigger } from "./ui/sidebar";
 import {
@@ -34,6 +38,9 @@ function SidebarControl() {
 
 export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
+  const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread } =
+    useHandleNewThread();
+  const appSettings = useSettings();
   const sidebarStyle = {
     "--sidebar-width": THREAD_SIDEBAR_DEFAULT_WIDTH,
     ...(isElectron && typeof navigator !== "undefined" && isMacPlatform(navigator.platform)
@@ -72,13 +79,33 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
     const unsubscribe = onMenuAction((action) => {
       if (action === "open-settings") {
         void navigate({ to: "/settings" });
+        return;
+      }
+
+      if (action === "new-thread") {
+        void startNewThreadFromContext({
+          activeDraftThread,
+          activeThread,
+          defaultProjectRef,
+          defaultThreadEnvMode: resolveSidebarNewThreadEnvMode({
+            defaultEnvMode: appSettings.defaultThreadEnvMode,
+          }),
+          handleNewThread,
+        });
       }
     });
 
     return () => {
       unsubscribe?.();
     };
-  }, [navigate]);
+  }, [
+    activeDraftThread,
+    activeThread,
+    appSettings.defaultThreadEnvMode,
+    defaultProjectRef,
+    handleNewThread,
+    navigate,
+  ]);
 
   return (
     <SidebarProvider className="h-dvh! min-h-0!" defaultOpen style={sidebarStyle}>

@@ -50,7 +50,7 @@ interface ChatHeaderProps {
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<void>;
   onUpdateProjectScript: (scriptId: string, input: NewProjectScriptInput) => Promise<void>;
   onDeleteProjectScript: (scriptId: string) => Promise<void>;
-  onOpenBackgroundRunTerminal: (terminalId: string) => void;
+  onToggleBackgroundRunTerminal: (terminalId: string) => void;
   onStopBackgroundRun: (run: ThreadBackgroundRunItem) => void;
   onOpenForkSourceThread: (threadId: ThreadId) => void;
   onToggleTerminal: () => void;
@@ -92,7 +92,7 @@ export const ChatHeader = memo(function ChatHeader({
   onAddProjectScript,
   onUpdateProjectScript,
   onDeleteProjectScript,
-  onOpenBackgroundRunTerminal,
+  onToggleBackgroundRunTerminal,
   onStopBackgroundRun,
   onOpenForkSourceThread,
   onToggleTerminal,
@@ -156,7 +156,7 @@ export const ChatHeader = memo(function ChatHeader({
           taskProgress={taskProgress}
           subagentProgress={subagentProgress}
           backgroundRuns={backgroundRuns}
-          onOpenBackgroundRunTerminal={onOpenBackgroundRunTerminal}
+          onToggleBackgroundRunTerminal={onToggleBackgroundRunTerminal}
           onStopBackgroundRun={onStopBackgroundRun}
         />
         {activeProjectScripts && (

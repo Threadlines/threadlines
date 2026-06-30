@@ -16,6 +16,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
+import { normalizeTerminalActivityCommand } from "@threadlines/shared/terminalCommandTracker";
 
 import { collectUint8StreamText } from "../stream/collectUint8StreamText.ts";
 
@@ -770,12 +771,79 @@ function localhostPortFromUrl(value: string): number | null {
 }
 
 function compactCommand(command: string): string {
-  const normalized = command.replace(/\s+/g, " ").trim();
+  const normalized =
+    normalizeTerminalActivityCommand(command) ?? command.replace(/\s+/g, " ").trim();
   return normalized.length <= 140 ? normalized : `${normalized.slice(0, 137)}...`;
 }
 
 function normalizeCommandSearchText(value: string): string {
   return value.toLowerCase().replace(/\\/g, "/").replace(/\s+/g, " ").trim();
+}
+
+const standaloneCommandHintExecutables = new Set([
+  "bash",
+  "bun",
+  "cargo",
+  "cmd",
+  "deno",
+  "dotnet",
+  "go",
+  "node",
+  "npm",
+  "npx",
+  "pnpm",
+  "powershell",
+  "pwsh",
+  "py",
+  "python",
+  "ruby",
+  "sh",
+  "sleep",
+  "vite",
+  "vp",
+  "yarn",
+]);
+
+function stripCommandHintHead(value: string): string {
+  const normalized = value.replaceAll("\\", "/");
+  const basename = normalized.split("/").findLast((part) => part.length > 0) ?? value;
+  return basename.replace(/\.(?:exe|cmd|bat|ps1)$/i, "");
+}
+
+function standaloneCommandHintToken(value: string): string | null {
+  if (value.length > 220 || /[.!?]\s/.test(value)) {
+    return null;
+  }
+  const quotedPathMatch = /^["']([^"']+)["'](?:\s+|$)/.exec(value);
+  const head = quotedPathMatch?.[1] ?? value.split(/\s+/, 1)[0] ?? "";
+  const strippedHead = stripCommandHintHead(head);
+  const isPathLike = /^([a-z]:\/|\.{0,2}\/|\/)/i.test(head) || head.includes("/");
+  if (!isPathLike && !standaloneCommandHintExecutables.has(strippedHead)) {
+    return null;
+  }
+  return value;
+}
+
+function commandHintScriptTokens(value: string): string[] {
+  const scriptMatch = /\s-e\s+(?:"([^"]+)"|'([^']+)'|(.+))$/i.exec(value);
+  const script = scriptMatch
+    ? (scriptMatch[1] ?? scriptMatch[2] ?? scriptMatch[3] ?? "").trim()
+    : "";
+  if (script.length === 0) {
+    return [];
+  }
+  const tokens: string[] = [];
+  for (const quotedText of script.matchAll(/["']([^"']{8,80})["']/g)) {
+    const token = quotedText[1]?.trim();
+    if (token && !tokens.includes(token)) {
+      tokens.push(token);
+    }
+  }
+  const compactScript = script.replace(/\s+/g, " ").trim();
+  if (compactScript.length >= 24) {
+    tokens.push(compactScript.slice(0, 120));
+  }
+  return tokens;
 }
 
 function commandHintTokens(hints: ReadonlyArray<string>): string[] {
@@ -790,6 +858,10 @@ function commandHintTokens(hints: ReadonlyArray<string>): string[] {
 
   for (const hint of hints) {
     const normalizedHint = normalizeCommandSearchText(hint);
+    addToken(standaloneCommandHintToken(normalizedHint) ?? undefined);
+    for (const token of commandHintScriptTokens(normalizedHint)) {
+      addToken(token);
+    }
     const previewMatch = /\bthreadlines-activity-preview-\d+\b/i.exec(hint);
     addToken(previewMatch?.[0]);
     const offsetMatch = /\bthreadlines_port_offset\s*=\s*['"]?(\d+)/i.exec(normalizedHint);
@@ -849,6 +921,103 @@ function descendantPidsForMatches(input: {
   return result;
 }
 
+const processOnlyWrapperExecutables = new Set([
+  "bash",
+  "cmd",
+  "conhost",
+  "powershell",
+  "pwsh",
+  "sh",
+]);
+
+function commandExecutableName(command: string): string {
+  const normalized = command.replace(/\s+/g, " ").trim();
+  const quotedPathMatch = /^["']([^"']+)["'](?:\s+|$)/.exec(normalized);
+  const head = quotedPathMatch?.[1] ?? normalized.split(/\s+/, 1)[0] ?? "";
+  return stripCommandHintHead(head).toLowerCase();
+}
+
+function elapsedSortValue(elapsed: string): number {
+  const normalized = elapsed.trim();
+  if (normalized.length === 0) {
+    return Number.POSITIVE_INFINITY;
+  }
+  const dayMatch = /^(\d+)-(.+)$/.exec(normalized);
+  const daySeconds = dayMatch?.[1] ? Number.parseInt(dayMatch[1], 10) * 86_400 : 0;
+  const timeText = dayMatch?.[2] ?? normalized;
+  const parts = timeText.split(":").map((part) => Number.parseFloat(part));
+  if (parts.some((part) => !Number.isFinite(part))) {
+    return Number.POSITIVE_INFINITY;
+  }
+  if (parts.length === 3) {
+    return daySeconds + (parts[0] ?? 0) * 3_600 + (parts[1] ?? 0) * 60 + (parts[2] ?? 0);
+  }
+  if (parts.length === 2) {
+    return daySeconds + (parts[0] ?? 0) * 60 + (parts[1] ?? 0);
+  }
+  return daySeconds + (parts[0] ?? 0);
+}
+
+function selectHintedProcessOnlyRows(input: {
+  readonly processRows: ReadonlyArray<ProcessRow>;
+  readonly commandHints: ReadonlyArray<string>;
+}): ProcessRow[] {
+  const tokens = commandHintTokens(input.commandHints);
+  if (tokens.length === 0) {
+    return [];
+  }
+  const hintFingerprints = new Set(
+    input.commandHints
+      .map((hint) => compactCommand(hint))
+      .filter((hint) => hint.length > 0)
+      .map((hint) => hint.toLowerCase()),
+  );
+  const childrenByParent = new Map<number, ProcessRow[]>();
+  for (const row of input.processRows) {
+    const children = childrenByParent.get(row.ppid) ?? [];
+    children.push(row);
+    childrenByParent.set(row.ppid, children);
+  }
+
+  const candidates = input.processRows
+    .map((row) => {
+      const command = normalizeCommandSearchText(row.command);
+      const matchingTokenCount = tokens.reduce(
+        (count, token) => count + (command.includes(token) ? 1 : 0),
+        0,
+      );
+      if (matchingTokenCount === 0) {
+        return null;
+      }
+      const executable = commandExecutableName(row.command);
+      const compacted = compactCommand(row.command).toLowerCase();
+      const exactCommand = hintFingerprints.has(compacted);
+      const wrapper = processOnlyWrapperExecutables.has(executable);
+      const childMatches = (childrenByParent.get(row.pid) ?? []).some((child) => {
+        const childCommand = normalizeCommandSearchText(child.command);
+        return tokens.some((token) => childCommand.includes(token));
+      });
+      const score =
+        (exactCommand ? 1_000 : 0) +
+        (wrapper ? 0 : 100) +
+        (childMatches ? 0 : 25) +
+        matchingTokenCount;
+      return { row, score, wrapper, childMatches };
+    })
+    .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null)
+    .filter((candidate) => !(candidate.wrapper && candidate.childMatches))
+    .toSorted((left, right) => {
+      if (left.score !== right.score) return right.score - left.score;
+      const elapsedComparison =
+        elapsedSortValue(left.row.elapsed) - elapsedSortValue(right.row.elapsed);
+      if (elapsedComparison !== 0) return elapsedComparison;
+      return right.row.pid - left.row.pid;
+    });
+
+  const best = candidates[0]?.row;
+  return best ? [best] : [];
+}
+
 export function resolveBackgroundRunsFromListeningPorts(input: {
   readonly urls: ReadonlyArray<string>;
   readonly pids?: ReadonlyArray<number> | undefined;
@@ -892,12 +1061,24 @@ export function resolveBackgroundRunsFromListeningPorts(input: {
   }
 
   const portRunPids = new Set([...rowsByPort.values()].map((row) => row.pid));
-  const processOnlyRows = uniquePositivePids(input.pids ?? [])
+  const explicitProcessOnlyRows = uniquePositivePids(input.pids ?? [])
     .filter((pid) => !portRunPids.has(pid))
     .flatMap((pid) => {
       const row = processRowsByPid.get(pid);
       return row ? [row] : [];
     });
+  const hintedProcessOnlyRows =
+    urlsByPort.size === 0 && portRunPids.size === 0
+      ? selectHintedProcessOnlyRows({
+          processRows: input.processRows ?? [],
+          commandHints: input.commandHints ?? [],
+        })
+      : [];
+  const processOnlyRows = [
+    ...new Map(
+      [...explicitProcessOnlyRows, ...hintedProcessOnlyRows].map((row) => [row.pid, row]),
+    ).values(),
+  ];
 
   return {
     runs: [

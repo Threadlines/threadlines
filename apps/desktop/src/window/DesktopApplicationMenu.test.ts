@@ -41,6 +41,9 @@ const electronAppLayer = Layer.succeed(ElectronApp.ElectronApp, {
   setAppUserModelId: () => Effect.void,
   setDesktopName: () => Effect.void,
   setDockIcon: () => Effect.void,
+  setDockBadge: () => Effect.void,
+  bounceDock: () => Effect.succeed(Option.none()),
+  cancelDockBounce: () => Effect.void,
   appendCommandLineSwitch: () => Effect.void,
   on: () => Effect.void,
 } satisfies ElectronApp.ElectronAppShape);

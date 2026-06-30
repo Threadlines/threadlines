@@ -11,8 +11,6 @@ import {
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { nativeImage } from "electron";
-import type * as Electron from "electron";
 
 import * as DesktopBackendManager from "../../backend/DesktopBackendManager.ts";
 import * as DesktopEnvironment from "../../app/DesktopEnvironment.ts";
@@ -24,6 +22,7 @@ import * as ElectronTheme from "../../electron/ElectronTheme.ts";
 import * as ElectronWindow from "../../electron/ElectronWindow.ts";
 import * as IpcChannels from "../channels.ts";
 import { makeIpcMethod, makeSyncIpcMethod } from "../DesktopIpc.ts";
+import * as DesktopStatusIndicator from "../../window/DesktopStatusIndicator.ts";
 
 const ContextMenuPosition = Schema.Struct({
   x: Schema.Number,
@@ -34,19 +33,6 @@ const ContextMenuInput = Schema.Struct({
   items: Schema.Array(ContextMenuItemSchema),
   position: Schema.optionalKey(ContextMenuPosition),
 });
-
-// 16x16 transparent PNG with a compact, anti-aliased blue dot.
-const TASKBAR_COMPLETE_OVERLAY_ICON_DATA_URL =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAASklEQVR42mNQTX7NQAlmGL4GGKsmv96gmvz6GxRvgIoRZYAxVNN/NPwNmyHYDNiARTMMbyDGgG94DPhGFwMo9gLFgUhxNI60vAAACfilkKE3QbkAAAAASUVORK5CYII=";
-
-let cachedTaskbarCompleteOverlayIcon: Electron.NativeImage | null = null;
-
-function getTaskbarCompleteOverlayIcon(): Electron.NativeImage {
-  cachedTaskbarCompleteOverlayIcon ??= nativeImage.createFromDataURL(
-    TASKBAR_COMPLETE_OVERLAY_ICON_DATA_URL,
-  );
-  return cachedTaskbarCompleteOverlayIcon;
-}
 
 function toWebSocketBaseUrl(httpBaseUrl: URL): string {
   const url = new URL(httpBaseUrl.href);
@@ -137,44 +123,8 @@ export const setTaskbarStatus = makeIpcMethod({
   payload: DesktopTaskbarStatusInputSchema,
   result: Schema.Void,
   handler: Effect.fn("desktop.ipc.window.setTaskbarStatus")(function* (input) {
-    const environment = yield* DesktopEnvironment.DesktopEnvironment;
-    if (environment.platform !== "win32") {
-      return;
-    }
-
-    const electronWindow = yield* ElectronWindow.ElectronWindow;
-    const maybeWindow = yield* electronWindow.currentMainOrFirst;
-    if (Option.isNone(maybeWindow)) {
-      return;
-    }
-
-    const window = maybeWindow.value;
-    if (window.isDestroyed()) {
-      return;
-    }
-
-    yield* Effect.sync(() => {
-      const description = input.description ?? "";
-      switch (input.status) {
-        case "working":
-          window.flashFrame(false);
-          window.setOverlayIcon(null, "");
-          window.setProgressBar(2, { mode: "indeterminate" });
-          return;
-        case "completed":
-          window.setProgressBar(-1);
-          window.setOverlayIcon(getTaskbarCompleteOverlayIcon(), description);
-          if (!window.isFocused()) {
-            window.flashFrame(true);
-          }
-          return;
-        case "idle":
-          window.flashFrame(false);
-          window.setOverlayIcon(null, "");
-          window.setProgressBar(-1);
-          return;
-      }
-    });
+    const statusIndicator = yield* DesktopStatusIndicator.DesktopStatusIndicator;
+    yield* statusIndicator.setStatus(input);
   }),
 });
 

@@ -492,6 +492,44 @@ describe("SourceControlPanel changes", () => {
     }
   });
 
+  it("opens a manual commit message editor from the actions dropdown", async () => {
+    const status = makeStatus({
+      hasWorkingTreeChanges: true,
+      workingTree: {
+        files: [
+          {
+            path: "src/app.ts",
+            indexStatus: null,
+            worktreeStatus: "modified",
+            insertions: 2,
+            deletions: 1,
+          },
+        ],
+        insertions: 2,
+        deletions: 1,
+      },
+    });
+    const mounted = await renderPanel({ status });
+
+    try {
+      await page.getByRole("button", { name: "Source control actions" }).click();
+      await page.getByText("Write message").click();
+
+      const textarea = getCommitMessageTextarea();
+      expect(textarea.value).toBe("");
+      expect(textarea.disabled).toBe(false);
+      await expect
+        .element(page.getByRole("button", { name: "Generate, commit & push" }))
+        .toBeVisible();
+      expect(gitActionMock.generateCommitMessage).not.toHaveBeenCalled();
+
+      await page.getByPlaceholder("Commit message").fill("Describe the manual change");
+      await expect.element(page.getByRole("button", { name: "Commit & push" })).toBeVisible();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("clears the commit message draft when discarding changes", async () => {
     const discardChanges: EnvironmentApi["vcs"]["discardChanges"] = vi.fn(async (input) => ({
       discardedPaths: input.filePaths,

@@ -1,6 +1,6 @@
 import { memo, type PointerEventHandler } from "react";
 import type { RuntimeMode } from "@threadlines/contracts";
-import { ChevronDownIcon, ChevronLeftIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronLeftIcon, CornerDownRightIcon, SquareIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import {
@@ -59,6 +59,9 @@ export const formatPendingPrimaryActionLabel = (input: {
   }
   return input.questionIndex > 0 ? "Submit answers" : "Submit answer";
 };
+
+export const formatRunningPrimaryActionLabel = (input: { hasSendableContent: boolean }) =>
+  input.hasSendableContent ? "Steer" : "Stop";
 
 const preventPointerFocus: PointerEventHandler<HTMLElement> = (event) => {
   event.preventDefault();
@@ -139,18 +142,37 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   }
 
   if (isRunning) {
+    const runningActionLabel = formatRunningPrimaryActionLabel({ hasSendableContent });
+
+    if (hasSendableContent) {
+      return (
+        <Button
+          type="submit"
+          size="icon"
+          className="rounded-full"
+          {...pointerFocusProps}
+          disabled={isSendBusy || isConnecting || isEnvironmentUnavailable}
+          aria-label="Steer active turn"
+          tooltip={runningActionLabel}
+        >
+          <CornerDownRightIcon className="size-3.5" />
+        </Button>
+      );
+    }
+
     return (
-      <button
+      <Button
         type="button"
-        className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-rose-500/90 text-white transition-all duration-150 hover:bg-rose-500 hover:scale-105 sm:h-8 sm:w-8"
+        size="icon"
+        variant="destructive"
+        className="rounded-full before:hidden"
         {...pointerFocusProps}
         onClick={onInterrupt}
         aria-label="Stop generation"
+        tooltip={runningActionLabel}
       >
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
-          <rect x="2" y="2" width="8" height="8" rx="1.5" />
-        </svg>
-      </button>
+        <SquareIcon className="size-2.5 fill-current" strokeWidth={0} />
+      </Button>
     );
   }
 

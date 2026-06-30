@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { formatPendingPrimaryActionLabel } from "./ComposerPrimaryActions";
+import {
+  formatPendingPrimaryActionLabel,
+  formatRunningPrimaryActionLabel,
+} from "./ComposerPrimaryActions";
 
 describe("formatPendingPrimaryActionLabel", () => {
   it("returns 'Submitting...' while responding", () => {
@@ -89,5 +92,15 @@ describe("formatPendingPrimaryActionLabel", () => {
         questionIndex: 5,
       }),
     ).toBe("Submit answers");
+  });
+});
+
+describe("formatRunningPrimaryActionLabel", () => {
+  it("returns 'Stop' while running with an empty composer", () => {
+    expect(formatRunningPrimaryActionLabel({ hasSendableContent: false })).toBe("Stop");
+  });
+
+  it("returns 'Steer' while running with sendable composer content", () => {
+    expect(formatRunningPrimaryActionLabel({ hasSendableContent: true })).toBe("Steer");
   });
 });

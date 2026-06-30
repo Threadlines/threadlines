@@ -23,6 +23,7 @@ import * as DesktopSecretStorage from "./electron/ElectronSafeStorage.ts";
 import * as ElectronGlobalShortcut from "./electron/ElectronGlobalShortcut.ts";
 import * as ElectronShell from "./electron/ElectronShell.ts";
 import * as ElectronTheme from "./electron/ElectronTheme.ts";
+import * as ElectronTray from "./electron/ElectronTray.ts";
 import * as ElectronUpdater from "./electron/ElectronUpdater.ts";
 import * as ElectronWindow from "./electron/ElectronWindow.ts";
 import * as DesktopApp from "./app/DesktopApp.ts";
@@ -48,6 +49,7 @@ import * as DesktopRelay from "./relay/DesktopRelay.ts";
 import * as DesktopState from "./app/DesktopState.ts";
 import * as DesktopUpdates from "./updates/DesktopUpdates.ts";
 import * as DesktopWindow from "./window/DesktopWindow.ts";
+import * as DesktopStatusIndicator from "./window/DesktopStatusIndicator.ts";
 
 const desktopEnvironmentLayer = Layer.unwrap(
   Effect.gen(function* () {
@@ -106,6 +108,7 @@ const electronLayer = Layer.mergeAll(
   ElectronGlobalShortcut.layer,
   ElectronShell.layer,
   ElectronTheme.layer,
+  ElectronTray.layer,
   ElectronUpdater.layer,
   ElectronWindow.layer,
   Layer.succeed(DesktopIpc.DesktopIpc, DesktopIpc.make(Electron.ipcMain)),
@@ -141,6 +144,7 @@ const desktopBackendLayer = DesktopBackendManager.layer.pipe(
 const desktopApplicationLayer = Layer.mergeAll(
   DesktopLifecycle.layer,
   DesktopApplicationMenu.layer,
+  DesktopStatusIndicator.layer,
   DesktopScreenCapture.layer,
   DesktopShellEnvironment.layer,
   DesktopRelay.layer,

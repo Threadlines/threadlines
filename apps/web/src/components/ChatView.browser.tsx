@@ -2025,6 +2025,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       terminalLaunchContextByThreadKey: {},
       terminalEventEntriesByKey: {},
       terminalSubmittedCommandByKey: {},
+      terminalActivityCommandByKey: {},
       nextTerminalEventId: 1,
     });
   });

@@ -220,6 +220,7 @@ describe("TerminalEvent", () => {
         terminalId: DEFAULT_TERMINAL_ID,
         createdAt: isoTimestamp,
         hasRunningSubprocess: true,
+        command: "vp run dev:desktop",
       }),
     ).toBe(true);
   });

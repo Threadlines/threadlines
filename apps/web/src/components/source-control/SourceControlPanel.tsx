@@ -3054,6 +3054,13 @@ export function SourceControlPanel({
                     </MenuItem>
                     <MenuItem
                       disabled={commitDisabledReason !== null}
+                      onClick={() => setCommitMessageEditorOpen(true)}
+                    >
+                      <FileTextIcon className="size-3.5" />
+                      <span>Write message</span>
+                    </MenuItem>
+                    <MenuItem
+                      disabled={commitDisabledReason !== null}
                       onClick={() => void runAction("commit")}
                     >
                       <GitCommitIcon className="size-3.5" />

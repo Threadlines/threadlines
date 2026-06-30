@@ -615,11 +615,21 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
 
       yield* manager.open(openInput());
       expect((yield* getEvents).some((event) => event.type === "activity")).toBe(false);
+      yield* manager.write({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        data: "vp run dev:desktop\r",
+      });
 
       hasRunningSubprocess = true;
       yield* waitFor(
         Effect.map(getEvents, (events) =>
-          events.some((event) => event.type === "activity" && event.hasRunningSubprocess === true),
+          events.some(
+            (event) =>
+              event.type === "activity" &&
+              event.hasRunningSubprocess === true &&
+              event.command === "vp run dev:desktop",
+          ),
         ),
         "1200 millis",
       );
@@ -627,7 +637,12 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       hasRunningSubprocess = false;
       yield* waitFor(
         Effect.map(getEvents, (events) =>
-          events.some((event) => event.type === "activity" && event.hasRunningSubprocess === false),
+          events.some(
+            (event) =>
+              event.type === "activity" &&
+              event.hasRunningSubprocess === false &&
+              event.command === null,
+          ),
         ),
         "1200 millis",
       );
