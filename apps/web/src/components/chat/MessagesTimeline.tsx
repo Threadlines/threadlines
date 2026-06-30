@@ -2372,6 +2372,7 @@ function classifySummarizableActivityEntry(
   if (
     entry.executionState === "running" ||
     entry.executionState === "failed" ||
+    entry.outputPreview ||
     (entry.changedFiles?.length ?? 0) > 0 ||
     (entry.images?.length ?? 0) > 0
   ) {
