@@ -64,6 +64,38 @@ function normalizeWorkspacePath(value: string): string {
   return value.replaceAll("\\", "/").replace(/\/+$/u, "").toLowerCase();
 }
 
+function normalizeCheckpointFilePath(value: string): string {
+  return value.replaceAll("\\", "/").toLowerCase();
+}
+
+function cloneCheckpointFiles(
+  files: ReadonlyArray<OrchestrationCheckpointFile> | undefined,
+): OrchestrationCheckpointFile[] | undefined {
+  return files?.map((file) => ({ ...file }));
+}
+
+function sharedCheckoutFilesFromDerivedDiff(input: {
+  readonly derivedFiles: ReadonlyArray<OrchestrationCheckpointFile>;
+  readonly providerSummaryFiles: ReadonlyArray<OrchestrationCheckpointFile> | undefined;
+}): OrchestrationCheckpointFile[] | null {
+  const providerFiles = input.providerSummaryFiles;
+  if (input.derivedFiles.length === 0) {
+    return [];
+  }
+  if (providerFiles === undefined) {
+    return null;
+  }
+
+  const providerPaths = new Set(
+    providerFiles.map((file) => normalizeCheckpointFilePath(file.path)),
+  );
+  const onlyContainsProviderPaths = input.derivedFiles.every((file) =>
+    providerPaths.has(normalizeCheckpointFilePath(file.path)),
+  );
+
+  return onlyContainsProviderPaths ? input.derivedFiles.map((file) => ({ ...file })) : null;
+}
+
 function checkpointStatusFromRuntime(status: string | undefined): "ready" | "missing" | "error" {
   switch (status) {
     case "failed":
@@ -300,6 +332,7 @@ const make = Effect.gen(function* () {
     readonly status: "ready" | "missing" | "error";
     readonly assistantMessageId: MessageId | undefined;
     readonly providerSummaryFiles: ReadonlyArray<OrchestrationCheckpointFile> | undefined;
+    readonly refreshSharedCheckoutSummaryFromCheckpoint: boolean;
     readonly createdAt: string;
   }) {
     const fromTurnCount = Math.max(0, input.turnCount - 1);
@@ -349,49 +382,90 @@ const make = Effect.gen(function* () {
       threadId: input.threadId,
       cwd: input.cwd,
     });
-    const files = hasConcurrentSession
-      ? input.providerSummaryFiles !== undefined
-        ? input.providerSummaryFiles.map((file) => ({ ...file }))
-        : yield* Effect.logWarning("skipping shared-checkout checkpoint file summary", {
+    const files = yield* checkpointStore
+      .diffCheckpoints({
+        cwd: input.cwd,
+        fromCheckpointRef: summaryFromCheckpointRef,
+        toCheckpointRef: targetCheckpointRef,
+        fallbackFromToHead: false,
+        ignoreWhitespace: false,
+      })
+      .pipe(
+        Effect.map((diff) =>
+          parseTurnDiffFilesFromUnifiedDiff(diff).map((file) => ({
+            path: file.path,
+            kind: "modified" as const,
+            additions: file.additions,
+            deletions: file.deletions,
+          })),
+        ),
+        Effect.flatMap((derivedFiles) => {
+          if (!hasConcurrentSession) {
+            return Effect.succeed(derivedFiles);
+          }
+
+          if (!input.refreshSharedCheckoutSummaryFromCheckpoint) {
+            const providerFiles = cloneCheckpointFiles(input.providerSummaryFiles);
+            if (providerFiles !== undefined) {
+              return Effect.succeed(providerFiles);
+            }
+
+            return Effect.logWarning("skipping shared-checkout checkpoint file summary", {
+              threadId: input.threadId,
+              turnId: input.turnId,
+              turnCount: input.turnCount,
+              cwd: input.cwd,
+              derivedFileCount: derivedFiles.length,
+              providerFileCount: 0,
+            }).pipe(Effect.as([]));
+          }
+
+          const sharedCheckoutFiles = sharedCheckoutFilesFromDerivedDiff({
+            derivedFiles,
+            providerSummaryFiles: input.providerSummaryFiles,
+          });
+          if (sharedCheckoutFiles !== null) {
+            return Effect.succeed(sharedCheckoutFiles);
+          }
+
+          return Effect.logWarning("skipping shared-checkout checkpoint file summary", {
             threadId: input.threadId,
             turnId: input.turnId,
             turnCount: input.turnCount,
             cwd: input.cwd,
-          }).pipe(Effect.as([]))
-      : yield* checkpointStore
-          .diffCheckpoints({
-            cwd: input.cwd,
-            fromCheckpointRef: summaryFromCheckpointRef,
-            toCheckpointRef: targetCheckpointRef,
-            fallbackFromToHead: false,
-            ignoreWhitespace: false,
-          })
-          .pipe(
-            Effect.map((diff) =>
-              parseTurnDiffFilesFromUnifiedDiff(diff).map((file) => ({
-                path: file.path,
-                kind: "modified" as const,
-                additions: file.additions,
-                deletions: file.deletions,
-              })),
-            ),
-            Effect.tapError((error) =>
-              appendCaptureFailureActivity({
-                threadId: input.threadId,
-                turnId: input.turnId,
-                detail: `Checkpoint captured, but turn diff summary is unavailable: ${error.message}`,
-                createdAt: input.createdAt,
-              }),
-            ),
-            Effect.catch((error) =>
-              Effect.logWarning("failed to derive checkpoint file summary", {
-                threadId: input.threadId,
-                turnId: input.turnId,
-                turnCount: input.turnCount,
-                detail: error.message,
-              }).pipe(Effect.as([])),
-            ),
-          );
+            derivedFileCount: derivedFiles.length,
+            providerFileCount: input.providerSummaryFiles?.length ?? 0,
+          }).pipe(Effect.as(cloneCheckpointFiles(input.providerSummaryFiles) ?? []));
+        }),
+        Effect.catch((error) => {
+          const fallbackFiles = cloneCheckpointFiles(input.providerSummaryFiles);
+          if (fallbackFiles !== undefined) {
+            return Effect.logWarning("failed to derive checkpoint file summary", {
+              threadId: input.threadId,
+              turnId: input.turnId,
+              turnCount: input.turnCount,
+              detail: error.message,
+              fallback: "provider-summary",
+            }).pipe(Effect.as(fallbackFiles));
+          }
+
+          return Effect.gen(function* () {
+            yield* appendCaptureFailureActivity({
+              threadId: input.threadId,
+              turnId: input.turnId,
+              detail: `Checkpoint captured, but turn diff summary is unavailable: ${error.message}`,
+              createdAt: input.createdAt,
+            });
+            yield* Effect.logWarning("failed to derive checkpoint file summary", {
+              threadId: input.threadId,
+              turnId: input.turnId,
+              turnCount: input.turnCount,
+              detail: error.message,
+            });
+            return [];
+          });
+        }),
+      );
 
     const assistantMessageId =
       input.assistantMessageId ??
@@ -511,6 +585,7 @@ const make = Effect.gen(function* () {
         status: checkpointStatusFromRuntime(event.payload.state),
         assistantMessageId: undefined,
         providerSummaryFiles,
+        refreshSharedCheckoutSummaryFromCheckpoint: true,
         createdAt: event.createdAt,
       });
     },
@@ -575,6 +650,7 @@ const make = Effect.gen(function* () {
       status: "ready",
       assistantMessageId: event.payload.assistantMessageId ?? undefined,
       providerSummaryFiles: event.payload.files,
+      refreshSharedCheckoutSummaryFromCheckpoint: false,
       createdAt: event.payload.completedAt,
     });
   });

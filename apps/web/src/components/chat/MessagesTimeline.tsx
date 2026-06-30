@@ -79,6 +79,7 @@ import {
 } from "./MessagesTimeline.logic";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
 import {
+  handleTranscriptHighlightNoteFormSubmit,
   handleTranscriptHighlightNoteKeyDown,
   TRANSCRIPT_HIGHLIGHT_CARD_LABEL_CLASS_NAME,
   TranscriptHighlightContextCard,
@@ -167,6 +168,13 @@ type TranscriptSelectionPopoverState = {
   mode: "actions" | "note";
   note: string;
 };
+
+export function getTranscriptSelectionAfterTimelineScroll(
+  current: TranscriptSelectionPopoverState | null,
+): TranscriptSelectionPopoverState | null {
+  return current?.mode === "note" ? current : null;
+}
+
 const TOUCH_SCROLL_INTENT_THRESHOLD_PX = 4;
 const MAINTAIN_SCROLL_AT_END = { animated: false } as const;
 type TimelineScrollEvent = {
@@ -404,7 +412,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   const handleScroll = useCallback(
     (event: TimelineScrollEvent) => {
-      setTranscriptSelection(null);
+      setTranscriptSelection(getTranscriptSelectionAfterTimelineScroll);
       const eventAtEnd = isTimelineScrollEventAtEnd(event);
       const nextIsAtEnd =
         eventAtEnd !== null ? eventAtEnd : Boolean(listRef.current?.getState?.().isAtEnd);
@@ -813,10 +821,7 @@ function TranscriptSelectionPopover({
       ) : (
         <form
           className="rounded-lg border border-border/75 bg-popover/96 p-2 text-popover-foreground shadow-lg shadow-black/10 backdrop-blur"
-          onSubmit={(event) => {
-            event.preventDefault();
-            onSubmitNote();
-          }}
+          onSubmit={(event) => handleTranscriptHighlightNoteFormSubmit(event, onSubmitNote)}
         >
           <p className="mb-1 line-clamp-2 text-[11px] leading-snug text-muted-foreground">
             {state.selectedText}

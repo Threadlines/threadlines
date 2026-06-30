@@ -9,6 +9,7 @@ import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Textarea } from "../ui/textarea";
 import {
+  handleTranscriptHighlightNoteFormSubmit,
   handleTranscriptHighlightNoteKeyDown,
   TRANSCRIPT_HIGHLIGHT_CARD_LABEL_CLASS_NAME,
   TranscriptHighlightContextCard,
@@ -145,10 +146,7 @@ function TranscriptHighlightChip({
       >
         <form
           className="w-full"
-          onSubmit={(event) => {
-            event.preventDefault();
-            handleSave();
-          }}
+          onSubmit={(event) => handleTranscriptHighlightNoteFormSubmit(event, handleSave)}
         >
           <TranscriptHighlightContextCard context={context}>
             <div className="flex flex-col gap-1.5">

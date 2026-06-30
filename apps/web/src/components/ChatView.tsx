@@ -926,6 +926,7 @@ export default function ChatView(props: ChatViewProps) {
   const attachmentPreviewPromotionInFlightByMessageIdRef = useRef<Record<string, true>>({});
   const sendInFlightRef = useRef(false);
   const terminalOpenByThreadRef = useRef<Record<string, boolean>>({});
+  const timelineStickFrameIdsRef = useRef<number[]>([]);
 
   const terminalState = useTerminalStateStore((state) =>
     selectThreadTerminalState(state.terminalStateByThreadKey, routeThreadRef),
@@ -3227,13 +3228,42 @@ export default function ChatView(props: ChatViewProps) {
     ),
   );
 
-  const requestTimelineStickToBottom = useCallback(async (animated = false) => {
-    isAtEndRef.current = true;
-    showScrollDebouncer.current.cancel();
-    setShowScrollToBottom(false);
-    setStickToBottomRequestKey((current) => current + 1);
-    await legendListRef.current?.scrollToEnd?.({ animated });
+  const clearTimelineStickFrames = useCallback(() => {
+    for (const frameId of timelineStickFrameIdsRef.current) {
+      window.cancelAnimationFrame(frameId);
+    }
+    timelineStickFrameIdsRef.current = [];
   }, []);
+
+  const requestTimelineStickToBottom = useCallback(
+    async (animated = false) => {
+      clearTimelineStickFrames();
+      const stickToBottom = (nextAnimated: boolean) => {
+        isAtEndRef.current = true;
+        showScrollDebouncer.current.cancel();
+        setShowScrollToBottom(false);
+        return legendListRef.current?.scrollToEnd?.({ animated: nextAnimated });
+      };
+      const scheduleSettlingFrame = (remainingFrames: number): void => {
+        const frameId = window.requestAnimationFrame(() => {
+          void stickToBottom(false);
+          if (remainingFrames > 1) {
+            scheduleSettlingFrame(remainingFrames - 1);
+            return;
+          }
+          timelineStickFrameIdsRef.current = [];
+        });
+        timelineStickFrameIdsRef.current.push(frameId);
+      };
+
+      setStickToBottomRequestKey((current) => current + 1);
+      await stickToBottom(animated);
+      if (!animated) {
+        scheduleSettlingFrame(LAYOUT_STICK_TO_BOTTOM_FRAME_COUNT);
+      }
+    },
+    [clearTimelineStickFrames],
+  );
   const scheduleTimelineStickToBottom = useCallback(() => {
     void requestTimelineStickToBottom(false);
   }, [requestTimelineStickToBottom]);
@@ -3252,10 +3282,17 @@ export default function ChatView(props: ChatViewProps) {
 
   useEffect(() => {
     setPullRequestDialogState(null);
+    clearTimelineStickFrames();
     isAtEndRef.current = true;
     showScrollDebouncer.current.cancel();
     setShowScrollToBottom(false);
-  }, [activeThread?.id]);
+  }, [activeThread?.id, clearTimelineStickFrames]);
+
+  useEffect(() => {
+    return () => {
+      clearTimelineStickFrames();
+    };
+  }, [clearTimelineStickFrames]);
 
   useEffect(() => {
     if (!activeThread?.id) return;

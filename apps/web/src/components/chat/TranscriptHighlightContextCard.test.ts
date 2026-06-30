@@ -1,7 +1,10 @@
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { describe, expect, it, vi } from "vitest";
 
-import { handleTranscriptHighlightNoteKeyDown } from "./TranscriptHighlightContextCard";
+import {
+  handleTranscriptHighlightNoteFormSubmit,
+  handleTranscriptHighlightNoteKeyDown,
+} from "./TranscriptHighlightContextCard";
 
 function makeKeyEvent(overrides: {
   key: string;
@@ -59,5 +62,21 @@ describe("handleTranscriptHighlightNoteKeyDown", () => {
 
     expect(event.preventDefault).toHaveBeenCalledTimes(1);
     expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("handleTranscriptHighlightNoteFormSubmit", () => {
+  it("keeps note form submits local to the highlight editor", () => {
+    const onSubmit = vi.fn();
+    const event = {
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    };
+
+    handleTranscriptHighlightNoteFormSubmit(event, onSubmit);
+
+    expect(event.preventDefault).toHaveBeenCalledTimes(1);
+    expect(event.stopPropagation).toHaveBeenCalledTimes(1);
+    expect(onSubmit).toHaveBeenCalledTimes(1);
   });
 });

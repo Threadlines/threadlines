@@ -187,6 +187,28 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain('data-user-message-footer="true"');
   });
 
+  it("keeps an open transcript note editor across timeline scroll", async () => {
+    const { getTranscriptSelectionAfterTimelineScroll } = await import("./MessagesTimeline");
+    const noteSelection = {
+      sourceMessageId: MessageId.make("message-1"),
+      sourceRole: "assistant" as const,
+      selectedText: "selected text",
+      left: 24,
+      top: 36,
+      mode: "note" as const,
+      note: "draft note",
+    };
+    const actionsSelection = {
+      ...noteSelection,
+      mode: "actions" as const,
+      note: "",
+    };
+
+    expect(getTranscriptSelectionAfterTimelineScroll(noteSelection)).toBe(noteSelection);
+    expect(getTranscriptSelectionAfterTimelineScroll(actionsSelection)).toBeNull();
+    expect(getTranscriptSelectionAfterTimelineScroll(null)).toBeNull();
+  });
+
   it("renders context compaction entries in the normal work log", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(

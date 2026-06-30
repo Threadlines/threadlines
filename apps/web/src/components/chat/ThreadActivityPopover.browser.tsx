@@ -4,6 +4,7 @@ import { page } from "vitest/browser";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
+import type { SubagentProgressState } from "../../session-logic";
 import { ThreadActivityPopover, type ThreadTaskProgressState } from "./ThreadActivityPopover";
 
 const TASK_BADGE = {
@@ -158,6 +159,72 @@ describe("ThreadActivityPopover", () => {
       await page.getByRole("button", { name: "1 background run" }).click();
       await page.getByRole("button", { name: 'Close node -e "let n=0"' }).click();
       expect(onToggleBackgroundRunTerminal).toHaveBeenCalledWith("default");
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("omits the tasks icon when mixed activity has no tasks", async () => {
+    const subagentProgress: SubagentProgressState = {
+      items: [],
+      activeCount: 1,
+      completedCount: 0,
+      failedCount: 0,
+      totalCount: 1,
+      summary: "1 subagent active",
+      badge: {
+        label: "1",
+        ariaLabel: "1 subagent active",
+        tone: "active",
+        pulse: true,
+      },
+    };
+    const mounted = await render(
+      <main
+        style={{
+          boxSizing: "border-box",
+          display: "flex",
+          justifyContent: "flex-end",
+          minHeight: 360,
+          padding: 24,
+          width: 960,
+        }}
+      >
+        <ThreadActivityPopover
+          taskProgress={null}
+          subagentProgress={subagentProgress}
+          backgroundRuns={[
+            {
+              id: "provider:command-1",
+              source: "provider",
+              providerKind: "command",
+              terminalId: null,
+              pid: null,
+              port: null,
+              elapsed: null,
+              canStop: false,
+              label: "Get-Content command",
+              detail: "Agent command",
+              cwd: null,
+              statusLabel: "Running",
+              urls: [],
+            },
+          ]}
+          onToggleBackgroundRunTerminal={vi.fn()}
+          onStopBackgroundRun={vi.fn()}
+        />
+      </main>,
+    );
+
+    try {
+      const trigger = document.querySelector<HTMLButtonElement>(
+        "button[aria-label='Thread activity']",
+      );
+
+      expect(trigger).not.toBeNull();
+      expect(trigger?.querySelector("[data-activity-trigger-icon='tasks']")).toBeNull();
+      expect(trigger?.querySelector("[data-activity-trigger-icon='subagents']")).not.toBeNull();
+      expect(trigger?.querySelector("[data-activity-trigger-icon='background']")).not.toBeNull();
     } finally {
       await mounted.unmount();
     }

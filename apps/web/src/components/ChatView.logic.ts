@@ -31,7 +31,7 @@ export const LEGACY_LAST_INVOKED_SCRIPT_BY_PROJECT_KEYS = [
   "t3code:last-invoked-script-by-project",
 ] as const;
 export const MAX_HIDDEN_MOUNTED_TERMINAL_THREADS = 10;
-export const DEFAULT_SCROLL_END_TOLERANCE_PX = 2;
+export const DEFAULT_SCROLL_END_TOLERANCE_PX = 24;
 
 export const LastInvokedScriptByProjectSchema = Schema.Record(ProjectId, Schema.String);
 

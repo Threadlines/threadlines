@@ -61,6 +61,16 @@ describe("isScrollMetricsAtEnd", () => {
     ).toBe(true);
   });
 
+  it("treats a small residual gap near the end as still at the end", () => {
+    expect(
+      isScrollMetricsAtEnd({
+        scrollOffset: 276,
+        viewportLength: 500,
+        contentLength: 800,
+      }),
+    ).toBe(true);
+  });
+
   it("returns false when there is visible content below the viewport", () => {
     expect(
       isScrollMetricsAtEnd({

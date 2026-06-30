@@ -598,6 +598,7 @@ describe("CheckpointReactor", () => {
       turnId,
     });
     await waitForGitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 0));
+    await waitForGitRefExists(harness.cwd, checkpointPreTurnRefForThreadTurn(threadId, turnId));
 
     fs.writeFileSync(path.join(harness.cwd, "README.md"), "changed by another session\n", "utf8");
     harness.provider.emit({
@@ -620,7 +621,7 @@ describe("CheckpointReactor", () => {
     expect(thread.activities.some((activity) => activity.summary === "Changed files")).toBe(false);
   });
 
-  it("uses provider-reported changed files for shared-checkout checkpoint summaries through completion", async () => {
+  it("keeps provider-reported shared-checkout summaries when final diffs include unreported paths", async () => {
     const harness = await createHarness({
       seedFilesystemCheckpoints: false,
       includeConcurrentSession: true,
@@ -646,6 +647,7 @@ describe("CheckpointReactor", () => {
       turnId,
     });
     await waitForGitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 0));
+    await waitForGitRefExists(harness.cwd, checkpointPreTurnRefForThreadTurn(threadId, turnId));
 
     fs.writeFileSync(path.join(harness.cwd, "README.md"), "provider-owned edit\n", "utf8");
     await Effect.runPromise(
@@ -709,6 +711,89 @@ describe("CheckpointReactor", () => {
     expect(completedThread.checkpoints[0]?.files).toEqual(providerFiles);
   });
 
+  it("refreshes same-path shared-checkout summaries from the final checkpoint diff", async () => {
+    const harness = await createHarness({
+      seedFilesystemCheckpoints: false,
+      includeConcurrentSession: true,
+    });
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const turnId = asTurnId("turn-shared-refresh-same-path-summary");
+    const providerFiles: OrchestrationCheckpointFile[] = [
+      {
+        path: "README.md",
+        kind: "modified",
+        additions: 1,
+        deletions: 1,
+      },
+    ];
+
+    harness.provider.emit({
+      type: "turn.started",
+      eventId: EventId.make("evt-turn-started-shared-refresh-same-path-summary"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId,
+      turnId,
+    });
+    await waitForGitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 0));
+    await waitForGitRefExists(harness.cwd, checkpointPreTurnRefForThreadTurn(threadId, turnId));
+
+    fs.writeFileSync(path.join(harness.cwd, "README.md"), "early\n", "utf8");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.diff.complete",
+        commandId: CommandId.make("cmd-shared-refresh-same-path-placeholder"),
+        threadId,
+        turnId,
+        completedAt: createdAt,
+        checkpointRef: asCheckpointRef("provider-diff:evt-shared-refresh-same-path"),
+        status: "missing",
+        files: providerFiles,
+        checkpointTurnCount: 1,
+        createdAt,
+      }),
+    );
+
+    await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.latestTurn?.turnId === "turn-shared-refresh-same-path-summary" &&
+        entry.checkpoints.length === 1 &&
+        entry.checkpoints[0]?.status === "ready",
+    );
+
+    fs.writeFileSync(path.join(harness.cwd, "README.md"), "final\nmore\n", "utf8");
+    harness.provider.emit({
+      type: "turn.completed",
+      eventId: EventId.make("evt-turn-completed-shared-refresh-same-path-summary"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId,
+      turnId,
+      payload: { state: "completed" },
+    });
+    await harness.drain();
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.latestTurn?.turnId === "turn-shared-refresh-same-path-summary" &&
+        entry.checkpoints.length === 1 &&
+        entry.checkpoints[0]?.status === "ready" &&
+        entry.checkpoints[0]?.files?.[0]?.additions === 2,
+    );
+
+    expect(thread.checkpoints[0]?.files).toEqual([
+      {
+        path: "README.md",
+        kind: "modified",
+        additions: 2,
+        deletions: 1,
+      },
+    ]);
+  });
+
   it("does not replace an empty provider diff summary with shared-checkout Git changes", async () => {
     const harness = await createHarness({
       seedFilesystemCheckpoints: false,
@@ -727,6 +812,7 @@ describe("CheckpointReactor", () => {
       turnId,
     });
     await waitForGitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 0));
+    await waitForGitRefExists(harness.cwd, checkpointPreTurnRefForThreadTurn(threadId, turnId));
 
     fs.writeFileSync(path.join(harness.cwd, "README.md"), "changed outside provider\n", "utf8");
     await Effect.runPromise(

@@ -23,6 +23,15 @@ export function handleTranscriptHighlightNoteKeyDown(
   }
 }
 
+export function handleTranscriptHighlightNoteFormSubmit(
+  event: { preventDefault: () => void; stopPropagation: () => void },
+  onSubmit: () => void,
+): void {
+  event.preventDefault();
+  event.stopPropagation();
+  onSubmit();
+}
+
 export const CONTEXT_PREVIEW_CARD_LABEL_CLASS_NAME =
   "font-medium text-[11px] text-muted-foreground uppercase tracking-wide";
 export const TRANSCRIPT_HIGHLIGHT_CARD_LABEL_CLASS_NAME = CONTEXT_PREVIEW_CARD_LABEL_CLASS_NAME;

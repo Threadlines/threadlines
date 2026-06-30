@@ -302,28 +302,32 @@ function chipClassName(tone: ActivityBadgeTone, pulse: boolean) {
   );
 }
 
-function TriggerIcon({ mode }: { mode: ActivityTriggerState["mode"] }) {
-  if (mode === "tasks") {
-    return <ListTodoIcon className="size-3" aria-hidden="true" />;
+function ActivityKindIcon({
+  kind,
+  className,
+}: {
+  kind: ActivityBadgeState["kind"];
+  className: string;
+}) {
+  if (kind === "tasks") {
+    return (
+      <ListTodoIcon className={className} data-activity-trigger-icon="tasks" aria-hidden="true" />
+    );
   }
-  if (mode === "subagents") {
-    return <BotIcon className="size-3" aria-hidden="true" />;
+  if (kind === "subagents") {
+    return (
+      <BotIcon className={className} data-activity-trigger-icon="subagents" aria-hidden="true" />
+    );
   }
-  if (mode === "background") {
-    return <RadarIcon className="size-3" aria-hidden="true" />;
-  }
-  return <ListTodoIcon className="size-3" aria-hidden="true" />;
+  return (
+    <RadarIcon className={className} data-activity-trigger-icon="background" aria-hidden="true" />
+  );
 }
 
 function TriggerChip({ chip }: { chip: ActivityBadgeState }) {
   return (
     <span className="inline-flex min-w-0 items-center gap-0.5">
-      {chip.kind === "subagents" ? (
-        <BotIcon className="size-3 text-foreground/80" aria-hidden="true" />
-      ) : null}
-      {chip.kind === "background" ? (
-        <RadarIcon className="size-3 text-foreground/80" aria-hidden="true" />
-      ) : null}
+      <ActivityKindIcon kind={chip.kind} className="size-3 text-foreground/80" />
       <span className={chipClassName(chip.tone, chip.pulse)}>{chip.label}</span>
     </span>
   );
@@ -332,20 +336,17 @@ function TriggerChip({ chip }: { chip: ActivityBadgeState }) {
 function TriggerContent({ state }: { state: ActivityTriggerState }) {
   if (state.mode === "mixed") {
     return (
-      <>
-        <TriggerIcon mode={state.mode} />
-        <span className="flex min-w-0 items-center gap-0.5">
-          {state.chips.map((chip) => (
-            <TriggerChip key={chip.kind} chip={chip} />
-          ))}
-        </span>
-      </>
+      <span className="flex min-w-0 items-center gap-0.5">
+        {state.chips.map((chip) => (
+          <TriggerChip key={chip.kind} chip={chip} />
+        ))}
+      </span>
     );
   }
 
   return (
     <>
-      <TriggerIcon mode={state.mode} />
+      <ActivityKindIcon kind={state.mode} className="size-3" />
       {state.badge ? (
         <span className={badgeClassName(state.badge.tone, state.badge.pulse)}>
           {state.badge.label}
