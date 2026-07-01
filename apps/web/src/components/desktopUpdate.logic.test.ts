@@ -327,6 +327,25 @@ describe("getSidebarDesktopUpdateTagPresentation", () => {
     });
   });
 
+  it("keeps unknown download progress unlabeled in the compact tag", () => {
+    const state: DesktopUpdateState = {
+      ...baseState,
+      status: "downloading",
+      availableVersion: "1.1.0",
+      downloadPercent: null,
+    };
+
+    expect(getSidebarDesktopUpdateTagPresentation(state, "1.0.0")).toMatchObject({
+      action: "none",
+      disabled: true,
+      indicatorLabel: null,
+      label: "v1.0.0",
+      progressPercent: 0,
+      tone: "downloading",
+      tooltip: "Downloading",
+    });
+  });
+
   it("shows install failures as a retry prompt in the compact tag", () => {
     const state: DesktopUpdateState = {
       ...baseState,

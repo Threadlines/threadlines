@@ -3,6 +3,7 @@ import type { ServerProvider } from "@threadlines/contracts";
 import { XIcon } from "lucide-react";
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 
+import { useDismissedProviderUpdateNotificationKeys } from "../../providerUpdateDismissal";
 import { useServerProviders } from "../../rpc/serverState";
 import {
   getProviderUpdateSidebarPillView,
@@ -187,18 +188,18 @@ function sidebarProviderUpdatePrimaryTone(
 export function SidebarProviderUpdatePill() {
   const navigate = useNavigate();
   const providers = useServerProviders();
-  const [dismissedKeys, setDismissedKeys] = useState<ReadonlySet<string>>(() => new Set());
+  const { dismissedNotificationKeys, dismissNotificationKey } =
+    useDismissedProviderUpdateNotificationKeys();
   const [renderedView, setRenderedView] = useState<ProviderUpdateSidebarPillView | null>(null);
   const [pendingView, setPendingView] = useState<ProviderUpdateSidebarPillView | null>(null);
   const [exitingKey, setExitingKey] = useState<string | null>(null);
-  const [dismissAfterExitKey, setDismissAfterExitKey] = useState<string | null>(null);
   const [visibleAfterIso, setVisibleAfterIso] = useState<string | undefined>();
   const effectiveVisibleAfterIso = visibleAfterIso ?? latestProviderCheckedAt(providers);
   const view = getProviderUpdateSidebarPillView(providers, {
     ...(effectiveVisibleAfterIso !== undefined
       ? { visibleAfterIso: effectiveVisibleAfterIso }
       : {}),
-    dismissedKeys,
+    dismissedKeys: dismissedNotificationKeys,
   });
 
   useEffect(() => {
@@ -232,11 +233,13 @@ export function SidebarProviderUpdatePill() {
       if (exitingKey === key) {
         return;
       }
+      if (dismissKey !== undefined) {
+        dismissNotificationKey(dismissKey);
+      }
       setPendingView(nextView);
       setExitingKey(key);
-      setDismissAfterExitKey(dismissKey ?? null);
     },
-    [exitingKey],
+    [dismissNotificationKey, exitingKey],
   );
 
   useEffect(() => {
@@ -295,13 +298,9 @@ export function SidebarProviderUpdatePill() {
         if (!displayedView || exitingKey !== displayedView.key) {
           return;
         }
-        if (dismissAfterExitKey === displayedView.key) {
-          setDismissedKeys((previous) => new Set(previous).add(displayedView.key));
-        }
         setRenderedView(pendingView);
         setPendingView(null);
         setExitingKey(null);
-        setDismissAfterExitKey(null);
       }}
     >
       {showDismissProgress ? (

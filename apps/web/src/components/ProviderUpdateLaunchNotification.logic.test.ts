@@ -688,6 +688,35 @@ describe("provider update launch notification logic", () => {
     });
   });
 
+  it("does not resurface a dismissed sidebar success pill", () => {
+    const providers = [
+      provider({
+        driver: driver("codex"),
+        version: "1.1.0",
+        latestVersion: "1.1.0",
+        advisoryStatus: "current",
+        updateState: {
+          status: "succeeded",
+          startedAt: checkedAt,
+          finishedAt: checkedAt,
+          message: "Provider updated.",
+          output: null,
+        },
+      }),
+    ];
+    const successView = getProviderUpdateSidebarPillView(providers, {
+      visibleAfterIso: sessionStartedAt,
+    });
+
+    expect(successView?.key).toBe("succeeded:codex:2026-04-23T10:00:00.000Z:Provider updated.");
+    expect(
+      getProviderUpdateSidebarPillView(providers, {
+        visibleAfterIso: sessionStartedAt,
+        dismissedKeys: new Set([successView!.key]),
+      }),
+    ).toBeNull();
+  });
+
   it("keeps unchanged sidebar pill states dismissible", () => {
     const view = getProviderUpdateSidebarPillView(
       [

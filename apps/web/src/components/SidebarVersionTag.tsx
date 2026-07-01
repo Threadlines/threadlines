@@ -38,9 +38,10 @@ export function SidebarVersionTag() {
     isElectron ? state : null,
     COMPACT_APP_VERSION,
   );
-  const showProgressIndicator =
+  const hasKnownDownloadProgress =
     presentation.tone === "downloading" && presentation.indicatorLabel !== null;
-  const Icon = showProgressIndicator ? null : getUpdateIcon(presentation.tone);
+  const showDownloadProgressRail = presentation.tone === "downloading";
+  const Icon = hasKnownDownloadProgress ? null : getUpdateIcon(presentation.tone);
   const canRunAction =
     isElectron && state !== null && presentation.action !== "none" && !presentation.disabled;
 
@@ -108,7 +109,7 @@ export function SidebarVersionTag() {
 
   const tagClassName = cn(
     "relative inline-flex h-7 w-[4.25rem] shrink-0 items-center justify-center overflow-hidden rounded-md border px-1.5 text-[9px] font-medium leading-none tracking-tight tabular-nums transition-[background-color,border-color,color,box-shadow,opacity] duration-300",
-    showProgressIndicator && "w-[4.75rem]",
+    hasKnownDownloadProgress && "w-[4.75rem]",
     presentation.tone === "idle" &&
       "cursor-default border-transparent bg-transparent text-muted-foreground/40",
     presentation.tone === "available" &&
@@ -123,17 +124,32 @@ export function SidebarVersionTag() {
 
   const contents = (
     <>
-      <span
-        className={cn(
-          "pointer-events-none absolute inset-y-0 left-0 opacity-0 transition-[width,opacity] duration-500 ease-out",
-          presentation.tone === "downloading" && "bg-primary/16 opacity-100",
-        )}
-        style={{ width: `${presentation.progressPercent}%` }}
-      />
+      {showDownloadProgressRail ? (
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-1 bottom-1 h-0.5 overflow-hidden rounded-full bg-primary/14"
+          data-testid="desktop-update-progress-track"
+        >
+          <span
+            className={cn(
+              "absolute inset-y-0 left-0 rounded-full bg-primary-readable",
+              hasKnownDownloadProgress
+                ? "transition-[width] duration-300 ease-out"
+                : "w-[45%] desktop-update-indeterminate-rail",
+            )}
+            data-testid="desktop-update-progress-fill"
+            style={
+              hasKnownDownloadProgress ? { width: `${presentation.progressPercent}%` } : undefined
+            }
+          />
+        </span>
+      ) : null}
       <span
         className={cn(
           "relative z-10 inline-flex min-w-0 items-center justify-center gap-1",
-          presentation.tone === "downloading" && "motion-safe:animate-pulse",
+          presentation.tone === "downloading" &&
+            !hasKnownDownloadProgress &&
+            "motion-safe:animate-pulse",
         )}
       >
         <span className="min-w-0 truncate">{presentation.label}</span>
@@ -142,7 +158,9 @@ export function SidebarVersionTag() {
             className={cn(
               "shrink-0 -translate-y-px",
               presentation.tone === "error" ? "size-2.5" : "size-3",
-              presentation.tone === "available" && "motion-safe:animate-pulse",
+              (presentation.tone === "available" ||
+                (presentation.tone === "downloading" && !hasKnownDownloadProgress)) &&
+                "motion-safe:animate-pulse",
             )}
           />
         ) : null}

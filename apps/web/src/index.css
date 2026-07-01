@@ -821,6 +821,10 @@ label:has(> select#reasoning-effort) select {
   animation: provider-update-indeterminate-rail 1.45s cubic-bezier(0.45, 0, 0.2, 1) infinite;
 }
 
+.desktop-update-indeterminate-rail {
+  animation: provider-update-indeterminate-rail 1.45s cubic-bezier(0.45, 0, 0.2, 1) infinite;
+}
+
 .provider-update-active-dot {
   animation: provider-update-active-segment 1.4s ease-in-out infinite;
 }
@@ -833,6 +837,7 @@ label:has(> select#reasoning-effort) select {
 
 @media (prefers-reduced-motion: reduce) {
   .provider-update-indeterminate-rail,
+  .desktop-update-indeterminate-rail,
   .provider-update-active-dot {
     animation: none;
   }
