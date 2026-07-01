@@ -1263,11 +1263,13 @@ describe("SourceControlPanel commit graph", () => {
       configurable: true,
       value: { writeText },
     });
+    Reflect.deleteProperty(window, "nativeApi");
     await __resetLocalApiForTests();
   });
 
   afterEach(async () => {
     __resetEnvironmentApiOverridesForTests();
+    Reflect.deleteProperty(window, "nativeApi");
     await __resetLocalApiForTests();
   });
 
@@ -1399,7 +1401,7 @@ describe("SourceControlPanel commit graph", () => {
       await vi.waitFor(() => {
         expect(commitGraph).toHaveBeenLastCalledWith({ cwd: CWD, limit: 48 });
       });
-      await expect.element(page.getByText("Historical cleanup")).toBeVisible();
+      await expect.element(page.getByText("Historical cleanup", { exact: true })).toBeVisible();
       expect(document.body.textContent).not.toContain("Load 24 more");
       await expect
         .element(page.getByRole("button", { name: "Show 24 fewer commits" }))
@@ -1407,7 +1409,9 @@ describe("SourceControlPanel commit graph", () => {
 
       await page.getByRole("button", { name: "Show 24 fewer commits" }).click();
 
-      await expect.element(page.getByText("Historical cleanup")).not.toBeInTheDocument();
+      await expect
+        .element(page.getByText("Historical cleanup", { exact: true }))
+        .not.toBeInTheDocument();
       await expect
         .element(page.getByRole("button", { name: "Load 24 older commits" }))
         .toBeVisible();
@@ -1469,9 +1473,7 @@ describe("SourceControlPanel commit graph", () => {
       await expect.element(page.getByRole("button", { name: "Copied" })).toBeVisible();
       expect(gitActionMock.toastAdd).not.toHaveBeenCalled();
 
-      await page
-        .getByRole("button", { name: "Commit abc1234: Polish source control graph" })
-        .click();
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 
       await expect
         .element(page.getByText("Show full commit messages when a graph commit is pinned."))
@@ -1559,9 +1561,9 @@ describe("SourceControlPanel commit graph", () => {
 
     try {
       await page.getByRole("button", { name: "Load 24 older commits" }).click();
-      await expect.element(page.getByText("Historical cleanup")).toBeVisible();
+      await expect.element(page.getByText("Historical cleanup", { exact: true })).toBeVisible();
 
-      await page.getByText("Historical cleanup").click();
+      await page.getByText("Historical cleanup", { exact: true }).click();
 
       await vi.waitFor(() => {
         expect(commitDetails).toHaveBeenCalledWith({ cwd: CWD, sha: olderCommit.sha });

@@ -1600,7 +1600,7 @@ describe("GeneralSettingsPanel observability", () => {
       </AppAtomRegistryProvider>,
     );
 
-    await page.getByRole("button", { name: "Update available â€” view details" }).click();
+    await page.getByRole("button", { name: "Update available — view details" }).click();
 
     await expect
       .element(
