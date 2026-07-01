@@ -242,8 +242,10 @@ function assertMissing(path: string, message: string): void {
   }
 }
 
-function assertReleaseBuildIdentity(): void {
-  const macBuildConfig = Effect.runSync(
+async function assertReleaseBuildIdentity(): Promise<void> {
+  // createBuildConfig probes the filesystem for staged adaptive-icon assets,
+  // so it is an asynchronous effect and cannot run under Effect.runSync.
+  const macBuildConfig = await Effect.runPromise(
     createBuildConfig("mac", "dmg", "9.9.9-smoke.0", true, false, undefined).pipe(
       Effect.provide(NodeServices.layer),
     ),
@@ -266,7 +268,7 @@ function assertReleaseBuildIdentity(): void {
     "macOS release builds must keep the explicit afterSign notarization hook.",
   );
 
-  const windowsBuildConfig = Effect.runSync(
+  const windowsBuildConfig = await Effect.runPromise(
     createBuildConfig("win", "nsis", "9.9.9-smoke.0", true, false, undefined).pipe(
       Effect.provide(
         ConfigProvider.layer(
@@ -299,7 +301,7 @@ function assertReleaseBuildIdentity(): void {
 const tempRoot = mkdtempSync(join(tmpdir(), "threadlines-release-smoke-"));
 
 try {
-  assertReleaseBuildIdentity();
+  await assertReleaseBuildIdentity();
   copyWorkspaceManifestFixture(tempRoot);
 
   execFileSync(

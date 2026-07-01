@@ -1466,7 +1466,7 @@ describe("GeneralSettingsPanel observability", () => {
 
     await expect.element(page.getByText("Binary path")).toBeInTheDocument();
     await expect.element(page.getByLabelText("Binary path")).toHaveValue("claude");
-    await expect.element(page.getByText("Launch arguments")).toBeInTheDocument();
+    await expect.element(page.getByText("Launch arguments", { exact: true })).toBeInTheDocument();
     await expect.element(page.getByPlaceholder("e.g. --chrome")).toBeInTheDocument();
   });
 
@@ -1496,6 +1496,7 @@ describe("GeneralSettingsPanel observability", () => {
     );
 
     await page.getByLabelText("Toggle Claude details").click();
+    await page.getByRole("button", { name: "Models" }).click();
     await page.getByRole("button", { name: "Add Claude Sonnet 4.6 to fallback chain" }).click();
 
     await expect.element(page.getByText("fallback 1")).toBeInTheDocument();
