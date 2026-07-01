@@ -89,9 +89,6 @@ Bitbucket uses API tokens instead of a CLI tool:
    export THREADLINES_BITBUCKET_EMAIL="you@example.com"
    export THREADLINES_BITBUCKET_API_TOKEN="your-token"
    ```
-   Legacy `BADCODE_BITBUCKET_*` and `T3CODE_BITBUCKET_*` variables are still
-   accepted, but `THREADLINES_BITBUCKET_*` values take precedence when multiple
-   aliases are set.
 3. Restart Threadlines and verify the connection in **Source Control settings**
 
 ### For Azure DevOps

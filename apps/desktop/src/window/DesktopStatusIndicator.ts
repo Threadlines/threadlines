@@ -4,36 +4,18 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import { nativeImage } from "electron";
 import type * as Electron from "electron";
 
-import * as DesktopAssets from "../app/DesktopAssets.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronTray from "../electron/ElectronTray.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
+import * as DesktopStatusGlyphs from "./DesktopStatusGlyphs.ts";
 import * as DesktopWindow from "./DesktopWindow.ts";
 
-const MACOS_DOCK_PROGRESS_TICK_MS = 120;
-const MACOS_DOCK_PROGRESS_MIN = 0.12;
-const MACOS_DOCK_PROGRESS_MAX = 0.92;
-const MACOS_DOCK_PROGRESS_STEP = 0.055;
-const MACOS_COMPLETED_DOCK_BADGE = "1";
-const MACOS_COMPLETED_TRAY_TITLE = "OK";
-
-// 16x16 transparent PNG with a compact, anti-aliased blue dot.
-const TASKBAR_COMPLETE_OVERLAY_ICON_DATA_URL =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAASklEQVR42mNQTX7NQAlmGL4GGKsmv96gmvz6GxRvgIoRZYAxVNN/NPwNmyHYDNiARTMMbyDGgG94DPhGFwMo9gLFgUhxNI60vAAACfilkKE3QbkAAAAASUVORK5CYII=";
-
-let cachedTaskbarCompleteOverlayIcon: Electron.NativeImage | null = null;
-
-function getTaskbarCompleteOverlayIcon(): Electron.NativeImage {
-  cachedTaskbarCompleteOverlayIcon ??= nativeImage.createFromDataURL(
-    TASKBAR_COMPLETE_OVERLAY_ICON_DATA_URL,
-  );
-  return cachedTaskbarCompleteOverlayIcon;
-}
+const THREAD_COUNT_DISPLAY_MAX = 99;
+const MACOS_TRAY_TITLE_OPTIONS = { fontType: "monospacedDigit" } as const;
 
 export interface DesktopStatusIndicatorShape {
   readonly configure: Effect.Effect<void>;
@@ -46,6 +28,12 @@ export class DesktopStatusIndicator extends Context.Service<
 >()("threadlines/desktop/StatusIndicator") {}
 
 type DesktopStatusIndicatorRuntimeServices = DesktopWindow.DesktopWindow | ElectronApp.ElectronApp;
+
+interface MacTrayImages {
+  readonly idle: Electron.NativeImage;
+  readonly workingFrames: readonly Electron.NativeImage[];
+  readonly completedFrames: readonly Electron.NativeImage[];
+}
 
 const { logWarning: logStatusWarning, logError: logStatusError } =
   DesktopObservability.makeComponentLogger("desktop-status");
@@ -62,6 +50,15 @@ function normalizeRunningThreadCount(input: DesktopTaskbarStatusInput): number {
   return Math.floor(count);
 }
 
+function normalizeCompletedThreadCount(input: DesktopTaskbarStatusInput): number {
+  const count = input.completedThreadCount;
+  if (typeof count !== "number" || !Number.isFinite(count) || count <= 0) {
+    // A completed status always represents at least one finished thread.
+    return 1;
+  }
+  return Math.floor(count);
+}
+
 function resolveStatusDescription(input: DesktopTaskbarStatusInput): string {
   const description = input.description?.trim();
   if (description) {
@@ -69,70 +66,78 @@ function resolveStatusDescription(input: DesktopTaskbarStatusInput): string {
   }
 
   switch (input.status) {
-    case "working": {
-      const count = normalizeRunningThreadCount(input);
-      if (count === 1) return "One chat is working";
-      if (count > 1) return `${count} chats are working`;
-      return "Chats are working";
-    }
+    case "working":
     case "completed":
-      return "Chat completed";
+      return resolveStatusMenuLabel(input);
     case "idle":
-      return "No chats are working";
+      return "No active agent sessions";
   }
+}
+
+function formatThreadCount(count: number): string {
+  return count > THREAD_COUNT_DISPLAY_MAX ? `${THREAD_COUNT_DISPLAY_MAX}+` : String(count);
 }
 
 function resolveTrayTitle(input: DesktopTaskbarStatusInput): string {
   if (input.status === "working") {
     const count = normalizeRunningThreadCount(input);
-    return count > 0 ? String(count) : "";
-  }
-  if (input.status === "completed") {
-    return MACOS_COMPLETED_TRAY_TITLE;
+    return count > 0 ? formatThreadCount(count) : "";
   }
   return "";
 }
 
 function resolveTrayTooltip(appName: string, input: DesktopTaskbarStatusInput): string {
-  return `${appName}: ${resolveStatusDescription(input)}`;
+  return `${appName}: ${resolveStatusMenuLabel(input)}`;
 }
 
 function resolveStatusMenuLabel(input: DesktopTaskbarStatusInput): string {
-  return `Status: ${resolveStatusDescription(input)}`;
+  switch (input.status) {
+    case "working": {
+      const count = normalizeRunningThreadCount(input);
+      if (count === 1) return "1 thread running";
+      if (count > 1) return `${count} threads running`;
+      return "Threads running";
+    }
+    case "completed": {
+      const count = normalizeCompletedThreadCount(input);
+      return count > 1 ? `${count} threads completed` : "Thread completed";
+    }
+    case "idle":
+      return "Ready";
+  }
+}
+
+function resolveStatusMenuSublabel(input: DesktopTaskbarStatusInput): string {
+  switch (input.status) {
+    case "working":
+      return "Coding agents are active";
+    case "completed":
+      return "Latest work finished";
+    case "idle":
+      return "No active agent sessions";
+  }
 }
 
 function createDefaultStatus(): DesktopTaskbarStatusInput {
-  return { status: "idle", description: "No chats are working" };
-}
-
-function setWindowProgress(window: Electron.BrowserWindow, progress: number): boolean {
-  if (!isUsableWindow(window)) {
-    return false;
-  }
-
-  try {
-    window.setProgressBar(progress);
-    return true;
-  } catch {
-    return false;
-  }
+  return { status: "idle", description: "No active agent sessions" };
 }
 
 const make = Effect.gen(function* () {
-  const assets = yield* DesktopAssets.DesktopAssets;
   const electronApp = yield* ElectronApp.ElectronApp;
   const electronTray = yield* ElectronTray.ElectronTray;
   const electronWindow = yield* ElectronWindow.ElectronWindow;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const context = yield* Effect.context<DesktopStatusIndicatorRuntimeServices>();
   const runPromise = Effect.runPromiseWith(context);
-  const appName = yield* electronApp.name;
+  const appName = environment.displayName;
 
   let currentStatus = createDefaultStatus();
   let tray: Electron.Tray | null = null;
-  let macDockProgressWindow: Electron.BrowserWindow | null = null;
-  let macDockProgressTimer: ReturnType<typeof setInterval> | null = null;
+  let macTrayImages: MacTrayImages | null = null;
+  let macTrayAnimationTimer: ReturnType<typeof setInterval> | null = null;
+  let macTrayRenderedStatus: DesktopTaskbarStatusInput["status"] | null = null;
   let macDockBounceId: number | null = null;
+  const taskbarOverlayIcons = new Map<DesktopStatusGlyphs.TrayGlyph, Electron.NativeImage>();
 
   const runTrayEffect = <E>(
     action: string,
@@ -158,12 +163,136 @@ const make = Effect.gen(function* () {
       yield* desktopWindow.dispatchMenuAction(action);
     });
 
+  const createTrayImageFrames = (glyphs: readonly DesktopStatusGlyphs.TrayGlyph[]) =>
+    Effect.gen(function* () {
+      const frames: Electron.NativeImage[] = [];
+      for (const glyph of glyphs) {
+        const frame = yield* electronTray.createTemplateImage(glyph.representations);
+        if (Option.isNone(frame)) {
+          return Option.none<Electron.NativeImage[]>();
+        }
+        frames.push(frame.value);
+      }
+      return Option.some(frames);
+    });
+
+  const createMacTrayImages = Effect.gen(function* () {
+    const glyphs = DesktopStatusGlyphs.makeMacTrayGlyphSet();
+    const idle = yield* createTrayImageFrames([glyphs.idle]);
+    const workingFrames = yield* createTrayImageFrames(glyphs.workingFrames);
+    const completedFrames = yield* createTrayImageFrames(glyphs.completedFrames);
+    if (
+      Option.isNone(idle) ||
+      Option.isNone(workingFrames) ||
+      Option.isNone(completedFrames) ||
+      idle.value[0] === undefined
+    ) {
+      return Option.none<MacTrayImages>();
+    }
+
+    return Option.some({
+      idle: idle.value[0],
+      workingFrames: workingFrames.value,
+      completedFrames: completedFrames.value,
+    });
+  });
+
+  const setMacTrayImage = (image: Electron.NativeImage) => {
+    const currentTray = tray;
+    if (currentTray === null) {
+      return;
+    }
+
+    try {
+      currentTray.setImage(image);
+    } catch {
+      clearMacTrayAnimation();
+    }
+  };
+
+  const clearMacTrayAnimation = () => {
+    if (macTrayAnimationTimer !== null) {
+      clearInterval(macTrayAnimationTimer);
+      macTrayAnimationTimer = null;
+    }
+  };
+
+  const playMacTrayFrames = (
+    frames: readonly Electron.NativeImage[],
+    input: { readonly loop: boolean; readonly frameMs: number },
+  ) => {
+    clearMacTrayAnimation();
+    const first = frames[0];
+    if (first === undefined) {
+      return;
+    }
+
+    setMacTrayImage(first);
+    if (frames.length === 1) {
+      return;
+    }
+
+    let frameIndex = 1;
+    macTrayAnimationTimer = setInterval(() => {
+      const frame = frames[frameIndex];
+      if (frame === undefined || tray === null) {
+        clearMacTrayAnimation();
+        return;
+      }
+
+      setMacTrayImage(frame);
+      frameIndex += 1;
+      if (frameIndex >= frames.length) {
+        if (input.loop) {
+          frameIndex = 0;
+        } else {
+          clearMacTrayAnimation();
+        }
+      }
+    }, input.frameMs);
+  };
+
+  const syncMacTrayImage = () => {
+    const images = macTrayImages;
+    if (tray === null || images === null) {
+      return;
+    }
+
+    // Count or description updates within the same status must not restart the
+    // running animation.
+    if (currentStatus.status === macTrayRenderedStatus) {
+      return;
+    }
+    macTrayRenderedStatus = currentStatus.status;
+
+    switch (currentStatus.status) {
+      case "working":
+        playMacTrayFrames(images.workingFrames, {
+          loop: true,
+          frameMs: DesktopStatusGlyphs.TRAY_WORKING_FRAME_INTERVAL_MS,
+        });
+        return;
+      case "completed":
+        playMacTrayFrames(images.completedFrames, {
+          loop: false,
+          frameMs: DesktopStatusGlyphs.TRAY_COMPLETED_FRAME_INTERVAL_MS,
+        });
+        return;
+      case "idle":
+        clearMacTrayAnimation();
+        setMacTrayImage(images.idle);
+        return;
+    }
+  };
+
   const buildTrayMenuTemplate = (
     status: DesktopTaskbarStatusInput,
   ): Electron.MenuItemConstructorOptions[] => [
     {
       label: resolveStatusMenuLabel(status),
+      sublabel: resolveStatusMenuSublabel(status),
       enabled: false,
+      toolTip: resolveStatusDescription(status),
     },
     { type: "separator" },
     {
@@ -182,7 +311,7 @@ const make = Effect.gen(function* () {
       click: () => runTrayEffect("new-thread", dispatchRendererAction("new-thread")),
     },
     {
-      label: "Settings...",
+      label: "Settings…",
       click: () => runTrayEffect("open-settings", dispatchRendererAction("open-settings")),
     },
     { type: "separator" },
@@ -209,54 +338,12 @@ const make = Effect.gen(function* () {
       if (tray === null) {
         return;
       }
-      tray.setTitle(resolveTrayTitle(currentStatus));
+      tray.setTitle(resolveTrayTitle(currentStatus), MACOS_TRAY_TITLE_OPTIONS);
       tray.setToolTip(resolveTrayTooltip(appName, currentStatus));
       tray.setContextMenu(menu);
+      syncMacTrayImage();
     });
   });
-
-  const clearMacDockProgress = () => {
-    if (macDockProgressTimer !== null) {
-      clearInterval(macDockProgressTimer);
-      macDockProgressTimer = null;
-    }
-
-    const window = macDockProgressWindow;
-    macDockProgressWindow = null;
-    if (window !== null) {
-      setWindowProgress(window, -1);
-    }
-  };
-
-  const startMacDockProgress = (window: Electron.BrowserWindow) => {
-    if (macDockProgressWindow === window && macDockProgressTimer !== null) {
-      return;
-    }
-
-    clearMacDockProgress();
-    macDockProgressWindow = window;
-    let progress = MACOS_DOCK_PROGRESS_MIN;
-    let direction = 1;
-
-    const tick = () => {
-      if (macDockProgressWindow === null || !setWindowProgress(macDockProgressWindow, progress)) {
-        clearMacDockProgress();
-        return;
-      }
-
-      progress += MACOS_DOCK_PROGRESS_STEP * direction;
-      if (progress >= MACOS_DOCK_PROGRESS_MAX) {
-        progress = MACOS_DOCK_PROGRESS_MAX;
-        direction = -1;
-      } else if (progress <= MACOS_DOCK_PROGRESS_MIN) {
-        progress = MACOS_DOCK_PROGRESS_MIN;
-        direction = 1;
-      }
-    };
-
-    tick();
-    macDockProgressTimer = setInterval(tick, MACOS_DOCK_PROGRESS_TICK_MS);
-  };
 
   const cancelMacDockBounce = Effect.gen(function* () {
     if (macDockBounceId === null) {
@@ -267,6 +354,20 @@ const make = Effect.gen(function* () {
     macDockBounceId = null;
     yield* electronApp.cancelDockBounce(bounceId);
   });
+
+  const getTaskbarOverlayIcon = (input: DesktopStatusGlyphs.TaskbarOverlayChipInput) =>
+    Effect.gen(function* () {
+      const glyph = DesktopStatusGlyphs.makeTaskbarOverlayChip(input);
+      const cached = taskbarOverlayIcons.get(glyph);
+      if (cached !== undefined) {
+        return Option.some(cached);
+      }
+      const icon = yield* electronTray.createImage(glyph.representations);
+      if (Option.isSome(icon)) {
+        taskbarOverlayIcons.set(glyph, icon.value);
+      }
+      return icon;
+    });
 
   const applyWindowsStatus = Effect.fn("desktop.status.applyWindows")(function* (
     input: DesktopTaskbarStatusInput,
@@ -285,28 +386,46 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    yield* Effect.sync(() => {
-      const description = input.description ?? "";
-      switch (input.status) {
-        case "working":
+    const description = input.description ?? "";
+    switch (input.status) {
+      case "working": {
+        const count = normalizeRunningThreadCount(input);
+        const overlay =
+          count > 0
+            ? yield* getTaskbarOverlayIcon({ kind: "running", count })
+            : Option.none<Electron.NativeImage>();
+        yield* Effect.sync(() => {
           window.flashFrame(false);
-          window.setOverlayIcon(null, "");
+          window.setOverlayIcon(
+            Option.getOrNull(overlay),
+            Option.isSome(overlay) ? description : "",
+          );
           window.setProgressBar(2, { mode: "indeterminate" });
-          return;
-        case "completed":
+        });
+        return;
+      }
+      case "completed": {
+        const overlay = yield* getTaskbarOverlayIcon({
+          kind: "completed",
+          count: normalizeCompletedThreadCount(input),
+        });
+        yield* Effect.sync(() => {
           window.setProgressBar(-1);
-          window.setOverlayIcon(getTaskbarCompleteOverlayIcon(), description);
+          window.setOverlayIcon(Option.getOrNull(overlay), description);
           if (!window.isFocused()) {
             window.flashFrame(true);
           }
-          return;
-        case "idle":
+        });
+        return;
+      }
+      case "idle":
+        yield* Effect.sync(() => {
           window.flashFrame(false);
           window.setOverlayIcon(null, "");
           window.setProgressBar(-1);
-          return;
-      }
-    });
+        });
+        return;
+    }
   });
 
   const applyMacStatus = Effect.fn("desktop.status.applyMac")(function* (
@@ -319,17 +438,16 @@ const make = Effect.gen(function* () {
     const maybeWindow = yield* electronWindow.currentMainOrFirst;
     const window = Option.getOrNull(maybeWindow);
 
+    // The Dock stays quiet while working — the menu bar status item is the
+    // macOS activity surface. The badge is reserved for finished work that
+    // has not been seen yet, mirroring Mail's unread semantics.
     switch (input.status) {
       case "working":
         yield* cancelMacDockBounce;
         yield* electronApp.setDockBadge("");
-        if (window !== null && isUsableWindow(window)) {
-          startMacDockProgress(window);
-        }
         return;
       case "completed": {
-        clearMacDockProgress();
-        yield* electronApp.setDockBadge(MACOS_COMPLETED_DOCK_BADGE);
+        yield* electronApp.setDockBadge(formatThreadCount(normalizeCompletedThreadCount(input)));
         if (window !== null && isUsableWindow(window) && !window.isFocused()) {
           yield* cancelMacDockBounce;
           const bounceId = yield* electronApp.bounceDock("informational");
@@ -338,7 +456,6 @@ const make = Effect.gen(function* () {
         return;
       }
       case "idle":
-        clearMacDockProgress();
         yield* cancelMacDockBounce;
         yield* electronApp.setDockBadge("");
         return;
@@ -350,24 +467,16 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    const iconPaths = yield* assets.iconPaths;
-    if (Option.isNone(iconPaths.png)) {
-      yield* logStatusWarning("macOS status item skipped because no PNG icon is available");
-      return;
-    }
-
-    const trayImage = yield* electronTray.createTemplateImageFromPath(iconPaths.png.value);
-    if (Option.isNone(trayImage)) {
+    const trayImages = yield* createMacTrayImages;
+    if (Option.isNone(trayImages)) {
       yield* logStatusWarning(
-        "macOS status item skipped because the PNG icon could not be loaded",
-        {
-          iconPath: iconPaths.png.value,
-        },
+        "macOS status item skipped because the generated tray icons could not be loaded",
       );
       return;
     }
 
-    tray = yield* electronTray.create(trayImage.value);
+    macTrayImages = trayImages.value;
+    tray = yield* electronTray.create(trayImages.value.idle);
     yield* updateTray();
   }).pipe(Effect.withSpan("desktop.status.configure"));
 

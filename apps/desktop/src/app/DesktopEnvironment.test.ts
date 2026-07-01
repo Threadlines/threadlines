@@ -50,28 +50,31 @@ describe("DesktopEnvironment", () => {
       const environment = yield* makeEnvironment(
         {},
         {
-          T3CODE_HOME: " /tmp/t3 ",
-          T3CODE_COMMIT_HASH: " 0123456789abcdef ",
-          T3CODE_PORT: "4949",
+          THREADLINES_HOME: " /tmp/threadlines ",
+          THREADLINES_COMMIT_HASH: " 0123456789abcdef ",
+          THREADLINES_PORT: "4949",
           VITE_DEV_SERVER_URL: "http://localhost:5173",
-          T3CODE_DEV_REMOTE_T3_SERVER_ENTRY_PATH: " /remote/server.mjs ",
-          T3CODE_OTLP_TRACES_URL: " http://127.0.0.1:4318/v1/traces ",
-          T3CODE_OTLP_EXPORT_INTERVAL_MS: "2500",
+          THREADLINES_DEV_REMOTE_THREADLINES_SERVER_ENTRY_PATH: " /remote/server.mjs ",
+          THREADLINES_OTLP_TRACES_URL: " http://127.0.0.1:4318/v1/traces ",
+          THREADLINES_OTLP_EXPORT_INTERVAL_MS: "2500",
         },
       );
 
       assert.equal(environment.isDevelopment, true);
       assertPathEqual(environment.appDataDirectory, "/Users/alice/Library/Application Support");
-      assertPathEqual(environment.baseDir, "/tmp/t3");
-      assertPathEqual(environment.stateDir, "/tmp/t3/dev");
-      assertPathEqual(environment.desktopSettingsPath, "/tmp/t3/dev/desktop-settings.json");
-      assertPathEqual(environment.clientSettingsPath, "/tmp/t3/dev/client-settings.json");
+      assertPathEqual(environment.baseDir, "/tmp/threadlines");
+      assertPathEqual(environment.stateDir, "/tmp/threadlines/dev");
+      assertPathEqual(
+        environment.desktopSettingsPath,
+        "/tmp/threadlines/dev/desktop-settings.json",
+      );
+      assertPathEqual(environment.clientSettingsPath, "/tmp/threadlines/dev/client-settings.json");
       assertPathEqual(
         environment.savedEnvironmentRegistryPath,
-        "/tmp/t3/dev/saved-environments.json",
+        "/tmp/threadlines/dev/saved-environments.json",
       );
-      assertPathEqual(environment.serverSettingsPath, "/tmp/t3/dev/settings.json");
-      assertPathEqual(environment.logDir, "/tmp/t3/dev/logs");
+      assertPathEqual(environment.serverSettingsPath, "/tmp/threadlines/dev/settings.json");
+      assertPathEqual(environment.logDir, "/tmp/threadlines/dev/logs");
       assertPathEqual(environment.rootDir, "/repo");
       assertPathEqual(environment.appRoot, "/repo");
       assertPathEqual(environment.developmentDockIconPath, "/repo/apps/desktop/resources/icon.png");
@@ -85,7 +88,7 @@ describe("DesktopEnvironment", () => {
         Option.some("http://localhost:5173/"),
       );
       assert.deepEqual(
-        Option.map(environment.devRemoteT3ServerEntryPath, toPortablePath),
+        Option.map(environment.devRemoteThreadlinesServerEntryPath, toPortablePath),
         Option.some("/remote/server.mjs"),
       );
       assert.deepEqual(environment.configuredBackendPort, Option.some(4949));
@@ -102,7 +105,7 @@ describe("DesktopEnvironment", () => {
         {},
         {
           VITE_DEV_SERVER_URL: "http://localhost:5173",
-          T3CODE_DESKTOP_OPEN_DEVTOOLS: "true",
+          THREADLINES_DESKTOP_OPEN_DEVTOOLS: "true",
         },
       );
 
@@ -115,16 +118,16 @@ describe("DesktopEnvironment", () => {
       const environment = yield* makeEnvironment(
         {},
         {
-          T3CODE_HOME: "/tmp/t3",
+          THREADLINES_HOME: "/tmp/threadlines",
         },
       );
 
       assert.equal(environment.isDevelopment, false);
       assert.equal(environment.displayName, "Threadlines");
       assert.equal(environment.appUserModelId, DESKTOP_RELEASE_APP_ID);
-      assertPathEqual(environment.stateDir, "/tmp/t3/userdata");
-      assertPathEqual(environment.logDir, "/tmp/t3/userdata/logs");
-      assertPathEqual(environment.serverSettingsPath, "/tmp/t3/userdata/settings.json");
+      assertPathEqual(environment.stateDir, "/tmp/threadlines/userdata");
+      assertPathEqual(environment.logDir, "/tmp/threadlines/userdata/logs");
+      assertPathEqual(environment.serverSettingsPath, "/tmp/threadlines/userdata/settings.json");
     }),
   );
 

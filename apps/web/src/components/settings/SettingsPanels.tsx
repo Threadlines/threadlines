@@ -7,7 +7,7 @@ import {
   Trash2Icon,
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useMemo, useRef, useState } from "react";
 import {
   AUTO_ARCHIVE_INACTIVE_THREADS_DAY_OPTIONS,
@@ -20,9 +20,10 @@ import {
   type ProviderInstanceId,
   type ScopedThreadRef,
 } from "@threadlines/contracts";
-import { scopeThreadRef } from "@threadlines/client-runtime";
+import { scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
 import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
 import { createModelSelection } from "@threadlines/shared/model";
+import { projectScriptCwd, projectScriptRuntimeEnv } from "@threadlines/shared/projectScripts";
 import * as Duration from "effect/Duration";
 import * as Equal from "effect/Equal";
 import { APP_VERSION } from "../../branding";
@@ -62,8 +63,11 @@ import {
 import { ensureLocalApi, readLocalApi } from "../../localApi";
 import { useShallow } from "zustand/react/shallow";
 import {
+  type AppState,
+  selectProjectByRef,
   selectProjectsAcrossEnvironments,
   selectSidebarThreadsAcrossEnvironments,
+  selectThreadByRef,
   useStore,
 } from "../../store";
 import {
@@ -119,6 +123,13 @@ import {
 import { ProjectFavicon } from "../ProjectFavicon";
 import { useServerObservability, useServerProviders } from "../../rpc/serverState";
 import { newCommandId } from "../../lib/utils";
+import {
+  selectTerminalCommandTargetId,
+  selectThreadTerminalState,
+  useTerminalStateStore,
+} from "../../terminalStateStore";
+import { useUiStateStore } from "../../uiStateStore";
+import type { ProviderAccountTerminalCommandRequest } from "./ProviderInstanceCard";
 
 const THEME_OPTIONS = [
   {
@@ -145,6 +156,8 @@ const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("codex");
 const MAINTAINED_PROVIDER_DRIVER_KINDS = DRIVER_OPTIONS.map((definition) => definition.value);
 const INACTIVE_THREAD_ARCHIVE_COMMAND_DELAY_MS = 25;
 const ARCHIVED_THREAD_DELETE_COMMAND_DELAY_MS = 25;
+const PROVIDER_AUTH_TERMINAL_COLS = 120;
+const PROVIDER_AUTH_TERMINAL_ROWS = 30;
 const DEFAULT_ARCHIVED_THREAD_DELETE_AGE_DAYS: ArchivedThreadDeleteAgeDays = 90;
 
 function waitForInactiveThreadArchiveCommandSlot(): Promise<void> {
@@ -402,6 +415,125 @@ function AboutVersionSection() {
   );
 }
 
+function useProviderAccountTerminalRunner():
+  | ((request: ProviderAccountTerminalCommandRequest) => Promise<void>)
+  | undefined {
+  const navigate = useNavigate();
+  const lastChatThreadRef = useUiStateStore((state) => state.lastChatThreadRef);
+  const thread = useStore(
+    useMemo(
+      () => (state: AppState) => selectThreadByRef(state, lastChatThreadRef),
+      [lastChatThreadRef],
+    ),
+  );
+  const projectRef = useMemo(
+    () => (thread ? scopeProjectRef(thread.environmentId, thread.projectId) : null),
+    [thread],
+  );
+  const project = useStore(
+    useMemo(() => (state: AppState) => selectProjectByRef(state, projectRef), [projectRef]),
+  );
+
+  return useMemo(() => {
+    if (!lastChatThreadRef || !thread || !project) {
+      return undefined;
+    }
+
+    return async (request: ProviderAccountTerminalCommandRequest) => {
+      const api = readEnvironmentApi(lastChatThreadRef.environmentId);
+      if (!api) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not open auth terminal",
+            description: "The environment API is unavailable.",
+          }),
+        );
+        return;
+      }
+
+      const worktreePath = thread.worktreePath ?? null;
+      const cwd = projectScriptCwd({
+        project: { cwd: project.cwd },
+        worktreePath,
+      });
+      const runtimeEnv = projectScriptRuntimeEnv({
+        project: { cwd: project.cwd },
+        worktreePath,
+      });
+      const terminalStore = useTerminalStateStore.getState();
+      const terminalState = selectThreadTerminalState(
+        terminalStore.terminalStateByThreadKey,
+        lastChatThreadRef,
+      );
+      const terminalId = selectTerminalCommandTargetId(
+        terminalStore,
+        lastChatThreadRef,
+        request.terminalId,
+      );
+
+      terminalStore.setTerminalLaunchContext(lastChatThreadRef, { cwd, worktreePath });
+      terminalStore.ensureTerminal(lastChatThreadRef, terminalId, { open: true, active: true });
+      if (terminalState.runningTerminalIds.includes(terminalId)) {
+        await navigate({
+          to: "/$environmentId/$threadId",
+          params: {
+            environmentId: lastChatThreadRef.environmentId,
+            threadId: lastChatThreadRef.threadId,
+          },
+        });
+        toastManager.add({
+          type: "warning",
+          title: `${request.title} terminal is already running`,
+          description: "Finish or close the current auth command before starting another one.",
+        });
+        return;
+      }
+      terminalStore.setTerminalSubmittedCommand(lastChatThreadRef, terminalId, request.command);
+
+      try {
+        await api.terminal.open({
+          threadId: lastChatThreadRef.threadId,
+          terminalId,
+          cwd,
+          ...(worktreePath !== null ? { worktreePath } : {}),
+          env: runtimeEnv,
+          cols: PROVIDER_AUTH_TERMINAL_COLS,
+          rows: PROVIDER_AUTH_TERMINAL_ROWS,
+        });
+        await api.terminal.write({
+          threadId: lastChatThreadRef.threadId,
+          terminalId,
+          data: `${request.command}\r`,
+        });
+        await navigate({
+          to: "/$environmentId/$threadId",
+          params: {
+            environmentId: lastChatThreadRef.environmentId,
+            threadId: lastChatThreadRef.threadId,
+          },
+        });
+        toastManager.add({
+          type: "success",
+          title: `${request.title} started`,
+          description: "The command is running in the thread terminal.",
+        });
+      } catch (error) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: `Could not start ${request.title.toLowerCase()}`,
+            description:
+              error instanceof Error
+                ? error.message
+                : "Threadlines could not write the command to the terminal.",
+          }),
+        );
+      }
+    };
+  }, [lastChatThreadRef, navigate, project, thread]);
+}
+
 export function useSettingsRestore(onRestored?: () => void) {
   const { theme, setTheme } = useTheme();
   const settings = useSettings();
@@ -445,6 +577,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.enableAssistantStreaming !== DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming
         ? ["Agent responses"]
         : []),
+      ...(settings.usageAnalyticsEnabled !== DEFAULT_UNIFIED_SETTINGS.usageAnalyticsEnabled
+        ? ["Usage analytics"]
+        : []),
       ...(Duration.toMillis(settings.automaticGitFetchInterval) !==
       Duration.toMillis(DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval)
         ? ["Automatic Git fetch interval"]
@@ -478,6 +613,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.diffWordWrap,
       settings.automaticGitFetchInterval,
       settings.enableAssistantStreaming,
+      settings.usageAnalyticsEnabled,
       settings.sidebarThreadPreviewCount,
       settings.timestampFormat,
       theme,
@@ -504,6 +640,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount,
       autoArchiveInactiveThreadsDays: DEFAULT_UNIFIED_SETTINGS.autoArchiveInactiveThreadsDays,
       enableAssistantStreaming: DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming,
+      usageAnalyticsEnabled: DEFAULT_UNIFIED_SETTINGS.usageAnalyticsEnabled,
       automaticGitFetchInterval: DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval,
       defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
       addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
@@ -1095,15 +1232,43 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
           />
         )}
         {!isPhoneSurface ? (
-          <SettingsRow
-            title="Diagnostics"
-            description={diagnosticsDescription}
-            control={
-              <Button render={<Link to="/settings/diagnostics" />} size="xs" variant="outline">
-                View diagnostics
-              </Button>
-            }
-          />
+          <>
+            <SettingsRow
+              title="Usage analytics"
+              description="Share anonymous usage events so we can understand installs, active usage, providers, and reliability. Threadlines does not send prompts, code, file paths, repository names, terminal output, or secrets."
+              resetAction={
+                settings.usageAnalyticsEnabled !==
+                DEFAULT_UNIFIED_SETTINGS.usageAnalyticsEnabled ? (
+                  <SettingResetButton
+                    label="usage analytics"
+                    onClick={() =>
+                      updateSettings({
+                        usageAnalyticsEnabled: DEFAULT_UNIFIED_SETTINGS.usageAnalyticsEnabled,
+                      })
+                    }
+                  />
+                ) : null
+              }
+              control={
+                <Switch
+                  checked={settings.usageAnalyticsEnabled}
+                  onCheckedChange={(checked) =>
+                    updateSettings({ usageAnalyticsEnabled: Boolean(checked) })
+                  }
+                  aria-label="Share anonymous usage analytics"
+                />
+              }
+            />
+            <SettingsRow
+              title="Diagnostics"
+              description={diagnosticsDescription}
+              control={
+                <Button render={<Link to="/settings/diagnostics" />} size="xs" variant="outline">
+                  View diagnostics
+                </Button>
+              }
+            />
+          </>
         ) : (
           <SettingsRow
             title="Phone settings"
@@ -1119,6 +1284,7 @@ export function ProviderSettingsPanel() {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
   const serverProviders = useServerProviders();
+  const runProviderTerminalCommand = useProviderAccountTerminalRunner();
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
   const [isAddInstanceDialogOpen, setIsAddInstanceDialogOpen] = useState(false);
   const [updatingProviderDrivers, setUpdatingProviderDrivers] = useState<
@@ -1551,6 +1717,7 @@ export function ProviderSettingsPanel() {
                     ? isConsumingRateLimitResetCredit
                     : undefined
                 }
+                onRunTerminalCommand={runProviderTerminalCommand}
               />
             );
           })}

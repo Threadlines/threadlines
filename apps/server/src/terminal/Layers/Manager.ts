@@ -696,10 +696,6 @@ function localProjectBinPathEntries(input: {
   appendRoot(input.worktreePath);
   appendRoot(input.runtimeEnv?.THREADLINES_WORKTREE_PATH);
   appendRoot(input.runtimeEnv?.THREADLINES_PROJECT_ROOT);
-  appendRoot(input.runtimeEnv?.BADCODE_WORKTREE_PATH);
-  appendRoot(input.runtimeEnv?.BADCODE_PROJECT_ROOT);
-  appendRoot(input.runtimeEnv?.T3CODE_WORKTREE_PATH);
-  appendRoot(input.runtimeEnv?.T3CODE_PROJECT_ROOT);
   return entries;
 }
 

@@ -9,7 +9,7 @@
  * that the builder may compact.
  *
  * Kept dependency-free (no Effect, no IO) so it is trivially unit-testable and
- * usable from any package. See `.plans/18-cross-provider-switching.md`.
+ * usable from any package.
  *
  * @module contextSeed
  */

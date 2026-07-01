@@ -854,6 +854,119 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  it("forwards privacy-safe fork telemetry context with source and target models", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-fork-source"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-fork-source"),
+          role: "user",
+          text: "Build the first version.",
+          attachments: [],
+        },
+        modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5-codex"),
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.fork",
+        commandId: CommandId.make("cmd-thread-fork-telemetry"),
+        threadId: ThreadId.make("thread-fork"),
+        sourceThreadId: ThreadId.make("thread-1"),
+        sourceMessageId: asMessageId("user-message-fork-source"),
+        message: {
+          messageId: asMessageId("user-message-fork"),
+          role: "user",
+          text: "Try the same idea with Claude.",
+        },
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-sonnet-4-6",
+        ),
+        runtimeMode: "approval-required",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        workspaceMode: "current",
+        includeAttachments: true,
+        projectId: asProjectId("project-1"),
+        title: "Forked Thread",
+        branch: null,
+        worktreePath: null,
+        forkContext: {
+          sourceThreadId: ThreadId.make("thread-1"),
+          sourceThreadTitle: "Thread",
+          sourceMessageId: asMessageId("user-message-fork-source"),
+          sourceMessageRole: "user",
+          sourceMessageText: "Build the first version.",
+          sourceMessageCreatedAt: now,
+          workspaceMode: "current",
+          includedMessageCount: 1,
+          includedToolSummaryCount: 0,
+          includedAttachmentCount: 0,
+          omittedAttachmentCount: 0,
+          contextText: "Carried fork context.",
+          attachments: [],
+          modelSelection: createModelSelection(
+            ProviderInstanceId.make("claudeAgent"),
+            "claude-sonnet-4-6",
+          ),
+          createdAt: "2026-01-01T00:00:01.000Z",
+        },
+        providerContext: "Carried fork context.",
+        providerAttachments: [],
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    expect(harness.sendTurn.mock.calls[1]?.[0]).toMatchObject({
+      threadId: ThreadId.make("thread-fork"),
+      messageId: asMessageId("user-message-fork"),
+      modelSelection: createModelSelection(
+        ProviderInstanceId.make("claudeAgent"),
+        "claude-sonnet-4-6",
+      ),
+      telemetryContext: {
+        kind: "thread_fork",
+        sourceModelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5-codex"),
+        includedMessageCount: 1,
+        includedToolSummaryCount: 0,
+        includedAttachmentCount: 0,
+        omittedAttachmentCount: 0,
+      },
+    });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-fork-follow-up"),
+        threadId: ThreadId.make("thread-fork"),
+        message: {
+          messageId: asMessageId("user-message-fork-follow-up"),
+          role: "user",
+          text: "Continue in the fork.",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 3);
+    expect(harness.sendTurn.mock.calls[2]?.[0]).not.toHaveProperty("telemetryContext");
+  });
+
   it("forwards claude effort options through session start and turn send", async () => {
     const harness = await createHarness({
       threadModelSelection: {

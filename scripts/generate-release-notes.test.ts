@@ -8,7 +8,7 @@ it("formats direct commits in categorized sections with commit links and a compa
       channel: "nightly",
       currentTag: "v0.0.18-nightly.20260529.37",
       previousTag: "v0.0.17",
-      repository: "badcuban/badcode",
+      repository: "Threadlines/threadlines",
       commits: [
         {
           hash: "62ae0936452552cff68db2293db9ad455d981e8b",
@@ -26,9 +26,9 @@ it("formats direct commits in categorized sections with commit links and a compa
       "",
       "### Performance",
       "",
-      "- [`62ae093`](https://github.com/badcuban/badcode/commit/62ae0936452552cff68db2293db9ad455d981e8b) Cache diagnostics reads and reduce background polling",
+      "- [`62ae093`](https://github.com/Threadlines/threadlines/commit/62ae0936452552cff68db2293db9ad455d981e8b) Cache diagnostics reads and reduce background polling",
       "",
-      "**Full Changelog**: https://github.com/badcuban/badcode/compare/v0.0.17...v0.0.18-nightly.20260529.37",
+      "**Full Changelog**: https://github.com/Threadlines/threadlines/compare/v0.0.17...v0.0.18-nightly.20260529.37",
       "",
     ].join("\n"),
   );
@@ -40,7 +40,7 @@ it("formats GitHub merge and squash commits as pull request entries", () => {
       channel: "stable",
       currentTag: "v0.0.18",
       previousTag: "v0.0.17",
-      repository: "badcuban/badcode",
+      repository: "Threadlines/threadlines",
       commits: [
         {
           hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -49,7 +49,7 @@ it("formats GitHub merge and squash commits as pull request entries", () => {
             "1111111111111111111111111111111111111111",
             "2222222222222222222222222222222222222222",
           ],
-          subject: "Merge pull request #42 from badcuban/release-notes",
+          subject: "Merge pull request #42 from threadlines/release-notes",
           body: "feat(release): improve generated release notes\n\nAdds PR-aware formatting.",
         },
         {
@@ -68,13 +68,13 @@ it("formats GitHub merge and squash commits as pull request entries", () => {
       "",
       "### Features",
       "",
-      "- [#42](https://github.com/badcuban/badcode/pull/42) Improve generated release notes ([`aaaaaaaa`](https://github.com/badcuban/badcode/commit/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa))",
+      "- [#42](https://github.com/Threadlines/threadlines/pull/42) Improve generated release notes ([`aaaaaaaa`](https://github.com/Threadlines/threadlines/commit/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa))",
       "",
       "### Fixes",
       "",
-      "- [#43](https://github.com/badcuban/badcode/pull/43) Handle updater diagnostics ([`bbbbbbbb`](https://github.com/badcuban/badcode/commit/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb))",
+      "- [#43](https://github.com/Threadlines/threadlines/pull/43) Handle updater diagnostics ([`bbbbbbbb`](https://github.com/Threadlines/threadlines/commit/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb))",
       "",
-      "**Full Changelog**: https://github.com/badcuban/badcode/compare/v0.0.17...v0.0.18",
+      "**Full Changelog**: https://github.com/Threadlines/threadlines/compare/v0.0.17...v0.0.18",
       "",
     ].join("\n"),
   );
@@ -107,7 +107,7 @@ it("parses git log records with parent hashes and commit bodies", () => {
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "aaaaaaaa",
         "1111111111111111111111111111111111111111 2222222222222222222222222222222222222222",
-        "Merge pull request #42 from badcuban/release-notes",
+        "Merge pull request #42 from threadlines/release-notes",
         "Improve generated release notes\n\nAdds PR-aware formatting.",
       ].join("\x00") + "\x1e",
     ),
@@ -119,7 +119,7 @@ it("parses git log records with parent hashes and commit bodies", () => {
           "1111111111111111111111111111111111111111",
           "2222222222222222222222222222222222222222",
         ],
-        subject: "Merge pull request #42 from badcuban/release-notes",
+        subject: "Merge pull request #42 from threadlines/release-notes",
         body: "Improve generated release notes\n\nAdds PR-aware formatting.",
       },
     ],

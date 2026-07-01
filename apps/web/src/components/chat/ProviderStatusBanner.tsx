@@ -1,11 +1,13 @@
 import { ProviderDriverKind, type ServerProvider } from "@threadlines/contracts";
-import { Link } from "@tanstack/react-router";
-import { memo, useCallback, useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
-import { ActivityIcon, CircleAlertIcon, LoaderIcon, RefreshCwIcon } from "lucide-react";
+import { CircleAlertIcon } from "lucide-react";
 import { formatProviderDriverKindLabel } from "../../providerModels";
-import { ensureLocalApi } from "../../localApi";
-import { Button } from "../ui/button";
+import {
+  CompactStatusNoticeRow,
+  StatusNoticeActionButtons,
+  useProviderStatusRefresh,
+} from "./statusNotice";
 
 const CODEX_DRIVER_KIND = ProviderDriverKind.make("codex");
 export const PROVIDER_STATUS_SLOW_NOTICE_DELAY_MS = 25_000;
@@ -85,26 +87,9 @@ export const ProviderStatusBanner = memo(function ProviderStatusBanner({
   status: ServerProvider | null;
 }) {
   const [nowMs, setNowMs] = useState(() => Date.now());
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [refreshError, setRefreshError] = useState<string | null>(null);
-  const refreshProvider = useCallback(() => {
-    if (!status || isRefreshing) {
-      return;
-    }
-
-    setRefreshError(null);
-    setIsRefreshing(true);
-    void ensureLocalApi()
-      .server.refreshProviders({ instanceId: status.instanceId })
-      .catch((error: unknown) => {
-        setRefreshError(
-          error instanceof Error ? error.message : "Provider status could not be refreshed.",
-        );
-      })
-      .finally(() => {
-        setIsRefreshing(false);
-      });
-  }, [isRefreshing, status]);
+  const { isRefreshing, refreshError, refreshProvider } = useProviderStatusRefresh(
+    status?.instanceId ?? null,
+  );
 
   useEffect(() => {
     setNowMs(Date.now());
@@ -151,48 +136,18 @@ export const ProviderStatusBanner = memo(function ProviderStatusBanner({
 
   if (noticeKind === "compact") {
     return (
-      <div className="mx-auto w-full max-w-3xl px-4 pt-2 sm:px-0">
-        <div
-          className="mx-auto flex max-w-2xl flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-warning/20 bg-warning/5 px-2.5 py-1.5 text-xs shadow-sm shadow-warning/5"
-          role="status"
-        >
-          <CircleAlertIcon className="size-3.5 shrink-0 text-warning" aria-hidden="true" />
-          <div className="min-w-56 flex-1 leading-5">
-            <span className="font-medium text-foreground">{title}: </span>
-            <span className="text-muted-foreground">{message}</span>
-            {refreshError ? (
-              <span className="block text-[11px] text-warning-foreground/85">{refreshError}</span>
-            ) : null}
-          </div>
-          <div className="flex shrink-0 items-center gap-1">
-            <Button
-              size="xs"
-              variant="ghost"
-              className="h-6 px-1.5"
-              onClick={refreshProvider}
-              disabled={isRefreshing}
-              aria-label="Refresh provider status"
-            >
-              {isRefreshing ? (
-                <LoaderIcon className="size-3 animate-spin" />
-              ) : (
-                <RefreshCwIcon className="size-3" />
-              )}
-              <span>{isRefreshing ? "Refreshing" : "Refresh"}</span>
-            </Button>
-            <Button
-              size="xs"
-              variant="ghost"
-              className="h-6 px-1.5"
-              render={<Link to="/settings/diagnostics" />}
-              aria-label="Open diagnostics"
-            >
-              <ActivityIcon className="size-3" />
-              <span>Diagnostics</span>
-            </Button>
-          </div>
-        </div>
-      </div>
+      <CompactStatusNoticeRow
+        title={title}
+        message={message}
+        errorText={refreshError}
+        actions={
+          <StatusNoticeActionButtons
+            variant="ghost"
+            isRefreshing={isRefreshing}
+            onRefresh={refreshProvider}
+          />
+        }
+      />
     );
   }
 
@@ -206,29 +161,11 @@ export const ProviderStatusBanner = memo(function ProviderStatusBanner({
           {refreshError ? <span className="text-[11px]">{refreshError}</span> : null}
         </AlertDescription>
         <AlertAction>
-          <Button
-            size="xs"
+          <StatusNoticeActionButtons
             variant="outline"
-            onClick={refreshProvider}
-            disabled={isRefreshing}
-            aria-label="Refresh provider status"
-          >
-            {isRefreshing ? (
-              <LoaderIcon className="size-3 animate-spin" />
-            ) : (
-              <RefreshCwIcon className="size-3" />
-            )}
-            <span>{isRefreshing ? "Refreshing" : "Refresh"}</span>
-          </Button>
-          <Button
-            size="xs"
-            variant="outline"
-            render={<Link to="/settings/diagnostics" />}
-            aria-label="Open diagnostics"
-          >
-            <ActivityIcon className="size-3" />
-            <span>Diagnostics</span>
-          </Button>
+            isRefreshing={isRefreshing}
+            onRefresh={refreshProvider}
+          />
         </AlertAction>
       </Alert>
     </div>

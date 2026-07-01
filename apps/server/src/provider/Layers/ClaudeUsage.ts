@@ -5,8 +5,13 @@
  * Codex app-server does (`account/rateLimits/read`). The data behind Claude
  * Code's `/usage` screen is served by Anthropic's OAuth usage endpoint, which
  * the wider Claude Code tooling ecosystem (statusline plugins, usage
- * monitors) reads with the same OAuth access token Claude Code maintains in
- * `<home>/.claude/.credentials.json` or macOS Keychain.
+ * monitors) reads with the same scoped OAuth credential Claude Code maintains
+ * in `<home>/.claude/.credentials.json` or macOS Keychain.
+ *
+ * `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` is intentionally not
+ * used here. It is valid for long-lived inference auth, but the usage endpoint
+ * rejects it without the profile/usage scope and may then apply long Retry-After
+ * windows. Chat can still work while usage is unavailable.
  *
  * The endpoint is unofficial, so every step here degrades to `undefined`
  * rather than failing the provider probe: missing credentials (API key auth,
@@ -35,6 +40,7 @@ import { resolveClaudeHomePath } from "../Drivers/ClaudeHome.ts";
 import { spawnAndCollect } from "../providerSnapshot.ts";
 
 export const CLAUDE_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+export const CLAUDE_CODE_OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
 export const CLAUDE_MACOS_KEYCHAIN_SERVICE = "Claude Code-credentials";
 const USAGE_FETCH_TIMEOUT_MS = 4_000;
 const KEYCHAIN_READ_TIMEOUT_MS = 1_500;
@@ -43,13 +49,22 @@ const SEVEN_DAY_WINDOW_MINS = 10_080;
 const CLAUDE_USAGE_BACKOFF_MAX_MS = 60 * 60 * 1000;
 const claudeUsageBackoffUntilMsByCredential = new Map<string, number>();
 
+const ClaudeCredentialAccount = Schema.Struct({
+  email: Schema.optional(Schema.String),
+});
+
 const ClaudeCredentialsPayload = Schema.Struct({
   claudeAiOauth: Schema.optional(
     Schema.Struct({
       accessToken: Schema.optional(Schema.String),
       expiresAt: Schema.optional(Schema.NullOr(Schema.Number)),
+      email: Schema.optional(Schema.String),
+      account: Schema.optional(ClaudeCredentialAccount),
     }),
   ),
+  account: Schema.optional(ClaudeCredentialAccount),
+  email: Schema.optional(Schema.String),
+  userEmail: Schema.optional(Schema.String),
   organizationUuid: Schema.optional(Schema.String),
 });
 type ClaudeCredentialsPayload = typeof ClaudeCredentialsPayload.Type;
@@ -144,6 +159,7 @@ export function normalizeClaudeAccountUsage(
 export interface ClaudeOAuthCredential {
   readonly accessToken: string;
   readonly organizationUuid?: string;
+  readonly email?: string;
 }
 
 function claudeUsageBackoffKey(credential: ClaudeOAuthCredential): string {
@@ -211,9 +227,16 @@ export function extractClaudeOAuthCredential(
   // Claude Code may leave `expiresAt` stale when secure storage/keychain is the
   // source of truth. Treat it as advisory and let the usage endpoint decide.
   const organizationUuid = normalizeCredentialString(credentials?.organizationUuid);
+  const email =
+    normalizeCredentialString(credentials?.account?.email) ??
+    normalizeCredentialString(credentials?.claudeAiOauth?.account?.email) ??
+    normalizeCredentialString(credentials?.claudeAiOauth?.email) ??
+    normalizeCredentialString(credentials?.email) ??
+    normalizeCredentialString(credentials?.userEmail);
   return {
     accessToken,
     ...(organizationUuid ? { organizationUuid } : {}),
+    ...(email ? { email } : {}),
   };
 }
 
@@ -285,7 +308,9 @@ const readClaudeMacOSKeychainCredentials = Effect.fn("readClaudeMacOSKeychainCre
 
 export const readClaudeOAuthCredential = Effect.fn("readClaudeOAuthCredential")(function* (
   claudeSettings: Pick<ClaudeSettings, "homePath">,
-  options: { readonly platform?: NodeJS.Platform } = {},
+  options: {
+    readonly platform?: NodeJS.Platform;
+  } = {},
 ): Effect.fn.Return<
   ClaudeOAuthCredential | undefined,
   never,
@@ -306,6 +331,7 @@ export const readClaudeOAuthCredential = Effect.fn("readClaudeOAuthCredential")(
  */
 export const fetchClaudeAccountUsage = Effect.fn("fetchClaudeAccountUsage")(function* (
   claudeSettings: Pick<ClaudeSettings, "homePath">,
+  environment: NodeJS.ProcessEnv = process.env,
 ): Effect.fn.Return<
   ServerProviderAccountUsage | undefined,
   never,
@@ -316,7 +342,12 @@ export const fetchClaudeAccountUsage = Effect.fn("fetchClaudeAccountUsage")(func
 > {
   const credential = yield* readClaudeOAuthCredential(claudeSettings);
   if (!credential) {
-    yield* Effect.logDebug("claude.usage.fetch.skipped", { reason: "missing-oauth-credential" });
+    yield* Effect.logDebug("claude.usage.fetch.skipped", {
+      reason:
+        normalizeCredentialString(environment[CLAUDE_CODE_OAUTH_TOKEN_ENV]) !== undefined
+          ? "long-lived-token-lacks-usage-scope"
+          : "missing-oauth-credential",
+    });
     return undefined;
   }
 

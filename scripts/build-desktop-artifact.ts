@@ -7,6 +7,11 @@ import rootPackageJson from "../package.json" with { type: "json" };
 
 import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
 import { getDefaultBuildArch } from "./lib/build-target-arch.ts";
+import {
+  MAC_ADAPTIVE_ICON_ASSETS_CAR_FILE_NAME,
+  MAC_ADAPTIVE_ICON_NAME,
+  buildMacAdaptiveIconSync,
+} from "./lib/mac-adaptive-icon.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
 import { DESKTOP_RELEASE_APP_ID } from "@threadlines/shared/desktopIdentity";
 import { fromYaml } from "@threadlines/shared/schemaYaml";
@@ -50,6 +55,8 @@ const readWorkspaceConfig = Effect.fn("readWorkspaceConfig")(function* () {
 
 interface DesktopBuildIconAssets {
   readonly macIconPng: string;
+  readonly macDarkIconPng: string;
+  readonly macLightIconPng: string;
   readonly linuxIconPng: string;
   readonly windowsIconIco: string;
 }
@@ -593,13 +600,29 @@ function generateMacIconSet(
   });
 }
 
-function stageMacIcons(stageResourcesDir: string, sourcePng: string, verbose: boolean) {
+function stageMacIcons(
+  stageResourcesDir: string,
+  sourcePng: string,
+  darkSourcePng: string,
+  lightSourcePng: string,
+  verbose: boolean,
+) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     if (!(yield* fs.exists(sourcePng))) {
       return yield* new BuildScriptError({
         message: `Desktop macOS icon source is missing at ${sourcePng}`,
+      });
+    }
+    if (!(yield* fs.exists(darkSourcePng))) {
+      return yield* new BuildScriptError({
+        message: `Desktop macOS dark icon source is missing at ${darkSourcePng}`,
+      });
+    }
+    if (!(yield* fs.exists(lightSourcePng))) {
+      return yield* new BuildScriptError({
+        message: `Desktop macOS light icon source is missing at ${lightSourcePng}`,
       });
     }
 
@@ -617,8 +640,29 @@ function stageMacIcons(stageResourcesDir: string, sourcePng: string, verbose: bo
         ...commandOutputOptions(verbose),
       })`sips -z 512 512 ${paddedSourcePng} --out ${iconPngPath}`,
     );
-
     yield* generateMacIconSet(paddedSourcePng, iconIcnsPath, tmpRoot, path, verbose);
+
+    // The adaptive Assets.car lets macOS 26+ follow the system icon appearance
+    // (light/dark). It requires actool from Xcode 26+, so treat it as optional.
+    const adaptiveIconMessages: string[] = [];
+    const adaptiveIcon = yield* Effect.sync(() =>
+      buildMacAdaptiveIconSync({
+        lightSourcePng,
+        darkSourcePng,
+        outputDir: stageResourcesDir,
+        log: (message) => {
+          adaptiveIconMessages.push(message);
+        },
+      }),
+    );
+    for (const message of adaptiveIconMessages) {
+      yield* Effect.log(`[desktop-artifact] ${message}`);
+    }
+    yield* Effect.log(
+      adaptiveIcon
+        ? "[desktop-artifact] Staged adaptive macOS icon (Assets.car)."
+        : "[desktop-artifact] Building without adaptive macOS icon; the packaged icon will not follow the system icon appearance.",
+    );
   });
 }
 
@@ -721,11 +765,7 @@ export function resolveGitHubPublishConfig(
     }
   | undefined {
   const rawRepo =
-    env.THREADLINES_DESKTOP_UPDATE_REPOSITORY?.trim() ||
-    env.BADCODE_DESKTOP_UPDATE_REPOSITORY?.trim() ||
-    env.T3CODE_DESKTOP_UPDATE_REPOSITORY?.trim() ||
-    env.GITHUB_REPOSITORY?.trim() ||
-    "";
+    env.THREADLINES_DESKTOP_UPDATE_REPOSITORY?.trim() || env.GITHUB_REPOSITORY?.trim() || "";
   if (!rawRepo) return undefined;
 
   const [owner, repo, ...rest] = rawRepo.split("/");
@@ -748,6 +788,8 @@ export function resolveDesktopUpdateChannel(version: string): "latest" | "nightl
 export function resolveDesktopBuildIconAssets(_version: string): DesktopBuildIconAssets {
   return {
     macIconPng: BRAND_ASSET_PATHS.productionMacIconPng,
+    macDarkIconPng: BRAND_ASSET_PATHS.productionMacDarkIconPng,
+    macLightIconPng: BRAND_ASSET_PATHS.productionMacLightIconPng,
     linuxIconPng: BRAND_ASSET_PATHS.productionLinuxIconPng,
     windowsIconIco: BRAND_ASSET_PATHS.productionWindowsIconIco,
   };
@@ -770,6 +812,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   mockUpdateServerPort: number | undefined,
   stageResourcesDir?: string,
 ) {
+  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const stageResourcePath = (fileName: string) =>
     stageResourcesDir
@@ -802,6 +845,24 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       icon: "icon.icns",
       category: "public.app-category.developer-tools",
     };
+    // Ship the adaptive icon when staging produced one: Assets.car must live in
+    // Contents/Resources (outside the asar) and CFBundleIconName points macOS
+    // at it, letting the OS follow the system icon appearance on macOS 26+.
+    const stagedAssetsCarPath = stageResourcePath(MAC_ADAPTIVE_ICON_ASSETS_CAR_FILE_NAME);
+    const hasStagedAssetsCar = yield* fs
+      .exists(stagedAssetsCarPath)
+      .pipe(Effect.orElseSucceed(() => false));
+    if (hasStagedAssetsCar) {
+      macConfig.extraResources = [
+        {
+          from: stagedAssetsCarPath,
+          to: MAC_ADAPTIVE_ICON_ASSETS_CAR_FILE_NAME,
+        },
+      ];
+      macConfig.extendInfo = {
+        CFBundleIconName: MAC_ADAPTIVE_ICON_NAME,
+      };
+    }
     if (signed) {
       macConfig.hardenedRuntime = true;
       macConfig.gatekeeperAssess = true;
@@ -911,7 +972,13 @@ const assertPlatformBuildResources = Effect.fn("assertPlatformBuildResources")(f
   verbose: boolean,
 ) {
   if (platform === "mac") {
-    yield* stageMacIcons(stageResourcesDir, iconAssets.macIconPng, verbose);
+    yield* stageMacIcons(
+      stageResourcesDir,
+      iconAssets.macIconPng,
+      iconAssets.macDarkIconPng,
+      iconAssets.macLightIconPng,
+      verbose,
+    );
     return;
   }
 
@@ -1038,6 +1105,8 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     stageResourcesDir,
     {
       macIconPng: path.join(repoRoot, iconAssets.macIconPng),
+      macDarkIconPng: path.join(repoRoot, iconAssets.macDarkIconPng),
+      macLightIconPng: path.join(repoRoot, iconAssets.macLightIconPng),
       linuxIconPng: path.join(repoRoot, iconAssets.linuxIconPng),
       windowsIconIco: path.join(repoRoot, iconAssets.windowsIconIco),
     },
@@ -1180,69 +1249,57 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
 
 const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
   platform: Flag.choice("platform", BuildPlatform.literals).pipe(
-    Flag.withDescription(
-      "Build platform (env: THREADLINES_DESKTOP_PLATFORM; legacy: BADCODE_DESKTOP_PLATFORM, T3CODE_DESKTOP_PLATFORM).",
-    ),
+    Flag.withDescription("Build platform (env: THREADLINES_DESKTOP_PLATFORM)."),
     Flag.optional,
   ),
   target: Flag.string("target").pipe(
     Flag.withDescription(
-      "Artifact target, for example dmg/AppImage/nsis (env: THREADLINES_DESKTOP_TARGET; legacy: BADCODE_DESKTOP_TARGET, T3CODE_DESKTOP_TARGET).",
+      "Artifact target, for example dmg/AppImage/nsis (env: THREADLINES_DESKTOP_TARGET).",
     ),
     Flag.optional,
   ),
   arch: Flag.choice("arch", BuildArch.literals).pipe(
     Flag.withDescription(
-      "Build arch, for example arm64/x64/universal (env: THREADLINES_DESKTOP_ARCH; legacy: BADCODE_DESKTOP_ARCH, T3CODE_DESKTOP_ARCH).",
+      "Build arch, for example arm64/x64/universal (env: THREADLINES_DESKTOP_ARCH).",
     ),
     Flag.optional,
   ),
   buildVersion: Flag.string("build-version").pipe(
-    Flag.withDescription(
-      "Artifact version metadata (env: THREADLINES_DESKTOP_VERSION; legacy: BADCODE_DESKTOP_VERSION, T3CODE_DESKTOP_VERSION).",
-    ),
+    Flag.withDescription("Artifact version metadata (env: THREADLINES_DESKTOP_VERSION)."),
     Flag.optional,
   ),
   outputDir: Flag.string("output-dir").pipe(
-    Flag.withDescription(
-      "Output directory for artifacts (env: THREADLINES_DESKTOP_OUTPUT_DIR; legacy: BADCODE_DESKTOP_OUTPUT_DIR, T3CODE_DESKTOP_OUTPUT_DIR).",
-    ),
+    Flag.withDescription("Output directory for artifacts (env: THREADLINES_DESKTOP_OUTPUT_DIR)."),
     Flag.optional,
   ),
   skipBuild: Flag.boolean("skip-build").pipe(
     Flag.withDescription(
-      "Skip `vp run build:desktop` and use existing dist artifacts (env: THREADLINES_DESKTOP_SKIP_BUILD; legacy: BADCODE_DESKTOP_SKIP_BUILD, T3CODE_DESKTOP_SKIP_BUILD).",
+      "Skip `vp run build:desktop` and use existing dist artifacts (env: THREADLINES_DESKTOP_SKIP_BUILD).",
     ),
     Flag.optional,
   ),
   keepStage: Flag.boolean("keep-stage").pipe(
-    Flag.withDescription(
-      "Keep temporary staging files (env: THREADLINES_DESKTOP_KEEP_STAGE; legacy: BADCODE_DESKTOP_KEEP_STAGE, T3CODE_DESKTOP_KEEP_STAGE).",
-    ),
+    Flag.withDescription("Keep temporary staging files (env: THREADLINES_DESKTOP_KEEP_STAGE)."),
     Flag.optional,
   ),
   signed: Flag.boolean("signed").pipe(
     Flag.withDescription(
-      "Enable signing/notarization discovery; Windows uses Azure Trusted Signing (env: THREADLINES_DESKTOP_SIGNED; legacy: BADCODE_DESKTOP_SIGNED, T3CODE_DESKTOP_SIGNED).",
+      "Enable signing/notarization discovery; Windows uses Azure Trusted Signing (env: THREADLINES_DESKTOP_SIGNED).",
     ),
     Flag.optional,
   ),
   verbose: Flag.boolean("verbose").pipe(
-    Flag.withDescription(
-      "Stream subprocess stdout (env: THREADLINES_DESKTOP_VERBOSE; legacy: BADCODE_DESKTOP_VERBOSE, T3CODE_DESKTOP_VERBOSE).",
-    ),
+    Flag.withDescription("Stream subprocess stdout (env: THREADLINES_DESKTOP_VERBOSE)."),
     Flag.optional,
   ),
   mockUpdates: Flag.boolean("mock-updates").pipe(
-    Flag.withDescription(
-      "Enable mock updates (env: THREADLINES_DESKTOP_MOCK_UPDATES; legacy: BADCODE_DESKTOP_MOCK_UPDATES, T3CODE_DESKTOP_MOCK_UPDATES).",
-    ),
+    Flag.withDescription("Enable mock updates (env: THREADLINES_DESKTOP_MOCK_UPDATES)."),
     Flag.optional,
   ),
   mockUpdateServerPort: Flag.integer("mock-update-server-port").pipe(
     Flag.withSchema(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }))),
     Flag.withDescription(
-      "Mock update server port (env: THREADLINES_DESKTOP_MOCK_UPDATE_SERVER_PORT; legacy: BADCODE_DESKTOP_MOCK_UPDATE_SERVER_PORT, T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT).",
+      "Mock update server port (env: THREADLINES_DESKTOP_MOCK_UPDATE_SERVER_PORT).",
     ),
     Flag.optional,
   ),

@@ -40,7 +40,7 @@ const makeAuthRequest = (input?: {
   ({
     cookies: input?.sessionToken
       ? {
-          t3_session: input.sessionToken,
+          threadlines_session: input.sessionToken,
         }
       : {},
     headers: input?.headers ?? {},

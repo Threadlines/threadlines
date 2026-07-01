@@ -7,7 +7,7 @@
   "main": "dist-electron/main.cjs",
   "scripts": {
     "dev": "node scripts/dev.mjs",
-    "dev:server-bundle": "vp run --filter t3 dev:bundle",
+    "dev:server-bundle": "vp run --filter @threadlines/server dev:bundle",
     "dev:bundle": "vp pack --watch",
     "dev:electron": "node scripts/dev-electron.mjs",
     "build": "vp pack",

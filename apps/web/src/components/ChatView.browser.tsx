@@ -173,7 +173,7 @@ function createBaseServerConfig(): ServerConfig {
       policy: "loopback-browser",
       bootstrapMethods: ["one-time-token"],
       sessionMethods: ["browser-session-cookie", "bearer-session-token"],
-      sessionCookieName: "t3_session",
+      sessionCookieName: "threadlines_session",
     },
     cwd: "/repo/project",
     keybindingsConfigPath: "/repo/project/.threadlines/keybindings.json",
@@ -196,7 +196,7 @@ function createBaseServerConfig(): ServerConfig {
     ],
     availableEditors: [],
     observability: {
-      logsDirectoryPath: "/repo/project/.t3/logs",
+      logsDirectoryPath: "/repo/project/.threadlines/logs",
       localTracingEnabled: true,
       otlpTracesEnabled: false,
       otlpMetricsEnabled: false,
@@ -820,7 +820,9 @@ function createSnapshotWithChangedFileSummary(): OrchestrationReadModel {
           {
             turnId,
             checkpointTurnCount: 1,
-            checkpointRef: CheckpointRef.make("refs/t3/checkpoints/thread-browser-test/turn/1"),
+            checkpointRef: CheckpointRef.make(
+              "refs/threadlines/checkpoints/thread-browser-test/turn/1",
+            ),
             status: "ready",
             assistantMessageId,
             completedAt: isoAt(10),
@@ -5016,7 +5018,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
           thread.id === THREAD_ID
             ? Object.assign({}, thread, {
                 branch: "feature/existing",
-                worktreePath: "/repo/.t3/worktrees/existing",
+                worktreePath: "/repo/.threadlines/worktrees/existing",
               })
             : thread,
         ),

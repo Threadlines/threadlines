@@ -38,6 +38,9 @@ type ProviderUpdateSidebarPillItemStatus = Exclude<ServerProviderUpdateStatus, "
 export interface ProviderUpdateSidebarPillItem {
   readonly key: string;
   readonly label: string;
+  readonly progressIndeterminate?: boolean;
+  readonly progressLabel?: string;
+  readonly progressPercent: number;
   readonly status: ProviderUpdateSidebarPillItemStatus;
   readonly statusLabel: string;
   readonly tone: ProviderUpdateSidebarPillItemTone;
@@ -49,6 +52,9 @@ export interface ProviderUpdateSidebarPillView {
   readonly title: string;
   readonly summary?: string;
   readonly description: string;
+  readonly progressIndeterminate?: boolean;
+  readonly progressLabel?: string;
+  readonly progressPercent: number;
   readonly items?: readonly ProviderUpdateSidebarPillItem[];
   readonly dismissible?: boolean;
   readonly dismissAfterVisibleMs?: number;
@@ -445,6 +451,31 @@ function getProviderUpdateSidebarItemTone(
   }
 }
 
+function isTerminalProviderUpdateSidebarItemStatus(
+  status: ProviderUpdateSidebarPillItemStatus,
+): boolean {
+  return status === "succeeded" || status === "failed" || status === "unchanged";
+}
+
+function getProviderUpdateSidebarItemProgress(
+  status: ProviderUpdateSidebarPillItemStatus,
+): Pick<
+  ProviderUpdateSidebarPillItem,
+  "progressIndeterminate" | "progressLabel" | "progressPercent"
+> {
+  if (isTerminalProviderUpdateSidebarItemStatus(status)) {
+    return {
+      progressLabel: "100%",
+      progressPercent: 100,
+    };
+  }
+
+  return {
+    ...(status === "running" ? { progressIndeterminate: true } : {}),
+    progressPercent: 0,
+  };
+}
+
 function getProviderUpdateSidebarStatusLabel(
   provider: Pick<ServerProvider, "version">,
   status: ProviderUpdateSidebarPillItemStatus,
@@ -475,6 +506,7 @@ function collectProviderUpdateSidebarItems(
       {
         key: `${provider.driver}:${status}:${provider.updateState?.finishedAt ?? "pending"}`,
         label: getProviderDisplayName(provider),
+        ...getProviderUpdateSidebarItemProgress(status),
         status,
         statusLabel: getProviderUpdateSidebarStatusLabel(provider, status),
         tone: getProviderUpdateSidebarItemTone(status),
@@ -527,6 +559,29 @@ function optionalProviderUpdateSidebarSummary(
   return summary === undefined ? {} : { summary };
 }
 
+function getProviderUpdateSidebarProgress(
+  items: ReadonlyArray<ProviderUpdateSidebarPillItem>,
+): Pick<
+  ProviderUpdateSidebarPillView,
+  "progressIndeterminate" | "progressLabel" | "progressPercent"
+> {
+  if (items.length === 0) {
+    return { progressPercent: 0 };
+  }
+
+  const completeCount = items.filter((item) =>
+    isTerminalProviderUpdateSidebarItemStatus(item.status),
+  ).length;
+  const progressPercent = Math.max(0, Math.min(100, (completeCount / items.length) * 100));
+  const hasActiveItem = items.some((item) => item.status === "queued" || item.status === "running");
+
+  return {
+    ...(hasActiveItem && progressPercent < 100 ? { progressIndeterminate: true } : {}),
+    progressLabel: `${Math.floor(progressPercent)}%`,
+    progressPercent,
+  };
+}
+
 export function getProviderUpdateSidebarPillView(
   providers: ReadonlyArray<ServerProvider>,
   options?: ProviderUpdateSidebarPillOptions,
@@ -553,6 +608,7 @@ export function getProviderUpdateSidebarPillView(
         .join("|")}`,
       tone: "loading",
       title: showItemDetails ? "Provider updates" : `Updating ${activeProviderName}`,
+      ...getProviderUpdateSidebarProgress(items),
       ...(showItemDetails
         ? optionalProviderUpdateSidebarSummary(formatProviderUpdateSidebarSummary(items))
         : {}),
@@ -587,6 +643,7 @@ export function getProviderUpdateSidebarPillView(
         failedProviders.length === 1
           ? getProviderFailedUpdateTitle(failedProvider)
           : `${failedProviders.length} provider updates failed`,
+      ...getProviderUpdateSidebarProgress(items),
       ...(failedProviders.length > 1
         ? optionalProviderUpdateSidebarSummary(formatProviderUpdateSidebarSummary(items))
         : {}),
@@ -616,6 +673,7 @@ export function getProviderUpdateSidebarPillView(
         unchangedProviders.length === 1
           ? `${unchangedProviderName} still needs an update`
           : `${unchangedProviders.length} providers still need updates`,
+      ...getProviderUpdateSidebarProgress(items),
       ...(unchangedProviders.length > 1
         ? optionalProviderUpdateSidebarSummary(formatProviderUpdateSidebarSummary(items))
         : {}),
@@ -646,6 +704,7 @@ export function getProviderUpdateSidebarPillView(
         succeededProviders.length === 1
           ? `${getProviderDisplayName(succeededProvider)} updated`
           : `${succeededProviders.length} providers updated`,
+      ...getProviderUpdateSidebarProgress(items),
       ...(succeededProviders.length > 1
         ? optionalProviderUpdateSidebarSummary(formatProviderUpdateSidebarSummary(items))
         : {}),

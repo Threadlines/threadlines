@@ -43,7 +43,7 @@ layer("GitLabCli.layer", (it) => {
             JSON.stringify({
               iid: 42,
               title: "Add MR thread creation",
-              web_url: "https://gitlab.com/pingdotgg/t3code/-/merge_requests/42",
+              web_url: "https://gitlab.com/Threadlines/threadlines/-/merge_requests/42",
               target_branch: "main",
               source_branch: "feature/mr-threads",
               state: "opened",
@@ -68,7 +68,7 @@ layer("GitLabCli.layer", (it) => {
       assert.deepStrictEqual(result, {
         number: 42,
         title: "Add MR thread creation",
-        url: "https://gitlab.com/pingdotgg/t3code/-/merge_requests/42",
+        url: "https://gitlab.com/Threadlines/threadlines/-/merge_requests/42",
         baseRefName: "main",
         headRefName: "feature/mr-threads",
         state: "open",
@@ -96,14 +96,14 @@ layer("GitLabCli.layer", (it) => {
               {
                 iid: 0,
                 title: "invalid",
-                web_url: "https://gitlab.com/pingdotgg/t3code/-/merge_requests/0",
+                web_url: "https://gitlab.com/Threadlines/threadlines/-/merge_requests/0",
                 target_branch: "main",
                 source_branch: "feature/invalid",
               },
               {
                 iid: 43,
                 title: "  Valid MR  ",
-                web_url: " https://gitlab.com/pingdotgg/t3code/-/merge_requests/43 ",
+                web_url: " https://gitlab.com/Threadlines/threadlines/-/merge_requests/43 ",
                 target_branch: " main ",
                 source_branch: " feature/mr-list ",
                 state: "merged",
@@ -126,7 +126,7 @@ layer("GitLabCli.layer", (it) => {
         {
           number: 43,
           title: "Valid MR",
-          url: "https://gitlab.com/pingdotgg/t3code/-/merge_requests/43",
+          url: "https://gitlab.com/Threadlines/threadlines/-/merge_requests/43",
           baseRefName: "main",
           headRefName: "feature/mr-list",
           state: "merged",
@@ -194,7 +194,7 @@ layer("GitLabCli.layer", (it) => {
         baseBranch: "main",
         headSelector: "owner:feature/provider",
         title: "Provider MR",
-        bodyFile: "/tmp/t3-mr-body.md",
+        bodyFile: "/tmp/threadlines-mr-body.md",
       });
 
       expect(mockedRun).toHaveBeenCalledWith(
@@ -213,7 +213,7 @@ layer("GitLabCli.layer", (it) => {
             "--raw-field",
             "title=Provider MR",
             "--field",
-            "description=@/tmp/t3-mr-body.md",
+            "description=@/tmp/threadlines-mr-body.md",
           ],
         }),
       );

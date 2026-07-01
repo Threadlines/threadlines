@@ -60,7 +60,7 @@ export interface DesktopEnvironmentShape {
   readonly preloadPath: string;
   readonly appUpdateYmlPath: string;
   readonly devServerUrl: Option.Option<URL>;
-  readonly devRemoteT3ServerEntryPath: Option.Option<string>;
+  readonly devRemoteThreadlinesServerEntryPath: Option.Option<string>;
   readonly configuredBackendPort: Option.Option<number>;
   readonly commitHashOverride: Option.Option<string>;
   readonly otlpTracesUrl: Option.Option<string>;
@@ -157,7 +157,9 @@ const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
       : input.platform === "darwin"
         ? path.join(homeDirectory, "Library", "Application Support")
         : Option.getOrElse(config.xdgConfigHome, () => path.join(homeDirectory, ".config"));
-  const baseDir = Option.getOrElse(config.t3Home, () => path.join(homeDirectory, ".threadlines"));
+  const baseDir = Option.getOrElse(config.threadlinesHome, () =>
+    path.join(homeDirectory, ".threadlines"),
+  );
   const rootDir = path.resolve(input.dirname, "../../..");
   const appRoot = input.isPackaged ? input.appPath : rootDir;
   const branding = resolveDesktopAppBranding({
@@ -198,7 +200,7 @@ const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
       ? path.join(resourcesPath, "app-update.yml")
       : path.join(input.appPath, "dev-app-update.yml"),
     devServerUrl,
-    devRemoteT3ServerEntryPath: config.devRemoteT3ServerEntryPath,
+    devRemoteThreadlinesServerEntryPath: config.devRemoteThreadlinesServerEntryPath,
     configuredBackendPort: config.configuredBackendPort,
     commitHashOverride: config.commitHashOverride,
     otlpTracesUrl: config.otlpTracesUrl,

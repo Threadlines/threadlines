@@ -77,13 +77,13 @@ it.effect("GitVcsDriver forwards execute env to the VCS process", () => {
       cwd: "/repo",
       args: ["status"],
       env: {
-        GIT_INDEX_FILE: "/tmp/t3-index",
+        GIT_INDEX_FILE: "/tmp/threadlines-index",
       },
       appendTruncationMarker: true,
     });
 
     assert.deepStrictEqual(observedEnv, {
-      GIT_INDEX_FILE: "/tmp/t3-index",
+      GIT_INDEX_FILE: "/tmp/threadlines-index",
     });
     assert.strictEqual(observedAppendTruncationMarker, true);
   }).pipe(

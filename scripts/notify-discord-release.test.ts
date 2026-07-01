@@ -11,7 +11,7 @@ it("builds a prerelease Discord announcement for nightly subscribers", () => {
       version: "1.2.4-nightly.20260501.17",
       tag: "v1.2.4-nightly.20260501.17",
       releaseUrl: new URL(
-        "https://github.com/badcuban/badcode/releases/tag/v1.2.4-nightly.20260501.17",
+        "https://github.com/Threadlines/threadlines/releases/tag/v1.2.4-nightly.20260501.17",
       ),
       timestamp: "2026-05-01T01:41:00.000Z",
     }),
@@ -24,7 +24,7 @@ it("builds a prerelease Discord announcement for nightly subscribers", () => {
       embeds: [
         {
           title: "Threadlines Nightly 1.2.4-nightly.20260501.17 (abcdef123456)",
-          url: "https://github.com/badcuban/badcode/releases/tag/v1.2.4-nightly.20260501.17",
+          url: "https://github.com/Threadlines/threadlines/releases/tag/v1.2.4-nightly.20260501.17",
           description: "A new Threadlines prerelease is available for nightly testers.",
           color: 0x5865f2,
           fields: [
@@ -54,7 +54,7 @@ it("builds a latest Discord announcement for stable subscribers", () => {
       releaseName: "Threadlines v1.2.3",
       version: "1.2.3",
       tag: "v1.2.3",
-      releaseUrl: new URL("https://github.com/badcuban/badcode/releases/tag/v1.2.3"),
+      releaseUrl: new URL("https://github.com/Threadlines/threadlines/releases/tag/v1.2.3"),
       timestamp: "2026-05-01T01:41:00.000Z",
     }),
     {
@@ -65,7 +65,7 @@ it("builds a latest Discord announcement for stable subscribers", () => {
       embeds: [
         {
           title: "Threadlines v1.2.3",
-          url: "https://github.com/badcuban/badcode/releases/tag/v1.2.3",
+          url: "https://github.com/Threadlines/threadlines/releases/tag/v1.2.3",
           description: "A new Threadlines latest release is available.",
           color: 0x2ecc71,
           fields: [

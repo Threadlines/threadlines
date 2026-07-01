@@ -9,6 +9,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import { describe, expect, it } from "vitest";
 
 import {
+  CLAUDE_CODE_OAUTH_TOKEN_ENV,
   CLAUDE_MACOS_KEYCHAIN_SERVICE,
   extractClaudeOAuthCredential,
   normalizeClaudeAccountUsage,
@@ -85,11 +86,31 @@ describe("extractClaudeOAuthCredential", () => {
           accessToken: " token ",
           expiresAt: 1,
         },
+        account: {
+          email: " claude@example.com ",
+        },
         organizationUuid: " org-1 ",
       }),
     ).toEqual({
       accessToken: "token",
       organizationUuid: "org-1",
+      email: "claude@example.com",
+    });
+  });
+
+  it("extracts email from nested Claude OAuth credential metadata", () => {
+    expect(
+      extractClaudeOAuthCredential({
+        claudeAiOauth: {
+          accessToken: "token",
+          account: {
+            email: "nested@example.com",
+          },
+        },
+      }),
+    ).toEqual({
+      accessToken: "token",
+      email: "nested@example.com",
     });
   });
 
@@ -100,6 +121,39 @@ describe("extractClaudeOAuthCredential", () => {
 });
 
 describe("readClaudeOAuthCredential", () => {
+  it("does not use the provider long-lived OAuth token for usage credentials", async () => {
+    const previousToken = process.env[CLAUDE_CODE_OAUTH_TOKEN_ENV];
+    process.env[CLAUDE_CODE_OAUTH_TOKEN_ENV] = "env-token";
+    try {
+      const credential = await Effect.runPromise(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const homePath = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "threadlines-claude-usage-",
+          });
+          return yield* readClaudeOAuthCredential({ homePath }, { platform: "linux" });
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(
+            Layer.mergeAll(
+              NodeServices.layer,
+              mockSpawnerLayer(() => {
+                throw new Error("keychain should not be queried");
+              }),
+            ),
+          ),
+        ),
+      );
+      expect(credential).toBeUndefined();
+    } finally {
+      if (previousToken === undefined) {
+        delete process.env[CLAUDE_CODE_OAUTH_TOKEN_ENV];
+      } else {
+        process.env[CLAUDE_CODE_OAUTH_TOKEN_ENV] = previousToken;
+      }
+    }
+  });
+
   it("reads file-backed Claude credentials before consulting keychain", async () => {
     const credential = await Effect.runPromise(
       Effect.gen(function* () {
@@ -111,7 +165,7 @@ describe("readClaudeOAuthCredential", () => {
         yield* fileSystem.makeDirectory(path.join(homePath, ".claude"));
         yield* fileSystem.writeFileString(
           path.join(homePath, ".claude", ".credentials.json"),
-          '{"claudeAiOauth":{"accessToken":"file-token","expiresAt":1},"organizationUuid":"file-org"}',
+          '{"claudeAiOauth":{"accessToken":"file-token","expiresAt":1},"account":{"email":"file@example.com"},"organizationUuid":"file-org"}',
         );
 
         return yield* readClaudeOAuthCredential({ homePath }, { platform: "darwin" });
@@ -128,7 +182,11 @@ describe("readClaudeOAuthCredential", () => {
       ),
     );
 
-    expect(credential).toEqual({ accessToken: "file-token", organizationUuid: "file-org" });
+    expect(credential).toEqual({
+      accessToken: "file-token",
+      organizationUuid: "file-org",
+      email: "file@example.com",
+    });
   });
 
   it("falls back to the Claude Code keychain item on macOS", async () => {

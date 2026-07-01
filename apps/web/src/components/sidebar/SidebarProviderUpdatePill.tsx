@@ -46,14 +46,6 @@ const PROVIDER_UPDATE_ITEM_TEXT_STYLES = {
   error: "text-destructive",
 } as const;
 
-const PROVIDER_UPDATE_SEGMENT_STYLES = {
-  queued: "bg-muted-foreground/25",
-  running: "bg-primary-readable provider-update-active-segment",
-  success: "bg-success",
-  warning: "bg-warning",
-  error: "bg-destructive",
-} as const;
-
 const PROVIDER_UPDATE_STATUS_BADGE_STYLES = {
   queued: "border-muted-foreground/20 bg-muted-foreground/8 text-muted-foreground",
   running: "border-primary/18 bg-primary/8 text-primary-readable",
@@ -62,13 +54,14 @@ const PROVIDER_UPDATE_STATUS_BADGE_STYLES = {
   error: "border-destructive/24 bg-destructive/8 text-destructive",
 } as const;
 
-const PROVIDER_UPDATE_RAIL_FILL_STYLES = {
-  queued: "w-1/3 bg-muted-foreground/40",
-  running: "w-[45%] bg-primary-readable provider-update-indeterminate-rail",
-  success: "w-full bg-success",
-  warning: "w-full bg-warning",
-  error: "w-full bg-destructive",
+const PROVIDER_UPDATE_PROGRESS_FILL_STYLES = {
+  loading: "bg-primary-readable",
+  success: "bg-success",
+  warning: "bg-warning",
+  error: "bg-destructive",
 } as const;
+
+let providerUpdateSidebarVisibleAfterIso: string | undefined;
 
 function latestProviderCheckedAt(
   providers: ReadonlyArray<Pick<ServerProvider, "checkedAt">>,
@@ -80,28 +73,78 @@ function latestProviderCheckedAt(
   );
 }
 
-function SidebarProviderUpdateSegmentRail({
-  items,
+function SidebarProviderUpdateProgressRail({
+  view,
 }: {
-  items: ReadonlyArray<ProviderUpdateSidebarPillItem>;
+  view: Pick<ProviderUpdateSidebarPillView, "progressIndeterminate" | "progressPercent" | "tone">;
 }) {
+  const progressPercent = Math.max(0, Math.min(100, view.progressPercent));
+  const showIndeterminate = view.progressIndeterminate === true && progressPercent < 100;
+
   return (
     <div
       aria-hidden="true"
-      className="grid h-1 w-full gap-px overflow-hidden rounded-full bg-foreground/8"
-      style={
-        {
-          gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))`,
-        } as CSSProperties
-      }
+      className="relative h-1 w-full overflow-hidden rounded-full bg-foreground/8"
     >
-      {items.map((item) => (
+      <span
+        className={cn(
+          "absolute inset-y-0 left-0 rounded-full transition-[width] duration-300 ease-out",
+          PROVIDER_UPDATE_PROGRESS_FILL_STYLES[view.tone],
+        )}
+        style={{ width: `${progressPercent}%` }}
+      />
+      {showIndeterminate ? (
         <span
-          className={cn("min-w-0 rounded-full", PROVIDER_UPDATE_SEGMENT_STYLES[item.tone])}
-          key={item.key}
-        />
-      ))}
+          className="absolute inset-y-0 right-0 overflow-hidden rounded-full"
+          style={{ left: `${progressPercent}%` }}
+        >
+          <span
+            className={cn(
+              "absolute inset-y-0 left-0 w-[45%] rounded-full provider-update-indeterminate-rail",
+              PROVIDER_UPDATE_PROGRESS_FILL_STYLES[view.tone],
+            )}
+          />
+        </span>
+      ) : null}
     </div>
+  );
+}
+
+function SidebarProviderUpdateItemRail({ item }: { item: ProviderUpdateSidebarPillItem }) {
+  const progressPercent = Math.max(0, Math.min(100, item.progressPercent));
+  const showIndeterminate = item.progressIndeterminate === true && progressPercent < 100;
+  const tone =
+    item.tone === "success"
+      ? "success"
+      : item.tone === "warning"
+        ? "warning"
+        : item.tone === "error"
+          ? "error"
+          : "loading";
+
+  return (
+    <span
+      aria-hidden="true"
+      className="relative h-0.5 w-8 shrink-0 overflow-hidden rounded-full bg-foreground/8"
+    >
+      <span
+        className={cn(
+          "absolute inset-y-0 left-0 rounded-full transition-[width] duration-300 ease-out",
+          PROVIDER_UPDATE_PROGRESS_FILL_STYLES[tone],
+        )}
+        style={{ width: `${progressPercent}%` }}
+      />
+      {showIndeterminate ? (
+        <span className="absolute inset-0 overflow-hidden rounded-full">
+          <span
+            className={cn(
+              "absolute inset-y-0 left-0 w-1/2 rounded-full provider-update-indeterminate-rail",
+              PROVIDER_UPDATE_PROGRESS_FILL_STYLES[tone],
+            )}
+          />
+        </span>
+      ) : null}
+    </span>
   );
 }
 
@@ -111,10 +154,10 @@ function SidebarProviderUpdateRows({
   items: ReadonlyArray<ProviderUpdateSidebarPillItem>;
 }) {
   return (
-    <div className="grid w-full gap-0.5">
+    <div className="grid w-full gap-1">
       {items.map((item) => (
         <div
-          className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1"
+          className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-1"
           key={item.key}
         >
           <span
@@ -124,6 +167,7 @@ function SidebarProviderUpdateRows({
           <span className="min-w-0 truncate text-[10.5px] leading-3 text-foreground/82">
             {item.label}
           </span>
+          <SidebarProviderUpdateItemRail item={item} />
           <span
             className={cn(
               "shrink-0 text-[9.5px] leading-3 font-medium",
@@ -134,23 +178,6 @@ function SidebarProviderUpdateRows({
           </span>
         </div>
       ))}
-    </div>
-  );
-}
-
-function SidebarProviderUpdateSingleRail({ item }: { item: ProviderUpdateSidebarPillItem | null }) {
-  const tone = item?.tone ?? "running";
-  return (
-    <div
-      aria-hidden="true"
-      className="relative h-1 w-full overflow-hidden rounded-full bg-foreground/8"
-    >
-      <span
-        className={cn(
-          "absolute inset-y-0 left-0 rounded-full",
-          PROVIDER_UPDATE_RAIL_FILL_STYLES[tone],
-        )}
-      />
     </div>
   );
 }
@@ -193,7 +220,9 @@ export function SidebarProviderUpdatePill() {
   const [renderedView, setRenderedView] = useState<ProviderUpdateSidebarPillView | null>(null);
   const [pendingView, setPendingView] = useState<ProviderUpdateSidebarPillView | null>(null);
   const [exitingKey, setExitingKey] = useState<string | null>(null);
-  const [visibleAfterIso, setVisibleAfterIso] = useState<string | undefined>();
+  const [visibleAfterIso, setVisibleAfterIso] = useState<string | undefined>(
+    providerUpdateSidebarVisibleAfterIso,
+  );
   const effectiveVisibleAfterIso = visibleAfterIso ?? latestProviderCheckedAt(providers);
   const view = getProviderUpdateSidebarPillView(providers, {
     ...(effectiveVisibleAfterIso !== undefined
@@ -204,6 +233,7 @@ export function SidebarProviderUpdatePill() {
 
   useEffect(() => {
     if (visibleAfterIso === undefined && effectiveVisibleAfterIso !== undefined) {
+      providerUpdateSidebarVisibleAfterIso = effectiveVisibleAfterIso;
       setVisibleAfterIso(effectiveVisibleAfterIso);
     }
   }, [effectiveVisibleAfterIso, visibleAfterIso]);
@@ -227,6 +257,12 @@ export function SidebarProviderUpdatePill() {
   const statusLabel =
     singleItem?.statusLabel ??
     (displayedView ? sidebarProviderUpdateFallbackStatus(displayedView.tone) : "");
+  const badgeLabel =
+    showMultiProviderDetails && displayedView?.tone === "loading" && displayedView.progressLabel
+      ? displayedView.progressLabel
+      : showMultiProviderDetails && displayedView?.summary
+        ? displayedView.summary
+        : statusLabel;
 
   const startExit = useCallback(
     (key: string, nextView: ProviderUpdateSidebarPillView | null, dismissKey?: string) => {
@@ -235,6 +271,9 @@ export function SidebarProviderUpdatePill() {
       }
       if (dismissKey !== undefined) {
         dismissNotificationKey(dismissKey);
+        const nextVisibleAfterIso = new Date().toISOString();
+        providerUpdateSidebarVisibleAfterIso = nextVisibleAfterIso;
+        setVisibleAfterIso(nextVisibleAfterIso);
       }
       setPendingView(nextView);
       setExitingKey(key);
@@ -349,18 +388,16 @@ export function SidebarProviderUpdatePill() {
                     PROVIDER_UPDATE_STATUS_BADGE_STYLES[primaryTone],
                   )}
                 >
-                  {showMultiProviderDetails && displayedView.summary
-                    ? displayedView.summary
-                    : statusLabel}
+                  {badgeLabel}
                 </span>
               </span>
               {showMultiProviderDetails ? (
                 <>
-                  <SidebarProviderUpdateSegmentRail items={displayedItems} />
+                  <SidebarProviderUpdateProgressRail view={displayedView} />
                   <SidebarProviderUpdateRows items={displayedItems} />
                 </>
               ) : (
-                <SidebarProviderUpdateSingleRail item={singleItem} />
+                <SidebarProviderUpdateProgressRail view={displayedView} />
               )}
             </button>
           }

@@ -9,8 +9,8 @@ import * as Option from "effect/Option";
 import * as Electron from "electron";
 
 import * as NetService from "@threadlines/shared/Net";
-import { resolveRemoteT3CliPackageSpec } from "@threadlines/ssh/command";
-import type { RemoteT3RunnerOptions } from "@threadlines/ssh/tunnel";
+import { resolveRemoteThreadlinesCliPackageSpec } from "@threadlines/ssh/command";
+import type { RemoteThreadlinesRunnerOptions } from "@threadlines/ssh/tunnel";
 import serverPackageJson from "../../server/package.json" with { type: "json" };
 
 import type { DesktopSettings as DesktopSettingsValue } from "./settings/DesktopAppSettings.ts";
@@ -69,8 +69,8 @@ const desktopEnvironmentLayer = Layer.unwrap(
 const resolveDesktopSshCliRunner = (
   environment: DesktopEnvironment.DesktopEnvironmentShape,
   settings: DesktopSettingsValue,
-): RemoteT3RunnerOptions => {
-  const devRemoteEntryPath = Option.getOrUndefined(environment.devRemoteT3ServerEntryPath);
+): RemoteThreadlinesRunnerOptions => {
+  const devRemoteEntryPath = Option.getOrUndefined(environment.devRemoteThreadlinesServerEntryPath);
   if (environment.isDevelopment && devRemoteEntryPath !== undefined) {
     return {
       nodeScriptPath: devRemoteEntryPath,
@@ -78,7 +78,7 @@ const resolveDesktopSshCliRunner = (
     };
   }
   return {
-    packageSpec: resolveRemoteT3CliPackageSpec({
+    packageSpec: resolveRemoteThreadlinesCliPackageSpec({
       appVersion: environment.appVersion,
       updateChannel: settings.updateChannel,
       isDevelopment: environment.isDevelopment,

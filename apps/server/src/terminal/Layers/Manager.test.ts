@@ -1092,10 +1092,6 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
           env: {
             THREADLINES_PROJECT_ROOT: "/repo",
             THREADLINES_WORKTREE_PATH: "/repo/worktree-a",
-            BADCODE_PROJECT_ROOT: "/repo",
-            BADCODE_WORKTREE_PATH: "/repo/worktree-a",
-            T3CODE_PROJECT_ROOT: "/repo",
-            T3CODE_WORKTREE_PATH: "/repo/worktree-a",
             CUSTOM_FLAG: "1",
           },
         }),
@@ -1106,10 +1102,6 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
 
       assert.equal(spawnInput.env.THREADLINES_PROJECT_ROOT, "/repo");
       assert.equal(spawnInput.env.THREADLINES_WORKTREE_PATH, "/repo/worktree-a");
-      assert.equal(spawnInput.env.BADCODE_PROJECT_ROOT, "/repo");
-      assert.equal(spawnInput.env.BADCODE_WORKTREE_PATH, "/repo/worktree-a");
-      assert.equal(spawnInput.env.T3CODE_PROJECT_ROOT, "/repo");
-      assert.equal(spawnInput.env.T3CODE_WORKTREE_PATH, "/repo/worktree-a");
       assert.equal(spawnInput.env.CUSTOM_FLAG, "1");
     }),
   );

@@ -27,6 +27,10 @@ Log in with Codex normally:
 codex login
 ```
 
+Threadlines shows Codex account setup under `Settings -> Providers -> Codex -> Account`. If you
+opened Settings from a chat, use `Run` to open that chat's terminal and start the login command;
+otherwise use `Copy` and run the command yourself.
+
 ## I Want Work And Personal Codex Accounts
 
 Use one real Codex home and one shadow home.
@@ -70,6 +74,10 @@ Log in with a separate Codex home:
 mkdir -p ~/.codex_p
 CODEX_HOME=~/.codex_p codex login
 ```
+
+The Codex provider's `Account` section generates the matching terminal command from the configured
+`Shadow home path`; use `Run` from Settings when a previous chat terminal is available, or copy the
+command into your own terminal.
 
 In Threadlines Settings, add another Codex provider:
 

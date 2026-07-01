@@ -1,9 +1,11 @@
-// This file mostly exists because we want dev mode to say "Threadlines (Dev)" instead of "electron"
+// This file mostly exists because macOS app identity (Dock name and icon) comes
+// from the app bundle: we stage a patched copy of Electron.app so dev mode says
+// "Threadlines (Dev)" instead of "Electron" and so the Dock icon can adapt to
+// the system icon appearance (light/dark) like a packaged app.
 
 import { spawnSync } from "node:child_process";
 import {
   copyFileSync,
-  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -16,15 +18,31 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  MAC_ADAPTIVE_ICON_NAME,
+  buildMacAdaptiveIconSync,
+  isMacAdaptiveIconToolchainAvailable,
+} from "../../../scripts/lib/mac-adaptive-icon.ts";
+
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
 const APP_DISPLAY_NAME = isDevelopment ? "Threadlines (Dev)" : "Threadlines";
 const APP_BUNDLE_ID = isDevelopment ? "com.threadlines.app.dev" : "com.threadlines.app";
-const LAUNCHER_VERSION = 2;
+const LAUNCHER_VERSION = 4;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const desktopDir = resolve(__dirname, "..");
+const repoRoot = resolve(desktopDir, "../..");
 const defaultIconPath = join(desktopDir, "resources", "icon.icns");
 const developmentMacIconPngPath = join(desktopDir, "resources", "icon.png");
+const macAdaptiveIconSources = isDevelopment
+  ? {
+      light: join(repoRoot, "assets/dev/threadlines-dev-macos-light-1024.png"),
+      dark: join(repoRoot, "assets/dev/threadlines-dev-macos-dark-1024.png"),
+    }
+  : {
+      light: join(repoRoot, "assets/prod/threadlines-macos-light-1024.png"),
+      dark: join(repoRoot, "assets/prod/threadlines-macos-dark-1024.png"),
+    };
 
 function setPlistString(plistPath, key, value) {
   const replaceResult = spawnSync("plutil", ["-replace", key, "-string", value, plistPath], {
@@ -117,11 +135,31 @@ function patchMainBundleInfoPlist(appBundlePath, iconPath) {
   const resourcesDir = join(appBundlePath, "Contents", "Resources");
   copyFileSync(iconPath, join(resourcesDir, "icon.icns"));
   copyFileSync(iconPath, join(resourcesDir, "electron.icns"));
+
+  const adaptiveIcon = buildMacAdaptiveIconSync({
+    lightSourcePng: macAdaptiveIconSources.light,
+    darkSourcePng: macAdaptiveIconSources.dark,
+    outputDir: resourcesDir,
+    log: (message) => {
+      console.warn(`[desktop-launcher] ${message}`);
+    },
+  });
+  if (adaptiveIcon) {
+    setPlistString(infoPlistPath, "CFBundleIconName", MAC_ADAPTIVE_ICON_NAME);
+  }
 }
 
 function readJson(path) {
   try {
     return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function mtimeMsOrNull(path) {
+  try {
+    return statSync(path).mtimeMs;
   } catch {
     return null;
   }
@@ -142,6 +180,11 @@ function buildMacLauncher(electronBinaryPath) {
     sourceAppBundlePath,
     sourceAppMtimeMs: statSync(sourceAppBundlePath).mtimeMs,
     iconMtimeMs: statSync(iconPath).mtimeMs,
+    adaptiveIcon: {
+      lightSourceMtimeMs: mtimeMsOrNull(macAdaptiveIconSources.light),
+      darkSourceMtimeMs: mtimeMsOrNull(macAdaptiveIconSources.dark),
+      toolchainAvailable: isMacAdaptiveIconToolchainAvailable(),
+    },
   };
 
   const currentMetadata = readJson(metadataPath);
@@ -154,7 +197,10 @@ function buildMacLauncher(electronBinaryPath) {
   }
 
   rmSync(targetAppBundlePath, { recursive: true, force: true });
-  cpSync(sourceAppBundlePath, targetAppBundlePath, { recursive: true });
+  // ditto preserves the framework-internal relative symlinks that Electron's
+  // helper processes need for bundle resource lookup (icudtl.dat, GPU helpers);
+  // fs.cpSync rewrites them into absolute links into the source bundle.
+  runChecked("ditto", [sourceAppBundlePath, targetAppBundlePath]);
   patchMainBundleInfoPlist(targetAppBundlePath, iconPath);
   writeFileSync(metadataPath, `${JSON.stringify(expectedMetadata, null, 2)}\n`);
 
@@ -166,12 +212,6 @@ export function resolveElectronPath() {
   const electronBinaryPath = require("electron");
 
   if (process.platform !== "darwin") {
-    return electronBinaryPath;
-  }
-
-  // Dev launches do not need a renamed app bundle badly enough to risk breaking
-  // Electron helper resource lookup on macOS.
-  if (isDevelopment) {
     return electronBinaryPath;
   }
 

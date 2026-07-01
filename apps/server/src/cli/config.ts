@@ -208,7 +208,7 @@ const EnvServerConfig = Config.all({
     Config.string("BADCODE_HOST"),
     Config.string("T3CODE_HOST"),
   ),
-  t3Home: aliasedConfigOption(
+  threadlinesHome: aliasedConfigOption(
     Config.string("THREADLINES_HOME"),
     Config.string("BADCODE_HOME"),
     Config.string("T3CODE_HOME"),
@@ -379,8 +379,8 @@ export const resolveServerConfig = (
       Option.getOrUndefined(
         resolveOptionPrecedence(
           normalizedFlags.baseDir,
-          Option.fromUndefinedOr(env.t3Home),
-          Option.fromUndefinedOr(bootstrap?.t3Home),
+          Option.fromUndefinedOr(env.threadlinesHome),
+          Option.fromUndefinedOr(bootstrap?.threadlinesHome),
         ),
       ),
     );

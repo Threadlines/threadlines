@@ -38,11 +38,11 @@ const MODE_ARGS = {
     "run",
     "--filter=@threadlines/contracts",
     "--filter=@threadlines/web",
-    "--filter=t3",
+    "--filter=@threadlines/server",
     "--parallel",
     "dev",
   ],
-  "dev:server": ["run", "--filter=t3", "dev"],
+  "dev:server": ["run", "--filter=@threadlines/server", "dev"],
   "dev:web": ["run", "--filter=@threadlines/web", "dev"],
   "dev:desktop": [
     "run",
@@ -176,7 +176,7 @@ interface CreateDevRunnerEnvInput {
   readonly baseEnv: NodeJS.ProcessEnv;
   readonly serverOffset: number;
   readonly webOffset: number;
-  readonly t3Home: string | undefined;
+  readonly threadlinesHome: string | undefined;
   readonly noBrowser: boolean | undefined;
   readonly autoBootstrapProjectFromCwd: boolean | undefined;
   readonly logWebSocketEvents: boolean | undefined;
@@ -185,22 +185,18 @@ interface CreateDevRunnerEnvInput {
   readonly devUrl: URL | undefined;
 }
 
-const setThreadlinesEnvAlias = (
-  env: NodeJS.ProcessEnv,
-  suffix: string,
-  value: string | undefined,
-) => {
+const setThreadlinesEnv = (env: NodeJS.ProcessEnv, suffix: string, value: string | undefined) => {
   if (value === undefined) {
-    deleteThreadlinesEnvAlias(env, suffix);
+    deleteThreadlinesEnv(env, suffix);
     return;
   }
 
   env[`THREADLINES_${suffix}`] = value;
-  env[`BADCODE_${suffix}`] = value;
-  env[`T3CODE_${suffix}`] = value;
+  delete env[`BADCODE_${suffix}`];
+  delete env[`T3CODE_${suffix}`];
 };
 
-const deleteThreadlinesEnvAlias = (env: NodeJS.ProcessEnv, suffix: string) => {
+const deleteThreadlinesEnv = (env: NodeJS.ProcessEnv, suffix: string) => {
   delete env[`THREADLINES_${suffix}`];
   delete env[`BADCODE_${suffix}`];
   delete env[`T3CODE_${suffix}`];
@@ -235,7 +231,7 @@ export function createDevRunnerEnv({
   baseEnv,
   serverOffset,
   webOffset,
-  t3Home,
+  threadlinesHome,
   noBrowser,
   autoBootstrapProjectFromCwd,
   logWebSocketEvents,
@@ -246,7 +242,7 @@ export function createDevRunnerEnv({
   return Effect.gen(function* () {
     const serverPort = port ?? BASE_SERVER_PORT + serverOffset;
     const webPort = BASE_WEB_PORT + webOffset;
-    const resolvedBaseDir = yield* resolveBaseDir(t3Home);
+    const resolvedBaseDir = yield* resolveBaseDir(threadlinesHome);
     const isDesktopMode = mode === "dev:desktop";
 
     const output: NodeJS.ProcessEnv = {
@@ -256,60 +252,60 @@ export function createDevRunnerEnv({
         devUrl?.toString() ??
         `http://${isDesktopMode ? DESKTOP_DEV_LOOPBACK_HOST : "localhost"}:${webPort}`,
     };
-    setThreadlinesEnvAlias(output, "HOME", resolvedBaseDir);
+    setThreadlinesEnv(output, "HOME", resolvedBaseDir);
 
     if (!isDesktopMode) {
-      setThreadlinesEnvAlias(output, "PORT", String(serverPort));
+      setThreadlinesEnv(output, "PORT", String(serverPort));
       output.VITE_HTTP_URL = `http://localhost:${serverPort}`;
       output.VITE_WS_URL = `ws://localhost:${serverPort}`;
     } else {
-      setThreadlinesEnvAlias(output, "PORT", String(serverPort));
+      setThreadlinesEnv(output, "PORT", String(serverPort));
       output.VITE_HTTP_URL = `http://${DESKTOP_DEV_LOOPBACK_HOST}:${serverPort}`;
       output.VITE_WS_URL = `ws://${DESKTOP_DEV_LOOPBACK_HOST}:${serverPort}`;
-      deleteThreadlinesEnvAlias(output, "MODE");
-      deleteThreadlinesEnvAlias(output, "NO_BROWSER");
-      deleteThreadlinesEnvAlias(output, "HOST");
+      deleteThreadlinesEnv(output, "MODE");
+      deleteThreadlinesEnv(output, "NO_BROWSER");
+      deleteThreadlinesEnv(output, "HOST");
     }
 
     if (!isDesktopMode && host !== undefined) {
-      setThreadlinesEnvAlias(output, "HOST", host);
+      setThreadlinesEnv(output, "HOST", host);
     }
 
     if (!isDesktopMode && noBrowser !== undefined) {
-      setThreadlinesEnvAlias(output, "NO_BROWSER", noBrowser ? "1" : "0");
+      setThreadlinesEnv(output, "NO_BROWSER", noBrowser ? "1" : "0");
     } else if (!isDesktopMode) {
-      deleteThreadlinesEnvAlias(output, "NO_BROWSER");
+      deleteThreadlinesEnv(output, "NO_BROWSER");
     }
 
     if (autoBootstrapProjectFromCwd !== undefined) {
-      setThreadlinesEnvAlias(
+      setThreadlinesEnv(
         output,
         "AUTO_BOOTSTRAP_PROJECT_FROM_CWD",
         autoBootstrapProjectFromCwd ? "1" : "0",
       );
     } else {
-      deleteThreadlinesEnvAlias(output, "AUTO_BOOTSTRAP_PROJECT_FROM_CWD");
+      deleteThreadlinesEnv(output, "AUTO_BOOTSTRAP_PROJECT_FROM_CWD");
     }
 
     if (logWebSocketEvents !== undefined) {
-      setThreadlinesEnvAlias(output, "LOG_WS_EVENTS", logWebSocketEvents ? "1" : "0");
+      setThreadlinesEnv(output, "LOG_WS_EVENTS", logWebSocketEvents ? "1" : "0");
     } else {
-      deleteThreadlinesEnvAlias(output, "LOG_WS_EVENTS");
+      deleteThreadlinesEnv(output, "LOG_WS_EVENTS");
     }
 
     if (mode === "dev") {
-      setThreadlinesEnvAlias(output, "MODE", "web");
-      deleteThreadlinesEnvAlias(output, "DESKTOP_WS_URL");
+      setThreadlinesEnv(output, "MODE", "web");
+      deleteThreadlinesEnv(output, "DESKTOP_WS_URL");
     }
 
     if (mode === "dev:server" || mode === "dev:web") {
-      setThreadlinesEnvAlias(output, "MODE", "web");
-      deleteThreadlinesEnvAlias(output, "DESKTOP_WS_URL");
+      setThreadlinesEnv(output, "MODE", "web");
+      deleteThreadlinesEnv(output, "DESKTOP_WS_URL");
     }
 
     if (isDesktopMode) {
       output.HOST = DESKTOP_DEV_LOOPBACK_HOST;
-      deleteThreadlinesEnvAlias(output, "DESKTOP_WS_URL");
+      deleteThreadlinesEnv(output, "DESKTOP_WS_URL");
     }
 
     return output;
@@ -468,7 +464,7 @@ export function resolveModePortOffsets<R = NetService.NetService>({
 
 interface DevRunnerCliInput {
   readonly mode: DevMode;
-  readonly t3Home: string | undefined;
+  readonly threadlinesHome: string | undefined;
   readonly noBrowser: boolean | undefined;
   readonly autoBootstrapProjectFromCwd: boolean | undefined;
   readonly logWebSocketEvents: boolean | undefined;
@@ -529,7 +525,7 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
       baseEnv: process.env,
       serverOffset,
       webOffset,
-      t3Home: input.t3Home,
+      threadlinesHome: input.threadlinesHome,
       noBrowser: input.noBrowser,
       autoBootstrapProjectFromCwd: input.autoBootstrapProjectFromCwd,
       logWebSocketEvents: input.logWebSocketEvents,
@@ -588,7 +584,7 @@ const devRunnerCli = Command.make("dev-runner", {
   mode: Argument.choice("mode", DEV_RUNNER_MODES).pipe(
     Argument.withDescription("Development mode to run."),
   ),
-  t3Home: Flag.string("home-dir").pipe(
+  threadlinesHome: Flag.string("home-dir").pipe(
     Flag.withDescription(
       "Base directory for all Threadlines data (equivalent to THREADLINES_HOME; legacy BADCODE_HOME and T3CODE_HOME are still accepted).",
     ),

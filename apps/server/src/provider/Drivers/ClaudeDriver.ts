@@ -31,6 +31,7 @@ import {
   checkClaudeProviderStatus,
   makePendingClaudeProvider,
   probeClaudeCapabilities,
+  readClaudeNormalAuthEmail,
 } from "../Layers/ClaudeProvider.ts";
 import { fetchClaudeAccountUsage } from "../Layers/ClaudeUsage.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
@@ -248,10 +249,15 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         () => Cache.get(capabilitiesProbeCache, capabilitiesCacheKey),
         processEnv,
         (settings) =>
-          fetchClaudeAccountUsage(settings).pipe(
+          fetchClaudeAccountUsage(settings, processEnv).pipe(
             Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
             Effect.provideService(FileSystem.FileSystem, fileSystem),
             Effect.provideService(HttpClient.HttpClient, httpClient),
+            Effect.provideService(Path.Path, path),
+          ),
+        (settings) =>
+          readClaudeNormalAuthEmail(settings, processEnv).pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
             Effect.provideService(Path.Path, path),
           ),
       ).pipe(

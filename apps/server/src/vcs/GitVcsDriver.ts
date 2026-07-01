@@ -44,6 +44,7 @@ import {
   type VcsStatusInput,
   type VcsStatusResult,
 } from "@threadlines/contracts";
+import { CHECKPOINT_REFS_PREFIX, LEGACY_CHECKPOINT_REFS_PREFIX } from "./checkpointRefs.ts";
 import * as GitVcsDriverCore from "./GitVcsDriverCore.ts";
 import * as VcsDriver from "./VcsDriver.ts";
 import * as VcsProcess from "./VcsProcess.ts";
@@ -284,6 +285,7 @@ export class GitVcsDriver extends Context.Service<GitVcsDriver, GitVcsDriverShap
 const WORKSPACE_FILES_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 const GIT_CHECK_IGNORE_MAX_STDIN_BYTES = 256 * 1024;
 const CHECKPOINT_DIFF_MAX_OUTPUT_BYTES = 10_000_000;
+const CHECKPOINT_MIGRATION_MAX_OUTPUT_BYTES = 16_000_000;
 const WORKSPACE_GIT_HARDENED_CONFIG_ARGS = [
   "-c",
   "core.fsmonitor=false",
@@ -661,9 +663,91 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       return path.isAbsolute(gitCommonDir) ? gitCommonDir : path.resolve(cwd, gitCommonDir);
     });
 
+  const parseRefListing = (stdout: string): ReadonlyArray<string> =>
+    stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+
+  const migrateLegacyCheckpointRefs = Effect.fn(
+    "GitVcsDriver.checkpoints.migrateLegacyCheckpointRefs",
+  )(function* (cwd: string) {
+    const operation = "GitVcsDriver.checkpoints.migrateLegacyCheckpointRefs";
+    const legacyListing = yield* execute({
+      operation,
+      cwd,
+      args: ["for-each-ref", "--format=%(refname) %(objectname)", LEGACY_CHECKPOINT_REFS_PREFIX],
+      allowNonZeroExit: true,
+      maxOutputBytes: CHECKPOINT_MIGRATION_MAX_OUTPUT_BYTES,
+    });
+    if (legacyListing.exitCode !== 0) {
+      return;
+    }
+    const legacyRefs = parseRefListing(legacyListing.stdout).flatMap((line) => {
+      const [refName = "", objectId = ""] = line.split(" ");
+      return refName.startsWith(`${LEGACY_CHECKPOINT_REFS_PREFIX}/`) && objectId.length >= 40
+        ? [{ refName, objectId }]
+        : [];
+    });
+    if (legacyRefs.length === 0) {
+      return;
+    }
+
+    const currentListing = yield* execute({
+      operation,
+      cwd,
+      args: ["for-each-ref", "--format=%(refname)", CHECKPOINT_REFS_PREFIX],
+      maxOutputBytes: CHECKPOINT_MIGRATION_MAX_OUTPUT_BYTES,
+    });
+    const currentRefs = new Set(parseRefListing(currentListing.stdout));
+
+    // Single atomic transaction: rename every legacy ref, but never clobber a
+    // ref the current namespace already has (post-rename captures win).
+    const commands: string[] = [];
+    let migratedCount = 0;
+    for (const { refName, objectId } of legacyRefs) {
+      const targetRef = `${CHECKPOINT_REFS_PREFIX}${refName.slice(LEGACY_CHECKPOINT_REFS_PREFIX.length)}`;
+      if (!currentRefs.has(targetRef)) {
+        commands.push(`create ${targetRef} ${objectId}`);
+        migratedCount += 1;
+      }
+      commands.push(`delete ${refName} ${objectId}`);
+    }
+    yield* execute({
+      operation,
+      cwd,
+      args: ["update-ref", "--stdin"],
+      stdin: `${commands.join("\n")}\n`,
+      timeoutMs: 30_000,
+    });
+    yield* Effect.logInfo("migrated legacy checkpoint refs to the threadlines namespace", {
+      cwd,
+      migrated: migratedCount,
+      supersededByCurrentRefs: legacyRefs.length - migratedCount,
+    });
+  });
+
+  const attemptedLegacyCheckpointMigrations = new Set<string>();
+
+  const ensureLegacyCheckpointRefsMigrated = (cwd: string): Effect.Effect<void> => {
+    if (attemptedLegacyCheckpointMigrations.has(cwd)) {
+      return Effect.void;
+    }
+    attemptedLegacyCheckpointMigrations.add(cwd);
+    return migrateLegacyCheckpointRefs(cwd).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning("legacy checkpoint ref migration failed; will retry on restart", {
+          cwd,
+          error: String(error),
+        }),
+      ),
+    );
+  };
+
   const checkpoints: VcsDriver.VcsCheckpointOps = {
     captureCheckpoint: Effect.fn("GitVcsDriver.checkpoints.captureCheckpoint")(function* (input) {
       const operation = "GitVcsDriver.checkpoints.captureCheckpoint";
+      yield* ensureLegacyCheckpointRefsMigrated(input.cwd);
       const gitCommonDir = yield* resolveGitCommonDir(input.cwd);
       const tempIndexPath = path.join(gitCommonDir, `t3-checkpoint-index-${randomUUID()}`);
       const commitEnv: NodeJS.ProcessEnv = {
@@ -714,7 +798,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
           });
         }
 
-        const message = `t3 checkpoint ref=${input.checkpointRef}`;
+        const message = `threadlines checkpoint ref=${input.checkpointRef}`;
         const commitTreeResult = yield* execute({
           operation,
           cwd: input.cwd,
@@ -740,13 +824,14 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       }).pipe(Effect.ensuring(cleanupTempIndex));
     }),
 
-    hasCheckpointRef: (input) =>
-      resolveCheckpointCommit(input.cwd, input.checkpointRef).pipe(
-        Effect.map((commit) => commit !== null),
-      ),
+    hasCheckpointRef: Effect.fn("GitVcsDriver.checkpoints.hasCheckpointRef")(function* (input) {
+      yield* ensureLegacyCheckpointRefsMigrated(input.cwd);
+      return (yield* resolveCheckpointCommit(input.cwd, input.checkpointRef)) !== null;
+    }),
 
     restoreCheckpoint: Effect.fn("GitVcsDriver.checkpoints.restoreCheckpoint")(function* (input) {
       const operation = "GitVcsDriver.checkpoints.restoreCheckpoint";
+      yield* ensureLegacyCheckpointRefsMigrated(input.cwd);
 
       let commitOid = yield* resolveCheckpointCommit(input.cwd, input.checkpointRef);
 
@@ -783,6 +868,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
 
     diffCheckpoints: Effect.fn("GitVcsDriver.checkpoints.diffCheckpoints")(function* (input) {
       const operation = "GitVcsDriver.checkpoints.diffCheckpoints";
+      yield* ensureLegacyCheckpointRefsMigrated(input.cwd);
       yield* Effect.annotateCurrentSpan({
         "checkpoint.cwd": input.cwd,
         "checkpoint.from_ref": input.fromCheckpointRef,
@@ -846,6 +932,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
 
     deleteCheckpointRefs: Effect.fn("GitVcsDriver.checkpoints.deleteCheckpointRefs")(
       function* (input) {
+        yield* ensureLegacyCheckpointRefsMigrated(input.cwd);
         yield* Effect.forEach(
           input.checkpointRefs,
           (checkpointRef) =>

@@ -20,8 +20,8 @@ const AUTH_ERROR_PATTERNS = [
 ] as const;
 
 const GENERIC_AUTH_STATUS_PATTERNS = [
-  /^(?:error:\s*)?(?:(?:codex(?: cli)?|claude(?: code)?|cursor agent|openai(?: cli)?|provider|model provider)\s+is\s+)?not authenticated[.!]?(?:\s+run `[^`]+`(?: in a terminal)?(?:, then retry| and try again)\.)?$/u,
-  /^(?:error:\s*)?not logged in[.!]?(?:\s+run `[^`]+`(?: in a terminal)?(?:, then retry| and try again)\.)?$/u,
+  /^(?:error:\s*)?(?:(?:codex(?: cli)?|claude(?: code)?|cursor agent|openai(?: cli)?|provider|model provider)\s+is\s+)?not authenticated[.!]?(?:\s*(?:[•·-]\s*)?(?:please\s+)?run\s+(?:\/login|`[^`]+`)(?: in a terminal)?(?:, then retry| and try again)?\.?)?$/u,
+  /^(?:error:\s*)?not logged in[.!]?(?:\s*(?:[•·-]\s*)?(?:please\s+)?run\s+(?:\/login|`[^`]+`)(?: in a terminal)?(?:, then retry| and try again)?\.?)?$/u,
   /^(?:error:\s*)?(?:(?:codex|claude|cursor agent|openai|provider|model provider)\s+)?requires authentication[.!]?$/u,
   /^(?:error:\s*)?unauthenticated[.!]?$/u,
 ] as const;

@@ -28,6 +28,52 @@ Claude HOME path: empty
 ```
 
 An empty `Claude HOME path` means Threadlines uses your normal home directory.
+Threadlines shows Claude account setup under `Settings -> Providers -> Claude -> Account`. If you
+opened Settings from a chat, use `Run` to open that chat's terminal and start the sign-in command;
+otherwise use `Copy` and run the command yourself.
+
+## Keeping Claude Sign-In Fresh
+
+If Claude reports `Not logged in` inside Threadlines, use the terminal command:
+
+```bash
+claude auth login
+```
+
+Claude may also print `Please run /login`, but that in-session slash command can be unreliable when
+Claude is running through Threadlines' managed SDK session. Threadlines treats that message as a
+provider sign-in problem and opens the terminal login command instead.
+
+For longer-lived unattended use, Claude Code supports a one-year OAuth token. Threadlines shows the
+right setup command in each Claude provider's `Account` section, with the same `Run` and `Copy`
+options.
+
+Default command:
+
+```bash
+claude setup-token
+```
+
+If the provider uses a custom `Claude HOME path`, the command must use the same home, for example:
+
+```bash
+HOME=~/.claude_personal_home claude setup-token
+```
+
+Run the command, finish browser authorization, then copy the printed token into the `OAuth token`
+field and choose `Save token`. If you used `Run`, Threadlines opens the command in the last active
+chat terminal; return to Settings after Claude prints the token. Threadlines stores the value as the
+sensitive `CLAUDE_CODE_OAUTH_TOKEN` environment variable for that provider instance. If terminal
+wrapping adds whitespace while copying, Threadlines removes that whitespace before saving.
+
+Credential precedence matters. `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY` override
+`CLAUDE_CODE_OAUTH_TOKEN`, so remove stale Anthropic variables from the provider environment unless
+you intentionally want them to win.
+
+If a Claude provider already has a long-lived token and Threadlines detects either Anthropic
+credential variable in that provider, the Account section shows `Use long-lived token`. That action
+clears the provider-level Anthropic credentials and writes blank masks for those names so inherited
+shell environment variables cannot override `CLAUDE_CODE_OAUTH_TOKEN`.
 
 ## I Want Work And Personal Claude Accounts
 

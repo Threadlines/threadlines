@@ -1,0 +1,125 @@
+name: npm Package
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/npm-package.yml"
+      - "apps/server/**"
+      - "apps/web/**"
+      - "packages/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "vite.config.ts"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/npm-package.yml"
+      - "apps/server/**"
+      - "apps/web/**"
+      - "packages/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "vite.config.ts"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Optional package version to publish. Blank uses apps/server/package.json."
+        required: false
+        type: string
+      dist_tag:
+        description: "npm dist-tag for publishing."
+        required: true
+        default: latest
+        type: choice
+        options:
+          - latest
+          - nightly
+      publish:
+        description: "Publish to npm. Leave false for a dry run."
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  pack:
+    name: Build and dry-run package
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          version: "0.1.24"
+          run-install: false
+
+      - name: Install dependencies
+        run: vp install --frozen-lockfile
+
+      - name: Align package versions
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.version != '' }}
+        run: node scripts/update-release-package-versions.ts "${{ inputs.version }}"
+
+      - name: Build server package
+        env:
+          THREADLINES_POSTHOG_KEY: ${{ secrets.THREADLINES_POSTHOG_KEY }}
+          THREADLINES_POSTHOG_HOST: ${{ vars.THREADLINES_POSTHOG_HOST }}
+        run: vp exec vp run --filter @threadlines/server build:bundle
+
+      - name: Prepare npm package
+        run: node scripts/prepare-server-npm-package.ts
+
+      - name: Dry-run npm package
+        working-directory: release/npm-server
+        run: npm pack --dry-run
+
+  publish:
+    name: Publish package
+    needs: pack
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          version: "0.1.24"
+          run-install: false
+
+      - name: Install dependencies
+        run: vp install --frozen-lockfile
+
+      - name: Align package versions
+        if: ${{ inputs.version != '' }}
+        run: node scripts/update-release-package-versions.ts "${{ inputs.version }}"
+
+      - name: Build server package
+        env:
+          THREADLINES_POSTHOG_KEY: ${{ secrets.THREADLINES_POSTHOG_KEY }}
+          THREADLINES_POSTHOG_HOST: ${{ vars.THREADLINES_POSTHOG_HOST }}
+        run: vp exec vp run --filter @threadlines/server build:bundle
+
+      - name: Prepare npm package
+        run: node scripts/prepare-server-npm-package.ts
+
+      - name: Publish to npm
+        working-directory: release/npm-server
+        run: npm publish --access public --tag "${{ inputs.dist_tag }}"

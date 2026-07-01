@@ -72,6 +72,27 @@ describe("ServerProvider", () => {
     expect(parsed.continuation?.groupKey).toBe("codex:home:/Users/julius/.codex");
   });
 
+  it("decodes separate usage auth email metadata", () => {
+    const parsed = decodeServerProvider({
+      instanceId: "claudeAgent",
+      driver: "claudeAgent",
+      enabled: true,
+      installed: true,
+      version: "2.1.197",
+      status: "ready",
+      auth: {
+        status: "authenticated",
+        type: "longLivedOAuthToken",
+        label: "Long-lived Claude token",
+        usageEmail: "usage@example.com",
+      },
+      checkedAt: "2026-04-10T00:00:00.000Z",
+      models: [],
+    });
+
+    expect(parsed.auth.usageEmail).toBe("usage@example.com");
+  });
+
   it("decodes provider model descriptions", () => {
     const parsed = decodeServerProvider({
       instanceId: "claudeAgent",

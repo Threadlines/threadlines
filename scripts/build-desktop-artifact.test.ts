@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import { DESKTOP_RELEASE_APP_ID } from "@threadlines/shared/desktopIdentity";
 
@@ -35,12 +36,16 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   it("uses one desktop packaging icon set across release channels", () => {
     assert.deepStrictEqual(resolveDesktopBuildIconAssets("0.0.17"), {
       macIconPng: BRAND_ASSET_PATHS.productionMacIconPng,
+      macDarkIconPng: BRAND_ASSET_PATHS.productionMacDarkIconPng,
+      macLightIconPng: BRAND_ASSET_PATHS.productionMacLightIconPng,
       linuxIconPng: BRAND_ASSET_PATHS.productionLinuxIconPng,
       windowsIconIco: BRAND_ASSET_PATHS.productionWindowsIconIco,
     });
 
     assert.deepStrictEqual(resolveDesktopBuildIconAssets("0.0.17-nightly.20260413.42"), {
       macIconPng: BRAND_ASSET_PATHS.productionMacIconPng,
+      macDarkIconPng: BRAND_ASSET_PATHS.productionMacDarkIconPng,
+      macLightIconPng: BRAND_ASSET_PATHS.productionMacLightIconPng,
       linuxIconPng: BRAND_ASSET_PATHS.productionLinuxIconPng,
       windowsIconIco: BRAND_ASSET_PATHS.productionWindowsIconIco,
     });
@@ -176,7 +181,40 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(macConfig.hardenedRuntime, false);
       assert.equal(macConfig.gatekeeperAssess, false);
       assert.equal(macConfig.notarize, undefined);
+      assert.equal(macConfig.extraResources, undefined);
+      assert.equal(macConfig.extendInfo, undefined);
     }),
+  );
+
+  it.effect("ships the staged adaptive macOS icon when Assets.car was produced", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const stageResourcesDir = yield* fs.makeTempDirectoryScoped({
+        prefix: "threadlines-adaptive-icon-stage-",
+      });
+      yield* fs.writeFileString(`${stageResourcesDir}/Assets.car`, "car");
+
+      const buildConfig = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "0.0.19",
+        false,
+        false,
+        undefined,
+        stageResourcesDir,
+      );
+      const macConfig = buildConfig.mac as Record<string, unknown>;
+      const normalizePath = (value: unknown) => String(value).replaceAll("\\", "/");
+      const extraResources = macConfig.extraResources as Array<Record<string, unknown>>;
+
+      assert.equal(extraResources.length, 1);
+      assert.equal(
+        normalizePath(extraResources[0]?.from),
+        `${stageResourcesDir.replaceAll("\\", "/")}/Assets.car`,
+      );
+      assert.equal(extraResources[0]?.to, "Assets.car");
+      assert.deepStrictEqual(macConfig.extendInfo, { CFBundleIconName: "AppIcon" });
+    }).pipe(Effect.scoped),
   );
 
   it.effect("enables hardened runtime and notarization for signed macOS artifacts", () =>
@@ -263,12 +301,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     );
   });
 
-  it("prefers the Threadlines update repository env var over legacy and GitHub defaults", () => {
+  it("prefers the Threadlines update repository env var over GitHub defaults", () => {
     assert.deepStrictEqual(
       resolveGitHubPublishConfig("latest", {
         THREADLINES_DESKTOP_UPDATE_REPOSITORY: "threadlines/app",
-        BADCODE_DESKTOP_UPDATE_REPOSITORY: "badcuban/badcode",
-        T3CODE_DESKTOP_UPDATE_REPOSITORY: "legacy/threadlines",
         GITHUB_REPOSITORY: "fallback/repo",
       }),
       {
@@ -281,7 +317,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     );
   });
 
-  it("falls back to the BadCode update repository env var before T3Code and GitHub defaults", () => {
+  it("falls back to the GitHub repository env var", () => {
     assert.deepStrictEqual(
       resolveGitHubPublishConfig("latest", {
         BADCODE_DESKTOP_UPDATE_REPOSITORY: "badcuban/badcode",
@@ -290,28 +326,20 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       }),
       {
         provider: "github",
-        owner: "badcuban",
-        repo: "badcode",
+        owner: "fallback",
+        repo: "repo",
         private: true,
         releaseType: "release",
       },
     );
   });
 
-  it("falls back to the legacy update repository env var", () => {
+  it("ignores legacy update repository env vars when GitHub repository is absent", () => {
     assert.deepStrictEqual(
       resolveGitHubPublishConfig("nightly", {
         T3CODE_DESKTOP_UPDATE_REPOSITORY: "legacy/threadlines",
-        GITHUB_REPOSITORY: "fallback/repo",
       }),
-      {
-        provider: "github",
-        owner: "legacy",
-        repo: "threadlines",
-        private: true,
-        releaseType: "prerelease",
-        channel: "nightly",
-      },
+      undefined,
     );
   });
 

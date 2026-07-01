@@ -87,7 +87,7 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
         environment,
         childProcessSpawner: commandSpawner,
         cwd,
-        clientInfo: { name: "t3-code-git-text", version: "0.0.0" },
+        clientInfo: { name: "threadlines-git-text", version: "0.0.0" },
       });
 
       yield* runtime.handleSessionUpdate((notification) => {

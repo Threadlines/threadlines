@@ -65,12 +65,12 @@ const makeElectronAppLayer = (calls: ElectronAppCalls) =>
     on: () => Effect.void,
   } satisfies ElectronApp.ElectronAppShape);
 
-const makeAssetsLayer = (png: Option.Option<string>) =>
+const makeAssetsLayer = (input: { readonly png: Option.Option<string> }) =>
   Layer.succeed(DesktopAssets.DesktopAssets, {
     iconPaths: Effect.succeed({
       ico: Option.none(),
       icns: Option.none(),
-      png,
+      png: input.png,
     }),
     resolveResourcePath: () => Effect.succeed(Option.none()),
   } satisfies DesktopAssets.DesktopAssetsShape);
@@ -107,6 +107,7 @@ const withIdentity = <A, E, R>(
     readonly calls?: ElectronAppCalls;
     readonly environment?: TestEnvironmentInput;
     readonly legacyPathExists?: boolean;
+    readonly bundledAdaptiveIconExists?: boolean;
     readonly packageJson?: string;
     readonly pngIconPath?: Option.Option<string>;
   } = {},
@@ -123,12 +124,20 @@ const withIdentity = <A, E, R>(
         Layer.provideMerge(
           FileSystem.layerNoop({
             exists: (path) =>
-              Effect.succeed(input.legacyPathExists === true && path.includes("badcode")),
+              Effect.succeed(
+                path.endsWith("Assets.car")
+                  ? input.bundledAdaptiveIconExists === true
+                  : input.legacyPathExists === true && path.includes("badcode"),
+              ),
             readFileString: () =>
               Effect.succeed(input.packageJson ?? '{"threadlinesCommitHash":"abcdef1234567890"}'),
           }),
         ),
-        Layer.provideMerge(makeAssetsLayer(input.pngIconPath ?? Option.none())),
+        Layer.provideMerge(
+          makeAssetsLayer({
+            png: input.pngIconPath ?? Option.none(),
+          }),
+        ),
         Layer.provideMerge(makeElectronAppLayer(calls)),
         Layer.provideMerge(makeEnvironmentLayer(input.environment)),
       ),
@@ -177,6 +186,52 @@ describe("DesktopAppIdentity", () => {
             THREADLINES_COMMIT_HASH: "0123456789abcdef",
           },
         },
+        pngIconPath: Option.some("/icon.png"),
+      },
+    );
+  });
+
+  it.effect("skips the static dock icon when the bundle ships an adaptive icon", () => {
+    const calls: ElectronAppCalls = {
+      setAboutPanelOptions: [],
+      setDockIcon: [],
+      setName: [],
+    };
+
+    return withIdentity(
+      Effect.gen(function* () {
+        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
+        yield* identity.configure;
+
+        // macOS renders the bundled Assets.car itself, following the system
+        // icon appearance; a static bitmap would pin one appearance forever.
+        assert.deepEqual(calls.setDockIcon, []);
+      }),
+      {
+        calls,
+        bundledAdaptiveIconExists: true,
+        pngIconPath: Option.some("/icon.png"),
+      },
+    );
+  });
+
+  it.effect("falls back to the static dock icon without a bundled adaptive icon", () => {
+    const calls: ElectronAppCalls = {
+      setAboutPanelOptions: [],
+      setDockIcon: [],
+      setName: [],
+    };
+
+    return withIdentity(
+      Effect.gen(function* () {
+        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
+        yield* identity.configure;
+
+        assert.deepEqual(calls.setDockIcon, ["/icon.png"]);
+      }),
+      {
+        calls,
+        bundledAdaptiveIconExists: false,
         pngIconPath: Option.some("/icon.png"),
       },
     );

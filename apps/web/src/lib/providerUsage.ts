@@ -408,7 +408,9 @@ function shouldShowClaudeUsageUnavailablePlaceholder(
   );
 }
 
-function makeClaudeUsageUnavailablePresentation(): ProviderAccountUsagePresentation {
+function makeClaudeUsageUnavailablePresentation(
+  detail: string = "usage unavailable",
+): ProviderAccountUsagePresentation {
   return {
     label: PROVIDER_USAGE_SOURCE_LABELS["claude-oauth-usage"],
     reachedLimit: false,
@@ -416,7 +418,7 @@ function makeClaudeUsageUnavailablePresentation(): ProviderAccountUsagePresentat
       {
         key: "primary",
         label: "5h",
-        detail: "usage unavailable",
+        detail,
         usedPercent: 0,
         remainingPercent: 100,
         reachedLimit: false,
@@ -424,7 +426,7 @@ function makeClaudeUsageUnavailablePresentation(): ProviderAccountUsagePresentat
       {
         key: "secondary",
         label: "Weekly",
-        detail: "usage unavailable",
+        detail,
         usedPercent: 0,
         remainingPercent: 100,
         reachedLimit: false,
@@ -440,7 +442,11 @@ export function deriveProviderAccountUsagePresentationForProvider(
   const presentation = deriveProviderAccountUsagePresentation(provider?.accountUsage, nowMs);
   if (presentation || !provider) return presentation;
   if (shouldShowClaudeUsageUnavailablePlaceholder(provider)) {
-    return makeClaudeUsageUnavailablePresentation();
+    return makeClaudeUsageUnavailablePresentation(
+      provider.auth.type === "longLivedOAuthToken"
+        ? "needs Claude sign-in for usage"
+        : "usage unavailable",
+    );
   }
   return null;
 }

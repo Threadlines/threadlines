@@ -349,7 +349,7 @@ jobs:
       - name: Require Windows signing for installer releases
         shell: pwsh
         env:
-          THREADLINES_DESKTOP_SIGNED: ${{ (vars.THREADLINES_DESKTOP_SIGNED == 'true' || vars.BADCODE_DESKTOP_SIGNED == 'true') && 'true' || 'false' }}
+          THREADLINES_DESKTOP_SIGNED: ${{ vars.THREADLINES_DESKTOP_SIGNED == 'true' && 'true' || 'false' }}
           AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ vars.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME }}
           AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ vars.AZURE_TRUSTED_SIGNING_ENDPOINT }}
           AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ vars.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
@@ -378,7 +378,7 @@ jobs:
 
       - name: Build Windows installer
         env:
-          THREADLINES_DESKTOP_SIGNED: ${{ (vars.THREADLINES_DESKTOP_SIGNED == 'true' || vars.BADCODE_DESKTOP_SIGNED == 'true') && 'true' || 'false' }}
+          THREADLINES_DESKTOP_SIGNED: ${{ vars.THREADLINES_DESKTOP_SIGNED == 'true' && 'true' || 'false' }}
           AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ vars.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME }}
           AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ vars.AZURE_TRUSTED_SIGNING_ENDPOINT }}
           AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ vars.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
@@ -386,6 +386,8 @@ jobs:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          THREADLINES_POSTHOG_KEY: ${{ secrets.THREADLINES_POSTHOG_KEY }}
+          THREADLINES_POSTHOG_HOST: ${{ vars.THREADLINES_POSTHOG_HOST }}
         run: >
           vp exec vp run dist:desktop:artifact --
           --platform win
@@ -516,17 +518,30 @@ jobs:
 
       - name: Require macOS signing for updater releases
         env:
-          THREADLINES_DESKTOP_SIGNED: ${{ (vars.THREADLINES_MACOS_SIGNED == 'true' || vars.BADCODE_MACOS_SIGNED == 'true') && 'true' || 'false' }}
+          THREADLINES_DESKTOP_SIGNED: ${{ vars.THREADLINES_MACOS_SIGNED == 'true' && 'true' || 'false' }}
         run: |
           if [[ "$THREADLINES_DESKTOP_SIGNED" != "true" ]]; then
             echo "::error::macOS desktop releases must be Developer ID signed for Squirrel.Mac updates. Configure THREADLINES_MACOS_SIGNED=true and the macOS signing/notarization secrets before publishing."
             exit 1
           fi
 
+      # actool from Xcode 26+ compiles the adaptive app icon (Assets.car) that
+      # follows the macOS 26 system icon appearance. The build degrades to the
+      # static icon when no Xcode 26 toolchain is present.
+      - name: Select Xcode 26 toolchain for adaptive app icon
+        run: |
+          latest_xcode="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n 1 || true)"
+          if [[ -n "$latest_xcode" ]]; then
+            sudo xcode-select -s "$latest_xcode/Contents/Developer"
+            xcodebuild -version
+          else
+            echo "::warning::No Xcode 26 toolchain on this runner; the packaged macOS icon will not adapt to the system icon appearance."
+          fi
+
       - name: Build macOS artifact
         timeout-minutes: 35
         env:
-          THREADLINES_DESKTOP_SIGNED: ${{ (vars.THREADLINES_MACOS_SIGNED == 'true' || vars.BADCODE_MACOS_SIGNED == 'true') && 'true' || 'false' }}
+          THREADLINES_DESKTOP_SIGNED: ${{ vars.THREADLINES_MACOS_SIGNED == 'true' && 'true' || 'false' }}
           CSC_LINK: ${{ secrets.MACOS_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.MACOS_CSC_KEY_PASSWORD }}
           APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY }}
@@ -535,6 +550,8 @@ jobs:
           THREADLINES_NOTARY_TIMEOUT_SECONDS: "900"
           THREADLINES_NOTARY_POLL_SECONDS: "30"
           THREADLINES_NOTARY_SUBMIT_ATTEMPTS: "3"
+          THREADLINES_POSTHOG_KEY: ${{ secrets.THREADLINES_POSTHOG_KEY }}
+          THREADLINES_POSTHOG_HOST: ${{ vars.THREADLINES_POSTHOG_HOST }}
         run: |
           set -euo pipefail
 

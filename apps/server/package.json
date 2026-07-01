@@ -1,21 +1,38 @@
 {
-  "name": "t3",
+  "name": "@threadlines/server",
   "version": "0.0.1",
+  "description": "Threadlines server and CLI for running coding-agent sessions.",
+  "keywords": [
+    "claude",
+    "codex",
+    "coding-agents",
+    "developer-tools",
+    "threadlines"
+  ],
+  "homepage": "https://github.com/Threadlines/threadlines#readme",
+  "bugs": {
+    "url": "https://github.com/Threadlines/threadlines/issues"
+  },
   "license": "MIT",
+  "author": "Wilfredo Leon",
   "repository": {
     "type": "git",
     "url": "https://github.com/Threadlines/threadlines",
     "directory": "apps/server"
   },
   "bin": {
-    "badcode": "./dist/bin.mjs",
-    "t3": "./dist/bin.mjs",
     "threadlines": "./dist/bin.mjs"
   },
   "files": [
-    "dist"
+    "dist/**/*.mjs",
+    "LICENSE",
+    "README.md"
   ],
   "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "scripts": {
     "dev": "node --watch src/bin.ts ../..",
     "dev:bundle": "vp pack --watch",
@@ -25,7 +42,7 @@
     "test": "vp test run"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.190",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.197",
     "@anthropic-ai/sdk": "^0.105.0",
     "@effect/platform-bun": "catalog:",
     "@effect/platform-node": "catalog:",

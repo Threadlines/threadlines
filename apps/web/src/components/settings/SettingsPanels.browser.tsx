@@ -218,7 +218,7 @@ function createBaseServerConfig(): ServerConfig {
       policy: "loopback-browser",
       bootstrapMethods: ["one-time-token"],
       sessionMethods: ["browser-session-cookie", "bearer-session-token"],
-      sessionCookieName: "t3_session",
+      sessionCookieName: "threadlines_session",
     },
     cwd: "/repo/project",
     keybindingsConfigPath: "/repo/project/.threadlines/keybindings.json",
@@ -227,7 +227,7 @@ function createBaseServerConfig(): ServerConfig {
     providers: [],
     availableEditors: ["cursor"],
     observability: {
-      logsDirectoryPath: "/repo/project/.t3/logs",
+      logsDirectoryPath: "/repo/project/.threadlines/logs",
       localTracingEnabled: true,
       otlpTracesUrl: "http://localhost:4318/v1/traces",
       otlpTracesEnabled: true,
@@ -475,7 +475,7 @@ const createDesktopBridgeStub = (overrides?: {
         policy: "remote-reachable",
         bootstrapMethods: ["one-time-token"],
         sessionMethods: ["browser-session-cookie", "bearer-session-token"],
-        sessionCookieName: "t3_session",
+        sessionCookieName: "threadlines_session",
       },
       role: "owner",
       sessionMethod: "bearer-session-token",
@@ -1053,6 +1053,39 @@ describe("GeneralSettingsPanel observability", () => {
       .toBeInTheDocument();
   });
 
+  it("persists the usage analytics opt-out from About", async () => {
+    const updateSettings = vi
+      .fn<LocalApi["server"]["updateSettings"]>()
+      .mockResolvedValue({ ...DEFAULT_SERVER_SETTINGS, usageAnalyticsEnabled: false });
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      server: {
+        updateSettings,
+      },
+    } as unknown as LocalApi;
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    mounted = await renderWithTestRouter(
+      <AppAtomRegistryProvider>
+        <GeneralSettingsPanel />
+      </AppAtomRegistryProvider>,
+    );
+
+    const analyticsSwitch = page.getByRole("switch", {
+      name: "Share anonymous usage analytics",
+    });
+
+    await expect.element(analyticsSwitch).toHaveAttribute("aria-checked", "true");
+    await analyticsSwitch.click();
+    await expect.element(analyticsSwitch).toHaveAttribute("aria-checked", "false");
+    await vi.waitFor(() => {
+      expect(updateSettings).toHaveBeenCalledWith({ usageAnalyticsEnabled: false });
+    });
+  });
+
   it("creates and shows a pairing link when network access is enabled", async () => {
     window.desktopBridge = createDesktopBridgeStub({
       serverExposureState: {
@@ -1382,8 +1415,8 @@ describe("GeneralSettingsPanel observability", () => {
           .fn()
           .mockResolvedValue(createEmptyProcessResourceHistoryResult()),
         getTraceDiagnostics: vi.fn().mockResolvedValue({
-          traceFilePath: "/repo/project/.t3/traces.jsonl",
-          scannedFilePaths: ["/repo/project/.t3/traces.jsonl"],
+          traceFilePath: "/repo/project/.threadlines/traces.jsonl",
+          scannedFilePaths: ["/repo/project/.threadlines/traces.jsonl"],
           readAt: makeUtc("2036-04-07T00:00:00.000Z"),
           recordCount: 0,
           parseErrorCount: 0,
@@ -1416,7 +1449,7 @@ describe("GeneralSettingsPanel observability", () => {
     const openLogsButton = page.getByLabelText("Open logs folder");
     await openLogsButton.click();
 
-    expect(openInEditor).toHaveBeenCalledWith("/repo/project/.t3/logs", "cursor");
+    expect(openInEditor).toHaveBeenCalledWith("/repo/project/.threadlines/logs", "cursor");
   });
 
   it("shows Claude configuration fields in provider settings", async () => {

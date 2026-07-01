@@ -12,8 +12,6 @@
  * Read failures degrade to "no seed" (working-tree-only handoff) rather than
  * failing the turn, keeping the switch resilient.
  *
- * See `.plans/18-cross-provider-switching.md`.
- *
  * @module ThreadContextSeedBuilder
  */
 import type {

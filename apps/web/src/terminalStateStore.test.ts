@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   migratePersistedTerminalStateStoreState,
+  selectTerminalCommandTargetId,
   selectTerminalActivityCommand,
   selectTerminalEventEntries,
   selectTerminalSubmittedCommand,
@@ -68,6 +69,7 @@ describe("terminalStateStore actions", () => {
       terminalEventEntriesByKey: {},
       terminalSubmittedCommandByKey: {},
       terminalActivityCommandByKey: {},
+      terminalCommandHistoryByKey: {},
       nextTerminalEventId: 1,
     });
   });
@@ -238,6 +240,85 @@ describe("terminalStateStore actions", () => {
       { id: "group-default", terminalIds: ["default"] },
       { id: "group-setup-setup", terminalIds: ["setup-setup"] },
     ]);
+  });
+
+  it("reuses the default terminal for command launches when it has no tracked command activity", () => {
+    const store = useTerminalStateStore.getState();
+    store.ensureTerminal(THREAD_REF, "default", { open: true, active: true });
+    store.recordTerminalEvent(THREAD_REF, makeTerminalEvent("output", { data: "prompt % " }));
+
+    expect(
+      selectTerminalCommandTargetId(useTerminalStateStore.getState(), THREAD_REF, "auth-claude"),
+    ).toBe("default");
+  });
+
+  it("uses the preferred command terminal when the default terminal is running", () => {
+    const store = useTerminalStateStore.getState();
+    store.ensureTerminal(THREAD_REF, "default", { open: true, active: true });
+    store.setTerminalActivity(THREAD_REF, "default", true);
+
+    expect(
+      selectTerminalCommandTargetId(useTerminalStateStore.getState(), THREAD_REF, "auth-claude"),
+    ).toBe("auth-claude");
+  });
+
+  it("uses the preferred command terminal when the default terminal has command history", () => {
+    const store = useTerminalStateStore.getState();
+    store.applyTerminalEvent(
+      THREAD_REF,
+      makeTerminalEvent("activity", {
+        terminalId: "default",
+        hasRunningSubprocess: true,
+        command: "vp run dev:desktop",
+      }),
+    );
+    store.applyTerminalEvent(
+      THREAD_REF,
+      makeTerminalEvent("activity", {
+        terminalId: "default",
+        hasRunningSubprocess: false,
+        command: null,
+      }),
+    );
+
+    expect(
+      selectTerminalCommandTargetId(useTerminalStateStore.getState(), THREAD_REF, "auth-claude"),
+    ).toBe("auth-claude");
+  });
+
+  it("keeps submitted command history after the transient submitted command is cleared", () => {
+    const store = useTerminalStateStore.getState();
+    store.setTerminalSubmittedCommand(THREAD_REF, "default", "claude auth login");
+    store.clearTerminalSubmittedCommand(THREAD_REF, "default");
+
+    expect(
+      selectTerminalCommandTargetId(useTerminalStateStore.getState(), THREAD_REF, "auth-claude"),
+    ).toBe("auth-claude");
+  });
+
+  it("reuses the default terminal again after command history is cleared", () => {
+    const store = useTerminalStateStore.getState();
+    store.applyTerminalEvent(
+      THREAD_REF,
+      makeTerminalEvent("activity", {
+        terminalId: "default",
+        hasRunningSubprocess: true,
+        command: "vp run dev:desktop",
+      }),
+    );
+    store.applyTerminalEvent(
+      THREAD_REF,
+      makeTerminalEvent("activity", {
+        terminalId: "default",
+        hasRunningSubprocess: false,
+        command: null,
+      }),
+    );
+    store.applyTerminalEvent(THREAD_REF, makeTerminalEvent("cleared"));
+
+    expect(
+      selectTerminalCommandTargetId(useTerminalStateStore.getState(), THREAD_REF, "auth-claude"),
+    ).toBe("default");
   });
 
   it("keeps state isolated per environment when raw thread ids collide", () => {

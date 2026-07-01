@@ -12,7 +12,7 @@ import * as Electron from "electron";
 
 import { DesktopEnvironment, type DesktopEnvironmentShape } from "../app/DesktopEnvironment.ts";
 
-export const DESKTOP_SCHEME = "t3";
+export const DESKTOP_SCHEME = "threadlines";
 
 export class ElectronProtocolRegistrationError extends Data.TaggedError(
   "ElectronProtocolRegistrationError",

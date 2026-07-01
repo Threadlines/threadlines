@@ -285,7 +285,7 @@ export const probeTailscaleHttpsEndpoint = (input: {
   Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient;
     const response = yield* Effect.gen(function* () {
-      const url = new URL("/.well-known/t3/environment", input.baseUrl);
+      const url = new URL("/.well-known/threadlines/environment", input.baseUrl);
       const request = HttpClientRequest.get(url.toString());
       return yield* client.execute(request);
     }).pipe(Effect.timeoutOption(input.timeoutMs ?? TAILSCALE_PROBE_TIMEOUT_MS));

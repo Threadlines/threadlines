@@ -46,7 +46,7 @@ describe("ElectronProtocol", () => {
               [
                 [
                   {
-                    scheme: "t3",
+                    scheme: "threadlines",
                     privileges: {
                       standard: true,
                       secure: true,
@@ -81,14 +81,15 @@ describe("ElectronProtocol", () => {
         Effect.gen(function* () {
           const electronProtocol = yield* ElectronProtocol.ElectronProtocol;
           yield* electronProtocol.registerFileProtocol({
-            scheme: "t3",
+            scheme: "threadlines",
             handler: () => Effect.succeed({ path: "/app/index.html" }),
           });
 
           assert.isDefined(capturedHandler);
           return yield* Effect.callback<Electron.ProtocolResponse>((resume) => {
-            capturedHandler?.({ url: "t3://app/" } as Electron.ProtocolRequest, (response) =>
-              resume(Effect.succeed(response)),
+            capturedHandler?.(
+              { url: "threadlines://app/" } as Electron.ProtocolRequest,
+              (response) => resume(Effect.succeed(response)),
             );
           });
         }),
@@ -97,9 +98,9 @@ describe("ElectronProtocol", () => {
       assert.deepEqual(response, { path: "/app/index.html" });
       assert.deepEqual(
         registerFileProtocolMock.mock.calls.map((call) => call[0]),
-        ["t3"],
+        ["threadlines"],
       );
-      assert.deepEqual(unregisterProtocolMock.mock.calls, [["t3"]]);
+      assert.deepEqual(unregisterProtocolMock.mock.calls, [["threadlines"]]);
     }).pipe(Effect.provide(ElectronProtocol.layer)),
   );
 });

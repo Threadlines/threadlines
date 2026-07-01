@@ -1,27 +1,14 @@
 # Threadlines
 
-Threadlines is a desktop GUI for coding agents. It is a fork of
-[T3 Code](https://github.com/pingdotgg/t3code), with the upstream Git history
-kept intact so useful changes can still be reviewed and brought forward.
+Threadlines is a local-first desktop workspace for Codex and Claude Code.
 
-The maintained provider paths are Codex and Claude. Inherited OpenCode and
-Cursor support is being phased out as Threadlines narrows toward a smaller native
-desktop surface.
+It brings agent threads, terminals, diffs, branches, source-control workflows,
+and session recovery into one focused app so coding agents stay manageable under
+real project load.
 
-## Fork Positioning
-
-Threadlines does not hide its T3 Code or BadCode origin, but it now treats
-Threadlines as the visible product identity:
-
-- new local configuration should use `THREADLINES_*` environment variables;
-- legacy `BADCODE_*` and `T3CODE_*` variables remain accepted as compatibility aliases;
-- when multiple aliases are set, `THREADLINES_*` wins, then `BADCODE_*`, then `T3CODE_*`;
-- new installs default to a separate `~/.threadlines` data directory;
-- the `threadlines` CLI is preferred, while `badcode` and `t3` remain available
-  for old scripts during the transition.
-
-See [docs/fork-separation.md](./docs/fork-separation.md) for the current
-branding and compatibility policy.
+The maintained provider paths are Codex and Claude. Other inherited provider
+surfaces may remain while Threadlines narrows toward a smaller native desktop
+surface.
 
 ## Installation
 
@@ -37,8 +24,17 @@ branding and compatibility policy.
 Install the latest desktop alpha from
 [GitHub Releases](https://github.com/Threadlines/threadlines/releases).
 
-This repository is private, so release downloads require a GitHub account with
-access to the repo.
+Signed Windows and macOS builds are published through the desktop release
+workflow. Linux packaging exists locally but is not part of the normal release
+lane yet.
+
+### Server CLI
+
+The npm package is for advanced CLI/server usage and remote bootstrap flows:
+
+```bash
+npx @threadlines/server@latest --help
+```
 
 ### Local development
 
@@ -56,21 +52,44 @@ vp run dist:desktop:artifact -- --platform win --target nsis --arch x64 --build-
 
 The artifact is written to `release/`.
 
+## Origins
+
+Threadlines began as a fork of [T3 Code](https://github.com/pingdotgg/t3code).
+It now has its own product direction, branding, desktop release pipeline,
+provider orchestration, source-control workflow, signing/notarization setup, and
+compatibility policy.
+
+The upstream Git history and MIT license notice are kept intact.
+
+See [docs/fork-separation.md](./docs/fork-separation.md) for the current origin
+and compatibility policy.
+
+## Configuration
+
+New configuration should use `THREADLINES_*` environment variables:
+
+- new local configuration should use `THREADLINES_*` environment variables;
+- new installs default to a separate `~/.threadlines` data directory;
+- the `threadlines` CLI is the supported command.
+
+Usage analytics are enabled by default in official builds and can be disabled
+from Settings. See [docs/telemetry.md](./docs/telemetry.md) for what Threadlines
+collects and what it deliberately does not collect.
+
 ## Releases
 
 Threadlines keeps the upstream Git history but uses its own app versions starting
 at `0.0.1`.
 
 See [docs/release.md](./docs/release.md) for the desktop release workflow,
-private-repo download notes, platform status, and auto-update requirements.
+platform status, signing requirements, and auto-update behavior.
 
 ## Development Notes
 
 This is still early WIP. Expect sharp edges.
 
-The repository is private today, but it may become open source later. Treat it
-as public-safe now: do not commit `.env` files, tokens, private keys, local app
-data, customer data, or screenshots containing secrets. See
+Do not commit `.env` files, tokens, private keys, local app data, customer data,
+or screenshots containing secrets. See
 [SECURITY_GUARDRAILS.md](./SECURITY_GUARDRAILS.md) before publishing code or
 release artifacts.
 

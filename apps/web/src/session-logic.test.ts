@@ -1635,6 +1635,30 @@ describe("deriveWorkLogEntries", () => {
     });
   });
 
+  it("attaches a provider auth reconnect action to Claude slash-login runtime errors", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "claude-slash-login-error",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "runtime.error",
+        summary: "Runtime error",
+        tone: "error",
+        turnId: "turn-1",
+        payload: {
+          provider: "claudeAgent",
+          class: "provider_error",
+          message: "Not logged in • Please run /login",
+        },
+      }),
+    ]);
+
+    expect(entry?.authReconnect).toEqual({
+      provider: "claudeAgent",
+      command: "claude auth login",
+      message: "Not logged in • Please run /login",
+    });
+  });
+
   it("attaches a Codex auth reconnect action to unauthenticated runtime errors", () => {
     const [entry] = deriveWorkLogEntries([
       makeActivity({

@@ -7,7 +7,7 @@ import { cn } from "~/lib/utils";
 import { DiffStatLabel, hasNonZeroStat } from "./DiffStatLabel";
 import { VscodeEntryIcon } from "./VscodeEntryIcon";
 
-const EMPTY_DIRECTORY_OVERRIDES: Record<string, boolean> = {};
+const EMPTY_DIRECTORY_OVERRIDES: Readonly<Record<string, boolean>> = {};
 
 export const ChangedFilesTree = memo(function ChangedFilesTree(props: {
   turnId: TurnId;
@@ -18,29 +18,25 @@ export const ChangedFilesTree = memo(function ChangedFilesTree(props: {
 }) {
   const { files, allDirectoriesExpanded, onOpenTurnDiff, resolvedTheme, turnId } = props;
   const treeNodes = useMemo(() => buildTurnDiffTree(files), [files]);
-  const directoryPathsKey = useMemo(
-    () => collectDirectoryPaths(treeNodes).join("\u0000"),
-    [treeNodes],
-  );
-  const expansionStateKey = `${allDirectoriesExpanded ? "expanded" : "collapsed"}\u0000${directoryPathsKey}`;
   const [directoryExpansionState, setDirectoryExpansionState] = useState<{
-    key: string;
+    defaultExpanded: boolean;
     overrides: Record<string, boolean>;
   }>(() => ({
-    key: expansionStateKey,
+    defaultExpanded: allDirectoriesExpanded,
     overrides: {},
   }));
   const expandedDirectories =
-    directoryExpansionState.key === expansionStateKey
+    directoryExpansionState.defaultExpanded === allDirectoriesExpanded
       ? directoryExpansionState.overrides
       : EMPTY_DIRECTORY_OVERRIDES;
 
   const toggleDirectory = useCallback(
     (pathValue: string) => {
       setDirectoryExpansionState((current) => {
-        const nextOverrides = current.key === expansionStateKey ? current.overrides : {};
+        const nextOverrides =
+          current.defaultExpanded === allDirectoriesExpanded ? current.overrides : {};
         return {
-          key: expansionStateKey,
+          defaultExpanded: allDirectoriesExpanded,
           overrides: {
             ...nextOverrides,
             [pathValue]: !(nextOverrides[pathValue] ?? allDirectoriesExpanded),
@@ -48,7 +44,7 @@ export const ChangedFilesTree = memo(function ChangedFilesTree(props: {
         };
       });
     },
-    [allDirectoriesExpanded, expansionStateKey],
+    [allDirectoriesExpanded],
   );
 
   const renderTreeNode = (node: TurnDiffTreeNode, depth: number) => {
@@ -123,13 +119,3 @@ export const ChangedFilesTree = memo(function ChangedFilesTree(props: {
 
   return <div className="space-y-0.5">{treeNodes.map((node) => renderTreeNode(node, 0))}</div>;
 });
-
-function collectDirectoryPaths(nodes: ReadonlyArray<TurnDiffTreeNode>): string[] {
-  const paths: string[] = [];
-  for (const node of nodes) {
-    if (node.kind !== "directory") continue;
-    paths.push(node.path);
-    paths.push(...collectDirectoryPaths(node.children));
-  }
-  return paths;
-}

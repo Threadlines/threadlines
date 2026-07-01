@@ -99,6 +99,29 @@ const make = Effect.gen(function* () {
       : environment.path.join(environment.appDataDirectory, environment.userDataDirName);
   }).pipe(Effect.withSpan("desktop.appIdentity.resolveUserDataPath"));
 
+  const syncDockIcon = Effect.gen(function* () {
+    if (environment.platform !== "darwin") {
+      return;
+    }
+
+    // A bundled Assets.car means macOS renders the adaptive app icon itself,
+    // following the system "Icon & Widget style" setting (light/dark/tinted).
+    // Overriding it with a static bitmap would pin one appearance forever.
+    const bundledAdaptiveIconPath = environment.path.join(environment.resourcesPath, "Assets.car");
+    const hasBundledAdaptiveIcon = yield* fileSystem
+      .exists(bundledAdaptiveIconPath)
+      .pipe(Effect.orElseSucceed(() => false));
+    if (hasBundledAdaptiveIcon) {
+      return;
+    }
+
+    const iconPaths = yield* assets.iconPaths;
+    yield* Option.match(iconPaths.png, {
+      onNone: () => Effect.void,
+      onSome: electronApp.setDockIcon,
+    });
+  }).pipe(Effect.withSpan("desktop.appIdentity.syncDockIcon"));
+
   const configure = Effect.gen(function* () {
     const commitHash = yield* resolveAboutCommitHash;
     yield* electronApp.setName(environment.displayName);
@@ -116,13 +139,7 @@ const make = Effect.gen(function* () {
       yield* electronApp.setDesktopName(environment.linuxDesktopEntryName);
     }
 
-    if (environment.platform === "darwin") {
-      const iconPaths = yield* assets.iconPaths;
-      yield* Option.match(iconPaths.png, {
-        onNone: () => Effect.void,
-        onSome: electronApp.setDockIcon,
-      });
-    }
+    yield* syncDockIcon;
   }).pipe(Effect.withSpan("desktop.appIdentity.configure"));
 
   return DesktopAppIdentity.of({

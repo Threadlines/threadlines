@@ -38,7 +38,7 @@ it.effect("maps GitHub PR summaries into provider-neutral change requests", () =
         Effect.succeed({
           number: 42,
           title: "Add GitHub provider",
-          url: "https://github.com/pingdotgg/t3code/pull/42",
+          url: "https://github.com/Threadlines/threadlines/pull/42",
           baseRefName: "main",
           headRefName: "feature/source-control",
           state: "open",
@@ -57,7 +57,7 @@ it.effect("maps GitHub PR summaries into provider-neutral change requests", () =
       provider: "github",
       number: 42,
       title: "Add GitHub provider",
-      url: "https://github.com/pingdotgg/t3code/pull/42",
+      url: "https://github.com/Threadlines/threadlines/pull/42",
       baseRefName: "main",
       headRefName: "feature/source-control",
       state: "open",
@@ -111,7 +111,7 @@ it.effect("uses gh json listing for non-open change request state queries", () =
               {
                 number: 7,
                 title: "Merged work",
-                url: "https://github.com/pingdotgg/t3code/pull/7",
+                url: "https://github.com/Threadlines/threadlines/pull/7",
                 baseRefName: "main",
                 headRefName: "feature/merged",
                 state: "merged",
@@ -215,7 +215,7 @@ it.effect("scopes GitHub PR creation to the detected repository context", () =>
           baseUrl: "https://github.com",
         },
         remoteName: "origin",
-        remoteUrl: "https://github.com/badcuban/badcode.git",
+        remoteUrl: "https://github.com/Threadlines/threadlines.git",
       },
       baseRefName: "main",
       headSelector: "source-control-panel",
@@ -225,7 +225,7 @@ it.effect("scopes GitHub PR creation to the detected repository context", () =>
 
     assert.deepStrictEqual(createInput, {
       cwd: "/repo",
-      repository: "badcuban/badcode",
+      repository: "Threadlines/threadlines",
       baseBranch: "main",
       headSelector: "source-control-panel",
       title: "Provider PR",

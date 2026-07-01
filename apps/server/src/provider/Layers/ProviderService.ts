@@ -59,6 +59,12 @@ import {
 import { type EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { ProviderEventLoggers } from "./ProviderEventLoggers.ts";
 import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
+import {
+  analyticsModelProperties,
+  classifyModelRerouteReason,
+  classifyProviderSessionStart,
+  classifyProviderFailure,
+} from "../../telemetry/AnalyticsProperties.ts";
 const isModelSelection = Schema.is(ModelSelection);
 
 /**
@@ -223,6 +229,85 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
+  const runtimeEventModel = (event: ProviderRuntimeEvent) =>
+    directory.getBinding(event.threadId).pipe(
+      Effect.map(
+        (binding) =>
+          readPersistedModelSelection(Option.getOrUndefined(binding)?.runtimePayload)?.model,
+      ),
+      Effect.catch(() => Effect.succeed(undefined)),
+    );
+
+  const recordRuntimeEventAnalytics = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      switch (event.type) {
+        case "model.rerouted": {
+          const reason = classifyModelRerouteReason(event.payload.reason);
+          yield* analytics.record("provider.model.rerouted", {
+            provider: event.provider,
+            ...analyticsModelProperties({
+              model: event.payload.fromModel,
+              provider: event.provider,
+              prefix: "from",
+            }),
+            ...analyticsModelProperties({
+              model: event.payload.toModel,
+              provider: event.provider,
+              prefix: "to",
+            }),
+            reasonCategory: reason.reasonCategory,
+            isFallback: reason.isFallback,
+          });
+          return;
+        }
+        case "turn.completed": {
+          if (event.payload.state !== "failed") return;
+          const selectedModel = yield* runtimeEventModel(event);
+          yield* analytics.record("provider.turn.failed", {
+            provider: event.provider,
+            ...analyticsModelProperties({
+              model: selectedModel,
+              provider: event.provider,
+            }),
+            failureCategory: classifyProviderFailure({
+              message: event.payload.errorMessage,
+              reason: event.payload.stopReason ?? undefined,
+            }),
+            hasTurnId: event.turnId !== undefined,
+          });
+          return;
+        }
+        case "runtime.error": {
+          const selectedModel = yield* runtimeEventModel(event);
+          yield* analytics.record("provider.runtime.error", {
+            provider: event.provider,
+            ...analyticsModelProperties({
+              model: selectedModel,
+              provider: event.provider,
+            }),
+            failureCategory: classifyProviderFailure({
+              errorClass: event.payload.class,
+              message: event.payload.message,
+            }),
+            errorClass: event.payload.class ?? "unknown",
+            hasTurnId: event.turnId !== undefined,
+          });
+          return;
+        }
+        default:
+          return;
+      }
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logDebug("provider runtime analytics capture failed", {
+          eventId: event.eventId,
+          eventType: event.type,
+          threadId: event.threadId,
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
+
   const publishRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
     Effect.succeed(event).pipe(
       Effect.tap((canonicalEvent) =>
@@ -239,6 +324,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             )
           : Effect.void,
       ),
+      Effect.tap(recordRuntimeEventAnalytics),
       Effect.flatMap((canonicalEvent) => PubSub.publish(runtimeEventPubSub, canonicalEvent)),
       Effect.asVoid,
     );
@@ -561,6 +647,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           );
         }
         const persistedBinding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+        const persistedModelSelection = readPersistedModelSelection(
+          persistedBinding?.runtimePayload,
+        );
         const effectiveResumeCursor =
           input.resumeCursor ??
           (persistedBinding?.providerInstanceId === resolvedInstanceId
@@ -618,6 +707,34 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         });
         yield* analytics.record("provider.session.started", {
           provider: sessionWithInstance.provider,
+          sessionStartKind: classifyProviderSessionStart({
+            hasPreviousBinding: persistedBinding !== undefined,
+            previousProvider: persistedBinding?.provider,
+            previousInstanceId: persistedBinding?.providerInstanceId,
+            nextProvider: resolvedProvider,
+            nextInstanceId: resolvedInstanceId,
+            hasContextSeed: input.contextSeed !== undefined,
+            hasResumeCursor: effectiveResumeCursor !== undefined,
+          }),
+          previousProvider: persistedBinding?.provider ?? "none",
+          providerChanged:
+            persistedBinding !== undefined &&
+            (persistedBinding.provider !== resolvedProvider ||
+              persistedBinding.providerInstanceId !== resolvedInstanceId),
+          modelChanged:
+            persistedModelSelection?.model !== undefined &&
+            input.modelSelection?.model !== undefined &&
+            persistedModelSelection.model !== input.modelSelection.model,
+          hasContextSeed: input.contextSeed !== undefined,
+          ...analyticsModelProperties({
+            model: input.modelSelection?.model,
+            provider: resolvedProvider,
+          }),
+          ...analyticsModelProperties({
+            model: persistedModelSelection?.model,
+            provider: persistedBinding?.provider,
+            prefix: "previous",
+          }),
           runtimeMode: input.runtimeMode,
           hasResumeCursor: sessionWithInstance.resumeCursor !== undefined,
           hasCwd: typeof effectiveCwd === "string" && effectiveCwd.trim().length > 0,
@@ -690,9 +807,42 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           lastRuntimeEventAt: yield* nowIso,
         },
       });
+      if (input.telemetryContext?.kind === "thread_fork") {
+        const sourceModelSelection = input.telemetryContext.sourceModelSelection;
+        yield* analytics.record("thread.fork.created", {
+          sourceProvider: sourceModelSelection?.instanceId ?? "unknown",
+          targetProvider: input.modelSelection?.instanceId ?? routed.instanceId,
+          providerChanged:
+            sourceModelSelection !== undefined &&
+            input.modelSelection !== undefined &&
+            sourceModelSelection.instanceId !== input.modelSelection.instanceId,
+          modelChanged:
+            sourceModelSelection !== undefined &&
+            input.modelSelection !== undefined &&
+            sourceModelSelection.model !== input.modelSelection.model,
+          hasForkContext: true,
+          includedMessageCount: input.telemetryContext.includedMessageCount,
+          includedToolSummaryCount: input.telemetryContext.includedToolSummaryCount,
+          includedAttachmentCount: input.telemetryContext.includedAttachmentCount,
+          omittedAttachmentCount: input.telemetryContext.omittedAttachmentCount,
+          ...analyticsModelProperties({
+            model: sourceModelSelection?.model,
+            provider: sourceModelSelection?.instanceId,
+            prefix: "source",
+          }),
+          ...analyticsModelProperties({
+            model: input.modelSelection?.model,
+            provider: input.modelSelection?.instanceId,
+            prefix: "target",
+          }),
+        });
+      }
       yield* analytics.record("provider.turn.sent", {
         provider: routed.adapter.provider,
-        model: input.modelSelection?.model,
+        ...analyticsModelProperties({
+          model: input.modelSelection?.model,
+          provider: routed.adapter.provider,
+        }),
         interactionMode: input.interactionMode,
         attachmentCount: input.attachments.length,
         hasInput: typeof input.input === "string" && input.input.trim().length > 0,

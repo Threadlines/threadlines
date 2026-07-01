@@ -13,7 +13,7 @@ import { runServerCommand, serveCommand, startCommand } from "./cli/server.ts";
 
 const CliRuntimeLayer = Layer.mergeAll(NodeServices.layer, NetService.layer);
 
-export const cli = Command.make("t3", { ...sharedServerCommandFlags }).pipe(
+export const cli = Command.make("threadlines", { ...sharedServerCommandFlags }).pipe(
   Command.withDescription("Run the Threadlines server."),
   Command.withHandler((flags) => runServerCommand(flags)),
   Command.withSubcommands([startCommand, serveCommand, authCommand, projectCommand]),

@@ -60,8 +60,8 @@ function ProviderUpdateToastIcon({ provider }: { provider: ProviderDriverKind })
 
   return (
     <span className="relative inline-flex size-4 shrink-0 items-center justify-center">
-      <ProviderIcon aria-hidden="true" className="size-4" />
-      <span className="absolute -right-1 -bottom-1 inline-flex size-3 items-center justify-center rounded-full bg-popover">
+      <ProviderIcon aria-hidden="true" className="relative z-0 size-4" />
+      <span className="absolute -right-1 -bottom-1 z-10 inline-flex size-3 items-center justify-center rounded-full bg-popover">
         <DownloadIcon aria-hidden="true" className="size-2.5 text-success" strokeWidth={2.5} />
       </span>
     </span>
@@ -85,12 +85,12 @@ function ProviderUpdateToastIconStack({
   return (
     <span
       aria-hidden="true"
-      className="relative inline-flex h-5 min-w-8 shrink-0 items-center justify-start"
+      className="relative isolate inline-flex h-5 min-w-8 shrink-0 items-center justify-start overflow-visible"
     >
       <span className="flex -space-x-1.5">
         {visibleProviders.map((provider, index) => (
           <span
-            className="inline-flex size-5 items-center justify-center rounded-full border border-popover bg-popover text-muted-foreground shadow-sm/10"
+            className="relative inline-flex size-5 items-center justify-center rounded-full border border-popover bg-popover text-muted-foreground shadow-sm/10"
             key={provider.driver}
             style={{ zIndex: visibleProviders.length - index }}
           >
@@ -98,7 +98,7 @@ function ProviderUpdateToastIconStack({
           </span>
         ))}
       </span>
-      <span className="absolute -right-0.5 -bottom-1 inline-flex size-3.5 items-center justify-center rounded-full border border-popover bg-popover">
+      <span className="absolute -right-0.5 -bottom-1 z-10 inline-flex size-3.5 items-center justify-center rounded-full border border-popover bg-popover">
         <DownloadIcon aria-hidden="true" className="size-3 text-success" strokeWidth={2.5} />
       </span>
     </span>

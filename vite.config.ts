@@ -35,7 +35,6 @@ export default defineConfig({
   fmt: {
     ignorePatterns: [
       ".reference",
-      ".plans",
       "dist",
       "dist-electron",
       "node_modules",

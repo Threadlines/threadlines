@@ -19,7 +19,10 @@ import {
   SshPasswordPromptError,
   SshReadinessError,
 } from "@threadlines/ssh/errors";
-import { SshEnvironmentManager, type RemoteT3RunnerOptions } from "@threadlines/ssh/tunnel";
+import {
+  SshEnvironmentManager,
+  type RemoteThreadlinesRunnerOptions,
+} from "@threadlines/ssh/tunnel";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -72,7 +75,7 @@ export class DesktopSshEnvironment extends Context.Service<
 
 export interface DesktopSshEnvironmentLayerOptions {
   readonly resolveCliPackageSpec?: () => string;
-  readonly resolveCliRunner?: Effect.Effect<RemoteT3RunnerOptions>;
+  readonly resolveCliRunner?: Effect.Effect<RemoteThreadlinesRunnerOptions>;
 }
 
 function discoverDesktopSshHostsEffect(input?: { readonly homeDir?: string }) {

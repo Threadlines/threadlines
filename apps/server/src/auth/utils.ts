@@ -2,7 +2,7 @@ import type { AuthClientMetadata, AuthClientMetadataDeviceType } from "@threadli
 import type * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as Crypto from "node:crypto";
 
-const SESSION_COOKIE_NAME = "t3_session";
+const SESSION_COOKIE_NAME = "threadlines_session";
 
 export function resolveSessionCookieName(input: {
   readonly mode: "web" | "desktop";

@@ -8,8 +8,10 @@ import {
   DownloadIcon,
   GaugeIcon,
   LoaderIcon,
+  PipetteIcon,
   PlusIcon,
   RotateCcwIcon,
+  TerminalIcon,
   Trash2Icon,
   XIcon,
 } from "lucide-react";
@@ -17,10 +19,10 @@ import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from "r
 import {
   isProviderDriverKind,
   PROVIDER_DISPLAY_NAMES,
+  ProviderDriverKind,
   type ProviderInstanceConfig,
   type ProviderInstanceEnvironmentVariable,
   type ProviderInstanceId,
-  type ProviderDriverKind,
   type ServerProvider,
   type ServerProviderModel,
 } from "@threadlines/contracts";
@@ -36,6 +38,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleContent } from "../ui/collapsible";
 import { DraftInput } from "../ui/draft-input";
+import { Input } from "../ui/input";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { ScrollArea } from "../ui/scroll-area";
 import { Switch } from "../ui/switch";
@@ -45,6 +48,7 @@ import type { DriverOption } from "./providerDriverMeta";
 import {
   deriveProviderSettingsFields,
   ProviderSettingsFields,
+  readProviderConfigString,
   type ProviderSettingsFieldModel,
 } from "./ProviderSettingsForm";
 import { ProviderModelsSection } from "./ProviderModelsSection";
@@ -64,6 +68,10 @@ const PROVIDER_ACCENT_SWATCHES = ["#00347D", "#16a34a", "#ea580c", "#dc2626", "#
 const PROVIDER_UPDATE_OUTPUT_PREVIEW_CHARS = 700;
 
 const ENVIRONMENT_VARIABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+const CODEX_DRIVER_KIND = ProviderDriverKind.make("codex");
+const CLAUDE_DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
+const CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
+const CLAUDE_CREDENTIAL_OVERRIDE_ENV_NAMES = ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"] as const;
 const RUNTIME_PROVIDER_CONFIG_FIELD_KEYS = new Set([
   "binaryPath",
   "launchArgs",
@@ -74,6 +82,17 @@ const RUNTIME_PROVIDER_CONFIG_FIELD_KEYS = new Set([
 
 let environmentVariableDraftId = 0;
 const nextEnvironmentVariableDraftId = () => `provider-env-${environmentVariableDraftId++}`;
+
+export interface ProviderAccountTerminalCommandRequest {
+  readonly title: string;
+  readonly command: string;
+  readonly terminalId: string;
+}
+
+function providerAccountTerminalId(driverKind: ProviderDriverKind | null): string {
+  const driverKey = driverKind ? String(driverKind).replace(/[^A-Za-z0-9_-]/g, "-") : "provider";
+  return `auth-${driverKey}`;
+}
 
 function truncateProviderUpdateOutput(value: string): string {
   const trimmed = value.trim();
@@ -183,6 +202,149 @@ export function deriveProviderModelsForDisplay(input: {
   return [...serverModels, ...customModels];
 }
 
+function shellWord(value: string): string {
+  if (/^[A-Za-z0-9_./~:@%+=,-]+$/u.test(value)) {
+    return value;
+  }
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+export function buildClaudeSetupTokenCommand(input: {
+  readonly binaryPath: string;
+  readonly homePath: string;
+}): string {
+  const binaryPath = input.binaryPath.trim() || "claude";
+  const homePath = input.homePath.trim();
+  const command = `${shellWord(binaryPath)} setup-token`;
+  return homePath ? `HOME=${shellWord(homePath)} ${command}` : command;
+}
+
+export function buildClaudeAuthLoginCommand(input: {
+  readonly binaryPath: string;
+  readonly homePath: string;
+}): string {
+  const binaryPath = input.binaryPath.trim() || "claude";
+  const homePath = input.homePath.trim();
+  const command = `${shellWord(binaryPath)} auth login`;
+  return homePath ? `HOME=${shellWord(homePath)} ${command}` : command;
+}
+
+export function buildCodexLoginCommand(input: {
+  readonly binaryPath: string;
+  readonly homePath: string;
+  readonly shadowHomePath: string;
+}): string {
+  const binaryPath = input.binaryPath.trim() || "codex";
+  const authHomePath = input.shadowHomePath.trim() || input.homePath.trim();
+  const command = `${shellWord(binaryPath)} login`;
+  return authHomePath ? `CODEX_HOME=${shellWord(authHomePath)} ${command}` : command;
+}
+
+export interface ClaudeLongLivedOAuthTokenState {
+  readonly configured: boolean;
+  readonly redacted: boolean;
+  readonly value: string;
+}
+
+export function deriveClaudeLongLivedOAuthTokenState(
+  environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>,
+): ClaudeLongLivedOAuthTokenState {
+  const variable = environment.find((entry) => entry.name === CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV);
+  if (!variable) {
+    return { configured: false, redacted: false, value: "" };
+  }
+  const redacted = variable.valueRedacted === true;
+  const value = redacted ? "" : variable.value;
+  return {
+    configured: redacted || value.trim().length > 0,
+    redacted,
+    value,
+  };
+}
+
+export function sanitizeClaudeLongLivedOAuthTokenInput(value: string): string {
+  const trimmed = value.trim();
+  const assignmentMatch = trimmed.match(/(?:^|\s)CLAUDE_CODE_OAUTH_TOKEN\s*=\s*(.+)$/u);
+  const token = assignmentMatch?.[1]?.trim() ?? trimmed;
+  return token
+    .replace(/^['"]|['"]$/g, "")
+    .replace(/\\[nr]/g, "")
+    .replace(/\s+/g, "");
+}
+
+export function upsertClaudeLongLivedOAuthTokenEnvironment(
+  environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>,
+  token: string,
+): ReadonlyArray<ProviderInstanceEnvironmentVariable> {
+  const trimmed = sanitizeClaudeLongLivedOAuthTokenInput(token);
+  const nextEnvironment: ProviderInstanceEnvironmentVariable[] = [];
+  let inserted = false;
+
+  for (const variable of environment) {
+    if (variable.name !== CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV) {
+      nextEnvironment.push(variable);
+      continue;
+    }
+    if (trimmed.length === 0 || inserted) {
+      continue;
+    }
+    nextEnvironment.push({
+      name: CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV,
+      value: trimmed,
+      sensitive: true,
+      valueRedacted: false,
+    });
+    inserted = true;
+  }
+
+  if (trimmed.length > 0 && !inserted) {
+    nextEnvironment.push({
+      name: CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV,
+      value: trimmed,
+      sensitive: true,
+      valueRedacted: false,
+    });
+  }
+
+  return nextEnvironment;
+}
+
+export function removeClaudeLongLivedOAuthTokenEnvironment(
+  environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>,
+): ReadonlyArray<ProviderInstanceEnvironmentVariable> {
+  return environment.filter((variable) => variable.name !== CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV);
+}
+
+export function hasClaudeCredentialOverrideEnvironment(
+  environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>,
+): boolean {
+  return environment.some(
+    (variable) =>
+      CLAUDE_CREDENTIAL_OVERRIDE_ENV_NAMES.includes(
+        variable.name as (typeof CLAUDE_CREDENTIAL_OVERRIDE_ENV_NAMES)[number],
+      ) &&
+      (variable.valueRedacted === true || variable.value.trim().length > 0),
+  );
+}
+
+export function preferClaudeLongLivedOAuthTokenEnvironment(
+  environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>,
+): ReadonlyArray<ProviderInstanceEnvironmentVariable> {
+  const overrideNames = new Set<string>(CLAUDE_CREDENTIAL_OVERRIDE_ENV_NAMES);
+  const nextEnvironment = environment.filter((variable) => !overrideNames.has(variable.name));
+
+  for (const name of CLAUDE_CREDENTIAL_OVERRIDE_ENV_NAMES) {
+    nextEnvironment.push({
+      name,
+      value: "",
+      sensitive: false,
+      valueRedacted: false,
+    });
+  }
+
+  return nextEnvironment;
+}
+
 function ProviderAuthEmail(props: {
   readonly email: string | undefined;
   readonly prefix?: string;
@@ -234,22 +396,46 @@ function ProviderAccentColorPicker(props: {
     <div className="grid gap-2">
       <span className="text-xs font-medium text-foreground">Accent color</span>
       <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <input
-          type="color"
-          value={draftColor ?? PROVIDER_ACCENT_SWATCHES[0]}
-          onFocus={() => setIsEditing(true)}
-          onInput={(event) => {
-            setIsEditing(true);
-            setDraft(event.currentTarget.value);
-          }}
-          onChange={(event) => {
-            setIsEditing(true);
-            setDraft(event.currentTarget.value);
-          }}
-          onBlur={commitDraft}
-          aria-label={`Accent color for ${props.displayName}`}
-          className="h-8 w-10 cursor-pointer rounded border border-input bg-background p-0.5"
-        />
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <span className="relative inline-flex size-7 shrink-0">
+                <input
+                  type="color"
+                  value={draftColor ?? PROVIDER_ACCENT_SWATCHES[0]}
+                  onFocus={() => setIsEditing(true)}
+                  onInput={(event) => {
+                    setIsEditing(true);
+                    setDraft(event.currentTarget.value);
+                  }}
+                  onChange={(event) => {
+                    setIsEditing(true);
+                    setDraft(event.currentTarget.value);
+                  }}
+                  onBlur={commitDraft}
+                  aria-label={`Pick custom accent color for ${props.displayName}`}
+                  className="absolute inset-0 z-10 size-7 cursor-pointer rounded-full opacity-0"
+                />
+                <span
+                  className={cn(
+                    "pointer-events-none absolute inset-0 rounded-full border border-black/10 shadow-inner dark:border-white/20",
+                    draftColor &&
+                      !PROVIDER_ACCENT_SWATCHES.includes(
+                        draftColor as (typeof PROVIDER_ACCENT_SWATCHES)[number],
+                      ) &&
+                      "ring-2 ring-ring ring-offset-1 ring-offset-background",
+                  )}
+                  style={{ backgroundColor: draftColor ?? PROVIDER_ACCENT_SWATCHES[0] }}
+                  aria-hidden
+                />
+                <span className="pointer-events-none absolute -right-0.5 -bottom-0.5 flex size-4 items-center justify-center rounded-full border border-background bg-background/95 text-foreground shadow-sm">
+                  <PipetteIcon className="size-2.5" aria-hidden />
+                </span>
+              </span>
+            }
+          />
+          <TooltipPopup side="top">Pick custom accent color</TooltipPopup>
+        </Tooltip>
         <div className="flex flex-wrap gap-1.5">
           {PROVIDER_ACCENT_SWATCHES.map((swatch) => {
             const selected = draftColor?.toLowerCase() === swatch;
@@ -258,7 +444,7 @@ function ProviderAccentColorPicker(props: {
                 key={swatch}
                 type="button"
                 className={cn(
-                  "size-6 cursor-pointer rounded-full border transition",
+                  "size-7 cursor-pointer rounded-full border transition",
                   selected
                     ? "border-foreground ring-2 ring-ring ring-offset-1 ring-offset-background"
                     : "border-black/10 hover:scale-105 dark:border-white/20",
@@ -293,17 +479,25 @@ function ProviderAccentColorPicker(props: {
   );
 }
 
-function ProviderEnvironmentSection(props: {
+function ProviderEnvironmentEditor(props: {
   readonly environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>;
+  readonly reservedNames?: ReadonlySet<string> | undefined;
   readonly onChange: (environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>) => void;
 }) {
+  const editableEnvironment = useMemo(
+    () =>
+      props.reservedNames
+        ? props.environment.filter((variable) => !props.reservedNames?.has(variable.name))
+        : props.environment,
+    [props.environment, props.reservedNames],
+  );
   const [rows, setRows] = useState<ReadonlyArray<EnvironmentDraftRow>>(() =>
-    props.environment.map(makeEnvironmentDraftRow),
+    editableEnvironment.map(makeEnvironmentDraftRow),
   );
 
   useEffect(() => {
-    setRows(props.environment.map(makeEnvironmentDraftRow));
-  }, [props.environment]);
+    setRows(editableEnvironment.map(makeEnvironmentDraftRow));
+  }, [editableEnvironment]);
 
   const publishRows = (nextRows: ReadonlyArray<EnvironmentDraftRow>) => {
     const published: ProviderInstanceEnvironmentVariable[] = [];
@@ -323,7 +517,10 @@ function ProviderEnvironmentSection(props: {
       const { id: _id, ...rest } = row;
       published.push({ ...rest, name });
     }
-    props.onChange(published);
+    const reserved = props.reservedNames
+      ? props.environment.filter((variable) => props.reservedNames?.has(variable.name))
+      : [];
+    props.onChange([...reserved, ...published]);
   };
 
   const updateVariable = (id: string, patch: Partial<Omit<EnvironmentDraftRow, "id">>) => {
@@ -358,10 +555,14 @@ function ProviderEnvironmentSection(props: {
     ]);
 
   return (
-    <ProviderConfigurationSection
-      title="Environment"
-      description="Variables passed to this provider instance. Sensitive values stay stored separately."
-      action={
+    <div className="grid gap-3">
+      <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 space-y-0.5">
+          <p className="text-xs font-semibold text-foreground">Environment variables</p>
+          <p className="text-xs text-muted-foreground">
+            Process environment for provider-specific tokens, gateways, and debugging.
+          </p>
+        </div>
         <Button
           type="button"
           size="sm"
@@ -372,8 +573,7 @@ function ProviderEnvironmentSection(props: {
           <PlusIcon className="size-3" />
           Add
         </Button>
-      }
-    >
+      </div>
       {rows.length === 0 ? (
         <p className="text-xs text-muted-foreground">No environment variables configured.</p>
       ) : (
@@ -432,13 +632,417 @@ function ProviderEnvironmentSection(props: {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function ClaudeLongLivedAuthSection(props: {
+  readonly idPrefix: string;
+  readonly setupCommand: string;
+  readonly environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>;
+  readonly onChange: (environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>) => void;
+  readonly onRunTerminalCommand?:
+    | ((request: ProviderAccountTerminalCommandRequest) => Promise<void> | void)
+    | undefined;
+  readonly terminalCommandRequest?: ProviderAccountTerminalCommandRequest | undefined;
+}) {
+  const tokenState = deriveClaudeLongLivedOAuthTokenState(props.environment);
+  const tokenInputId = `${props.idPrefix}-claude-oauth-token`;
+  const [tokenDraft, setTokenDraft] = useState("");
+  const [isRunningSetupCommand, setIsRunningSetupCommand] = useState(false);
+  const sanitizedTokenDraft = sanitizeClaudeLongLivedOAuthTokenInput(tokenDraft);
+  const tokenDraftHasValue = tokenDraft.trim().length > 0;
+  const tokenDraftWillBeSanitized = tokenDraftHasValue && sanitizedTokenDraft !== tokenDraft.trim();
+  const { copyToClipboard, isCopied } = useCopyToClipboard<"setup-token-command">({
+    onCopy: () => {
+      toastManager.add({
+        type: "success",
+        title: "Claude token setup command copied",
+        description: "Run it in a terminal, then paste the generated token here.",
+      });
+    },
+    onError: (error) => {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not copy Claude token setup command",
+          description: error.message,
+        }),
+      );
+    },
+  });
+  const canRunSetupCommand =
+    props.onRunTerminalCommand !== undefined && props.terminalCommandRequest !== undefined;
+  const runSetupCommand = async () => {
+    if (!props.onRunTerminalCommand || !props.terminalCommandRequest) {
+      return;
+    }
+    setIsRunningSetupCommand(true);
+    try {
+      await props.onRunTerminalCommand(props.terminalCommandRequest);
+    } finally {
+      setIsRunningSetupCommand(false);
+    }
+  };
+  const saveToken = () => {
+    if (sanitizedTokenDraft.length === 0) {
+      toastManager.add({
+        type: "error",
+        title: "Paste a Claude OAuth token first",
+        description: "Run the setup command, copy the printed token, then save it here.",
+      });
+      return;
+    }
+    props.onChange(
+      upsertClaudeLongLivedOAuthTokenEnvironment(props.environment, sanitizedTokenDraft),
+    );
+    setTokenDraft("");
+    toastManager.add({
+      type: "success",
+      title: "Claude long-lived token saved",
+      description: tokenDraftWillBeSanitized
+        ? "Whitespace was removed from the pasted token before saving."
+        : "Threadlines will pass it to Claude as CLAUDE_CODE_OAUTH_TOKEN.",
+    });
+  };
+
+  return (
+    <div className="grid gap-3 border-t border-border/50 pt-4">
+      <div className="min-w-0 space-y-0.5">
+        <p className="text-xs font-semibold text-foreground">Long-lived token</p>
+        <p className="text-xs text-muted-foreground">
+          Keeps Claude sessions signed in. Usage still comes from Claude's normal sign-in.
+        </p>
+      </div>
+      <div className="grid gap-2 rounded-md border border-border/70 bg-muted/20 p-2.5">
+        <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+          <span className="text-xs font-medium text-foreground">Setup command</span>
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+            {canRunSetupCommand ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="default"
+                className="h-7 gap-1.5 px-2 text-xs"
+                disabled={isRunningSetupCommand}
+                onClick={() => void runSetupCommand()}
+              >
+                {isRunningSetupCommand ? (
+                  <LoaderIcon className="size-3 animate-spin" />
+                ) : (
+                  <TerminalIcon className="size-3" />
+                )}
+                {isRunningSetupCommand ? "Opening" : "Run"}
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-7 gap-1.5 px-2 text-xs"
+              onClick={() => copyToClipboard(props.setupCommand, "setup-token-command")}
+            >
+              <CopyIcon className="size-3" />
+              {isCopied ? "Copied" : "Copy"}
+            </Button>
+          </div>
+        </div>
+        <code className="block overflow-x-auto whitespace-nowrap rounded border border-border/60 bg-background/80 px-2 py-1.5 font-mono text-[11px] text-foreground/85">
+          {props.setupCommand}
+        </code>
+        <p className="text-xs text-muted-foreground">
+          Run this in a terminal, finish the browser authorization, then paste the generated token
+          below.
+        </p>
+      </div>
+      <label className="block" htmlFor={tokenInputId}>
+        <span className="text-xs font-medium text-foreground">OAuth token</span>
+        <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-2">
+          <Input
+            id={tokenInputId}
+            className="min-w-64 flex-1"
+            value={tokenDraft}
+            onChange={(event) => setTokenDraft(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                saveToken();
+              }
+            }}
+            type="password"
+            autoComplete="off"
+            placeholder={
+              tokenState.configured ? "Stored secret - enter a new value to replace" : "Paste token"
+            }
+            spellCheck={false}
+          />
+          <Button
+            type="button"
+            size="sm"
+            variant="default"
+            className="h-8 px-2 text-xs sm:h-7.5"
+            disabled={sanitizedTokenDraft.length === 0}
+            onClick={saveToken}
+          >
+            Save token
+          </Button>
+        </div>
+        <span className="mt-1 block text-xs text-muted-foreground">
+          This writes <code className="text-foreground">{CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV}</code>{" "}
+          as a sensitive environment variable.
+        </span>
+        {tokenDraftWillBeSanitized ? (
+          <span className="mt-1 block text-xs text-warning">
+            Whitespace will be removed before saving.
+          </span>
+        ) : null}
+      </label>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <Badge variant={tokenState.configured ? "success" : "secondary"} size="sm">
+          {tokenState.configured ? "Configured" : "Not configured"}
+        </Badge>
+        {tokenState.configured ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-7 px-2 text-xs"
+            onClick={() =>
+              props.onChange(removeClaudeLongLivedOAuthTokenEnvironment(props.environment))
+            }
+          >
+            Clear token
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function CopyableProviderCommand(props: {
+  readonly title: string;
+  readonly command: string;
+  readonly description: string;
+  readonly copiedTitle: string;
+  readonly errorTitle: string;
+  readonly runLabel?: string | undefined;
+  readonly onRunTerminalCommand?:
+    | ((request: ProviderAccountTerminalCommandRequest) => Promise<void> | void)
+    | undefined;
+  readonly terminalCommandRequest?: ProviderAccountTerminalCommandRequest | undefined;
+}) {
+  const [isRunningCommand, setIsRunningCommand] = useState(false);
+  const { copyToClipboard, isCopied } = useCopyToClipboard<"command">({
+    onCopy: () => {
+      toastManager.add({
+        type: "success",
+        title: props.copiedTitle,
+        description: "Run it in a terminal when you need to refresh this account.",
+      });
+    },
+    onError: (error) => {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: props.errorTitle,
+          description: error.message,
+        }),
+      );
+    },
+  });
+  const canRunCommand =
+    props.onRunTerminalCommand !== undefined && props.terminalCommandRequest !== undefined;
+  const runCommand = async () => {
+    if (!props.onRunTerminalCommand || !props.terminalCommandRequest) {
+      return;
+    }
+    setIsRunningCommand(true);
+    try {
+      await props.onRunTerminalCommand(props.terminalCommandRequest);
+    } finally {
+      setIsRunningCommand(false);
+    }
+  };
+
+  return (
+    <div className="grid gap-2 rounded-md border border-border/70 bg-muted/20 p-2.5">
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+        <span className="text-xs font-medium text-foreground">{props.title}</span>
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+          {canRunCommand ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="default"
+              className="h-7 gap-1.5 px-2 text-xs"
+              disabled={isRunningCommand}
+              onClick={() => void runCommand()}
+            >
+              {isRunningCommand ? (
+                <LoaderIcon className="size-3 animate-spin" />
+              ) : (
+                <TerminalIcon className="size-3" />
+              )}
+              {isRunningCommand ? "Opening" : (props.runLabel ?? "Run")}
+            </Button>
+          ) : null}
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-7 gap-1.5 px-2 text-xs"
+            onClick={() => copyToClipboard(props.command, "command")}
+          >
+            <CopyIcon className="size-3" />
+            {isCopied ? "Copied" : "Copy"}
+          </Button>
+        </div>
+      </div>
+      <code className="block overflow-x-auto whitespace-nowrap rounded border border-border/60 bg-background/80 px-2 py-1.5 font-mono text-[11px] text-foreground/85">
+        {props.command}
+      </code>
+      <p className="text-xs text-muted-foreground">{props.description}</p>
+    </div>
+  );
+}
+
+function providerAuthBadge(input: ServerProvider["auth"] | undefined): {
+  readonly label: string;
+  readonly variant: "success" | "warning" | "secondary";
+} {
+  switch (input?.status) {
+    case "authenticated":
+      return { label: "Authenticated", variant: "success" };
+    case "unauthenticated":
+      return { label: "Needs sign in", variant: "warning" };
+    default:
+      return { label: "Checking", variant: "secondary" };
+  }
+}
+
+function ProviderAccountSignInSection(props: {
+  readonly driverKind: ProviderDriverKind | null;
+  readonly displayName: string;
+  readonly liveProvider: ServerProvider | undefined;
+  readonly authEmail: string | undefined;
+  readonly terminalLoginCommand: string;
+  readonly idPrefix: string;
+  readonly environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>;
+  readonly onEnvironmentChange: (
+    environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>,
+  ) => void;
+  readonly claudeSetupTokenCommand?: string | undefined;
+  readonly onRunTerminalCommand?:
+    | ((request: ProviderAccountTerminalCommandRequest) => Promise<void> | void)
+    | undefined;
+}) {
+  const authBadge = providerAuthBadge(props.liveProvider?.auth);
+  const authLabel = props.liveProvider?.auth.label ?? props.liveProvider?.auth.type ?? null;
+  const usageEmail = props.liveProvider?.auth.usageEmail;
+  const usageEmailForDisplay =
+    usageEmail?.trim() && usageEmail !== props.authEmail ? usageEmail : undefined;
+  const isClaude = props.driverKind === CLAUDE_DRIVER_KIND;
+  const hasClaudeCredentialOverride =
+    isClaude && hasClaudeCredentialOverrideEnvironment(props.environment);
+  const claudeLongLivedTokenConfigured =
+    isClaude && deriveClaudeLongLivedOAuthTokenState(props.environment).configured;
+
+  return (
+    <ProviderConfigurationSection
+      title="Account & Sign-in"
+      description="Shows whether this provider is ready and gives the right terminal command to refresh it."
+    >
+      <div className="grid gap-4">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <Badge variant={authBadge.variant} size="sm">
+            {authBadge.label}
+          </Badge>
+          <ProviderAuthEmail email={props.authEmail} prefix="Account" />
+          {authLabel ? <span className="text-xs text-muted-foreground">· {authLabel}</span> : null}
+          <ProviderAuthEmail email={usageEmailForDisplay} separator prefix="Usage" />
+        </div>
+
+        <CopyableProviderCommand
+          title="Terminal sign-in"
+          command={props.terminalLoginCommand}
+          description={
+            isClaude && claudeLongLivedTokenConfigured
+              ? "Refreshes Claude's normal sign-in so usage reporting can work."
+              : `Run this when ${props.displayName} reports that the account is signed out.`
+          }
+          copiedTitle={`${props.displayName} sign-in command copied`}
+          errorTitle={`Could not copy ${props.displayName} sign-in command`}
+          runLabel="Sign in"
+          onRunTerminalCommand={props.onRunTerminalCommand}
+          terminalCommandRequest={{
+            title: `${props.displayName} sign-in`,
+            command: props.terminalLoginCommand,
+            terminalId: providerAccountTerminalId(props.driverKind),
+          }}
+        />
+
+        {hasClaudeCredentialOverride ? (
+          <div className="rounded-md border border-warning/35 bg-warning/8 px-3 py-2 text-xs leading-5 text-warning">
+            <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className="font-medium">Environment override active</p>
+                <p className="mt-0.5 text-warning/85">
+                  `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY` is set for this provider. Claude
+                  uses those before the long-lived OAuth token.
+                </p>
+                {claudeLongLivedTokenConfigured ? (
+                  <p className="mt-1 text-warning/85">
+                    Use the long-lived token to clear these provider overrides and mask inherited
+                    Anthropic env vars.
+                  </p>
+                ) : (
+                  <p className="mt-1 text-warning/85">
+                    Add a long-lived token before switching this provider to OAuth token auth.
+                  </p>
+                )}
+              </div>
+              {claudeLongLivedTokenConfigured ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 border-warning/40 bg-warning/10 px-2 text-xs text-warning hover:bg-warning/15"
+                  onClick={() =>
+                    props.onEnvironmentChange(
+                      preferClaudeLongLivedOAuthTokenEnvironment(props.environment),
+                    )
+                  }
+                >
+                  Use long-lived token
+                </Button>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+
+        {isClaude && props.claudeSetupTokenCommand ? (
+          <ClaudeLongLivedAuthSection
+            idPrefix={props.idPrefix}
+            setupCommand={props.claudeSetupTokenCommand}
+            environment={props.environment}
+            onChange={props.onEnvironmentChange}
+            onRunTerminalCommand={props.onRunTerminalCommand}
+            terminalCommandRequest={{
+              title: "Claude token setup",
+              command: props.claudeSetupTokenCommand,
+              terminalId: providerAccountTerminalId(props.driverKind),
+            }}
+          />
+        ) : null}
+      </div>
     </ProviderConfigurationSection>
   );
 }
 
-type ProviderDetailsSection = "usage" | "models" | "configuration";
+type ProviderDetailsSection = "account" | "usage" | "models" | "configuration";
 
 const PROVIDER_DETAILS_SECTION_LABELS: Record<ProviderDetailsSection, string> = {
+  account: "Account",
   usage: "Usage",
   models: "Models",
   configuration: "Configuration",
@@ -648,10 +1252,19 @@ function ProviderAdvancedConfigurationSection(props: {
   readonly fields: ReadonlyArray<ProviderSettingsFieldModel>;
   readonly value: unknown;
   readonly idPrefix: string;
+  readonly environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>;
+  readonly reservedEnvironmentNames?: ReadonlySet<string> | undefined;
   readonly onChange: (nextConfig: Record<string, unknown> | undefined) => void;
+  readonly onEnvironmentChange: (
+    environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>,
+  ) => void;
 }) {
   const [isOpen, setIsOpen] = useState(false);
-  if (props.fields.length === 0) return null;
+  const editableEnvironmentCount = props.reservedEnvironmentNames
+    ? props.environment.filter((variable) => !props.reservedEnvironmentNames?.has(variable.name))
+        .length
+    : props.environment.length;
+  if (props.fields.length === 0 && editableEnvironmentCount === 0) return null;
 
   return (
     <section className="border-t border-border/60 px-4 py-3 sm:px-5">
@@ -665,7 +1278,7 @@ function ProviderAdvancedConfigurationSection(props: {
           <span className="min-w-0 space-y-0.5">
             <span className="block text-xs font-semibold text-foreground">Advanced</span>
             <span className="block text-xs text-muted-foreground">
-              Home paths and low-level provider process settings.
+              Home paths, environment variables, and low-level provider overrides.
             </span>
           </span>
           <ChevronDownIcon
@@ -677,13 +1290,22 @@ function ProviderAdvancedConfigurationSection(props: {
           />
         </button>
         <CollapsibleContent>
-          <div className="pt-3">
-            <ProviderSettingsFields
-              fields={props.fields}
-              value={props.value}
-              idPrefix={props.idPrefix}
-              variant="group"
-              onChange={props.onChange}
+          <div className="grid gap-4 pt-3">
+            {props.fields.length > 0 ? (
+              <div className="grid gap-1">
+                <ProviderSettingsFields
+                  fields={props.fields}
+                  value={props.value}
+                  idPrefix={props.idPrefix}
+                  variant="group"
+                  onChange={props.onChange}
+                />
+              </div>
+            ) : null}
+            <ProviderEnvironmentEditor
+              environment={props.environment}
+              reservedNames={props.reservedEnvironmentNames}
+              onChange={props.onEnvironmentChange}
             />
           </div>
         </CollapsibleContent>
@@ -729,6 +1351,9 @@ interface ProviderInstanceCardProps {
     | ((request: ProviderRateLimitResetCreditRequest) => void)
     | undefined;
   readonly accountUsageResetInFlight?: boolean | undefined;
+  readonly onRunTerminalCommand?:
+    | ((request: ProviderAccountTerminalCommandRequest) => Promise<void> | void)
+    | undefined;
 }
 
 /**
@@ -777,6 +1402,7 @@ export function ProviderInstanceCard({
   isResolvingUpdateBlockers = false,
   onResetAccountUsage,
   accountUsageResetInFlight,
+  onRunTerminalCommand,
 }: ProviderInstanceCardProps) {
   const enabled = instance.enabled ?? true;
   // The server-reported status wins when present; otherwise fall back to
@@ -787,6 +1413,9 @@ export function ProviderInstanceCard({
   const statusStyle = PROVIDER_STATUS_STYLES[statusKey];
   const rawSummary = getProviderSummary(liveProvider);
   const authEmail = liveProvider?.auth.email;
+  const usageEmail = liveProvider?.auth.usageEmail;
+  const usageEmailForDisplay =
+    usageEmail?.trim() && usageEmail !== authEmail ? usageEmail : undefined;
   const hasAuthenticatedEmail =
     liveProvider?.auth.status === "authenticated" && Boolean(authEmail?.trim());
   const authenticatedDetail = hasAuthenticatedEmail
@@ -809,7 +1438,7 @@ export function ProviderInstanceCard({
     providerUpdateIsProcessLock && onResolveUpdateBlockers !== undefined;
   const usagePresentation = deriveProviderAccountUsagePresentationForProvider(liveProvider);
   const hasTokenUsageDetails = usagePresentation?.tokenUsage !== undefined;
-  const [detailsSection, setDetailsSection] = useState<ProviderDetailsSection>("usage");
+  const [detailsSection, setDetailsSection] = useState<ProviderDetailsSection>("account");
   // Narrow `instance.driver` for callers that key on the closed
   // `ProviderDriverKind` union (e.g. `normalizeModelSlug`'s alias table). Custom
   // fork drivers pass through as `null` and those callers fall back to
@@ -859,6 +1488,37 @@ export function ProviderInstanceCard({
   const providerSettingsFieldGroups = useMemo(
     () => splitProviderSettingsFields(providerSettingsFields),
     [providerSettingsFields],
+  );
+  const claudeSetupTokenCommand = useMemo(
+    () =>
+      buildClaudeSetupTokenCommand({
+        binaryPath: readProviderConfigString(instance.config, "binaryPath"),
+        homePath: readProviderConfigString(instance.config, "homePath"),
+      }),
+    [instance.config],
+  );
+  const terminalLoginCommand = useMemo(() => {
+    if (driverKind === CODEX_DRIVER_KIND) {
+      return buildCodexLoginCommand({
+        binaryPath: readProviderConfigString(instance.config, "binaryPath"),
+        homePath: readProviderConfigString(instance.config, "homePath"),
+        shadowHomePath: readProviderConfigString(instance.config, "shadowHomePath"),
+      });
+    }
+    if (driverKind === CLAUDE_DRIVER_KIND) {
+      return buildClaudeAuthLoginCommand({
+        binaryPath: readProviderConfigString(instance.config, "binaryPath"),
+        homePath: readProviderConfigString(instance.config, "homePath"),
+      });
+    }
+    return null;
+  }, [driverKind, instance.config]);
+  const reservedEnvironmentNames = useMemo(
+    () =>
+      driverKind === CLAUDE_DRIVER_KIND
+        ? new Set<string>([CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV])
+        : undefined,
+    [driverKind],
   );
 
   const updateDisplayName = (value: string) => {
@@ -1000,6 +1660,7 @@ export function ProviderInstanceCard({
   );
 
   const availableDetailsSections: ReadonlyArray<ProviderDetailsSection> = [
+    ...(terminalLoginCommand ? (["account"] as const) : []),
     ...(hasTokenUsageDetails ? (["usage"] as const) : []),
     ...(driverOption !== undefined ? (["models"] as const) : []),
     "configuration",
@@ -1015,11 +1676,13 @@ export function ProviderInstanceCard({
           <span>Authenticated as</span>
           <ProviderAuthEmail email={authEmail} />
           {authenticatedDetail ? <span>· {authenticatedDetail}</span> : null}
+          <ProviderAuthEmail email={usageEmailForDisplay} separator prefix="Usage" />
         </>
       ) : (
         <>
           <span>{summary.headline}</span>
           <ProviderAuthEmail email={authEmail} separator prefix="Email" />
+          <ProviderAuthEmail email={usageEmailForDisplay} separator prefix="Usage" />
         </>
       )}
       {summary.detail ? <span>- {summary.detail}</span> : null}
@@ -1245,6 +1908,23 @@ export function ProviderInstanceCard({
             </div>
           ) : null}
 
+          {activeDetailsSection === "account" && terminalLoginCommand ? (
+            <div className="space-y-0">
+              <ProviderAccountSignInSection
+                driverKind={driverKind}
+                displayName={displayName}
+                liveProvider={liveProvider}
+                authEmail={authEmail}
+                terminalLoginCommand={terminalLoginCommand}
+                idPrefix={`provider-instance-${instanceId}`}
+                environment={instance.environment ?? []}
+                onEnvironmentChange={updateEnvironment}
+                onRunTerminalCommand={onRunTerminalCommand}
+                {...(driverKind === CLAUDE_DRIVER_KIND ? { claudeSetupTokenCommand } : {})}
+              />
+            </div>
+          ) : null}
+
           {activeDetailsSection === "models" && driverOption !== undefined ? (
             <ProviderModelsSection
               instanceId={instanceId}
@@ -1268,8 +1948,8 @@ export function ProviderInstanceCard({
           {activeDetailsSection === "configuration" ? (
             <div className="space-y-0">
               <ProviderConfigurationSection
-                title="Identity"
-                description="Controls how this provider appears in pickers and settings."
+                title="Appearance"
+                description="Names and colors used to distinguish provider instances in Threadlines."
               >
                 <label htmlFor={`provider-instance-${instanceId}-display-name`} className="block">
                   <span className="text-xs font-medium text-foreground">Display name</span>
@@ -1297,8 +1977,8 @@ export function ProviderInstanceCard({
 
               {providerSettingsFieldGroups.runtimeFields.length > 0 ? (
                 <ProviderConfigurationSection
-                  title="Runtime"
-                  description="Process launch settings used when this provider starts a session."
+                  title="Command & Launch"
+                  description="Executable and launch arguments used when this provider starts a session."
                 >
                   <ProviderSettingsFields
                     fields={providerSettingsFieldGroups.runtimeFields}
@@ -1310,17 +1990,15 @@ export function ProviderInstanceCard({
                 </ProviderConfigurationSection>
               ) : null}
 
-              <ProviderEnvironmentSection
-                environment={instance.environment ?? []}
-                onChange={updateEnvironment}
-              />
-
               {driverOption ? (
                 <ProviderAdvancedConfigurationSection
                   fields={providerSettingsFieldGroups.advancedFields}
                   value={instance.config}
                   idPrefix={`provider-instance-${instanceId}`}
+                  environment={instance.environment ?? []}
+                  reservedEnvironmentNames={reservedEnvironmentNames}
                   onChange={updateConfig}
+                  onEnvironmentChange={updateEnvironment}
                 />
               ) : (
                 <div className="border-t border-border/60 px-4 py-3 sm:px-5">

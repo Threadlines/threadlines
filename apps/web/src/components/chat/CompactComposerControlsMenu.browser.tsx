@@ -401,4 +401,17 @@ describe("CompactComposerControlsMenu", () => {
     await expect.element(page.getByRole("menuitemradio", { name: "Plan" })).toBeInTheDocument();
     await expect.element(page.getByRole("menuitemradio", { name: "Chat" })).not.toBeInTheDocument();
   });
+
+  it("shows the same mode and access icons as the expanded composer", async () => {
+    await using _ = await mountMenu();
+
+    await page.getByLabelText("More composer controls").click();
+
+    await expect.element(page.getByRole("menuitemradio", { name: "Build" })).toBeInTheDocument();
+    expect(document.body.querySelector("svg.lucide-hammer")).not.toBeNull();
+    expect(document.body.querySelector("svg.lucide-list-todo")).not.toBeNull();
+    expect(document.body.querySelector("svg.lucide-lock")).not.toBeNull();
+    expect(document.body.querySelector("svg.lucide-pen-line")).not.toBeNull();
+    expect(document.body.querySelector("svg.lucide-lock-open")).not.toBeNull();
+  });
 });

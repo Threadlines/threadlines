@@ -383,8 +383,14 @@ function paginateBranches(input: {
   };
 }
 
-function isT3CheckpointRef(value: string): boolean {
+function isThreadlinesCheckpointRef(value: string): boolean {
   return (
+    value === "threadlines/checkpoints" ||
+    value.startsWith("threadlines/checkpoints/") ||
+    value === "refs/threadlines/checkpoints" ||
+    value.startsWith("refs/threadlines/checkpoints/") ||
+    value === "refs/threadlines" ||
+    value.startsWith("refs/threadlines/") ||
     value === "t3/checkpoints" ||
     value.startsWith("t3/checkpoints/") ||
     value === "refs/t3/checkpoints" ||
@@ -394,8 +400,12 @@ function isT3CheckpointRef(value: string): boolean {
   );
 }
 
-function isT3CheckpointSubject(value: string): boolean {
-  return value.trim().toLowerCase().startsWith("t3 checkpoint ref=refs/t3/");
+function isThreadlinesCheckpointSubject(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return (
+    normalized.startsWith("threadlines checkpoint ref=refs/threadlines/") ||
+    normalized.startsWith("t3 checkpoint ref=refs/t3/")
+  );
 }
 
 function isSymbolicRemoteHeadRef(value: string): boolean {
@@ -422,7 +432,9 @@ function parseCommitGraphRefs(value: string): string[] {
       }
       return [trimmed];
     })
-    .filter((ref) => ref.length > 0 && !isT3CheckpointRef(ref) && !isSymbolicRemoteHeadRef(ref));
+    .filter(
+      (ref) => ref.length > 0 && !isThreadlinesCheckpointRef(ref) && !isSymbolicRemoteHeadRef(ref),
+    );
 }
 
 function parseCommitGraphOutput(stdout: string, limit: number): VcsCommitGraphResult {
@@ -444,7 +456,7 @@ function parseCommitGraphOutput(stdout: string, limit: number): VcsCommitGraphRe
       return [];
     }
 
-    const hasT3CheckpointRef = refsRaw
+    const hasThreadlinesCheckpointRef = refsRaw
       .split(",")
       .map((ref) =>
         ref
@@ -452,10 +464,10 @@ function parseCommitGraphOutput(stdout: string, limit: number): VcsCommitGraphRe
           .replace(/^HEAD -> /, "")
           .replace(/^tag: /, ""),
       )
-      .some(isT3CheckpointRef);
+      .some(isThreadlinesCheckpointRef);
     const refs = parseCommitGraphRefs(refsRaw);
     const normalizedSubject = subject.trim();
-    if (isT3CheckpointSubject(normalizedSubject) || hasT3CheckpointRef) {
+    if (isThreadlinesCheckpointSubject(normalizedSubject) || hasThreadlinesCheckpointRef) {
       return [];
     }
 
@@ -3074,6 +3086,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         input.cwd,
         [
           "log",
+          "--exclude=refs/threadlines/*",
+          "--exclude=refs/threadlines/checkpoints/*",
           "--exclude=refs/t3/*",
           "--exclude=refs/t3/checkpoints/*",
           "--all",

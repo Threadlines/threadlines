@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 
 const commands = [
-  ["vp", ["run", "--filter", "t3", "dev:bundle"]],
+  ["vp", ["run", "--filter", "@threadlines/server", "dev:bundle"]],
   ["vp", ["pack", "--watch"]],
   ["node", ["scripts/dev-electron.mjs"]],
 ];

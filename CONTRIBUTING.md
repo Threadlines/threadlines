@@ -2,15 +2,18 @@
 
 ## Read This First
 
-We are not actively accepting contributions right now.
+Threadlines is early, but focused contributions are welcome.
 
-You can still open an issue or PR, but please do so knowing there is a high chance we close it, defer it forever, or never look at it.
-
-If that sounds annoying, that is because it is. This project is still early and we are trying to keep scope, quality, and direction under control.
+Open an issue first for non-trivial changes. Small, concrete bug fixes,
+reliability fixes, performance improvements, and maintenance work are much easier
+to review than broad feature PRs.
 
 PRs are automatically labeled with a `vouch:*` trust status and a `size:*` diff size based on changed lines.
 
 If you are an external contributor, expect `vouch:unvouched` until we explicitly add you to [.github/VOUCHED.td](.github/VOUCHED.td).
+
+By contributing to Threadlines, you agree that your contribution is licensed
+under the repository's MIT license.
 
 ## What We Are Most Likely To Accept
 
@@ -32,7 +35,8 @@ Opinionated rewrites.
 
 Anything that expands product scope without us asking for it first.
 
-If you open a 1,000+ line PR full of new features, we will probably close it quickly and remember that you ignored the clearly written instructions.
+Very large PRs full of unrelated feature work will usually be closed or asked to
+be split before review.
 
 ## If You Still Want To Open A PR
 
@@ -54,12 +58,14 @@ If we have to guess what changed, we are much less likely to review it.
 
 If you are thinking about a non-trivial change, open an issue first.
 
-That still does not mean we will want the PR, but it gives you a chance to avoid wasting your time.
+That gives everyone a chance to check direction and scope before you spend time
+on a larger patch.
 
 ## Be Realistic
 
 Opening a PR does not create an obligation on our side.
 
-We may close it. We may ignore it. We may ask you to shrink it. We may reimplement the idea ourselves later.
+We may close it. We may ask you to shrink it. We may reimplement the idea
+ourselves later.
 
 If you are fine with that, proceed.

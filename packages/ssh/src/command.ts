@@ -13,7 +13,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { buildSshChildEnvironment, type SshAuthOptions } from "./auth.ts";
 import { SshCommandError, SshInvalidTargetError } from "./errors.ts";
 
-const PUBLISHABLE_T3_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u;
+const PUBLISHABLE_THREADLINES_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u;
 const DEFAULT_SSH_COMMAND_TIMEOUT_MS = 60_000;
 export const SSH_COMMAND = process.platform === "win32" ? "ssh.exe" : "ssh";
 
@@ -325,19 +325,21 @@ export const resolveSshTarget = Effect.fn("ssh/command.resolveSshTarget")(functi
   );
 });
 
-export function resolveRemoteT3CliPackageSpec(input: {
+export function resolveRemoteThreadlinesCliPackageSpec(input: {
   readonly appVersion: string;
   readonly updateChannel: DesktopUpdateChannel;
   readonly isDevelopment?: boolean;
 }): string {
   const appVersion = input.appVersion.trim();
-  if (!input.isDevelopment && PUBLISHABLE_T3_VERSION_PATTERN.test(appVersion)) {
-    return `t3@${appVersion}`;
+  if (!input.isDevelopment && PUBLISHABLE_THREADLINES_VERSION_PATTERN.test(appVersion)) {
+    return `@threadlines/server@${appVersion}`;
   }
 
   if (input.isDevelopment) {
-    return "t3@nightly";
+    return "@threadlines/server@nightly";
   }
 
-  return input.updateChannel === "nightly" ? "t3@nightly" : "t3@latest";
+  return input.updateChannel === "nightly"
+    ? "@threadlines/server@nightly"
+    : "@threadlines/server@latest";
 }

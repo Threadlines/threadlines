@@ -41,6 +41,7 @@ import {
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
+import { CLAUDE_CODE_OAUTH_TOKEN_ENV } from "./ClaudeUsage.ts";
 
 const DEFAULT_CLAUDE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
@@ -52,7 +53,6 @@ const CLAUDE_PRESENTATION = {
   showInteractionModeToggle: true,
   supportedRuntimeModes: RUNTIME_MODES,
 } as const;
-
 /**
  * Models that predate the auto permission mode classifier. Auto mode needs
  * Opus 4.6+ or Sonnet 4.6-class models; the adapter clamps these to
@@ -490,6 +490,13 @@ function normalizeClaudeAuthMethod(authMethod: string | undefined): string | und
   ) {
     return "apiKey";
   }
+  if (
+    normalized === "oauthtoken" ||
+    normalized === "claudecodeoauthtoken" ||
+    normalized === "claudeoauthtoken"
+  ) {
+    return "longLivedOAuthToken";
+  }
   return undefined;
 }
 
@@ -513,11 +520,20 @@ function formatClaudeSubscriptionAuthLabel(subscriptionType: string): string {
 function claudeAuthMetadata(input: {
   readonly subscriptionType: string | undefined;
   readonly authMethod: string | undefined;
+  readonly hasLongLivedOAuthToken: boolean;
 }): { readonly type: string; readonly label: string } | undefined {
-  if (normalizeClaudeAuthMethod(input.authMethod) === "apiKey") {
+  const normalizedAuthMethod = normalizeClaudeAuthMethod(input.authMethod);
+  if (normalizedAuthMethod === "apiKey") {
     return {
       type: "apiKey",
       label: "Claude API Key",
+    };
+  }
+
+  if (normalizedAuthMethod === "longLivedOAuthToken" || input.hasLongLivedOAuthToken) {
+    return {
+      type: "longLivedOAuthToken",
+      label: "Long-lived Claude token",
     };
   }
 
@@ -704,6 +720,40 @@ const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
   return yield* spawnAndCollect(claudeSettings.binaryPath, command);
 });
 
+export function parseClaudeAuthStatusEmail(stdout: string): string | undefined {
+  try {
+    const parsed = JSON.parse(stdout) as {
+      readonly loggedIn?: unknown;
+      readonly account?: { readonly email?: unknown } | null;
+    };
+    if (parsed.loggedIn === false) return undefined;
+    return typeof parsed.account?.email === "string"
+      ? nonEmptyProbeString(parsed.account.email)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export const readClaudeNormalAuthEmail = Effect.fn("readClaudeNormalAuthEmail")(function* (
+  claudeSettings: ClaudeSettings,
+  environment: NodeJS.ProcessEnv = process.env,
+) {
+  const normalAuthEnvironment = { ...environment };
+  delete normalAuthEnvironment[CLAUDE_CODE_OAUTH_TOKEN_ENV];
+  delete normalAuthEnvironment.ANTHROPIC_AUTH_TOKEN;
+  delete normalAuthEnvironment.ANTHROPIC_API_KEY;
+
+  const result = yield* runClaudeCommand(
+    claudeSettings,
+    ["auth", "status"],
+    normalAuthEnvironment,
+  ).pipe(Effect.timeoutOption(DEFAULT_TIMEOUT_MS), Effect.result);
+  if (Result.isFailure(result) || Option.isNone(result.success)) return undefined;
+  if (result.success.value.code !== 0) return undefined;
+  return parseClaudeAuthStatusEmail(result.success.value.stdout);
+});
+
 export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(function* (
   claudeSettings: ClaudeSettings,
   resolveCapabilities?: (
@@ -713,6 +763,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   resolveAccountUsage?: (
     claudeSettings: ClaudeSettings,
   ) => Effect.Effect<ServerProviderAccountUsage | undefined>,
+  resolveUsageAuthEmail?: (claudeSettings: ClaudeSettings) => Effect.Effect<string | undefined>,
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
@@ -838,12 +889,25 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   const authMetadata = claudeAuthMetadata({
     subscriptionType: capabilities.subscriptionType,
     authMethod: capabilities.tokenSource,
+    hasLongLivedOAuthToken:
+      typeof environment[CLAUDE_CODE_OAUTH_TOKEN_ENV] === "string" &&
+      environment[CLAUDE_CODE_OAUTH_TOKEN_ENV]!.trim().length > 0,
   });
+  const isApiKeyAuth = authMetadata?.type === "apiKey";
+  const isLongLivedOAuthAuth = authMetadata?.type === "longLivedOAuthToken";
   // Subscription usage comes from the Claude Code OAuth credential, which
   // does not exist for API-key auth — skip the lookup entirely there.
   const accountUsage =
-    resolveAccountUsage && authMetadata?.type !== "apiKey"
+    resolveAccountUsage && !isApiKeyAuth
       ? yield* resolveAccountUsage(claudeSettings).pipe(Effect.orElseSucceed(() => undefined))
+      : undefined;
+  const resolvedUsageEmail =
+    resolveUsageAuthEmail && isLongLivedOAuthAuth
+      ? yield* resolveUsageAuthEmail(claudeSettings).pipe(Effect.orElseSucceed(() => undefined))
+      : undefined;
+  const usageEmail =
+    resolvedUsageEmail && resolvedUsageEmail !== capabilities.email
+      ? resolvedUsageEmail
       : undefined;
   return buildServerProvider({
     presentation: CLAUDE_PRESENTATION,
@@ -859,6 +923,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         status: "authenticated",
         ...(capabilities.email ? { email: capabilities.email } : {}),
         ...(authMetadata ? authMetadata : {}),
+        ...(usageEmail ? { usageEmail } : {}),
       },
       ...(accountUsage ? { accountUsage } : {}),
       ...(upgradeMessage ? { message: upgradeMessage } : {}),

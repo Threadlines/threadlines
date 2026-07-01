@@ -5,6 +5,10 @@ release pipeline builds a Windows x64 NSIS `.exe` installer plus macOS arm64 and
 x64 `.dmg`/`.zip` artifacts, then publishes them together with Electron updater
 metadata.
 
+Windows installers are signed with Azure Trusted Signing. macOS releases are
+Developer ID signed, notarized, and stapled when the signing secrets are
+configured.
+
 Linux packaging exists in the local artifact script, but it is not part of the
 normal release workflow yet because there is no tested Linux install/update path.
 
@@ -22,9 +26,10 @@ Nightly releases are based on the next patch after the latest plain stable tag.
 For example, if the latest stable tag is `v0.0.17`, a nightly dispatch from
 `main` produces `0.0.18-nightly.<YYYYMMDD>.<run-number>`.
 
-If you previously installed a local build that reported an upstream-style
-`0.0.24` version, uninstall it before installing the first `0.0.1` Threadlines
-build. Auto-updaters normally treat `0.0.1` as older than `0.0.24`.
+If you previously installed a private alpha build that used an older fork-era
+app identity or an upstream-style `0.0.24` version, uninstall it before
+installing the first public Threadlines build. Public releases use the
+`dev.threadlines.app` app id and the Threadlines version lane.
 
 ## Local Desktop Artifacts
 
@@ -47,16 +52,15 @@ vp run dist:desktop:artifact -- --platform mac --target dmg --arch arm64 --build
 Use `--arch x64` on an Intel Mac runner. The macOS build uses `sips` and
 `iconutil`, so it must run on macOS.
 
-For a private-repo update feed, set the update repository while building:
+To override the GitHub update repository while building:
 
 ```powershell
 $env:THREADLINES_DESKTOP_UPDATE_REPOSITORY = "Threadlines/threadlines"
 vp run dist:desktop:artifact -- --platform win --target nsis --arch x64 --build-version 0.0.1
 ```
 
-The desktop artifact script accepts `THREADLINES_DESKTOP_*` variables. Legacy
-`BADCODE_DESKTOP_*` and `T3CODE_DESKTOP_*` variables remain compatibility aliases.
-When multiple aliases are set, `THREADLINES_DESKTOP_*` takes precedence.
+The desktop artifact script accepts `THREADLINES_DESKTOP_*` variables. New
+automation should not use old fork-era variable names.
 
 ## GitHub Release
 
@@ -66,7 +70,7 @@ It runs:
 
 - `vp fmt --check`
 - `vp lint --report-unused-disable-directives`
-- `vpr typecheck`
+- `vp run typecheck`
 - `vp run test`
 - Windows x64 NSIS packaging
 - macOS arm64 DMG/ZIP packaging
@@ -134,84 +138,69 @@ Electron Builder also uploads matching `.blockmap` files for differential
 updates.
 
 Nightly releases may also include `nightly.yml` and `nightly-mac.yml`. The
-workflow keeps latest-channel copies on nightly prereleases so private GitHub
-updater checks can read the prerelease manifest.
+workflow keeps latest-channel copies on nightly prereleases so updater checks can
+read the prerelease manifest.
 
-## Private Repository Downloads
+## Downloads
 
-Because this repository is private, downloading the installer from GitHub
-Releases requires a GitHub account with access to the repo.
+Download the matching asset from GitHub Releases:
 
-For another machine:
+- Windows: `Threadlines-<version>-x64.exe`
+- Apple Silicon macOS: `Threadlines-<version>-arm64.dmg`
+- Intel macOS: `Threadlines-<version>-x64.dmg`
 
-1. Sign into GitHub with an account that can access `badcuban/badcode`.
-2. Open the release page.
-3. Download the matching asset for the machine:
-   - Windows: `Threadlines-<version>-x64.exe`
-   - Apple Silicon macOS: `Threadlines-<version>-arm64.dmg`
-   - Intel macOS: `Threadlines-<version>-x64.dmg`
-4. Run the installer or open the DMG.
+Windows and macOS public release artifacts are expected to be signed. Windows may
+still show SmartScreen reputation prompts until the signing identity has enough
+download reputation.
 
-Unsigned alpha builds may show Windows SmartScreen or "unknown publisher"
-warnings. macOS alpha builds are ad-hoc signed so Squirrel.Mac can validate and
-apply ZIP updates, but they are not Developer ID signed or notarized unless
-`THREADLINES_MACOS_SIGNED=true` is configured. They will still show Gatekeeper
-friction and may require manual approval in System Settings.
+## npm Package
+
+The server/CLI package is `@threadlines/server`. It backs advanced local usage
+and remote bootstrap flows:
+
+```bash
+npx @threadlines/server@latest --help
+```
+
+The npm organization scope is `@threadlines`. The first package publish must be
+done by an npm account that owns the organization and has 2FA enabled for
+publishing:
+
+```bash
+vp install --frozen-lockfile
+vp exec vp run --filter @threadlines/server build:bundle
+node scripts/prepare-server-npm-package.ts
+cd release/npm-server
+npm login
+npm publish --access public
+```
+
+After the first package exists, configure npm Trusted Publishing for
+`@threadlines/server` with the GitHub repository and workflow
+`.github/workflows/npm-package.yml`. Then use the **npm Package** workflow to
+dry-run or publish future versions. Stable builds should use the `latest`
+dist-tag; nightly builds should use the `nightly` dist-tag.
 
 ## Windows Publisher Name
 
 There are two different Windows publisher surfaces:
 
 - Installed app metadata can be set by the installer package. Threadlines'
-  desktop artifact script stages the package author as `Threadlines`, so newly built
-  unsigned installers should not inherit the upstream app metadata.
+  desktop artifact script stages the package author as `Threadlines`.
 - UAC, SmartScreen, and Authenticode publisher identity come from the signing
-  certificate. If an `.exe` is signed by an upstream certificate, Windows will
-  show that upstream identity. To make those verified publisher prompts say
-  Threadlines, sign the installer with a Threadlines-owned code-signing certificate or
-  Azure Trusted Signing identity. Without signing, Windows will show an unknown
-  publisher.
+  certificate. Threadlines releases use a Threadlines-owned Azure Trusted Signing
+  identity for Windows.
 
-## Auto-Updates In A Private Repo
+## Auto-Updates
 
-The app uses `electron-updater` and GitHub Releases metadata. For private
-repositories, the updater needs a token at runtime because GitHub release
-assets are not public.
-
-For personal testing on your own machine, install and sign into the GitHub CLI
-once:
-
-```powershell
-gh auth login
-gh auth status
-```
-
-When the packaged app sees a private GitHub update feed, it checks
-`GH_TOKEN`/`GITHUB_TOKEN` first. If neither is set, it asks `gh auth token` for
-the signed-in GitHub CLI token and passes that token directly to the updater for
-the update check or download.
-
-If GitHub CLI is not installed or is not visible on `PATH`, launch Threadlines from a
-shell with a token that can read releases from this private repo. Windows
-example:
-
-```powershell
-$env:GH_TOKEN = "github_pat_or_classic_token_here"
-& "$env:LOCALAPPDATA\Programs\Threadlines\Threadlines.exe"
-```
-
-`GITHUB_TOKEN` also works. Do not commit tokens, screenshots containing tokens,
-or local token setup scripts. Prefer `gh auth login` for personal testing;
-environment tokens are inherited by the Electron process for that launch.
-
-If Threadlines becomes public later, or if release assets move to public hosting,
-users will not need a private-repo token for updates.
+The app uses `electron-updater` and GitHub Releases metadata. Public GitHub
+release assets do not require a runtime GitHub token for normal update checks or
+downloads.
 
 ## macOS Signing And Notarization
 
-The workflow can build unsigned macOS artifacts now. For a clean public macOS
-release, enroll in the Apple Developer Program, create a Developer ID
-Application certificate, and configure notarization credentials.
+For public macOS releases, configure a Developer ID Application certificate and
+notarization credentials.
 
 Set repository variable `THREADLINES_MACOS_SIGNED=true`, then add these GitHub
 secrets:
@@ -223,19 +212,15 @@ secrets:
 - `APPLE_API_KEY_ID`: App Store Connect key ID
 - `APPLE_API_ISSUER`: App Store Connect issuer ID
 
-When signing is enabled, the artifact script enables hardened runtime and
-Electron Builder notarization for macOS. When signing is not enabled, the script
-uses Electron Builder's ad-hoc signing identity (`mac.identity: "-"`) instead of
-skipping signing entirely. That keeps private alpha/nightly auto-updates
-installable while preserving the expected Gatekeeper friction for non-notarized
-builds.
+When signing is enabled, the artifact script enables hardened runtime and runs
+the explicit after-sign notarization hook. The hook submits the `.app` bundle to
+Apple, waits for acceptance, staples the ticket, and validates the staple.
 
-## Windows Signing Later
+## Windows Signing
 
-Windows signing is not required for local alpha testing, but it is strongly
-recommended before wider distribution. The existing build script already has an
-optional Azure Trusted Signing path; the workflow intentionally leaves it off
-for now.
+The release workflow requires Windows signing before upload. Configure
+`THREADLINES_DESKTOP_SIGNED=true` and the Azure Trusted Signing variables and
+secrets used by `.github/workflows/release.yml`.
 
 ## Linux Later
 

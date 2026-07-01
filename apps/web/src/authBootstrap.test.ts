@@ -64,7 +64,7 @@ describe("resolveInitialServerAuthGateState", () => {
             policy: "desktop-managed-local",
             bootstrapMethods: ["desktop-bootstrap"],
             sessionMethods: ["browser-session-cookie"],
-            sessionCookieName: "t3_session",
+            sessionCookieName: "threadlines_session",
           },
         }),
       )
@@ -82,7 +82,7 @@ describe("resolveInitialServerAuthGateState", () => {
             policy: "loopback-browser",
             bootstrapMethods: ["one-time-token"],
             sessionMethods: ["browser-session-cookie"],
-            sessionCookieName: "t3_session",
+            sessionCookieName: "threadlines_session",
           },
           sessionMethod: "browser-session-cookie",
           expiresAt: "2026-04-05T00:00:00.000Z",
@@ -118,7 +118,7 @@ describe("resolveInitialServerAuthGateState", () => {
           policy: "loopback-browser",
           bootstrapMethods: ["one-time-token"],
           sessionMethods: ["browser-session-cookie"],
-          sessionCookieName: "t3_session",
+          sessionCookieName: "threadlines_session",
         },
       }),
     );
@@ -134,7 +134,7 @@ describe("resolveInitialServerAuthGateState", () => {
         policy: "loopback-browser",
         bootstrapMethods: ["one-time-token"],
         sessionMethods: ["browser-session-cookie"],
-        sessionCookieName: "t3_session",
+        sessionCookieName: "threadlines_session",
       },
     });
 
@@ -151,7 +151,7 @@ describe("resolveInitialServerAuthGateState", () => {
           policy: "loopback-browser",
           bootstrapMethods: ["one-time-token"],
           sessionMethods: ["browser-session-cookie"],
-          sessionCookieName: "t3_session",
+          sessionCookieName: "threadlines_session",
         },
       }),
     );
@@ -166,7 +166,7 @@ describe("resolveInitialServerAuthGateState", () => {
         policy: "loopback-browser",
         bootstrapMethods: ["one-time-token"],
         sessionMethods: ["browser-session-cookie"],
-        sessionCookieName: "t3_session",
+        sessionCookieName: "threadlines_session",
       },
     });
 
@@ -183,7 +183,7 @@ describe("resolveInitialServerAuthGateState", () => {
           policy: "desktop-managed-local",
           bootstrapMethods: ["desktop-bootstrap"],
           sessionMethods: ["browser-session-cookie"],
-          sessionCookieName: "t3_session",
+          sessionCookieName: "threadlines_session",
         },
       }),
     );
@@ -207,7 +207,7 @@ describe("resolveInitialServerAuthGateState", () => {
         policy: "desktop-managed-local",
         bootstrapMethods: ["desktop-bootstrap"],
         sessionMethods: ["browser-session-cookie"],
-        sessionCookieName: "t3_session",
+        sessionCookieName: "threadlines_session",
       },
     });
 
@@ -224,7 +224,7 @@ describe("resolveInitialServerAuthGateState", () => {
           policy: "loopback-browser",
           bootstrapMethods: ["one-time-token"],
           sessionMethods: ["browser-session-cookie"],
-          sessionCookieName: "t3_session",
+          sessionCookieName: "threadlines_session",
         },
       }),
     );
@@ -238,7 +238,7 @@ describe("resolveInitialServerAuthGateState", () => {
         policy: "loopback-browser",
         bootstrapMethods: ["one-time-token"],
         sessionMethods: ["browser-session-cookie"],
-        sessionCookieName: "t3_session",
+        sessionCookieName: "threadlines_session",
       },
     });
   });
@@ -257,7 +257,7 @@ describe("resolveInitialServerAuthGateState", () => {
             policy: "loopback-browser",
             bootstrapMethods: ["one-time-token"],
             sessionMethods: ["browser-session-cookie"],
-            sessionCookieName: "t3_session",
+            sessionCookieName: "threadlines_session",
           },
         }),
       );
@@ -274,7 +274,7 @@ describe("resolveInitialServerAuthGateState", () => {
         policy: "loopback-browser",
         bootstrapMethods: ["one-time-token"],
         sessionMethods: ["browser-session-cookie"],
-        sessionCookieName: "t3_session",
+        sessionCookieName: "threadlines_session",
       },
     });
     expect(fetchMock).toHaveBeenCalledTimes(4);
@@ -307,7 +307,7 @@ describe("resolveInitialServerAuthGateState", () => {
             policy: "loopback-browser",
             bootstrapMethods: ["one-time-token"],
             sessionMethods: ["browser-session-cookie"],
-            sessionCookieName: "t3_session",
+            sessionCookieName: "threadlines_session",
           },
         }),
       )
@@ -325,7 +325,7 @@ describe("resolveInitialServerAuthGateState", () => {
             policy: "loopback-browser",
             bootstrapMethods: ["one-time-token"],
             sessionMethods: ["browser-session-cookie"],
-            sessionCookieName: "t3_session",
+            sessionCookieName: "threadlines_session",
           },
           sessionMethod: "browser-session-cookie",
           expiresAt: "2026-04-05T00:00:00.000Z",
@@ -343,7 +343,7 @@ describe("resolveInitialServerAuthGateState", () => {
         policy: "loopback-browser",
         bootstrapMethods: ["one-time-token"],
         sessionMethods: ["browser-session-cookie"],
-        sessionCookieName: "t3_session",
+        sessionCookieName: "threadlines_session",
       },
     });
     await expect(submitServerAuthCredential("retry-token")).resolves.toBeUndefined();
@@ -392,7 +392,7 @@ describe("resolveInitialServerAuthGateState", () => {
             policy: "desktop-managed-local",
             bootstrapMethods: ["desktop-bootstrap"],
             sessionMethods: ["browser-session-cookie"],
-            sessionCookieName: "t3_session",
+            sessionCookieName: "threadlines_session",
           },
         }),
       )
@@ -410,7 +410,7 @@ describe("resolveInitialServerAuthGateState", () => {
             policy: "desktop-managed-local",
             bootstrapMethods: ["desktop-bootstrap"],
             sessionMethods: ["browser-session-cookie"],
-            sessionCookieName: "t3_session",
+            sessionCookieName: "threadlines_session",
           },
         }),
       )
@@ -421,7 +421,7 @@ describe("resolveInitialServerAuthGateState", () => {
             policy: "desktop-managed-local",
             bootstrapMethods: ["desktop-bootstrap"],
             sessionMethods: ["browser-session-cookie"],
-            sessionCookieName: "t3_session",
+            sessionCookieName: "threadlines_session",
           },
           sessionMethod: "browser-session-cookie",
           expiresAt: "2026-04-05T00:00:00.000Z",
@@ -462,7 +462,7 @@ describe("resolveInitialServerAuthGateState", () => {
             policy: "loopback-browser",
             bootstrapMethods: ["one-time-token"],
             sessionMethods: ["browser-session-cookie"],
-            sessionCookieName: "t3_session",
+            sessionCookieName: "threadlines_session",
           },
           sessionMethod: "browser-session-cookie",
           expiresAt: "2026-04-05T00:00:00.000Z",
@@ -475,7 +475,7 @@ describe("resolveInitialServerAuthGateState", () => {
             policy: "loopback-browser",
             bootstrapMethods: ["one-time-token"],
             sessionMethods: ["browser-session-cookie"],
-            sessionCookieName: "t3_session",
+            sessionCookieName: "threadlines_session",
           },
         }),
       );

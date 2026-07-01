@@ -113,13 +113,13 @@ const compactEnv = (env: Readonly<Record<string, string | undefined>>): Record<s
 export const DesktopConfig = Config.all({
   appDataDirectory: trimmedString("APPDATA"),
   xdgConfigHome: trimmedString("XDG_CONFIG_HOME"),
-  t3Home: trimmedStringAlias("THREADLINES_HOME", "BADCODE_HOME", "T3CODE_HOME"),
+  threadlinesHome: trimmedStringAlias("THREADLINES_HOME", "BADCODE_HOME", "T3CODE_HOME"),
   devServerUrl: Config.url("VITE_DEV_SERVER_URL").pipe(Config.option),
-  devRemoteT3ServerEntryPath: trimmedStringAlias(
-    "THREADLINES_DEV_REMOTE_T3_SERVER_ENTRY_PATH",
-    "BADCODE_DEV_REMOTE_T3_SERVER_ENTRY_PATH",
-    "T3CODE_DEV_REMOTE_T3_SERVER_ENTRY_PATH",
-  ),
+  devRemoteThreadlinesServerEntryPath: firstSomeOption([
+    trimmedString("THREADLINES_DEV_REMOTE_THREADLINES_SERVER_ENTRY_PATH"),
+    trimmedString("BADCODE_DEV_REMOTE_T3_SERVER_ENTRY_PATH"),
+    trimmedString("T3CODE_DEV_REMOTE_T3_SERVER_ENTRY_PATH"),
+  ]),
   configuredBackendPort: optionalPortAlias("THREADLINES_PORT", "BADCODE_PORT", "T3CODE_PORT"),
   commitHashOverride: trimmedStringAlias(
     "THREADLINES_COMMIT_HASH",

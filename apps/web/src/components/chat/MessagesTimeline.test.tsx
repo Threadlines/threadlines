@@ -574,6 +574,42 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain('data-agent-response-body="true"');
   });
 
+  it("renders Claude slash-login messages as terminal sign-in guidance", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        providerAuthReconnect={{
+          provider: ProviderDriverKind.make("claudeAgent"),
+          command: "claude auth login",
+          message: "Not logged in • Please run /login",
+        }}
+        onRunProviderAuthReconnect={() => {}}
+        timelineEntries={[
+          {
+            id: "entry-claude-slash-login",
+            kind: "message",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            message: {
+              id: MessageId.make("message-claude-slash-login"),
+              role: "assistant",
+              text: "Not logged in • Please run /login",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              completedAt: "2026-03-17T19:12:30.000Z",
+              streaming: false,
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('data-provider-auth-reconnect="true"');
+    expect(markup).toContain("Claude needs sign in");
+    expect(markup).toContain("claude auth login");
+    expect(markup).toContain("Sign in in terminal");
+    expect(markup).not.toContain('data-agent-response-body="true"');
+  });
+
   it("keeps live activity compact and height-stable while a turn is working", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(

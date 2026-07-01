@@ -579,6 +579,36 @@ describe("deriveProviderAccountUsagePresentationForProvider", () => {
 
     expect(deriveProviderAccountUsagePresentationForProvider(provider)).toBeNull();
   });
+
+  it("explains Claude usage needs subscription sign-in for long-lived token auth", () => {
+    const provider = {
+      driver: ProviderDriverKind.make("claudeAgent"),
+      auth: {
+        status: "authenticated",
+        type: "longLivedOAuthToken",
+        label: "Long-lived Claude token",
+      },
+    } satisfies Pick<ServerProvider, "accountUsage" | "auth" | "driver">;
+
+    expect(deriveProviderAccountUsagePresentationForProvider(provider)?.windows).toEqual([
+      {
+        key: "primary",
+        label: "5h",
+        detail: "needs Claude sign-in for usage",
+        usedPercent: 0,
+        remainingPercent: 100,
+        reachedLimit: false,
+      },
+      {
+        key: "secondary",
+        label: "Weekly",
+        detail: "needs Claude sign-in for usage",
+        usedPercent: 0,
+        remainingPercent: 100,
+        reachedLimit: false,
+      },
+    ]);
+  });
 });
 
 const makeUsage = (usedPercent: number): ServerProviderAccountUsage => ({

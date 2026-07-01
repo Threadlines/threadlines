@@ -870,13 +870,17 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
 
         yield* writeTextFile(cwd, "checkpoint.txt", "checkpoint\n");
         yield* git(cwd, ["add", "."]);
-        yield* git(cwd, ["commit", "-m", "t3 checkpoint ref=refs/t3/checkpoints/example"]);
+        yield* git(cwd, [
+          "commit",
+          "-m",
+          "threadlines checkpoint ref=refs/threadlines/checkpoints/example",
+        ]);
 
         const graph = yield* driver.commitGraph({ cwd, limit: 5 });
 
         assert.notInclude(
           graph.commits.map((commit) => commit.subject),
-          "t3 checkpoint ref=refs/t3/checkpoints/example",
+          "threadlines checkpoint ref=refs/threadlines/checkpoints/example",
         );
         assert.include(
           graph.commits.map((commit) => commit.subject),

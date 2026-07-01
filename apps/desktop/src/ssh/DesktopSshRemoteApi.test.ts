@@ -54,7 +54,7 @@ describe("DesktopSshRemoteApi", () => {
       });
 
       assert.equal(descriptor.label, "Remote Devbox");
-      assert.deepEqual(requestUrls, ["http://127.0.0.1:41773/.well-known/t3/environment"]);
+      assert.deepEqual(requestUrls, ["http://127.0.0.1:41773/.well-known/threadlines/environment"]);
     }).pipe(Effect.provide(layer));
   });
 

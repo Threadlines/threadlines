@@ -76,7 +76,7 @@ const make = Effect.gen(function* () {
     fetchEnvironmentDescriptor: ({ httpBaseUrl }) =>
       fetchLoopbackSshJson<unknown>({
         httpBaseUrl,
-        pathname: "/.well-known/t3/environment",
+        pathname: "/.well-known/threadlines/environment",
       }).pipe(
         Effect.flatMap(decodeExecutionEnvironmentDescriptor),
         Effect.mapError(mapError("fetch-environment-descriptor")),

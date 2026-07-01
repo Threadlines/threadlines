@@ -665,7 +665,7 @@ describe("deriveProviderBackgroundRuns", () => {
     expect(detectionSeeds.commandHints).toContain("node scripts/dev-runner.ts dev");
   });
 
-  it("renders active command tool activities as provider command runs", () => {
+  it("uses active command tool activities to seed detection without rendering provider runs", () => {
     const command =
       'node -e "let n=0; const t=setInterval(()=>console.log(n++), 1000); setTimeout(()=>clearInterval(t), 120000)"';
     const { runs, detectionSeeds } = deriveProviderBackgroundRuns({
@@ -675,17 +675,46 @@ describe("deriveProviderBackgroundRuns", () => {
       activeCommandTurnId: TurnId.make("turn-1"),
     });
 
-    expect(runs).toHaveLength(1);
-    expect(runs[0]).toMatchObject({
-      id: "provider:command:tool-command-1",
-      source: "provider",
-      providerKind: "command",
-      label: "2-minute Node counter",
-      command,
-      detail: "Command tool",
-      statusLabel: "Running",
-    });
+    expect(runs).toEqual([]);
     expect(detectionSeeds.commandHints).toContain(command);
+  });
+
+  it("does not render many foreground command tools as background runs", () => {
+    const { runs, detectionSeeds } = deriveProviderBackgroundRuns({
+      activities: [
+        commandToolActivity(
+          'sed -n "1,140p" apps/server/src/bin.ts',
+          1,
+          TurnId.make("turn-1"),
+          "tool.started",
+          "tool-command-1",
+        ),
+        commandToolActivity(
+          'sed -n "1,80p" apps/server/dist/bin.mjs',
+          2,
+          TurnId.make("turn-1"),
+          "tool.started",
+          "tool-command-2",
+        ),
+        commandToolActivity(
+          'rg -n "background run" apps/web/src',
+          3,
+          TurnId.make("turn-1"),
+          "tool.started",
+          "tool-command-3",
+        ),
+      ],
+      messages: [],
+      pendingBackgroundTaskCount: 0,
+      activeCommandTurnId: TurnId.make("turn-1"),
+    });
+
+    expect(runs).toEqual([]);
+    expect(detectionSeeds.commandHints).toEqual([
+      'sed -n "1,140p" apps/server/src/bin.ts',
+      'sed -n "1,80p" apps/server/dist/bin.mjs',
+      'rg -n "background run" apps/web/src',
+    ]);
   });
 
   it("ignores active command tool activities from inactive historical turns", () => {

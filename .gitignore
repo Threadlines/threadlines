@@ -36,6 +36,7 @@ apps/web/.playwright
 .playwright-mcp/
 apps/web/playwright-report
 apps/web/src/components/__screenshots__
+apps/web/src/components/chat/preview-output/
 .vitest-*
 __screenshots__/
 .tanstack

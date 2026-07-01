@@ -15,6 +15,8 @@ describe("provider auth helpers", () => {
       ),
     ).toBe(true);
     expect(isProviderAuthErrorMessage("Access token expired")).toBe(true);
+    expect(isProviderAuthErrorMessage("Not logged in • Please run /login")).toBe(true);
+    expect(isProviderAuthErrorMessage("Not logged in · Please run /login")).toBe(true);
     expect(isProviderAuthErrorMessage("Sandbox setup failed")).toBe(false);
   });
 
@@ -47,6 +49,15 @@ describe("provider auth helpers", () => {
     ).toBe(
       "Failed to authenticate. API Error: 401 Invalid authentication credentials Run `claude auth login` in a terminal, then retry.",
     );
+  });
+
+  it("translates Claude slash-login guidance into terminal sign-in guidance", () => {
+    expect(
+      addProviderAuthHint(
+        ProviderDriverKind.make("claudeAgent"),
+        "Not logged in • Please run /login",
+      ),
+    ).toBe("Not logged in • Please run /login Run `claude auth login` in a terminal, then retry.");
   });
 
   it("does not duplicate provider login guidance", () => {

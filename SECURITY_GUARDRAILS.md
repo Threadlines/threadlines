@@ -1,6 +1,7 @@
 # Security Guardrails
 
-Threadlines may become public later, so treat the repository as public-safe from the start.
+Threadlines is intended to be public-safe. Treat every commit, fixture,
+screenshot, and release artifact as if it may be inspected by outside users.
 
 ## Before pushing
 
@@ -12,7 +13,7 @@ Threadlines may become public later, so treat the repository as public-safe from
 
 ## Secret Scanning
 
-Use a secret scanner before publishing or opening the repository.
+Use a secret scanner before publishing releases or large changes.
 
 Recommended local check:
 
@@ -24,12 +25,13 @@ If `gitleaks` is not installed yet, install it from the official project:
 
 https://github.com/gitleaks/gitleaks
 
-## Open Source Checklist
+## Public Release Checklist
 
-Before making the repository public:
+Before public releases:
 
 - Run a full secret scan.
 - Review git history for accidental secrets or personal data.
-- Confirm the app name, icons, and README clearly distinguish Threadlines from upstream T3Code.
+- Confirm the app name, icons, and README clearly distinguish Threadlines from
+  its upstream origin.
 - Keep the upstream MIT license notice intact.
 - Add Threadlines-specific documentation only after checking it contains no local machine details.

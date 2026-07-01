@@ -12,6 +12,7 @@ import {
   type ProviderSession,
   type RuntimeMode,
   type ThreadContextSeed,
+  ThreadForkContextPayload,
   type TurnId,
 } from "@threadlines/contracts";
 import { withContextSeedPreamble } from "@threadlines/shared/contextSeed";
@@ -51,6 +52,7 @@ import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
+const isThreadForkContextPayload = Schema.is(ThreadForkContextPayload);
 
 type ProviderIntentEvent = Extract<
   OrchestrationEvent,
@@ -675,6 +677,34 @@ const make = Effect.gen(function* () {
               .sessionModelSwitch;
     const requestedModelSelection =
       input.modelSelection ?? threadModelSelections.get(input.threadId) ?? thread.modelSelection;
+    const forkContextActivity = thread.activities.find(
+      (activity) =>
+        activity.kind === "thread.fork.context" && isThreadForkContextPayload(activity.payload),
+    );
+    const isForkInitialTurn =
+      forkContextActivity !== undefined &&
+      input.messageId !== undefined &&
+      thread.messages[0]?.id === input.messageId;
+    const forkContext =
+      forkContextActivity !== undefined &&
+      isForkInitialTurn &&
+      isThreadForkContextPayload(forkContextActivity.payload)
+        ? forkContextActivity.payload
+        : undefined;
+    const sourceThread = forkContext ? yield* resolveThread(forkContext.sourceThreadId) : undefined;
+    const telemetryContext =
+      forkContext !== undefined
+        ? {
+            kind: "thread_fork" as const,
+            ...(sourceThread?.modelSelection !== undefined
+              ? { sourceModelSelection: sourceThread.modelSelection }
+              : {}),
+            includedMessageCount: forkContext.includedMessageCount,
+            includedToolSummaryCount: forkContext.includedToolSummaryCount,
+            includedAttachmentCount: forkContext.includedAttachmentCount,
+            omittedAttachmentCount: forkContext.omittedAttachmentCount,
+          }
+        : undefined;
     const modelForTurn =
       sessionModelSwitch === "unsupported" && input.modelSelection === undefined
         ? activeSession?.model !== undefined
@@ -692,6 +722,7 @@ const make = Effect.gen(function* () {
       ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
       ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
+      ...(telemetryContext !== undefined ? { telemetryContext } : {}),
     };
   });
 

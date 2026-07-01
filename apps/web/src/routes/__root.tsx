@@ -158,6 +158,14 @@ function RootRouteView() {
   );
 }
 
+function describeWorking(count: number): string {
+  return count === 1 ? "1 thread is working" : `${count} threads are working`;
+}
+
+function describeCompleted(count: number): string {
+  return count === 1 ? "1 thread completed" : `${count} threads completed`;
+}
+
 function DesktopTaskbarStatusSync() {
   const runningThreadCount = useStore(
     (state) =>
@@ -168,6 +176,8 @@ function DesktopTaskbarStatusSync() {
   );
   const hadRunningThreadRef = useRef(false);
   const completionShownRef = useRef(false);
+  const previousRunningThreadCountRef = useRef(0);
+  const unseenCompletedThreadCountRef = useRef(0);
   const lastStatusKeyRef = useRef<string | null>(null);
 
   const setTaskbarStatus = useEffectEvent((input: DesktopTaskbarStatusInput) => {
@@ -176,7 +186,7 @@ function DesktopTaskbarStatusSync() {
       return;
     }
 
-    const statusKey = `${input.status}:${input.description ?? ""}:${input.runningThreadCount ?? ""}`;
+    const statusKey = `${input.status}:${input.description ?? ""}:${input.runningThreadCount ?? ""}:${input.completedThreadCount ?? ""}`;
     if (lastStatusKeyRef.current === statusKey) {
       return;
     }
@@ -191,16 +201,23 @@ function DesktopTaskbarStatusSync() {
       return;
     }
 
+    // Track threads that finished while the app was unfocused so completion
+    // badges can show a real count; focused users see completions live.
+    const previousRunningThreadCount = previousRunningThreadCountRef.current;
+    previousRunningThreadCountRef.current = runningThreadCount;
+    if (document.hasFocus()) {
+      unseenCompletedThreadCountRef.current = 0;
+    } else if (runningThreadCount < previousRunningThreadCount) {
+      unseenCompletedThreadCountRef.current += previousRunningThreadCount - runningThreadCount;
+    }
+
     if (runningThreadCount > 0) {
       hadRunningThreadRef.current = true;
       completionShownRef.current = false;
       setTaskbarStatus({
         status: "working",
         runningThreadCount,
-        description:
-          runningThreadCount === 1
-            ? "One chat is working"
-            : `${runningThreadCount} chats are working`,
+        description: describeWorking(runningThreadCount),
       });
       return;
     }
@@ -209,17 +226,22 @@ function DesktopTaskbarStatusSync() {
       hadRunningThreadRef.current = false;
       if (document.hasFocus()) {
         completionShownRef.current = false;
-        setTaskbarStatus({ status: "idle", description: "No chats are working" });
+        setTaskbarStatus({ status: "idle", description: "No threads are working" });
         return;
       }
 
       completionShownRef.current = true;
-      setTaskbarStatus({ status: "completed", description: "Chat completed" });
+      const completedThreadCount = Math.max(1, unseenCompletedThreadCountRef.current);
+      setTaskbarStatus({
+        status: "completed",
+        completedThreadCount,
+        description: describeCompleted(completedThreadCount),
+      });
       return;
     }
 
     if (!completionShownRef.current) {
-      setTaskbarStatus({ status: "idle", description: "No chats are working" });
+      setTaskbarStatus({ status: "idle", description: "No threads are working" });
     }
   }, [runningThreadCount]);
 
@@ -229,15 +251,13 @@ function DesktopTaskbarStatusSync() {
         return;
       }
 
+      unseenCompletedThreadCountRef.current = 0;
       if (runningThreadCount > 0) {
         completionShownRef.current = false;
         setTaskbarStatus({
           status: "working",
           runningThreadCount,
-          description:
-            runningThreadCount === 1
-              ? "One chat is working"
-              : `${runningThreadCount} chats are working`,
+          description: describeWorking(runningThreadCount),
         });
         return;
       }
@@ -246,7 +266,7 @@ function DesktopTaskbarStatusSync() {
         return;
       }
       completionShownRef.current = false;
-      setTaskbarStatus({ status: "idle", description: "No chats are working" });
+      setTaskbarStatus({ status: "idle", description: "No threads are working" });
     };
 
     window.addEventListener("focus", handleFocus);
@@ -254,7 +274,7 @@ function DesktopTaskbarStatusSync() {
     return () => {
       window.removeEventListener("focus", handleFocus);
       document.removeEventListener("visibilitychange", handleFocus);
-      setTaskbarStatus({ status: "idle", description: "No chats are working" });
+      setTaskbarStatus({ status: "idle", description: "No threads are working" });
     };
   }, [runningThreadCount]);
 

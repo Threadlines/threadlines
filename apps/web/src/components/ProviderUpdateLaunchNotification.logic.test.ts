@@ -536,18 +536,74 @@ describe("provider update launch notification logic", () => {
       title: "Provider updates",
       summary: "2 active",
       description: "Codex updating. Cursor queued.",
+      progressIndeterminate: true,
+      progressLabel: "0%",
+      progressPercent: 0,
       items: [
         {
           label: "Codex",
+          progressIndeterminate: true,
+          progressPercent: 0,
           status: "running",
           statusLabel: "Updating",
           tone: "running",
         },
         {
           label: "Cursor",
+          progressPercent: 0,
           status: "queued",
           statusLabel: "Queued",
           tone: "queued",
+        },
+      ],
+    });
+  });
+
+  it("counts completed providers toward multi-provider sidebar progress", () => {
+    const view = getProviderUpdateSidebarPillView([
+      provider({
+        driver: driver("codex"),
+        version: "1.1.0",
+        latestVersion: "1.1.0",
+        advisoryStatus: "current",
+        updateState: {
+          status: "succeeded",
+          startedAt: checkedAt,
+          finishedAt: checkedAt,
+          message: "Provider updated.",
+          output: null,
+        },
+      }),
+      provider({
+        driver: driver("cursor"),
+        updateState: {
+          status: "running",
+          startedAt: laterCheckedAt,
+          finishedAt: null,
+          message: "Updating provider.",
+          output: null,
+        },
+      }),
+    ]);
+
+    expect(view).toMatchObject({
+      tone: "loading",
+      title: "Provider updates",
+      progressIndeterminate: true,
+      progressLabel: "50%",
+      progressPercent: 50,
+      items: [
+        {
+          label: "Codex",
+          progressLabel: "100%",
+          progressPercent: 100,
+          status: "succeeded",
+        },
+        {
+          label: "Cursor",
+          progressIndeterminate: true,
+          progressPercent: 0,
+          status: "running",
         },
       ],
     });
@@ -675,6 +731,8 @@ describe("provider update launch notification logic", () => {
       tone: "success",
       title: "2 providers updated",
       summary: "2 done",
+      progressLabel: "100%",
+      progressPercent: 100,
       items: [
         {
           label: "Codex",

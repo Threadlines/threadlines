@@ -53,11 +53,20 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
                 props.onInteractionModeChange(value as ProviderInteractionMode);
               }}
             >
-              {interactionModeOptions.map((option) => (
-                <MenuRadioItem key={option.mode} value={option.mode} title={option.description}>
-                  {option.label}
-                </MenuRadioItem>
-              ))}
+              {interactionModeOptions.map((option) => {
+                const OptionIcon = option.icon;
+                return (
+                  <MenuRadioItem key={option.mode} value={option.mode} title={option.description}>
+                    <span className="inline-flex min-w-0 items-center gap-1.5">
+                      <OptionIcon
+                        aria-hidden="true"
+                        className="size-3.5 shrink-0 text-muted-foreground"
+                      />
+                      <span className="truncate">{option.label}</span>
+                    </span>
+                  </MenuRadioItem>
+                );
+              })}
             </MenuRadioGroup>
             <MenuDivider />
           </>
@@ -70,20 +79,29 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
             props.onRuntimeModeChange(value as RuntimeMode);
           }}
         >
-          {props.runtimeModeOptions.map((option) => (
-            <MenuRadioItem
-              key={option.mode}
-              value={option.mode}
-              disabled={option.disabled === true}
-              title={
-                option.disabled && option.disabledReason
-                  ? option.disabledReason
-                  : option.description
-              }
-            >
-              {option.label}
-            </MenuRadioItem>
-          ))}
+          {props.runtimeModeOptions.map((option) => {
+            const OptionIcon = option.icon;
+            return (
+              <MenuRadioItem
+                key={option.mode}
+                value={option.mode}
+                disabled={option.disabled === true}
+                title={
+                  option.disabled && option.disabledReason
+                    ? option.disabledReason
+                    : option.description
+                }
+              >
+                <span className="inline-flex min-w-0 items-center gap-1.5">
+                  <OptionIcon
+                    aria-hidden="true"
+                    className="size-3.5 shrink-0 text-muted-foreground"
+                  />
+                  <span className="truncate">{option.label}</span>
+                </span>
+              </MenuRadioItem>
+            );
+          })}
         </MenuRadioGroup>
       </MenuPopup>
     </Menu>

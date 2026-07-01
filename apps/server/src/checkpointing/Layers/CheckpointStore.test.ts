@@ -11,6 +11,7 @@ import * as Scope from "effect/Scope";
 import { describe, expect } from "vitest";
 
 import { checkpointRefForThreadTurn } from "../Utils.ts";
+import { CHECKPOINT_REFS_PREFIX, LEGACY_CHECKPOINT_REFS_PREFIX } from "../../vcs/checkpointRefs.ts";
 import { CheckpointStoreLive } from "./CheckpointStore.ts";
 import { CheckpointStore } from "../Services/CheckpointStore.ts";
 import * as VcsDriverRegistry from "../../vcs/VcsDriverRegistry.ts";
@@ -200,6 +201,66 @@ it.layer(TestLayer)("CheckpointStoreLive", (it) => {
         expect(whitespaceIgnoredDiff).toContain("+        <div>");
         expect(whitespaceIgnoredDiff).not.toContain("-      <h1>Title</h1>");
         expect(whitespaceIgnoredDiff).not.toContain("+          <h1>Title</h1>");
+      }),
+    );
+  });
+
+  describe("legacy checkpoint ref migration", () => {
+    const toLegacyRef = (checkpointRef: string): string =>
+      checkpointRef.replace(CHECKPOINT_REFS_PREFIX, LEGACY_CHECKPOINT_REFS_PREFIX);
+
+    const listLegacyRefs = (cwd: string) =>
+      git(cwd, ["for-each-ref", "--format=%(refname)", LEGACY_CHECKPOINT_REFS_PREFIX]);
+
+    it.effect("moves refs/t3 checkpoint refs to the threadlines namespace on first use", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const checkpointStore = yield* CheckpointStore;
+        const threadId = ThreadId.make("thread-legacy-migration");
+        const checkpointRef = checkpointRefForThreadTurn(threadId, 1);
+        const headCommit = yield* git(tmp, ["rev-parse", "HEAD"]);
+        yield* git(tmp, ["update-ref", toLegacyRef(checkpointRef), headCommit]);
+
+        const hasCheckpoint = yield* checkpointStore.hasCheckpointRef({
+          cwd: tmp,
+          checkpointRef,
+        });
+
+        expect(hasCheckpoint).toBe(true);
+        expect(yield* git(tmp, ["rev-parse", checkpointRef])).toBe(headCommit);
+        expect(yield* listLegacyRefs(tmp)).toBe("");
+      }),
+    );
+
+    it.effect("keeps existing threadlines refs on collision and still drops legacy refs", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const checkpointStore = yield* CheckpointStore;
+        const threadId = ThreadId.make("thread-legacy-collision");
+        const collidingRef = checkpointRefForThreadTurn(threadId, 1);
+        const legacyOnlyRef = checkpointRefForThreadTurn(threadId, 2);
+
+        const firstCommit = yield* git(tmp, ["rev-parse", "HEAD"]);
+        yield* writeTextFile(path.join(tmp, "README.md"), "# updated\n");
+        yield* git(tmp, ["add", "."]);
+        yield* git(tmp, ["commit", "-m", "second commit"]);
+        const secondCommit = yield* git(tmp, ["rev-parse", "HEAD"]);
+
+        yield* git(tmp, ["update-ref", collidingRef, secondCommit]);
+        yield* git(tmp, ["update-ref", toLegacyRef(collidingRef), firstCommit]);
+        yield* git(tmp, ["update-ref", toLegacyRef(legacyOnlyRef), firstCommit]);
+
+        const hasCheckpoint = yield* checkpointStore.hasCheckpointRef({
+          cwd: tmp,
+          checkpointRef: collidingRef,
+        });
+
+        expect(hasCheckpoint).toBe(true);
+        expect(yield* git(tmp, ["rev-parse", collidingRef])).toBe(secondCommit);
+        expect(yield* git(tmp, ["rev-parse", legacyOnlyRef])).toBe(firstCommit);
+        expect(yield* listLegacyRefs(tmp)).toBe("");
       }),
     );
   });

@@ -40,6 +40,7 @@ import {
   type CodexAppServerProviderSnapshot,
 } from "./CodexProvider.ts";
 import { checkClaudeProviderStatus } from "./ClaudeProvider.ts";
+import { CLAUDE_CODE_OAUTH_TOKEN_ENV } from "./ClaudeUsage.ts";
 import { OpenCodeRuntimeLive } from "../opencodeRuntime.ts";
 import { NoOpProviderEventLoggers, ProviderEventLoggers } from "./ProviderEventLoggers.ts";
 import { ProviderInstanceRegistryHydrationLive } from "./ProviderInstanceRegistryHydration.ts";
@@ -910,6 +911,56 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
         assert.deepStrictEqual(
           mergeProviderSnapshot(previousProvider, refreshedProvider).accountUsage,
           usage,
+        );
+      });
+
+      it("does not preserve usage when the usage auth email changes", () => {
+        const usage: ServerProviderAccountUsage = {
+          source: "claude-oauth-usage",
+          checkedAt: "2026-06-10T15:00:00.000Z",
+          primaryLimitId: "claude",
+          limits: [
+            {
+              limitId: "claude",
+              primary: {
+                usedPercent: 40,
+                remainingPercent: 60,
+                windowDurationMins: 300,
+              },
+            },
+          ],
+        };
+        const previousProvider = {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          driver: ProviderDriverKind.make("claudeAgent"),
+          status: "ready",
+          enabled: true,
+          installed: true,
+          auth: {
+            status: "authenticated",
+            type: "longLivedOAuthToken",
+            usageEmail: "previous@example.com",
+          },
+          checkedAt: "2026-06-10T15:00:00.000Z",
+          version: "2.1.197",
+          accountUsage: usage,
+          models: [],
+          slashCommands: [],
+          skills: [],
+        } as const satisfies ServerProvider;
+        const { accountUsage: _accountUsage, ...refreshedProviderBase } = previousProvider;
+        const refreshedProvider = {
+          ...refreshedProviderBase,
+          auth: {
+            ...refreshedProviderBase.auth,
+            usageEmail: "next@example.com",
+          },
+          checkedAt: "2026-06-10T15:05:00.000Z",
+        } satisfies ServerProvider;
+
+        assert.strictEqual(
+          mergeProviderSnapshot(previousProvider, refreshedProvider).accountUsage,
+          undefined,
         );
       });
 
@@ -2282,6 +2333,90 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             mockSpawnerLayer((args) => {
               const joined = args.join(" ");
               if (joined === "--version") return { stdout: "2.1.170\n", stderr: "", code: 0 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      it.effect("labels Claude long-lived token auth", () =>
+        Effect.gen(function* () {
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities(),
+            { [CLAUDE_CODE_OAUTH_TOKEN_ENV]: "sk-ant-oat01-test" },
+          );
+          assert.strictEqual(status.status, "ready");
+          assert.strictEqual(status.auth.status, "authenticated");
+          assert.strictEqual(status.auth.type, "longLivedOAuthToken");
+          assert.strictEqual(status.auth.label, "Long-lived Claude token");
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.197\n", stderr: "", code: 0 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      it.effect("attaches Claude usage auth email for long-lived token auth", () =>
+        Effect.gen(function* () {
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities(),
+            { [CLAUDE_CODE_OAUTH_TOKEN_ENV]: "sk-ant-oat01-test" },
+            undefined,
+            () => Effect.succeed("usage@example.com"),
+          );
+          assert.strictEqual(status.status, "ready");
+          assert.strictEqual(status.auth.status, "authenticated");
+          assert.strictEqual(status.auth.type, "longLivedOAuthToken");
+          assert.strictEqual(status.auth.usageEmail, "usage@example.com");
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.197\n", stderr: "", code: 0 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      it.effect("attaches account usage for Claude long-lived token auth", () =>
+        Effect.gen(function* () {
+          const usage: ServerProviderAccountUsage = {
+            source: "claude-oauth-usage",
+            checkedAt: "2026-06-10T00:00:00.000Z",
+            primaryLimitId: "claude",
+            limits: [
+              {
+                limitId: "claude",
+                primary: {
+                  usedPercent: 42,
+                  remainingPercent: 58,
+                  windowDurationMins: 300,
+                },
+              },
+            ],
+          };
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities(),
+            { [CLAUDE_CODE_OAUTH_TOKEN_ENV]: "sk-ant-oat01-test" },
+            () => Effect.succeed(usage),
+          );
+          assert.strictEqual(status.status, "ready");
+          assert.strictEqual(status.auth.status, "authenticated");
+          assert.strictEqual(status.auth.type, "longLivedOAuthToken");
+          assert.deepStrictEqual(status.accountUsage, usage);
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "2.1.197\n", stderr: "", code: 0 };
               throw new Error(`Unexpected args: ${joined}`);
             }),
           ),

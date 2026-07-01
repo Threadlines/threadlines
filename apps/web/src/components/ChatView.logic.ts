@@ -898,7 +898,7 @@ export function deriveProviderBackgroundRuns(input: {
   activeCommandTurnId?: TurnId | null | undefined;
 }): ProviderBackgroundRunsResult {
   const activeRunsByTaskId = new Map<string, ProviderBackgroundRunState>();
-  const activeCommandRunsByKey = new Map<string, ProviderBackgroundRunState>();
+  const activeCommandDetectionRunsByKey = new Map<string, ProviderBackgroundRunState>();
   const suppressedSubagentTaskIds = new Set<string>();
   const activeTaskScopesByTaskId = new Map<
     string,
@@ -919,9 +919,9 @@ export function deriveProviderBackgroundRuns(input: {
         : null;
     if (commandActivityRun) {
       if (commandActivityRun.run) {
-        activeCommandRunsByKey.set(commandActivityRun.key, commandActivityRun.run);
+        activeCommandDetectionRunsByKey.set(commandActivityRun.key, commandActivityRun.run);
       } else {
-        activeCommandRunsByKey.delete(commandActivityRun.key);
+        activeCommandDetectionRunsByKey.delete(commandActivityRun.key);
       }
     }
 
@@ -1073,7 +1073,7 @@ export function deriveProviderBackgroundRuns(input: {
     ];
   }
   const taskBackedRuns = runs;
-  const commandOnlyRuns = [...activeCommandRunsByKey.values()].filter(
+  const commandDetectionRuns = [...activeCommandDetectionRunsByKey.values()].filter(
     (commandRun) =>
       !taskBackedRuns.some(
         (taskRun) =>
@@ -1081,7 +1081,7 @@ export function deriveProviderBackgroundRuns(input: {
           taskRun.commandHints.some((hint) => backgroundRunCommandsMatch(hint, commandRun.command)),
       ),
   );
-  runs = [...taskBackedRuns, ...commandOnlyRuns];
+  runs = taskBackedRuns;
   const hiddenSubagentTaskCount = Math.max(
     suppressedSubagentTaskIds.size,
     input.activeSubagentCount ?? 0,
@@ -1113,8 +1113,14 @@ export function deriveProviderBackgroundRuns(input: {
   // confirmed listener is promoted to a stoppable `detected` run elsewhere. We
   // deliberately never render the mention itself, because an unverified
   // localhost reference in prose is not a live background process.
-  const knownUrls = new Set(runs.flatMap((run) => run.urls));
-  const knownPids = new Set(runs.flatMap((run) => run.pids));
+  const knownUrls = new Set([
+    ...runs.flatMap((run) => run.urls),
+    ...commandDetectionRuns.flatMap((run) => run.urls),
+  ]);
+  const knownPids = new Set([
+    ...runs.flatMap((run) => run.pids),
+    ...commandDetectionRuns.flatMap((run) => run.pids),
+  ]);
   const previewMessage = input.messages
     .toReversed()
     .find(
@@ -1141,6 +1147,7 @@ export function deriveProviderBackgroundRuns(input: {
     commandHints: [
       ...new Set([
         ...runs.flatMap((run) => run.commandHints),
+        ...commandDetectionRuns.flatMap((run) => run.commandHints),
         ...(runs.length > 0 ? commandActivityHints : []),
         ...mentionedCommandHints,
       ]),

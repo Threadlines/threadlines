@@ -10,6 +10,10 @@ const bundledPackagePrefixes = [
   "effect-codex-app-server",
 ];
 
+const bundledPosthogKey = process.env.THREADLINES_POSTHOG_KEY?.trim() ?? "";
+const bundledPosthogHost =
+  process.env.THREADLINES_POSTHOG_HOST?.trim() || "https://us.i.posthog.com";
+
 export function shouldBundleCliDependency(id: string): boolean {
   return bundledPackagePrefixes.some((prefix) => id.startsWith(prefix));
 }
@@ -17,6 +21,10 @@ export function shouldBundleCliDependency(id: string): boolean {
 export default mergeConfig(
   baseConfig,
   defineConfig({
+    define: {
+      __THREADLINES_BUNDLED_POSTHOG_KEY__: JSON.stringify(bundledPosthogKey),
+      __THREADLINES_BUNDLED_POSTHOG_HOST__: JSON.stringify(bundledPosthogHost),
+    },
     run: {
       tasks: {
         build: {

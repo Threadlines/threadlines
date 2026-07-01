@@ -1,5 +1,7 @@
 export const BRAND_ASSET_PATHS = {
   productionMacIconPng: "assets/prod/threadlines-macos-1024.png",
+  productionMacDarkIconPng: "assets/prod/threadlines-macos-dark-1024.png",
+  productionMacLightIconPng: "assets/prod/threadlines-macos-light-1024.png",
   productionLinuxIconPng: "assets/prod/threadlines-universal-1024.png",
   productionWindowsIconIco: "assets/prod/threadlines-windows.ico",
   productionWebFaviconIco: "assets/prod/threadlines-web-favicon.ico",
@@ -8,6 +10,8 @@ export const BRAND_ASSET_PATHS = {
   productionWebAppleTouchIconPng: "assets/prod/threadlines-web-apple-touch-180.png",
 
   nightlyMacIconPng: "assets/nightly/threadlines-nightly-macos-1024.png",
+  nightlyMacDarkIconPng: "assets/nightly/threadlines-nightly-macos-dark-1024.png",
+  nightlyMacLightIconPng: "assets/nightly/threadlines-nightly-macos-light-1024.png",
   nightlyLinuxIconPng: "assets/nightly/threadlines-nightly-universal-1024.png",
   nightlyWindowsIconIco: "assets/nightly/threadlines-nightly-windows.ico",
   nightlyWebFaviconIco: "assets/nightly/threadlines-nightly-web-favicon.ico",
@@ -16,6 +20,8 @@ export const BRAND_ASSET_PATHS = {
   nightlyWebAppleTouchIconPng: "assets/nightly/threadlines-nightly-web-apple-touch-180.png",
 
   developmentDesktopIconPng: "assets/dev/threadlines-dev-macos-1024.png",
+  developmentDesktopDarkIconPng: "assets/dev/threadlines-dev-macos-dark-1024.png",
+  developmentDesktopLightIconPng: "assets/dev/threadlines-dev-macos-light-1024.png",
   developmentWindowsIconIco: "assets/dev/threadlines-dev-windows.ico",
   developmentWebFaviconIco: "assets/dev/threadlines-dev-web-favicon.ico",
   developmentWebFavicon16Png: "assets/dev/threadlines-dev-web-favicon-16x16.png",

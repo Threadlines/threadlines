@@ -410,19 +410,32 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [clearUserScrollLockTimer, enableAutoStickIfAtEnd, onIsAtEndChange, setAutoStickToBottomState],
   );
 
+  const stickToBottomRequestPending =
+    stickToBottomRequestKey !== lastHandledStickToBottomRequestKeyRef.current;
+
   const handleScroll = useCallback(
     (event: TimelineScrollEvent) => {
       setTranscriptSelection(getTranscriptSelectionAfterTimelineScroll);
       const eventAtEnd = isTimelineScrollEventAtEnd(event);
       const nextIsAtEnd =
         eventAtEnd !== null ? eventAtEnd : Boolean(listRef.current?.getState?.().isAtEnd);
+      if (!nextIsAtEnd && (autoStickToBottomRef.current || stickToBottomRequestPending)) {
+        onIsAtEndChange(true);
+        return;
+      }
       if (nextIsAtEnd) {
         clearUserScrollLockTimer();
         setAutoStickToBottomState(true);
       }
       onIsAtEndChange(nextIsAtEnd);
     },
-    [clearUserScrollLockTimer, listRef, onIsAtEndChange, setAutoStickToBottomState],
+    [
+      clearUserScrollLockTimer,
+      listRef,
+      onIsAtEndChange,
+      setAutoStickToBottomState,
+      stickToBottomRequestPending,
+    ],
   );
 
   const refreshTranscriptSelectionPopover = useCallback(() => {
@@ -533,8 +546,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   );
 
   const hasRows = rows.length > 0;
-  const stickToBottomRequestPending =
-    stickToBottomRequestKey !== lastHandledStickToBottomRequestKeyRef.current;
 
   useEffect(() => {
     if (!hasRows) {

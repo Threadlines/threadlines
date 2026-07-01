@@ -153,6 +153,13 @@ const shouldPreservePreviousAccountUsage = (
     return false;
   }
   if (
+    previousProvider.auth.usageEmail &&
+    nextProvider.auth.usageEmail &&
+    previousProvider.auth.usageEmail !== nextProvider.auth.usageEmail
+  ) {
+    return false;
+  }
+  if (
     previousProvider.auth.type &&
     nextProvider.auth.type &&
     previousProvider.auth.type !== nextProvider.auth.type

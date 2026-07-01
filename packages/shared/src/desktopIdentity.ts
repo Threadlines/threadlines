@@ -1,6 +1,5 @@
-// The release app id is an updater/install identity, not branding. Existing
-// desktop installs were shipped under this id, so keep it stable until a
-// deliberate installer identity migration is implemented.
-export const DESKTOP_RELEASE_APP_ID = "com.badcuban.badcode";
+// Public releases use a Threadlines-owned app id. Private alpha builds used an
+// older fork-era id and should be reinstalled before moving to the public lane.
+export const DESKTOP_RELEASE_APP_ID = "dev.threadlines.app";
 
-export const DESKTOP_DEVELOPMENT_APP_ID = "com.threadlines.app.dev";
+export const DESKTOP_DEVELOPMENT_APP_ID = "dev.threadlines.app.dev";

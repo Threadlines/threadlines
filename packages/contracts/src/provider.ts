@@ -5,6 +5,7 @@ import {
   EventId,
   IsoDateTime,
   MessageId,
+  NonNegativeInt,
   ProviderItemId,
   ThreadId,
   TurnId,
@@ -73,7 +74,7 @@ export type ThreadContextSeedEntry = typeof ThreadContextSeedEntry.Type;
  * Built from the orchestration transcript (not from any adapter-owned
  * `resumeCursor`) so a thread can hand off to a *different* driver mid-thread.
  * The new adapter renders this into a priming preamble when it starts a fresh
- * session without native resume. See `.plans/18-cross-provider-switching.md`.
+ * session without native resume.
  *
  * Fidelity is tiered: recent turns are verbatim in `entries`, older history is
  * optionally compacted into `olderSummary`, and the shared working tree is
@@ -122,6 +123,16 @@ export const ProviderSendTurnInput = Schema.Struct({
   ),
   modelSelection: Schema.optional(ModelSelection),
   interactionMode: Schema.optional(ProviderInteractionMode),
+  telemetryContext: Schema.optional(
+    Schema.Struct({
+      kind: Schema.Literal("thread_fork"),
+      sourceModelSelection: Schema.optional(ModelSelection),
+      includedMessageCount: NonNegativeInt,
+      includedToolSummaryCount: NonNegativeInt,
+      includedAttachmentCount: NonNegativeInt,
+      omittedAttachmentCount: NonNegativeInt,
+    }),
+  ),
 });
 export type ProviderSendTurnInput = typeof ProviderSendTurnInput.Type;
 

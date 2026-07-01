@@ -22,6 +22,14 @@ vi.mock("@legendapp/list/react", async () => {
     ListHeaderComponent?: React.ReactNode;
     ListFooterComponent?: React.ReactNode;
     maintainScrollAtEnd?: unknown;
+    onScroll?: (event: {
+      nativeEvent: {
+        layoutMeasurement: { height: number };
+        contentSize: { height: number };
+        contentOffset: { y: number };
+        contentInset: { bottom: number };
+      };
+    }) => void;
     onWheelCapture?: React.WheelEventHandler<HTMLDivElement>;
     ref?: React.Ref<LegendListRef>;
   }) {
@@ -38,6 +46,16 @@ vi.mock("@legendapp/list/react", async () => {
       <div
         data-testid="legend-list"
         data-maintain-scroll-at-end={props.maintainScrollAtEnd ? "true" : "false"}
+        onScroll={() => {
+          props.onScroll?.({
+            nativeEvent: {
+              layoutMeasurement: { height: 100 },
+              contentSize: { height: 200 },
+              contentOffset: { y: 0 },
+              contentInset: { bottom: 0 },
+            },
+          });
+        }}
         onWheelCapture={props.onWheelCapture}
       >
         {props.ListHeaderComponent}
@@ -451,6 +469,26 @@ describe("MessagesTimeline", () => {
       });
       expect(props.onIsAtEndChange).toHaveBeenCalledWith(true);
       expect(scrollToEndSpy).toHaveBeenCalledWith({ animated: false });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("ignores transient away-from-end scroll events while bottom sticking is armed", async () => {
+    const props = buildProps();
+    const screen = await render(
+      <MessagesTimeline {...props} timelineEntries={[buildUserTimelineEntry("Pinned message.")]} />,
+    );
+
+    try {
+      const legendList = document.querySelector<HTMLElement>('[data-testid="legend-list"]');
+      expect(legendList).not.toBeNull();
+      expect(legendList?.getAttribute("data-maintain-scroll-at-end")).toBe("true");
+
+      props.onIsAtEndChange.mockClear();
+      legendList?.dispatchEvent(new Event("scroll", { bubbles: true }));
+
+      expect(props.onIsAtEndChange).not.toHaveBeenCalledWith(false);
     } finally {
       await screen.unmount();
     }

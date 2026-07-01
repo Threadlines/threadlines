@@ -294,12 +294,15 @@ export interface DesktopTaskbarStatusInput {
   status: DesktopTaskbarStatus;
   description?: string;
   runningThreadCount?: number;
+  /** Threads that finished while the app was unfocused (drives dock/taskbar badges). */
+  completedThreadCount?: number;
 }
 
 export const DesktopTaskbarStatusInputSchema = Schema.Struct({
   status: DesktopTaskbarStatusSchema,
   description: Schema.optionalKey(Schema.String),
   runningThreadCount: Schema.optionalKey(Schema.Number),
+  completedThreadCount: Schema.optionalKey(Schema.Number),
 });
 
 export const DesktopCaptureScreenshotInputSchema = Schema.Struct({

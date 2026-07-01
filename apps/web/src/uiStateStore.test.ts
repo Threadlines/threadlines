@@ -1,4 +1,4 @@
-import { ProjectId, ThreadId } from "@threadlines/contracts";
+import { EnvironmentId, ProjectId, ThreadId } from "@threadlines/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -11,6 +11,7 @@ import {
   persistState,
   reorderProjects,
   setDefaultAdvertisedEndpointKey,
+  setLastChatThreadRef,
   setProjectExpanded,
   setThreadChangedFilesExpanded,
   syncProjects,
@@ -25,6 +26,7 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     threadLastVisitedAtById: {},
     threadChangedFilesExpandedById: {},
     defaultAdvertisedEndpointKey: null,
+    lastChatThreadRef: null,
     ...overrides,
   };
 }
@@ -114,6 +116,20 @@ describe("uiStateStore pure functions", () => {
     expect(setDefaultAdvertisedEndpointKey(next, "")).toMatchObject({
       defaultAdvertisedEndpointKey: null,
     });
+  });
+
+  it("setLastChatThreadRef remembers the active chat thread without churn", () => {
+    const initialState = makeUiState();
+    const threadRef = {
+      environmentId: EnvironmentId.make("env-local"),
+      threadId: ThreadId.make("thread-1"),
+    };
+
+    const next = setLastChatThreadRef(initialState, threadRef);
+
+    expect(next.lastChatThreadRef).toEqual(threadRef);
+    expect(setLastChatThreadRef(next, threadRef)).toBe(next);
+    expect(setLastChatThreadRef(next, null).lastChatThreadRef).toBeNull();
   });
 
   it("reorderProjects moves all member keys of a multi-member group together", () => {

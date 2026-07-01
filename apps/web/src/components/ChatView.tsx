@@ -183,6 +183,7 @@ import {
   ProviderStatusBanner,
   shouldRenderProviderStatusBanner,
 } from "./chat/ProviderStatusBanner";
+import { SessionStartupNotice } from "./chat/SessionStartupNotice";
 import { ThreadErrorBanner } from "./chat/ThreadErrorBanner";
 import { ComposerBannerStack, type ComposerBannerStackItem } from "./chat/ComposerBannerStack";
 import {
@@ -273,6 +274,7 @@ const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnsw
 const CODEX_PROVIDER_DRIVER = ProviderDriverKind.make("codex");
 const CLAUDE_PROVIDER_DRIVER = ProviderDriverKind.make("claudeAgent");
 const LAYOUT_STICK_TO_BOTTOM_FRAME_COUNT = 4;
+const PROGRAMMATIC_STICK_TO_BOTTOM_SUPPRESS_MS = 600;
 type McpAuthReconnectStatus = "running" | "completed";
 
 function finiteScrollMetric(value: number | null | undefined): number | null {
@@ -927,6 +929,7 @@ export default function ChatView(props: ChatViewProps) {
   const sendInFlightRef = useRef(false);
   const terminalOpenByThreadRef = useRef<Record<string, boolean>>({});
   const timelineStickFrameIdsRef = useRef<number[]>([]);
+  const programmaticStickToBottomSuppressUntilRef = useRef(0);
 
   const terminalState = useTerminalStateStore((state) =>
     selectThreadTerminalState(state.terminalStateByThreadKey, routeThreadRef),
@@ -3238,6 +3241,8 @@ export default function ChatView(props: ChatViewProps) {
   const requestTimelineStickToBottom = useCallback(
     async (animated = false) => {
       clearTimelineStickFrames();
+      programmaticStickToBottomSuppressUntilRef.current =
+        window.performance.now() + PROGRAMMATIC_STICK_TO_BOTTOM_SUPPRESS_MS;
       const stickToBottom = (nextAnimated: boolean) => {
         isAtEndRef.current = true;
         showScrollDebouncer.current.cancel();
@@ -3271,6 +3276,14 @@ export default function ChatView(props: ChatViewProps) {
   const onIsAtEndChange = useCallback((isAtEnd: boolean) => {
     const nextIsAtEnd = isAtEnd || isLegendListVisiblyAtEnd(legendListRef.current);
     if (isAtEndRef.current === nextIsAtEnd) return;
+    if (
+      !nextIsAtEnd &&
+      window.performance.now() < programmaticStickToBottomSuppressUntilRef.current
+    ) {
+      showScrollDebouncer.current.cancel();
+      setShowScrollToBottom(false);
+      return;
+    }
     isAtEndRef.current = nextIsAtEnd;
     if (nextIsAtEnd) {
       showScrollDebouncer.current.cancel();
@@ -3283,6 +3296,7 @@ export default function ChatView(props: ChatViewProps) {
   useEffect(() => {
     setPullRequestDialogState(null);
     clearTimelineStickFrames();
+    programmaticStickToBottomSuppressUntilRef.current = 0;
     isAtEndRef.current = true;
     showScrollDebouncer.current.cancel();
     setShowScrollToBottom(false);
@@ -4989,6 +5003,12 @@ export default function ChatView(props: ChatViewProps) {
       <ProviderStatusBanner
         activeTurnInProgress={activeTurnInProgress}
         status={activeProviderStatus}
+      />
+      <SessionStartupNotice
+        isSessionStarting={isSessionStarting}
+        startedAt={activeWorkStartedAt}
+        suppressed={providerStatusBannerVisible || threadErrorBannerVisible}
+        providerStatus={activeProviderStatus}
       />
       <ThreadErrorBanner
         error={activeThread.error}

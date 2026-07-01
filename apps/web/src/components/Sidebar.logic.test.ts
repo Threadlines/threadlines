@@ -200,12 +200,12 @@ describe("resolveSidebarNewThreadSeedContext", () => {
         activeThread: {
           projectId: "project-1",
           branch: "feature/existing",
-          worktreePath: "/repo/.t3/worktrees/existing",
+          worktreePath: "/repo/.threadlines/worktrees/existing",
         },
         activeDraftThread: {
           projectId: "project-1",
           branch: "feature/draft",
-          worktreePath: "/repo/.t3/worktrees/draft",
+          worktreePath: "/repo/.threadlines/worktrees/draft",
           envMode: "worktree",
         },
       }),
