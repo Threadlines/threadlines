@@ -68,6 +68,7 @@ export function claudeModelSupportsAutoRuntimeMode(modelSlug: string | null | un
   return modelSlug ? !CLAUDE_AUTO_MODE_UNSUPPORTED_SLUGS.has(modelSlug) : true;
 }
 const MINIMUM_CLAUDE_FABLE_5_VERSION = "2.1.170";
+const MINIMUM_CLAUDE_SONNET_5_VERSION = "2.1.197";
 const MINIMUM_CLAUDE_OPUS_4_8_VERSION = "2.1.154";
 const MINIMUM_CLAUDE_OPUS_4_7_VERSION = "2.1.111";
 const CLAUDE_FABLE_5_DESCRIPTION =
@@ -77,6 +78,14 @@ const CLAUDE_FAST_MODE_DESCRIPTION =
 
 const CLAUDE_EFFORT_OPTIONS = {
   fable5: [
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High", isDefault: true },
+    { value: "xhigh", label: "Extra High" },
+    { value: "max", label: "Max" },
+    { value: "ultracode", label: "Ultracode" },
+  ],
+  sonnet5: [
     { value: "low", label: "Low" },
     { value: "medium", label: "Medium" },
     { value: "high", label: "High", isDefault: true },
@@ -131,6 +140,20 @@ const BUILT_IN_MODEL_DEFINITIONS: ReadonlyArray<ServerProviderModel> = [
           id: "effort",
           label: "Reasoning",
           options: CLAUDE_EFFORT_OPTIONS.fable5,
+        }),
+      ],
+    }),
+  },
+  {
+    slug: "claude-sonnet-5",
+    name: "Claude Sonnet 5",
+    isCustom: false,
+    capabilities: createModelCapabilities({
+      optionDescriptors: [
+        buildSelectOptionDescriptor({
+          id: "effort",
+          label: "Reasoning",
+          options: CLAUDE_EFFORT_OPTIONS.sonnet5,
         }),
       ],
     }),
@@ -282,6 +305,10 @@ function supportsClaudeFable5(version: string | null | undefined): boolean {
   return version ? compareSemverVersions(version, MINIMUM_CLAUDE_FABLE_5_VERSION) >= 0 : false;
 }
 
+function supportsClaudeSonnet5(version: string | null | undefined): boolean {
+  return version ? compareSemverVersions(version, MINIMUM_CLAUDE_SONNET_5_VERSION) >= 0 : false;
+}
+
 function supportsClaudeOpus47(version: string | null | undefined): boolean {
   return version ? compareSemverVersions(version, MINIMUM_CLAUDE_OPUS_4_7_VERSION) >= 0 : false;
 }
@@ -292,6 +319,9 @@ function getBuiltInClaudeModelsForVersion(
   return BUILT_IN_MODELS.filter((model) => {
     if (model.slug === "claude-fable-5") {
       return supportsClaudeFable5(version);
+    }
+    if (model.slug === "claude-sonnet-5") {
+      return supportsClaudeSonnet5(version);
     }
     if (model.slug === "claude-opus-4-8") {
       return supportsClaudeOpus48(version);
@@ -333,6 +363,13 @@ function formatClaudeUpgradeMessage(version: string | null): string | undefined 
       version,
       modelName: "Claude Fable 5",
       minimumVersion: MINIMUM_CLAUDE_FABLE_5_VERSION,
+    });
+  }
+  if (!supportsClaudeSonnet5(version)) {
+    return formatClaudeModelUpgradeMessage({
+      version,
+      modelName: "Claude Sonnet 5",
+      minimumVersion: MINIMUM_CLAUDE_SONNET_5_VERSION,
     });
   }
   return undefined;

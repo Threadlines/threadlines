@@ -21,6 +21,7 @@ import { hideWindowsConsole } from "@threadlines/shared/childProcess";
 
 import {
   GitCommandError,
+  type VcsCommitDetailsResult,
   type VcsCommitGraphResult,
   type VcsRef,
   type VcsWorkingTreeFileChangeKind,
@@ -67,6 +68,7 @@ const DEFAULT_BASE_BRANCH_CANDIDATES = ["main", "master"] as const;
 const GIT_LIST_BRANCHES_DEFAULT_LIMIT = 100;
 const GIT_COMMIT_GRAPH_DEFAULT_LIMIT = 24;
 const GIT_COMMIT_GRAPH_MAX_OUTPUT_BYTES = 512 * 1024;
+const GIT_COMMIT_DETAILS_MAX_OUTPUT_BYTES = 96 * 1024;
 const UNTRACKED_TEXT_STAT_MAX_BYTES = 512 * 1024;
 const GIT_GRAPH_RECORD_SEPARATOR = "\x1e";
 const GIT_GRAPH_FIELD_SEPARATOR = "\x1f";
@@ -509,6 +511,66 @@ function parseRemoteFetchUrls(stdout: string): Map<string, string> {
     remotes.set(remoteName, remoteUrl);
   }
   return remotes;
+}
+
+function parseGitHubCommitUrlFromRemoteUrl(remoteUrl: string, sha: string): string | null {
+  const trimmed = remoteUrl.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+
+  const sshMatch = /^git@([^:/\s]+):(.+)$/i.exec(trimmed);
+  const urlMatch = /^(?:ssh:\/\/git@|https?:\/\/|git:\/\/)([^/\s]+)\/(.+)$/i.exec(trimmed);
+  const host = (sshMatch?.[1] ?? urlMatch?.[1] ?? "").trim();
+  const rawPath = (sshMatch?.[2] ?? urlMatch?.[2] ?? "").trim();
+  const normalizedHost = host.toLowerCase();
+  if (
+    normalizedHost.length === 0 ||
+    (!normalizedHost.includes("github") && normalizedHost !== "github.com")
+  ) {
+    return null;
+  }
+
+  const repositoryPath = rawPath
+    .replace(/[?#].*$/u, "")
+    .replace(/\/+$/u, "")
+    .replace(/\.git$/iu, "");
+  const [owner = "", repo = ""] = repositoryPath.split("/");
+  if (owner.length === 0 || repo.length === 0) {
+    return null;
+  }
+
+  return `https://${host}/${owner}/${repo}/commit/${sha}`;
+}
+
+function parseGitHubCommitUrlFromRemoteList(stdout: string, sha: string): string | null {
+  const remotes = parseRemoteFetchUrls(stdout);
+  const remoteUrls = [remotes.get("origin"), ...remotes.values()].filter(
+    (remoteUrl): remoteUrl is string => typeof remoteUrl === "string" && remoteUrl.length > 0,
+  );
+  for (const remoteUrl of remoteUrls) {
+    const commitUrl = parseGitHubCommitUrlFromRemoteUrl(remoteUrl, sha);
+    if (commitUrl) {
+      return commitUrl;
+    }
+  }
+  return null;
+}
+
+function normalizeCommitMessageOutput(stdout: string): string {
+  return stdout.replace(/\r\n?/gu, "\n").trim();
+}
+
+function splitCommitMessage(message: string): { subject: string; body: string } {
+  const firstNewline = message.indexOf("\n");
+  if (firstNewline === -1) {
+    return { subject: message, body: "" };
+  }
+
+  return {
+    subject: message.slice(0, firstNewline),
+    body: message.slice(firstNewline + 1).replace(/^\n+/u, ""),
+  };
 }
 
 function parseUpstreamRefWithRemoteNames(
@@ -1137,6 +1199,15 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       Effect.map((result) =>
         result.stdoutTruncated ? `${result.stdout}${OUTPUT_TRUNCATED_MARKER}` : result.stdout,
       ),
+    );
+
+  const resolveCommitUrl = (
+    cwd: string,
+    sha: string,
+  ): Effect.Effect<string | null, GitCommandError> =>
+    runGitStdout("GitVcsDriver.commitDetails.remoteUrls", cwd, ["remote", "-v"], true).pipe(
+      Effect.map((stdout) => parseGitHubCommitUrlFromRemoteList(stdout, sha)),
+      Effect.catch(() => Effect.succeed(null)),
     );
 
   const branchExists = (cwd: string, refName: string): Effect.Effect<boolean, GitCommandError> =>
@@ -3041,6 +3112,37 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     },
   );
 
+  const commitDetails: GitVcsDriver.GitVcsDriverShape["commitDetails"] = Effect.fn("commitDetails")(
+    function* (input) {
+      const resolvedSha = (yield* runGitStdout("GitVcsDriver.commitDetails.revParse", input.cwd, [
+        "rev-parse",
+        "--verify",
+        `${input.sha}^{commit}`,
+      ])).trim();
+      const messageOutput = yield* runGitStdoutWithOptions(
+        "GitVcsDriver.commitDetails.message",
+        input.cwd,
+        ["log", "-1", "--format=%B", resolvedSha],
+        {
+          maxOutputBytes: GIT_COMMIT_DETAILS_MAX_OUTPUT_BYTES,
+          appendTruncationMarker: true,
+        },
+      );
+      const message = normalizeCommitMessageOutput(messageOutput) || resolvedSha;
+      const { subject, body } = splitCommitMessage(message);
+      const commitUrl = yield* resolveCommitUrl(input.cwd, resolvedSha);
+
+      return {
+        sha: resolvedSha,
+        shortSha: resolvedSha.slice(0, 7),
+        subject,
+        body,
+        message,
+        commitUrl,
+      } satisfies VcsCommitDetailsResult;
+    },
+  );
+
   const createWorktree: GitVcsDriver.GitVcsDriverShape["createWorktree"] = Effect.fn(
     "createWorktree",
   )(function* (input) {
@@ -3554,6 +3656,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     readConfigValue,
     listRefs,
     commitGraph,
+    commitDetails,
     workingTreeDiff,
     discardChanges,
     stageChanges,

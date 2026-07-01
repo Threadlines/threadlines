@@ -350,6 +350,38 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
     ),
   );
 
+  it.effect("forwards Claude Sonnet 5 model and supported effort", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({
+          structured_output: {
+            title: "Use Sonnet 5",
+            body: "Body",
+          },
+        }),
+        argsMustContain: "--model claude-sonnet-5 --effort max",
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const generated = yield* textGeneration.generatePrContent({
+            cwd: process.cwd(),
+            baseBranch: "main",
+            headBranch: "feature/sonnet-5",
+            commitSummary: "Use Sonnet 5",
+            diffSummary: "1 file changed",
+            diffPatch: "diff --git a/README.md b/README.md",
+            modelSelection: {
+              ...createModelSelection(ProviderInstanceId.make("claudeAgent"), "claude-sonnet-5", [
+                { id: "effort", value: "max" },
+              ]),
+            },
+          });
+
+          expect(generated.title).toBe("Use Sonnet 5");
+        }),
+    ),
+  );
+
   it.effect("generates thread titles through the Claude provider", () =>
     withFakeClaudeEnv(
       {

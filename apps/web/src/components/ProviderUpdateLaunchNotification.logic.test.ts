@@ -13,6 +13,7 @@ import {
   getProviderUpdateInitialToastView,
   getProviderUpdateProgressToastView,
   getProviderUpdateRejectedToastView,
+  getProviderUpdateRunningToastView,
   getProviderUpdateSidebarPillView,
   getSingleProviderUpdateProgressToastView,
   hasOneClickUpdateProviderCandidate,
@@ -289,6 +290,22 @@ describe("provider update launch notification logic", () => {
     });
   });
 
+  it("describes multiple one-click updates without squeezing provider names into the title", () => {
+    const codex = updateCandidate({ driver: driver("codex"), latestVersion: "1.1.0" });
+    const claude = updateCandidate({ driver: driver("claudeAgent"), latestVersion: "2.1.197" });
+    const view = getProviderUpdateInitialToastView({
+      updateProviders: [codex, claude],
+      oneClickProviders: [codex, claude],
+    });
+
+    expect(view).toMatchObject({
+      phase: "initial",
+      type: "warning",
+      title: "Updates available",
+      description: "Codex and Claude can be updated.",
+    });
+  });
+
   it("describes settings-only updates without one-click support", () => {
     const view = getProviderUpdateInitialToastView({
       updateProviders: [
@@ -322,6 +339,17 @@ describe("provider update launch notification logic", () => {
       phase: "running",
       type: "loading",
       title: "Updating provider",
+    });
+  });
+
+  it("points multi-provider running to the sidebar progress surface", () => {
+    const view = getProviderUpdateRunningToastView(2);
+
+    expect(view).toMatchObject({
+      phase: "running",
+      type: "loading",
+      title: "Updating providers",
+      description: "Progress is shown in the sidebar.",
     });
   });
 
@@ -505,8 +533,23 @@ describe("provider update launch notification logic", () => {
 
     expect(view).toMatchObject({
       tone: "loading",
-      title: "Updating 2 providers",
-      description: "Codex and Cursor updates are in progress.",
+      title: "Provider updates",
+      summary: "2 active",
+      description: "Codex updating. Cursor queued.",
+      items: [
+        {
+          label: "Codex",
+          status: "running",
+          statusLabel: "Updating",
+          tone: "running",
+        },
+        {
+          label: "Cursor",
+          status: "queued",
+          statusLabel: "Queued",
+          tone: "queued",
+        },
+      ],
     });
   });
 
@@ -525,7 +568,7 @@ describe("provider update launch notification logic", () => {
     ]);
 
     expect(view).toMatchObject({
-      key: "loading:codex:running",
+      key: "loading:codex:running:pending",
       tone: "loading",
       title: "Updating Codex",
       description: "Codex update in progress.",
@@ -581,9 +624,67 @@ describe("provider update launch notification logic", () => {
     expect(view).toMatchObject({
       key: "succeeded:codex:2026-04-23T10:00:00.000Z:Provider updated.",
       tone: "success",
-      title: "Codex updated: v1.1.0",
+      title: "Codex updated",
+      items: [
+        {
+          label: "Codex",
+          status: "succeeded",
+          statusLabel: "v1.1.0",
+          tone: "success",
+        },
+      ],
       description: "New sessions will use the updated provider.",
       dismissAfterVisibleMs: 3_000,
+    });
+  });
+
+  it("shows updated versions in multi-provider sidebar success rows", () => {
+    const view = getProviderUpdateSidebarPillView(
+      [
+        provider({
+          driver: driver("codex"),
+          version: "1.1.0",
+          latestVersion: "1.1.0",
+          advisoryStatus: "current",
+          updateState: {
+            status: "succeeded",
+            startedAt: checkedAt,
+            finishedAt: checkedAt,
+            message: "Provider updated.",
+            output: null,
+          },
+        }),
+        provider({
+          driver: driver("claudeAgent"),
+          version: "2.1.197",
+          latestVersion: "2.1.197",
+          advisoryStatus: "current",
+          updateState: {
+            status: "succeeded",
+            startedAt: checkedAt,
+            finishedAt: checkedAt,
+            message: "Provider updated.",
+            output: null,
+          },
+        }),
+      ],
+      { visibleAfterIso: sessionStartedAt },
+    );
+
+    expect(view).toMatchObject({
+      tone: "success",
+      title: "2 providers updated",
+      summary: "2 done",
+      items: [
+        {
+          label: "Codex",
+          statusLabel: "v1.1.0",
+        },
+        {
+          label: "Claude",
+          statusLabel: "v2.1.197",
+        },
+      ],
     });
   });
 
@@ -665,7 +766,13 @@ describe("provider update launch notification logic", () => {
     expect(successView).toMatchObject({
       key: "succeeded:codex:2026-04-23T10:01:00.000Z:Provider updated.",
       tone: "success",
-      title: "Codex updated: v1.2.0",
+      title: "Codex updated",
+      items: [
+        {
+          label: "Codex",
+          statusLabel: "v1.2.0",
+        },
+      ],
     });
 
     const failureView = getProviderUpdateSidebarPillView(providers, {

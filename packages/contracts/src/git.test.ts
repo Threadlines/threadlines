@@ -4,6 +4,8 @@ import * as Schema from "effect/Schema";
 import {
   VcsCommitGraphInput,
   VcsCommitGraphResult,
+  VcsCommitDetailsInput,
+  VcsCommitDetailsResult,
   VcsCreateWorktreeInput,
   GitPreparePullRequestThreadInput,
   GitRunStackedActionResult,
@@ -14,6 +16,8 @@ import {
 
 const decodeCommitGraphInput = Schema.decodeUnknownSync(VcsCommitGraphInput);
 const decodeCommitGraphResult = Schema.decodeUnknownSync(VcsCommitGraphResult);
+const decodeCommitDetailsInput = Schema.decodeUnknownSync(VcsCommitDetailsInput);
+const decodeCommitDetailsResult = Schema.decodeUnknownSync(VcsCommitDetailsResult);
 const decodeCreateWorktreeInput = Schema.decodeUnknownSync(VcsCreateWorktreeInput);
 const decodePreparePullRequestThreadInput = Schema.decodeUnknownSync(
   GitPreparePullRequestThreadInput,
@@ -59,6 +63,27 @@ describe("VcsCommitGraph", () => {
 
     expect(input.limit).toBe(24);
     expect(result.commits[0]?.shortSha).toBe("89abcde");
+  });
+});
+
+describe("VcsCommitDetails", () => {
+  it("accepts a commit details request and full message result", () => {
+    const input = decodeCommitDetailsInput({
+      cwd: "/repo",
+      sha: "89abcdef0123456789abcdef0123456789abcdef",
+    });
+    const result = decodeCommitDetailsResult({
+      sha: "89abcdef0123456789abcdef0123456789abcdef",
+      shortSha: "89abcde",
+      subject: "Add source control panel",
+      body: "Show full commit bodies in pinned graph details.",
+      message: "Add source control panel\n\nShow full commit bodies in pinned graph details.",
+      commitUrl:
+        "https://github.com/threadlines/threadlines/commit/89abcdef0123456789abcdef0123456789abcdef",
+    });
+
+    expect(input.sha).toBe("89abcdef0123456789abcdef0123456789abcdef");
+    expect(result.message).toContain(result.body);
   });
 });
 

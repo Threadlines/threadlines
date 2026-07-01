@@ -2,6 +2,7 @@
 
 import {
   ArrowUpCircleIcon,
+  AlertCircleIcon,
   ChevronDownIcon,
   CopyIcon,
   DownloadIcon,
@@ -60,6 +61,7 @@ import {
 } from "./providerStatus";
 
 const PROVIDER_ACCENT_SWATCHES = ["#00347D", "#16a34a", "#ea580c", "#dc2626", "#7c3aed"] as const;
+const PROVIDER_UPDATE_OUTPUT_PREVIEW_CHARS = 700;
 
 const ENVIRONMENT_VARIABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 const RUNTIME_PROVIDER_CONFIG_FIELD_KEYS = new Set([
@@ -72,6 +74,24 @@ const RUNTIME_PROVIDER_CONFIG_FIELD_KEYS = new Set([
 
 let environmentVariableDraftId = 0;
 const nextEnvironmentVariableDraftId = () => `provider-env-${environmentVariableDraftId++}`;
+
+function truncateProviderUpdateOutput(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= PROVIDER_UPDATE_OUTPUT_PREVIEW_CHARS) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, PROVIDER_UPDATE_OUTPUT_PREVIEW_CHARS).trimEnd()}...`;
+}
+
+function isProviderUpdateProcessLockMessage(value: string): boolean {
+  const normalized = value.toLowerCase();
+  return (
+    normalized.includes("claude") &&
+    normalized.includes("windows") &&
+    normalized.includes("replace") &&
+    normalized.includes("executable")
+  );
+}
 
 type EnvironmentDraftRow = {
   readonly id: string;
@@ -703,6 +723,8 @@ interface ProviderInstanceCardProps {
   readonly onModelOrderChange: (next: ReadonlyArray<string>) => void;
   readonly onRunUpdate?: (() => void) | undefined;
   readonly isUpdating?: boolean | undefined;
+  readonly onResolveUpdateBlockers?: (() => void) | undefined;
+  readonly isResolvingUpdateBlockers?: boolean | undefined;
   readonly onResetAccountUsage?:
     | ((request: ProviderRateLimitResetCreditRequest) => void)
     | undefined;
@@ -751,6 +773,8 @@ export function ProviderInstanceCard({
   onModelOrderChange,
   onRunUpdate,
   isUpdating = false,
+  onResolveUpdateBlockers,
+  isResolvingUpdateBlockers = false,
   onResetAccountUsage,
   accountUsageResetInFlight,
 }: ProviderInstanceCardProps) {
@@ -772,6 +796,17 @@ export function ProviderInstanceCard({
   const versionLabel = getProviderVersionLabel(liveProvider?.version);
   const versionAdvisory = getProviderVersionAdvisoryPresentation(liveProvider?.versionAdvisory);
   const updateCommand = versionAdvisory?.updateCommand ?? null;
+  const providerUpdateState = liveProvider?.updateState ?? null;
+  const providerUpdateMessage = providerUpdateState?.message?.trim() ?? "";
+  const providerUpdateOutput = providerUpdateState?.output?.trim() ?? "";
+  const providerUpdateIsProcessLock =
+    providerUpdateState?.status === "failed" &&
+    isProviderUpdateProcessLockMessage(providerUpdateMessage);
+  const providerUpdatePanelMessage = providerUpdateIsProcessLock
+    ? "Claude is running in the background, so Windows cannot replace claude.exe. Stop those Claude processes, then run the update again."
+    : providerUpdateMessage;
+  const canResolveProviderUpdateBlockers =
+    providerUpdateIsProcessLock && onResolveUpdateBlockers !== undefined;
   const usagePresentation = deriveProviderAccountUsagePresentationForProvider(liveProvider);
   const hasTokenUsageDetails = usagePresentation?.tokenUsage !== undefined;
   const [detailsSection, setDetailsSection] = useState<ProviderDetailsSection>("usage");
@@ -1052,13 +1087,60 @@ export function ProviderInstanceCard({
                           {versionAdvisory.detail}
                         </p>
                       </div>
+                      {providerUpdateMessage ? (
+                        <div
+                          className={cn(
+                            "grid gap-2 rounded-md border px-2.5 py-2 text-xs leading-snug",
+                            providerUpdateIsProcessLock
+                              ? "border-warning/35 bg-warning/8 text-warning"
+                              : providerUpdateState?.status === "failed"
+                                ? "border-destructive/35 bg-destructive/8 text-destructive"
+                                : providerUpdateState?.status === "unchanged"
+                                  ? "border-warning/35 bg-warning/8 text-warning"
+                                  : "border-border/70 bg-muted/40 text-muted-foreground",
+                          )}
+                        >
+                          <div className="flex min-w-0 items-start gap-2">
+                            <AlertCircleIcon className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+                            <p className="min-w-0">{providerUpdatePanelMessage}</p>
+                          </div>
+                          {providerUpdateState?.status === "failed" &&
+                          providerUpdateOutput &&
+                          !providerUpdateIsProcessLock ? (
+                            <ScrollArea scrollFade className="max-h-24 min-w-0 rounded-sm">
+                              <code className="block whitespace-pre-wrap break-words rounded-sm bg-background/55 p-2 font-mono text-[10px] leading-snug text-foreground/80">
+                                {truncateProviderUpdateOutput(providerUpdateOutput)}
+                              </code>
+                            </ScrollArea>
+                          ) : null}
+                          {canResolveProviderUpdateBlockers ? (
+                            <Button
+                              type="button"
+                              size="xs"
+                              variant="outline"
+                              className="w-full border-warning/35 bg-background/45 text-warning hover:bg-warning/10 hover:text-warning"
+                              disabled={isResolvingUpdateBlockers || isUpdating}
+                              onClick={onResolveUpdateBlockers}
+                            >
+                              {isResolvingUpdateBlockers ? (
+                                <LoaderIcon className="animate-spin" />
+                              ) : (
+                                <XIcon />
+                              )}
+                              {isResolvingUpdateBlockers
+                                ? "Stopping Claude"
+                                : "Stop Claude processes"}
+                            </Button>
+                          ) : null}
+                        </div>
+                      ) : null}
                       {onRunUpdate ? (
                         <Button
                           type="button"
                           size="xs"
                           variant="default"
                           className="w-full"
-                          disabled={isUpdating}
+                          disabled={isUpdating || isResolvingUpdateBlockers}
                           onClick={onRunUpdate}
                         >
                           {isUpdating ? <LoaderIcon className="animate-spin" /> : <DownloadIcon />}

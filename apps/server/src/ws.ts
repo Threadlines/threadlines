@@ -943,6 +943,14 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               "rpc.aggregate": "server",
             },
           ),
+        [WS_METHODS.serverResolveProviderUpdateBlockers]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverResolveProviderUpdateBlockers,
+            providerMaintenanceRunner.resolveUpdateBlockers(input),
+            {
+              "rpc.aggregate": "server",
+            },
+          ),
         [WS_METHODS.serverUpsertKeybinding]: (rule) =>
           observeRpcEffect(
             WS_METHODS.serverUpsertKeybinding,
@@ -1352,6 +1360,10 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           }),
         [WS_METHODS.vcsCommitGraph]: (input) =>
           observeRpcEffect(WS_METHODS.vcsCommitGraph, gitWorkflow.commitGraph(input), {
+            "rpc.aggregate": "vcs",
+          }),
+        [WS_METHODS.vcsCommitDetails]: (input) =>
+          observeRpcEffect(WS_METHODS.vcsCommitDetails, gitWorkflow.commitDetails(input), {
             "rpc.aggregate": "vcs",
           }),
         [WS_METHODS.vcsWorkingTreeDiff]: (input) =>

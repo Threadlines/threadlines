@@ -4,6 +4,7 @@ import {
   type GitActionProgressEvent,
   type GitStackedAction,
   type ScopedThreadRef,
+  type VcsCommitDetailsResult,
   type VcsCommitGraphCommit,
   type VcsRef,
   type VcsStatusResult,
@@ -20,6 +21,7 @@ import {
 import {
   ChevronDownIcon,
   ChevronRightIcon,
+  CheckIcon,
   CloudUploadIcon,
   CopyIcon,
   ExternalLinkIcon,
@@ -39,6 +41,7 @@ import {
   TagIcon,
   Undo2Icon,
   UploadIcon,
+  XIcon,
 } from "lucide-react";
 import {
   type MouseEvent as ReactMouseEvent,
@@ -57,6 +60,7 @@ import { openInPreferredEditor } from "~/editorPreferences";
 import { readEnvironmentApi } from "~/environmentApi";
 import {
   gitBranchSearchInfiniteQueryOptions,
+  gitCommitDetailsQueryOptions,
   gitCheckoutMutationOptions,
   gitCommitGraphQueryOptions,
   gitCreateTagMutationOptions,
@@ -134,7 +138,6 @@ import {
   buildSourceControlFileTree,
   collectSourceControlFileTreeDirectoryPaths,
   type CommitGraphLaneLayout,
-  formatCommitCount,
   formatCommitGraphDateTime,
   formatCommitGraphParentSummary,
   formatCommitGraphTimestamp,
@@ -424,7 +427,9 @@ function ActionButton({
 
 type CommitGraphContextAction =
   | "copy-full-sha"
-  | "copy-subject"
+  | "copy-title"
+  | "copy-full-message"
+  | "open-commit"
   | "create-tag"
   | `delete-branch:${string}`;
 
@@ -732,25 +737,160 @@ function CommitGraphDetailRow({
   );
 }
 
+const COMMIT_DETAILS_VIEWPORT_PADDING = 8;
+const COMMIT_DETAILS_GRAPH_SCROLL_CLOSE_THRESHOLD_PX = 12;
+const COMMIT_DETAILS_COPIED_FEEDBACK_MS = 1_600;
+
+type CopyCommitValueOptions = {
+  readonly successToast?: boolean;
+};
+
+function useViewportConstrainedCommitCard(enabled: boolean) {
+  const ref = useRef<HTMLDivElement>(null);
+  const offsetRef = useRef(0);
+  const [offsetY, setOffsetY] = useState(0);
+
+  useLayoutEffect(() => {
+    if (!enabled) {
+      offsetRef.current = 0;
+      setOffsetY(0);
+      return;
+    }
+
+    const element = ref.current;
+    if (!element) {
+      return;
+    }
+
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      const rect = element.getBoundingClientRect();
+      const currentOffset = offsetRef.current;
+      const baseTop = rect.top - currentOffset;
+      const baseBottom = rect.bottom - currentOffset;
+      let nextOffset = 0;
+
+      const bottomOverflow = baseBottom - (window.innerHeight - COMMIT_DETAILS_VIEWPORT_PADDING);
+      if (bottomOverflow > 0) {
+        nextOffset -= bottomOverflow;
+      }
+
+      const topOverflow = COMMIT_DETAILS_VIEWPORT_PADDING - (baseTop + nextOffset);
+      if (topOverflow > 0) {
+        nextOffset += topOverflow;
+      }
+
+      if (Math.abs(nextOffset - currentOffset) < 0.5) {
+        return;
+      }
+
+      offsetRef.current = nextOffset;
+      setOffsetY(nextOffset);
+    };
+    const scheduleUpdate = () => {
+      if (frame !== 0) {
+        return;
+      }
+      frame = window.requestAnimationFrame(update);
+    };
+
+    update();
+
+    const resizeObserver =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(scheduleUpdate);
+    resizeObserver?.observe(element);
+    window.addEventListener("resize", scheduleUpdate);
+    window.addEventListener("scroll", scheduleUpdate, true);
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", scheduleUpdate);
+      window.removeEventListener("scroll", scheduleUpdate, true);
+      if (frame !== 0) {
+        window.cancelAnimationFrame(frame);
+      }
+    };
+  }, [enabled]);
+
+  return { offsetY, ref };
+}
+
 function CommitGraphHoverCard({
   commit,
   currentBranch,
+  details,
+  detailsError,
+  detailsLoading,
+  pinned,
+  onClose,
   onCopyCommitValue,
+  onCopyFullMessage,
+  onOpenCommitUrl,
 }: {
   readonly commit: VcsCommitGraphCommit;
   readonly currentBranch: string | null | undefined;
+  readonly details: VcsCommitDetailsResult | null | undefined;
+  readonly detailsError: Error | null;
+  readonly detailsLoading: boolean;
+  readonly pinned: boolean;
+  readonly onClose: () => void;
   readonly onCopyCommitValue: (value: string, title: string) => void;
+  readonly onCopyFullMessage: (
+    commit: VcsCommitGraphCommit,
+    options?: CopyCommitValueOptions,
+  ) => Promise<boolean>;
+  readonly onOpenCommitUrl: (commit: VcsCommitGraphCommit) => void;
 }) {
+  const [copyFullMessageState, setCopyFullMessageState] = useState<"idle" | "copied">("idle");
   const absoluteDate = formatCommitGraphDateTime(commit.committedAt);
   const relativeDate = formatCommitGraphTimestamp(commit.committedAt);
   const parentSummary = formatCommitGraphParentSummary(commit.parents.length);
   const visibleRefs = getVisibleCommitGraphRefs(commit.refs);
+  const messageBody = details?.body.trim() || details?.message.trim() || "";
+  const canOpenCommit = Boolean(details?.commitUrl);
+  const fullMessageCopied = copyFullMessageState === "copied";
+
+  useEffect(() => {
+    setCopyFullMessageState("idle");
+  }, [commit.sha]);
+
+  useEffect(() => {
+    if (!fullMessageCopied) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setCopyFullMessageState("idle");
+    }, COMMIT_DETAILS_COPIED_FEEDBACK_MS);
+    return () => window.clearTimeout(timeout);
+  }, [fullMessageCopied]);
 
   return (
-    <div className="w-80 max-w-[calc(100vw-2rem)] space-y-2.5 p-1 text-left">
-      <div className="space-y-1">
-        <div className="line-clamp-2 text-xs font-medium leading-snug text-popover-foreground">
-          {commit.subject || "Untitled commit"}
+    <div
+      className="flex max-h-[min(calc(100vh-1rem),var(--available-height,100vh))] w-80 max-w-[calc(100vw-2rem)] flex-col gap-2.5 overflow-x-hidden overflow-y-auto p-1 text-left"
+      data-commit-details-surface
+    >
+      <div className="shrink-0 space-y-1">
+        <div className="flex min-w-0 items-start gap-2">
+          <div className="line-clamp-2 min-w-0 flex-1 text-xs font-medium leading-snug text-popover-foreground">
+            {commit.subject || "Untitled commit"}
+          </div>
+          {pinned ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              className="size-6"
+              aria-label="Close commit details"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onClose();
+              }}
+            >
+              <XIcon className="size-3" />
+            </Button>
+          ) : null}
         </div>
         <div className="flex min-w-0 items-center gap-1.5">
           <code className="min-w-0 flex-1 truncate rounded-sm bg-muted px-1.5 py-1 font-mono text-[10px] text-muted-foreground">
@@ -773,7 +913,7 @@ function CommitGraphHoverCard({
         </div>
       </div>
 
-      <div className="space-y-1.5 text-[11px] leading-tight">
+      <div className="shrink-0 space-y-1.5 text-[11px] leading-tight">
         <CommitGraphDetailRow label="Author">
           <span className="truncate">{commit.authorName || "Unknown author"}</span>
         </CommitGraphDetailRow>
@@ -798,6 +938,69 @@ function CommitGraphHoverCard({
           </CommitGraphDetailRow>
         ) : null}
       </div>
+
+      {pinned ? (
+        <div className="flex min-h-0 flex-1 flex-col gap-2 border-t border-border/70 pt-2">
+          <div className="max-h-32 min-h-12 overflow-auto rounded-md border border-border/70 bg-muted/35 p-2">
+            {detailsLoading ? (
+              <div className="text-[11px] text-muted-foreground">Loading full message...</div>
+            ) : detailsError ? (
+              <div className="text-[11px] text-destructive-foreground">
+                {detailsError.message || "Failed to load commit details."}
+              </div>
+            ) : messageBody.length > 0 ? (
+              <pre className="whitespace-pre-wrap font-mono text-[10px] leading-snug text-popover-foreground">
+                {messageBody}
+              </pre>
+            ) : (
+              <div className="text-[11px] text-muted-foreground">No commit message.</div>
+            )}
+          </div>
+          <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+            <Button
+              type="button"
+              variant="outline"
+              size="xs"
+              className={cn(
+                "min-w-[8.75rem] justify-center transition-colors",
+                fullMessageCopied && "bg-success/10 text-success",
+              )}
+              disabled={detailsLoading}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                void onCopyFullMessage(commit, { successToast: false }).then((copied) => {
+                  if (copied) {
+                    setCopyFullMessageState("copied");
+                  }
+                });
+              }}
+            >
+              {fullMessageCopied ? (
+                <CheckIcon className="size-3" />
+              ) : (
+                <CopyIcon className="size-3" />
+              )}
+              <span>{fullMessageCopied ? "Copied" : "Copy full message"}</span>
+            </Button>
+            {canOpenCommit ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="xs"
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onOpenCommitUrl(commit);
+                }}
+              >
+                <ExternalLinkIcon className="size-3" />
+                <span>Open on GitHub</span>
+              </Button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -805,44 +1008,81 @@ function CommitGraphHoverCard({
 function CommitGraphRow({
   commit,
   currentBranch,
+  details,
+  detailsError,
+  detailsLoading,
+  isAnyCommitPinned,
+  isPinned,
   layout,
   visibleRefs,
+  onClosePinnedCommit,
   onCopyCommitValue,
+  onCopyFullMessage,
   onCommitContextMenu,
+  onOpenCommitUrl,
+  onPinCommit,
 }: {
   readonly commit: VcsCommitGraphCommit;
   readonly currentBranch: string | null | undefined;
+  readonly details: VcsCommitDetailsResult | null | undefined;
+  readonly detailsError: Error | null;
+  readonly detailsLoading: boolean;
+  readonly isAnyCommitPinned: boolean;
+  readonly isPinned: boolean;
   readonly layout: CommitGraphLaneLayout;
   readonly visibleRefs: readonly string[];
+  readonly onClosePinnedCommit: () => void;
   readonly onCopyCommitValue: (value: string, title: string) => void;
+  readonly onCopyFullMessage: (
+    commit: VcsCommitGraphCommit,
+    options?: CopyCommitValueOptions,
+  ) => Promise<boolean>;
   readonly onCommitContextMenu: (
     commit: VcsCommitGraphCommit,
     position: { readonly x: number; readonly y: number },
   ) => void;
+  readonly onOpenCommitUrl: (commit: VcsCommitGraphCommit) => void;
+  readonly onPinCommit: (commit: VcsCommitGraphCommit) => void;
 }) {
+  const [hoverCardOpen, setHoverCardOpen] = useState(false);
   const isCurrentBranchCommit = visibleRefs.some(
     (ref) => getCommitGraphRefKind(ref, currentBranch) === "current",
   );
   const renderedRefs = visibleRefs.slice(0, 2);
   const hiddenRefCount = Math.max(0, visibleRefs.length - renderedRefs.length);
   const graphWidth = commitGraphLaneX(layout.laneCount - 1) + COMMIT_GRAPH_LEFT_PADDING;
+  const detailsCardOpen = isPinned || (!isAnyCommitPinned && hoverCardOpen);
+  const viewportClamp = useViewportConstrainedCommitCard(isPinned);
+  const popupStyle =
+    viewportClamp.offsetY === 0
+      ? undefined
+      : { transform: `translateY(${viewportClamp.offsetY}px)` };
 
   return (
-    <Tooltip>
+    <Tooltip open={detailsCardOpen} onOpenChange={setHoverCardOpen}>
       <TooltipTrigger
         render={
-          <div
+          <button
+            type="button"
             aria-label={`Commit ${commit.shortSha}: ${commit.subject || "Untitled commit"}`}
-            role="listitem"
-            tabIndex={0}
-            onContextMenu={(event: ReactMouseEvent<HTMLDivElement>) => {
+            aria-pressed={isPinned}
+            data-commit-details-surface
+            onClick={(event: ReactMouseEvent<HTMLButtonElement>) => {
+              event.preventDefault();
+              if (isPinned) {
+                setHoverCardOpen(false);
+              }
+              onPinCommit(commit);
+            }}
+            onContextMenu={(event: ReactMouseEvent<HTMLButtonElement>) => {
               event.preventDefault();
               event.stopPropagation();
               onCommitContextMenu(commit, { x: event.clientX, y: event.clientY });
             }}
             className={cn(
-              "grid cursor-default items-center gap-2 px-2.5 transition-colors hover:bg-accent/60",
+              "grid w-full cursor-pointer appearance-none items-center gap-2 border-0 bg-transparent px-2.5 text-left transition-colors hover:bg-accent/60",
               isCurrentBranchCommit && "bg-primary/10 hover:bg-primary/15",
+              isPinned && "bg-accent/70 ring-1 ring-primary/80",
             )}
             style={{
               gridTemplateColumns: `${graphWidth}px minmax(0, 1fr)`,
@@ -881,14 +1121,38 @@ function CommitGraphRow({
                 </span>
               ) : null}
             </span>
-          </div>
+          </button>
         }
       />
-      <TooltipPopup side="left" align="start" sideOffset={8} className="max-w-none">
+      <TooltipPopup
+        side="left"
+        align={isPinned ? "end" : "center"}
+        sideOffset={8}
+        collisionAvoidance={
+          isPinned ? { side: "shift", align: "shift", fallbackAxisSide: "none" } : undefined
+        }
+        collisionPadding={8}
+        positionMethod={isPinned ? "fixed" : undefined}
+        popupRef={viewportClamp.ref}
+        positionerClassName={isPinned ? undefined : "transition-none"}
+        style={popupStyle}
+        sticky={isPinned ? true : undefined}
+        className={cn(
+          "max-w-none overflow-hidden",
+          isPinned && "transition-[width,height,scale,opacity,transform] duration-150 ease-out",
+        )}
+      >
         <CommitGraphHoverCard
           commit={commit}
           currentBranch={currentBranch}
+          details={isPinned ? details : null}
+          detailsError={isPinned ? detailsError : null}
+          detailsLoading={isPinned && detailsLoading}
+          pinned={isPinned}
+          onClose={onClosePinnedCommit}
           onCopyCommitValue={onCopyCommitValue}
+          onCopyFullMessage={onCopyFullMessage}
+          onOpenCommitUrl={onOpenCommitUrl}
         />
       </TooltipPopup>
     </Tooltip>
@@ -941,6 +1205,7 @@ function CommitGraphMessage({
 
 const GRAPH_INITIAL_LIMIT = 24;
 const GRAPH_LOAD_MORE_INCREMENT = 24;
+const COMMIT_GRAPH_COUNT_FORMATTER = new Intl.NumberFormat();
 const BRANCH_MENU_REF_LIMIT = 14;
 const SOURCE_CONTROL_STATUS_REFRESH_INTERVAL_MS = 5_000;
 const COMMIT_MESSAGE_EDITOR_TRANSITION_MS = 160;
@@ -1487,9 +1752,11 @@ export function SourceControlPanel({
     readonly overrides: Record<string, boolean>;
   }>(() => ({ key: "", overrides: {} }));
   const [commitGraphLimit, setCommitGraphLimit] = useState(GRAPH_INITIAL_LIMIT);
+  const [pinnedCommitSha, setPinnedCommitSha] = useState<string | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const changesSectionRef = useRef<HTMLElement>(null);
   const commitControlsRef = useRef<HTMLElement>(null);
+  const commitGraphScrollerRef = useRef<HTMLDivElement>(null);
   const commitGraphStatusRefreshRef = useRef<{
     readonly targetKey: string;
     readonly statusKey: string | null;
@@ -1506,6 +1773,7 @@ export function SourceControlPanel({
   const commitGraphStatusRefreshKey = getCommitGraphStatusRefreshKey(status);
   useEffect(() => {
     setCommitGraphLimit(GRAPH_INITIAL_LIMIT);
+    setPinnedCommitSha(null);
   }, [cwd, environmentId]);
   const graphQueryEnabled = Boolean(status?.isRepo);
   const graphQuery = useQuery(
@@ -1519,6 +1787,24 @@ export function SourceControlPanel({
   const refetchCommitGraph = graphQuery.refetch;
   const graphCommits = graphQuery.data?.commits ?? EMPTY_COMMIT_GRAPH_COMMITS;
   const commitGraphRows = useMemo(() => buildCommitGraphRows(graphCommits), [graphCommits]);
+  const pinnedCommit = useMemo(
+    () => graphCommits.find((commit) => commit.sha === pinnedCommitSha) ?? null,
+    [graphCommits, pinnedCommitSha],
+  );
+  const commitDetailsQuery = useQuery(
+    gitCommitDetailsQueryOptions({
+      environmentId,
+      cwd,
+      sha: pinnedCommitSha,
+      enabled: pinnedCommitSha !== null && graphQueryEnabled,
+    }),
+  );
+  const pinnedCommitDetails =
+    commitDetailsQuery.data?.sha === pinnedCommitSha ? commitDetailsQuery.data : null;
+  const pinnedCommitDetailsError =
+    pinnedCommitSha !== null && commitDetailsQuery.error instanceof Error
+      ? commitDetailsQuery.error
+      : null;
   const graphHasData = graphQuery.data !== undefined;
   const isCommitGraphInitialLoading = graphQueryEnabled && !graphHasData && graphQuery.isPending;
   const isCommitGraphRefreshing = graphHasData && graphQuery.isFetching;
@@ -1534,17 +1820,32 @@ export function SourceControlPanel({
   const hasCommitGraphLoadMoreError = graphHasData && graphQuery.isError;
   const shouldShowCommitGraphLoadMore =
     graphQuery.data?.truncated === true || hasCommitGraphLoadMoreError;
-  const commitGraphCountLabel = `${formatCommitCount(graphCommits.length)}${
-    graphQuery.data?.truncated ? "+" : ""
-  }`;
+  const canCommitGraphShowLess =
+    commitGraphLimit > GRAPH_INITIAL_LIMIT && graphCommits.length > GRAPH_INITIAL_LIMIT;
+  const shouldShowCommitGraphFooter = shouldShowCommitGraphLoadMore || canCommitGraphShowLess;
+  const isCommitGraphFooterSplit = canCommitGraphShowLess && shouldShowCommitGraphLoadMore;
+  const commitGraphShownCount = COMMIT_GRAPH_COUNT_FORMATTER.format(graphCommits.length);
+  const commitGraphLoadMoreCount = COMMIT_GRAPH_COUNT_FORMATTER.format(GRAPH_LOAD_MORE_INCREMENT);
+  const commitGraphShowLessCount = COMMIT_GRAPH_COUNT_FORMATTER.format(
+    Math.min(GRAPH_LOAD_MORE_INCREMENT, Math.max(0, graphCommits.length - GRAPH_INITIAL_LIMIT)),
+  );
+  const commitGraphCountLabel = `${commitGraphShownCount} shown`;
   const commitGraphLoadMoreDescription = hasCommitGraphLoadMoreError
     ? "Could not load older commits."
-    : `Showing latest ${formatCommitCount(graphCommits.length)}.`;
+    : "";
   const commitGraphLoadMoreButtonLabel = hasCommitGraphLoadMoreError
     ? "Retry"
     : isCommitGraphLoadingMore
+      ? "Loading..."
+      : isCommitGraphFooterSplit
+        ? `${commitGraphLoadMoreCount} more`
+        : `Load ${commitGraphLoadMoreCount} more`;
+  const commitGraphLoadMoreButtonAriaLabel = hasCommitGraphLoadMoreError
+    ? "Retry loading older commits"
+    : isCommitGraphLoadingMore
       ? "Loading older commits"
-      : "Load older commits";
+      : `Load ${commitGraphLoadMoreCount} older commits`;
+  const commitGraphShowLessButtonAriaLabel = `Show ${commitGraphShowLessCount} fewer commits`;
   const loadOlderCommitGraph = useCallback(() => {
     if (hasCommitGraphLoadMoreError) {
       void refetchCommitGraph();
@@ -1552,6 +1853,82 @@ export function SourceControlPanel({
     }
     setCommitGraphLimit((limit) => limit + GRAPH_LOAD_MORE_INCREMENT);
   }, [hasCommitGraphLoadMoreError, refetchCommitGraph]);
+  const showLessCommitGraph = useCallback(() => {
+    setCommitGraphLimit((limit) =>
+      Math.max(GRAPH_INITIAL_LIMIT, limit - GRAPH_LOAD_MORE_INCREMENT),
+    );
+  }, []);
+  useEffect(() => {
+    if (pinnedCommitSha !== null && graphHasData && pinnedCommit === null) {
+      setPinnedCommitSha(null);
+    }
+  }, [graphHasData, pinnedCommit, pinnedCommitSha]);
+  useEffect(() => {
+    if (pinnedCommitSha === null) {
+      return;
+    }
+
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const targetNode = event.target;
+      if (targetNode instanceof Element && targetNode.closest("[data-commit-details-surface]")) {
+        return;
+      }
+      setPinnedCommitSha(null);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setPinnedCommitSha(null);
+      }
+    };
+
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [pinnedCommitSha]);
+  useEffect(() => {
+    if (pinnedCommitSha === null) {
+      return;
+    }
+
+    const scroller = commitGraphScrollerRef.current;
+    if (!scroller) {
+      return;
+    }
+
+    const initialScrollTop = scroller.scrollTop;
+    const initialScrollLeft = scroller.scrollLeft;
+    let closed = false;
+    const closeOnGraphScroll = () => {
+      if (closed) {
+        return;
+      }
+
+      const scrollDelta = Math.max(
+        Math.abs(scroller.scrollTop - initialScrollTop),
+        Math.abs(scroller.scrollLeft - initialScrollLeft),
+      );
+      if (scrollDelta < COMMIT_DETAILS_GRAPH_SCROLL_CLOSE_THRESHOLD_PX) {
+        return;
+      }
+
+      closed = true;
+      setPinnedCommitSha(null);
+    };
+
+    scroller.addEventListener("scroll", closeOnGraphScroll, { passive: true });
+    return () => {
+      scroller.removeEventListener("scroll", closeOnGraphScroll);
+    };
+  }, [pinnedCommitSha]);
+  const closePinnedCommit = useCallback(() => {
+    setPinnedCommitSha(null);
+  }, []);
+  const pinCommit = useCallback((commit: VcsCommitGraphCommit) => {
+    setPinnedCommitSha((currentSha) => (currentSha === commit.sha ? null : commit.sha));
+  }, []);
   const actionMutation = useMutation(
     gitRunStackedActionMutationOptions({
       environmentId,
@@ -2147,37 +2524,124 @@ export function SourceControlPanel({
     void api.shell.openExternal(openPullRequest.url).catch(() => undefined);
   }, [openPullRequest]);
 
-  const copyCommitValue = useCallback((value: string, title: string) => {
-    if (typeof window === "undefined" || !navigator.clipboard?.writeText) {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: `Failed to copy ${title.toLowerCase()}`,
-          description: "Clipboard API unavailable.",
-        }),
-      );
-      return;
-    }
-
-    void navigator.clipboard.writeText(value).then(
-      () => {
-        toastManager.add({
-          type: "success",
-          title: `${title} copied`,
-          description: value,
-        });
-      },
-      (error) => {
+  const copyCommitValue = useCallback(
+    (value: string, title: string, options?: CopyCommitValueOptions) => {
+      if (typeof window === "undefined" || !navigator.clipboard?.writeText) {
         toastManager.add(
           stackedThreadToast({
             type: "error",
             title: `Failed to copy ${title.toLowerCase()}`,
-            description: error instanceof Error ? error.message : "An error occurred.",
+            description: "Clipboard API unavailable.",
           }),
         );
-      },
-    );
-  }, []);
+        return Promise.resolve(false);
+      }
+
+      return navigator.clipboard.writeText(value).then(
+        () => {
+          if (options?.successToast !== false) {
+            const description = value.length > 240 ? `${value.slice(0, 240)}...` : value;
+            toastManager.add({
+              type: "success",
+              title: `${title} copied`,
+              description,
+            });
+          }
+          return true;
+        },
+        (error) => {
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: `Failed to copy ${title.toLowerCase()}`,
+              description: error instanceof Error ? error.message : "An error occurred.",
+            }),
+          );
+          return false;
+        },
+      );
+    },
+    [],
+  );
+
+  const fetchCommitDetails = useCallback(
+    (commit: VcsCommitGraphCommit) => {
+      if (!environmentId || !cwd) {
+        return Promise.reject(new Error("Commit details are unavailable."));
+      }
+      return queryClient.fetchQuery(
+        gitCommitDetailsQueryOptions({
+          environmentId,
+          cwd,
+          sha: commit.sha,
+        }),
+      );
+    },
+    [cwd, environmentId, queryClient],
+  );
+
+  const copyFullCommitMessage = useCallback(
+    (commit: VcsCommitGraphCommit, options?: CopyCommitValueOptions) => {
+      return fetchCommitDetails(commit).then(
+        (details) => {
+          return copyCommitValue(details.message, "Commit message", options);
+        },
+        (error) => {
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Failed to copy commit message",
+              description: error instanceof Error ? error.message : "An error occurred.",
+            }),
+          );
+          return false;
+        },
+      );
+    },
+    [copyCommitValue, fetchCommitDetails],
+  );
+
+  const openCommitUrl = useCallback(
+    (commit: VcsCommitGraphCommit) => {
+      const api = readLocalApi();
+      if (!api) {
+        return;
+      }
+      void fetchCommitDetails(commit).then(
+        (details) => {
+          if (!details.commitUrl) {
+            toastManager.add(
+              stackedThreadToast({
+                type: "error",
+                title: "Commit link unavailable",
+                description: "No GitHub remote URL was found for this commit.",
+              }),
+            );
+            return;
+          }
+          void api.shell.openExternal(details.commitUrl).catch((error) => {
+            toastManager.add(
+              stackedThreadToast({
+                type: "error",
+                title: "Failed to open commit",
+                description: error instanceof Error ? error.message : "An error occurred.",
+              }),
+            );
+          });
+        },
+        (error) => {
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Commit link unavailable",
+              description: error instanceof Error ? error.message : "An error occurred.",
+            }),
+          );
+        },
+      );
+    },
+    [fetchCommitDetails],
+  );
 
   const openCreateTagDialog = useCallback((commit: VcsCommitGraphCommit) => {
     setPendingCreateTagCommit(commit);
@@ -2245,11 +2709,21 @@ export function SourceControlPanel({
         return;
       }
       const deletableBranches = getDeletableCommitGraphBranchRefs(commit.refs, status?.refName);
+      const canOpenCommitUrl = status?.sourceControlProvider?.kind === "github";
 
       const clicked = await api.contextMenu.show<CommitGraphContextAction>(
         [
           { id: "copy-full-sha", label: "Copy commit id" },
-          { id: "copy-subject", label: "Copy commit message" },
+          { id: "copy-title", label: "Copy title" },
+          { id: "copy-full-message", label: "Copy full message" },
+          ...(canOpenCommitUrl
+            ? ([
+                {
+                  id: "open-commit",
+                  label: `Open on ${sourceControlPresentation.providerName}`,
+                },
+              ] satisfies readonly ContextMenuItem<CommitGraphContextAction>[])
+            : []),
           {
             id: "create-tag",
             label: "Create tag...",
@@ -2265,11 +2739,19 @@ export function SourceControlPanel({
       );
 
       if (clicked === "copy-full-sha") {
-        copyCommitValue(commit.sha, "Commit id");
+        void copyCommitValue(commit.sha, "Commit id");
         return;
       }
-      if (clicked === "copy-subject") {
-        copyCommitValue(commit.subject, "Commit message");
+      if (clicked === "copy-title") {
+        void copyCommitValue(commit.subject, "Commit title");
+        return;
+      }
+      if (clicked === "copy-full-message") {
+        void copyFullCommitMessage(commit);
+        return;
+      }
+      if (clicked === "open-commit") {
+        openCommitUrl(commit);
         return;
       }
       if (clicked === "create-tag") {
@@ -2284,12 +2766,16 @@ export function SourceControlPanel({
       }
     },
     [
+      copyFullCommitMessage,
       copyCommitValue,
       createTagMutation.isPending,
       cwd,
       deleteBranchMutation.isPending,
       environmentId,
       openCreateTagDialog,
+      openCommitUrl,
+      sourceControlPresentation.providerName,
+      status?.sourceControlProvider?.kind,
       status?.refName,
     ],
   );
@@ -3137,7 +3623,11 @@ export function SourceControlPanel({
                 {commitGraphCountLabel}
               </span>
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto rounded-md border border-border/70 bg-background/35 recess">
+            <div
+              ref={commitGraphScrollerRef}
+              className="min-h-0 flex-1 overflow-y-auto rounded-md border border-border/70 bg-background/35 recess"
+              data-commit-graph-scroll-container
+            >
               {status === null ? (
                 <CommitGraphSkeleton />
               ) : !status.isRepo ? (
@@ -3176,37 +3666,83 @@ export function SourceControlPanel({
                 <CommitGraphMessage>No commits yet</CommitGraphMessage>
               ) : (
                 <div>
-                  <div role="list">
+                  <div>
                     {commitGraphRows.map((row) => (
                       <CommitGraphRow
                         key={row.commit.sha}
                         commit={row.commit}
                         currentBranch={status?.refName}
+                        details={pinnedCommitSha === row.commit.sha ? pinnedCommitDetails : null}
+                        detailsError={
+                          pinnedCommitSha === row.commit.sha ? pinnedCommitDetailsError : null
+                        }
+                        detailsLoading={
+                          pinnedCommitSha === row.commit.sha &&
+                          pinnedCommitDetails === null &&
+                          pinnedCommitDetailsError === null
+                        }
+                        isAnyCommitPinned={pinnedCommitSha !== null}
+                        isPinned={pinnedCommitSha === row.commit.sha}
                         layout={row.layout}
                         visibleRefs={row.visibleRefs}
+                        onClosePinnedCommit={closePinnedCommit}
                         onCopyCommitValue={copyCommitValue}
+                        onCopyFullMessage={copyFullCommitMessage}
                         onCommitContextMenu={handleCommitContextMenu}
+                        onOpenCommitUrl={openCommitUrl}
+                        onPinCommit={pinCommit}
                       />
                     ))}
                   </div>
-                  {shouldShowCommitGraphLoadMore ? (
-                    <div className="flex items-center justify-between gap-2 border-t border-border/60 px-2.5 py-2 text-xs text-muted-foreground/70">
-                      <span className="min-w-0 truncate">{commitGraphLoadMoreDescription}</span>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="xs"
-                        className="shrink-0"
-                        disabled={graphQuery.isFetching && !hasCommitGraphLoadMoreError}
-                        onClick={loadOlderCommitGraph}
+                  {shouldShowCommitGraphFooter ? (
+                    <div
+                      className={cn(
+                        "flex gap-2 border-t border-border/60 px-2.5 py-2 text-xs",
+                        hasCommitGraphLoadMoreError
+                          ? "flex-col items-stretch text-muted-foreground/70"
+                          : "items-center justify-center",
+                      )}
+                    >
+                      {hasCommitGraphLoadMoreError ? (
+                        <span className="min-w-0 truncate">{commitGraphLoadMoreDescription}</span>
+                      ) : null}
+                      <div
+                        className={cn(
+                          "grid w-full gap-2",
+                          isCommitGraphFooterSplit ? "grid-cols-2" : "grid-cols-1",
+                        )}
                       >
-                        {isCommitGraphLoadingMore ? (
-                          <RefreshCwIcon className="size-3 animate-spin" />
-                        ) : hasCommitGraphLoadMoreError ? (
-                          <RefreshCwIcon className="size-3" />
+                        {canCommitGraphShowLess ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="xs"
+                            className="min-w-0 justify-center"
+                            aria-label={commitGraphShowLessButtonAriaLabel}
+                            onClick={showLessCommitGraph}
+                          >
+                            <span className="truncate">Show less</span>
+                          </Button>
                         ) : null}
-                        <span>{commitGraphLoadMoreButtonLabel}</span>
-                      </Button>
+                        {shouldShowCommitGraphLoadMore ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="xs"
+                            className="min-w-0 justify-center"
+                            disabled={graphQuery.isFetching && !hasCommitGraphLoadMoreError}
+                            aria-label={commitGraphLoadMoreButtonAriaLabel}
+                            onClick={loadOlderCommitGraph}
+                          >
+                            {isCommitGraphLoadingMore ? (
+                              <RefreshCwIcon className="size-3 animate-spin" />
+                            ) : hasCommitGraphLoadMoreError ? (
+                              <RefreshCwIcon className="size-3" />
+                            ) : null}
+                            <span className="truncate">{commitGraphLoadMoreButtonLabel}</span>
+                          </Button>
+                        ) : null}
+                      </div>
                     </div>
                   ) : null}
                 </div>

@@ -285,6 +285,21 @@ function createVerifiedNativeOutdatedClaudeProvider(): ServerProvider {
   };
 }
 
+function createClaudeUpdateLockFailedProvider(): ServerProvider {
+  return {
+    ...createVerifiedNativeOutdatedClaudeProvider(),
+    updateState: {
+      status: "failed",
+      startedAt: "2026-05-04T10:01:00.000Z",
+      finishedAt: "2026-05-04T10:01:01.000Z",
+      message:
+        "Claude is still running, so Windows cannot replace its executable. Stop Claude processes, close other Claude windows, or end terminal Claude sessions and try again.",
+      output:
+        '#< CLIXML\r\n<Objs Version="1.1.0.1"><S S="Error">Move-Item : Cannot create a file when that file already exists.</S></Objs>',
+    },
+  };
+}
+
 function createClaudeProvider(): ServerProvider {
   return {
     instanceId: ProviderInstanceId.make("claudeAgent"),
@@ -1538,6 +1553,67 @@ describe("GeneralSettingsPanel observability", () => {
     await page.getByRole("button", { name: "Update now" }).click();
 
     expect(updateProvider).toHaveBeenCalledWith({
+      provider: ProviderDriverKind.make("claudeAgent"),
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+    });
+  });
+
+  it("offers a recovery action for Windows Claude update process locks", async () => {
+    const provider = createClaudeUpdateLockFailedProvider();
+    const resolveProviderUpdateBlockers = vi
+      .fn<LocalApi["server"]["resolveProviderUpdateBlockers"]>()
+      .mockResolvedValue({
+        providers: [
+          {
+            ...provider,
+            updateState: {
+              status: "unchanged",
+              startedAt: "2026-05-04T10:02:00.000Z",
+              finishedAt: "2026-05-04T10:02:01.000Z",
+              message: "Stopped 1 process running Claude. Run the update again.",
+              output: null,
+            },
+          },
+        ],
+        stoppedProcessCount: 1,
+        remainingProcessCount: 0,
+        message: "Stopped 1 process running Claude. Run the update again.",
+      });
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      server: {
+        resolveProviderUpdateBlockers,
+      },
+    } as unknown as LocalApi;
+
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [provider],
+    });
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <ProviderSettingsPanel />
+      </AppAtomRegistryProvider>,
+    );
+
+    await page.getByRole("button", { name: "Update available â€” view details" }).click();
+
+    await expect
+      .element(
+        page.getByText(
+          "Claude is running in the background, so Windows cannot replace claude.exe. Stop those Claude processes, then run the update again.",
+        ),
+      )
+      .toBeInTheDocument();
+    await expect.element(page.getByText("#< CLIXML")).not.toBeInTheDocument();
+
+    await page.getByRole("button", { name: "Stop Claude processes" }).click();
+
+    expect(resolveProviderUpdateBlockers).toHaveBeenCalledWith({
       provider: ProviderDriverKind.make("claudeAgent"),
       instanceId: ProviderInstanceId.make("claudeAgent"),
     });

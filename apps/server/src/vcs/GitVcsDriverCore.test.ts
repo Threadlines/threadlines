@@ -885,6 +885,47 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
+    it.effect("reads full commit details separately from graph subjects", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        yield* writeTextFile(cwd, "details.txt", "details\n");
+        yield* git(cwd, ["add", "."]);
+        yield* git(cwd, [
+          "commit",
+          "-m",
+          "Add graph details",
+          "-m",
+          "Copy the complete commit message body from pinned graph details.",
+        ]);
+        yield* git(cwd, [
+          "remote",
+          "add",
+          "origin",
+          "https://github.com/threadlines/threadlines.git",
+        ]);
+        const sha = yield* git(cwd, ["rev-parse", "HEAD"]);
+
+        const details = yield* driver.commitDetails({ cwd, sha });
+
+        assert.strictEqual(details.subject, "Add graph details");
+        assert.strictEqual(
+          details.body,
+          "Copy the complete commit message body from pinned graph details.",
+        );
+        assert.strictEqual(
+          details.message,
+          "Add graph details\n\nCopy the complete commit message body from pinned graph details.",
+        );
+        assert.strictEqual(
+          details.commitUrl,
+          `https://github.com/threadlines/threadlines/commit/${sha}`,
+        );
+      }),
+    );
+
     it.effect("omits symbolic remote HEAD decorations from graph refs", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();

@@ -5,6 +5,8 @@ import * as Layer from "effect/Layer";
 import {
   GitManagerError,
   GitCommandError,
+  type VcsCommitDetailsInput,
+  type VcsCommitDetailsResult,
   type VcsCommitGraphInput,
   type VcsCommitGraphResult,
   type VcsDiscardChangesInput,
@@ -81,6 +83,9 @@ export interface GitWorkflowServiceShape {
   readonly commitGraph: (
     input: VcsCommitGraphInput,
   ) => Effect.Effect<VcsCommitGraphResult, GitCommandError>;
+  readonly commitDetails: (
+    input: VcsCommitDetailsInput,
+  ) => Effect.Effect<VcsCommitDetailsResult, GitCommandError>;
   readonly workingTreeDiff: (
     input: VcsWorkingTreeDiffInput,
   ) => Effect.Effect<VcsWorkingTreeDiffResult, GitCommandError>;
@@ -349,6 +354,10 @@ export const make = Effect.fn("makeGitWorkflowService")(function* () {
         Effect.flatMap((isGitRepository) =>
           isGitRepository ? git.commitGraph(input) : Effect.succeed(nonRepositoryCommitGraph()),
         ),
+      ),
+    commitDetails: (input) =>
+      ensureGitCommand("GitWorkflowService.commitDetails", input.cwd).pipe(
+        Effect.andThen(git.commitDetails(input)),
       ),
     workingTreeDiff: (input) =>
       ensureGitCommand("GitWorkflowService.workingTreeDiff", input.cwd).pipe(

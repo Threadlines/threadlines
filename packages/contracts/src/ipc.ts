@@ -1,6 +1,8 @@
 import type {
   VcsSwitchRefInput,
   VcsSwitchRefResult,
+  VcsCommitDetailsInput,
+  VcsCommitDetailsResult,
   VcsCommitGraphInput,
   VcsCommitGraphResult,
   VcsDiscardChangesInput,
@@ -84,6 +86,7 @@ import type {
   ServerProcessResourceHistoryResult,
   ServerProviderRateLimitResetCreditConsumeInput,
   ServerProviderRateLimitResetCreditConsumeResult,
+  ServerProviderUpdateBlockerResolutionResult,
   ServerProviderUpdateInput,
   ServerProviderUpdatedPayload,
   ServerRemoveKeybindingResult,
@@ -619,6 +622,9 @@ export interface LocalApi {
       input: ServerProviderRateLimitResetCreditConsumeInput,
     ) => Promise<ServerProviderRateLimitResetCreditConsumeResult>;
     updateProvider: (input: ServerProviderUpdateInput) => Promise<ServerProviderUpdatedPayload>;
+    resolveProviderUpdateBlockers: (
+      input: ServerProviderUpdateInput,
+    ) => Promise<ServerProviderUpdateBlockerResolutionResult>;
     upsertKeybinding: (input: ServerUpsertKeybindingInput) => Promise<ServerUpsertKeybindingResult>;
     removeKeybinding: (input: ServerRemoveKeybindingInput) => Promise<ServerRemoveKeybindingResult>;
     getSettings: () => Promise<ServerSettings>;
@@ -725,6 +731,7 @@ export interface EnvironmentApi {
   vcs: {
     listRefs: (input: VcsListRefsInput) => Promise<VcsListRefsResult>;
     commitGraph: (input: VcsCommitGraphInput) => Promise<VcsCommitGraphResult>;
+    commitDetails: (input: VcsCommitDetailsInput) => Promise<VcsCommitDetailsResult>;
     workingTreeDiff: (input: VcsWorkingTreeDiffInput) => Promise<VcsWorkingTreeDiffResult>;
     discardChanges: (input: VcsDiscardChangesInput) => Promise<VcsDiscardChangesResult>;
     stageChanges: (input: VcsStageChangesInput) => Promise<VcsStageChangesResult>;

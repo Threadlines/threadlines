@@ -29,15 +29,13 @@ const isServerProviderUpdateError = Schema.is(ServerProviderUpdateError);
 
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
 const CURSOR_DRIVER = ProviderDriverKind.make("cursor");
+const CLAUDE_DRIVER = ProviderDriverKind.make("claudeAgent");
 const OPENCODE_DRIVER = ProviderDriverKind.make("opencode");
 const CODEX_INSTANCE_ID = ProviderInstanceId.make("codex");
 const CURSOR_INSTANCE_ID = ProviderInstanceId.make("cursor");
+const CLAUDE_INSTANCE_ID = ProviderInstanceId.make("claudeAgent");
 const OPENCODE_INSTANCE_ID = ProviderInstanceId.make("opencode");
 const encoder = new TextEncoder();
-
-afterEach(() => {
-  clearLatestProviderVersionCacheForTests();
-});
 
 function lifecycleFor(provider: ProviderDriverKind): ProviderMaintenanceCapabilities {
   if (provider === CURSOR_DRIVER) {
@@ -79,6 +77,13 @@ const baseCursorProvider: ServerProvider = {
   ...baseProvider,
   instanceId: CURSOR_INSTANCE_ID,
   driver: CURSOR_DRIVER,
+};
+
+const baseClaudeProvider: ServerProvider = {
+  ...baseProvider,
+  instanceId: CLAUDE_INSTANCE_ID,
+  driver: CLAUDE_DRIVER,
+  displayName: "Claude",
 };
 
 const baseOpenCodeProvider: ServerProvider = {
@@ -226,6 +231,16 @@ function makeRegistry(
   });
 }
 
+function claudeWindowsUpdateCapabilities(): ProviderMaintenanceCapabilities {
+  return makeProviderMaintenanceCapabilities({
+    provider: CLAUDE_DRIVER,
+    packageName: "@anthropic-ai/claude-code",
+    updateExecutable: "powershell.exe",
+    updateArgs: ["-NoProfile", "-EncodedCommand", "fake"],
+    updateLockKey: "claude-native-verified-win32",
+  });
+}
+
 const makeTestRunner = (registry: ProviderRegistryShape) =>
   Effect.service(ProviderMaintenanceRunner.ProviderMaintenanceRunner).pipe(
     Effect.provide(
@@ -236,6 +251,10 @@ const makeTestRunner = (registry: ProviderRegistryShape) =>
   );
 
 describe("providerMaintenanceRunner", () => {
+  afterEach(() => {
+    clearLatestProviderVersionCacheForTests();
+  });
+
   it.effect("runs the allowlisted provider update command and records success", () => {
     const calls: Array<{ command: string; args: ReadonlyArray<string> }> = [];
     return Effect.gen(function* () {
@@ -482,6 +501,124 @@ describe("providerMaintenanceRunner", () => {
       ),
     ),
   );
+
+  it.effect("runs the Windows Claude update when no Claude process is active", () => {
+    const calls: string[] = [];
+    return withProcessPlatform(
+      "win32",
+      Effect.gen(function* () {
+        const { registry } = yield* makeRegistry(baseClaudeProvider);
+        const updater = yield* makeTestRunner({
+          ...registry,
+          getProviderMaintenanceCapabilitiesForInstance: () =>
+            Effect.succeed(claudeWindowsUpdateCapabilities()),
+        });
+
+        const result = yield* updater.updateProvider(CLAUDE_DRIVER);
+
+        assert.deepStrictEqual(calls, [
+          "command:powershell.exe preflight",
+          "command:powershell.exe update",
+        ]);
+        assert.strictEqual(result.providers[0]?.updateState?.status, "succeeded");
+      }),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          latestVersionHttpClient("0.0.0"),
+          mockSpawnerLayer((command, args) => {
+            const kind = args.includes("fake") ? "update" : "preflight";
+            calls.push(`command:${command} ${kind}`);
+            return kind === "preflight" ? {} : { stdout: "updated" };
+          }),
+        ),
+      ),
+    );
+  });
+
+  it.effect("blocks the Windows Claude update when claude.exe is active", () => {
+    const calls: string[] = [];
+    return withProcessPlatform(
+      "win32",
+      Effect.gen(function* () {
+        const { registry } = yield* makeRegistry(baseClaudeProvider);
+        const updater = yield* makeTestRunner({
+          ...registry,
+          getProviderMaintenanceCapabilitiesForInstance: () =>
+            Effect.succeed(claudeWindowsUpdateCapabilities()),
+        });
+
+        const result = yield* updater.updateProvider(CLAUDE_DRIVER);
+        const updateState = result.providers[0]?.updateState;
+
+        assert.deepStrictEqual(calls, ["command:powershell.exe preflight"]);
+        assert.strictEqual(updateState?.status, "failed");
+        assert.include(updateState?.message ?? "", "Claude is still running");
+        assert.include(updateState?.output ?? "", "claude.exe");
+      }),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          latestVersionHttpClient("0.0.0"),
+          mockSpawnerLayer((command, args) => {
+            const kind = args.includes("fake") ? "update" : "preflight";
+            calls.push(`command:${command} ${kind}`);
+            if (kind === "preflight") {
+              return {
+                stdout: JSON.stringify({
+                  ProcessId: 1234,
+                  ParentProcessId: 5678,
+                  ExecutablePath: "C:\\Users\\Will\\.local\\bin\\claude.exe",
+                  CommandLine: "claude --output-format stream-json",
+                }),
+              };
+            }
+            return { stdout: "updated" };
+          }),
+        ),
+      ),
+    );
+  });
+
+  it.effect("stops Windows Claude processes that block the native updater", () => {
+    const calls: string[] = [];
+    return withProcessPlatform(
+      "win32",
+      Effect.gen(function* () {
+        const { registry } = yield* makeRegistry(baseClaudeProvider);
+        const updater = yield* makeTestRunner({
+          ...registry,
+          getProviderMaintenanceCapabilitiesForInstance: () =>
+            Effect.succeed(claudeWindowsUpdateCapabilities()),
+        });
+
+        const result = yield* updater.resolveUpdateBlockers(CLAUDE_DRIVER);
+        const updateState = result.providers[0]?.updateState;
+
+        assert.deepStrictEqual(calls, ["command:powershell.exe stop"]);
+        assert.strictEqual(result.stoppedProcessCount, 2);
+        assert.strictEqual(result.remainingProcessCount, 0);
+        assert.strictEqual(updateState?.status, "unchanged");
+        assert.include(updateState?.message ?? "", "Stopped 2 processes");
+      }),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          latestVersionHttpClient("0.0.0"),
+          mockSpawnerLayer((command) => {
+            calls.push(`command:${command} stop`);
+            return {
+              stdout: JSON.stringify({
+                StoppedProcessCount: 2,
+                RemainingProcessCount: 0,
+                Remaining: [],
+              }),
+            };
+          }),
+        ),
+      ),
+    );
+  });
 
   it.effect(
     "marks successful commands as unchanged when the refreshed provider is still outdated",

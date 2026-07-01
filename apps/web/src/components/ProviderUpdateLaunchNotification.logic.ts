@@ -4,6 +4,7 @@ import {
   type ProviderDriverKind,
   type ProviderInstanceId,
   type ServerProvider,
+  type ServerProviderUpdateStatus,
 } from "@threadlines/contracts";
 
 export type ProviderUpdateCandidate = ServerProvider & {
@@ -25,12 +26,30 @@ export interface ProviderUpdateToastView {
 }
 
 export type ProviderUpdateSidebarPillTone = "loading" | "warning" | "error" | "success";
+export type ProviderUpdateSidebarPillItemTone =
+  | "queued"
+  | "running"
+  | "warning"
+  | "error"
+  | "success";
+
+type ProviderUpdateSidebarPillItemStatus = Exclude<ServerProviderUpdateStatus, "idle">;
+
+export interface ProviderUpdateSidebarPillItem {
+  readonly key: string;
+  readonly label: string;
+  readonly status: ProviderUpdateSidebarPillItemStatus;
+  readonly statusLabel: string;
+  readonly tone: ProviderUpdateSidebarPillItemTone;
+}
 
 export interface ProviderUpdateSidebarPillView {
   readonly key: string;
   readonly tone: ProviderUpdateSidebarPillTone;
   readonly title: string;
+  readonly summary?: string;
   readonly description: string;
+  readonly items?: readonly ProviderUpdateSidebarPillItem[];
   readonly dismissible?: boolean;
   readonly dismissAfterVisibleMs?: number;
 }
@@ -90,7 +109,7 @@ function dedupeProvidersByInstanceId<T extends ServerProvider>(providers: Readon
 }
 
 function getProviderUpdatedTitle(provider: Pick<ServerProvider, "driver" | "version">): string {
-  const providerName = PROVIDER_DISPLAY_NAMES[provider.driver] ?? provider.driver;
+  const providerName = getProviderDisplayName(provider);
   return provider.version
     ? `${providerName} updated: ${formatVersion(provider.version)}`
     : `${providerName} updated`;
@@ -105,11 +124,15 @@ function getProviderUpdatedDescription(providerCount: number): string {
 function getProviderFailedUpdateTitle(
   provider: Pick<ServerProvider, "driver" | "versionAdvisory">,
 ): string {
-  const providerName = PROVIDER_DISPLAY_NAMES[provider.driver] ?? provider.driver;
+  const providerName = getProviderDisplayName(provider);
   const attemptedVersion = provider.versionAdvisory?.latestVersion;
   return attemptedVersion
     ? `${providerName} ${formatVersion(attemptedVersion)} update failed`
     : `${providerName} update failed`;
+}
+
+function getProviderDisplayName(provider: Pick<ServerProvider, "driver">): string {
+  return PROVIDER_DISPLAY_NAMES[provider.driver] ?? provider.driver;
 }
 
 export function isProviderUpdateCandidate(
@@ -203,13 +226,16 @@ export function getProviderUpdateInitialToastView(input: {
   readonly updateProviders: ReadonlyArray<ProviderUpdateCandidate>;
   readonly oneClickProviders: ReadonlyArray<ProviderUpdateCandidate>;
 }): ProviderUpdateToastView {
+  const hasMultipleProviders = input.updateProviders.length > 1;
   return {
     phase: "initial",
     type: "warning",
     title: getProviderUpdateInitialToastTitle(input.updateProviders),
     description:
       input.oneClickProviders.length > 0
-        ? "Install the update now or review provider settings."
+        ? hasMultipleProviders
+          ? `${formatProviderList(input.updateProviders)} can be updated.`
+          : "Install the update now or review provider settings."
         : `${formatProviderList(input.updateProviders)} can be updated from provider settings.`,
   };
 }
@@ -219,7 +245,10 @@ export function getProviderUpdateRunningToastView(providerCount: number): Provid
     phase: "running",
     type: "loading",
     title: providerCount === 1 ? "Updating provider" : "Updating providers",
-    description: "Running provider update command.",
+    description:
+      providerCount === 1
+        ? "Running provider update command."
+        : "Progress is shown in the sidebar.",
   };
 }
 
@@ -298,7 +327,7 @@ export function getSingleProviderUpdateProgressToastView(
     providers: [provider],
     providerCount: 1,
   });
-  const providerName = PROVIDER_DISPLAY_NAMES[provider.driver] ?? provider.driver;
+  const providerName = getProviderDisplayName(provider);
 
   switch (view.phase) {
     case "running":
@@ -387,6 +416,117 @@ function latestFinishedAtForProviders(providers: ReadonlyArray<ServerProvider>):
   }, null);
 }
 
+function isProviderUpdateSidebarItemStatus(
+  status: ServerProviderUpdateStatus | undefined,
+): status is ProviderUpdateSidebarPillItemStatus {
+  return (
+    status === "queued" ||
+    status === "running" ||
+    status === "succeeded" ||
+    status === "failed" ||
+    status === "unchanged"
+  );
+}
+
+function getProviderUpdateSidebarItemTone(
+  status: ProviderUpdateSidebarPillItemStatus,
+): ProviderUpdateSidebarPillItemTone {
+  switch (status) {
+    case "queued":
+      return "queued";
+    case "running":
+      return "running";
+    case "succeeded":
+      return "success";
+    case "failed":
+      return "error";
+    case "unchanged":
+      return "warning";
+  }
+}
+
+function getProviderUpdateSidebarStatusLabel(
+  provider: Pick<ServerProvider, "version">,
+  status: ProviderUpdateSidebarPillItemStatus,
+): string {
+  switch (status) {
+    case "queued":
+      return "Queued";
+    case "running":
+      return "Updating";
+    case "succeeded":
+      return provider.version ? formatVersion(provider.version) : "Updated";
+    case "failed":
+      return "Failed";
+    case "unchanged":
+      return "Needs update";
+  }
+}
+
+function collectProviderUpdateSidebarItems(
+  providers: ReadonlyArray<ServerProvider>,
+): ProviderUpdateSidebarPillItem[] {
+  return providers.flatMap((provider) => {
+    const status = provider.updateState?.status;
+    if (!isProviderUpdateSidebarItemStatus(status)) {
+      return [];
+    }
+    return [
+      {
+        key: `${provider.driver}:${status}:${provider.updateState?.finishedAt ?? "pending"}`,
+        label: getProviderDisplayName(provider),
+        status,
+        statusLabel: getProviderUpdateSidebarStatusLabel(provider, status),
+        tone: getProviderUpdateSidebarItemTone(status),
+      },
+    ];
+  });
+}
+
+function formatProviderUpdateSidebarItemDescription(
+  items: ReadonlyArray<ProviderUpdateSidebarPillItem>,
+): string {
+  return items.map((item) => `${item.label} ${item.statusLabel.toLowerCase()}.`).join(" ");
+}
+
+function formatCountLabel(count: number, singular: string, plural: string): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function formatProviderUpdateSidebarSummary(
+  items: ReadonlyArray<ProviderUpdateSidebarPillItem>,
+): string | undefined {
+  const failedCount = items.filter((item) => item.status === "failed").length;
+  if (failedCount > 0) {
+    return formatCountLabel(failedCount, "failed", "failed");
+  }
+
+  const unchangedCount = items.filter((item) => item.status === "unchanged").length;
+  if (unchangedCount > 0) {
+    return formatCountLabel(unchangedCount, "needs attention", "need attention");
+  }
+
+  const activeCount = items.filter(
+    (item) => item.status === "running" || item.status === "queued",
+  ).length;
+  if (activeCount > 0) {
+    return formatCountLabel(activeCount, "active", "active");
+  }
+
+  const succeededCount = items.filter((item) => item.status === "succeeded").length;
+  if (succeededCount > 0) {
+    return formatCountLabel(succeededCount, "done", "done");
+  }
+
+  return undefined;
+}
+
+function optionalProviderUpdateSidebarSummary(
+  summary: string | undefined,
+): { readonly summary: string } | Record<string, never> {
+  return summary === undefined ? {} : { summary };
+}
+
 export function getProviderUpdateSidebarPillView(
   providers: ReadonlyArray<ServerProvider>,
   options?: ProviderUpdateSidebarPillOptions,
@@ -395,22 +535,31 @@ export function getProviderUpdateSidebarPillView(
   const activeProviders = dedupedProviders.filter(isProviderUpdateActive);
   if (activeProviders.length > 0) {
     const activeProvider = activeProviders[0]!;
-    const activeProviderName =
-      PROVIDER_DISPLAY_NAMES[activeProvider.driver] ?? activeProvider.driver;
+    const activeProviderName = getProviderDisplayName(activeProvider);
+    const visibleProviders = dedupedProviders.filter(
+      (provider) =>
+        isProviderUpdateActive(provider) ||
+        isRecentTerminalProvider(provider, options?.visibleAfterIso),
+    );
+    const items = collectProviderUpdateSidebarItems(visibleProviders);
+    const showItemDetails = items.length > 1;
     return {
-      key: `loading:${activeProviders
-        .map((provider) => `${provider.driver}:${provider.updateState?.status ?? "idle"}`)
+      key: `loading:${visibleProviders
+        .map(
+          (provider) =>
+            `${provider.driver}:${provider.updateState?.status ?? "idle"}:${provider.updateState?.finishedAt ?? "pending"}`,
+        )
         .toSorted()
         .join("|")}`,
       tone: "loading",
-      title:
-        activeProviders.length === 1
-          ? `Updating ${activeProviderName}`
-          : `Updating ${activeProviders.length} providers`,
-      description:
-        activeProviders.length === 1
-          ? `${formatProviderList(activeProviders)} update in progress.`
-          : `${formatProviderList(activeProviders)} updates are in progress.`,
+      title: showItemDetails ? "Provider updates" : `Updating ${activeProviderName}`,
+      ...(showItemDetails
+        ? optionalProviderUpdateSidebarSummary(formatProviderUpdateSidebarSummary(items))
+        : {}),
+      description: showItemDetails
+        ? formatProviderUpdateSidebarItemDescription(items)
+        : `${formatProviderList(activeProviders)} update in progress.`,
+      ...(items.length > 0 ? { items } : {}),
     };
   }
 
@@ -424,6 +573,7 @@ export function getProviderUpdateSidebarPillView(
   );
   if (failedProviders.length > 0) {
     const failedProvider = failedProviders[0]!;
+    const items = collectProviderUpdateSidebarItems(failedProviders);
     terminalCandidates.push({
       key: `failed:${failedProviders
         .map(
@@ -437,7 +587,11 @@ export function getProviderUpdateSidebarPillView(
         failedProviders.length === 1
           ? getProviderFailedUpdateTitle(failedProvider)
           : `${failedProviders.length} provider updates failed`,
+      ...(failedProviders.length > 1
+        ? optionalProviderUpdateSidebarSummary(formatProviderUpdateSidebarSummary(items))
+        : {}),
       description: getFailedProviderUpdateDescription(failedProviders),
+      ...(items.length > 0 ? { items } : {}),
       dismissible: true,
     });
   }
@@ -447,8 +601,8 @@ export function getProviderUpdateSidebarPillView(
   );
   if (unchangedProviders.length > 0) {
     const unchangedProvider = unchangedProviders[0]!;
-    const unchangedProviderName =
-      PROVIDER_DISPLAY_NAMES[unchangedProvider.driver] ?? unchangedProvider.driver;
+    const unchangedProviderName = getProviderDisplayName(unchangedProvider);
+    const items = collectProviderUpdateSidebarItems(unchangedProviders);
     terminalCandidates.push({
       key: `unchanged:${unchangedProviders
         .map(
@@ -462,9 +616,13 @@ export function getProviderUpdateSidebarPillView(
         unchangedProviders.length === 1
           ? `${unchangedProviderName} still needs an update`
           : `${unchangedProviders.length} providers still need updates`,
+      ...(unchangedProviders.length > 1
+        ? optionalProviderUpdateSidebarSummary(formatProviderUpdateSidebarSummary(items))
+        : {}),
       description: `${formatProviderList(unchangedProviders)} ${
         unchangedProviders.length === 1 ? "still appears" : "still appear"
       } outdated. Review provider settings for details.`,
+      ...(items.length > 0 ? { items } : {}),
       dismissible: true,
     });
   }
@@ -474,6 +632,7 @@ export function getProviderUpdateSidebarPillView(
   );
   if (succeededProviders.length > 0) {
     const succeededProvider = succeededProviders[0]!;
+    const items = collectProviderUpdateSidebarItems(succeededProviders);
     terminalCandidates.push({
       key: `succeeded:${succeededProviders
         .map(
@@ -485,9 +644,13 @@ export function getProviderUpdateSidebarPillView(
       tone: "success",
       title:
         succeededProviders.length === 1
-          ? getProviderUpdatedTitle(succeededProvider)
+          ? `${getProviderDisplayName(succeededProvider)} updated`
           : `${succeededProviders.length} providers updated`,
+      ...(succeededProviders.length > 1
+        ? optionalProviderUpdateSidebarSummary(formatProviderUpdateSidebarSummary(items))
+        : {}),
       description: getProviderUpdatedDescription(succeededProviders.length),
+      ...(items.length > 0 ? { items } : {}),
       dismissAfterVisibleMs: PROVIDER_UPDATE_SUCCESS_VISIBLE_MS,
     });
   }
@@ -520,10 +683,10 @@ function getProviderUpdateInitialToastTitle(
 ): string {
   if (providers.length === 1) {
     const provider = providers[0]!;
-    const providerName = PROVIDER_DISPLAY_NAMES[provider.driver] ?? provider.driver;
+    const providerName = getProviderDisplayName(provider);
     return `Update Available: ${providerName} ${formatVersion(provider.versionAdvisory.latestVersion)}`;
   }
-  return `Updates Available: ${providers.length} providers`;
+  return "Updates available";
 }
 
 function getFailedProviderUpdateDescription(providers: ReadonlyArray<ServerProvider>): string {

@@ -440,12 +440,7 @@ describe("ClaudeAdapterLive", () => {
   it.effect("forwards configured Claude fallback model chains into query options", () => {
     const harness = makeHarness({
       claudeConfig: {
-        fallbackModel: [
-          "claude-sonnet-4-6",
-          "claude-opus-4-8",
-          "claude-haiku-4-5",
-          "claude-fable-5",
-        ],
+        fallbackModel: ["claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5", "claude-fable-5"],
       },
     });
     return Effect.gen(function* () {
@@ -455,7 +450,7 @@ describe("ClaudeAdapterLive", () => {
         provider: ProviderDriverKind.make("claudeAgent"),
         modelSelection: createModelSelection(
           ProviderInstanceId.make("claudeAgent"),
-          "claude-sonnet-4-6",
+          "claude-sonnet-5",
         ),
         runtimeMode: "full-access",
       });
@@ -620,6 +615,53 @@ describe("ClaudeAdapterLive", () => {
       const createInput = harness.getLastCreateQueryInput();
       assert.equal(createInput?.options.model, "claude-opus-4-8[1m]");
       assert.equal(createInput?.options.effort, "high");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("uses high effort and bare model id for Claude Sonnet 5 by default", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "claude-sonnet-5",
+        },
+        runtimeMode: "full-access",
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      assert.equal(createInput?.options.model, "claude-sonnet-5");
+      assert.equal(createInput?.options.effort, "high");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("forwards max effort for Claude Sonnet 5", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-sonnet-5",
+          [{ id: "effort", value: "max" }],
+        ),
+        runtimeMode: "full-access",
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      assert.equal(createInput?.options.model, "claude-sonnet-5");
+      assert.equal(createInput?.options.effort, "max");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

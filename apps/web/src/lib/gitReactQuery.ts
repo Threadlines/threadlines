@@ -27,6 +27,8 @@ export const gitQueryKeys = {
     ["git", "commit-graph", environmentId ?? null, cwd] as const,
   commitGraph: (environmentId: EnvironmentId | null, cwd: string | null, limit: number) =>
     ["git", "commit-graph", environmentId ?? null, cwd, limit] as const,
+  commitDetails: (environmentId: EnvironmentId | null, cwd: string | null, sha: string | null) =>
+    ["git", "commit-details", environmentId ?? null, cwd, sha] as const,
   workingTreeDiffPrefix: (environmentId: EnvironmentId | null, cwd: string | null) =>
     ["git", "working-tree-diff", environmentId ?? null, cwd] as const,
   workingTreeDiff: (
@@ -192,6 +194,32 @@ export function gitCommitGraphQueryOptions(input: {
     placeholderData: keepPreviousData,
     staleTime: 10_000,
     refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
+  });
+}
+
+export function gitCommitDetailsQueryOptions(input: {
+  environmentId: EnvironmentId | null;
+  cwd: string | null;
+  sha: string | null;
+  enabled?: boolean;
+}) {
+  return queryOptions({
+    queryKey: gitQueryKeys.commitDetails(input.environmentId, input.cwd, input.sha),
+    queryFn: async () => {
+      if (!input.cwd || !input.environmentId || !input.sha) {
+        throw new Error("Commit details are unavailable.");
+      }
+      const api = ensureEnvironmentApi(input.environmentId);
+      return api.vcs.commitDetails({ cwd: input.cwd, sha: input.sha });
+    },
+    enabled:
+      input.environmentId !== null &&
+      input.cwd !== null &&
+      input.sha !== null &&
+      (input.enabled ?? true),
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
     refetchOnReconnect: true,
   });
 }

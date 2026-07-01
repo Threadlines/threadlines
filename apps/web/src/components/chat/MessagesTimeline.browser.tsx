@@ -285,6 +285,17 @@ describe("MessagesTimeline", () => {
 
       const outputPanel = document.querySelector<HTMLElement>('[data-command-output="true"]');
       expect(outputPanel).not.toBeNull();
+      const outputPre = outputPanel!.querySelector<HTMLElement>("pre");
+      const copyButton = document.querySelector<HTMLElement>(
+        'button[aria-label="Copy command output"]',
+      );
+      expect(outputPre).not.toBeNull();
+      expect(copyButton).not.toBeNull();
+
+      const outputPreRect = outputPre!.getBoundingClientRect();
+      const copyButtonRect = copyButton!.getBoundingClientRect();
+      expect(outputPreRect.right - copyButtonRect.right).toBeGreaterThanOrEqual(10);
+
       outputPanel!.click();
 
       await expect.element(page.getByRole("button", { name: "Hide command output" })).toBeVisible();

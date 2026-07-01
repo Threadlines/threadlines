@@ -1,6 +1,6 @@
 import { useNavigate } from "@tanstack/react-router";
 import { DownloadIcon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { type ProviderDriverKind, type ProviderInstanceId } from "@threadlines/contracts";
 
 import { ensureLocalApi } from "../localApi";
@@ -31,8 +31,21 @@ type ActiveProviderUpdateToast =
       readonly key: string;
       readonly toastId: ProviderUpdateToastId;
       readonly providerInstanceIds: ReadonlySet<ProviderInstanceId>;
+      readonly providerDrivers: readonly ProviderDriverKind[];
       readonly providerCount: number;
     };
+
+type ProviderUpdateToastIconProvider = { readonly driver: ProviderDriverKind };
+
+function ProviderUpdateToastBaseIcon({ provider }: { provider: ProviderDriverKind }) {
+  const ProviderIcon = PROVIDER_ICON_BY_PROVIDER[provider];
+
+  if (!ProviderIcon) {
+    return <DownloadIcon aria-hidden="true" className="size-3.5 text-success" strokeWidth={2.5} />;
+  }
+
+  return <ProviderIcon aria-hidden="true" className="size-4" />;
+}
 
 function ProviderUpdateToastIcon({ provider }: { provider: ProviderDriverKind }) {
   const ProviderIcon = PROVIDER_ICON_BY_PROVIDER[provider];
@@ -55,10 +68,52 @@ function ProviderUpdateToastIcon({ provider }: { provider: ProviderDriverKind })
   );
 }
 
+function ProviderUpdateToastIconStack({
+  providers,
+}: {
+  providers: ReadonlyArray<ProviderUpdateToastIconProvider>;
+}) {
+  if (providers.length === 0) {
+    return <DownloadIcon aria-hidden="true" className="size-4 text-success" strokeWidth={2.5} />;
+  }
+
+  if (providers.length === 1) {
+    return <ProviderUpdateToastIcon provider={providers[0]!.driver} />;
+  }
+
+  const visibleProviders = providers.slice(0, 3);
+  return (
+    <span
+      aria-hidden="true"
+      className="relative inline-flex h-5 min-w-8 shrink-0 items-center justify-start"
+    >
+      <span className="flex -space-x-1.5">
+        {visibleProviders.map((provider, index) => (
+          <span
+            className="inline-flex size-5 items-center justify-center rounded-full border border-popover bg-popover text-muted-foreground shadow-sm/10"
+            key={provider.driver}
+            style={{ zIndex: visibleProviders.length - index }}
+          >
+            <ProviderUpdateToastBaseIcon provider={provider.driver} />
+          </span>
+        ))}
+      </span>
+      <span className="absolute -right-0.5 -bottom-1 inline-flex size-3.5 items-center justify-center rounded-full border border-popover bg-popover">
+        <DownloadIcon aria-hidden="true" className="size-3 text-success" strokeWidth={2.5} />
+      </span>
+    </span>
+  );
+}
+
+function providerUpdateToastIconForDrivers(drivers: readonly ProviderDriverKind[]): ReactNode {
+  return <ProviderUpdateToastIconStack providers={drivers.map((driver) => ({ driver }))} />;
+}
+
 function updateProviderUpdateToast(input: {
   readonly toastId: ProviderUpdateToastId;
   readonly view: ProviderUpdateToastView;
   readonly openSettings: () => void;
+  readonly leadingIcon?: ReactNode;
 }) {
   if (input.view.type === "loading" || input.view.type === "success") {
     toastManager.update(input.toastId, {
@@ -69,6 +124,7 @@ function updateProviderUpdateToast(input: {
       actionProps: undefined,
       data: {
         hideCopyButton: true,
+        ...(input.leadingIcon !== undefined ? { leadingIcon: input.leadingIcon } : {}),
         ...(input.view.dismissAfterVisibleMs !== undefined
           ? { dismissAfterVisibleMs: input.view.dismissAfterVisibleMs }
           : {}),
@@ -91,6 +147,7 @@ function updateProviderUpdateToast(input: {
       actionVariant: "outline",
       data: {
         hideCopyButton: true,
+        ...(input.leadingIcon !== undefined ? { leadingIcon: input.leadingIcon } : {}),
       },
     }),
   );
@@ -151,6 +208,7 @@ export function ProviderUpdateLaunchNotification() {
       toastId: activeToast.toastId,
       view,
       openSettings: () => openProviderSettings(activeToast.toastId),
+      leadingIcon: providerUpdateToastIconForDrivers(activeToast.providerDrivers),
     });
 
     if (isTerminalProviderUpdateToastView(view)) {
@@ -193,11 +251,13 @@ export function ProviderUpdateLaunchNotification() {
 
       const providerCount = oneClickProviders.length;
       const providerInstanceIds = new Set(oneClickProviders.map((provider) => provider.instanceId));
+      const providerDrivers = oneClickProviders.map((provider) => provider.driver);
       activeToastRef.current = {
         kind: "update",
         key: notificationKey,
         toastId,
         providerInstanceIds,
+        providerDrivers,
         providerCount,
       };
 
@@ -205,6 +265,7 @@ export function ProviderUpdateLaunchNotification() {
         toastId,
         view: getProviderUpdateRunningToastView(providerCount),
         openSettings,
+        leadingIcon: providerUpdateToastIconForDrivers(providerDrivers),
       });
 
       void Promise.allSettled(
@@ -226,6 +287,7 @@ export function ProviderUpdateLaunchNotification() {
             toastId,
             view: getProviderUpdateRejectedToastView(providerCount, rejectedMessage),
             openSettings,
+            leadingIcon: providerUpdateToastIconForDrivers(activeUpdateToast.providerDrivers),
           });
           activeToastRef.current = null;
           return;
@@ -243,6 +305,7 @@ export function ProviderUpdateLaunchNotification() {
           toastId,
           view,
           openSettings,
+          leadingIcon: providerUpdateToastIconForDrivers(activeUpdateToast.providerDrivers),
         });
 
         if (isTerminalProviderUpdateToastView(view)) {
@@ -270,8 +333,8 @@ export function ProviderUpdateLaunchNotification() {
         actionVariant: oneClickProviders.length > 0 ? "default" : "outline",
         data: {
           leadingIcon:
-            updateProviders.length === 1 ? (
-              <ProviderUpdateToastIcon provider={updateProviders[0]!.driver} />
+            updateProviders.length > 0 ? (
+              <ProviderUpdateToastIconStack providers={updateProviders} />
             ) : undefined,
           hideCopyButton: true,
           onClose: dismissPrompt,

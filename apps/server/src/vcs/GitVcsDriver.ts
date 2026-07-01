@@ -14,6 +14,8 @@ import {
   VcsProcessExitError,
   type VcsSwitchRefInput,
   type VcsSwitchRefResult,
+  type VcsCommitDetailsInput,
+  type VcsCommitDetailsResult,
   type VcsCommitGraphInput,
   type VcsCommitGraphResult,
   type VcsDiscardChangesInput,
@@ -221,6 +223,9 @@ export interface GitVcsDriverShape {
   readonly commitGraph: (
     input: VcsCommitGraphInput,
   ) => Effect.Effect<VcsCommitGraphResult, GitCommandError>;
+  readonly commitDetails: (
+    input: VcsCommitDetailsInput,
+  ) => Effect.Effect<VcsCommitDetailsResult, GitCommandError>;
   readonly workingTreeDiff: (
     input: VcsWorkingTreeDiffInput,
   ) => Effect.Effect<VcsWorkingTreeDiffResult, GitCommandError>;

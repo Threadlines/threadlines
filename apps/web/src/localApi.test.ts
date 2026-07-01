@@ -98,6 +98,7 @@ const rpcClientMock = {
     refreshProviders: vi.fn(),
     consumeProviderRateLimitResetCredit: vi.fn(),
     updateProvider: vi.fn(),
+    resolveProviderUpdateBlockers: vi.fn(),
     upsertKeybinding: vi.fn(),
     getSettings: vi.fn(),
     updateSettings: vi.fn(),
@@ -587,6 +588,44 @@ describe("wsApi", () => {
     });
     expect(rpcClientMock.server.updateProvider).toHaveBeenCalledWith({
       provider: ProviderDriverKind.make("codex"),
+    });
+  });
+
+  it("forwards provider update blocker resolution directly to the RPC client", async () => {
+    const nextProviders: ReadonlyArray<ServerProvider> = [
+      {
+        ...defaultProviders[0]!,
+        updateState: {
+          status: "unchanged",
+          startedAt: "2026-01-03T00:00:00.000Z",
+          finishedAt: "2026-01-03T00:00:01.000Z",
+          message: "Stopped 1 process for Claude. Run the update again.",
+          output: null,
+        },
+      },
+    ];
+    rpcClientMock.server.resolveProviderUpdateBlockers.mockResolvedValue({
+      providers: nextProviders,
+      stoppedProcessCount: 1,
+      remainingProcessCount: 0,
+      message: "Stopped 1 process for Claude. Run the update again.",
+    });
+    const { createLocalApi } = await import("./localApi");
+
+    const api = createLocalApi(rpcClientMock as never);
+
+    await expect(
+      api.server.resolveProviderUpdateBlockers({
+        provider: ProviderDriverKind.make("claudeAgent"),
+      }),
+    ).resolves.toEqual({
+      providers: nextProviders,
+      stoppedProcessCount: 1,
+      remainingProcessCount: 0,
+      message: "Stopped 1 process for Claude. Run the update again.",
+    });
+    expect(rpcClientMock.server.resolveProviderUpdateBlockers).toHaveBeenCalledWith({
+      provider: ProviderDriverKind.make("claudeAgent"),
     });
   });
 

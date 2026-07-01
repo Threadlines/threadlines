@@ -712,6 +712,15 @@ export const ServerProviderUpdateInput = Schema.Struct({
 });
 export type ServerProviderUpdateInput = typeof ServerProviderUpdateInput.Type;
 
+export const ServerProviderUpdateBlockerResolutionResult = Schema.Struct({
+  providers: ServerProviders,
+  stoppedProcessCount: NonNegativeInt,
+  remainingProcessCount: NonNegativeInt,
+  message: TrimmedNonEmptyString,
+});
+export type ServerProviderUpdateBlockerResolutionResult =
+  typeof ServerProviderUpdateBlockerResolutionResult.Type;
+
 export class ServerProviderRateLimitResetCreditError extends Schema.TaggedErrorClass<ServerProviderRateLimitResetCreditError>()(
   "ServerProviderRateLimitResetCreditError",
   {

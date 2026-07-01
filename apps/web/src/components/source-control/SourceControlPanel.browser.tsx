@@ -6,6 +6,7 @@ import {
   type GitRunStackedActionResult,
   type EnvironmentApi,
   type LocalApi,
+  type VcsCommitDetailsResult,
   type VcsCommitGraphResult,
   type VcsStatusResult,
 } from "@threadlines/contracts";
@@ -173,6 +174,17 @@ const GRAPH: VcsCommitGraphResult = {
   ],
 };
 
+const COMMIT_DETAILS: VcsCommitDetailsResult = {
+  sha: "abc1234abc1234abc1234abc1234abc1234abc1234",
+  shortSha: "abc1234",
+  subject: "Polish source control graph",
+  body: "Show full commit messages when a graph commit is pinned.",
+  message:
+    "Polish source control graph\n\nShow full commit messages when a graph commit is pinned.",
+  commitUrl:
+    "https://github.com/threadlines/threadlines/commit/abc1234abc1234abc1234abc1234abc1234abc1234",
+};
+
 function createDeferredPromise<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -236,6 +248,7 @@ function makeEnvironmentApi(
         ],
       })),
       commitGraph: vi.fn(async () => GRAPH),
+      commitDetails: vi.fn(async () => COMMIT_DETAILS),
       discardChanges: vi.fn(async (input: { readonly filePaths: string[] }) => ({
         discardedPaths: input.filePaths,
       })),
@@ -1330,7 +1343,7 @@ describe("SourceControlPanel commit graph", () => {
     }
   });
 
-  it("marks truncated commit graph counts", async () => {
+  it("shows compact commit graph counts", async () => {
     const mounted = await renderPanel({
       environmentApi: makeEnvironmentApi({
         vcs: {
@@ -1341,26 +1354,35 @@ describe("SourceControlPanel commit graph", () => {
 
     try {
       await expect.element(page.getByText("Polish source control graph")).toBeVisible();
-      await expect.element(page.getByText(`${GRAPH.commits.length} commits+`)).toBeVisible();
+      await expect.element(page.getByText(`${GRAPH.commits.length} shown`)).toBeVisible();
     } finally {
       await mounted.cleanup();
     }
   });
 
   it("loads older commits from the truncated graph footer", async () => {
-    const olderCommit: VcsCommitGraphResult["commits"][number] = {
-      sha: "9999999999999999999999999999999999999999",
-      shortSha: "9999999",
-      parents: [],
-      refs: [],
-      subject: "Historical cleanup",
-      authorName: "Margaret Hamilton",
-      committedAt: "2026-05-22T12:00:00.000Z",
+    const makeCommit = (index: number): VcsCommitGraphResult["commits"][number] => {
+      const sha = (index + 1).toString(16).padStart(40, "0");
+      const parentSha = index >= 47 ? null : (index + 2).toString(16).padStart(40, "0");
+      return {
+        sha,
+        shortSha: sha.slice(0, 7),
+        parents: parentSha ? [parentSha] : [],
+        refs: index === 0 ? ["main", "origin/main"] : [],
+        subject: index === 0 ? "Polish source control graph" : `Graph commit ${index + 1}`,
+        authorName: index < 24 ? "Ada Lovelace" : "Margaret Hamilton",
+        committedAt: new Date(Date.UTC(2026, 4, 25 - index, 12)).toISOString(),
+      };
     };
+    const latestCommits = Array.from({ length: 24 }, (_, index) => makeCommit(index));
+    const olderCommits = Array.from({ length: 24 }, (_, index) => ({
+      ...makeCommit(index + 24),
+      subject: index === 0 ? "Historical cleanup" : `Historical cleanup ${index + 1}`,
+    }));
     const commitGraph: EnvironmentApi["vcs"]["commitGraph"] = vi.fn(async (input) =>
       input.limit === 24
-        ? { ...GRAPH, truncated: true }
-        : { commits: [...GRAPH.commits, olderCommit], truncated: false },
+        ? { commits: latestCommits, truncated: true }
+        : { commits: [...latestCommits, ...olderCommits], truncated: false },
     );
     const mounted = await renderPanel({
       environmentApi: makeEnvironmentApi({ vcs: { commitGraph } }),
@@ -1368,15 +1390,27 @@ describe("SourceControlPanel commit graph", () => {
 
     try {
       await expect.element(page.getByText("Polish source control graph")).toBeVisible();
-      await expect.element(page.getByRole("button", { name: "Load older commits" })).toBeVisible();
+      await expect
+        .element(page.getByRole("button", { name: "Load 24 older commits" }))
+        .toBeVisible();
 
-      await page.getByRole("button", { name: "Load older commits" }).click();
+      await page.getByRole("button", { name: "Load 24 older commits" }).click();
 
       await vi.waitFor(() => {
         expect(commitGraph).toHaveBeenLastCalledWith({ cwd: CWD, limit: 48 });
       });
       await expect.element(page.getByText("Historical cleanup")).toBeVisible();
-      expect(document.body.textContent).not.toContain("Load older commits");
+      expect(document.body.textContent).not.toContain("Load 24 more");
+      await expect
+        .element(page.getByRole("button", { name: "Show 24 fewer commits" }))
+        .toBeVisible();
+
+      await page.getByRole("button", { name: "Show 24 fewer commits" }).click();
+
+      await expect.element(page.getByText("Historical cleanup")).not.toBeInTheDocument();
+      await expect
+        .element(page.getByRole("button", { name: "Load 24 older commits" }))
+        .toBeVisible();
     } finally {
       await mounted.cleanup();
     }
@@ -1400,6 +1434,145 @@ describe("SourceControlPanel commit graph", () => {
       await vi.waitFor(() => {
         expect(writeText).toHaveBeenCalledWith("abc1234abc1234abc1234abc1234abc1234abc1234");
       });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("pins commit details on click and loads the full message body", async () => {
+    const commitDetails: EnvironmentApi["vcs"]["commitDetails"] = vi.fn(async () => COMMIT_DETAILS);
+    const mounted = await renderPanel({
+      environmentApi: makeEnvironmentApi({ vcs: { commitDetails } }),
+    });
+
+    try {
+      await page
+        .getByRole("button", { name: "Commit abc1234: Polish source control graph" })
+        .click();
+
+      await vi.waitFor(() => {
+        expect(commitDetails).toHaveBeenCalledWith({
+          cwd: CWD,
+          sha: "abc1234abc1234abc1234abc1234abc1234abc1234",
+        });
+      });
+      await expect
+        .element(page.getByText("Show full commit messages when a graph commit is pinned."))
+        .toBeVisible();
+      await expect.element(page.getByText("Copy full message")).toBeVisible();
+
+      gitActionMock.toastAdd.mockClear();
+      await page.getByRole("button", { name: "Copy full message" }).click();
+      await vi.waitFor(() => {
+        expect(writeText).toHaveBeenCalledWith(COMMIT_DETAILS.message);
+      });
+      await expect.element(page.getByRole("button", { name: "Copied" })).toBeVisible();
+      expect(gitActionMock.toastAdd).not.toHaveBeenCalled();
+
+      await page
+        .getByRole("button", { name: "Commit abc1234: Polish source control graph" })
+        .click();
+
+      await expect
+        .element(page.getByText("Show full commit messages when a graph commit is pinned."))
+        .not.toBeInTheDocument();
+
+      await page
+        .getByRole("button", { name: "Commit abc1234: Polish source control graph" })
+        .click();
+      await expect
+        .element(page.getByText("Show full commit messages when a graph commit is pinned."))
+        .toBeVisible();
+
+      const graphScroller = document.querySelector<HTMLElement>(
+        "[data-commit-graph-scroll-container]",
+      );
+      expect(graphScroller).toBeInstanceOf(HTMLElement);
+      if (!graphScroller) {
+        throw new Error("Graph scroller was not rendered.");
+      }
+      Object.defineProperty(graphScroller, "scrollTop", {
+        configurable: true,
+        value: 0,
+        writable: true,
+      });
+      graphScroller.scrollTop = 6;
+      graphScroller.dispatchEvent(new Event("scroll"));
+      await expect
+        .element(page.getByText("Show full commit messages when a graph commit is pinned."))
+        .toBeVisible();
+
+      graphScroller.scrollTop = 18;
+      graphScroller.dispatchEvent(new Event("scroll"));
+      await expect
+        .element(page.getByText("Show full commit messages when a graph commit is pinned."))
+        .not.toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("pins loaded older commits with a selected border and full message fallback", async () => {
+    const makeCommit = (
+      index: number,
+      overrides: Partial<VcsCommitGraphResult["commits"][number]> = {},
+    ): VcsCommitGraphResult["commits"][number] => {
+      const sha = `loaded${index.toString().padStart(34, "0")}`;
+      return {
+        sha,
+        shortSha: sha.slice(0, 7),
+        parents: [],
+        refs: index === 0 ? ["main"] : [],
+        subject: `Graph commit ${index + 1}`,
+        authorName: "Ada Lovelace",
+        committedAt: new Date(Date.UTC(2026, 4, 25 - index, 12)).toISOString(),
+        ...overrides,
+      };
+    };
+    const latestCommits = Array.from({ length: 24 }, (_, index) => makeCommit(index));
+    const olderCommit = makeCommit(24, {
+      subject: "Historical cleanup",
+      authorName: "Margaret Hamilton",
+    });
+    const olderMessage =
+      "Historical cleanup keeps the full one-line message visible in pinned graph details.";
+    const commitGraph: EnvironmentApi["vcs"]["commitGraph"] = vi.fn(async (input) =>
+      input.limit === 24
+        ? { commits: latestCommits, truncated: true }
+        : { commits: [...latestCommits, olderCommit], truncated: false },
+    );
+    const commitDetails: EnvironmentApi["vcs"]["commitDetails"] = vi.fn(async (input) =>
+      input.sha === olderCommit.sha
+        ? {
+            sha: olderCommit.sha,
+            shortSha: olderCommit.shortSha,
+            subject: olderCommit.subject,
+            body: "",
+            message: olderMessage,
+            commitUrl: null,
+          }
+        : COMMIT_DETAILS,
+    );
+    const mounted = await renderPanel({
+      environmentApi: makeEnvironmentApi({ vcs: { commitDetails, commitGraph } }),
+    });
+
+    try {
+      await page.getByRole("button", { name: "Load 24 older commits" }).click();
+      await expect.element(page.getByText("Historical cleanup")).toBeVisible();
+
+      await page.getByText("Historical cleanup").click();
+
+      await vi.waitFor(() => {
+        expect(commitDetails).toHaveBeenCalledWith({ cwd: CWD, sha: olderCommit.sha });
+      });
+      const pinnedRow = document.querySelector(
+        `[aria-label="Commit ${olderCommit.shortSha}: Historical cleanup"]`,
+      );
+      expect(pinnedRow).toBeInstanceOf(HTMLElement);
+      expect(pinnedRow?.className).toContain("ring-primary/80");
+      await expect.element(page.getByText(olderMessage)).toBeVisible();
+      await expect.element(page.getByText("No commit message.")).not.toBeInTheDocument();
     } finally {
       await mounted.cleanup();
     }
@@ -1630,6 +1803,106 @@ describe("SourceControlPanel commit graph", () => {
 
       await vi.waitFor(() => {
         expect(writeText).toHaveBeenCalledWith("abc1234abc1234abc1234abc1234abc1234abc1234");
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("copies the full commit message from the graph context menu", async () => {
+    const showContextMenu = vi.fn(async () => "copy-full-message" as const);
+    const commitDetails: EnvironmentApi["vcs"]["commitDetails"] = vi.fn(async () => COMMIT_DETAILS);
+    window.nativeApi = {
+      shell: {
+        openInEditor: vi.fn(async () => undefined),
+        openExternal: vi.fn(async () => undefined),
+      },
+      server: { getConfig: vi.fn(async () => ({ availableEditors: ["cursor"] })) },
+      contextMenu: { show: showContextMenu },
+    } as unknown as LocalApi;
+    const mounted = await renderPanel({
+      environmentApi: makeEnvironmentApi({ vcs: { commitDetails } }),
+    });
+
+    try {
+      await expect.element(page.getByText("Polish source control graph")).toBeVisible();
+      const row = document.querySelector(
+        '[aria-label="Commit abc1234: Polish source control graph"]',
+      );
+      expect(row).toBeInstanceOf(HTMLElement);
+
+      row?.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 160,
+          clientY: 180,
+        }),
+      );
+
+      await vi.waitFor(() => {
+        expect(showContextMenu).toHaveBeenCalledWith(
+          expect.arrayContaining([
+            { id: "copy-full-sha", label: "Copy commit id" },
+            { id: "copy-title", label: "Copy title" },
+            { id: "copy-full-message", label: "Copy full message" },
+          ]),
+          { x: 160, y: 180 },
+        );
+      });
+      await vi.waitFor(() => {
+        expect(commitDetails).toHaveBeenCalledWith({
+          cwd: CWD,
+          sha: "abc1234abc1234abc1234abc1234abc1234abc1234",
+        });
+        expect(writeText).toHaveBeenCalledWith(COMMIT_DETAILS.message);
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens a GitHub commit from the graph context menu", async () => {
+    const showContextMenu = vi.fn(async () => "open-commit" as const);
+    const openExternal = vi.fn(async () => undefined);
+    window.nativeApi = {
+      shell: { openInEditor: vi.fn(async () => undefined), openExternal },
+      server: { getConfig: vi.fn(async () => ({ availableEditors: ["cursor"] })) },
+      contextMenu: { show: showContextMenu },
+    } as unknown as LocalApi;
+    const mounted = await renderPanel({
+      status: makeStatus({
+        sourceControlProvider: {
+          kind: "github",
+          name: "GitHub",
+          baseUrl: "https://github.com",
+        },
+      }),
+    });
+
+    try {
+      const row = document.querySelector(
+        '[aria-label="Commit abc1234: Polish source control graph"]',
+      );
+      expect(row).toBeInstanceOf(HTMLElement);
+
+      row?.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 160,
+          clientY: 180,
+        }),
+      );
+
+      await vi.waitFor(() => {
+        expect(showContextMenu).toHaveBeenCalledWith(
+          expect.arrayContaining([{ id: "open-commit", label: "Open on GitHub" }]),
+          { x: 160, y: 180 },
+        );
+      });
+      await vi.waitFor(() => {
+        expect(openExternal).toHaveBeenCalledWith(COMMIT_DETAILS.commitUrl);
       });
     } finally {
       await mounted.cleanup();

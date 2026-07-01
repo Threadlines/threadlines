@@ -4134,7 +4134,7 @@ const CommandOutputCopyButton = memo(function CommandOutputCopyButton({ text }: 
       variant="ghost"
       aria-label="Copy command output"
       tooltip={isCopied ? "Copied" : "Copy command output"}
-      className="absolute top-1.5 right-1.5 size-5 rounded-md border border-border/45 bg-background/85 text-muted-foreground/70 opacity-80 shadow-sm hover:bg-accent/75 hover:text-foreground hover:opacity-100 focus-visible:opacity-100 group-hover/command-output:opacity-100"
+      className="absolute top-1.5 right-3 size-5 rounded-md border border-border/45 bg-background/85 text-muted-foreground/70 opacity-80 shadow-sm hover:bg-accent/75 hover:text-foreground hover:opacity-100 focus-visible:opacity-100 group-hover/command-output:opacity-100"
       disabled={isCopied || text.length === 0}
       onClick={(event) => {
         event.stopPropagation();
@@ -4345,7 +4345,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       {hasExpandableOutput && isOutputExpanded ? (
         <div className={cn("mt-1", detailIndent)} data-command-output="true">
           <div className="group/command-output relative">
-            <pre className="max-h-52 overflow-y-auto rounded-md border border-border/45 bg-background/70 px-2 py-1.5 pr-8 font-mono text-[11px] leading-4 whitespace-pre-wrap wrap-break-word text-muted-foreground/80">
+            <pre className="max-h-52 overflow-y-auto rounded-md border border-border/45 bg-background/70 px-2 py-1.5 pr-10 font-mono text-[11px] leading-4 whitespace-pre-wrap wrap-break-word text-muted-foreground/80">
               {commandOutputText}
             </pre>
             <CommandOutputCopyButton text={commandOutputText} />

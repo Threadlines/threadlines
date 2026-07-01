@@ -1124,6 +1124,9 @@ export function ProviderSettingsPanel() {
   const [updatingProviderDrivers, setUpdatingProviderDrivers] = useState<
     ReadonlySet<ProviderDriverKind>
   >(() => new Set());
+  const [resolvingProviderUpdateBlockers, setResolvingProviderUpdateBlockers] = useState<
+    ReadonlySet<ProviderInstanceId>
+  >(() => new Set());
   const [openInstanceDetails, setOpenInstanceDetails] = useState<Record<string, boolean>>({});
   const {
     pendingRateLimitResetCredit,
@@ -1210,6 +1213,55 @@ export function ProviderSettingsPanel() {
         }
         const next = new Set(previous);
         next.delete(candidate.driver);
+        return next;
+      });
+    }
+  }, []);
+
+  const resolveProviderUpdateBlockers = useCallback(async (candidate: ProviderUpdateCandidate) => {
+    let started = false;
+    setResolvingProviderUpdateBlockers((previous) => {
+      if (previous.has(candidate.instanceId)) {
+        return previous;
+      }
+      started = true;
+      const next = new Set(previous);
+      next.add(candidate.instanceId);
+      return next;
+    });
+    if (!started) {
+      return;
+    }
+
+    try {
+      const result = await ensureLocalApi().server.resolveProviderUpdateBlockers({
+        provider: candidate.driver,
+        instanceId: candidate.instanceId,
+      });
+      toastManager.add({
+        type: result.remainingProcessCount > 0 ? "warning" : "success",
+        title:
+          result.remainingProcessCount > 0 ? "Claude is still running" : "Claude processes stopped",
+        description: result.message,
+      });
+    } catch (error) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not stop Claude processes",
+          description:
+            error instanceof Error
+              ? error.message
+              : "Threadlines could not stop the processes blocking this update.",
+        }),
+      );
+    } finally {
+      setResolvingProviderUpdateBlockers((previous) => {
+        if (!previous.has(candidate.instanceId)) {
+          return previous;
+        }
+        const next = new Set(previous);
+        next.delete(candidate.instanceId);
         return next;
       });
     }
@@ -1391,6 +1443,9 @@ export function ProviderSettingsPanel() {
               updateCandidate !== undefined &&
               canOneClickUpdateProviderCandidate(updateCandidate, serverProviders) &&
               !updatingProviderDrivers.has(updateCandidate.driver);
+            const isResolvingUpdateBlockers =
+              updateCandidate !== undefined &&
+              resolvingProviderUpdateBlockers.has(updateCandidate.instanceId);
             const modelPreferences = settings.providerModelPreferences?.[row.instanceId] ?? {
               hiddenModels: [],
               modelOrder: [],
@@ -1477,6 +1532,17 @@ export function ProviderSettingsPanel() {
                     : undefined
                 }
                 isUpdating={showInlineUpdateButton ? isDriverUpdateRunning : undefined}
+                onResolveUpdateBlockers={
+                  showInlineUpdateButton && updateCandidate
+                    ? () => {
+                        if (isResolvingUpdateBlockers) {
+                          return;
+                        }
+                        void resolveProviderUpdateBlockers(updateCandidate);
+                      }
+                    : undefined
+                }
+                isResolvingUpdateBlockers={isResolvingUpdateBlockers}
                 onResetAccountUsage={
                   canResetProviderUsage ? requestRateLimitResetCredit : undefined
                 }

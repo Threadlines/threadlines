@@ -36,6 +36,7 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
       onStatus: (input, callback, options) => rpcClient.vcs.onStatus(input, callback, options),
       listRefs: rpcClient.vcs.listRefs,
       commitGraph: rpcClient.vcs.commitGraph,
+      commitDetails: rpcClient.vcs.commitDetails,
       workingTreeDiff: rpcClient.vcs.workingTreeDiff,
       discardChanges: rpcClient.vcs.discardChanges,
       stageChanges: rpcClient.vcs.stageChanges,

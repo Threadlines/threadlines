@@ -146,10 +146,22 @@ export function getDefaultServerModel(
   provider: ProviderDriverKind,
 ): string {
   const models = getProviderModels(providers, provider);
+  const providerDefault = DEFAULT_MODEL_BY_PROVIDER[provider];
+  if (
+    providerDefault &&
+    models.some(
+      (model) =>
+        !model.isCustom &&
+        model.isHidden !== true &&
+        normalizeModelSlug(model.slug, provider) === providerDefault,
+    )
+  ) {
+    return providerDefault;
+  }
   return (
     models.find((model) => !model.isCustom && model.isHidden !== true)?.slug ??
     models.find((model) => model.isHidden !== true)?.slug ??
-    DEFAULT_MODEL_BY_PROVIDER[provider] ??
+    providerDefault ??
     DEFAULT_MODEL
   );
 }

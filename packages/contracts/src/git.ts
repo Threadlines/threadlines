@@ -155,6 +155,14 @@ export const VcsCommitGraphInput = Schema.Struct({
 });
 export type VcsCommitGraphInput = typeof VcsCommitGraphInput.Type;
 
+const VcsCommitSha = TrimmedNonEmptyStringSchema.check(Schema.isPattern(/^[0-9a-fA-F]{7,64}$/));
+
+export const VcsCommitDetailsInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  sha: VcsCommitSha,
+});
+export type VcsCommitDetailsInput = typeof VcsCommitDetailsInput.Type;
+
 export const VcsWorkingTreeDiffInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
   filePaths: Schema.optional(
@@ -396,6 +404,16 @@ export const VcsCommitGraphResult = Schema.Struct({
   truncated: Schema.Boolean,
 });
 export type VcsCommitGraphResult = typeof VcsCommitGraphResult.Type;
+
+export const VcsCommitDetailsResult = Schema.Struct({
+  sha: TrimmedNonEmptyStringSchema,
+  shortSha: TrimmedNonEmptyStringSchema,
+  subject: Schema.String,
+  body: Schema.String,
+  message: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(100_000)),
+  commitUrl: Schema.NullOr(Schema.String),
+});
+export type VcsCommitDetailsResult = typeof VcsCommitDetailsResult.Type;
 
 export const VcsCreateWorktreeResult = Schema.Struct({
   worktree: VcsWorktree,

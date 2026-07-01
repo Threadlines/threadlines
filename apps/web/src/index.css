@@ -797,6 +797,47 @@ label:has(> select#reasoning-effort) select {
   animation: provider-update-pill-countdown var(--provider-update-pill-dismiss-ms) linear forwards;
 }
 
+@keyframes provider-update-active-segment {
+  0%,
+  100% {
+    opacity: 0.58;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes provider-update-indeterminate-rail {
+  0% {
+    transform: translateX(-115%);
+  }
+  58%,
+  100% {
+    transform: translateX(235%);
+  }
+}
+
+.provider-update-indeterminate-rail {
+  animation: provider-update-indeterminate-rail 1.45s cubic-bezier(0.45, 0, 0.2, 1) infinite;
+}
+
+.provider-update-active-dot {
+  animation: provider-update-active-segment 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .provider-update-active-segment {
+    animation: provider-update-active-segment 1.4s ease-in-out infinite;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .provider-update-indeterminate-rail,
+  .provider-update-active-dot {
+    animation: none;
+  }
+}
+
 /* Diffs theme bridge (match diff surfaces to app palette) */
 .diff-panel-viewport {
   background: color-mix(in srgb, var(--background) 94%, var(--card));

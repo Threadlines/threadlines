@@ -98,6 +98,7 @@ export interface WsRpcClient {
     ) => () => void;
     readonly listRefs: RpcUnaryMethod<typeof WS_METHODS.vcsListRefs>;
     readonly commitGraph: RpcUnaryMethod<typeof WS_METHODS.vcsCommitGraph>;
+    readonly commitDetails: RpcUnaryMethod<typeof WS_METHODS.vcsCommitDetails>;
     readonly workingTreeDiff: RpcUnaryMethod<typeof WS_METHODS.vcsWorkingTreeDiff>;
     readonly discardChanges: RpcUnaryMethod<typeof WS_METHODS.vcsDiscardChanges>;
     readonly stageChanges: RpcUnaryMethod<typeof WS_METHODS.vcsStageChanges>;
@@ -140,6 +141,9 @@ export interface WsRpcClient {
       typeof WS_METHODS.serverConsumeProviderRateLimitResetCredit
     >;
     readonly updateProvider: RpcUnaryMethod<typeof WS_METHODS.serverUpdateProvider>;
+    readonly resolveProviderUpdateBlockers: RpcUnaryMethod<
+      typeof WS_METHODS.serverResolveProviderUpdateBlockers
+    >;
     readonly upsertKeybinding: RpcUnaryMethod<typeof WS_METHODS.serverUpsertKeybinding>;
     readonly removeKeybinding: RpcUnaryMethod<typeof WS_METHODS.serverRemoveKeybinding>;
     readonly getSettings: RpcUnaryNoArgMethod<typeof WS_METHODS.serverGetSettings>;
@@ -282,6 +286,8 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       listRefs: (input) => transport.request((client) => client[WS_METHODS.vcsListRefs](input)),
       commitGraph: (input) =>
         transport.request((client) => client[WS_METHODS.vcsCommitGraph](input)),
+      commitDetails: (input) =>
+        transport.request((client) => client[WS_METHODS.vcsCommitDetails](input)),
       workingTreeDiff: (input) =>
         transport.request((client) => client[WS_METHODS.vcsWorkingTreeDiff](input)),
       discardChanges: (input) =>
@@ -341,6 +347,10 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         ),
       updateProvider: (input) =>
         transport.request((client) => client[WS_METHODS.serverUpdateProvider](input)),
+      resolveProviderUpdateBlockers: (input) =>
+        transport.request((client) =>
+          client[WS_METHODS.serverResolveProviderUpdateBlockers](input),
+        ),
       upsertKeybinding: (input) =>
         transport.request((client) => client[WS_METHODS.serverUpsertKeybinding](input)),
       removeKeybinding: (input) =>

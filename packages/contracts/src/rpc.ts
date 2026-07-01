@@ -11,6 +11,8 @@ import {
 } from "./filesystem.ts";
 import {
   GitActionProgressEvent,
+  VcsCommitDetailsInput,
+  VcsCommitDetailsResult,
   VcsCommitGraphInput,
   VcsCommitGraphResult,
   VcsDiscardChangesInput,
@@ -126,6 +128,7 @@ import {
   ServerProviderRateLimitResetCreditConsumeInput,
   ServerProviderRateLimitResetCreditConsumeResult,
   ServerProviderRateLimitResetCreditError,
+  ServerProviderUpdateBlockerResolutionResult,
   ServerProviderUpdateError,
   ServerProviderUpdateInput,
   ServerLifecycleStreamEvent,
@@ -179,6 +182,7 @@ export const WS_METHODS = {
   vcsRefreshStatus: "vcs.refreshStatus",
   vcsListRefs: "vcs.listRefs",
   vcsCommitGraph: "vcs.commitGraph",
+  vcsCommitDetails: "vcs.commitDetails",
   vcsWorkingTreeDiff: "vcs.workingTreeDiff",
   vcsDiscardChanges: "vcs.discardChanges",
   vcsStageChanges: "vcs.stageChanges",
@@ -211,6 +215,7 @@ export const WS_METHODS = {
   serverRefreshProviders: "server.refreshProviders",
   serverConsumeProviderRateLimitResetCredit: "server.consumeProviderRateLimitResetCredit",
   serverUpdateProvider: "server.updateProvider",
+  serverResolveProviderUpdateBlockers: "server.resolveProviderUpdateBlockers",
   serverUpsertKeybinding: "server.upsertKeybinding",
   serverRemoveKeybinding: "server.removeKeybinding",
   serverGetSettings: "server.getSettings",
@@ -298,6 +303,15 @@ export const WsServerUpdateProviderRpc = Rpc.make(WS_METHODS.serverUpdateProvide
   success: ServerProviderUpdatedPayload,
   error: ServerProviderUpdateError,
 });
+
+export const WsServerResolveProviderUpdateBlockersRpc = Rpc.make(
+  WS_METHODS.serverResolveProviderUpdateBlockers,
+  {
+    payload: ServerProviderUpdateInput,
+    success: ServerProviderUpdateBlockerResolutionResult,
+    error: ServerProviderUpdateError,
+  },
+);
 
 export const WsServerGetSettingsRpc = Rpc.make(WS_METHODS.serverGetSettings, {
   payload: Schema.Struct({}),
@@ -599,6 +613,12 @@ export const WsVcsCommitGraphRpc = Rpc.make(WS_METHODS.vcsCommitGraph, {
   error: GitCommandError,
 });
 
+export const WsVcsCommitDetailsRpc = Rpc.make(WS_METHODS.vcsCommitDetails, {
+  payload: VcsCommitDetailsInput,
+  success: VcsCommitDetailsResult,
+  error: GitCommandError,
+});
+
 export const WsVcsWorkingTreeDiffRpc = Rpc.make(WS_METHODS.vcsWorkingTreeDiff, {
   payload: VcsWorkingTreeDiffInput,
   success: VcsWorkingTreeDiffResult,
@@ -787,6 +807,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerRefreshProvidersRpc,
   WsServerConsumeProviderRateLimitResetCreditRpc,
   WsServerUpdateProviderRpc,
+  WsServerResolveProviderUpdateBlockersRpc,
   WsServerUpsertKeybindingRpc,
   WsServerRemoveKeybindingRpc,
   WsServerGetSettingsRpc,
@@ -831,6 +852,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsGitPreparePullRequestThreadRpc,
   WsVcsListRefsRpc,
   WsVcsCommitGraphRpc,
+  WsVcsCommitDetailsRpc,
   WsVcsWorkingTreeDiffRpc,
   WsVcsDiscardChangesRpc,
   WsVcsStageChangesRpc,
