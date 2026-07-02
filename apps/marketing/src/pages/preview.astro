@@ -250,6 +250,31 @@ import Layout from "../layouts/Layout.astro";
     </div>
   </section>
 
+  <section class="pv-section">
+    <div class="pv-wrap pv-center pv-reveal">
+      <p class="pv-kicker">How we build</p>
+      <h2>We don't compete with the frontier. We keep up with it.</h2>
+      <p class="pv-sub">
+        OpenAI and Anthropic have giant teams shipping new agent capabilities every
+        month. Threadlines doesn't reinvent that work: it keeps pace with it.
+      </p>
+      <div class="pv-grid pv-grid-3">
+        <div class="pv-card pv-reveal">
+          <h3>Core first</h3>
+          <p>No pile of gimmick features. The daily loop, threads, diffs, commits, reviews, gets the attention.</p>
+        </div>
+        <div class="pv-card pv-reveal" style="--pv-d: 0.08s">
+          <h3>Native parity, fast</h3>
+          <p>When Codex or Claude ships a new capability, Threadlines fits it in. In days, not months.</p>
+        </div>
+        <div class="pv-card pv-reveal" style="--pv-d: 0.16s">
+          <h3>No lock-in</h3>
+          <p>Every feature works across providers. Switching is a feature here, not a betrayal.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <section class="pv-section pv-oss">
     <div class="pv-glow pv-glow-oss" aria-hidden="true"></div>
     <div class="pv-wrap pv-center pv-reveal">
@@ -542,6 +567,13 @@ import Layout from "../layouts/Layout.astro";
     grid-template-columns: repeat(4, 1fr);
     gap: 20px;
     margin-top: 36px;
+  }
+
+  .pv-grid-3 {
+    grid-template-columns: repeat(3, 1fr);
+    max-width: 880px;
+    margin-left: auto;
+    margin-right: auto;
   }
 
   .pv-card {
