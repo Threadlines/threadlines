@@ -3722,6 +3722,273 @@ describe("deriveSubagentResultEntries", () => {
     ]);
   });
 
+  it("keeps background Claude subagents running on launch acknowledgments", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "claude-bg-agent-started",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.started",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "inProgress",
+          title: "Subagent task",
+          toolCallId: "tool-agent-bg",
+          data: {
+            toolName: "Task",
+            input: {
+              description: "Inventory Threadlines features",
+              prompt: "Catalog every feature thoroughly.",
+              subagent_type: "Explore",
+              run_in_background: true,
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "claude-bg-agent-launch-ack",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.completed",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          title: "Subagent task",
+          toolCallId: "tool-agent-bg",
+          data: {
+            toolName: "Task",
+            input: {
+              description: "Inventory Threadlines features",
+              subagent_type: "Explore",
+              run_in_background: true,
+            },
+            result: {
+              type: "tool_result",
+              tool_use_id: "tool-agent-bg",
+              content: [
+                {
+                  type: "text",
+                  text:
+                    "Async agent launched successfully. agentId: agent-bg-1 (internal ID - do " +
+                    "not mention to user. Use SendMessage with to: 'agent-bg-1', summary: " +
+                    "'<5-10 word recap>' to continue this agent.) The agent is working in the " +
+                    "background. You will be notified automatically when it completes.",
+                },
+              ],
+            },
+          },
+        },
+      }),
+    ];
+
+    expect(deriveSubagentResultEntries(activities)).toEqual([]);
+
+    const progress = deriveSubagentProgressState({
+      activities,
+      latestTurnId: TurnId.make("turn-1"),
+    });
+    expect(progress?.items).toEqual([
+      expect.objectContaining({
+        agentThreadId: "tool-agent-bg",
+        role: "Explore",
+        status: "running",
+      }),
+    ]);
+  });
+
+  it("replays background subagent completion notifications into styled results", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "claude-bg-agent-launch-ack",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.completed",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          title: "Subagent task",
+          toolCallId: "tool-agent-bg",
+          data: {
+            toolName: "Task",
+            input: {
+              description: "Inventory Threadlines features",
+              subagent_type: "Explore",
+              run_in_background: true,
+            },
+            result: {
+              type: "tool_result",
+              tool_use_id: "tool-agent-bg",
+              content: [
+                {
+                  type: "text",
+                  text: "Async agent launched successfully. agentId: agent-bg-1 (internal ID - do not mention to user. Use SendMessage with to: 'agent-bg-1', summary: '<recap>' to continue this agent.) The agent is working in the background.",
+                },
+              ],
+            },
+          },
+        },
+      }),
+      // Background agents settle between prompts; the replay lands without a
+      // turn id and must still update the record spawned in turn-1.
+      makeActivity({
+        id: "claude-bg-agent-notification-replay",
+        createdAt: "2026-02-23T00:00:09.000Z",
+        kind: "tool.completed",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          title: "Subagent task",
+          toolCallId: "tool-agent-bg",
+          data: {
+            toolName: "Task",
+            input: {
+              description: "Inventory Threadlines features",
+              subagent_type: "Explore",
+            },
+            result: {
+              type: "tool_result",
+              tool_use_id: "tool-agent-bg",
+              content: [
+                {
+                  type: "text",
+                  text: "## Feature Inventory\n\nSessions & orchestration all verified.",
+                },
+              ],
+            },
+            taskNotification: {
+              taskId: "task-bg-agent",
+              status: "completed",
+              summary: 'Agent "Inventory Threadlines features" finished',
+            },
+          },
+        },
+      }),
+    ];
+
+    expect(deriveSubagentResultEntries(activities)).toEqual([
+      {
+        id: "subagent-result:turn-1:tool-agent-bg",
+        createdAt: "2026-02-23T00:00:09.000Z",
+        turnId: TurnId.make("turn-1"),
+        agentThreadId: "tool-agent-bg",
+        label: "Explore subagent",
+        role: "Explore",
+        objective: "Inventory Threadlines features",
+        body: "## Feature Inventory\n\nSessions & orchestration all verified.",
+        model: null,
+        reasoningEffort: null,
+      },
+    ]);
+  });
+
+  it("settles background subagent status from linked task completions", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "claude-bg-agent-launch-ack",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.completed",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          title: "Subagent task",
+          toolCallId: "tool-agent-bg",
+          data: {
+            toolName: "Task",
+            input: {
+              description: "Inventory Threadlines features",
+              subagent_type: "Explore",
+              run_in_background: true,
+            },
+            result: {
+              type: "tool_result",
+              tool_use_id: "tool-agent-bg",
+              content: [
+                {
+                  type: "text",
+                  text: "Async agent launched successfully. agentId: agent-bg-1 (internal ID - do not mention to user. Use SendMessage with to: 'agent-bg-1', summary: '<recap>' to continue this agent.) The agent is working in the background.",
+                },
+              ],
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "claude-bg-agent-task-completed",
+        createdAt: "2026-02-23T00:00:09.000Z",
+        kind: "task.completed",
+        tone: "info",
+        summary: "Task completed",
+        payload: {
+          taskId: "task-bg-agent",
+          status: "completed",
+          detail: 'Agent "Inventory Threadlines features" finished',
+          toolUseId: "tool-agent-bg",
+        },
+      }),
+    ];
+
+    const runningProgress = deriveSubagentProgressState({
+      activities: activities.slice(0, 1),
+      latestTurnId: TurnId.make("turn-1"),
+    });
+    expect(runningProgress?.items).toEqual([
+      expect.objectContaining({ agentThreadId: "tool-agent-bg", status: "running" }),
+    ]);
+
+    // The linked task completion settles the agent, clearing the progress UI.
+    expect(
+      deriveSubagentProgressState({ activities, latestTurnId: TurnId.make("turn-1") }),
+    ).toBeNull();
+
+    // Status-only settle: the task summary is not the agent's message.
+    expect(deriveSubagentResultEntries(activities)).toEqual([]);
+  });
+
+  it("omits notification replay tool activities from the work log", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "claude-bg-agent-notification-replay",
+        createdAt: "2026-02-23T00:00:09.000Z",
+        kind: "tool.completed",
+        summary: "Subagent task",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          title: "Subagent task",
+          toolCallId: "tool-agent-bg",
+          data: {
+            toolName: "Task",
+            result: {
+              type: "tool_result",
+              tool_use_id: "tool-agent-bg",
+              content: [{ type: "text", text: "## Feature Inventory" }],
+            },
+            taskNotification: {
+              taskId: "task-bg-agent",
+              status: "completed",
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "regular-tool-completed",
+        createdAt: "2026-02-23T00:00:10.000Z",
+        kind: "tool.completed",
+        summary: "Read file",
+        payload: {
+          itemType: "dynamic_tool_call",
+          status: "completed",
+          title: "Read file",
+          toolCallId: "tool-read-1",
+          data: { toolName: "Read" },
+        },
+      }),
+    ]);
+
+    expect(entries.map((entry) => entry.id)).toEqual(["regular-tool-completed"]);
+  });
+
   it("extracts synthetic child-thread subagent results without duplicating work-log rows", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

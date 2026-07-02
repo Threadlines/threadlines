@@ -4,6 +4,7 @@ import {
   ProviderInstanceId,
   type ProviderRuntimeEvent,
   RuntimeItemId,
+  RuntimeTaskId,
   ThreadId,
   TurnId,
 } from "@threadlines/contracts";
@@ -364,5 +365,33 @@ describe("ProviderActivityProjection", () => {
     expect(result).toEqual(expect.stringContaining("line 999"));
     expect(result?.startsWith("...")).toBe(true);
     expect(result?.length).toBeLessThanOrEqual(MAX_THREAD_ACTIVITY_PAYLOAD_TEXT_LENGTH);
+  });
+
+  it("links task completions to their originating tool call", () => {
+    const activities = projectRuntimeEventToActivities({
+      type: "task.completed",
+      eventId: EventId.make("evt-task-completed"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: ThreadId.make("thread-1"),
+      createdAt: "2026-06-01T12:00:00.000Z",
+      payload: {
+        taskId: RuntimeTaskId.make("task-bg-agent"),
+        status: "completed",
+        summary: 'Agent "Inventory features" finished',
+        toolUseId: "tool-task-bg-1",
+      },
+    } satisfies ProviderRuntimeEvent);
+
+    expect(activities).toEqual([
+      expect.objectContaining({
+        kind: "task.completed",
+        payload: {
+          taskId: "task-bg-agent",
+          status: "completed",
+          detail: 'Agent "Inventory features" finished',
+          toolUseId: "tool-task-bg-1",
+        },
+      }),
+    ]);
   });
 });

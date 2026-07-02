@@ -2812,6 +2812,269 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("replays background subagent final results from task notifications", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 12).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "inventory the features in the background",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-bg-agent",
+        uuid: "stream-bg-agent-start",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "tool-task-bg-1",
+            name: "Task",
+            input: {
+              description: "Inventory Threadlines features",
+              prompt: "Catalog every feature thoroughly.",
+              subagent_type: "Explore",
+              run_in_background: true,
+            },
+          },
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-bg-agent",
+        tool_use_id: "tool-task-bg-1",
+        description: "explore subagent",
+        session_id: "sdk-session-bg-agent",
+        uuid: "bg-agent-task-started",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "user",
+        session_id: "sdk-session-bg-agent",
+        uuid: "user-bg-agent-launch-ack",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool-task-bg-1",
+              content:
+                "Async agent launched successfully. agentId: agent-bg-1 (internal ID - do not " +
+                "mention to user. Use SendMessage with to: 'agent-bg-1', summary: '<5-10 word " +
+                "recap>' to continue this agent.) The agent is working in the background.",
+            },
+          ],
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-bg-agent",
+        uuid: "result-bg-agent",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "user",
+        session_id: "sdk-session-bg-agent",
+        uuid: "user-bg-agent-notification",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: [
+                "<task-notification>",
+                "<task-id>task-bg-agent</task-id>",
+                "<tool-use-id>tool-task-bg-1</tool-use-id>",
+                "<output-file>/tmp/tasks/task-bg-agent.output</output-file>",
+                "<status>completed</status>",
+                '<summary>Agent "Inventory Threadlines features" finished</summary>',
+                "<note>The same task-id may notify more than once.</note>",
+                "<result>## Feature Inventory\n\nSessions &amp; orchestration: threads spawn " +
+                  "providers &lt;10ms after connect.</result>",
+                "</task-notification>",
+              ].join("\n"),
+            },
+          ],
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-bg-agent",
+        tool_use_id: "tool-task-bg-1",
+        status: "completed",
+        summary: 'Agent "Inventory Threadlines features" finished',
+        session_id: "sdk-session-bg-agent",
+        uuid: "bg-agent-task-notification",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const replayCompleted = runtimeEvents.filter(
+        (event) =>
+          event.type === "item.completed" &&
+          (event.payload.data as { taskNotification?: unknown } | undefined)?.taskNotification !==
+            undefined,
+      );
+      assert.equal(replayCompleted.length, 1);
+      const replay = replayCompleted[0];
+      assert.equal(replay?.type, "item.completed");
+      if (replay?.type === "item.completed") {
+        assert.equal(String(replay.itemId), "tool-task-bg-1");
+        assert.equal(replay.payload.itemType, "collab_agent_tool_call");
+        assert.equal(replay.payload.status, "completed");
+        assert.equal(replay.payload.title, "Subagent task");
+        const data = replay.payload.data as {
+          toolName?: string;
+          input?: { subagent_type?: string };
+          result?: { content?: Array<{ text?: string }> };
+          taskNotification?: { taskId?: string; status?: string; summary?: string };
+        };
+        assert.equal(data.toolName, "Task");
+        assert.equal(data.input?.subagent_type, "Explore");
+        assert.equal(
+          data.result?.content?.[0]?.text,
+          "## Feature Inventory\n\nSessions & orchestration: threads spawn providers <10ms after connect.",
+        );
+        assert.deepEqual(data.taskNotification, {
+          taskId: "task-bg-agent",
+          status: "completed",
+          summary: 'Agent "Inventory Threadlines features" finished',
+        });
+      }
+
+      const taskCompleted = runtimeEvents.find((event) => event.type === "task.completed");
+      assert.equal(taskCompleted?.type, "task.completed");
+      if (taskCompleted?.type === "task.completed") {
+        assert.equal(taskCompleted.payload.taskId, "task-bg-agent");
+        assert.equal(taskCompleted.payload.toolUseId, "tool-task-bg-1");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("does not replay task notifications for non-subagent background tools", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 7).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-bg-command",
+        tool_use_id: "tool-bash-bg-1",
+        description: "Watch CI run until completion",
+        session_id: "sdk-session-bg-command",
+        uuid: "bg-command-task-started",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "user",
+        session_id: "sdk-session-bg-command",
+        uuid: "user-bg-command-notification",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: [
+                "<task-notification>",
+                "<task-id>task-bg-command</task-id>",
+                "<tool-use-id>tool-bash-bg-1</tool-use-id>",
+                "<status>completed</status>",
+                '<summary>Background command "Watch CI run" completed (exit code 0)</summary>',
+                "</task-notification>",
+              ].join("\n"),
+            },
+          ],
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-bg-command",
+        tool_use_id: "tool-bash-bg-1",
+        status: "completed",
+        summary: 'Background command "Watch CI run" completed (exit code 0)',
+        session_id: "sdk-session-bg-command",
+        uuid: "bg-command-task-notification",
+      } as unknown as SDKMessage);
+
+      // Marker: with the fixed-size take, it only fits when the notification
+      // above replayed no tool item events.
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-bg-command-marker",
+        description: "Marker task",
+        session_id: "sdk-session-bg-command",
+        uuid: "bg-command-marker-started",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      assert.isUndefined(
+        runtimeEvents.find(
+          (event) =>
+            event.type === "item.started" ||
+            event.type === "item.updated" ||
+            event.type === "item.completed",
+        ),
+      );
+      const taskCompleted = runtimeEvents.find((event) => event.type === "task.completed");
+      assert.equal(taskCompleted?.type, "task.completed");
+      if (taskCompleted?.type === "task.completed") {
+        assert.equal(taskCompleted.payload.toolUseId, "tool-bash-bg-1");
+      }
+      const markerStarted = runtimeEvents.find(
+        (event) =>
+          event.type === "task.started" && event.payload.taskId === "task-bg-command-marker",
+      );
+      assert.isDefined(markerStarted);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("does not derive context usage from Claude task progress totals", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

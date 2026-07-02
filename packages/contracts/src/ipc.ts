@@ -316,7 +316,7 @@ export interface DesktopTaskbarStatusInput {
   /** Threads that finished while the app was unfocused (drives dock/taskbar badges). */
   completedThreadCount?: number;
   /** Unseen-completed and running threads, in display order for the status item menu. */
-  threads?: DesktopTaskbarThreadSummary[];
+  threads?: readonly DesktopTaskbarThreadSummary[];
 }
 
 export const DesktopTaskbarStatusInputSchema = Schema.Struct({
