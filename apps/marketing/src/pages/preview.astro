@@ -3,20 +3,80 @@ import Layout from "../layouts/Layout.astro";
 ---
 
 <Layout
-  title="Threadlines — a local workspace for coding agents"
+  title="Threadlines: a local workspace for coding agents"
   description="Run Claude Code and Codex in parallel threads with real source control, live usage meters, and full visibility into every task, subagent, and background run."
   canonicalPath="/preview"
   noindex
 >
   <section class="pv-hero">
+    <div class="pv-glow pv-glow-hero" aria-hidden="true"></div>
     <div class="pv-wrap">
-      <h1 class="pv-display">Every thread leaves a line.</h1>
-      <p class="pv-sub">
+      <svg
+        class="pv-figure"
+        viewBox="0 48 960 152"
+        fill="none"
+        role="img"
+        aria-label="A git graph of agent threads: branches diverge from a main line and merge back; one branch stays open, ending in a glowing node"
+      >
+        <defs>
+          <linearGradient
+            id="pv-live-stroke"
+            gradientUnits="userSpaceOnUse"
+            x1="432"
+            y1="128"
+            x2="816"
+            y2="180"
+          >
+            <stop offset="0" stop-color="#a1a1aa" stop-opacity="0.35"></stop>
+            <stop offset="1" stop-color="var(--accent-bright, #7dd3fc)" stop-opacity="0.9"></stop>
+          </linearGradient>
+        </defs>
+        <g stroke-linecap="round" stroke-width="1.25">
+          <path
+            class="pv-line" vector-effect="non-scaling-stroke"
+            d="M -8 128 L 968 128"
+            pathLength="1"
+            stroke="rgba(255, 255, 255, 0.17)"
+            style="--pv-delay: 0.2s"></path>
+          <path
+            class="pv-line" vector-effect="non-scaling-stroke"
+            d="M 256 128 C 282 128 282 76 308 76 L 600 76 C 626 76 626 128 652 128"
+            pathLength="1"
+            stroke="rgba(255, 255, 255, 0.12)"
+            style="--pv-delay: 0.7s; animation-duration: 0.8s"></path>
+          <path
+            class="pv-line" vector-effect="non-scaling-stroke"
+            d="M 432 128 C 458 128 458 180 484 180 L 812 180"
+            pathLength="1"
+            stroke="url(#pv-live-stroke)"
+            style="--pv-delay: 0.95s; animation-duration: 0.8s"></path>
+        </g>
+        <g fill="rgba(255, 255, 255, 0.3)">
+          <circle class="pv-node" cx="140" cy="128" r="3" style="--pv-delay: 0.45s"></circle>
+          <circle class="pv-node" cx="256" cy="128" r="3.5" style="--pv-delay: 0.6s"></circle>
+          <circle class="pv-node" cx="432" cy="128" r="3.5" style="--pv-delay: 0.8s"></circle>
+          <circle class="pv-node" cx="452" cy="76" r="3" style="--pv-delay: 1.2s"></circle>
+          <circle class="pv-node" cx="652" cy="128" r="3.5" style="--pv-delay: 1.4s"></circle>
+          <circle class="pv-node" cx="744" cy="128" r="3" style="--pv-delay: 1.3s"></circle>
+          <circle class="pv-node" cx="896" cy="128" r="3" style="--pv-delay: 1.5s"></circle>
+        </g>
+        <circle class="pv-halo" cx="816" cy="180" r="6" fill="var(--accent-bright, #7dd3fc)"></circle>
+        <circle
+          class="pv-node pv-node-live"
+          cx="816"
+          cy="180"
+          r="4"
+          fill="var(--accent-bright, #7dd3fc)"
+          style="--pv-delay: 1.6s"></circle>
+      </svg>
+
+      <h1 class="pv-display pv-rise" style="--pv-d: 0.25s">Every thread leaves a line.</h1>
+      <p class="pv-sub pv-rise" style="--pv-d: 0.4s">
         Threadlines is a local desktop workspace that runs Claude&nbsp;Code and Codex in
-        parallel threads — with real source control at the center, live usage meters, and
-        nothing hidden. Bring the subscriptions you already pay for.
+        parallel threads, with real source control at the center and nothing hidden.
+        Bring the subscriptions you already pay for.
       </p>
-      <div class="pv-cta-row">
+      <div class="pv-cta-row pv-rise" style="--pv-d: 0.55s">
         <a class="pv-cta pv-cta-primary" href="/download">Download for macOS</a>
         <a
           class="pv-cta"
@@ -25,32 +85,34 @@ import Layout from "../layouts/Layout.astro";
           rel="noopener noreferrer">View on GitHub</a
         >
       </div>
-      <p class="pv-note">Free &amp; open source (MIT) · No account · Your code never leaves your machine</p>
-      <figure class="pv-shot pv-hero-shot">
+      <p class="pv-note pv-rise" style="--pv-d: 0.7s">
+        Free and open source (MIT) · No account · Your code never leaves your machine
+      </p>
+      <figure class="pv-app-frame pv-rise" style="--pv-d: 0.85s">
         <img
-          src="/Screenshots/providers-usage.png"
-          alt="Threadlines provider settings showing Codex and Claude subscriptions side by side with live 5-hour and weekly usage meters and reset countdowns"
-          width="1572"
-          height="832"
+          src="/Screenshots/subagent-card.png"
+          alt="The Threadlines workspace: a subagent reporting its findings in the chat timeline, with the source control panel and commit graph in a sidebar"
+          width="3248"
+          height="1990"
         />
-        <figcaption>Both subscriptions, one workspace — live meters, reset countdowns, and reset credits.</figcaption>
+        <figcaption>A subagent reporting back, with source control one panel away.</figcaption>
       </figure>
     </div>
   </section>
 
   <section class="pv-section">
     <div class="pv-wrap pv-feature">
-      <div class="pv-copy">
+      <div class="pv-copy pv-reveal">
         <p class="pv-kicker">Steer, don't re-prompt</p>
         <h2>Review the agent like a pull request</h2>
         <p>
-          Highlight any sentence of the agent's output — or any line of terminal output —
+          Highlight any sentence of the agent's output, or any line from the terminal,
           and attach a note. Your annotation lands in the composer as structured context,
-          quoted against exactly what you were reacting to. Course-correct mid-turn
+          quoted against exactly what you were reacting to. Course-correct in seconds
           instead of writing paragraphs of follow-up.
         </p>
       </div>
-      <div class="pv-media">
+      <div class="pv-media pv-reveal pv-reveal-late">
         <img
           src="/Screenshots/add-note.png"
           alt="Annotation popover quoting a highlighted assistant sentence with a user note reading 'this doesn't sound right'"
@@ -68,25 +130,25 @@ import Layout from "../layouts/Layout.astro";
 
   <section class="pv-section">
     <div class="pv-wrap pv-feature pv-flip">
-      <div class="pv-copy">
+      <div class="pv-copy pv-reveal">
         <p class="pv-kicker">Nothing runs invisibly</p>
-        <h2>Every task, subagent, and background run — visible, labeled, stoppable</h2>
+        <h2>Every task, subagent, and background run. Visible, labeled, stoppable.</h2>
         <p>
           The activity header shows what your agents are actually doing: task lists with
-          live states, each subagent's goal and the model and effort it runs on, and
+          live states, every subagent's goal with the model and effort it runs on, and
           background processes with a Stop button. Subagent results render as first-class
-          messages in the timeline — not a collapsed spinner line.
+          messages in the timeline, not a collapsed spinner line.
         </p>
       </div>
-      <div class="pv-media">
+      <div class="pv-media pv-reveal pv-reveal-late">
         <img
-          src="/Screenshots/activity-header.png"
-          alt="Thread activity popover listing current tasks, two subagents with goals and model/effort tags, and a running background process with a Stop button"
+          src="/Screenshots/activity-header-crop.png"
+          alt="Thread activity popover listing current tasks, two subagents with goals and model and effort tags, and a running background process with a Stop button"
           loading="lazy"
         />
         <img
           class="pv-media-small"
-          src="/Screenshots/subagent-card.png"
+          src="/Screenshots/subagent-card-crop.png"
           alt="A completed subagent's findings rendered as a first-class card in the chat timeline"
           loading="lazy"
         />
@@ -96,26 +158,25 @@ import Layout from "../layouts/Layout.astro";
 
   <section class="pv-section">
     <div class="pv-wrap pv-feature">
-      <div class="pv-copy">
+      <div class="pv-copy pv-reveal">
         <p class="pv-kicker">One thread, two providers</p>
         <h2>Hit a usage limit? Switch, don't stop.</h2>
         <p>
-          Switch a running conversation between Claude and Codex in place — the recap and
-          your working tree carry over. Usage and context live one hover away from the
-          composer, so you see the wall before you hit it and keep shipping on the other
-          provider when you do.
+          Switch a running conversation between Claude and Codex in place. The recap and
+          your working tree carry over. Live meters show both providers' five-hour and
+          weekly windows with reset countdowns, so you see the wall before you hit it and
+          keep shipping when you do.
         </p>
       </div>
-      <div class="pv-media">
+      <div class="pv-media pv-reveal pv-reveal-late">
         <img
           src="/Screenshots/switch-dialog.png"
           alt="Switch to Codex dialog explaining that Codex picks up a recap of the conversation and the current working tree"
           loading="lazy"
         />
         <img
-          class="pv-media-small"
-          src="/Screenshots/context-hover.png"
-          alt="Context window hover showing 39% context used plus Claude 5-hour and weekly usage meters with reset countdowns"
+          src="/Screenshots/providers-usage.png"
+          alt="Provider settings showing Codex and Claude subscriptions side by side with live five-hour and weekly usage meters and reset countdowns"
           loading="lazy"
         />
       </div>
@@ -124,17 +185,17 @@ import Layout from "../layouts/Layout.astro";
 
   <section class="pv-section">
     <div class="pv-wrap pv-feature pv-flip">
-      <div class="pv-copy">
+      <div class="pv-copy pv-reveal">
         <p class="pv-kicker">Source control, built in</p>
         <h2>From agent diff to opened PR</h2>
         <p>
-          A real source-control panel beside every thread: per-turn diffs, a commit graph,
-          commit detail, and a one-button generate&nbsp;→&nbsp;commit&nbsp;→&nbsp;push flow
-          with your hooks' output shown, not hidden. GitHub, GitLab, Bitbucket, and Azure
+          A real source-control panel beside every thread: per-turn diffs, a commit
+          graph, commit detail, and a one-button generate, commit, and push flow with
+          your hooks' output shown, not hidden. GitHub, GitLab, Bitbucket, and Azure
           DevOps.
         </p>
       </div>
-      <div class="pv-media">
+      <div class="pv-media pv-reveal pv-reveal-late">
         <img
           src="/Screenshots/source-actions.png"
           alt="Source control actions: generate message, commit only, commit and push, push only, plus Pull and New PR"
@@ -152,59 +213,163 @@ import Layout from "../layouts/Layout.astro";
 
   <section class="pv-section">
     <div class="pv-wrap">
-      <p class="pv-kicker pv-center">Built to be boring</p>
-      <h2 class="pv-center">Reliability is the feature</h2>
+      <div class="pv-reveal pv-center">
+        <p class="pv-kicker">Built to be boring</p>
+        <h2>Reliability is the feature</h2>
+      </div>
       <div class="pv-grid">
-        <div class="pv-card">
+        <div class="pv-card pv-reveal">
           <h3>Survives restarts</h3>
-          <p>Sessions resume across app and server restarts via event replay. Close the lid mid-turn; pick it back up.</p>
+          <p>Sessions resume across app and server restarts via event replay. Close the lid mid-turn and pick it back up.</p>
         </div>
-        <div class="pv-card">
+        <div class="pv-card pv-reveal" style="--pv-d: 0.08s">
           <h3>Fork from anywhere</h3>
-          <p>Fork any message into a parallel thread — context, attachments, and working tree included.</p>
+          <p>Fork any message into a parallel thread with context, attachments, and working tree included.</p>
         </div>
-        <div class="pv-card">
+        <div class="pv-card pv-reveal" style="--pv-d: 0.16s">
           <h3>Worktrees per thread</h3>
-          <p>Give each agent its own isolated checkout, or share one — your call, per thread.</p>
+          <p>Give each agent its own isolated checkout, or share one. Your call, per thread.</p>
         </div>
-        <div class="pv-card">
+        <div class="pv-card pv-reveal" style="--pv-d: 0.24s">
           <h3>Always within reach</h3>
-          <p>Glanceable agent status from the macOS menu bar — running threads, one click away.</p>
-          <img
-            class="pv-card-img"
-            src="/Screenshots/menubar-tray.png"
-            alt="macOS menu bar dropdown showing one running thread and quick actions"
-            loading="lazy"
-          />
+          <p>Glanceable agent status from the macOS menu bar: running threads, one click away.</p>
+          <video
+            class="pv-card-video"
+            autoplay
+            muted
+            loop
+            playsinline
+            poster="/Screenshots/menubar-tray.png"
+            aria-label="Screen recording of the Threadlines macOS menu bar item showing a running thread count and dropdown"
+          >
+            <source src="/Screenshots/menubar-animation.webm" type="video/webm" />
+            <source src="/Screenshots/menubar-animation.mp4" type="video/mp4" />
+          </video>
         </div>
       </div>
     </div>
   </section>
 
   <section class="pv-section pv-oss">
-    <div class="pv-wrap pv-center">
+    <div class="pv-glow pv-glow-oss" aria-hidden="true"></div>
+    <div class="pv-wrap pv-center pv-reveal">
       <p class="pv-kicker">Open source</p>
       <h2>MIT-licensed, history and all</h2>
       <p class="pv-sub">
-        Threadlines began as a fork of T3 Code and grew into the safety-and-endurance
+        Threadlines began as a fork of T3 Code and grew into the safety and endurance
         layer for agent work: visibility, recovery, and source-control depth. The full
-        git history is public — refactors, lessons, and all.
+        git history is public: refactors, lessons, and all.
       </p>
       <p class="pv-note">github.com/Threadlines/threadlines · macOS + Windows</p>
     </div>
   </section>
 </Layout>
 
+<script>
+  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const targets = document.querySelectorAll(".pv-reveal");
+  if (reduced || !("IntersectionObserver" in window)) {
+    for (const el of targets) el.classList.add("pv-in");
+  } else {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            entry.target.classList.add("pv-in");
+            observer.unobserve(entry.target);
+          }
+        }
+      },
+      { threshold: 0.15, rootMargin: "0px 0px -40px 0px" },
+    );
+    for (const el of targets) observer.observe(el);
+  }
+</script>
+
 <style>
   .pv-wrap {
     max-width: 1040px;
     margin: 0 auto;
     padding: 0 24px;
+    position: relative;
+  }
+
+  .pv-glow {
+    position: absolute;
+    pointer-events: none;
+    background: radial-gradient(closest-side, var(--accent-dim, rgba(125, 211, 252, 0.14)), transparent 72%);
+  }
+
+  .pv-glow-hero {
+    top: 4%;
+    right: 8%;
+    width: 560px;
+    height: 440px;
+  }
+
+  .pv-glow-oss {
+    bottom: -10%;
+    left: 10%;
+    width: 480px;
+    height: 380px;
   }
 
   .pv-hero {
-    padding: 72px 0 56px;
+    position: relative;
+    overflow: hidden;
+    padding: 56px 0 72px;
     text-align: center;
+  }
+
+  .pv-figure {
+    width: min(720px, 100%);
+    margin: 0 auto 8px;
+    display: block;
+  }
+
+  .pv-line {
+    stroke-dasharray: 1;
+    stroke-dashoffset: 1;
+    animation: pv-draw 1.1s ease-out forwards;
+    animation-delay: var(--pv-delay, 0s);
+  }
+
+  .pv-node {
+    opacity: 0;
+    animation: pv-pop 0.5s ease-out forwards;
+    animation-delay: var(--pv-delay, 0s);
+  }
+
+  .pv-halo {
+    opacity: 0;
+    transform-origin: 816px 180px;
+    animation: pv-halo 2.6s ease-out 1.9s infinite;
+  }
+
+  @keyframes pv-draw {
+    to { stroke-dashoffset: 0; }
+  }
+
+  @keyframes pv-pop {
+    from { opacity: 0; transform: scale(0.4); transform-origin: center; transform-box: fill-box; }
+    to { opacity: 1; transform: scale(1); transform-origin: center; transform-box: fill-box; }
+  }
+
+  @keyframes pv-halo {
+    0% { opacity: 0.55; transform: scale(0.6); }
+    70% { opacity: 0; transform: scale(2.4); }
+    100% { opacity: 0; transform: scale(2.4); }
+  }
+
+  .pv-rise {
+    opacity: 0;
+    transform: translateY(14px);
+    animation: pv-rise 0.7s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+    animation-delay: var(--pv-d, 0s);
+  }
+
+  @keyframes pv-rise {
+    to { opacity: 1; transform: translateY(0); }
   }
 
   .pv-display {
@@ -235,6 +400,12 @@ import Layout from "../layouts/Layout.astro";
     font-weight: 600;
     color: inherit;
     text-decoration: none;
+    transition: border-color 0.2s ease, transform 0.2s ease;
+  }
+
+  .pv-cta:hover {
+    border-color: var(--accent-bright, #7dd3fc);
+    transform: translateY(-1px);
   }
 
   .pv-cta-primary {
@@ -249,29 +420,46 @@ import Layout from "../layouts/Layout.astro";
     color: var(--text-muted, #9aa3b2);
   }
 
-  .pv-shot img,
-  .pv-media img {
+  .pv-app-frame {
+    max-width: 920px;
+    margin: 48px auto 0;
+  }
+
+  .pv-app-frame img {
     width: 100%;
     height: auto;
-    border: 1px solid var(--border, #2a2f38);
-    border-radius: 12px;
     display: block;
+    border: 1px solid var(--border, #2a2f38);
+    border-radius: 14px;
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.03),
+      0 24px 80px -24px rgba(125, 211, 252, 0.18),
+      0 32px 64px -32px rgba(0, 0, 0, 0.8);
   }
 
-  .pv-hero-shot {
-    max-width: 880px;
-    margin: 44px auto 0;
-  }
-
-  .pv-hero-shot figcaption {
-    margin-top: 12px;
+  .pv-app-frame figcaption {
+    margin-top: 14px;
     font-size: 0.85rem;
     color: var(--text-muted, #9aa3b2);
   }
 
   .pv-section {
-    padding: 72px 0;
+    position: relative;
+    padding: 84px 0;
     border-top: 1px solid var(--border, #232830);
+  }
+
+  .pv-section::before {
+    content: "";
+    position: absolute;
+    top: -4px;
+    left: 50%;
+    width: 7px;
+    height: 7px;
+    margin-left: -3.5px;
+    border-radius: 50%;
+    background: var(--accent-bright, #7dd3fc);
+    opacity: 0.45;
   }
 
   .pv-feature {
@@ -309,6 +497,21 @@ import Layout from "../layouts/Layout.astro";
     gap: 16px;
   }
 
+  .pv-media img {
+    width: 100%;
+    height: auto;
+    display: block;
+    border: 1px solid var(--border, #2a2f38);
+    border-radius: 12px;
+    transition: transform 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
+  }
+
+  .pv-media img:hover {
+    transform: translateY(-3px);
+    border-color: rgba(125, 211, 252, 0.4);
+    box-shadow: 0 16px 48px -20px rgba(0, 0, 0, 0.7);
+  }
+
   .pv-media-small {
     max-width: 78%;
     justify-self: end;
@@ -316,6 +519,22 @@ import Layout from "../layouts/Layout.astro";
 
   .pv-flip .pv-media-small {
     justify-self: start;
+  }
+
+  .pv-reveal {
+    opacity: 0;
+    transform: translateY(18px);
+    transition: opacity 0.7s cubic-bezier(0.22, 1, 0.36, 1), transform 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+    transition-delay: var(--pv-d, 0s);
+  }
+
+  .pv-reveal-late {
+    transition-delay: 0.12s;
+  }
+
+  .pv-reveal.pv-in {
+    opacity: 1;
+    transform: translateY(0);
   }
 
   .pv-grid {
@@ -330,6 +549,13 @@ import Layout from "../layouts/Layout.astro";
     border-radius: 12px;
     padding: 22px;
     text-align: left;
+    transition: border-color 0.25s ease, transform 0.25s ease,
+      opacity 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .pv-card:hover {
+    border-color: rgba(125, 211, 252, 0.35);
+    transform: translateY(-2px);
   }
 
   .pv-card h3 {
@@ -342,15 +568,20 @@ import Layout from "../layouts/Layout.astro";
     font-size: 0.9rem;
   }
 
-  .pv-card-img {
+  .pv-card-video {
     margin-top: 14px;
     width: 100%;
     border-radius: 8px;
     border: 1px solid var(--border, #232830);
+    display: block;
   }
 
   .pv-center {
     text-align: center;
+  }
+
+  .pv-oss {
+    overflow: hidden;
   }
 
   .pv-oss .pv-sub {
@@ -374,6 +605,23 @@ import Layout from "../layouts/Layout.astro";
   @media (max-width: 520px) {
     .pv-grid {
       grid-template-columns: 1fr;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .pv-rise,
+    .pv-line,
+    .pv-node,
+    .pv-halo {
+      animation: none;
+      opacity: 1;
+      stroke-dashoffset: 0;
+    }
+
+    .pv-reveal {
+      opacity: 1;
+      transform: none;
+      transition: none;
     }
   }
 </style>
