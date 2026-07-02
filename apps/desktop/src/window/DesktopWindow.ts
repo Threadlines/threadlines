@@ -1,3 +1,4 @@
+import type { DesktopMenuActionPayload } from "@threadlines/contracts";
 import { fromJsonStringPretty } from "@threadlines/shared/schemaJson";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
@@ -75,7 +76,10 @@ export interface DesktopWindowShape {
   readonly activate: Effect.Effect<void, DesktopWindowError>;
   readonly createMainIfBackendReady: Effect.Effect<void, DesktopWindowError>;
   readonly handleBackendReady: Effect.Effect<void, DesktopWindowError>;
-  readonly dispatchMenuAction: (action: string) => Effect.Effect<void, DesktopWindowError>;
+  readonly dispatchMenuAction: (
+    action: string,
+    payload?: DesktopMenuActionPayload,
+  ) => Effect.Effect<void, DesktopWindowError>;
   readonly syncAppearance: Effect.Effect<void>;
 }
 
@@ -588,7 +592,7 @@ const make = Effect.gen(function* () {
       yield* logWindowInfo("backend ready", { source: "http" });
       yield* createMainIfBackendReady;
     }).pipe(Effect.withSpan("desktop.window.handleBackendReady")),
-    dispatchMenuAction: Effect.fn("desktop.window.dispatchMenuAction")(function* (action) {
+    dispatchMenuAction: Effect.fn("desktop.window.dispatchMenuAction")(function* (action, payload) {
       if (action === OPEN_SCREEN_CLIP_MENU_ACTION) {
         yield* openWindowsScreenClip(electronShell);
         return;
@@ -600,7 +604,7 @@ const make = Effect.gen(function* () {
 
       const send = () => {
         if (targetWindow.isDestroyed()) return;
-        targetWindow.webContents.send(IpcChannels.MENU_ACTION_CHANNEL, action);
+        targetWindow.webContents.send(IpcChannels.MENU_ACTION_CHANNEL, action, payload);
         void runPromise(electronWindow.reveal(targetWindow));
       };
 

@@ -1,4 +1,4 @@
-import type { DesktopTaskbarStatusInput } from "@threadlines/contracts";
+import type { DesktopMenuActionPayload, DesktopTaskbarStatusInput } from "@threadlines/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -16,6 +16,8 @@ import * as DesktopWindow from "./DesktopWindow.ts";
 
 const THREAD_COUNT_DISPLAY_MAX = 99;
 const MACOS_TRAY_TITLE_OPTIONS = { fontType: "monospacedDigit" } as const;
+const MACOS_TRAY_MENU_THREAD_LIMIT = 5;
+const MACOS_TRAY_MENU_TITLE_MAX_LENGTH = 44;
 
 export interface DesktopStatusIndicatorShape {
   readonly configure: Effect.Effect<void>;
@@ -33,6 +35,8 @@ interface MacTrayImages {
   readonly idle: Electron.NativeImage;
   readonly workingFrames: readonly Electron.NativeImage[];
   readonly completedFrames: readonly Electron.NativeImage[];
+  readonly menuRunning: Electron.NativeImage;
+  readonly menuCompleted: Electron.NativeImage;
 }
 
 const { logWarning: logStatusWarning, logError: logStatusError } =
@@ -122,6 +126,17 @@ function createDefaultStatus(): DesktopTaskbarStatusInput {
   return { status: "idle", description: "No active agent sessions" };
 }
 
+function truncateThreadMenuLabel(title: string): string {
+  const trimmed = title.trim();
+  if (trimmed.length === 0) {
+    return "Untitled thread";
+  }
+  if (trimmed.length <= MACOS_TRAY_MENU_TITLE_MAX_LENGTH) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, MACOS_TRAY_MENU_TITLE_MAX_LENGTH - 1).trimEnd()}…`;
+}
+
 const make = Effect.gen(function* () {
   const electronApp = yield* ElectronApp.ElectronApp;
   const electronTray = yield* ElectronTray.ElectronTray;
@@ -157,10 +172,10 @@ const make = Effect.gen(function* () {
     );
   };
 
-  const dispatchRendererAction = (action: string) =>
+  const dispatchRendererAction = (action: string, payload?: DesktopMenuActionPayload) =>
     Effect.gen(function* () {
       const desktopWindow = yield* DesktopWindow.DesktopWindow;
-      yield* desktopWindow.dispatchMenuAction(action);
+      yield* desktopWindow.dispatchMenuAction(action, payload);
     });
 
   const createTrayImageFrames = (glyphs: readonly DesktopStatusGlyphs.TrayGlyph[]) =>
@@ -178,14 +193,19 @@ const make = Effect.gen(function* () {
 
   const createMacTrayImages = Effect.gen(function* () {
     const glyphs = DesktopStatusGlyphs.makeMacTrayGlyphSet();
+    const menuGlyphs = DesktopStatusGlyphs.makeMacMenuStateGlyphs();
     const idle = yield* createTrayImageFrames([glyphs.idle]);
     const workingFrames = yield* createTrayImageFrames(glyphs.workingFrames);
     const completedFrames = yield* createTrayImageFrames(glyphs.completedFrames);
+    const menuIcons = yield* createTrayImageFrames([menuGlyphs.running, menuGlyphs.completed]);
     if (
       Option.isNone(idle) ||
       Option.isNone(workingFrames) ||
       Option.isNone(completedFrames) ||
-      idle.value[0] === undefined
+      Option.isNone(menuIcons) ||
+      idle.value[0] === undefined ||
+      menuIcons.value[0] === undefined ||
+      menuIcons.value[1] === undefined
     ) {
       return Option.none<MacTrayImages>();
     }
@@ -194,6 +214,8 @@ const make = Effect.gen(function* () {
       idle: idle.value[0],
       workingFrames: workingFrames.value,
       completedFrames: completedFrames.value,
+      menuRunning: menuIcons.value[0],
+      menuCompleted: menuIcons.value[1],
     });
   });
 
@@ -285,6 +307,42 @@ const make = Effect.gen(function* () {
     }
   };
 
+  const buildThreadMenuItems = (
+    status: DesktopTaskbarStatusInput,
+  ): Electron.MenuItemConstructorOptions[] => {
+    const images = macTrayImages;
+    const threads = status.threads ?? [];
+    if (threads.length === 0 || images === null) {
+      return [];
+    }
+
+    const items: Electron.MenuItemConstructorOptions[] = threads
+      .slice(0, MACOS_TRAY_MENU_THREAD_LIMIT)
+      .map((thread) => ({
+        label: truncateThreadMenuLabel(thread.title),
+        icon: thread.state === "completed" ? images.menuCompleted : images.menuRunning,
+        toolTip: `${thread.title.trim()} — ${thread.state === "completed" ? "completed" : "running"}`,
+        click: () =>
+          runTrayEffect(
+            "open-thread",
+            dispatchRendererAction("open-thread", {
+              environmentId: thread.environmentId,
+              threadId: thread.threadId,
+            }),
+          ),
+      }));
+
+    const hiddenThreadCount = threads.length - items.length;
+    if (hiddenThreadCount > 0) {
+      items.push({
+        label: hiddenThreadCount === 1 ? "1 more thread" : `${hiddenThreadCount} more threads`,
+        enabled: false,
+      });
+    }
+
+    return [...items, { type: "separator" }];
+  };
+
   const buildTrayMenuTemplate = (
     status: DesktopTaskbarStatusInput,
   ): Electron.MenuItemConstructorOptions[] => [
@@ -295,6 +353,7 @@ const make = Effect.gen(function* () {
       toolTip: resolveStatusDescription(status),
     },
     { type: "separator" },
+    ...buildThreadMenuItems(status),
     {
       label: "Show Threadlines",
       click: () =>

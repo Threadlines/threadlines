@@ -1,5 +1,6 @@
 import {
   type DesktopTaskbarStatusInput,
+  type DesktopTaskbarThreadSummary,
   type ServerLifecycleWelcomePayload,
 } from "@threadlines/contracts";
 import { scopedProjectKey, scopeProjectRef } from "@threadlines/client-runtime";
@@ -46,7 +47,7 @@ import {
   useServerConfigUpdatedSubscription,
   useServerWelcomeSubscription,
 } from "../rpc/serverState";
-import { selectThreadsAcrossEnvironments, useStore } from "../store";
+import { type AppState, selectSidebarThreadsAcrossEnvironments, useStore } from "../store";
 import { useUiStateStore } from "../uiStateStore";
 import { syncBrowserChromeTheme } from "../hooks/useTheme";
 import {
@@ -166,18 +167,44 @@ function describeCompleted(count: number): string {
   return count === 1 ? "1 thread completed" : `${count} threads completed`;
 }
 
+// Bounds the taskbar status IPC payload; the desktop menu shows fewer and
+// summarizes the rest.
+const TASKBAR_MENU_THREAD_LIMIT = 20;
+
+function taskbarThreadKey(
+  thread: Pick<DesktopTaskbarThreadSummary, "environmentId" | "threadId">,
+): string {
+  return `${thread.environmentId}:${thread.threadId}`;
+}
+
+function selectRunningTaskbarThreads(state: AppState): DesktopTaskbarThreadSummary[] {
+  return selectSidebarThreadsAcrossEnvironments(state)
+    .filter(
+      (thread) =>
+        thread.session?.status === "running" || thread.session?.orchestrationStatus === "running",
+    )
+    .map((thread) => ({
+      threadId: thread.id,
+      environmentId: thread.environmentId,
+      title: thread.title,
+      state: "running" as const,
+    }));
+}
+
 function DesktopTaskbarStatusSync() {
-  const runningThreadCount = useStore(
-    (state) =>
-      selectThreadsAcrossEnvironments(state).filter(
-        (thread) =>
-          thread.session?.status === "running" || thread.session?.orchestrationStatus === "running",
-      ).length,
+  // Subscribe to a compact signature so re-renders happen only when the
+  // running set or a running thread's title changes.
+  const runningThreadsSignature = useStore((state) =>
+    selectRunningTaskbarThreads(state)
+      .map((thread) => `${taskbarThreadKey(thread)}:${thread.title}`)
+      .join("|"),
   );
   const hadRunningThreadRef = useRef(false);
   const completionShownRef = useRef(false);
-  const previousRunningThreadCountRef = useRef(0);
-  const unseenCompletedThreadCountRef = useRef(0);
+  const previousRunningThreadsRef = useRef<ReadonlyMap<string, DesktopTaskbarThreadSummary>>(
+    new Map(),
+  );
+  const unseenCompletedThreadsRef = useRef(new Map<string, DesktopTaskbarThreadSummary>());
   const lastStatusKeyRef = useRef<string | null>(null);
 
   const setTaskbarStatus = useEffectEvent((input: DesktopTaskbarStatusInput) => {
@@ -186,7 +213,10 @@ function DesktopTaskbarStatusSync() {
       return;
     }
 
-    const statusKey = `${input.status}:${input.description ?? ""}:${input.runningThreadCount ?? ""}:${input.completedThreadCount ?? ""}`;
+    const threadsKey = (input.threads ?? [])
+      .map((thread) => `${taskbarThreadKey(thread)}:${thread.state}:${thread.title}`)
+      .join("|");
+    const statusKey = `${input.status}:${input.description ?? ""}:${input.runningThreadCount ?? ""}:${input.completedThreadCount ?? ""}:${threadsKey}`;
     if (lastStatusKeyRef.current === statusKey) {
       return;
     }
@@ -196,28 +226,44 @@ function DesktopTaskbarStatusSync() {
     });
   });
 
-  useEffect(() => {
+  const syncTaskbarStatus = useEffectEvent(() => {
     if (!window.desktopBridge?.setTaskbarStatus) {
       return;
     }
 
-    // Track threads that finished while the app was unfocused so completion
-    // badges can show a real count; focused users see completions live.
-    const previousRunningThreadCount = previousRunningThreadCountRef.current;
-    previousRunningThreadCountRef.current = runningThreadCount;
-    if (document.hasFocus()) {
-      unseenCompletedThreadCountRef.current = 0;
-    } else if (runningThreadCount < previousRunningThreadCount) {
-      unseenCompletedThreadCountRef.current += previousRunningThreadCount - runningThreadCount;
-    }
+    const runningThreads = selectRunningTaskbarThreads(useStore.getState());
+    const runningByKey = new Map(
+      runningThreads.map((thread) => [taskbarThreadKey(thread), thread]),
+    );
 
-    if (runningThreadCount > 0) {
+    // Track threads that finished while the app was unfocused, by identity, so
+    // the badge count and menu list stay truthful; focused users see
+    // completions live.
+    if (document.hasFocus()) {
+      unseenCompletedThreadsRef.current.clear();
+    } else {
+      for (const [key, thread] of previousRunningThreadsRef.current) {
+        if (!runningByKey.has(key)) {
+          unseenCompletedThreadsRef.current.set(key, { ...thread, state: "completed" });
+        }
+      }
+    }
+    previousRunningThreadsRef.current = runningByKey;
+
+    const unseenCompletedThreads = [...unseenCompletedThreadsRef.current.values()];
+    const menuThreads = [...unseenCompletedThreads, ...runningThreads].slice(
+      0,
+      TASKBAR_MENU_THREAD_LIMIT,
+    );
+
+    if (runningThreads.length > 0) {
       hadRunningThreadRef.current = true;
       completionShownRef.current = false;
       setTaskbarStatus({
         status: "working",
-        runningThreadCount,
-        description: describeWorking(runningThreadCount),
+        runningThreadCount: runningThreads.length,
+        description: describeWorking(runningThreads.length),
+        threads: menuThreads,
       });
       return;
     }
@@ -226,24 +272,29 @@ function DesktopTaskbarStatusSync() {
       hadRunningThreadRef.current = false;
       if (document.hasFocus()) {
         completionShownRef.current = false;
-        setTaskbarStatus({ status: "idle", description: "No threads are working" });
+        setTaskbarStatus({ status: "idle", description: "No threads are working", threads: [] });
         return;
       }
 
       completionShownRef.current = true;
-      const completedThreadCount = Math.max(1, unseenCompletedThreadCountRef.current);
+      const completedThreadCount = Math.max(1, unseenCompletedThreads.length);
       setTaskbarStatus({
         status: "completed",
         completedThreadCount,
         description: describeCompleted(completedThreadCount),
+        threads: menuThreads,
       });
       return;
     }
 
     if (!completionShownRef.current) {
-      setTaskbarStatus({ status: "idle", description: "No threads are working" });
+      setTaskbarStatus({ status: "idle", description: "No threads are working", threads: [] });
     }
-  }, [runningThreadCount]);
+  });
+
+  useEffect(() => {
+    syncTaskbarStatus();
+  }, [runningThreadsSignature]);
 
   useEffect(() => {
     const handleFocus = () => {
@@ -251,22 +302,10 @@ function DesktopTaskbarStatusSync() {
         return;
       }
 
-      unseenCompletedThreadCountRef.current = 0;
-      if (runningThreadCount > 0) {
-        completionShownRef.current = false;
-        setTaskbarStatus({
-          status: "working",
-          runningThreadCount,
-          description: describeWorking(runningThreadCount),
-        });
-        return;
-      }
-
-      if (!completionShownRef.current) {
-        return;
-      }
+      // Focus acknowledges completions: clear them and re-sync the surfaces.
+      unseenCompletedThreadsRef.current.clear();
       completionShownRef.current = false;
-      setTaskbarStatus({ status: "idle", description: "No threads are working" });
+      syncTaskbarStatus();
     };
 
     window.addEventListener("focus", handleFocus);
@@ -276,7 +315,7 @@ function DesktopTaskbarStatusSync() {
       document.removeEventListener("visibilitychange", handleFocus);
       setTaskbarStatus({ status: "idle", description: "No threads are working" });
     };
-  }, [runningThreadCount]);
+  }, []);
 
   return null;
 }

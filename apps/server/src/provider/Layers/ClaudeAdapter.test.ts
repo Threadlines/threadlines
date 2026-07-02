@@ -2640,6 +2640,178 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("settles a task once when task_notification follows a terminal task_updated", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 7).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-settled-twice",
+        description: "Scan git history in the background",
+        session_id: "sdk-session-task-settled-twice",
+        uuid: "task-settled-twice-started",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_updated",
+        task_id: "task-settled-twice",
+        patch: {
+          status: "completed",
+        },
+        session_id: "sdk-session-task-settled-twice",
+        uuid: "task-settled-twice-updated",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-settled-twice",
+        status: "completed",
+        summary: 'Background command "Scan git history" completed (exit code 0)',
+        session_id: "sdk-session-task-settled-twice",
+        uuid: "task-settled-twice-notification",
+      } as unknown as SDKMessage);
+
+      // Marker after the duplicate settle: the fixed-size take only includes it
+      // when the task_notification above emitted nothing.
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-settled-twice-marker",
+        description: "Marker task",
+        session_id: "sdk-session-task-settled-twice",
+        uuid: "task-settled-twice-marker-started",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const completedEvents = runtimeEvents.filter((event) => event.type === "task.completed");
+      assert.equal(completedEvents.length, 1);
+      const completedEvent = completedEvents[0];
+      if (completedEvent?.type === "task.completed") {
+        assert.equal(completedEvent.payload.taskId, "task-settled-twice");
+        assert.equal(completedEvent.payload.status, "completed");
+        assert.equal(completedEvent.payload.summary, "Scan git history in the background");
+      }
+      const markerStarted = runtimeEvents.find(
+        (event) =>
+          event.type === "task.started" && event.payload.taskId === "task-settled-twice-marker",
+      );
+      assert.isDefined(markerStarted);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("ignores task_updated patches after a task_notification settled the task", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 7).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-notified-first",
+        description: "Research competitor features",
+        session_id: "sdk-session-task-notified-first",
+        uuid: "task-notified-first-started",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-notified-first",
+        status: "completed",
+        summary: 'Agent "Research competitor features" finished',
+        session_id: "sdk-session-task-notified-first",
+        uuid: "task-notified-first-notification",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_updated",
+        task_id: "task-notified-first",
+        patch: {
+          status: "completed",
+        },
+        session_id: "sdk-session-task-notified-first",
+        uuid: "task-notified-first-updated",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_updated",
+        task_id: "task-notified-first",
+        patch: {
+          status: "running",
+          description: "Stale update after completion",
+        },
+        session_id: "sdk-session-task-notified-first",
+        uuid: "task-notified-first-stale-update",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-notified-first-marker",
+        description: "Marker task",
+        session_id: "sdk-session-task-notified-first",
+        uuid: "task-notified-first-marker-started",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const completedEvents = runtimeEvents.filter((event) => event.type === "task.completed");
+      assert.equal(completedEvents.length, 1);
+      const completedEvent = completedEvents[0];
+      if (completedEvent?.type === "task.completed") {
+        assert.equal(completedEvent.payload.taskId, "task-notified-first");
+        assert.equal(
+          completedEvent.payload.summary,
+          'Agent "Research competitor features" finished',
+        );
+      }
+      assert.isUndefined(
+        runtimeEvents.find(
+          (event) =>
+            event.type === "task.progress" && event.payload.taskId === "task-notified-first",
+        ),
+      );
+      const markerStarted = runtimeEvents.find(
+        (event) =>
+          event.type === "task.started" && event.payload.taskId === "task-notified-first-marker",
+      );
+      assert.isDefined(markerStarted);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("does not derive context usage from Claude task progress totals", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

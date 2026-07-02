@@ -668,6 +668,46 @@ export function makeTaskbarOverlayChip(input: TaskbarOverlayChipInput): TrayGlyp
   return glyph;
 }
 
+// --- macOS menu item state icons ------------------------------------------
+
+export interface MacMenuStateGlyphs {
+  readonly running: TrayGlyph;
+  readonly completed: TrayGlyph;
+}
+
+const MENU_ICON_SIZE_PT = 16;
+const MENU_ICON_CENTER: Vec = { x: 8, y: 8 };
+
+let cachedMenuStateGlyphs: MacMenuStateGlyphs | null = null;
+
+/** Small template icons marking thread state in the status item menu. */
+export function makeMacMenuStateGlyphs(): MacMenuStateGlyphs {
+  const options: RenderOptions = { sizePt: MENU_ICON_SIZE_PT, compositing: "mask" };
+  cachedMenuStateGlyphs ??= {
+    // The brand's accent node: a filled dot with a soft halo.
+    running: buildGlyph(
+      [
+        { kind: "circle", center: MENU_ICON_CENTER, radius: 4.2, alpha: 0.25 },
+        { kind: "circle", center: MENU_ICON_CENTER, radius: 2.6, alpha: 1 },
+      ],
+      options,
+    ),
+    completed: buildGlyph(
+      [
+        {
+          kind: "stroke",
+          points: OVERLAY_CHECK_POINTS,
+          width: 1.8,
+          alphaStart: 1,
+          alphaEnd: 1,
+        },
+      ],
+      options,
+    ),
+  };
+  return cachedMenuStateGlyphs;
+}
+
 let cachedGlyphSet: MacTrayGlyphSet | null = null;
 
 export function makeMacTrayGlyphSet(): MacTrayGlyphSet {

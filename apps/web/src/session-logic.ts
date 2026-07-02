@@ -881,15 +881,25 @@ function collectSubagentActivityRecords(
   const latestTurnId = options.latestTurnId ?? null;
 
   for (const activity of [...activities].toSorted(compareActivitiesByOrder)) {
-    if (latestTurnId !== null && activity.turnId !== latestTurnId) {
-      continue;
-    }
+    const inLatestTurn = latestTurnId === null || activity.turnId === latestTurnId;
 
     const payload =
       activity.payload && typeof activity.payload === "object"
         ? (activity.payload as Record<string, unknown>)
         : null;
-    if (payload === null || extractWorkLogItemType(payload) !== "collab_agent_tool_call") {
+    if (payload === null) {
+      continue;
+    }
+
+    // Background agents settle between prompts, so their task.completed lands
+    // in a different (or no) turn. It links back via toolUseId and only
+    // updates already-known records, so it bypasses turn scoping.
+    if (activity.kind === "task.completed") {
+      applySubagentTaskCompletion(byAgentId, activity, payload);
+      continue;
+    }
+
+    if (extractWorkLogItemType(payload) !== "collab_agent_tool_call") {
       continue;
     }
 
@@ -933,6 +943,12 @@ function collectSubagentActivityRecords(
 
     for (const agentId of resolvedAgentIds) {
       const previous = byAgentId.get(agentId);
+      // Turn scoping applies to where an agent is spawned. Later lifecycle
+      // activities for a known agent (e.g. a background agent's completion
+      // replayed after its turn ended) still update the record.
+      if (!inLatestTurn && previous === undefined) {
+        continue;
+      }
       const pendingAgent = agentId.startsWith("pending:");
       if (pendingAgent) {
         pendingSpawnKeysByCallId.set(toolCallId, agentId);
@@ -978,7 +994,7 @@ function collectSubagentActivityRecords(
       byAgentId.set(agentId, {
         id: agentId,
         agentThreadId: pendingAgent ? null : agentId,
-        turnId: activity.turnId,
+        turnId: activity.turnId ?? previous?.turnId ?? null,
         label,
         ...(nickname ? { nickname } : {}),
         role,
@@ -1002,6 +1018,30 @@ function collectSubagentActivityRecords(
   });
 }
 
+/** Settles a spawned agent's status from a task.completed activity that links
+ *  back via toolUseId. Status only — the agent's message arrives through the
+ *  tool item completion replay, and the task summary is not agent output. */
+function applySubagentTaskCompletion(
+  byAgentId: Map<string, InternalSubagentRecord>,
+  activity: OrchestrationThreadActivity,
+  payload: Record<string, unknown>,
+): void {
+  const toolUseId = asTrimmedString(payload.toolUseId);
+  const record = toolUseId ? byAgentId.get(toolUseId) : undefined;
+  if (!record) {
+    return;
+  }
+  const rawStatus = asTrimmedString(payload.status);
+  const status: SubagentProgressStatus =
+    rawStatus === "failed" ? "failed" : rawStatus === "stopped" ? "interrupted" : "completed";
+  byAgentId.set(record.id, {
+    ...record,
+    status,
+    statusLabel: subagentProgressStatusLabel(status),
+    updatedAt: activity.createdAt,
+  });
+}
+
 function asClaudeSubagentActivityItem(input: {
   activity: OrchestrationThreadActivity;
   payload: Record<string, unknown>;
@@ -1020,7 +1060,18 @@ function asClaudeSubagentActivityItem(input: {
   const itemStatus =
     asTrimmedString(input.payload.status) ?? claudeSubagentStatusFromActivityKind(input.activity);
   const resultText = extractClaudeSubagentResultText(input.data?.result);
-  const stateStatus = claudeSubagentStateStatus(itemStatus);
+  const notificationStatus = asTrimmedString(asRecord(input.data?.taskNotification)?.status);
+  // A background launch acknowledgment is harness plumbing, not agent output:
+  // the agent keeps running and its real message arrives later through the
+  // task-notification completion replay (which carries data.taskNotification).
+  const stateStatus =
+    notificationStatus !== null
+      ? claudeSubagentStateStatus(
+          notificationStatus === "stopped" ? "interrupted" : notificationStatus,
+        )
+      : isClaudeAsyncAgentLaunchAcknowledgment(resultText)
+        ? "running"
+        : claudeSubagentStateStatus(itemStatus);
   const agentMessage = isTerminalClaudeSubagentState(stateStatus) ? resultText : null;
   const role =
     asTrimmedString(toolInput?.subagent_type) ??
@@ -1117,14 +1168,23 @@ function sanitizeClaudeSubagentResultText(value: string | null): string | null {
   }
 
   const withoutUsage = value.replace(/\s*<usage>[\s\S]*?<\/usage>\s*$/iu, "").trimEnd();
+  // The parenthetical wording varies by harness version ("use SendMessage
+  // with ..." vs "internal ID - do not mention to user. Use SendMessage ...").
   const withoutContinuationFooter = withoutUsage
     .replace(
-      /\s*agentId:\s*[A-Za-z0-9_-]+\s*\(use\s+SendMessage\s+with\s+to:\s*['"`][^'"`]+['"`],\s*summary:\s*['"`][\s\S]*?['"`]\s+to\s+continue\s+this\s+agent\)\s*$/iu,
+      /\s*agentId:\s*[A-Za-z0-9_-]+\s*\([^()]*?use\s+SendMessage\s+with\s+to:\s*['"`][^'"`]+['"`],\s*summary:\s*['"`][\s\S]*?['"`]\s+to\s+continue\s+this\s+agent\.?\)\s*$/iu,
       "",
     )
     .trim();
 
   return withoutContinuationFooter.length > 0 ? withoutContinuationFooter : null;
+}
+
+/** The Task tool_result for a `run_in_background` launch is an acknowledgment
+ *  ("Async agent launched successfully. agentId: ..."), not the agent's
+ *  output — the agent is still running at that point. */
+function isClaudeAsyncAgentLaunchAcknowledgment(value: string | null): boolean {
+  return value !== null && /^async agent launched successfully\b/iu.test(value);
 }
 
 function extractClaudeTextContent(content: unknown): string | null {
@@ -1434,6 +1494,7 @@ export function deriveWorkLogEntries(
     .filter((activity) => activity.kind !== "prompt-suggestion.updated")
     .filter((activity) => activity.summary !== "Checkpoint captured")
     .filter((activity) => !isPlanBoundaryToolActivity(activity))
+    .filter((activity) => !isSubagentNotificationReplayActivity(activity))
     .map(toDerivedWorkLogEntry);
   return enrichGenericThinkingEntries(
     collapseDerivedWorkLogEntries(entries).filter(shouldKeepDerivedWorkLogEntry),
@@ -1445,6 +1506,22 @@ export function deriveWorkLogEntries(
       ...entry
     }) => entry,
   );
+}
+
+/** The task-notification completion replay re-emits the original Task tool
+ *  call with the agent's final message. The work log already narrates the
+ *  completion via its task.completed entry, and the message itself renders as
+ *  the subagent result row — a second tool row would duplicate both. */
+function isSubagentNotificationReplayActivity(activity: OrchestrationThreadActivity): boolean {
+  if (
+    activity.kind !== "tool.started" &&
+    activity.kind !== "tool.updated" &&
+    activity.kind !== "tool.completed"
+  ) {
+    return false;
+  }
+  const payload = asRecord(activity.payload);
+  return asRecord(asRecord(payload?.data)?.taskNotification) !== null;
 }
 
 function isPlanBoundaryToolActivity(activity: OrchestrationThreadActivity): boolean {

@@ -1,7 +1,21 @@
-import type { DesktopBridge } from "@threadlines/contracts";
+import type { DesktopBridge, DesktopMenuActionPayload } from "@threadlines/contracts";
 import { contextBridge, ipcRenderer } from "electron";
 
 import * as IpcChannels from "./ipc/channels.ts";
+
+function decodeMenuActionPayload(payload: unknown): DesktopMenuActionPayload | undefined {
+  if (typeof payload !== "object" || payload === null) {
+    return undefined;
+  }
+  const decoded: { environmentId?: string; threadId?: string } = {};
+  if ("environmentId" in payload && typeof payload.environmentId === "string") {
+    decoded.environmentId = payload.environmentId;
+  }
+  if ("threadId" in payload && typeof payload.threadId === "string") {
+    decoded.threadId = payload.threadId;
+  }
+  return decoded;
+}
 
 function unwrapEnsureSshEnvironmentResult(result: unknown) {
   if (
@@ -104,9 +118,13 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     }),
   openExternal: (url: string) => ipcRenderer.invoke(IpcChannels.OPEN_EXTERNAL_CHANNEL, url),
   onMenuAction: (listener) => {
-    const wrappedListener = (_event: Electron.IpcRendererEvent, action: unknown) => {
+    const wrappedListener = (
+      _event: Electron.IpcRendererEvent,
+      action: unknown,
+      payload: unknown,
+    ) => {
       if (typeof action !== "string") return;
-      listener(action);
+      listener(action, decodeMenuActionPayload(payload));
     };
 
     ipcRenderer.on(IpcChannels.MENU_ACTION_CHANNEL, wrappedListener);

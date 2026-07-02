@@ -5,6 +5,8 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import { afterEach, vi } from "vitest";
 
+import type { DesktopMenuActionPayload } from "@threadlines/contracts";
+
 import type * as Electron from "electron";
 
 import * as DesktopConfig from "../app/DesktopConfig.ts";
@@ -128,8 +130,13 @@ const makeElectronWindowLayer = (window: Electron.BrowserWindow) =>
     syncAllAppearance: (sync) => sync(window),
   } satisfies ElectronWindow.ElectronWindowShape);
 
+interface DispatchedMenuAction {
+  readonly action: string;
+  readonly payload?: DesktopMenuActionPayload;
+}
+
 const makeDesktopWindowLayer = (input: {
-  readonly dispatchedActions: string[];
+  readonly dispatchedActions: DispatchedMenuAction[];
   readonly window: Electron.BrowserWindow;
 }) =>
   Layer.succeed(DesktopWindow.DesktopWindow, {
@@ -139,16 +146,16 @@ const makeDesktopWindowLayer = (input: {
     activate: Effect.void,
     createMainIfBackendReady: Effect.void,
     handleBackendReady: Effect.void,
-    dispatchMenuAction: (action) =>
+    dispatchMenuAction: (action, payload) =>
       Effect.sync(() => {
-        input.dispatchedActions.push(action);
+        input.dispatchedActions.push(payload === undefined ? { action } : { action, payload });
       }),
     syncAppearance: Effect.void,
   } satisfies DesktopWindow.DesktopWindowShape);
 
 function makeTestLayer(input: {
   readonly appCalls: ElectronAppCalls;
-  readonly dispatchedActions?: string[];
+  readonly dispatchedActions?: DispatchedMenuAction[];
   readonly platform?: NodeJS.Platform;
   readonly trayCalls: TrayCalls;
   readonly window: Electron.BrowserWindow;
@@ -235,7 +242,9 @@ describe("DesktopStatusIndicator", () => {
         }).pipe(Effect.provide(makeTestLayer({ appCalls, trayCalls, window })));
 
         const glyphs = DesktopStatusGlyphs.makeMacTrayGlyphSet();
-        const expectedGlyphCount = 1 + glyphs.workingFrames.length + glyphs.completedFrames.length;
+        // idle + animation frames + the two menu thread-state icons.
+        const expectedGlyphCount =
+          1 + glyphs.workingFrames.length + glyphs.completedFrames.length + 2;
         assert.lengthOf(trayCalls.createTemplateImages, expectedGlyphCount);
         assert.isTrue(
           trayCalls.createTemplateImages.every(
@@ -335,7 +344,7 @@ describe("DesktopStatusIndicator", () => {
   it.effect("routes the macOS status menu New Thread action through the renderer bridge", () =>
     Effect.gen(function* () {
       const { appCalls, trayCalls } = makeCalls();
-      const dispatchedActions: string[] = [];
+      const dispatchedActions: DispatchedMenuAction[] = [];
       const window = makeFakeWindow({ focused: true });
 
       yield* Effect.gen(function* () {
@@ -360,7 +369,92 @@ describe("DesktopStatusIndicator", () => {
         yield* Effect.promise(() => Promise.resolve());
       }).pipe(Effect.provide(makeTestLayer({ appCalls, dispatchedActions, trayCalls, window })));
 
-      assert.deepEqual(dispatchedActions, ["new-thread"]);
+      assert.deepEqual(dispatchedActions, [{ action: "new-thread" }]);
+    }),
+  );
+
+  it.effect("lists threads in the macOS status menu and opens them on click", () =>
+    Effect.gen(function* () {
+      const { appCalls, trayCalls } = makeCalls();
+      const dispatchedActions: DispatchedMenuAction[] = [];
+      const window = makeFakeWindow({ focused: false });
+
+      yield* Effect.gen(function* () {
+        const indicator = yield* DesktopStatusIndicator.DesktopStatusIndicator;
+        yield* indicator.configure;
+        yield* indicator.setStatus({
+          status: "working",
+          description: "1 thread is working",
+          runningThreadCount: 1,
+          threads: [
+            {
+              threadId: "thread-done",
+              environmentId: "env-1",
+              title: "Fix tray icons",
+              state: "completed",
+            },
+            {
+              threadId: "thread-live",
+              environmentId: "env-2",
+              title: `Refactor ${"x".repeat(60)}`,
+              state: "running",
+            },
+          ],
+        });
+
+        const menu = trayCalls.buildMenu.at(-1);
+        assert.isDefined(menu);
+        assert.equal(menu[0]?.label, "1 thread running");
+        assert.equal(menu[1]?.type, "separator");
+
+        const completedItem = menu[2];
+        const runningItem = menu[3];
+        assert.equal(completedItem?.label, "Fix tray icons");
+        assert.isDefined(completedItem?.icon);
+        assert.isDefined(runningItem?.icon);
+        assert.notEqual(completedItem?.icon, runningItem?.icon);
+        assert.isTrue(runningItem?.label?.endsWith("…"));
+        assert.isAtMost(runningItem?.label?.length ?? Number.POSITIVE_INFINITY, 44);
+        assert.equal(menu[4]?.type, "separator");
+        assert.equal(menu[5]?.label, "Show Threadlines");
+
+        if (typeof completedItem?.click !== "function") {
+          throw new Error("Expected thread tray item to have a click handler.");
+        }
+        completedItem.click(
+          {} as Electron.MenuItem,
+          {} as Electron.BrowserWindow,
+          {} as KeyboardEvent,
+        );
+        yield* Effect.promise(() => Promise.resolve());
+
+        // Overflow beyond the display limit collapses into a summary row.
+        yield* indicator.setStatus({
+          status: "working",
+          description: "7 threads are working",
+          runningThreadCount: 7,
+          threads: Array.from({ length: 7 }, (_, index) => ({
+            threadId: `thread-${index}`,
+            environmentId: "env-1",
+            title: `Thread ${index}`,
+            state: "running" as const,
+          })),
+        });
+        const overflowMenu = trayCalls.buildMenu.at(-1);
+        assert.isDefined(overflowMenu);
+        const overflowLabels = overflowMenu
+          .map((item) => item.label)
+          .filter((label) => label?.startsWith("Thread "));
+        assert.lengthOf(overflowLabels, 5);
+        assert.isDefined(overflowMenu.find((item) => item.label === "2 more threads"));
+      }).pipe(Effect.provide(makeTestLayer({ appCalls, dispatchedActions, trayCalls, window })));
+
+      assert.deepEqual(dispatchedActions, [
+        {
+          action: "open-thread",
+          payload: { environmentId: "env-1", threadId: "thread-done" },
+        },
+      ]);
     }),
   );
 });

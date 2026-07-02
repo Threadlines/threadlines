@@ -1,4 +1,6 @@
 import { useEffect, type CSSProperties, type ReactNode } from "react";
+import { scopeThreadRef } from "@threadlines/client-runtime";
+import type { EnvironmentId, ThreadId } from "@threadlines/contracts";
 import { useNavigate } from "@tanstack/react-router";
 
 import { isElectron } from "../env";
@@ -6,6 +8,7 @@ import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useSettings } from "../hooks/useSettings";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { isMacPlatform } from "../lib/utils";
+import { buildThreadRouteParams } from "../threadRoutes";
 import { resolveSidebarNewThreadEnvMode } from "./Sidebar.logic";
 import ThreadSidebar from "./Sidebar";
 import { Sidebar, SidebarProvider, SidebarRail, SidebarTrigger } from "./ui/sidebar";
@@ -76,9 +79,24 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
       return;
     }
 
-    const unsubscribe = onMenuAction((action) => {
+    const unsubscribe = onMenuAction((action, payload) => {
       if (action === "open-settings") {
         void navigate({ to: "/settings" });
+        return;
+      }
+
+      if (action === "open-thread") {
+        const environmentId = payload?.environmentId;
+        const threadId = payload?.threadId;
+        if (!environmentId || !threadId) {
+          return;
+        }
+        void navigate({
+          to: "/$environmentId/$threadId",
+          params: buildThreadRouteParams(
+            scopeThreadRef(environmentId as EnvironmentId, threadId as ThreadId),
+          ),
+        });
         return;
       }
 

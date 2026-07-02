@@ -212,6 +212,9 @@ type ClaudeTaskStatus = "pending" | "running" | "completed" | "failed" | "killed
 interface ClaudeTaskSnapshot {
   readonly description?: string;
   readonly status?: ClaudeTaskStatus;
+  /** tool_use_id of the call that started the task (from task_started), so
+   *  every task.completed emitter can link back to the originating tool. */
+  readonly toolUseId?: string;
 }
 
 interface ClaudeSessionContext {
@@ -235,6 +238,11 @@ interface ClaudeSessionContext {
     assistantUuid?: string;
   }>;
   readonly inFlightTools: Map<number, ToolInFlight>;
+  /** Subagent launches (collab-agent tool calls), keyed by tool_use_id. Kept
+   *  for the session lifetime so a later task notification (background agents
+   *  settle between turns and may notify more than once) can re-emit the
+   *  originating tool item with the agent's real final message. */
+  readonly collabAgentToolsByItemId: Map<string, ToolInFlight>;
   /** Per-file +/- counts captured by the PostToolUse hook, keyed by tool_use_id.
    *  Consumed when the matching tool_result is emitted. */
   readonly fileChangeStatsByToolUseId: Map<string, FileChangeStat>;
@@ -1727,6 +1735,89 @@ function toolResultBlocksFromUserMessage(message: SDKMessage): Array<{
   return blocks;
 }
 
+interface ClaudeTaskNotification {
+  readonly taskId: string;
+  readonly toolUseId?: string;
+  readonly status: "completed" | "failed" | "stopped";
+  readonly summary?: string;
+  readonly result?: string;
+}
+
+const TASK_NOTIFICATION_BLOCK_PATTERN = /<task-notification>([\s\S]*?)<\/task-notification>/gu;
+
+/** Tag contents are XML-escaped by the harness; `&amp;` must decode last. */
+function decodeTaskNotificationText(value: string): string {
+  return value
+    .replace(/&lt;/gu, "<")
+    .replace(/&gt;/gu, ">")
+    .replace(/&quot;/gu, '"')
+    .replace(/&#39;/gu, "'")
+    .replace(/&apos;/gu, "'")
+    .replace(/&amp;/gu, "&");
+}
+
+function taskNotificationTagValue(block: string, tag: string): string | undefined {
+  const match = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "u").exec(block);
+  const value = match?.[1];
+  if (value === undefined) {
+    return undefined;
+  }
+  const decoded = decodeTaskNotificationText(value).trim();
+  return decoded.length > 0 ? decoded : undefined;
+}
+
+/** Background tasks settle between turns via synthetic `<task-notification>`
+ *  user messages. For subagents these carry the agent's full final message in
+ *  `<result>` — the only place it surfaces, since the Task tool_result was just
+ *  a launch acknowledgment. */
+function taskNotificationsFromUserMessage(message: SDKMessage): ClaudeTaskNotification[] {
+  if (message.type !== "user") {
+    return [];
+  }
+
+  const content = (message.message as { content?: unknown } | undefined)?.content;
+  const textParts: string[] = [];
+  if (typeof content === "string") {
+    textParts.push(content);
+  } else if (Array.isArray(content)) {
+    for (const entry of content) {
+      if (!entry || typeof entry !== "object") {
+        continue;
+      }
+      const block = entry as { type?: unknown; text?: unknown };
+      if (block.type === "text" && typeof block.text === "string") {
+        textParts.push(block.text);
+      }
+    }
+  }
+
+  const notifications: ClaudeTaskNotification[] = [];
+  for (const part of textParts) {
+    if (!part.includes("<task-notification>")) {
+      continue;
+    }
+    for (const match of part.matchAll(TASK_NOTIFICATION_BLOCK_PATTERN)) {
+      const block = match[1] ?? "";
+      const taskId = taskNotificationTagValue(block, "task-id");
+      const status = taskNotificationTagValue(block, "status");
+      if (!taskId || (status !== "completed" && status !== "failed" && status !== "stopped")) {
+        continue;
+      }
+      const toolUseId = taskNotificationTagValue(block, "tool-use-id");
+      const summary = taskNotificationTagValue(block, "summary");
+      const result = taskNotificationTagValue(block, "result");
+      notifications.push({
+        taskId,
+        status,
+        ...(toolUseId ? { toolUseId } : {}),
+        ...(summary ? { summary } : {}),
+        ...(result ? { result } : {}),
+      });
+    }
+  }
+  return notifications;
+}
+
 function toSessionError(
   threadId: ThreadId,
   cause: unknown,
@@ -2789,6 +2880,68 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     });
   });
 
+  // A background subagent's Task tool_result is only a launch acknowledgment;
+  // the agent's real final message arrives later inside a <task-notification>
+  // user message. Replay it as a completion of the originating tool item so
+  // consumers see the agent's actual output attached to the original call.
+  const emitCollabAgentNotificationResult = Effect.fn("emitCollabAgentNotificationResult")(
+    function* (
+      context: ClaudeSessionContext,
+      notification: ClaudeTaskNotification,
+      message: SDKMessage,
+    ) {
+      const tool = notification.toolUseId
+        ? context.collabAgentToolsByItemId.get(notification.toolUseId)
+        : undefined;
+      if (!tool) {
+        return;
+      }
+
+      const stamp = yield* makeEventStamp();
+      yield* offerRuntimeEvent({
+        type: "item.completed",
+        eventId: stamp.eventId,
+        provider: PROVIDER,
+        createdAt: stamp.createdAt,
+        threadId: context.session.threadId,
+        ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+        itemId: asRuntimeItemId(tool.itemId),
+        payload: {
+          itemType: tool.itemType,
+          status: notification.status === "completed" ? "completed" : "failed",
+          title: tool.title,
+          ...(tool.detail ? { detail: tool.detail } : {}),
+          data: {
+            toolName: tool.toolName,
+            input: tool.input,
+            ...(notification.result
+              ? {
+                  result: {
+                    type: "tool_result",
+                    tool_use_id: tool.itemId,
+                    content: [{ type: "text", text: notification.result }],
+                  },
+                }
+              : {}),
+            taskNotification: {
+              taskId: notification.taskId,
+              status: notification.status,
+              ...(notification.summary ? { summary: notification.summary } : {}),
+            },
+          },
+        },
+        providerRefs: nativeProviderRefs(context, {
+          providerItemId: tool.itemId,
+        }),
+        raw: {
+          source: "claude.sdk.message",
+          method: "claude/user",
+          payload: message,
+        },
+      });
+    },
+  );
+
   const handleUserMessage = Effect.fn("handleUserMessage")(function* (
     context: ClaudeSessionContext,
     message: SDKMessage,
@@ -2801,6 +2954,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       context.turnState.items.push(message.message);
     }
 
+    for (const notification of taskNotificationsFromUserMessage(message)) {
+      yield* emitCollabAgentNotificationResult(context, notification, message);
+    }
+
     for (const toolResult of toolResultBlocksFromUserMessage(message)) {
       const toolEntry = Array.from(context.inFlightTools.entries()).find(
         ([, tool]) => tool.itemId === toolResult.toolUseId,
@@ -2810,6 +2967,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }
 
       const [index, tool] = toolEntry;
+      if (tool.itemType === "collab_agent_tool_call") {
+        // Background agents settle after this tool_result; keep the launch so
+        // a later task notification can complete the item with the real result.
+        context.collabAgentToolsByItemId.set(tool.itemId, tool);
+      }
       const itemStatus = toolResult.isError ? "failed" : "completed";
       const fileChangeStat = context.fileChangeStatsByToolUseId.get(toolResult.toolUseId);
       context.fileChangeStatsByToolUseId.delete(toolResult.toolUseId);
@@ -3188,8 +3350,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       case "task_started":
         {
           const description = nonEmptyString(message.description);
+          const toolUseId = nonEmptyString(message.tool_use_id);
           context.tasks.set(message.task_id, {
             ...(description ? { description } : {}),
+            ...(toolUseId ? { toolUseId } : {}),
             status: "running",
           });
         }
@@ -3230,6 +3394,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             : {};
         const status = normalizeClaudeTaskStatus(patch.status);
         const previous = context.tasks.get(message.task_id);
+        // The SDK reports a finished background task twice: a terminal
+        // task_updated patch and a task_notification. Whichever arrives first
+        // settles the task; later task messages for it are dropped so consumers
+        // see at most one task.completed per task (the session's pending
+        // background task count decrements once per completion event).
+        if (completedTaskStatusFromClaudeStatus(previous?.status) !== undefined) {
+          return;
+        }
         const description = nonEmptyString(patch.description) ?? previous?.description;
         const error = nonEmptyString(patch.error);
         context.tasks.set(message.task_id, {
@@ -3248,6 +3420,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               taskId: RuntimeTaskId.make(message.task_id),
               status: completedStatus,
               ...(summary ? { summary } : {}),
+              ...(previous?.toolUseId ? { toolUseId: previous.toolUseId } : {}),
             },
           });
           return;
@@ -3264,9 +3437,15 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         });
         return;
       }
-      case "task_notification":
+      case "task_notification": {
+        const previous = context.tasks.get(message.task_id);
+        // Dropped when a terminal task_updated patch already settled the task —
+        // see the task_updated handler for the single-completion invariant.
+        if (completedTaskStatusFromClaudeStatus(previous?.status) !== undefined) {
+          return;
+        }
         context.tasks.set(message.task_id, {
-          ...context.tasks.get(message.task_id),
+          ...previous,
           status:
             message.status === "completed"
               ? "completed"
@@ -3274,6 +3453,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
                 ? "failed"
                 : "killed",
         });
+        const toolUseId = nonEmptyString(message.tool_use_id) ?? previous?.toolUseId;
         yield* offerRuntimeEvent({
           ...base,
           type: "task.completed",
@@ -3282,9 +3462,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             status: message.status,
             ...(message.summary ? { summary: message.summary } : {}),
             ...(message.usage ? { usage: message.usage } : {}),
+            ...(toolUseId ? { toolUseId } : {}),
           },
         });
         return;
+      }
       case "files_persisted":
         yield* offerRuntimeEvent({
           ...base,
@@ -4181,6 +4363,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         pendingUserInputs,
         turns: [],
         inFlightTools,
+        collabAgentToolsByItemId: new Map(),
         fileChangeStatsByToolUseId,
         tasks: new Map(),
         planTracker: new Map(),

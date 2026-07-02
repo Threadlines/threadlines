@@ -1998,6 +1998,18 @@ const make = Effect.gen(function* () {
         thread.session != null
       ) {
         const currentPendingCount = thread.session.pendingBackgroundTaskCount ?? 0;
+        if (event.type === "task.completed" && currentPendingCount === 0) {
+          // Clamping hides drift: an unmatched completion here means some other
+          // still-running task already lost its decrement, so make it loud.
+          yield* Effect.logWarning(
+            "provider runtime ingestion saw task.completed with no pending background tasks",
+            {
+              eventId: event.eventId,
+              threadId: thread.id,
+              taskId: event.payload.taskId,
+            },
+          );
+        }
         const nextPendingCount =
           event.type === "task.started"
             ? currentPendingCount + 1

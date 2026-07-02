@@ -290,12 +290,33 @@ export const DesktopUpdateCheckResultSchema = Schema.Struct({
   state: DesktopUpdateStateSchema,
 });
 
+export type DesktopTaskbarThreadState = "running" | "completed";
+
+export const DesktopTaskbarThreadStateSchema = Schema.Literals(["running", "completed"]);
+
+/** A thread surfaced in the desktop status item menu (click-to-open). */
+export interface DesktopTaskbarThreadSummary {
+  threadId: string;
+  environmentId: string;
+  title: string;
+  state: DesktopTaskbarThreadState;
+}
+
+export const DesktopTaskbarThreadSummarySchema = Schema.Struct({
+  threadId: Schema.String,
+  environmentId: Schema.String,
+  title: Schema.String,
+  state: DesktopTaskbarThreadStateSchema,
+});
+
 export interface DesktopTaskbarStatusInput {
   status: DesktopTaskbarStatus;
   description?: string;
   runningThreadCount?: number;
   /** Threads that finished while the app was unfocused (drives dock/taskbar badges). */
   completedThreadCount?: number;
+  /** Unseen-completed and running threads, in display order for the status item menu. */
+  threads?: DesktopTaskbarThreadSummary[];
 }
 
 export const DesktopTaskbarStatusInputSchema = Schema.Struct({
@@ -303,7 +324,14 @@ export const DesktopTaskbarStatusInputSchema = Schema.Struct({
   description: Schema.optionalKey(Schema.String),
   runningThreadCount: Schema.optionalKey(Schema.Number),
   completedThreadCount: Schema.optionalKey(Schema.Number),
+  threads: Schema.optionalKey(Schema.Array(DesktopTaskbarThreadSummarySchema)),
 });
+
+/** Optional structured payload accompanying a desktop menu action. */
+export interface DesktopMenuActionPayload {
+  environmentId?: string;
+  threadId?: string;
+}
 
 export const DesktopCaptureScreenshotInputSchema = Schema.Struct({
   mode: DesktopCaptureScreenshotModeSchema,
@@ -565,7 +593,9 @@ export interface DesktopBridge {
   ) => Promise<T | null>;
   openExternal: (url: string) => Promise<boolean>;
   setTaskbarStatus?: (input: DesktopTaskbarStatusInput) => Promise<void>;
-  onMenuAction: (listener: (action: string) => void) => () => void;
+  onMenuAction: (
+    listener: (action: string, payload?: DesktopMenuActionPayload) => void,
+  ) => () => void;
   onSpellcheckReplacement?: (listener: () => void) => () => void;
   getUpdateState: () => Promise<DesktopUpdateState>;
   setUpdateChannel: (channel: DesktopUpdateChannel) => Promise<DesktopUpdateState>;

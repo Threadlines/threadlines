@@ -134,6 +134,28 @@ describe("DesktopStatusGlyphs", () => {
     assert.notEqual(completedDataUrls.at(0), completedDataUrls.at(-1));
   });
 
+  it("renders distinct template menu state icons", () => {
+    const menuGlyphs = DesktopStatusGlyphs.makeMacMenuStateGlyphs();
+    assert.equal(menuGlyphs, DesktopStatusGlyphs.makeMacMenuStateGlyphs());
+
+    for (const glyph of [menuGlyphs.running, menuGlyphs.completed]) {
+      assert.deepEqual(
+        glyph.representations.map((representation) => representation.scaleFactor),
+        [1, 2],
+      );
+      for (const representation of glyph.representations) {
+        const decoded = decodePng(representation.dataUrl);
+        assert.equal(decoded.width, 16 * representation.scaleFactor);
+        assert.isAbove(maxAlpha(decoded), 200);
+        assertColorIsBlack(decoded);
+      }
+    }
+    assert.notEqual(
+      menuGlyphs.running.representations[1]?.dataUrl,
+      menuGlyphs.completed.representations[1]?.dataUrl,
+    );
+  });
+
   it("renders colored taskbar overlay chips and caches them by label", () => {
     const runningTwo = DesktopStatusGlyphs.makeTaskbarOverlayChip({ kind: "running", count: 2 });
     assert.equal(
