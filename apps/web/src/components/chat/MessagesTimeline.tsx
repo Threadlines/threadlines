@@ -1479,17 +1479,45 @@ function ProposedPlanTimelineRow({
   );
 }
 
+/** Shared auto-collapse mechanics for long chat content: user messages and
+ *  subagent results use the same threshold shape and bottom fade. */
+function shouldCollapseMessageText(
+  text: string,
+  limits: { maxLength: number; maxLines: number },
+): boolean {
+  if (text.trim().length === 0) {
+    return false;
+  }
+  return text.length > limits.maxLength || text.split("\n").length > limits.maxLines;
+}
+
+const COLLAPSED_MESSAGE_FADE_HEIGHT_REM = 1.75;
+const COLLAPSED_MESSAGE_FADE_MASK = `linear-gradient(to bottom, black calc(100% - ${COLLAPSED_MESSAGE_FADE_HEIGHT_REM}rem), transparent)`;
+const COLLAPSED_MESSAGE_FADE_STYLE: CSSProperties = {
+  WebkitMaskImage: COLLAPSED_MESSAGE_FADE_MASK,
+  maskImage: COLLAPSED_MESSAGE_FADE_MASK,
+};
+
+const MAX_COLLAPSED_SUBAGENT_RESULT_LINES = 12;
+const MAX_COLLAPSED_SUBAGENT_RESULT_LENGTH = 900;
+
 function SubagentResultTimelineRow({
   row,
 }: {
   row: Extract<TimelineRow, { kind: "subagent-result" }>;
 }) {
   const ctx = use(TimelineRowCtx);
-  const meta = [row.result.model, row.result.reasoningEffort].filter(
+  const [expanded, setExpanded] = useState(false);
+  const metaChips = [row.result.model, row.result.reasoningEffort].filter(
     (part): part is string => typeof part === "string" && part.length > 0,
   );
   const displayName = formatSubagentDisplayName(row.result);
   const showSubagentChip = shouldShowSubagentDisplayChip(row.result);
+  const canCollapse = shouldCollapseMessageText(row.result.body, {
+    maxLength: MAX_COLLAPSED_SUBAGENT_RESULT_LENGTH,
+    maxLines: MAX_COLLAPSED_SUBAGENT_RESULT_LINES,
+  });
+  const isCollapsed = canCollapse && !expanded;
 
   return (
     <div className="min-w-0 px-1 py-0.5" data-subagent-result-row="true">
@@ -1522,7 +1550,16 @@ function SubagentResultTimelineRow({
             Done
           </span>
         </div>
-        <div className="min-w-0 border-l border-border/60 pl-3" data-subagent-result-body="true">
+        <div
+          className={cn(
+            "relative min-w-0 border-l border-border/60 pl-3",
+            isCollapsed && "max-h-56 overflow-hidden",
+          )}
+          data-subagent-result-body="true"
+          data-subagent-result-collapsed={isCollapsed ? "true" : "false"}
+          data-subagent-result-collapsible={canCollapse ? "true" : "false"}
+          style={isCollapsed ? COLLAPSED_MESSAGE_FADE_STYLE : undefined}
+        >
           <ChatMarkdown
             text={row.result.body}
             cwd={ctx.markdownCwd}
@@ -1530,13 +1567,39 @@ function SubagentResultTimelineRow({
             skills={ctx.skills}
           />
         </div>
-        <div className="mt-2 flex items-center justify-between gap-2">
-          <p className="truncate text-[10px] text-muted-foreground/40">
-            {meta.length > 0 ? meta.join(" / ") : "Subagent result"}
-          </p>
-          <p className="shrink-0 text-[10px] tracking-tight tabular-nums text-muted-foreground/30">
-            {formatTimestamp(row.createdAt, ctx.timestampFormat)}
-          </p>
+        <div
+          className="mt-2 flex items-center justify-between gap-2"
+          data-subagent-result-footer="true"
+        >
+          {canCollapse ? (
+            <Button
+              type="button"
+              size="xs"
+              variant="ghost"
+              aria-expanded={expanded}
+              data-scroll-anchor-ignore
+              onClick={() => setExpanded((value) => !value)}
+              className="-ml-1 h-6 rounded-md px-1.5 text-xs text-muted-foreground/72 hover:bg-muted/55 hover:text-foreground/85"
+            >
+              {expanded ? "Show less" : "Show full result"}
+            </Button>
+          ) : (
+            <p className="truncate text-[10px] text-muted-foreground/40">Subagent result</p>
+          )}
+          <div className="flex shrink-0 items-center gap-1.5">
+            {metaChips.map((chip) => (
+              <span
+                key={chip}
+                className="rounded border border-border/55 bg-background/55 px-1.5 py-0.5 text-[9px] leading-none tracking-[0.08em] text-muted-foreground/70 uppercase"
+                data-subagent-result-meta-chip="true"
+              >
+                {chip}
+              </span>
+            ))}
+            <p className="shrink-0 text-[10px] tracking-tight tabular-nums text-muted-foreground/30">
+              {formatTimestamp(row.createdAt, ctx.timestampFormat)}
+            </p>
+          </div>
         </div>
       </div>
     </div>
@@ -2987,18 +3050,12 @@ const UserMessageTranscriptHighlightInlineLabel = memo(
 
 const MAX_COLLAPSED_USER_MESSAGE_LINES = 8;
 const MAX_COLLAPSED_USER_MESSAGE_LENGTH = 600;
-const COLLAPSED_USER_MESSAGE_FADE_HEIGHT_REM = 1.75;
-const COLLAPSED_USER_MESSAGE_FADE_MASK = `linear-gradient(to bottom, black calc(100% - ${COLLAPSED_USER_MESSAGE_FADE_HEIGHT_REM}rem), transparent)`;
 
 function shouldCollapseUserMessage(text: string): boolean {
-  if (text.trim().length === 0) {
-    return false;
-  }
-
-  return (
-    text.length > MAX_COLLAPSED_USER_MESSAGE_LENGTH ||
-    text.split("\n").length > MAX_COLLAPSED_USER_MESSAGE_LINES
-  );
+  return shouldCollapseMessageText(text, {
+    maxLength: MAX_COLLAPSED_USER_MESSAGE_LENGTH,
+    maxLines: MAX_COLLAPSED_USER_MESSAGE_LINES,
+  });
 }
 
 const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(props: {
@@ -3029,14 +3086,7 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
           data-user-message-collapsed={isCollapsed ? "true" : "false"}
           data-user-message-collapsible={canCollapse ? "true" : "false"}
           data-user-message-fade={isCollapsed ? "true" : "false"}
-          style={
-            isCollapsed
-              ? {
-                  WebkitMaskImage: COLLAPSED_USER_MESSAGE_FADE_MASK,
-                  maskImage: COLLAPSED_USER_MESSAGE_FADE_MASK,
-                }
-              : undefined
-          }
+          style={isCollapsed ? COLLAPSED_MESSAGE_FADE_STYLE : undefined}
         >
           <UserMessageBody
             text={props.text}

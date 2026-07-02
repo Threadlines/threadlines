@@ -1,4 +1,5 @@
 import type {
+  GitRemoteAuthFailure,
   VcsRef,
   SourceControlProviderInfo,
   VcsStatusLocalResult,
@@ -133,16 +134,159 @@ export function normalizeGitRemoteUrl(value: string): string {
   return normalized;
 }
 
-export function isGitHubHttpsCredentialPromptErrorMessage(message: string): boolean {
-  const normalized = message.toLowerCase();
-  return (
-    normalized.includes("could not read username for 'https://github.com'") ||
-    normalized.includes('could not read username for "https://github.com"') ||
-    normalized.includes("could not read password for 'https://github.com'") ||
-    normalized.includes('could not read password for "https://github.com"') ||
-    (normalized.includes("authentication failed") && normalized.includes("https://github.com")) ||
-    (normalized.includes("terminal prompts disabled") && normalized.includes("github.com"))
+const HTTPS_REMOTE_IN_MESSAGE = /['"](https?:\/\/[^'"]+)['"]/i;
+
+function extractHttpsHostFromMessage(message: string): string | null {
+  const raw = HTTPS_REMOTE_IN_MESSAGE.exec(message)?.[1];
+  if (!raw) {
+    return null;
+  }
+  try {
+    const hostname = new URL(raw).hostname.trim().toLowerCase();
+    return hostname.length > 0 ? hostname : null;
+  } catch {
+    return null;
+  }
+}
+
+function extractSshHostFromMessage(message: string): string | null {
+  const userAtHost = /(?:^|[\s(])(?:[a-z0-9._-]+@)([a-z0-9.-]+):\s*permission denied/i.exec(
+    message,
   );
+  if (userAtHost?.[1]) {
+    return userAtHost[1].toLowerCase();
+  }
+  const connectToHost = /connect to host ([a-z0-9.-]+)/i.exec(message);
+  return connectToHost?.[1] ? connectToHost[1].toLowerCase() : null;
+}
+
+/**
+ * Classify a git failure message as a remote authentication failure.
+ * Matches the stderr git emits when credentials are missing (no terminal to
+ * prompt on), rejected, or when SSH access is not set up. Returns null for
+ * messages that are not auth-related.
+ */
+export function classifyGitRemoteAuthFailure(message: string): GitRemoteAuthFailure | null {
+  const normalized = message.toLowerCase();
+
+  if (
+    /could not read (?:username|password) for ['"]https?:\/\//.test(normalized) ||
+    (normalized.includes("terminal prompts disabled") && normalized.includes("http"))
+  ) {
+    return {
+      kind: "https_credentials_unavailable",
+      scheme: "https",
+      host: extractHttpsHostFromMessage(message),
+    };
+  }
+
+  if (/authentication failed for ['"]?https?:\/\//.test(normalized)) {
+    return {
+      kind: "https_credentials_rejected",
+      scheme: "https",
+      host: extractHttpsHostFromMessage(message),
+    };
+  }
+
+  if (normalized.includes("permission denied (publickey")) {
+    return {
+      kind: "ssh_permission_denied",
+      scheme: "ssh",
+      host: extractSshHostFromMessage(message),
+    };
+  }
+
+  if (normalized.includes("host key verification failed")) {
+    return {
+      kind: "ssh_host_key_verification_failed",
+      scheme: "ssh",
+      host: extractSshHostFromMessage(message),
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Extract a remote auth failure from any error shape: prefers the structured
+ * `remoteAuth` field the server attaches to GitCommandError, falling back to
+ * classifying the error message text.
+ */
+export function gitRemoteAuthFailureFromError(error: unknown): GitRemoteAuthFailure | null {
+  if (typeof error === "object" && error !== null) {
+    const remoteAuth = (error as { remoteAuth?: GitRemoteAuthFailure | undefined }).remoteAuth;
+    if (remoteAuth !== undefined) {
+      return remoteAuth;
+    }
+  }
+  if (error instanceof Error) {
+    return classifyGitRemoteAuthFailure(error.message);
+  }
+  return typeof error === "string" ? classifyGitRemoteAuthFailure(error) : null;
+}
+
+export function describeGitRemoteAuthFailure(failure: GitRemoteAuthFailure): string {
+  const host = failure.host ?? "the remote host";
+  switch (failure.kind) {
+    case "https_credentials_unavailable":
+      return `Git needs credentials for ${host}, but none are configured for non-interactive use. The repository is private or requires sign-in over HTTPS.`;
+    case "https_credentials_rejected":
+      return `${host} rejected the stored HTTPS credentials. They may be expired or lack access to this repository.`;
+    case "ssh_permission_denied":
+      return `${host} rejected the SSH connection (permission denied). No usable SSH key is configured for it.`;
+    case "ssh_host_key_verification_failed":
+      return `SSH host key verification failed for ${host}. Connect once from a terminal to trust the host, then retry.`;
+  }
+}
+
+export interface GitRemoteEndpoint {
+  readonly scheme: "https" | "ssh";
+  readonly host: string;
+  /** Repository path without a leading slash or `.git` suffix, e.g. `owner/repo`. */
+  readonly path: string;
+}
+
+function parseUrlRemoteEndpoint(url: string, scheme: "https" | "ssh"): GitRemoteEndpoint | null {
+  try {
+    const parsed = new URL(url);
+    const path = parsed.pathname
+      .split("/")
+      .filter((segment) => segment.length > 0)
+      .join("/")
+      .replace(/\.git$/i, "");
+    const host = parsed.hostname.trim().toLowerCase();
+    return host.length > 0 && path.length > 0 ? { scheme, host, path } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse a git remote URL into its transport scheme, host, and repository
+ * path. Supports https://, ssh://, and scp-style `user@host:path` remotes;
+ * returns null for local paths and other unsupported shapes.
+ */
+export function parseGitRemoteEndpoint(url: string): GitRemoteEndpoint | null {
+  const trimmed = url.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+  if (/^https?:\/\//i.test(trimmed)) {
+    return parseUrlRemoteEndpoint(trimmed, "https");
+  }
+  if (/^ssh:\/\//i.test(trimmed)) {
+    return parseUrlRemoteEndpoint(trimmed, "ssh");
+  }
+  const scpStyle = /^[a-z0-9._-]+@([a-z0-9.-]+):([^/\s].*)$/i.exec(trimmed);
+  if (scpStyle?.[1] && scpStyle[2]) {
+    const path = scpStyle[2].replace(/\/+$/g, "").replace(/\.git$/i, "");
+    return path.length > 0 ? { scheme: "ssh", host: scpStyle[1].toLowerCase(), path } : null;
+  }
+  return null;
+}
+
+export function buildSshRemoteUrl(endpoint: Pick<GitRemoteEndpoint, "host" | "path">): string {
+  return `git@${endpoint.host}:${endpoint.path}.git`;
 }
 
 export function isGitRepositoryMetadataCorruptionErrorMessage(message: string): boolean {
@@ -168,8 +312,9 @@ export function formatGitErrorMessage(error: unknown): string {
         ? error
         : "An error occurred.";
 
-  if (isGitHubHttpsCredentialPromptErrorMessage(message)) {
-    return "GitHub could not prompt for HTTPS credentials from Threadlines. Sign in for Git HTTPS or switch origin to SSH, then retry Push.";
+  const authFailure = classifyGitRemoteAuthFailure(message);
+  if (authFailure) {
+    return describeGitRemoteAuthFailure(authFailure);
   }
 
   return message;

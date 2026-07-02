@@ -42,6 +42,10 @@ import {
   VcsListRefsInput,
   VcsListRefsResult,
   GitManagerServiceError,
+  GitApplyAuthRemediationInput,
+  GitApplyAuthRemediationResult,
+  GitAuthRemediationPlan,
+  GitAuthRemediationPlanInput,
   GitPreparePullRequestThreadInput,
   GitPreparePullRequestThreadResult,
   VcsPullInput,
@@ -219,6 +223,8 @@ export const WS_METHODS = {
   gitGenerateCommitMessage: "git.generateCommitMessage",
   gitResolvePullRequest: "git.resolvePullRequest",
   gitPreparePullRequestThread: "git.preparePullRequestThread",
+  gitAuthRemediationPlan: "git.authRemediationPlan",
+  gitApplyAuthRemediation: "git.applyAuthRemediation",
 
   // Terminal methods
   terminalOpen: "terminal.open",
@@ -643,6 +649,18 @@ export const WsGitPreparePullRequestThreadRpc = Rpc.make(WS_METHODS.gitPreparePu
   error: GitManagerServiceError,
 });
 
+export const WsGitAuthRemediationPlanRpc = Rpc.make(WS_METHODS.gitAuthRemediationPlan, {
+  payload: GitAuthRemediationPlanInput,
+  success: GitAuthRemediationPlan,
+  error: GitManagerServiceError,
+});
+
+export const WsGitApplyAuthRemediationRpc = Rpc.make(WS_METHODS.gitApplyAuthRemediation, {
+  payload: GitApplyAuthRemediationInput,
+  success: GitApplyAuthRemediationResult,
+  error: GitManagerServiceError,
+});
+
 export const WsVcsListRefsRpc = Rpc.make(WS_METHODS.vcsListRefs, {
   payload: VcsListRefsInput,
   success: VcsListRefsResult,
@@ -896,6 +914,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsGitGenerateCommitMessageRpc,
   WsGitResolvePullRequestRpc,
   WsGitPreparePullRequestThreadRpc,
+  WsGitAuthRemediationPlanRpc,
+  WsGitApplyAuthRemediationRpc,
   WsVcsListRefsRpc,
   WsVcsCommitGraphRpc,
   WsVcsCommitDetailsRpc,

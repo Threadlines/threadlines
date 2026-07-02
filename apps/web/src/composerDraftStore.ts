@@ -41,6 +41,11 @@ import {
   type TranscriptHighlightContextDraft,
   normalizeTranscriptHighlightContextDraft,
 } from "./lib/transcriptHighlightContext";
+import {
+  type FileSelectionContextDraft,
+  fileSelectionContextDedupKey,
+  normalizeFileSelectionContextDraft,
+} from "./lib/fileSelectionContext";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { useShallow } from "zustand/react/shallow";
@@ -118,6 +123,18 @@ const PersistedTranscriptHighlightContextDraft = Schema.Struct({
 type PersistedTranscriptHighlightContextDraft =
   typeof PersistedTranscriptHighlightContextDraft.Type;
 
+const PersistedFileSelectionContextDraft = Schema.Struct({
+  id: Schema.String,
+  threadId: Schema.String,
+  createdAt: Schema.String,
+  relativePath: Schema.String,
+  startLine: Schema.Number,
+  endLine: Schema.Number,
+  selectedText: Schema.String,
+  wholeFile: Schema.optionalKey(Schema.Boolean),
+});
+type PersistedFileSelectionContextDraft = typeof PersistedFileSelectionContextDraft.Type;
+
 const PersistedComposerThreadDraftState = Schema.Struct({
   prompt: Schema.String,
   attachments: Schema.Array(PersistedComposerImageAttachment),
@@ -125,6 +142,7 @@ const PersistedComposerThreadDraftState = Schema.Struct({
   transcriptHighlightContexts: Schema.optionalKey(
     Schema.Array(PersistedTranscriptHighlightContextDraft),
   ),
+  fileSelectionContexts: Schema.optionalKey(Schema.Array(PersistedFileSelectionContextDraft)),
   // Keyed by `ProviderInstanceId` (open branded slug) so custom provider
   // instances (e.g. `codex_personal`) round-trip alongside the built-in
   // `codex` / `claudeAgent` / ... entries. Every prior `ProviderDriverKind`
@@ -246,6 +264,7 @@ export interface ComposerThreadDraftState {
   persistedAttachments: PersistedComposerImageAttachment[];
   terminalContexts: TerminalContextDraft[];
   transcriptHighlightContexts: TranscriptHighlightContextDraft[];
+  fileSelectionContexts: FileSelectionContextDraft[];
   /**
    * Per-instance model selection. Keyed by `ProviderInstanceId` (open
    * branded slug) so a default `codex` instance and a user-authored
@@ -447,6 +466,12 @@ interface ComposerDraftStoreState {
     note: string,
   ) => void;
   clearTranscriptHighlightContexts: (threadRef: ComposerThreadTarget) => void;
+  addFileSelectionContext: (
+    threadRef: ComposerThreadTarget,
+    context: FileSelectionContextDraft,
+  ) => void;
+  removeFileSelectionContext: (threadRef: ComposerThreadTarget, contextId: string) => void;
+  clearFileSelectionContexts: (threadRef: ComposerThreadTarget) => void;
   clearPersistedAttachments: (threadRef: ComposerThreadTarget) => void;
   syncPersistedAttachments: (
     threadRef: ComposerThreadTarget,
@@ -521,10 +546,12 @@ const EMPTY_IDS: string[] = [];
 const EMPTY_PERSISTED_ATTACHMENTS: PersistedComposerImageAttachment[] = [];
 const EMPTY_TERMINAL_CONTEXTS: TerminalContextDraft[] = [];
 const EMPTY_TRANSCRIPT_HIGHLIGHT_CONTEXTS: TranscriptHighlightContextDraft[] = [];
+const EMPTY_FILE_SELECTION_CONTEXTS: FileSelectionContextDraft[] = [];
 Object.freeze(EMPTY_IMAGES);
 Object.freeze(EMPTY_IDS);
 Object.freeze(EMPTY_PERSISTED_ATTACHMENTS);
 Object.freeze(EMPTY_TRANSCRIPT_HIGHLIGHT_CONTEXTS);
+Object.freeze(EMPTY_FILE_SELECTION_CONTEXTS);
 const EMPTY_MODEL_SELECTION_BY_PROVIDER: Partial<Record<ProviderDriverKind, ModelSelection>> =
   Object.freeze({});
 const EMPTY_COMPOSER_DRAFT_MODEL_STATE = Object.freeze<ComposerDraftModelState>({
@@ -539,6 +566,7 @@ const EMPTY_THREAD_DRAFT = Object.freeze<ComposerThreadDraftState>({
   persistedAttachments: EMPTY_PERSISTED_ATTACHMENTS,
   terminalContexts: EMPTY_TERMINAL_CONTEXTS,
   transcriptHighlightContexts: EMPTY_TRANSCRIPT_HIGHLIGHT_CONTEXTS,
+  fileSelectionContexts: EMPTY_FILE_SELECTION_CONTEXTS,
   modelSelectionByProvider: EMPTY_MODEL_SELECTION_BY_PROVIDER,
   activeProvider: null,
   runtimeMode: null,
@@ -553,6 +581,7 @@ function createEmptyThreadDraft(): ComposerThreadDraftState {
     persistedAttachments: [],
     terminalContexts: [],
     transcriptHighlightContexts: [],
+    fileSelectionContexts: [],
     modelSelectionByProvider: {},
     activeProvider: null,
     runtimeMode: null,
@@ -708,6 +737,7 @@ function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
     draft.persistedAttachments.length === 0 &&
     draft.terminalContexts.length === 0 &&
     draft.transcriptHighlightContexts.length === 0 &&
+    draft.fileSelectionContexts.length === 0 &&
     Object.keys(draft.modelSelectionByProvider).length === 0 &&
     draft.activeProvider === null &&
     draft.runtimeMode === null &&
@@ -1829,6 +1859,7 @@ function partializeComposerDraftStoreState(
       draft.persistedAttachments.length === 0 &&
       draft.terminalContexts.length === 0 &&
       draft.transcriptHighlightContexts.length === 0 &&
+      draft.fileSelectionContexts.length === 0 &&
       !hasModelData &&
       draft.runtimeMode === null &&
       draft.interactionMode === null
@@ -1861,6 +1892,20 @@ function partializeComposerDraftStoreState(
               sourceRole: context.sourceRole,
               selectedText: context.selectedText,
               note: context.note,
+            })),
+          }
+        : {}),
+      ...(draft.fileSelectionContexts.length > 0
+        ? {
+            fileSelectionContexts: draft.fileSelectionContexts.map((context) => ({
+              id: context.id,
+              threadId: context.threadId,
+              createdAt: context.createdAt,
+              relativePath: context.relativePath,
+              startLine: context.startLine,
+              endLine: context.endLine,
+              selectedText: context.selectedText,
+              ...(context.wholeFile ? { wholeFile: true } : {}),
             })),
           }
         : {}),
@@ -2100,6 +2145,8 @@ function toHydratedThreadDraft(
       })) ?? [],
     transcriptHighlightContexts:
       persistedDraft.transcriptHighlightContexts?.map((context) => ({ ...context })) ?? [],
+    fileSelectionContexts:
+      persistedDraft.fileSelectionContexts?.map((context) => ({ ...context })) ?? [],
     modelSelectionByProvider,
     activeProvider,
     runtimeMode: persistedDraft.runtimeMode ?? null,
@@ -3100,6 +3147,86 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             };
           });
         },
+        addFileSelectionContext: (threadRef, context) => {
+          const threadKey = resolveComposerDraftKey(get(), threadRef);
+          const threadId = resolveComposerThreadId(get(), threadRef);
+          if (!threadKey || !threadId) {
+            return;
+          }
+          set((state) => {
+            const existing = state.draftsByThreadKey[threadKey] ?? createEmptyThreadDraft();
+            const normalized = normalizeFileSelectionContextDraft(threadId, context);
+            if (!normalized) {
+              return state;
+            }
+            const dedupKey = fileSelectionContextDedupKey(normalized);
+            if (
+              existing.fileSelectionContexts.some(
+                (entry) =>
+                  entry.id === normalized.id || fileSelectionContextDedupKey(entry) === dedupKey,
+              )
+            ) {
+              return state;
+            }
+            return {
+              draftsByThreadKey: {
+                ...state.draftsByThreadKey,
+                [threadKey]: {
+                  ...existing,
+                  fileSelectionContexts: [...existing.fileSelectionContexts, normalized],
+                },
+              },
+            };
+          });
+        },
+        removeFileSelectionContext: (threadRef, contextId) => {
+          const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";
+          if (threadKey.length === 0 || contextId.length === 0) {
+            return;
+          }
+          set((state) => {
+            const current = state.draftsByThreadKey[threadKey];
+            if (!current) {
+              return state;
+            }
+            const nextDraft: ComposerThreadDraftState = {
+              ...current,
+              fileSelectionContexts: current.fileSelectionContexts.filter(
+                (context) => context.id !== contextId,
+              ),
+            };
+            const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
+            if (shouldRemoveDraft(nextDraft)) {
+              delete nextDraftsByThreadKey[threadKey];
+            } else {
+              nextDraftsByThreadKey[threadKey] = nextDraft;
+            }
+            return { draftsByThreadKey: nextDraftsByThreadKey };
+          });
+        },
+        clearFileSelectionContexts: (threadRef) => {
+          const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";
+          if (threadKey.length === 0) {
+            return;
+          }
+          set((state) => {
+            const current = state.draftsByThreadKey[threadKey];
+            if (!current || current.fileSelectionContexts.length === 0) {
+              return state;
+            }
+            const nextDraft: ComposerThreadDraftState = {
+              ...current,
+              fileSelectionContexts: [],
+            };
+            const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
+            if (shouldRemoveDraft(nextDraft)) {
+              delete nextDraftsByThreadKey[threadKey];
+            } else {
+              nextDraftsByThreadKey[threadKey] = nextDraft;
+            }
+            return { draftsByThreadKey: nextDraftsByThreadKey };
+          });
+        },
         removeTranscriptHighlightContext: (threadRef, contextId) => {
           const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";
           if (threadKey.length === 0 || contextId.length === 0) {
@@ -3267,6 +3394,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               persistedAttachments: [],
               terminalContexts: [],
               transcriptHighlightContexts: [],
+              fileSelectionContexts: [],
             };
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
             if (shouldRemoveDraft(nextDraft)) {

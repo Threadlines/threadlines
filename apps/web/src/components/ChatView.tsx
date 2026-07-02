@@ -167,6 +167,10 @@ import {
   type TranscriptHighlightContextSelection,
 } from "../lib/transcriptHighlightContext";
 import {
+  appendFileSelectionContextsToPrompt,
+  type FileSelectionContextDraft,
+} from "../lib/fileSelectionContext";
+import {
   selectTerminalActivityCommand,
   selectTerminalSubmittedCommand,
   selectThreadTerminalState,
@@ -869,6 +873,9 @@ export default function ChatView(props: ChatViewProps) {
   const setComposerDraftTranscriptHighlightContexts = useComposerDraftStore(
     (store) => store.setTranscriptHighlightContexts,
   );
+  const addComposerDraftFileSelectionContext = useComposerDraftStore(
+    (store) => store.addFileSelectionContext,
+  );
   const setComposerDraftModelSelection = useComposerDraftStore((store) => store.setModelSelection);
   const setComposerDraftRuntimeMode = useComposerDraftStore((store) => store.setRuntimeMode);
   const setComposerDraftInteractionMode = useComposerDraftStore(
@@ -894,6 +901,7 @@ export default function ChatView(props: ChatViewProps) {
   const composerImagesRef = useRef<ComposerImageAttachment[]>([]);
   const composerTerminalContextsRef = useRef<TerminalContextDraft[]>([]);
   const composerTranscriptHighlightContextsRef = useRef<TranscriptHighlightContextDraft[]>([]);
+  const composerFileSelectionContextsRef = useRef<FileSelectionContextDraft[]>([]);
   const localComposerRef = useRef<ChatComposerHandle | null>(null);
   const composerRef = useComposerHandleContext() ?? localComposerRef;
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
@@ -3752,6 +3760,7 @@ export default function ChatView(props: ChatViewProps) {
       images: composerImages,
       terminalContexts: composerTerminalContexts,
       transcriptHighlightContexts: composerTranscriptHighlightContexts,
+      fileSelectionContexts: composerFileSelectionContexts,
       selectedModel: ctxSelectedModel,
       selectedModelSelection: ctxSelectedModelSelection,
     } = sendCtx;
@@ -3767,6 +3776,7 @@ export default function ChatView(props: ChatViewProps) {
       imageCount: composerImages.length,
       terminalContexts: composerTerminalContexts,
       transcriptHighlightContexts: composerTranscriptHighlightContexts,
+      fileSelectionContextCount: composerFileSelectionContexts.length,
     });
     if (showPlanFollowUpPrompt && activeProposedPlan) {
       const followUp = resolvePlanFollowUpSubmission({
@@ -3785,7 +3795,8 @@ export default function ChatView(props: ChatViewProps) {
     const standaloneSlashCommand =
       composerImages.length === 0 &&
       sendableComposerTerminalContexts.length === 0 &&
-      sendableTranscriptHighlightContexts.length === 0
+      sendableTranscriptHighlightContexts.length === 0 &&
+      composerFileSelectionContexts.length === 0
         ? parseStandaloneComposerSlashCommand(trimmed)
         : null;
     if (standaloneSlashCommand) {
@@ -3838,13 +3849,18 @@ export default function ChatView(props: ChatViewProps) {
     const composerImagesSnapshot = [...composerImages];
     const composerTerminalContextsSnapshot = [...sendableComposerTerminalContexts];
     const composerTranscriptHighlightContextsSnapshot = [...sendableTranscriptHighlightContexts];
+    const composerFileSelectionContextsSnapshot = [...composerFileSelectionContexts];
     const messageTextWithTerminalContexts = appendTerminalContextsToPrompt(
       promptForSend,
       composerTerminalContextsSnapshot,
     );
-    const messageTextForSend = appendTranscriptHighlightContextsToPrompt(
+    const messageTextWithHighlights = appendTranscriptHighlightContextsToPrompt(
       messageTextWithTerminalContexts,
       composerTranscriptHighlightContextsSnapshot,
+    );
+    const messageTextForSend = appendFileSelectionContextsToPrompt(
+      messageTextWithHighlights,
+      composerFileSelectionContextsSnapshot,
     );
     const messageIdForSend = newMessageId();
     const messageCreatedAt = new Date().toISOString();
@@ -4050,7 +4066,8 @@ export default function ChatView(props: ChatViewProps) {
         promptRef.current.length === 0 &&
         composerImagesRef.current.length === 0 &&
         composerTerminalContextsRef.current.length === 0 &&
-        composerTranscriptHighlightContextsRef.current.length === 0
+        composerTranscriptHighlightContextsRef.current.length === 0 &&
+        composerFileSelectionContextsRef.current.length === 0
       ) {
         if (isSteeringFollowUp) {
           setSteeringMessagesById((existing) => {
@@ -4072,6 +4089,7 @@ export default function ChatView(props: ChatViewProps) {
         composerTerminalContextsRef.current = composerTerminalContextsSnapshot;
         composerTranscriptHighlightContextsRef.current =
           composerTranscriptHighlightContextsSnapshot;
+        composerFileSelectionContextsRef.current = composerFileSelectionContextsSnapshot;
         setComposerDraftPrompt(composerDraftTarget, promptForSend);
         addComposerDraftImages(composerDraftTarget, retryComposerImages);
         setComposerDraftTerminalContexts(composerDraftTarget, composerTerminalContextsSnapshot);
@@ -4079,6 +4097,9 @@ export default function ChatView(props: ChatViewProps) {
           composerDraftTarget,
           composerTranscriptHighlightContextsSnapshot,
         );
+        for (const context of composerFileSelectionContextsSnapshot) {
+          addComposerDraftFileSelectionContext(composerDraftTarget, context);
+        }
         composerRef.current?.resetCursorState({
           cursor: collapseExpandedComposerCursor(promptForSend, promptForSend.length),
           prompt: promptForSend,
@@ -5324,6 +5345,7 @@ export default function ChatView(props: ChatViewProps) {
                   composerImagesRef={composerImagesRef}
                   composerTerminalContextsRef={composerTerminalContextsRef}
                   composerTranscriptHighlightContextsRef={composerTranscriptHighlightContextsRef}
+                  composerFileSelectionContextsRef={composerFileSelectionContextsRef}
                   shouldAutoScrollRef={isAtEndRef}
                   scheduleStickToBottom={scheduleTimelineStickToBottom}
                   onSend={onSend}

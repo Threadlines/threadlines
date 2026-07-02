@@ -32,7 +32,9 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { useDebouncedValue } from "@tanstack/react-pacer";
 import { serializeComposerMentionPath } from "~/composerMentionPath";
+import type { FileSelectionContextDraft } from "~/lib/fileSelectionContext";
 import { projectSearchEntriesQueryOptions } from "~/lib/projectReactQuery";
+import { ComposerPendingFileSelectionContexts } from "./ComposerPendingFileSelectionContexts";
 import {
   clampCollapsedComposerCursor,
   type ComposerTrigger,
@@ -397,6 +399,7 @@ export interface ChatComposerHandle {
     images: ComposerImageAttachment[];
     terminalContexts: TerminalContextDraft[];
     transcriptHighlightContexts: TranscriptHighlightContextDraft[];
+    fileSelectionContexts: FileSelectionContextDraft[];
     selectedPromptEffort: string | null;
     selectedModelOptionsForDispatch: unknown;
     selectedModelSelection: ModelSelection;
@@ -480,6 +483,7 @@ export interface ChatComposerProps {
   composerImagesRef: React.RefObject<ComposerImageAttachment[]>;
   composerTerminalContextsRef: React.RefObject<TerminalContextDraft[]>;
   composerTranscriptHighlightContextsRef: React.RefObject<TranscriptHighlightContextDraft[]>;
+  composerFileSelectionContextsRef: React.RefObject<FileSelectionContextDraft[]>;
   composerRef: React.RefObject<ChatComposerHandle | null>;
 
   // Scroll
@@ -568,6 +572,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     composerImagesRef,
     composerTerminalContextsRef,
     composerTranscriptHighlightContextsRef,
+    composerFileSelectionContextsRef,
     shouldAutoScrollRef,
     scheduleStickToBottom,
     onSend,
@@ -599,6 +604,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const composerImages = composerDraft.images;
   const composerTerminalContexts = composerDraft.terminalContexts;
   const composerTranscriptHighlightContexts = composerDraft.transcriptHighlightContexts;
+  const composerFileSelectionContexts = composerDraft.fileSelectionContexts;
   const nonPersistedComposerImageIds = composerDraft.nonPersistedImageIds;
 
   const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);
@@ -613,6 +619,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   );
   const setComposerDraftTerminalContexts = useComposerDraftStore(
     (store) => store.setTerminalContexts,
+  );
+  const removeComposerDraftFileSelectionContext = useComposerDraftStore(
+    (store) => store.removeFileSelectionContext,
   );
   const addComposerDraftTranscriptHighlightContext = useComposerDraftStore(
     (store) => store.addTranscriptHighlightContext,
@@ -938,8 +947,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         imageCount: composerImages.length,
         terminalContexts: composerTerminalContexts,
         transcriptHighlightContexts: composerTranscriptHighlightContexts,
+        fileSelectionContextCount: composerFileSelectionContexts.length,
       }),
-    [composerImages.length, composerTerminalContexts, composerTranscriptHighlightContexts, prompt],
+    [
+      composerImages.length,
+      composerTerminalContexts,
+      composerTranscriptHighlightContexts,
+      composerFileSelectionContexts.length,
+      prompt,
+    ],
   );
 
   // ------------------------------------------------------------------
@@ -1269,6 +1285,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     ],
   );
 
+  const removeComposerFileSelectionContextFromDraft = useCallback(
+    (contextId: string) => {
+      removeComposerDraftFileSelectionContext(composerDraftTarget, contextId);
+    },
+    [composerDraftTarget, removeComposerDraftFileSelectionContext],
+  );
+
   const removeComposerTranscriptHighlightContextFromDraft = useCallback(
     (contextId: string) => {
       removeComposerDraftTranscriptHighlightContext(composerDraftTarget, contextId);
@@ -1302,6 +1325,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   useEffect(() => {
     composerTranscriptHighlightContextsRef.current = composerTranscriptHighlightContexts;
   }, [composerTranscriptHighlightContexts, composerTranscriptHighlightContextsRef]);
+  useEffect(() => {
+    composerFileSelectionContextsRef.current = composerFileSelectionContexts;
+  }, [composerFileSelectionContexts, composerFileSelectionContextsRef]);
 
   // ------------------------------------------------------------------
   // Composer menu highlight sync
@@ -2175,6 +2201,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         images: composerImagesRef.current,
         terminalContexts: composerTerminalContextsRef.current,
         transcriptHighlightContexts: composerTranscriptHighlightContextsRef.current,
+        fileSelectionContexts: composerFileSelectionContextsRef.current,
         selectedPromptEffort,
         selectedModelOptionsForDispatch,
         selectedModelSelection,
@@ -2192,6 +2219,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       composerImagesRef,
       composerTerminalContextsRef,
       composerTranscriptHighlightContextsRef,
+      composerFileSelectionContextsRef,
       isComposerModelPickerOpen,
       readComposerSnapshot,
       selectedModel,
@@ -2537,6 +2565,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   contexts={composerTranscriptHighlightContexts}
                   onRemove={removeComposerTranscriptHighlightContextFromDraft}
                   onUpdateNote={updateComposerTranscriptHighlightContextNote}
+                  className="mb-2"
+                />
+              )}
+
+            {!isComposerCollapsedMobile &&
+              !isComposerApprovalState &&
+              pendingUserInputs.length === 0 &&
+              composerFileSelectionContexts.length > 0 && (
+                <ComposerPendingFileSelectionContexts
+                  contexts={composerFileSelectionContexts}
+                  onRemove={removeComposerFileSelectionContextFromDraft}
                   className="mb-2"
                 />
               )}

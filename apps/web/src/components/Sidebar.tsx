@@ -2868,12 +2868,12 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
           new-chat action row until the first chat exists, then the group
           itself (whose hover button takes over starting new chats). */}
       {!generalChatsProject && generalChatsProjectRef ? (
-        <SidebarGroup className="px-2 pt-1 pb-0">
+        <SidebarGroup className="px-2 pt-3 pb-1">
           <SidebarMenu>
             <SidebarMenuItem>
               <SidebarMenuButton
                 size="sm"
-                className="gap-2 px-2 py-1.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground"
+                className="justify-center gap-2 rounded-md border border-dashed border-border/70 px-2 py-1.5 text-muted-foreground/75 transition-colors hover:border-border hover:bg-muted/40 hover:text-foreground"
                 data-testid="sidebar-new-general-chat-trigger"
                 onClick={() => {
                   void handleNewThread(generalChatsProjectRef);
@@ -2887,7 +2887,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
         </SidebarGroup>
       ) : null}
       {generalChatsProject ? (
-        <SidebarGroup className="px-2 pt-1 pb-0">
+        <SidebarGroup className="px-2 pt-3 pb-4">
           <SidebarMenu>
             <SidebarProjectItem
               project={generalChatsProject}

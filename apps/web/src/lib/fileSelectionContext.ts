@@ -43,6 +43,75 @@ export interface FileSelectionContext {
   startLine: number;
   endLine: number;
   selectedText: string;
+  /**
+   * Whole-file reference: serialized as an `@path` mention (the agent reads
+   * the file itself) instead of quoting contents, so it costs no context.
+   */
+  wholeFile?: boolean;
+}
+
+/** A file selection attached to a composer draft as a context chip. */
+export interface FileSelectionContextDraft extends FileSelectionContext {
+  id: string;
+  threadId: string;
+  createdAt: string;
+}
+
+export function normalizeFileSelectionContextDraft(
+  threadId: string,
+  context: FileSelectionContextDraft,
+): FileSelectionContextDraft | null {
+  const relativePath = context.relativePath.trim();
+  const selectedText = context.selectedText.replace(/\n+$/, "");
+  const startLine = Math.max(1, Math.min(context.startLine, context.endLine));
+  const endLine = Math.max(context.startLine, context.endLine);
+  if (
+    relativePath.length === 0 ||
+    (!context.wholeFile && selectedText.trim().length === 0) ||
+    context.id.trim().length === 0 ||
+    context.createdAt.trim().length === 0
+  ) {
+    return null;
+  }
+  return {
+    id: context.id.trim(),
+    threadId,
+    createdAt: context.createdAt.trim(),
+    relativePath,
+    startLine,
+    endLine,
+    selectedText,
+    ...(context.wholeFile ? { wholeFile: true } : {}),
+  };
+}
+
+export function fileSelectionContextDedupKey(context: FileSelectionContext): string {
+  return context.wholeFile
+    ? `${context.relativePath}:file`
+    : `${context.relativePath}:${context.startLine}-${context.endLine}`;
+}
+
+export function formatFileSelectionContextLabel(context: FileSelectionContext): string {
+  const basename = context.relativePath.split("/").at(-1) ?? context.relativePath;
+  return context.wholeFile ? basename : `${basename} ${formatFileSelectionLineRange(context)}`;
+}
+
+/**
+ * Serialize attached file selections into the outgoing prompt, mirroring how
+ * transcript highlights are appended at send time.
+ */
+export function appendFileSelectionContextsToPrompt(
+  prompt: string,
+  contexts: ReadonlyArray<FileSelectionContext>,
+): string {
+  let next = prompt;
+  for (const context of contexts) {
+    next = appendBlockToPrompt(
+      next,
+      context.wholeFile ? `@${context.relativePath}` : formatFileSelectionContextBlock(context),
+    );
+  }
+  return next;
 }
 
 export function formatFileSelectionLineRange(context: {
@@ -68,13 +137,20 @@ export function formatFileSelectionContextBlock(context: FileSelectionContext): 
 }
 
 /**
+ * Append a standalone block to an existing composer prompt, preserving any
+ * text the user already typed.
+ */
+export function appendBlockToPrompt(prompt: string, block: string): string {
+  const trimmedPrompt = prompt.replace(/\s+$/, "");
+  return trimmedPrompt.length > 0 ? `${trimmedPrompt}\n\n${block}\n` : `${block}\n`;
+}
+
+/**
  * Append a file selection block to an existing composer prompt, preserving
  * any text the user already typed.
  */
 export function appendFileSelectionToPrompt(prompt: string, context: FileSelectionContext): string {
-  const block = formatFileSelectionContextBlock(context);
-  const trimmedPrompt = prompt.replace(/\s+$/, "");
-  return trimmedPrompt.length > 0 ? `${trimmedPrompt}\n\n${block}\n` : `${block}\n`;
+  return appendBlockToPrompt(prompt, formatFileSelectionContextBlock(context));
 }
 
 /**

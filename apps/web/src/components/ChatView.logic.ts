@@ -942,6 +942,13 @@ export function deriveProviderBackgroundRuns(input: {
       continue;
     }
 
+    // Suppression is sticky per task: progress activities carry less context
+    // than the task.started that classified it (no taskType), so re-evaluating
+    // them would resurface an already-classified subagent task as a run.
+    if (suppressedSubagentTaskIds.has(taskId)) {
+      continue;
+    }
+
     const taskScope = activeTaskScopesByTaskId.get(taskId) ?? {
       turnIds: new Set<string>(),
       minSequence: null,
@@ -1167,6 +1174,16 @@ function isSubagentProviderTask(input: {
   activeSubagentCount: number;
 }): boolean {
   const taskType = asBackgroundRunString(input.payload.taskType);
+  // Claude tags agent tasks explicitly (task_type "local_agent", plus the
+  // subagent type when set); both are definitive and independent of the
+  // heuristics below, which lose track once the spawn turn is no longer the
+  // latest turn.
+  if (taskType?.toLowerCase() === "local_agent") {
+    return true;
+  }
+  if (asBackgroundRunString(input.payload.subagentType) !== null) {
+    return true;
+  }
   const text = [
     taskType,
     asBackgroundRunString(input.payload.description),
@@ -1311,6 +1328,7 @@ export function deriveComposerSendState(options: {
   imageCount: number;
   terminalContexts: ReadonlyArray<TerminalContextDraft>;
   transcriptHighlightContexts?: ReadonlyArray<TranscriptHighlightContextDraft> | undefined;
+  fileSelectionContextCount?: number | undefined;
 }): {
   trimmedPrompt: string;
   sendableTerminalContexts: TerminalContextDraft[];
@@ -1332,7 +1350,8 @@ export function deriveComposerSendState(options: {
       trimmedPrompt.length > 0 ||
       options.imageCount > 0 ||
       sendableTerminalContexts.length > 0 ||
-      sendableTranscriptHighlightContexts.length > 0,
+      sendableTranscriptHighlightContexts.length > 0 ||
+      (options.fileSelectionContextCount ?? 0) > 0,
   };
 }
 

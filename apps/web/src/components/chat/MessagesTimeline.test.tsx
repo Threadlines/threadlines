@@ -891,11 +891,51 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain('data-subagent-result-row="true"');
     expect(markup).toContain('data-subagent-result-body="true"');
+    expect(markup).toContain('data-subagent-result-collapsible="false"');
     expect(markup).toContain("Heisenberg");
     expect(markup).toContain("Reviewer subagent");
     expect(markup).toContain("Inspect timeline rendering");
     expect(markup).toContain("subagent output is visible");
     expect(markup).toContain("Subagent");
+    expect(markup).toContain('data-subagent-result-meta-chip="true"');
+    expect(markup).toContain("gpt-5.5");
+    expect(markup).toContain("medium");
+  });
+
+  it("collapses very long subagent results and keeps meta chips in the footer", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const longBody = Array.from({ length: 40 }, (_, index) => `- finding ${index}`).join("\n");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "subagent-result:turn-1:agent-long",
+            kind: "subagent-result",
+            createdAt: "2026-03-17T19:12:30.000Z",
+            result: {
+              id: "subagent-result:turn-1:agent-long",
+              createdAt: "2026-03-17T19:12:30.000Z",
+              turnId: TurnId.make("turn-1"),
+              agentThreadId: "agent-long",
+              label: "Explore subagent",
+              role: "Explore",
+              objective: "Inventory Threadlines features",
+              body: longBody,
+              model: "claude-fable-5",
+              reasoningEffort: "high",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('data-subagent-result-collapsible="true"');
+    expect(markup).toContain('data-subagent-result-collapsed="true"');
+    expect(markup).toContain("Show full result");
+    expect(markup).toContain('data-subagent-result-meta-chip="true"');
+    expect(markup).toContain("claude-fable-5");
+    expect(markup).toContain("high");
   });
 
   it("marks agent response bodies without changing markdown rendering", async () => {

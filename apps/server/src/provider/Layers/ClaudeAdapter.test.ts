@@ -2862,6 +2862,8 @@ describe("ClaudeAdapterLive", () => {
         task_id: "task-bg-agent",
         tool_use_id: "tool-task-bg-1",
         description: "explore subagent",
+        subagent_type: "Explore",
+        task_type: "local_agent",
         session_id: "sdk-session-bg-agent",
         uuid: "bg-agent-task-started",
       } as unknown as SDKMessage);
@@ -2967,6 +2969,16 @@ describe("ClaudeAdapterLive", () => {
         });
       }
 
+      const taskStarted = runtimeEvents.find(
+        (event) => event.type === "task.started" && event.payload.taskId === "task-bg-agent",
+      );
+      assert.equal(taskStarted?.type, "task.started");
+      if (taskStarted?.type === "task.started") {
+        assert.equal(taskStarted.payload.taskType, "local_agent");
+        assert.equal(taskStarted.payload.toolUseId, "tool-task-bg-1");
+        assert.equal(taskStarted.payload.subagentType, "Explore");
+      }
+
       const taskCompleted = runtimeEvents.find((event) => event.type === "task.completed");
       assert.equal(taskCompleted?.type, "task.completed");
       if (taskCompleted?.type === "task.completed") {
@@ -3067,6 +3079,90 @@ describe("ClaudeAdapterLive", () => {
       const markerStarted = runtimeEvents.find(
         (event) =>
           event.type === "task.started" && event.payload.taskId === "task-bg-command-marker",
+      );
+      assert.isDefined(markerStarted);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("replays agent task notifications after a restart loses the launch record", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 6).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      // No tool_use or task_started preceded this notification in this
+      // process: the launch happened before a restart, so the notification is
+      // the only trace of the agent's output.
+      harness.query.emit({
+        type: "user",
+        session_id: "sdk-session-restart-agent",
+        uuid: "user-restart-agent-notification",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: [
+                "<task-notification>",
+                "<task-id>task-restart-agent</task-id>",
+                "<tool-use-id>tool-task-restart-1</tool-use-id>",
+                "<status>completed</status>",
+                '<summary>Agent "Inventory Threadlines features" finished</summary>',
+                "<result>## Feature Inventory\n\nEverything still works.</result>",
+                "</task-notification>",
+              ].join("\n"),
+            },
+          ],
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-restart-agent-marker",
+        description: "Marker task",
+        session_id: "sdk-session-restart-agent",
+        uuid: "restart-agent-marker-started",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const replay = runtimeEvents.find((event) => event.type === "item.completed");
+      assert.equal(replay?.type, "item.completed");
+      if (replay?.type === "item.completed") {
+        assert.equal(String(replay.itemId), "tool-task-restart-1");
+        assert.equal(replay.payload.itemType, "collab_agent_tool_call");
+        assert.equal(replay.payload.status, "completed");
+        assert.equal(replay.payload.title, "Subagent task");
+        assert.equal(replay.payload.detail, 'Agent "Inventory Threadlines features" finished');
+        const data = replay.payload.data as {
+          toolName?: string;
+          result?: { content?: Array<{ text?: string }> };
+          taskNotification?: { taskId?: string; status?: string };
+        };
+        assert.equal(data.toolName, "Agent");
+        assert.equal(
+          data.result?.content?.[0]?.text,
+          "## Feature Inventory\n\nEverything still works.",
+        );
+        assert.equal(data.taskNotification?.taskId, "task-restart-agent");
+      }
+      const markerStarted = runtimeEvents.find(
+        (event) =>
+          event.type === "task.started" && event.payload.taskId === "task-restart-agent-marker",
       );
       assert.isDefined(markerStarted);
     }).pipe(

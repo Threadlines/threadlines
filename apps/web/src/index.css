@@ -319,6 +319,16 @@ code {
   -webkit-app-region: no-drag;
 }
 
+/* The OS resolves drag regions geometrically, not by z-order: dialogs that
+   portal over the titlebar's drag rectangle never receive mouse events on
+   their top strip unless they punch themselves out of the region. */
+[data-slot="dialog-viewport"],
+[data-slot="dialog-popup"],
+[data-slot="alert-dialog-viewport"],
+[data-slot="alert-dialog-popup"] {
+  -webkit-app-region: no-drag;
+}
+
 .source-control-title-full {
   display: none;
 }

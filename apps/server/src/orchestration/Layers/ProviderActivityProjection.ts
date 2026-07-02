@@ -8,6 +8,7 @@ import {
   type ThreadTokenUsageSnapshot,
 } from "@threadlines/contracts";
 import {
+  MAX_THREAD_ACTIVITY_PAYLOAD_AGENT_RESULT_TEXT_LENGTH,
   MAX_THREAD_ACTIVITY_PAYLOAD_ARRAY_ITEMS,
   MAX_THREAD_ACTIVITY_PAYLOAD_DEPTH,
   MAX_THREAD_ACTIVITY_PAYLOAD_OBJECT_KEYS,
@@ -56,10 +57,33 @@ const OUTPUT_LIKE_PAYLOAD_KEYS = new Set([
   "stdout",
 ]);
 
-function shouldCompactPayloadString(key: string | undefined, value: string): boolean {
+interface PayloadTextCompactionLimits {
+  /** Cap for any string value. */
+  readonly text: number;
+  /** Tighter cap for output-like keys (stdout, diff, content, ...). */
+  readonly outputText: number;
+}
+
+const DEFAULT_PAYLOAD_TEXT_LIMITS: PayloadTextCompactionLimits = {
+  text: MAX_THREAD_ACTIVITY_PAYLOAD_TEXT_LENGTH,
+  outputText: 1_200,
+};
+
+/** A collab agent's final message is the product of the call and often lands
+ *  under an output-like key, so both caps get the agent-result length. */
+const COLLAB_AGENT_PAYLOAD_TEXT_LIMITS: PayloadTextCompactionLimits = {
+  text: MAX_THREAD_ACTIVITY_PAYLOAD_AGENT_RESULT_TEXT_LENGTH,
+  outputText: MAX_THREAD_ACTIVITY_PAYLOAD_AGENT_RESULT_TEXT_LENGTH,
+};
+
+function shouldCompactPayloadString(
+  key: string | undefined,
+  value: string,
+  limits: PayloadTextCompactionLimits,
+): boolean {
   return (
-    value.length > MAX_THREAD_ACTIVITY_PAYLOAD_TEXT_LENGTH ||
-    (key !== undefined && OUTPUT_LIKE_PAYLOAD_KEYS.has(key) && value.length > 1_200)
+    value.length > limits.text ||
+    (key !== undefined && OUTPUT_LIKE_PAYLOAD_KEYS.has(key) && value.length > limits.outputText)
   );
 }
 
@@ -76,10 +100,15 @@ function isImageGenerationPayloadRecord(value: Record<string, unknown>): boolean
   );
 }
 
-function compactActivityPayloadData(value: unknown, key?: string | undefined, depth = 0): unknown {
+function compactActivityPayloadData(
+  value: unknown,
+  key?: string | undefined,
+  depth = 0,
+  limits: PayloadTextCompactionLimits = DEFAULT_PAYLOAD_TEXT_LIMITS,
+): unknown {
   if (typeof value === "string") {
-    return shouldCompactPayloadString(key, value)
-      ? truncateBlock(value, MAX_THREAD_ACTIVITY_PAYLOAD_TEXT_LENGTH)
+    return shouldCompactPayloadString(key, value, limits)
+      ? truncateBlock(value, limits.text)
       : value;
   }
 
@@ -94,7 +123,7 @@ function compactActivityPayloadData(value: unknown, key?: string | undefined, de
   if (Array.isArray(value)) {
     const compacted = value
       .slice(0, MAX_THREAD_ACTIVITY_PAYLOAD_ARRAY_ITEMS)
-      .map((entry) => compactActivityPayloadData(entry, key, depth + 1));
+      .map((entry) => compactActivityPayloadData(entry, key, depth + 1, limits));
     if (value.length > MAX_THREAD_ACTIVITY_PAYLOAD_ARRAY_ITEMS) {
       compacted.push({
         truncated: true,
@@ -111,7 +140,7 @@ function compactActivityPayloadData(value: unknown, key?: string | undefined, de
     compacted[entryKey] =
       preserveImageResult && entryKey === "result" && typeof entryValue === "string"
         ? entryValue
-        : compactActivityPayloadData(entryValue, entryKey, depth + 1);
+        : compactActivityPayloadData(entryValue, entryKey, depth + 1, limits);
   }
   if (entries.length > MAX_THREAD_ACTIVITY_PAYLOAD_OBJECT_KEYS) {
     compacted.__truncatedKeys = entries.length - MAX_THREAD_ACTIVITY_PAYLOAD_OBJECT_KEYS;
@@ -692,6 +721,8 @@ export function projectRuntimeEventToActivities(
             ...(event.payload.description
               ? { detail: truncateDetail(event.payload.description) }
               : {}),
+            ...(event.payload.toolUseId ? { toolUseId: event.payload.toolUseId } : {}),
+            ...(event.payload.subagentType ? { subagentType: event.payload.subagentType } : {}),
           },
         }),
       ];
@@ -709,6 +740,8 @@ export function projectRuntimeEventToActivities(
             ...(event.payload.summary ? { summary: truncateDetail(event.payload.summary) } : {}),
             ...(event.payload.lastToolName ? { lastToolName: event.payload.lastToolName } : {}),
             ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),
+            ...(event.payload.toolUseId ? { toolUseId: event.payload.toolUseId } : {}),
+            ...(event.payload.subagentType ? { subagentType: event.payload.subagentType } : {}),
           },
         }),
       ];
@@ -938,7 +971,16 @@ export function projectRuntimeEventToActivities(
             ...(event.payload.title ? { title: event.payload.title } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
             ...(event.payload.data !== undefined
-              ? { data: compactActivityPayloadData(event.payload.data) }
+              ? {
+                  data: compactActivityPayloadData(
+                    event.payload.data,
+                    undefined,
+                    0,
+                    event.payload.itemType === "collab_agent_tool_call"
+                      ? COLLAB_AGENT_PAYLOAD_TEXT_LIMITS
+                      : DEFAULT_PAYLOAD_TEXT_LIMITS,
+                  ),
+                }
               : {}),
           },
         }),

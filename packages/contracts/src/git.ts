@@ -119,6 +119,66 @@ export const VcsPullInput = Schema.Struct({
 });
 export type VcsPullInput = typeof VcsPullInput.Type;
 
+// Remote authentication failures classified from git stderr, and the
+// remediation actions the server can apply on the user's behalf.
+
+export const GitRemoteAuthScheme = Schema.Literals(["https", "ssh"]);
+export type GitRemoteAuthScheme = typeof GitRemoteAuthScheme.Type;
+
+export const GitRemoteAuthFailureKind = Schema.Literals([
+  "https_credentials_unavailable",
+  "https_credentials_rejected",
+  "ssh_permission_denied",
+  "ssh_host_key_verification_failed",
+]);
+export type GitRemoteAuthFailureKind = typeof GitRemoteAuthFailureKind.Type;
+
+export const GitRemoteAuthFailure = Schema.Struct({
+  kind: GitRemoteAuthFailureKind,
+  scheme: GitRemoteAuthScheme,
+  host: Schema.NullOr(TrimmedNonEmptyStringSchema),
+});
+export type GitRemoteAuthFailure = typeof GitRemoteAuthFailure.Type;
+
+export const GitAuthRemediationActionId = Schema.Literals(["gh_setup_git", "switch_remote_to_ssh"]);
+export type GitAuthRemediationActionId = typeof GitAuthRemediationActionId.Type;
+
+export const GitAuthRemediationAction = Schema.Struct({
+  id: GitAuthRemediationActionId,
+  title: TrimmedNonEmptyStringSchema,
+  description: Schema.String,
+  command: TrimmedNonEmptyStringSchema,
+  applicable: Schema.Boolean,
+  inapplicableReason: Schema.NullOr(Schema.String),
+});
+export type GitAuthRemediationAction = typeof GitAuthRemediationAction.Type;
+
+export const GitAuthRemediationPlanInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+});
+export type GitAuthRemediationPlanInput = typeof GitAuthRemediationPlanInput.Type;
+
+export const GitAuthRemediationPlan = Schema.Struct({
+  remoteName: Schema.NullOr(TrimmedNonEmptyStringSchema),
+  remoteUrl: Schema.NullOr(TrimmedNonEmptyStringSchema),
+  host: Schema.NullOr(TrimmedNonEmptyStringSchema),
+  scheme: Schema.NullOr(GitRemoteAuthScheme),
+  actions: Schema.Array(GitAuthRemediationAction),
+});
+export type GitAuthRemediationPlan = typeof GitAuthRemediationPlan.Type;
+
+export const GitApplyAuthRemediationInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  actionId: GitAuthRemediationActionId,
+});
+export type GitApplyAuthRemediationInput = typeof GitApplyAuthRemediationInput.Type;
+
+export const GitApplyAuthRemediationResult = Schema.Struct({
+  actionId: GitAuthRemediationActionId,
+  detail: TrimmedNonEmptyStringSchema,
+});
+export type GitApplyAuthRemediationResult = typeof GitApplyAuthRemediationResult.Type;
+
 export const GitRunStackedActionInput = Schema.Struct({
   actionId: TrimmedNonEmptyStringSchema,
   cwd: TrimmedNonEmptyStringSchema,
@@ -486,6 +546,7 @@ export class GitCommandError extends Schema.TaggedErrorClass<GitCommandError>()(
   command: Schema.String,
   cwd: Schema.String,
   detail: Schema.String,
+  remoteAuth: Schema.optional(GitRemoteAuthFailure),
   cause: Schema.optional(Schema.Defect),
 }) {
   override get message(): string {

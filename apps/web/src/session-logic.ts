@@ -879,8 +879,32 @@ function collectSubagentActivityRecords(
   const byAgentId = new Map<string, InternalSubagentRecord>();
   const pendingSpawnKeysByCallId = new Map<string, string>();
   const latestTurnId = options.latestTurnId ?? null;
+  const sortedActivities = [...activities].toSorted(compareActivitiesByOrder);
 
-  for (const activity of [...activities].toSorted(compareActivitiesByOrder)) {
+  // Background agents keep reporting through task.* activities after their
+  // spawn turn settles. Spawns linked to a still-live task bypass turn scoping
+  // below so the popover keeps showing them until the task completes.
+  const liveBackgroundTaskToolUseIds = new Set<string>();
+  for (const activity of sortedActivities) {
+    if (
+      activity.kind !== "task.started" &&
+      activity.kind !== "task.progress" &&
+      activity.kind !== "task.completed"
+    ) {
+      continue;
+    }
+    const toolUseId = asTrimmedString(asRecord(activity.payload)?.toolUseId);
+    if (!toolUseId) {
+      continue;
+    }
+    if (activity.kind === "task.completed") {
+      liveBackgroundTaskToolUseIds.delete(toolUseId);
+    } else {
+      liveBackgroundTaskToolUseIds.add(toolUseId);
+    }
+  }
+
+  for (const activity of sortedActivities) {
     const inLatestTurn = latestTurnId === null || activity.turnId === latestTurnId;
 
     const payload =
@@ -945,8 +969,9 @@ function collectSubagentActivityRecords(
       const previous = byAgentId.get(agentId);
       // Turn scoping applies to where an agent is spawned. Later lifecycle
       // activities for a known agent (e.g. a background agent's completion
-      // replayed after its turn ended) still update the record.
-      if (!inLatestTurn && previous === undefined) {
+      // replayed after its turn ended) still update the record, and spawns
+      // with a live background task stay visible across turns.
+      if (!inLatestTurn && previous === undefined && !liveBackgroundTaskToolUseIds.has(agentId)) {
         continue;
       }
       const pendingAgent = agentId.startsWith("pending:");

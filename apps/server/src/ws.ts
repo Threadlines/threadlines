@@ -89,6 +89,7 @@ import { WorkspaceFileSystem } from "./workspace/Services/WorkspaceFileSystem.ts
 import { WorkspacePathOutsideRootError } from "./workspace/Services/WorkspacePaths.ts";
 import { VcsStatusBroadcaster } from "./vcs/VcsStatusBroadcaster.ts";
 import { VcsProvisioningService } from "./vcs/VcsProvisioningService.ts";
+import { GitAuthRemediationService } from "./git/GitAuthRemediationService.ts";
 import { GitWorkflowService } from "./git/GitWorkflowService.ts";
 import { ProjectSetupScriptRunner } from "./project/Services/ProjectSetupScriptRunner.ts";
 import { RepositoryIdentityResolver } from "./project/Services/RepositoryIdentityResolver.ts";
@@ -199,6 +200,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
       const keybindings = yield* Keybindings;
       const externalLauncher = yield* ExternalLauncher.ExternalLauncher;
       const gitWorkflow = yield* GitWorkflowService;
+      const gitAuthRemediation = yield* GitAuthRemediationService;
       const vcsProvisioning = yield* VcsProvisioningService;
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
       const terminalManager = yield* TerminalManager;
@@ -1460,6 +1462,18 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             WS_METHODS.gitPreparePullRequestThread,
             gitWorkflow
               .preparePullRequestThread(input)
+              .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            { "rpc.aggregate": "git" },
+          ),
+        [WS_METHODS.gitAuthRemediationPlan]: (input) =>
+          observeRpcEffect(WS_METHODS.gitAuthRemediationPlan, gitAuthRemediation.plan(input), {
+            "rpc.aggregate": "git",
+          }),
+        [WS_METHODS.gitApplyAuthRemediation]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.gitApplyAuthRemediation,
+            gitAuthRemediation
+              .apply(input)
               .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
             { "rpc.aggregate": "git" },
           ),

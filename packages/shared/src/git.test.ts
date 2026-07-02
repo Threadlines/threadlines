@@ -3,10 +3,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   applyGitStatusStreamEvent,
+  buildSshRemoteUrl,
   buildTemporaryWorktreeBranchName,
+  classifyGitRemoteAuthFailure,
   deriveRepositoryDirectoryName,
+  parseGitRemoteEndpoint,
   formatGitErrorMessage,
-  isGitHubHttpsCredentialPromptErrorMessage,
+  gitRemoteAuthFailureFromError,
   isGitRepositoryMetadataCorruptionErrorMessage,
   isTemporaryWorktreeBranch,
   normalizeGitRemoteUrl,
@@ -107,14 +110,130 @@ describe("isGitRepositoryMetadataCorruptionErrorMessage", () => {
   });
 });
 
+describe("parseGitRemoteEndpoint", () => {
+  it("parses https, ssh, and scp-style remotes", () => {
+    expect(parseGitRemoteEndpoint("https://github.com/badcuban/fire-alarm-tycoon.git")).toEqual({
+      scheme: "https",
+      host: "github.com",
+      path: "badcuban/fire-alarm-tycoon",
+    });
+    expect(parseGitRemoteEndpoint("git@github.com:Threadlines/threadlines.git")).toEqual({
+      scheme: "ssh",
+      host: "github.com",
+      path: "Threadlines/threadlines",
+    });
+    expect(parseGitRemoteEndpoint("ssh://git@gitlab.company.com:2222/team/project.git")).toEqual({
+      scheme: "ssh",
+      host: "gitlab.company.com",
+      path: "team/project",
+    });
+  });
+
+  it("rejects local paths and unsupported shapes", () => {
+    expect(parseGitRemoteEndpoint("/Users/will/some/local/remote")).toBeNull();
+    expect(parseGitRemoteEndpoint("C:\\repos\\local")).toBeNull();
+    expect(parseGitRemoteEndpoint("")).toBeNull();
+  });
+
+  it("round-trips https endpoints into ssh remote URLs", () => {
+    const endpoint = parseGitRemoteEndpoint("https://github.com/badcuban/fire-alarm-tycoon.git");
+    expect(endpoint && buildSshRemoteUrl(endpoint)).toBe(
+      "git@github.com:badcuban/fire-alarm-tycoon.git",
+    );
+  });
+});
+
+describe("classifyGitRemoteAuthFailure", () => {
+  it("classifies HTTPS credential prompt failures with the host", () => {
+    const deviceNotConfigured =
+      "Git command failed in GitVcsDriver.pullCurrentBranch.fetch: git fetch --no-write-fetch-head origin +refs/heads/main:refs/remotes/origin/main (/repo) - fatal: could not read Username for 'https://github.com': Device not configured";
+    expect(classifyGitRemoteAuthFailure(deviceNotConfigured)).toEqual({
+      kind: "https_credentials_unavailable",
+      scheme: "https",
+      host: "github.com",
+    });
+
+    const promptsDisabled =
+      "fatal: could not read Username for 'https://gitlab.company.com': terminal prompts disabled";
+    expect(classifyGitRemoteAuthFailure(promptsDisabled)).toEqual({
+      kind: "https_credentials_unavailable",
+      scheme: "https",
+      host: "gitlab.company.com",
+    });
+  });
+
+  it("classifies rejected HTTPS credentials", () => {
+    expect(
+      classifyGitRemoteAuthFailure(
+        "fatal: Authentication failed for 'https://github.com/owner/repo.git/'",
+      ),
+    ).toEqual({
+      kind: "https_credentials_rejected",
+      scheme: "https",
+      host: "github.com",
+    });
+  });
+
+  it("classifies SSH permission and host key failures", () => {
+    expect(
+      classifyGitRemoteAuthFailure(
+        "git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.",
+      ),
+    ).toEqual({
+      kind: "ssh_permission_denied",
+      scheme: "ssh",
+      host: "github.com",
+    });
+
+    expect(classifyGitRemoteAuthFailure("Host key verification failed.")).toEqual({
+      kind: "ssh_host_key_verification_failed",
+      scheme: "ssh",
+      host: null,
+    });
+  });
+
+  it("does not classify unrelated git errors", () => {
+    expect(classifyGitRemoteAuthFailure("Branch is behind upstream.")).toBeNull();
+    expect(
+      classifyGitRemoteAuthFailure("fatal: bad object refs/remotes/origin/HEAD"),
+    ).toBeNull();
+  });
+});
+
+describe("gitRemoteAuthFailureFromError", () => {
+  it("prefers the structured remoteAuth field when present", () => {
+    const error = Object.assign(new Error("opaque message"), {
+      _tag: "GitCommandError",
+      remoteAuth: { kind: "https_credentials_unavailable", scheme: "https", host: "github.com" },
+    });
+    expect(gitRemoteAuthFailureFromError(error)).toEqual({
+      kind: "https_credentials_unavailable",
+      scheme: "https",
+      host: "github.com",
+    });
+  });
+
+  it("falls back to classifying the error message", () => {
+    expect(
+      gitRemoteAuthFailureFromError(
+        new Error("fatal: could not read Username for 'https://github.com': Device not configured"),
+      ),
+    ).toEqual({
+      kind: "https_credentials_unavailable",
+      scheme: "https",
+      host: "github.com",
+    });
+    expect(gitRemoteAuthFailureFromError(new Error("Branch is behind upstream."))).toBeNull();
+  });
+});
+
 describe("formatGitErrorMessage", () => {
-  it("recognizes GitHub HTTPS credential prompt failures", () => {
+  it("describes remote auth failures in plain language", () => {
     const message =
       "Git command failed in GitVcsDriver.pushCurrentBranch.pushUpstream: git push origin HEAD:refs/heads/main (/repo) - fatal: could not read Username for 'https://github.com': Device not configured";
 
-    expect(isGitHubHttpsCredentialPromptErrorMessage(message)).toBe(true);
     expect(formatGitErrorMessage(new Error(message))).toBe(
-      "GitHub could not prompt for HTTPS credentials from Threadlines. Sign in for Git HTTPS or switch origin to SSH, then retry Push.",
+      "Git needs credentials for github.com, but none are configured for non-interactive use. The repository is private or requires sign-in over HTTPS.",
     );
   });
 

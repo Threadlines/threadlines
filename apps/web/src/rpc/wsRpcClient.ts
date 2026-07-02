@@ -133,6 +133,8 @@ export interface WsRpcClient {
     readonly preparePullRequestThread: RpcUnaryMethod<
       typeof WS_METHODS.gitPreparePullRequestThread
     >;
+    readonly authRemediationPlan: RpcUnaryMethod<typeof WS_METHODS.gitAuthRemediationPlan>;
+    readonly applyAuthRemediation: RpcUnaryMethod<typeof WS_METHODS.gitApplyAuthRemediation>;
   };
   readonly server: {
     readonly getConfig: RpcUnaryNoArgMethod<typeof WS_METHODS.serverGetConfig>;
@@ -348,6 +350,10 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.gitResolvePullRequest](input)),
       preparePullRequestThread: (input) =>
         transport.request((client) => client[WS_METHODS.gitPreparePullRequestThread](input)),
+      authRemediationPlan: (input) =>
+        transport.request((client) => client[WS_METHODS.gitAuthRemediationPlan](input)),
+      applyAuthRemediation: (input) =>
+        transport.request((client) => client[WS_METHODS.gitApplyAuthRemediation](input)),
     },
     server: {
       getConfig: () => transport.request((client) => client[WS_METHODS.serverGetConfig]({})),

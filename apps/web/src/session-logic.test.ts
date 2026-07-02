@@ -3796,6 +3796,87 @@ describe("deriveSubagentResultEntries", () => {
     ]);
   });
 
+  it("keeps a live background agent visible after a new turn starts", () => {
+    const spawnActivities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "claude-bg-agent-launch-ack",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.completed",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          title: "Subagent task",
+          toolCallId: "tool-agent-bg",
+          data: {
+            toolName: "Task",
+            input: {
+              description: "Inventory Threadlines features",
+              subagent_type: "Explore",
+              run_in_background: true,
+            },
+            result: {
+              type: "tool_result",
+              tool_use_id: "tool-agent-bg",
+              content: [
+                {
+                  type: "text",
+                  text: "Async agent launched successfully. agentId: agent-bg-1 (internal ID - do not mention to user. Use SendMessage with to: 'agent-bg-1', summary: '<recap>' to continue this agent.) The agent is working in the background.",
+                },
+              ],
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "claude-bg-agent-task-progress",
+        createdAt: "2026-02-23T00:00:20.000Z",
+        kind: "task.progress",
+        turnId: "turn-2",
+        payload: {
+          taskId: "task-bg-agent",
+          detail: "Reading contracts",
+          toolUseId: "tool-agent-bg",
+          subagentType: "Explore",
+        },
+      }),
+    ];
+
+    // Without the linked task the spawn from turn-1 would fall out of scope.
+    const progress = deriveSubagentProgressState({
+      activities: spawnActivities,
+      latestTurnId: TurnId.make("turn-2"),
+    });
+    expect(progress?.items).toEqual([
+      expect.objectContaining({
+        agentThreadId: "tool-agent-bg",
+        role: "Explore",
+        status: "running",
+      }),
+    ]);
+
+    const settledActivities = [
+      ...spawnActivities,
+      makeActivity({
+        id: "claude-bg-agent-task-completed",
+        createdAt: "2026-02-23T00:00:30.000Z",
+        kind: "task.completed",
+        payload: {
+          taskId: "task-bg-agent",
+          status: "completed",
+          toolUseId: "tool-agent-bg",
+        },
+      }),
+    ];
+
+    expect(
+      deriveSubagentProgressState({
+        activities: settledActivities,
+        latestTurnId: TurnId.make("turn-2"),
+      }),
+    ).toBeNull();
+  });
+
   it("replays background subagent completion notifications into styled results", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

@@ -1,3 +1,4 @@
+import { createServer } from "node:http";
 import { setTimeout as sleepRealTime } from "node:timers/promises";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -156,6 +157,31 @@ function gitCommitDateEnv(isoDate: string): NodeJS.ProcessEnv {
     GIT_COMMITTER_DATE: isoDate,
   };
 }
+
+/** Minimal HTTP server that answers every request with a Basic auth challenge. */
+const makeBasicAuthChallengeRemote = Effect.acquireRelease(
+  Effect.promise(
+    () =>
+      new Promise<{ readonly url: string; readonly server: ReturnType<typeof createServer> }>(
+        (resolve, reject) => {
+          const server = createServer((_request, response) => {
+            response.writeHead(401, { "WWW-Authenticate": 'Basic realm="test"' });
+            response.end("authentication required");
+          });
+          server.listen(0, "127.0.0.1", () => {
+            const address = server.address();
+            if (address === null || typeof address === "string") {
+              reject(new Error("Failed to bind auth challenge server."));
+              return;
+            }
+            resolve({ url: `http://127.0.0.1:${address.port}/private.git`, server });
+          });
+          server.on("error", reject);
+        },
+      ),
+  ),
+  ({ server }) => Effect.promise(() => new Promise<void>((resolve) => server.close(() => resolve()))),
+);
 
 const pushRemoteBranchFromPeer = (input: {
   readonly remote: string;
@@ -1140,6 +1166,33 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         assert.deepInclude(skipped, {
           status: "skipped_up_to_date",
           branch: "feature/push",
+        });
+      }),
+    );
+
+    it.effect("fails fast on HTTPS auth challenges and classifies the failure", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const remote = yield* makeBasicAuthChallengeRemote;
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        const error = yield* driver
+          .execute({
+            operation: "GitVcsDriverCore.test.authChallengeFetch",
+            cwd,
+            // Reset credential helpers so the host machine's stored
+            // credentials cannot satisfy the challenge.
+            args: ["-c", "credential.helper=", "fetch", remote.url],
+            timeoutMs: 15_000,
+          })
+          .pipe(Effect.flip);
+
+        assert.instanceOf(error, GitCommandError);
+        assert.deepStrictEqual(error.remoteAuth, {
+          kind: "https_credentials_unavailable",
+          scheme: "https",
+          host: "127.0.0.1",
         });
       }),
     );

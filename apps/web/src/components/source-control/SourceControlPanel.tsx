@@ -57,6 +57,7 @@ import {
 import * as Schema from "effect/Schema";
 
 import { openInPreferredEditor } from "~/editorPreferences";
+import { openFileInActiveViewer } from "~/fileViewerStore";
 import { readEnvironmentApi } from "~/environmentApi";
 import {
   gitBranchSearchInfiniteQueryOptions,
@@ -170,7 +171,7 @@ interface SourceControlPanelProps {
 
 type WorkingTreeFile = VcsStatusResult["workingTree"]["files"][number];
 type WorkingTreeChangeSection = "staged" | "unstaged";
-type ChangedFileContextAction = "open-diff" | "open-editor";
+type ChangedFileContextAction = "open-diff" | "open-viewer" | "open-editor";
 
 interface WorkingTreeSectionFile {
   readonly file: WorkingTreeFile;
@@ -1000,7 +1001,11 @@ function CommitGraphHoverCard({
             ) : null}
           </div>
         </div>
-      ) : null}
+      ) : (
+        <div className="shrink-0 border-t border-border/70 pt-1.5 text-[10px] text-muted-foreground/70">
+          Click the commit for the full message and actions
+        </div>
+      )}
     </div>
   );
 }
@@ -2501,12 +2506,19 @@ export function SourceControlPanel({
 
       const menuItems: readonly ContextMenuItem<ChangedFileContextAction>[] = [
         { id: "open-diff", label: "Open diff", disabled: !onOpenDiff },
-        { id: "open-editor", label: "Open in editor" },
+        { id: "open-viewer", label: "Open in file viewer" },
+        { id: "open-editor", label: "Open in external editor" },
       ];
       const clicked = await api.contextMenu.show(menuItems, position);
 
       if (clicked === "open-diff") {
         openChangedFileDiff(entry.path);
+        return;
+      }
+      if (clicked === "open-viewer") {
+        if (!openFileInActiveViewer({ path: entry.path })) {
+          openChangedFileInEditor(entry.path);
+        }
         return;
       }
       if (clicked === "open-editor") {

@@ -28,10 +28,15 @@ interface FileViewerState {
   activePath: string | null;
   /** 1-based line to reveal in the active file. */
   revealLine: number | null;
+  /** Optional inclusive end of the reveal range (selection restore). */
+  revealEndLine: number | null;
   /** Bumped on every reveal request so re-opening the same line re-scrolls. */
   revealRequestId: number;
-  open: (context: FileViewerContext, target?: { path: string; line?: number }) => void;
-  openFile: (path: string, line?: number) => void;
+  open: (
+    context: FileViewerContext,
+    target?: { path: string; line?: number; endLine?: number },
+  ) => void;
+  openFile: (path: string, line?: number, endLine?: number) => void;
   setActivePath: (path: string) => void;
   closeTab: (path: string) => void;
   close: () => void;
@@ -43,6 +48,7 @@ export const useFileViewerStore = create<FileViewerState>((set) => ({
   tabs: [],
   activePath: null,
   revealLine: null,
+  revealEndLine: null,
   revealRequestId: 0,
 
   open: (context, target) =>
@@ -63,19 +69,21 @@ export const useFileViewerStore = create<FileViewerState>((set) => ({
         tabs,
         activePath: activePath ?? tabs[0] ?? null,
         revealLine: target?.line ?? null,
+        revealEndLine: target?.endLine ?? null,
         revealRequestId: state.revealRequestId + 1,
       };
     }),
 
-  openFile: (path, line) =>
+  openFile: (path, line, endLine) =>
     set((state) => ({
       tabs: state.tabs.includes(path) ? state.tabs : [...state.tabs, path],
       activePath: path,
       revealLine: line ?? null,
+      revealEndLine: endLine ?? null,
       revealRequestId: state.revealRequestId + 1,
     })),
 
-  setActivePath: (path) => set({ activePath: path, revealLine: null }),
+  setActivePath: (path) => set({ activePath: path, revealLine: null, revealEndLine: null }),
 
   closeTab: (path) =>
     set((state) => {
@@ -149,6 +157,7 @@ export function openActiveFileViewer(): boolean {
 export function openFileInActiveViewer(input: {
   path: string;
   line?: number | undefined;
+  endLine?: number | undefined;
 }): boolean {
   if (!activeFileViewerContext) {
     return false;
@@ -159,7 +168,67 @@ export function openFileInActiveViewer(input: {
     threadRef: activeFileViewerContext.threadRef,
     path: input.path,
     line: input.line,
+    ...(input.endLine !== undefined ? { endLine: input.endLine } : {}),
   });
+}
+
+/**
+ * Inline-code text that reads as a file reference: an optionally-pathed file
+ * name with a letter-led extension and an optional `:line[:column]` suffix.
+ * (`v0.1.0` and package names like `effect/Schema` deliberately do not match.)
+ */
+const CHAT_FILE_REFERENCE_PATTERN =
+  /^(?<path>[\w.@~-]+(?:\/[\w.@~-]+)*\.[A-Za-z][A-Za-z0-9]{0,7})(?::(?<line>\d+)(?::\d+)?)?$/;
+
+export function parseChatFileReference(
+  text: string,
+): { path: string; line: number | undefined } | null {
+  const match = CHAT_FILE_REFERENCE_PATTERN.exec(text.trim());
+  if (!match?.groups?.path) {
+    return null;
+  }
+  const line = match.groups.line ? Number.parseInt(match.groups.line, 10) : undefined;
+  return { path: match.groups.path, line };
+}
+
+/**
+ * Open an inline-code file reference from the chat transcript.
+ *
+ * Pathed references open directly; bare file names are resolved through the
+ * workspace search index (models frequently cite `ChatComposer.tsx:1010`
+ * without the directory). Returns false when nothing could be opened.
+ */
+export async function openChatFileReference(text: string): Promise<boolean> {
+  const parsed = parseChatFileReference(text);
+  const context = activeFileViewerContext;
+  if (!parsed || !context) {
+    return false;
+  }
+  if (parsed.path.includes("/")) {
+    return openFileInActiveViewer({ path: parsed.path, line: parsed.line });
+  }
+
+  const { ensureEnvironmentApi } = await import("./environmentApi");
+  try {
+    const api = ensureEnvironmentApi(context.environmentId);
+    const result = await api.projects.searchEntries({
+      cwd: context.cwd,
+      query: parsed.path,
+      limit: 8,
+    });
+    const basename = parsed.path.toLowerCase();
+    const fileMatches = result.entries.filter((entry) => entry.kind === "file");
+    const bestMatch =
+      fileMatches.find((entry) => entry.path.toLowerCase().endsWith(`/${basename}`)) ??
+      fileMatches.find((entry) => entry.path.toLowerCase() === basename) ??
+      fileMatches[0];
+    if (!bestMatch) {
+      return false;
+    }
+    return openFileInActiveViewer({ path: bestMatch.path, line: parsed.line });
+  } catch {
+    return false;
+  }
 }
 
 export interface OpenFileInViewerInput {
@@ -169,6 +238,7 @@ export interface OpenFileInViewerInput {
   /** Workspace-relative or absolute path; absolute paths are relativized. */
   path: string;
   line?: number | undefined;
+  endLine?: number | undefined;
 }
 
 /**
@@ -178,9 +248,20 @@ export interface OpenFileInViewerInput {
  * workspace root); callers should fall back to the external editor.
  */
 export function openFileInViewer(input: OpenFileInViewerInput): boolean {
-  const normalizedPath = toPosixPath(input.path);
+  // Editor-style targets carry the line as a `path:12[:4]` suffix (that is
+  // what external editors expect); strip it before hitting the read API.
+  let targetPath = input.path;
+  let line = input.line;
+  const lineSuffix = /:(\d+)(?::\d+)?$/.exec(targetPath);
+  if (lineSuffix) {
+    targetPath = targetPath.slice(0, lineSuffix.index);
+    if (line === undefined) {
+      line = Number.parseInt(lineSuffix[1] ?? "", 10) || undefined;
+    }
+  }
+  const normalizedPath = toPosixPath(targetPath);
   const relativePath =
-    normalizedPath.startsWith("/") || isWindowsAbsolutePath(input.path)
+    normalizedPath.startsWith("/") || isWindowsAbsolutePath(targetPath)
       ? relativePathWithinCwd(normalizedPath, input.cwd)
       : normalizedPath;
   if (!relativePath) {
@@ -192,7 +273,11 @@ export function openFileInViewer(input: OpenFileInViewerInput): boolean {
       cwd: input.cwd,
       threadRef: input.threadRef ?? null,
     },
-    { path: relativePath, ...(input.line !== undefined ? { line: input.line } : {}) },
+    {
+      path: relativePath,
+      ...(line !== undefined ? { line } : {}),
+      ...(input.endLine !== undefined ? { endLine: input.endLine } : {}),
+    },
   );
   return true;
 }

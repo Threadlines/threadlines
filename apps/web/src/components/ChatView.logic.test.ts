@@ -750,6 +750,64 @@ describe("deriveProviderBackgroundRuns", () => {
     expect(detectionSeeds.urls).toEqual(["http://localhost:5953"]);
   });
 
+  it("hides local_agent tasks from background runs even without active subagent records", () => {
+    const { runs } = deriveProviderBackgroundRuns({
+      activities: [
+        taskActivity(
+          "task.started",
+          {
+            taskId: "task-bg-agent",
+            taskType: "local_agent",
+            detail: "Inventory Threadlines features thoroughly",
+            toolUseId: "tool-agent-bg",
+            subagentType: "Explore",
+          },
+          1,
+        ),
+        // Progress activities never repeat taskType; the suppression from the
+        // task.started classification must stick.
+        taskActivity(
+          "task.progress",
+          {
+            taskId: "task-bg-agent",
+            detail: "Reading packages/contracts/src/rpc.ts",
+            lastToolName: "Read",
+            toolUseId: "tool-agent-bg",
+          },
+          2,
+          TurnId.make("turn-2"),
+        ),
+      ],
+      messages: [],
+      pendingBackgroundTaskCount: 1,
+      activeSubagentCount: 0,
+    });
+
+    expect(runs).toEqual([]);
+  });
+
+  it("hides tasks tagged with a subagent type from background runs", () => {
+    const { runs } = deriveProviderBackgroundRuns({
+      activities: [
+        taskActivity(
+          "task.progress",
+          {
+            taskId: "task-bg-agent",
+            detail: "Reading packages/contracts/src/rpc.ts",
+            subagentType: "Explore",
+            toolUseId: "tool-agent-bg",
+          },
+          1,
+        ),
+      ],
+      messages: [],
+      pendingBackgroundTaskCount: 1,
+      activeSubagentCount: 0,
+    });
+
+    expect(runs).toEqual([]);
+  });
+
   it("keeps a normalized provider command when task payload exposes one", () => {
     const { runs, detectionSeeds } = deriveProviderBackgroundRuns({
       activities: [

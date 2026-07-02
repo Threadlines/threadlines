@@ -8,7 +8,10 @@ import {
   ThreadId,
   TurnId,
 } from "@threadlines/contracts";
-import { MAX_THREAD_ACTIVITY_PAYLOAD_TEXT_LENGTH } from "@threadlines/shared/threadLimits";
+import {
+  MAX_THREAD_ACTIVITY_PAYLOAD_AGENT_RESULT_TEXT_LENGTH,
+  MAX_THREAD_ACTIVITY_PAYLOAD_TEXT_LENGTH,
+} from "@threadlines/shared/threadLimits";
 import { describe, expect, it } from "vitest";
 
 import { projectRuntimeEventToActivities } from "./ProviderActivityProjection.ts";
@@ -365,6 +368,90 @@ describe("ProviderActivityProjection", () => {
     expect(result).toEqual(expect.stringContaining("line 999"));
     expect(result?.startsWith("...")).toBe(true);
     expect(result?.length).toBeLessThanOrEqual(MAX_THREAD_ACTIVITY_PAYLOAD_TEXT_LENGTH);
+  });
+
+  it("preserves long collab agent results up to the agent result cap", () => {
+    const agentResult = Array.from({ length: 400 }, (_, index) => `finding ${index}`).join("\n");
+    expect(agentResult.length).toBeGreaterThan(MAX_THREAD_ACTIVITY_PAYLOAD_TEXT_LENGTH);
+    expect(agentResult.length).toBeLessThanOrEqual(
+      MAX_THREAD_ACTIVITY_PAYLOAD_AGENT_RESULT_TEXT_LENGTH,
+    );
+    const activities = projectRuntimeEventToActivities({
+      type: "item.completed",
+      eventId: EventId.make("evt-collab-agent-completed"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: ThreadId.make("thread-1"),
+      turnId: TurnId.make("turn-1"),
+      itemId: RuntimeItemId.make("tool-agent-long"),
+      createdAt: "2026-06-01T12:00:00.000Z",
+      payload: {
+        itemType: "collab_agent_tool_call",
+        status: "completed",
+        title: "Subagent task",
+        data: {
+          toolName: "Agent",
+          result: {
+            type: "tool_result",
+            tool_use_id: "tool-agent-long",
+            content: [{ type: "text", text: agentResult }],
+          },
+          taskNotification: {
+            taskId: "task-agent-long",
+            status: "completed",
+          },
+        },
+      },
+    } satisfies ProviderRuntimeEvent);
+
+    const payload = activities[0]?.payload as
+      | { data?: { result?: { content?: Array<{ text?: string }> } } }
+      | undefined;
+
+    expect(payload?.data?.result?.content?.[0]?.text).toBe(agentResult);
+  });
+
+  it("projects task lifecycle linkage fields for background agents", () => {
+    const started = projectRuntimeEventToActivities({
+      type: "task.started",
+      eventId: EventId.make("evt-task-started-agent"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: ThreadId.make("thread-1"),
+      createdAt: "2026-06-01T12:00:00.000Z",
+      payload: {
+        taskId: RuntimeTaskId.make("task-bg-agent"),
+        description: "Inventory features",
+        taskType: "local_agent",
+        toolUseId: "tool-task-bg-1",
+        subagentType: "Explore",
+      },
+    } satisfies ProviderRuntimeEvent);
+
+    expect(started[0]?.payload).toMatchObject({
+      taskId: "task-bg-agent",
+      taskType: "local_agent",
+      toolUseId: "tool-task-bg-1",
+      subagentType: "Explore",
+    });
+
+    const progress = projectRuntimeEventToActivities({
+      type: "task.progress",
+      eventId: EventId.make("evt-task-progress-agent"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      threadId: ThreadId.make("thread-1"),
+      createdAt: "2026-06-01T12:00:05.000Z",
+      payload: {
+        taskId: RuntimeTaskId.make("task-bg-agent"),
+        description: "Reading contracts",
+        toolUseId: "tool-task-bg-1",
+        subagentType: "Explore",
+      },
+    } satisfies ProviderRuntimeEvent);
+
+    expect(progress[0]?.payload).toMatchObject({
+      taskId: "task-bg-agent",
+      toolUseId: "tool-task-bg-1",
+      subagentType: "Explore",
+    });
   });
 
   it("links task completions to their originating tool call", () => {

@@ -451,7 +451,9 @@ const gitCommand = (
     cwd,
     spawnCwd: globalThis.process.cwd(),
     ...(options?.stdin !== undefined ? { stdin: options.stdin } : {}),
-    ...(options?.env !== undefined ? { env: options.env } : {}),
+    // Merged onto the parent env by the process runner; git must fail fast
+    // instead of prompting for credentials on a terminal we do not have.
+    env: { GIT_TERMINAL_PROMPT: "0", ...options?.env },
     ...(options?.allowNonZeroExit !== undefined
       ? { allowNonZeroExit: options.allowNonZeroExit }
       : {}),

@@ -24,7 +24,11 @@ import { renderSkillInlineMarkdownChildren } from "./chat/SkillInlineText";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { openInPreferredEditor } from "../editorPreferences";
-import { openFileInActiveViewer } from "../fileViewerStore";
+import {
+  openChatFileReference,
+  openFileInActiveViewer,
+  parseChatFileReference,
+} from "../fileViewerStore";
 import { resolveDiffThemeName, type DiffThemeName } from "../lib/diffRendering";
 import { fnv1a32 } from "../lib/diffRendering";
 import { LRUCache } from "../lib/lruCache";
@@ -595,6 +599,48 @@ function ChatMarkdown({
             theme={resolvedTheme}
             className={props.className}
           />
+        );
+      },
+      code({ node: _node, className, children, ...props }) {
+        // Inline code that reads as a file reference (`ChatComposer.tsx:1010`)
+        // opens the internal file viewer; bare names resolve via workspace
+        // search. Fenced blocks carry a language class and are skipped.
+        const text = typeof children === "string" ? children : null;
+        if (className || !text || !parseChatFileReference(text)) {
+          return (
+            <code {...props} className={className}>
+              {children}
+            </code>
+          );
+        }
+        const openReference = () => {
+          void openChatFileReference(text).then((opened) => {
+            if (!opened) {
+              toastManager.add({
+                type: "error",
+                title: "File not found in workspace",
+                description: text,
+              });
+            }
+          });
+        };
+        return (
+          <code
+            {...props}
+            role="button"
+            tabIndex={0}
+            title={`Open ${text}`}
+            className="cursor-pointer transition-colors hover:text-foreground hover:underline hover:decoration-dotted hover:underline-offset-2"
+            onClick={openReference}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                openReference();
+              }
+            }}
+          >
+            {children}
+          </code>
         );
       },
       pre({ node: _node, children, ...props }) {

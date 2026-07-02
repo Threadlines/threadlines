@@ -26,7 +26,10 @@ import {
   type VcsRef,
   type VcsWorkingTreeFileChangeKind,
 } from "@threadlines/contracts";
-import { dedupeRemoteBranchesWithLocalMatches } from "@threadlines/shared/git";
+import {
+  classifyGitRemoteAuthFailure,
+  dedupeRemoteBranchesWithLocalMatches,
+} from "@threadlines/shared/git";
 import { compactTraceAttributes } from "@threadlines/shared/observability";
 import { decodeJsonResult } from "@threadlines/shared/schemaJson";
 import { gitCommandDuration, gitCommandsTotal, withMetrics } from "../observability/Metrics.ts";
@@ -651,10 +654,6 @@ function deriveLocalBranchNameFromRemoteRef(branchName: string): string | null {
   return localBranch.length > 0 ? localBranch : null;
 }
 
-function commandLabel(args: readonly string[]): string {
-  return `git ${args.join(" ")}`;
-}
-
 function parseDefaultBranchFromRemoteHeadRef(value: string, remoteName: string): string | null {
   const trimmed = value.trim();
   const prefix = `refs/remotes/${remoteName}/`;
@@ -672,11 +671,13 @@ function createGitCommandError(
   detail: string,
   cause?: unknown,
 ): GitCommandError {
+  const remoteAuth = classifyGitRemoteAuthFailure(detail);
   return new GitCommandError({
     operation,
-    command: commandLabel(args),
+    command: quoteGitCommand(args),
     cwd,
     detail,
+    ...(remoteAuth !== null ? { remoteAuth } : {}),
     ...(cause !== undefined ? { cause } : {}),
   });
 }
@@ -1015,6 +1016,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
                 cwd: commandInput.cwd,
                 env: {
                   ...process.env,
+                  // Git must never block waiting for credentials on a terminal
+                  // the server does not have; fail fast so auth errors surface
+                  // deterministically on every platform.
+                  GIT_TERMINAL_PROMPT: "0",
                   ...input.env,
                   ...trace2Monitor.env,
                 },
@@ -1054,15 +1059,14 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
 
         if (!input.allowNonZeroExit && exitCode !== 0) {
           const trimmedStderr = stderr.text.trim();
-          return yield* new GitCommandError({
-            operation: commandInput.operation,
-            command: quoteGitCommand(commandInput.args),
-            cwd: commandInput.cwd,
-            detail:
-              trimmedStderr.length > 0
-                ? `${quoteGitCommand(commandInput.args)} failed: ${trimmedStderr}`
-                : `${quoteGitCommand(commandInput.args)} failed with code ${exitCode}.`,
-          });
+          return yield* createGitCommandError(
+            commandInput.operation,
+            commandInput.cwd,
+            commandInput.args,
+            trimmedStderr.length > 0
+              ? `${quoteGitCommand(commandInput.args)} failed: ${trimmedStderr}`
+              : `${quoteGitCommand(commandInput.args)} failed with code ${exitCode}.`,
+          );
         }
 
         return {
@@ -1152,7 +1156,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             operation,
             cwd,
             args,
-            `${commandLabel(args)} failed: code=${result.exitCode ?? "null"}`,
+            `${quoteGitCommand(args)} failed: code=${result.exitCode ?? "null"}`,
           ),
         );
       }),
@@ -3319,7 +3323,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           "GitVcsDriver.removeWorktree",
           input.cwd,
           args,
-          `${commandLabel(args)} failed (cwd: ${input.cwd}): ${error.message}`,
+          `${quoteGitCommand(args)} failed (cwd: ${input.cwd}): ${error.message}`,
           error,
         ),
       ),
