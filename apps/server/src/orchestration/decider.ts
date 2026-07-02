@@ -668,6 +668,82 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         : [userMessageEvent, turnStartRequestedEvent];
     }
 
+    case "thread.turn.retry": {
+      const targetThread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const session = targetThread.session;
+      if (session?.status === "running" || session?.status === "starting") {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' already has a turn in flight and cannot retry.`,
+        });
+      }
+      if (!session || session.lastError === null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' has no failed turn to retry.`,
+        });
+      }
+      const lastUserMessage = targetThread.messages.findLast((message) => message.role === "user");
+      if (!lastUserMessage) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' has no user message to retry.`,
+        });
+      }
+      // Mirrors thread.turn.start, but re-points at the persisted last user
+      // message instead of appending a new one: the transcript keeps a single
+      // bubble and attachments are reused as stored. lastError is carried
+      // forward (as in turn.start) so the failure stays visible until the
+      // provider actually accepts the turn.
+      const retrySessionEvent: Omit<OrchestrationEvent, "sequence"> = {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.session-set",
+        payload: {
+          threadId: command.threadId,
+          session: {
+            threadId: command.threadId,
+            status: "starting",
+            providerName: session.providerName ?? null,
+            providerInstanceId:
+              session.providerInstanceId ?? targetThread.modelSelection.instanceId,
+            providerSessionId: session.providerSessionId ?? null,
+            providerThreadId: session.providerThreadId ?? null,
+            runtimeMode: targetThread.runtimeMode,
+            activeTurnId: null,
+            lastError: session.lastError,
+            updatedAt: command.createdAt,
+          },
+        },
+      };
+      const retryTurnStartRequestedEvent: Omit<OrchestrationEvent, "sequence"> = {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        causationEventId: retrySessionEvent.eventId,
+        type: "thread.turn-start-requested",
+        payload: {
+          threadId: command.threadId,
+          messageId: lastUserMessage.id,
+          runtimeMode: targetThread.runtimeMode,
+          interactionMode: targetThread.interactionMode,
+          createdAt: command.createdAt,
+        },
+      };
+      return [retrySessionEvent, retryTurnStartRequestedEvent];
+    }
+
     case "thread.follow-up.submit": {
       const targetThread = yield* requireThread({
         readModel,

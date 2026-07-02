@@ -14,6 +14,7 @@ import {
 } from "@threadlines/shared/providerAuth";
 import { normalizeTerminalActivityCommand } from "@threadlines/shared/terminalCommandTracker";
 import type { DesktopCapturedScreenshot } from "@threadlines/contracts";
+import { isProviderUsageLimitErrorMessage } from "./ProviderRateLimitResetCredit";
 import { type ChatMessage, type SessionPhase, type Thread, type ThreadSession } from "../types";
 import { type ComposerImageAttachment, type DraftThreadState } from "../composerDraftStore";
 import * as Schema from "effect/Schema";
@@ -1424,6 +1425,41 @@ export function deriveProviderAuthReconnectPrompt(input: {
   }
 
   return null;
+}
+
+/** Error classes where re-running the same turn would reproduce the failure;
+ *  those surfaces get their own affordances (auth reconnect, usage reset). */
+const NON_RETRYABLE_RUNTIME_ERROR_CLASSES: ReadonlySet<string> = new Set([
+  "authentication_error",
+  "permission_error",
+  "validation_error",
+]);
+
+export function isRetryableThreadError(input: {
+  readonly threadError: string | null | undefined;
+  readonly activities?: ReadonlyArray<OrchestrationThreadActivity> | null | undefined;
+}): boolean {
+  const threadError = input.threadError?.trim();
+  if (!threadError) {
+    return false;
+  }
+  if (isProviderAuthErrorMessage(threadError) || isProviderUsageLimitErrorMessage(threadError)) {
+    return false;
+  }
+
+  const activities = input.activities ?? [];
+  for (let index = activities.length - 1; index >= 0; index -= 1) {
+    const activity = activities[index];
+    if (!activity || activity.kind !== "runtime.error") {
+      continue;
+    }
+    const errorClass = asString(asRecord(activity.payload)?.class);
+    return errorClass === null || !NON_RETRYABLE_RUNTIME_ERROR_CLASSES.has(errorClass);
+  }
+
+  // No runtime.error activity (e.g. the provider process failed to start):
+  // transient by default, so keep the manual retry available.
+  return true;
 }
 
 export function buildExpiredTerminalContextToastCopy(

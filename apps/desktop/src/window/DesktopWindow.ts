@@ -355,15 +355,6 @@ const make = Effect.gen(function* () {
       event.preventDefault();
 
       const menuTemplate: Electron.MenuItemConstructorOptions[] = [];
-      const notifySpellcheckReplacement = () => {
-        window.webContents.focus();
-        queueMicrotask(() => {
-          if (window.isDestroyed()) {
-            return;
-          }
-          window.webContents.send(IpcChannels.SPELLCHECK_REPLACEMENT_CHANNEL);
-        });
-      };
 
       if (params.misspelledWord) {
         for (const suggestion of params.dictionarySuggestions.slice(0, 5)) {
@@ -371,7 +362,7 @@ const make = Effect.gen(function* () {
             label: suggestion,
             click: () => {
               window.webContents.replaceMisspelling(suggestion);
-              notifySpellcheckReplacement();
+              window.webContents.focus();
             },
           });
         }

@@ -4,7 +4,7 @@ import { formatProviderRateLimitResetCreditTooltip } from "../ProviderRateLimitR
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { CircleAlertIcon, RotateCcwIcon, TerminalIcon, XIcon } from "lucide-react";
+import { CircleAlertIcon, RefreshCwIcon, RotateCcwIcon, TerminalIcon, XIcon } from "lucide-react";
 
 type UsageResetAction = {
   availableCount: number;
@@ -12,10 +12,16 @@ type UsageResetAction = {
   onReset: () => void;
 };
 
+type TurnRetryAction = {
+  isRetrying: boolean;
+  onRetry: () => void;
+};
+
 export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   error,
   authReconnect,
   usageReset,
+  retry,
   providerLabel,
   onRunAuthReconnect,
   onDismiss,
@@ -23,6 +29,7 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   error: string | null;
   authReconnect?: ProviderAuthReconnectAction | null;
   usageReset?: UsageResetAction | null;
+  retry?: TurnRetryAction | null;
   providerLabel?: string;
   onRunAuthReconnect?: (action: ProviderAuthReconnectAction) => void;
   onDismiss?: () => void;
@@ -77,8 +84,20 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
         <AlertDescription className="line-clamp-3" title={error}>
           {error}
         </AlertDescription>
-        {(usageReset || onDismiss) && (
+        {(retry || usageReset || onDismiss) && (
           <AlertAction>
+            {retry ? (
+              <Button
+                type="button"
+                size="xs"
+                disabled={retry.isRetrying}
+                onClick={retry.onRetry}
+                aria-label="Retry last message"
+              >
+                <RefreshCwIcon className={retry.isRetrying ? "size-3 animate-spin" : "size-3"} />
+                {retry.isRetrying ? "Retrying" : "Retry"}
+              </Button>
+            ) : null}
             {usageReset ? (
               <Tooltip>
                 <TooltipTrigger

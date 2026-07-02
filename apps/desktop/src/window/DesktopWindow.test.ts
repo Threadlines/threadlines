@@ -19,7 +19,6 @@ import * as ElectronGlobalShortcut from "../electron/ElectronGlobalShortcut.ts";
 import * as ElectronShell from "../electron/ElectronShell.ts";
 import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
-import * as IpcChannels from "../ipc/channels.ts";
 import * as DesktopServerExposure from "../backend/DesktopServerExposure.ts";
 import * as DesktopWindow from "./DesktopWindow.ts";
 
@@ -335,9 +334,7 @@ describe("DesktopWindow", () => {
         assert.equal(popupTemplate.mock.calls[0]?.[0].sourceType, "mouse");
         assert.deepEqual(fakeWindow.replaceMisspelling.mock.calls, [["spelling"]]);
         assert.equal(fakeWindow.webContentsFocus.mock.calls.length, 1);
-        assert.deepEqual(fakeWindow.send.mock.calls, [
-          [IpcChannels.SPELLCHECK_REPLACEMENT_CHANNEL],
-        ]);
+        assert.deepEqual(fakeWindow.send.mock.calls, []);
       }).pipe(Effect.provide(layer));
     }),
   );

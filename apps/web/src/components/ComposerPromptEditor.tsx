@@ -1123,6 +1123,52 @@ function ComposerInlineTokenBackspacePlugin() {
   return null;
 }
 
+function ComposerNativeSpellcheckReplacementPlugin() {
+  const [editor] = useLexicalComposerContext();
+
+  useEffect(() => {
+    // Let the browser apply spellcheck corrections (`insertReplacementText`)
+    // natively instead of routing them through Lexical's controlled
+    // `beforeinput` handling. A native replacement is a real Blink editing
+    // command, so existing spelling markers shift instead of being wiped and
+    // a re-check of the remaining text is scheduled immediately; a controlled
+    // replacement is a script mutation, which Blink never re-checks until the
+    // next real keystroke. Lexical absorbs the native change through its
+    // MutationObserver/`input` handling, the same path as plain typing.
+    //
+    // Lexical's own `beforeinput` listener sits on the root element and, at
+    // the target, listener registration order beats capture flags — so this
+    // listener must sit on the root's parent, where the capture phase truly
+    // runs first.
+    const onBeforeInput = (event: Event) => {
+      const inputEvent = event as InputEvent;
+      if (inputEvent.inputType !== "insertReplacementText") {
+        return;
+      }
+      // Synthetic events (tests, extensions) can't trigger native editing, so
+      // they must keep flowing into Lexical's controlled path.
+      if (!inputEvent.isTrusted || editor.isComposing()) {
+        return;
+      }
+      event.stopPropagation();
+    };
+
+    let activeHost: HTMLElement | null = null;
+    const unregisterRootListener = editor.registerRootListener((rootElement, prevRootElement) => {
+      prevRootElement?.parentElement?.removeEventListener("beforeinput", onBeforeInput, true);
+      rootElement?.parentElement?.addEventListener("beforeinput", onBeforeInput, true);
+      activeHost = rootElement?.parentElement ?? null;
+    });
+
+    return () => {
+      activeHost?.removeEventListener("beforeinput", onBeforeInput, true);
+      unregisterRootListener();
+    };
+  }, [editor]);
+
+  return null;
+}
+
 function ComposerSurroundSelectionPlugin(props: {
   terminalContexts: ReadonlyArray<TerminalContextDraft>;
   skills: ReadonlyArray<ServerProviderSkill>;
@@ -1622,13 +1668,16 @@ function ComposerPromptEditorInner({
               data-testid="composer-editor"
               aria-placeholder={placeholder}
               placeholder={<span />}
-              // Native browser spellcheck only. We deliberately do NOT try to
-              // force a re-check after programmatic edits (e.g. accepting a
-              // suggestion): Chromium re-checks a contenteditable only on real
-              // typing, so toggling `spellcheck`, remounting the host, or
-              // refocusing do not reliably restore the other words' underlines
-              // and just add churn. They reappear on the next keystroke. See
-              // chipx86.blog 2025-06-26 and Mozilla bug 674212.
+              // Native browser spellcheck. Blink attaches spelling markers to
+              // DOM text nodes and drops every marker a script rewrite
+              // touches, so two things keep the underlines stable: the
+              // lexical patch (patches/lexical@0.41.0.patch) makes reconciler
+              // text writes minimal diffs instead of full nodeValue rewrites,
+              // and ComposerNativeSpellcheckReplacementPlugin lets accepted
+              // corrections run as native editing commands so Blink also
+              // re-checks afterwards. Do not add spellcheck-attribute toggles
+              // or host remounts here — Chromium schedules re-checks only for
+              // real edits, so they add churn without restoring underlines.
               spellCheck={true}
               onPaste={onPaste}
             />
@@ -1648,6 +1697,7 @@ function ComposerPromptEditorInner({
         <ComposerInlineTokenArrowPlugin />
         <ComposerInlineTokenSelectionNormalizePlugin />
         <ComposerInlineTokenBackspacePlugin />
+        <ComposerNativeSpellcheckReplacementPlugin />
         <HistoryPlugin />
       </div>
     </ComposerTerminalContextActionsContext>

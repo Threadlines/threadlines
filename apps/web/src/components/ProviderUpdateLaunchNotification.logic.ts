@@ -38,9 +38,6 @@ type ProviderUpdateSidebarPillItemStatus = Exclude<ServerProviderUpdateStatus, "
 export interface ProviderUpdateSidebarPillItem {
   readonly key: string;
   readonly label: string;
-  readonly progressIndeterminate?: boolean;
-  readonly progressLabel?: string;
-  readonly progressPercent: number;
   readonly status: ProviderUpdateSidebarPillItemStatus;
   readonly statusLabel: string;
   readonly tone: ProviderUpdateSidebarPillItemTone;
@@ -457,25 +454,6 @@ function isTerminalProviderUpdateSidebarItemStatus(
   return status === "succeeded" || status === "failed" || status === "unchanged";
 }
 
-function getProviderUpdateSidebarItemProgress(
-  status: ProviderUpdateSidebarPillItemStatus,
-): Pick<
-  ProviderUpdateSidebarPillItem,
-  "progressIndeterminate" | "progressLabel" | "progressPercent"
-> {
-  if (isTerminalProviderUpdateSidebarItemStatus(status)) {
-    return {
-      progressLabel: "100%",
-      progressPercent: 100,
-    };
-  }
-
-  return {
-    ...(status === "running" ? { progressIndeterminate: true } : {}),
-    progressPercent: 0,
-  };
-}
-
 function getProviderUpdateSidebarStatusLabel(
   provider: Pick<ServerProvider, "version">,
   status: ProviderUpdateSidebarPillItemStatus,
@@ -506,7 +484,6 @@ function collectProviderUpdateSidebarItems(
       {
         key: `${provider.driver}:${status}:${provider.updateState?.finishedAt ?? "pending"}`,
         label: getProviderDisplayName(provider),
-        ...getProviderUpdateSidebarItemProgress(status),
         status,
         statusLabel: getProviderUpdateSidebarStatusLabel(provider, status),
         tone: getProviderUpdateSidebarItemTone(status),

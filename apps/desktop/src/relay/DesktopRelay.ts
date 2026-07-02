@@ -4,6 +4,8 @@ import {
   type DesktopRelayPairingSession,
 } from "@threadlines/contracts";
 import {
+  RELAY_CLOSE_CODE_REPLACED,
+  RELAY_RAW_CONTROL_PREFIX,
   RELAY_TOKEN_PROTOCOL_PREFIX,
   RELAY_WEBSOCKET_PROTOCOL,
   RelayCreateSessionResult,
@@ -83,7 +85,16 @@ const { logInfo: logRelayInfo, logWarning: logRelayWarning } =
 
 type DesktopRelayPairingSessionStatus = NonNullable<DesktopRelayPairingSession["status"]>;
 
-const RELAY_RECONNECT_DELAYS_MS = [500, 1_000, 2_000, 5_000, 10_000, 15_000, 30_000] as const;
+// The relay now keeps the desktop socket alive while the phone is away, so
+// bridge closes are rare, real failures; a 10s cap keeps the phone's
+// worst-case wait for the desktop short.
+const RELAY_RECONNECT_DELAYS_MS = [500, 1_000, 2_000, 5_000, 10_000] as const;
+
+// Device frames buffered while the local backend socket is (re)opening.
+// Localhost opens in milliseconds; the cap only guards against a stuck
+// backend, where dropping frames is safe because the phone's heartbeat
+// timeout forces a fresh session anyway.
+const MAX_PENDING_DEVICE_FRAMES = 1_000;
 
 function relayError(
   operation: DesktopRelayOperation,
@@ -135,7 +146,32 @@ function isSessionExpired(session: DesktopRelayPairingSession, nowMs = Date.now(
 
 function nextReconnectDelayMs(attempt: number): number {
   const index = Math.min(Math.max(0, attempt), RELAY_RECONNECT_DELAYS_MS.length - 1);
-  return RELAY_RECONNECT_DELAYS_MS[index] ?? 30_000;
+  return RELAY_RECONNECT_DELAYS_MS[index] ?? 10_000;
+}
+
+interface RelayRawControlEvent {
+  readonly type: "relay.peer-joined" | "relay.peer-left";
+  readonly role: string;
+  readonly connectionId: string;
+}
+
+function parseRelayRawControlFrame(data: string): RelayRawControlEvent | null {
+  try {
+    const parsed = JSON.parse(data.slice(RELAY_RAW_CONTROL_PREFIX.length)) as Record<
+      string,
+      unknown
+    >;
+    if (
+      (parsed.type === "relay.peer-joined" || parsed.type === "relay.peer-left") &&
+      typeof parsed.role === "string" &&
+      typeof parsed.connectionId === "string"
+    ) {
+      return { type: parsed.type, role: parsed.role, connectionId: parsed.connectionId };
+    }
+  } catch {
+    // Malformed control frames are dropped below.
+  }
+  return null;
 }
 
 function createClosedBridgeHandle(): RelayBridgeHandle {
@@ -264,30 +300,8 @@ function closeSocket(socket: WebSocket): void {
   socket.close(1000, "Threadlines relay bridge closed.");
 }
 
-function forwardSocketMessages(source: WebSocket, target: WebSocket): () => void {
-  const onMessage = (event: MessageEvent) => {
-    if (target.readyState !== WebSocket.OPEN) {
-      return;
-    }
-    target.send(event.data);
-  };
-  source.addEventListener("message", onMessage);
-  return () => source.removeEventListener("message", onMessage);
-}
-
-function bindCloseTogether(left: WebSocket, right: WebSocket): () => void {
-  const closeRight = () => closeSocket(right);
-  const closeLeft = () => closeSocket(left);
-  left.addEventListener("close", closeRight);
-  left.addEventListener("error", closeRight);
-  right.addEventListener("close", closeLeft);
-  right.addEventListener("error", closeLeft);
-  return () => {
-    left.removeEventListener("close", closeRight);
-    left.removeEventListener("error", closeRight);
-    right.removeEventListener("close", closeLeft);
-    right.removeEventListener("error", closeLeft);
-  };
+export interface RelayBridgeCloseContext {
+  readonly closeCode: number | null;
 }
 
 const createLocalWebSocketUrl = Effect.fn("desktop.relay.createLocalWebSocketUrl")(function* (
@@ -360,11 +374,16 @@ const createRelaySession = Effect.fn("desktop.relay.createRelaySession")(functio
   );
 });
 
+// The bridge keeps one long-lived relay socket per pairing session and pipes
+// its frames into a replaceable local backend socket. The local socket is
+// recycled whenever a device (re)joins after using it, because a fresh device
+// RPC client must not resume on a server connection that still holds the
+// previous client's subscriptions and request ids.
 function openBridge(input: {
-  readonly localSocketUrl: string;
+  readonly getLocalSocketUrl: () => Promise<string>;
   readonly relayDesktopSocketUrl: string;
   readonly relayDesktopToken: string;
-  readonly onClosed?: () => void;
+  readonly onClosed?: (context: RelayBridgeCloseContext) => void;
 }): Effect.Effect<RelayBridgeHandle, DesktopRelayError> {
   return Effect.tryPromise({
     try: async () => {
@@ -372,63 +391,202 @@ function openBridge(input: {
         RELAY_WEBSOCKET_PROTOCOL,
         `${RELAY_TOKEN_PROTOCOL_PREFIX}${input.relayDesktopToken}`,
       ]);
-      const localSocket = new WebSocket(input.localSocketUrl);
+
+      let closed = false;
+      let closeNotified = false;
+      let localSocket: WebSocket | null = null;
+      let localGeneration = 0;
+      let localOpenChain: Promise<void> = Promise.resolve();
+      let localUsedByDevice = false;
+      let detachLocal: () => void = () => {};
+      let pendingDeviceFrames: Array<string | ArrayBufferLike | Blob | ArrayBufferView> = [];
+      let currentDeviceConnectionId: string | null = null;
+
+      const teardownLocal = () => {
+        localGeneration += 1;
+        detachLocal();
+        detachLocal = () => {};
+        const socket = localSocket;
+        localSocket = null;
+        localUsedByDevice = false;
+        if (socket) {
+          closeSocket(socket);
+        }
+      };
+
+      const detachRelay = () => {
+        relaySocket.removeEventListener("message", onRelayMessage);
+        relaySocket.removeEventListener("close", onRelayClose);
+        relaySocket.removeEventListener("error", onRelayError);
+      };
+
+      const markClosed = (closeCode: number | null) => {
+        if (closed) {
+          return;
+        }
+        closed = true;
+        pendingDeviceFrames = [];
+        teardownLocal();
+        detachRelay();
+        closeSocket(relaySocket);
+        if (!closeNotified) {
+          closeNotified = true;
+          input.onClosed?.({ closeCode });
+        }
+      };
+
+      const attachLocal = (socket: WebSocket) => {
+        const onLocalMessage = (event: MessageEvent) => {
+          if (relaySocket.readyState === WebSocket.OPEN) {
+            relaySocket.send(event.data);
+          }
+        };
+        const onLocalClosed = () => {
+          if (closed || localSocket !== socket) {
+            return;
+          }
+          teardownLocal();
+          // The backend socket dropped (for example a server restart). If a
+          // device is still connected, reopen right away; otherwise the next
+          // device frame or peer-join reopens it on demand.
+          if (currentDeviceConnectionId !== null) {
+            void ensureLocalSocket().catch(() => markClosed(null));
+          }
+        };
+        socket.addEventListener("message", onLocalMessage);
+        socket.addEventListener("close", onLocalClosed);
+        socket.addEventListener("error", onLocalClosed);
+        detachLocal = () => {
+          socket.removeEventListener("message", onLocalMessage);
+          socket.removeEventListener("close", onLocalClosed);
+          socket.removeEventListener("error", onLocalClosed);
+        };
+        localSocket = socket;
+        localUsedByDevice = false;
+        const frames = pendingDeviceFrames;
+        pendingDeviceFrames = [];
+        for (const frame of frames) {
+          socket.send(frame);
+          localUsedByDevice = true;
+        }
+      };
+
+      // Opens are serialized so a recycle issued while a previous open is in
+      // flight cannot race it; the superseded open abandons its socket via
+      // the generation check.
+      const ensureLocalSocket = (): Promise<void> => {
+        const next = localOpenChain.then(async () => {
+          if (closed || localSocket) {
+            return;
+          }
+          const generation = localGeneration;
+          const localSocketUrl = await input.getLocalSocketUrl();
+          if (closed || generation !== localGeneration || localSocket) {
+            return;
+          }
+          const socket = new WebSocket(localSocketUrl);
+          try {
+            await waitForSocketOpen(socket, "Local backend");
+          } catch (error) {
+            closeSocket(socket);
+            throw error;
+          }
+          if (closed || generation !== localGeneration || localSocket) {
+            closeSocket(socket);
+            return;
+          }
+          attachLocal(socket);
+        });
+        localOpenChain = next.catch(() => undefined);
+        return next;
+      };
+
+      const onRelayMessage = (event: MessageEvent) => {
+        if (closed) {
+          return;
+        }
+        const data: unknown = event.data;
+        if (typeof data === "string" && data.startsWith(RELAY_RAW_CONTROL_PREFIX)) {
+          const control = parseRelayRawControlFrame(data);
+          if (!control || control.role !== "device") {
+            return;
+          }
+          if (control.type === "relay.peer-joined") {
+            currentDeviceConnectionId = control.connectionId;
+            if (localUsedByDevice) {
+              teardownLocal();
+            }
+            void ensureLocalSocket().catch(() => markClosed(null));
+            return;
+          }
+          if (control.connectionId !== currentDeviceConnectionId) {
+            return;
+          }
+          currentDeviceConnectionId = null;
+          pendingDeviceFrames = [];
+          teardownLocal();
+          return;
+        }
+
+        if (localSocket && localSocket.readyState === WebSocket.OPEN) {
+          localUsedByDevice = true;
+          localSocket.send(event.data);
+          return;
+        }
+        if (pendingDeviceFrames.length >= MAX_PENDING_DEVICE_FRAMES) {
+          pendingDeviceFrames.shift();
+        }
+        pendingDeviceFrames.push(event.data);
+        void ensureLocalSocket().catch(() => markClosed(null));
+      };
+      const onRelayClose = (event: CloseEvent) => {
+        markClosed(typeof event.code === "number" ? event.code : null);
+      };
+      const onRelayError = () => {
+        markClosed(null);
+      };
 
       try {
-        await Promise.all([
-          waitForSocketOpen(relaySocket, "Relay"),
-          waitForSocketOpen(localSocket, "Local backend"),
-        ]);
+        await waitForSocketOpen(relaySocket, "Relay");
       } catch (error) {
         closeSocket(relaySocket);
-        closeSocket(localSocket);
         throw error instanceof DesktopRelayError
           ? error
           : relayError("open-relay-bridge", errorMessage(error), error);
       }
 
-      const cleanupRelayForward = forwardSocketMessages(relaySocket, localSocket);
-      const cleanupLocalForward = forwardSocketMessages(localSocket, relaySocket);
-      const cleanupCloseBinding = bindCloseTogether(relaySocket, localSocket);
-      let closed = false;
-      let closeNotified = false;
-      const markClosed = () => {
-        closed = true;
-        if (closeNotified) {
-          return;
-        }
-        closeNotified = true;
-        input.onClosed?.();
-      };
-      relaySocket.addEventListener("close", markClosed);
-      relaySocket.addEventListener("error", markClosed);
-      localSocket.addEventListener("close", markClosed);
-      localSocket.addEventListener("error", markClosed);
+      relaySocket.addEventListener("message", onRelayMessage);
+      relaySocket.addEventListener("close", onRelayClose);
+      relaySocket.addEventListener("error", onRelayError);
 
-      const cleanupClosedListeners = () => {
-        relaySocket.removeEventListener("close", markClosed);
-        relaySocket.removeEventListener("error", markClosed);
-        localSocket.removeEventListener("close", markClosed);
-        localSocket.removeEventListener("error", markClosed);
-      };
+      try {
+        await ensureLocalSocket();
+      } catch (error) {
+        closed = true;
+        closeNotified = true;
+        teardownLocal();
+        detachRelay();
+        closeSocket(relaySocket);
+        throw error instanceof DesktopRelayError
+          ? error
+          : relayError("open-relay-bridge", errorMessage(error), error);
+      }
+      if (closed) {
+        throw relayError(
+          "open-relay-bridge",
+          "Relay connection closed while the local pipe was opening.",
+        );
+      }
 
       return {
         close: () => {
-          closed = true;
           closeNotified = true;
-          cleanupRelayForward();
-          cleanupLocalForward();
-          cleanupCloseBinding();
-          cleanupClosedListeners();
-          closeSocket(relaySocket);
-          closeSocket(localSocket);
+          markClosed(null);
         },
         isClosed: () =>
           closed ||
           relaySocket.readyState === WebSocket.CLOSING ||
-          relaySocket.readyState === WebSocket.CLOSED ||
-          localSocket.readyState === WebSocket.CLOSING ||
-          localSocket.readyState === WebSocket.CLOSED,
+          relaySocket.readyState === WebSocket.CLOSED,
       };
     },
     catch: (cause) =>
@@ -466,30 +624,36 @@ const make = Effect.gen(function* () {
     });
   });
 
+  // Mints a fresh short-lived ws token per local socket, so recycled local
+  // pipes never reuse a consumed credential.
+  const createLocalSocketUrlForCurrentBackend = Effect.gen(function* () {
+    const maybeBackendConfig = yield* backendManager.currentConfig;
+    if (Option.isNone(maybeBackendConfig)) {
+      return yield* relayError("open-relay-bridge", "Desktop backend is not ready yet.");
+    }
+    return yield* createLocalWebSocketUrl(maybeBackendConfig.value);
+  });
+
   function openActiveBridge(
     active: ActiveRelayBridge,
   ): Effect.Effect<RelayBridgeHandle, DesktopRelayError> {
     return Effect.gen(function* () {
-      const maybeBackendConfig = yield* backendManager.currentConfig;
-      if (Option.isNone(maybeBackendConfig)) {
-        return yield* relayError("open-relay-bridge", "Desktop backend is not ready yet.");
-      }
-
-      const localSocketUrl = yield* createLocalWebSocketUrl(maybeBackendConfig.value);
       let bridge: RelayBridgeHandle | null = null;
       bridge = yield* openBridge({
-        localSocketUrl,
+        getLocalSocketUrl: () => Effect.runPromise(createLocalSocketUrlForCurrentBackend),
         relayDesktopSocketUrl: active.relayDesktopSocketUrl,
         relayDesktopToken: active.relayDesktopToken,
-        onClosed: () => {
-          void Effect.runPromise(handleBridgeClosed(active, bridge)).catch((error) => {
-            void Effect.runPromise(
-              logRelayWarning("failed to handle relay pairing bridge close", {
-                sessionId: active.session.sessionId,
-                error: errorMessage(error),
-              }),
-            );
-          });
+        onClosed: (context) => {
+          void Effect.runPromise(handleBridgeClosed(active, bridge, context.closeCode)).catch(
+            (error) => {
+              void Effect.runPromise(
+                logRelayWarning("failed to handle relay pairing bridge close", {
+                  sessionId: active.session.sessionId,
+                  error: errorMessage(error),
+                }),
+              );
+            },
+          );
         },
       });
       return bridge;
@@ -526,6 +690,7 @@ const make = Effect.gen(function* () {
   function handleBridgeClosed(
     active: ActiveRelayBridge,
     closedBridge: RelayBridgeHandle | null,
+    closeCode: number | null = null,
   ): Effect.Effect<void> {
     return Effect.gen(function* () {
       const current = yield* Ref.get(activeBridgeRef);
@@ -539,6 +704,17 @@ const make = Effect.gen(function* () {
       }
 
       if (isSessionExpired(active.session)) {
+        yield* disconnectPairingSession;
+        return;
+      }
+
+      if (closeCode === RELAY_CLOSE_CODE_REPLACED) {
+        // Another desktop connection took over this relay session; retrying
+        // from here would make the two desktops steal the link back and
+        // forth.
+        yield* logRelayWarning("relay pairing session was replaced by another desktop", {
+          sessionId: active.session.sessionId,
+        });
         yield* disconnectPairingSession;
         return;
       }

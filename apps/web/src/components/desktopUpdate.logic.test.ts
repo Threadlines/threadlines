@@ -280,10 +280,10 @@ describe("getSidebarDesktopUpdateTagPresentation", () => {
       action: "download",
       disabled: false,
       indicatorLabel: null,
-      label: "v1.0.0",
+      label: "v1.1.0",
       progressPercent: 0,
       tone: "available",
-      tooltip: "Update available",
+      tooltip: "v1.1.0 available — click to download",
     });
   });
 
@@ -301,7 +301,7 @@ describe("getSidebarDesktopUpdateTagPresentation", () => {
       action: "download",
       disabled: false,
       indicatorLabel: null,
-      label: "v1.0.0",
+      label: "v1.1.0",
       progressPercent: 0,
       tone: "error",
       tooltip: "Retry download",
@@ -320,10 +320,10 @@ describe("getSidebarDesktopUpdateTagPresentation", () => {
       action: "none",
       disabled: true,
       indicatorLabel: "100%",
-      label: "v1.0.0",
+      label: "v1.1.0",
       progressPercent: 100,
       tone: "downloading",
-      tooltip: "Downloading 100%",
+      tooltip: "Downloading v1.1.0 · 100%",
     });
   });
 
@@ -339,10 +339,10 @@ describe("getSidebarDesktopUpdateTagPresentation", () => {
       action: "none",
       disabled: true,
       indicatorLabel: null,
-      label: "v1.0.0",
+      label: "v1.1.0",
       progressPercent: 0,
       tone: "downloading",
-      tooltip: "Downloading",
+      tooltip: "Downloading v1.1.0",
     });
   });
 
@@ -361,7 +361,7 @@ describe("getSidebarDesktopUpdateTagPresentation", () => {
       action: "install",
       disabled: false,
       indicatorLabel: null,
-      label: "v1.0.0",
+      label: "v1.1.0",
       progressPercent: 100,
       tone: "error",
       tooltip: "Retry install",
@@ -381,10 +381,24 @@ describe("getSidebarDesktopUpdateTagPresentation", () => {
       action: "install",
       disabled: false,
       indicatorLabel: null,
-      label: "v1.0.0",
+      label: "v1.1.0",
       progressPercent: 100,
       tone: "downloaded",
-      tooltip: "Restart to install",
+      tooltip: "Restart to install v1.1.0",
+    });
+  });
+
+  it("compacts prerelease tails out of the target version label", () => {
+    const state: DesktopUpdateState = {
+      ...baseState,
+      status: "downloaded",
+      availableVersion: "1.1.0-nightly.4",
+      downloadedVersion: "1.1.0-nightly.4",
+    };
+
+    expect(getSidebarDesktopUpdateTagPresentation(state, "1.0.0-nightly.2")).toMatchObject({
+      label: "v1.1.0",
+      tooltip: "Restart to install v1.1.0",
     });
   });
 });

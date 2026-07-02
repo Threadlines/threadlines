@@ -1,7 +1,7 @@
 import { useNavigate } from "@tanstack/react-router";
 import type { ServerProvider } from "@threadlines/contracts";
 import { XIcon } from "lucide-react";
-import { useCallback, useEffect, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { useDismissedProviderUpdateNotificationKeys } from "../../providerUpdateDismissal";
 import { useServerProviders } from "../../rpc/serverState";
@@ -11,55 +11,40 @@ import {
   type ProviderUpdateSidebarPillView,
 } from "../ProviderUpdateLaunchNotification.logic";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import {
+  UPDATE_STATUS_DOT_STYLES,
+  UPDATE_STATUS_SURFACE_STYLES,
+  UPDATE_STATUS_TEXT_STYLES,
+  UpdateProgressRail,
+  UpdateStatusBadge,
+  type UpdateStatusTone,
+} from "./updateStatusVisuals";
 import { cn } from "~/lib/utils";
 
-const PROVIDER_UPDATE_SURFACE_STYLES = {
-  loading:
-    "border-primary/22 bg-sidebar-accent/55 text-foreground group-has-[button.provider-update-main:hover]/provider-update:border-primary/35 group-has-[button.provider-update-main:hover]/provider-update:bg-sidebar-accent/75",
+// Hover feedback lives on the container but only when the main button (not
+// the dismiss affordance) is hovered, hence the group-has selector.
+const PROVIDER_UPDATE_SURFACE_HOVER_STYLES: Record<Exclude<UpdateStatusTone, "neutral">, string> = {
+  progress:
+    "group-has-[button.provider-update-main:hover]/provider-update:border-primary/40 group-has-[button.provider-update-main:hover]/provider-update:bg-sidebar-accent/75",
   success:
-    "border-success/24 bg-sidebar-accent/50 text-foreground group-has-[button.provider-update-main:hover]/provider-update:border-success/40 group-has-[button.provider-update-main:hover]/provider-update:bg-sidebar-accent/72",
+    "group-has-[button.provider-update-main:hover]/provider-update:border-success/40 group-has-[button.provider-update-main:hover]/provider-update:bg-sidebar-accent/72",
   warning:
-    "border-warning/28 bg-sidebar-accent/50 text-foreground group-has-[button.provider-update-main:hover]/provider-update:border-warning/45 group-has-[button.provider-update-main:hover]/provider-update:bg-sidebar-accent/72",
+    "group-has-[button.provider-update-main:hover]/provider-update:border-warning/45 group-has-[button.provider-update-main:hover]/provider-update:bg-sidebar-accent/72",
   error:
-    "border-destructive/28 bg-sidebar-accent/50 text-foreground group-has-[button.provider-update-main:hover]/provider-update:border-destructive/45 group-has-[button.provider-update-main:hover]/provider-update:bg-sidebar-accent/72",
-} as const;
+    "group-has-[button.provider-update-main:hover]/provider-update:border-destructive/45 group-has-[button.provider-update-main:hover]/provider-update:bg-sidebar-accent/72",
+};
 
-const PROVIDER_UPDATE_PILL_PROGRESS_STYLES = {
-  success: "bg-success/70",
-  warning: "bg-warning/70",
-  error: "bg-destructive/70",
-} as const;
+function viewToneToStatusTone(
+  tone: ProviderUpdateSidebarPillView["tone"],
+): Exclude<UpdateStatusTone, "neutral"> {
+  return tone === "loading" ? "progress" : tone;
+}
 
-const PROVIDER_UPDATE_ITEM_DOT_STYLES = {
-  queued: "bg-muted-foreground/45",
-  running: "bg-primary-readable ring-2 ring-primary/15 provider-update-active-dot",
-  success: "bg-success",
-  warning: "bg-warning",
-  error: "bg-destructive",
-} as const;
-
-const PROVIDER_UPDATE_ITEM_TEXT_STYLES = {
-  queued: "text-muted-foreground",
-  running: "text-primary-readable",
-  success: "text-success",
-  warning: "text-warning",
-  error: "text-destructive",
-} as const;
-
-const PROVIDER_UPDATE_STATUS_BADGE_STYLES = {
-  queued: "border-muted-foreground/20 bg-muted-foreground/8 text-muted-foreground",
-  running: "border-primary/18 bg-primary/8 text-primary-readable",
-  success: "border-success/20 bg-success/8 text-success",
-  warning: "border-warning/24 bg-warning/8 text-warning",
-  error: "border-destructive/24 bg-destructive/8 text-destructive",
-} as const;
-
-const PROVIDER_UPDATE_PROGRESS_FILL_STYLES = {
-  loading: "bg-primary-readable",
-  success: "bg-success",
-  warning: "bg-warning",
-  error: "bg-destructive",
-} as const;
+function itemToneToStatusTone(tone: ProviderUpdateSidebarPillItem["tone"]): UpdateStatusTone {
+  if (tone === "running") return "progress";
+  if (tone === "queued") return "neutral";
+  return tone;
+}
 
 let providerUpdateSidebarVisibleAfterIso: string | undefined;
 
@@ -73,81 +58,6 @@ function latestProviderCheckedAt(
   );
 }
 
-function SidebarProviderUpdateProgressRail({
-  view,
-}: {
-  view: Pick<ProviderUpdateSidebarPillView, "progressIndeterminate" | "progressPercent" | "tone">;
-}) {
-  const progressPercent = Math.max(0, Math.min(100, view.progressPercent));
-  const showIndeterminate = view.progressIndeterminate === true && progressPercent < 100;
-
-  return (
-    <div
-      aria-hidden="true"
-      className="relative h-1 w-full overflow-hidden rounded-full bg-foreground/8"
-    >
-      <span
-        className={cn(
-          "absolute inset-y-0 left-0 rounded-full transition-[width] duration-300 ease-out",
-          PROVIDER_UPDATE_PROGRESS_FILL_STYLES[view.tone],
-        )}
-        style={{ width: `${progressPercent}%` }}
-      />
-      {showIndeterminate ? (
-        <span
-          className="absolute inset-y-0 right-0 overflow-hidden rounded-full"
-          style={{ left: `${progressPercent}%` }}
-        >
-          <span
-            className={cn(
-              "absolute inset-y-0 left-0 w-[45%] rounded-full provider-update-indeterminate-rail",
-              PROVIDER_UPDATE_PROGRESS_FILL_STYLES[view.tone],
-            )}
-          />
-        </span>
-      ) : null}
-    </div>
-  );
-}
-
-function SidebarProviderUpdateItemRail({ item }: { item: ProviderUpdateSidebarPillItem }) {
-  const progressPercent = Math.max(0, Math.min(100, item.progressPercent));
-  const showIndeterminate = item.progressIndeterminate === true && progressPercent < 100;
-  const tone =
-    item.tone === "success"
-      ? "success"
-      : item.tone === "warning"
-        ? "warning"
-        : item.tone === "error"
-          ? "error"
-          : "loading";
-
-  return (
-    <span
-      aria-hidden="true"
-      className="relative h-0.5 w-8 shrink-0 overflow-hidden rounded-full bg-foreground/8"
-    >
-      <span
-        className={cn(
-          "absolute inset-y-0 left-0 rounded-full transition-[width] duration-300 ease-out",
-          PROVIDER_UPDATE_PROGRESS_FILL_STYLES[tone],
-        )}
-        style={{ width: `${progressPercent}%` }}
-      />
-      {showIndeterminate ? (
-        <span className="absolute inset-0 overflow-hidden rounded-full">
-          <span
-            className={cn(
-              "absolute inset-y-0 left-0 w-1/2 rounded-full provider-update-indeterminate-rail",
-              PROVIDER_UPDATE_PROGRESS_FILL_STYLES[tone],
-            )}
-          />
-        </span>
-      ) : null}
-    </span>
-  );
-}
-
 function SidebarProviderUpdateRows({
   items,
 }: {
@@ -157,21 +67,23 @@ function SidebarProviderUpdateRows({
     <div className="grid w-full gap-1">
       {items.map((item) => (
         <div
-          className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-1"
+          className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1"
           key={item.key}
         >
           <span
             aria-hidden="true"
-            className={cn("size-1 rounded-full", PROVIDER_UPDATE_ITEM_DOT_STYLES[item.tone])}
+            className={cn(
+              "size-1 rounded-full",
+              UPDATE_STATUS_DOT_STYLES[itemToneToStatusTone(item.tone)],
+            )}
           />
           <span className="min-w-0 truncate text-[10.5px] leading-3 text-foreground/82">
             {item.label}
           </span>
-          <SidebarProviderUpdateItemRail item={item} />
           <span
             className={cn(
               "shrink-0 text-[9.5px] leading-3 font-medium",
-              PROVIDER_UPDATE_ITEM_TEXT_STYLES[item.tone],
+              UPDATE_STATUS_TEXT_STYLES[itemToneToStatusTone(item.tone)],
             )}
           >
             {item.statusLabel}
@@ -244,10 +156,6 @@ export function SidebarProviderUpdatePill() {
   const displayedView = renderedView ?? view;
   const dismissAfterVisibleMs = displayedView?.dismissAfterVisibleMs;
   const viewKey = displayedView?.key ?? null;
-  const showDismissProgress =
-    dismissAfterVisibleMs !== undefined &&
-    displayedView?.tone !== "loading" &&
-    exitingKey !== viewKey;
   const displayedItems = displayedView?.items ?? [];
   const showMultiProviderDetails = displayedItems.length > 1;
   const singleItem = displayedItems.length === 1 ? displayedItems[0]! : null;
@@ -324,8 +232,9 @@ export function SidebarProviderUpdatePill() {
       className={cn(
         "group/provider-update relative w-full overflow-hidden rounded-md text-xs font-medium transform-gpu transition-all duration-180 ease-[cubic-bezier(0.22,1,0.36,1)] will-change-transform",
         showMultiProviderDetails ? "min-h-[4.25rem]" : "min-h-[2.5rem]",
-        "border shadow-[0_1px_0_rgb(255_255_255_/_0.04)_inset]",
-        PROVIDER_UPDATE_SURFACE_STYLES[displayedView.tone],
+        "border text-foreground",
+        UPDATE_STATUS_SURFACE_STYLES[viewToneToStatusTone(displayedView.tone)],
+        PROVIDER_UPDATE_SURFACE_HOVER_STYLES[viewToneToStatusTone(displayedView.tone)],
         exitingKey === displayedView.key
           ? "pointer-events-none translate-y-1.5 opacity-0"
           : "translate-y-0 opacity-100",
@@ -342,20 +251,6 @@ export function SidebarProviderUpdatePill() {
         setExitingKey(null);
       }}
     >
-      {showDismissProgress ? (
-        <div
-          key={displayedView.key}
-          aria-hidden="true"
-          className={`provider-update-pill-progress pointer-events-none absolute bottom-0 left-0 h-0.5 w-full origin-left ${
-            PROVIDER_UPDATE_PILL_PROGRESS_STYLES[displayedView.tone]
-          }`}
-          style={
-            {
-              "--provider-update-pill-dismiss-ms": `${dismissAfterVisibleMs}ms`,
-            } as CSSProperties
-          }
-        />
-      ) : null}
       <Tooltip>
         <TooltipTrigger
           render={
@@ -374,7 +269,7 @@ export function SidebarProviderUpdatePill() {
                   aria-hidden="true"
                   className={cn(
                     "mt-1 size-1.5 shrink-0 rounded-full",
-                    PROVIDER_UPDATE_ITEM_DOT_STYLES[primaryTone],
+                    UPDATE_STATUS_DOT_STYLES[itemToneToStatusTone(primaryTone)],
                   )}
                 />
                 <span className="grid min-w-0 flex-1">
@@ -382,22 +277,27 @@ export function SidebarProviderUpdatePill() {
                     {displayedView.title}
                   </span>
                 </span>
-                <span
-                  className={cn(
-                    "shrink-0 rounded-sm border px-1.5 py-px text-[9.5px] leading-3 font-medium",
-                    PROVIDER_UPDATE_STATUS_BADGE_STYLES[primaryTone],
-                  )}
-                >
+                <UpdateStatusBadge tone={itemToneToStatusTone(primaryTone)}>
                   {badgeLabel}
-                </span>
+                </UpdateStatusBadge>
               </span>
               {showMultiProviderDetails ? (
                 <>
-                  <SidebarProviderUpdateProgressRail view={displayedView} />
+                  <UpdateProgressRail
+                    className="h-1"
+                    indeterminate={displayedView.progressIndeterminate === true}
+                    percent={displayedView.progressPercent}
+                    tone={viewToneToStatusTone(displayedView.tone)}
+                  />
                   <SidebarProviderUpdateRows items={displayedItems} />
                 </>
               ) : (
-                <SidebarProviderUpdateProgressRail view={displayedView} />
+                <UpdateProgressRail
+                  className="h-1"
+                  indeterminate={displayedView.progressIndeterminate === true}
+                  percent={displayedView.progressPercent}
+                  tone={viewToneToStatusTone(displayedView.tone)}
+                />
               )}
             </button>
           }

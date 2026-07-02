@@ -10,6 +10,12 @@ import type {
   RelayReadyEvent,
 } from "@threadlines/contracts/relay";
 import {
+  RELAY_CLOSE_CODE_PEER_UNAVAILABLE,
+  RELAY_CLOSE_CODE_REPLACED,
+  RELAY_CLOSE_CODE_SESSION_EXPIRED,
+  RELAY_RAW_CONTROL_PREFIX,
+} from "@threadlines/contracts/relay";
+import {
   createJsonResponse,
   isRelayConnectionRole,
   parseRelayClientMessage,
@@ -129,8 +135,10 @@ export class RelaySession extends DurableObject<Env> {
       return createJsonResponse({ error: "Invalid relay token." }, { status: 401 });
     }
 
-    if (role === "desktop" && this.hasConnectedDesktop()) {
-      return createJsonResponse({ error: "A desktop is already connected." }, { status: 409 });
+    if (role === "desktop") {
+      // A half-dead desktop socket (sleep, network drop) can look OPEN here
+      // for minutes. Replace it instead of rejecting the reconnect.
+      this.closeConnectedSockets("desktop", "Replaced by a newer desktop connection.");
     }
 
     const pair = new WebSocketPair();
@@ -156,6 +164,8 @@ export class RelaySession extends DurableObject<Env> {
         peers: this.getPeerSummary(),
       } satisfies RelayReadyEvent);
       this.broadcastPeerJoined(attachment, server);
+    } else if (role === "device") {
+      this.notifyRawDesktopsOfDevice("relay.peer-joined", attachment);
     }
 
     const { selectedProtocol } = parseRelayTokenProtocol(
@@ -237,11 +247,17 @@ export class RelaySession extends DurableObject<Env> {
     if (attachment?.mode === "envelope") {
       this.broadcastPeerLeft(attachment, ws);
     }
+    if (attachment?.mode === "raw" && attachment.role === "device") {
+      this.notifyRawDesktopsOfDevice("relay.peer-left", attachment);
+    }
     ws.close(code, reason);
   }
 
   override async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
     const attachment = readSocketAttachment(ws);
+    if (attachment?.mode === "raw" && attachment.role === "device") {
+      this.notifyRawDesktopsOfDevice("relay.peer-left", attachment);
+    }
     log("warn", "relay websocket error", {
       connectionId: attachment?.connectionId,
       role: attachment?.role,
@@ -270,15 +286,6 @@ export class RelaySession extends DurableObject<Env> {
         )
         .toArray()[0] ?? null
     );
-  }
-
-  private hasConnectedDesktop(): boolean {
-    return this.ctx
-      .getWebSockets()
-      .some(
-        (socket) =>
-          socket.readyState === WebSocket.OPEN && readSocketAttachment(socket)?.role === "desktop",
-      );
   }
 
   private getPeerSummary(): RelayPeerSummary {
@@ -325,12 +332,47 @@ export class RelaySession extends DurableObject<Env> {
     const target = attachment.role === "device" ? "desktop" : "devices";
     const recipients = this.getRecipients(sender, attachment.role, target);
     if (recipients.length === 0) {
-      sender.close(1013, "Relay peer unavailable.");
+      if (attachment.role === "desktop") {
+        // Devices resync from a fresh snapshot when they reconnect, so frames
+        // sent while no device is connected are dropped. Closing the desktop
+        // socket here caused desktop and device reconnect loops to chase each
+        // other's backoff windows.
+        return;
+      }
+      sender.close(RELAY_CLOSE_CODE_PEER_UNAVAILABLE, "Relay peer unavailable.");
       return;
     }
 
     for (const recipient of recipients) {
       recipient.send(message);
+    }
+  }
+
+  private closeConnectedSockets(role: RelayConnectionRole, reason: string): void {
+    for (const socket of this.ctx.getWebSockets()) {
+      if (socket.readyState !== WebSocket.OPEN) continue;
+      if (readSocketAttachment(socket)?.role !== role) continue;
+      socket.close(RELAY_CLOSE_CODE_REPLACED, reason);
+    }
+  }
+
+  private notifyRawDesktopsOfDevice(
+    type: "relay.peer-joined" | "relay.peer-left",
+    attachment: SocketAttachment,
+  ): void {
+    const event: RelayPeerJoinedEvent | RelayPeerLeftEvent = {
+      version: 1,
+      type,
+      role: attachment.role,
+      connectionId: attachment.connectionId as RelayConnectionId,
+      peers: this.getPeerSummary(),
+    };
+    const frame = `${RELAY_RAW_CONTROL_PREFIX}${JSON.stringify(event)}`;
+    for (const socket of this.ctx.getWebSockets()) {
+      if (socket.readyState !== WebSocket.OPEN) continue;
+      const recipient = readSocketAttachment(socket);
+      if (recipient?.role !== "desktop" || recipient.mode !== "raw") continue;
+      socket.send(frame);
     }
   }
 
@@ -384,7 +426,7 @@ export class RelaySession extends DurableObject<Env> {
   private async expireSession(reason: string): Promise<void> {
     for (const socket of this.ctx.getWebSockets()) {
       this.sendError(socket, "session-expired", "This relay session has expired.");
-      socket.close(4000, reason);
+      socket.close(RELAY_CLOSE_CODE_SESSION_EXPIRED, reason);
     }
     this.ctx.storage.sql.exec("DELETE FROM relay_sessions");
     await this.ctx.storage.deleteAlarm();

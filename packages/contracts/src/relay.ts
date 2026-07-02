@@ -17,6 +17,15 @@ export type RelayForwardTarget = typeof RelayForwardTarget.Type;
 export const RELAY_WEBSOCKET_PROTOCOL = "threadlines-relay" as const;
 export const RELAY_TOKEN_PROTOCOL_PREFIX = "threadlines-token." as const;
 
+// Raw-mode relay sockets carry opaque app frames, so relay control events are
+// marked with a leading ASCII record separator that no JSON app frame can
+// start with.
+export const RELAY_RAW_CONTROL_PREFIX = "\u001E" as const;
+
+export const RELAY_CLOSE_CODE_PEER_UNAVAILABLE = 1013;
+export const RELAY_CLOSE_CODE_SESSION_EXPIRED = 4000;
+export const RELAY_CLOSE_CODE_REPLACED = 4001;
+
 export const RelayPeerSummary = Schema.Struct({
   desktopConnected: Schema.Boolean,
   deviceCount: Schema.Number,

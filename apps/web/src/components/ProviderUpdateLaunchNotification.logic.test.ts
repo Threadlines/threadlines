@@ -542,15 +542,12 @@ describe("provider update launch notification logic", () => {
       items: [
         {
           label: "Codex",
-          progressIndeterminate: true,
-          progressPercent: 0,
           status: "running",
           statusLabel: "Updating",
           tone: "running",
         },
         {
           label: "Cursor",
-          progressPercent: 0,
           status: "queued",
           statusLabel: "Queued",
           tone: "queued",
@@ -595,14 +592,10 @@ describe("provider update launch notification logic", () => {
       items: [
         {
           label: "Codex",
-          progressLabel: "100%",
-          progressPercent: 100,
           status: "succeeded",
         },
         {
           label: "Cursor",
-          progressIndeterminate: true,
-          progressPercent: 0,
           status: "running",
         },
       ],

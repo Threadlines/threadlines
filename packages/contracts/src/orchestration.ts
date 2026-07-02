@@ -756,6 +756,16 @@ const ThreadTurnInterruptCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/** Re-requests the thread's last user message after a failed turn. The
+ *  server recovers the message from the thread's history, so the client
+ *  never rebuilds text or attachments. */
+const ThreadTurnRetryCommand = Schema.Struct({
+  type: Schema.Literal("thread.turn.retry"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  createdAt: IsoDateTime,
+});
+
 const ThreadContextCompactRequestCommand = Schema.Struct({
   type: Schema.Literal("thread.context-compact.request"),
   commandId: CommandId,
@@ -813,6 +823,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadTurnStartCommand,
   ThreadFollowUpSubmitCommand,
   ThreadTurnInterruptCommand,
+  ThreadTurnRetryCommand,
   ThreadContextCompactRequestCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -839,6 +850,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ClientThreadTurnStartCommand,
   ClientThreadFollowUpSubmitCommand,
   ThreadTurnInterruptCommand,
+  ThreadTurnRetryCommand,
   ThreadContextCompactRequestCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,

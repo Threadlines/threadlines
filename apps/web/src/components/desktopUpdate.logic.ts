@@ -115,15 +115,48 @@ export function shouldHighlightDesktopUpdateError(state: DesktopUpdateState | nu
   return state.errorContext === "download" || state.errorContext === "install";
 }
 
+/**
+ * "1.2.3-nightly.4+abc" → "v1.2.3". Prerelease/build tails stay in tooltips so
+ * compact chips never crowd the controls beside them.
+ */
+export function compactVersionLabel(version: string): string {
+  const releaseTriple = version.split(/[-+]/)[0] ?? version;
+  return releaseTriple.startsWith("v") ? releaseTriple : `v${releaseTriple}`;
+}
+
+function getSidebarDesktopUpdateTagTooltip(input: {
+  readonly action: DesktopUpdateButtonAction;
+  readonly isDownloading: boolean;
+  readonly isError: boolean;
+  readonly downloadPercent: number | null;
+  readonly targetLabel: string | null;
+}): string {
+  if (input.isDownloading) {
+    const subject = input.targetLabel ? `Downloading ${input.targetLabel}` : "Downloading";
+    return input.downloadPercent !== null
+      ? `${subject} · ${Math.floor(input.downloadPercent)}%`
+      : subject;
+  }
+  if (input.isError) {
+    return input.action === "install" ? "Retry install" : "Retry download";
+  }
+  if (input.action === "install") {
+    return input.targetLabel ? `Restart to install ${input.targetLabel}` : "Restart to install";
+  }
+  return input.targetLabel
+    ? `${input.targetLabel} available — click to download`
+    : "Update available";
+}
+
 export function getSidebarDesktopUpdateTagPresentation(
   state: DesktopUpdateState | null,
-  compactAppVersion: string,
+  appVersion: string,
 ): SidebarDesktopUpdateTagPresentation {
   const idlePresentation = {
     action: "none",
     disabled: true,
     indicatorLabel: null,
-    label: `v${compactAppVersion}`,
+    label: compactVersionLabel(appVersion),
     progressPercent: 0,
     tone: "idle",
     tooltip: "Up to date",
@@ -137,30 +170,23 @@ export function getSidebarDesktopUpdateTagPresentation(
   const isDownloaded = action === "install" || state.status === "downloaded";
   const isDownloading = state.status === "downloading";
   const isError = shouldHighlightDesktopUpdateError(state);
+  // Active states label the chip with the version the action concerns, so
+  // "ready to restart" reads as the incoming release, not the running one.
+  const targetVersion = state.downloadedVersion ?? state.availableVersion;
+  const targetLabel = targetVersion ? compactVersionLabel(targetVersion) : null;
   const downloadPercent = typeof state.downloadPercent === "number" ? state.downloadPercent : null;
   const progressPercent = isDownloaded
     ? 100
     : isDownloading && downloadPercent !== null
       ? Math.max(0, Math.min(100, downloadPercent))
       : 0;
-  const tooltip = isDownloading
-    ? downloadPercent !== null
-      ? `Downloading ${Math.floor(progressPercent)}%`
-      : "Downloading"
-    : isError
-      ? action === "install"
-        ? "Retry install"
-        : "Retry download"
-      : action === "install"
-        ? "Restart to install"
-        : "Update available";
 
   return {
     action,
     disabled: isDesktopUpdateButtonDisabled(state),
     indicatorLabel:
       isDownloading && downloadPercent !== null ? `${Math.floor(progressPercent)}%` : null,
-    label: `v${compactAppVersion}`,
+    label: targetLabel ?? compactVersionLabel(appVersion),
     progressPercent,
     tone: isError
       ? "error"
@@ -169,7 +195,13 @@ export function getSidebarDesktopUpdateTagPresentation(
         : isDownloading
           ? "downloading"
           : "available",
-    tooltip,
+    tooltip: getSidebarDesktopUpdateTagTooltip({
+      action,
+      isDownloading,
+      isError,
+      downloadPercent: isDownloading && downloadPercent !== null ? progressPercent : null,
+      targetLabel,
+    }),
   };
 }
 

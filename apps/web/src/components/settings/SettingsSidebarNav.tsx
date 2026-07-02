@@ -22,7 +22,7 @@ import {
   useSidebar,
 } from "../ui/sidebar";
 import { SourceControlIcon } from "../Icons";
-import { SidebarVersionTag } from "../SidebarVersionTag";
+import { SidebarVersionTag } from "../sidebar/SidebarVersionTag";
 import { isHostedStaticApp } from "../../hostedPairing";
 import {
   HOSTED_STATIC_SETTINGS_SECTION_PATHS,

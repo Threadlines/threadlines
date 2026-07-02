@@ -10,7 +10,7 @@ import {
   recordWsConnectionOpened,
   resetWsConnectionStateForTests,
   setBrowserOnlineStatus,
-  WS_RECONNECT_MAX_ATTEMPTS,
+  WS_RECONNECT_MAX_DELAY_MS,
 } from "./wsConnectionState";
 
 describe("wsConnectionState", () => {
@@ -51,9 +51,6 @@ describe("wsConnectionState", () => {
     recordWsConnectionErrored("Unable to connect to the Threadlines server WebSocket.");
 
     const firstRetryDelayMs = getWsReconnectDelayMsForRetry(0);
-    if (firstRetryDelayMs === null) {
-      throw new Error("Expected an initial retry delay.");
-    }
 
     expect(getWsConnectionStatus()).toMatchObject({
       connectionLabel: "Remote Mac",
@@ -92,16 +89,18 @@ describe("wsConnectionState", () => {
     });
   });
 
-  it("marks the reconnect cycle as exhausted after the final attempt fails", () => {
-    for (let attempt = 0; attempt < WS_RECONNECT_MAX_ATTEMPTS; attempt += 1) {
+  it("keeps scheduling retries with capped backoff instead of exhausting", () => {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
       recordWsConnectionAttempt("ws://localhost:3020/ws");
       recordWsConnectionErrored("Unable to connect to the Threadlines server WebSocket.");
+      vi.setSystemTime(Date.now() + 60_000);
     }
 
     expect(getWsConnectionStatus()).toMatchObject({
-      nextRetryAt: null,
-      reconnectAttemptCount: WS_RECONNECT_MAX_ATTEMPTS,
-      reconnectPhase: "exhausted",
+      reconnectAttemptCount: 20,
+      reconnectPhase: "waiting",
     });
+    expect(getWsConnectionStatus().nextRetryAt).not.toBeNull();
+    expect(getWsReconnectDelayMsForRetry(19)).toBe(WS_RECONNECT_MAX_DELAY_MS);
   });
 });

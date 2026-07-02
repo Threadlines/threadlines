@@ -6,6 +6,8 @@ import {
   shouldShowArm64IntelBuildWarning,
 } from "../desktopUpdate.logic";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
+import { UPDATE_STATUS_SURFACE_STYLES } from "./updateStatusVisuals";
+import { cn } from "~/lib/utils";
 
 export function SidebarUpdatePill() {
   const state = useDesktopUpdateState().data ?? null;
@@ -16,7 +18,10 @@ export function SidebarUpdatePill() {
   if (!showArm64Warning || !arm64Description) return null;
 
   return (
-    <Alert variant="warning" className="rounded-2xl border-warning/40 bg-warning/8 text-xs">
+    <Alert
+      variant="warning"
+      className={cn("rounded-md text-xs", UPDATE_STATUS_SURFACE_STYLES.warning)}
+    >
       <TriangleAlertIcon />
       <AlertTitle>Intel build on Apple Silicon</AlertTitle>
       <AlertDescription>{arm64Description}</AlertDescription>

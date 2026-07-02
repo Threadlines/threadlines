@@ -109,7 +109,10 @@ import { useTheme } from "../hooks/useTheme";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useCommandPaletteStore } from "../commandPaletteStore";
-import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
+import {
+  RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
+  useChatHeaderBottomVarRef,
+} from "../rightPanelLayout";
 import { buildTemporaryWorktreeBranchName } from "@threadlines/shared/git";
 import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
@@ -199,6 +202,7 @@ import {
   deriveProviderAuthReconnectPrompt,
   filterUnresolvedProviderBackgroundRuns,
   hasServerAcknowledgedLocalDispatch,
+  isRetryableThreadError,
   isScrollMetricsAtEnd,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
   LEGACY_LAST_INVOKED_SCRIPT_BY_PROJECT_KEYS,
@@ -895,6 +899,9 @@ export default function ChatView(props: ChatViewProps) {
   const [isRevertingCheckpoint, setIsRevertingCheckpoint] = useState(false);
   const [contextCompactDispatchingThreadId, setContextCompactDispatchingThreadId] =
     useState<ThreadId | null>(null);
+  const [turnRetryDispatchingThreadId, setTurnRetryDispatchingThreadId] = useState<ThreadId | null>(
+    null,
+  );
   const [respondingRequestIds, setRespondingRequestIds] = useState<ApprovalRequestId[]>([]);
   const [respondingUserInputRequestIds, setRespondingUserInputRequestIds] = useState<
     ApprovalRequestId[]
@@ -4125,6 +4132,78 @@ export default function ChatView(props: ChatViewProps) {
     }
   }, [activeThread, contextCompactDisabledReason, environmentId]);
 
+  const onRetryFailedTurn = useCallback(async () => {
+    if (!activeThread) {
+      return;
+    }
+    const api = readEnvironmentApi(environmentId);
+    if (!api) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not retry",
+          description: "Environment API unavailable.",
+        }),
+      );
+      return;
+    }
+
+    const threadId = activeThread.id;
+    setTurnRetryDispatchingThreadId(threadId);
+    try {
+      await api.orchestration.dispatchCommand({
+        type: "thread.turn.retry",
+        commandId: newCommandId(),
+        threadId,
+        createdAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not retry",
+          description: error instanceof Error ? error.message : "Retry dispatch failed.",
+        }),
+      );
+    } finally {
+      setTurnRetryDispatchingThreadId((current) => (current === threadId ? null : current));
+    }
+  }, [activeThread, environmentId]);
+
+  const threadErrorRetryAction = useMemo(() => {
+    if (
+      !isServerThread ||
+      providerAuthReconnectPrompt !== null ||
+      threadErrorUsageResetAction !== null ||
+      activeTurnInProgress ||
+      activeThread?.session?.orchestrationStatus === "starting" ||
+      activeThread?.session?.orchestrationStatus === "running" ||
+      !isRetryableThreadError({
+        threadError: activeThread?.error,
+        activities: threadActivities,
+      })
+    ) {
+      return null;
+    }
+    return {
+      isRetrying: turnRetryDispatchingThreadId === activeThread?.id,
+      onRetry: () => {
+        void onRetryFailedTurn();
+      },
+    };
+  }, [
+    activeThread?.error,
+    activeThread?.id,
+    activeThread?.session?.orchestrationStatus,
+    activeTurnInProgress,
+    isServerThread,
+    onRetryFailedTurn,
+    providerAuthReconnectPrompt,
+    threadActivities,
+    threadErrorUsageResetAction,
+    turnRetryDispatchingThreadId,
+  ]);
+
   const onRespondToApproval = useCallback(
     async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
       const api = readEnvironmentApi(environmentId);
@@ -4944,6 +5023,8 @@ export default function ChatView(props: ChatViewProps) {
     [activeThread, navigate],
   );
 
+  const chatHeaderBottomVarRef = useChatHeaderBottomVarRef();
+
   // Empty state: no active thread
   if (!activeThread) {
     return <NoActiveThreadState />;
@@ -4953,6 +5034,7 @@ export default function ChatView(props: ChatViewProps) {
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background">
       {/* Top bar */}
       <header
+        ref={chatHeaderBottomVarRef}
         className={cn(
           "border-b border-border transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none",
           isElectron
@@ -5014,6 +5096,7 @@ export default function ChatView(props: ChatViewProps) {
         error={activeThread.error}
         authReconnect={providerAuthReconnectPrompt}
         usageReset={threadErrorUsageResetAction}
+        retry={threadErrorRetryAction}
         providerLabel={activeProviderLabel}
         onRunAuthReconnect={runProviderAuthReconnect}
         onDismiss={() => setThreadError(activeThread.id, null)}

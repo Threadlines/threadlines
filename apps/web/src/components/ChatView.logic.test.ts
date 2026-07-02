@@ -27,6 +27,7 @@ import {
   desktopCapturedScreenshotToFile,
   filterUnresolvedProviderBackgroundRuns,
   hasServerAcknowledgedLocalDispatch,
+  isRetryableThreadError,
   isScrollMetricsAtEnd,
   mergeLocalDraftThreadWithServerThread,
   threadHasPromotableServerActivity,
@@ -396,6 +397,113 @@ describe("deriveProviderAuthReconnectPrompt", () => {
         threadError: "Sandbox setup failed",
       }),
     ).toBeNull();
+  });
+});
+
+describe("isRetryableThreadError", () => {
+  function runtimeErrorActivity(input: {
+    id: string;
+    errorClass?: string;
+    message?: string;
+    createdAt?: string;
+  }): OrchestrationThreadActivity {
+    return {
+      id: EventId.make(input.id),
+      tone: "error",
+      kind: "runtime.error",
+      summary: input.message ?? "Turn failed",
+      payload: {
+        message: input.message ?? "Turn failed",
+        ...(input.errorClass !== undefined ? { class: input.errorClass } : {}),
+      },
+      turnId: null,
+      createdAt: input.createdAt ?? "2026-03-29T00:00:00.000Z",
+    };
+  }
+
+  it("is false without a thread error", () => {
+    expect(
+      isRetryableThreadError({
+        threadError: null,
+        activities: [runtimeErrorActivity({ id: "evt-1", errorClass: "transport_error" })],
+      }),
+    ).toBe(false);
+    expect(isRetryableThreadError({ threadError: "   " })).toBe(false);
+  });
+
+  it("is true for transport and provider errors", () => {
+    expect(
+      isRetryableThreadError({
+        threadError: "API Error: Unable to connect to API (ECONNRESET)",
+        activities: [
+          runtimeErrorActivity({
+            id: "evt-transport",
+            errorClass: "transport_error",
+            message: "API Error: Unable to connect to API (ECONNRESET)",
+          }),
+        ],
+      }),
+    ).toBe(true);
+    expect(
+      isRetryableThreadError({
+        threadError: "Claude turn failed.",
+        activities: [runtimeErrorActivity({ id: "evt-provider", errorClass: "provider_error" })],
+      }),
+    ).toBe(true);
+  });
+
+  it("is true when no runtime error activity exists", () => {
+    expect(
+      isRetryableThreadError({
+        threadError: "Provider process exited before the turn started",
+        activities: [],
+      }),
+    ).toBe(true);
+  });
+
+  it("is false for authentication, permission, and validation classes", () => {
+    for (const errorClass of ["authentication_error", "permission_error", "validation_error"]) {
+      expect(
+        isRetryableThreadError({
+          threadError: "Turn failed",
+          activities: [runtimeErrorActivity({ id: `evt-${errorClass}`, errorClass })],
+        }),
+      ).toBe(false);
+    }
+  });
+
+  it("is false for auth-shaped and usage-limit thread errors regardless of activities", () => {
+    expect(
+      isRetryableThreadError({
+        threadError: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+      }),
+    ).toBe(false);
+    expect(
+      isRetryableThreadError({
+        threadError: "You've hit your usage limit.",
+        activities: [runtimeErrorActivity({ id: "evt-usage", errorClass: "provider_error" })],
+      }),
+    ).toBe(false);
+  });
+
+  it("uses the most recent runtime error activity", () => {
+    expect(
+      isRetryableThreadError({
+        threadError: "API Error: Unable to connect to API (ECONNRESET)",
+        activities: [
+          runtimeErrorActivity({
+            id: "evt-old-auth",
+            errorClass: "authentication_error",
+            createdAt: "2026-03-29T00:00:00.000Z",
+          }),
+          runtimeErrorActivity({
+            id: "evt-new-transport",
+            errorClass: "transport_error",
+            createdAt: "2026-03-29T00:05:00.000Z",
+          }),
+        ],
+      }),
+    ).toBe(true);
   });
 });
 

@@ -43,7 +43,8 @@ its rendered copy).
    ```
 
    Same for `threadlines-icon-1024.png`, `threadlines-icon-small-512.png` (`?variant=small`),
-   and `threadlines-icon-1024-opaque.png` (background `0D0D10FF`).
+   and `threadlines-icon-1024-opaque.png` (background `2C2C2CFF`, the plate color — the icon
+   plate is `#2c2c2c`, matching the app's dark `--card` token and the macOS adaptive dark tile).
 
 2. `powershell -File pipeline/resize-icons.ps1` — builds the 16–256 set + apple-touch 180.
 3. `bun pipeline/pack-icons.ts` — packs `icons/*.ico` and `icons/*.icns`.
@@ -53,6 +54,10 @@ its rendered copy).
 - `assets/{dev,nightly,prod}/threadlines-*` — channel masters consumed by
   `scripts/lib/brand-assets.ts`, `scripts/build-desktop-artifact.ts`, and
   `scripts/apply-web-brand-assets.ts`. All three channels currently share the same artwork.
+  The `*-macos-{dark,light}-1024.png` appearance masters are NOT rendered from these SVGs:
+  they are tuned layer images for the macOS 26 adaptive icon (borderless, no node halo,
+  softened stroke opacities) because the system draws the tile mask and edge itself. Only
+  their plate colors (`#2c2c2c` dark / `#f8f8f8` light) must stay in sync with the SVG plate.
 - `apps/desktop/resources/icon.{ico,icns,png}` — desktop dev-runtime icons. The macOS
   `icon.png` and `icon.icns` are padded for Dock display; keep the raw 1024px channel masters in
   `assets/{dev,nightly,prod}/`.

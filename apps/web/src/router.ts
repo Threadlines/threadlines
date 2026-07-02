@@ -8,6 +8,14 @@ import { routeTree } from "./routeTree.gen";
 export function getRouter(history: RouterHistory) {
   const queryClient = new QueryClient();
 
+  // Console preview tools for the updater surfaces; the dynamic import keeps
+  // them out of production bundles entirely.
+  if (import.meta.env.DEV && import.meta.env.MODE !== "test" && typeof window !== "undefined") {
+    void import("./dev/updatePreviewDevTools").then((devTools) =>
+      devTools.installUpdatePreviewDevTools(queryClient),
+    );
+  }
+
   return createRouter({
     routeTree,
     history,

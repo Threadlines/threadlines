@@ -115,6 +115,22 @@ pnpm --filter @threadlines/relay-worker exec wrangler deploy --dry-run --config 
 8. The Durable Object relays app WebSocket frames between the phone browser and
    the desktop app.
 
+Connection lifecycle rules in raw mode:
+
+- A new desktop connection replaces any existing desktop socket (close code
+  `4001`), so a half-dead socket left by sleep or a network drop cannot block
+  reconnects. The replaced desktop stops reconnecting when it sees `4001`.
+- Desktop frames sent while no device is connected are dropped, not treated as
+  an error. Devices resync from a fresh snapshot when they reconnect.
+- Device frames sent while no desktop is connected close the device socket
+  with `1013` so the device retries with backoff.
+- The Durable Object notifies raw-mode desktop sockets of device joins and
+  leaves with control frames: an ASCII record separator (`U+001E`) followed by
+  a `relay.peer-joined` / `relay.peer-left` JSON event. The desktop bridge
+  uses these to recycle its local backend socket so a reconnecting device
+  never resumes on a server connection that still holds a previous device's
+  RPC state.
+
 Preferred WebSocket auth uses subprotocols:
 
 ```ts

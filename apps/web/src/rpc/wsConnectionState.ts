@@ -4,13 +4,14 @@ import { Atom } from "effect/unstable/reactivity";
 import { appAtomRegistry } from "./atomRegistry";
 
 export type WsConnectionUiState = "connected" | "connecting" | "error" | "offline" | "reconnecting";
-export type WsReconnectPhase = "attempting" | "exhausted" | "idle" | "waiting";
+export type WsReconnectPhase = "attempting" | "idle" | "waiting";
 
 export const WS_RECONNECT_INITIAL_DELAY_MS = 1_000;
 export const WS_RECONNECT_BACKOFF_FACTOR = 2;
-export const WS_RECONNECT_MAX_DELAY_MS = 64_000;
-export const WS_RECONNECT_MAX_RETRIES = 7;
-export const WS_RECONNECT_MAX_ATTEMPTS = WS_RECONNECT_MAX_RETRIES + 1;
+// Reconnects retry forever with capped backoff. Mobile browsers routinely
+// kill sockets while backgrounded, so a bounded retry budget turned every
+// longer phone lock into a dead page that needed a manual refresh.
+export const WS_RECONNECT_MAX_DELAY_MS = 30_000;
 
 export interface WsConnectionStatus {
   readonly attemptCount: number;
@@ -26,7 +27,6 @@ export interface WsConnectionStatus {
   readonly online: boolean;
   readonly phase: "idle" | "connecting" | "connected" | "disconnected";
   readonly reconnectAttemptCount: number;
-  readonly reconnectMaxAttempts: number;
   readonly reconnectPhase: WsReconnectPhase;
   readonly socketUrl: string | null;
 }
@@ -45,7 +45,6 @@ const INITIAL_WS_CONNECTION_STATUS = Object.freeze<WsConnectionStatus>({
   online: typeof navigator === "undefined" ? true : navigator.onLine !== false,
   phase: "idle",
   reconnectAttemptCount: 0,
-  reconnectMaxAttempts: WS_RECONNECT_MAX_ATTEMPTS,
   reconnectPhase: "idle",
   socketUrl: null,
 });
@@ -200,13 +199,11 @@ export function useWsConnectionStatus(): WsConnectionStatus {
   return useAtomValue(wsConnectionStatusAtom);
 }
 
-export function getWsReconnectDelayMsForRetry(retryIndex: number): number | null {
-  if (!Number.isInteger(retryIndex) || retryIndex < 0 || retryIndex >= WS_RECONNECT_MAX_RETRIES) {
-    return null;
-  }
-
+export function getWsReconnectDelayMsForRetry(retryIndex: number): number {
+  const boundedIndex =
+    Number.isInteger(retryIndex) && retryIndex > 0 ? Math.min(retryIndex, 16) : 0;
   return Math.min(
-    Math.round(WS_RECONNECT_INITIAL_DELAY_MS * WS_RECONNECT_BACKOFF_FACTOR ** retryIndex),
+    Math.round(WS_RECONNECT_INITIAL_DELAY_MS * WS_RECONNECT_BACKOFF_FACTOR ** boundedIndex),
     WS_RECONNECT_MAX_DELAY_MS,
   );
 }
@@ -220,7 +217,7 @@ function applyDisconnectState(
 ): WsConnectionStatus {
   const disconnectedAt = current.disconnectedAt ?? isoNow();
   const nextRetryDelayMs =
-    current.nextRetryAt !== null || current.reconnectPhase === "exhausted"
+    current.nextRetryAt !== null
       ? null
       : getWsReconnectDelayMsForRetry(Math.max(0, current.reconnectAttemptCount - 1));
 
@@ -234,11 +231,6 @@ function applyDisconnectState(
         ? current.nextRetryAt
         : new Date(Date.now() + nextRetryDelayMs).toISOString(),
     phase: "disconnected",
-    reconnectPhase:
-      current.reconnectPhase === "waiting" || current.reconnectPhase === "exhausted"
-        ? current.reconnectPhase
-        : nextRetryDelayMs === null
-          ? "exhausted"
-          : "waiting",
+    reconnectPhase: "waiting",
   };
 }

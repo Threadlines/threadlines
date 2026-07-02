@@ -55,6 +55,9 @@ patchedDependencies:
   effect@4.0.0-beta.59:
     hash: 6e1973a8a5694a117f3782960e4f08303dac4d147a23129b5b1d1cb5cb67b773
     path: patches/effect@4.0.0-beta.59.patch
+  lexical@0.41.0:
+    hash: 6b5eec0e240328a13923636078cf8842952b52dd81c0853c444d5752c77c5e77
+    path: patches/lexical@0.41.0.patch
 
 importers:
 
@@ -297,7 +300,7 @@ importers:
         version: 4.0.0-beta.59(patch_hash=6e1973a8a5694a117f3782960e4f08303dac4d147a23129b5b1d1cb5cb67b773)
       lexical:
         specifier: ^0.41.0
-        version: 0.41.0
+        version: 0.41.0(patch_hash=6b5eec0e240328a13923636078cf8842952b52dd81c0853c444d5752c77c5e77)
       lucide-react:
         specifier: ^0.564.0
         version: 0.564.0(react@19.2.6)
@@ -6639,12 +6642,12 @@ snapshots:
       '@lexical/list': 0.41.0
       '@lexical/selection': 0.41.0
       '@lexical/utils': 0.41.0
-      lexical: 0.41.0
+      lexical: 0.41.0(patch_hash=6b5eec0e240328a13923636078cf8842952b52dd81c0853c444d5752c77c5e77)
 
   '@lexical/code@0.41.0':
     dependencies:
       '@lexical/utils': 0.41.0
-      lexical: 0.41.0
+      lexical: 0.41.0(patch_hash=6b5eec0e240328a13923636078cf8842952b52dd81c0853c444d5752c77c5e77)
       prismjs: 1.30.0
 
   '@lexical/devtools-core@0.41.0(react-dom@19.2.6(react@19.2.6))(react@19.2.6)':
@@ -6654,56 +6657,56 @@ snapshots:
       '@lexical/mark': 0.41.0
       '@lexical/table': 0.41.0
       '@lexical/utils': 0.41.0
-      lexical: 0.41.0
+      lexical: 0.41.0(patch_hash=6b5eec0e240328a13923636078cf8842952b52dd81c0853c444d5752c77c5e77)
       react: 19.2.6
       react-dom: 19.2.6(react@19.2.6)
 
   '@lexical/dragon@0.41.0':
     dependencies:
       '@lexical/extension': 0.41.0
-      lexical: 0.41.0
+      lexical: 0.41.0(patch_hash=6b5eec0e240328a13923636078cf8842952b52dd81c0853c444d5752c77c5e77)
 
   '@lexical/extension@0.41.0':
     dependencies:
       '@lexical/utils': 0.41.0
       '@preact/signals-core': 1.14.3
-      lexical: 0.41.0
+      lexical: 0.41.0(patch_hash=6b5eec0e240328a13923636078cf8842952b52dd81c0853c444d5752c77c5e77)
 
   '@lexical/hashtag@0.41.0':
     dependencies:
       '@lexical/text': 0.41.0
       '@lexical/utils': 0.41.0
-      lexical: 0.41.0
+      lexical: 0.41.0(patch_hash=6b5eec0e240328a13923636078cf8842952b52dd81c0853c444d5752c77c5e77)
 
   '@lexical/history@0.41.0':
     dependencies:
       '@lexical/extension': 0.41.0
       '@lexical/utils': 0.41.0
-      lexical: 0.41.0
+      lexical: 0.41.0(patch_hash=6b5eec0e240328a13923636078cf8842952b52dd81c0853c444d5752c77c5e77)
 
   '@lexical/html@0.41.0':
     dependencies:
       '@lexical/selection': 0.41.0
       '@lexical/utils': 0.41.0
-      lexical: 0.41.0
+      lexical: 0.41.0(patch_hash=6b5eec0e240328a13923636078cf8842952b52dd81c0853c444d5752c77c5e77)
 
   '@lexical/link@0.41.0':
     dependencies:
       '@lexical/extension': 0.41.0
       '@lexical/utils': 0.41.0
-      lexical: 0.41.0
+      lexical: 0.41.0(patch_hash=6b5eec0e240328a13923636078cf8842952b52dd81c0853c444d5752c77c5e77)
 
   '@lexical/list@0.41.0':
     dependencies:
       '@lexical/extension': 0.41.0
       '@lexical/selection': 0.41.0
       '@lexical/utils': 0.41.0
-      lexical: 0.41.0
+      lexical: 0.41.0(patch_hash=6b5eec0e240328a13923636078cf8842952b52dd81c0853c444d5752c77c5e77)
 
   '@lexical/mark@0.41.0':
     dependencies:
       '@lexical/utils': 0.41.0
-      lexical: 0.41.0
+      lexical: 0.41.0(patch_hash=6b5eec0e240328a13923636078cf8842952b52dd81c0853c444d5752c77c5e77)
 
   '@lexical/markdown@0.41.0':
     dependencies:
@@ -6713,15 +6716,15 @@ snapshots:
       '@lexical/rich-text': 0.41.0
       '@lexical/text': 0.41.0
       '@lexical/utils': 0.41.0
-      lexical: 0.41.0
+      lexical: 0.41.0(patch_hash=6b5eec0e240328a13923636078cf8842952b52dd81c0853c444d5752c77c5e77)
 
   '@lexical/offset@0.41.0':
     dependencies:
-      lexical: 0.41.0
+      lexical: 0.41.0(patch_hash=6b5eec0e240328a13923636078cf8842952b52dd81c0853c444d5752c77c5e77)
 
   '@lexical/overflow@0.41.0':
     dependencies:
-      lexical: 0.41.0
+      lexical: 0.41.0(patch_hash=6b5eec0e240328a13923636078cf8842952b52dd81c0853c444d5752c77c5e77)
 
   '@lexical/plain-text@0.41.0':
     dependencies:
@@ -6729,7 +6732,7 @@ snapshots:
       '@lexical/dragon': 0.41.0
       '@lexical/selection': 0.41.0
       '@lexical/utils': 0.41.0
-      lexical: 0.41.0
+      lexical: 0.41.0(patch_hash=6b5eec0e240328a13923636078cf8842952b52dd81c0853c444d5752c77c5e77)
 
   '@lexical/react@0.41.0(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(yjs@13.6.31)':
     dependencies:
@@ -6750,7 +6753,7 @@ snapshots:
       '@lexical/text': 0.41.0
       '@lexical/utils': 0.41.0
       '@lexical/yjs': 0.41.0(yjs@13.6.31)
-      lexical: 0.41.0
+      lexical: 0.41.0(patch_hash=6b5eec0e240328a13923636078cf8842952b52dd81c0853c444d5752c77c5e77)
       react: 19.2.6
       react-dom: 19.2.6(react@19.2.6)
       react-error-boundary: 6.1.2(react@19.2.6)
@@ -6763,33 +6766,33 @@ snapshots:
       '@lexical/dragon': 0.41.0
       '@lexical/selection': 0.41.0
       '@lexical/utils': 0.41.0
-      lexical: 0.41.0
+      lexical: 0.41.0(patch_hash=6b5eec0e240328a13923636078cf8842952b52dd81c0853c444d5752c77c5e77)
 
   '@lexical/selection@0.41.0':
     dependencies:
-      lexical: 0.41.0
+      lexical: 0.41.0(patch_hash=6b5eec0e240328a13923636078cf8842952b52dd81c0853c444d5752c77c5e77)
 
   '@lexical/table@0.41.0':
     dependencies:
       '@lexical/clipboard': 0.41.0
       '@lexical/extension': 0.41.0
       '@lexical/utils': 0.41.0
-      lexical: 0.41.0
+      lexical: 0.41.0(patch_hash=6b5eec0e240328a13923636078cf8842952b52dd81c0853c444d5752c77c5e77)
 
   '@lexical/text@0.41.0':
     dependencies:
-      lexical: 0.41.0
+      lexical: 0.41.0(patch_hash=6b5eec0e240328a13923636078cf8842952b52dd81c0853c444d5752c77c5e77)
 
   '@lexical/utils@0.41.0':
     dependencies:
       '@lexical/selection': 0.41.0
-      lexical: 0.41.0
+      lexical: 0.41.0(patch_hash=6b5eec0e240328a13923636078cf8842952b52dd81c0853c444d5752c77c5e77)
 
   '@lexical/yjs@0.41.0(yjs@13.6.31)':
     dependencies:
       '@lexical/offset': 0.41.0
       '@lexical/selection': 0.41.0
-      lexical: 0.41.0
+      lexical: 0.41.0(patch_hash=6b5eec0e240328a13923636078cf8842952b52dd81c0853c444d5752c77c5e77)
       yjs: 13.6.31
 
   '@malept/cross-spawn-promise@2.0.0':
@@ -9176,7 +9179,7 @@ snapshots:
 
   lazy-val@1.0.5: {}
 
-  lexical@0.41.0: {}
+  lexical@0.41.0(patch_hash=6b5eec0e240328a13923636078cf8842952b52dd81c0853c444d5752c77c5e77): {}
 
   lib0@0.2.117:
     dependencies:

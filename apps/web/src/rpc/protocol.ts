@@ -18,7 +18,6 @@ import {
   recordWsConnectionErrored,
   recordWsConnectionOpened,
   type WsConnectionMetadata,
-  WS_RECONNECT_MAX_RETRIES,
 } from "./wsConnectionState";
 
 export interface WsProtocolCloseContext {
@@ -234,8 +233,11 @@ export function createWsRpcProtocolLayer(
     resolvedUrl,
     options?.protocols === undefined ? {} : { protocols: normalizeProtocols(options.protocols) },
   ).pipe(Layer.provide(trackingWebSocketConstructorLayer));
-  const retryPolicy = Schedule.addDelay(Schedule.recurs(WS_RECONNECT_MAX_RETRIES), (retryCount) =>
-    Effect.succeed(Duration.millis(getWsReconnectDelayMsForRetry(retryCount) ?? 0)),
+  // Retry forever with capped backoff: giving up permanently meant mobile
+  // browsers that dropped the socket while backgrounded came back to a dead
+  // page. The online/visibility handlers reset the loop with a fresh session.
+  const retryPolicy = Schedule.addDelay(Schedule.forever, (retryCount) =>
+    Effect.succeed(Duration.millis(getWsReconnectDelayMsForRetry(retryCount))),
   );
   const protocolLayer = Layer.effect(
     RpcClient.Protocol,
