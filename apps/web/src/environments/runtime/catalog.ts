@@ -202,6 +202,16 @@ export function getSavedEnvironmentRecord(
   return useSavedEnvironmentRegistryStore.getState().byId[environmentId] ?? null;
 }
 
+/**
+ * Relay-paired environments (phonelink) tunnel only the WebSocket; their
+ * `httpBaseUrl` points at the relay origin, which serves no server routes.
+ * Callers that would fetch server HTTP resources (attachment previews,
+ * favicons, …) must use an RPC transport instead when this returns true.
+ */
+export function environmentUsesRelayTransport(environmentId: EnvironmentId): boolean {
+  return getSavedEnvironmentRecord(environmentId)?.relay != null;
+}
+
 export function getEnvironmentHttpBaseUrl(environmentId: EnvironmentId): string | null {
   const primaryEnvironment = getPrimaryKnownEnvironment();
   if (primaryEnvironment?.environmentId === environmentId) {

@@ -65,10 +65,8 @@ import * as Clock from "effect/Clock";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService, type GitWorkflowServiceShape } from "../../git/GitWorkflowService.ts";
-import {
-  CheckpointStore,
-  type CheckpointStoreShape,
-} from "../../checkpointing/Services/CheckpointStore.ts";
+import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
+import { makeCheckpointStoreStub } from "../../checkpointing/testing/CheckpointStoreStub.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asApprovalRequestId = (value: string): ApprovalRequestId => ApprovalRequestId.make(value);
@@ -308,14 +306,10 @@ describe("ProviderCommandReactor", () => {
     );
 
     const unsupported = () => Effect.die(new Error("Unsupported provider call in test")) as never;
-    const checkpointStore: CheckpointStoreShape = {
+    const checkpointStore = makeCheckpointStoreStub({
       isGitRepository: () => Effect.succeed(false),
-      captureCheckpoint: () => Effect.void,
-      hasCheckpointRef: () => Effect.succeed(false),
       restoreCheckpoint: () => Effect.succeed(false),
-      diffCheckpoints: () => Effect.succeed(""),
-      deleteCheckpointRefs: () => Effect.void,
-    };
+    });
     const service: ProviderServiceShape = {
       startSession: startSession as ProviderServiceShape["startSession"],
       sendTurn: sendTurn as ProviderServiceShape["sendTurn"],

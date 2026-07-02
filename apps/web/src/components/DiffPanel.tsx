@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { openInPreferredEditor } from "../editorPreferences";
+import { openFileInActiveViewer } from "../fileViewerStore";
 import {
   gitDiscardChangesMutationOptions,
   gitQueryKeys,
@@ -923,6 +924,9 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
   // ── Per-file actions ───────────────────────────────────────────────
   const openDiffFileInEditor = useCallback(
     (filePath: string) => {
+      if (openFileInActiveViewer({ path: filePath })) {
+        return;
+      }
       const api = readLocalApi();
       if (!api) return;
       const targetPath = activeCwd ? resolvePathLinkTarget(filePath, activeCwd) : filePath;

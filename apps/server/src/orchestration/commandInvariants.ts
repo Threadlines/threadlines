@@ -55,6 +55,30 @@ export function requireProject(input: {
   );
 }
 
+/**
+ * Require a project that supports workspace capabilities (source control,
+ * scripts, meta edits). System `general-chat` projects reject these commands
+ * even when UI gating is bypassed.
+ */
+export function requireWorkspaceProject(input: {
+  readonly readModel: OrchestrationReadModel;
+  readonly command: OrchestrationCommand;
+  readonly projectId: ProjectId;
+}): Effect.Effect<OrchestrationProject, OrchestrationCommandInvariantError> {
+  return requireProject(input).pipe(
+    Effect.flatMap((project) =>
+      project.kind === "general-chat"
+        ? Effect.fail(
+            invariantError(
+              input.command.type,
+              `Project '${input.projectId}' is the system General Chats project and does not support command '${input.command.type}'.`,
+            ),
+          )
+        : Effect.succeed(project),
+    ),
+  );
+}
+
 export function requireProjectAbsent(input: {
   readonly readModel: OrchestrationReadModel;
   readonly command: OrchestrationCommand;

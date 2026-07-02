@@ -1,5 +1,5 @@
 import * as Schema from "effect/Schema";
-import { PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 const PROJECT_SEARCH_ENTRIES_MAX_LIMIT = 200;
 const PROJECT_WRITE_FILE_PATH_MAX_LENGTH = 512;
@@ -48,6 +48,102 @@ export type ProjectWriteFileResult = typeof ProjectWriteFileResult.Type;
 
 export class ProjectWriteFileError extends Schema.TaggedErrorClass<ProjectWriteFileError>()(
   "ProjectWriteFileError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect),
+  },
+) {}
+
+export const ProjectListEntriesInput = Schema.Struct({
+  cwd: TrimmedNonEmptyString,
+});
+export type ProjectListEntriesInput = typeof ProjectListEntriesInput.Type;
+
+export const ProjectListEntriesResult = Schema.Struct({
+  entries: Schema.Array(ProjectEntry),
+  truncated: Schema.Boolean,
+});
+export type ProjectListEntriesResult = typeof ProjectListEntriesResult.Type;
+
+export class ProjectListEntriesError extends Schema.TaggedErrorClass<ProjectListEntriesError>()(
+  "ProjectListEntriesError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect),
+  },
+) {}
+
+export const ProjectReadFileInput = Schema.Struct({
+  cwd: TrimmedNonEmptyString,
+  relativePath: TrimmedNonEmptyString.check(Schema.isMaxLength(PROJECT_WRITE_FILE_PATH_MAX_LENGTH)),
+});
+export type ProjectReadFileInput = typeof ProjectReadFileInput.Type;
+
+export const ProjectTextFileContent = Schema.Struct({
+  kind: Schema.Literal("text"),
+  relativePath: TrimmedNonEmptyString,
+  content: Schema.String,
+  /** Total file size in bytes; `content` may cover only a truncated prefix. */
+  size: NonNegativeInt,
+  truncated: Schema.Boolean,
+});
+export type ProjectTextFileContent = typeof ProjectTextFileContent.Type;
+
+export const ProjectImageFileContent = Schema.Struct({
+  kind: Schema.Literal("image"),
+  relativePath: TrimmedNonEmptyString,
+  mimeType: TrimmedNonEmptyString,
+  base64: Schema.String,
+  size: NonNegativeInt,
+});
+export type ProjectImageFileContent = typeof ProjectImageFileContent.Type;
+
+export const ProjectBinaryFileContent = Schema.Struct({
+  kind: Schema.Literal("binary"),
+  relativePath: TrimmedNonEmptyString,
+  size: NonNegativeInt,
+});
+export type ProjectBinaryFileContent = typeof ProjectBinaryFileContent.Type;
+
+export const ProjectReadFileResult = Schema.Union([
+  ProjectTextFileContent,
+  ProjectImageFileContent,
+  ProjectBinaryFileContent,
+]);
+export type ProjectReadFileResult = typeof ProjectReadFileResult.Type;
+
+export class ProjectReadFileError extends Schema.TaggedErrorClass<ProjectReadFileError>()(
+  "ProjectReadFileError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect),
+  },
+) {}
+
+/**
+ * Reads the project's resolved favicon over the WebSocket RPC channel.
+ * Relay-paired clients (phonelink) cannot reach the `/api/project-favicon`
+ * HTTP route — the relay only carries the WebSocket — so this is their
+ * favicon transport. `favicon` is null when the project has no icon; the
+ * client renders its own fallback.
+ */
+export const ProjectFaviconInput = Schema.Struct({
+  cwd: TrimmedNonEmptyString,
+});
+export type ProjectFaviconInput = typeof ProjectFaviconInput.Type;
+
+export const ProjectFaviconResult = Schema.Struct({
+  favicon: Schema.NullOr(
+    Schema.Struct({
+      mimeType: TrimmedNonEmptyString,
+      base64: Schema.String,
+    }),
+  ),
+});
+export type ProjectFaviconResult = typeof ProjectFaviconResult.Type;
+
+export class ProjectFaviconError extends Schema.TaggedErrorClass<ProjectFaviconError>()(
+  "ProjectFaviconError",
   {
     message: TrimmedNonEmptyString,
     cause: Schema.optional(Schema.Defect),

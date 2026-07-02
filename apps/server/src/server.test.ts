@@ -146,6 +146,7 @@ const makeDefaultOrchestrationReadModel = () => {
     projects: [
       {
         id: defaultProjectId,
+        kind: "workspace" as const,
         title: "Default Project",
         workspaceRoot: "/tmp/default-project",
         defaultModelSelection,
@@ -3259,6 +3260,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         projects: [
           {
             id: ProjectId.make("project-a"),
+            kind: "workspace" as const,
             title: "Project A",
             workspaceRoot: "/tmp/project-a",
             defaultModelSelection,
@@ -3426,6 +3428,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                 type: "project.created",
                 payload: {
                   projectId: defaultProjectId,
+                  kind: "workspace" as const,
                   title: "Default Project",
                   workspaceRoot: "/tmp/default-project",
                   defaultModelSelection,

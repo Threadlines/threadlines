@@ -1,4 +1,5 @@
 export {
+  environmentUsesRelayTransport,
   getEnvironmentHttpBaseUrl,
   getSavedEnvironmentRecord,
   getSavedEnvironmentRuntimeState,

@@ -205,6 +205,198 @@ it.layer(TestLayer)("CheckpointStoreLive", (it) => {
     );
   });
 
+  describe("selective revert operations", () => {
+    it.effect("diffs checkpoint entries and restores only the requested paths", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const checkpointStore = yield* CheckpointStore;
+        const threadId = ThreadId.make("thread-selective-restore");
+        const targetCheckpointRef = checkpointRefForThreadTurn(threadId, 1);
+        const latestCheckpointRef = checkpointRefForThreadTurn(threadId, 2);
+
+        yield* writeTextFile(path.join(tmp, "mine.txt"), "mine v1\n");
+        yield* writeTextFile(path.join(tmp, "doomed.txt"), "doomed v1\n");
+        yield* writeTextFile(path.join(tmp, "foreign.txt"), "foreign v1\n");
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: targetCheckpointRef });
+
+        // The thread edits mine.txt, deletes doomed.txt, and creates fresh.txt.
+        yield* writeTextFile(path.join(tmp, "mine.txt"), "mine v2\n");
+        yield* fileSystem.remove(path.join(tmp, "doomed.txt"));
+        yield* writeTextFile(path.join(tmp, "fresh.txt"), "fresh v1\n");
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: latestCheckpointRef });
+
+        // Another session changes foreign.txt after the thread's last snapshot.
+        yield* writeTextFile(path.join(tmp, "foreign.txt"), "foreign v2\n");
+
+        const targetCommit = yield* checkpointStore.resolveCheckpointCommit({
+          cwd: tmp,
+          checkpointRef: targetCheckpointRef,
+        });
+        const latestCommit = yield* checkpointStore.resolveCheckpointCommit({
+          cwd: tmp,
+          checkpointRef: latestCheckpointRef,
+        });
+        expect(targetCommit).not.toBeNull();
+        expect(latestCommit).not.toBeNull();
+
+        const entries = yield* checkpointStore.diffCheckpointEntries({
+          cwd: tmp,
+          fromCommit: targetCommit ?? "",
+          toCommit: latestCommit ?? "",
+        });
+        const entryByPath = new Map(entries.map((entry) => [entry.path, entry]));
+        expect([...entryByPath.keys()].toSorted()).toEqual(["doomed.txt", "fresh.txt", "mine.txt"]);
+        expect(entryByPath.get("mine.txt")?.fromOid).not.toBeNull();
+        expect(entryByPath.get("mine.txt")?.toOid).not.toBeNull();
+        expect(entryByPath.get("doomed.txt")?.toOid).toBeNull();
+        expect(entryByPath.get("fresh.txt")?.fromOid).toBeNull();
+
+        const worktreeStates = yield* checkpointStore.hashWorktreePaths({
+          cwd: tmp,
+          paths: ["mine.txt", "doomed.txt", "fresh.txt"],
+        });
+        const stateByPath = new Map(worktreeStates.map((state) => [state.path, state]));
+        expect(stateByPath.get("mine.txt")?.kind).toBe("file");
+        expect(stateByPath.get("mine.txt")?.oid).toBe(entryByPath.get("mine.txt")?.toOid);
+        expect(stateByPath.get("doomed.txt")?.kind).toBe("missing");
+        expect(stateByPath.get("fresh.txt")?.oid).toBe(entryByPath.get("fresh.txt")?.toOid);
+
+        yield* checkpointStore.restoreCheckpointPaths({
+          cwd: tmp,
+          checkpointCommit: targetCommit ?? "",
+          restorePaths: ["mine.txt", "doomed.txt"],
+          deletePaths: ["fresh.txt"],
+        });
+
+        expect(yield* fileSystem.readFileString(path.join(tmp, "mine.txt"))).toBe("mine v1\n");
+        expect(yield* fileSystem.readFileString(path.join(tmp, "doomed.txt"))).toBe("doomed v1\n");
+        expect(yield* fileSystem.exists(path.join(tmp, "fresh.txt"))).toBe(false);
+        // The untouched path keeps the other session's content.
+        expect(yield* fileSystem.readFileString(path.join(tmp, "foreign.txt"))).toBe(
+          "foreign v2\n",
+        );
+      }),
+    );
+
+    it.effect("applies inverse hunks around non-overlapping later edits and rejects overlaps", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const checkpointStore = yield* CheckpointStore;
+        const threadId = ThreadId.make("thread-hunk-restore");
+        const targetCheckpointRef = checkpointRefForThreadTurn(threadId, 1);
+        const latestCheckpointRef = checkpointRefForThreadTurn(threadId, 2);
+
+        const lines = (first: string, last: string): string =>
+          [first, "line2", "line3", "line4", "line5", "line6", "line7", "line8", "line9", last]
+            .join("\n")
+            .concat("\n");
+
+        const filePath = path.join(tmp, "lines.txt");
+        yield* writeTextFile(filePath, lines("line1", "line10"));
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: targetCheckpointRef });
+
+        // The thread edits the first line.
+        yield* writeTextFile(filePath, lines("line1-thread", "line10"));
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: latestCheckpointRef });
+
+        // Another actor later edits the last line, far from the thread's hunk.
+        yield* writeTextFile(filePath, lines("line1-thread", "line10-other"));
+
+        const targetCommit = yield* checkpointStore.resolveCheckpointCommit({
+          cwd: tmp,
+          checkpointRef: targetCheckpointRef,
+        });
+        const latestCommit = yield* checkpointStore.resolveCheckpointCommit({
+          cwd: tmp,
+          checkpointRef: latestCheckpointRef,
+        });
+
+        const applied = yield* checkpointStore.restoreCheckpointFileHunks({
+          cwd: tmp,
+          fromCommit: latestCommit ?? "",
+          toCommit: targetCommit ?? "",
+          path: "lines.txt",
+        });
+        expect(applied).toBe(true);
+        // The thread's edit is undone while the other actor's edit survives.
+        expect(yield* fileSystem.readFileString(filePath)).toBe(lines("line1", "line10-other"));
+
+        // Overlapping case: the other actor rewrites the same line the
+        // thread touched, so the inverse patch must be refused.
+        yield* writeTextFile(filePath, lines("line1", "line10"));
+        yield* checkpointStore.captureCheckpoint({
+          cwd: tmp,
+          checkpointRef: checkpointRefForThreadTurn(threadId, 3),
+        });
+        yield* writeTextFile(filePath, lines("line1-thread-again", "line10"));
+        yield* checkpointStore.captureCheckpoint({
+          cwd: tmp,
+          checkpointRef: checkpointRefForThreadTurn(threadId, 4),
+        });
+        yield* writeTextFile(filePath, lines("line1-other-overwrite", "line10"));
+
+        const overlapTargetCommit = yield* checkpointStore.resolveCheckpointCommit({
+          cwd: tmp,
+          checkpointRef: checkpointRefForThreadTurn(threadId, 3),
+        });
+        const overlapLatestCommit = yield* checkpointStore.resolveCheckpointCommit({
+          cwd: tmp,
+          checkpointRef: checkpointRefForThreadTurn(threadId, 4),
+        });
+        const overlapApplied = yield* checkpointStore.restoreCheckpointFileHunks({
+          cwd: tmp,
+          fromCommit: overlapLatestCommit ?? "",
+          toCommit: overlapTargetCommit ?? "",
+          path: "lines.txt",
+        });
+        expect(overlapApplied).toBe(false);
+        expect(yield* fileSystem.readFileString(filePath)).toBe(
+          lines("line1-other-overwrite", "line10"),
+        );
+      }),
+    );
+
+    it.effect("reports non-file worktree paths and honors head fallback resolution", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const checkpointStore = yield* CheckpointStore;
+        const threadId = ThreadId.make("thread-selective-kinds");
+        const missingCheckpointRef = checkpointRefForThreadTurn(threadId, 0);
+
+        yield* fileSystem.makeDirectory(path.join(tmp, "a-directory"));
+
+        const states = yield* checkpointStore.hashWorktreePaths({
+          cwd: tmp,
+          paths: ["a-directory", "not-there.txt"],
+        });
+        expect(states).toEqual([
+          { path: "a-directory", kind: "other", oid: null },
+          { path: "not-there.txt", kind: "missing", oid: null },
+        ]);
+
+        const withoutFallback = yield* checkpointStore.resolveCheckpointCommit({
+          cwd: tmp,
+          checkpointRef: missingCheckpointRef,
+        });
+        expect(withoutFallback).toBeNull();
+
+        const headCommit = yield* git(tmp, ["rev-parse", "HEAD"]);
+        const withFallback = yield* checkpointStore.resolveCheckpointCommit({
+          cwd: tmp,
+          checkpointRef: missingCheckpointRef,
+          fallbackToHead: true,
+        });
+        expect(withFallback).toBe(headCommit);
+      }),
+    );
+  });
+
   describe("legacy checkpoint ref migration", () => {
     const toLegacyRef = (checkpointRef: string): string =>
       checkpointRef.replace(CHECKPOINT_REFS_PREFIX, LEGACY_CHECKPOINT_REFS_PREFIX);

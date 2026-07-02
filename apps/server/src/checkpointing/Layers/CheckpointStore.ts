@@ -59,12 +59,59 @@ const makeCheckpointStore = Effect.gen(function* () {
     return yield* checkpoints.restoreCheckpoint(input);
   });
 
+  const resolveCheckpointCommit: CheckpointStoreShape["resolveCheckpointCommit"] = Effect.fn(
+    "resolveCheckpointCommit",
+  )(function* (input) {
+    const checkpoints = yield* resolveCheckpoints(
+      "CheckpointStore.resolveCheckpointCommit",
+      input.cwd,
+    );
+    return yield* checkpoints.resolveCheckpointCommit(input);
+  });
+
   const diffCheckpoints: CheckpointStoreShape["diffCheckpoints"] = Effect.fn("diffCheckpoints")(
     function* (input) {
       const checkpoints = yield* resolveCheckpoints("CheckpointStore.diffCheckpoints", input.cwd);
       return yield* checkpoints.diffCheckpoints(input);
     },
   );
+
+  const diffCheckpointEntries: CheckpointStoreShape["diffCheckpointEntries"] = Effect.fn(
+    "diffCheckpointEntries",
+  )(function* (input) {
+    const checkpoints = yield* resolveCheckpoints(
+      "CheckpointStore.diffCheckpointEntries",
+      input.cwd,
+    );
+    return yield* checkpoints.diffCheckpointEntries(input);
+  });
+
+  const hashWorktreePaths: CheckpointStoreShape["hashWorktreePaths"] = Effect.fn(
+    "hashWorktreePaths",
+  )(function* (input) {
+    const checkpoints = yield* resolveCheckpoints("CheckpointStore.hashWorktreePaths", input.cwd);
+    return yield* checkpoints.hashWorktreePaths(input);
+  });
+
+  const restoreCheckpointPaths: CheckpointStoreShape["restoreCheckpointPaths"] = Effect.fn(
+    "restoreCheckpointPaths",
+  )(function* (input) {
+    const checkpoints = yield* resolveCheckpoints(
+      "CheckpointStore.restoreCheckpointPaths",
+      input.cwd,
+    );
+    return yield* checkpoints.restoreCheckpointPaths(input);
+  });
+
+  const restoreCheckpointFileHunks: CheckpointStoreShape["restoreCheckpointFileHunks"] = Effect.fn(
+    "restoreCheckpointFileHunks",
+  )(function* (input) {
+    const checkpoints = yield* resolveCheckpoints(
+      "CheckpointStore.restoreCheckpointFileHunks",
+      input.cwd,
+    );
+    return yield* checkpoints.restoreCheckpointFileHunks(input);
+  });
 
   const deleteCheckpointRefs: CheckpointStoreShape["deleteCheckpointRefs"] = Effect.fn(
     "deleteCheckpointRefs",
@@ -81,7 +128,12 @@ const makeCheckpointStore = Effect.gen(function* () {
     captureCheckpoint,
     hasCheckpointRef,
     restoreCheckpoint,
+    resolveCheckpointCommit,
     diffCheckpoints,
+    diffCheckpointEntries,
+    hashWorktreePaths,
+    restoreCheckpointPaths,
+    restoreCheckpointFileHunks,
     deleteCheckpointRefs,
   } satisfies CheckpointStoreShape;
 });

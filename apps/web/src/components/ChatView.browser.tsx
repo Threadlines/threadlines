@@ -215,6 +215,7 @@ function createMockEnvironmentApi(input: {
   return {
     terminal: {} as EnvironmentApi["terminal"],
     projects: {} as EnvironmentApi["projects"],
+    attachments: {} as EnvironmentApi["attachments"],
     filesystem: {
       browse: input.browse,
     },
@@ -342,6 +343,7 @@ function createSnapshotForTargetUser(options: {
     projects: [
       {
         id: PROJECT_ID,
+        kind: "workspace" as const,
         title: "Project",
         workspaceRoot: "/repo/project",
         defaultModelSelection: {
@@ -1031,6 +1033,7 @@ function createSnapshotWithSecondaryProject(options?: {
       ...snapshot.projects,
       {
         id: SECOND_PROJECT_ID,
+        kind: "workspace" as const,
         title: "Docs Portal",
         workspaceRoot: "/repo/clients/docs-portal",
         defaultModelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },

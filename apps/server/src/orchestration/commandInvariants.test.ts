@@ -27,6 +27,7 @@ const readModel: OrchestrationReadModel = {
   projects: [
     {
       id: ProjectId.make("project-a"),
+      kind: "workspace",
       title: "Project A",
       workspaceRoot: "/tmp/project-a",
       defaultModelSelection: {
@@ -40,6 +41,7 @@ const readModel: OrchestrationReadModel = {
     },
     {
       id: ProjectId.make("project-b"),
+      kind: "workspace",
       title: "Project B",
       workspaceRoot: "/tmp/project-b",
       defaultModelSelection: {

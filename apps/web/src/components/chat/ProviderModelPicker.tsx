@@ -3,7 +3,7 @@ import {
   type ProviderDriverKind,
   type ResolvedKeybindingsConfig,
 } from "@threadlines/contracts";
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState, type CSSProperties } from "react";
 import type { VariantProps } from "class-variance-authority";
 import { ChevronDownIcon } from "lucide-react";
 import { Button, buttonVariants } from "../ui/button";
@@ -19,6 +19,7 @@ import {
   getTriggerDisplayModelName,
 } from "./providerIconUtils";
 import { setModelPickerOpen } from "../../modelPickerOpenState";
+import { useOnScreenKeyboardInset } from "~/hooks/useOnScreenKeyboardInset";
 import type { ProviderInstanceEntry } from "../../providerInstances";
 
 export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
@@ -52,6 +53,11 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
 }) {
   const [uncontrolledIsMenuOpen, setUncontrolledIsMenuOpen] = useState(false);
   const isMenuOpen = props.open ?? uncontrolledIsMenuOpen;
+  // On overlay-keyboard browsers (iOS Safari), focusing the picker's search
+  // input slides the keyboard over the bottom-anchored popup. Lift the popup
+  // by the covered height; ModelPickerContent shrinks its max-height by the
+  // same amount (via --keyboard-inset) so the top stays on screen.
+  const keyboardInset = useOnScreenKeyboardInset(isMenuOpen);
 
   // Resolve the active instance entry by exact routing key. The composer
   // resolves fallbacks before rendering this component; if the selected
@@ -182,6 +188,14 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
         align="start"
         side={props.side}
         className="border-0 bg-transparent p-0 shadow-none before:hidden [--viewport-inline-padding:0] *:data-[slot=popover-viewport]:p-0"
+        style={
+          keyboardInset > 0
+            ? ({
+                translate: `0 -${keyboardInset}px`,
+                "--keyboard-inset": `${keyboardInset}px`,
+              } as CSSProperties)
+            : undefined
+        }
       >
         <ModelPickerContent
           activeInstanceId={activeInstanceId}

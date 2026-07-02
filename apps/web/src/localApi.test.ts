@@ -385,6 +385,7 @@ describe("wsApi", () => {
       sequence: 1,
       project: {
         id: ProjectId.make("project-1"),
+        kind: "workspace" as const,
         title: "Project",
         workspaceRoot: "/tmp/workspace",
         defaultModelSelection: {

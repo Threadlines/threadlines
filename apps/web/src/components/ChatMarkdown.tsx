@@ -24,6 +24,7 @@ import { renderSkillInlineMarkdownChildren } from "./chat/SkillInlineText";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { openInPreferredEditor } from "../editorPreferences";
+import { openFileInActiveViewer } from "../fileViewerStore";
 import { resolveDiffThemeName, type DiffThemeName } from "../lib/diffRendering";
 import { fnv1a32 } from "../lib/diffRendering";
 import { LRUCache } from "../lib/lruCache";
@@ -281,6 +282,7 @@ interface MarkdownFileLinkProps {
   targetPath: string;
   displayPath: string;
   filePath: string;
+  line?: number | undefined;
   label: string;
   theme: "light" | "dark";
   className?: string | undefined;
@@ -372,11 +374,12 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   targetPath,
   displayPath,
   filePath,
+  line,
   label,
   theme,
   className,
 }: MarkdownFileLinkProps) {
-  const handleOpen = useCallback(() => {
+  const handleOpenExternally = useCallback(() => {
     const api = readLocalApi();
     if (!api) {
       toastManager.add({
@@ -396,6 +399,13 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
       );
     });
   }, [targetPath]);
+
+  const handleOpen = useCallback(() => {
+    if (openFileInActiveViewer({ path: targetPath, line })) {
+      return;
+    }
+    handleOpenExternally();
+  }, [handleOpenExternally, line, targetPath]);
 
   const handleCopy = useCallback((value: string, title: string) => {
     if (typeof window === "undefined" || !navigator.clipboard?.writeText) {
@@ -439,7 +449,8 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
 
       const clicked = await api.contextMenu.show(
         [
-          { id: "open", label: "Open in editor" },
+          { id: "open", label: "Open in file viewer" },
+          { id: "open-external", label: "Open in editor" },
           { id: "copy-relative", label: "Copy relative path" },
           { id: "copy-full", label: "Copy full path" },
         ] as const,
@@ -450,6 +461,10 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         handleOpen();
         return;
       }
+      if (clicked === "open-external") {
+        handleOpenExternally();
+        return;
+      }
       if (clicked === "copy-relative") {
         handleCopy(displayPath, "Relative path");
         return;
@@ -458,7 +473,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         handleCopy(targetPath, "Full path");
       }
     },
-    [displayPath, handleCopy, handleOpen, targetPath],
+    [displayPath, handleCopy, handleOpen, handleOpenExternally, targetPath],
   );
 
   return (
@@ -506,6 +521,7 @@ function areMarkdownFileLinkPropsEqual(
     previous.targetPath === next.targetPath &&
     previous.displayPath === next.displayPath &&
     previous.filePath === next.filePath &&
+    previous.line === next.line &&
     previous.label === next.label &&
     previous.theme === next.theme &&
     previous.className === next.className
@@ -574,6 +590,7 @@ function ChatMarkdown({
             targetPath={fileLinkMeta.targetPath}
             displayPath={fileLinkMeta.displayPath}
             filePath={fileLinkMeta.filePath}
+            line={fileLinkMeta.line}
             label={labelParts.join(" · ")}
             theme={resolvedTheme}
             className={props.className}

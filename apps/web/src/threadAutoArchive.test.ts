@@ -101,6 +101,7 @@ describe("thread auto-archive candidates", () => {
     const project: Project = {
       id: PROJECT_ID,
       environmentId: ENVIRONMENT_ID,
+      kind: "workspace" as const,
       name: "Project A",
       cwd: "/tmp/project-a",
       defaultModelSelection: null,

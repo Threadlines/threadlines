@@ -6,7 +6,7 @@ import {
   type ResolvedKeybindingsConfig,
 } from "@threadlines/contracts";
 import { memo } from "react";
-import { GitForkIcon, TerminalSquareIcon } from "lucide-react";
+import { FolderInputIcon, FolderOpenIcon, GitForkIcon, TerminalSquareIcon } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import ProjectScriptsControl, { type NewProjectScriptInput } from "../ProjectScriptsControl";
@@ -14,6 +14,7 @@ import { Toggle } from "../ui/toggle";
 import { SidebarOpenTrigger } from "../ui/sidebar";
 import { SourceControlIcon } from "../Icons";
 import { OpenInPicker } from "./OpenInPicker";
+import { openActiveFileViewer } from "../../fileViewerStore";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
 import {
   ThreadActivityPopover,
@@ -42,6 +43,10 @@ interface ChatHeaderProps {
   terminalToggleShortcutLabel: string | null;
   sourceControlToggleShortcutLabel: string | null;
   sourceControlOpen: boolean;
+  /** False for capability-gated threads (General Chats) even when a project name exists. */
+  sourceControlAvailable: boolean;
+  /** False for General Chats: their scratch workspace has no files worth browsing. */
+  fileBrowserAvailable: boolean;
   taskProgress: ThreadTaskProgressState | null;
   subagentProgress: SubagentProgressState | null;
   forkContext: ForkHeaderContext | null;
@@ -55,6 +60,8 @@ interface ChatHeaderProps {
   onOpenForkSourceThread: (threadId: ThreadId) => void;
   onToggleTerminal: () => void;
   onToggleSourceControl: () => void;
+  /** Present only for General Chat threads that can continue into a project. */
+  onContinueInProject?: ((event: React.MouseEvent<HTMLButtonElement>) => void) | undefined;
 }
 
 export function shouldShowOpenInPicker(input: {
@@ -84,6 +91,8 @@ export const ChatHeader = memo(function ChatHeader({
   terminalToggleShortcutLabel,
   sourceControlToggleShortcutLabel,
   sourceControlOpen,
+  sourceControlAvailable,
+  fileBrowserAvailable,
   taskProgress,
   subagentProgress,
   forkContext,
@@ -97,13 +106,16 @@ export const ChatHeader = memo(function ChatHeader({
   onOpenForkSourceThread,
   onToggleTerminal,
   onToggleSourceControl,
+  onContinueInProject,
 }: ChatHeaderProps) {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const showOpenInPicker = shouldShowOpenInPicker({
-    activeProjectName,
-    activeThreadEnvironmentId,
-    primaryEnvironmentId,
-  });
+  const showOpenInPicker =
+    openInCwd !== null &&
+    shouldShowOpenInPicker({
+      activeProjectName,
+      activeThreadEnvironmentId,
+      primaryEnvironmentId,
+    });
 
   return (
     <div className="@container/header-actions flex min-w-0 flex-1 items-center gap-2">
@@ -178,6 +190,52 @@ export const ChatHeader = memo(function ChatHeader({
           />
         )}
         <div className="flex shrink-0 items-center gap-1">
+          {onContinueInProject ? (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <button
+                    type="button"
+                    aria-label="Continue in project"
+                    className="inline-flex h-6 shrink-0 cursor-pointer items-center gap-1.5 rounded-md border border-border/70 bg-background px-2 text-[11px] text-foreground/85 transition-colors hover:bg-foreground/10 hover:text-foreground"
+                    onClick={onContinueInProject}
+                  >
+                    <FolderInputIcon className="size-3" />
+                    <span className="max-sm:hidden">Continue in project</span>
+                  </button>
+                }
+              />
+              <TooltipPopup side="bottom">
+                Start a project thread seeded with this chat
+              </TooltipPopup>
+            </Tooltip>
+          ) : null}
+          {fileBrowserAvailable ? (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Toggle
+                    className="shrink-0"
+                    pressed={false}
+                    onPressedChange={() => {
+                      openActiveFileViewer();
+                    }}
+                    aria-label="Browse project files"
+                    variant="outline"
+                    size="xs"
+                    disabled={!terminalAvailable}
+                  >
+                    <FolderOpenIcon className="size-3" />
+                  </Toggle>
+                }
+              />
+              <TooltipPopup side="bottom">
+                {!terminalAvailable
+                  ? "File viewer is unavailable until this thread has an active project."
+                  : "Browse project files"}
+              </TooltipPopup>
+            </Tooltip>
+          ) : null}
           <Tooltip>
             <TooltipTrigger
               render={
@@ -202,30 +260,32 @@ export const ChatHeader = memo(function ChatHeader({
                   : "Toggle terminal drawer"}
             </TooltipPopup>
           </Tooltip>
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Toggle
-                  className="shrink-0"
-                  pressed={sourceControlOpen}
-                  onPressedChange={onToggleSourceControl}
-                  aria-label="Toggle source control panel"
-                  variant="outline"
-                  size="xs"
-                  disabled={!activeProjectName && !sourceControlOpen}
-                >
-                  <SourceControlIcon className="size-[11px]" />
-                </Toggle>
-              }
-            />
-            <TooltipPopup side="bottom">
-              {!activeProjectName && !sourceControlOpen
-                ? "Source control is unavailable until this thread has an active project."
-                : sourceControlToggleShortcutLabel
-                  ? `Toggle source control panel (${sourceControlToggleShortcutLabel})`
-                  : "Toggle source control panel"}
-            </TooltipPopup>
-          </Tooltip>
+          {sourceControlAvailable || sourceControlOpen ? (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Toggle
+                    className="shrink-0"
+                    pressed={sourceControlOpen}
+                    onPressedChange={onToggleSourceControl}
+                    aria-label="Toggle source control panel"
+                    variant="outline"
+                    size="xs"
+                    disabled={!sourceControlAvailable && !sourceControlOpen}
+                  >
+                    <SourceControlIcon className="size-[11px]" />
+                  </Toggle>
+                }
+              />
+              <TooltipPopup side="bottom">
+                {!sourceControlAvailable && !sourceControlOpen
+                  ? "Source control is unavailable until this thread has an active project."
+                  : sourceControlToggleShortcutLabel
+                    ? `Toggle source control panel (${sourceControlToggleShortcutLabel})`
+                    : "Toggle source control panel"}
+              </TooltipPopup>
+            </Tooltip>
+          ) : null}
         </div>
       </div>
     </div>

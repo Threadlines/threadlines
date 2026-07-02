@@ -284,7 +284,9 @@ export class GitVcsDriver extends Context.Service<GitVcsDriver, GitVcsDriverShap
 
 const WORKSPACE_FILES_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 const GIT_CHECK_IGNORE_MAX_STDIN_BYTES = 256 * 1024;
+const GIT_PATH_ARGS_MAX_BYTES = 256 * 1024;
 const CHECKPOINT_DIFF_MAX_OUTPUT_BYTES = 10_000_000;
+const CHECKPOINT_ENTRIES_MAX_OUTPUT_BYTES = 16_000_000;
 const CHECKPOINT_MIGRATION_MAX_OUTPUT_BYTES = 16_000_000;
 const WORKSPACE_GIT_HARDENED_CONFIG_ARGS = [
   "-c",
@@ -313,14 +315,17 @@ function splitNullSeparatedPaths(input: string, truncated: boolean): string[] {
   return parts.filter((value) => value.length > 0);
 }
 
-function chunkPathsForGitCheckIgnore(relativePaths: ReadonlyArray<string>): string[][] {
+function chunkPathsByByteBudget(
+  relativePaths: ReadonlyArray<string>,
+  maxChunkBytes: number,
+): string[][] {
   const chunks: string[][] = [];
   let chunk: string[] = [];
   let chunkBytes = 0;
 
   for (const relativePath of relativePaths) {
     const relativePathBytes = Buffer.byteLength(relativePath) + 1;
-    if (chunk.length > 0 && chunkBytes + relativePathBytes > GIT_CHECK_IGNORE_MAX_STDIN_BYTES) {
+    if (chunk.length > 0 && chunkBytes + relativePathBytes > maxChunkBytes) {
       chunks.push(chunk);
       chunk = [];
       chunkBytes = 0;
@@ -329,7 +334,7 @@ function chunkPathsForGitCheckIgnore(relativePaths: ReadonlyArray<string>): stri
     chunk.push(relativePath);
     chunkBytes += relativePathBytes;
 
-    if (chunkBytes >= GIT_CHECK_IGNORE_MAX_STDIN_BYTES) {
+    if (chunkBytes >= maxChunkBytes) {
       chunks.push(chunk);
       chunk = [];
       chunkBytes = 0;
@@ -341,6 +346,10 @@ function chunkPathsForGitCheckIgnore(relativePaths: ReadonlyArray<string>): stri
   }
 
   return chunks;
+}
+
+function chunkPathsForGitCheckIgnore(relativePaths: ReadonlyArray<string>): string[][] {
+  return chunkPathsByByteBudget(relativePaths, GIT_CHECK_IGNORE_MAX_STDIN_BYTES);
 }
 
 function parseGitRemoteVerboseOutput(
@@ -373,6 +382,52 @@ function parseGitRemoteVerboseOutput(
     remotes.set(name, remote);
   }
   return remotes;
+}
+
+const ZERO_OID_PATTERN = /^0+$/u;
+// Regular file blobs only; symlinks (120000) and gitlinks (160000) are flagged
+// so selective revert refuses to touch them.
+const SUPPORTED_CHECKPOINT_ENTRY_MODES = new Set(["000000", "100644", "100755"]);
+
+interface RawCheckpointEntry {
+  readonly path: string;
+  readonly fromOid: string | null;
+  readonly toOid: string | null;
+  readonly hasUnsupportedMode: boolean;
+}
+
+// Parses `git diff-tree -r -z --no-renames` output: NUL-separated pairs of
+// ":<srcmode> <dstmode> <srcoid> <dstoid> <status>" followed by the path.
+function parseDiffTreeEntries(stdout: string): RawCheckpointEntry[] {
+  const tokens = stdout.split("\0").filter((token) => token.length > 0);
+  const entries: RawCheckpointEntry[] = [];
+
+  for (let index = 0; index + 1 < tokens.length; index += 2) {
+    const meta = tokens[index];
+    const entryPath = tokens[index + 1];
+    if (!meta?.startsWith(":") || !entryPath) {
+      continue;
+    }
+    const [srcMode = "", dstMode = "", srcOid = "", dstOid = ""] = meta.slice(1).split(" ");
+    if (srcOid.length < 40 || dstOid.length < 40) {
+      continue;
+    }
+    entries.push({
+      path: entryPath,
+      fromOid: ZERO_OID_PATTERN.test(srcOid) ? null : srcOid,
+      toOid: ZERO_OID_PATTERN.test(dstOid) ? null : dstOid,
+      hasUnsupportedMode:
+        !SUPPORTED_CHECKPOINT_ENTRY_MODES.has(srcMode) ||
+        !SUPPORTED_CHECKPOINT_ENTRY_MODES.has(dstMode),
+    });
+  }
+
+  return entries;
+}
+
+// Wraps a repo-relative path so git treats it verbatim (no glob expansion).
+function literalPathspec(relativePath: string): string {
+  return `:(literal)${relativePath}`;
 }
 
 const gitCommand = (
@@ -663,6 +718,16 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       return path.isAbsolute(gitCommonDir) ? gitCommonDir : path.resolve(cwd, gitCommonDir);
     });
 
+  // Checkpoint snapshots store repository-root-relative paths; selective
+  // restore operations anchor path arguments at the worktree toplevel so a
+  // session cwd inside a subdirectory still addresses the right files.
+  const resolveWorktreeToplevel = (cwd: string) =>
+    execute({
+      operation: "GitVcsDriver.checkpoints.resolveWorktreeToplevel",
+      cwd,
+      args: ["rev-parse", "--show-toplevel"],
+    }).pipe(Effect.map((result) => result.stdout.trim()));
+
   const parseRefListing = (stdout: string): ReadonlyArray<string> =>
     stdout
       .split("\n")
@@ -865,6 +930,238 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
 
       return true;
     }),
+
+    resolveCheckpointCommit: Effect.fn("GitVcsDriver.checkpoints.resolveCheckpointCommit")(
+      function* (input) {
+        yield* ensureLegacyCheckpointRefsMigrated(input.cwd);
+        const commitOid = yield* resolveCheckpointCommit(input.cwd, input.checkpointRef);
+        if (commitOid) {
+          return commitOid;
+        }
+        if (input.fallbackToHead === true) {
+          return yield* resolveHeadCommit(input.cwd);
+        }
+        return null;
+      },
+    ),
+
+    diffCheckpointEntries: Effect.fn("GitVcsDriver.checkpoints.diffCheckpointEntries")(
+      function* (input) {
+        const operation = "GitVcsDriver.checkpoints.diffCheckpointEntries";
+        const result = yield* execute({
+          operation,
+          cwd: input.cwd,
+          args: ["diff-tree", "-r", "-z", "--no-renames", input.fromCommit, input.toCommit],
+          maxOutputBytes: CHECKPOINT_ENTRIES_MAX_OUTPUT_BYTES,
+        });
+        if (result.stdoutTruncated) {
+          return yield* new VcsProcessExitError({
+            operation,
+            command: "git diff-tree",
+            cwd: input.cwd,
+            exitCode: 0,
+            detail: "Checkpoint entry listing exceeded the output limit.",
+          });
+        }
+        return parseDiffTreeEntries(result.stdout);
+      },
+    ),
+
+    hashWorktreePaths: Effect.fn("GitVcsDriver.checkpoints.hashWorktreePaths")(function* (input) {
+      const operation = "GitVcsDriver.checkpoints.hashWorktreePaths";
+      if (input.paths.length === 0) {
+        return [];
+      }
+      const toplevel = yield* resolveWorktreeToplevel(input.cwd);
+
+      const kinds = new Map<string, VcsDriver.VcsWorktreePathKind>();
+      const hashablePaths: string[] = [];
+      for (const relativePath of input.paths) {
+        const info = yield* fileSystem
+          .stat(path.join(toplevel, relativePath))
+          .pipe(Effect.catch(() => Effect.succeed(null)));
+        if (info === null) {
+          kinds.set(relativePath, "missing");
+        } else if (info.type === "File") {
+          kinds.set(relativePath, "file");
+          hashablePaths.push(relativePath);
+        } else {
+          kinds.set(relativePath, "other");
+        }
+      }
+
+      const oids = new Map<string, string>();
+      for (const chunk of chunkPathsByByteBudget(hashablePaths, GIT_PATH_ARGS_MAX_BYTES)) {
+        const result = yield* execute({
+          operation,
+          cwd: toplevel,
+          args: ["hash-object", "--stdin-paths"],
+          stdin: `${chunk.join("\n")}\n`,
+          maxOutputBytes: WORKSPACE_FILES_MAX_OUTPUT_BYTES,
+        });
+        const lines = result.stdout
+          .split("\n")
+          .map((line) => line.trim())
+          .filter((line) => line.length > 0);
+        if (lines.length !== chunk.length) {
+          return yield* new VcsProcessExitError({
+            operation,
+            command: "git hash-object",
+            cwd: input.cwd,
+            exitCode: 0,
+            detail: `Expected ${chunk.length} hashes but received ${lines.length}.`,
+          });
+        }
+        chunk.forEach((relativePath, index) => {
+          oids.set(relativePath, lines[index] ?? "");
+        });
+      }
+
+      return input.paths.map((relativePath) => {
+        const kind = kinds.get(relativePath) ?? "missing";
+        const oid = kind === "file" ? (oids.get(relativePath) ?? null) : null;
+        return { path: relativePath, kind, oid };
+      });
+    }),
+
+    restoreCheckpointPaths: Effect.fn("GitVcsDriver.checkpoints.restoreCheckpointPaths")(
+      function* (input) {
+        const operation = "GitVcsDriver.checkpoints.restoreCheckpointPaths";
+        if (input.restorePaths.length === 0 && input.deletePaths.length === 0) {
+          return;
+        }
+        const toplevel = yield* resolveWorktreeToplevel(input.cwd);
+
+        for (const chunk of chunkPathsByByteBudget(input.restorePaths, GIT_PATH_ARGS_MAX_BYTES)) {
+          yield* execute({
+            operation,
+            cwd: toplevel,
+            args: [
+              "restore",
+              "--source",
+              input.checkpointCommit,
+              "--worktree",
+              "--staged",
+              "--",
+              ...chunk.map(literalPathspec),
+            ],
+          });
+        }
+
+        for (const relativePath of input.deletePaths) {
+          const absolutePath = path.resolve(toplevel, relativePath);
+          if (!absolutePath.startsWith(`${toplevel}${path.sep}`)) {
+            return yield* new VcsProcessExitError({
+              operation,
+              command: "rm",
+              cwd: input.cwd,
+              exitCode: 1,
+              detail: `Refusing to delete a path outside the worktree: ${relativePath}`,
+            });
+          }
+          yield* fileSystem.remove(absolutePath, { force: true }).pipe(
+            Effect.mapError(
+              (error) =>
+                new VcsProcessExitError({
+                  operation,
+                  command: "rm",
+                  cwd: input.cwd,
+                  exitCode: 1,
+                  detail: `Failed to delete '${relativePath}': ${error.message}`,
+                }),
+            ),
+          );
+        }
+
+        // Mirror whole-checkout restore semantics: the index ends up matching
+        // HEAD for the touched paths, leaving the revert as unstaged changes.
+        const headExists = yield* hasHeadCommit(toplevel);
+        if (headExists) {
+          const touchedPaths = [...input.restorePaths, ...input.deletePaths];
+          for (const chunk of chunkPathsByByteBudget(touchedPaths, GIT_PATH_ARGS_MAX_BYTES)) {
+            yield* execute({
+              operation,
+              cwd: toplevel,
+              args: ["reset", "--quiet", "--", ...chunk.map(literalPathspec)],
+              allowNonZeroExit: true,
+            });
+          }
+        }
+      },
+    ),
+
+    // Applies the inverse of a single file's snapshot transition onto the
+    // current worktree file. Returns false when the patch does not apply
+    // cleanly (overlapping later edits, binary content, or a truncated
+    // patch), leaving the file untouched: `git apply` matches hunk context
+    // strictly and never fuzzes.
+    restoreCheckpointFileHunks: Effect.fn("GitVcsDriver.checkpoints.restoreCheckpointFileHunks")(
+      function* (input) {
+        const operation = "GitVcsDriver.checkpoints.restoreCheckpointFileHunks";
+        const toplevel = yield* resolveWorktreeToplevel(input.cwd);
+
+        // No --binary: binary transitions render as an unapplyable stub and
+        // fail the apply check below, which is the safe outcome.
+        const patchResult = yield* execute({
+          operation,
+          cwd: toplevel,
+          args: [
+            "diff",
+            "--full-index",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            input.fromCommit,
+            input.toCommit,
+            "--",
+            literalPathspec(input.path),
+          ],
+          maxOutputBytes: CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,
+        });
+        if (patchResult.stdoutTruncated) {
+          return false;
+        }
+        const patch = patchResult.stdout;
+        if (patch.trim().length === 0) {
+          return false;
+        }
+
+        const checkResult = yield* execute({
+          operation,
+          cwd: toplevel,
+          args: ["apply", "--check", "--whitespace=nowarn"],
+          stdin: patch,
+          allowNonZeroExit: true,
+        });
+        if (checkResult.exitCode !== 0) {
+          return false;
+        }
+
+        const applyResult = yield* execute({
+          operation,
+          cwd: toplevel,
+          args: ["apply", "--whitespace=nowarn"],
+          stdin: patch,
+          allowNonZeroExit: true,
+        });
+        if (applyResult.exitCode !== 0) {
+          return false;
+        }
+
+        // Mirror whole-checkout restore semantics for the touched path.
+        const headExists = yield* hasHeadCommit(toplevel);
+        if (headExists) {
+          yield* execute({
+            operation,
+            cwd: toplevel,
+            args: ["reset", "--quiet", "--", literalPathspec(input.path)],
+            allowNonZeroExit: true,
+          });
+        }
+
+        return true;
+      },
+    ),
 
     diffCheckpoints: Effect.fn("GitVcsDriver.checkpoints.diffCheckpoints")(function* (input) {
       const operation = "GitVcsDriver.checkpoints.diffCheckpoints";

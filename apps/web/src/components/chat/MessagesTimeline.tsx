@@ -24,6 +24,7 @@ import {
   type WheelEvent as ReactWheelEvent,
 } from "react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
+import { useQueries } from "@tanstack/react-query";
 import { isProviderAuthErrorMessage } from "@threadlines/shared/providerAuth";
 import {
   deriveTimelineEntries,
@@ -35,6 +36,8 @@ import {
 } from "../../session-logic";
 import { DEFAULT_SCROLL_END_TOLERANCE_PX, isScrollMetricsAtEnd } from "../ChatView.logic";
 import { type TurnDiffSummary } from "../../types";
+import { chatAttachmentPreviewQueryOptions } from "../../lib/attachmentPreviewQuery";
+import { environmentUsesRelayTransport } from "../../environments/runtime";
 import { summarizeTurnDiffStats } from "../../lib/turnDiffTree";
 import ChatMarkdown from "../ChatMarkdown";
 import {
@@ -1084,9 +1087,52 @@ function ForkContextTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "fo
   );
 }
 
+const EMPTY_IMAGE_PREVIEW_ITEMS: ReadonlyArray<TimelineImagePreviewItem> = [];
+
+/**
+ * Message attachments carry HTTP preview URLs against the environment's base
+ * URL. Relay-paired environments (phonelink) can't reach that route — the
+ * relay tunnels only the WebSocket — so swap those previews for data URLs
+ * fetched over the RPC channel. Locally-echoed blob/data previews (composer
+ * handoff) pass through untouched. Only chat attachments belong here: work
+ * entry images may carry foreign http URLs that are not stored attachments.
+ */
+function useResolvedAttachmentPreviews(
+  images: ReadonlyArray<TimelineImagePreviewItem>,
+): ReadonlyArray<TimelineImagePreviewItem> {
+  const ctx = use(TimelineRowCtx);
+  const environmentId = ctx.activeThreadEnvironmentId;
+  const rpcImages =
+    images.length > 0 && environmentUsesRelayTransport(environmentId)
+      ? images.filter((image) => image.previewUrl && /^https?:/i.test(image.previewUrl))
+      : EMPTY_IMAGE_PREVIEW_ITEMS;
+  const previewQueries = useQueries({
+    queries: rpcImages.map((image) =>
+      chatAttachmentPreviewQueryOptions({ environmentId, attachmentId: image.id }),
+    ),
+  });
+  if (rpcImages.length === 0) {
+    return images;
+  }
+
+  const dataUrlById = new Map<string, string | undefined>();
+  rpcImages.forEach((image, index) => {
+    dataUrlById.set(image.id, previewQueries[index]?.data);
+  });
+  return images.map((image) => {
+    if (!dataUrlById.has(image.id)) {
+      return image;
+    }
+    const dataUrl = dataUrlById.get(image.id);
+    // While the RPC fetch is pending (or failed), drop the unreachable HTTP
+    // URL so the grid shows its name placeholder instead of a broken image.
+    return dataUrl ? { ...image, previewUrl: dataUrl } : { id: image.id, name: image.name };
+  });
+}
+
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
-  const userImages = row.message.attachments ?? [];
+  const userImages = useResolvedAttachmentPreviews(row.message.attachments ?? []);
   const displayedUserMessage = deriveDisplayedUserMessageState(row.message.text);
   const terminalContexts = displayedUserMessage.contexts;
   const transcriptHighlights = displayedUserMessage.transcriptHighlights;

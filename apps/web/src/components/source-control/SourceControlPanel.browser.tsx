@@ -85,6 +85,7 @@ vi.mock("~/environments/runtime", () => {
     connectDesktopSshEnvironment: vi.fn(async () => undefined),
     disconnectSavedEnvironment: vi.fn(async () => undefined),
     ensureEnvironmentConnectionBootstrapped: vi.fn(async () => undefined),
+    environmentUsesRelayTransport: vi.fn(() => false),
     getEnvironmentHttpBaseUrl: vi.fn(() => null),
     getPrimaryEnvironmentConnection: vi.fn(() => connection),
     getSavedEnvironmentRecord: vi.fn(() => null),

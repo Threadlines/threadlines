@@ -14,7 +14,8 @@ import {
   checkpointRefForThreadTurn,
 } from "../Utils.ts";
 import { CheckpointDiffQueryLive } from "./CheckpointDiffQuery.ts";
-import { CheckpointStore, type CheckpointStoreShape } from "../Services/CheckpointStore.ts";
+import { CheckpointStore } from "../Services/CheckpointStore.ts";
+import { makeCheckpointStoreStub } from "../testing/CheckpointStoreStub.ts";
 import { CheckpointDiffQuery } from "../Services/CheckpointDiffQuery.ts";
 
 function makeThreadCheckpointContext(input: {
@@ -59,11 +60,7 @@ describe("CheckpointDiffQueryLive", () => {
       readonly ignoreWhitespace: boolean;
     }> = [];
 
-    const checkpointStore: CheckpointStoreShape = {
-      isGitRepository: () => Effect.succeed(true),
-      captureCheckpoint: () => Effect.void,
-      hasCheckpointRef: () => Effect.succeed(false),
-      restoreCheckpoint: () => Effect.succeed(true),
+    const checkpointStore = makeCheckpointStoreStub({
       diffCheckpoints: ({ fromCheckpointRef, toCheckpointRef, cwd, ignoreWhitespace }) =>
         Effect.sync(() => {
           diffCheckpointsCalls.push({
@@ -74,8 +71,7 @@ describe("CheckpointDiffQueryLive", () => {
           });
           return "full thread diff patch";
         }),
-      deleteCheckpointRefs: () => Effect.void,
-    };
+    });
 
     const layer = CheckpointDiffQueryLive.pipe(
       Layer.provideMerge(Layer.succeed(CheckpointStore, checkpointStore)),
@@ -166,11 +162,7 @@ describe("CheckpointDiffQueryLive", () => {
       checkpointRef: toCheckpointRef,
     });
 
-    const checkpointStore: CheckpointStoreShape = {
-      isGitRepository: () => Effect.succeed(true),
-      captureCheckpoint: () => Effect.void,
-      hasCheckpointRef: () => Effect.succeed(false),
-      restoreCheckpoint: () => Effect.succeed(true),
+    const checkpointStore = makeCheckpointStoreStub({
       diffCheckpoints: ({ fromCheckpointRef, toCheckpointRef, cwd, ignoreWhitespace }) =>
         Effect.sync(() => {
           diffCheckpointsCalls.push({
@@ -181,8 +173,7 @@ describe("CheckpointDiffQueryLive", () => {
           });
           return "diff patch";
         }),
-      deleteCheckpointRefs: () => Effect.void,
-    };
+    });
 
     const layer = CheckpointDiffQueryLive.pipe(
       Layer.provideMerge(Layer.succeed(CheckpointStore, checkpointStore)),
@@ -283,12 +274,9 @@ describe("CheckpointDiffQueryLive", () => {
       ],
     };
 
-    const checkpointStore: CheckpointStoreShape = {
-      isGitRepository: () => Effect.succeed(true),
-      captureCheckpoint: () => Effect.void,
+    const checkpointStore = makeCheckpointStoreStub({
       hasCheckpointRef: ({ checkpointRef }) =>
         Effect.succeed(checkpointRef === preTurnCheckpointRef),
-      restoreCheckpoint: () => Effect.succeed(true),
       diffCheckpoints: ({ fromCheckpointRef, toCheckpointRef, cwd, ignoreWhitespace }) =>
         Effect.sync(() => {
           diffCheckpointsCalls.push({
@@ -299,8 +287,7 @@ describe("CheckpointDiffQueryLive", () => {
           });
           return "pre-turn diff patch";
         }),
-      deleteCheckpointRefs: () => Effect.void,
-    };
+    });
 
     const layer = CheckpointDiffQueryLive.pipe(
       Layer.provideMerge(Layer.succeed(CheckpointStore, checkpointStore)),
@@ -365,18 +352,14 @@ describe("CheckpointDiffQueryLive", () => {
       checkpointRef: toCheckpointRef,
     });
 
-    const checkpointStore: CheckpointStoreShape = {
-      isGitRepository: () => Effect.succeed(true),
-      captureCheckpoint: () => Effect.void,
+    const checkpointStore = makeCheckpointStoreStub({
       hasCheckpointRef: () => Effect.succeed(true),
-      restoreCheckpoint: () => Effect.succeed(true),
       diffCheckpoints: ({ ignoreWhitespace }) =>
         Effect.sync(() => {
           diffCheckpointsCalls.push({ ignoreWhitespace });
           return "diff patch";
         }),
-      deleteCheckpointRefs: () => Effect.void,
-    };
+    });
 
     const layer = CheckpointDiffQueryLive.pipe(
       Layer.provideMerge(Layer.succeed(CheckpointStore, checkpointStore)),
@@ -433,22 +416,18 @@ describe("CheckpointDiffQueryLive", () => {
       checkpointRef: toCheckpointRef,
     });
 
-    const checkpointStore: CheckpointStoreShape = {
-      isGitRepository: () => Effect.succeed(true),
-      captureCheckpoint: () => Effect.void,
+    const checkpointStore = makeCheckpointStoreStub({
       hasCheckpointRef: ({ checkpointRef }) =>
         Effect.sync(() => {
           hasCheckpointRefCalls.push(checkpointRef);
           return false;
         }),
-      restoreCheckpoint: () => Effect.succeed(true),
       diffCheckpoints: ({ fromCheckpointRef }) =>
         Effect.sync(() => {
           diffCheckpointsCalls.push(fromCheckpointRef);
           return "diff patch";
         }),
-      deleteCheckpointRefs: () => Effect.void,
-    };
+    });
 
     const layer = CheckpointDiffQueryLive.pipe(
       Layer.provideMerge(Layer.succeed(CheckpointStore, checkpointStore)),
@@ -497,14 +476,9 @@ describe("CheckpointDiffQueryLive", () => {
   it("fails when the thread is missing from the snapshot", async () => {
     const threadId = ThreadId.make("thread-missing");
 
-    const checkpointStore: CheckpointStoreShape = {
-      isGitRepository: () => Effect.succeed(true),
-      captureCheckpoint: () => Effect.void,
+    const checkpointStore = makeCheckpointStoreStub({
       hasCheckpointRef: () => Effect.succeed(true),
-      restoreCheckpoint: () => Effect.succeed(true),
-      diffCheckpoints: () => Effect.succeed(""),
-      deleteCheckpointRefs: () => Effect.void,
-    };
+    });
 
     const layer = CheckpointDiffQueryLive.pipe(
       Layer.provideMerge(Layer.succeed(CheckpointStore, checkpointStore)),

@@ -148,6 +148,7 @@ it.effect("resolveAutoBootstrapWelcomeTargets returns existing project and threa
           Effect.succeed(
             Option.some({
               id: bootstrapProjectId,
+              kind: "workspace" as const,
               title: "Startup Project",
               workspaceRoot: "/tmp/startup-project",
               defaultModelSelection: getAutoBootstrapDefaultModelSelection(),

@@ -40,6 +40,66 @@ export interface DeleteCheckpointRefsInput {
   readonly checkpointRefs: ReadonlyArray<CheckpointRef>;
 }
 
+export interface ResolveCheckpointCommitInput {
+  readonly cwd: string;
+  readonly checkpointRef: CheckpointRef;
+  readonly fallbackToHead?: boolean;
+}
+
+export interface DiffCheckpointEntriesInput {
+  readonly cwd: string;
+  /** Resolved commit oid for the "from" side (e.g. the revert target snapshot). */
+  readonly fromCommit: string;
+  /** Resolved commit oid for the "to" side (e.g. the thread's latest snapshot). */
+  readonly toCommit: string;
+}
+
+export interface CheckpointEntry {
+  /** Repository-root-relative path. */
+  readonly path: string;
+  /** Blob oid on the "from" side, or null when the path does not exist there. */
+  readonly fromOid: string | null;
+  /** Blob oid on the "to" side, or null when the path does not exist there. */
+  readonly toOid: string | null;
+  /** True when either side is not a regular file blob (symlink, submodule, ...). */
+  readonly hasUnsupportedMode: boolean;
+}
+
+export interface HashWorktreePathsInput {
+  readonly cwd: string;
+  /** Repository-root-relative paths. */
+  readonly paths: ReadonlyArray<string>;
+}
+
+export type WorktreePathKind = "file" | "missing" | "other";
+
+export interface WorktreePathState {
+  readonly path: string;
+  readonly kind: WorktreePathKind;
+  /** Blob oid of the current worktree content; null unless kind is "file". */
+  readonly oid: string | null;
+}
+
+export interface RestoreCheckpointPathsInput {
+  readonly cwd: string;
+  /** Resolved commit oid of the snapshot to restore path contents from. */
+  readonly checkpointCommit: string;
+  /** Repository-root-relative paths that exist in the snapshot. */
+  readonly restorePaths: ReadonlyArray<string>;
+  /** Repository-root-relative paths absent from the snapshot (deleted on restore). */
+  readonly deletePaths: ReadonlyArray<string>;
+}
+
+export interface RestoreCheckpointFileHunksInput {
+  readonly cwd: string;
+  /** Resolved commit oid of the thread's latest snapshot (patch "from" side). */
+  readonly fromCommit: string;
+  /** Resolved commit oid of the revert target snapshot (patch "to" side). */
+  readonly toCommit: string;
+  /** Repository-root-relative path to patch. */
+  readonly path: string;
+}
+
 /**
  * CheckpointStoreShape - Service API for checkpoint capture/restore and diff access.
  */
@@ -75,6 +135,16 @@ export interface CheckpointStoreShape {
   ) => Effect.Effect<boolean, CheckpointStoreError>;
 
   /**
+   * Resolve a checkpoint ref to its commit oid.
+   *
+   * Optionally falls back to current `HEAD` when the checkpoint ref is missing.
+   * Returns null when neither resolves.
+   */
+  readonly resolveCheckpointCommit: (
+    input: ResolveCheckpointCommitInput,
+  ) => Effect.Effect<string | null, CheckpointStoreError>;
+
+  /**
    * Compute patch diff between two checkpoint refs.
    *
    * Can optionally treat missing "from" ref as `HEAD`.
@@ -82,6 +152,39 @@ export interface CheckpointStoreShape {
   readonly diffCheckpoints: (
     input: DiffCheckpointsInput,
   ) => Effect.Effect<string, CheckpointStoreError>;
+
+  /**
+   * List per-path blob transitions between two checkpoint commits.
+   */
+  readonly diffCheckpointEntries: (
+    input: DiffCheckpointEntriesInput,
+  ) => Effect.Effect<ReadonlyArray<CheckpointEntry>, CheckpointStoreError>;
+
+  /**
+   * Report the current worktree state (kind and blob oid) for the given paths.
+   */
+  readonly hashWorktreePaths: (
+    input: HashWorktreePathsInput,
+  ) => Effect.Effect<ReadonlyArray<WorktreePathState>, CheckpointStoreError>;
+
+  /**
+   * Restore only the given paths to a checkpoint's state, leaving all other
+   * workspace files untouched. Used by shared-checkout selective revert.
+   */
+  readonly restoreCheckpointPaths: (
+    input: RestoreCheckpointPathsInput,
+  ) => Effect.Effect<void, CheckpointStoreError>;
+
+  /**
+   * Apply the inverse of a single file's snapshot transition onto the current
+   * worktree file, preserving non-overlapping later edits by other actors.
+   *
+   * Returns false (leaving the file untouched) when the inverse patch does
+   * not apply cleanly.
+   */
+  readonly restoreCheckpointFileHunks: (
+    input: RestoreCheckpointFileHunksInput,
+  ) => Effect.Effect<boolean, CheckpointStoreError>;
 
   /**
    * Delete the provided checkpoint refs.

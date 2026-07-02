@@ -6,6 +6,7 @@ import type {
   RepositoryIdentity,
   OrchestrationSessionStatus,
   OrchestrationThreadActivity,
+  ProjectKind,
   ProjectScript as ContractProjectScript,
   ThreadId,
   ProjectId,
@@ -84,6 +85,7 @@ export interface TurnDiffSummary {
 export interface Project {
   id: ProjectId;
   environmentId: EnvironmentId;
+  kind: ProjectKind;
   name: string;
   cwd: string;
   repositoryIdentity?: RepositoryIdentity | null;

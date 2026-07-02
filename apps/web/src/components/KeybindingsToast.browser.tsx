@@ -143,6 +143,7 @@ function createMinimalSnapshot(): OrchestrationReadModel {
     projects: [
       {
         id: PROJECT_ID,
+        kind: "workspace" as const,
         title: "Project",
         workspaceRoot: "/repo/project",
         defaultModelSelection: {

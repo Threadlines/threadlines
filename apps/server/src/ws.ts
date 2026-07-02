@@ -1,7 +1,11 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import NodePath from "node:path";
+
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -24,6 +28,10 @@ import {
   OrchestrationGetSnapshotError,
   OrchestrationGetTurnDiffError,
   ORCHESTRATION_WS_METHODS,
+  ChatAttachmentReadError,
+  ProjectFaviconError,
+  ProjectListEntriesError,
+  ProjectReadFileError,
   ProjectSearchEntriesError,
   ProjectWriteFileError,
   OrchestrationReplayEventsError,
@@ -38,8 +46,10 @@ import { clamp } from "effect/Number";
 import { HttpRouter, HttpServerRequest } from "effect/unstable/http";
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
+import { resolveAttachmentPathById } from "./attachmentStore.ts";
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery.ts";
 import { ServerConfig } from "./config.ts";
+import { IMAGE_MIME_TYPE_BY_EXTENSION } from "./imageMime.ts";
 import { Keybindings } from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
@@ -50,6 +60,7 @@ import {
   observeRpcStream,
   observeRpcStreamEffect,
 } from "./observability/RpcInstrumentation.ts";
+import { ProjectFaviconResolver } from "./project/Services/ProjectFaviconResolver.ts";
 import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import {
@@ -194,11 +205,13 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
       const providerRegistry = yield* ProviderRegistry;
       const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
       const config = yield* ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
       const lifecycleEvents = yield* ServerLifecycleEvents;
       const serverSettings = yield* ServerSettingsService;
       const startup = yield* ServerRuntimeStartup;
       const workspaceEntries = yield* WorkspaceEntries;
       const workspaceFileSystem = yield* WorkspaceFileSystem;
+      const projectFaviconResolver = yield* ProjectFaviconResolver;
       const projectSetupScriptRunner = yield* ProjectSetupScriptRunner;
       const repositoryIdentityResolver = yield* RepositoryIdentityResolver;
       const serverEnvironment = yield* ServerEnvironment;
@@ -1248,6 +1261,102 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                 });
               }),
             ),
+            { "rpc.aggregate": "workspace" },
+          ),
+        [WS_METHODS.projectsListEntries]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.projectsListEntries,
+            workspaceEntries.list(input).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProjectListEntriesError({
+                    message: `Failed to list workspace entries: ${cause.detail}`,
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "workspace" },
+          ),
+        [WS_METHODS.projectsReadFile]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.projectsReadFile,
+            workspaceFileSystem.readFile(input).pipe(
+              Effect.mapError((cause) => {
+                const message = isWorkspacePathOutsideRootError(cause)
+                  ? "Workspace file path must stay within the project root."
+                  : `Failed to read workspace file: ${cause.detail}`;
+                return new ProjectReadFileError({
+                  message,
+                  cause,
+                });
+              }),
+            ),
+            { "rpc.aggregate": "workspace" },
+          ),
+        // Relay-paired clients (phonelink) have no HTTP path to this server,
+        // so the `/api/project-favicon` route is unreachable for them; this
+        // RPC is their favicon transport. A null favicon means "no icon
+        // found" — the client renders its own fallback glyph.
+        [WS_METHODS.projectsFavicon]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.projectsFavicon,
+            Effect.gen(function* () {
+              const faviconFilePath = yield* projectFaviconResolver.resolvePath(input.cwd);
+              if (!faviconFilePath) {
+                return { favicon: null };
+              }
+              const bytes = yield* fileSystem.readFile(faviconFilePath).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProjectFaviconError({
+                      message: `Failed to read project favicon for ${input.cwd}.`,
+                      cause,
+                    }),
+                ),
+              );
+              const extension = NodePath.extname(faviconFilePath).toLowerCase();
+              return {
+                favicon: {
+                  mimeType: IMAGE_MIME_TYPE_BY_EXTENSION[extension] ?? "application/octet-stream",
+                  base64: Buffer.from(bytes).toString("base64"),
+                },
+              };
+            }),
+            { "rpc.aggregate": "workspace" },
+          ),
+        // Relay-paired clients (phonelink) have no HTTP path to this server,
+        // so the `/attachments` route is unreachable for them; this RPC is
+        // their transport for stored attachment bytes.
+        [WS_METHODS.attachmentsRead]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.attachmentsRead,
+            Effect.gen(function* () {
+              const filePath = resolveAttachmentPathById({
+                attachmentsDir: config.attachmentsDir,
+                attachmentId: input.attachmentId,
+              });
+              if (!filePath) {
+                return yield* new ChatAttachmentReadError({
+                  message: `Attachment ${input.attachmentId} was not found.`,
+                });
+              }
+              const bytes = yield* fileSystem.readFile(filePath).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ChatAttachmentReadError({
+                      message: `Failed to read attachment ${input.attachmentId}.`,
+                      cause,
+                    }),
+                ),
+              );
+              const extension = NodePath.extname(filePath).toLowerCase();
+              return {
+                attachmentId: input.attachmentId,
+                mimeType: IMAGE_MIME_TYPE_BY_EXTENSION[extension] ?? "application/octet-stream",
+                base64: Buffer.from(bytes).toString("base64"),
+                sizeBytes: bytes.byteLength,
+              };
+            }),
             { "rpc.aggregate": "workspace" },
           ),
         [WS_METHODS.shellOpenInEditor]: (input) =>

@@ -1,13 +1,15 @@
-import type {
-  OrchestrationCommand,
-  OrchestrationEvent,
-  OrchestrationReadModel,
+import {
+  DEFAULT_PROJECT_KIND,
+  type OrchestrationCommand,
+  type OrchestrationEvent,
+  type OrchestrationReadModel,
 } from "@threadlines/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import {
+  findProjectById,
   listThreadsByProjectId,
   requireProject,
   requireProjectAbsent,
@@ -17,6 +19,7 @@ import {
   requireThreadNotArchived,
   requireThreadNotPinned,
   requireThreadPinned,
+  requireWorkspaceProject,
 } from "./commandInvariants.ts";
 import { projectEvent } from "./projector.ts";
 
@@ -103,6 +106,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "project.created",
         payload: {
           projectId: command.projectId,
+          kind: command.kind ?? DEFAULT_PROJECT_KIND,
           title: command.title,
           workspaceRoot: command.workspaceRoot,
           defaultModelSelection: command.defaultModelSelection ?? null,
@@ -114,7 +118,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "project.meta.update": {
-      yield* requireProject({
+      yield* requireWorkspaceProject({
         readModel,
         command,
         projectId: command.projectId,
@@ -142,7 +146,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "project.delete": {
-      yield* requireProject({
+      yield* requireWorkspaceProject({
         readModel,
         command,
         projectId: command.projectId,
@@ -193,11 +197,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.create": {
-      yield* requireProject({
+      const project = yield* requireProject({
         readModel,
         command,
         projectId: command.projectId,
       });
+      if (project.kind === "general-chat" && (command.branch || command.worktreePath)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "General Chat threads do not support branches or worktrees.",
+        });
+      }
       yield* requireThreadAbsent({
         readModel,
         command,
@@ -243,10 +253,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         threadId: command.sourceThreadId,
       });
       if (sourceThread.projectId !== command.projectId) {
-        return yield* new OrchestrationCommandInvariantError({
-          commandType: command.type,
-          detail: `Source thread '${command.sourceThreadId}' belongs to a different project.`,
-        });
+        // "Continue in project" forks a General Chat into a workspace
+        // project; any other cross-project fork remains invalid.
+        const sourceProject = findProjectById(readModel, sourceThread.projectId);
+        if (sourceProject?.kind !== "general-chat") {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `Source thread '${command.sourceThreadId}' belongs to a different project.`,
+          });
+        }
       }
       if (!sourceThread.messages.some((message) => message.id === command.sourceMessageId)) {
         return yield* new OrchestrationCommandInvariantError({

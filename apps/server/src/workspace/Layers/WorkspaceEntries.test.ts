@@ -154,6 +154,32 @@ it.layer(TestLayer)("WorkspaceEntriesLive", (it) => {
       }),
     );
 
+    it.effect("lists the full workspace index with parent paths for tree rendering", () =>
+      Effect.gen(function* () {
+        const workspaceEntries = yield* WorkspaceEntries;
+        const cwd = yield* makeTempDir();
+        yield* writeTextFile(cwd, "src/components/Composer.tsx");
+        yield* writeTextFile(cwd, "src/index.ts");
+        yield* writeTextFile(cwd, "README.md");
+
+        const result = yield* workspaceEntries.list({ cwd });
+
+        expect(result.truncated).toBe(false);
+        expect(result.entries).toEqual(
+          expect.arrayContaining([
+            { path: "src", kind: "directory", parentPath: undefined },
+            { path: "src/components", kind: "directory", parentPath: "src" },
+            {
+              path: "src/components/Composer.tsx",
+              kind: "file",
+              parentPath: "src/components",
+            },
+            { path: "README.md", kind: "file", parentPath: undefined },
+          ]),
+        );
+      }),
+    );
+
     it.effect("filters and ranks entries by query", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTempDir({ prefix: "threadlines-workspace-query-" });

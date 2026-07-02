@@ -57,6 +57,9 @@ import {
 } from "./git.ts";
 import { KeybindingsConfigError } from "./keybindings.ts";
 import {
+  ChatAttachmentReadError,
+  ChatAttachmentReadInput,
+  ChatAttachmentReadResult,
   ClientOrchestrationCommand,
   ORCHESTRATION_WS_METHODS,
   OrchestrationDispatchCommandError,
@@ -104,6 +107,15 @@ import {
   ProviderInstructionWriteResult,
 } from "./providerExtensions.ts";
 import {
+  ProjectFaviconError,
+  ProjectFaviconInput,
+  ProjectFaviconResult,
+  ProjectListEntriesError,
+  ProjectListEntriesInput,
+  ProjectListEntriesResult,
+  ProjectReadFileError,
+  ProjectReadFileInput,
+  ProjectReadFileResult,
   ProjectSearchEntriesError,
   ProjectSearchEntriesInput,
   ProjectSearchEntriesResult,
@@ -169,6 +181,12 @@ export const WS_METHODS = {
   projectsRemove: "projects.remove",
   projectsSearchEntries: "projects.searchEntries",
   projectsWriteFile: "projects.writeFile",
+  projectsListEntries: "projects.listEntries",
+  projectsReadFile: "projects.readFile",
+  projectsFavicon: "projects.favicon",
+
+  // Chat attachment methods
+  attachmentsRead: "attachments.read",
 
   // Shell methods
   shellOpenInEditor: "shell.openInEditor",
@@ -540,6 +558,30 @@ export const WsProjectsWriteFileRpc = Rpc.make(WS_METHODS.projectsWriteFile, {
   error: ProjectWriteFileError,
 });
 
+export const WsProjectsListEntriesRpc = Rpc.make(WS_METHODS.projectsListEntries, {
+  payload: ProjectListEntriesInput,
+  success: ProjectListEntriesResult,
+  error: ProjectListEntriesError,
+});
+
+export const WsProjectsReadFileRpc = Rpc.make(WS_METHODS.projectsReadFile, {
+  payload: ProjectReadFileInput,
+  success: ProjectReadFileResult,
+  error: ProjectReadFileError,
+});
+
+export const WsProjectsFaviconRpc = Rpc.make(WS_METHODS.projectsFavicon, {
+  payload: ProjectFaviconInput,
+  success: ProjectFaviconResult,
+  error: ProjectFaviconError,
+});
+
+export const WsAttachmentsReadRpc = Rpc.make(WS_METHODS.attachmentsRead, {
+  payload: ChatAttachmentReadInput,
+  success: ChatAttachmentReadResult,
+  error: ChatAttachmentReadError,
+});
+
 export const WsShellOpenInEditorRpc = Rpc.make(WS_METHODS.shellOpenInEditor, {
   payload: LaunchEditorInput,
   error: ExternalLauncherError,
@@ -840,6 +882,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsSourceControlPublishRepositoryRpc,
   WsProjectsSearchEntriesRpc,
   WsProjectsWriteFileRpc,
+  WsProjectsListEntriesRpc,
+  WsProjectsReadFileRpc,
+  WsProjectsFaviconRpc,
+  WsAttachmentsReadRpc,
   WsShellOpenInEditorRpc,
   WsFilesystemBrowseRpc,
   WsSubscribeVcsStatusRpc,

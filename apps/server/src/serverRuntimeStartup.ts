@@ -24,6 +24,7 @@ import * as DateTime from "effect/DateTime";
 import { ServerConfig } from "./config.ts";
 import { Keybindings } from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
+import { ensureGeneralChatsProject } from "./orchestration/generalChats.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { OrchestrationReactor } from "./orchestration/Services/OrchestrationReactor.ts";
@@ -331,6 +332,20 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
         yield* orchestrationReactor.start().pipe(Scope.provide(reactorScope));
         yield* providerSessionReaper.start().pipe(Scope.provide(reactorScope));
       }),
+    );
+
+    yield* Effect.logDebug("startup phase: ensuring general chats project");
+    yield* Effect.forkScoped(
+      runStartupPhase(
+        "general-chats.ensure",
+        ensureGeneralChatsProject().pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("failed to ensure the General Chats system project", {
+              cause,
+            }),
+          ),
+        ),
+      ),
     );
 
     const welcomeBase = yield* resolveWelcomeBase;

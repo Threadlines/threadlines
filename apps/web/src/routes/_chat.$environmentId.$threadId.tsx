@@ -32,6 +32,7 @@ import {
 } from "../rightPanelLayout";
 import { selectEnvironmentState, selectThreadExistsByRef, useStore } from "../store";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
+import { setActiveFileViewerContext, useFileViewerStore } from "../fileViewerStore";
 import { resolveThreadRouteRef, buildThreadRouteParams } from "../threadRoutes";
 import { RightPanelSheet } from "../components/RightPanelSheet";
 import { SidebarInset } from "~/components/ui/sidebar";
@@ -43,6 +44,21 @@ import {
 } from "../components/source-control/SourceControlPanel";
 
 const DiffPanel = lazy(() => import("../components/DiffPanel"));
+const FileViewerOverlay = lazy(() => import("../components/file-viewer/FileViewerOverlay"));
+
+/** Mount the heavy viewer chunk only after the first open request. */
+function LazyFileViewerOverlay() {
+  const isOpen = useFileViewerStore((state) => state.isOpen);
+  const hasContext = useFileViewerStore((state) => state.context !== null);
+  if (!isOpen && !hasContext) {
+    return null;
+  }
+  return (
+    <Suspense fallback={null}>
+      <FileViewerOverlay />
+    </Suspense>
+  );
+}
 
 const DiffLoadingFallback = (props: { mode: DiffPanelMode }) => {
   return (
@@ -108,8 +124,10 @@ function ChatThreadRouteView() {
     useMemo(() => createProjectSelectorByRef(sourceControlProjectRef), [sourceControlProjectRef]),
   );
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
+  // General Chat threads never expose source control, even via deep links.
+  const isGeneralChatThread = activeProject?.kind === "general-chat";
   const sourceControlTarget = useMemo<SourceControlProjectTarget | null>(() => {
-    if (!threadRef || !sourceControlThread || !activeProject) {
+    if (!threadRef || !sourceControlThread || !activeProject || isGeneralChatThread) {
       return null;
     }
 
@@ -123,7 +141,7 @@ function ChatThreadRouteView() {
       environmentLabel: null,
       worktreePath: sourceControlThread.worktreePath ?? null,
     };
-  }, [activeProject, sourceControlThread, threadRef]);
+  }, [activeProject, isGeneralChatThread, sourceControlThread, threadRef]);
   const handleDraftSourceControlBranchChange = useCallback(
     (branch: string | null, worktreePath: string | null) => {
       if (!threadRef) {
@@ -140,6 +158,30 @@ function ChatThreadRouteView() {
   useEffect(() => {
     setLastChatThreadRef(threadRef);
   }, [setLastChatThreadRef, threadRef]);
+
+  // Register the workspace context so chat file chips, diff rows, and the
+  // terminal affordance can open the internal file viewer from anywhere in
+  // this route without prop drilling. General Chat threads browse their
+  // per-thread scratch directory (mirrors the server's provider cwd layout).
+  const fileViewerCwd = isGeneralChatThread
+    ? activeProject
+      ? `${activeProject.cwd}/threads/${threadRef?.threadId ?? ""}`
+      : null
+    : (sourceControlTarget?.cwd ?? null);
+  useEffect(() => {
+    if (!threadRef || !fileViewerCwd) {
+      setActiveFileViewerContext(null);
+      return;
+    }
+    setActiveFileViewerContext({
+      environmentId: threadRef.environmentId,
+      cwd: fileViewerCwd,
+      threadRef,
+    });
+    return () => {
+      setActiveFileViewerContext(null);
+    };
+  }, [fileViewerCwd, threadRef]);
 
   const [diffPanelMountState, setDiffPanelMountState] = useState(() => ({
     threadKey: currentThreadKey,
@@ -195,7 +237,8 @@ function ChatThreadRouteView() {
     blocked: diffOpen,
     onAutoHide: closeRightPanel,
   });
-  const sourceControlOpen = rawSourceControlOpen && !sourceControlAutoHidden;
+  const sourceControlOpen =
+    rawSourceControlOpen && !sourceControlAutoHidden && !isGeneralChatThread;
   const rightPanelOpen = diffOpen || sourceControlOpen;
   const openSourceControl = useCallback(() => {
     if (!threadRef) {
@@ -339,6 +382,7 @@ function ChatThreadRouteView() {
         >
           {rightPanelContent}
         </ChatRightPanelInlineSidebar>
+        <LazyFileViewerOverlay />
       </>
     );
   }
@@ -360,6 +404,7 @@ function ChatThreadRouteView() {
       >
         {rightPanelContent}
       </RightPanelSheet>
+      <LazyFileViewerOverlay />
     </>
   );
 }

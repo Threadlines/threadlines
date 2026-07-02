@@ -47,6 +47,7 @@ function makeProject(
   overrides: Partial<Project> & Pick<Project, "id" | "environmentId" | "name">,
 ): Project {
   return {
+    kind: "workspace",
     cwd: `/tmp/${overrides.name}`,
     defaultModelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
     createdAt: "2026-01-01T00:00:00.000Z",

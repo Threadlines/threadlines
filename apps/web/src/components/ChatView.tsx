@@ -86,6 +86,7 @@ import {
 import {
   selectProjectsAcrossEnvironments,
   selectThreadsAcrossEnvironments,
+  selectWorkspaceProjectsAcrossEnvironments,
   useStore,
 } from "../store";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
@@ -407,6 +408,8 @@ function formatOutgoingPrompt(text: string): string {
 const FORK_SOURCE_EXCERPT_CHARS = 1_200;
 const DEFAULT_FORK_THREAD_INSTRUCTION =
   "Continue from this fork point. Use the carried context for background, inspect the current files for ground truth, and take the next best step.";
+const DEFAULT_CONTINUE_IN_PROJECT_INSTRUCTION =
+  "Continue this conversation in the project. Use the carried context for background and apply it to this repository.";
 
 type ForkThreadDialogState = {
   readonly sourceMessageId: MessageId;
@@ -415,6 +418,8 @@ type ForkThreadDialogState = {
   readonly sourceAttachmentCount: number;
   readonly instruction: string;
   readonly modelSelection: ModelSelection;
+  /** Present for "Continue in project" from a General Chat. */
+  readonly targetProject?: { readonly projectId: ProjectId; readonly name: string };
 };
 
 function buildForkSourceExcerpt(message: ChatMessage): string {
@@ -459,11 +464,15 @@ function ForkThreadDialog(props: {
     <AlertDialog open onOpenChange={props.onOpenChange}>
       <AlertDialogPopup className="max-w-2xl">
         <AlertDialogHeader>
-          <AlertDialogTitle>Continue in a new thread?</AlertDialogTitle>
+          <AlertDialogTitle>
+            {state.targetProject
+              ? `Continue in ${state.targetProject.name}?`
+              : "Continue in a new thread?"}
+          </AlertDialogTitle>
           <AlertDialogDescription>
-            This starts a separate thread immediately. It uses your current files, does not checkout
-            or revert the worktree, and carries a server-built context snapshot up to the selected
-            message.
+            {state.targetProject
+              ? `This starts a new thread in ${state.targetProject.name} immediately, seeded with a context snapshot of this chat up to the selected message. This chat stays unchanged.`
+              : "This starts a separate thread immediately. It uses your current files, does not checkout or revert the worktree, and carries a server-built context snapshot up to the selected message."}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <div className="min-h-0 space-y-4 overflow-y-auto px-6 pb-5">
@@ -476,7 +485,8 @@ function ForkThreadDialog(props: {
 
           <div className="grid gap-2 rounded-lg border border-border/70 bg-background/50 px-3 py-2.5 text-xs text-muted-foreground/80 sm:grid-cols-3">
             <p>
-              <span className="font-medium text-foreground/80">Files:</span> current worktree
+              <span className="font-medium text-foreground/80">Files:</span>{" "}
+              {state.targetProject ? `${state.targetProject.name} workspace` : "current worktree"}
             </p>
             <p>
               <span className="font-medium text-foreground/80">Revert:</span> none
@@ -525,7 +535,7 @@ function ForkThreadDialog(props: {
             Cancel
           </AlertDialogClose>
           <Button disabled={props.disabled || instruction.length === 0} onClick={props.onConfirm}>
-            Start fork
+            {state.targetProject ? "Continue in project" : "Start fork"}
           </Button>
         </AlertDialogFooter>
       </AlertDialogPopup>
@@ -1088,6 +1098,9 @@ export default function ChatView(props: ChatViewProps) {
   const activeProject = useStore(
     useMemo(() => createProjectSelectorByRef(activeProjectRef), [activeProjectRef]),
   );
+  // General Chat threads run in a hidden scratch workspace: source-control,
+  // scripts, and open-in affordances stay hidden even though a project exists.
+  const isGeneralChatThread = activeProject?.kind === "general-chat";
 
   const shouldRetainThreadDetailSubscription = routeKind === "server" || serverThread !== undefined;
   useEffect(() => {
@@ -4609,6 +4622,73 @@ export default function ChatView(props: ChatViewProps) {
     ],
   );
 
+  const onContinueInProject = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      if (
+        !activeThread ||
+        !isServerThread ||
+        phase === "running" ||
+        isSendBusy ||
+        isConnecting ||
+        activeEnvironmentUnavailable ||
+        sendInFlightRef.current
+      ) {
+        return;
+      }
+      const lastMessage = activeThread.messages.at(-1);
+      if (!lastMessage) {
+        return;
+      }
+      const candidateProjects = selectWorkspaceProjectsAcrossEnvironments(
+        useStore.getState(),
+      ).filter((project) => project.environmentId === activeThread.environmentId);
+      if (candidateProjects.length === 0) {
+        toastManager.add({
+          type: "error",
+          title: "No projects to continue into",
+          description: "Add a project first, then continue this chat into it.",
+        });
+        return;
+      }
+      const api = readLocalApi();
+      if (!api) {
+        return;
+      }
+      const position = { x: event.clientX, y: event.clientY };
+      void (async () => {
+        const clicked = await api.contextMenu.show(
+          candidateProjects.map((project) => ({ id: project.id, label: project.name })),
+          position,
+        );
+        if (!clicked) {
+          return;
+        }
+        const targetProject = candidateProjects.find((project) => project.id === clicked);
+        if (!targetProject) {
+          return;
+        }
+        setForkDialogState({
+          sourceMessageId: lastMessage.id,
+          sourceMessageRole: lastMessage.role,
+          sourceMessageText: buildForkSourceExcerpt(lastMessage),
+          sourceAttachmentCount: lastMessage.attachments?.length ?? 0,
+          instruction: DEFAULT_CONTINUE_IN_PROJECT_INSTRUCTION,
+          modelSelection: resolveInitialForkModelSelection(),
+          targetProject: { projectId: targetProject.id, name: targetProject.name },
+        });
+      })();
+    },
+    [
+      activeEnvironmentUnavailable,
+      activeThread,
+      isConnecting,
+      isSendBusy,
+      isServerThread,
+      phase,
+      resolveInitialForkModelSelection,
+    ],
+  );
+
   const updateForkDialogInstruction = useCallback((instruction: string) => {
     setForkDialogState((current) => (current ? { ...current, instruction } : current));
   }, []);
@@ -4667,6 +4747,7 @@ export default function ChatView(props: ChatViewProps) {
         threadId: nextThreadId,
         sourceThreadId: activeThread.id,
         sourceMessageId: state.sourceMessageId,
+        ...(state.targetProject ? { targetProjectId: state.targetProject.projectId } : {}),
         message: {
           messageId: newMessageId(),
           role: "user",
@@ -5053,8 +5134,8 @@ export default function ChatView(props: ChatViewProps) {
           activeThreadTitle={activeThread.title}
           activeProjectName={activeProject?.name}
           isGitRepo={isGitRepo}
-          openInCwd={gitCwd}
-          activeProjectScripts={activeProject?.scripts}
+          openInCwd={isGeneralChatThread ? null : gitCwd}
+          activeProjectScripts={isGeneralChatThread ? undefined : activeProject?.scripts}
           preferredScriptId={
             activeProject ? (lastInvokedScriptByProjectId[activeProject.id] ?? null) : null
           }
@@ -5064,7 +5145,9 @@ export default function ChatView(props: ChatViewProps) {
           terminalOpen={terminalState.terminalOpen}
           terminalToggleShortcutLabel={terminalToggleShortcutLabel}
           sourceControlToggleShortcutLabel={sourceControlPanelShortcutLabel}
-          sourceControlOpen={sourceControlOpen}
+          sourceControlOpen={sourceControlOpen && !isGeneralChatThread}
+          sourceControlAvailable={activeProject !== undefined && !isGeneralChatThread}
+          fileBrowserAvailable={!isGeneralChatThread}
           taskProgress={taskProgress}
           subagentProgress={subagentProgress}
           forkContext={forkHeaderContext}
@@ -5078,6 +5161,11 @@ export default function ChatView(props: ChatViewProps) {
           onOpenForkSourceThread={onOpenForkSourceThread}
           onToggleTerminal={toggleTerminalVisibility}
           onToggleSourceControl={onToggleSourceControl}
+          onContinueInProject={
+            isGeneralChatThread && isServerThread && (activeThread?.messages.length ?? 0) > 0
+              ? onContinueInProject
+              : undefined
+          }
         />
       </header>
 

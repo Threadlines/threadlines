@@ -35,6 +35,7 @@ import {
   resolveThreadWorkspaceCwd,
 } from "../../checkpointing/Utils.ts";
 import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
+import { ensureGeneralChatThreadScratchCwd } from "../generalChats.ts";
 import { increment, orchestrationEventsProcessedTotal } from "../../observability/Metrics.ts";
 import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import type { ProviderServiceError } from "../../provider/Errors.ts";
@@ -470,10 +471,25 @@ const make = Effect.gen(function* () {
       });
     }
     const project = yield* resolveProject(thread.projectId);
-    const effectiveCwd = resolveThreadWorkspaceCwd({
-      thread,
-      projects: project ? [project] : [],
-    });
+    const effectiveCwd =
+      project?.kind === "general-chat"
+        ? yield* ensureGeneralChatThreadScratchCwd({
+            workspaceRoot: project.workspaceRoot,
+            threadId,
+          }).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProviderAdapterRequestError({
+                  provider: preferredProvider,
+                  method: "thread.turn.start",
+                  detail: `Failed to prepare the General Chat scratch directory: ${cause.message}`,
+                }),
+            ),
+          )
+        : resolveThreadWorkspaceCwd({
+            thread,
+            projects: project ? [project] : [],
+          });
 
     const startProviderSession = (input?: {
       readonly resumeCursor?: unknown;
@@ -734,6 +750,9 @@ const make = Effect.gen(function* () {
       }
 
       const project = yield* resolveProject(thread.projectId);
+      if (project?.kind === "general-chat") {
+        return;
+      }
       const cwd = resolveThreadWorkspaceCwd({
         thread,
         projects: project ? [project] : [],
@@ -924,11 +943,18 @@ const make = Effect.gen(function* () {
       thread.messages.filter((entry) => entry.role === "user").length === 1;
     if (isFirstUserMessageTurn) {
       const project = yield* resolveProject(thread.projectId);
+      // Title generation forks before the provider session creates the
+      // General Chat scratch directory, so ensure it exists here as well.
       const generationCwd =
-        resolveThreadWorkspaceCwd({
-          thread,
-          projects: project ? [project] : [],
-        }) ?? process.cwd();
+        (project?.kind === "general-chat"
+          ? yield* ensureGeneralChatThreadScratchCwd({
+              workspaceRoot: project.workspaceRoot,
+              threadId: thread.id,
+            }).pipe(Effect.catch(() => Effect.succeed(project.workspaceRoot)))
+          : resolveThreadWorkspaceCwd({
+              thread,
+              projects: project ? [project] : [],
+            })) ?? process.cwd();
       const generationInput = {
         messageText: message.text,
         ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),

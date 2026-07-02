@@ -76,8 +76,10 @@ function DraftChatThreadRouteView() {
     useMemo(() => createProjectSelectorByRef(draftProjectRef), [draftProjectRef]),
   );
   const draftThreadRef = serverThreadRef;
+  // General Chat drafts never expose source control, even via deep links.
+  const isGeneralChatDraft = draftProject?.kind === "general-chat";
   const sourceControlTarget = useMemo<SourceControlProjectTarget | null>(() => {
-    if (!draftSession || !draftProject) {
+    if (!draftSession || !draftProject || isGeneralChatDraft) {
       return null;
     }
 
@@ -91,7 +93,7 @@ function DraftChatThreadRouteView() {
       environmentLabel: null,
       worktreePath: draftSession.worktreePath,
     };
-  }, [draftProject, draftSession]);
+  }, [draftProject, draftSession, isGeneralChatDraft]);
   const closeRightPanel = useCallback(() => {
     void navigate({
       to: "/draft/$draftId",
@@ -105,7 +107,7 @@ function DraftChatThreadRouteView() {
     sourceControl: search.sourceControl,
     onAutoHide: closeRightPanel,
   });
-  const sourceControlOpen = rawSourceControlOpen && !sourceControlAutoHidden;
+  const sourceControlOpen = rawSourceControlOpen && !sourceControlAutoHidden && !isGeneralChatDraft;
   const openSourceControl = useCallback(() => {
     void navigate({
       to: "/draft/$draftId",

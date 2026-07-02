@@ -238,6 +238,7 @@ function mapProject(
   return {
     id: project.id,
     environmentId,
+    kind: project.kind,
     name: project.title,
     cwd: project.workspaceRoot,
     repositoryIdentity: project.repositoryIdentity ?? null,
@@ -1320,6 +1321,7 @@ function applyEnvironmentOrchestrationEvent(
       const nextProject = mapProject(
         {
           id: event.payload.projectId,
+          kind: event.payload.kind,
           title: event.payload.title,
           workspaceRoot: event.payload.workspaceRoot,
           repositoryIdentity: event.payload.repositoryIdentity ?? null,
@@ -1951,6 +1953,21 @@ export function selectThreadsForEnvironment(
 export function selectProjectsAcrossEnvironments(state: AppState): Project[] {
   return getEnvironmentEntries(state).flatMap(([, environmentState]) =>
     getProjects(environmentState),
+  );
+}
+
+/** Projects with workspace capabilities — excludes the hidden General Chats system project. */
+export function selectWorkspaceProjectsAcrossEnvironments(state: AppState): Project[] {
+  return selectProjectsAcrossEnvironments(state).filter(
+    (project) => project.kind !== "general-chat",
+  );
+}
+
+/** The hidden system project backing General Chat threads, when the server has created it. */
+export function selectGeneralChatsProjectAcrossEnvironments(state: AppState): Project | null {
+  return (
+    selectProjectsAcrossEnvironments(state).find((project) => project.kind === "general-chat") ??
+    null
   );
 }
 

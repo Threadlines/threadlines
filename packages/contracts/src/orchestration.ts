@@ -201,6 +201,32 @@ export type ChatAttachment = typeof ChatAttachment.Type;
 const UploadChatAttachment = Schema.Union([UploadChatImageAttachment]);
 export type UploadChatAttachment = typeof UploadChatAttachment.Type;
 
+/**
+ * Reads stored attachment bytes over the WebSocket RPC channel. Relay-paired
+ * clients (phonelink) have no HTTP path to the server, so the `/attachments`
+ * route is unreachable for them; this is their transport for previews.
+ */
+export const ChatAttachmentReadInput = Schema.Struct({
+  attachmentId: ChatAttachmentId,
+});
+export type ChatAttachmentReadInput = typeof ChatAttachmentReadInput.Type;
+
+export const ChatAttachmentReadResult = Schema.Struct({
+  attachmentId: ChatAttachmentId,
+  mimeType: TrimmedNonEmptyString,
+  base64: Schema.String,
+  sizeBytes: NonNegativeInt,
+});
+export type ChatAttachmentReadResult = typeof ChatAttachmentReadResult.Type;
+
+export class ChatAttachmentReadError extends Schema.TaggedErrorClass<ChatAttachmentReadError>()(
+  "ChatAttachmentReadError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect),
+  },
+) {}
+
 export const ProjectScriptIcon = Schema.Literals([
   "play",
   "test",
@@ -220,8 +246,22 @@ export const ProjectScript = Schema.Struct({
 });
 export type ProjectScript = typeof ProjectScript.Type;
 
+/**
+ * Project capability kind.
+ *
+ * - `workspace`: a normal user project rooted in a repository/workspace.
+ * - `general-chat`: the hidden system project backing project-independent
+ *   General Chat threads. Source-control, worktree, and project-script
+ *   capabilities are disabled for this kind, and it is excluded from normal
+ *   project listings.
+ */
+export const ProjectKind = Schema.Literals(["workspace", "general-chat"]);
+export type ProjectKind = typeof ProjectKind.Type;
+export const DEFAULT_PROJECT_KIND: ProjectKind = "workspace";
+
 export const OrchestrationProject = Schema.Struct({
   id: ProjectId,
+  kind: ProjectKind.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROJECT_KIND))),
   title: TrimmedNonEmptyString,
   workspaceRoot: TrimmedNonEmptyString,
   repositoryIdentity: Schema.optional(Schema.NullOr(RepositoryIdentity)),
@@ -420,6 +460,7 @@ export type OrchestrationReadModel = typeof OrchestrationReadModel.Type;
 
 export const OrchestrationProjectShell = Schema.Struct({
   id: ProjectId,
+  kind: ProjectKind.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROJECT_KIND))),
   title: TrimmedNonEmptyString,
   workspaceRoot: TrimmedNonEmptyString,
   repositoryIdentity: Schema.optional(Schema.NullOr(RepositoryIdentity)),
@@ -510,6 +551,7 @@ export const ProjectCreateCommand = Schema.Struct({
   type: Schema.Literal("project.create"),
   commandId: CommandId,
   projectId: ProjectId,
+  kind: Schema.optional(ProjectKind),
   title: TrimmedNonEmptyString,
   workspaceRoot: TrimmedNonEmptyString,
   createWorkspaceRootIfMissing: Schema.optional(Schema.Boolean),
@@ -556,6 +598,12 @@ const ClientThreadForkCommand = Schema.Struct({
   threadId: ThreadId,
   sourceThreadId: ThreadId,
   sourceMessageId: MessageId,
+  /**
+   * Fork into a different project ("Continue in project" for General Chats).
+   * When omitted the fork stays in the source thread's project. Cross-project
+   * forks are only permitted from `general-chat` projects.
+   */
+  targetProjectId: Schema.optional(ProjectId),
   message: Schema.Struct({
     messageId: MessageId,
     role: Schema.Literal("user"),
@@ -993,6 +1041,7 @@ export const OrchestrationActorKind = Schema.Literals(["client", "server", "prov
 
 export const ProjectCreatedPayload = Schema.Struct({
   projectId: ProjectId,
+  kind: ProjectKind.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROJECT_KIND))),
   title: TrimmedNonEmptyString,
   workspaceRoot: TrimmedNonEmptyString,
   repositoryIdentity: Schema.optional(Schema.NullOr(RepositoryIdentity)),

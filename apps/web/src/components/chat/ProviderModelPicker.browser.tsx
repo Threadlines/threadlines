@@ -52,6 +52,7 @@ vi.mock("../../environments/runtime", () => {
   };
 
   return {
+    environmentUsesRelayTransport: () => false,
     getEnvironmentHttpBaseUrl: () => "http://localhost:3000",
     getSavedEnvironmentRecord: () => null,
     getSavedEnvironmentRuntimeState: () => null,

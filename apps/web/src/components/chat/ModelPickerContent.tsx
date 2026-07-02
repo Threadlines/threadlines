@@ -18,6 +18,7 @@ import {
   shortcutLabelForCommand,
 } from "../../keybindings";
 import { useSettings, useUpdateSettings } from "~/hooks/useSettings";
+import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { TooltipProvider } from "../ui/tooltip";
 import type { ProviderInstanceEntry } from "../../providerInstances";
 import { providerModelKey, sortProviderModelItems } from "../../modelOrdering";
@@ -180,9 +181,15 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   );
   const { updateSettings } = useUpdateSettings();
 
+  // On touch devices, programmatic focus pops the on-screen keyboard over the
+  // picker, so leave the search input blurred until the user taps into it.
+  const isCoarsePointer = useMediaQuery({ pointer: "coarse" });
   const focusSearchInput = useCallback(() => {
+    if (isCoarsePointer) {
+      return;
+    }
     searchInputRef.current?.focus({ preventScroll: true });
-  }, []);
+  }, [isCoarsePointer]);
 
   useLayoutEffect(() => {
     focusSearchInput();
@@ -621,8 +628,10 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       {/* Height hugs the visible rows; the list region caps and scrolls itself.
           The card also clamps to the positioner's --available-height so rows
           can't extend past the window edge, where the inner scroller (with
-          overscroll-contain) would leave them unreachable. */}
-      <div className="relative flex max-h-(--available-height) w-screen max-w-[34rem] flex-col overflow-hidden rounded-lg border bg-popover not-dark:bg-clip-padding text-popover-foreground shadow-lg/5 before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:before:shadow-[0_-1px_--theme(--color-white/6%)]">
+          overscroll-contain) would leave them unreachable. --keyboard-inset
+          (set by ProviderModelPicker while an overlay keyboard is up) shrinks
+          the cap so the lifted popup's top edge stays on screen. */}
+      <div className="relative flex max-h-[calc(var(--available-height)-var(--keyboard-inset,0px))] w-screen max-w-[34rem] flex-col overflow-hidden rounded-lg border bg-popover not-dark:bg-clip-padding text-popover-foreground shadow-lg/5 before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:before:shadow-[0_-1px_--theme(--color-white/6%)]">
         {/* Locked provider banner: the turn's driver cannot change */}
         {lockedToSingleInstance && LockedProviderIcon && lockedHeaderLabel && (
           <div className="flex items-center gap-2 border-b px-4 py-3">

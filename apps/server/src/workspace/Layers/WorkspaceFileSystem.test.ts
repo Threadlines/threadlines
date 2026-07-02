@@ -11,7 +11,7 @@ import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import { WorkspaceEntries } from "../Services/WorkspaceEntries.ts";
 import { WorkspaceFileSystem } from "../Services/WorkspaceFileSystem.ts";
 import { WorkspaceEntriesLive } from "./WorkspaceEntries.ts";
-import { WorkspaceFileSystemLive } from "./WorkspaceFileSystem.ts";
+import { WorkspaceFileSystemLive, WORKSPACE_TEXT_READ_MAX_BYTES } from "./WorkspaceFileSystem.ts";
 import { WorkspacePathsLive } from "./WorkspacePaths.ts";
 
 const ProjectLayer = WorkspaceFileSystemLive.pipe(
@@ -134,6 +134,158 @@ it.layer(TestLayer)("WorkspaceFileSystemLive", (it) => {
           .stat(escapedPath)
           .pipe(Effect.catch(() => Effect.succeed(null)));
         expect(escapedStat).toBeNull();
+      }),
+    );
+  });
+
+  describe("readFile", () => {
+    it.effect("reads text files relative to the workspace root", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const cwd = yield* makeTempDir;
+        yield* writeTextFile(cwd, "src/main.ts", "export const answer = 42;\n");
+
+        const result = yield* workspaceFileSystem.readFile({
+          cwd,
+          relativePath: "src/main.ts",
+        });
+
+        expect(result).toEqual({
+          kind: "text",
+          relativePath: "src/main.ts",
+          content: "export const answer = 42;\n",
+          size: 26,
+          truncated: false,
+        });
+      }),
+    );
+
+    it.effect("truncates oversized text files instead of reading them fully", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const cwd = yield* makeTempDir;
+        const oversized = "x".repeat(WORKSPACE_TEXT_READ_MAX_BYTES + 16);
+        yield* writeTextFile(cwd, "big.log", oversized);
+
+        const result = yield* workspaceFileSystem.readFile({
+          cwd,
+          relativePath: "big.log",
+        });
+
+        expect(result.kind).toBe("text");
+        if (result.kind === "text") {
+          expect(result.truncated).toBe(true);
+          expect(result.content.length).toBe(WORKSPACE_TEXT_READ_MAX_BYTES);
+          expect(result.size).toBe(oversized.length);
+        }
+      }),
+    );
+
+    it.effect("reports NUL-containing files as binary", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir;
+        yield* fileSystem
+          .writeFile(path.join(cwd, "blob.dat"), new Uint8Array([1, 2, 0, 3]))
+          .pipe(Effect.orDie);
+
+        const result = yield* workspaceFileSystem.readFile({
+          cwd,
+          relativePath: "blob.dat",
+        });
+
+        expect(result).toEqual({
+          kind: "binary",
+          relativePath: "blob.dat",
+          size: 4,
+        });
+      }),
+    );
+
+    it.effect("serves known image extensions as base64", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir;
+        const bytes = new Uint8Array([137, 80, 78, 71, 0, 13]);
+        yield* fileSystem
+          .makeDirectory(path.join(cwd, "assets"), { recursive: true })
+          .pipe(Effect.orDie);
+        yield* fileSystem.writeFile(path.join(cwd, "assets/logo.png"), bytes).pipe(Effect.orDie);
+
+        const result = yield* workspaceFileSystem.readFile({
+          cwd,
+          relativePath: "assets/logo.png",
+        });
+
+        expect(result).toEqual({
+          kind: "image",
+          relativePath: "assets/logo.png",
+          mimeType: "image/png",
+          base64: Buffer.from(bytes).toString("base64"),
+          size: bytes.length,
+        });
+      }),
+    );
+
+    it.effect("rejects reads outside the workspace root", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const cwd = yield* makeTempDir;
+
+        const error = yield* workspaceFileSystem
+          .readFile({
+            cwd,
+            relativePath: "../etc/passwd",
+          })
+          .pipe(Effect.flip);
+
+        expect(error._tag).toBe("WorkspacePathOutsideRootError");
+      }),
+    );
+
+    it.effect("rejects symlinks that escape the workspace root", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const outside = yield* makeTempDir;
+        const cwd = yield* makeTempDir;
+        yield* fileSystem
+          .writeFileString(path.join(outside, "secret.txt"), "secret")
+          .pipe(Effect.orDie);
+        yield* fileSystem
+          .symlink(path.join(outside, "secret.txt"), path.join(cwd, "link.txt"))
+          .pipe(Effect.orDie);
+
+        const error = yield* workspaceFileSystem
+          .readFile({
+            cwd,
+            relativePath: "link.txt",
+          })
+          .pipe(Effect.flip);
+
+        expect(error._tag).toBe("WorkspacePathOutsideRootError");
+      }),
+    );
+
+    it.effect("rejects directory reads", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const cwd = yield* makeTempDir;
+        yield* writeTextFile(cwd, "src/main.ts", "export {};\n");
+
+        const error = yield* workspaceFileSystem
+          .readFile({
+            cwd,
+            relativePath: "src",
+          })
+          .pipe(Effect.flip);
+
+        expect(error._tag).toBe("WorkspaceFileSystemError");
       }),
     );
   });
