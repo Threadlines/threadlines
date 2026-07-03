@@ -9,6 +9,7 @@ import React, {
   use,
   useCallback,
   memo,
+  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
@@ -203,18 +204,12 @@ interface SuspenseShikiCodeBlockProps {
   className: string | undefined;
   code: string;
   themeName: DiffThemeName;
-  isStreaming: boolean;
 }
 
-function SuspenseShikiCodeBlock({
-  className,
-  code,
-  themeName,
-  isStreaming,
-}: SuspenseShikiCodeBlockProps) {
+function SuspenseShikiCodeBlock({ className, code, themeName }: SuspenseShikiCodeBlockProps) {
   const language = extractFenceLanguage(className);
   const cacheKey = createHighlightCacheKey(code, language, themeName);
-  const cachedHighlightedHtml = !isStreaming ? highlightedCodeCache.get(cacheKey) : null;
+  const cachedHighlightedHtml = highlightedCodeCache.get(cacheKey);
 
   if (cachedHighlightedHtml != null) {
     return (
@@ -231,7 +226,6 @@ function SuspenseShikiCodeBlock({
       language={language}
       themeName={themeName}
       cacheKey={cacheKey}
-      isStreaming={isStreaming}
     />
   );
 }
@@ -241,7 +235,6 @@ interface UncachedShikiCodeBlockProps {
   language: string;
   themeName: DiffThemeName;
   cacheKey: string;
-  isStreaming: boolean;
 }
 
 function UncachedShikiCodeBlock({
@@ -249,7 +242,6 @@ function UncachedShikiCodeBlock({
   language,
   themeName,
   cacheKey,
-  isStreaming,
 }: UncachedShikiCodeBlockProps) {
   const highlighter = use(getHighlighterPromise(language));
   const highlightedHtml = useMemo(() => {
@@ -267,14 +259,12 @@ function UncachedShikiCodeBlock({
   }, [code, highlighter, language, themeName]);
 
   useEffect(() => {
-    if (!isStreaming) {
-      highlightedCodeCache.set(
-        cacheKey,
-        highlightedHtml,
-        estimateHighlightedSize(highlightedHtml, code),
-      );
-    }
-  }, [cacheKey, code, highlightedHtml, isStreaming]);
+    highlightedCodeCache.set(
+      cacheKey,
+      highlightedHtml,
+      estimateHighlightedSize(highlightedHtml, code),
+    );
+  }, [cacheKey, code, highlightedHtml]);
 
   return (
     <div className="chat-markdown-shiki" dangerouslySetInnerHTML={{ __html: highlightedHtml }} />
@@ -532,7 +522,57 @@ function areMarkdownFileLinkPropsEqual(
   );
 }
 
-function ChatMarkdown({
+const BLOCK_FENCE_MARKER_REGEX = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+
+/**
+ * Splits markdown into top-level blocks at blank lines outside fenced code
+ * blocks, so a streaming message can memoize settled blocks and re-parse
+ * only the growing tail. Fidelity note: constructs that reference across
+ * blank lines (reference-style link definitions, footnotes) degrade while
+ * streaming; the final non-streaming render parses the full document again.
+ */
+export function splitMarkdownBlocks(text: string): string[] {
+  const lines = text.split("\n");
+  const blocks: string[] = [];
+  let current: string[] = [];
+  let openFence: { char: string; length: number } | null = null;
+
+  for (const line of lines) {
+    const fenceMatch = BLOCK_FENCE_MARKER_REGEX.exec(line);
+    if (fenceMatch) {
+      const marker = fenceMatch[1]!;
+      const rest = fenceMatch[2] ?? "";
+      if (openFence === null) {
+        openFence = { char: marker[0]!, length: marker.length };
+      } else if (
+        marker[0] === openFence.char &&
+        marker.length >= openFence.length &&
+        rest.trim() === ""
+      ) {
+        openFence = null;
+      }
+      current.push(line);
+      continue;
+    }
+
+    if (openFence === null && line.trim() === "") {
+      if (current.length > 0) {
+        blocks.push(current.join("\n"));
+        current = [];
+      }
+      continue;
+    }
+
+    current.push(line);
+  }
+
+  if (current.length > 0) {
+    blocks.push(current.join("\n"));
+  }
+  return blocks;
+}
+
+function ChatMarkdownDocument({
   text,
   cwd,
   isStreaming = false,
@@ -649,6 +689,18 @@ function ChatMarkdown({
           return <pre {...props}>{children}</pre>;
         }
 
+        // While this document is an actively growing streaming tail, skip
+        // Shiki entirely: re-highlighting the open fence on every delta is
+        // O(n²) in block size. The block gets highlighted (and cached) once
+        // it settles or the message finishes streaming.
+        if (isStreaming) {
+          return (
+            <MarkdownCodeBlock code={codeBlock.code}>
+              <pre {...props}>{children}</pre>
+            </MarkdownCodeBlock>
+          );
+        }
+
         return (
           <MarkdownCodeBlock code={codeBlock.code}>
             <CodeHighlightErrorBoundary fallback={<pre {...props}>{children}</pre>}>
@@ -657,7 +709,6 @@ function ChatMarkdown({
                   className={codeBlock.className}
                   code={codeBlock.code}
                   themeName={diffThemeName}
-                  isStreaming={isStreaming}
                 />
               </Suspense>
             </CodeHighlightErrorBoundary>
@@ -676,14 +727,64 @@ function ChatMarkdown({
   );
 
   return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={markdownComponents}
+      urlTransform={markdownUrlTransform}
+    >
+      {text}
+    </ReactMarkdown>
+  );
+}
+
+const MemoChatMarkdownDocument = memo(ChatMarkdownDocument);
+
+function StreamingTailBlock({
+  text,
+  cwd,
+  skills = EMPTY_MARKDOWN_SKILLS,
+}: Omit<ChatMarkdownProps, "isStreaming">) {
+  // Lets React drop intermediate parses when deltas outpace rendering
+  // (older CPUs) instead of parsing every 50ms server flush.
+  const deferredText = useDeferredValue(text);
+  return <MemoChatMarkdownDocument text={deferredText} cwd={cwd} isStreaming skills={skills} />;
+}
+
+function ChatMarkdown({
+  text,
+  cwd,
+  isStreaming = false,
+  skills = EMPTY_MARKDOWN_SKILLS,
+}: ChatMarkdownProps) {
+  let body: ReactNode;
+  if (isStreaming) {
+    // Streaming: parse settled blocks once and re-parse only the growing
+    // tail. Index keys are the correct identity here: streaming only appends
+    // blocks, and keying by content would remount the tail on every delta.
+    const blocks = splitMarkdownBlocks(text);
+    const tailIndex = blocks.length - 1;
+    body = blocks.map((block, index) =>
+      index === tailIndex ? (
+        // oxlint-disable-next-line react/no-array-index-key
+        <StreamingTailBlock key={index} text={block} cwd={cwd} skills={skills} />
+      ) : (
+        <MemoChatMarkdownDocument
+          // oxlint-disable-next-line react/no-array-index-key
+          key={index}
+          text={block}
+          cwd={cwd}
+          isStreaming={false}
+          skills={skills}
+        />
+      ),
+    );
+  } else {
+    body = <MemoChatMarkdownDocument text={text} cwd={cwd} isStreaming={false} skills={skills} />;
+  }
+
+  return (
     <div className="chat-markdown w-full min-w-0 text-sm leading-relaxed text-foreground/80">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={markdownComponents}
-        urlTransform={markdownUrlTransform}
-      >
-        {text}
-      </ReactMarkdown>
+      {body}
     </div>
   );
 }

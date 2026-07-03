@@ -36,12 +36,21 @@ The npm package is for advanced CLI/server usage and remote bootstrap flows:
 npx @threadlines/server@latest --help
 ```
 
+> [!IMPORTANT]
+> The server requires **Node.js 22.16+, 23.11+, or 24+** — it uses the
+> built-in `node:sqlite` module and exits with a version error on older
+> Node releases (including 22.x below 22.16).
+
 ### Local development
 
 ```bash
 vp install --frozen-lockfile
 vp run dev
 ```
+
+On Windows, clone the repository **outside** OneDrive-synced folders
+(Desktop/Documents by default) — syncing `node_modules`, `.git`, and build
+output noticeably slows installs, builds, and file watching.
 
 ### Local desktop artifact
 

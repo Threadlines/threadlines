@@ -69,3 +69,22 @@ We may close it. We may ask you to shrink it. We may reimplement the idea
 ourselves later.
 
 If you are fine with that, proceed.
+
+## Development Notes
+
+Node.js 22.16+, 23.11+, or 24+ is required (the server uses `node:sqlite`).
+
+Before considering a change done, all of `vp fmt`, `vp lint`, and
+`vp run typecheck` must pass, and run the test suite with `vp run test`
+(never `bun test`).
+
+On Windows:
+
+- Clone outside OneDrive-synced folders (Desktop/Documents by default).
+  Syncing `node_modules`, `.git`, and build output makes installs, builds,
+  and watch mode noticeably slower.
+- A handful of test files currently fail on Windows regardless of your
+  changes (git-revert checkpoint tests, terminal PATH tests, symlink
+  tests, and the oxlint plugin tests, which spawn a POSIX-only bin shim).
+  Verify your change's own test files pass; do not chase these unless your
+  PR is about fixing them.

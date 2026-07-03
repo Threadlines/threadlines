@@ -21,20 +21,17 @@ const MinLastAppliedSequenceRowSchema = Schema.Struct({
 const makeProjectionStateRepository = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
-  const upsertProjectionStateRow = SqlSchema.void({
-    Request: ProjectionState,
-    execute: (row) =>
+  const upsertProjectionStateRows = SqlSchema.void({
+    Request: Schema.Array(ProjectionState),
+    execute: (rows) =>
       sql`
-        INSERT INTO projection_state (
-          projector,
-          last_applied_sequence,
-          updated_at
-        )
-        VALUES (
-          ${row.projector},
-          ${row.lastAppliedSequence},
-          ${row.updatedAt}
-        )
+        INSERT INTO projection_state ${sql.insert(
+          rows.map((row) => ({
+            projector: row.projector,
+            last_applied_sequence: row.lastAppliedSequence,
+            updated_at: row.updatedAt,
+          })),
+        )}
         ON CONFLICT (projector)
         DO UPDATE SET
           last_applied_sequence = excluded.last_applied_sequence,
@@ -81,10 +78,14 @@ const makeProjectionStateRepository = Effect.gen(function* () {
       `,
   });
 
-  const upsert: ProjectionStateRepositoryShape["upsert"] = (row) =>
-    upsertProjectionStateRow(row).pipe(
-      Effect.mapError(toPersistenceSqlError("ProjectionStateRepository.upsert:query")),
-    );
+  const upsertMany: ProjectionStateRepositoryShape["upsertMany"] = (rows) =>
+    rows.length === 0
+      ? Effect.void
+      : upsertProjectionStateRows(rows).pipe(
+          Effect.mapError(toPersistenceSqlError("ProjectionStateRepository.upsertMany:query")),
+        );
+
+  const upsert: ProjectionStateRepositoryShape["upsert"] = (row) => upsertMany([row]);
 
   const getByProjector: ProjectionStateRepositoryShape["getByProjector"] = (input) =>
     getProjectionStateRow(input).pipe(
@@ -106,6 +107,7 @@ const makeProjectionStateRepository = Effect.gen(function* () {
 
   return {
     upsert,
+    upsertMany,
     getByProjector,
     listAll,
     minLastAppliedSequence,
