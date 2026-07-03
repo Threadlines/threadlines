@@ -19,6 +19,10 @@ import type {
   VcsCreateTagResult,
   VcsDeleteBranchInput,
   VcsDeleteBranchResult,
+  GitApplyAuthRemediationInput,
+  GitApplyAuthRemediationResult,
+  GitAuthRemediationPlan,
+  GitAuthRemediationPlanInput,
   GitGenerateCommitMessageInput,
   GitGenerateCommitMessageResult,
   GitPreparePullRequestThreadInput,
@@ -809,6 +813,10 @@ export interface EnvironmentApi {
     preparePullRequestThread: (
       input: GitPreparePullRequestThreadInput,
     ) => Promise<GitPreparePullRequestThreadResult>;
+    authRemediationPlan: (input: GitAuthRemediationPlanInput) => Promise<GitAuthRemediationPlan>;
+    applyAuthRemediation: (
+      input: GitApplyAuthRemediationInput,
+    ) => Promise<GitApplyAuthRemediationResult>;
   };
   orchestration: {
     dispatchCommand: (command: ClientOrchestrationCommand) => Promise<{ sequence: number }>;

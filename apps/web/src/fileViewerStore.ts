@@ -39,7 +39,20 @@ interface FileViewerState {
   openFile: (path: string, line?: number, endLine?: number) => void;
   setActivePath: (path: string) => void;
   closeTab: (path: string) => void;
+  closeOtherTabs: (path: string) => void;
+  closeAllTabs: () => void;
   close: () => void;
+}
+
+/** Open-tab cap: the leftmost non-active tab is evicted FIFO beyond this. */
+const MAX_OPEN_TABS = 10;
+
+function withTabCap(tabs: string[], activePath: string | null): string[] {
+  if (tabs.length <= MAX_OPEN_TABS) {
+    return tabs;
+  }
+  const evictable = tabs.find((tab) => tab !== activePath);
+  return evictable ? tabs.filter((tab) => tab !== evictable) : tabs;
 }
 
 export const useFileViewerStore = create<FileViewerState>((set) => ({
@@ -63,11 +76,12 @@ export const useFileViewerStore = create<FileViewerState>((set) => ({
         }
         activePath = target.path;
       }
+      const nextActivePath = activePath ?? tabs[0] ?? null;
       return {
         isOpen: true,
         context,
-        tabs,
-        activePath: activePath ?? tabs[0] ?? null,
+        tabs: withTabCap(tabs, nextActivePath),
+        activePath: nextActivePath,
         revealLine: target?.line ?? null,
         revealEndLine: target?.endLine ?? null,
         revealRequestId: state.revealRequestId + 1,
@@ -76,7 +90,7 @@ export const useFileViewerStore = create<FileViewerState>((set) => ({
 
   openFile: (path, line, endLine) =>
     set((state) => ({
-      tabs: state.tabs.includes(path) ? state.tabs : [...state.tabs, path],
+      tabs: withTabCap(state.tabs.includes(path) ? state.tabs : [...state.tabs, path], path),
       activePath: path,
       revealLine: line ?? null,
       revealEndLine: endLine ?? null,
@@ -95,6 +109,16 @@ export const useFileViewerStore = create<FileViewerState>((set) => ({
           : state.activePath;
       return { tabs, activePath, revealLine: null };
     }),
+
+  closeOtherTabs: (path) =>
+    set((state) => ({
+      tabs: state.tabs.includes(path) ? [path] : [],
+      activePath: state.tabs.includes(path) ? path : null,
+      revealLine: null,
+      revealEndLine: null,
+    })),
+
+  closeAllTabs: () => set({ tabs: [], activePath: null, revealLine: null, revealEndLine: null }),
 
   close: () => set({ isOpen: false, revealLine: null }),
 }));

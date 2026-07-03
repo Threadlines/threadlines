@@ -1472,9 +1472,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
         [WS_METHODS.gitApplyAuthRemediation]: (input) =>
           observeRpcEffect(
             WS_METHODS.gitApplyAuthRemediation,
-            gitAuthRemediation
-              .apply(input)
-              .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            gitAuthRemediation.apply(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
             { "rpc.aggregate": "git" },
           ),
         [WS_METHODS.vcsListRefs]: (input) =>

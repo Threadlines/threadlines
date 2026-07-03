@@ -2,6 +2,7 @@ import {
   type ContextMenuItem,
   type EnvironmentId,
   type GitActionProgressEvent,
+  type GitRemoteAuthFailure,
   type GitStackedAction,
   type ScopedThreadRef,
   type VcsCommitDetailsResult,
@@ -10,7 +11,7 @@ import {
   type VcsStatusResult,
   type VcsWorkingTreeFileChangeKind,
 } from "@threadlines/contracts";
-import { formatGitErrorMessage } from "@threadlines/shared/git";
+import { formatGitErrorMessage, gitRemoteAuthFailureFromError } from "@threadlines/shared/git";
 import {
   useInfiniteQuery,
   useIsMutating,
@@ -85,6 +86,7 @@ import { getSourceControlPresentation } from "~/sourceControlPresentation";
 import { useStore } from "~/store";
 import { resolvePathLinkTarget } from "~/terminal-links";
 import { PublishRepositoryDialog } from "../GitActionsControl";
+import { GitAuthRemediationDialog } from "./GitAuthRemediationDialog";
 import { SourceControlIcon } from "../Icons";
 import {
   buildGitActionProgressStages,
@@ -1729,6 +1731,9 @@ export function SourceControlPanel({
   const [commitMessageEditorOpen, setCommitMessageEditorOpen] = useState(false);
   const [commitMessageEditorMounted, setCommitMessageEditorMounted] = useState(false);
   const [isPublishDialogOpen, setIsPublishDialogOpen] = useState(false);
+  const [authRemediationFailure, setAuthRemediationFailure] = useState<GitRemoteAuthFailure | null>(
+    null,
+  );
   const [pendingDefaultBranchAction, setPendingDefaultBranchAction] =
     useState<DefaultBranchConfirmableAction | null>(null);
   const [pendingDiscardChanges, setPendingDiscardChanges] = useState<PendingDiscardChanges | null>(
@@ -2294,11 +2299,22 @@ export function SourceControlPanel({
             : `${result.refName} is already synchronized.`,
         data: threadToastData,
       }),
-      error: (error) => ({
-        title: "Pull failed",
-        description: error instanceof Error ? error.message : "An error occurred.",
-        data: threadToastData,
-      }),
+      error: (error) => {
+        const authFailure = gitRemoteAuthFailureFromError(error);
+        return {
+          title: "Pull failed",
+          description: formatGitErrorMessage(error),
+          ...(authFailure
+            ? {
+                actionProps: {
+                  children: "Fix...",
+                  onClick: () => setAuthRemediationFailure(authFailure),
+                },
+              }
+            : {}),
+          data: threadToastData,
+        };
+      },
     });
     void promise.then(refreshPanel, () => undefined);
   }, [pullMutation, refreshPanel, threadToastData]);
@@ -3934,6 +3950,18 @@ export function SourceControlPanel({
         onOpenChange={setIsPublishDialogOpen}
         environmentId={target.environmentId}
         gitCwd={target.cwd}
+      />
+      <GitAuthRemediationDialog
+        open={authRemediationFailure !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setAuthRemediationFailure(null);
+          }
+        }}
+        environmentId={target.environmentId}
+        gitCwd={target.cwd}
+        failure={authRemediationFailure}
+        onResolved={runPull}
       />
     </div>
   );

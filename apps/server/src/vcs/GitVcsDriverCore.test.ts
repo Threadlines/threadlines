@@ -180,7 +180,8 @@ const makeBasicAuthChallengeRemote = Effect.acquireRelease(
         },
       ),
   ),
-  ({ server }) => Effect.promise(() => new Promise<void>((resolve) => server.close(() => resolve()))),
+  ({ server }) =>
+    Effect.promise(() => new Promise<void>((resolve) => server.close(() => resolve()))),
 );
 
 const pushRemoteBranchFromPeer = (input: {

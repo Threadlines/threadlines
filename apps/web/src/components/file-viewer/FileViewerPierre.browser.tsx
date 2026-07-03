@@ -36,27 +36,11 @@ function Harness({
             themeType: "dark",
             unsafeCSS: DIFF_PANEL_UNSAFE_CSS,
             enableLineSelection: true,
-            enableGutterUtility: true,
             lineHoverHighlight: "both" as const,
             onLineSelected: (range: SelectedLineRange | null) => {
               setSelectedLines(range);
             },
           }}
-          renderGutterUtility={(getHoveredLine) => (
-            <button
-              type="button"
-              title="Select line"
-              className="flex size-4 items-center justify-center"
-              onClick={() => {
-                const hovered = getHoveredLine();
-                if (hovered) {
-                  setSelectedLines({ start: hovered.lineNumber, end: hovered.lineNumber });
-                }
-              }}
-            >
-              +
-            </button>
-          )}
         />
       </div>
     </DiffWorkerPoolProvider>

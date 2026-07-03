@@ -10,6 +10,7 @@ import {
   MessageSquarePlus,
   SearchIcon,
   SquareArrowOutUpRight,
+  TextWrapIcon,
   X,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -19,6 +20,7 @@ import { cn } from "~/lib/utils";
 import { openInPreferredEditor } from "../../editorPreferences";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { useFileViewerStore, type FileViewerContext } from "../../fileViewerStore";
+import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { useTheme } from "../../hooks/useTheme";
 import { formatFileSelectionLineRange, sliceFileSelection } from "../../lib/fileSelectionContext";
 import { resolveDiffThemeName } from "../../lib/diffRendering";
@@ -32,15 +34,25 @@ import { DIFF_PANEL_UNSAFE_CSS } from "../DiffPanel.styles";
  */
 const FILE_VIEWER_UNSAFE_CSS = `${DIFF_PANEL_UNSAFE_CSS}
 @media (pointer: fine) {
-  [data-file] [data-hovered]:is([data-line], [data-column-number], [data-gutter-buffer]) {
-    --diffs-line-bg: var(
-      --diffs-bg-hover-override,
-      color-mix(in lab, var(--diffs-bg) 86%, var(--diffs-mixer))
-    ) !important;
+  /* Selected lines are excluded: pierre's own selected+hovered rule deepens
+     the selection tint instead, so hovering never erases the blue. */
+  [data-file]
+    [data-hovered]:is([data-line], [data-column-number], [data-gutter-buffer]):not(
+      [data-selected-line]
+    ) {
+    --diffs-line-bg: color-mix(in lab, var(--diffs-bg) 82%, var(--diffs-mixer)) !important;
   }
 }
 [data-file] [data-column-number] {
   cursor: pointer;
+}
+/* Line numbers are the selection control: brighten the hovered number and
+   ease background changes so hover and selection read as one motion. */
+[data-file] [data-column-number][data-hovered]:not([data-selected-line]) {
+  color: var(--diffs-fg) !important;
+}
+[data-file] :is([data-line], [data-column-number]) {
+  transition: background-color 100ms ease-out, color 100ms ease-out;
 }
 `;
 import {
@@ -51,6 +63,8 @@ import {
 import { VscodeEntryIcon } from "../chat/VscodeEntryIcon";
 import { DiffWorkerPoolProvider } from "../DiffWorkerPoolProvider";
 import { Dialog, DialogPopup, DialogTitle } from "../ui/dialog";
+import { ScrollArea } from "../ui/scroll-area";
+import { Toggle } from "../ui/toggle";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { TooltipWrapper } from "../ui/tooltip";
 
@@ -380,7 +394,7 @@ function AddSelectionToChatFooter({
       <span className="text-[11px] text-muted-foreground/70">
         {selectionCount > 0
           ? `${selectionCount} line${selectionCount === 1 ? "" : "s"} selected`
-          : "Hover a line and click + to select (drag to extend), or attach the whole file as a reference."}
+          : "Click a line number to select (drag for a range), or attach the whole file as a reference."}
       </span>
       <button
         type="button"
@@ -394,7 +408,13 @@ function AddSelectionToChatFooter({
   );
 }
 
-function FileViewerPreview({ context }: { context: FileViewerContext }) {
+function FileViewerPreview({
+  context,
+  wordWrap,
+}: {
+  context: FileViewerContext;
+  wordWrap: boolean;
+}) {
   const activePath = useFileViewerStore((state) => state.activePath);
   const revealLine = useFileViewerStore((state) => state.revealLine);
   const revealEndLine = useFileViewerStore((state) => state.revealEndLine);
@@ -467,7 +487,7 @@ function FileViewerPreview({ context }: { context: FileViewerContext }) {
   const pierreOptions = useMemo(
     () => ({
       disableFileHeader: true,
-      overflow: "scroll" as const,
+      overflow: wordWrap ? ("wrap" as const) : ("scroll" as const),
       theme: resolveDiffThemeName(resolvedTheme),
       themeType: resolvedTheme,
       // Same background overrides as the diff panel so files render on the
@@ -475,15 +495,14 @@ function FileViewerPreview({ context }: { context: FileViewerContext }) {
       // row-hover styling so selectable lines read as interactive.
       unsafeCSS: FILE_VIEWER_UNSAFE_CSS,
       enableLineSelection: true,
-      // Both are opt-in: the render prop only supplies the + renderer, and
-      // hover stamping (`data-hovered`) is disabled unless requested.
-      enableGutterUtility: true,
+      // Hover stamping (`data-hovered`) is opt-in; line numbers are the
+      // selection affordance (GitHub-style), no gutter utility.
       lineHoverHighlight: "both" as const,
       onLineSelected: (range: SelectedLineRange | null) => {
         setSelectedLines(range);
       },
     }),
-    [resolvedTheme],
+    [resolvedTheme, wordWrap],
   );
 
   if (!activePath) {
@@ -557,21 +576,6 @@ function FileViewerPreview({ context }: { context: FileViewerContext }) {
           }}
           selectedLines={selectedLines}
           options={pierreOptions}
-          renderGutterUtility={(getHoveredLine) => (
-            <button
-              type="button"
-              title="Select line (drag or shift-click to extend)"
-              className="flex size-4 cursor-pointer items-center justify-center rounded-sm border-0 bg-foreground/10 text-[11px] leading-none text-muted-foreground hover:bg-foreground/20 hover:text-foreground"
-              onClick={() => {
-                const hovered = getHoveredLine();
-                if (hovered) {
-                  setSelectedLines({ start: hovered.lineNumber, end: hovered.lineNumber });
-                }
-              }}
-            >
-              +
-            </button>
-          )}
         />
       </div>
       {context.threadRef ? (
@@ -591,6 +595,46 @@ function FileViewerTabs({ context }: { context: FileViewerContext }) {
   const activePath = useFileViewerStore((state) => state.activePath);
   const setActivePath = useFileViewerStore((state) => state.setActivePath);
   const closeTab = useFileViewerStore((state) => state.closeTab);
+  const closeOtherTabs = useFileViewerStore((state) => state.closeOtherTabs);
+  const closeAllTabs = useFileViewerStore((state) => state.closeAllTabs);
+
+  const handleTabContextMenu = useCallback(
+    (event: React.MouseEvent, tab: string) => {
+      event.preventDefault();
+      const api = readLocalApi();
+      if (!api) {
+        return;
+      }
+      const position = { x: event.clientX, y: event.clientY };
+      void (async () => {
+        const clicked = await api.contextMenu.show(
+          [
+            { id: "close", label: "Close" },
+            { id: "close-others", label: "Close others", disabled: tabs.length <= 1 },
+            { id: "close-all", label: "Close all" },
+            { id: "open-external", label: "Open in external editor" },
+            { id: "copy-path", label: "Copy relative path" },
+          ] as const,
+          position,
+        );
+        if (clicked === "close") {
+          closeTab(tab);
+        } else if (clicked === "close-others") {
+          closeOtherTabs(tab);
+        } else if (clicked === "close-all") {
+          closeAllTabs();
+        } else if (clicked === "open-external") {
+          const absolutePath = `${context.cwd.replace(/[/\\]+$/, "")}/${tab}`;
+          void openInPreferredEditor(api, absolutePath).catch(() => undefined);
+        } else if (clicked === "copy-path") {
+          void navigator.clipboard?.writeText(tab).then(() => {
+            toastManager.add({ type: "success", title: "Path copied", description: tab });
+          });
+        }
+      })();
+    },
+    [closeAllTabs, closeOtherTabs, closeTab, context.cwd, tabs.length],
+  );
 
   const handleOpenExternally = useCallback(() => {
     if (!activePath) {
@@ -613,51 +657,60 @@ function FileViewerTabs({ context }: { context: FileViewerContext }) {
   }, [activePath, context.cwd]);
 
   return (
-    <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
-      {tabs.map((tab) => (
-        <div
-          key={tab}
-          className={cn(
-            "flex shrink-0 items-center gap-0.5 rounded-md border border-transparent py-0.5 pl-2 pr-0.5 text-xs text-muted-foreground/80 transition-colors hover:bg-foreground/8",
-            tab === activePath && "border-border/70 bg-foreground/8 text-foreground",
-          )}
-        >
-          <button
-            type="button"
-            className="cursor-pointer border-0 bg-transparent p-0 py-0.5 text-inherit"
-            onClick={() => setActivePath(tab)}
-          >
-            {basenameOf(tab)}
-          </button>
-          <button
-            type="button"
-            aria-label={`Close ${tab}`}
+    // ScrollArea gives overflow discoverability without geometry changes:
+    // edge mask-fades appear only on sides with hidden tabs, and the overlay
+    // scrollbar fades in on hover/scroll without occupying layout height.
+    <ScrollArea
+      scrollFade
+      className="min-w-0 flex-1 self-stretch [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:mx-1 [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:my-0.5 [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:h-1 [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:opacity-100"
+    >
+      <div className="flex h-full items-center gap-1">
+        {tabs.map((tab) => (
+          <div
+            key={tab}
             className={cn(
-              "inline-flex cursor-pointer items-center rounded-sm border-0 bg-transparent p-1 text-muted-foreground/45 transition-colors hover:bg-foreground/10 hover:text-foreground",
-              tab !== activePath && "text-muted-foreground/30",
+              "flex shrink-0 items-center gap-0.5 rounded-md border border-transparent py-0.5 pl-2 pr-0.5 text-xs text-muted-foreground/80 transition-colors hover:bg-foreground/8",
+              tab === activePath && "border-border/70 bg-foreground/8 text-foreground",
             )}
-            onClick={(event) => {
-              event.stopPropagation();
-              closeTab(tab);
-            }}
+            onContextMenu={(event) => handleTabContextMenu(event, tab)}
           >
-            <X className="size-3" />
-          </button>
-        </div>
-      ))}
-      {activePath ? (
-        <TooltipWrapper tooltip="Open in external editor">
-          <button
-            type="button"
-            aria-label="Open in external editor"
-            className="ml-1 inline-flex shrink-0 cursor-pointer items-center rounded-sm border-0 bg-transparent p-1 text-muted-foreground/60 transition-colors hover:bg-foreground/10 hover:text-foreground"
-            onClick={handleOpenExternally}
-          >
-            <SquareArrowOutUpRight className="size-3.5" />
-          </button>
-        </TooltipWrapper>
-      ) : null}
-    </div>
+            <button
+              type="button"
+              className="cursor-pointer border-0 bg-transparent p-0 py-0.5 text-inherit"
+              onClick={() => setActivePath(tab)}
+            >
+              {basenameOf(tab)}
+            </button>
+            <button
+              type="button"
+              aria-label={`Close ${tab}`}
+              className={cn(
+                "inline-flex cursor-pointer items-center rounded-sm border-0 bg-transparent p-1 text-muted-foreground/45 transition-colors hover:bg-foreground/10 hover:text-foreground",
+                tab !== activePath && "text-muted-foreground/30",
+              )}
+              onClick={(event) => {
+                event.stopPropagation();
+                closeTab(tab);
+              }}
+            >
+              <X className="size-3" />
+            </button>
+          </div>
+        ))}
+        {activePath ? (
+          <TooltipWrapper tooltip="Open in external editor">
+            <button
+              type="button"
+              aria-label="Open in external editor"
+              className="ml-1 inline-flex shrink-0 cursor-pointer items-center rounded-sm border-0 bg-transparent p-1 text-muted-foreground/60 transition-colors hover:bg-foreground/10 hover:text-foreground"
+              onClick={handleOpenExternally}
+            >
+              <SquareArrowOutUpRight className="size-3.5" />
+            </button>
+          </TooltipWrapper>
+        ) : null}
+      </div>
+    </ScrollArea>
   );
 }
 
@@ -666,6 +719,10 @@ export default function FileViewerOverlay() {
   const context = useFileViewerStore((state) => state.context);
   const activePath = useFileViewerStore((state) => state.activePath);
   const close = useFileViewerStore((state) => state.close);
+  // Persisted preference: the toggle writes straight to settings (optimistic
+  // local apply + fire-and-forget RPC), so it sticks until toggled again.
+  const wordWrap = useSettings((settings) => settings.fileViewerWordWrap);
+  const { updateSettings } = useUpdateSettings();
 
   if (!context) {
     return null;
@@ -691,6 +748,21 @@ export default function FileViewerOverlay() {
           <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border/60 px-3">
             <FileViewerTabs context={context} />
             {activePath ? (
+              <Toggle
+                aria-label={wordWrap ? "Disable line wrapping" : "Enable line wrapping"}
+                tooltip={wordWrap ? "Disable line wrapping" : "Enable line wrapping"}
+                variant="outline"
+                size="xs"
+                className="shrink-0"
+                pressed={wordWrap}
+                onPressedChange={(pressed) => {
+                  updateSettings({ fileViewerWordWrap: Boolean(pressed) });
+                }}
+              >
+                <TextWrapIcon className="size-3" />
+              </Toggle>
+            ) : null}
+            {activePath ? (
               <span className="max-w-[36ch] shrink-0 truncate text-[11px] text-muted-foreground/60">
                 {activePath}
               </span>
@@ -709,7 +781,7 @@ export default function FileViewerOverlay() {
               <FileViewerTree context={context} />
             </div>
             <div className="min-w-0 flex-1">
-              <FileViewerPreview context={context} />
+              <FileViewerPreview context={context} wordWrap={wordWrap} />
             </div>
           </div>
         </DiffWorkerPoolProvider>

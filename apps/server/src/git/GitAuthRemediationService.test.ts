@@ -7,6 +7,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
 import * as Scope from "effect/Scope";
+import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { GitManagerError, VcsProcessSpawnError } from "@threadlines/contracts";
 import { ServerConfig } from "../config.ts";
@@ -48,7 +49,7 @@ const makeFakeVcsProcess = (behavior: FakeGhBehavior, calls: RecordedGhCall[]) =
           );
         }
         return Effect.succeed({
-          exitCode: behavior === "authed" ? 0 : 1,
+          exitCode: ChildProcessSpawner.ExitCode(behavior === "authed" ? 0 : 1),
           stdout: "",
           stderr: behavior === "authed" ? "" : "You are not logged into any GitHub hosts.",
           stdoutTruncated: false,
@@ -72,9 +73,7 @@ const makeTmpDir = (): Effect.Effect<
     const directory = yield* fileSystem.makeTempDirectory({
       prefix: "git-auth-remediation-test-",
     });
-    yield* Effect.addFinalizer(() =>
-      removeTempDirectoryWithRetry(fileSystem, directory),
-    );
+    yield* Effect.addFinalizer(() => removeTempDirectoryWithRetry(fileSystem, directory));
     return directory;
   });
 
