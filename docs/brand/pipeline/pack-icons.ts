@@ -65,7 +65,7 @@ function buildIcns(sizes: ReadonlyArray<number>): Buffer {
   return Buffer.concat([fileHeader, body]);
 }
 
-writeFileSync(join(outDir, "threadlines-windows.ico"), buildIco([256, 128, 64, 48, 32, 16]));
+writeFileSync(join(outDir, "threadlines-windows.ico"), buildIco([256, 128, 64, 48, 32, 24, 16]));
 writeFileSync(join(outDir, "threadlines-web-favicon.ico"), buildIco([48, 32, 16]));
 writeFileSync(join(outDir, "threadlines-icon.icns"), buildIcns([1024, 512, 256, 128, 32, 16]));
 console.log(`wrote 3 containers to ${outDir}`);
