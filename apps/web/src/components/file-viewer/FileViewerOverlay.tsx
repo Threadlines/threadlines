@@ -8,6 +8,7 @@ import {
   FileImage,
   FileWarning,
   FileX,
+  FolderTree,
   MessageSquarePlus,
   SearchIcon,
   SquareArrowOutUpRight,
@@ -21,8 +22,10 @@ import { cn } from "~/lib/utils";
 import { openInPreferredEditor } from "../../editorPreferences";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { useFileViewerStore, type FileViewerContext } from "../../fileViewerStore";
+import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { useTheme } from "../../hooks/useTheme";
+import { resolveCoarseLineSelection } from "./FileViewerOverlay.logic";
 import { formatFileSelectionLineRange, sliceFileSelection } from "../../lib/fileSelectionContext";
 import { resolveDiffThemeName } from "../../lib/diffRendering";
 import { DIFF_PANEL_UNSAFE_CSS } from "../DiffPanel.styles";
@@ -141,7 +144,7 @@ const TreeRow = memo(function TreeRow({
       <button
         type="button"
         className={cn(
-          "flex w-full cursor-pointer items-center gap-1.5 rounded-sm border-0 bg-transparent py-1 pr-2 text-left text-xs text-foreground/85 transition-colors hover:bg-foreground/8",
+          "flex w-full cursor-pointer items-center gap-1.5 rounded-sm border-0 bg-transparent py-1 pr-2 text-left text-xs text-foreground/85 transition-colors hover:bg-foreground/8 pointer-coarse:py-2 pointer-coarse:text-sm",
           isActive && "bg-foreground/10 text-foreground",
         )}
         style={{ paddingLeft: `${depth * 14 + 8}px` }}
@@ -186,9 +189,16 @@ const TreeRow = memo(function TreeRow({
 
 const FILE_VIEWER_SEARCH_LIMIT = 60;
 
-function FileViewerTree({ context }: { context: FileViewerContext }) {
+function FileViewerTree({
+  context,
+  onFileOpened,
+}: {
+  context: FileViewerContext;
+  /** Fires on every file open, including re-opening the already-active file. */
+  onFileOpened?: () => void;
+}) {
   const activePath = useFileViewerStore((state) => state.activePath);
-  const openFile = useFileViewerStore((state) => state.openFile);
+  const storeOpenFile = useFileViewerStore((state) => state.openFile);
   const { resolvedTheme } = useTheme();
   const [query, setQuery] = useState("");
   const trimmedQuery = query.trim();
@@ -208,6 +218,14 @@ function FileViewerTree({ context }: { context: FileViewerContext }) {
   );
   const tree = useMemo(() => buildFileTree(entriesQuery.data?.entries ?? []), [entriesQuery.data]);
   const [expandedPaths, setExpandedPaths] = useState<ReadonlySet<string>>(new Set());
+
+  const openFile = useCallback(
+    (path: string) => {
+      storeOpenFile(path);
+      onFileOpened?.();
+    },
+    [onFileOpened, storeOpenFile],
+  );
 
   const expandPathWithAncestors = useCallback((path: string) => {
     setExpandedPaths((previous) => {
@@ -286,7 +304,9 @@ function FileViewerTree({ context }: { context: FileViewerContext }) {
             }}
             placeholder="Go to file..."
             spellCheck={false}
-            className="w-full border-0 bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground/60"
+            // 16px on coarse pointers: iOS Safari force-zooms focused inputs
+            // below that size, which jolts the whole dialog.
+            className="w-full border-0 bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground/60 pointer-coarse:text-base"
           />
         </div>
       </div>
@@ -303,7 +323,7 @@ function FileViewerTree({ context }: { context: FileViewerContext }) {
               <button
                 key={entry.path}
                 type="button"
-                className="flex w-full cursor-pointer items-center gap-1.5 rounded-sm border-0 bg-transparent px-2 py-1 text-left text-xs text-foreground/85 transition-colors hover:bg-foreground/8"
+                className="flex w-full cursor-pointer items-center gap-1.5 rounded-sm border-0 bg-transparent px-2 py-1 text-left text-xs text-foreground/85 transition-colors hover:bg-foreground/8 pointer-coarse:py-2 pointer-coarse:text-sm"
                 onClick={() => handleOpenSearchResult(entry)}
               >
                 <VscodeEntryIcon
@@ -360,6 +380,7 @@ function AddSelectionToChatFooter({
 }) {
   const addFileSelectionContext = useComposerDraftStore((state) => state.addFileSelectionContext);
   const close = useFileViewerStore((state) => state.close);
+  const isCoarsePointer = useMediaQuery({ pointer: "coarse" });
   const selectionCount = selectedLines ? Math.abs(selectedLines.end - selectedLines.start) + 1 : 0;
 
   const handleAddToChat = useCallback(() => {
@@ -390,12 +411,19 @@ function AddSelectionToChatFooter({
     close();
   }, [activePath, addFileSelectionContext, close, file.content, selectedLines, threadRef]);
 
+  const selectionLabel = `${selectionCount} line${selectionCount === 1 ? "" : "s"} selected`;
   return (
-    <div className="flex items-center justify-between gap-2 border-t border-border/60 px-3 py-1.5">
+    // Bottom padding tracks the home-indicator inset on notched phones, where
+    // the sheet runs to the screen edge.
+    <div className="flex items-center justify-between gap-2 border-t border-border/60 px-3 py-1.5 max-sm:pb-[max(0.375rem,env(safe-area-inset-bottom))]">
       <span className="text-[11px] text-muted-foreground/70">
         {selectionCount > 0
-          ? `${selectionCount} line${selectionCount === 1 ? "" : "s"} selected`
-          : "Click a line number to select (drag for a range), or attach the whole file as a reference."}
+          ? isCoarsePointer
+            ? `${selectionLabel} — tap another line number to extend, tap the selection to clear.`
+            : selectionLabel
+          : isCoarsePointer
+            ? "Tap a line number to select it, or attach the whole file as a reference."
+            : "Click a line number to select (drag for a range), or attach the whole file as a reference."}
       </span>
       <button
         type="button"
@@ -421,6 +449,7 @@ function FileViewerPreview({
   const revealEndLine = useFileViewerStore((state) => state.revealEndLine);
   const revealRequestId = useFileViewerStore((state) => state.revealRequestId);
   const { resolvedTheme } = useTheme();
+  const isCoarsePointer = useMediaQuery({ pointer: "coarse" });
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const [selectedLines, setSelectedLines] = useState<SelectedLineRange | null>(null);
 
@@ -500,10 +529,12 @@ function FileViewerPreview({
       // selection affordance (GitHub-style), no gutter utility.
       lineHoverHighlight: "both" as const,
       onLineSelected: (range: SelectedLineRange | null) => {
-        setSelectedLines(range);
+        setSelectedLines((previous) =>
+          isCoarsePointer ? resolveCoarseLineSelection(previous, range) : range,
+        );
       },
     }),
-    [resolvedTheme, wordWrap],
+    [isCoarsePointer, resolvedTheme, wordWrap],
   );
 
   if (!activePath) {
@@ -603,7 +634,14 @@ function FileViewerPreview({
   );
 }
 
-function FileViewerTabs({ context }: { context: FileViewerContext }) {
+function FileViewerTabs({
+  context,
+  onTabSelected,
+}: {
+  context: FileViewerContext;
+  /** Fires on every tab click, including re-selecting the active tab. */
+  onTabSelected?: () => void;
+}) {
   const tabs = useFileViewerStore((state) => state.tabs);
   const activePath = useFileViewerStore((state) => state.activePath);
   const setActivePath = useFileViewerStore((state) => state.setActivePath);
@@ -690,7 +728,10 @@ function FileViewerTabs({ context }: { context: FileViewerContext }) {
             <button
               type="button"
               className="cursor-pointer border-0 bg-transparent p-0 py-0.5 text-inherit"
-              onClick={() => setActivePath(tab)}
+              onClick={() => {
+                setActivePath(tab);
+                onTabSelected?.();
+              }}
             >
               {basenameOf(tab)}
             </button>
@@ -727,15 +768,100 @@ function FileViewerTabs({ context }: { context: FileViewerContext }) {
   );
 }
 
+function FileViewerLayout({ context }: { context: FileViewerContext }) {
+  const activePath = useFileViewerStore((state) => state.activePath);
+  const close = useFileViewerStore((state) => state.close);
+  const isCoarsePointer = useMediaQuery({ pointer: "coarse" });
+  // Persisted preference: the toggle writes straight to settings (optimistic
+  // local apply + fire-and-forget RPC), so it sticks until toggled again.
+  // Coarse pointers instead default to wrap and toggle a session-scoped
+  // override, so a phone never rewrites the shared desktop preference.
+  const wordWrapSetting = useSettings((settings) => settings.fileViewerWordWrap);
+  const coarsePointerWordWrap = useFileViewerStore((state) => state.coarsePointerWordWrap);
+  const setCoarsePointerWordWrap = useFileViewerStore((state) => state.setCoarsePointerWordWrap);
+  const { updateSettings } = useUpdateSettings();
+  const wordWrap = isCoarsePointer ? (coarsePointerWordWrap ?? true) : wordWrapSetting;
+
+  // Below the `sm` breakpoint the tree and preview share the screen one at a
+  // time (a 256px tree beside code is unusable on a phone); every file-open
+  // interaction lands on the preview, and the header's tree button goes back.
+  // Desktop ignores this state entirely — both panes stay visible.
+  const [mobilePane, setMobilePane] = useState<"tree" | "preview">(activePath ? "preview" : "tree");
+  const showPreviewPane = useCallback(() => setMobilePane("preview"), []);
+  useEffect(() => {
+    setMobilePane(activePath ? "preview" : "tree");
+  }, [activePath]);
+
+  return (
+    <>
+      {/* Fixed-height header so it doesn't collapse when no tabs are
+          open, with an inline close button that centers with the row. */}
+      <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border/60 px-3">
+        {mobilePane === "preview" ? (
+          <button
+            type="button"
+            aria-label="Show project files"
+            className="inline-flex shrink-0 cursor-pointer items-center rounded-md border-0 bg-transparent p-1.5 text-muted-foreground/60 transition-colors hover:bg-foreground/10 hover:text-foreground sm:hidden"
+            onClick={() => setMobilePane("tree")}
+          >
+            <FolderTree className="size-4" />
+          </button>
+        ) : null}
+        <FileViewerTabs context={context} onTabSelected={showPreviewPane} />
+        {activePath ? (
+          <Toggle
+            aria-label={wordWrap ? "Disable line wrapping" : "Enable line wrapping"}
+            tooltip={wordWrap ? "Disable line wrapping" : "Enable line wrapping"}
+            variant="outline"
+            size="xs"
+            className="shrink-0"
+            pressed={wordWrap}
+            onPressedChange={(pressed) => {
+              if (isCoarsePointer) {
+                setCoarsePointerWordWrap(Boolean(pressed));
+              } else {
+                updateSettings({ fileViewerWordWrap: Boolean(pressed) });
+              }
+            }}
+          >
+            <TextWrapIcon className="size-3" />
+          </Toggle>
+        ) : null}
+        {activePath ? (
+          <span className="max-w-[36ch] shrink-0 truncate text-[11px] text-muted-foreground/60 max-sm:hidden">
+            {activePath}
+          </span>
+        ) : null}
+        <button
+          type="button"
+          aria-label="Close file viewer"
+          className="inline-flex shrink-0 cursor-pointer items-center rounded-md border-0 bg-transparent p-1.5 text-muted-foreground/60 transition-colors hover:bg-foreground/10 hover:text-foreground"
+          onClick={close}
+        >
+          <X className="size-4" />
+        </button>
+      </div>
+      <div className="flex min-h-0 flex-1">
+        <div
+          className={cn(
+            "w-64 shrink-0 border-r border-border/60 max-sm:w-full max-sm:border-r-0",
+            mobilePane === "preview" && "max-sm:hidden",
+          )}
+        >
+          <FileViewerTree context={context} onFileOpened={showPreviewPane} />
+        </div>
+        <div className={cn("min-w-0 flex-1", mobilePane === "tree" && "max-sm:hidden")}>
+          <FileViewerPreview context={context} wordWrap={wordWrap} />
+        </div>
+      </div>
+    </>
+  );
+}
+
 export default function FileViewerOverlay() {
   const isOpen = useFileViewerStore((state) => state.isOpen);
   const context = useFileViewerStore((state) => state.context);
-  const activePath = useFileViewerStore((state) => state.activePath);
   const close = useFileViewerStore((state) => state.close);
-  // Persisted preference: the toggle writes straight to settings (optimistic
-  // local apply + fire-and-forget RPC), so it sticks until toggled again.
-  const wordWrap = useSettings((settings) => settings.fileViewerWordWrap);
-  const { updateSettings } = useUpdateSettings();
 
   if (!context) {
     return null;
@@ -750,53 +876,16 @@ export default function FileViewerOverlay() {
         }
       }}
     >
+      {/* Desktop sizes are `sm:`-scoped so the popup's bottom-sheet mobile
+          styling wins below that: a full-width sheet filling the viewport
+          under the 3rem (pt-12) backdrop reveal. */}
       <DialogPopup
         showCloseButton={false}
-        className="flex h-[86vh] w-[calc(100vw-4rem)] max-w-[1400px] flex-col gap-0 overflow-hidden p-0"
+        className="flex h-[calc(100dvh-3rem)] flex-col gap-0 overflow-hidden p-0 sm:h-[86vh] sm:w-[calc(100vw-4rem)] sm:max-w-[1400px]"
       >
         <DialogTitle className="sr-only">Project files</DialogTitle>
         <DiffWorkerPoolProvider>
-          {/* Fixed-height header so it doesn't collapse when no tabs are
-              open, with an inline close button that centers with the row. */}
-          <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border/60 px-3">
-            <FileViewerTabs context={context} />
-            {activePath ? (
-              <Toggle
-                aria-label={wordWrap ? "Disable line wrapping" : "Enable line wrapping"}
-                tooltip={wordWrap ? "Disable line wrapping" : "Enable line wrapping"}
-                variant="outline"
-                size="xs"
-                className="shrink-0"
-                pressed={wordWrap}
-                onPressedChange={(pressed) => {
-                  updateSettings({ fileViewerWordWrap: Boolean(pressed) });
-                }}
-              >
-                <TextWrapIcon className="size-3" />
-              </Toggle>
-            ) : null}
-            {activePath ? (
-              <span className="max-w-[36ch] shrink-0 truncate text-[11px] text-muted-foreground/60">
-                {activePath}
-              </span>
-            ) : null}
-            <button
-              type="button"
-              aria-label="Close file viewer"
-              className="inline-flex shrink-0 cursor-pointer items-center rounded-md border-0 bg-transparent p-1.5 text-muted-foreground/60 transition-colors hover:bg-foreground/10 hover:text-foreground"
-              onClick={close}
-            >
-              <X className="size-4" />
-            </button>
-          </div>
-          <div className="flex min-h-0 flex-1">
-            <div className="w-64 shrink-0 border-r border-border/60">
-              <FileViewerTree context={context} />
-            </div>
-            <div className="min-w-0 flex-1">
-              <FileViewerPreview context={context} wordWrap={wordWrap} />
-            </div>
-          </div>
+          <FileViewerLayout context={context} />
         </DiffWorkerPoolProvider>
       </DialogPopup>
     </Dialog>

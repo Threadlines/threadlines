@@ -4,6 +4,7 @@ import type { EnvironmentId, ThreadId } from "@threadlines/contracts";
 import { useNavigate } from "@tanstack/react-router";
 
 import { isElectron } from "../env";
+import { useCommandPaletteStore } from "../commandPaletteStore";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useSettings } from "../hooks/useSettings";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
@@ -97,6 +98,11 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
             scopeThreadRef(environmentId as EnvironmentId, threadId as ThreadId),
           ),
         });
+        return;
+      }
+
+      if (action === "toggle-command-palette") {
+        useCommandPaletteStore.getState().toggleOpen();
         return;
       }
 

@@ -56,7 +56,10 @@ export interface ProjectionFullThreadDiffContext {
 export interface ProjectionSnapshotQueryShape {
   /**
    * Read the lightweight command snapshot used to bootstrap the in-memory
-   * orchestration engine without hydrating message/activity/checkpoint bodies.
+   * orchestration engine. Thread messages are hydrated (capped to the same
+   * per-thread tail the projector keeps in memory) because decider invariants
+   * consult message history (turn retry, fork source lookup); activity and
+   * checkpoint bodies are not hydrated.
    */
   readonly getCommandReadModel: () => Effect.Effect<
     OrchestrationReadModel,

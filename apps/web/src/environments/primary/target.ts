@@ -37,7 +37,18 @@ export function isLoopbackHostname(hostname: string): boolean {
 }
 
 function resolveHttpRequestBaseUrl(httpBaseUrl: string): string {
-  const configuredDevServerUrl = import.meta.env.VITE_DEV_SERVER_URL?.trim();
+  // Under `vite dev` with a configured WS target, the dev server proxies
+  // /api, /attachments, and /.well-known (vite.config.ts), and routing HTTP
+  // through the page origin is required for correctness, not just latency:
+  // the server answers browser-API CORS with a wildcard allow-origin, which
+  // browsers reject for credentialed requests, so cross-origin absolute URLs
+  // would fail. VITE_DEV_SERVER_URL stays as the explicit override for pages
+  // not served by the vite dev server itself (e.g. the desktop shell).
+  const configuredDevServerUrl =
+    import.meta.env.VITE_DEV_SERVER_URL?.trim() ||
+    (import.meta.env.DEV && import.meta.env.VITE_WS_URL?.trim()
+      ? window.location.origin
+      : undefined);
   if (!configuredDevServerUrl) {
     return httpBaseUrl;
   }

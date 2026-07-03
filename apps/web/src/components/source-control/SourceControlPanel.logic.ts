@@ -406,28 +406,42 @@ export function getCommitGraphRefKind(
   return "branch";
 }
 
+function occupiedLaneIndexes(lanes: ReadonlyArray<string | null>): number[] {
+  const indexes: number[] = [];
+  for (let index = 0; index < lanes.length; index += 1) {
+    if (lanes[index] !== null) {
+      indexes.push(index);
+    }
+  }
+  return indexes;
+}
+
 export function buildCommitGraphRows<TCommit extends CommitGraphTopologyCommit>(
   commits: readonly TCommit[],
 ): Array<CommitGraphDisplayRow<TCommit>> {
-  let activeLanes: string[] = [];
+  // Each lane holds the sha it is waiting for. A closed lane leaves a null
+  // hole rather than compacting: surviving lanes must keep their index so the
+  // lines already drawn in the rows above stay at the same x-position (and
+  // color). Compacting shifted every lane right of a merge, detaching those
+  // lines mid-graph.
+  let activeLanes: Array<string | null> = [];
   const rows: Array<CommitGraphDisplayRow<TCommit>> = [];
 
   for (const commit of commits) {
     let lane = activeLanes.indexOf(commit.sha);
     const isNewTip = lane < 0;
     if (isNewTip) {
-      lane = activeLanes.length;
-      activeLanes.push(commit.sha);
+      const freeLane = activeLanes.indexOf(null);
+      lane = freeLane >= 0 ? freeLane : activeLanes.length;
     }
 
-    const topLanes = activeLanes
-      .map((_, index) => index)
-      .filter((index) => !isNewTip || index !== lane);
-    let nextLanes = [...activeLanes];
+    const topLanes = occupiedLaneIndexes(activeLanes);
+    const nextLanes: Array<string | null> = [...activeLanes];
+    nextLanes[lane] = commit.sha;
     const parentPaths: CommitGraphLanePath[] = [];
 
     if (commit.parents.length === 0) {
-      nextLanes.splice(lane, 1);
+      nextLanes[lane] = null;
     } else {
       const [firstParent, ...additionalParents] = commit.parents;
       if (firstParent) {
@@ -435,11 +449,16 @@ export function buildCommitGraphRows<TCommit extends CommitGraphTopologyCommit>(
           (sha, index) => index !== lane && sha === firstParent,
         );
         if (existingParentLane >= 0) {
-          const toLane = lane < existingParentLane ? existingParentLane - 1 : existingParentLane;
-          nextLanes.splice(lane, 1);
-          parentPaths.push({ fromLane: lane, toLane });
+          // The parent keeps the leftmost of the two lanes so the longer-lived
+          // line continues straight while the other lane curves into it.
+          const toLane = Math.min(lane, existingParentLane);
+          nextLanes[toLane] = firstParent;
+          nextLanes[Math.max(lane, existingParentLane)] = null;
           if (lane < existingParentLane) {
+            parentPaths.push({ fromLane: lane, toLane });
             parentPaths.push({ fromLane: existingParentLane, toLane });
+          } else {
+            parentPaths.push({ fromLane: lane, toLane });
           }
         } else {
           nextLanes[lane] = firstParent;
@@ -454,13 +473,26 @@ export function buildCommitGraphRows<TCommit extends CommitGraphTopologyCommit>(
           continue;
         }
 
-        const parentLane = nextLanes.length;
-        nextLanes.push(parent);
+        // Reuse a hole only if it was already free above this row; a lane
+        // freed by this very commit still has its old line in the top half,
+        // which a curve opening into it would appear to continue.
+        let parentLane = nextLanes.length;
+        for (let index = 0; index < nextLanes.length; index += 1) {
+          if (nextLanes[index] === null && activeLanes[index] === null) {
+            parentLane = index;
+            break;
+          }
+        }
+        nextLanes[parentLane] = parent;
         parentPaths.push({ fromLane: lane, toLane: parentLane });
       }
     }
 
-    const bottomLanes = nextLanes.map((_, index) => index);
+    while (nextLanes.length > 0 && nextLanes[nextLanes.length - 1] === null) {
+      nextLanes.pop();
+    }
+
+    const bottomLanes = occupiedLaneIndexes(nextLanes);
     const rowLaneCount = Math.max(
       1,
       lane + 1,

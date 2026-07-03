@@ -230,6 +230,57 @@ export interface WsRpcClient {
   };
 }
 
+const DISPATCH_ATTEMPT_TIMEOUT_BASE_MS = 25_000;
+// Image attachments travel inline as data URLs inside the command payload,
+// so a turn.start can be tens of megabytes on a slow mobile uplink. Scale
+// the per-attempt timeout with payload size so a legitimately slow upload
+// is not killed and pointlessly re-sent from scratch.
+const DISPATCH_ATTEMPT_TIMEOUT_PER_UPLOAD_MB_MS = 20_000;
+const DISPATCH_ATTEMPT_TIMEOUT_MAX_MS = 180_000;
+
+export function estimateCommandUploadChars(command: unknown): number {
+  if (typeof command !== "object" || command === null || !("message" in command)) {
+    return 0;
+  }
+  const message = (command as { readonly message?: unknown }).message;
+  if (typeof message !== "object" || message === null || !("attachments" in message)) {
+    return 0;
+  }
+  const attachments = (message as { readonly attachments?: unknown }).attachments;
+  if (!Array.isArray(attachments)) {
+    return 0;
+  }
+  let totalChars = 0;
+  for (const attachment of attachments) {
+    if (typeof attachment !== "object" || attachment === null || !("dataUrl" in attachment)) {
+      continue;
+    }
+    const dataUrl = (attachment as { readonly dataUrl?: unknown }).dataUrl;
+    if (typeof dataUrl === "string") {
+      totalChars += dataUrl.length;
+    }
+  }
+  return totalChars;
+}
+
+export function dispatchCommandRetryOptions(command: unknown): {
+  readonly label: string;
+  readonly attemptTimeoutMs: number;
+  readonly totalBudgetMs: number;
+} {
+  const uploadChars = estimateCommandUploadChars(command);
+  const attemptTimeoutMs = Math.min(
+    DISPATCH_ATTEMPT_TIMEOUT_MAX_MS,
+    DISPATCH_ATTEMPT_TIMEOUT_BASE_MS +
+      Math.ceil(uploadChars / 1_000_000) * DISPATCH_ATTEMPT_TIMEOUT_PER_UPLOAD_MB_MS,
+  );
+  return {
+    label: ORCHESTRATION_WS_METHODS.dispatchCommand,
+    attemptTimeoutMs,
+    totalBudgetMs: attemptTimeoutMs * 3 + 15_000,
+  };
+}
+
 export function createWsRpcClient(transport: WsTransport): WsRpcClient {
   return {
     dispose: () => transport.dispose(),
@@ -263,7 +314,12 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       favicon: (input) => transport.request((client) => client[WS_METHODS.projectsFavicon](input)),
     },
     attachments: {
-      read: (input) => transport.request((client) => client[WS_METHODS.attachmentsRead](input)),
+      // Pure read, so retrying across relay churn is safe; phones fetch
+      // previews this way and their sockets drop constantly.
+      read: (input) =>
+        transport.requestWithReconnectRetry((client) => client[WS_METHODS.attachmentsRead](input), {
+          label: WS_METHODS.attachmentsRead,
+        }),
     },
     filesystem: {
       browse: (input) => transport.request((client) => client[WS_METHODS.filesystemBrowse](input)),
@@ -515,8 +571,14 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         }),
     },
     orchestration: {
+      // Commands are deduped server-side by commandId receipts, so re-sending
+      // through socket drops and session swaps cannot double-apply. Without
+      // this, a send racing a phone-link reconnect was simply lost.
       dispatchCommand: (input) =>
-        transport.request((client) => client[ORCHESTRATION_WS_METHODS.dispatchCommand](input)),
+        transport.requestWithReconnectRetry(
+          (client) => client[ORCHESTRATION_WS_METHODS.dispatchCommand](input),
+          dispatchCommandRetryOptions(input),
+        ),
       getTurnDiff: (input) =>
         transport.request((client) => client[ORCHESTRATION_WS_METHODS.getTurnDiff](input)),
       getFullThreadDiff: (input) =>

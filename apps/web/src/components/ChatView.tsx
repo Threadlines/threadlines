@@ -238,7 +238,7 @@ import {
   selectOptimisticThreadMessages,
   useOptimisticThreadMessagesStore,
 } from "../optimisticThreadMessages";
-import { sanitizeThreadErrorMessage } from "~/rpc/transportError";
+import { describeDispatchFailure, sanitizeThreadErrorMessage } from "~/rpc/transportError";
 import { retainThreadDetailSubscription } from "../environments/runtime/service";
 import { hasActiveContextCompactionActivity } from "~/lib/contextCompactionActivities";
 import { deriveProviderAccountUsagePresentationForProvider } from "~/lib/providerUsage";
@@ -4126,10 +4126,7 @@ export default function ChatView(props: ChatViewProps) {
           detectTrigger: true,
         });
       }
-      setThreadError(
-        threadIdForSend,
-        err instanceof Error ? err.message : "Failed to send message.",
-      );
+      setThreadError(threadIdForSend, describeDispatchFailure(err, "Failed to send message."));
     });
     sendInFlightRef.current = false;
     if (!dispatchSucceeded && !isSteeringFollowUp) {

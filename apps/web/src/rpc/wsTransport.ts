@@ -19,7 +19,12 @@ import {
   type WsRpcProtocolClient,
   type WsRpcProtocolSocketUrlProvider,
 } from "./protocol";
-import { isTransportConnectionErrorMessage } from "./transportError";
+import {
+  isRetryableRequestFailure,
+  isTransportConnectionErrorMessage,
+  TransportRequestRetriesExhaustedError,
+  TransportRequestTimeoutError,
+} from "./transportError";
 
 interface SubscribeOptions {
   readonly retryDelay?: Duration.Input;
@@ -31,8 +36,55 @@ interface RequestOptions {
   readonly timeout?: Option.Option<Duration.Input>;
 }
 
+export interface RequestRetryOptions {
+  /** Method name used in error messages and telemetry. */
+  readonly label?: string;
+  /** How long one attempt may wait for the server's response. */
+  readonly attemptTimeoutMs?: number;
+  /** Total wall-clock budget across attempts, reconnects, and backoff. */
+  readonly totalBudgetMs?: number;
+}
+
 const DEFAULT_SUBSCRIPTION_RETRY_DELAY_MS = Duration.millis(250);
+const DEFAULT_REQUEST_ATTEMPT_TIMEOUT_MS = 25_000;
+const DEFAULT_REQUEST_RETRY_BUDGET_MS = 90_000;
+// A pong newer than this means the socket the failure happened on is alive,
+// so the failure was request-level and a plain re-send is enough. Older (or
+// no) pongs mean a zombie socket: force a fresh session before retrying
+// instead of waiting out the protocol's own backoff on a dead pipe.
+const REQUEST_RETRY_HEARTBEAT_FRESH_MS = 12_000;
+const REQUEST_RETRY_DELAYS_MS = [400, 800, 1_600, 3_200, 5_000] as const;
 const NOOP: () => void = () => undefined;
+
+function getRequestRetryDelayMs(attempt: number): number {
+  return (
+    REQUEST_RETRY_DELAYS_MS[Math.min(attempt, REQUEST_RETRY_DELAYS_MS.length - 1)] ??
+    REQUEST_RETRY_DELAYS_MS[0]
+  );
+}
+
+function resolveRequestTimeoutMs(options: RequestOptions | undefined): number | null {
+  const timeout = options?.timeout;
+  if (timeout === undefined || Option.isNone(timeout)) {
+    return null;
+  }
+  return Duration.toMillis(Duration.fromInputUnsafe(timeout.value));
+}
+
+function withAttemptTimeout<TSuccess>(
+  effect: Effect.Effect<TSuccess, Error, never>,
+  timeoutMs: number,
+  label: string,
+): Effect.Effect<TSuccess, Error, never> {
+  return effect.pipe(
+    Effect.timeoutOption(Duration.millis(timeoutMs)),
+    Effect.flatMap((result) =>
+      Option.isSome(result)
+        ? Effect.succeed(result.value)
+        : Effect.fail(new TransportRequestTimeoutError(label, timeoutMs)),
+    ),
+  );
+}
 
 interface TransportSession {
   readonly clientPromise: Promise<WsRpcProtocolClient>;
@@ -80,7 +132,7 @@ export class WsTransport {
 
   async request<TSuccess>(
     execute: (client: WsRpcProtocolClient) => Effect.Effect<TSuccess, Error, never>,
-    _options?: RequestOptions,
+    options?: RequestOptions,
   ): Promise<TSuccess> {
     if (this.disposed) {
       throw new Error("Transport disposed");
@@ -88,7 +140,57 @@ export class WsTransport {
 
     const session = this.session;
     const client = await session.clientPromise;
-    return await session.runtime.runPromise(Effect.suspend(() => execute(client)));
+    const timeoutMs = resolveRequestTimeoutMs(options);
+    const effect = Effect.suspend(() => execute(client));
+    return await session.runtime.runPromise(
+      timeoutMs === null ? effect : withAttemptTimeout(effect, timeoutMs, "request"),
+    );
+  }
+
+  /**
+   * Like request(), but re-sends across socket drops, zombie sockets, and
+   * session swaps until the server acknowledges or the budget runs out.
+   * ONLY safe for idempotent methods: orchestration commands (deduped
+   * server-side by commandId receipts) and pure reads. Server rejections
+   * are never retried — they surface on the first attempt.
+   */
+  async requestWithReconnectRetry<TSuccess>(
+    execute: (client: WsRpcProtocolClient) => Effect.Effect<TSuccess, Error, never>,
+    options?: RequestRetryOptions,
+  ): Promise<TSuccess> {
+    const label = options?.label ?? "request";
+    const attemptTimeoutMs = options?.attemptTimeoutMs ?? DEFAULT_REQUEST_ATTEMPT_TIMEOUT_MS;
+    const totalBudgetMs = options?.totalBudgetMs ?? DEFAULT_REQUEST_RETRY_BUDGET_MS;
+    const startedAtMs = Date.now();
+    for (let attempt = 0; ; attempt += 1) {
+      if (this.disposed) {
+        throw new Error("Transport disposed");
+      }
+      const session = this.session;
+      try {
+        const client = await session.clientPromise;
+        return await session.runtime.runPromise(
+          withAttemptTimeout(
+            Effect.suspend(() => execute(client)),
+            attemptTimeoutMs,
+            label,
+          ),
+        );
+      } catch (error) {
+        if (this.disposed || !isRetryableRequestFailure(error)) {
+          throw error;
+        }
+        const elapsedMs = Date.now() - startedAtMs;
+        const retryDelayMs = getRequestRetryDelayMs(attempt);
+        if (elapsedMs + retryDelayMs >= totalBudgetMs) {
+          throw new TransportRequestRetriesExhaustedError(label, elapsedMs, error);
+        }
+        if (session === this.session && !this.isHeartbeatFresh(REQUEST_RETRY_HEARTBEAT_FRESH_MS)) {
+          await this.reconnect().catch(() => undefined);
+        }
+        await sleep(retryDelayMs);
+      }
+    }
   }
 
   async requestStream<TValue>(

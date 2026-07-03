@@ -272,6 +272,66 @@ describe("SourceControlPanel.logic", () => {
     expect(baseRow?.layout.lane).toBe(0);
   });
 
+  it("keeps unrelated lanes in place when a branch line merges into an existing lane", () => {
+    // Mirrors the shape that broke in production: two long-lived side branches
+    // (perf, theme) around main. When main-tip consumed its parent from lane 2,
+    // lane compaction used to shift the theme branch from lane 3 into lane 2,
+    // detaching its line from the rows above.
+    const rows = buildCommitGraphRows([
+      { sha: "perf-tip", parents: ["perf-mid", "main-tip"], refs: ["origin/perf"] },
+      { sha: "perf-mid", parents: ["perf-base", "shared"], refs: [] },
+      { sha: "perf-base", parents: ["trunk"], refs: [] },
+      { sha: "theme-tip", parents: ["theme-mid", "main-tip"], refs: ["origin/theme"] },
+      { sha: "main-tip", parents: ["shared"], refs: ["main"] },
+      { sha: "theme-mid", parents: ["theme-base", "shared"], refs: [] },
+      { sha: "shared", parents: ["trunk"], refs: [] },
+      { sha: "theme-base", parents: ["trunk"], refs: [] },
+      { sha: "trunk", parents: [], refs: [] },
+    ]);
+
+    const themeTipRow = rows[3];
+    const mainTipRow = rows[4];
+    const themeMidRow = rows[5];
+    const themeBaseRow = rows[7];
+
+    expect(themeTipRow?.layout.lane).toBe(3);
+    expect(themeTipRow?.layout.parentPaths).toEqual([
+      { fromLane: 3, toLane: 3 },
+      { fromLane: 3, toLane: 1 },
+    ]);
+    expect(mainTipRow?.layout.lane).toBe(1);
+    expect(mainTipRow?.layout.parentPaths).toEqual([
+      { fromLane: 1, toLane: 1 },
+      { fromLane: 2, toLane: 1 },
+    ]);
+    expect(mainTipRow?.layout.bottomLanes).toEqual([0, 1, 3]);
+    expect(themeMidRow?.layout.lane).toBe(3);
+    expect(themeMidRow?.layout.topLanes).toEqual([0, 1, 3]);
+    expect(themeBaseRow?.layout.lane).toBe(3);
+    expect(themeBaseRow?.layout.parentPaths).toEqual([{ fromLane: 3, toLane: 0 }]);
+
+    for (let index = 0; index < rows.length - 1; index += 1) {
+      expect(rows[index + 1]?.layout.topLanes).toEqual(rows[index]?.layout.bottomLanes);
+    }
+  });
+
+  it("reuses a freed lane for a later branch tip", () => {
+    const rows = buildCommitGraphRows([
+      { sha: "top", parents: ["mid", "side-1", "side-2"], refs: ["main"] },
+      { sha: "side-1", parents: ["mid"], refs: [] },
+      { sha: "late-tip", parents: ["mid"], refs: ["origin/late"] },
+      { sha: "side-2", parents: ["mid"], refs: [] },
+      { sha: "mid", parents: [], refs: [] },
+    ]);
+
+    const lateTipRow = rows[2];
+    expect(lateTipRow?.layout.lane).toBe(1);
+    expect(lateTipRow?.layout.isNewTip).toBe(true);
+    expect(lateTipRow?.layout.topLanes).toEqual([0, 2]);
+    expect(lateTipRow?.layout.parentPaths).toEqual([{ fromLane: 1, toLane: 0 }]);
+    expect(rows[0]?.layout.laneCount).toBe(3);
+  });
+
   it("preserves lane continuity through rows that also carry ref decorations", () => {
     const rows = buildCommitGraphRows([
       { sha: "merge", parents: ["main-parent", "side-parent"], refs: ["main", "origin/main"] },

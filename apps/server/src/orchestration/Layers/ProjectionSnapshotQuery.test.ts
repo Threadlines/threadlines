@@ -7,7 +7,7 @@ import {
   TurnId,
   ProviderInstanceId,
 } from "@threadlines/contracts";
-import { MAX_THREAD_ACTIVITIES } from "@threadlines/shared/threadLimits";
+import { MAX_THREAD_ACTIVITIES, MAX_THREAD_MESSAGES } from "@threadlines/shared/threadLimits";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
@@ -1137,6 +1137,307 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         );
       }
       assert.equal(snapshot.threads[0]?.activities.length, MAX_THREAD_ACTIVITIES);
+    }),
+  );
+
+  it.effect("hydrates thread messages into the command read model", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_thread_messages`;
+      yield* sql`DELETE FROM projection_state`;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id,
+          title,
+          workspace_root,
+          default_model_selection_json,
+          scripts_json,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'project-command-messages',
+          'Command Messages',
+          '/tmp/command-messages',
+          '{"provider":"codex","model":"gpt-5-codex"}',
+          '[]',
+          '2026-04-02T00:00:00.000Z',
+          '2026-04-02T00:00:00.000Z',
+          NULL
+        )
+      `;
+
+      for (const threadId of ["thread-command-messages-a", "thread-command-messages-b"]) {
+        yield* sql`
+          INSERT INTO projection_threads (
+            thread_id,
+            project_id,
+            title,
+            model_selection_json,
+            runtime_mode,
+            interaction_mode,
+            branch,
+            worktree_path,
+            latest_turn_id,
+            latest_user_message_at,
+            pending_approval_count,
+            pending_user_input_count,
+            has_actionable_proposed_plan,
+            created_at,
+            updated_at,
+            deleted_at
+          )
+          VALUES (
+            ${threadId},
+            'project-command-messages',
+            'Command messages thread',
+            '{"provider":"codex","model":"gpt-5-codex"}',
+            'full-access',
+            'default',
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            0,
+            0,
+            0,
+            '2026-04-02T00:00:01.000Z',
+            '2026-04-02T00:00:01.000Z',
+            NULL
+          )
+        `;
+      }
+
+      const messageRows = [
+        {
+          messageId: "message-a-1",
+          threadId: "thread-command-messages-a",
+          turnId: null,
+          role: "user",
+          text: "fix the graph rendering",
+          attachments:
+            '[{"type":"image","id":"attachment-1","name":"screenshot.png","mimeType":"image/png","sizeBytes":2048}]',
+          isStreaming: 0,
+          createdAt: "2026-04-02T00:00:02.000Z",
+        },
+        {
+          messageId: "message-a-2",
+          threadId: "thread-command-messages-a",
+          turnId: "turn-a-1",
+          role: "assistant",
+          text: "looking into it",
+          attachments: null,
+          isStreaming: 1,
+          createdAt: "2026-04-02T00:00:03.000Z",
+        },
+        {
+          messageId: "message-a-3",
+          threadId: "thread-command-messages-a",
+          turnId: null,
+          role: "user",
+          text: "please continue",
+          attachments: null,
+          isStreaming: 0,
+          createdAt: "2026-04-02T00:00:04.000Z",
+        },
+        {
+          messageId: "message-b-1",
+          threadId: "thread-command-messages-b",
+          turnId: null,
+          role: "user",
+          text: "unrelated thread message",
+          attachments: null,
+          isStreaming: 0,
+          createdAt: "2026-04-02T00:00:05.000Z",
+        },
+      ] as const;
+      for (const row of messageRows) {
+        yield* sql`
+          INSERT INTO projection_thread_messages (
+            message_id,
+            thread_id,
+            turn_id,
+            role,
+            text,
+            attachments_json,
+            is_streaming,
+            created_at,
+            updated_at
+          )
+          VALUES (
+            ${row.messageId},
+            ${row.threadId},
+            ${row.turnId},
+            ${row.role},
+            ${row.text},
+            ${row.attachments},
+            ${row.isStreaming},
+            ${row.createdAt},
+            ${row.createdAt}
+          )
+        `;
+      }
+
+      const commandReadModel = yield* snapshotQuery.getCommandReadModel();
+      const threadA = commandReadModel.threads.find(
+        (thread) => thread.id === ThreadId.make("thread-command-messages-a"),
+      );
+      const threadB = commandReadModel.threads.find(
+        (thread) => thread.id === ThreadId.make("thread-command-messages-b"),
+      );
+
+      assert.deepEqual(
+        threadA?.messages.map((message) => message.id),
+        [asMessageId("message-a-1"), asMessageId("message-a-2"), asMessageId("message-a-3")],
+      );
+      assert.deepEqual(
+        threadB?.messages.map((message) => message.id),
+        [asMessageId("message-b-1")],
+      );
+      assert.equal(threadA?.messages[0]?.attachments?.length, 1);
+      assert.equal(threadA?.messages[0]?.attachments?.[0]?.name, "screenshot.png");
+      assert.equal(threadA?.messages[1]?.streaming, true);
+      assert.equal(threadA?.messages[1]?.turnId, asTurnId("turn-a-1"));
+
+      // The turn retry decider re-points the new turn at the newest user
+      // message, so command-model hydration must make it findable.
+      const lastUserMessage = threadA?.messages.findLast((message) => message.role === "user");
+      assert.equal(lastUserMessage?.id, asMessageId("message-a-3"));
+
+      const fullSnapshot = yield* snapshotQuery.getSnapshot();
+      const fullThreadA = fullSnapshot.threads.find(
+        (thread) => thread.id === ThreadId.make("thread-command-messages-a"),
+      );
+      assert.deepStrictEqual(threadA?.messages, fullThreadA?.messages);
+    }),
+  );
+
+  it.effect("caps command read model thread messages to the newest rows", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_thread_messages`;
+      yield* sql`DELETE FROM projection_state`;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id,
+          title,
+          workspace_root,
+          default_model_selection_json,
+          scripts_json,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'project-message-cap',
+          'Message Cap',
+          '/tmp/message-cap',
+          '{"provider":"codex","model":"gpt-5-codex"}',
+          '[]',
+          '2026-04-02T01:00:00.000Z',
+          '2026-04-02T01:00:00.000Z',
+          NULL
+        )
+      `;
+
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id,
+          project_id,
+          title,
+          model_selection_json,
+          runtime_mode,
+          interaction_mode,
+          branch,
+          worktree_path,
+          latest_turn_id,
+          latest_user_message_at,
+          pending_approval_count,
+          pending_user_input_count,
+          has_actionable_proposed_plan,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'thread-message-cap',
+          'project-message-cap',
+          'Thread message cap',
+          '{"provider":"codex","model":"gpt-5-codex"}',
+          'full-access',
+          'default',
+          NULL,
+          NULL,
+          NULL,
+          NULL,
+          0,
+          0,
+          0,
+          '2026-04-02T01:00:01.000Z',
+          '2026-04-02T01:00:01.000Z',
+          NULL
+        )
+      `;
+
+      const totalMessages = MAX_THREAD_MESSAGES + 5;
+      const messageIdAt = (index: number) => `message-cap-${String(index).padStart(4, "0")}`;
+      const messageCreatedAt = (index: number) =>
+        `2026-04-02T01:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(
+          index % 60,
+        ).padStart(2, "0")}.000Z`;
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          for (let index = 1; index <= totalMessages; index += 1) {
+            yield* sql`
+              INSERT INTO projection_thread_messages (
+                message_id,
+                thread_id,
+                turn_id,
+                role,
+                text,
+                attachments_json,
+                is_streaming,
+                created_at,
+                updated_at
+              )
+              VALUES (
+                ${messageIdAt(index)},
+                'thread-message-cap',
+                NULL,
+                ${index % 2 === 1 ? "user" : "assistant"},
+                ${`message ${index}`},
+                NULL,
+                0,
+                ${messageCreatedAt(index)},
+                ${messageCreatedAt(index)}
+              )
+            `;
+          }
+        }),
+      );
+
+      const commandReadModel = yield* snapshotQuery.getCommandReadModel();
+      const thread = commandReadModel.threads.find(
+        (entry) => entry.id === ThreadId.make("thread-message-cap"),
+      );
+
+      assert.equal(thread?.messages.length, MAX_THREAD_MESSAGES);
+      assert.equal(thread?.messages[0]?.id, asMessageId(messageIdAt(6)));
+      assert.equal(
+        thread?.messages[MAX_THREAD_MESSAGES - 1]?.id,
+        asMessageId(messageIdAt(totalMessages)),
+      );
     }),
   );
 

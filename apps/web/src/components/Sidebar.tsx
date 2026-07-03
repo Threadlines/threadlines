@@ -892,14 +892,17 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
   return (
     <SidebarMenuSub
       ref={attachThreadListAutoAnimateRef}
-      // Threads hang off their project's line: the inherited border-l is the rail.
-      // Clip only the y axis: it keeps auto-animated rows from painting outside
-      // the list without becoming a scroll container (so the sticky thread-list
-      // footer tracks the sidebar viewport), while each row's live node (and its
-      // halo) hangs past the left edge to sit on the rail. Safari has no
-      // overflow-clip-margin support, so the x axis must stay visible rather
-      // than clip-with-margin.
-      className="my-0 ml-3.5 mr-1 translate-x-0 gap-0.5 overflow-x-visible overflow-y-clip border-muted-foreground/15 py-0 pl-1 pr-0"
+      // Threads hang off their project's line. The rail is an inset pseudo-
+      // element (not border-l) so every row's node sits fully INSIDE the
+      // list's padding box: mobile WebKit clips descendants to the padding box
+      // when any overflow axis is non-visible, which shaved the left half off
+      // nodes that hung past the edge. Same rendered geometry as the old
+      // border-l layout (rail x and row indent unchanged), just with the
+      // gutter reserved as padding. Clip only the y axis: it keeps
+      // auto-animated rows from painting outside the list without becoming a
+      // scroll container (so the sticky thread-list footer tracks the sidebar
+      // viewport).
+      className="relative my-0 ml-1.5 mr-1 translate-x-0 gap-0.5 overflow-x-visible overflow-y-clip border-l-0 py-0 pl-[13px] pr-0 before:absolute before:inset-y-0 before:left-2 before:w-px before:bg-muted-foreground/15"
     >
       {shouldShowThreadPanel && showEmptyThreadState ? (
         <SidebarMenuSubItem className="w-full" data-thread-selection-safe>

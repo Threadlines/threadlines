@@ -10,9 +10,13 @@ import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronDialog from "../electron/ElectronDialog.ts";
 import * as ElectronMenu from "../electron/ElectronMenu.ts";
+import * as ElectronShell from "../electron/ElectronShell.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopUpdates from "../updates/DesktopUpdates.ts";
 import * as DesktopWindow from "./DesktopWindow.ts";
+
+export const GITHUB_REPOSITORY_URL = "https://github.com/Threadlines/threadlines";
+export const GITHUB_NEW_ISSUE_URL = "https://github.com/Threadlines/threadlines/issues/new/choose";
 
 export interface DesktopApplicationMenuShape {
   readonly configure: Effect.Effect<void>;
@@ -26,7 +30,8 @@ export class DesktopApplicationMenu extends Context.Service<
 type DesktopApplicationMenuRuntimeServices =
   | DesktopUpdates.DesktopUpdates
   | DesktopWindow.DesktopWindow
-  | ElectronDialog.ElectronDialog;
+  | ElectronDialog.ElectronDialog
+  | ElectronShell.ElectronShell;
 
 const { logInfo: logUpdaterInfo } = DesktopObservability.makeComponentLogger("desktop-updater");
 
@@ -37,6 +42,16 @@ const dispatchMenuAction = Effect.fn("desktop.menu.dispatchMenuAction")(function
 ): Effect.fn.Return<void, DesktopWindow.DesktopWindowError, DesktopWindow.DesktopWindow> {
   const desktopWindow = yield* DesktopWindow.DesktopWindow;
   yield* desktopWindow.dispatchMenuAction(action);
+});
+
+const openExternalHelpUrl = Effect.fn("desktop.menu.openExternalHelpUrl")(function* (
+  url: string,
+): Effect.fn.Return<void, never, ElectronShell.ElectronShell> {
+  const electronShell = yield* ElectronShell.ElectronShell;
+  const opened = yield* electronShell.openExternal(url);
+  if (!opened) {
+    yield* logMenuError("failed to open help link in browser", { url });
+  }
 });
 
 const checkForUpdatesFromMenu: Effect.Effect<
@@ -133,6 +148,18 @@ const make = Effect.gen(function* () {
         dispatchMenuAction(DesktopWindow.OPEN_SCREEN_CLIP_MENU_ACTION),
       );
     };
+    const newThreadClick = () => {
+      runMenuEffect("new-thread", dispatchMenuAction("new-thread"));
+    };
+    const commandPaletteClick = () => {
+      runMenuEffect("toggle-command-palette", dispatchMenuAction("toggle-command-palette"));
+    };
+    const openGitHubClick = () => {
+      runMenuEffect("open-github", openExternalHelpUrl(GITHUB_REPOSITORY_URL));
+    };
+    const reportIssueClick = () => {
+      runMenuEffect("report-issue", openExternalHelpUrl(GITHUB_NEW_ISSUE_URL));
+    };
     const template: Electron.MenuItemConstructorOptions[] = [];
 
     if (environment.platform === "darwin") {
@@ -162,10 +189,16 @@ const make = Effect.gen(function* () {
       });
     }
 
+    // In-app shortcuts (mod+n, mod+k, ...) are user-configurable and context
+    // sensitive ("when" clauses), while native menu accelerators intercept
+    // keys before the renderer sees them. Menu items that mirror in-app
+    // commands must therefore stay accelerator-free.
     template.push(
       {
         label: "File",
         submenu: [
+          { label: "New Thread", click: newThreadClick },
+          { type: "separator" },
           ...(environment.platform === "darwin"
             ? []
             : [
@@ -183,6 +216,8 @@ const make = Effect.gen(function* () {
       {
         label: "View",
         submenu: [
+          { label: "Command Palette...", click: commandPaletteClick },
+          { type: "separator" },
           { role: "reload" },
           { role: "forceReload" },
           { role: "toggleDevTools" },
@@ -209,6 +244,15 @@ const make = Effect.gen(function* () {
       {
         role: "help",
         submenu: [
+          {
+            label: `${appName} on GitHub`,
+            click: openGitHubClick,
+          },
+          {
+            label: "Report an Issue",
+            click: reportIssueClick,
+          },
+          { type: "separator" },
           {
             label: "Check for Updates...",
             click: checkForUpdatesClick,

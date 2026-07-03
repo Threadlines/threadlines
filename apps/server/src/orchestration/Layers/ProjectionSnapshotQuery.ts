@@ -31,7 +31,7 @@ import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
-import { MAX_THREAD_ACTIVITIES } from "@threadlines/shared/threadLimits";
+import { MAX_THREAD_ACTIVITIES, MAX_THREAD_MESSAGES } from "@threadlines/shared/threadLimits";
 
 import {
   isPersistenceError,
@@ -221,6 +221,21 @@ function mapSessionRow(
     activeTurnId: row.activeTurnId,
     pendingBackgroundTaskCount: row.pendingBackgroundTaskCount,
     lastError: row.lastError,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function mapThreadMessageRow(
+  row: Schema.Schema.Type<typeof ProjectionThreadMessageDbRowSchema>,
+): OrchestrationMessage {
+  return {
+    id: row.messageId,
+    role: row.role,
+    text: row.text,
+    ...(row.attachments !== null ? { attachments: row.attachments } : {}),
+    turnId: row.turnId,
+    streaming: row.isStreaming === 1,
+    createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
 }
@@ -426,6 +441,42 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM projection_thread_messages
+        ORDER BY thread_id ASC, created_at ASC, message_id ASC
+      `,
+  });
+
+  // The command read model hydrates the same per-thread message tail the
+  // projector keeps in memory (MAX_THREAD_MESSAGES) so decider invariants
+  // that consult message history (turn retry, fork source lookup) behave the
+  // same after a server restart as they do on a long-running process.
+  const listCappedThreadMessageRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionThreadMessageDbRowSchema,
+    execute: () =>
+      sql`
+        WITH ranked_messages AS (
+          SELECT
+            message.*,
+            ROW_NUMBER() OVER (
+              PARTITION BY message.thread_id
+              ORDER BY
+                message.created_at DESC,
+                message.message_id DESC
+            ) AS message_rank
+          FROM projection_thread_messages AS message
+        )
+        SELECT
+          message_id AS "messageId",
+          thread_id AS "threadId",
+          turn_id AS "turnId",
+          role,
+          text,
+          attachments_json AS "attachments",
+          is_streaming AS "isStreaming",
+          created_at AS "createdAt",
+          updated_at AS "updatedAt"
+        FROM ranked_messages
+        WHERE message_rank <= ${MAX_THREAD_MESSAGES}
         ORDER BY thread_id ASC, created_at ASC, message_id ASC
       `,
   });
@@ -1082,16 +1133,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               for (const row of messageRows) {
                 updatedAt = maxIso(updatedAt, row.updatedAt);
                 const threadMessages = messagesByThread.get(row.threadId) ?? [];
-                threadMessages.push({
-                  id: row.messageId,
-                  role: row.role,
-                  text: row.text,
-                  ...(row.attachments !== null ? { attachments: row.attachments } : {}),
-                  turnId: row.turnId,
-                  streaming: row.isStreaming === 1,
-                  createdAt: row.createdAt,
-                  updatedAt: row.updatedAt,
-                });
+                threadMessages.push(mapThreadMessageRow(row));
                 messagesByThread.set(row.threadId, threadMessages);
               }
 
@@ -1278,6 +1320,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
+          listCappedThreadMessageRows(undefined).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getCommandReadModel:listThreadMessages:query",
+                "ProjectionSnapshotQuery.getCommandReadModel:listThreadMessages:decodeRows",
+              ),
+            ),
+          ),
           listThreadProposedPlanRows(undefined).pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
@@ -1314,7 +1364,15 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       )
       .pipe(
         Effect.flatMap(
-          ([projectRows, threadRows, proposedPlanRows, sessionRows, latestTurnRows, stateRows]) =>
+          ([
+            projectRows,
+            threadRows,
+            messageRows,
+            proposedPlanRows,
+            sessionRows,
+            latestTurnRows,
+            stateRows,
+          ]) =>
             Effect.sync(() => {
               let updatedAt: string | null = null;
               const projects: OrchestrationProject[] = [];
@@ -1340,6 +1398,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               }
               for (let index = 0; index < threadRows.length; index += 1) {
                 const row = threadRows[index];
+                if (!row) {
+                  continue;
+                }
+                updatedAt = maxIso(updatedAt, row.updatedAt);
+              }
+              for (let index = 0; index < messageRows.length; index += 1) {
+                const row = messageRows[index];
                 if (!row) {
                   continue;
                 }
@@ -1388,6 +1453,16 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 }
                 latestTurnByThread.set(row.threadId, mapLatestTurn(row));
               }
+              const messagesByThread = new Map<string, Array<OrchestrationMessage>>();
+              for (let index = 0; index < messageRows.length; index += 1) {
+                const row = messageRows[index];
+                if (!row) {
+                  continue;
+                }
+                const threadMessages = messagesByThread.get(row.threadId) ?? [];
+                threadMessages.push(mapThreadMessageRow(row));
+                messagesByThread.set(row.threadId, threadMessages);
+              }
               const proposedPlansByThread = new Map<string, Array<OrchestrationProposedPlan>>();
               const sessionByThread = new Map<string, OrchestrationSession>();
 
@@ -1429,7 +1504,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   archivedAt: row.archivedAt,
                   pinnedAt: row.pinnedAt,
                   deletedAt: row.deletedAt,
-                  messages: [],
+                  messages: messagesByThread.get(row.threadId) ?? [],
                   proposedPlans: proposedPlansByThread.get(row.threadId) ?? [],
                   activities: [],
                   checkpoints: [],
@@ -2027,21 +2102,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         archivedAt: threadRow.value.archivedAt,
         pinnedAt: threadRow.value.pinnedAt,
         deletedAt: null,
-        messages: messageRows.map((row) => {
-          const message = {
-            id: row.messageId,
-            role: row.role,
-            text: row.text,
-            turnId: row.turnId,
-            streaming: row.isStreaming === 1,
-            createdAt: row.createdAt,
-            updatedAt: row.updatedAt,
-          };
-          if (row.attachments !== null) {
-            return Object.assign(message, { attachments: row.attachments });
-          }
-          return message;
-        }),
+        messages: messageRows.map(mapThreadMessageRow),
         proposedPlans: proposedPlanRows.map(mapProposedPlanRow),
         activities: activityRows.map((row) => {
           const activity = {

@@ -216,6 +216,67 @@ describe("resolveInitialServerAuthGateState", () => {
     });
   });
 
+  it("uses the vite proxy for configured loopback targets during local dev", async () => {
+    // Without VITE_DEV_SERVER_URL: dev pages served by vite must still route
+    // HTTP through their own origin (the /api proxy) because the server's
+    // wildcard CORS allow-origin rejects credentialed cross-origin requests.
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      sessionResponse({
+        authenticated: false,
+        auth: {
+          policy: "loopback-browser",
+          bootstrapMethods: ["one-time-token"],
+          sessionMethods: ["browser-session-cookie"],
+          sessionCookieName: "threadlines_session",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubEnv("VITE_WS_URL", "ws://localhost:3773");
+    installTestBrowser("http://localhost:5733/");
+
+    const { resolveInitialServerAuthGateState } = await import("./environments/primary");
+
+    await expect(resolveInitialServerAuthGateState()).resolves.toEqual({
+      status: "requires-auth",
+      auth: {
+        policy: "loopback-browser",
+        bootstrapMethods: ["one-time-token"],
+        sessionMethods: ["browser-session-cookie"],
+        sessionCookieName: "threadlines_session",
+      },
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith("http://localhost:5733/api/auth/session", {
+      credentials: "include",
+    });
+  });
+
+  it("keeps absolute urls for configured non-loopback targets during local dev", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      sessionResponse({
+        authenticated: false,
+        auth: {
+          policy: "loopback-browser",
+          bootstrapMethods: ["one-time-token"],
+          sessionMethods: ["browser-session-cookie"],
+          sessionCookieName: "threadlines_session",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubEnv("VITE_WS_URL", "ws://192.168.1.20:3773");
+    installTestBrowser("http://localhost:5733/");
+
+    const { resolveInitialServerAuthGateState } = await import("./environments/primary");
+
+    await resolveInitialServerAuthGateState();
+
+    expect(fetchMock).toHaveBeenCalledWith("http://192.168.1.20:3773/api/auth/session", {
+      credentials: "include",
+    });
+  });
+
   it("returns a requires-auth state instead of throwing when no bootstrap credential exists", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(
       sessionResponse({

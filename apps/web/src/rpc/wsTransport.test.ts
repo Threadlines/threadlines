@@ -17,6 +17,7 @@ import {
   getWsConnectionUiState,
   resetWsConnectionStateForTests,
 } from "../rpc/wsConnectionState";
+import { TransportRequestRetriesExhaustedError } from "./transportError";
 import { WsTransport } from "./wsTransport";
 
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
@@ -1254,6 +1255,127 @@ describe("WsTransport", () => {
     );
 
     await expect(requestPromise).resolves.toEqual(DEFAULT_SERVER_SETTINGS);
+    await transport.dispose();
+  });
+});
+
+describe("WsTransport.requestWithReconnectRetry", () => {
+  const KEYBINDING_INPUT = { command: "terminal.toggle", key: "ctrl+k" } as const;
+  const KEYBINDING_RESULT = { keybindings: [], issues: [] };
+
+  function openConnectingSockets(): void {
+    for (const socket of sockets) {
+      if (socket.readyState === MockWebSocket.CONNECTING) {
+        socket.open();
+      }
+    }
+  }
+
+  function latestSentFrame(exclude?: MockWebSocket): { socket: MockWebSocket; raw: string } | null {
+    for (let index = sockets.length - 1; index >= 0; index -= 1) {
+      const socket = sockets[index];
+      if (!socket || socket === exclude || socket.sent.length === 0) {
+        continue;
+      }
+      const raw = socket.sent.at(-1);
+      if (raw !== undefined) {
+        return { socket, raw };
+      }
+    }
+    return null;
+  }
+
+  function respondToLatestRequest(exclude?: MockWebSocket): void {
+    const frame = latestSentFrame(exclude);
+    if (!frame) {
+      throw new Error("Expected a sent request frame");
+    }
+    const requestMessage = JSON.parse(frame.raw) as { id: string };
+    frame.socket.serverMessage(
+      JSON.stringify({
+        _tag: "Exit",
+        requestId: requestMessage.id,
+        exit: { _tag: "Success", value: KEYBINDING_RESULT },
+      }),
+    );
+  }
+
+  it("re-sends after a socket drop and resolves on the replacement socket", async () => {
+    const transport = createTransport("ws://localhost:3020");
+    await waitFor(() => {
+      expect(sockets).toHaveLength(1);
+    });
+    const firstSocket = getSocket();
+    firstSocket.open();
+
+    const requestPromise = transport.requestWithReconnectRetry(
+      (client) => client[WS_METHODS.serverUpsertKeybinding](KEYBINDING_INPUT),
+      { label: "test.request", attemptTimeoutMs: 400, totalBudgetMs: 20_000 },
+    );
+
+    await waitFor(() => {
+      expect(firstSocket.sent).toHaveLength(1);
+    });
+    firstSocket.close(1006, "connection reset");
+
+    await waitFor(() => {
+      openConnectingSockets();
+      expect(latestSentFrame(firstSocket)).not.toBeNull();
+    }, 5_000);
+
+    respondToLatestRequest(firstSocket);
+    await expect(requestPromise).resolves.toEqual(KEYBINDING_RESULT);
+    await transport.dispose();
+  });
+
+  it("times out a silent request on a live socket and re-sends it", async () => {
+    const transport = createTransport("ws://localhost:3020");
+    await waitFor(() => {
+      expect(sockets).toHaveLength(1);
+    });
+    const firstSocket = getSocket();
+    firstSocket.open();
+
+    const requestPromise = transport.requestWithReconnectRetry(
+      (client) => client[WS_METHODS.serverUpsertKeybinding](KEYBINDING_INPUT),
+      { label: "test.request", attemptTimeoutMs: 150, totalBudgetMs: 20_000 },
+    );
+
+    // The first attempt goes out and is never answered (a frame the relay
+    // dropped while the socket stayed open).
+    await waitFor(() => {
+      expect(firstSocket.sent).toHaveLength(1);
+    });
+
+    await waitFor(() => {
+      openConnectingSockets();
+      const frame = latestSentFrame(firstSocket);
+      expect(frame).not.toBeNull();
+      const requestMessage = JSON.parse(frame?.raw ?? "{}") as { tag: string; payload: unknown };
+      expect(requestMessage).toMatchObject({
+        tag: WS_METHODS.serverUpsertKeybinding,
+        payload: KEYBINDING_INPUT,
+      });
+    }, 5_000);
+
+    respondToLatestRequest(firstSocket);
+    await expect(requestPromise).resolves.toEqual(KEYBINDING_RESULT);
+    await transport.dispose();
+  });
+
+  it("fails with a retries-exhausted error once the budget runs out", async () => {
+    const transport = createTransport("ws://localhost:3020");
+    await waitFor(() => {
+      expect(sockets).toHaveLength(1);
+    });
+    getSocket().open();
+
+    const requestPromise = transport.requestWithReconnectRetry(
+      (client) => client[WS_METHODS.serverUpsertKeybinding](KEYBINDING_INPUT),
+      { label: "test.request", attemptTimeoutMs: 100, totalBudgetMs: 800 },
+    );
+
+    await expect(requestPromise).rejects.toBeInstanceOf(TransportRequestRetriesExhaustedError);
     await transport.dispose();
   });
 });

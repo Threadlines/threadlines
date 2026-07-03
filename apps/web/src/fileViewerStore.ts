@@ -32,6 +32,14 @@ interface FileViewerState {
   revealEndLine: number | null;
   /** Bumped on every reveal request so re-opening the same line re-scrolls. */
   revealRequestId: number;
+  /**
+   * Word-wrap override for coarse pointers, where wrap defaults on (panning
+   * code sideways on a phone is worse than wrapping). Session-scoped on
+   * purpose: the persisted `fileViewerWordWrap` setting is shared across
+   * devices, so a phone toggling wrap must not clobber the desktop choice.
+   */
+  coarsePointerWordWrap: boolean | null;
+  setCoarsePointerWordWrap: (wrap: boolean) => void;
   open: (
     context: FileViewerContext,
     target?: { path: string; line?: number; endLine?: number },
@@ -63,6 +71,9 @@ export const useFileViewerStore = create<FileViewerState>((set) => ({
   revealLine: null,
   revealEndLine: null,
   revealRequestId: 0,
+  coarsePointerWordWrap: null,
+
+  setCoarsePointerWordWrap: (wrap) => set({ coarsePointerWordWrap: wrap }),
 
   open: (context, target) =>
     set((state) => {
