@@ -3,11 +3,15 @@ import { playwright } from "vite-plus/test/browser-playwright";
 import "vite-plus/test/config";
 import { defineConfig, mergeConfig } from "vite-plus";
 
-import viteConfig from "./vite.config";
+import viteConfig, { createWebPlugins } from "./vite.config";
 
 const srcPath = fileURLToPath(new URL("./src", import.meta.url));
 const browserViteConfig = {
   ...viteConfig,
+  // Eager routes in tests: route code-splitting is a production-bundle
+  // concern, and split routes turn the first full-app mount into a cold
+  // chunk load that can outlive waitFor timeouts on shared CI runners.
+  plugins: createWebPlugins({ routerAutoCodeSplitting: false }),
   test: undefined,
 };
 

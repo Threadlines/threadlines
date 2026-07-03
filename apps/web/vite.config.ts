@@ -6,6 +6,7 @@ import { execFileSync } from "node:child_process";
 import { defineProject, type TestProjectInlineConfiguration } from "vite-plus/test/config";
 import "vite-plus/test/config";
 import { defineConfig } from "vite-plus";
+import type { PluginOption } from "vite";
 import pkg from "./package.json" with { type: "json" };
 
 const port = Number(process.env.PORT ?? 5733);
@@ -95,12 +96,16 @@ const unitTestProject = {
   },
 } satisfies TestProjectInlineConfiguration;
 
-export default defineConfig({
-  plugins: [
+export function createWebPlugins(options?: {
+  readonly routerAutoCodeSplitting?: boolean;
+}): PluginOption[] {
+  return [
     // autoCodeSplitting keeps route components (settings panels, pairing,
     // source-control heavy chat panels) out of the entry chunk so first
-    // paint on older machines parses less JS.
-    tanstackRouter({ autoCodeSplitting: true }),
+    // paint on older machines parses less JS. Browser tests opt out: split
+    // routes would load through per-test waitFor windows instead of the
+    // module import phase, which times out on slow CI runners.
+    tanstackRouter({ autoCodeSplitting: options?.routerAutoCodeSplitting ?? true }),
     react(),
     babel({
       // We need to be explicit about the parser options after moving to @vitejs/plugin-react v6.0.0
@@ -111,7 +116,11 @@ export default defineConfig({
       presets: [reactCompilerPreset()],
     }),
     tailwindcss(),
-  ],
+  ];
+}
+
+export default defineConfig({
+  plugins: createWebPlugins(),
   optimizeDeps: {
     include: [
       "@pierre/diffs",
