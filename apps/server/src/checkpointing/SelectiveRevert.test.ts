@@ -31,7 +31,7 @@ describe("buildSelectiveRevertPlan", () => {
 
     expect(plan.restorePaths).toEqual(["src/app.ts"]);
     expect(plan.deletePaths).toEqual([]);
-    expect(plan.conflictPaths).toEqual([]);
+    expect(plan.conflicts).toEqual([]);
     expect(plan.unattributedPaths).toEqual([]);
   });
 
@@ -57,7 +57,7 @@ describe("buildSelectiveRevertPlan", () => {
 
     expect(plan.restorePaths).toEqual(["src/gone.ts"]);
     expect(plan.deletePaths).toEqual([]);
-    expect(plan.conflictPaths).toEqual([]);
+    expect(plan.conflicts).toEqual([]);
   });
 
   it("leaves unattributed paths untouched", () => {
@@ -70,7 +70,7 @@ describe("buildSelectiveRevertPlan", () => {
 
     expect(plan.unattributedPaths).toEqual(["other-session.ts"]);
     expect(plan.restorePaths).toEqual([]);
-    expect(plan.conflictPaths).toEqual([]);
+    expect(plan.conflicts).toEqual([]);
   });
 
   it("marks changed regular files as hunk candidates instead of immediate conflicts", () => {
@@ -82,11 +82,11 @@ describe("buildSelectiveRevertPlan", () => {
     });
 
     expect(plan.hunkCandidatePaths).toEqual(["src/app.ts"]);
-    expect(plan.conflictPaths).toEqual([]);
+    expect(plan.conflicts).toEqual([]);
     expect(plan.restorePaths).toEqual([]);
   });
 
-  it("keeps recreated-after-deletion paths as hunk candidates for the apply check to reject", () => {
+  it("marks recreated-after-deletion paths as conflicts (no base to merge against)", () => {
     const plan = buildSelectiveRevertPlan({
       entries: [entry({ path: "src/gone.ts", toOid: null })],
       attributedPaths: new Set(["src/gone.ts"]),
@@ -94,8 +94,8 @@ describe("buildSelectiveRevertPlan", () => {
       worktreeStates: new Map([fileState("src/gone.ts", "foreign-oid")]),
     });
 
-    expect(plan.hunkCandidatePaths).toEqual(["src/gone.ts"]);
-    expect(plan.conflictPaths).toEqual([]);
+    expect(plan.conflicts).toEqual([{ path: "src/gone.ts", reason: "changed-after-thread" }]);
+    expect(plan.hunkCandidatePaths).toEqual([]);
   });
 
   it("marks attributed files deleted by another actor as conflicts, not hunk candidates", () => {
@@ -106,11 +106,11 @@ describe("buildSelectiveRevertPlan", () => {
       worktreeStates: new Map([fileState("src/app.ts", null)]),
     });
 
-    expect(plan.conflictPaths).toEqual(["src/app.ts"]);
+    expect(plan.conflicts).toEqual([{ path: "src/app.ts", reason: "changed-after-thread" }]);
     expect(plan.hunkCandidatePaths).toEqual([]);
   });
 
-  it("marks contested paths as conflicts even when the content hash matches", () => {
+  it("marks contested regular files as candidates for turn-by-turn rollback", () => {
     const plan = buildSelectiveRevertPlan({
       entries: [entry({ path: "src/app.ts" })],
       attributedPaths: new Set(["src/app.ts"]),
@@ -118,7 +118,21 @@ describe("buildSelectiveRevertPlan", () => {
       worktreeStates: new Map([fileState("src/app.ts", "expected-oid")]),
     });
 
-    expect(plan.conflictPaths).toEqual(["src/app.ts"]);
+    expect(plan.contestedCandidatePaths).toEqual(["src/app.ts"]);
+    expect(plan.conflicts).toEqual([]);
+    expect(plan.restorePaths).toEqual([]);
+  });
+
+  it("marks contested paths that are no longer regular files as interleaved conflicts", () => {
+    const plan = buildSelectiveRevertPlan({
+      entries: [entry({ path: "src/app.ts" })],
+      attributedPaths: new Set(["src/app.ts"]),
+      contestedPaths: new Set(["src/app.ts"]),
+      worktreeStates: new Map([fileState("src/app.ts", null)]),
+    });
+
+    expect(plan.conflicts).toEqual([{ path: "src/app.ts", reason: "interleaved" }]);
+    expect(plan.contestedCandidatePaths).toEqual([]);
   });
 
   it("treats paths already at the target state as no-ops, even when contested", () => {
@@ -130,7 +144,7 @@ describe("buildSelectiveRevertPlan", () => {
     });
 
     expect(plan.noopPaths).toEqual(["src/app.ts"]);
-    expect(plan.conflictPaths).toEqual([]);
+    expect(plan.conflicts).toEqual([]);
   });
 
   it("marks symlinks, submodules, and non-file worktree paths as conflicts", () => {
@@ -148,7 +162,11 @@ describe("buildSelectiveRevertPlan", () => {
       ]),
     });
 
-    expect(plan.conflictPaths).toEqual(["linked.ts", "now-a-dir", "never-hashed"]);
+    expect(plan.conflicts).toEqual([
+      { path: "linked.ts", reason: "unsupported" },
+      { path: "now-a-dir", reason: "changed-after-thread" },
+      { path: "never-hashed", reason: "unsupported" },
+    ]);
   });
 
   it("matches attribution across path separator and case differences", () => {

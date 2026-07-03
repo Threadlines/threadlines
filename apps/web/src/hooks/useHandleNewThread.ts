@@ -15,7 +15,10 @@ import {
 } from "../diffRouteSearch";
 import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import { newDraftId, newThreadId } from "../lib/utils";
-import { orderItemsByPreferredIds } from "../components/Sidebar.logic";
+import {
+  orderItemsByPreferredIds,
+  sortScopedProjectsByActivity,
+} from "../components/Sidebar.logic";
 import {
   deriveLogicalProjectKeyFromSettings,
   getProjectOrderKey,
@@ -23,6 +26,7 @@ import {
 } from "../logicalProject";
 import {
   selectProjectsAcrossEnvironments,
+  selectSidebarThreadsAcrossEnvironments,
   selectWorkspaceProjectsAcrossEnvironments,
   useStore,
 } from "../store";
@@ -200,13 +204,23 @@ export function useHandleNewThread() {
   const projects = useStore(
     useShallow((store) => selectWorkspaceProjectsAcrossEnvironments(store)),
   );
+  const sidebarProjectSortOrder = useSettings((settings) => settings.sidebarProjectSortOrder);
+  const sidebarThreads = useStore(
+    useShallow((store) => selectSidebarThreadsAcrossEnvironments(store)),
+  );
   const orderedProjects = useMemo(() => {
-    return orderItemsByPreferredIds({
+    const manuallyOrdered = orderItemsByPreferredIds({
       items: projects,
       preferredIds: projectOrder,
       getId: getProjectOrderKey,
     });
-  }, [projectOrder, projects]);
+    if (sidebarProjectSortOrder === "manual") {
+      return manuallyOrdered;
+    }
+    // Mirror the sidebar's activity/created ordering so project pickers built
+    // on this hook list projects in the same order the user sees there.
+    return sortScopedProjectsByActivity(manuallyOrdered, sidebarThreads, sidebarProjectSortOrder);
+  }, [projectOrder, projects, sidebarProjectSortOrder, sidebarThreads]);
   const handleNewThread = useNewThreadState();
 
   return {

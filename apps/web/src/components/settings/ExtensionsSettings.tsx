@@ -68,8 +68,9 @@ import {
 } from "../../providerInstances";
 import { useServerConfig, useServerProviders } from "../../rpc/serverState";
 import {
-  selectProjectsAcrossEnvironments,
+  selectSidebarThreadsAcrossEnvironments,
   selectThreadsAcrossEnvironments,
+  selectWorkspaceProjectsAcrossEnvironments,
   useStore,
 } from "../../store";
 import { useUiStateStore } from "../../uiStateStore";
@@ -3128,12 +3129,16 @@ function ProviderInventoryRow({
 }
 
 export function ExtensionsSettingsPanel() {
-  const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
+  const projects = useStore(useShallow(selectWorkspaceProjectsAcrossEnvironments));
   const threads = useStore(useShallow(selectThreadsAcrossEnvironments));
+  const sidebarThreads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
   const threadLastVisitedAtById = useUiStateStore((state) => state.threadLastVisitedAtById);
   const serverConfig = useServerConfig();
   const serverProviders = useServerProviders();
-  const projectOptions = useMemo(() => deriveSettingsProjectOptions(projects), [projects]);
+  const projectOptions = useMemo(
+    () => deriveSettingsProjectOptions(projects, sidebarThreads),
+    [projects, sidebarThreads],
+  );
   const providerEntries = useMemo(
     () =>
       sortProviderInstanceEntries(deriveProviderInstanceEntries(serverProviders))

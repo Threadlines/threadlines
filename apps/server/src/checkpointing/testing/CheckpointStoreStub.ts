@@ -24,7 +24,7 @@ export function makeCheckpointStoreStub(
     diffCheckpointEntries: () => Effect.succeed([]),
     hashWorktreePaths: () => Effect.succeed([]),
     restoreCheckpointPaths: () => Effect.void,
-    restoreCheckpointFileHunks: () => Effect.succeed(false),
+    restoreCheckpointFileEdits: () => Effect.succeed(false),
     deleteCheckpointRefs: () => Effect.void,
     ...overrides,
   };

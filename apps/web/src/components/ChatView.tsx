@@ -871,6 +871,7 @@ export default function ChatView(props: ChatViewProps) {
     (store) => store.getComposerDraft(composerDraftTarget)?.activeProvider ?? null,
   );
   const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);
+  const prefillComposerDraftPrompt = useComposerDraftStore((store) => store.prefillEmptyPrompt);
   const addComposerDraftImages = useComposerDraftStore((store) => store.addImages);
   const setComposerDraftTerminalContexts = useComposerDraftStore(
     (store) => store.setTerminalContexts,
@@ -3674,7 +3675,7 @@ export default function ChatView(props: ChatViewProps) {
   ]);
 
   const onRevertToTurnCount = useCallback(
-    async (turnCount: number) => {
+    async (turnCount: number, revertedMessageText?: string) => {
       const api = readEnvironmentApi(environmentId);
       const localApi = readLocalApi();
       if (!api || !localApi || !activeThread || isRevertingCheckpoint) return;
@@ -3692,8 +3693,15 @@ export default function ChatView(props: ChatViewProps) {
       }
       const confirmed = await localApi.dialogs.confirm(
         [
-          `Revert this thread to checkpoint ${turnCount}?`,
+          turnCount === 0
+            ? "Revert this thread back to its start?"
+            : `Revert this thread to checkpoint ${turnCount}?`,
           "This will discard newer messages and turn diffs in this thread.",
+          // Local (shared-checkout) threads take the selective revert path,
+          // which only touches files attributed to this thread.
+          ...(activeThread.worktreePath === null
+            ? ["Files changed by other threads or sessions are preserved."]
+            : []),
           "This action cannot be undone.",
         ].join("\n"),
       );
@@ -3711,6 +3719,11 @@ export default function ChatView(props: ChatViewProps) {
           turnCount,
           createdAt: new Date().toISOString(),
         });
+        // Restore the reverted-away message for editing so rewinding a thread
+        // never loses the prompt the user wants to iterate on.
+        if (revertedMessageText !== undefined) {
+          prefillComposerDraftPrompt(composerDraftTarget, revertedMessageText);
+        }
       } catch (err) {
         setThreadError(
           activeThread.id,
@@ -3726,8 +3739,10 @@ export default function ChatView(props: ChatViewProps) {
       environmentId,
       isConnecting,
       isRevertingCheckpoint,
+      composerDraftTarget,
       isSendBusy,
       phase,
+      prefillComposerDraftPrompt,
       setThreadError,
     ],
   );
@@ -5107,12 +5122,17 @@ export default function ChatView(props: ChatViewProps) {
   revertTurnCountRef.current = revertTurnCountByUserMessageId;
   const onRevertToTurnCountRef = useRef(onRevertToTurnCount);
   onRevertToTurnCountRef.current = onRevertToTurnCount;
+  const activeThreadMessagesRef = useRef(activeThread?.messages);
+  activeThreadMessagesRef.current = activeThread?.messages;
   const onRevertUserMessage = useCallback((messageId: MessageId) => {
     const targetTurnCount = revertTurnCountRef.current.get(messageId);
     if (typeof targetTurnCount !== "number") {
       return;
     }
-    void onRevertToTurnCountRef.current(targetTurnCount);
+    const revertedMessageText = activeThreadMessagesRef.current?.find(
+      (message) => message.id === messageId,
+    )?.text;
+    void onRevertToTurnCountRef.current(targetTurnCount, revertedMessageText);
   }, []);
   const onOpenForkSourceThread = useCallback(
     (sourceThreadId: ThreadId) => {

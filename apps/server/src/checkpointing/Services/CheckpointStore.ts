@@ -90,14 +90,23 @@ export interface RestoreCheckpointPathsInput {
   readonly deletePaths: ReadonlyArray<string>;
 }
 
-export interface RestoreCheckpointFileHunksInput {
-  readonly cwd: string;
-  /** Resolved commit oid of the thread's latest snapshot (patch "from" side). */
+/** One snapshot transition to undo: the file's change from fromCommit to toCommit. */
+export interface CheckpointFileEditStep {
+  /** Resolved commit oid of the later snapshot (e.g. a turn's post-state). */
   readonly fromCommit: string;
-  /** Resolved commit oid of the revert target snapshot (patch "to" side). */
+  /** Resolved commit oid of the earlier snapshot (e.g. that turn's pre-state). */
   readonly toCommit: string;
+}
+
+export interface RestoreCheckpointFileEditsInput {
+  readonly cwd: string;
   /** Repository-root-relative path to patch. */
   readonly path: string;
+  /**
+   * Transitions to undo in order (newest first for turn-by-turn rollback).
+   * All steps are composed in memory and written atomically, or not at all.
+   */
+  readonly steps: ReadonlyArray<CheckpointFileEditStep>;
 }
 
 /**
@@ -176,14 +185,16 @@ export interface CheckpointStoreShape {
   ) => Effect.Effect<void, CheckpointStoreError>;
 
   /**
-   * Apply the inverse of a single file's snapshot transition onto the current
-   * worktree file, preserving non-overlapping later edits by other actors.
+   * Undo one or more of a file's snapshot transitions on the current worktree
+   * file, preserving non-overlapping edits by other actors. Multi-step inputs
+   * roll a thread's turns back one at a time so edits made between the turns
+   * survive.
    *
-   * Returns false (leaving the file untouched) when the inverse patch does
-   * not apply cleanly.
+   * Returns false (leaving the file untouched) when any step does not merge
+   * cleanly.
    */
-  readonly restoreCheckpointFileHunks: (
-    input: RestoreCheckpointFileHunksInput,
+  readonly restoreCheckpointFileEdits: (
+    input: RestoreCheckpointFileEditsInput,
   ) => Effect.Effect<boolean, CheckpointStoreError>;
 
   /**

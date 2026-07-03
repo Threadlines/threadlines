@@ -171,6 +171,7 @@ import {
   useThreadJumpHintVisibility,
   ThreadStatusPill,
 } from "./Sidebar.logic";
+import { startNewGeneralChatThread } from "../lib/chatThreadActions";
 import { sortThreads } from "../lib/threadSort";
 import { SidebarUpdatePill } from "./sidebar/SidebarUpdatePill";
 import { SidebarVersionTag } from "./sidebar/SidebarVersionTag";
@@ -1803,17 +1804,14 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
 
   const createThreadForProjectMember = useCallback(
     (member: SidebarProjectGroupMember) => {
-      // General Chats never seed branch/worktree context; they always run in
-      // per-thread scratch directories in local mode.
       if (member.kind === "general-chat") {
         if (isMobile) {
           setOpenMobile(false);
         }
-        void handleNewThread(scopeProjectRef(member.environmentId, member.id), {
-          branch: null,
-          worktreePath: null,
-          envMode: "local",
-        });
+        void startNewGeneralChatThread(
+          handleNewThread,
+          scopeProjectRef(member.environmentId, member.id),
+        );
         return;
       }
       const currentRouteParams =
@@ -2876,7 +2874,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                 className="justify-center gap-2 rounded-md border border-dashed border-border/70 px-2 py-1.5 text-muted-foreground/75 transition-colors hover:border-border hover:bg-muted/40 hover:text-foreground"
                 data-testid="sidebar-new-general-chat-trigger"
                 onClick={() => {
-                  void handleNewThread(generalChatsProjectRef);
+                  void startNewGeneralChatThread(handleNewThread, generalChatsProjectRef);
                 }}
               >
                 <MessageCirclePlusIcon className="size-3.5" />

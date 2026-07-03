@@ -315,11 +315,10 @@ it.layer(TestLayer)("CheckpointStoreLive", (it) => {
           checkpointRef: latestCheckpointRef,
         });
 
-        const applied = yield* checkpointStore.restoreCheckpointFileHunks({
+        const applied = yield* checkpointStore.restoreCheckpointFileEdits({
           cwd: tmp,
-          fromCommit: latestCommit ?? "",
-          toCommit: targetCommit ?? "",
           path: "lines.txt",
+          steps: [{ fromCommit: latestCommit ?? "", toCommit: targetCommit ?? "" }],
         });
         expect(applied).toBe(true);
         // The thread's edit is undone while the other actor's edit survives.
@@ -347,16 +346,156 @@ it.layer(TestLayer)("CheckpointStoreLive", (it) => {
           cwd: tmp,
           checkpointRef: checkpointRefForThreadTurn(threadId, 4),
         });
-        const overlapApplied = yield* checkpointStore.restoreCheckpointFileHunks({
+        const overlapApplied = yield* checkpointStore.restoreCheckpointFileEdits({
           cwd: tmp,
-          fromCommit: overlapLatestCommit ?? "",
-          toCommit: overlapTargetCommit ?? "",
           path: "lines.txt",
+          steps: [{ fromCommit: overlapLatestCommit ?? "", toCommit: overlapTargetCommit ?? "" }],
         });
         expect(overlapApplied).toBe(false);
         expect(yield* fileSystem.readFileString(filePath)).toBe(
           lines("line1-other-overwrite", "line10"),
         );
+      }),
+    );
+
+    it.effect("hunk-reverts an EOF append when another session appended right after it", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const checkpointStore = yield* CheckpointStore;
+        const threadId = ThreadId.make("thread-eof-append");
+        const targetCheckpointRef = checkpointRefForThreadTurn(threadId, 1);
+        const latestCheckpointRef = checkpointRefForThreadTurn(threadId, 2);
+
+        const baseline = ["# TODO", "", "- [ ] existing item"].join("\n").concat("\n");
+        const threadBlock = ["", "## thread scratchpad", "", "- [ ] mine"].join("\n").concat("\n");
+        const foreignBlock = ["", "## second session", "", "- [ ] theirs"].join("\n").concat("\n");
+
+        const filePath = path.join(tmp, "notes.md");
+        yield* writeTextFile(filePath, baseline);
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: targetCheckpointRef });
+
+        // The thread appends its block at the end of the file.
+        yield* writeTextFile(filePath, baseline + threadBlock);
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: latestCheckpointRef });
+
+        // Another session appends its own block directly after the thread's.
+        yield* writeTextFile(filePath, baseline + threadBlock + foreignBlock);
+
+        const targetCommit = yield* checkpointStore.resolveCheckpointCommit({
+          cwd: tmp,
+          checkpointRef: targetCheckpointRef,
+        });
+        const latestCommit = yield* checkpointStore.resolveCheckpointCommit({
+          cwd: tmp,
+          checkpointRef: latestCheckpointRef,
+        });
+
+        const applied = yield* checkpointStore.restoreCheckpointFileEdits({
+          cwd: tmp,
+          path: "notes.md",
+          steps: [{ fromCommit: latestCommit ?? "", toCommit: targetCommit ?? "" }],
+        });
+
+        expect(applied).toBe(true);
+        expect(yield* fileSystem.readFileString(filePath)).toBe(baseline + foreignBlock);
+      }),
+    );
+
+    it.effect("rolls a thread's turns back one at a time around interleaved foreign edits", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const checkpointStore = yield* CheckpointStore;
+        const threadId = ThreadId.make("thread-turn-rollback");
+
+        // Another session created the file (the thread's pre-turn snapshot
+        // records that pristine state), then the thread edited it twice.
+        const foreignPristine = ["# Notes", "", "- original item"].join("\n").concat("\n");
+        const afterFirstEdit = ["# Notes", "", "- original item (edited by thread)"]
+          .join("\n")
+          .concat("\n");
+        const afterSecondEdit = [
+          "# Notes",
+          "",
+          "- original item (edited by thread)",
+          "- second thread item",
+        ]
+          .join("\n")
+          .concat("\n");
+
+        const filePath = path.join(tmp, "notes.md");
+        yield* writeTextFile(filePath, foreignPristine);
+        yield* checkpointStore.captureCheckpoint({
+          cwd: tmp,
+          checkpointRef: checkpointRefForThreadTurn(threadId, 10),
+        });
+        yield* writeTextFile(filePath, afterFirstEdit);
+        yield* checkpointStore.captureCheckpoint({
+          cwd: tmp,
+          checkpointRef: checkpointRefForThreadTurn(threadId, 11),
+        });
+        yield* writeTextFile(filePath, afterSecondEdit);
+        yield* checkpointStore.captureCheckpoint({
+          cwd: tmp,
+          checkpointRef: checkpointRefForThreadTurn(threadId, 12),
+        });
+
+        const preFirst = yield* checkpointStore.resolveCheckpointCommit({
+          cwd: tmp,
+          checkpointRef: checkpointRefForThreadTurn(threadId, 10),
+        });
+        const postFirst = yield* checkpointStore.resolveCheckpointCommit({
+          cwd: tmp,
+          checkpointRef: checkpointRefForThreadTurn(threadId, 11),
+        });
+        const postSecond = yield* checkpointStore.resolveCheckpointCommit({
+          cwd: tmp,
+          checkpointRef: checkpointRefForThreadTurn(threadId, 12),
+        });
+
+        // Undo newest-first: second edit, then first edit.
+        const applied = yield* checkpointStore.restoreCheckpointFileEdits({
+          cwd: tmp,
+          path: "notes.md",
+          steps: [
+            { fromCommit: postSecond ?? "", toCommit: postFirst ?? "" },
+            { fromCommit: postFirst ?? "", toCommit: preFirst ?? "" },
+          ],
+        });
+        expect(applied).toBe(true);
+        // The foreign creation survives; both thread edits are unwound.
+        expect(yield* fileSystem.readFileString(filePath)).toBe(foreignPristine);
+
+        // Atomicity: when a later step cannot merge, no step is written.
+        yield* writeTextFile(filePath, afterSecondEdit);
+        yield* checkpointStore.captureCheckpoint({
+          cwd: tmp,
+          checkpointRef: checkpointRefForThreadTurn(threadId, 13),
+        });
+        // A foreign actor rewrites the line the first edit touched.
+        const conflicted = [
+          "# Notes",
+          "",
+          "- original item (rewritten by someone else)",
+          "- second thread item",
+        ]
+          .join("\n")
+          .concat("\n");
+        yield* writeTextFile(filePath, conflicted);
+
+        const blockedApplied = yield* checkpointStore.restoreCheckpointFileEdits({
+          cwd: tmp,
+          path: "notes.md",
+          steps: [
+            { fromCommit: postSecond ?? "", toCommit: postFirst ?? "" },
+            { fromCommit: postFirst ?? "", toCommit: preFirst ?? "" },
+          ],
+        });
+        expect(blockedApplied).toBe(false);
+        expect(yield* fileSystem.readFileString(filePath)).toBe(conflicted);
       }),
     );
 

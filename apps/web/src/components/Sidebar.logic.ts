@@ -582,3 +582,38 @@ export function sortProjectsForSidebar<
     return left.name.localeCompare(right.name) || left.id.localeCompare(right.id);
   });
 }
+
+/** `sortProjectsForSidebar` for environment-scoped inputs: threads attribute
+    to projects by `environment:project` key so same-id projects from
+    different environments stay distinct. Archived threads are ignored. */
+export function sortScopedProjectsByActivity<
+  TProject extends SidebarProject & { environmentId: string },
+  TThread extends ThreadSortInput & {
+    environmentId: string;
+    projectId: string;
+    archivedAt: string | null;
+  },
+>(
+  projects: readonly TProject[],
+  threads: readonly TThread[],
+  sortOrder: Exclude<SidebarProjectSortOrder, "manual">,
+): TProject[] {
+  const scopedKey = (environmentId: string, id: string) => `${environmentId}:${id}`;
+  const projectByScopedKey = new Map(
+    projects.map((project) => [scopedKey(project.environmentId, project.id), project]),
+  );
+  const sortableProjects = projects.map((project) => ({
+    ...project,
+    id: scopedKey(project.environmentId, project.id),
+  }));
+  const sortableThreads = threads
+    .filter((thread) => thread.archivedAt === null)
+    .map((thread) => ({
+      ...thread,
+      projectId: scopedKey(thread.environmentId, thread.projectId) as Thread["projectId"],
+    }));
+  return sortProjectsForSidebar(sortableProjects, sortableThreads, sortOrder).flatMap((sorted) => {
+    const project = projectByScopedKey.get(sorted.id);
+    return project ? [project] : [];
+  });
+}
