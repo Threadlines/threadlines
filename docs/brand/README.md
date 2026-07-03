@@ -49,6 +49,11 @@ its rendered copy).
 2. `powershell -File pipeline/resize-icons.ps1` — builds the 16–256 set + apple-touch 180.
 3. `bun pipeline/pack-icons.ts` — packs `icons/*.ico` and `icons/*.icns`.
 
+Run steps 1–2 on the Windows machine: the masters render with Edge and the downscaler is
+System.Drawing. Substituting other tools (e.g. `sips` on macOS) yields visually equivalent but
+byte-different output, churning every raster in git on the next canonical run. Step 3 runs
+anywhere. After packing, copy the outputs to the deploy locations listed below.
+
 ## Where the assets are deployed
 
 - `assets/{dev,nightly,prod}/threadlines-*` — channel masters consumed by

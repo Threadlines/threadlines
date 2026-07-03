@@ -33,10 +33,11 @@ function Resize-Png([string]$source, [string]$target, [int]$size) {
 
 # 64+ keep the regular mark's proportions; 48 and below switch to the
 # small variant so the branch survives taskbar/favicon rendering.
+# 24 is the Windows 11 taskbar size at 100% scaling.
 foreach ($size in 256, 128, 64) {
   Resize-Png "$png\threadlines-icon-512.png" "$png\threadlines-icon-$size.png" $size
 }
-foreach ($size in 48, 32, 16) {
+foreach ($size in 48, 32, 24, 16) {
   Resize-Png "$png\threadlines-icon-small-512.png" "$png\threadlines-icon-$size.png" $size
 }
 
