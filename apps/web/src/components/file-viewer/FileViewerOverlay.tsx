@@ -7,6 +7,7 @@ import {
   ChevronRight,
   FileImage,
   FileWarning,
+  FileX,
   MessageSquarePlus,
   SearchIcon,
   SquareArrowOutUpRight,
@@ -526,6 +527,18 @@ function FileViewerPreview({
       <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-muted-foreground/75">
         <FileWarning className="size-5" />
         Unable to read {basenameOf(activePath)}.
+      </div>
+    );
+  }
+
+  if (file.kind === "missing") {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-1.5 px-6 text-center text-sm text-muted-foreground/75">
+        <FileX className="mb-0.5 size-5" />
+        <p>{`${basenameOf(activePath)} doesn't exist in this project.`}</p>
+        <p className="text-xs text-muted-foreground/55">
+          It may have been deleted or renamed since it was referenced.
+        </p>
       </div>
     );
   }

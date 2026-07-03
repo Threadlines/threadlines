@@ -105,10 +105,23 @@ export const ProjectBinaryFileContent = Schema.Struct({
 });
 export type ProjectBinaryFileContent = typeof ProjectBinaryFileContent.Type;
 
+/**
+ * The path has no filesystem entry. Modeled as a result rather than an error
+ * because dangling references are an expected state (agents delete or rename
+ * files while chat references keep pointing at the old path), and the error
+ * channel reads as an IO fault clients retry.
+ */
+export const ProjectMissingFileContent = Schema.Struct({
+  kind: Schema.Literal("missing"),
+  relativePath: TrimmedNonEmptyString,
+});
+export type ProjectMissingFileContent = typeof ProjectMissingFileContent.Type;
+
 export const ProjectReadFileResult = Schema.Union([
   ProjectTextFileContent,
   ProjectImageFileContent,
   ProjectBinaryFileContent,
+  ProjectMissingFileContent,
 ]);
 export type ProjectReadFileResult = typeof ProjectReadFileResult.Type;
 

@@ -364,6 +364,43 @@ describe("composerDraftStore syncPersistedAttachments", () => {
   });
 });
 
+describe("composerDraftStore prefillEmptyPrompt", () => {
+  const threadId = ThreadId.make("thread-prefill");
+  const threadRef = scopeThreadRef(TEST_ENVIRONMENT_ID, threadId);
+
+  beforeEach(() => {
+    useComposerDraftStore.setState({
+      draftsByThreadKey: {},
+      draftThreadsByThreadKey: {},
+      logicalProjectDraftThreadKeyByLogicalProjectKey: {},
+      stickyModelSelectionByProvider: {},
+      stickyActiveProvider: null,
+    });
+  });
+
+  it("fills an empty composer with the provided prompt", () => {
+    useComposerDraftStore.getState().prefillEmptyPrompt(threadRef, "restored message");
+
+    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.prompt).toBe("restored message");
+  });
+
+  it("never clobbers text the user already typed", () => {
+    useComposerDraftStore.getState().setPrompt(threadRef, "half-typed thought");
+    useComposerDraftStore.getState().prefillEmptyPrompt(threadRef, "restored message");
+
+    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.prompt).toBe("half-typed thought");
+  });
+
+  it("treats whitespace-only drafts as empty and ignores empty prefills", () => {
+    useComposerDraftStore.getState().setPrompt(threadRef, "   ");
+    useComposerDraftStore.getState().prefillEmptyPrompt(threadRef, "restored message");
+    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.prompt).toBe("restored message");
+
+    useComposerDraftStore.getState().prefillEmptyPrompt(threadRef, "   ");
+    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.prompt).toBe("restored message");
+  });
+});
+
 describe("composerDraftStore terminal contexts", () => {
   const threadId = ThreadId.make("thread-dedupe");
   const threadRef = scopeThreadRef(TEST_ENVIRONMENT_ID, threadId);

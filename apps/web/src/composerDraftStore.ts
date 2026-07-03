@@ -401,6 +401,12 @@ interface ComposerDraftStoreState {
   clearDraftThread: (threadRef: ComposerThreadTarget) => void;
   setStickyModelSelection: (modelSelection: ModelSelection | null | undefined) => void;
   setPrompt: (threadRef: ComposerThreadTarget, prompt: string) => void;
+  /**
+   * Sets the prompt only when the current draft prompt is empty. Used to
+   * restore a reverted-away message for editing without clobbering text the
+   * user has already typed.
+   */
+  prefillEmptyPrompt: (threadRef: ComposerThreadTarget, prompt: string) => void;
   setTerminalContexts: (threadRef: ComposerThreadTarget, contexts: TerminalContextDraft[]) => void;
   setTranscriptHighlightContexts: (
     threadRef: ComposerThreadTarget,
@@ -2577,6 +2583,17 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             }
             return { draftsByThreadKey: nextDraftsByThreadKey };
           });
+        },
+        prefillEmptyPrompt: (threadRef, prompt) => {
+          if (prompt.trim().length === 0) {
+            return;
+          }
+          const state = get();
+          const existingPrompt = getComposerDraftState(state, threadRef)?.prompt ?? "";
+          if (existingPrompt.trim().length > 0) {
+            return;
+          }
+          state.setPrompt(threadRef, prompt);
         },
         setTerminalContexts: (threadRef, contexts) => {
           const threadKey = resolveComposerDraftKey(get(), threadRef);

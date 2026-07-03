@@ -1093,18 +1093,24 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       },
     ),
 
-    // Applies the inverse of a single file's snapshot transition onto the
-    // current worktree file via an exact coordinate merge: the thread's
-    // change (fromCommit -> toCommit) and other actors' drift (fromCommit ->
-    // worktree) are both expressed against the same base, so disjoint
+    // Undoes one or more of a file's snapshot transitions on the current
+    // worktree file via exact coordinate merges. Each step's change
+    // (fromCommit -> toCommit) and the drift between that step's base and
+    // the evolving content are expressed against the same base, so disjoint
     // regions merge deterministically — including edits that merely touch,
     // like two sessions appending consecutive blocks at the end of a file,
-    // which `git apply` and 3-way merges reject. Returns false (file
-    // untouched) on any overlap, verification mismatch, or content the
-    // parser cannot interpret exactly (binary, missing-newline markers).
-    restoreCheckpointFileHunks: Effect.fn("GitVcsDriver.checkpoints.restoreCheckpointFileHunks")(
+    // which `git apply` and 3-way merges reject. Multi-step inputs roll a
+    // thread's turns back one at a time so foreign edits made between turns
+    // survive. All steps compose in memory and are written once; on any
+    // overlap, verification mismatch, or content the parser cannot interpret
+    // exactly (binary, missing-newline markers) the file is left untouched
+    // and false is returned.
+    restoreCheckpointFileEdits: Effect.fn("GitVcsDriver.checkpoints.restoreCheckpointFileEdits")(
       function* (input) {
-        const operation = "GitVcsDriver.checkpoints.restoreCheckpointFileHunks";
+        const operation = "GitVcsDriver.checkpoints.restoreCheckpointFileEdits";
+        if (input.steps.length === 0) {
+          return false;
+        }
         const toplevel = yield* resolveWorktreeToplevel(input.cwd);
 
         // -U0 keeps regions minimal so nearby-but-separate edits stay
@@ -1119,20 +1125,6 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
           toRevision,
           ...pathspecs,
         ];
-
-        const inversePatch = yield* execute({
-          operation,
-          cwd: toplevel,
-          args: diffArgs(input.fromCommit, input.toCommit, ["--", literalPathspec(input.path)]),
-          maxOutputBytes: CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,
-        });
-        if (inversePatch.stdoutTruncated) {
-          return false;
-        }
-        const editRegions = parseUnifiedDiffRegions(inversePatch.stdout);
-        if (editRegions === null || editRegions.length === 0) {
-          return false;
-        }
 
         // The merged result is written back as UTF-8 text; refuse anything
         // that does not round-trip so untouched bytes can never be mangled.
@@ -1150,64 +1142,96 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
           return false;
         }
         const endsWithNewline = content.endsWith("\n");
-        const currentLines = content.split("\n");
+
+        let currentLines = content.split("\n");
         if (endsWithNewline) {
           currentLines.pop();
         }
+        let appliedStepCount = 0;
 
-        // Drift is diffed blob-to-blob: comparing the snapshot commit against
-        // the worktree would consult the index and misreport files that are
-        // not tracked there (e.g. created by an agent and never staged) as
-        // deleted.
-        const baseBlobResult = yield* execute({
-          operation,
-          cwd: toplevel,
-          args: ["rev-parse", "--verify", "--quiet", `${input.fromCommit}:${input.path}`],
-          allowNonZeroExit: true,
-        });
-        const baseBlobOid = baseBlobResult.exitCode === 0 ? baseBlobResult.stdout.trim() : "";
-        if (baseBlobOid.length === 0) {
-          return false;
-        }
-        const currentBlobResult = yield* execute({
-          operation,
-          cwd: toplevel,
-          args: ["hash-object", "-w", "--stdin"],
-          stdin: content,
-        });
-        const currentBlobOid = currentBlobResult.stdout.trim();
-        if (currentBlobOid.length === 0) {
-          return false;
-        }
-
-        let driftRegions: ReturnType<typeof parseUnifiedDiffRegions> = [];
-        if (currentBlobOid !== baseBlobOid) {
-          const driftPatch = yield* execute({
+        for (const step of input.steps) {
+          const inversePatch = yield* execute({
             operation,
             cwd: toplevel,
-            args: diffArgs(baseBlobOid, currentBlobOid, []),
+            args: diffArgs(step.fromCommit, step.toCommit, ["--", literalPathspec(input.path)]),
             maxOutputBytes: CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,
           });
-          if (driftPatch.stdoutTruncated) {
+          if (inversePatch.stdoutTruncated) {
             return false;
           }
-          driftRegions = parseUnifiedDiffRegions(driftPatch.stdout);
-        }
-        if (driftRegions === null) {
-          return false;
+          const editRegions = parseUnifiedDiffRegions(inversePatch.stdout);
+          if (editRegions === null) {
+            return false;
+          }
+          if (editRegions.length === 0) {
+            // The snapshots are identical for this path; nothing to undo.
+            continue;
+          }
+
+          // Drift is diffed blob-to-blob: comparing the snapshot commit
+          // against the worktree would consult the index and misreport files
+          // that are not tracked there (e.g. created by an agent and never
+          // staged) as deleted.
+          const baseBlobResult = yield* execute({
+            operation,
+            cwd: toplevel,
+            args: ["rev-parse", "--verify", "--quiet", `${step.fromCommit}:${input.path}`],
+            allowNonZeroExit: true,
+          });
+          const baseBlobOid = baseBlobResult.exitCode === 0 ? baseBlobResult.stdout.trim() : "";
+          if (baseBlobOid.length === 0) {
+            return false;
+          }
+          const evolvingContent =
+            currentLines.length === 0
+              ? ""
+              : currentLines.join("\n") + (endsWithNewline ? "\n" : "");
+          const currentBlobResult = yield* execute({
+            operation,
+            cwd: toplevel,
+            args: ["hash-object", "-w", "--stdin"],
+            stdin: evolvingContent,
+          });
+          const currentBlobOid = currentBlobResult.stdout.trim();
+          if (currentBlobOid.length === 0) {
+            return false;
+          }
+
+          let driftRegions: ReturnType<typeof parseUnifiedDiffRegions> = [];
+          if (currentBlobOid !== baseBlobOid) {
+            const driftPatch = yield* execute({
+              operation,
+              cwd: toplevel,
+              args: diffArgs(baseBlobOid, currentBlobOid, []),
+              maxOutputBytes: CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,
+            });
+            if (driftPatch.stdoutTruncated) {
+              return false;
+            }
+            driftRegions = parseUnifiedDiffRegions(driftPatch.stdout);
+          }
+          if (driftRegions === null) {
+            return false;
+          }
+
+          const mergedLines = mergeRegionEditsIntoCurrent({
+            editRegions,
+            driftRegions,
+            currentLines,
+          });
+          if (mergedLines === null) {
+            return false;
+          }
+          currentLines = mergedLines;
+          appliedStepCount += 1;
         }
 
-        const mergedLines = mergeRegionEditsIntoCurrent({
-          editRegions,
-          driftRegions,
-          currentLines,
-        });
-        if (mergedLines === null) {
+        if (appliedStepCount === 0) {
           return false;
         }
 
         const nextContent =
-          mergedLines.length === 0 ? "" : mergedLines.join("\n") + (endsWithNewline ? "\n" : "");
+          currentLines.length === 0 ? "" : currentLines.join("\n") + (endsWithNewline ? "\n" : "");
         yield* fileSystem.writeFileString(absolutePath, nextContent).pipe(
           Effect.mapError(
             (error) =>

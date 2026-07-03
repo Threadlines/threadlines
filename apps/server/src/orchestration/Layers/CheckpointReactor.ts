@@ -24,6 +24,7 @@ import {
   attributedPathsForTurnRange,
   buildSelectiveRevertPlan,
   normalizeCheckpointFilePath,
+  type SelectiveRevertConflict,
 } from "../../checkpointing/SelectiveRevert.ts";
 import type { WorktreePathState } from "../../checkpointing/Services/CheckpointStore.ts";
 import {
@@ -145,11 +146,13 @@ const MAX_CONTESTED_GAP_SCANS = 100;
 
 type SelectiveRevertOutcome = {
   readonly mode: "selective";
-  /** Total files brought back to the target state (exact and hunk-level). */
+  /** Total files brought back to the target state (exact, hunk, and turn-level). */
   readonly revertedFileCount: number;
   /** Subset of revertedFileCount restored via hunk-level inverse patch. */
   readonly hunkRevertedFileCount: number;
-  readonly conflictPaths: ReadonlyArray<string>;
+  /** Subset of revertedFileCount restored via turn-by-turn rollback. */
+  readonly interleavedRevertedFileCount: number;
+  readonly conflicts: ReadonlyArray<SelectiveRevertConflict>;
   readonly unattributedPathCount: number;
   readonly noopPathCount: number;
   readonly skippedReason?: "missing-latest-checkpoint";
@@ -164,7 +167,8 @@ function emptySelectiveOutcome(
     mode: "selective",
     revertedFileCount: 0,
     hunkRevertedFileCount: 0,
-    conflictPaths: [],
+    interleavedRevertedFileCount: 0,
+    conflicts: [],
     unattributedPathCount: 0,
     noopPathCount: 0,
     ...(skippedReason !== undefined ? { skippedReason } : {}),
@@ -185,12 +189,15 @@ const MAX_SUMMARY_CONFLICT_PATHS = 3;
 function selectiveRevertSummary(outcome: SelectiveRevertOutcome): string {
   const fileCount = (count: number): string => `${count} file${count === 1 ? "" : "s"}`;
 
-  if (outcome.conflictPaths.length > 0) {
-    const listed = outcome.conflictPaths.slice(0, MAX_SUMMARY_CONFLICT_PATHS).join(", ");
-    const overflow = outcome.conflictPaths.length - MAX_SUMMARY_CONFLICT_PATHS;
+  if (outcome.conflicts.length > 0) {
+    const listed = outcome.conflicts
+      .slice(0, MAX_SUMMARY_CONFLICT_PATHS)
+      .map((conflict) => conflict.path)
+      .join(", ");
+    const overflow = outcome.conflicts.length - MAX_SUMMARY_CONFLICT_PATHS;
     const suffix = overflow > 0 ? ` and ${overflow} more` : "";
     return `Reverted ${fileCount(outcome.revertedFileCount)}; left ${fileCount(
-      outcome.conflictPaths.length,
+      outcome.conflicts.length,
     )} with conflicting edits untouched: ${listed}${suffix}`;
   }
   if (outcome.revertedFileCount > 0) {
@@ -246,7 +253,7 @@ const make = Effect.gen(function* () {
         ? "Workspace restored to checkpoint"
         : selectiveRevertSummary(input.outcome);
     const tone =
-      input.outcome.mode === "selective" && input.outcome.conflictPaths.length > 0
+      input.outcome.mode === "selective" && input.outcome.conflicts.length > 0
         ? ("warning" as const)
         : ("info" as const);
 
@@ -267,8 +274,12 @@ const make = Effect.gen(function* () {
                 mode: "selective",
                 revertedFileCount: input.outcome.revertedFileCount,
                 hunkRevertedFileCount: input.outcome.hunkRevertedFileCount,
-                conflictPathCount: input.outcome.conflictPaths.length,
-                conflictPaths: input.outcome.conflictPaths.slice(0, MAX_REPORTED_CONFLICT_PATHS),
+                interleavedRevertedFileCount: input.outcome.interleavedRevertedFileCount,
+                conflictPathCount: input.outcome.conflicts.length,
+                conflictPaths: input.outcome.conflicts
+                  .slice(0, MAX_REPORTED_CONFLICT_PATHS)
+                  .map((conflict) => conflict.path),
+                conflicts: input.outcome.conflicts.slice(0, MAX_REPORTED_CONFLICT_PATHS),
                 unattributedPathCount: input.outcome.unattributedPathCount,
                 noopPathCount: input.outcome.noopPathCount,
                 ...(input.outcome.skippedReason !== undefined
@@ -603,19 +614,84 @@ const make = Effect.gen(function* () {
     // Files another actor edited after the thread's last checkpoint: undo
     // just the thread's hunks when they apply cleanly against the current
     // content; overlapping edits stay conflicts.
-    const conflictPaths = [...plan.conflictPaths];
+    const conflicts: SelectiveRevertConflict[] = [...plan.conflicts];
     let hunkRevertedFileCount = 0;
     for (const candidatePath of plan.hunkCandidatePaths) {
-      const applied = yield* checkpointStore.restoreCheckpointFileHunks({
+      const applied = yield* checkpointStore.restoreCheckpointFileEdits({
         cwd: input.cwd,
-        fromCommit: currentCommit,
-        toCommit: targetCommit,
         path: candidatePath,
+        steps: [{ fromCommit: currentCommit, toCommit: targetCommit }],
       });
       if (applied) {
         hunkRevertedFileCount += 1;
       } else {
-        conflictPaths.push(candidatePath);
+        conflicts.push({ path: candidatePath, reason: "changed-after-thread" });
+      }
+    }
+
+    // Files also edited between the thread's turns: a single range-level
+    // inverse would destroy the interleaved foreign work, so roll the
+    // thread's own turns back one at a time instead. Any turn window that
+    // cannot be resolved or merged cleanly leaves the file untouched.
+    let interleavedRevertedFileCount = 0;
+    const commitByRef = new Map<CheckpointRef, string | null>();
+    const resolveCommitCached = (checkpointRef: CheckpointRef) =>
+      commitByRef.has(checkpointRef)
+        ? Effect.succeed(commitByRef.get(checkpointRef) ?? null)
+        : checkpointStore.resolveCheckpointCommit({ cwd: input.cwd, checkpointRef }).pipe(
+            Effect.map((commit) => {
+              commitByRef.set(checkpointRef, commit);
+              return commit;
+            }),
+          );
+    for (const candidatePath of plan.contestedCandidatePaths) {
+      const normalizedPath = normalizeCheckpointFilePath(candidatePath);
+      const touchingCheckpoints = input.checkpoints
+        .filter(
+          (checkpoint) =>
+            checkpoint.checkpointTurnCount > input.targetTurnCount &&
+            checkpoint.checkpointTurnCount <= input.currentTurnCount &&
+            checkpoint.files.some(
+              (file) => normalizeCheckpointFilePath(file.path) === normalizedPath,
+            ),
+        )
+        .toSorted((left, right) => right.checkpointTurnCount - left.checkpointTurnCount);
+
+      let steps: Array<{ fromCommit: string; toCommit: string }> | null =
+        touchingCheckpoints.length > 0 ? [] : null;
+      for (const checkpoint of touchingCheckpoints) {
+        if (steps === null) {
+          break;
+        }
+        const postCommit = yield* resolveCommitCached(checkpoint.checkpointRef);
+        const preCommit =
+          (yield* resolveCommitCached(
+            checkpointPreTurnRefForThreadTurnCount(input.threadId, checkpoint.checkpointTurnCount),
+          )) ??
+          (yield* resolveCommitCached(
+            checkpointPreTurnRefForThreadTurn(input.threadId, checkpoint.turnId),
+          ));
+        if (!postCommit || !preCommit) {
+          steps = null;
+          break;
+        }
+        if (postCommit !== preCommit) {
+          steps.push({ fromCommit: postCommit, toCommit: preCommit });
+        }
+      }
+
+      const applied =
+        steps !== null && steps.length > 0
+          ? yield* checkpointStore.restoreCheckpointFileEdits({
+              cwd: input.cwd,
+              path: candidatePath,
+              steps,
+            })
+          : false;
+      if (applied) {
+        interleavedRevertedFileCount += 1;
+      } else {
+        conflicts.push({ path: candidatePath, reason: "interleaved" });
       }
     }
 
@@ -627,16 +703,22 @@ const make = Effect.gen(function* () {
       restoredPathCount: plan.restorePaths.length,
       deletedPathCount: plan.deletePaths.length,
       hunkRevertedFileCount,
-      conflictPaths: conflictPaths.slice(0, 10),
+      interleavedRevertedFileCount,
+      conflicts: conflicts.slice(0, 10),
       unattributedPathCount: plan.unattributedPaths.length,
       noopPathCount: plan.noopPaths.length,
     });
 
     return {
       mode: "selective",
-      revertedFileCount: plan.restorePaths.length + plan.deletePaths.length + hunkRevertedFileCount,
+      revertedFileCount:
+        plan.restorePaths.length +
+        plan.deletePaths.length +
+        hunkRevertedFileCount +
+        interleavedRevertedFileCount,
       hunkRevertedFileCount,
-      conflictPaths,
+      interleavedRevertedFileCount,
+      conflicts,
       unattributedPathCount: plan.unattributedPaths.length,
       noopPathCount: plan.noopPaths.length,
     };
