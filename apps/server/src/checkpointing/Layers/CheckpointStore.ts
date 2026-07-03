@@ -103,14 +103,14 @@ const makeCheckpointStore = Effect.gen(function* () {
     return yield* checkpoints.restoreCheckpointPaths(input);
   });
 
-  const restoreCheckpointFileHunks: CheckpointStoreShape["restoreCheckpointFileHunks"] = Effect.fn(
-    "restoreCheckpointFileHunks",
+  const restoreCheckpointFileEdits: CheckpointStoreShape["restoreCheckpointFileEdits"] = Effect.fn(
+    "restoreCheckpointFileEdits",
   )(function* (input) {
     const checkpoints = yield* resolveCheckpoints(
-      "CheckpointStore.restoreCheckpointFileHunks",
+      "CheckpointStore.restoreCheckpointFileEdits",
       input.cwd,
     );
-    return yield* checkpoints.restoreCheckpointFileHunks(input);
+    return yield* checkpoints.restoreCheckpointFileEdits(input);
   });
 
   const deleteCheckpointRefs: CheckpointStoreShape["deleteCheckpointRefs"] = Effect.fn(
@@ -133,7 +133,7 @@ const makeCheckpointStore = Effect.gen(function* () {
     diffCheckpointEntries,
     hashWorktreePaths,
     restoreCheckpointPaths,
-    restoreCheckpointFileHunks,
+    restoreCheckpointFileEdits,
     deleteCheckpointRefs,
   } satisfies CheckpointStoreShape;
 });

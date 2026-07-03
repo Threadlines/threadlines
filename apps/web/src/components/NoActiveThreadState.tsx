@@ -1,6 +1,13 @@
-import { scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
+import { scopedProjectKey, scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
 import { useNavigate } from "@tanstack/react-router";
-import { ChevronDownIcon, SearchIcon, SquarePenIcon, FolderPlusIcon } from "lucide-react";
+import {
+  ChevronDownIcon,
+  FolderPlusIcon,
+  MessageCirclePlusIcon,
+  MessagesSquareIcon,
+  SearchIcon,
+  SquarePenIcon,
+} from "lucide-react";
 import type * as React from "react";
 import { useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -10,11 +17,16 @@ import { ELECTRON_HEADER_HEIGHT_CLASS } from "../desktopChrome";
 import { isElectron } from "../env";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import {
+  startNewGeneralChatThread,
   startNewThreadFromContext,
   startNewThreadInProjectFromContext,
 } from "../lib/chatThreadActions";
 import { sortThreads } from "../lib/threadSort";
-import { selectSidebarThreadsAcrossEnvironments, useStore } from "../store";
+import {
+  selectGeneralChatsProjectAcrossEnvironments,
+  selectSidebarThreadsAcrossEnvironments,
+  useStore,
+} from "../store";
 import { buildThreadRouteParams } from "../threadRoutes";
 import { formatRelativeTimeLabel } from "../timestampFormat";
 import { ProjectFavicon } from "./ProjectFavicon";
@@ -23,7 +35,15 @@ import { ThreadRowLeadingStatus } from "./ThreadStatusIndicators";
 import { Button } from "./ui/button";
 import { Empty, EmptyDescription, EmptyTitle } from "./ui/empty";
 import { Group } from "./ui/group";
-import { Menu, MenuGroup, MenuGroupLabel, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
+import {
+  Menu,
+  MenuGroup,
+  MenuGroupLabel,
+  MenuItem,
+  MenuPopup,
+  MenuSeparator,
+  MenuTrigger,
+} from "./ui/menu";
 import { SidebarInset, SidebarOpenTrigger } from "./ui/sidebar";
 import { useSettings } from "~/hooks/useSettings";
 import { cn } from "~/lib/utils";
@@ -159,9 +179,23 @@ export function NoActiveThreadState() {
       ).slice(0, RECENT_THREAD_LIMIT),
     [appSettings.sidebarThreadSortOrder, threads],
   );
-  const projectTitleById = useMemo(
-    () => new Map(orderedProjects.map((project) => [project.id, project.name])),
+  const projectByScopedKey = useMemo(
+    () =>
+      new Map(
+        orderedProjects.map((project) => [
+          scopedProjectKey(scopeProjectRef(project.environmentId, project.id)),
+          project,
+        ]),
+      ),
     [orderedProjects],
+  );
+  const generalChatsProject = useStore(selectGeneralChatsProjectAcrossEnvironments);
+  const generalChatsRef = useMemo(
+    () =>
+      generalChatsProject
+        ? scopeProjectRef(generalChatsProject.environmentId, generalChatsProject.id)
+        : null,
+    [generalChatsProject],
   );
 
   const hasProject = defaultProjectRef !== null;
@@ -184,6 +218,12 @@ export function NoActiveThreadState() {
       newThreadActionContext,
       scopeProjectRef(project.environmentId, project.id),
     );
+  };
+  const handleNewGeneralChat = () => {
+    if (!generalChatsRef) {
+      return;
+    }
+    void startNewGeneralChatThread(handleNewThread, generalChatsRef);
   };
   const handleOpenThread = (thread: (typeof recentThreads)[number]) => {
     void navigate({
@@ -241,7 +281,9 @@ export function NoActiveThreadState() {
                 ? recentThreads.length > 0
                   ? "Jump back in, or start something new."
                   : "Resume one from the sidebar, or start fresh."
-                : "Add a project to begin."}
+                : generalChatsRef
+                  ? "Add a project, or just start chatting."
+                  : "Add a project to begin."}
             </EmptyDescription>
 
             <div
@@ -269,12 +311,12 @@ export function NoActiveThreadState() {
                       ) : null}
                     </span>
                   </Button>
-                  {orderedProjects.length > 1 ? (
+                  {orderedProjects.length > 1 || generalChatsRef ? (
                     <Menu>
                       <MenuTrigger
                         render={
                           <Button
-                            aria-label="Choose a project for the new thread"
+                            aria-label="Choose where to start the new thread"
                             data-testid="no-thread-project-picker-trigger"
                             size="icon-sm"
                             variant="outline"
@@ -284,6 +326,20 @@ export function NoActiveThreadState() {
                         <ChevronDownIcon className="size-3.5" />
                       </MenuTrigger>
                       <MenuPopup align="end">
+                        {generalChatsRef ? (
+                          <>
+                            <MenuGroup>
+                              <MenuItem
+                                data-testid="no-thread-new-general-chat-item"
+                                onClick={handleNewGeneralChat}
+                              >
+                                <MessagesSquareIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
+                                General chat
+                              </MenuItem>
+                            </MenuGroup>
+                            <MenuSeparator />
+                          </>
+                        ) : null}
                         <MenuGroup>
                           <MenuGroupLabel>New thread in…</MenuGroupLabel>
                           {orderedProjects.map((project) => (
@@ -305,15 +361,28 @@ export function NoActiveThreadState() {
                   ) : null}
                 </Group>
               ) : (
-                <Button
-                  data-testid="no-thread-add-project-button"
-                  onClick={openAddProject}
-                  size="sm"
-                  variant="outline"
-                >
-                  <FolderPlusIcon />
-                  Add a project
-                </Button>
+                <>
+                  <Button
+                    data-testid="no-thread-add-project-button"
+                    onClick={openAddProject}
+                    size="sm"
+                    variant="outline"
+                  >
+                    <FolderPlusIcon />
+                    Add a project
+                  </Button>
+                  {generalChatsRef ? (
+                    <Button
+                      data-testid="no-thread-new-general-chat-button"
+                      onClick={handleNewGeneralChat}
+                      size="sm"
+                      variant="outline"
+                    >
+                      <MessageCirclePlusIcon />
+                      New general chat
+                    </Button>
+                  ) : null}
+                </>
               )}
               <Button
                 className="text-muted-foreground hover:text-foreground"
@@ -333,30 +402,48 @@ export function NoActiveThreadState() {
                   Recent threads
                 </div>
                 <div className="flex flex-col gap-0.5">
-                  {recentThreads.map((thread) => (
-                    <button
-                      className="group flex w-full min-w-0 cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-colors hover:bg-muted focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
-                      data-testid="no-thread-recent-thread"
-                      key={`${thread.environmentId}:${thread.id}`}
-                      onClick={() => handleOpenThread(thread)}
-                      type="button"
-                    >
-                      <ThreadRowLeadingStatus thread={thread} />
-                      <span className="min-w-0 flex-1 truncate text-sm text-foreground/90">
-                        {thread.title}
-                      </span>
-                      {projectTitleById.get(thread.projectId) ? (
-                        <span className="max-w-28 shrink-0 truncate text-xs text-muted-foreground/60">
-                          {projectTitleById.get(thread.projectId)}
+                  {recentThreads.map((thread) => {
+                    const project = projectByScopedKey.get(
+                      scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
+                    );
+                    const isGeneralChat =
+                      generalChatsProject !== null &&
+                      thread.environmentId === generalChatsProject.environmentId &&
+                      thread.projectId === generalChatsProject.id;
+                    return (
+                      <button
+                        className="group flex w-full min-w-0 cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-colors hover:bg-muted focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+                        data-testid="no-thread-recent-thread"
+                        key={`${thread.environmentId}:${thread.id}`}
+                        onClick={() => handleOpenThread(thread)}
+                        type="button"
+                      >
+                        <ThreadRowLeadingStatus thread={thread} />
+                        <span className="min-w-0 flex-1 truncate text-sm text-foreground/90">
+                          {thread.title}
                         </span>
-                      ) : null}
-                      <span className="shrink-0 text-xs tabular-nums text-muted-foreground/50">
-                        {formatRelativeTimeLabel(
-                          thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
-                        )}
-                      </span>
-                    </button>
-                  ))}
+                        {isGeneralChat ? (
+                          <span className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground/60">
+                            <MessagesSquareIcon className="size-3 shrink-0" />
+                            General
+                          </span>
+                        ) : project ? (
+                          <span className="flex max-w-28 shrink-0 items-center gap-1.5 text-xs text-muted-foreground/60">
+                            <ProjectFavicon
+                              cwd={project.cwd}
+                              environmentId={project.environmentId}
+                            />
+                            <span className="truncate">{project.name}</span>
+                          </span>
+                        ) : null}
+                        <span className="shrink-0 text-xs tabular-nums text-muted-foreground/50">
+                          {formatRelativeTimeLabel(
+                            thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
+                          )}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             ) : null}

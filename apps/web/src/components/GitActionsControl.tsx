@@ -1,6 +1,7 @@
 import { type ScopedThreadRef } from "@threadlines/contracts";
 import type {
   GitActionProgressEvent,
+  GitRemoteAuthFailure,
   GitRunStackedActionResult,
   GitStackedAction,
   SourceControlCloneProtocol,
@@ -26,7 +27,8 @@ import {
   GlobeIcon,
 } from "lucide-react";
 import { Radio as RadioPrimitive } from "@base-ui/react/radio";
-import { formatGitErrorMessage } from "@threadlines/shared/git";
+import { formatGitErrorMessage, gitRemoteAuthFailureFromError } from "@threadlines/shared/git";
+import { GitAuthRemediationDialog } from "~/components/source-control/GitAuthRemediationDialog";
 import { AzureDevOpsIcon, BitbucketIcon, GitHubIcon, GitLabIcon } from "~/components/Icons";
 import { RadioGroup } from "~/components/ui/radio-group";
 import { Spinner } from "~/components/ui/spinner";
@@ -949,6 +951,10 @@ export default function GitActionsControl({
   const [excludedFiles, setExcludedFiles] = useState<ReadonlySet<string>>(new Set());
   const [isEditingFiles, setIsEditingFiles] = useState(false);
   const [isPublishDialogOpen, setIsPublishDialogOpen] = useState(false);
+  const [authRemediation, setAuthRemediation] = useState<{
+    readonly failure: GitRemoteAuthFailure;
+    readonly retry: (() => void) | null;
+  } | null>(null);
   const [pendingDefaultBranchAction, setPendingDefaultBranchAction] =
     useState<PendingDefaultBranchAction | null>(null);
   const activeGitActionProgressRef = useRef<ActiveGitActionProgress | null>(null);
@@ -1375,12 +1381,21 @@ export default function GitActionsControl({
             force: true,
           }).catch(() => undefined);
         }
+        const authFailure = gitRemoteAuthFailureFromError(err);
         toastManager.update(
           resolvedProgressToastId,
           stackedThreadToast({
             type: "error",
             title: "Action failed",
             description: formatGitErrorMessage(err),
+            ...(authFailure
+              ? {
+                  actionProps: {
+                    children: "Fix...",
+                    onClick: () => setAuthRemediation({ failure: authFailure, retry: null }),
+                  },
+                }
+              : {}),
             ...(scopedToastData !== undefined ? { data: scopedToastData } : {}),
           }),
         );
@@ -1443,27 +1458,42 @@ export default function GitActionsControl({
       return;
     }
     if (quickAction.kind === "run_pull") {
-      const promise = pullMutation.mutateAsync();
-      void toastManager.promise<
-        Awaited<ReturnType<typeof pullMutation.mutateAsync>>,
-        ThreadToastData
-      >(promise, {
-        loading: { title: "Pulling...", data: threadToastData },
-        success: (result) => ({
-          title: result.status === "pulled" ? "Pulled" : "Already up to date",
-          description:
-            result.status === "pulled"
-              ? `Updated ${result.refName} from ${result.upstreamRef ?? "upstream"}`
-              : `${result.refName} is already synchronized.`,
-          data: threadToastData,
-        }),
-        error: (err) => ({
-          title: "Pull failed",
-          description: err instanceof Error ? err.message : "An error occurred.",
-          data: threadToastData,
-        }),
-      });
-      void promise.catch(() => undefined);
+      const runPullWithToast = () => {
+        const promise = pullMutation.mutateAsync();
+        void toastManager.promise<
+          Awaited<ReturnType<typeof pullMutation.mutateAsync>>,
+          ThreadToastData
+        >(promise, {
+          loading: { title: "Pulling...", data: threadToastData },
+          success: (result) => ({
+            title: result.status === "pulled" ? "Pulled" : "Already up to date",
+            description:
+              result.status === "pulled"
+                ? `Updated ${result.refName} from ${result.upstreamRef ?? "upstream"}`
+                : `${result.refName} is already synchronized.`,
+            data: threadToastData,
+          }),
+          error: (err) => {
+            const authFailure = gitRemoteAuthFailureFromError(err);
+            return {
+              title: "Pull failed",
+              description: formatGitErrorMessage(err),
+              ...(authFailure
+                ? {
+                    actionProps: {
+                      children: "Fix...",
+                      onClick: () =>
+                        setAuthRemediation({ failure: authFailure, retry: runPullWithToast }),
+                    },
+                  }
+                : {}),
+              data: threadToastData,
+            };
+          },
+        });
+        void promise.catch(() => undefined);
+      };
+      runPullWithToast();
       return;
     }
     if (quickAction.kind === "show_hint") {
@@ -1863,6 +1893,19 @@ export default function GitActionsControl({
         onOpenChange={setIsPublishDialogOpen}
         environmentId={activeEnvironmentId}
         gitCwd={gitCwd}
+      />
+
+      <GitAuthRemediationDialog
+        open={authRemediation !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setAuthRemediation(null);
+          }
+        }}
+        environmentId={activeEnvironmentId}
+        gitCwd={gitCwd}
+        failure={authRemediation?.failure ?? null}
+        onResolved={() => authRemediation?.retry?.()}
       />
 
       <Dialog

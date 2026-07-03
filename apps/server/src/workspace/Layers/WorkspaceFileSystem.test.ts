@@ -231,6 +231,23 @@ it.layer(TestLayer)("WorkspaceFileSystemLive", (it) => {
       }),
     );
 
+    it.effect("reports paths with no filesystem entry as missing", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const cwd = yield* makeTempDir;
+
+        const result = yield* workspaceFileSystem.readFile({
+          cwd,
+          relativePath: "deleted/TODO.md",
+        });
+
+        expect(result).toEqual({
+          kind: "missing",
+          relativePath: "deleted/TODO.md",
+        });
+      }),
+    );
+
     it.effect("rejects reads outside the workspace root", () =>
       Effect.gen(function* () {
         const workspaceFileSystem = yield* WorkspaceFileSystem;

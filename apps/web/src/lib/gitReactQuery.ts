@@ -1,6 +1,7 @@
 import {
   type EnvironmentId,
   type GitActionProgressEvent,
+  type GitAuthRemediationActionId,
   type GitStackedAction,
   type SourceControlPublishRepositoryInput,
   type ThreadId,
@@ -47,6 +48,8 @@ export const gitQueryKeys = {
     ] as const,
   branchSearch: (environmentId: EnvironmentId | null, cwd: string | null, query: string) =>
     ["git", "refs", environmentId ?? null, cwd, "search", query] as const,
+  authRemediationPlan: (environmentId: EnvironmentId | null, cwd: string | null) =>
+    ["git", "auth-remediation-plan", environmentId ?? null, cwd] as const,
 };
 
 export const gitMutationKeys = {
@@ -76,6 +79,8 @@ export const gitMutationKeys = {
     ["git", "mutation", "prepare-pull-request-thread", environmentId ?? null, cwd] as const,
   publishRepository: (environmentId: EnvironmentId | null, cwd: string | null) =>
     ["git", "mutation", "publish-repository", environmentId ?? null, cwd] as const,
+  applyAuthRemediation: (environmentId: EnvironmentId | null, cwd: string | null) =>
+    ["git", "mutation", "apply-auth-remediation", environmentId ?? null, cwd] as const,
 };
 
 export function invalidateGitQueries(
@@ -498,6 +503,58 @@ export function gitPullMutationOptions(input: {
     },
     onSuccess: async () => {
       await invalidateGitBranchQueries(input.queryClient, input.environmentId, input.cwd);
+    },
+  });
+}
+
+/**
+ * Probes which auth fixes apply to the repository's remote (gh login state,
+ * SSH access). Server-side probes can take several seconds, so this only
+ * runs while the remediation dialog is open.
+ */
+export function gitAuthRemediationPlanQueryOptions(input: {
+  environmentId: EnvironmentId | null;
+  cwd: string | null;
+  enabled?: boolean;
+}) {
+  return queryOptions({
+    queryKey: gitQueryKeys.authRemediationPlan(input.environmentId, input.cwd),
+    queryFn: async () => {
+      if (!input.cwd || !input.environmentId) {
+        throw new Error("Authentication remediation is unavailable.");
+      }
+      const api = ensureEnvironmentApi(input.environmentId);
+      return api.git.authRemediationPlan({ cwd: input.cwd });
+    },
+    enabled: input.environmentId !== null && input.cwd !== null && (input.enabled ?? true),
+    staleTime: 15_000,
+    retry: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+}
+
+export function gitApplyAuthRemediationMutationOptions(input: {
+  environmentId: EnvironmentId | null;
+  cwd: string | null;
+  queryClient: QueryClient;
+}) {
+  return mutationOptions({
+    mutationKey: gitMutationKeys.applyAuthRemediation(input.environmentId, input.cwd),
+    mutationFn: async (args: { actionId: GitAuthRemediationActionId }) => {
+      if (!input.cwd || !input.environmentId) {
+        throw new Error("Authentication remediation is unavailable.");
+      }
+      const api = ensureEnvironmentApi(input.environmentId);
+      return api.git.applyAuthRemediation({ cwd: input.cwd, actionId: args.actionId });
+    },
+    onSuccess: async () => {
+      await Promise.all([
+        input.queryClient.invalidateQueries({
+          queryKey: gitQueryKeys.authRemediationPlan(input.environmentId, input.cwd),
+        }),
+        invalidateGitBranchQueries(input.queryClient, input.environmentId, input.cwd),
+      ]);
     },
   });
 }

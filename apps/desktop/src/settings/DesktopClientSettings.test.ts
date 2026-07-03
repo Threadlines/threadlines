@@ -22,6 +22,7 @@ const clientSettings: ClientSettings = {
   diffIgnoreWhitespace: true,
   diffRenderMode: "stacked",
   diffWordWrap: true,
+  fileViewerWordWrap: false,
   favorites: [],
   providerModelPreferences: {},
   suppressCrossProviderSwitchWarning: false,

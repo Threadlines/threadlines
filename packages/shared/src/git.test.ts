@@ -194,9 +194,7 @@ describe("classifyGitRemoteAuthFailure", () => {
 
   it("does not classify unrelated git errors", () => {
     expect(classifyGitRemoteAuthFailure("Branch is behind upstream.")).toBeNull();
-    expect(
-      classifyGitRemoteAuthFailure("fatal: bad object refs/remotes/origin/HEAD"),
-    ).toBeNull();
+    expect(classifyGitRemoteAuthFailure("fatal: bad object refs/remotes/origin/HEAD")).toBeNull();
   });
 });
 

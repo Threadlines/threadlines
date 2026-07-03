@@ -83,6 +83,8 @@ it.effect("GitVcsDriver forwards execute env to the VCS process", () => {
     });
 
     assert.deepStrictEqual(observedEnv, {
+      // The driver always disables interactive credential prompts.
+      GIT_TERMINAL_PROMPT: "0",
       GIT_INDEX_FILE: "/tmp/threadlines-index",
     });
     assert.strictEqual(observedAppendTruncationMarker, true);

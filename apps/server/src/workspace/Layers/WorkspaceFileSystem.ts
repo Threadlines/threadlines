@@ -104,9 +104,21 @@ export const makeWorkspaceFileSystem = Effect.gen(function* () {
       const rootRealPath = yield* fileSystem
         .realPath(input.cwd)
         .pipe(readError(input, "workspaceFileSystem.resolveRootRealPath"));
-      const targetRealPath = yield* fileSystem
-        .realPath(target.absolutePath)
-        .pipe(readError(input, "workspaceFileSystem.resolveTargetRealPath"));
+      // A vanished target is an expected state, not an IO fault: agents
+      // delete and rename files while chat references keep pointing at the
+      // old path. Report it as a `missing` result so clients don't retry.
+      const targetRealPath = yield* fileSystem.realPath(target.absolutePath).pipe(
+        Effect.catch((cause) =>
+          cause.reason._tag === "NotFound" ? Effect.succeed(null) : Effect.fail(cause),
+        ),
+        readError(input, "workspaceFileSystem.resolveTargetRealPath"),
+      );
+      if (targetRealPath === null) {
+        return {
+          kind: "missing",
+          relativePath: target.relativePath,
+        } satisfies ProjectReadFileResult;
+      }
       const realRelativePath = path.relative(rootRealPath, targetRealPath);
       if (
         realRelativePath.length === 0 ||
@@ -120,9 +132,20 @@ export const makeWorkspaceFileSystem = Effect.gen(function* () {
         });
       }
 
-      const targetStat = yield* fileSystem
-        .stat(targetRealPath)
-        .pipe(readError(input, "workspaceFileSystem.statFile"));
+      // Same NotFound handling as above: the file can vanish between the
+      // realpath resolution and this stat under concurrent deletes.
+      const targetStat = yield* fileSystem.stat(targetRealPath).pipe(
+        Effect.catch((cause) =>
+          cause.reason._tag === "NotFound" ? Effect.succeed(null) : Effect.fail(cause),
+        ),
+        readError(input, "workspaceFileSystem.statFile"),
+      );
+      if (targetStat === null) {
+        return {
+          kind: "missing",
+          relativePath: target.relativePath,
+        } satisfies ProjectReadFileResult;
+      }
       if (targetStat.type !== "File") {
         return yield* new WorkspaceFileSystemError({
           cwd: input.cwd,

@@ -1,5 +1,6 @@
 import { EnvironmentId, MessageId, ProviderDriverKind, TurnId } from "@threadlines/contracts";
-import { createRef, type ReactNode, type Ref } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createRef, type ReactElement, type ReactNode, type Ref } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { LegendListRef } from "@legendapp/list/react";
@@ -71,6 +72,16 @@ beforeAll(() => {
 const ACTIVE_THREAD_ENVIRONMENT_ID = EnvironmentId.make("environment-local");
 const MESSAGE_CREATED_AT = "2026-03-17T19:12:28.000Z";
 
+// User rows resolve attachment previews through react-query, so timeline
+// renders need the provider the app root supplies.
+const renderTimelineQueryClient = new QueryClient();
+
+function renderTimeline(element: ReactElement): string {
+  return renderToStaticMarkup(
+    <QueryClientProvider client={renderTimelineQueryClient}>{element}</QueryClientProvider>,
+  );
+}
+
 function buildProps() {
   return {
     isWorking: false,
@@ -120,7 +131,7 @@ function buildUserTimelineEntry(text: string) {
 describe("MessagesTimeline", () => {
   it("renders collapse controls for long user messages", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[buildUserTimelineEntry(buildLongUserMessageText())]}
@@ -135,7 +146,7 @@ describe("MessagesTimeline", () => {
 
   it("does not render collapse controls for short user messages", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[buildUserTimelineEntry("Short prompt.")]}
@@ -148,7 +159,7 @@ describe("MessagesTimeline", () => {
 
   it("renders inline terminal labels with the composer chip UI", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[
@@ -175,7 +186,7 @@ describe("MessagesTimeline", () => {
 
   it("keeps the copy button for collapsed long user messages", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[buildUserTimelineEntry(buildLongUserMessageText())]}
@@ -211,7 +222,7 @@ describe("MessagesTimeline", () => {
 
   it("renders context compaction entries in the normal work log", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[
@@ -236,7 +247,7 @@ describe("MessagesTimeline", () => {
 
   it("summarizes command-heavy activity groups by default", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[
@@ -275,7 +286,7 @@ describe("MessagesTimeline", () => {
 
   it("keeps consequential commands verbatim instead of compacting them", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[
@@ -306,7 +317,7 @@ describe("MessagesTimeline", () => {
 
   it("surfaces the first error line and output toggle on failed commands", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[
@@ -340,7 +351,7 @@ describe("MessagesTimeline", () => {
 
   it("renders provider authentication errors with terminal sign-in guidance", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         onRunProviderAuthReconnect={() => {}}
@@ -376,7 +387,7 @@ describe("MessagesTimeline", () => {
 
   it("renders explicit MCP auth reconnect actions with an inline authorize action", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         onRunMcpAuthReconnect={() => {}}
@@ -415,7 +426,7 @@ describe("MessagesTimeline", () => {
 
   it("marks explicit MCP auth reconnect actions authorized after OAuth completes", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         onRunMcpAuthReconnect={() => {}}
@@ -455,7 +466,7 @@ describe("MessagesTimeline", () => {
 
   it("marks provider authentication errors resolved after a later assistant response succeeds", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         onRunProviderAuthReconnect={() => {}}
@@ -505,7 +516,7 @@ describe("MessagesTimeline", () => {
 
   it("renders assistant authentication messages as provider sign-in guidance", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         providerAuthReconnect={{
@@ -540,7 +551,7 @@ describe("MessagesTimeline", () => {
 
   it("renders Codex authentication messages with the Codex sign-in command", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         providerAuthReconnect={{
@@ -576,7 +587,7 @@ describe("MessagesTimeline", () => {
 
   it("renders Claude slash-login messages as terminal sign-in guidance", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         providerAuthReconnect={{
@@ -612,7 +623,7 @@ describe("MessagesTimeline", () => {
 
   it("keeps live activity compact and height-stable while a turn is working", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         isWorking
@@ -688,7 +699,7 @@ describe("MessagesTimeline", () => {
 
   it("renders warning and error work activity with solid threadline spine dots", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[
@@ -732,7 +743,7 @@ describe("MessagesTimeline", () => {
   it("connects an untracked reasoning step to the single live terminus", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const turnId = TurnId.make("turn-1");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         isWorking
@@ -769,7 +780,7 @@ describe("MessagesTimeline", () => {
 
   it("renders unpaired output-only command activity as inactive progress", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         isWorking
@@ -799,7 +810,7 @@ describe("MessagesTimeline", () => {
 
   it("renders verification commands as a semantic activity summary", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[
@@ -831,7 +842,7 @@ describe("MessagesTimeline", () => {
 
   it("renders subagent tool calls with delegated-work language", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[
@@ -863,7 +874,7 @@ describe("MessagesTimeline", () => {
 
   it("renders final subagent results as distinct timeline rows", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[
@@ -905,7 +916,7 @@ describe("MessagesTimeline", () => {
   it("collapses very long subagent results and keeps meta chips in the footer", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const longBody = Array.from({ length: 40 }, (_, index) => `- finding ${index}`).join("\n");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[
@@ -940,7 +951,7 @@ describe("MessagesTimeline", () => {
 
   it("marks agent response bodies without changing markdown rendering", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[
@@ -971,7 +982,7 @@ describe("MessagesTimeline", () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const imageSrc =
       "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[
@@ -1006,7 +1017,7 @@ describe("MessagesTimeline", () => {
 
   it("formats changed file paths from the workspace root", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[
@@ -1034,7 +1045,7 @@ describe("MessagesTimeline", () => {
   it("shows inline diff stats on file change work rows when turn diff data is available", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const turnId = TurnId.make("turn-1");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[
@@ -1084,7 +1095,7 @@ describe("MessagesTimeline", () => {
   it("does not borrow inline diff stats when the work row has no turn id", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const turnId = TurnId.make("turn-1");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[
@@ -1131,7 +1142,7 @@ describe("MessagesTimeline", () => {
 
   it("renders provider-reported diff stats without a checkpoint turn diff", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[
@@ -1169,7 +1180,7 @@ describe("MessagesTimeline", () => {
   it("coalesces duplicate completed file change rows for the same turn and file", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const turnId = TurnId.make("turn-1");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[
@@ -1237,7 +1248,7 @@ describe("MessagesTimeline", () => {
   it("infers file change row labels and stats from turn diff data when paths are absent", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const turnId = TurnId.make("turn-1");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[
@@ -1286,7 +1297,7 @@ describe("MessagesTimeline", () => {
 
   it("shows a live verification label while a command is running", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         isWorking
@@ -1316,7 +1327,7 @@ describe("MessagesTimeline", () => {
   it("does not keep a live command label running after same-turn assistant output starts", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const turnId = TurnId.make("turn-1");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         isWorking
@@ -1362,7 +1373,7 @@ describe("MessagesTimeline", () => {
   it("anchors the live node at the bottom once the assistant responds after work", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const turnId = TurnId.make("turn-1");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         isWorking
@@ -1413,7 +1424,7 @@ describe("MessagesTimeline", () => {
 
   it("shows a live read label while a file-read command is running", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         isWorking
@@ -1446,7 +1457,7 @@ describe("MessagesTimeline", () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const turnId = TurnId.make("turn-1");
     const assistantMessageId = MessageId.make("assistant-1");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[
@@ -1499,7 +1510,7 @@ describe("MessagesTimeline", () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const turnId = TurnId.make("turn-1");
     const assistantMessageId = MessageId.make("assistant-1");
-    const markup = renderToStaticMarkup(
+    const markup = renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         isWorking

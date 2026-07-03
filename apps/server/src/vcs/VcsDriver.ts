@@ -86,14 +86,23 @@ export interface VcsRestoreCheckpointPathsInput {
   readonly deletePaths: ReadonlyArray<string>;
 }
 
-export interface VcsRestoreCheckpointFileHunksInput {
-  readonly cwd: string;
-  /** Resolved commit oid of the thread's latest snapshot (patch "from" side). */
+/** One snapshot transition to undo: the file's change from fromCommit to toCommit. */
+export interface VcsCheckpointFileEditStep {
+  /** Resolved commit oid of the later snapshot (e.g. a turn's post-state). */
   readonly fromCommit: string;
-  /** Resolved commit oid of the revert target snapshot (patch "to" side). */
+  /** Resolved commit oid of the earlier snapshot (e.g. that turn's pre-state). */
   readonly toCommit: string;
+}
+
+export interface VcsRestoreCheckpointFileEditsInput {
+  readonly cwd: string;
   /** Repository-root-relative path to patch. */
   readonly path: string;
+  /**
+   * Transitions to undo in order (newest first for turn-by-turn rollback).
+   * All steps are composed in memory and written atomically, or not at all.
+   */
+  readonly steps: ReadonlyArray<VcsCheckpointFileEditStep>;
 }
 
 export interface VcsCheckpointOps {
@@ -117,8 +126,8 @@ export interface VcsCheckpointOps {
   readonly restoreCheckpointPaths: (
     input: VcsRestoreCheckpointPathsInput,
   ) => Effect.Effect<void, VcsError>;
-  readonly restoreCheckpointFileHunks: (
-    input: VcsRestoreCheckpointFileHunksInput,
+  readonly restoreCheckpointFileEdits: (
+    input: VcsRestoreCheckpointFileEditsInput,
   ) => Effect.Effect<boolean, VcsError>;
   readonly deleteCheckpointRefs: (
     input: VcsDeleteCheckpointRefsInput,

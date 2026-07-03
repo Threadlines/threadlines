@@ -53,6 +53,9 @@ const rpcClientMock = {
     searchEntries: vi.fn(),
     writeFile: vi.fn(),
   },
+  attachments: {
+    read: vi.fn(),
+  },
   filesystem: {
     browse: vi.fn(),
   },
@@ -696,6 +699,7 @@ describe("wsApi", () => {
       diffIgnoreWhitespace: true,
       diffRenderMode: "stacked" as const,
       diffWordWrap: true,
+      fileViewerWordWrap: false,
       favorites: [],
       providerModelPreferences: {},
       suppressCrossProviderSwitchWarning: false,
@@ -764,6 +768,7 @@ describe("wsApi", () => {
       diffIgnoreWhitespace: true,
       diffRenderMode: "stacked" as const,
       diffWordWrap: true,
+      fileViewerWordWrap: false,
       favorites: [],
       providerModelPreferences: {},
       suppressCrossProviderSwitchWarning: false,

@@ -23,6 +23,19 @@ export function normalizeCheckpointFilePath(value: string): string {
   return value.replaceAll("\\", "/").toLowerCase();
 }
 
+export type SelectiveRevertConflictReason =
+  /** Another actor changed the path after the thread's last edit to it. */
+  | "changed-after-thread"
+  /** Edits are woven between the thread's turns and could not be separated. */
+  | "interleaved"
+  /** Binary/symlink/non-file content or missing snapshots. */
+  | "unsupported";
+
+export interface SelectiveRevertConflict {
+  readonly path: string;
+  readonly reason: SelectiveRevertConflictReason;
+}
+
 export interface SelectiveRevertPlan {
   /** Safe to restore from the target snapshot (path exists there). */
   readonly restorePaths: ReadonlyArray<string>;
@@ -36,8 +49,14 @@ export interface SelectiveRevertPlan {
    * the thread's hunks do not overlap the later edits, conflicts otherwise.
    */
   readonly hunkCandidatePaths: ReadonlyArray<string>;
-  /** Attributed to the thread but changed by another actor; left untouched. */
-  readonly conflictPaths: ReadonlyArray<string>;
+  /**
+   * Attributed files also edited between the thread's turns. Candidates for
+   * turn-by-turn rollback: revertible when each turn's inverse merges
+   * cleanly around the interleaved edits, conflicts otherwise.
+   */
+  readonly contestedCandidatePaths: ReadonlyArray<string>;
+  /** Attributed to the thread but not safely revertible; left untouched. */
+  readonly conflicts: ReadonlyArray<SelectiveRevertConflict>;
   /** Changed between the snapshots but not attributed to the thread; left untouched. */
   readonly unattributedPaths: ReadonlyArray<string>;
 }
@@ -66,7 +85,8 @@ export function buildSelectiveRevertPlan(
   const deletePaths: string[] = [];
   const noopPaths: string[] = [];
   const hunkCandidatePaths: string[] = [];
-  const conflictPaths: string[] = [];
+  const contestedCandidatePaths: string[] = [];
+  const conflicts: SelectiveRevertConflict[] = [];
   const unattributedPaths: string[] = [];
 
   for (const entry of input.entries) {
@@ -77,8 +97,13 @@ export function buildSelectiveRevertPlan(
     }
 
     const worktreeState = input.worktreeStates.get(entry.path);
-    if (entry.hasUnsupportedMode || worktreeState === undefined || worktreeState.kind === "other") {
-      conflictPaths.push(entry.path);
+    if (entry.hasUnsupportedMode || worktreeState === undefined) {
+      conflicts.push({ path: entry.path, reason: "unsupported" });
+      continue;
+    }
+    if (worktreeState.kind === "other") {
+      // Another actor replaced the file with a directory/symlink/etc.
+      conflicts.push({ path: entry.path, reason: "changed-after-thread" });
       continue;
     }
 
@@ -90,20 +115,26 @@ export function buildSelectiveRevertPlan(
       continue;
     }
     if (input.contestedPaths.has(normalizedPath)) {
-      // Interleaved edits inside the snapshot range cannot be separated at
-      // the hunk level either: the thread's snapshot diff already contains
-      // the other actor's bytes.
-      conflictPaths.push(entry.path);
+      // Interleaved edits inside the snapshot range cannot be undone with a
+      // single range-level inverse: the thread's snapshot diff already
+      // contains the other actor's bytes. A regular file may still be
+      // revertible by rolling the thread's turns back one at a time.
+      if (worktreeState.kind === "file") {
+        contestedCandidatePaths.push(entry.path);
+      } else {
+        conflicts.push({ path: entry.path, reason: "interleaved" });
+      }
       continue;
     }
     if (currentOid !== entry.toOid) {
       // Another actor changed the path after the thread's last checkpoint.
-      // A regular file may still be revertible hunk-by-hunk; anything else
-      // (deleted or replaced by a non-file) is a conflict outright.
-      if (worktreeState.kind === "file") {
+      // A regular file may still be revertible hunk-by-hunk when the
+      // thread's last snapshot contains it (the merge is anchored on that
+      // base); anything else is a conflict outright.
+      if (worktreeState.kind === "file" && entry.toOid !== null) {
         hunkCandidatePaths.push(entry.path);
       } else {
-        conflictPaths.push(entry.path);
+        conflicts.push({ path: entry.path, reason: "changed-after-thread" });
       }
       continue;
     }
@@ -120,7 +151,8 @@ export function buildSelectiveRevertPlan(
     deletePaths,
     noopPaths,
     hunkCandidatePaths,
-    conflictPaths,
+    contestedCandidatePaths,
+    conflicts,
     unattributedPaths,
   };
 }

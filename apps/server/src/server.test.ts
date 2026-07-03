@@ -110,6 +110,7 @@ import * as VcsDriver from "./vcs/VcsDriver.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
+import * as GitAuthRemediationService from "./git/GitAuthRemediationService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
 import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore.ts";
@@ -328,6 +329,7 @@ const buildAppUnderTest = (options?: {
     vcsDriverRegistry?: Partial<VcsDriverRegistry.VcsDriverRegistryShape>;
     gitVcsDriver?: Partial<GitVcsDriver.GitVcsDriverShape>;
     gitManager?: Partial<GitManagerShape>;
+    gitAuthRemediation?: Partial<GitAuthRemediationService.GitAuthRemediationServiceShape>;
     sourceControlRepositoryService?: Partial<SourceControlRepositoryService.SourceControlRepositoryServiceShape>;
     vcsStatusBroadcaster?: Partial<VcsStatusBroadcaster.VcsStatusBroadcasterShape>;
     projectSetupScriptRunner?: Partial<ProjectSetupScriptRunnerShape>;
@@ -499,6 +501,11 @@ const buildAppUnderTest = (options?: {
       Layer.provideMerge(gitVcsDriverLayer),
       Layer.provideMerge(gitManagerLayer),
     );
+    const gitAuthRemediationLayer = Layer.mock(GitAuthRemediationService.GitAuthRemediationService)(
+      {
+        ...options?.layers?.gitAuthRemediation,
+      },
+    );
     const vcsProvisioningLayer = VcsProvisioningService.layer.pipe(
       Layer.provide(vcsDriverRegistryLayer),
     );
@@ -627,6 +634,7 @@ const buildAppUnderTest = (options?: {
       Layer.provide(gitManagerLayer),
       Layer.provide(gitVcsDriverLayer),
       Layer.provide(gitWorkflowLayer),
+      Layer.provide(gitAuthRemediationLayer),
       Layer.provide(vcsProvisioningLayer),
       Layer.provide(
         Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({

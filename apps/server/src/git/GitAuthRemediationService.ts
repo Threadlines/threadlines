@@ -77,40 +77,40 @@ export const make = Effect.fn("makeGitAuthRemediationService")(function* () {
         }),
       );
 
-  const resolveRemoteTarget = Effect.fn("GitAuthRemediationService.resolveRemoteTarget")(
-    function* (cwd: string) {
-      const branch = yield* gitStdoutOrNull("GitAuthRemediationService.currentBranch", cwd, [
-        "symbolic-ref",
-        "--short",
-        "-q",
-        "HEAD",
-      ]);
-      const upstreamRemote =
-        branch === null
-          ? null
-          : yield* gitStdoutOrNull("GitAuthRemediationService.upstreamRemote", cwd, [
-              "config",
-              "--get",
-              `branch.${branch}.remote`,
-            ]);
-      const remoteName =
-        upstreamRemote ??
-        (yield* git.resolvePrimaryRemoteName(cwd).pipe(Effect.catch(() => Effect.succeed(null))));
-      const remoteUrl =
-        remoteName === null
-          ? null
-          : yield* gitStdoutOrNull("GitAuthRemediationService.remoteUrl", cwd, [
-              "remote",
-              "get-url",
-              remoteName,
-            ]);
-      return {
-        remoteName: remoteUrl === null ? null : remoteName,
-        remoteUrl,
-        endpoint: remoteUrl === null ? null : parseGitRemoteEndpoint(remoteUrl),
-      } satisfies RemoteTarget;
-    },
-  );
+  const resolveRemoteTarget = Effect.fn("GitAuthRemediationService.resolveRemoteTarget")(function* (
+    cwd: string,
+  ) {
+    const branch = yield* gitStdoutOrNull("GitAuthRemediationService.currentBranch", cwd, [
+      "symbolic-ref",
+      "--short",
+      "-q",
+      "HEAD",
+    ]);
+    const upstreamRemote =
+      branch === null
+        ? null
+        : yield* gitStdoutOrNull("GitAuthRemediationService.upstreamRemote", cwd, [
+            "config",
+            "--get",
+            `branch.${branch}.remote`,
+          ]);
+    const remoteName =
+      upstreamRemote ??
+      (yield* git.resolvePrimaryRemoteName(cwd).pipe(Effect.catch(() => Effect.succeed(null))));
+    const remoteUrl =
+      remoteName === null
+        ? null
+        : yield* gitStdoutOrNull("GitAuthRemediationService.remoteUrl", cwd, [
+            "remote",
+            "get-url",
+            remoteName,
+          ]);
+    return {
+      remoteName: remoteUrl === null ? null : remoteName,
+      remoteUrl,
+      endpoint: remoteUrl === null ? null : parseGitRemoteEndpoint(remoteUrl),
+    } satisfies RemoteTarget;
+  });
 
   const probeGhCredentialHelper = (cwd: string, host: string) =>
     vcsProcess
@@ -168,80 +168,80 @@ export const make = Effect.fn("makeGitAuthRemediationService")(function* () {
         ),
       );
 
-  const plan: GitAuthRemediationServiceShape["plan"] = Effect.fn(
-    "GitAuthRemediationService.plan",
-  )(function* (input) {
-    const target = yield* resolveRemoteTarget(input.cwd);
-    const endpoint = target.endpoint;
-    if (endpoint === null || target.remoteName === null) {
+  const plan: GitAuthRemediationServiceShape["plan"] = Effect.fn("GitAuthRemediationService.plan")(
+    function* (input) {
+      const target = yield* resolveRemoteTarget(input.cwd);
+      const endpoint = target.endpoint;
+      if (endpoint === null || target.remoteName === null) {
+        return {
+          remoteName: target.remoteName,
+          remoteUrl: target.remoteUrl,
+          host: null,
+          scheme: null,
+          actions: [],
+        } satisfies GitAuthRemediationPlan;
+      }
+
+      const sshUrl = buildSshRemoteUrl(endpoint);
+      const actions: GitAuthRemediationAction[] = [];
+
+      if (endpoint.scheme === "https") {
+        const [ghProbe, sshProbe] = yield* Effect.all(
+          [
+            probeGhCredentialHelper(input.cwd, endpoint.host),
+            probeSshAccess(input.cwd, sshUrl, endpoint.host),
+          ],
+          { concurrency: 2 },
+        );
+        actions.push(
+          {
+            id: "gh_setup_git",
+            title: "Use GitHub CLI credentials",
+            description: `Configure git to authenticate HTTPS remotes on ${endpoint.host} with your GitHub CLI login. Fixes every repository on this machine at once.`,
+            command: ghSetupGitCommand(endpoint.host),
+            applicable: ghProbe.applicable,
+            inapplicableReason: ghProbe.reason,
+          },
+          {
+            id: "switch_remote_to_ssh",
+            title: "Switch remote to SSH",
+            description: `Point "${target.remoteName}" at ${sshUrl} so git authenticates with your SSH key instead of HTTPS credentials.`,
+            command: switchRemoteCommand(target.remoteName, sshUrl),
+            applicable: sshProbe.applicable,
+            inapplicableReason: sshProbe.reason,
+          },
+        );
+      } else {
+        actions.push(
+          {
+            id: "gh_setup_git",
+            title: "Use GitHub CLI credentials",
+            description: `Configure git to authenticate HTTPS remotes on ${endpoint.host} with your GitHub CLI login.`,
+            command: ghSetupGitCommand(endpoint.host),
+            applicable: false,
+            inapplicableReason:
+              "This remote already uses SSH; GitHub CLI credentials only apply to HTTPS remotes.",
+          },
+          {
+            id: "switch_remote_to_ssh",
+            title: "Switch remote to SSH",
+            description: `Point "${target.remoteName}" at ${sshUrl}.`,
+            command: switchRemoteCommand(target.remoteName, sshUrl),
+            applicable: false,
+            inapplicableReason: "This remote already uses SSH.",
+          },
+        );
+      }
+
       return {
         remoteName: target.remoteName,
         remoteUrl: target.remoteUrl,
-        host: null,
-        scheme: null,
-        actions: [],
+        host: endpoint.host,
+        scheme: endpoint.scheme,
+        actions,
       } satisfies GitAuthRemediationPlan;
-    }
-
-    const sshUrl = buildSshRemoteUrl(endpoint);
-    const actions: GitAuthRemediationAction[] = [];
-
-    if (endpoint.scheme === "https") {
-      const [ghProbe, sshProbe] = yield* Effect.all(
-        [
-          probeGhCredentialHelper(input.cwd, endpoint.host),
-          probeSshAccess(input.cwd, sshUrl, endpoint.host),
-        ],
-        { concurrency: 2 },
-      );
-      actions.push(
-        {
-          id: "gh_setup_git",
-          title: "Use GitHub CLI credentials",
-          description: `Configure git to authenticate HTTPS remotes on ${endpoint.host} with your GitHub CLI login. Fixes every repository on this machine at once.`,
-          command: ghSetupGitCommand(endpoint.host),
-          applicable: ghProbe.applicable,
-          inapplicableReason: ghProbe.reason,
-        },
-        {
-          id: "switch_remote_to_ssh",
-          title: "Switch remote to SSH",
-          description: `Point "${target.remoteName}" at ${sshUrl} so git authenticates with your SSH key instead of HTTPS credentials.`,
-          command: switchRemoteCommand(target.remoteName, sshUrl),
-          applicable: sshProbe.applicable,
-          inapplicableReason: sshProbe.reason,
-        },
-      );
-    } else {
-      actions.push(
-        {
-          id: "gh_setup_git",
-          title: "Use GitHub CLI credentials",
-          description: `Configure git to authenticate HTTPS remotes on ${endpoint.host} with your GitHub CLI login.`,
-          command: ghSetupGitCommand(endpoint.host),
-          applicable: false,
-          inapplicableReason:
-            "This remote already uses SSH; GitHub CLI credentials only apply to HTTPS remotes.",
-        },
-        {
-          id: "switch_remote_to_ssh",
-          title: "Switch remote to SSH",
-          description: `Point "${target.remoteName}" at ${sshUrl}.`,
-          command: switchRemoteCommand(target.remoteName, sshUrl),
-          applicable: false,
-          inapplicableReason: "This remote already uses SSH.",
-        },
-      );
-    }
-
-    return {
-      remoteName: target.remoteName,
-      remoteUrl: target.remoteUrl,
-      host: endpoint.host,
-      scheme: endpoint.scheme,
-      actions,
-    } satisfies GitAuthRemediationPlan;
-  });
+    },
+  );
 
   const applyGhSetupGit = Effect.fn("GitAuthRemediationService.applyGhSetupGit")(function* (
     cwd: string,
@@ -299,8 +299,7 @@ export const make = Effect.fn("makeGitAuthRemediationService")(function* () {
       if (!probe.applicable) {
         return yield* new GitManagerError({
           operation: "GitAuthRemediationService.applySwitchRemoteToSsh",
-          detail:
-            probe.reason ?? `SSH access to ${endpoint.host} is not set up on this machine.`,
+          detail: probe.reason ?? `SSH access to ${endpoint.host} is not set up on this machine.`,
         });
       }
       yield* git.execute({
