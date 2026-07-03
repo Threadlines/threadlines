@@ -1535,14 +1535,33 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       },
     ];
 
+    const makeAttachmentSideEffects = (): AttachmentSideEffects => ({
+      deletedThreadIds: new Set<string>(),
+      prunedThreadRelativePaths: new Map<string, Set<string>>(),
+    });
+
+    const flushAttachmentSideEffects = (
+      attachmentSideEffects: AttachmentSideEffects,
+      logContext: Record<string, unknown>,
+    ) =>
+      hasAttachmentSideEffects(attachmentSideEffects)
+        ? runAttachmentSideEffects(attachmentSideEffects).pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("failed to apply projected attachment side-effects", {
+                ...logContext,
+                cause,
+              }),
+            ),
+          )
+        : Effect.void;
+
+    // Bootstrap-only path: replays a single lagging projector from its own
+    // cursor, so it checkpoints that projector alone.
     const runProjectorForEvent = Effect.fn("runProjectorForEvent")(function* (
       projector: ProjectorDefinition,
       event: OrchestrationEvent,
     ) {
-      const attachmentSideEffects: AttachmentSideEffects = {
-        deletedThreadIds: new Set<string>(),
-        prunedThreadRelativePaths: new Map<string, Set<string>>(),
-      };
+      const attachmentSideEffects = makeAttachmentSideEffects();
 
       yield* sql.withTransaction(
         projector.apply(event, attachmentSideEffects).pipe(
@@ -1556,18 +1575,43 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         ),
       );
 
-      if (hasAttachmentSideEffects(attachmentSideEffects)) {
-        yield* runAttachmentSideEffects(attachmentSideEffects).pipe(
-          Effect.catch((cause) =>
-            Effect.logWarning("failed to apply projected attachment side-effects", {
-              projector: projector.name,
-              sequence: event.sequence,
-              eventType: event.type,
-              cause,
-            }),
+      yield* flushAttachmentSideEffects(attachmentSideEffects, {
+        projector: projector.name,
+        sequence: event.sequence,
+        eventType: event.type,
+      });
+    });
+
+    // Live path: applies every projector to the event inside one transaction
+    // (a single savepoint when the engine already holds the command
+    // transaction) and advances all cursors with one batched upsert instead
+    // of one write per projector.
+    const applyAllProjectorsForEvent = Effect.fn("applyAllProjectorsForEvent")(function* (
+      event: OrchestrationEvent,
+    ) {
+      const attachmentSideEffects = makeAttachmentSideEffects();
+
+      yield* sql.withTransaction(
+        Effect.forEach(projectors, (projector) => projector.apply(event, attachmentSideEffects), {
+          concurrency: 1,
+          discard: true,
+        }).pipe(
+          Effect.flatMap(() =>
+            projectionStateRepository.upsertMany(
+              projectors.map((projector) => ({
+                projector: projector.name,
+                lastAppliedSequence: event.sequence,
+                updatedAt: event.occurredAt,
+              })),
+            ),
           ),
-        );
-      }
+        ),
+      );
+
+      yield* flushAttachmentSideEffects(attachmentSideEffects, {
+        sequence: event.sequence,
+        eventType: event.type,
+      });
     });
 
     const bootstrapProjector = (projector: ProjectorDefinition) =>
@@ -1587,9 +1631,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         );
 
     const projectEvent: OrchestrationProjectionPipelineShape["projectEvent"] = (event) =>
-      Effect.forEach(projectors, (projector) => runProjectorForEvent(projector, event), {
-        concurrency: 1,
-      }).pipe(
+      applyAllProjectorsForEvent(event).pipe(
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
         Effect.provideService(ServerConfig, serverConfig),

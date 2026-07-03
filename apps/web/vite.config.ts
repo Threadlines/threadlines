@@ -97,7 +97,10 @@ const unitTestProject = {
 
 export default defineConfig({
   plugins: [
-    tanstackRouter(),
+    // autoCodeSplitting keeps route components (settings panels, pairing,
+    // source-control heavy chat panels) out of the entry chunk so first
+    // paint on older machines parses less JS.
+    tanstackRouter({ autoCodeSplitting: true }),
     react(),
     babel({
       // We need to be explicit about the parser options after moving to @vitejs/plugin-react v6.0.0
