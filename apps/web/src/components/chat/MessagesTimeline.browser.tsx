@@ -1,7 +1,8 @@
 import "../../index.css";
 
 import { EnvironmentId, MessageId, TurnId } from "@threadlines/contracts";
-import { createRef } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createRef, type ReactElement, type ReactNode } from "react";
 import type { LegendListRef } from "@legendapp/list/react";
 import { page } from "vitest/browser";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -73,6 +74,19 @@ vi.mock("@legendapp/list/react", async () => {
 import { MessagesTimeline } from "./MessagesTimeline";
 
 const MESSAGE_CREATED_AT = "2026-04-13T12:00:00.000Z";
+
+// User rows resolve attachment previews through react-query, so timeline
+// renders need the provider the app root supplies. The wrapper option keeps
+// it across screen.rerender calls.
+const timelineQueryClient = new QueryClient();
+
+function TimelineQueryProvider({ children }: { children: ReactNode }) {
+  return <QueryClientProvider client={timelineQueryClient}>{children}</QueryClientProvider>;
+}
+
+function renderTimeline(ui: ReactElement) {
+  return render(ui, { wrapper: TimelineQueryProvider });
+}
 
 function buildProps() {
   return {
@@ -181,7 +195,7 @@ describe("MessagesTimeline", () => {
   });
 
   it("renders activity rows instead of the empty placeholder when a thread has non-message timeline data", async () => {
-    const screen = await render(
+    const screen = await renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[
@@ -214,7 +228,7 @@ describe("MessagesTimeline", () => {
   });
 
   it("keeps live command preview aligned with its activity heading", async () => {
-    const screen = await render(
+    const screen = await renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         isWorking
@@ -271,7 +285,7 @@ describe("MessagesTimeline", () => {
       value: { writeText },
     });
 
-    const screen = await render(
+    const screen = await renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[
@@ -344,7 +358,7 @@ describe("MessagesTimeline", () => {
     vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
 
     const props = buildProps();
-    const screen = await render(<MessagesTimeline {...props} timelineEntries={[]} />);
+    const screen = await renderTimeline(<MessagesTimeline {...props} timelineEntries={[]} />);
 
     try {
       await expect
@@ -392,7 +406,7 @@ describe("MessagesTimeline", () => {
     vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
 
     const props = buildProps();
-    const screen = await render(
+    const screen = await renderTimeline(
       <MessagesTimeline
         {...props}
         timelineEntries={[
@@ -435,7 +449,7 @@ describe("MessagesTimeline", () => {
 
     const props = buildProps();
     const timelineEntries = [buildUserTimelineEntry("Message before send.")];
-    const screen = await render(
+    const screen = await renderTimeline(
       <MessagesTimeline {...props} stickToBottomRequestKey={0} timelineEntries={timelineEntries} />,
     );
 
@@ -476,7 +490,7 @@ describe("MessagesTimeline", () => {
 
   it("ignores transient away-from-end scroll events while bottom sticking is armed", async () => {
     const props = buildProps();
-    const screen = await render(
+    const screen = await renderTimeline(
       <MessagesTimeline {...props} timelineEntries={[buildUserTimelineEntry("Pinned message.")]} />,
     );
 
@@ -496,7 +510,7 @@ describe("MessagesTimeline", () => {
 
   it("exposes a continue-in-new-thread action on user messages", async () => {
     const onContinueInNewThread = vi.fn();
-    const screen = await render(
+    const screen = await renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         onContinueInNewThread={onContinueInNewThread}
@@ -523,7 +537,7 @@ describe("MessagesTimeline", () => {
   it("exposes a continue-in-new-thread action on completed assistant messages", async () => {
     const onContinueInNewThread = vi.fn();
     await resetBrowserHoverState();
-    const screen = await render(
+    const screen = await renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         onContinueInNewThread={onContinueInNewThread}
@@ -555,7 +569,7 @@ describe("MessagesTimeline", () => {
   });
 
   it("does not show assistant continue-in-new-thread actions while a turn is working", async () => {
-    const screen = await render(
+    const screen = await renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         isWorking
@@ -574,7 +588,7 @@ describe("MessagesTimeline", () => {
   });
 
   it("starts long user messages collapsed by default", async () => {
-    const screen = await render(
+    const screen = await renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[buildUserTimelineEntry(buildLongUserMessageText())]}
@@ -600,7 +614,7 @@ describe("MessagesTimeline", () => {
   });
 
   it("expands and re-collapses long user messages from the toggle", async () => {
-    const screen = await render(
+    const screen = await renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[buildUserTimelineEntry(buildLongUserMessageText())]}
@@ -646,7 +660,7 @@ describe("MessagesTimeline", () => {
       "Include one heading, one bullet list, one inline-code example, and one file reference.",
       "Keep the final instruction visible only after the clamped text expands.",
     ].join(" ");
-    const screen = await render(
+    const screen = await renderTimeline(
       <div style={{ width: 360 }}>
         <MessagesTimeline
           {...buildProps()}
@@ -694,7 +708,7 @@ describe("MessagesTimeline", () => {
   it("expands assistant changed-files trees from the header when the default is collapsed", async () => {
     const turnId = TurnId.make("turn-1");
     const assistantMessageId = MessageId.make("assistant-1");
-    const screen = await render(
+    const screen = await renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[
@@ -750,7 +764,7 @@ describe("MessagesTimeline", () => {
   });
 
   it("starts the newest long user prompt collapsed", async () => {
-    const screen = await render(
+    const screen = await renderTimeline(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[buildUserTimelineEntry(buildLongUserMessageText("latest long prompt"))]}

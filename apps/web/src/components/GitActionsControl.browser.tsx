@@ -78,7 +78,15 @@ vi.mock("@tanstack/react-query", async () => {
         isPending: false,
       };
     }),
-    useQuery: vi.fn(() => ({ data: null, error: null })),
+    useQuery: vi.fn((options: { __kind?: string }) => {
+      if (options?.__kind === "auth-remediation-plan") {
+        // The remediation dialog is closed in these tests; mirror the real
+        // disabled-query state so its pending guard holds.
+        return { data: null, error: null, isPending: true, isError: false, refetch: vi.fn() };
+      }
+
+      return { data: null, error: null };
+    }),
     useQueryClient: vi.fn(() => ({})),
   };
 });
@@ -98,6 +106,8 @@ vi.mock("~/editorPreferences", () => ({
 }));
 
 vi.mock("~/lib/gitReactQuery", () => ({
+  gitApplyAuthRemediationMutationOptions: vi.fn(() => ({ __kind: "apply-auth-remediation" })),
+  gitAuthRemediationPlanQueryOptions: vi.fn(() => ({ __kind: "auth-remediation-plan" })),
   gitInitMutationOptions: vi.fn(() => ({ __kind: "init" })),
   gitMutationKeys: {
     publishRepository: vi.fn(() => ["publish-repository"]),
