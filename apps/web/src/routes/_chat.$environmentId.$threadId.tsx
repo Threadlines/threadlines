@@ -71,11 +71,16 @@ const DiffLoadingFallback = (props: { mode: DiffPanelMode }) => {
 const LazyDiffPanelWithBack = (props: {
   mode: DiffPanelMode;
   onBackToSourceControl: () => void;
+  onClose: () => void;
 }) => {
   return (
     <DiffWorkerPoolProvider>
       <Suspense fallback={<DiffLoadingFallback mode={props.mode} />}>
-        <DiffPanel mode={props.mode} onBackToSourceControl={props.onBackToSourceControl} />
+        <DiffPanel
+          mode={props.mode}
+          onBackToSourceControl={props.onBackToSourceControl}
+          onClose={props.onClose}
+        />
       </Suspense>
     </DiffWorkerPoolProvider>
   );
@@ -339,6 +344,7 @@ function ChatThreadRouteView() {
           <SourceControlPanel
             target={sourceControlTarget}
             activeThreadRef={threadRef}
+            onClose={closeRightPanel}
             onPrefetchDiff={prefetchWorkingTreeDiff}
             onOpenDiff={(filePath?: string) => {
               openDiff({
@@ -357,6 +363,7 @@ function ChatThreadRouteView() {
             <LazyDiffPanelWithBack
               mode={shouldUseDiffSheet ? "sheet" : "sidebar"}
               onBackToSourceControl={openSourceControl}
+              onClose={closeRightPanel}
             />
           </div>
         ) : null}

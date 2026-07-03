@@ -205,6 +205,7 @@ function DraftChatThreadRouteView() {
       target={sourceControlTarget}
       activeThreadRef={draftThreadRef}
       onActiveBranchChange={handleSourceControlBranchChange}
+      onClose={closeRightPanel}
       onOpenDiff={openDiff}
       onPrefetchDiff={prefetchWorkingTreeDiff}
     />

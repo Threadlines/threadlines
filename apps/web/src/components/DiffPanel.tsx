@@ -260,11 +260,21 @@ interface PendingDiscardDiffFile {
 interface DiffPanelProps {
   mode?: DiffPanelMode;
   onBackToSourceControl?: () => void;
+  /**
+   * Closes the containing right panel. Surfaced as an in-panel ✕ on phone
+   * widths, where the sheet spans the full screen and the header toggle is
+   * easy to miss.
+   */
+  onClose?: () => void;
 }
 
 export { DiffWorkerPoolProvider } from "./DiffWorkerPoolProvider";
 
-export default function DiffPanel({ mode = "inline", onBackToSourceControl }: DiffPanelProps) {
+export default function DiffPanel({
+  mode = "inline",
+  onBackToSourceControl,
+  onClose,
+}: DiffPanelProps) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { resolvedTheme } = useTheme();
@@ -1225,6 +1235,20 @@ export default function DiffPanel({ mode = "inline", onBackToSourceControl }: Di
       <h2 className="shrink-0 text-[11px] font-medium uppercase tracking-wider text-foreground/85">
         Diff
       </h2>
+      {onClose ? (
+        <TooltipWrapper tooltip="Close panel">
+          <Button
+            type="button"
+            aria-label="Close diff panel"
+            variant="ghost"
+            size="icon-xs"
+            className="ml-auto sm:hidden"
+            onClick={onClose}
+          >
+            <XIcon className="size-3.5" />
+          </Button>
+        </TooltipWrapper>
+      ) : null}
     </div>
   );
 

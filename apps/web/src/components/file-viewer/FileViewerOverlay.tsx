@@ -727,7 +727,7 @@ function FileViewerTabs({
           >
             <button
               type="button"
-              className="cursor-pointer border-0 bg-transparent p-0 py-0.5 text-inherit"
+              className="cursor-pointer border-0 bg-transparent p-0 py-0.5 text-inherit pointer-coarse:py-1.5"
               onClick={() => {
                 setActivePath(tab);
                 onTabSelected?.();
@@ -739,7 +739,7 @@ function FileViewerTabs({
               type="button"
               aria-label={`Close ${tab}`}
               className={cn(
-                "inline-flex cursor-pointer items-center rounded-sm border-0 bg-transparent p-1 text-muted-foreground/45 transition-colors hover:bg-foreground/10 hover:text-foreground",
+                "inline-flex cursor-pointer items-center rounded-sm border-0 bg-transparent p-1 text-muted-foreground/45 transition-colors hover:bg-foreground/10 hover:text-foreground pointer-coarse:p-2",
                 tab !== activePath && "text-muted-foreground/30",
               )}
               onClick={(event) => {
@@ -756,7 +756,7 @@ function FileViewerTabs({
             <button
               type="button"
               aria-label="Open in external editor"
-              className="ml-1 inline-flex shrink-0 cursor-pointer items-center rounded-sm border-0 bg-transparent p-1 text-muted-foreground/60 transition-colors hover:bg-foreground/10 hover:text-foreground"
+              className="ml-1 inline-flex shrink-0 cursor-pointer items-center rounded-sm border-0 bg-transparent p-1 text-muted-foreground/60 transition-colors hover:bg-foreground/10 hover:text-foreground pointer-coarse:p-2"
               onClick={handleOpenExternally}
             >
               <SquareArrowOutUpRight className="size-3.5" />
@@ -801,7 +801,7 @@ function FileViewerLayout({ context }: { context: FileViewerContext }) {
           <button
             type="button"
             aria-label="Show project files"
-            className="inline-flex shrink-0 cursor-pointer items-center rounded-md border-0 bg-transparent p-1.5 text-muted-foreground/60 transition-colors hover:bg-foreground/10 hover:text-foreground sm:hidden"
+            className="inline-flex shrink-0 cursor-pointer items-center rounded-md border-0 bg-transparent p-1.5 text-muted-foreground/60 transition-colors hover:bg-foreground/10 hover:text-foreground pointer-coarse:p-2.5 sm:hidden"
             onClick={() => setMobilePane("tree")}
           >
             <FolderTree className="size-4" />
@@ -835,7 +835,7 @@ function FileViewerLayout({ context }: { context: FileViewerContext }) {
         <button
           type="button"
           aria-label="Close file viewer"
-          className="inline-flex shrink-0 cursor-pointer items-center rounded-md border-0 bg-transparent p-1.5 text-muted-foreground/60 transition-colors hover:bg-foreground/10 hover:text-foreground"
+          className="inline-flex shrink-0 cursor-pointer items-center rounded-md border-0 bg-transparent p-1.5 text-muted-foreground/60 transition-colors hover:bg-foreground/10 hover:text-foreground pointer-coarse:p-2.5"
           onClick={close}
         >
           <X className="size-4" />

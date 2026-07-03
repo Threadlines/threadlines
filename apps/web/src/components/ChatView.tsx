@@ -1061,6 +1061,11 @@ export default function ChatView(props: ChatViewProps) {
   const sourceControlOpen = isSourceControlPanelOpen(rawSearch, {
     defaultOpen: !shouldUseRightPanelSheet,
   });
+  // The diff panel is a drill-in of source control, so the header toggle
+  // treats the right panel as one unit: it stays pressed while a diff is
+  // open and pressing it closes the whole panel.
+  const diffPanelOpen = rawSearch.diff === "1";
+  const rightPanelEngaged = sourceControlOpen || diffPanelOpen;
   const preserveRightPanelSearchForDraftNavigation = useCallback(
     (previous: Record<string, unknown>) =>
       preserveRightPanelSearchParamsForNavigation(previous, { sourceControlOpen }),
@@ -2198,7 +2203,7 @@ export default function ChatView(props: ChatViewProps) {
     () => shortcutLabelForCommand(keybindings, "diff.toggle", nonTerminalShortcutLabelOptions),
     [keybindings, nonTerminalShortcutLabelOptions],
   );
-  const onToggleSourceControl = useCallback(() => {
+  const closeRightPanelForRoute = useCallback(() => {
     if (!activeThread) {
       return;
     }
@@ -2207,12 +2212,7 @@ export default function ChatView(props: ChatViewProps) {
         to: "/draft/$draftId",
         params: buildDraftThreadRouteParams(draftId),
         replace: true,
-        search: (previous) => {
-          const rest = stripRightPanelSearchParams(previous);
-          return sourceControlOpen
-            ? closeRightPanelSearchParams(previous)
-            : { ...rest, sourceControl: "1" };
-        },
+        search: (previous) => closeRightPanelSearchParams(previous),
       });
       return;
     }
@@ -2223,14 +2223,52 @@ export default function ChatView(props: ChatViewProps) {
         threadId,
       },
       replace: true,
-      search: (previous) => {
-        const rest = stripRightPanelSearchParams(previous);
-        return sourceControlOpen
-          ? closeRightPanelSearchParams(previous)
-          : { ...rest, sourceControl: "1" };
-      },
+      search: (previous) => closeRightPanelSearchParams(previous),
     });
-  }, [activeThread, draftId, environmentId, navigate, routeKind, sourceControlOpen, threadId]);
+  }, [activeThread, draftId, environmentId, navigate, routeKind, threadId]);
+
+  const onToggleSourceControl = useCallback(() => {
+    if (!activeThread) {
+      return;
+    }
+    if (rightPanelEngaged) {
+      closeRightPanelForRoute();
+      return;
+    }
+    if (routeKind === "draft" && draftId) {
+      void navigate({
+        to: "/draft/$draftId",
+        params: buildDraftThreadRouteParams(draftId),
+        replace: true,
+        search: (previous) => ({
+          ...stripRightPanelSearchParams(previous),
+          sourceControl: "1",
+        }),
+      });
+      return;
+    }
+    void navigate({
+      to: "/$environmentId/$threadId",
+      params: {
+        environmentId,
+        threadId,
+      },
+      replace: true,
+      search: (previous) => ({
+        ...stripRightPanelSearchParams(previous),
+        sourceControl: "1",
+      }),
+    });
+  }, [
+    activeThread,
+    closeRightPanelForRoute,
+    draftId,
+    environmentId,
+    navigate,
+    rightPanelEngaged,
+    routeKind,
+    threadId,
+  ]);
 
   const envLocked = Boolean(
     activeThread &&
@@ -2318,8 +2356,22 @@ export default function ChatView(props: ChatViewProps) {
   );
   const toggleTerminalVisibility = useCallback(() => {
     if (!activeThreadRef) return;
-    setTerminalOpen(!terminalState.terminalOpen);
-  }, [activeThreadRef, setTerminalOpen, terminalState.terminalOpen]);
+    const opening = !terminalState.terminalOpen;
+    // In sheet mode the right panel covers the chat column the drawer lives
+    // in, so a terminal opened behind it would be invisible — close the
+    // panel and let the drawer take the stage.
+    if (opening && shouldUseRightPanelSheet && rightPanelEngaged) {
+      closeRightPanelForRoute();
+    }
+    setTerminalOpen(opening);
+  }, [
+    activeThreadRef,
+    closeRightPanelForRoute,
+    rightPanelEngaged,
+    setTerminalOpen,
+    shouldUseRightPanelSheet,
+    terminalState.terminalOpen,
+  ]);
   const splitTerminal = useCallback(() => {
     if (!activeThreadRef || hasReachedSplitLimit) return;
     const terminalId = `terminal-${randomUUID()}`;
@@ -5188,7 +5240,7 @@ export default function ChatView(props: ChatViewProps) {
           terminalOpen={terminalState.terminalOpen}
           terminalToggleShortcutLabel={terminalToggleShortcutLabel}
           sourceControlToggleShortcutLabel={sourceControlPanelShortcutLabel}
-          sourceControlOpen={sourceControlOpen && !isGeneralChatThread}
+          sourceControlOpen={rightPanelEngaged && !isGeneralChatThread}
           sourceControlAvailable={activeProject !== undefined && !isGeneralChatThread}
           fileBrowserAvailable={!isGeneralChatThread}
           taskProgress={taskProgress}

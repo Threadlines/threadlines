@@ -183,11 +183,15 @@ export const ChatHeader = memo(function ChatHeader({
           />
         )}
         {showOpenInPicker && (
-          <OpenInPicker
-            keybindings={keybindings}
-            availableEditors={availableEditors}
-            openInCwd={openInCwd}
-          />
+          // Desktop affordance: "open in editor" acts on the machine running
+          // the server, so it earns no room in the phone-width header.
+          <div className="flex shrink-0 items-center max-sm:hidden">
+            <OpenInPicker
+              keybindings={keybindings}
+              availableEditors={availableEditors}
+              openInCwd={openInCwd}
+            />
+          </div>
         )}
         <div className="flex shrink-0 items-center gap-1">
           {onContinueInProject ? (

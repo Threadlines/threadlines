@@ -64,6 +64,11 @@ import { selectTerminalEventEntries, useTerminalStateStore } from "../terminalSt
 
 const MIN_DRAWER_HEIGHT = DEFAULT_THREAD_TERMINAL_HEIGHT;
 const MAX_DRAWER_HEIGHT_RATIO = 0.75;
+// Below this viewport width (Tailwind `sm`) the drawer floors at a viewport
+// fraction instead: the desktop pixel minimum leaves a few terminal rows on a
+// phone, and the on-screen keyboard would claim most of those.
+const NARROW_VIEWPORT_WIDTH = 640;
+const NARROW_MIN_DRAWER_HEIGHT_RATIO = 0.4;
 const MULTI_CLICK_SELECTION_ACTION_DELAY_MS = 260;
 const TERMINAL_SELECTION_ACTION_POPOVER_WIDTH_PX = 148;
 const TERMINAL_SELECTION_ACTION_POPOVER_HEIGHT_PX = 34;
@@ -74,10 +79,20 @@ function maxDrawerHeight(): number {
   return Math.max(MIN_DRAWER_HEIGHT, Math.floor(window.innerHeight * MAX_DRAWER_HEIGHT_RATIO));
 }
 
+function minDrawerHeight(): number {
+  if (typeof window === "undefined" || window.innerWidth >= NARROW_VIEWPORT_WIDTH) {
+    return MIN_DRAWER_HEIGHT;
+  }
+  return Math.max(
+    MIN_DRAWER_HEIGHT,
+    Math.floor(window.innerHeight * NARROW_MIN_DRAWER_HEIGHT_RATIO),
+  );
+}
+
 function clampDrawerHeight(height: number): number {
   const safeHeight = Number.isFinite(height) ? height : DEFAULT_THREAD_TERMINAL_HEIGHT;
   const maxHeight = maxDrawerHeight();
-  return Math.min(Math.max(Math.round(safeHeight), MIN_DRAWER_HEIGHT), maxHeight);
+  return Math.min(Math.max(Math.round(safeHeight), minDrawerHeight()), maxHeight);
 }
 
 function writeSystemMessage(terminal: Terminal, message: string): void {
@@ -1056,7 +1071,16 @@ function TerminalActionButton({ label, className, onClick, children }: TerminalA
     <Popover>
       <PopoverTrigger
         openOnHover
-        render={<button type="button" className={className} onClick={onClick} aria-label={label} />}
+        render={
+          <button
+            type="button"
+            // Touch pointers get a real ≥36px target; desktop keeps the
+            // caller's compact sizing untouched.
+            className={`pointer-coarse:inline-flex pointer-coarse:min-h-9 pointer-coarse:min-w-9 pointer-coarse:items-center pointer-coarse:justify-center ${className}`}
+            onClick={onClick}
+            aria-label={label}
+          />
+        }
       >
         {children}
       </PopoverTrigger>

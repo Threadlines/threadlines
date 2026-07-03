@@ -4,10 +4,10 @@ import { isElectron } from "../env";
 import { cn } from "../lib/utils";
 import {
   RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH,
+  RIGHT_PANEL_SHEET_BACKDROP_CLASS_NAME,
   RIGHT_PANEL_SHEET_CLASS_NAME,
-  RIGHT_PANEL_SOURCE_CONTROL_SHEET_BACKDROP_CLASS_NAME,
+  RIGHT_PANEL_SHEET_VIEWPORT_CLASS_NAME,
   RIGHT_PANEL_SOURCE_CONTROL_SHEET_CLASS_NAME,
-  RIGHT_PANEL_SOURCE_CONTROL_SHEET_VIEWPORT_CLASS_NAME,
 } from "../rightPanelLayout";
 import { Sheet, SheetPopup } from "./ui/sheet";
 
@@ -23,13 +23,14 @@ export function RightPanelSheet(props: {
   return (
     <Sheet
       open={props.open}
-      // The source control sheet starts below the chat header so the header's
-      // toggle keeps working while it is open. That needs a non-modal dialog
-      // (the header must stay interactive) with pointer dismissal disabled: an
-      // outside-press dismissal on the toggle would close the sheet before the
-      // toggle's click reopens it. The backdrop closes it explicitly instead.
-      modal={!sourceControl}
-      disablePointerDismissal={sourceControl}
+      // Both sizes start below the chat header so its toggles keep working
+      // while a panel is open (source control list and diff drill-in alike).
+      // That needs a non-modal dialog (the header must stay interactive) with
+      // pointer dismissal disabled: an outside-press dismissal on a header
+      // toggle would close the sheet before the toggle's click reopens it.
+      // The backdrop closes it explicitly instead.
+      modal={false}
+      disablePointerDismissal
       onOpenChange={(open) => {
         if (!open) {
           props.onClose();
@@ -40,17 +41,11 @@ export function RightPanelSheet(props: {
         side="right"
         showCloseButton={false}
         keepMounted
-        viewportClassName={
-          sourceControl ? RIGHT_PANEL_SOURCE_CONTROL_SHEET_VIEWPORT_CLASS_NAME : undefined
-        }
-        backdropProps={
-          sourceControl
-            ? {
-                className: RIGHT_PANEL_SOURCE_CONTROL_SHEET_BACKDROP_CLASS_NAME,
-                onClick: props.onClose,
-              }
-            : undefined
-        }
+        viewportClassName={RIGHT_PANEL_SHEET_VIEWPORT_CLASS_NAME}
+        backdropProps={{
+          className: RIGHT_PANEL_SHEET_BACKDROP_CLASS_NAME,
+          onClick: props.onClose,
+        }}
         className={cn(
           sourceControl
             ? RIGHT_PANEL_SOURCE_CONTROL_SHEET_CLASS_NAME

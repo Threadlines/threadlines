@@ -169,6 +169,12 @@ interface SourceControlPanelProps {
   readonly onOpenDiff?: (filePath?: string) => void;
   /** Warm the diff chunk + working tree diff query before a likely diff open. */
   readonly onPrefetchDiff?: () => void;
+  /**
+   * Closes the containing right panel. Surfaced as an in-panel ✕ on phone
+   * widths, where the sheet spans the full screen and the header toggle is
+   * easy to miss.
+   */
+  readonly onClose?: () => void;
 }
 
 type WorkingTreeFile = VcsStatusResult["workingTree"]["files"][number];
@@ -1223,8 +1229,11 @@ const DEFAULT_CHANGES_PANEL_RATIO = 0.6;
 const SOURCE_CONTROL_NAME_TOOLTIP_DELAY_MS = 500;
 const CHANGED_FILE_ACTIONS_VISIBILITY_CLASS_NAME =
   "pointer-events-none opacity-0 transition-opacity duration-150 group-hover/change-file:pointer-events-auto group-hover/change-file:opacity-100 group-focus-within/change-file:pointer-events-auto group-focus-within/change-file:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100";
+// Coarse pointers get real (not hit-area-extended) size: discard sits next to
+// stage, and overlapping 44px extensions over a destructive pair would route
+// edge taps to the wrong action.
 const CHANGED_FILE_ROW_ACTION_BUTTON_CLASS_NAME =
-  "size-4 rounded-sm p-0 text-muted-foreground/60 before:rounded-sm sm:size-4 [&_svg]:mx-0";
+  "size-4 rounded-sm p-0 text-muted-foreground/60 before:rounded-sm sm:size-4 pointer-coarse:size-7 sm:pointer-coarse:size-7 [&_svg]:mx-0";
 const MIN_CHANGES_PANEL_RATIO = 0.2;
 const MAX_CHANGES_PANEL_RATIO = 0.8;
 const MIN_GRAPH_PANEL_HEIGHT = 120;
@@ -1725,6 +1734,7 @@ export function SourceControlPanel({
   onActiveBranchChange,
   onOpenDiff,
   onPrefetchDiff,
+  onClose,
 }: SourceControlPanelProps) {
   const queryClient = useQueryClient();
   const [commitMessage, setCommitMessage] = useState("");
@@ -3002,7 +3012,7 @@ export function SourceControlPanel({
           void handleChangedFileContextMenu(entry, { x: event.clientX, y: event.clientY });
         }}
         className={cn(
-          "group/change-file grid w-full grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-1.5 py-1.5 transition-colors hover:bg-accent/60",
+          "group/change-file grid w-full grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-1.5 py-1.5 transition-colors hover:bg-accent/60 pointer-coarse:py-2",
           isTreeRow ? "pr-2" : "px-2",
         )}
         style={isTreeRow ? { paddingLeft: `${8 + depth * 14}px` } : undefined}
@@ -3045,7 +3055,7 @@ export function SourceControlPanel({
         </span>
         <div
           className={cn(
-            "flex shrink-0 items-center gap-px",
+            "flex shrink-0 items-center gap-px pointer-coarse:gap-1",
             CHANGED_FILE_ACTIONS_VISIBILITY_CLASS_NAME,
           )}
         >
@@ -3241,28 +3251,42 @@ export function SourceControlPanel({
               <span className="source-control-title-full">Source Control</span>
             </h2>
           </div>
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  type="button"
-                  aria-label={
-                    isSourceControlRefreshing
-                      ? "Refreshing source control"
-                      : "Refresh source control"
-                  }
-                  variant="ghost"
-                  size="icon-xs"
-                  onClick={refreshPanel}
+          <div className="flex shrink-0 items-center gap-1">
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    type="button"
+                    aria-label={
+                      isSourceControlRefreshing
+                        ? "Refreshing source control"
+                        : "Refresh source control"
+                    }
+                    variant="ghost"
+                    size="icon-xs"
+                    onClick={refreshPanel}
+                  />
+                }
+              >
+                <RefreshCwIcon
+                  className={cn("size-3.5", isSourceControlRefreshing && "animate-spin")}
                 />
-              }
-            >
-              <RefreshCwIcon
-                className={cn("size-3.5", isSourceControlRefreshing && "animate-spin")}
-              />
-            </TooltipTrigger>
-            <TooltipPopup side="top">Refresh</TooltipPopup>
-          </Tooltip>
+              </TooltipTrigger>
+              <TooltipPopup side="top">Refresh</TooltipPopup>
+            </Tooltip>
+            {onClose ? (
+              <Button
+                type="button"
+                aria-label="Close source control panel"
+                variant="ghost"
+                size="icon-xs"
+                className="sm:hidden"
+                onClick={onClose}
+              >
+                <XIcon className="size-3.5" />
+              </Button>
+            ) : null}
+          </div>
         </div>
         <div className="flex min-w-0 items-center gap-1.5 px-3 pt-0.5 pb-2">
           <span
