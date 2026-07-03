@@ -86,7 +86,7 @@ describe("buildSelectiveRevertPlan", () => {
     expect(plan.restorePaths).toEqual([]);
   });
 
-  it("keeps recreated-after-deletion paths as hunk candidates for the apply check to reject", () => {
+  it("marks recreated-after-deletion paths as conflicts (no base to merge against)", () => {
     const plan = buildSelectiveRevertPlan({
       entries: [entry({ path: "src/gone.ts", toOid: null })],
       attributedPaths: new Set(["src/gone.ts"]),
@@ -94,8 +94,8 @@ describe("buildSelectiveRevertPlan", () => {
       worktreeStates: new Map([fileState("src/gone.ts", "foreign-oid")]),
     });
 
-    expect(plan.hunkCandidatePaths).toEqual(["src/gone.ts"]);
-    expect(plan.conflictPaths).toEqual([]);
+    expect(plan.conflictPaths).toEqual(["src/gone.ts"]);
+    expect(plan.hunkCandidatePaths).toEqual([]);
   });
 
   it("marks attributed files deleted by another actor as conflicts, not hunk candidates", () => {

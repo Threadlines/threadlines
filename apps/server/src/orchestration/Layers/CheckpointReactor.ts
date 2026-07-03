@@ -178,6 +178,27 @@ interface RevertCheckpointContext {
   readonly files: ReadonlyArray<OrchestrationCheckpointFile>;
 }
 
+const MAX_SUMMARY_CONFLICT_PATHS = 3;
+
+// The timeline renders only the summary text, so it must answer "what
+// happened to my files" on its own; the payload carries the full details.
+function selectiveRevertSummary(outcome: SelectiveRevertOutcome): string {
+  const fileCount = (count: number): string => `${count} file${count === 1 ? "" : "s"}`;
+
+  if (outcome.conflictPaths.length > 0) {
+    const listed = outcome.conflictPaths.slice(0, MAX_SUMMARY_CONFLICT_PATHS).join(", ");
+    const overflow = outcome.conflictPaths.length - MAX_SUMMARY_CONFLICT_PATHS;
+    const suffix = overflow > 0 ? ` and ${overflow} more` : "";
+    return `Reverted ${fileCount(outcome.revertedFileCount)}; left ${fileCount(
+      outcome.conflictPaths.length,
+    )} with conflicting edits untouched: ${listed}${suffix}`;
+  }
+  if (outcome.revertedFileCount > 0) {
+    return `Reverted ${fileCount(outcome.revertedFileCount)} for this thread`;
+  }
+  return "No file changes to revert for this thread";
+}
+
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
@@ -223,9 +244,7 @@ const make = Effect.gen(function* () {
     const summary =
       input.outcome.mode === "workspace"
         ? "Workspace restored to checkpoint"
-        : input.outcome.conflictPaths.length > 0
-          ? "Thread changes reverted with conflicts"
-          : "Thread changes reverted";
+        : selectiveRevertSummary(input.outcome);
     const tone =
       input.outcome.mode === "selective" && input.outcome.conflictPaths.length > 0
         ? ("warning" as const)
@@ -599,6 +618,19 @@ const make = Effect.gen(function* () {
         conflictPaths.push(candidatePath);
       }
     }
+
+    yield* Effect.logInfo("selective revert applied", {
+      threadId: input.threadId,
+      targetTurnCount: input.targetTurnCount,
+      currentTurnCount: input.currentTurnCount,
+      cwd: input.cwd,
+      restoredPathCount: plan.restorePaths.length,
+      deletedPathCount: plan.deletePaths.length,
+      hunkRevertedFileCount,
+      conflictPaths: conflictPaths.slice(0, 10),
+      unattributedPathCount: plan.unattributedPaths.length,
+      noopPathCount: plan.noopPaths.length,
+    });
 
     return {
       mode: "selective",

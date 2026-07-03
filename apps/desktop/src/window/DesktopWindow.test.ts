@@ -17,6 +17,7 @@ import * as DesktopState from "../app/DesktopState.ts";
 import * as ElectronMenu from "../electron/ElectronMenu.ts";
 import * as ElectronGlobalShortcut from "../electron/ElectronGlobalShortcut.ts";
 import * as ElectronShell from "../electron/ElectronShell.ts";
+import * as ElectronSpelling from "../electron/ElectronSpelling.ts";
 import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as DesktopServerExposure from "../backend/DesktopServerExposure.ts";
@@ -180,6 +181,7 @@ function makeTestLayer(input: {
   readonly electronGlobalShortcut?: ElectronGlobalShortcut.ElectronGlobalShortcutShape;
   readonly electronMenu?: ElectronMenu.ElectronMenuShape;
   readonly electronShell?: ElectronShell.ElectronShellShape;
+  readonly electronSpelling?: ElectronSpelling.ElectronSpellingShape;
 }) {
   const electronWindowLayer = Layer.succeed(ElectronWindow.ElectronWindow, {
     create: (options) =>
@@ -221,12 +223,23 @@ function makeTestLayer(input: {
         input.electronShell
           ? Layer.succeed(ElectronShell.ElectronShell, input.electronShell)
           : electronShellLayer,
+        Layer.succeed(
+          ElectronSpelling.ElectronSpelling,
+          input.electronSpelling ?? { platformSuggestionsFor: () => Effect.succeed([]) },
+        ),
         electronThemeLayer,
         electronWindowLayer,
       ),
     ),
   );
 }
+
+const waitForMockCalls = (mock: { readonly mock: { readonly calls: ReadonlyArray<unknown> } }) =>
+  Effect.promise(async () => {
+    for (let attempt = 0; attempt < 100 && mock.mock.calls.length === 0; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  });
 
 describe("DesktopWindow", () => {
   it.effect("does not open a development window until the backend is ready", () =>
@@ -276,7 +289,7 @@ describe("DesktopWindow", () => {
     }),
   );
 
-  it.effect("notifies the renderer after accepting a native spellcheck suggestion", () =>
+  it.effect("applies an accepted spellcheck suggestion without renderer notifications", () =>
     Effect.gen(function* () {
       const fakeWindow = makeFakeBrowserWindow();
       const createCount = yield* Ref.make(0);
@@ -325,8 +338,7 @@ describe("DesktopWindow", () => {
           frame,
           menuSourceType: "mouse",
         } satisfies Partial<Electron.ContextMenuParams>);
-        yield* Effect.promise(() => Promise.resolve());
-        yield* Effect.promise(() => Promise.resolve());
+        yield* waitForMockCalls(popupTemplate);
 
         assert.equal(preventDefault.mock.calls.length, 1);
         assert.equal(popupTemplate.mock.calls.length, 1);
@@ -335,6 +347,121 @@ describe("DesktopWindow", () => {
         assert.deepEqual(fakeWindow.replaceMisspelling.mock.calls, [["spelling"]]);
         assert.equal(fakeWindow.webContentsFocus.mock.calls.length, 1);
         assert.deepEqual(fakeWindow.send.mock.calls, []);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("recovers platform spelling suggestions when Chromium provides none", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const platformSuggestionsFor = vi.fn((_word: string) =>
+        Effect.succeed<ReadonlyArray<string>>(["I've", "Ive"]),
+      );
+      const popupTemplate = vi.fn((input: ElectronMenu.ElectronMenuTemplateInput) =>
+        Effect.sync(() => {
+          const [firstItem] = input.template;
+          if (!firstItem?.click) {
+            throw new Error("Expected first context menu item to accept the spelling suggestion.");
+          }
+          firstItem.click({} as Electron.MenuItem, fakeWindow.window, {} as KeyboardEvent);
+        }),
+      );
+      const layer = makeTestLayer({
+        window: fakeWindow.window,
+        createCount,
+        mainWindow,
+        electronMenu: {
+          setApplicationMenu: () => Effect.void,
+          popupTemplate,
+          showContextMenu: () => Effect.succeed(Option.none()),
+        },
+        electronSpelling: { platformSuggestionsFor },
+      });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.handleBackendReady;
+
+        fakeWindow.emitWebContents("context-menu", { preventDefault: vi.fn() }, {
+          misspelledWord: "ive",
+          dictionarySuggestions: [],
+          linkURL: "",
+          mediaType: "none",
+          editFlags: {
+            canUndo: false,
+            canRedo: false,
+            canCut: true,
+            canCopy: true,
+            canPaste: true,
+            canDelete: false,
+            canSelectAll: true,
+            canEditRichly: false,
+          },
+          frame: {} as Electron.WebFrameMain,
+          menuSourceType: "mouse",
+        } satisfies Partial<Electron.ContextMenuParams>);
+        yield* waitForMockCalls(popupTemplate);
+
+        assert.deepEqual(platformSuggestionsFor.mock.calls, [["ive"]]);
+        assert.equal(popupTemplate.mock.calls.length, 1);
+        const template = popupTemplate.mock.calls[0]?.[0].template ?? [];
+        assert.equal(template[0]?.label, "I've");
+        assert.equal(template[1]?.label, "Ive");
+        assert.isFalse(template.some((item) => item.label === "No suggestions"));
+        assert.deepEqual(fakeWindow.replaceMisspelling.mock.calls, [["I've"]]);
+        assert.equal(fakeWindow.webContentsFocus.mock.calls.length, 1);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("falls back to No suggestions when the platform has none either", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const popupTemplate = vi.fn((_input: ElectronMenu.ElectronMenuTemplateInput) => Effect.void);
+      const layer = makeTestLayer({
+        window: fakeWindow.window,
+        createCount,
+        mainWindow,
+        electronMenu: {
+          setApplicationMenu: () => Effect.void,
+          popupTemplate,
+          showContextMenu: () => Effect.succeed(Option.none()),
+        },
+        electronSpelling: { platformSuggestionsFor: () => Effect.succeed([]) },
+      });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.handleBackendReady;
+
+        fakeWindow.emitWebContents("context-menu", { preventDefault: vi.fn() }, {
+          misspelledWord: "ive",
+          dictionarySuggestions: [],
+          linkURL: "",
+          mediaType: "none",
+          editFlags: {
+            canUndo: false,
+            canRedo: false,
+            canCut: true,
+            canCopy: true,
+            canPaste: true,
+            canDelete: false,
+            canSelectAll: true,
+            canEditRichly: false,
+          },
+          frame: {} as Electron.WebFrameMain,
+          menuSourceType: "mouse",
+        } satisfies Partial<Electron.ContextMenuParams>);
+        yield* waitForMockCalls(popupTemplate);
+
+        const template = popupTemplate.mock.calls[0]?.[0].template ?? [];
+        assert.equal(template[0]?.label, "No suggestions");
+        assert.equal(template[0]?.enabled, false);
+        assert.deepEqual(fakeWindow.replaceMisspelling.mock.calls, []);
       }).pipe(Effect.provide(layer));
     }),
   );

@@ -22,6 +22,7 @@ import * as ElectronProtocol from "./electron/ElectronProtocol.ts";
 import * as DesktopSecretStorage from "./electron/ElectronSafeStorage.ts";
 import * as ElectronGlobalShortcut from "./electron/ElectronGlobalShortcut.ts";
 import * as ElectronShell from "./electron/ElectronShell.ts";
+import * as ElectronSpelling from "./electron/ElectronSpelling.ts";
 import * as ElectronTheme from "./electron/ElectronTheme.ts";
 import * as ElectronTray from "./electron/ElectronTray.ts";
 import * as ElectronUpdater from "./electron/ElectronUpdater.ts";
@@ -107,6 +108,7 @@ const electronLayer = Layer.mergeAll(
   DesktopSecretStorage.layer,
   ElectronGlobalShortcut.layer,
   ElectronShell.layer,
+  ElectronSpelling.layer.pipe(Layer.provide(NodeServices.layer)),
   ElectronTheme.layer,
   ElectronTray.layer,
   ElectronUpdater.layer,

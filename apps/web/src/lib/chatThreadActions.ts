@@ -66,6 +66,15 @@ function buildDefaultThreadOptions(context: ChatThreadActionContext): NewThreadO
   };
 }
 
+/** General Chats never seed branch/worktree context; they always run in
+    per-thread scratch directories in local mode. */
+export async function startNewGeneralChatThread(
+  handleNewThread: NewThreadHandler,
+  generalChatsRef: ScopedProjectRef,
+): Promise<void> {
+  await handleNewThread(generalChatsRef, { branch: null, worktreePath: null, envMode: "local" });
+}
+
 export async function startNewThreadInProjectFromContext(
   context: ChatThreadActionContext,
   projectRef: ScopedProjectRef,

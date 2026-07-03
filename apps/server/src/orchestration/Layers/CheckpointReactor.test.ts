@@ -2098,6 +2098,96 @@ describe("CheckpointReactor", () => {
     });
   });
 
+  it("hunk-reverts an EOF append while keeping a block another session appended after it", async () => {
+    const harness = await createHarness({
+      seedFilesystemCheckpoints: false,
+      includeConcurrentSession: true,
+    });
+    const threadId = ThreadId.make("thread-1");
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const baseline = ["# TODO", "", "- [ ] existing item"].join("\n").concat("\n");
+    const threadBlock = ["", "## thread scratchpad", "", "- [ ] mine"].join("\n").concat("\n");
+    const foreignBlock = ["", "## second session", "", "- [ ] theirs"].join("\n").concat("\n");
+    const notesPath = path.join(harness.cwd, "notes.md");
+
+    fs.writeFileSync(notesPath, baseline, "utf8");
+    await harness.checkpointStore.captureCheckpoint({
+      cwd: harness.cwd,
+      checkpointRef: checkpointRefForThreadTurn(threadId, 0),
+    });
+    // The thread's turn appends its block at the end of the file.
+    fs.writeFileSync(notesPath, baseline + threadBlock, "utf8");
+    await harness.checkpointStore.captureCheckpoint({
+      cwd: harness.cwd,
+      checkpointRef: checkpointRefForThreadTurn(threadId, 1),
+    });
+    // Another session appends its own block directly after the thread's.
+    fs.writeFileSync(notesPath, baseline + threadBlock + foreignBlock, "utf8");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-eof-append"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: createdAt,
+        },
+        createdAt,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.diff.complete",
+        commandId: CommandId.make("cmd-eof-append-diff-1"),
+        threadId,
+        turnId: asTurnId("turn-1"),
+        completedAt: createdAt,
+        checkpointRef: checkpointRefForThreadTurn(threadId, 1),
+        status: "ready",
+        files: [{ path: "notes.md", kind: "modified", additions: 4, deletions: 0 }],
+        checkpointTurnCount: 1,
+        createdAt,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.make("cmd-eof-append-revert"),
+        threadId,
+        turnCount: 0,
+        createdAt,
+      }),
+    );
+
+    await waitForEvent(harness.engine, (event) => event.type === "thread.reverted");
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some((activity) => activity.kind === "checkpoint.reverted"),
+    );
+
+    // The thread's block is removed; the other session's block survives.
+    expect(fs.readFileSync(notesPath, "utf8").replaceAll("\r\n", "\n")).toBe(
+      baseline + foreignBlock,
+    );
+
+    const outcomeActivity = thread.activities.find(
+      (activity) => activity.kind === "checkpoint.reverted",
+    );
+    expect(outcomeActivity?.payload).toMatchObject({
+      mode: "selective",
+      revertedFileCount: 1,
+      hunkRevertedFileCount: 1,
+      conflictPathCount: 0,
+    });
+    expect(outcomeActivity?.summary).toBe("Reverted 1 file for this thread");
+  });
+
   it("marks files edited between the thread's turns by another actor as conflicts", async () => {
     const harness = await createHarness({
       seedFilesystemCheckpoints: false,

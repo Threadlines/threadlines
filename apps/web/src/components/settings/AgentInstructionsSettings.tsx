@@ -8,7 +8,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { ensureLocalApi } from "../../localApi";
-import { selectProjectsAcrossEnvironments, useStore } from "../../store";
+import {
+  selectSidebarThreadsAcrossEnvironments,
+  selectWorkspaceProjectsAcrossEnvironments,
+  useStore,
+} from "../../store";
 import { cn } from "../../lib/utils";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -197,8 +201,12 @@ function InstructionFileEditor({
 }
 
 export function AgentInstructionsSettingsPanel() {
-  const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
-  const projectOptions = useMemo(() => deriveSettingsProjectOptions(projects), [projects]);
+  const projects = useStore(useShallow(selectWorkspaceProjectsAcrossEnvironments));
+  const sidebarThreads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
+  const projectOptions = useMemo(
+    () => deriveSettingsProjectOptions(projects, sidebarThreads),
+    [projects, sidebarThreads],
+  );
   const [cwd, setCwd] = useState(() => projectOptions[0]?.value ?? "");
   const [instructions, setInstructions] = useState<ProviderInstructionFilesResult | null>(null);
   const [isLoading, setIsLoading] = useState(false);

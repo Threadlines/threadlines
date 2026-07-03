@@ -360,6 +360,52 @@ it.layer(TestLayer)("CheckpointStoreLive", (it) => {
       }),
     );
 
+    it.effect("hunk-reverts an EOF append when another session appended right after it", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const checkpointStore = yield* CheckpointStore;
+        const threadId = ThreadId.make("thread-eof-append");
+        const targetCheckpointRef = checkpointRefForThreadTurn(threadId, 1);
+        const latestCheckpointRef = checkpointRefForThreadTurn(threadId, 2);
+
+        const baseline = ["# TODO", "", "- [ ] existing item"].join("\n").concat("\n");
+        const threadBlock = ["", "## thread scratchpad", "", "- [ ] mine"].join("\n").concat("\n");
+        const foreignBlock = ["", "## second session", "", "- [ ] theirs"].join("\n").concat("\n");
+
+        const filePath = path.join(tmp, "notes.md");
+        yield* writeTextFile(filePath, baseline);
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: targetCheckpointRef });
+
+        // The thread appends its block at the end of the file.
+        yield* writeTextFile(filePath, baseline + threadBlock);
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: latestCheckpointRef });
+
+        // Another session appends its own block directly after the thread's.
+        yield* writeTextFile(filePath, baseline + threadBlock + foreignBlock);
+
+        const targetCommit = yield* checkpointStore.resolveCheckpointCommit({
+          cwd: tmp,
+          checkpointRef: targetCheckpointRef,
+        });
+        const latestCommit = yield* checkpointStore.resolveCheckpointCommit({
+          cwd: tmp,
+          checkpointRef: latestCheckpointRef,
+        });
+
+        const applied = yield* checkpointStore.restoreCheckpointFileHunks({
+          cwd: tmp,
+          fromCommit: latestCommit ?? "",
+          toCommit: targetCommit ?? "",
+          path: "notes.md",
+        });
+
+        expect(applied).toBe(true);
+        expect(yield* fileSystem.readFileString(filePath)).toBe(baseline + foreignBlock);
+      }),
+    );
+
     it.effect("reports non-file worktree paths and honors head fallback resolution", () =>
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;

@@ -20,6 +20,7 @@ import * as DesktopState from "../app/DesktopState.ts";
 import * as ElectronMenu from "../electron/ElectronMenu.ts";
 import * as ElectronGlobalShortcut from "../electron/ElectronGlobalShortcut.ts";
 import * as ElectronShell from "../electron/ElectronShell.ts";
+import * as ElectronSpelling from "../electron/ElectronSpelling.ts";
 import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as IpcChannels from "../ipc/channels.ts";
@@ -53,6 +54,7 @@ type DesktopWindowRuntimeServices =
   | ElectronMenu.ElectronMenu
   | ElectronGlobalShortcut.ElectronGlobalShortcut
   | ElectronShell.ElectronShell
+  | ElectronSpelling.ElectronSpelling
   | ElectronTheme.ElectronTheme
   | ElectronWindow.ElectronWindow
   | Path.Path;
@@ -277,6 +279,7 @@ const make = Effect.gen(function* () {
   const electronMenu = yield* ElectronMenu.ElectronMenu;
   const electronGlobalShortcut = yield* ElectronGlobalShortcut.ElectronGlobalShortcut;
   const electronShell = yield* ElectronShell.ElectronShell;
+  const electronSpelling = yield* ElectronSpelling.ElectronSpelling;
   const electronTheme = yield* ElectronTheme.ElectronTheme;
   const electronWindow = yield* ElectronWindow.ElectronWindow;
   const path = yield* Path.Path;
@@ -354,57 +357,71 @@ const make = Effect.gen(function* () {
     window.webContents.on("context-menu", (event, params) => {
       event.preventDefault();
 
-      const menuTemplate: Electron.MenuItemConstructorOptions[] = [];
-
-      if (params.misspelledWord) {
-        for (const suggestion of params.dictionarySuggestions.slice(0, 5)) {
-          menuTemplate.push({
-            label: suggestion,
-            click: () => {
-              window.webContents.replaceMisspelling(suggestion);
-              window.webContents.focus();
-            },
-          });
-        }
-        if (params.dictionarySuggestions.length === 0) {
-          menuTemplate.push({ label: "No suggestions", enabled: false });
-        }
-        menuTemplate.push({ type: "separator" });
-      }
-
-      if (Option.isSome(ElectronShell.parseSafeExternalUrl(params.linkURL))) {
-        menuTemplate.push(
-          {
-            label: "Copy Link",
-            click: () => {
-              void runPromise(electronShell.copyText(params.linkURL));
-            },
-          },
-          { type: "separator" },
-        );
-      }
-
-      if (params.mediaType === "image") {
-        menuTemplate.push({
-          label: "Copy Image",
-          click: () => window.webContents.copyImageAt(params.x, params.y),
-        });
-        menuTemplate.push({ type: "separator" });
-      }
-
-      menuTemplate.push(
-        { role: "cut", enabled: params.editFlags.canCut },
-        { role: "copy", enabled: params.editFlags.canCopy },
-        { role: "paste", enabled: params.editFlags.canPaste },
-        { role: "selectAll", enabled: params.editFlags.canSelectAll },
-      );
-
       void runPromise(
-        electronMenu.popupTemplate({
-          window,
-          template: menuTemplate,
-          frame: params.frame,
-          sourceType: params.menuSourceType,
+        Effect.gen(function* () {
+          const menuTemplate: Electron.MenuItemConstructorOptions[] = [];
+
+          if (params.misspelledWord) {
+            // Chromium hands us empty dictionarySuggestions for words the
+            // macOS checker flags only from sentence context (capitalization,
+            // contractions). Recover the OS spellchecker's own guesses before
+            // settling for "No suggestions".
+            const suggestions =
+              params.dictionarySuggestions.length > 0
+                ? params.dictionarySuggestions
+                : yield* electronSpelling.platformSuggestionsFor(params.misspelledWord);
+            for (const suggestion of suggestions.slice(0, 5)) {
+              menuTemplate.push({
+                label: suggestion,
+                click: () => {
+                  window.webContents.replaceMisspelling(suggestion);
+                  window.webContents.focus();
+                },
+              });
+            }
+            if (suggestions.length === 0) {
+              menuTemplate.push({ label: "No suggestions", enabled: false });
+            }
+            menuTemplate.push({ type: "separator" });
+          }
+
+          if (window.isDestroyed()) {
+            return;
+          }
+
+          if (Option.isSome(ElectronShell.parseSafeExternalUrl(params.linkURL))) {
+            menuTemplate.push(
+              {
+                label: "Copy Link",
+                click: () => {
+                  void runPromise(electronShell.copyText(params.linkURL));
+                },
+              },
+              { type: "separator" },
+            );
+          }
+
+          if (params.mediaType === "image") {
+            menuTemplate.push({
+              label: "Copy Image",
+              click: () => window.webContents.copyImageAt(params.x, params.y),
+            });
+            menuTemplate.push({ type: "separator" });
+          }
+
+          menuTemplate.push(
+            { role: "cut", enabled: params.editFlags.canCut },
+            { role: "copy", enabled: params.editFlags.canCopy },
+            { role: "paste", enabled: params.editFlags.canPaste },
+            { role: "selectAll", enabled: params.editFlags.canSelectAll },
+          );
+
+          yield* electronMenu.popupTemplate({
+            window,
+            template: menuTemplate,
+            frame: params.frame,
+            sourceType: params.menuSourceType,
+          });
         }),
       );
     });

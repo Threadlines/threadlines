@@ -98,9 +98,10 @@ export function buildSelectiveRevertPlan(
     }
     if (currentOid !== entry.toOid) {
       // Another actor changed the path after the thread's last checkpoint.
-      // A regular file may still be revertible hunk-by-hunk; anything else
-      // (deleted or replaced by a non-file) is a conflict outright.
-      if (worktreeState.kind === "file") {
+      // A regular file may still be revertible hunk-by-hunk when the
+      // thread's last snapshot contains it (the merge is anchored on that
+      // base); anything else is a conflict outright.
+      if (worktreeState.kind === "file" && entry.toOid !== null) {
         hunkCandidatePaths.push(entry.path);
       } else {
         conflictPaths.push(entry.path);

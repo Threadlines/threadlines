@@ -46,6 +46,7 @@ import {
 } from "@threadlines/contracts";
 import { CHECKPOINT_REFS_PREFIX, LEGACY_CHECKPOINT_REFS_PREFIX } from "./checkpointRefs.ts";
 import * as GitVcsDriverCore from "./GitVcsDriverCore.ts";
+import { mergeRegionEditsIntoCurrent, parseUnifiedDiffRegions } from "./LineRegionMerge.ts";
 import * as VcsDriver from "./VcsDriver.ts";
 import * as VcsProcess from "./VcsProcess.ts";
 
@@ -1093,62 +1094,132 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
     ),
 
     // Applies the inverse of a single file's snapshot transition onto the
-    // current worktree file. Returns false when the patch does not apply
-    // cleanly (overlapping later edits, binary content, or a truncated
-    // patch), leaving the file untouched: `git apply` matches hunk context
-    // strictly and never fuzzes.
+    // current worktree file via an exact coordinate merge: the thread's
+    // change (fromCommit -> toCommit) and other actors' drift (fromCommit ->
+    // worktree) are both expressed against the same base, so disjoint
+    // regions merge deterministically — including edits that merely touch,
+    // like two sessions appending consecutive blocks at the end of a file,
+    // which `git apply` and 3-way merges reject. Returns false (file
+    // untouched) on any overlap, verification mismatch, or content the
+    // parser cannot interpret exactly (binary, missing-newline markers).
     restoreCheckpointFileHunks: Effect.fn("GitVcsDriver.checkpoints.restoreCheckpointFileHunks")(
       function* (input) {
         const operation = "GitVcsDriver.checkpoints.restoreCheckpointFileHunks";
         const toplevel = yield* resolveWorktreeToplevel(input.cwd);
 
-        // No --binary: binary transitions render as an unapplyable stub and
-        // fail the apply check below, which is the safe outcome.
-        const patchResult = yield* execute({
+        // -U0 keeps regions minimal so nearby-but-separate edits stay
+        // mergeable instead of fusing into one conflicting hunk.
+        const diffArgs = (fromRevision: string, toRevision: string, pathspecs: string[]) => [
+          "diff",
+          "-U0",
+          "--no-color",
+          "--no-ext-diff",
+          "--no-textconv",
+          fromRevision,
+          toRevision,
+          ...pathspecs,
+        ];
+
+        const inversePatch = yield* execute({
           operation,
           cwd: toplevel,
-          args: [
-            "diff",
-            "--full-index",
-            "--no-color",
-            "--no-ext-diff",
-            "--no-textconv",
-            input.fromCommit,
-            input.toCommit,
-            "--",
-            literalPathspec(input.path),
-          ],
+          args: diffArgs(input.fromCommit, input.toCommit, ["--", literalPathspec(input.path)]),
           maxOutputBytes: CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,
         });
-        if (patchResult.stdoutTruncated) {
+        if (inversePatch.stdoutTruncated) {
           return false;
         }
-        const patch = patchResult.stdout;
-        if (patch.trim().length === 0) {
-          return false;
-        }
-
-        const checkResult = yield* execute({
-          operation,
-          cwd: toplevel,
-          args: ["apply", "--check", "--whitespace=nowarn"],
-          stdin: patch,
-          allowNonZeroExit: true,
-        });
-        if (checkResult.exitCode !== 0) {
+        const editRegions = parseUnifiedDiffRegions(inversePatch.stdout);
+        if (editRegions === null || editRegions.length === 0) {
           return false;
         }
 
-        const applyResult = yield* execute({
-          operation,
-          cwd: toplevel,
-          args: ["apply", "--whitespace=nowarn"],
-          stdin: patch,
-          allowNonZeroExit: true,
-        });
-        if (applyResult.exitCode !== 0) {
+        // The merged result is written back as UTF-8 text; refuse anything
+        // that does not round-trip so untouched bytes can never be mangled.
+        const absolutePath = path.join(toplevel, input.path);
+        const contentBytes = yield* fileSystem
+          .readFile(absolutePath)
+          .pipe(Effect.catch(() => Effect.succeed(null)));
+        if (contentBytes === null) {
           return false;
         }
+        let content: string;
+        try {
+          content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(contentBytes);
+        } catch {
+          return false;
+        }
+        const endsWithNewline = content.endsWith("\n");
+        const currentLines = content.split("\n");
+        if (endsWithNewline) {
+          currentLines.pop();
+        }
+
+        // Drift is diffed blob-to-blob: comparing the snapshot commit against
+        // the worktree would consult the index and misreport files that are
+        // not tracked there (e.g. created by an agent and never staged) as
+        // deleted.
+        const baseBlobResult = yield* execute({
+          operation,
+          cwd: toplevel,
+          args: ["rev-parse", "--verify", "--quiet", `${input.fromCommit}:${input.path}`],
+          allowNonZeroExit: true,
+        });
+        const baseBlobOid = baseBlobResult.exitCode === 0 ? baseBlobResult.stdout.trim() : "";
+        if (baseBlobOid.length === 0) {
+          return false;
+        }
+        const currentBlobResult = yield* execute({
+          operation,
+          cwd: toplevel,
+          args: ["hash-object", "-w", "--stdin"],
+          stdin: content,
+        });
+        const currentBlobOid = currentBlobResult.stdout.trim();
+        if (currentBlobOid.length === 0) {
+          return false;
+        }
+
+        let driftRegions: ReturnType<typeof parseUnifiedDiffRegions> = [];
+        if (currentBlobOid !== baseBlobOid) {
+          const driftPatch = yield* execute({
+            operation,
+            cwd: toplevel,
+            args: diffArgs(baseBlobOid, currentBlobOid, []),
+            maxOutputBytes: CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,
+          });
+          if (driftPatch.stdoutTruncated) {
+            return false;
+          }
+          driftRegions = parseUnifiedDiffRegions(driftPatch.stdout);
+        }
+        if (driftRegions === null) {
+          return false;
+        }
+
+        const mergedLines = mergeRegionEditsIntoCurrent({
+          editRegions,
+          driftRegions,
+          currentLines,
+        });
+        if (mergedLines === null) {
+          return false;
+        }
+
+        const nextContent =
+          mergedLines.length === 0 ? "" : mergedLines.join("\n") + (endsWithNewline ? "\n" : "");
+        yield* fileSystem.writeFileString(absolutePath, nextContent).pipe(
+          Effect.mapError(
+            (error) =>
+              new VcsProcessExitError({
+                operation,
+                command: "write",
+                cwd: input.cwd,
+                exitCode: 1,
+                detail: `Failed to write merged content for '${input.path}': ${error.message}`,
+              }),
+          ),
+        );
 
         // Mirror whole-checkout restore semantics for the touched path.
         const headExists = yield* hasHeadCommit(toplevel);
