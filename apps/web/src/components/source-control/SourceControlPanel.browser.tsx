@@ -994,7 +994,8 @@ describe("SourceControlPanel changes", () => {
         expect(showContextMenu).toHaveBeenCalledWith(
           [
             { id: "open-diff", label: "Open diff", disabled: false },
-            { id: "open-editor", label: "Open in editor" },
+            { id: "open-viewer", label: "Open in file viewer" },
+            { id: "open-editor", label: "Open in external editor" },
           ],
           { x: 44, y: 88 },
         );
