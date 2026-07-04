@@ -187,11 +187,13 @@ function ComboboxPopup({
 function ComboboxItem({
   className,
   contentClassName,
+  indicatorClassName,
   children,
   hideIndicator = false,
   ...props
 }: ComboboxPrimitive.Item.Props & {
   contentClassName?: string;
+  indicatorClassName?: string;
   hideIndicator?: boolean;
 }) {
   return (
@@ -203,7 +205,9 @@ function ComboboxItem({
       data-slot="combobox-item"
       {...props}
     >
-      <ComboboxPrimitive.ItemIndicator className={cn("col-start-1", hideIndicator && "hidden")}>
+      <ComboboxPrimitive.ItemIndicator
+        className={cn("col-start-1", indicatorClassName, hideIndicator && "hidden")}
+      >
         <CheckIcon />
       </ComboboxPrimitive.ItemIndicator>
       <div

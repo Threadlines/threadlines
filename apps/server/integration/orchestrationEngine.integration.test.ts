@@ -889,41 +889,37 @@ it.live("reverts to an earlier checkpoint and trims checkpoint projections + git
   ),
 );
 
-it.live(
-  "appends checkpoint.revert.failed activity when revert is requested without an active session",
-  () =>
-    withHarness((harness) =>
-      Effect.gen(function* () {
-        yield* seedProjectAndThread(harness);
+it.live("completes a checkpoint revert without an active provider session", () =>
+  withHarness((harness) =>
+    Effect.gen(function* () {
+      yield* seedProjectAndThread(harness);
 
-        yield* harness.engine.dispatch({
-          type: "thread.checkpoint.revert",
-          commandId: CommandId.make("cmd-checkpoint-revert-no-session"),
-          threadId: THREAD_ID,
-          turnCount: 0,
-          createdAt: nowIso(),
-        });
+      yield* harness.engine.dispatch({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.make("cmd-checkpoint-revert-no-session"),
+        threadId: THREAD_ID,
+        turnCount: 0,
+        createdAt: nowIso(),
+      });
 
-        const thread = yield* harness.waitForThread(THREAD_ID, (entry) =>
-          entry.activities.some(
-            (activity) =>
-              activity.kind === "checkpoint.revert.failed" &&
-              typeof activity.payload === "object" &&
-              activity.payload !== null,
-          ),
-        );
-        const failureActivity = thread.activities.find(
-          (activity) => activity.kind === "checkpoint.revert.failed",
-        );
-        assert.equal(failureActivity !== undefined, true);
-        assert.equal(
-          String(
-            (failureActivity?.payload as { readonly detail?: string } | undefined)?.detail,
-          ).includes("No active provider session"),
-          true,
-        );
-      }),
-    ),
+      // Session-less reverts resolve the workspace from thread/project
+      // config; only provider conversation rollback needs a live session.
+      const thread = yield* harness.waitForThread(THREAD_ID, (entry) =>
+        entry.activities.some((activity) => activity.kind === "checkpoint.reverted"),
+      );
+      const outcomeActivity = thread.activities.find(
+        (activity) => activity.kind === "checkpoint.reverted",
+      );
+      assert.equal(
+        (outcomeActivity?.payload as { readonly mode?: string } | undefined)?.mode,
+        "selective",
+      );
+      assert.equal(
+        thread.activities.some((activity) => activity.kind === "checkpoint.revert.failed"),
+        false,
+      );
+    }),
+  ),
 );
 
 it.live("starts a claudeAgent session on first turn when provider is requested", () =>

@@ -4,8 +4,17 @@ import {
   type ResolvedKeybindingsConfig,
 } from "@threadlines/contracts";
 import { resolveSelectableModel } from "@threadlines/shared/model";
-import { memo, useMemo, useState, useCallback, useEffect, useLayoutEffect, useRef } from "react";
-import { SearchIcon, StarIcon } from "lucide-react";
+import {
+  Fragment,
+  memo,
+  useMemo,
+  useState,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+} from "react";
+import { SearchIcon, StarIcon, XIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
 import { ModelListRow } from "./ModelListRow";
 import { buildModelPickerSearchText, scoreModelPickerSearch } from "./modelPickerSearch";
@@ -38,10 +47,6 @@ type ModelPickerItem = {
 
 const EMPTY_MODEL_JUMP_LABELS = new Map<string, string>();
 const EMPTY_MODEL_PICKER_ITEMS: ReadonlyArray<ModelPickerItem> = [];
-const EMPTY_SEARCHED_MODELS_BY_TAB_ID: ReadonlyMap<
-  string,
-  ReadonlyArray<ModelPickerItem>
-> = new Map();
 const EMPTY_FAVORITES: ReadonlyArray<{
   readonly provider: ProviderInstanceId;
   readonly model: string;
@@ -56,6 +61,21 @@ type ModelPickerTab = {
   driverKind?: ProviderDriverKind;
   accentColor?: string | undefined;
 };
+
+/**
+ * One provider section of global search results. Searching ignores the
+ * active tab: matches are ranked across every eligible instance, then
+ * grouped back into instance sections for display.
+ */
+type ModelPickerSearchGroup = {
+  instanceId: ProviderInstanceId;
+  label: string;
+  driverKind: ProviderDriverKind;
+  accentColor?: string | undefined;
+  models: ReadonlyArray<ModelPickerItem>;
+};
+
+const EMPTY_SEARCH_GROUPS: ReadonlyArray<ModelPickerSearchGroup> = [];
 
 // Split a `${instanceId}:${slug}` combobox key back into its pieces. Slugs
 // can contain colons (e.g. some vendor model ids), so we only split on the
@@ -169,6 +189,11 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     onInstanceModelChange,
   } = props;
   const [searchQuery, setSearchQuery] = useState("");
+  // Search is collapsed to an icon until the user types or clicks the
+  // toggle. The input keeps focus for combobox keyboard nav even while
+  // visually hidden, so the first printable key lands in the query and
+  // expands the field.
+  const [searchOpenedManually, setSearchOpenedManually] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const highlightedModelKeyRef = useRef<string | null>(null);
   const favorites = useSettings((s) => s.favorites ?? EMPTY_FAVORITES);
@@ -377,21 +402,6 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     ];
   }, [favoriteModels, isLocked, providerTabs, showTabList]);
 
-  const searchedModelsByTabId = useMemo((): ReadonlyMap<string, ReadonlyArray<ModelPickerItem>> => {
-    if (!isSearching || tabs.length === 0) {
-      return EMPTY_SEARCHED_MODELS_BY_TAB_ID;
-    }
-
-    const searchResults = new Map<string, ReadonlyArray<ModelPickerItem>>();
-    for (const tab of tabs) {
-      searchResults.set(
-        tab.id,
-        rankModelPickerSearchMatches(tab.models, normalizedSearchQuery, favoritesSet),
-      );
-    }
-    return searchResults;
-  }, [favoritesSet, isSearching, normalizedSearchQuery, tabs]);
-
   const defaultActiveTabId = activeModelIsFavorite ? "favorites" : props.activeInstanceId;
   const activeTab = useMemo(() => {
     if (!showTabList) {
@@ -399,72 +409,83 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     }
     const manualTab = tabs.find((tab) => tab.id === manualActiveTabId);
     const defaultTab = tabs.find((tab) => tab.id === defaultActiveTabId);
-    const selectedTab = manualTab ?? defaultTab ?? tabs.find((tab) => tab.kind === "instance");
-    const fallbackTab = selectedTab ?? tabs[0] ?? null;
-    if (!isSearching) {
-      return fallbackTab;
-    }
-
-    const selectedTabMatchCount = fallbackTab
-      ? (searchedModelsByTabId.get(fallbackTab.id)?.length ?? 0)
-      : 0;
-    if (fallbackTab?.kind === "instance" && selectedTabMatchCount > 0) {
-      return fallbackTab;
-    }
-
     return (
-      providerTabs.find((tab) => (searchedModelsByTabId.get(tab.id)?.length ?? 0) > 0) ??
-      fallbackTab
+      manualTab ?? defaultTab ?? tabs.find((tab) => tab.kind === "instance") ?? tabs[0] ?? null
     );
-  }, [
-    defaultActiveTabId,
-    isSearching,
-    manualActiveTabId,
-    providerTabs,
-    searchedModelsByTabId,
-    showTabList,
-    tabs,
-  ]);
+  }, [defaultActiveTabId, manualActiveTabId, showTabList, tabs]);
   const activeTabId = activeTab?.id ?? null;
 
   const activeTabModels = activeTab?.models ?? providerTabs[0]?.models ?? EMPTY_MODEL_PICKER_ITEMS;
 
-  // Search renders the active provider pane. If the current pane has no
-  // matches, jump to the first provider tab with matches; Favorites remains
-  // a display tab rather than an automatic search destination.
-  const searchedModels = useMemo(() => {
+  // Global search: rank across every eligible instance, then group back
+  // into instance sections (in configured order) for display. Ranking
+  // within a group is preserved from the global pass, so favorites still
+  // float via their score boost.
+  const searchGroups = useMemo((): ReadonlyArray<ModelPickerSearchGroup> => {
     if (!isSearching) {
-      return EMPTY_MODEL_PICKER_ITEMS;
+      return EMPTY_SEARCH_GROUPS;
     }
-    if (activeTab) {
-      return searchedModelsByTabId.get(activeTab.id) ?? EMPTY_MODEL_PICKER_ITEMS;
+    const rankedModels = rankModelPickerSearchMatches(
+      eligibleModels,
+      normalizedSearchQuery,
+      favoritesSet,
+    );
+    const grouped = new Map<ProviderInstanceId, ModelPickerItem[]>();
+    for (const model of rankedModels) {
+      const models = grouped.get(model.instanceId);
+      if (models) {
+        models.push(model);
+      } else {
+        grouped.set(model.instanceId, [model]);
+      }
     }
-    return rankModelPickerSearchMatches(activeTabModels, normalizedSearchQuery, favoritesSet);
+    const groups: ModelPickerSearchGroup[] = [];
+    for (const instanceId of instanceOrder) {
+      const models = grouped.get(instanceId);
+      const entry = entryByInstanceId.get(instanceId);
+      if (!models || !entry) {
+        continue;
+      }
+      groups.push({
+        instanceId,
+        label: entry.displayName,
+        driverKind: entry.driverKind,
+        ...(entry.accentColor ? { accentColor: entry.accentColor } : {}),
+        models,
+      });
+    }
+    return groups;
   }, [
-    activeTab,
-    activeTabModels,
+    eligibleModels,
+    entryByInstanceId,
     favoritesSet,
+    instanceOrder,
     isSearching,
     normalizedSearchQuery,
-    searchedModelsByTabId,
   ]);
 
   const orderedModels = useMemo(
-    () => (isSearching ? searchedModels : activeTabModels),
-    [activeTabModels, isSearching, searchedModels],
+    () => (isSearching ? searchGroups.flatMap((group) => group.models) : activeTabModels),
+    [activeTabModels, isSearching, searchGroups],
   );
 
+  // The list pane is sized to the largest tab (floor 3, cap 9 rows) so
+  // switching tabs never resizes the popup, while setups with few models
+  // don't inherit a huge mostly-empty pane. Searching keeps the same
+  // height so results don't jitter the popup while typing.
+  const paneRowCount = useMemo(() => {
+    const rowCounts =
+      tabs.length > 0 ? tabs.map((tab) => tab.modelCount) : [activeTabModels.length];
+    return Math.max(3, Math.min(9, Math.max(...rowCounts)));
+  }, [activeTabModels.length, tabs]);
+
   const emptyMessage = isSearching
-    ? activeTab
-      ? `No matches in ${activeTab.label}`
-      : "No models found"
+    ? "No models match"
     : activeTab?.kind === "favorites"
       ? "No favorite models"
       : "No models available";
 
   const tabModelCountLabel = (count: number) => `${count} ${count === 1 ? "model" : "models"}`;
-  const tabSearchCountLabel = (count: number, total: number) =>
-    `${count} ${count === 1 ? "match" : "matches"} of ${tabModelCountLabel(total)}`;
 
   const renderTabIcon = (tab: ModelPickerTab) => {
     if (tab.kind === "favorites") {
@@ -522,6 +543,19 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     },
     [activeTabId, favorites, updateSettings],
   );
+
+  const searchActive = searchOpenedManually || isSearching;
+  const openSearch = useCallback(() => {
+    setSearchOpenedManually(true);
+    // Explicit intent: focus even on coarse pointers, where the on-screen
+    // keyboard is expected after tapping the search toggle.
+    searchInputRef.current?.focus({ preventScroll: true });
+  }, []);
+  const closeSearch = useCallback(() => {
+    setSearchOpenedManually(false);
+    setSearchQuery("");
+    focusSearchInput();
+  }, [focusSearchInput]);
 
   const LockedProviderIcon =
     isLocked && props.lockedProvider ? PROVIDER_ICON_BY_PROVIDER[props.lockedProvider] : null;
@@ -623,105 +657,128 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     };
   }, [handleModelSelect, keybindings, modelJumpModelKeys, modelJumpShortcutContext]);
 
+  const renderModelRow = (model: ModelPickerItem, modelIndex: number) => {
+    const modelKey = `${model.instanceId}:${model.slug}`;
+    return (
+      <ModelListRow
+        key={modelKey}
+        index={modelIndex}
+        model={model}
+        instanceId={model.instanceId}
+        driverKind={model.driverKind}
+        providerDisplayName={model.instanceDisplayName}
+        providerAccentColor={model.instanceAccentColor}
+        isFavorite={favoritesSet.has(modelKey)}
+        showProvider={!isSearching && activeTab?.kind === "favorites"}
+        preferShortName={!isLocked}
+        useProviderScopedLabel
+        useTriggerLabel={lockedToSingleInstance}
+        jumpLabel={modelJumpLabelByKey.get(modelKey) ?? null}
+        onToggleFavorite={() => toggleFavorite(model.instanceId, model.slug)}
+      />
+    );
+  };
+
   return (
     <TooltipProvider delay={0}>
-      {/* Height hugs the visible rows; the list region caps and scrolls itself.
-          The card also clamps to the positioner's --available-height so rows
-          can't extend past the window edge, where the inner scroller (with
-          overscroll-contain) would leave them unreachable. --keyboard-inset
-          (set by ProviderModelPicker while an overlay keyboard is up) shrinks
-          the cap so the lifted popup's top edge stays on screen. */}
-      <div className="relative flex max-h-[calc(var(--available-height)-var(--keyboard-inset,0px))] w-screen max-w-[34rem] flex-col overflow-hidden rounded-lg border bg-popover not-dark:bg-clip-padding text-popover-foreground shadow-lg/5 before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:before:shadow-[0_-1px_--theme(--color-white/6%)]">
-        {/* Locked provider banner: the turn's driver cannot change */}
-        {lockedToSingleInstance && LockedProviderIcon && lockedHeaderLabel && (
-          <div className="flex items-center gap-2 border-b px-4 py-3">
-            <LockedProviderIcon className="size-5 shrink-0" />
-            <span className="text-sm font-medium">{lockedHeaderLabel}</span>
-          </div>
-        )}
-
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-          {showTabList ? (
-            <div className="border-b bg-muted/20 px-3 py-2">
+      {/* The list pane holds a stable height (sized to the largest tab) so
+          switching tabs doesn't resize the popup. The card still clamps to
+          the positioner's --available-height so rows can't extend past the
+          window edge, where the inner scroller (with overscroll-contain)
+          would leave them unreachable. --keyboard-inset (set by
+          ProviderModelPicker while an overlay keyboard is up) shrinks the
+          cap so the lifted popup's top edge stays on screen. */}
+      <div className="relative flex max-h-[calc(var(--available-height)-var(--keyboard-inset,0px))] w-screen max-w-[28rem] flex-col overflow-hidden rounded-lg border bg-popover not-dark:bg-clip-padding text-popover-foreground shadow-lg/5 before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:before:shadow-[0_-1px_--theme(--color-white/6%)]">
+        <Combobox
+          inline
+          items={orderedModelKeys}
+          filteredItems={orderedModelKeys}
+          filter={null}
+          autoHighlight
+          open
+          value={`${props.activeInstanceId}:${props.model}`}
+          onItemHighlighted={(modelKey) => {
+            highlightedModelKeyRef.current = typeof modelKey === "string" ? modelKey : null;
+          }}
+          onValueChange={(modelKey) => {
+            if (typeof modelKey !== "string") {
+              return;
+            }
+            const { instanceId, slug } = splitInstanceModelKey(modelKey);
+            handleModelSelect(slug, instanceId);
+          }}
+        >
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+            {/* Header: provider tabs (or the locked-provider label — the
+                turn's driver cannot change) share one row with the search
+                control; the search field expands over the tabs while active. */}
+            <div className="flex h-10 min-w-0 shrink-0 items-center gap-1.5 border-b px-2">
+              {!searchActive &&
+                (showTabList ? (
+                  <div
+                    role="tablist"
+                    aria-label="Model tabs"
+                    className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
+                  >
+                    {tabs.map((tab) => {
+                      const isActive = activeTab?.id === tab.id;
+                      return (
+                        <button
+                          key={tab.id}
+                          type="button"
+                          role="tab"
+                          aria-selected={isActive}
+                          data-model-picker-tab={tab.id}
+                          title={`${tab.label} · ${tabModelCountLabel(tab.modelCount)}`}
+                          className={cn(
+                            "flex max-w-40 shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1 text-left text-xs font-medium transition-colors",
+                            "focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring",
+                            isActive
+                              ? "bg-accent text-foreground"
+                              : "text-muted-foreground hover:bg-muted/70 hover:text-foreground",
+                          )}
+                          onClick={() => {
+                            setManualActiveTabId(tab.id);
+                            focusSearchInput();
+                          }}
+                        >
+                          <span className="relative flex size-4 shrink-0 items-center justify-center">
+                            {renderTabIcon(tab)}
+                          </span>
+                          <span className="min-w-0 truncate">{tab.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : lockedToSingleInstance && LockedProviderIcon && lockedHeaderLabel ? (
+                  <div className="flex min-w-0 flex-1 items-center gap-2 px-1.5">
+                    <LockedProviderIcon className="size-4 shrink-0" />
+                    <span className="truncate text-sm font-medium">{lockedHeaderLabel}</span>
+                  </div>
+                ) : (
+                  <div className="min-w-0 flex-1" />
+                ))}
+              {!searchActive && (
+                <button
+                  type="button"
+                  aria-label="Search models"
+                  data-model-picker-search-toggle
+                  className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-muted/70 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={openSearch}
+                >
+                  <SearchIcon className="size-4" />
+                </button>
+              )}
+              {/* Always mounted so the combobox keeps its keyboard nav while
+                  collapsed; sr-only hides the field without giving up focus. */}
               <div
-                role="tablist"
-                aria-label="Model tabs"
-                className="flex min-w-0 gap-1 overflow-x-auto rounded-md bg-background/55 p-1"
+                className={searchActive ? "flex min-w-0 flex-1 items-center gap-1.5" : "sr-only"}
               >
-                {tabs.map((tab) => {
-                  const isActive = activeTab?.id === tab.id;
-                  const visibleModelCount = isSearching
-                    ? (searchedModelsByTabId.get(tab.id)?.length ?? 0)
-                    : tab.modelCount;
-                  return (
-                    <button
-                      key={tab.id}
-                      type="button"
-                      role="tab"
-                      aria-selected={isActive}
-                      data-model-picker-tab={tab.id}
-                      title={`${tab.label} · ${
-                        isSearching
-                          ? tabSearchCountLabel(visibleModelCount, tab.modelCount)
-                          : tabModelCountLabel(tab.modelCount)
-                      }`}
-                      className={cn(
-                        "flex min-w-20 max-w-40 shrink-0 cursor-pointer items-center gap-1.5 rounded px-2.5 py-1.5 text-left text-xs font-medium transition-colors",
-                        "focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring",
-                        isActive
-                          ? "bg-accent text-foreground shadow-xs/5"
-                          : "text-muted-foreground hover:bg-muted/70 hover:text-foreground",
-                      )}
-                      onClick={() => {
-                        setManualActiveTabId(tab.id);
-                        focusSearchInput();
-                      }}
-                    >
-                      <span className="relative flex size-4 shrink-0 items-center justify-center">
-                        {renderTabIcon(tab)}
-                      </span>
-                      <span className="min-w-0 flex-1 truncate">{tab.label}</span>
-                      <span
-                        className={cn(
-                          "shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] leading-none tabular-nums",
-                          isActive ? "text-foreground/75" : "text-muted-foreground/60",
-                        )}
-                      >
-                        {isSearching ? `${visibleModelCount}/${tab.modelCount}` : tab.modelCount}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ) : null}
-
-          <Combobox
-            inline
-            items={orderedModelKeys}
-            filteredItems={orderedModelKeys}
-            filter={null}
-            autoHighlight
-            open
-            value={`${props.activeInstanceId}:${props.model}`}
-            onItemHighlighted={(modelKey) => {
-              highlightedModelKeyRef.current = typeof modelKey === "string" ? modelKey : null;
-            }}
-            onValueChange={(modelKey) => {
-              if (typeof modelKey !== "string") {
-                return;
-              }
-              const { instanceId, slug } = splitInstanceModelKey(modelKey);
-              handleModelSelect(slug, instanceId);
-            }}
-          >
-            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-              {/* Search bar */}
-              <div className="border-b px-3 py-2">
                 <ComboboxInput
                   ref={searchInputRef}
-                  className="[&_input]:font-sans rounded-md"
-                  inputClassName="border-0 shadow-none ring-0 focus-visible:ring-0"
+                  className="min-w-0 flex-1 [&_input]:font-sans"
+                  inputClassName="border-0 bg-transparent shadow-none ring-0 focus-visible:ring-0"
                   placeholder="Search models..."
                   showTrigger={false}
                   startAddon={<SearchIcon className="size-4 shrink-0 text-muted-foreground/50" />}
@@ -731,7 +788,13 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                     if (e.key === "Escape") {
                       e.preventDefault();
                       e.stopPropagation();
-                      props.onRequestClose?.();
+                      // First escape collapses the search back to browsing;
+                      // a second one closes the picker.
+                      if (searchActive) {
+                        closeSearch();
+                      } else {
+                        props.onRequestClose?.();
+                      }
                       return;
                     }
                     if (
@@ -756,45 +819,65 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                   onTouchStart={(e) => e.stopPropagation()}
                   size="sm"
                 />
+                <button
+                  type="button"
+                  aria-label="Clear search"
+                  className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-muted/70 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={closeSearch}
+                >
+                  <XIcon className="size-4" />
+                </button>
               </div>
+            </div>
 
-              {/* The region is its own scroller with a cap, so the popup hugs
-                short lists and scrolls long ones (e.g. broad searches). */}
-              <div className="model-picker-list min-h-0 max-h-80 flex-1 overflow-y-auto overscroll-contain bg-muted/40">
-                <ComboboxListVirtualized className="w-full px-1.5 py-1">
-                  {(() => {
-                    let modelIndex = -1;
-                    return orderedModels.map((model) => {
-                      modelIndex += 1;
-                      const modelKey = `${model.instanceId}:${model.slug}`;
-                      return (
-                        <ModelListRow
-                          key={modelKey}
-                          index={modelIndex}
-                          model={model}
-                          instanceId={model.instanceId}
-                          driverKind={model.driverKind}
-                          providerDisplayName={model.instanceDisplayName}
-                          providerAccentColor={model.instanceAccentColor}
-                          isFavorite={favoritesSet.has(modelKey)}
-                          showProvider={activeTab?.kind === "favorites"}
-                          preferShortName={!isLocked}
-                          useProviderScopedLabel
-                          useTriggerLabel={lockedToSingleInstance}
-                          jumpLabel={modelJumpLabelByKey.get(modelKey) ?? null}
-                          onToggleFavorite={() => toggleFavorite(model.instanceId, model.slug)}
-                        />
-                      );
-                    });
-                  })()}
-                </ComboboxListVirtualized>
-              </div>
-              <ComboboxEmpty className="not-empty:py-6 empty:h-0 text-xs font-normal leading-snug">
+            {/* Stable-height pane (2rem per single-line row + list padding):
+                smaller tabs show trailing space instead of resizing the
+                popup; long lists and searches scroll. */}
+            <div
+              className="model-picker-list flex min-h-0 w-full shrink flex-col overflow-y-auto overscroll-contain"
+              style={{ height: `calc(${paneRowCount} * 2rem + 0.625rem)` }}
+            >
+              <ComboboxListVirtualized className="w-full px-1.5 py-1">
+                {isSearching
+                  ? (() => {
+                      let modelIndex = -1;
+                      return searchGroups.map((group) => {
+                        const GroupIcon = PROVIDER_ICON_BY_PROVIDER[group.driverKind] ?? null;
+                        return (
+                          <Fragment key={group.instanceId}>
+                            <div className="flex items-center gap-1.5 px-2.5 pb-1 pt-2 text-[11px] font-medium text-muted-foreground">
+                              {GroupIcon ? (
+                                <GroupIcon className="size-3 shrink-0 opacity-70" />
+                              ) : null}
+                              {group.accentColor ? (
+                                <span
+                                  aria-hidden
+                                  className="size-1.5 shrink-0 rounded-full"
+                                  style={{ backgroundColor: group.accentColor }}
+                                />
+                              ) : null}
+                              <span className="truncate">{group.label}</span>
+                              <span className="tabular-nums text-muted-foreground/60">
+                                {group.models.length}
+                              </span>
+                            </div>
+                            {group.models.map((model) => {
+                              modelIndex += 1;
+                              return renderModelRow(model, modelIndex);
+                            })}
+                          </Fragment>
+                        );
+                      });
+                    })()
+                  : orderedModels.map((model, modelIndex) => renderModelRow(model, modelIndex))}
+              </ComboboxListVirtualized>
+              <ComboboxEmpty className="not-empty:flex not-empty:flex-1 not-empty:items-center not-empty:justify-center not-empty:p-6 empty:h-0 text-xs font-normal leading-snug">
                 {emptyMessage}
               </ComboboxEmpty>
             </div>
-          </Combobox>
-        </div>
+          </div>
+        </Combobox>
       </div>
     </TooltipProvider>
   );

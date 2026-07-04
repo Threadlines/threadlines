@@ -330,6 +330,20 @@ async function openModelPicker() {
   });
 }
 
+// The search field is collapsed to an icon until the user types or clicks
+// the toggle; expand it explicitly so the input is visible and fillable.
+async function fillModelPickerSearch(query: string) {
+  const toggle = document.querySelector<HTMLButtonElement>("[data-model-picker-search-toggle]");
+  expect(toggle).not.toBeNull();
+  toggle!.click();
+
+  await vi.waitFor(() => {
+    expect(document.querySelector('button[aria-label="Clear search"]')).not.toBeNull();
+  });
+
+  await page.getByPlaceholder("Search models...").fill(query);
+}
+
 async function clickModelPickerTab(tabId: string) {
   const tab = document.querySelector<HTMLButtonElement>(`[data-model-picker-tab="${tabId}"]`);
   expect(tab).not.toBeNull();
@@ -445,7 +459,7 @@ describe("ProviderModelPicker", () => {
         expect(getModelPickerTabOrder()).toEqual(["favorites", "codex", "claudeAgent"]);
       });
 
-      await page.getByPlaceholder("Search models...").fill("rogue");
+      await fillModelPickerSearch("rogue");
 
       await vi.waitFor(() => {
         expect(getModelPickerListText()).not.toContain("Rogue Model");
@@ -734,7 +748,7 @@ describe("ProviderModelPicker", () => {
     }
   });
 
-  it("searches models by name in the active tab", async () => {
+  it("searches models by name across all providers", async () => {
     const mounted = await mountPicker({
       activeInstanceId: CLAUDE_INSTANCE_ID,
       model: "claude-opus-4-6",
@@ -750,9 +764,7 @@ describe("ProviderModelPicker", () => {
         expect(getModelPickerListText()).not.toContain("GPT-5 Codex");
       });
 
-      // Find and type in search box
-      const searchInput = page.getByPlaceholder("Search models...");
-      await searchInput.fill("claude");
+      await fillModelPickerSearch("claude");
 
       await vi.waitFor(() => {
         expect(getVisibleModelNames()).toContain("Opus 4.6");
@@ -774,8 +786,8 @@ describe("ProviderModelPicker", () => {
     try {
       await openModelPicker();
 
-      const searchInput = page.getByPlaceholder("Search models...");
-      await userEvent.click(searchInput);
+      // The collapsed search input is focused on open, so keyboard nav
+      // works without clicking into it.
       await userEvent.keyboard("{ArrowDown}");
       await vi.waitFor(() => {
         const highlightedItem = document.querySelector<HTMLElement>(
@@ -803,7 +815,7 @@ describe("ProviderModelPicker", () => {
     }
   });
 
-  it("keeps provider tabs visible while searching the active pane", async () => {
+  it("replaces the tab strip with global grouped results while searching", async () => {
     const mounted = await mountPicker({
       activeInstanceId: CLAUDE_INSTANCE_ID,
       model: "claude-opus-4-6",
@@ -817,20 +829,22 @@ describe("ProviderModelPicker", () => {
         expect(getModelPickerTabOrder()).toEqual(["favorites", "codex", "claudeAgent"]);
       });
 
-      await page.getByPlaceholder("Search models...").fill("cla");
+      await fillModelPickerSearch("cla");
 
       await vi.waitFor(() => {
-        expect(getModelPickerTabOrder()).toEqual(["favorites", "codex", "claudeAgent"]);
+        expect(getModelPickerTabOrder()).toEqual([]);
         expect(getVisibleModelNames()).toEqual(
           expect.arrayContaining(["Opus 4.6", "Sonnet 4.6", "Haiku 4.5"]),
         );
+        // Matches render under a provider section header.
+        expect(getModelPickerListText()).toContain("Claude");
       });
     } finally {
       await mounted.cleanup();
     }
   });
 
-  it("switches to a provider tab with matches while searching", async () => {
+  it("finds matches from other providers than the active tab while searching", async () => {
     const mounted = await mountPicker({
       activeInstanceId: CLAUDE_INSTANCE_ID,
       model: "claude-opus-4-6",
@@ -839,11 +853,9 @@ describe("ProviderModelPicker", () => {
 
     try {
       await openModelPicker();
-      await page.getByPlaceholder("Search models...").fill("gpt");
+      await fillModelPickerSearch("gpt");
 
       await vi.waitFor(() => {
-        const codexTab = document.querySelector<HTMLElement>('[data-model-picker-tab="codex"]');
-        expect(codexTab?.getAttribute("aria-selected")).toBe("true");
         expect(getVisibleModelNames()).toEqual(["GPT-5 Codex", "GPT-5.3 Codex"]);
         expect(getModelPickerListText()).not.toContain("Opus 4.6");
       });
@@ -852,7 +864,35 @@ describe("ProviderModelPicker", () => {
     }
   });
 
-  it("shows duplicate favorite search matches as scoped tab counts", async () => {
+  it("expands the collapsed search when the user starts typing", async () => {
+    const mounted = await mountPicker({
+      activeInstanceId: CLAUDE_INSTANCE_ID,
+      model: "claude-opus-4-6",
+      lockedProvider: null,
+    });
+
+    try {
+      await openModelPicker();
+
+      await vi.waitFor(() => {
+        expect(getModelPickerTabOrder()).toEqual(["favorites", "codex", "claudeAgent"]);
+      });
+
+      // The hidden search input holds focus, so typing anywhere in the
+      // picker feeds the query and expands the field.
+      await userEvent.keyboard("gpt");
+
+      await vi.waitFor(() => {
+        expect(getModelPickerTabOrder()).toEqual([]);
+        expect(document.querySelector('button[aria-label="Clear search"]')).not.toBeNull();
+        expect(getVisibleModelNames()).toEqual(["GPT-5 Codex", "GPT-5.3 Codex"]);
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("shows a favorited match once in global search results", async () => {
     localStorage.setItem(
       CLIENT_SETTINGS_STORAGE_KEY,
       JSON.stringify({
@@ -869,20 +909,7 @@ describe("ProviderModelPicker", () => {
 
     try {
       await openModelPicker();
-      await page.getByPlaceholder("Search models...").fill("opus");
-
-      await vi.waitFor(() => {
-        expect(getModelPickerTabText("favorites")).toBe("Favorites1/1");
-        expect(getModelPickerTabText("claudeAgent")).toBe("Claude1/3");
-        expect(getModelPickerTabText("codex")).toBe("Codex0/2");
-        const claudeTab = document.querySelector<HTMLElement>(
-          '[data-model-picker-tab="claudeAgent"]',
-        );
-        expect(claudeTab?.getAttribute("aria-selected")).toBe("true");
-        expect(getVisibleModelNames()).toEqual(["Opus 4.6"]);
-      });
-
-      await clickModelPickerTab("claudeAgent");
+      await fillModelPickerSearch("opus");
 
       await vi.waitFor(() => {
         expect(getVisibleModelNames()).toEqual(["Opus 4.6"]);
@@ -903,13 +930,55 @@ describe("ProviderModelPicker", () => {
     try {
       await openModelPicker();
 
-      const searchInput = page.getByPlaceholder("Search models...");
-      await searchInput.click();
       const searchInputElement = document.querySelector<HTMLInputElement>(
         'input[placeholder="Search models..."]',
       );
       expect(searchInputElement).not.toBeNull();
       searchInputElement!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+
+      await vi.waitFor(() => {
+        expect(document.querySelector(".model-picker-list")).toBeNull();
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("clears an active search on escape before closing the picker", async () => {
+    const mounted = await mountPicker({
+      activeInstanceId: CLAUDE_INSTANCE_ID,
+      model: "claude-opus-4-6",
+      lockedProvider: null,
+    });
+
+    try {
+      await openModelPicker();
+      await fillModelPickerSearch("gpt");
+
+      await vi.waitFor(() => {
+        expect(getModelPickerTabOrder()).toEqual([]);
+      });
+
+      const getSearchInputElement = () => {
+        const element = document.querySelector<HTMLInputElement>(
+          'input[placeholder="Search models..."]',
+        );
+        expect(element).not.toBeNull();
+        return element!;
+      };
+      getSearchInputElement().dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+
+      // First escape collapses the search back to browsing.
+      await vi.waitFor(() => {
+        expect(document.querySelector(".model-picker-list")).not.toBeNull();
+        expect(getModelPickerTabOrder()).toEqual(["favorites", "codex", "claudeAgent"]);
+      });
+
+      getSearchInputElement().dispatchEvent(
         new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
       );
 
@@ -937,8 +1006,7 @@ describe("ProviderModelPicker", () => {
         expect(text).not.toContain("Claude Opus 4.6");
       });
 
-      const searchInput = page.getByPlaceholder("Search models...");
-      await searchInput.fill("codex");
+      await fillModelPickerSearch("codex");
 
       await vi.waitFor(() => {
         const listText = getModelPickerListText();
@@ -999,7 +1067,7 @@ describe("ProviderModelPicker", () => {
 
     try {
       await openModelPicker();
-      await page.getByPlaceholder("Search models...").fill("entr op");
+      await fillModelPickerSearch("entr op");
 
       await vi.waitFor(() => {
         const listText = getModelPickerListText();
@@ -1229,6 +1297,30 @@ describe("ProviderModelPicker", () => {
     } finally {
       await mounted.cleanup();
       localStorage.removeItem(CLIENT_SETTINGS_STORAGE_KEY);
+    }
+  });
+
+  it("marks the selected model with a check indicator instead of a filled row", async () => {
+    const mounted = await mountPicker({
+      activeInstanceId: CLAUDE_INSTANCE_ID,
+      model: "claude-opus-4-6",
+      lockedProvider: null,
+    });
+
+    try {
+      await openModelPicker();
+
+      await vi.waitFor(() => {
+        const selectedItem = document.querySelector<HTMLElement>(
+          '[data-slot="combobox-item"][data-selected]',
+        );
+        expect(selectedItem).not.toBeNull();
+        expect(selectedItem?.textContent).toContain("Opus 4.6");
+        // The check indicator is the selection marker.
+        expect(selectedItem?.querySelector("svg.lucide-check")).not.toBeNull();
+      });
+    } finally {
+      await mounted.cleanup();
     }
   });
 
