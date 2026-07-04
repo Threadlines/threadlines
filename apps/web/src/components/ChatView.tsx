@@ -226,7 +226,8 @@ import {
   shouldWriteThreadErrorToCurrentServerThread,
   waitForStartedServerThread,
   mergeLocalDraftThreadWithServerThread,
-  buildRevertConfirmLines,
+  buildRevertConfirmView,
+  type RevertConfirmView,
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { useComposerHandleContext } from "../composerHandleContext";
@@ -550,7 +551,87 @@ function ForkThreadDialog(props: {
     </AlertDialog>
   );
 }
+interface RevertThreadDialogState {
+  readonly turnCount: number;
+  readonly revertedMessageText: string | undefined;
+  readonly view: RevertConfirmView;
+}
+
+function RevertThreadDialog(props: {
+  readonly state: RevertThreadDialogState | null;
+  readonly disabled: boolean;
+  readonly onOpenChange: (open: boolean) => void;
+  readonly onConfirm: () => void;
+}) {
+  const state = props.state;
+  if (!state) {
+    return null;
+  }
+
+  const view = state.view;
+  return (
+    <AlertDialog open onOpenChange={props.onOpenChange}>
+      <AlertDialogPopup className="max-w-lg">
+        <AlertDialogHeader className="pb-3">
+          <AlertDialogTitle>{view.title}</AlertDialogTitle>
+          <AlertDialogDescription>{view.summary}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <div className="min-h-0 space-y-2.5 overflow-y-auto px-6 pb-5 text-sm text-muted-foreground/85">
+          {view.revertPaths.length > 0 && (
+            <ul className="flex flex-wrap items-baseline gap-x-1.5 gap-y-1.5 rounded-lg border border-border/70 bg-muted/35 px-3 py-2.5">
+              {view.revertPaths.map((revertPath) => (
+                <li key={revertPath} className="min-w-0">
+                  <code className="rounded bg-background/60 px-1.5 py-0.5 font-mono text-xs break-all text-foreground/90">
+                    {revertPath}
+                  </code>
+                </li>
+              ))}
+              {view.revertPathOverflowCount > 0 && (
+                <li className="text-xs whitespace-nowrap text-muted-foreground/70">
+                  and {view.revertPathOverflowCount} more
+                </li>
+              )}
+            </ul>
+          )}
+          {view.conflictsLabel !== null && <p>{view.conflictsLabel}</p>}
+          {view.conflicts.length > 0 && (
+            <ul className="space-y-1 rounded-lg border border-border/70 bg-muted/35 px-3 py-2.5">
+              {view.conflicts.map((conflict) => (
+                <li key={conflict.path} className="flex min-w-0 items-baseline gap-2">
+                  <code className="shrink-0 rounded bg-background/60 px-1 py-0.5 font-mono text-xs text-foreground/90">
+                    {conflict.path}
+                  </code>
+                  <span className="truncate text-xs text-muted-foreground/70">
+                    {conflict.reason}
+                  </span>
+                </li>
+              ))}
+              {view.conflictOverflowCount > 0 && (
+                <li className="text-xs text-muted-foreground/70">
+                  and {view.conflictOverflowCount} more
+                </li>
+              )}
+            </ul>
+          )}
+          {view.notes.map((note) => (
+            <p key={note}>{note}</p>
+          ))}
+        </div>
+        <AlertDialogFooter>
+          <AlertDialogClose render={<Button variant="outline" disabled={props.disabled} />}>
+            Cancel
+          </AlertDialogClose>
+          <Button variant="destructive" disabled={props.disabled} onClick={props.onConfirm}>
+            Revert
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogPopup>
+    </AlertDialog>
+  );
+}
+
 const SCRIPT_TERMINAL_COLS = 120;
+
 const SCRIPT_TERMINAL_ROWS = 30;
 
 type ChatViewProps =
@@ -850,6 +931,7 @@ export default function ChatView(props: ChatViewProps) {
   } | null>(null);
   const [crossProviderDontAskAgain, setCrossProviderDontAskAgain] = useState(false);
   const [forkDialogState, setForkDialogState] = useState<ForkThreadDialogState | null>(null);
+  const [revertDialogState, setRevertDialogState] = useState<RevertThreadDialogState | null>(null);
   const setStickyComposerModelSelection = useComposerDraftStore(
     (store) => store.setStickyModelSelection,
   );
@@ -3730,8 +3812,7 @@ export default function ChatView(props: ChatViewProps) {
   const onRevertToTurnCount = useCallback(
     async (turnCount: number, revertedMessageText?: string) => {
       const api = readEnvironmentApi(environmentId);
-      const localApi = readLocalApi();
-      if (!api || !localApi || !activeThread || isRevertingCheckpoint) return;
+      if (!api || !activeThread || isRevertingCheckpoint) return;
 
       if (activeEnvironmentUnavailable && activeEnvironmentUnavailableLabel) {
         setThreadError(
@@ -3749,39 +3830,15 @@ export default function ChatView(props: ChatViewProps) {
       const plan = await api.orchestration
         .getRevertPlan({ threadId: activeThread.id, turnCount })
         .catch(() => null);
-      const confirmed = await localApi.dialogs.confirm(
-        buildRevertConfirmLines({
+      setRevertDialogState({
+        turnCount,
+        revertedMessageText,
+        view: buildRevertConfirmView({
           turnCount,
           isWorktreeThread: activeThread.worktreePath !== null,
           plan,
-        }).join("\n"),
-      );
-      if (!confirmed) {
-        return;
-      }
-
-      setIsRevertingCheckpoint(true);
-      setThreadError(activeThread.id, null);
-      try {
-        await api.orchestration.dispatchCommand({
-          type: "thread.checkpoint.revert",
-          commandId: newCommandId(),
-          threadId: activeThread.id,
-          turnCount,
-          createdAt: new Date().toISOString(),
-        });
-        // Restore the reverted-away message for editing so rewinding a thread
-        // never loses the prompt the user wants to iterate on.
-        if (revertedMessageText !== undefined) {
-          prefillComposerDraftPrompt(composerDraftTarget, revertedMessageText);
-        }
-      } catch (err) {
-        setThreadError(
-          activeThread.id,
-          err instanceof Error ? err.message : "Failed to revert thread state.",
-        );
-      }
-      setIsRevertingCheckpoint(false);
+        }),
+      });
     },
     [
       activeThread,
@@ -3790,13 +3847,49 @@ export default function ChatView(props: ChatViewProps) {
       environmentId,
       isConnecting,
       isRevertingCheckpoint,
-      composerDraftTarget,
       isSendBusy,
       phase,
-      prefillComposerDraftPrompt,
       setThreadError,
     ],
   );
+
+  const confirmRevertThread = useCallback(async () => {
+    const api = readEnvironmentApi(environmentId);
+    const state = revertDialogState;
+    if (!api || !activeThread || !state || isRevertingCheckpoint) return;
+
+    setIsRevertingCheckpoint(true);
+    setThreadError(activeThread.id, null);
+    try {
+      await api.orchestration.dispatchCommand({
+        type: "thread.checkpoint.revert",
+        commandId: newCommandId(),
+        threadId: activeThread.id,
+        turnCount: state.turnCount,
+        createdAt: new Date().toISOString(),
+      });
+      // Restore the reverted-away message for editing so rewinding a thread
+      // never loses the prompt the user wants to iterate on.
+      if (state.revertedMessageText !== undefined) {
+        prefillComposerDraftPrompt(composerDraftTarget, state.revertedMessageText);
+      }
+    } catch (err) {
+      setThreadError(
+        activeThread.id,
+        err instanceof Error ? err.message : "Failed to revert thread state.",
+      );
+    }
+    setIsRevertingCheckpoint(false);
+    setRevertDialogState(null);
+  }, [
+    activeThread,
+    composerDraftTarget,
+    environmentId,
+    isRevertingCheckpoint,
+    prefillComposerDraftPrompt,
+    revertDialogState,
+    setThreadError,
+  ]);
 
   const onSend = async (e?: { preventDefault: () => void }) => {
     e?.preventDefault();
@@ -5299,6 +5392,18 @@ export default function ChatView(props: ChatViewProps) {
         onInstructionChange={updateForkDialogInstruction}
         onModelChange={updateForkDialogModel}
         onConfirm={confirmForkThread}
+      />
+      <RevertThreadDialog
+        state={revertDialogState}
+        disabled={isRevertingCheckpoint}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRevertDialogState(null);
+          }
+        }}
+        onConfirm={() => {
+          void confirmRevertThread();
+        }}
       />
       {/* Main content area */}
       <div className="flex min-h-0 min-w-0 flex-1">

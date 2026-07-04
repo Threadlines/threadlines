@@ -23,6 +23,7 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   CheckIcon,
+  CloudIcon,
   CloudUploadIcon,
   CopyIcon,
   ExternalLinkIcon,
@@ -137,10 +138,14 @@ import { SectionLabel } from "../ui/threadline";
 import { stackedThreadToast, toastManager, type ThreadToastData } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger, TooltipWrapper } from "../ui/tooltip";
 import {
+  buildCommitGraphDetailRefs,
+  buildCommitGraphDisplayRefs,
   buildCommitGraphRows,
   buildSourceControlFileTree,
   collectSourceControlFileTreeDirectoryPaths,
+  type CommitGraphDisplayRef,
   type CommitGraphLaneLayout,
+  type CommitGraphRefKind,
   formatCommitGraphDateTime,
   formatCommitGraphParentSummary,
   formatCommitGraphTimestamp,
@@ -150,6 +155,7 @@ import {
   resolveCommitGraphErrorPresentation,
   resolveSourceControlPrimaryAction,
   type SourceControlFileTreeNode,
+  takeCommitGraphRowRefs,
 } from "./SourceControlPanel.logic";
 
 export interface SourceControlProjectTarget {
@@ -478,8 +484,7 @@ function getCommitGraphStatusRefreshKey(status: VcsStatusResult | null | undefin
   ].join("\0");
 }
 
-function commitGraphRefClassName(refName: string, currentBranch: string | null | undefined) {
-  const kind = getCommitGraphRefKind(refName, currentBranch);
+function commitGraphRefClassName(kind: CommitGraphRefKind) {
   if (kind === "current") {
     return "border-primary-graph/70 bg-primary/16 text-primary-readable";
   }
@@ -493,23 +498,34 @@ function commitGraphRefClassName(refName: string, currentBranch: string | null |
 }
 
 function CommitGraphRefChip({
-  refName,
-  currentBranch,
-  compact = false,
+  displayRef,
+  className,
 }: {
-  readonly refName: string;
-  readonly currentBranch: string | null | undefined;
-  readonly compact?: boolean;
+  readonly displayRef: CommitGraphDisplayRef;
+  readonly className?: string;
 }) {
   return (
     <span
       className={cn(
-        "min-w-0 shrink truncate rounded-sm border px-1 py-0.5 font-mono text-[10px] leading-none",
-        compact ? "max-w-24" : "max-w-full",
-        commitGraphRefClassName(refName, currentBranch),
+        "flex min-w-0 shrink items-center overflow-hidden rounded-sm border font-mono text-[10px] leading-none",
+        commitGraphRefClassName(displayRef.kind),
+        className,
       )}
     >
-      {normalizeCommitGraphRefName(refName)}
+      {displayRef.cloudBadge === "remote" ? (
+        // A leading cloud (inline, no divider) marks a remote-only ref and
+        // stands in for the primary remote's stripped origin/ prefix.
+        <CloudIcon aria-hidden="true" className="ml-1 size-2.5 shrink-0 opacity-70" />
+      ) : null}
+      <span className="min-w-0 truncate px-1 py-0.5">{displayRef.label}</span>
+      {displayRef.cloudBadge === "synced" ? (
+        // A same-named remote branch points at this commit too. The divider
+        // gives the cloud its own segment so the pill reads as two refs
+        // sharing one chip, not as "this branch is the remote".
+        <span className="flex shrink-0 items-center self-stretch border-l border-inherit px-1">
+          <CloudIcon aria-hidden="true" className="size-2.5 opacity-70" />
+        </span>
+      ) : null}
     </span>
   );
 }
@@ -854,7 +870,7 @@ function CommitGraphHoverCard({
   const absoluteDate = formatCommitGraphDateTime(commit.committedAt);
   const relativeDate = formatCommitGraphTimestamp(commit.committedAt);
   const parentSummary = formatCommitGraphParentSummary(commit.parents.length);
-  const visibleRefs = getVisibleCommitGraphRefs(commit.refs);
+  const displayRefs = buildCommitGraphDetailRefs(commit.refs, currentBranch);
   const messageBody = details?.body.trim() || details?.message.trim() || "";
   const canOpenCommit = Boolean(details?.commitUrl);
   const fullMessageCopied = copyFullMessageState === "copied";
@@ -937,11 +953,15 @@ function CommitGraphHoverCard({
         <CommitGraphDetailRow label="Parents">
           <span className="truncate">{parentSummary}</span>
         </CommitGraphDetailRow>
-        {visibleRefs.length > 0 ? (
+        {displayRefs.length > 0 ? (
           <CommitGraphDetailRow label="Refs">
             <span className="flex min-w-0 flex-wrap gap-1">
-              {visibleRefs.map((ref) => (
-                <CommitGraphRefChip key={ref} refName={ref} currentBranch={currentBranch} />
+              {displayRefs.map((displayRef) => (
+                <CommitGraphRefChip
+                  key={displayRef.refName}
+                  displayRef={displayRef}
+                  className="max-w-full"
+                />
               ))}
             </span>
           </CommitGraphDetailRow>
@@ -1058,11 +1078,9 @@ function CommitGraphRow({
   readonly onPinCommit: (commit: VcsCommitGraphCommit) => void;
 }) {
   const [hoverCardOpen, setHoverCardOpen] = useState(false);
-  const isCurrentBranchCommit = visibleRefs.some(
-    (ref) => getCommitGraphRefKind(ref, currentBranch) === "current",
-  );
-  const renderedRefs = visibleRefs.slice(0, 2);
-  const hiddenRefCount = Math.max(0, visibleRefs.length - renderedRefs.length);
+  const displayRefs = buildCommitGraphDisplayRefs(visibleRefs, currentBranch);
+  const isCurrentBranchCommit = displayRefs.some((displayRef) => displayRef.kind === "current");
+  const rowRefs = takeCommitGraphRowRefs(displayRefs);
   const graphWidth = commitGraphLaneX(layout.laneCount - 1) + COMMIT_GRAPH_LEFT_PADDING;
   const detailsCardOpen = isPinned || (!isAnyCommitPinned && hoverCardOpen);
   const viewportClamp = useViewportConstrainedCommitCard(isPinned);
@@ -1116,19 +1134,20 @@ function CommitGraphRow({
               >
                 {commit.subject || "Untitled commit"}
               </span>
-              {renderedRefs.length > 0 ? (
-                <span className="flex shrink-0 items-center gap-1">
-                  {renderedRefs.map((ref) => (
+              {rowRefs.rendered.length > 0 ? (
+                // Chips yield to the subject: the cap reserves 4rem (plus the
+                // 0.5rem gap) of title width before chips start truncating.
+                <span className="flex min-w-0 max-w-[calc(100%-4.5rem)] items-center gap-1">
+                  {rowRefs.rendered.map((displayRef, index) => (
                     <CommitGraphRefChip
-                      key={ref}
-                      refName={ref}
-                      currentBranch={currentBranch}
-                      compact
+                      key={displayRef.refName}
+                      displayRef={displayRef}
+                      className={cn("max-w-40", index > 0 && "shrink-[3]")}
                     />
                   ))}
-                  {hiddenRefCount > 0 ? (
+                  {rowRefs.hiddenCount > 0 ? (
                     <span className="shrink-0 rounded-sm border border-border/60 px-1 py-0.5 font-mono text-[10px] leading-none text-muted-foreground/60">
-                      +{hiddenRefCount}
+                      +{rowRefs.hiddenCount}
                     </span>
                   ) : null}
                 </span>

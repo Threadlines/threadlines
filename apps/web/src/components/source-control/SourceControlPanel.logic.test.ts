@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildSourceControlFileTree,
+  buildCommitGraphDetailRefs,
+  buildCommitGraphDisplayRefs,
   buildCommitGraphRows,
   formatCommitGraphDateTime,
   formatCommitGraphParentSummary,
@@ -11,6 +13,7 @@ import {
   normalizeCommitGraphRefName,
   resolveCommitGraphErrorPresentation,
   resolveSourceControlPrimaryAction,
+  takeCommitGraphRowRefs,
 } from "./SourceControlPanel.logic";
 import type { VcsStatusResult } from "@threadlines/contracts";
 
@@ -197,6 +200,106 @@ describe("SourceControlPanel.logic", () => {
     ).toEqual(["main", "origin/main"]);
   });
 
+  it("collapses same-named remote branches into the local chip", () => {
+    expect(buildCommitGraphDisplayRefs(["main", "origin/main", "origin/HEAD"], "main")).toEqual([
+      { refName: "main", label: "main", kind: "current", cloudBadge: "synced" },
+    ]);
+  });
+
+  it("collapses remotes with nested branch names and multiple remotes", () => {
+    expect(
+      buildCommitGraphDisplayRefs(
+        ["feature/graph", "origin/feature/graph", "upstream/feature/graph"],
+        "main",
+      ),
+    ).toEqual([
+      { refName: "feature/graph", label: "feature/graph", kind: "branch", cloudBadge: "synced" },
+    ]);
+  });
+
+  it("strips the primary remote prefix from remote-only chips", () => {
+    expect(buildCommitGraphDisplayRefs(["origin/feature/remote-only"], "main")).toEqual([
+      {
+        refName: "origin/feature/remote-only",
+        label: "feature/remote-only",
+        kind: "remote",
+        cloudBadge: "remote",
+      },
+    ]);
+  });
+
+  it("keeps non-primary remote prefixes on remote-only chips", () => {
+    expect(buildCommitGraphDisplayRefs(["upstream/release"], "main")).toEqual([
+      {
+        refName: "upstream/release",
+        label: "upstream/release",
+        kind: "remote",
+        cloudBadge: "remote",
+      },
+    ]);
+  });
+
+  it("marks a remote-only current branch as remote, not local", () => {
+    expect(buildCommitGraphDisplayRefs(["origin/main"], "main")).toEqual([
+      { refName: "origin/main", label: "main", kind: "current", cloudBadge: "remote" },
+    ]);
+  });
+
+  it("does not pair remote branches with same-named tags", () => {
+    expect(buildCommitGraphDisplayRefs(["refs/tags/v1.0.0", "origin/v1.0.0"], "main")).toEqual([
+      { refName: "refs/tags/v1.0.0", label: "v1.0.0", kind: "tag", cloudBadge: "none" },
+      { refName: "origin/v1.0.0", label: "v1.0.0", kind: "remote", cloudBadge: "remote" },
+    ]);
+  });
+
+  it("orders display refs so the most relevant ref survives truncation", () => {
+    expect(
+      buildCommitGraphDisplayRefs(
+        ["origin/feature/other", "refs/tags/v1.0.0", "feature/side", "main"],
+        "main",
+      ).map((displayRef) => displayRef.label),
+    ).toEqual(["main", "feature/side", "v1.0.0", "feature/other"]);
+  });
+
+  it("keeps synced remotes as separate full-label chips in the detail refs", () => {
+    expect(
+      buildCommitGraphDetailRefs(
+        ["main", "origin/main", "origin/HEAD", "refs/tags/v1.0.0"],
+        "main",
+      ),
+    ).toEqual([
+      { refName: "main", label: "main", kind: "current", cloudBadge: "none" },
+      { refName: "origin/main", label: "origin/main", kind: "current", cloudBadge: "remote" },
+      { refName: "refs/tags/v1.0.0", label: "v1.0.0", kind: "tag", cloudBadge: "none" },
+    ]);
+  });
+
+  it("pairs row chips only when both labels stay legible", () => {
+    const shortPair = buildCommitGraphDisplayRefs(["main", "refs/tags/v1.0.0"], "main");
+    expect(takeCommitGraphRowRefs(shortPair)).toEqual({
+      rendered: shortPair,
+      hiddenCount: 0,
+    });
+
+    const longPair = buildCommitGraphDisplayRefs(
+      ["refs/tags/v0.1.1-nightly.20260703", "refs/tags/v0.1.1"],
+      "main",
+    );
+    expect(takeCommitGraphRowRefs(longPair)).toEqual({
+      rendered: [longPair[0]],
+      hiddenCount: 1,
+    });
+  });
+
+  it("counts refs beyond the rendered row chips in the hidden badge", () => {
+    const refs = buildCommitGraphDisplayRefs(["main", "dev", "refs/tags/v1.0.0"], "main");
+    expect(takeCommitGraphRowRefs(refs)).toEqual({
+      rendered: [refs[0], refs[1]],
+      hiddenCount: 1,
+    });
+    expect(takeCommitGraphRowRefs([])).toEqual({ rendered: [], hiddenCount: 0 });
+  });
+
   it("lays out merge commits across multiple graph lanes", () => {
     const [mergeRow, firstParentRow, sideParentRow, baseRow] = buildCommitGraphRows([
       { sha: "merge", parents: ["main-parent", "side-parent"], refs: ["main"] },
@@ -330,6 +433,17 @@ describe("SourceControlPanel.logic", () => {
     expect(lateTipRow?.layout.topLanes).toEqual([0, 2]);
     expect(lateTipRow?.layout.parentPaths).toEqual([{ fromLane: 1, toLane: 0 }]);
     expect(rows[0]?.layout.laneCount).toBe(3);
+  });
+
+  it("keeps lane counts per row so quiet rows are not indented by distant merges", () => {
+    const rows = buildCommitGraphRows([
+      { sha: "top", parents: ["mid", "side-1", "side-2"], refs: ["main"] },
+      { sha: "side-1", parents: ["mid"], refs: [] },
+      { sha: "side-2", parents: ["mid"], refs: [] },
+      { sha: "mid", parents: [], refs: [] },
+    ]);
+
+    expect(rows.map((row) => row.layout.laneCount)).toEqual([3, 3, 3, 1]);
   });
 
   it("preserves lane continuity through rows that also carry ref decorations", () => {

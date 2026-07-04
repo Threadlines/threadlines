@@ -379,6 +379,30 @@ export function getVisibleCommitGraphRefs(refs: readonly string[]): string[] {
   });
 }
 
+function isTagCommitGraphRef(refName: string): boolean {
+  const normalized = normalizeCommitGraphRefName(refName);
+  return (
+    refName.startsWith("refs/tags/") ||
+    refName.startsWith("tags/") ||
+    normalized.startsWith("tag/") ||
+    /^v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(normalized)
+  );
+}
+
+function isRemoteCommitGraphRef(refName: string): boolean {
+  const normalized = normalizeCommitGraphRefName(refName);
+  return (
+    refName.startsWith("refs/remotes/") ||
+    normalized.startsWith("origin/") ||
+    normalized.startsWith("upstream/") ||
+    normalized.startsWith("fork/")
+  );
+}
+
+function isLocalBranchCommitGraphRef(refName: string): boolean {
+  return !isTagCommitGraphRef(refName) && !isRemoteCommitGraphRef(refName);
+}
+
 export function getCommitGraphRefKind(
   refName: string,
   currentBranch: string | null | undefined,
@@ -387,23 +411,135 @@ export function getCommitGraphRefKind(
   if (currentBranch && (normalized === currentBranch || normalized === `origin/${currentBranch}`)) {
     return "current";
   }
-  if (
-    refName.startsWith("refs/tags/") ||
-    refName.startsWith("tags/") ||
-    normalized.startsWith("tag/") ||
-    /^v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(normalized)
-  ) {
+  if (isTagCommitGraphRef(refName)) {
     return "tag";
   }
-  if (
-    refName.startsWith("refs/remotes/") ||
-    normalized.startsWith("origin/") ||
-    normalized.startsWith("upstream/") ||
-    normalized.startsWith("fork/")
-  ) {
+  if (isRemoteCommitGraphRef(refName)) {
     return "remote";
   }
   return "branch";
+}
+
+// "synced": local branch whose same-named remote points at the same commit
+// (trailing cloud segment). "remote": remote-only ref (leading cloud).
+export type CommitGraphRefCloudBadge = "none" | "synced" | "remote";
+
+export interface CommitGraphDisplayRef {
+  readonly refName: string;
+  readonly label: string;
+  readonly kind: CommitGraphRefKind;
+  readonly cloudBadge: CommitGraphRefCloudBadge;
+}
+
+// Lower value renders first; the leading chip is the one that survives
+// truncation in narrow panels, so order by how actionable the ref is.
+const COMMIT_GRAPH_REF_KIND_PRIORITY: Record<CommitGraphRefKind, number> = {
+  current: 0,
+  branch: 1,
+  tag: 2,
+  remote: 3,
+};
+
+function sortCommitGraphDisplayRefs(displayRefs: CommitGraphDisplayRef[]): CommitGraphDisplayRef[] {
+  return displayRefs.toSorted(
+    (a, b) => COMMIT_GRAPH_REF_KIND_PRIORITY[a.kind] - COMMIT_GRAPH_REF_KIND_PRIORITY[b.kind],
+  );
+}
+
+// The leading cloud already marks these chips as remote, so the primary
+// remote's prefix is redundant text; other remotes (upstream, fork) are rare
+// enough that naming them is worth the width.
+const PRIMARY_REMOTE_REF_PREFIX = "origin/";
+
+// Chip models for a commit row: a remote branch pointing at the same commit as
+// its same-named local branch collapses into the local chip (cloudBadge
+// "synced") instead of costing a second chip, remaining remote-only refs drop
+// the origin/ prefix in favor of a leading cloud (cloudBadge "remote"), and
+// the result is sorted so the most relevant ref survives truncation.
+export function buildCommitGraphDisplayRefs(
+  refs: readonly string[],
+  currentBranch: string | null | undefined,
+): CommitGraphDisplayRef[] {
+  const visibleRefs = getVisibleCommitGraphRefs(refs);
+  const localBranchLabels = new Set(
+    visibleRefs.filter(isLocalBranchCommitGraphRef).map(normalizeCommitGraphRefName),
+  );
+
+  const syncedLocalBranchLabels = new Set<string>();
+  const unmergedRefs: Array<{ readonly refName: string; readonly label: string }> = [];
+  for (const refName of visibleRefs) {
+    const label = normalizeCommitGraphRefName(refName);
+    if (isRemoteCommitGraphRef(refName)) {
+      const localLabel = label.slice(label.indexOf("/") + 1);
+      if (localBranchLabels.has(localLabel)) {
+        syncedLocalBranchLabels.add(localLabel);
+        continue;
+      }
+    }
+    unmergedRefs.push({ refName, label });
+  }
+
+  return sortCommitGraphDisplayRefs(
+    unmergedRefs.map(({ refName, label }) => {
+      const isRemote = isRemoteCommitGraphRef(refName);
+      return {
+        refName,
+        label:
+          isRemote && label.startsWith(PRIMARY_REMOTE_REF_PREFIX)
+            ? label.slice(PRIMARY_REMOTE_REF_PREFIX.length)
+            : label,
+        kind: getCommitGraphRefKind(refName, currentBranch),
+        cloudBadge: isRemote
+          ? ("remote" as const)
+          : isLocalBranchCommitGraphRef(refName) && syncedLocalBranchLabels.has(label)
+            ? ("synced" as const)
+            : ("none" as const),
+      };
+    }),
+  );
+}
+
+// Chip models for the commit details card: same classification and ordering as
+// the row chips, but every ref stays its own chip with its full label, so the
+// card spells out exactly which refs point at the commit. Remote refs keep the
+// leading cloud next to their unstripped name — the deliberate redundancy is
+// what teaches that the rows' cloud stands for the origin/ prefix.
+export function buildCommitGraphDetailRefs(
+  refs: readonly string[],
+  currentBranch: string | null | undefined,
+): CommitGraphDisplayRef[] {
+  return sortCommitGraphDisplayRefs(
+    getVisibleCommitGraphRefs(refs).map((refName) => ({
+      refName,
+      label: normalizeCommitGraphRefName(refName),
+      kind: getCommitGraphRefKind(refName, currentBranch),
+      cloudBadge: isRemoteCommitGraphRef(refName) ? ("remote" as const) : ("none" as const),
+    })),
+  );
+}
+
+// Two chips side by side are only worth their space when both labels stay
+// legible; past this combined length the second chip would truncate into an
+// unreadable sliver, so it folds into the +N badge instead.
+const COMMIT_GRAPH_ROW_REF_CHAR_BUDGET = 20;
+
+export interface CommitGraphRowRefs {
+  readonly rendered: readonly CommitGraphDisplayRef[];
+  readonly hiddenCount: number;
+}
+
+export function takeCommitGraphRowRefs(
+  displayRefs: readonly CommitGraphDisplayRef[],
+): CommitGraphRowRefs {
+  const [first, second] = displayRefs;
+  if (!first) {
+    return { rendered: [], hiddenCount: 0 };
+  }
+  const rendered =
+    second && first.label.length + second.label.length <= COMMIT_GRAPH_ROW_REF_CHAR_BUDGET
+      ? [first, second]
+      : [first];
+  return { rendered, hiddenCount: displayRefs.length - rendered.length };
 }
 
 function occupiedLaneIndexes(lanes: ReadonlyArray<string | null>): number[] {
@@ -510,6 +646,9 @@ export function buildCommitGraphRows<TCommit extends CommitGraphTopologyCommit>(
         topLanes,
         bottomLanes,
         parentPaths,
+        // Per-row on purpose: the text column starts right after this row's
+        // rightmost active lane, so quiet stretches of history don't inherit
+        // the indent of the busiest merge region elsewhere in the graph.
         laneCount: rowLaneCount,
         isNewTip,
       },
@@ -518,12 +657,5 @@ export function buildCommitGraphRows<TCommit extends CommitGraphTopologyCommit>(
     activeLanes = nextLanes;
   }
 
-  const laneCount = Math.max(1, ...rows.map((row) => row.layout.laneCount));
-  return rows.map((row) =>
-    Object.assign({}, row, {
-      layout: Object.assign({}, row.layout, {
-        laneCount,
-      }),
-    }),
-  );
+  return rows;
 }

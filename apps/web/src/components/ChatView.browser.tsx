@@ -2567,15 +2567,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("previews shared-checkout reverts with plan-driven copy and shows conflict outcomes", async () => {
-    const confirmMessages: string[] = [];
-    const originalConfirm = window.confirm;
-    window.confirm = (message?: string) => {
-      confirmMessages.push(message ?? "");
-      // Cancel so the preview flow is exercised without dispatching a revert.
-      return false;
-    };
-
+  it("previews shared-checkout reverts in a styled dialog and shows conflict outcomes", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForRevertPreview(),
@@ -2617,24 +2609,45 @@ describe("ChatView timeline estimator parity (full app)", () => {
       );
       revertButton.click();
 
-      await vi.waitFor(() => expect(confirmMessages).toHaveLength(1), {
-        timeout: 8_000,
-        interval: 16,
-      });
-      const confirmMessage = confirmMessages[0] ?? "";
-      expect(confirmMessage).toContain("Revert this thread back to its start?");
-      expect(confirmMessage).toContain("2 files from this thread will be reverted.");
-      expect(confirmMessage).toContain(
-        "1 file with conflicting edits will be left untouched: REVERT_TEST.md.",
+      // The plan-driven preview renders in the styled in-app dialog.
+      const dialog = await waitForElement(
+        () =>
+          Array.from(document.querySelectorAll('[role="alertdialog"], [role="dialog"]')).find(
+            (element) => element.textContent?.includes("Revert this thread back to its start?"),
+          ) ?? null,
+        "Revert preview dialog should open with plan-driven title.",
       );
-      expect(confirmMessage).toContain(
+      expect(dialog.textContent).toContain("2 files from this thread will be reverted:");
+      expect(dialog.textContent).toContain("TODO.md");
+      expect(dialog.textContent).toContain("docs/notes.md");
+      expect(dialog.textContent).toContain("1 file with conflicting edits will be left untouched:");
+      expect(dialog.textContent).toContain("REVERT_TEST.md");
+      expect(dialog.textContent).toContain("interleaved with another session's edits");
+      expect(dialog.textContent).toContain(
         "Changes from other threads, sessions, and manual edits are preserved.",
       );
 
-      // The preview was requested over RPC and cancelling dispatched nothing.
+      // The preview was requested over RPC.
       expect(
         wsRequests.some((request) => request._tag === ORCHESTRATION_WS_METHODS.getRevertPlan),
       ).toBe(true);
+
+      // Cancelling closes the dialog without dispatching a revert.
+      const cancelButton = Array.from(dialog.querySelectorAll("button")).find(
+        (button) => button.textContent?.trim() === "Cancel",
+      );
+      expect(cancelButton).toBeDefined();
+      cancelButton?.click();
+      await vi.waitFor(
+        () => {
+          expect(
+            Array.from(document.querySelectorAll('[role="alertdialog"], [role="dialog"]')).some(
+              (element) => element.textContent?.includes("Revert this thread back to its start?"),
+            ),
+          ).toBe(false);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
       expect(
         wsRequests.some(
           (request) =>
@@ -2643,7 +2656,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
         ),
       ).toBe(false);
     } finally {
-      window.confirm = originalConfirm;
       await mounted.cleanup();
     }
   });
