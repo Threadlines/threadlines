@@ -125,7 +125,9 @@ describe("SidebarVersionTag", () => {
 
     await versionChip().hover();
     await expect.element(versionCard()).toBeVisible();
-    await expect.element(page.getByText(`v${APP_VERSION}`)).toBeVisible();
+    // Scoped to the card: with a plain x.y.z version (e.g. tag-less CI
+    // checkouts) the chip's compact label renders the identical string.
+    await expect.element(versionCard().getByText(`v${APP_VERSION}`)).toBeVisible();
     await expect.element(checkNowAction()).not.toBeInTheDocument();
   });
 
