@@ -571,7 +571,9 @@ function uniquePositivePorts(ports: ReadonlyArray<number>): number[] {
 }
 
 function uniquePositivePids(pids: ReadonlyArray<number>): number[] {
-  return [...new Set(pids.filter((pid) => Number.isInteger(pid) && pid > 0))]
+  // pid 1 is init/launchd — orphan reparenting and pid mentions mined from
+  // chat prose can both surface it, and it can never be a background run.
+  return [...new Set(pids.filter((pid) => Number.isInteger(pid) && pid > 1))]
     .map((pid) => Math.trunc(pid))
     .sort((left, right) => left - right);
 }
@@ -1024,7 +1026,9 @@ export function resolveBackgroundRunsFromListeningPorts(input: {
   readonly portRows: ReadonlyArray<ListeningPortRow>;
   readonly processRows?: ReadonlyArray<ProcessRow>;
   readonly commandHints?: ReadonlyArray<string>;
+  readonly serverPid?: number;
 }): ServerResolveBackgroundRunsResult {
+  const serverPid = input.serverPid ?? process.pid;
   const urlsByPort = new Map<number, string[]>();
   for (const url of input.urls) {
     const port = localhostPortFromUrl(url);
@@ -1061,8 +1065,16 @@ export function resolveBackgroundRunsFromListeningPorts(input: {
   }
 
   const portRunPids = new Set([...rowsByPort.values()].map((row) => row.pid));
+  // A bare pid seed carries no command evidence — it may have been mined from
+  // chat prose that merely mentioned a pid — so require ancestry evidence:
+  // only the server's own descendants qualify. Command-hint matches keep
+  // resolving orphaned (reparented) processes because the hint itself is the
+  // ownership evidence.
+  const serverDescendantPids = new Set(
+    buildDescendantEntries(input.processRows ?? [], serverPid).map((entry) => entry.pid),
+  );
   const explicitProcessOnlyRows = uniquePositivePids(input.pids ?? [])
-    .filter((pid) => !portRunPids.has(pid))
+    .filter((pid) => !portRunPids.has(pid) && serverDescendantPids.has(pid))
     .flatMap((pid) => {
       const row = processRowsByPid.get(pid);
       return row ? [row] : [];
@@ -1086,7 +1098,7 @@ export function resolveBackgroundRunsFromListeningPorts(input: {
         const urls = urlsByPort.get(row.port) ?? [];
         const primaryUrl = urls[0] ?? `http://localhost:${row.port}`;
         const command = compactCommand(processCommandByPid.get(row.pid) ?? row.command);
-        const canStop = row.pid !== process.pid;
+        const canStop = row.pid !== serverPid;
         return {
           id: `detected-localhost:${row.port}:${row.pid}`,
           url: primaryUrl,
@@ -1104,7 +1116,7 @@ export function resolveBackgroundRunsFromListeningPorts(input: {
       }),
       ...processOnlyRows.map((row) => {
         const command = compactCommand(row.command);
-        const canStop = row.pid !== process.pid;
+        const canStop = row.pid !== serverPid;
         return {
           id: `detected-process:${row.pid}`,
           url: `process:${row.pid}`,

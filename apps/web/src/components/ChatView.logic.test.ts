@@ -15,12 +15,13 @@ import { type EnvironmentState, useStore } from "../store";
 import { type ChatMessage, type Thread } from "../types";
 
 import {
-  buildRevertConfirmLines,
+  buildRevertConfirmView,
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
   buildExpiredTerminalContextToastCopy,
   classifyModelSwitch,
   createLocalDispatchSnapshot,
   deriveLockedProvider,
+  backgroundRunCommandsMatch,
   deriveComposerSendState,
   deriveDetectedBackgroundRunLabel,
   deriveProviderBackgroundRuns,
@@ -751,6 +752,27 @@ describe("deriveProviderBackgroundRuns", () => {
     expect(detectionSeeds.urls).toEqual(["http://localhost:5953"]);
   });
 
+  it("never mines pid 1 from task details", () => {
+    const { runs } = deriveProviderBackgroundRuns({
+      activities: [
+        taskActivity(
+          "task.started",
+          {
+            taskId: "task-orphan-hunt",
+            taskType: "background-command",
+            detail: "Detected background process PID 1 and PID 4242 still running",
+          },
+          1,
+        ),
+      ],
+      messages: [],
+      pendingBackgroundTaskCount: 1,
+    });
+
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.pids).toEqual([4242]);
+  });
+
   it("hides local_agent tasks from background runs even without active subagent records", () => {
     const { runs } = deriveProviderBackgroundRuns({
       activities: [
@@ -1159,6 +1181,18 @@ describe("deriveProviderBackgroundRuns", () => {
   });
 });
 
+describe("backgroundRunCommandsMatch", () => {
+  it("matches agent shell-snapshot wrappers against the tracked command", () => {
+    const tracked =
+      "until gh run list --commit 75bdfb9 --json status | jq -e 'all(.status == \"completed\")'; do sleep 60; done";
+    const detected =
+      "zsh -c source /Users/will/.claude/shell-snapshots/snapshot-zsh-123.sh 2>/dev/null || true && setopt NO_EXTENDED_GLOB 2>/dev/null || true && eval 'until gh run list --commit 75bdfb9 --json status | jq -e '\"'\"'all(.status == \"completed\")'\"'\"'; do sleep 60; done'";
+
+    expect(backgroundRunCommandsMatch(detected, tracked)).toBe(true);
+    expect(backgroundRunCommandsMatch(detected, "vp run dev")).toBe(false);
+  });
+});
+
 describe("filterUnresolvedProviderBackgroundRuns", () => {
   const providerUrlRun = {
     id: "provider:task-dev-server",
@@ -1186,6 +1220,35 @@ describe("filterUnresolvedProviderBackgroundRuns", () => {
       filterUnresolvedProviderBackgroundRuns({
         providerBackgroundRuns: [providerUrlRun],
         detectedBackgroundRuns: [{ urls: ["http://localhost:5953"] }],
+      }),
+    ).toEqual([]);
+  });
+
+  it("removes tracked runs whose process was detected through the shell-snapshot wrapper", () => {
+    const command =
+      "until gh run list --commit 75bdfb9 --json status | jq -e 'all(.status == \"completed\")'; do sleep 60; done";
+    const trackedRun = {
+      id: "provider:task-ci-watch",
+      source: "provider" as const,
+      label: "Watch CI for terminal tree-kill commit",
+      command,
+      detail: "Background Command task",
+      statusLabel: "Running",
+      urls: [],
+      pids: [],
+      commandHints: [command],
+    };
+
+    expect(
+      filterUnresolvedProviderBackgroundRuns({
+        providerBackgroundRuns: [trackedRun],
+        detectedBackgroundRuns: [
+          {
+            urls: [],
+            command:
+              "zsh -c source /Users/will/.claude/shell-snapshots/snapshot-zsh-123.sh 2>/dev/null || true && eval 'until gh run list --commit 75bdfb9 --json status | jq -e '\"'\"'all(.status == \"completed\")'\"'\"'; do sleep 60; done'",
+          },
+        ],
       }),
     ).toEqual([]);
   });
@@ -2105,7 +2168,7 @@ describe("reconcileSteeringHandoffStatuses", () => {
     expect(next[queuedMessage.id]?.status).toBe("queued");
   });
 });
-describe("buildRevertConfirmLines", () => {
+describe("buildRevertConfirmView", () => {
   const basePlan = {
     threadId: "thread-1" as never,
     turnCount: 1,
@@ -2120,43 +2183,57 @@ describe("buildRevertConfirmLines", () => {
   };
 
   it("falls back to generic shared-checkout copy without a plan", () => {
-    const lines = buildRevertConfirmLines({ turnCount: 2, isWorktreeThread: false, plan: null });
-    expect(lines[0]).toBe("Revert this thread to checkpoint 2?");
-    expect(lines).toContain("Files changed by other threads or sessions are preserved.");
-    expect(lines.at(-1)).toBe("This action cannot be undone.");
+    const view = buildRevertConfirmView({ turnCount: 2, isWorktreeThread: false, plan: null });
+    expect(view.title).toBe("Revert this thread to checkpoint 2?");
+    expect(view.summary).toBe("This will discard newer messages and turn diffs in this thread.");
+    expect(view.notes).toContain("Files changed by other threads or sessions are preserved.");
+    expect(view.notes.at(-1)).toBe("This action cannot be undone.");
+    expect(view.revertPaths).toEqual([]);
+    expect(view.conflicts).toEqual([]);
   });
 
   it("omits the shared-checkout reassurance for worktree threads without a plan", () => {
-    const lines = buildRevertConfirmLines({ turnCount: 0, isWorktreeThread: true, plan: null });
-    expect(lines[0]).toBe("Revert this thread back to its start?");
-    expect(lines).not.toContain("Files changed by other threads or sessions are preserved.");
+    const view = buildRevertConfirmView({ turnCount: 0, isWorktreeThread: true, plan: null });
+    expect(view.title).toBe("Revert this thread back to its start?");
+    expect(view.notes).not.toContain("Files changed by other threads or sessions are preserved.");
   });
 
   it("describes workspace-mode reverts as whole-checkout restores", () => {
-    const lines = buildRevertConfirmLines({
+    const view = buildRevertConfirmView({
       turnCount: 1,
       isWorktreeThread: true,
       plan: { ...basePlan, mode: "workspace" as const },
     });
-    expect(lines).toContain(
+    expect(view.summary).toBe(
       "This thread owns its worktree, so the entire checkout will be restored.",
     );
+    expect(view.revertPaths).toEqual([]);
   });
 
-  it("summarizes selective plans with counts and preserved-work reassurance", () => {
-    const lines = buildRevertConfirmLines({
-      turnCount: 1,
-      isWorktreeThread: false,
-      plan: basePlan,
-    });
-    expect(lines).toContain("2 files from this thread will be reverted.");
-    expect(lines).toContain(
+  it("lists the files that will revert with counts and preserved-work reassurance", () => {
+    const view = buildRevertConfirmView({ turnCount: 1, isWorktreeThread: false, plan: basePlan });
+    expect(view.summary).toBe("2 files from this thread will be reverted:");
+    expect(view.revertPaths).toEqual(["TODO.md", "docs/notes.md"]);
+    expect(view.revertPathOverflowCount).toBe(0);
+    expect(view.conflictsLabel).toBeNull();
+    expect(view.notes).toContain(
       "Changes from other threads, sessions, and manual edits are preserved.",
     );
   });
 
-  it("lists conflict paths with an overflow suffix", () => {
-    const lines = buildRevertConfirmLines({
+  it("caps the revert path list and counts the overflow", () => {
+    const paths = ["a", "b", "c", "d", "e", "f", "g", "h"];
+    const view = buildRevertConfirmView({
+      turnCount: 1,
+      isWorktreeThread: false,
+      plan: { ...basePlan, revertPaths: paths, revertFileCount: 9 },
+    });
+    expect(view.revertPaths).toHaveLength(6);
+    expect(view.revertPathOverflowCount).toBe(3);
+  });
+
+  it("lists conflict paths with reason labels and an overflow count", () => {
+    const view = buildRevertConfirmView({
       turnCount: 1,
       isWorktreeThread: false,
       plan: {
@@ -2166,22 +2243,33 @@ describe("buildRevertConfirmLines", () => {
           { path: "b.md", reason: "interleaved" as const },
           { path: "c.md", reason: "unsupported" as const },
           { path: "d.md", reason: "interleaved" as const },
+          { path: "e.md", reason: "interleaved" as const },
+          { path: "f.md", reason: "interleaved" as const },
+          { path: "g.md", reason: "interleaved" as const },
         ],
-        conflictCount: 5,
+        conflictCount: 8,
       },
     });
-    expect(lines).toContain(
-      "5 files with conflicting edits will be left untouched: a.md, b.md, c.md and 2 more.",
-    );
+    expect(view.conflictsLabel).toBe("8 files with conflicting edits will be left untouched:");
+    expect(view.conflicts).toHaveLength(6);
+    expect(view.conflicts[0]).toEqual({
+      path: "a.md",
+      reason: "changed after this thread's last edit",
+    });
+    expect(view.conflicts[1]).toEqual({
+      path: "b.md",
+      reason: "interleaved with another session's edits",
+    });
+    expect(view.conflictOverflowCount).toBe(2);
   });
 
   it("notes when no files need reverting and warns about missing provider sessions", () => {
-    const lines = buildRevertConfirmLines({
+    const view = buildRevertConfirmView({
       turnCount: 1,
       isWorktreeThread: false,
       plan: { ...basePlan, revertPaths: [], revertFileCount: 0, hasProviderSession: false },
     });
-    expect(lines).toContain("No file changes need to be reverted.");
-    expect(lines.some((line) => line.startsWith("No active provider session"))).toBe(true);
+    expect(view.summary).toBe("No file changes need to be reverted.");
+    expect(view.notes.some((note) => note.startsWith("No active provider session"))).toBe(true);
   });
 });

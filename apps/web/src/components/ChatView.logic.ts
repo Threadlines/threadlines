@@ -256,12 +256,39 @@ function unwrapShellLauncherCommand(command: string): string | null {
     : null;
 }
 
+/**
+ * Agent harnesses wrap background shell commands as
+ * `source …/shell-snapshots/….sh … && eval '<command>'`. The eval payload is
+ * the command the harness reported for the tracked task, so unwrapping it
+ * lets detected processes dedupe against their tracked runs.
+ */
+function unwrapShellSnapshotEvalCommand(command: string): string | null {
+  if (!command.includes("shell-snapshots")) {
+    return null;
+  }
+  const match = /\beval\s+'([\s\S]+)$/.exec(command);
+  if (!match?.[1]) {
+    return null;
+  }
+  const payload = match[1]
+    // POSIX single-quote escape sequences back to literal quotes.
+    .replaceAll(`'"'"'`, "'")
+    .replaceAll(`'\\''`, "'")
+    // Closing quote of the eval argument (absent when truncated with "…").
+    .replace(/'\s*$/, "")
+    .trim();
+  return payload.length > 0 ? payload : null;
+}
+
 function normalizeBackgroundRunCommand(command: string | null | undefined): string | null {
   if (!command) {
     return null;
   }
-  const normalized =
-    normalizeTerminalActivityCommand(command) ?? command.replace(/\s+/g, " ").trim();
+  // Unwrap snapshot preambles on the raw text: normalization truncates to a
+  // fixed length, and a long snapshot path would swallow the eval payload.
+  const snapshotPayload = unwrapShellSnapshotEvalCommand(command.replace(/\s+/g, " ").trim());
+  const source = snapshotPayload ?? command;
+  const normalized = normalizeTerminalActivityCommand(source) ?? source.replace(/\s+/g, " ").trim();
   if (normalized.length === 0) {
     return null;
   }
@@ -807,7 +834,9 @@ function extractBackgroundPidHints(text: string | null): number[] {
     for (const match of text.matchAll(pattern)) {
       const pidText = match[1];
       const pid = pidText ? Number.parseInt(pidText, 10) : Number.NaN;
-      if (Number.isInteger(pid) && pid > 0) {
+      // pid 1 is init/launchd; prose discussing orphaned processes mentions
+      // it constantly and it can never be an agent background run.
+      if (Number.isInteger(pid) && pid > 1) {
         pids.add(pid);
       }
     }
@@ -1741,64 +1770,119 @@ export function reconcileSteeringHandoffStatuses<T extends SteeringHandoffState>
 
   return changed ? next : input.messagesById;
 }
-const MAX_REVERT_CONFIRM_CONFLICT_PATHS = 3;
+const MAX_REVERT_CONFIRM_LIST_ITEMS = 6;
+
+export interface RevertConfirmView {
+  readonly title: string;
+  /** One-line answer to "what happens to my files", shown as the description. */
+  readonly summary: string;
+  /** Paths that will revert (capped); overflow is counted separately. */
+  readonly revertPaths: ReadonlyArray<string>;
+  readonly revertPathOverflowCount: number;
+  /** Label above the conflict list, when there are conflicts. */
+  readonly conflictsLabel: string | null;
+  /** Conflicting paths listed with human-readable reasons (capped). */
+  readonly conflicts: ReadonlyArray<{ readonly path: string; readonly reason: string }>;
+  readonly conflictOverflowCount: number;
+  /** Trailing caveats: preserved-work, session, discard, and undo notes. */
+  readonly notes: ReadonlyArray<string>;
+}
+
+export function revertConflictReasonLabel(
+  reason: OrchestrationRevertPlan["conflicts"][number]["reason"],
+): string {
+  switch (reason) {
+    case "changed-after-thread":
+      return "changed after this thread's last edit";
+    case "interleaved":
+      return "interleaved with another session's edits";
+    case "unsupported":
+      return "content cannot be merged safely";
+  }
+}
+
+const DISCARD_NOTE = "This will discard newer messages and turn diffs in this thread.";
+const UNDO_NOTE = "This action cannot be undone.";
 
 /**
- * Builds the revert confirmation dialog copy from a dry-run plan. Falls back
- * to mode-generic copy when the plan could not be fetched so the revert is
- * never blocked on the preview.
+ * Builds the revert confirmation dialog content from a dry-run plan. Falls
+ * back to mode-generic copy when the plan could not be fetched so the revert
+ * is never blocked on the preview.
  */
-export function buildRevertConfirmLines(input: {
+export function buildRevertConfirmView(input: {
   readonly turnCount: number;
   readonly isWorktreeThread: boolean;
   readonly plan: OrchestrationRevertPlan | null;
-}): string[] {
-  const lines: string[] = [
+}): RevertConfirmView {
+  const title =
     input.turnCount === 0
       ? "Revert this thread back to its start?"
-      : `Revert this thread to checkpoint ${input.turnCount}?`,
-  ];
+      : `Revert this thread to checkpoint ${input.turnCount}?`;
   const fileCount = (count: number): string => `${count} file${count === 1 ? "" : "s"}`;
+  const empty = {
+    revertPaths: [],
+    revertPathOverflowCount: 0,
+    conflictsLabel: null,
+    conflicts: [],
+    conflictOverflowCount: 0,
+  };
 
   if (input.plan === null) {
-    lines.push("This will discard newer messages and turn diffs in this thread.");
-    if (!input.isWorktreeThread) {
-      // Local (shared-checkout) threads take the selective revert path,
-      // which only touches files attributed to this thread.
-      lines.push("Files changed by other threads or sessions are preserved.");
-    }
-    lines.push("This action cannot be undone.");
-    return lines;
+    return {
+      title,
+      summary: DISCARD_NOTE,
+      ...empty,
+      notes: [
+        // Local (shared-checkout) threads take the selective revert path,
+        // which only touches files attributed to this thread.
+        ...(input.isWorktreeThread
+          ? []
+          : ["Files changed by other threads or sessions are preserved."]),
+        UNDO_NOTE,
+      ],
+    };
   }
 
   if (input.plan.mode === "workspace") {
-    lines.push("This thread owns its worktree, so the entire checkout will be restored.");
-  } else {
-    lines.push(
-      input.plan.revertFileCount > 0
-        ? `${fileCount(input.plan.revertFileCount)} from this thread will be reverted.`
-        : "No file changes need to be reverted.",
-    );
-    if (input.plan.conflictCount > 0) {
-      const listed = input.plan.conflicts
-        .slice(0, MAX_REVERT_CONFIRM_CONFLICT_PATHS)
-        .map((conflict) => conflict.path)
-        .join(", ");
-      const overflow = input.plan.conflictCount - MAX_REVERT_CONFIRM_CONFLICT_PATHS;
-      const suffix = overflow > 0 ? ` and ${overflow} more` : "";
-      lines.push(
-        `${fileCount(input.plan.conflictCount)} with conflicting edits will be left untouched: ${listed}${suffix}.`,
-      );
-    }
-    lines.push("Changes from other threads, sessions, and manual edits are preserved.");
-    if (!input.plan.hasProviderSession) {
-      lines.push(
-        "No active provider session: the provider's conversation memory cannot be rolled back until the session resumes.",
-      );
-    }
+    return {
+      title,
+      summary: "This thread owns its worktree, so the entire checkout will be restored.",
+      ...empty,
+      notes: [DISCARD_NOTE, UNDO_NOTE],
+    };
   }
 
-  lines.push("This will discard newer messages and turn diffs in this thread.");
-  lines.push("This action cannot be undone.");
-  return lines;
+  const revertPaths = input.plan.revertPaths.slice(0, MAX_REVERT_CONFIRM_LIST_ITEMS);
+  const conflicts = input.plan.conflicts
+    .slice(0, MAX_REVERT_CONFIRM_LIST_ITEMS)
+    .map((conflict) => ({
+      path: conflict.path,
+      reason: revertConflictReasonLabel(conflict.reason),
+    }));
+
+  return {
+    title,
+    summary:
+      input.plan.revertFileCount > 0
+        ? `${fileCount(input.plan.revertFileCount)} from this thread will be reverted:`
+        : "No file changes need to be reverted.",
+    revertPaths,
+    revertPathOverflowCount: Math.max(0, input.plan.revertFileCount - revertPaths.length),
+    conflictsLabel:
+      input.plan.conflictCount > 0
+        ? `${fileCount(input.plan.conflictCount)} with conflicting edits will be left untouched:`
+        : null,
+    conflicts,
+    conflictOverflowCount: Math.max(0, input.plan.conflictCount - conflicts.length),
+    notes: [
+      "Changes from other threads, sessions, and manual edits are preserved.",
+      ...(input.plan.hasProviderSession
+        ? []
+        : [
+            "No active provider session: the provider's conversation memory cannot be rolled back until the session resumes.",
+          ]),
+      DISCARD_NOTE,
+      UNDO_NOTE,
+    ],
+  };
 }

@@ -547,11 +547,12 @@ describe("ProcessDiagnostics", () => {
     const result = ProcessDiagnostics.resolveBackgroundRunsFromListeningPorts({
       urls: [],
       pids: [4242, 9999],
+      serverPid: 10,
       portRows: [],
       processRows: [
         {
           pid: 4242,
-          ppid: 1,
+          ppid: 10,
           pgid: null,
           status: "Live",
           cpuPercent: 0,
@@ -578,6 +579,41 @@ describe("ProcessDiagnostics", () => {
         canStop: true,
       },
     ]);
+  });
+
+  it("ignores mentioned PIDs that are not descendants of the server", () => {
+    const result = ProcessDiagnostics.resolveBackgroundRunsFromListeningPorts({
+      urls: [],
+      // pid 1 (init/launchd) and a bystander process mined from chat prose —
+      // neither may surface as a stoppable background run.
+      pids: [1, 42608],
+      serverPid: 10,
+      portRows: [],
+      processRows: [
+        {
+          pid: 1,
+          ppid: 0,
+          pgid: null,
+          status: "Live",
+          cpuPercent: 0,
+          rssBytes: 100,
+          elapsed: "14:20:36",
+          command: "/sbin/launchd",
+        },
+        {
+          pid: 42608,
+          ppid: 1,
+          pgid: null,
+          status: "Live",
+          cpuPercent: 0,
+          rssBytes: 100,
+          elapsed: "10:00:00",
+          command: "/Applications/Threadlines.app/Contents/MacOS/Threadlines",
+        },
+      ],
+    });
+
+    expect(result.runs).toEqual([]);
   });
 
   itEffect("does not allow signaling the diagnostics query process", () =>
