@@ -469,16 +469,6 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     [activeTabModels, isSearching, searchGroups],
   );
 
-  // The list pane is sized to the largest tab (floor 3, cap 9 rows) so
-  // switching tabs never resizes the popup, while setups with few models
-  // don't inherit a huge mostly-empty pane. Searching keeps the same
-  // height so results don't jitter the popup while typing.
-  const paneRowCount = useMemo(() => {
-    const rowCounts =
-      tabs.length > 0 ? tabs.map((tab) => tab.modelCount) : [activeTabModels.length];
-    return Math.max(3, Math.min(9, Math.max(...rowCounts)));
-  }, [activeTabModels.length, tabs]);
-
   const emptyMessage = isSearching
     ? "No models match"
     : activeTab?.kind === "favorites"
@@ -681,14 +671,15 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
 
   return (
     <TooltipProvider delay={0}>
-      {/* The list pane holds a stable height (sized to the largest tab) so
-          switching tabs doesn't resize the popup. The card still clamps to
-          the positioner's --available-height so rows can't extend past the
-          window edge, where the inner scroller (with overscroll-contain)
-          would leave them unreachable. --keyboard-inset (set by
-          ProviderModelPicker while an overlay keyboard is up) shrinks the
-          cap so the lifted popup's top edge stays on screen. */}
-      <div className="relative flex max-h-[calc(var(--available-height)-var(--keyboard-inset,0px))] w-screen max-w-[28rem] flex-col overflow-hidden rounded-lg border bg-popover not-dark:bg-clip-padding text-popover-foreground shadow-lg/5 before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:before:shadow-[0_-1px_--theme(--color-white/6%)]">
+      {/* Height hugs the visible rows; the list pane caps low and scrolls
+          longer lists (favorites with 2-3 models stays tiny, Claude's 8
+          scroll). The card also clamps to the positioner's
+          --available-height so rows can't extend past the window edge,
+          where the inner scroller (with overscroll-contain) would leave
+          them unreachable. --keyboard-inset (set by ProviderModelPicker
+          while an overlay keyboard is up) shrinks the cap so the lifted
+          popup's top edge stays on screen. */}
+      <div className="relative flex max-h-[calc(var(--available-height)-var(--keyboard-inset,0px))] w-screen max-w-[26rem] flex-col overflow-hidden rounded-lg border bg-popover not-dark:bg-clip-padding text-popover-foreground shadow-lg/5 before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:before:shadow-[0_-1px_--theme(--color-white/6%)]">
         <Combobox
           inline
           items={orderedModelKeys}
@@ -831,13 +822,11 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
               </div>
             </div>
 
-            {/* Stable-height pane (2rem per single-line row + list padding):
-                smaller tabs show trailing space instead of resizing the
-                popup; long lists and searches scroll. */}
-            <div
-              className="model-picker-list flex min-h-0 w-full shrink flex-col overflow-y-auto overscroll-contain"
-              style={{ height: `calc(${paneRowCount} * 2rem + 0.625rem)` }}
-            >
+            {/* Fixed pane height of ~3 two-line favorite rows (160px) so tab
+                switches never move the popup — longer lists (Claude's 8
+                models, broad searches) scroll behind it. It still shrinks
+                with the card's --available-height clamp on short windows. */}
+            <div className="model-picker-list flex h-40 min-h-0 w-full shrink flex-col overflow-y-auto overscroll-contain">
               <ComboboxListVirtualized className="w-full px-1.5 py-1">
                 {isSearching
                   ? (() => {

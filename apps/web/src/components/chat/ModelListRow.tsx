@@ -1,6 +1,6 @@
 import { type ProviderDriverKind, type ProviderInstanceId } from "@threadlines/contracts";
 import { memo } from "react";
-import { StarIcon } from "lucide-react";
+import { CheckIcon, StarIcon } from "lucide-react";
 import {
   getDisplayModelName,
   getProviderScopedDisplayModelLabel,
@@ -52,16 +52,16 @@ export const ModelListRow = memo(function ModelListRow(props: {
 
   return (
     <ComboboxItem
+      hideIndicator
       index={props.index}
       value={`${props.instanceId}:${props.model.slug}`}
       contentClassName="flex w-full min-w-0"
-      indicatorClassName="text-primary-readable"
       className={cn(
         "group relative w-full cursor-pointer rounded pl-3 pr-3 transition-colors",
-        // Single-line rows keep a fixed height so the picker pane can be
-        // sized from row counts; only description rows grow taller.
-        props.model.description ? "py-1.5" : "h-8 py-0",
-        // Selection is marked by the check indicator + primary-tinted name so
+        // Single-line rows keep a compact fixed height; rows with a
+        // description or provider footer grow to two lines.
+        props.model.description || props.showProvider ? "py-1.5" : "h-8 py-0",
+        // Selection is marked by the inline check + primary-tinted name so
         // it stays distinguishable from the grey hover/keyboard highlight
         // (--accent and --muted resolve to the same grey in both themes).
         "hover:bg-muted data-highlighted:bg-muted data-selected:bg-transparent data-selected:text-foreground [&[data-highlighted][data-selected]]:bg-muted",
@@ -70,29 +70,18 @@ export const ModelListRow = memo(function ModelListRow(props: {
       <div className="min-w-0 flex-1 text-left">
         <div className="flex items-center justify-between gap-2 min-w-0">
           <div
-            className="text-xs font-medium leading-snug flex items-center gap-2 min-w-0 group-data-selected:text-primary-readable"
+            className="text-xs font-medium leading-snug flex items-center gap-1.5 min-w-0 group-data-selected:text-primary-readable"
             data-model-picker-model-name
           >
             <span className="truncate">{modelLabel}</span>
+            {/* Inline selection check (no left gutter — rows keep their
+                full width and unselected rows don't carry an empty column). */}
+            <CheckIcon
+              aria-hidden
+              className="hidden size-3.5 shrink-0 text-primary-readable group-data-selected:inline-block"
+            />
           </div>
-          <span className="flex min-w-0 shrink items-center gap-1.5">
-            {/* Provider branding rides inline (favorites tab) so rows stay
-                single-line and the pane height stays predictable. */}
-            {props.showProvider && (
-              <span className="flex min-w-0 shrink items-center gap-1">
-                {ProviderIcon ? <ProviderIcon className="size-3 shrink-0" /> : null}
-                {props.providerAccentColor ? (
-                  <span
-                    className="size-1.5 shrink-0 rounded-full"
-                    style={{ backgroundColor: props.providerAccentColor }}
-                    aria-hidden
-                  />
-                ) : null}
-                <span className="truncate text-[11px] font-normal leading-none text-muted-foreground/70">
-                  {providerLabel}
-                </span>
-              </span>
-            )}
+          <span className="flex shrink-0 items-center gap-1.5">
             {/* Favorited rows keep the filled star visible in provider tabs;
                 non-favorites reveal the action on hover/focus. */}
             <Tooltip>
@@ -139,6 +128,21 @@ export const ModelListRow = memo(function ModelListRow(props: {
             {props.model.description}
           </div>
         ) : null}
+        {props.showProvider && (
+          <div className="flex items-center gap-1 mt-0.5">
+            {ProviderIcon ? <ProviderIcon className="size-3 shrink-0" /> : null}
+            {props.providerAccentColor ? (
+              <span
+                className="size-1.5 shrink-0 rounded-full"
+                style={{ backgroundColor: props.providerAccentColor }}
+                aria-hidden
+              />
+            ) : null}
+            <span className="text-xs font-normal leading-snug text-muted-foreground/70 truncate">
+              {providerLabel}
+            </span>
+          </div>
+        )}
       </div>
     </ComboboxItem>
   );
