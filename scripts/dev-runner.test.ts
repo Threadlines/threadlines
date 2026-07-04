@@ -84,6 +84,34 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
       }),
     );
 
+    it.effect("strips inherited release version overrides so dev versions from the checkout", () =>
+      Effect.gen(function* () {
+        const env = yield* createDevRunnerEnv({
+          mode: "dev:desktop",
+          baseEnv: {
+            APP_VERSION: "0.1.1-nightly.20260703.145",
+            VITE_APP_VERSION: "0.1.1-nightly.20260703.145",
+            THREADLINES_APP_VERSION: "0.1.1-nightly.20260703.145",
+          },
+          serverOffset: 0,
+          webOffset: 0,
+          threadlinesHome: undefined,
+          noBrowser: undefined,
+          autoBootstrapProjectFromCwd: undefined,
+          logWebSocketEvents: undefined,
+          host: undefined,
+          port: undefined,
+          devUrl: undefined,
+        });
+
+        assert.equal(env.APP_VERSION, undefined);
+        assert.equal(env.VITE_APP_VERSION, undefined);
+        assert.equal(env.THREADLINES_APP_VERSION, undefined);
+        assert.equal(env.BADCODE_APP_VERSION, undefined);
+        assert.equal(env.T3CODE_APP_VERSION, undefined);
+      }),
+    );
+
     it.effect("supports explicit typed overrides", () =>
       Effect.gen(function* () {
         const path = yield* Path.Path;

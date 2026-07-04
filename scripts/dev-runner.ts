@@ -253,6 +253,13 @@ export function createDevRunnerEnv({
         `http://${isDesktopMode ? DESKTOP_DEV_LOOPBACK_HOST : "localhost"}:${webPort}`,
     };
     setThreadlinesEnv(output, "HOME", resolvedBaseDir);
+    // Release pipelines export these to pin packaged build versions. A leaked
+    // export in the launching shell would silently override the
+    // checkout-derived dev version on one side and trip the client/server
+    // version-skew banner, so dev always versions from the checkout.
+    delete output.APP_VERSION;
+    delete output.VITE_APP_VERSION;
+    deleteThreadlinesEnv(output, "APP_VERSION");
 
     if (!isDesktopMode) {
       setThreadlinesEnv(output, "PORT", String(serverPort));
