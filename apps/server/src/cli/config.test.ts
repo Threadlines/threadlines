@@ -102,6 +102,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           tailscaleServePort: Option.none(),
         },
         Option.none(),
+        { resolveDevAppVersion: () => undefined },
       ).pipe(
         Effect.provide(
           Layer.mergeAll(
@@ -168,6 +169,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           tailscaleServePort: Option.none(),
         },
         Option.none(),
+        { resolveDevAppVersion: () => undefined },
       ).pipe(
         Effect.provide(
           Layer.mergeAll(
@@ -245,6 +247,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           tailscaleServePort: Option.some(8443),
         },
         Option.some("Debug"),
+        { resolveDevAppVersion: () => undefined },
       ).pipe(
         Effect.provide(
           Layer.mergeAll(
@@ -319,6 +322,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           tailscaleServePort: Option.none(),
         },
         Option.none(),
+        { resolveDevAppVersion: () => undefined },
       ).pipe(
         Effect.provide(
           Layer.mergeAll(
@@ -395,6 +399,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           tailscaleServePort: Option.none(),
         },
         Option.none(),
+        { resolveDevAppVersion: () => undefined },
       ).pipe(
         Effect.provide(
           Layer.mergeAll(
@@ -459,6 +464,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           tailscaleServePort: Option.none(),
         },
         Option.none(),
+        { resolveDevAppVersion: () => undefined },
       ).pipe(
         Effect.provide(
           Layer.mergeAll(
@@ -518,6 +524,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           tailscaleServePort: Option.none(),
         },
         Option.some("Debug"),
+        { resolveDevAppVersion: () => undefined },
       ).pipe(
         Effect.provide(
           Layer.mergeAll(
@@ -596,6 +603,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           tailscaleServePort: Option.none(),
         },
         Option.none(),
+        { resolveDevAppVersion: () => undefined },
       ).pipe(
         Effect.provide(
           Layer.mergeAll(
@@ -655,6 +663,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         Option.none(),
         {
           startupPresentation: "headless",
+          resolveDevAppVersion: () => undefined,
         },
       ).pipe(
         Effect.provide(
@@ -691,6 +700,52 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         tailscaleServeEnabled: false,
         tailscaleServePort: 443,
       });
+    }),
+  );
+
+  it.effect("versions dev servers from the checkout release resolver", () =>
+    Effect.gen(function* () {
+      const { join } = yield* Path.Path;
+      const baseDir = join(NodeOS.tmpdir(), "threadlines-cli-config-dev-version");
+      const emptyFlags = {
+        mode: Option.none(),
+        port: Option.none(),
+        host: Option.none(),
+        baseDir: Option.none(),
+        cwd: Option.none(),
+        devUrl: Option.none(),
+        noBrowser: Option.none(),
+        bootstrapFd: Option.none(),
+        autoBootstrapProjectFromCwd: Option.none(),
+        logWebSocketEvents: Option.none(),
+        tailscaleServeEnabled: Option.none(),
+        tailscaleServePort: Option.none(),
+      };
+      const resolveWith = (env: Record<string, string>) =>
+        resolveServerConfig(emptyFlags, Option.none(), {
+          resolveDevAppVersion: () => "9.9.9-nightly.1",
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              ConfigProvider.layer(
+                ConfigProvider.fromEnv({ env: { T3CODE_HOME: baseDir, ...env } }),
+              ),
+              NetService.layer,
+            ),
+          ),
+        );
+
+      const devServer = yield* resolveWith({ VITE_DEV_SERVER_URL: "http://127.0.0.1:5173" });
+      expect(devServer.appVersion).toBe("9.9.9-nightly.1");
+
+      const explicitVersion = yield* resolveWith({
+        VITE_DEV_SERVER_URL: "http://127.0.0.1:5173",
+        THREADLINES_APP_VERSION: "1.2.3",
+      });
+      expect(explicitVersion.appVersion).toBe("1.2.3");
+
+      const productionServer = yield* resolveWith({});
+      expect(productionServer.appVersion).toBe(packageJson.version);
     }),
   );
 });

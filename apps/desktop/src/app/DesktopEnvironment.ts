@@ -8,6 +8,7 @@ import {
   DESKTOP_DEVELOPMENT_APP_ID,
   DESKTOP_RELEASE_APP_ID,
 } from "@threadlines/shared/desktopIdentity";
+import { resolveGitReleaseVersion } from "@threadlines/shared/gitVersion";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -32,6 +33,8 @@ export interface MakeDesktopEnvironmentInput {
   readonly isPackaged: boolean;
   readonly resourcesPath: string;
   readonly runningUnderArm64Translation: boolean;
+  /** Dev-only version source (defaults to the checkout's release tag); injectable for tests. */
+  readonly resolveDevAppVersion?: (rootDir: string) => string | undefined;
 }
 
 export interface DesktopEnvironmentShape {
@@ -162,9 +165,17 @@ const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
   );
   const rootDir = path.resolve(input.dirname, "../../..");
   const appRoot = input.isPackaged ? input.appPath : rootDir;
+  // Unpackaged dev runs report the Electron binary's own version through
+  // app.getVersion(); use the checked-out release version instead so the
+  // branding, the spawned backend, and the web dev bundle all agree.
+  const resolveDevAppVersion =
+    input.resolveDevAppVersion ?? ((cwd: string) => resolveGitReleaseVersion({ cwd }));
+  const appVersion = isDevelopment
+    ? (resolveDevAppVersion(rootDir) ?? input.appVersion)
+    : input.appVersion;
   const branding = resolveDesktopAppBranding({
     isDevelopment,
-    appVersion: input.appVersion,
+    appVersion,
   });
   const displayName = branding.displayName;
   const stateDir = path.join(baseDir, isDevelopment ? "dev" : "userdata");
@@ -179,7 +190,7 @@ const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
     processArch: input.processArch,
     isPackaged: input.isPackaged,
     isDevelopment,
-    appVersion: input.appVersion,
+    appVersion,
     appPath: input.appPath,
     resourcesPath,
     homeDirectory,
@@ -213,7 +224,7 @@ const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
     linuxWmClass: isDevelopment ? "threadlines-dev" : "threadlines",
     userDataDirName,
     legacyUserDataDirName,
-    defaultDesktopSettings: resolveDefaultDesktopSettings(input.appVersion),
+    defaultDesktopSettings: resolveDefaultDesktopSettings(appVersion),
     runtimeInfo: resolveDesktopRuntimeInfo({
       platform: input.platform,
       processArch: input.processArch,

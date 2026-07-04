@@ -19,6 +19,10 @@
       "types": "./src/git.ts",
       "import": "./src/git.ts"
     },
+    "./gitVersion": {
+      "types": "./src/gitVersion.ts",
+      "import": "./src/gitVersion.ts"
+    },
     "./sourceControl": {
       "types": "./src/sourceControl.ts",
       "import": "./src/sourceControl.ts"

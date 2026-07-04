@@ -2,7 +2,7 @@ import tailwindcss from "@tailwindcss/vite";
 import react, { reactCompilerPreset } from "@vitejs/plugin-react";
 import babel from "@rolldown/plugin-babel";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
-import { execFileSync } from "node:child_process";
+import { resolveGitReleaseVersion } from "@threadlines/shared/gitVersion";
 import { defineProject, type TestProjectInlineConfiguration } from "vite-plus/test/config";
 import "vite-plus/test/config";
 import { defineConfig } from "vite-plus";
@@ -40,29 +40,6 @@ const buildSourcemap =
     : sourcemapEnv === "hidden"
       ? "hidden"
       : true;
-
-function stripVersionTagPrefix(version: string): string {
-  return version.trim().replace(/^v(?=\d+\.\d+\.\d+(?:[-+]|$))/, "");
-}
-
-function readGitOutput(args: ReadonlyArray<string>): string | undefined {
-  try {
-    const output = execFileSync("git", args, {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    return output.length > 0 ? output : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function resolveGitReleaseVersion(): string | undefined {
-  const tag =
-    readGitOutput(["describe", "--tags", "--exact-match", "HEAD"]) ??
-    readGitOutput(["describe", "--tags", "--abbrev=0"]);
-  return tag ? stripVersionTagPrefix(tag) : undefined;
-}
 
 function resolveDevProxyTarget(wsUrl: string | undefined): string | undefined {
   if (!wsUrl) {

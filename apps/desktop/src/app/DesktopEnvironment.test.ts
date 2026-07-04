@@ -21,6 +21,8 @@ const defaultInput = {
   isPackaged: false,
   resourcesPath: "/Applications/Threadlines.app/Contents/Resources",
   runningUnderArm64Translation: false,
+  // Deterministic in tests: never consult the real checkout's git tags.
+  resolveDevAppVersion: () => undefined,
 } satisfies DesktopEnvironment.MakeDesktopEnvironmentInput;
 
 const makeEnvironmentLayer = (
@@ -110,6 +112,48 @@ describe("DesktopEnvironment", () => {
       );
 
       assert.equal(environment.openDevToolsInDevelopment, true);
+    }),
+  );
+
+  it.effect("versions development runs from the checkout instead of the Electron binary", () =>
+    Effect.gen(function* () {
+      const environment = yield* makeEnvironment(
+        {
+          resolveDevAppVersion: (rootDir) => (rootDir === "/repo" ? "1.5.0-nightly.9" : undefined),
+        },
+        { VITE_DEV_SERVER_URL: "http://localhost:5173" },
+      );
+
+      assert.equal(environment.appVersion, "1.5.0-nightly.9");
+      assert.equal(environment.branding.version, "1.5.0-nightly.9");
+      assert.equal(environment.branding.stageLabel, "Dev");
+    }),
+  );
+
+  it.effect("keeps the Electron-reported version when the checkout has no release tag", () =>
+    Effect.gen(function* () {
+      const environment = yield* makeEnvironment(
+        { resolveDevAppVersion: () => undefined },
+        { VITE_DEV_SERVER_URL: "http://localhost:5173" },
+      );
+
+      assert.equal(environment.appVersion, "0.0.22");
+    }),
+  );
+
+  it.effect("never consults the checkout version for packaged builds", () =>
+    Effect.gen(function* () {
+      const environment = yield* makeEnvironment(
+        {
+          isPackaged: true,
+          resolveDevAppVersion: () => "9.9.9",
+        },
+        {},
+      );
+
+      assert.equal(environment.isDevelopment, false);
+      assert.equal(environment.appVersion, "0.0.22");
+      assert.equal(environment.branding.version, "0.0.22");
     }),
   );
 

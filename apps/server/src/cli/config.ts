@@ -1,4 +1,5 @@
 import * as NetService from "@threadlines/shared/Net";
+import { resolveGitReleaseVersion } from "@threadlines/shared/gitVersion";
 import { parsePersistedServerObservabilitySettings } from "@threadlines/shared/serverSettings";
 import { DesktopBackendBootstrap, PortSchema } from "@threadlines/contracts";
 import * as Config from "effect/Config";
@@ -318,9 +319,13 @@ export const resolveServerConfig = (
   options?: {
     readonly startupPresentation?: StartupPresentation;
     readonly forceAutoBootstrapProjectFromCwd?: boolean;
+    /** Dev-only fallback version source; injectable for deterministic tests. */
+    readonly resolveDevAppVersion?: () => string | undefined;
   },
 ) =>
   Effect.gen(function* () {
+    const resolveDevAppVersion =
+      options?.resolveDevAppVersion ?? (() => resolveGitReleaseVersion());
     const { findAvailablePort } = yield* NetService.NetService;
     const path = yield* Path.Path;
     const fs = yield* FileSystem.FileSystem;
@@ -453,7 +458,11 @@ export const resolveServerConfig = (
         Option.fromUndefinedOr(bootstrap?.appVersion),
         Option.fromUndefinedOr(env.appVersion),
       ),
-      () => packageJson.version,
+      // Dev servers (serving the web app from the Vite dev server) version
+      // themselves from the checkout like the web bundle does, so client and
+      // server agree; published builds carry a real version via env/bootstrap
+      // and must never git-describe an arbitrary cwd.
+      () => (devUrl ? resolveDevAppVersion() : undefined) ?? packageJson.version,
     );
 
     const config: ServerConfigShape = {
