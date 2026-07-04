@@ -6,13 +6,17 @@ import {
   getArm64IntelBuildWarningDescription,
   getDesktopUpdateActionError,
   getDesktopUpdateButtonTooltip,
+  getDesktopUpdateCardActionLabel,
   getDesktopUpdateInstallConfirmationMessage,
+  getDesktopUpdateStatusLine,
   getSidebarDesktopUpdateTagPresentation,
+  isDesktopUpdateActionKindDisabled,
   isDesktopUpdateButtonDisabled,
+  resolveDesktopUpdateActionKind,
   resolveDesktopUpdateButtonAction,
   shouldShowArm64IntelBuildWarning,
   shouldShowDesktopUpdateButton,
-  shouldToastDesktopUpdateActionResult,
+  shouldShowDesktopUpdaterControls,
 } from "./desktopUpdate.logic";
 
 const baseState: DesktopUpdateState = {
@@ -187,30 +191,6 @@ describe("getDesktopUpdateActionError", () => {
 });
 
 describe("desktop update UI helpers", () => {
-  it("toasts only for actionable updater errors", () => {
-    expect(
-      shouldToastDesktopUpdateActionResult({
-        accepted: true,
-        completed: false,
-        state: { ...baseState, message: "checksum mismatch" },
-      }),
-    ).toBe(true);
-    expect(
-      shouldToastDesktopUpdateActionResult({
-        accepted: true,
-        completed: false,
-        state: { ...baseState, message: null },
-      }),
-    ).toBe(false);
-    expect(
-      shouldToastDesktopUpdateActionResult({
-        accepted: true,
-        completed: true,
-        state: { ...baseState, message: "checksum mismatch" },
-      }),
-    ).toBe(false);
-  });
-
   it("shows an Apple Silicon warning for Intel builds under Rosetta", () => {
     const state: DesktopUpdateState = {
       ...baseState,
@@ -283,7 +263,7 @@ describe("getSidebarDesktopUpdateTagPresentation", () => {
       label: "v1.1.0",
       progressPercent: 0,
       tone: "available",
-      tooltip: "v1.1.0 available — click to download",
+      tooltip: "v1.1.0 available",
     });
   });
 
@@ -304,7 +284,7 @@ describe("getSidebarDesktopUpdateTagPresentation", () => {
       label: "v1.1.0",
       progressPercent: 0,
       tone: "error",
-      tooltip: "Retry download",
+      tooltip: "Download failed",
     });
   });
 
@@ -364,7 +344,7 @@ describe("getSidebarDesktopUpdateTagPresentation", () => {
       label: "v1.1.0",
       progressPercent: 100,
       tone: "error",
-      tooltip: "Retry install",
+      tooltip: "Install failed",
     });
   });
 
@@ -464,6 +444,176 @@ describe("getDesktopUpdateButtonTooltip", () => {
     expect(getDesktopUpdateButtonTooltip({ ...baseState, status: "idle" })).toBe("Up to date");
     expect(getDesktopUpdateButtonTooltip({ ...baseState, status: "up-to-date" })).toBe(
       "Up to date",
+    );
+  });
+});
+
+describe("resolveDesktopUpdateActionKind", () => {
+  it("returns none for null state", () => {
+    expect(resolveDesktopUpdateActionKind(null)).toBe("none");
+  });
+
+  it("falls back to a manual check when no update action is pending", () => {
+    expect(resolveDesktopUpdateActionKind(baseState)).toBe("check");
+    expect(resolveDesktopUpdateActionKind({ ...baseState, status: "up-to-date" })).toBe("check");
+  });
+
+  it("prefers the pending download or install over a check", () => {
+    expect(
+      resolveDesktopUpdateActionKind({
+        ...baseState,
+        status: "available",
+        availableVersion: "1.1.0",
+      }),
+    ).toBe("download");
+    expect(
+      resolveDesktopUpdateActionKind({
+        ...baseState,
+        status: "downloaded",
+        downloadedVersion: "1.1.0",
+      }),
+    ).toBe("install");
+  });
+
+  it("returns none while busy or disabled", () => {
+    expect(resolveDesktopUpdateActionKind({ ...baseState, status: "checking" })).toBe("none");
+    expect(resolveDesktopUpdateActionKind({ ...baseState, status: "downloading" })).toBe("none");
+    expect(resolveDesktopUpdateActionKind({ ...baseState, enabled: false })).toBe("none");
+  });
+});
+
+describe("isDesktopUpdateActionKindDisabled", () => {
+  it("disables the action when there is nothing to run", () => {
+    expect(isDesktopUpdateActionKindDisabled(null)).toBe(true);
+    expect(isDesktopUpdateActionKindDisabled({ ...baseState, status: "checking" })).toBe(true);
+    expect(isDesktopUpdateActionKindDisabled({ ...baseState, enabled: false })).toBe(true);
+  });
+
+  it("keeps check, download, and install actions enabled", () => {
+    expect(isDesktopUpdateActionKindDisabled(baseState)).toBe(false);
+    expect(
+      isDesktopUpdateActionKindDisabled({
+        ...baseState,
+        status: "available",
+        availableVersion: "1.1.0",
+      }),
+    ).toBe(false);
+    expect(
+      isDesktopUpdateActionKindDisabled({
+        ...baseState,
+        status: "downloaded",
+        downloadedVersion: "1.1.0",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("getDesktopUpdateStatusLine", () => {
+  it("stays silent for fresh idle state and missing bridges", () => {
+    expect(getDesktopUpdateStatusLine(null)).toBeNull();
+    expect(getDesktopUpdateStatusLine(baseState)).toBeNull();
+  });
+
+  it("surfaces the updater error message", () => {
+    expect(
+      getDesktopUpdateStatusLine({
+        ...baseState,
+        status: "error",
+        message: "network timeout",
+        errorContext: "download",
+      }),
+    ).toEqual({ text: "network timeout", tone: "error" });
+    expect(getDesktopUpdateStatusLine({ ...baseState, status: "error" })).toEqual({
+      text: "Update failed",
+      tone: "error",
+    });
+  });
+
+  it("describes the pending update lifecycle", () => {
+    expect(
+      getDesktopUpdateStatusLine({
+        ...baseState,
+        status: "available",
+        availableVersion: "1.1.0",
+      }),
+    ).toEqual({ text: "v1.1.0 available", tone: "progress" });
+    expect(
+      getDesktopUpdateStatusLine({
+        ...baseState,
+        status: "downloading",
+        availableVersion: "1.1.0",
+        downloadPercent: 42.7,
+      }),
+    ).toEqual({ text: "Downloading v1.1.0 · 42%", tone: "progress" });
+    expect(
+      getDesktopUpdateStatusLine({
+        ...baseState,
+        status: "downloading",
+        availableVersion: "1.1.0",
+      }),
+    ).toEqual({ text: "Downloading v1.1.0", tone: "progress" });
+    expect(
+      getDesktopUpdateStatusLine({
+        ...baseState,
+        status: "downloaded",
+        downloadedVersion: "1.1.0-nightly.4",
+      }),
+    ).toEqual({ text: "v1.1.0 downloaded", tone: "success" });
+  });
+
+  it("reports check activity and stays silent once up to date", () => {
+    expect(getDesktopUpdateStatusLine({ ...baseState, status: "checking" })).toEqual({
+      text: "Checking for updates…",
+      tone: "neutral",
+    });
+    expect(getDesktopUpdateStatusLine({ ...baseState, status: "up-to-date" })).toBeNull();
+  });
+
+  it("explains disabled updaters", () => {
+    expect(getDesktopUpdateStatusLine({ ...baseState, status: "disabled" })).toEqual({
+      text: "Updates unavailable in this build",
+      tone: "neutral",
+    });
+    expect(
+      getDesktopUpdateStatusLine({ ...baseState, enabled: false, message: "unsupported install" }),
+    ).toEqual({ text: "unsupported install", tone: "neutral" });
+  });
+});
+
+describe("shouldShowDesktopUpdaterControls", () => {
+  it("shows controls only for operational updaters", () => {
+    expect(shouldShowDesktopUpdaterControls(null)).toBe(false);
+    expect(shouldShowDesktopUpdaterControls({ ...baseState, enabled: false })).toBe(false);
+    expect(shouldShowDesktopUpdaterControls({ ...baseState, status: "disabled" })).toBe(false);
+    expect(shouldShowDesktopUpdaterControls(baseState)).toBe(true);
+    expect(shouldShowDesktopUpdaterControls({ ...baseState, status: "downloading" })).toBe(true);
+  });
+});
+
+describe("getDesktopUpdateCardActionLabel", () => {
+  it("labels the adaptive action for each kind", () => {
+    expect(getDesktopUpdateCardActionLabel(null)).toBe("Check for updates");
+    expect(getDesktopUpdateCardActionLabel(baseState)).toBe("Check for updates");
+    expect(
+      getDesktopUpdateCardActionLabel({
+        ...baseState,
+        status: "available",
+        availableVersion: "1.1.0",
+      }),
+    ).toBe("Download update");
+    expect(
+      getDesktopUpdateCardActionLabel({
+        ...baseState,
+        status: "downloaded",
+        downloadedVersion: "1.1.0",
+      }),
+    ).toBe("Restart to install");
+  });
+
+  it("labels busy states while the action is unavailable", () => {
+    expect(getDesktopUpdateCardActionLabel({ ...baseState, status: "checking" })).toBe("Checking…");
+    expect(getDesktopUpdateCardActionLabel({ ...baseState, status: "downloading" })).toBe(
+      "Downloading…",
     );
   });
 });

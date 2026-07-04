@@ -20,8 +20,42 @@ import { getServerConfig, setServerConfigSnapshot } from "../rpc/serverState";
  * cache and the server-config atom. Nothing is sent to the desktop bridge or
  * the server, and a real state push from either simply overwrites the
  * preview.
+ *
+ * Dev sessions also boot directly into a pinned desktop-updater preview so
+ * the updater surfaces are visible without setup: "up-to-date" by default,
+ * another mode via `?updatePreview=<mode>` or
+ * `localStorage["threadlines:update-preview"]`, and none with the value
+ * "off". Unlike the console calls, a boot preview is pinned — startup
+ * refetches and bridge pushes cannot overwrite it — until a console preview
+ * call releases it for the session.
  */
-export type DesktopUpdatePreviewMode = "available" | "downloading" | "downloaded" | "error";
+const DESKTOP_UPDATE_PREVIEW_MODES = [
+  "up-to-date",
+  "available",
+  "downloading",
+  "downloaded",
+  "error",
+] as const;
+
+export type DesktopUpdatePreviewMode = (typeof DESKTOP_UPDATE_PREVIEW_MODES)[number];
+
+export const DESKTOP_UPDATE_PREVIEW_PARAM = "updatePreview";
+export const DESKTOP_UPDATE_PREVIEW_STORAGE_KEY = "threadlines:update-preview";
+
+function readBootDesktopUpdatePreviewMode(): DesktopUpdatePreviewMode | null {
+  const raw =
+    new URLSearchParams(window.location.search).get(DESKTOP_UPDATE_PREVIEW_PARAM) ??
+    window.localStorage.getItem(DESKTOP_UPDATE_PREVIEW_STORAGE_KEY);
+  if (raw === null) return "up-to-date";
+  if (raw === "off") return null;
+  const mode = DESKTOP_UPDATE_PREVIEW_MODES.find((candidate) => candidate === raw);
+  if (!mode) {
+    console.warn(
+      `[threadlines] update preview: unknown mode "${raw}" — expected "off" or one of: ${DESKTOP_UPDATE_PREVIEW_MODES.join(", ")}`,
+    );
+  }
+  return mode ?? null;
+}
 
 export interface DesktopUpdatePreviewOptions {
   /** Incoming version shown on the chip. Defaults to the next patch release. */
@@ -88,6 +122,10 @@ function makeDesktopUpdatePreviewState(
   };
 
   switch (mode) {
+    case "up-to-date":
+      // Idle operational updater: the version card shows the update track
+      // and the "Check for updates" action.
+      return { ...availableState, status: "up-to-date", availableVersion: null };
     case "available":
       return availableState;
     case "downloading":
@@ -148,6 +186,31 @@ function withProviderUpdateStates(
 export function installUpdatePreviewDevTools(queryClient: QueryClient): void {
   let desktopTimer: number | null = null;
   let providerTimer: number | null = null;
+  let releaseBootPreviewPin: (() => void) | null = null;
+
+  const releaseBootPreview = () => {
+    releaseBootPreviewPin?.();
+    releaseBootPreviewPin = null;
+  };
+
+  const pinBootDesktopPreview = () => {
+    const mode = readBootDesktopUpdatePreviewMode();
+    if (!mode) return;
+    const pinnedState = makeDesktopUpdatePreviewState(mode);
+    const stateKey = JSON.stringify(desktopUpdateQueryKeys.state());
+    setDesktopUpdateStateQueryData(queryClient, pinnedState);
+    // The initial mount fetch (and any desktop-bridge push) overwrites the
+    // cache, so re-apply until a console preview call releases the pin.
+    releaseBootPreviewPin = queryClient.getQueryCache().subscribe((event) => {
+      if (event.type !== "updated") return;
+      if (JSON.stringify(event.query.queryKey) !== stateKey) return;
+      if (event.query.state.data === pinnedState) return;
+      setDesktopUpdateStateQueryData(queryClient, pinnedState);
+    });
+    console.debug(
+      `[threadlines] desktop update preview "${mode}" pinned (dev default; pick a mode or "off" via ?${DESKTOP_UPDATE_PREVIEW_PARAM}= or localStorage["${DESKTOP_UPDATE_PREVIEW_STORAGE_KEY}"]). Release for this session with threadlinesUpdatePreview.clearDesktopUpdate().`,
+    );
+  };
 
   const stopDesktopTimer = () => {
     if (desktopTimer !== null) {
@@ -174,11 +237,13 @@ export function installUpdatePreviewDevTools(queryClient: QueryClient): void {
 
   window.threadlinesUpdatePreview = {
     desktopUpdate(mode = "downloading", options) {
+      releaseBootPreview();
       stopDesktopTimer();
       setDesktopUpdateStateQueryData(queryClient, makeDesktopUpdatePreviewState(mode, options));
     },
 
     animateDesktopDownload(durationMs = 6_000) {
+      releaseBootPreview();
       stopDesktopTimer();
       const version = nextPatchVersion(APP_VERSION);
       const startedAt = Date.now();
@@ -202,6 +267,7 @@ export function installUpdatePreviewDevTools(queryClient: QueryClient): void {
     },
 
     clearDesktopUpdate() {
+      releaseBootPreview();
       stopDesktopTimer();
       setDesktopUpdateStateQueryData(queryClient, null);
       void queryClient.invalidateQueries({ queryKey: desktopUpdateQueryKeys.state() });
@@ -256,6 +322,8 @@ export function installUpdatePreviewDevTools(queryClient: QueryClient): void {
       });
     },
   };
+
+  pinBootDesktopPreview();
 
   console.debug(
     "[threadlines] update preview dev tools installed: window.threadlinesUpdatePreview",

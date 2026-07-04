@@ -196,39 +196,43 @@ export const make = Effect.fn("makeGitAuthRemediationService")(function* () {
         actions.push(
           {
             id: "gh_setup_git",
-            title: "Use GitHub CLI credentials",
-            description: `Configure git to authenticate HTTPS remotes on ${endpoint.host} with your GitHub CLI login. Fixes every repository on this machine at once.`,
+            title: "Use your GitHub CLI login",
+            description: `You are already signed into ${endpoint.host} with the GitHub CLI; this tells git to use that login for HTTPS. One-time fix for every repository on this machine — this repository is not modified.`,
             command: ghSetupGitCommand(endpoint.host),
             applicable: ghProbe.applicable,
             inapplicableReason: ghProbe.reason,
+            recommended: ghProbe.applicable,
           },
           {
             id: "switch_remote_to_ssh",
-            title: "Switch remote to SSH",
-            description: `Point "${target.remoteName}" at ${sshUrl} so git authenticates with your SSH key instead of HTTPS credentials.`,
+            title: "Switch this repository to SSH",
+            description: `Rewrites the "${target.remoteName}" remote address to ${sshUrl} so git authenticates with your SSH key instead. Only affects this repository; other HTTPS repositories would still need fixing.`,
             command: switchRemoteCommand(target.remoteName, sshUrl),
             applicable: sshProbe.applicable,
             inapplicableReason: sshProbe.reason,
+            recommended: !ghProbe.applicable && sshProbe.applicable,
           },
         );
       } else {
         actions.push(
           {
             id: "gh_setup_git",
-            title: "Use GitHub CLI credentials",
-            description: `Configure git to authenticate HTTPS remotes on ${endpoint.host} with your GitHub CLI login.`,
+            title: "Use your GitHub CLI login",
+            description: `Tells git to authenticate HTTPS remotes on ${endpoint.host} with your GitHub CLI login.`,
             command: ghSetupGitCommand(endpoint.host),
             applicable: false,
             inapplicableReason:
               "This remote already uses SSH; GitHub CLI credentials only apply to HTTPS remotes.",
+            recommended: false,
           },
           {
             id: "switch_remote_to_ssh",
-            title: "Switch remote to SSH",
-            description: `Point "${target.remoteName}" at ${sshUrl}.`,
+            title: "Switch this repository to SSH",
+            description: `Rewrites the "${target.remoteName}" remote address to ${sshUrl}.`,
             command: switchRemoteCommand(target.remoteName, sshUrl),
             applicable: false,
             inapplicableReason: "This remote already uses SSH.",
+            recommended: false,
           },
         );
       }

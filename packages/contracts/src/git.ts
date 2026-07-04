@@ -150,6 +150,7 @@ export const GitAuthRemediationAction = Schema.Struct({
   command: TrimmedNonEmptyStringSchema,
   applicable: Schema.Boolean,
   inapplicableReason: Schema.NullOr(Schema.String),
+  recommended: Schema.Boolean,
 });
 export type GitAuthRemediationAction = typeof GitAuthRemediationAction.Type;
 

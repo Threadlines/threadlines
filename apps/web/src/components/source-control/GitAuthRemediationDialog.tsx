@@ -9,6 +9,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckIcon, CopyIcon } from "lucide-react";
 import { useState } from "react";
 
+import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import {
   Dialog,
@@ -18,6 +19,7 @@ import {
   DialogPopup,
   DialogTitle,
 } from "~/components/ui/dialog";
+import { cn } from "~/lib/utils";
 import { Spinner } from "~/components/ui/spinner";
 import { toastManager } from "~/components/ui/toast";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
@@ -35,6 +37,21 @@ export interface GitAuthRemediationDialogProps {
   readonly failure: GitRemoteAuthFailure | null;
   /** Called after a fix is applied so the caller can retry the failed operation. */
   readonly onResolved: () => void;
+}
+
+/** Recommended first, then remaining applicable fixes, then unavailable ones. */
+function sortRemediationActions(
+  actions: ReadonlyArray<GitAuthRemediationAction>,
+): ReadonlyArray<GitAuthRemediationAction> {
+  return actions.toSorted((left, right) => {
+    if (left.recommended !== right.recommended) {
+      return left.recommended ? -1 : 1;
+    }
+    if (left.applicable !== right.applicable) {
+      return left.applicable ? -1 : 1;
+    }
+    return 0;
+  });
 }
 
 function RemediationCommand(props: { readonly command: string }) {
@@ -158,28 +175,45 @@ export function GitAuthRemediationDialog(props: GitAuthRemediationDialogProps) {
               . Check the remote URL and your credentials in a terminal.
             </p>
           ) : (
-            plan.data.actions.map((action) => (
-              <div key={action.id} className="flex flex-col gap-2 rounded-md border p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium">{action.title}</p>
-                    <p className="mt-0.5 text-xs text-muted-foreground">{action.description}</p>
+            <>
+              {plan.data.actions.filter((action) => action.applicable).length > 1 ? (
+                <p className="text-xs text-muted-foreground">
+                  Either fix works on its own — you only need one.
+                </p>
+              ) : null}
+              {sortRemediationActions(plan.data.actions).map((action) => (
+                <div
+                  key={action.id}
+                  className={cn(
+                    "flex flex-col gap-2 rounded-md border p-3",
+                    action.recommended && "border-primary/40 bg-primary/[0.03]",
+                  )}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-medium">{action.title}</p>
+                        {action.recommended ? <Badge size="sm">Recommended</Badge> : null}
+                      </div>
+                      <p className="mt-0.5 text-xs text-muted-foreground">{action.description}</p>
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={action.recommended ? "default" : "outline"}
+                      disabled={!action.applicable || applyMutation.isPending}
+                      onClick={() => applyAction(action)}
+                    >
+                      {pendingActionId === action.id ? <Spinner className="size-3.5" /> : "Apply"}
+                    </Button>
                   </div>
-                  <Button
-                    type="button"
-                    size="sm"
-                    disabled={!action.applicable || applyMutation.isPending}
-                    onClick={() => applyAction(action)}
-                  >
-                    {pendingActionId === action.id ? <Spinner className="size-3.5" /> : "Apply"}
-                  </Button>
+                  <RemediationCommand command={action.command} />
+                  {!action.applicable && action.inapplicableReason ? (
+                    <p className="text-xs text-muted-foreground">{action.inapplicableReason}</p>
+                  ) : null}
                 </div>
-                <RemediationCommand command={action.command} />
-                {!action.applicable && action.inapplicableReason ? (
-                  <p className="text-xs text-muted-foreground">{action.inapplicableReason}</p>
-                ) : null}
-              </div>
-            ))
+              ))}
+            </>
           )}
 
           {applyError ? <p className="text-sm text-destructive">{applyError}</p> : null}

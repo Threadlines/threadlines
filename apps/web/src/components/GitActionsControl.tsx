@@ -1390,8 +1390,10 @@ export default function GitActionsControl({
             description: formatGitErrorMessage(err),
             ...(authFailure
               ? {
+                  timeout: 0,
+                  actionVariant: "default" as const,
                   actionProps: {
-                    children: "Fix...",
+                    children: "Fix authentication...",
                     onClick: () => setAuthRemediation({ failure: authFailure, retry: null }),
                   },
                 }
@@ -1475,18 +1477,26 @@ export default function GitActionsControl({
           }),
           error: (err) => {
             const authFailure = gitRemoteAuthFailureFromError(err);
+            if (authFailure) {
+              return {
+                title: "Pull failed",
+                description: formatGitErrorMessage(err),
+                timeout: 0,
+                actionProps: {
+                  children: "Fix authentication...",
+                  onClick: () =>
+                    setAuthRemediation({ failure: authFailure, retry: runPullWithToast }),
+                },
+                data: {
+                  ...threadToastData,
+                  actionLayout: "stacked-end" as const,
+                  actionVariant: "default" as const,
+                },
+              };
+            }
             return {
               title: "Pull failed",
               description: formatGitErrorMessage(err),
-              ...(authFailure
-                ? {
-                    actionProps: {
-                      children: "Fix...",
-                      onClick: () =>
-                        setAuthRemediation({ failure: authFailure, retry: runPullWithToast }),
-                    },
-                  }
-                : {}),
               data: threadToastData,
             };
           },

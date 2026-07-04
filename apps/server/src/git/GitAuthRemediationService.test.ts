@@ -138,10 +138,12 @@ it.layer(TestLayer)("GitAuthRemediationService", (it) => {
 
         const ghAction = plan.actions.find((action) => action.id === "gh_setup_git");
         assert.equal(ghAction?.applicable, true);
+        assert.equal(ghAction?.recommended, true);
         assert.equal(ghAction?.command, `gh auth setup-git --hostname ${UNREACHABLE_HOST}`);
 
         const sshAction = plan.actions.find((action) => action.id === "switch_remote_to_ssh");
         assert.equal(sshAction?.applicable, false);
+        assert.equal(sshAction?.recommended, false);
         assert.equal(
           sshAction?.command,
           `git remote set-url origin git@${UNREACHABLE_HOST}:owner/repo.git`,
@@ -160,6 +162,7 @@ it.layer(TestLayer)("GitAuthRemediationService", (it) => {
         const missingAction = missingPlan.actions.find((action) => action.id === "gh_setup_git");
         assert.equal(missingAction?.applicable, false);
         assert.match(missingAction?.inapplicableReason ?? "", /not installed/);
+        assert.isTrue(missingPlan.actions.every((action) => !action.recommended));
 
         const loggedOut = yield* makeService("unauthenticated");
         const loggedOutPlan = yield* loggedOut.plan({ cwd });

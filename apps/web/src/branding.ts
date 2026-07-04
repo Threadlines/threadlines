@@ -23,5 +23,15 @@ export const APP_STAGE_LABEL =
 export const APP_DISPLAY_NAME =
   injectedDesktopAppBranding?.displayName ??
   (APP_STAGE_LABEL === "Dev" ? `${APP_BASE_NAME} (${APP_STAGE_LABEL})` : APP_BASE_NAME);
+// An unpackaged dev Electron app reports the Electron binary's own version
+// through app.getVersion(), so a "Dev" stage prefers the web bundle's
+// git-derived version instead.
+const trustedInjectedVersion =
+  injectedDesktopAppBranding && injectedDesktopAppBranding.stageLabel !== "Dev"
+    ? injectedDesktopAppBranding.version
+    : null;
 export const APP_VERSION =
-  injectedDesktopAppBranding?.version ?? import.meta.env.APP_VERSION ?? "0.0.0";
+  trustedInjectedVersion ??
+  import.meta.env.APP_VERSION ??
+  injectedDesktopAppBranding?.version ??
+  "0.0.0";

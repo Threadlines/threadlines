@@ -134,7 +134,7 @@ import {
 import { Skeleton } from "../ui/skeleton";
 import { Textarea } from "../ui/textarea";
 import { SectionLabel } from "../ui/threadline";
-import { stackedThreadToast, toastManager } from "../ui/toast";
+import { stackedThreadToast, toastManager, type ThreadToastData } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger, TooltipWrapper } from "../ui/tooltip";
 import {
   buildCommitGraphRows,
@@ -2299,7 +2299,10 @@ export function SourceControlPanel({
 
   const runPull = useCallback(() => {
     const promise = pullMutation.mutateAsync();
-    void toastManager.promise(promise, {
+    void toastManager.promise<
+      Awaited<ReturnType<typeof pullMutation.mutateAsync>>,
+      ThreadToastData
+    >(promise, {
       loading: { title: "Pulling...", data: threadToastData },
       success: (result) => ({
         title: result.status === "pulled" ? "Pulled" : "Already up to date",
@@ -2311,17 +2314,25 @@ export function SourceControlPanel({
       }),
       error: (error) => {
         const authFailure = gitRemoteAuthFailureFromError(error);
+        if (authFailure) {
+          return {
+            title: "Pull failed",
+            description: formatGitErrorMessage(error),
+            timeout: 0,
+            actionProps: {
+              children: "Fix authentication...",
+              onClick: () => setAuthRemediationFailure(authFailure),
+            },
+            data: {
+              ...threadToastData,
+              actionLayout: "stacked-end" as const,
+              actionVariant: "default" as const,
+            },
+          };
+        }
         return {
           title: "Pull failed",
           description: formatGitErrorMessage(error),
-          ...(authFailure
-            ? {
-                actionProps: {
-                  children: "Fix...",
-                  onClick: () => setAuthRemediationFailure(authFailure),
-                },
-              }
-            : {}),
           data: threadToastData,
         };
       },

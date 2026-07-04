@@ -106,10 +106,6 @@ export function getDesktopUpdateActionError(result: DesktopUpdateActionResult): 
   return message.length > 0 ? message : null;
 }
 
-export function shouldToastDesktopUpdateActionResult(result: DesktopUpdateActionResult): boolean {
-  return getDesktopUpdateActionError(result) !== null;
-}
-
 export function shouldHighlightDesktopUpdateError(state: DesktopUpdateState | null): boolean {
   if (!state) return false;
   return state.errorContext === "download" || state.errorContext === "install";
@@ -138,14 +134,12 @@ function getSidebarDesktopUpdateTagTooltip(input: {
       : subject;
   }
   if (input.isError) {
-    return input.action === "install" ? "Retry install" : "Retry download";
+    return input.action === "install" ? "Install failed" : "Download failed";
   }
   if (input.action === "install") {
     return input.targetLabel ? `Restart to install ${input.targetLabel}` : "Restart to install";
   }
-  return input.targetLabel
-    ? `${input.targetLabel} available — click to download`
-    : "Update available";
+  return input.targetLabel ? `${input.targetLabel} available` : "Update available";
 }
 
 export function getSidebarDesktopUpdateTagPresentation(
@@ -213,4 +207,94 @@ export function canCheckForUpdate(state: DesktopUpdateState | null): boolean {
     state.status !== "downloaded" &&
     state.status !== "disabled"
   );
+}
+
+export type DesktopUpdateActionKind = "check" | "download" | "install" | "none";
+
+/**
+ * What the single adaptive update action does right now: the pending
+ * download/install when one exists, otherwise a manual update check when the
+ * updater can accept one.
+ */
+export function resolveDesktopUpdateActionKind(
+  state: DesktopUpdateState | null,
+): DesktopUpdateActionKind {
+  if (!state) return "none";
+  const action = resolveDesktopUpdateButtonAction(state);
+  if (action !== "none") return action;
+  return canCheckForUpdate(state) ? "check" : "none";
+}
+
+export function isDesktopUpdateActionKindDisabled(state: DesktopUpdateState | null): boolean {
+  if (resolveDesktopUpdateActionKind(state) === "none") return true;
+  return isDesktopUpdateButtonDisabled(state);
+}
+
+export interface DesktopUpdateStatusLine {
+  readonly text: string;
+  /** Keys into the shared updater tone palette (updateStatusVisuals). */
+  readonly tone: "neutral" | "progress" | "success" | "error";
+}
+
+/**
+ * One-line updater status for the version hover card. Null when there is
+ * nothing worth saying beyond the version itself (fresh idle state, or no
+ * updater bridge at all).
+ */
+export function getDesktopUpdateStatusLine(
+  state: DesktopUpdateState | null,
+): DesktopUpdateStatusLine | null {
+  if (!state) return null;
+  if (state.status === "error") {
+    return { text: state.message ?? "Update failed", tone: "error" };
+  }
+  const targetVersion = state.downloadedVersion ?? state.availableVersion;
+  const targetLabel = targetVersion ? compactVersionLabel(targetVersion) : null;
+  if (state.downloadedVersion || state.status === "downloaded") {
+    // "restart to install" lives on the action button right below.
+    return { text: `${targetLabel ?? "Update"} downloaded`, tone: "success" };
+  }
+  if (state.status === "downloading") {
+    const subject = targetLabel ? `Downloading ${targetLabel}` : "Downloading update";
+    return {
+      text:
+        typeof state.downloadPercent === "number"
+          ? `${subject} · ${Math.floor(state.downloadPercent)}%`
+          : subject,
+      tone: "progress",
+    };
+  }
+  if (state.status === "available") {
+    return { text: `${targetLabel ?? "Update"} available`, tone: "progress" };
+  }
+  if (state.status === "checking") {
+    return { text: "Checking for updates…", tone: "neutral" };
+  }
+  // "up-to-date" stays silent: the card's "Checked … ago" line already says it.
+  if (!state.enabled || state.status === "disabled") {
+    return {
+      text: state.message ?? "Updates unavailable in this build",
+      tone: "neutral",
+    };
+  }
+  return null;
+}
+
+/**
+ * Whether the version card should show updater controls (update track, action
+ * button). False when the updater can never run in this build — the status
+ * line alone explains why.
+ */
+export function shouldShowDesktopUpdaterControls(state: DesktopUpdateState | null): boolean {
+  return state !== null && state.enabled && state.status !== "disabled";
+}
+
+/** Label for the version card's adaptive action button. */
+export function getDesktopUpdateCardActionLabel(state: DesktopUpdateState | null): string {
+  const kind = resolveDesktopUpdateActionKind(state);
+  if (kind === "download") return "Download update";
+  if (kind === "install") return "Restart to install";
+  if (state?.status === "checking") return "Checking…";
+  if (state?.status === "downloading") return "Downloading…";
+  return "Check for updates";
 }
