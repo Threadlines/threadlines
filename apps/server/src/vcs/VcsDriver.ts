@@ -103,6 +103,8 @@ export interface VcsRestoreCheckpointFileEditsInput {
    * All steps are composed in memory and written atomically, or not at all.
    */
   readonly steps: ReadonlyArray<VcsCheckpointFileEditStep>;
+  /** When true, verify the merge without writing anything to the worktree. */
+  readonly dryRun?: boolean;
 }
 
 export interface VcsCheckpointOps {

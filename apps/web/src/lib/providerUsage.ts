@@ -2,18 +2,25 @@ import type {
   ServerProvider,
   ServerProviderAccountUsage,
   ServerProviderAccountTokenUsage,
+  ServerProviderScopedUsageWindow,
   ServerProviderSpendControlLimit,
   ServerProviderUsageLimit,
   ServerProviderUsageWindow,
 } from "@threadlines/contracts";
 
+/**
+ * `warning` is the single "render attention affordances" signal for usage
+ * bars: it folds together reached limits, the local near-limit threshold,
+ * and provider-reported severity so components never re-derive it.
+ */
 export interface ProviderAccountUsageWindowPresentation {
-  readonly key: "primary" | "secondary";
+  readonly key: string;
   readonly label: string;
   readonly detail: string;
   readonly usedPercent: number;
   readonly remainingPercent: number;
   readonly reachedLimit: boolean;
+  readonly warning: boolean;
 }
 
 export interface ProviderAccountUsageSpendControlPresentation {
@@ -22,6 +29,7 @@ export interface ProviderAccountUsageSpendControlPresentation {
   readonly usedPercent: number;
   readonly remainingPercent: number;
   readonly reachedLimit: boolean;
+  readonly warning: boolean;
 }
 
 export interface ProviderAccountUsageResetCreditsPresentation {
@@ -103,6 +111,8 @@ function selectProviderUsageLimit(
   );
 }
 
+const USAGE_WARNING_THRESHOLD_PERCENT = 90;
+
 function hasReachedUsageWindow(window: ServerProviderUsageWindow): boolean {
   return window.usedPercent >= 100 || window.remainingPercent <= 0;
 }
@@ -157,7 +167,7 @@ function formatUsageWindowPresentation(
     ? null
     : formatBlockedByLimitDetail(blockingLimitLabels);
   const detailParts = [
-    windowReachedLimit ? "limit reached" : `${remainingPercent}% remaining`,
+    windowReachedLimit ? "limit reached" : `${usedPercent}% used`,
     blockedByLimitDetail,
     resetDetail,
   ].filter((part): part is string => Boolean(part));
@@ -169,6 +179,41 @@ function formatUsageWindowPresentation(
     usedPercent,
     remainingPercent,
     reachedLimit: windowReachedLimit,
+    warning: windowReachedLimit || usedPercent >= USAGE_WARNING_THRESHOLD_PERCENT,
+  };
+}
+
+/**
+ * Scoped windows only constrain part of the account's usage (e.g. one
+ * model's weekly cap), so a reached scoped limit never marks sibling
+ * windows as blocked. Provider-reported severity feeds the warning signal
+ * ahead of the local threshold.
+ */
+function formatScopedUsageWindowPresentation(
+  window: ServerProviderScopedUsageWindow,
+  index: number,
+  nowMs: number,
+): ProviderAccountUsageWindowPresentation {
+  const usedPercent = Math.max(0, Math.min(100, window.usedPercent));
+  const remainingPercent = Math.max(0, Math.min(100, window.remainingPercent));
+  const reachedLimit = usedPercent >= 100 || remainingPercent <= 0;
+  const severityWarning = window.severity !== undefined && window.severity !== "normal";
+  const resetDetail = formatResetDetail(window.resetsAt, nowMs);
+  const durationLabel = formatUsageWindowDurationLabel(window, "");
+  const detailParts = [reachedLimit ? "limit reached" : `${usedPercent}% used`, resetDetail].filter(
+    (part): part is string => Boolean(part),
+  );
+
+  return {
+    key: `scoped-${index}`,
+    label: durationLabel
+      ? `${window.scopeLabel} (${durationLabel.toLowerCase()})`
+      : window.scopeLabel,
+    detail: detailParts.join(" · "),
+    usedPercent,
+    remainingPercent,
+    reachedLimit,
+    warning: reachedLimit || severityWarning || usedPercent >= USAGE_WARNING_THRESHOLD_PERCENT,
   };
 }
 
@@ -187,7 +232,7 @@ function formatSpendControlPresentation(
     : formatBlockedByLimitDetail(blockingLimitLabels);
   const detailParts = [
     `${limit.used} used of ${limit.limit}`,
-    spendControlReachedLimit ? "limit reached" : `${remainingPercent}% remaining`,
+    spendControlReachedLimit ? "limit reached" : `${usedPercent}% used`,
     blockedByLimitDetail,
     resetDetail,
   ].filter((part): part is string => Boolean(part));
@@ -198,6 +243,7 @@ function formatSpendControlPresentation(
     usedPercent,
     remainingPercent,
     reachedLimit: spendControlReachedLimit,
+    warning: spendControlReachedLimit || usedPercent >= USAGE_WARNING_THRESHOLD_PERCENT,
   };
 }
 
@@ -361,17 +407,22 @@ export function deriveProviderAccountUsagePresentation(
       : []),
   ];
   const useProviderLevelLimitFallback = reachedLimit && reachedLimitLabels.length === 0;
-  const windows = windowInputs.map((input) => {
-    const windowReachedLimit = hasReachedUsageWindow(input.window);
-    return formatUsageWindowPresentation(
-      input.key,
-      input.window,
-      input.label,
-      useProviderLevelLimitFallback || windowReachedLimit,
-      windowReachedLimit ? [] : reachedLimitLabels,
-      nowMs,
-    );
-  });
+  const windows = [
+    ...windowInputs.map((input) => {
+      const windowReachedLimit = hasReachedUsageWindow(input.window);
+      return formatUsageWindowPresentation(
+        input.key,
+        input.window,
+        input.label,
+        useProviderLevelLimitFallback || windowReachedLimit,
+        windowReachedLimit ? [] : reachedLimitLabels,
+        nowMs,
+      );
+    }),
+    ...(limit.scoped ?? []).map((scopedWindow, index) =>
+      formatScopedUsageWindowPresentation(scopedWindow, index, nowMs),
+    ),
+  ];
   const spendControlReachedLimit = limit.individualLimit
     ? hasReachedSpendControlLimit(limit.individualLimit)
     : false;
@@ -422,6 +473,7 @@ function makeClaudeUsageUnavailablePresentation(
         usedPercent: 0,
         remainingPercent: 100,
         reachedLimit: false,
+        warning: false,
       },
       {
         key: "secondary",
@@ -430,6 +482,7 @@ function makeClaudeUsageUnavailablePresentation(
         usedPercent: 0,
         remainingPercent: 100,
         reachedLimit: false,
+        warning: false,
       },
     ],
   };
@@ -458,18 +511,9 @@ export function deriveProviderAccountUsagePresentationForProvider(
  */
 export function isProviderUsageNearLimit(
   presentation: ProviderAccountUsagePresentation | null,
-  thresholdPercent = 90,
 ): boolean {
   if (!presentation) return false;
   if (presentation.reachedLimit) return true;
-  if (
-    presentation.spendControl &&
-    (presentation.spendControl.reachedLimit ||
-      presentation.spendControl.usedPercent >= thresholdPercent)
-  ) {
-    return true;
-  }
-  return presentation.windows.some(
-    (window) => window.reachedLimit || window.usedPercent >= thresholdPercent,
-  );
+  if (presentation.spendControl?.warning) return true;
+  return presentation.windows.some((window) => window.warning);
 }

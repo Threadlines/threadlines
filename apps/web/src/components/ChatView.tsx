@@ -226,6 +226,7 @@ import {
   shouldWriteThreadErrorToCurrentServerThread,
   waitForStartedServerThread,
   mergeLocalDraftThreadWithServerThread,
+  buildRevertConfirmLines,
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { useComposerHandleContext } from "../composerHandleContext";
@@ -3743,19 +3744,17 @@ export default function ChatView(props: ChatViewProps) {
         setThreadError(activeThread.id, "Interrupt the current turn before reverting checkpoints.");
         return;
       }
+      // Preview the revert so the confirmation states exactly what will
+      // happen; fall back to generic copy if the preview cannot be computed.
+      const plan = await api.orchestration
+        .getRevertPlan({ threadId: activeThread.id, turnCount })
+        .catch(() => null);
       const confirmed = await localApi.dialogs.confirm(
-        [
-          turnCount === 0
-            ? "Revert this thread back to its start?"
-            : `Revert this thread to checkpoint ${turnCount}?`,
-          "This will discard newer messages and turn diffs in this thread.",
-          // Local (shared-checkout) threads take the selective revert path,
-          // which only touches files attributed to this thread.
-          ...(activeThread.worktreePath === null
-            ? ["Files changed by other threads or sessions are preserved."]
-            : []),
-          "This action cannot be undone.",
-        ].join("\n"),
+        buildRevertConfirmLines({
+          turnCount,
+          isWorktreeThread: activeThread.worktreePath !== null,
+          plan,
+        }).join("\n"),
       );
       if (!confirmed) {
         return;

@@ -40,7 +40,7 @@ function AccountUsageBar(props: {
   rowLabel: string;
   detail: string;
   usedPercent: number;
-  reachedLimit: boolean;
+  warning: boolean;
 }) {
   return (
     <div className="space-y-1">
@@ -59,7 +59,7 @@ function AccountUsageBar(props: {
         <div
           className={cn(
             "h-full rounded-full transition-[width]",
-            props.reachedLimit || props.usedPercent >= 90 ? "bg-warning" : "bg-primary",
+            props.warning ? "bg-warning" : "bg-primary",
           )}
           style={{ width: `${props.usedPercent}%` }}
         />
@@ -363,7 +363,7 @@ export function ContextWindowMeter(props: {
                   rowLabel={accountUsage.spendControl.label}
                   detail={accountUsage.spendControl.detail}
                   usedPercent={accountUsage.spendControl.usedPercent}
-                  reachedLimit={accountUsage.spendControl.reachedLimit}
+                  warning={accountUsage.spendControl.warning}
                 />
               ) : null}
               {accountUsage.windows.map((window) => (
@@ -373,7 +373,7 @@ export function ContextWindowMeter(props: {
                   rowLabel={window.label}
                   detail={window.detail}
                   usedPercent={window.usedPercent}
-                  reachedLimit={window.reachedLimit}
+                  warning={window.warning}
                 />
               ))}
             </div>

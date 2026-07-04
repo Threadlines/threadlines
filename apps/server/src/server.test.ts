@@ -61,6 +61,10 @@ import {
   CheckpointDiffQuery,
   type CheckpointDiffQueryShape,
 } from "./checkpointing/Services/CheckpointDiffQuery.ts";
+import {
+  CheckpointRevert,
+  type CheckpointRevertShape,
+} from "./checkpointing/Services/CheckpointRevert.ts";
 import { GitManager, type GitManagerShape } from "./git/GitManager.ts";
 import { Keybindings, type KeybindingsShape } from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
@@ -337,6 +341,7 @@ const buildAppUnderTest = (options?: {
     orchestrationEngine?: Partial<OrchestrationEngineShape>;
     projectionSnapshotQuery?: Partial<ProjectionSnapshotQueryShape>;
     checkpointDiffQuery?: Partial<CheckpointDiffQueryShape>;
+    checkpointRevert?: Partial<CheckpointRevertShape>;
     browserTraceCollector?: Partial<BrowserTraceCollectorShape>;
     serverLifecycleEvents?: Partial<ServerLifecycleEventsShape>;
     serverRuntimeStartup?: Partial<ServerRuntimeStartupShape>;
@@ -707,6 +712,29 @@ const buildAppUnderTest = (options?: {
               diff: "",
             }),
           ...options?.layers?.checkpointDiffQuery,
+        }),
+      ),
+      Layer.provide(
+        Layer.mock(CheckpointRevert)({
+          resolveContext: () =>
+            Effect.succeed({
+              kind: "unavailable" as const,
+              detail: "Revert is unavailable in this test harness.",
+            }),
+          getRevertPlan: (input) =>
+            Effect.succeed({
+              threadId: input.threadId,
+              turnCount: input.turnCount,
+              currentTurnCount: input.turnCount,
+              mode: "selective" as const,
+              revertPaths: [],
+              revertFileCount: 0,
+              conflicts: [],
+              conflictCount: 0,
+              unattributedPathCount: 0,
+              hasProviderSession: true,
+            }),
+          ...options?.layers?.checkpointRevert,
         }),
       ),
     );

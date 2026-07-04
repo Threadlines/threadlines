@@ -74,6 +74,24 @@ export const ServerProviderUsageWindow = Schema.Struct({
 });
 export type ServerProviderUsageWindow = typeof ServerProviderUsageWindow.Type;
 
+/**
+ * A usage window that only constrains a subset of the account's usage (for
+ * example a single model's weekly cap). Scoped windows never block usage
+ * outside their scope, so they render as extra informational rows rather
+ * than gating the provider.
+ */
+export const ServerProviderScopedUsageWindow = Schema.Struct({
+  scopeLabel: TrimmedNonEmptyString,
+  usedPercent: NonNegativeInt,
+  remainingPercent: NonNegativeInt,
+  resetsAt: Schema.optional(NonNegativeInt),
+  windowDurationMins: Schema.optional(NonNegativeInt),
+  // Provider-reported severity (e.g. "normal" | "warning"); anything other
+  // than "normal" should surface ambient warning affordances.
+  severity: Schema.optional(TrimmedNonEmptyString),
+});
+export type ServerProviderScopedUsageWindow = typeof ServerProviderScopedUsageWindow.Type;
+
 export const ServerProviderUsageCredits = Schema.Struct({
   hasCredits: Schema.Boolean,
   unlimited: Schema.Boolean,
@@ -98,6 +116,7 @@ export const ServerProviderUsageLimit = Schema.Struct({
   individualLimit: Schema.optional(ServerProviderSpendControlLimit),
   primary: Schema.optional(ServerProviderUsageWindow),
   secondary: Schema.optional(ServerProviderUsageWindow),
+  scoped: Schema.optional(Schema.Array(ServerProviderScopedUsageWindow)),
 });
 export type ServerProviderUsageLimit = typeof ServerProviderUsageLimit.Type;
 

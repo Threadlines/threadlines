@@ -18,7 +18,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
     expect(formatProviderTokenCount(279_500_000)).toBe("279.5m");
   });
 
-  it("formats Codex rate limit usage with remaining percent and reset time", () => {
+  it("formats Codex rate limit usage with used percent and reset time", () => {
     const usage: ServerProviderAccountUsage = {
       source: "codex-rate-limits",
       checkedAt: "2026-04-10T00:00:00.000Z",
@@ -49,10 +49,11 @@ describe("deriveProviderAccountUsagePresentation", () => {
         {
           key: "primary",
           label: "5h",
-          detail: "63% remaining · resets in 1h",
+          detail: "37% used · resets in 1h",
           usedPercent: 37,
           remainingPercent: 63,
           reachedLimit: false,
+          warning: false,
         },
       ],
     });
@@ -94,18 +95,20 @@ describe("deriveProviderAccountUsagePresentation", () => {
         {
           key: "primary",
           label: "5h",
-          detail: "63% remaining · resets in 1h",
+          detail: "37% used · resets in 1h",
           usedPercent: 37,
           remainingPercent: 63,
           reachedLimit: false,
+          warning: false,
         },
         {
           key: "secondary",
           label: "Weekly",
-          detail: "36% remaining · resets in 7d",
+          detail: "64% used · resets in 7d",
           usedPercent: 64,
           remainingPercent: 36,
           reachedLimit: false,
+          warning: false,
         },
       ],
     });
@@ -144,10 +147,11 @@ describe("deriveProviderAccountUsagePresentation", () => {
         {
           key: "primary",
           label: "5h",
-          detail: "5% remaining",
+          detail: "95% used",
           usedPercent: 95,
           remainingPercent: 5,
           reachedLimit: false,
+          warning: true,
         },
       ],
     });
@@ -243,10 +247,11 @@ describe("deriveProviderAccountUsagePresentation", () => {
         {
           key: "primary",
           label: "5h",
-          detail: "63% remaining · resets in 1h",
+          detail: "37% used · resets in 1h",
           usedPercent: 37,
           remainingPercent: 63,
           reachedLimit: false,
+          warning: false,
         },
       ],
     });
@@ -284,6 +289,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
           usedPercent: 100,
           remainingPercent: 0,
           reachedLimit: true,
+          warning: true,
         },
       ],
     });
@@ -320,21 +326,142 @@ describe("deriveProviderAccountUsagePresentation", () => {
         {
           key: "primary",
           label: "5h",
-          detail: "69% remaining · resets in 2h 32m",
+          detail: "31% used · resets in 2h 32m",
           usedPercent: 31,
           remainingPercent: 69,
           reachedLimit: false,
+          warning: false,
         },
         {
           key: "secondary",
           label: "Weekly",
-          detail: "31% remaining · resets in 7d",
+          detail: "69% used · resets in 7d",
           usedPercent: 69,
           remainingPercent: 31,
           reachedLimit: false,
+          warning: false,
         },
       ],
     });
+  });
+
+  it("appends scoped Claude limits as extra windows honoring provider severity", () => {
+    const usage: ServerProviderAccountUsage = {
+      source: "claude-oauth-usage",
+      checkedAt: "2026-07-03T00:00:00.000Z",
+      primaryLimitId: "claude",
+      limits: [
+        {
+          limitId: "claude",
+          primary: {
+            usedPercent: 35,
+            remainingPercent: 65,
+            resetsAt: 1_800_009_120_000,
+            windowDurationMins: 300,
+          },
+          secondary: {
+            usedPercent: 39,
+            remainingPercent: 61,
+            resetsAt: 1_800_604_800_000,
+            windowDurationMins: 10_080,
+          },
+          scoped: [
+            {
+              scopeLabel: "Fable",
+              usedPercent: 78,
+              remainingPercent: 22,
+              resetsAt: 1_800_604_800_000,
+              windowDurationMins: 10_080,
+              severity: "warning",
+            },
+          ],
+        },
+      ],
+    };
+
+    const presentation = deriveProviderAccountUsagePresentation(usage, 1_800_000_000_000);
+    expect(presentation?.windows).toEqual([
+      {
+        key: "primary",
+        label: "5h",
+        detail: "35% used · resets in 2h 32m",
+        usedPercent: 35,
+        remainingPercent: 65,
+        reachedLimit: false,
+        warning: false,
+      },
+      {
+        key: "secondary",
+        label: "Weekly",
+        detail: "39% used · resets in 7d",
+        usedPercent: 39,
+        remainingPercent: 61,
+        reachedLimit: false,
+        warning: false,
+      },
+      {
+        key: "scoped-0",
+        label: "Fable (weekly)",
+        detail: "78% used · resets in 7d",
+        usedPercent: 78,
+        remainingPercent: 22,
+        reachedLimit: false,
+        warning: true,
+      },
+    ]);
+    expect(presentation?.reachedLimit).toBe(false);
+    expect(isProviderUsageNearLimit(presentation ?? null)).toBe(true);
+  });
+
+  it("marks reached scoped limits without blocking sibling windows", () => {
+    const usage: ServerProviderAccountUsage = {
+      source: "claude-oauth-usage",
+      checkedAt: "2026-07-03T00:00:00.000Z",
+      primaryLimitId: "claude",
+      limits: [
+        {
+          limitId: "claude",
+          primary: {
+            usedPercent: 35,
+            remainingPercent: 65,
+            windowDurationMins: 300,
+          },
+          scoped: [
+            {
+              scopeLabel: "Fable",
+              usedPercent: 100,
+              remainingPercent: 0,
+              resetsAt: 1_800_604_800_000,
+              windowDurationMins: 10_080,
+              severity: "exceeded",
+            },
+          ],
+        },
+      ],
+    };
+
+    const presentation = deriveProviderAccountUsagePresentation(usage, 1_800_000_000_000);
+    expect(presentation?.windows).toEqual([
+      {
+        key: "primary",
+        label: "5h",
+        detail: "35% used",
+        usedPercent: 35,
+        remainingPercent: 65,
+        reachedLimit: false,
+        warning: false,
+      },
+      {
+        key: "scoped-0",
+        label: "Fable (weekly)",
+        detail: "limit reached · resets in 7d",
+        usedPercent: 100,
+        remainingPercent: 0,
+        reachedLimit: true,
+        warning: true,
+      },
+    ]);
+    expect(presentation?.reachedLimit).toBe(true);
   });
 
   it("marks a capped Claude 5h window as limit reached while keeping weekly usage", () => {
@@ -372,14 +499,16 @@ describe("deriveProviderAccountUsagePresentation", () => {
           usedPercent: 100,
           remainingPercent: 0,
           reachedLimit: true,
+          warning: true,
         },
         {
           key: "secondary",
           label: "Weekly",
-          detail: "91% remaining \u00b7 blocked by 5h limit \u00b7 resets in 1d 11h",
+          detail: "9% used \u00b7 blocked by 5h limit \u00b7 resets in 1d 11h",
           usedPercent: 9,
           remainingPercent: 91,
           reachedLimit: false,
+          warning: false,
         },
       ],
     });
@@ -426,14 +555,16 @@ describe("deriveProviderAccountUsagePresentation", () => {
           usedPercent: 100,
           remainingPercent: 0,
           reachedLimit: true,
+          warning: true,
         },
         {
           key: "secondary",
           label: "Weekly",
-          detail: "36% remaining \u00b7 blocked by 5h limit \u00b7 resets in 1d 11h",
+          detail: "64% used \u00b7 blocked by 5h limit \u00b7 resets in 1d 11h",
           usedPercent: 64,
           remainingPercent: 36,
           reachedLimit: false,
+          warning: false,
         },
       ],
     });
@@ -476,10 +607,11 @@ describe("deriveProviderAccountUsagePresentation", () => {
         {
           key: "primary",
           label: "5h",
-          detail: "58% remaining \u00b7 blocked by weekly limit \u00b7 resets in 3h 20m",
+          detail: "42% used \u00b7 blocked by weekly limit \u00b7 resets in 3h 20m",
           usedPercent: 42,
           remainingPercent: 58,
           reachedLimit: false,
+          warning: false,
         },
         {
           key: "secondary",
@@ -488,6 +620,7 @@ describe("deriveProviderAccountUsagePresentation", () => {
           usedPercent: 100,
           remainingPercent: 0,
           reachedLimit: true,
+          warning: true,
         },
       ],
     });
@@ -522,10 +655,11 @@ describe("deriveProviderAccountUsagePresentation", () => {
       },
       spendControl: {
         label: "Monthly",
-        detail: "$35.00 used of $100.00 - 65% remaining - resets in 1d",
+        detail: "$35.00 used of $100.00 - 35% used - resets in 1d",
         usedPercent: 35,
         remainingPercent: 65,
         reachedLimit: false,
+        warning: false,
       },
       windows: [],
     });
@@ -554,6 +688,7 @@ describe("deriveProviderAccountUsagePresentationForProvider", () => {
           usedPercent: 0,
           remainingPercent: 100,
           reachedLimit: false,
+          warning: false,
         },
         {
           key: "secondary",
@@ -562,6 +697,7 @@ describe("deriveProviderAccountUsagePresentationForProvider", () => {
           usedPercent: 0,
           remainingPercent: 100,
           reachedLimit: false,
+          warning: false,
         },
       ],
     });
@@ -598,6 +734,7 @@ describe("deriveProviderAccountUsagePresentationForProvider", () => {
         usedPercent: 0,
         remainingPercent: 100,
         reachedLimit: false,
+        warning: false,
       },
       {
         key: "secondary",
@@ -606,6 +743,7 @@ describe("deriveProviderAccountUsagePresentationForProvider", () => {
         usedPercent: 0,
         remainingPercent: 100,
         reachedLimit: false,
+        warning: false,
       },
     ]);
   });

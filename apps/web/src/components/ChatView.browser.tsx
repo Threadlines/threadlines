@@ -210,6 +210,7 @@ function createBaseServerConfig(): ServerConfig {
 function createMockEnvironmentApi(input: {
   browse: EnvironmentApi["filesystem"]["browse"];
   dispatchCommand: EnvironmentApi["orchestration"]["dispatchCommand"];
+  getRevertPlan?: EnvironmentApi["orchestration"]["getRevertPlan"];
 }): EnvironmentApi {
   return {
     terminal: {} as EnvironmentApi["terminal"],
@@ -229,6 +230,12 @@ function createMockEnvironmentApi(input: {
       getFullThreadDiff: (() => {
         throw new Error("Not implemented in browser test.");
       }) as EnvironmentApi["orchestration"]["getFullThreadDiff"],
+      getRevertPlan:
+        input.getRevertPlan ??
+        ((() =>
+          Promise.reject(
+            new Error("Not implemented in browser test."),
+          )) as EnvironmentApi["orchestration"]["getRevertPlan"]),
       getArchivedShellSnapshot: (() => {
         throw new Error("Not implemented in browser test.");
       }) as EnvironmentApi["orchestration"]["getArchivedShellSnapshot"],
@@ -839,6 +846,33 @@ function createSnapshotWithChangedFileSummary(): OrchestrationReadModel {
         ],
       },
     ],
+  };
+}
+
+function createSnapshotForRevertPreview(): OrchestrationReadModel {
+  const snapshot = createSnapshotWithChangedFileSummary();
+  return {
+    ...snapshot,
+    threads: snapshot.threads.map((thread) => ({
+      ...thread,
+      activities: [
+        {
+          id: EventId.make("activity-revert-conflict"),
+          tone: "warning" as const,
+          kind: "checkpoint.reverted",
+          summary: "Reverted 1 file; left 1 file with conflicting edits untouched: REVERT_TEST.md",
+          payload: {
+            turnCount: 0,
+            mode: "selective",
+            revertedFileCount: 1,
+            conflictPathCount: 1,
+            conflicts: [{ path: "REVERT_TEST.md", reason: "interleaved" }],
+          },
+          turnId: null,
+          createdAt: isoAt(12),
+        },
+      ],
+    })),
   };
 }
 
@@ -2529,6 +2563,87 @@ describe("ChatView timeline estimator parity (full app)", () => {
         "Back to source control button should render.",
       );
     } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("previews shared-checkout reverts with plan-driven copy and shows conflict outcomes", async () => {
+    const confirmMessages: string[] = [];
+    const originalConfirm = window.confirm;
+    window.confirm = (message?: string) => {
+      confirmMessages.push(message ?? "");
+      // Cancel so the preview flow is exercised without dispatching a revert.
+      return false;
+    };
+
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForRevertPreview(),
+      resolveRpc: (body) => {
+        if (body._tag === ORCHESTRATION_WS_METHODS.getRevertPlan) {
+          return {
+            threadId: THREAD_ID,
+            turnCount: 0,
+            currentTurnCount: 1,
+            mode: "selective",
+            revertPaths: ["TODO.md", "docs/notes.md"],
+            revertFileCount: 2,
+            conflicts: [{ path: "REVERT_TEST.md", reason: "interleaved" }],
+            conflictCount: 1,
+            unattributedPathCount: 3,
+            hasProviderSession: true,
+          };
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      // The journaled conflict outcome renders in the timeline.
+      await waitForElement(
+        () =>
+          Array.from(document.querySelectorAll("*")).find((element) =>
+            element.textContent?.includes(
+              "left 1 file with conflicting edits untouched: REVERT_TEST.md",
+            ),
+          ) ?? null,
+        "Conflict outcome activity should render in the timeline.",
+      );
+
+      const revertButton = await waitForElement(
+        () =>
+          document.querySelector<HTMLButtonElement>('button[aria-label="Revert to this message"]'),
+        "Revert affordance should render on the user message.",
+      );
+      revertButton.click();
+
+      await vi.waitFor(() => expect(confirmMessages).toHaveLength(1), {
+        timeout: 8_000,
+        interval: 16,
+      });
+      const confirmMessage = confirmMessages[0] ?? "";
+      expect(confirmMessage).toContain("Revert this thread back to its start?");
+      expect(confirmMessage).toContain("2 files from this thread will be reverted.");
+      expect(confirmMessage).toContain(
+        "1 file with conflicting edits will be left untouched: REVERT_TEST.md.",
+      );
+      expect(confirmMessage).toContain(
+        "Changes from other threads, sessions, and manual edits are preserved.",
+      );
+
+      // The preview was requested over RPC and cancelling dispatched nothing.
+      expect(
+        wsRequests.some((request) => request._tag === ORCHESTRATION_WS_METHODS.getRevertPlan),
+      ).toBe(true);
+      expect(
+        wsRequests.some(
+          (request) =>
+            request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+            (request as { type?: string }).type === "thread.checkpoint.revert",
+        ),
+      ).toBe(false);
+    } finally {
+      window.confirm = originalConfirm;
       await mounted.cleanup();
     }
   });

@@ -1093,15 +1093,13 @@ function ProviderUsageSummaryBar(props: {
   readonly label: string;
   readonly detail: string;
   readonly usedPercent: number;
-  readonly reachedLimit: boolean;
+  readonly warning: boolean;
 }) {
   return (
     <div className="space-y-1.5">
       <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs">
         <span className="min-w-10 font-medium text-foreground">{props.label}</span>
-        <span className="text-muted-foreground">
-          {props.usedPercent}% used{props.detail ? ` - ${props.detail}` : ""}
-        </span>
+        <span className="text-muted-foreground">{props.detail}</span>
       </div>
       <div
         role="meter"
@@ -1114,7 +1112,7 @@ function ProviderUsageSummaryBar(props: {
         <div
           className={cn(
             "h-full rounded-full transition-[width]",
-            props.reachedLimit || props.usedPercent >= 90 ? "bg-warning" : "bg-primary",
+            props.warning ? "bg-warning" : "bg-primary",
           )}
           style={{ width: `${props.usedPercent}%` }}
         />
@@ -1181,7 +1179,7 @@ function ProviderUsageSummary(props: {
             label={props.usage.spendControl.label}
             detail={props.usage.spendControl.detail}
             usedPercent={props.usage.spendControl.usedPercent}
-            reachedLimit={props.usage.spendControl.reachedLimit}
+            warning={props.usage.spendControl.warning}
           />
         ) : null}
         {props.usage.windows.map((window) => (
@@ -1191,7 +1189,7 @@ function ProviderUsageSummary(props: {
             label={window.label}
             detail={window.detail}
             usedPercent={window.usedPercent}
-            reachedLimit={window.reachedLimit}
+            warning={window.warning}
           />
         ))}
       </div>

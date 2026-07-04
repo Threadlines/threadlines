@@ -13,6 +13,7 @@ import {
   CLAUDE_MACOS_KEYCHAIN_SERVICE,
   extractClaudeOAuthCredential,
   normalizeClaudeAccountUsage,
+  normalizeClaudeScopedUsageWindow,
   normalizeClaudeUsageResetsAt,
   normalizeClaudeUsageWindow,
   parseClaudeUsageRetryAfter,
@@ -348,6 +349,69 @@ describe("normalizeClaudeUsageWindow", () => {
   });
 });
 
+describe("normalizeClaudeScopedUsageWindow", () => {
+  it("maps model-scoped weekly limits with severity", () => {
+    expect(
+      normalizeClaudeScopedUsageWindow({
+        kind: "weekly_scoped",
+        group: "weekly",
+        percent: 78.4,
+        severity: "warning",
+        resets_at: "2026-07-10T03:00:00.000Z",
+        scope: { model: { display_name: "Fable" }, surface: null },
+      }),
+    ).toEqual({
+      scopeLabel: "Fable",
+      usedPercent: 78,
+      remainingPercent: 22,
+      resetsAt: Date.parse("2026-07-10T03:00:00.000Z"),
+      windowDurationMins: 10_080,
+      severity: "warning",
+    });
+  });
+
+  it("falls back to the surface scope label", () => {
+    expect(
+      normalizeClaudeScopedUsageWindow({
+        group: "weekly",
+        percent: 12,
+        scope: { model: null, surface: "cowork" },
+      }),
+    ).toEqual({
+      scopeLabel: "cowork",
+      usedPercent: 12,
+      remainingPercent: 88,
+      windowDurationMins: 10_080,
+    });
+  });
+
+  it("skips unscoped entries and entries missing a percent or scope label", () => {
+    expect(
+      normalizeClaudeScopedUsageWindow({
+        kind: "session",
+        group: "session",
+        percent: 35,
+        scope: null,
+      }),
+    ).toBeUndefined();
+    expect(
+      normalizeClaudeScopedUsageWindow({
+        kind: "weekly_scoped",
+        group: "weekly",
+        scope: { model: { display_name: "Fable" } },
+      }),
+    ).toBeUndefined();
+    expect(
+      normalizeClaudeScopedUsageWindow({
+        kind: "weekly_scoped",
+        group: "weekly",
+        percent: 10,
+        scope: { model: { display_name: "  " }, surface: null },
+      }),
+    ).toBeUndefined();
+  });
+});
+
 describe("normalizeClaudeAccountUsage", () => {
   const checkedAt = "2026-06-10T00:00:00.000Z";
 
@@ -449,10 +513,119 @@ describe("normalizeClaudeAccountUsage", () => {
     });
   });
 
+  it("appends scoped limits from the generic limits array", () => {
+    expect(
+      normalizeClaudeAccountUsage(
+        {
+          five_hour: { utilization: 35, resets_at: "2026-07-04T05:30:00.000Z" },
+          seven_day: { utilization: 39, resets_at: "2026-07-10T03:00:00.000Z" },
+          limits: [
+            {
+              kind: "session",
+              group: "session",
+              percent: 35,
+              severity: "normal",
+              resets_at: "2026-07-04T05:30:00.000Z",
+              scope: null,
+            },
+            {
+              kind: "weekly_all",
+              group: "weekly",
+              percent: 39,
+              severity: "normal",
+              resets_at: "2026-07-10T03:00:00.000Z",
+              scope: null,
+            },
+            {
+              kind: "weekly_scoped",
+              group: "weekly",
+              percent: 78,
+              severity: "warning",
+              resets_at: "2026-07-10T03:00:00.000Z",
+              scope: { model: { display_name: "Fable" }, surface: null },
+            },
+          ],
+        },
+        checkedAt,
+      ),
+    ).toEqual({
+      source: "claude-oauth-usage",
+      checkedAt,
+      primaryLimitId: "claude",
+      limits: [
+        {
+          limitId: "claude",
+          primary: {
+            usedPercent: 35,
+            remainingPercent: 65,
+            resetsAt: Date.parse("2026-07-04T05:30:00.000Z"),
+            windowDurationMins: 300,
+          },
+          secondary: {
+            usedPercent: 39,
+            remainingPercent: 61,
+            resetsAt: Date.parse("2026-07-10T03:00:00.000Z"),
+            windowDurationMins: 10_080,
+          },
+          scoped: [
+            {
+              scopeLabel: "Fable",
+              usedPercent: 78,
+              remainingPercent: 22,
+              resetsAt: Date.parse("2026-07-10T03:00:00.000Z"),
+              windowDurationMins: 10_080,
+              severity: "warning",
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("keeps scoped limits when the top-level windows are absent", () => {
+    expect(
+      normalizeClaudeAccountUsage(
+        {
+          five_hour: null,
+          seven_day: null,
+          limits: [
+            {
+              kind: "weekly_scoped",
+              group: "weekly",
+              percent: 78,
+              scope: { model: { display_name: "Fable" }, surface: null },
+            },
+          ],
+        },
+        checkedAt,
+      ),
+    ).toEqual({
+      source: "claude-oauth-usage",
+      checkedAt,
+      primaryLimitId: "claude",
+      limits: [
+        {
+          limitId: "claude",
+          scoped: [
+            {
+              scopeLabel: "Fable",
+              usedPercent: 78,
+              remainingPercent: 22,
+              windowDurationMins: 10_080,
+            },
+          ],
+        },
+      ],
+    });
+  });
+
   it("returns undefined when no window carries utilization data", () => {
     expect(normalizeClaudeAccountUsage({}, checkedAt)).toBeUndefined();
     expect(
       normalizeClaudeAccountUsage({ five_hour: null, seven_day: null }, checkedAt),
+    ).toBeUndefined();
+    expect(
+      normalizeClaudeAccountUsage({ five_hour: null, seven_day: null, limits: [] }, checkedAt),
     ).toBeUndefined();
   });
 });

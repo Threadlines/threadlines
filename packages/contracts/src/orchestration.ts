@@ -26,6 +26,7 @@ export const ORCHESTRATION_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
   getTurnDiff: "orchestration.getTurnDiff",
   getFullThreadDiff: "orchestration.getFullThreadDiff",
+  getRevertPlan: "orchestration.getRevertPlan",
   replayEvents: "orchestration.replayEvents",
   getArchivedShellSnapshot: "orchestration.getArchivedShellSnapshot",
   subscribeShell: "orchestration.subscribeShell",
@@ -1495,6 +1496,54 @@ export type OrchestrationGetFullThreadDiffInput = typeof OrchestrationGetFullThr
 export const OrchestrationGetFullThreadDiffResult = ThreadTurnDiff;
 export type OrchestrationGetFullThreadDiffResult = typeof OrchestrationGetFullThreadDiffResult.Type;
 
+export const OrchestrationRevertPlanMode = Schema.Literals(["workspace", "selective"]);
+export type OrchestrationRevertPlanMode = typeof OrchestrationRevertPlanMode.Type;
+
+export const OrchestrationRevertConflictReason = Schema.Literals([
+  "changed-after-thread",
+  "interleaved",
+  "unsupported",
+]);
+export type OrchestrationRevertConflictReason = typeof OrchestrationRevertConflictReason.Type;
+
+export const OrchestrationRevertPlanConflict = Schema.Struct({
+  path: TrimmedNonEmptyString,
+  reason: OrchestrationRevertConflictReason,
+});
+export type OrchestrationRevertPlanConflict = typeof OrchestrationRevertPlanConflict.Type;
+
+export const OrchestrationGetRevertPlanInput = Schema.Struct({
+  threadId: ThreadId,
+  turnCount: NonNegativeInt,
+});
+export type OrchestrationGetRevertPlanInput = typeof OrchestrationGetRevertPlanInput.Type;
+
+/**
+ * Dry-run preview of a checkpoint revert: what would be restored, what would
+ * be left untouched, and which restore strategy applies. Computed without
+ * modifying the workspace.
+ */
+export const OrchestrationRevertPlan = Schema.Struct({
+  threadId: ThreadId,
+  turnCount: NonNegativeInt,
+  currentTurnCount: NonNegativeInt,
+  mode: OrchestrationRevertPlanMode,
+  /** Paths that will be reverted (capped for transport). */
+  revertPaths: Schema.Array(TrimmedNonEmptyString),
+  revertFileCount: NonNegativeInt,
+  /** Conflicting paths left untouched (capped for transport). */
+  conflicts: Schema.Array(OrchestrationRevertPlanConflict),
+  conflictCount: NonNegativeInt,
+  /** Changed paths not attributed to this thread; always preserved. */
+  unattributedPathCount: NonNegativeInt,
+  /** False when no live provider session exists to roll conversation state back. */
+  hasProviderSession: Schema.Boolean,
+});
+export type OrchestrationRevertPlan = typeof OrchestrationRevertPlan.Type;
+
+export const OrchestrationGetRevertPlanResult = OrchestrationRevertPlan;
+export type OrchestrationGetRevertPlanResult = typeof OrchestrationGetRevertPlanResult.Type;
+
 export const OrchestrationReplayEventsInput = Schema.Struct({
   fromSequenceExclusive: NonNegativeInt,
 });
@@ -1515,6 +1564,10 @@ export const OrchestrationRpcSchemas = {
   getFullThreadDiff: {
     input: OrchestrationGetFullThreadDiffInput,
     output: OrchestrationGetFullThreadDiffResult,
+  },
+  getRevertPlan: {
+    input: OrchestrationGetRevertPlanInput,
+    output: OrchestrationGetRevertPlanResult,
   },
   replayEvents: {
     input: OrchestrationReplayEventsInput,
@@ -1560,6 +1613,14 @@ export class OrchestrationGetTurnDiffError extends Schema.TaggedErrorClass<Orche
 
 export class OrchestrationGetFullThreadDiffError extends Schema.TaggedErrorClass<OrchestrationGetFullThreadDiffError>()(
   "OrchestrationGetFullThreadDiffError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect),
+  },
+) {}
+
+export class OrchestrationGetRevertPlanError extends Schema.TaggedErrorClass<OrchestrationGetRevertPlanError>()(
+  "OrchestrationGetRevertPlanError",
   {
     message: TrimmedNonEmptyString,
     cause: Schema.optional(Schema.Defect),

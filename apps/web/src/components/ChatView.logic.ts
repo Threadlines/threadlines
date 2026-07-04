@@ -1,5 +1,6 @@
 import {
   type EnvironmentId,
+  type OrchestrationRevertPlan,
   ProjectId,
   type ModelSelection,
   type OrchestrationThreadActivity,
@@ -1739,4 +1740,65 @@ export function reconcileSteeringHandoffStatuses<T extends SteeringHandoffState>
   }
 
   return changed ? next : input.messagesById;
+}
+const MAX_REVERT_CONFIRM_CONFLICT_PATHS = 3;
+
+/**
+ * Builds the revert confirmation dialog copy from a dry-run plan. Falls back
+ * to mode-generic copy when the plan could not be fetched so the revert is
+ * never blocked on the preview.
+ */
+export function buildRevertConfirmLines(input: {
+  readonly turnCount: number;
+  readonly isWorktreeThread: boolean;
+  readonly plan: OrchestrationRevertPlan | null;
+}): string[] {
+  const lines: string[] = [
+    input.turnCount === 0
+      ? "Revert this thread back to its start?"
+      : `Revert this thread to checkpoint ${input.turnCount}?`,
+  ];
+  const fileCount = (count: number): string => `${count} file${count === 1 ? "" : "s"}`;
+
+  if (input.plan === null) {
+    lines.push("This will discard newer messages and turn diffs in this thread.");
+    if (!input.isWorktreeThread) {
+      // Local (shared-checkout) threads take the selective revert path,
+      // which only touches files attributed to this thread.
+      lines.push("Files changed by other threads or sessions are preserved.");
+    }
+    lines.push("This action cannot be undone.");
+    return lines;
+  }
+
+  if (input.plan.mode === "workspace") {
+    lines.push("This thread owns its worktree, so the entire checkout will be restored.");
+  } else {
+    lines.push(
+      input.plan.revertFileCount > 0
+        ? `${fileCount(input.plan.revertFileCount)} from this thread will be reverted.`
+        : "No file changes need to be reverted.",
+    );
+    if (input.plan.conflictCount > 0) {
+      const listed = input.plan.conflicts
+        .slice(0, MAX_REVERT_CONFIRM_CONFLICT_PATHS)
+        .map((conflict) => conflict.path)
+        .join(", ");
+      const overflow = input.plan.conflictCount - MAX_REVERT_CONFIRM_CONFLICT_PATHS;
+      const suffix = overflow > 0 ? ` and ${overflow} more` : "";
+      lines.push(
+        `${fileCount(input.plan.conflictCount)} with conflicting edits will be left untouched: ${listed}${suffix}.`,
+      );
+    }
+    lines.push("Changes from other threads, sessions, and manual edits are preserved.");
+    if (!input.plan.hasProviderSession) {
+      lines.push(
+        "No active provider session: the provider's conversation memory cannot be rolled back until the session resumes.",
+      );
+    }
+  }
+
+  lines.push("This will discard newer messages and turn diffs in this thread.");
+  lines.push("This action cannot be undone.");
+  return lines;
 }

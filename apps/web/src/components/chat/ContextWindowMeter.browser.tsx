@@ -42,18 +42,20 @@ const TEST_ACCOUNT_USAGE: ProviderAccountUsagePresentation = {
     {
       key: "primary",
       label: "5h",
-      detail: "98% remaining - resets in 4h 32m",
+      detail: "2% used - resets in 4h 32m",
       usedPercent: 2,
       remainingPercent: 98,
       reachedLimit: false,
+      warning: false,
     },
     {
       key: "secondary",
       label: "Weekly",
-      detail: "64% remaining - resets in 6d",
+      detail: "36% used - resets in 6d",
       usedPercent: 36,
       remainingPercent: 64,
       reachedLimit: false,
+      warning: false,
     },
   ],
   tokenUsage: {

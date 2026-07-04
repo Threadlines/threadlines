@@ -1229,6 +1229,9 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
         if (appliedStepCount === 0) {
           return false;
         }
+        if (input.dryRun === true) {
+          return true;
+        }
 
         const nextContent =
           currentLines.length === 0 ? "" : currentLines.join("\n") + (endsWithNewline ? "\n" : "");

@@ -25,6 +25,7 @@ import {
   type OrchestrationEvent,
   type OrchestrationShellStreamEvent,
   OrchestrationGetFullThreadDiffError,
+  OrchestrationGetRevertPlanError,
   OrchestrationGetSnapshotError,
   OrchestrationGetTurnDiffError,
   ORCHESTRATION_WS_METHODS,
@@ -48,6 +49,7 @@ import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
 import { resolveAttachmentPathById } from "./attachmentStore.ts";
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery.ts";
+import { CheckpointRevert } from "./checkpointing/Services/CheckpointRevert.ts";
 import { ServerConfig } from "./config.ts";
 import { IMAGE_MIME_TYPE_BY_EXTENSION } from "./imageMime.ts";
 import { Keybindings } from "./keybindings.ts";
@@ -198,6 +200,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
       const orchestrationEngine = yield* OrchestrationEngineService;
       const checkpointDiffQuery = yield* CheckpointDiffQuery;
+      const checkpointRevert = yield* CheckpointRevert;
       const keybindings = yield* Keybindings;
       const externalLauncher = yield* ExternalLauncher.ExternalLauncher;
       const gitWorkflow = yield* GitWorkflowService;
@@ -791,6 +794,23 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                 (cause) =>
                   new OrchestrationGetFullThreadDiffError({
                     message: "Failed to load full thread diff",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.getRevertPlan]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getRevertPlan,
+            checkpointRevert.getRevertPlan(input).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationGetRevertPlanError({
+                    message:
+                      cause._tag === "CheckpointUnavailableError"
+                        ? cause.message
+                        : "Failed to compute revert plan",
                     cause,
                   }),
               ),

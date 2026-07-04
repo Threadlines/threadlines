@@ -24,6 +24,7 @@
 import type {
   ClaudeSettings,
   ServerProviderAccountUsage,
+  ServerProviderScopedUsageWindow,
   ServerProviderUsageWindow,
 } from "@threadlines/contracts";
 import * as NodeOS from "node:os";
@@ -78,9 +79,39 @@ const ClaudeUsageWindow = Schema.Struct({
 });
 export type ClaudeUsageWindow = typeof ClaudeUsageWindow.Type;
 
+/**
+ * Entry in the endpoint's generic `limits` array. Unscoped entries (`scope`
+ * null) duplicate `five_hour`/`seven_day`; scoped entries describe limits
+ * that only apply to part of the account's usage (e.g. one model's weekly
+ * cap) and have no dedicated top-level field.
+ */
+const ClaudeUsageLimitEntry = Schema.Struct({
+  kind: Schema.optional(Schema.NullOr(Schema.String)),
+  group: Schema.optional(Schema.NullOr(Schema.String)),
+  percent: Schema.optional(Schema.NullOr(Schema.Number)),
+  severity: Schema.optional(Schema.NullOr(Schema.String)),
+  resets_at: Schema.optional(Schema.NullOr(Schema.Union([Schema.String, Schema.Number]))),
+  scope: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        model: Schema.optional(
+          Schema.NullOr(
+            Schema.Struct({
+              display_name: Schema.optional(Schema.NullOr(Schema.String)),
+            }),
+          ),
+        ),
+        surface: Schema.optional(Schema.NullOr(Schema.String)),
+      }),
+    ),
+  ),
+});
+export type ClaudeUsageLimitEntry = typeof ClaudeUsageLimitEntry.Type;
+
 const ClaudeOAuthUsageResponse = Schema.Struct({
   five_hour: Schema.optional(Schema.NullOr(ClaudeUsageWindow)),
   seven_day: Schema.optional(Schema.NullOr(ClaudeUsageWindow)),
+  limits: Schema.optional(Schema.NullOr(Schema.Array(ClaudeUsageLimitEntry))),
 });
 export type ClaudeOAuthUsageResponse = typeof ClaudeOAuthUsageResponse.Type;
 const decodeClaudeOAuthUsageResponse = Schema.decodeUnknownEffect(ClaudeOAuthUsageResponse);
@@ -93,7 +124,14 @@ const KNOWN_CLAUDE_USAGE_FIELDS = [
   "seven_day_sonnet",
   "cinder_cove",
   "extra_usage",
+  "limits",
 ] as const;
+
+const CLAUDE_USAGE_LIMIT_GROUP_DURATION_MINS: Record<string, number> = {
+  session: FIVE_HOUR_WINDOW_MINS,
+  daily: 1_440,
+  weekly: SEVEN_DAY_WINDOW_MINS,
+};
 
 function normalizeUsagePercent(value: number): number {
   if (!Number.isFinite(value)) return 0;
@@ -134,13 +172,46 @@ export function normalizeClaudeUsageWindow(
   };
 }
 
+/**
+ * Map a scoped `limits` entry (non-null `scope`) onto a scoped usage window.
+ * Unscoped entries are skipped — they duplicate `five_hour`/`seven_day` —
+ * as are entries without a percent or a usable scope label.
+ */
+export function normalizeClaudeScopedUsageWindow(
+  entry: ClaudeUsageLimitEntry,
+): ServerProviderScopedUsageWindow | undefined {
+  if (!entry.scope || typeof entry.percent !== "number") return undefined;
+
+  const scopeLabel = entry.scope.model?.display_name?.trim() || entry.scope.surface?.trim();
+  if (!scopeLabel) return undefined;
+
+  const usedPercent = normalizeUsagePercent(entry.percent);
+  const resetsAt = normalizeClaudeUsageResetsAt(entry.resets_at);
+  const windowDurationMins =
+    typeof entry.group === "string"
+      ? CLAUDE_USAGE_LIMIT_GROUP_DURATION_MINS[entry.group]
+      : undefined;
+  const severity = entry.severity?.trim();
+  return {
+    scopeLabel,
+    usedPercent,
+    remainingPercent: Math.max(0, 100 - usedPercent),
+    ...(resetsAt !== undefined ? { resetsAt } : {}),
+    ...(windowDurationMins !== undefined ? { windowDurationMins } : {}),
+    ...(severity ? { severity } : {}),
+  };
+}
+
 export function normalizeClaudeAccountUsage(
   payload: ClaudeOAuthUsageResponse,
   checkedAt: string,
 ): ServerProviderAccountUsage | undefined {
   const primary = normalizeClaudeUsageWindow(payload.five_hour, FIVE_HOUR_WINDOW_MINS);
   const secondary = normalizeClaudeUsageWindow(payload.seven_day, SEVEN_DAY_WINDOW_MINS);
-  if (!primary && !secondary) return undefined;
+  const scoped = (payload.limits ?? [])
+    .map((entry) => normalizeClaudeScopedUsageWindow(entry))
+    .filter((window): window is ServerProviderScopedUsageWindow => window !== undefined);
+  if (!primary && !secondary && scoped.length === 0) return undefined;
 
   return {
     source: "claude-oauth-usage",
@@ -151,6 +222,7 @@ export function normalizeClaudeAccountUsage(
         limitId: "claude",
         ...(primary ? { primary } : {}),
         ...(secondary ? { secondary } : {}),
+        ...(scoped.length > 0 ? { scoped } : {}),
       },
     ],
   };

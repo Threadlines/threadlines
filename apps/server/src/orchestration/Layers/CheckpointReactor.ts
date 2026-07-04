@@ -1,5 +1,4 @@
 import {
-  type CheckpointRef,
   CommandId,
   EventId,
   MessageId,
@@ -20,19 +19,19 @@ import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@threadlines/shared/DrainableWorker";
 
 import { parseTurnDiffFilesFromUnifiedDiff } from "../../checkpointing/Diffs.ts";
-import {
-  attributedPathsForTurnRange,
-  buildSelectiveRevertPlan,
-  normalizeCheckpointFilePath,
-  type SelectiveRevertConflict,
-} from "../../checkpointing/SelectiveRevert.ts";
-import type { WorktreePathState } from "../../checkpointing/Services/CheckpointStore.ts";
+import { normalizeCheckpointFilePath } from "../../checkpointing/SelectiveRevert.ts";
 import {
   checkpointPreTurnRefForThreadTurn,
   checkpointPreTurnRefForThreadTurnCount,
   checkpointRefForThreadTurn,
+  normalizeWorkspacePath,
   resolveThreadWorkspaceCwd,
 } from "../../checkpointing/Utils.ts";
+import {
+  CheckpointRevert,
+  type RevertFileOutcome,
+  type SelectiveRevertOutcome,
+} from "../../checkpointing/Services/CheckpointRevert.ts";
 import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { CheckpointReactor, type CheckpointReactorShape } from "../Services/CheckpointReactor.ts";
@@ -66,10 +65,6 @@ function sameId(left: string | null | undefined, right: string | null | undefine
     return false;
   }
   return left === right;
-}
-
-function normalizeWorkspacePath(value: string): string {
-  return value.replaceAll("\\", "/").replace(/\/+$/u, "").toLowerCase();
 }
 
 function cloneCheckpointFiles(
@@ -139,49 +134,6 @@ const serverCommandId = (tag: string): CommandId =>
   CommandId.make(`server:${tag}:${crypto.randomUUID()}`);
 
 const MAX_REPORTED_CONFLICT_PATHS = 50;
-// Inter-turn gap scans cost two ref resolutions and one tree diff per turn;
-// beyond this depth the scan is skipped and the content-hash gate alone
-// guards the revert.
-const MAX_CONTESTED_GAP_SCANS = 100;
-
-type SelectiveRevertOutcome = {
-  readonly mode: "selective";
-  /** Total files brought back to the target state (exact, hunk, and turn-level). */
-  readonly revertedFileCount: number;
-  /** Subset of revertedFileCount restored via hunk-level inverse patch. */
-  readonly hunkRevertedFileCount: number;
-  /** Subset of revertedFileCount restored via turn-by-turn rollback. */
-  readonly interleavedRevertedFileCount: number;
-  readonly conflicts: ReadonlyArray<SelectiveRevertConflict>;
-  readonly unattributedPathCount: number;
-  readonly noopPathCount: number;
-  readonly skippedReason?: "missing-latest-checkpoint";
-};
-
-type RevertFileOutcome = { readonly mode: "workspace" } | SelectiveRevertOutcome;
-
-function emptySelectiveOutcome(
-  skippedReason?: "missing-latest-checkpoint",
-): SelectiveRevertOutcome {
-  return {
-    mode: "selective",
-    revertedFileCount: 0,
-    hunkRevertedFileCount: 0,
-    interleavedRevertedFileCount: 0,
-    conflicts: [],
-    unattributedPathCount: 0,
-    noopPathCount: 0,
-    ...(skippedReason !== undefined ? { skippedReason } : {}),
-  };
-}
-
-interface RevertCheckpointContext {
-  readonly turnId: TurnId;
-  readonly checkpointTurnCount: number;
-  readonly checkpointRef: CheckpointRef;
-  readonly files: ReadonlyArray<OrchestrationCheckpointFile>;
-}
-
 const MAX_SUMMARY_CONFLICT_PATHS = 3;
 
 // The timeline renders only the summary text, so it must answer "what
@@ -211,6 +163,7 @@ const make = Effect.gen(function* () {
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerService = yield* ProviderService;
   const checkpointStore = yield* CheckpointStore;
+  const checkpointRevert = yield* CheckpointRevert;
   const receiptBus = yield* RuntimeReceiptBus;
   const workspaceEntries = yield* WorkspaceEntries;
   const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
@@ -273,6 +226,7 @@ const make = Effect.gen(function* () {
                 turnCount: input.turnCount,
                 mode: "selective",
                 revertedFileCount: input.outcome.revertedFileCount,
+                revertedPaths: input.outcome.revertedPaths.slice(0, MAX_REPORTED_CONFLICT_PATHS),
                 hunkRevertedFileCount: input.outcome.hunkRevertedFileCount,
                 interleavedRevertedFileCount: input.outcome.interleavedRevertedFileCount,
                 conflictPathCount: input.outcome.conflicts.length,
@@ -402,327 +356,6 @@ const make = Effect.gen(function* () {
   });
 
   const isGitWorkspace = (cwd: string) => isGitRepository(cwd);
-
-  // A thread may take the whole-checkout restore path only when it is the sole
-  // owner of its checkout: a dedicated worktree that is not the project
-  // workspace root and is not shared with any other thread or provider
-  // session. Everything else must use selective revert so other actors' work
-  // survives (issue #37).
-  const isIsolatedWorkspaceForThread = Effect.fn("isIsolatedWorkspaceForThread")(function* (input: {
-    readonly threadId: ThreadId;
-    readonly thread: { readonly projectId: ProjectId; readonly worktreePath: string | null };
-    readonly cwd: string;
-  }) {
-    const worktreePath = input.thread.worktreePath;
-    if (!worktreePath) {
-      return false;
-    }
-    const normalizedCwd = normalizeWorkspacePath(input.cwd);
-    if (normalizeWorkspacePath(worktreePath) !== normalizedCwd) {
-      return false;
-    }
-
-    const projects = yield* resolveThreadProjects(input.thread.projectId);
-    const workspaceRoot = projects[0]?.workspaceRoot;
-    if (workspaceRoot !== undefined && normalizeWorkspacePath(workspaceRoot) === normalizedCwd) {
-      return false;
-    }
-
-    const shellSnapshot = yield* projectionSnapshotQuery.getShellSnapshot();
-    const sharedWithThread = shellSnapshot.threads.some(
-      (shell) =>
-        !sameId(shell.id, input.threadId) &&
-        shell.worktreePath !== null &&
-        normalizeWorkspacePath(shell.worktreePath) === normalizedCwd,
-    );
-    if (sharedWithThread) {
-      return false;
-    }
-
-    // Any other provider session in the same checkout makes it shared,
-    // regardless of run state: an idle session's work is still on disk.
-    const sessions = yield* providerService.listSessions();
-    const sharedWithSession = sessions.some(
-      (session) =>
-        !sameId(session.threadId, input.threadId) &&
-        !!session.cwd &&
-        normalizeWorkspacePath(session.cwd) === normalizedCwd,
-    );
-    return !sharedWithSession;
-  });
-
-  // Detects attributed paths that also changed outside the thread's turn
-  // windows (between one turn's completion snapshot and the next turn's
-  // pre-turn snapshot). Such interleaved edits cannot be separated at the
-  // file level, so they become conflicts instead of silent overwrites.
-  const collectContestedPaths = Effect.fn("collectContestedPaths")(function* (input: {
-    readonly threadId: ThreadId;
-    readonly checkpoints: ReadonlyArray<RevertCheckpointContext>;
-    readonly cwd: string;
-    readonly targetTurnCount: number;
-    readonly currentTurnCount: number;
-  }) {
-    const contested = new Set<string>();
-    if (input.currentTurnCount - input.targetTurnCount > MAX_CONTESTED_GAP_SCANS) {
-      yield* Effect.logWarning("selective revert skipped the inter-turn gap scan", {
-        threadId: input.threadId,
-        targetTurnCount: input.targetTurnCount,
-        currentTurnCount: input.currentTurnCount,
-      });
-      return contested;
-    }
-
-    for (
-      let turnCount = input.targetTurnCount + 1;
-      turnCount <= input.currentTurnCount;
-      turnCount += 1
-    ) {
-      const checkpoint = input.checkpoints.find((entry) => entry.checkpointTurnCount === turnCount);
-      let preTurnCommit = yield* checkpointStore.resolveCheckpointCommit({
-        cwd: input.cwd,
-        checkpointRef: checkpointPreTurnRefForThreadTurnCount(input.threadId, turnCount),
-      });
-      if (!preTurnCommit && checkpoint) {
-        preTurnCommit = yield* checkpointStore.resolveCheckpointCommit({
-          cwd: input.cwd,
-          checkpointRef: checkpointPreTurnRefForThreadTurn(input.threadId, checkpoint.turnId),
-        });
-      }
-      if (!preTurnCommit) {
-        continue;
-      }
-
-      const previousCheckpointRef =
-        input.checkpoints.find((entry) => entry.checkpointTurnCount === turnCount - 1)
-          ?.checkpointRef ?? checkpointRefForThreadTurn(input.threadId, turnCount - 1);
-      const previousCommit = yield* checkpointStore.resolveCheckpointCommit({
-        cwd: input.cwd,
-        checkpointRef: previousCheckpointRef,
-        fallbackToHead: turnCount - 1 === 0,
-      });
-      if (!previousCommit || previousCommit === preTurnCommit) {
-        continue;
-      }
-
-      const gapEntries = yield* checkpointStore.diffCheckpointEntries({
-        cwd: input.cwd,
-        fromCommit: previousCommit,
-        toCommit: preTurnCommit,
-      });
-      for (const entry of gapEntries) {
-        contested.add(normalizeCheckpointFilePath(entry.path));
-      }
-    }
-
-    return contested;
-  });
-
-  // Shared-checkout revert: restores only paths that are attributed to this
-  // thread after the target checkpoint and whose current content provably
-  // matches the thread's last captured state. Returns null when the target
-  // checkpoint cannot be resolved.
-  const performSelectiveRevert = Effect.fn("performSelectiveRevert")(function* (input: {
-    readonly threadId: ThreadId;
-    readonly checkpoints: ReadonlyArray<RevertCheckpointContext>;
-    readonly cwd: string;
-    readonly targetTurnCount: number;
-    readonly currentTurnCount: number;
-    readonly targetCheckpointRef: CheckpointRef;
-  }): Effect.fn.Return<SelectiveRevertOutcome | null, CheckpointStoreError> {
-    const targetCommit = yield* checkpointStore.resolveCheckpointCommit({
-      cwd: input.cwd,
-      checkpointRef: input.targetCheckpointRef,
-      fallbackToHead: input.targetTurnCount === 0,
-    });
-    if (!targetCommit) {
-      return null;
-    }
-
-    const currentCheckpointRef =
-      input.checkpoints.find((entry) => entry.checkpointTurnCount === input.currentTurnCount)
-        ?.checkpointRef ?? checkpointRefForThreadTurn(input.threadId, input.currentTurnCount);
-    const currentCommit = yield* checkpointStore.resolveCheckpointCommit({
-      cwd: input.cwd,
-      checkpointRef: currentCheckpointRef,
-    });
-    if (!currentCommit) {
-      // Without the thread's last snapshot nothing can be attributed safely;
-      // roll back the conversation but leave the filesystem untouched.
-      yield* Effect.logWarning("selective revert skipped file restore: latest snapshot missing", {
-        threadId: input.threadId,
-        currentTurnCount: input.currentTurnCount,
-        cwd: input.cwd,
-      });
-      return emptySelectiveOutcome("missing-latest-checkpoint");
-    }
-    if (currentCommit === targetCommit) {
-      return emptySelectiveOutcome();
-    }
-
-    const entries = yield* checkpointStore.diffCheckpointEntries({
-      cwd: input.cwd,
-      fromCommit: targetCommit,
-      toCommit: currentCommit,
-    });
-    if (entries.length === 0) {
-      return emptySelectiveOutcome();
-    }
-
-    const attributedPaths = attributedPathsForTurnRange({
-      checkpoints: input.checkpoints,
-      afterTurnCount: input.targetTurnCount,
-      throughTurnCount: input.currentTurnCount,
-    });
-    const contestedPaths = yield* collectContestedPaths({
-      threadId: input.threadId,
-      checkpoints: input.checkpoints,
-      cwd: input.cwd,
-      targetTurnCount: input.targetTurnCount,
-      currentTurnCount: input.currentTurnCount,
-    });
-
-    const candidatePaths = entries
-      .filter((entry) => attributedPaths.has(normalizeCheckpointFilePath(entry.path)))
-      .map((entry) => entry.path);
-    const worktreeStates = new Map<string, WorktreePathState>();
-    if (candidatePaths.length > 0) {
-      const states = yield* checkpointStore.hashWorktreePaths({
-        cwd: input.cwd,
-        paths: candidatePaths,
-      });
-      for (const state of states) {
-        worktreeStates.set(state.path, state);
-      }
-    }
-
-    const plan = buildSelectiveRevertPlan({
-      entries,
-      attributedPaths,
-      contestedPaths,
-      worktreeStates,
-    });
-
-    if (plan.restorePaths.length > 0 || plan.deletePaths.length > 0) {
-      yield* checkpointStore.restoreCheckpointPaths({
-        cwd: input.cwd,
-        checkpointCommit: targetCommit,
-        restorePaths: plan.restorePaths,
-        deletePaths: plan.deletePaths,
-      });
-    }
-
-    // Files another actor edited after the thread's last checkpoint: undo
-    // just the thread's hunks when they apply cleanly against the current
-    // content; overlapping edits stay conflicts.
-    const conflicts: SelectiveRevertConflict[] = [...plan.conflicts];
-    let hunkRevertedFileCount = 0;
-    for (const candidatePath of plan.hunkCandidatePaths) {
-      const applied = yield* checkpointStore.restoreCheckpointFileEdits({
-        cwd: input.cwd,
-        path: candidatePath,
-        steps: [{ fromCommit: currentCommit, toCommit: targetCommit }],
-      });
-      if (applied) {
-        hunkRevertedFileCount += 1;
-      } else {
-        conflicts.push({ path: candidatePath, reason: "changed-after-thread" });
-      }
-    }
-
-    // Files also edited between the thread's turns: a single range-level
-    // inverse would destroy the interleaved foreign work, so roll the
-    // thread's own turns back one at a time instead. Any turn window that
-    // cannot be resolved or merged cleanly leaves the file untouched.
-    let interleavedRevertedFileCount = 0;
-    const commitByRef = new Map<CheckpointRef, string | null>();
-    const resolveCommitCached = (checkpointRef: CheckpointRef) =>
-      commitByRef.has(checkpointRef)
-        ? Effect.succeed(commitByRef.get(checkpointRef) ?? null)
-        : checkpointStore.resolveCheckpointCommit({ cwd: input.cwd, checkpointRef }).pipe(
-            Effect.map((commit) => {
-              commitByRef.set(checkpointRef, commit);
-              return commit;
-            }),
-          );
-    for (const candidatePath of plan.contestedCandidatePaths) {
-      const normalizedPath = normalizeCheckpointFilePath(candidatePath);
-      const touchingCheckpoints = input.checkpoints
-        .filter(
-          (checkpoint) =>
-            checkpoint.checkpointTurnCount > input.targetTurnCount &&
-            checkpoint.checkpointTurnCount <= input.currentTurnCount &&
-            checkpoint.files.some(
-              (file) => normalizeCheckpointFilePath(file.path) === normalizedPath,
-            ),
-        )
-        .toSorted((left, right) => right.checkpointTurnCount - left.checkpointTurnCount);
-
-      let steps: Array<{ fromCommit: string; toCommit: string }> | null =
-        touchingCheckpoints.length > 0 ? [] : null;
-      for (const checkpoint of touchingCheckpoints) {
-        if (steps === null) {
-          break;
-        }
-        const postCommit = yield* resolveCommitCached(checkpoint.checkpointRef);
-        const preCommit =
-          (yield* resolveCommitCached(
-            checkpointPreTurnRefForThreadTurnCount(input.threadId, checkpoint.checkpointTurnCount),
-          )) ??
-          (yield* resolveCommitCached(
-            checkpointPreTurnRefForThreadTurn(input.threadId, checkpoint.turnId),
-          ));
-        if (!postCommit || !preCommit) {
-          steps = null;
-          break;
-        }
-        if (postCommit !== preCommit) {
-          steps.push({ fromCommit: postCommit, toCommit: preCommit });
-        }
-      }
-
-      const applied =
-        steps !== null && steps.length > 0
-          ? yield* checkpointStore.restoreCheckpointFileEdits({
-              cwd: input.cwd,
-              path: candidatePath,
-              steps,
-            })
-          : false;
-      if (applied) {
-        interleavedRevertedFileCount += 1;
-      } else {
-        conflicts.push({ path: candidatePath, reason: "interleaved" });
-      }
-    }
-
-    yield* Effect.logInfo("selective revert applied", {
-      threadId: input.threadId,
-      targetTurnCount: input.targetTurnCount,
-      currentTurnCount: input.currentTurnCount,
-      cwd: input.cwd,
-      restoredPathCount: plan.restorePaths.length,
-      deletedPathCount: plan.deletePaths.length,
-      hunkRevertedFileCount,
-      interleavedRevertedFileCount,
-      conflicts: conflicts.slice(0, 10),
-      unattributedPathCount: plan.unattributedPaths.length,
-      noopPathCount: plan.noopPaths.length,
-    });
-
-    return {
-      mode: "selective",
-      revertedFileCount:
-        plan.restorePaths.length +
-        plan.deletePaths.length +
-        hunkRevertedFileCount +
-        interleavedRevertedFileCount,
-      hunkRevertedFileCount,
-      interleavedRevertedFileCount,
-      conflicts,
-      unattributedPathCount: plan.unattributedPaths.length,
-      noopPathCount: plan.noopPaths.length,
-    };
-  });
 
   // Resolves the workspace CWD for checkpoint operations, preferring the
   // active provider session CWD and falling back to the thread/project config.
@@ -1259,117 +892,38 @@ const make = Effect.gen(function* () {
     event: Extract<OrchestrationEvent, { type: "thread.checkpoint-revert-requested" }>,
   ) {
     const now = DateTime.formatIso(yield* DateTime.now);
-
-    const thread = yield* resolveThreadDetail(event.payload.threadId);
-    if (!thread) {
-      yield* appendRevertFailureActivity({
+    const failRevert = (detail: string) =>
+      appendRevertFailureActivity({
         threadId: event.payload.threadId,
         turnCount: event.payload.turnCount,
-        detail: "Thread was not found in read model.",
+        detail,
         createdAt: now,
-      }).pipe(Effect.catch(() => Effect.void));
-      return;
-    }
+      }).pipe(
+        Effect.catch(() => Effect.void),
+        Effect.asVoid,
+      );
 
-    const sessionRuntime = yield* resolveSessionRuntimeForThread(event.payload.threadId);
-    if (Option.isNone(sessionRuntime)) {
-      yield* appendRevertFailureActivity({
-        threadId: event.payload.threadId,
-        turnCount: event.payload.turnCount,
-        detail: "No active provider session with workspace cwd is bound to this thread.",
-        createdAt: now,
-      }).pipe(Effect.catch(() => Effect.void));
-      return;
-    }
-    if (!isGitWorkspace(sessionRuntime.value.cwd)) {
-      yield* appendRevertFailureActivity({
-        threadId: event.payload.threadId,
-        turnCount: event.payload.turnCount,
-        detail: "Checkpoints are unavailable because this project is not a git repository.",
-        createdAt: now,
-      }).pipe(Effect.catch(() => Effect.void));
-      return;
-    }
-
-    const currentTurnCount = thread.checkpoints.reduce(
-      (maxTurnCount, checkpoint) => Math.max(maxTurnCount, checkpoint.checkpointTurnCount),
-      0,
-    );
-
-    if (event.payload.turnCount > currentTurnCount) {
-      yield* appendRevertFailureActivity({
-        threadId: event.payload.threadId,
-        turnCount: event.payload.turnCount,
-        detail: `Checkpoint turn count ${event.payload.turnCount} exceeds current turn count ${currentTurnCount}.`,
-        createdAt: now,
-      }).pipe(Effect.catch(() => Effect.void));
-      return;
-    }
-
-    const targetCheckpointRef =
-      event.payload.turnCount === 0
-        ? checkpointRefForThreadTurn(event.payload.threadId, 0)
-        : thread.checkpoints.find(
-            (checkpoint) => checkpoint.checkpointTurnCount === event.payload.turnCount,
-          )?.checkpointRef;
-
-    if (!targetCheckpointRef) {
-      yield* appendRevertFailureActivity({
-        threadId: event.payload.threadId,
-        turnCount: event.payload.turnCount,
-        detail: `Checkpoint ref for turn ${event.payload.turnCount} is unavailable in read model.`,
-        createdAt: now,
-      }).pipe(Effect.catch(() => Effect.void));
-      return;
-    }
-
-    const isolatedWorkspace = yield* isIsolatedWorkspaceForThread({
+    const contextResult = yield* checkpointRevert.resolveContext({
       threadId: event.payload.threadId,
-      thread,
-      cwd: sessionRuntime.value.cwd,
+      turnCount: event.payload.turnCount,
     });
+    if (contextResult.kind === "unavailable") {
+      yield* failRevert(contextResult.detail);
+      return;
+    }
+    const context = contextResult.context;
 
-    let revertOutcome: RevertFileOutcome;
-    if (isolatedWorkspace) {
-      const restored = yield* checkpointStore.restoreCheckpoint({
-        cwd: sessionRuntime.value.cwd,
-        checkpointRef: targetCheckpointRef,
-        fallbackToHead: event.payload.turnCount === 0,
-      });
-      if (!restored) {
-        yield* appendRevertFailureActivity({
-          threadId: event.payload.threadId,
-          turnCount: event.payload.turnCount,
-          detail: `Filesystem checkpoint is unavailable for turn ${event.payload.turnCount}.`,
-          createdAt: now,
-        }).pipe(Effect.catch(() => Effect.void));
-        return;
-      }
-      revertOutcome = { mode: "workspace" };
-    } else {
-      const selectiveOutcome = yield* performSelectiveRevert({
-        threadId: event.payload.threadId,
-        checkpoints: thread.checkpoints,
-        cwd: sessionRuntime.value.cwd,
-        targetTurnCount: event.payload.turnCount,
-        currentTurnCount,
-        targetCheckpointRef,
-      });
-      if (selectiveOutcome === null) {
-        yield* appendRevertFailureActivity({
-          threadId: event.payload.threadId,
-          turnCount: event.payload.turnCount,
-          detail: `Filesystem checkpoint is unavailable for turn ${event.payload.turnCount}.`,
-          createdAt: now,
-        }).pipe(Effect.catch(() => Effect.void));
-        return;
-      }
-      revertOutcome = selectiveOutcome;
+    const revertOutcome = yield* checkpointRevert.applyRevert(context);
+    if (revertOutcome === null) {
+      yield* failRevert(
+        `Filesystem checkpoint is unavailable for turn ${event.payload.turnCount}.`,
+      );
+      return;
     }
 
     // Invalidate the workspace entry cache so the @-mention file picker
     // reflects the reverted filesystem state.
-    yield* workspaceEntries.invalidate(sessionRuntime.value.cwd);
+    yield* workspaceEntries.invalidate(context.cwd);
 
     yield* appendRevertOutcomeActivity({
       threadId: event.payload.threadId,
@@ -1378,20 +932,46 @@ const make = Effect.gen(function* () {
       createdAt: now,
     }).pipe(Effect.catch(() => Effect.void));
 
-    const rolledBackTurns = Math.max(0, currentTurnCount - event.payload.turnCount);
+    const rolledBackTurns = Math.max(0, context.currentTurnCount - event.payload.turnCount);
     if (rolledBackTurns > 0) {
-      const targetUserMessageId = targetUserMessageIdForCheckpointRewind({
-        thread,
-        targetTurnCount: event.payload.turnCount,
-      });
-      yield* providerService.rollbackConversation({
-        threadId: sessionRuntime.value.threadId,
-        numTurns: rolledBackTurns,
-        ...(targetUserMessageId !== undefined ? { targetUserMessageId } : {}),
-      });
+      if (context.hasProviderSession) {
+        const targetUserMessageId = targetUserMessageIdForCheckpointRewind({
+          thread: context.thread,
+          targetTurnCount: event.payload.turnCount,
+        });
+        yield* providerService.rollbackConversation({
+          threadId: event.payload.threadId,
+          numTurns: rolledBackTurns,
+          ...(targetUserMessageId !== undefined ? { targetUserMessageId } : {}),
+        });
+      } else {
+        // Files can revert without a live session, but provider conversation
+        // state cannot; surface it instead of failing the whole revert.
+        yield* orchestrationEngine
+          .dispatch({
+            type: "thread.activity.append",
+            commandId: serverCommandId("checkpoint-revert-rollback-skipped"),
+            threadId: event.payload.threadId,
+            activity: {
+              id: EventId.make(crypto.randomUUID()),
+              tone: "warning",
+              kind: "checkpoint.revert.rollback-skipped",
+              summary:
+                "Provider conversation was not rolled back: no active session. The provider may still remember reverted turns.",
+              payload: {
+                turnCount: event.payload.turnCount,
+                rolledBackTurns,
+              },
+              turnId: null,
+              createdAt: now,
+            },
+            createdAt: now,
+          })
+          .pipe(Effect.catch(() => Effect.void));
+      }
     }
 
-    const staleCheckpointRefs = thread.checkpoints
+    const staleCheckpointRefs = context.thread.checkpoints
       .filter((checkpoint) => checkpoint.checkpointTurnCount > event.payload.turnCount)
       .flatMap((checkpoint) => [
         checkpoint.checkpointRef,
@@ -1404,7 +984,7 @@ const make = Effect.gen(function* () {
 
     if (staleCheckpointRefs.length > 0) {
       yield* checkpointStore.deleteCheckpointRefs({
-        cwd: sessionRuntime.value.cwd,
+        cwd: context.cwd,
         checkpointRefs: staleCheckpointRefs,
       });
     }

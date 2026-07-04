@@ -107,6 +107,8 @@ export interface RestoreCheckpointFileEditsInput {
    * All steps are composed in memory and written atomically, or not at all.
    */
   readonly steps: ReadonlyArray<CheckpointFileEditStep>;
+  /** When true, verify the merge without writing anything to the worktree. */
+  readonly dryRun?: boolean;
 }
 
 /**

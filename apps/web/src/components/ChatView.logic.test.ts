@@ -15,6 +15,7 @@ import { type EnvironmentState, useStore } from "../store";
 import { type ChatMessage, type Thread } from "../types";
 
 import {
+  buildRevertConfirmLines,
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
   buildExpiredTerminalContextToastCopy,
   classifyModelSwitch,
@@ -2102,5 +2103,85 @@ describe("reconcileSteeringHandoffStatuses", () => {
 
     expect(next).toBe(messagesById);
     expect(next[queuedMessage.id]?.status).toBe("queued");
+  });
+});
+describe("buildRevertConfirmLines", () => {
+  const basePlan = {
+    threadId: "thread-1" as never,
+    turnCount: 1,
+    currentTurnCount: 3,
+    mode: "selective" as const,
+    revertPaths: ["TODO.md", "docs/notes.md"],
+    revertFileCount: 2,
+    conflicts: [],
+    conflictCount: 0,
+    unattributedPathCount: 4,
+    hasProviderSession: true,
+  };
+
+  it("falls back to generic shared-checkout copy without a plan", () => {
+    const lines = buildRevertConfirmLines({ turnCount: 2, isWorktreeThread: false, plan: null });
+    expect(lines[0]).toBe("Revert this thread to checkpoint 2?");
+    expect(lines).toContain("Files changed by other threads or sessions are preserved.");
+    expect(lines.at(-1)).toBe("This action cannot be undone.");
+  });
+
+  it("omits the shared-checkout reassurance for worktree threads without a plan", () => {
+    const lines = buildRevertConfirmLines({ turnCount: 0, isWorktreeThread: true, plan: null });
+    expect(lines[0]).toBe("Revert this thread back to its start?");
+    expect(lines).not.toContain("Files changed by other threads or sessions are preserved.");
+  });
+
+  it("describes workspace-mode reverts as whole-checkout restores", () => {
+    const lines = buildRevertConfirmLines({
+      turnCount: 1,
+      isWorktreeThread: true,
+      plan: { ...basePlan, mode: "workspace" as const },
+    });
+    expect(lines).toContain(
+      "This thread owns its worktree, so the entire checkout will be restored.",
+    );
+  });
+
+  it("summarizes selective plans with counts and preserved-work reassurance", () => {
+    const lines = buildRevertConfirmLines({
+      turnCount: 1,
+      isWorktreeThread: false,
+      plan: basePlan,
+    });
+    expect(lines).toContain("2 files from this thread will be reverted.");
+    expect(lines).toContain(
+      "Changes from other threads, sessions, and manual edits are preserved.",
+    );
+  });
+
+  it("lists conflict paths with an overflow suffix", () => {
+    const lines = buildRevertConfirmLines({
+      turnCount: 1,
+      isWorktreeThread: false,
+      plan: {
+        ...basePlan,
+        conflicts: [
+          { path: "a.md", reason: "changed-after-thread" as const },
+          { path: "b.md", reason: "interleaved" as const },
+          { path: "c.md", reason: "unsupported" as const },
+          { path: "d.md", reason: "interleaved" as const },
+        ],
+        conflictCount: 5,
+      },
+    });
+    expect(lines).toContain(
+      "5 files with conflicting edits will be left untouched: a.md, b.md, c.md and 2 more.",
+    );
+  });
+
+  it("notes when no files need reverting and warns about missing provider sessions", () => {
+    const lines = buildRevertConfirmLines({
+      turnCount: 1,
+      isWorktreeThread: false,
+      plan: { ...basePlan, revertPaths: [], revertFileCount: 0, hasProviderSession: false },
+    });
+    expect(lines).toContain("No file changes need to be reverted.");
+    expect(lines.some((line) => line.startsWith("No active provider session"))).toBe(true);
   });
 });

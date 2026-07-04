@@ -337,10 +337,7 @@ function UsageLimitBar(props: {
     <div className="space-y-1.5">
       <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-xs">
         <span className="font-medium text-foreground">{props.window.label}</span>
-        <span className="text-muted-foreground">
-          {props.window.usedPercent}% used
-          {props.window.detail ? ` - ${props.window.detail}` : ""}
-        </span>
+        <span className="text-muted-foreground">{props.window.detail}</span>
       </div>
       <div
         role="meter"
@@ -353,9 +350,7 @@ function UsageLimitBar(props: {
         <div
           className={cn(
             "h-full rounded-full transition-[width]",
-            props.window.reachedLimit || props.window.usedPercent >= 90
-              ? "bg-warning"
-              : "bg-primary",
+            props.window.warning ? "bg-warning" : "bg-primary",
           )}
           style={{ width: `${props.window.usedPercent}%` }}
         />
@@ -447,10 +442,7 @@ export function ProviderUsageDashboard(props: {
                   <div
                     className={cn(
                       "h-full rounded-full transition-[width]",
-                      props.usage.spendControl.reachedLimit ||
-                        props.usage.spendControl.usedPercent >= 90
-                        ? "bg-warning"
-                        : "bg-primary",
+                      props.usage.spendControl.warning ? "bg-warning" : "bg-primary",
                     )}
                     style={{ width: `${props.usage.spendControl.usedPercent}%` }}
                   />

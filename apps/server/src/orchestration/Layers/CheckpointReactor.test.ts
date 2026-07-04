@@ -32,6 +32,8 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { CheckpointRevertLive } from "../../checkpointing/Layers/CheckpointRevert.ts";
+import { CheckpointRevert } from "../../checkpointing/Services/CheckpointRevert.ts";
 import { CheckpointStoreLive } from "../../checkpointing/Layers/CheckpointStore.ts";
 import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
 import * as VcsDriverRegistry from "../../vcs/VcsDriverRegistry.ts";
@@ -291,7 +293,11 @@ async function waitForGitRefExists(cwd: string, ref: string, timeoutMs = 15_000)
 
 describe("CheckpointReactor", () => {
   let runtime: ManagedRuntime.ManagedRuntime<
-    OrchestrationEngineService | CheckpointReactor | CheckpointStore | ProjectionSnapshotQuery,
+    | OrchestrationEngineService
+    | CheckpointReactor
+    | CheckpointStore
+    | CheckpointRevert
+    | ProjectionSnapshotQuery,
     unknown
   > | null = null;
   let scope: Scope.Closeable | null = null;
@@ -388,6 +394,7 @@ describe("CheckpointReactor", () => {
     });
 
     const layer = CheckpointReactorLive.pipe(
+      Layer.provideMerge(CheckpointRevertLive),
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(projectionSnapshotLayer),
       Layer.provideMerge(RuntimeReceiptBusLive),
@@ -484,6 +491,14 @@ describe("CheckpointReactor", () => {
             ? Promise.reject(new Error("Harness runtime is unavailable."))
             : runtime.runPromise(checkpointStore.captureCheckpoint(input)),
       },
+      getRevertPlan: (input: { threadId: ThreadId; turnCount: number }) =>
+        runtime === null
+          ? Promise.reject(new Error("Harness runtime is unavailable."))
+          : runtime.runPromise(
+              Effect.flatMap(Effect.service(CheckpointRevert), (revert) =>
+                revert.getRevertPlan(input),
+              ),
+            ),
     };
   }
 
@@ -2337,7 +2352,145 @@ describe("CheckpointReactor", () => {
     expect(outcomeActivity?.summary).toBe("Reverted 2 files for this thread");
   });
 
-  it("appends an error activity when revert is requested without an active session", async () => {
+  it("computes a dry-run revert plan without touching the workspace", async () => {
+    const harness = await createHarness({
+      seedFilesystemCheckpoints: false,
+      includeConcurrentSession: true,
+    });
+    const threadId = ThreadId.make("thread-1");
+    const createdAt = "2026-01-01T00:00:00.000Z";
+
+    await harness.checkpointStore.captureCheckpoint({
+      cwd: harness.cwd,
+      checkpointRef: checkpointRefForThreadTurn(threadId, 0),
+    });
+    fs.writeFileSync(path.join(harness.cwd, "README.md"), "v2\n", "utf8");
+    await harness.checkpointStore.captureCheckpoint({
+      cwd: harness.cwd,
+      checkpointRef: checkpointRefForThreadTurn(threadId, 1),
+    });
+    fs.writeFileSync(path.join(harness.cwd, "other-session.txt"), "other v1\n", "utf8");
+    fs.writeFileSync(path.join(harness.cwd, "README.md"), "v3\n", "utf8");
+    fs.writeFileSync(path.join(harness.cwd, "created-by-thread.txt"), "mine\n", "utf8");
+    await harness.checkpointStore.captureCheckpoint({
+      cwd: harness.cwd,
+      checkpointRef: checkpointRefForThreadTurn(threadId, 2),
+    });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-plan"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: createdAt,
+        },
+        createdAt,
+      }),
+    );
+    for (const [turnCount, files] of [
+      [1, [{ path: "README.md", kind: "modified", additions: 1, deletions: 1 }]],
+      [
+        2,
+        [
+          { path: "README.md", kind: "modified", additions: 1, deletions: 1 },
+          { path: "created-by-thread.txt", kind: "added", additions: 1, deletions: 0 },
+        ],
+      ],
+    ] as const) {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: CommandId.make(`cmd-plan-diff-${turnCount}`),
+          threadId,
+          turnId: asTurnId(`turn-${turnCount}`),
+          completedAt: createdAt,
+          checkpointRef: checkpointRefForThreadTurn(threadId, turnCount),
+          status: "ready",
+          files: [...files],
+          checkpointTurnCount: turnCount,
+          createdAt,
+        }),
+      );
+    }
+
+    const plan = await harness.getRevertPlan({ threadId, turnCount: 1 });
+
+    expect(plan).toMatchObject({
+      mode: "selective",
+      turnCount: 1,
+      currentTurnCount: 2,
+      revertFileCount: 2,
+      conflictCount: 0,
+      unattributedPathCount: 1,
+      hasProviderSession: true,
+    });
+    expect([...plan.revertPaths].toSorted()).toEqual(["README.md", "created-by-thread.txt"]);
+
+    // Dry run: the workspace is untouched and checkpoints are preserved.
+    expect(
+      fs.readFileSync(path.join(harness.cwd, "README.md"), "utf8").replaceAll("\r\n", "\n"),
+    ).toBe("v3\n");
+    expect(fs.existsSync(path.join(harness.cwd, "created-by-thread.txt"))).toBe(true);
+    expect(gitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 2))).toBe(true);
+    expect(harness.provider.rollbackConversation).not.toHaveBeenCalled();
+  });
+
+  it("reverts files without a live provider session and reports the skipped rollback", async () => {
+    const harness = await createHarness({ hasSession: false });
+    const threadId = ThreadId.make("thread-1");
+    const createdAt = "2026-01-01T00:00:00.000Z";
+
+    for (const turnCount of [1, 2] as const) {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: CommandId.make(`cmd-sessionless-diff-${turnCount}`),
+          threadId,
+          turnId: asTurnId(`turn-${turnCount}`),
+          completedAt: createdAt,
+          checkpointRef: checkpointRefForThreadTurn(threadId, turnCount),
+          status: "ready",
+          files: [{ path: "README.md", kind: "modified", additions: 1, deletions: 1 }],
+          checkpointTurnCount: turnCount,
+          createdAt,
+        }),
+      );
+    }
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.make("cmd-sessionless-revert"),
+        threadId,
+        turnCount: 1,
+        createdAt,
+      }),
+    );
+
+    await waitForEvent(harness.engine, (event) => event.type === "thread.reverted");
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some((activity) => activity.kind === "checkpoint.revert.rollback-skipped"),
+    );
+
+    // Files revert from thread/project config alone; provider rollback is
+    // skipped and surfaced instead of failing the whole revert.
+    expect(
+      fs.readFileSync(path.join(harness.cwd, "README.md"), "utf8").replaceAll("\r\n", "\n"),
+    ).toBe("v2\n");
+    expect(harness.provider.rollbackConversation).not.toHaveBeenCalled();
+    expect(thread.activities.some((activity) => activity.kind === "checkpoint.reverted")).toBe(
+      true,
+    );
+  });
+
+  it("appends an error activity when revert targets a turn missing from the read model", async () => {
     const harness = await createHarness({ hasSession: false });
     const createdAt = "2026-01-01T00:00:00.000Z";
 
