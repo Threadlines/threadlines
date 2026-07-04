@@ -31,7 +31,7 @@ import {
   type PtySpawnInput,
   PtySpawnError,
 } from "../Services/PTY.ts";
-import { makeTerminalManagerWithOptions } from "./Manager.ts";
+import { makeTerminalManagerWithOptions, type TerminalProcessTreeControl } from "./Manager.ts";
 
 class WaitForConditionError extends Data.TaggedError("WaitForConditionError")<{
   readonly message: string;
@@ -207,7 +207,16 @@ interface CreateManagerOptions {
   processKillGraceMs?: number;
   maxRetainedInactiveSessions?: number;
   ptyAdapter?: FakePtyAdapter;
+  processTree?: TerminalProcessTreeControl;
 }
+
+// Fake pids must never reach the real process table — the default control
+// reports no descendants and swallows signals.
+const noopProcessTree: TerminalProcessTreeControl = {
+  listDescendants: () => [],
+  signal: () => {},
+  isAlive: () => false,
+};
 
 interface ManagerFixture {
   readonly baseDir: string;
@@ -246,6 +255,7 @@ const createManager = (
           ? { subprocessPollIntervalMs: options.subprocessPollIntervalMs }
           : {}),
         processKillGraceMs: options.processKillGraceMs ?? 1,
+        processTree: options.processTree ?? noopProcessTree,
         ...(options.maxRetainedInactiveSessions !== undefined
           ? { maxRetainedInactiveSessions: options.maxRetainedInactiveSessions }
           : {}),
@@ -867,6 +877,42 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       assert.equal(process.killSignals[0], "SIGTERM");
       expect(process.killSignals).toContain("SIGKILL");
     }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("signals the shell's descendant processes when stopping a terminal", () =>
+    Effect.gen(function* () {
+      // 4242/4243 ignore SIGTERM (stay alive) and must be force-killed after
+      // the grace period; 4244 exits on SIGTERM and must not be SIGKILLed.
+      const signals: Array<{ pid: number; signal: string }> = [];
+      const alive = new Set([4242, 4243]);
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        platform: "linux",
+        processKillGraceMs: 10,
+        processTree: {
+          listDescendants: () => [4242, 4243, 4244],
+          signal: (pid, signal) => {
+            signals.push({ pid, signal });
+            if (signal === "SIGKILL") alive.delete(pid);
+          },
+          isAlive: (pid) => alive.has(pid),
+        },
+      });
+      yield* manager.open(openInput());
+      const process = ptyAdapter.processes[0];
+      expect(process).toBeDefined();
+      if (!process) return;
+
+      yield* manager.close({ threadId: "thread-1" });
+      yield* waitFor(
+        Effect.sync(() => signals.filter((entry) => entry.signal === "SIGKILL").length >= 2),
+      );
+
+      const terms = signals.filter((entry) => entry.signal === "SIGTERM").map((entry) => entry.pid);
+      const kills = signals.filter((entry) => entry.signal === "SIGKILL").map((entry) => entry.pid);
+      assert.deepEqual(terms, [4242, 4243, 4244]);
+      assert.deepEqual(kills, [4242, 4243]);
+      assert.equal(process.killSignals[0], "SIGTERM");
+    }),
   );
 
   it.effect("kills the terminal without a signal on Windows", () =>

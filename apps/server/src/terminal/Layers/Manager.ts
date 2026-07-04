@@ -6,6 +6,11 @@ import {
 } from "@threadlines/contracts";
 import { makeKeyedCoalescingWorker } from "@threadlines/shared/KeyedCoalescingWorker";
 import {
+  isProcessAlive,
+  listDescendantProcessIds,
+  signalProcessSilently,
+} from "@threadlines/shared/processTree";
+import {
   applyTerminalInputData,
   createTerminalCommandInputState,
   normalizeTerminalActivityCommand,
@@ -786,6 +791,19 @@ function normalizedRuntimeEnv(
   return Object.fromEntries(entries.toSorted(([left], [right]) => left.localeCompare(right)));
 }
 
+/** Inspects and signals the shell's descendant processes; injectable for tests. */
+export interface TerminalProcessTreeControl {
+  readonly listDescendants: (rootPid: number) => ReadonlyArray<number>;
+  readonly signal: (pid: number, signal: "SIGTERM" | "SIGKILL") => void;
+  readonly isAlive: (pid: number) => boolean;
+}
+
+const defaultProcessTreeControl: TerminalProcessTreeControl = {
+  listDescendants: listDescendantProcessIds,
+  signal: signalProcessSilently,
+  isAlive: isProcessAlive,
+};
+
 interface TerminalManagerOptions {
   logsDir: string;
   historyLineLimit?: number;
@@ -797,6 +815,7 @@ interface TerminalManagerOptions {
   subprocessPollIntervalMs?: number;
   processKillGraceMs?: number;
   maxRetainedInactiveSessions?: number;
+  processTree?: TerminalProcessTreeControl;
 }
 
 const makeTerminalManager = Effect.fn("makeTerminalManager")(function* () {
@@ -825,6 +844,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
     const subprocessPollIntervalMs =
       options.subprocessPollIntervalMs ?? DEFAULT_SUBPROCESS_POLL_INTERVAL_MS;
     const processKillGraceMs = options.processKillGraceMs ?? DEFAULT_PROCESS_KILL_GRACE_MS;
+    const processTree = options.processTree ?? defaultProcessTreeControl;
     const maxRetainedInactiveSessions =
       options.maxRetainedInactiveSessions ?? DEFAULT_MAX_RETAINED_INACTIVE_SESSIONS;
 
@@ -930,6 +950,28 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
       });
     });
 
+    const sweepDescendantProcesses = Effect.fn("terminal.sweepDescendantProcesses")(function* (
+      descendantPids: ReadonlyArray<number>,
+      threadId: string,
+      terminalId: string,
+    ) {
+      yield* Effect.sleep(processKillGraceMs);
+      const survivors = yield* Effect.sync(() => {
+        const alive = descendantPids.filter((pid) => processTree.isAlive(pid));
+        for (const pid of alive) {
+          processTree.signal(pid, "SIGKILL");
+        }
+        return alive;
+      });
+      if (survivors.length > 0) {
+        yield* Effect.logWarning("force-killed terminal descendant processes", {
+          threadId,
+          terminalId,
+          pids: survivors,
+        });
+      }
+    });
+
     const runKillEscalation = Effect.fn("terminal.runKillEscalation")(function* (
       process: PtyProcess,
       threadId: string,
@@ -958,6 +1000,12 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         return;
       }
 
+      // Snapshot before signaling anything: the shell's descendants (dev
+      // servers, build watchers, …) run in their own process groups, so
+      // signaling the shell alone strands them — and once the shell dies
+      // they reparent to pid 1 and can no longer be attributed.
+      const descendantPids = yield* Effect.sync(() => processTree.listDescendants(process.pid));
+
       const terminated = yield* Effect.try({
         try: () => process.kill("SIGTERM"),
         catch: (cause) =>
@@ -977,6 +1025,20 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           }).pipe(Effect.as(false)),
         ),
       );
+
+      if (descendantPids.length > 0) {
+        yield* Effect.sync(() => {
+          for (const pid of descendantPids) {
+            processTree.signal(pid, "SIGTERM");
+          }
+        });
+        // Swept in its own fiber: the shell usually exits promptly, which
+        // interrupts this kill fiber before the grace period elapses.
+        yield* sweepDescendantProcesses(descendantPids, threadId, terminalId).pipe(
+          Effect.forkIn(workerScope),
+        );
+      }
+
       if (!terminated) {
         return;
       }

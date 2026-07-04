@@ -23,6 +23,10 @@
       "types": "./src/gitVersion.ts",
       "import": "./src/gitVersion.ts"
     },
+    "./processTree": {
+      "types": "./src/processTree.ts",
+      "import": "./src/processTree.ts"
+    },
     "./sourceControl": {
       "types": "./src/sourceControl.ts",
       "import": "./src/sourceControl.ts"
