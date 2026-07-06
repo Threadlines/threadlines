@@ -2174,7 +2174,7 @@ export function SourceControlPanel({
     });
   }, [cwd, environmentId, queryClient]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const targetKey = environmentId && cwd ? `${environmentId}\0${cwd}` : null;
     if (targetKey === null) {
       commitGraphStatusRefreshRef.current = null;
