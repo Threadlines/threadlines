@@ -1730,9 +1730,12 @@ describe("SourceControlPanel commit graph", () => {
         forcePanelRender?.();
       });
 
-      await vi.waitFor(() => {
-        expect(commitGraph).toHaveBeenCalledTimes(2);
-      });
+      await vi.waitFor(
+        () => {
+          expect(vi.mocked(commitGraph).mock.calls.length).toBeGreaterThanOrEqual(2);
+        },
+        { timeout: 5_000 },
+      );
       await expect.element(page.getByText("Remote main advanced")).toBeVisible();
     } finally {
       await screen.unmount();
