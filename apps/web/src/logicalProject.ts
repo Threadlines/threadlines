@@ -1,5 +1,5 @@
 import { scopedProjectKey, scopeProjectRef } from "@threadlines/client-runtime";
-import type { ScopedProjectRef } from "@threadlines/contracts";
+import { GENERAL_CHATS_PROJECT_ID, type ScopedProjectRef } from "@threadlines/contracts";
 import {
   DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE,
   type SidebarProjectGroupingMode,
@@ -118,11 +118,16 @@ function deriveRepositoryScopedKey(
 }
 
 export function deriveLogicalProjectKey(
-  project: Pick<Project, "environmentId" | "id" | "cwd" | "repositoryIdentity">,
+  project: Pick<Project, "environmentId" | "id" | "cwd" | "repositoryIdentity"> &
+    Partial<Pick<Project, "kind">>,
   options?: {
     groupingMode?: SidebarProjectGroupingMode;
   },
 ): string {
+  if (project.kind === "general-chat" || project.id === GENERAL_CHATS_PROJECT_ID) {
+    return scopedProjectKey(scopeProjectRef(project.environmentId, project.id));
+  }
+
   const groupingMode = options?.groupingMode ?? DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE;
   if (groupingMode === "separate") {
     return derivePhysicalProjectKey(project);
@@ -136,7 +141,8 @@ export function deriveLogicalProjectKey(
 }
 
 export function deriveLogicalProjectKeyFromSettings(
-  project: Pick<Project, "environmentId" | "id" | "cwd" | "repositoryIdentity">,
+  project: Pick<Project, "environmentId" | "id" | "cwd" | "repositoryIdentity"> &
+    Partial<Pick<Project, "kind">>,
   settings: ProjectGroupingSettings,
 ): string {
   return deriveLogicalProjectKey(project, {
@@ -146,7 +152,11 @@ export function deriveLogicalProjectKeyFromSettings(
 
 export function deriveLogicalProjectKeyFromRef(
   projectRef: ScopedProjectRef,
-  project: Pick<Project, "environmentId" | "id" | "cwd" | "repositoryIdentity"> | null | undefined,
+  project:
+    | (Pick<Project, "environmentId" | "id" | "cwd" | "repositoryIdentity"> &
+        Partial<Pick<Project, "kind">>)
+    | null
+    | undefined,
   options?: {
     groupingMode?: SidebarProjectGroupingMode;
   },

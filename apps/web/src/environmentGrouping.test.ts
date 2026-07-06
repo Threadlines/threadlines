@@ -1,5 +1,11 @@
-import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@threadlines/contracts";
-import { scopeProjectRef } from "@threadlines/client-runtime";
+import {
+  EnvironmentId,
+  GENERAL_CHATS_PROJECT_ID,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+} from "@threadlines/contracts";
+import { scopedProjectKey, scopeProjectRef } from "@threadlines/client-runtime";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -250,6 +256,20 @@ describe("environment grouping", () => {
         name: "local-only",
       });
       expect(deriveLogicalProjectKey(project)).toBe(derivePhysicalProjectKey(project));
+    });
+
+    it("keys General Chats by its stable project ref instead of the scratch workspace path", () => {
+      const project = makeProject({
+        id: GENERAL_CHATS_PROJECT_ID,
+        environmentId: primaryEnvId,
+        kind: "general-chat",
+        name: "General Chats",
+        cwd: "/tmp/threadlines/general-chats",
+      });
+
+      expect(deriveLogicalProjectKey(project)).toBe(
+        scopedProjectKey(scopeProjectRef(primaryEnvId, GENERAL_CHATS_PROJECT_ID)),
+      );
     });
 
     it("groups projects from different environments that share the same canonical key", () => {

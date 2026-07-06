@@ -1171,10 +1171,9 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       expect(spawnInput).toBeDefined();
       if (!spawnInput) return;
 
-      expect(spawnInput.env.PATH?.split(":").slice(0, 2)).toEqual([
-        posixLocalNodeModulesBinPath(projectRoot),
-        "/usr/bin",
-      ]);
+      expect(
+        spawnInput.env.PATH?.startsWith(`${posixLocalNodeModulesBinPath(projectRoot)}:/usr/bin`),
+      ).toBe(true);
     }),
   );
 
@@ -1203,11 +1202,11 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       expect(spawnInput).toBeDefined();
       if (!spawnInput) return;
 
-      expect(spawnInput.env.PATH?.split(":").slice(0, 3)).toEqual([
-        posixLocalNodeModulesBinPath(worktreePath),
-        posixLocalNodeModulesBinPath(baseDir),
-        "/usr/bin",
-      ]);
+      expect(
+        spawnInput.env.PATH?.startsWith(
+          `${posixLocalNodeModulesBinPath(worktreePath)}:${posixLocalNodeModulesBinPath(baseDir)}:/usr/bin`,
+        ),
+      ).toBe(true);
     }),
   );
 
@@ -1231,11 +1230,11 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("TerminalManager", (
       expect(spawnInput).toBeDefined();
       if (!spawnInput) return;
 
-      expect(spawnInput.env.PATH?.split(":").slice(0, 3)).toEqual([
-        posixLocalNodeModulesBinPath(projectRoot),
-        "/custom/bin",
-        "/usr/bin",
-      ]);
+      expect(
+        spawnInput.env.PATH?.startsWith(
+          `${posixLocalNodeModulesBinPath(projectRoot)}:/custom/bin:/usr/bin`,
+        ),
+      ).toBe(true);
     }),
   );
 

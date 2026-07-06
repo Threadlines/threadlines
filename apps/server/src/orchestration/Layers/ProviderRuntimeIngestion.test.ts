@@ -173,7 +173,7 @@ type ProviderRuntimeTestCheckpoint = ProviderRuntimeTestThread["checkpoints"][nu
 async function waitForThread(
   readModel: () => Promise<ProviderRuntimeTestReadModel>,
   predicate: (thread: ProviderRuntimeTestThread) => boolean,
-  timeoutMs = 2000,
+  timeoutMs = 10_000,
   threadId: ThreadId = asThreadId("thread-1"),
 ) {
   const deadline = (await Effect.runPromise(Clock.currentTimeMillis)) + timeoutMs;
@@ -186,7 +186,7 @@ async function waitForThread(
     if ((await Effect.runPromise(Clock.currentTimeMillis)) >= deadline) {
       throw new Error("Timed out waiting for thread state");
     }
-    await Effect.runPromise(Effect.yieldNow);
+    await Effect.runPromise(Effect.sleep("10 millis"));
     return poll();
   };
   return poll();

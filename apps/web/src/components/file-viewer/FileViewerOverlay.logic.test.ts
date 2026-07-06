@@ -1,6 +1,86 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveCoarseLineSelection } from "./FileViewerOverlay.logic";
+import {
+  countRenderableTextLines,
+  formatRevealLineNoticeLabel,
+  formatSelectedLineRangeLabel,
+  resolveCoarseLineSelection,
+  resolveRevealLineRange,
+  resolveRevealLineTarget,
+} from "./FileViewerOverlay.logic";
+
+describe("countRenderableTextLines", () => {
+  it("does not count a trailing final newline as a rendered extra line", () => {
+    expect(countRenderableTextLines("one\ntwo\nthree\n")).toBe(3);
+    expect(countRenderableTextLines("one\ntwo\nthree")).toBe(3);
+  });
+
+  it("keeps empty files addressable as one line", () => {
+    expect(countRenderableTextLines("")).toBe(1);
+  });
+});
+
+describe("resolveRevealLineRange", () => {
+  it("clamps line targets into the rendered file range", () => {
+    expect(resolveRevealLineRange({ line: 42, totalLines: 100 })).toEqual({ start: 42, end: 42 });
+    expect(resolveRevealLineRange({ line: 0, totalLines: 100 })).toEqual({ start: 1, end: 1 });
+    expect(resolveRevealLineRange({ line: 120, totalLines: 100 })).toEqual({
+      start: 100,
+      end: 100,
+    });
+  });
+
+  it("keeps reveal ranges inclusive and ordered from the target line", () => {
+    expect(resolveRevealLineRange({ line: 7, endLine: 11, totalLines: 20 })).toEqual({
+      start: 7,
+      end: 11,
+    });
+    expect(resolveRevealLineRange({ line: 7, endLine: 3, totalLines: 20 })).toEqual({
+      start: 7,
+      end: 7,
+    });
+    expect(resolveRevealLineRange({ line: 7, endLine: 30, totalLines: 20 })).toEqual({
+      start: 7,
+      end: 20,
+    });
+  });
+});
+
+describe("formatSelectedLineRangeLabel", () => {
+  it("formats single-line and multi-line selections", () => {
+    expect(formatSelectedLineRangeLabel({ start: 42, end: 42 })).toBe("L42 selected");
+    expect(formatSelectedLineRangeLabel({ start: 42, end: 45 })).toBe("L42-L45 selected");
+    expect(formatSelectedLineRangeLabel({ start: 45, end: 42 })).toBe("L42-L45 selected");
+  });
+});
+
+describe("formatRevealLineNoticeLabel", () => {
+  it("explains when a requested line is outside the current file", () => {
+    expect(
+      formatRevealLineNoticeLabel({
+        requestedLine: 87,
+      }),
+    ).toBe("L87 is not available in this file");
+  });
+});
+
+describe("resolveRevealLineTarget", () => {
+  it("selects valid requested lines", () => {
+    expect(resolveRevealLineTarget({ line: 42, totalLines: 100 })).toEqual({
+      scrollRange: { start: 42, end: 42 },
+      selectedRange: { start: 42, end: 42 },
+      notice: null,
+    });
+  });
+
+  it("scrolls near unavailable requested lines without selecting a replacement line", () => {
+    expect(resolveRevealLineTarget({ line: 87, totalLines: 53 })).toEqual({
+      scrollRange: { start: 53, end: 53 },
+      selectedRange: null,
+      notice: { requestedLine: 87 },
+    });
+  });
+});
 
 describe("resolveCoarseLineSelection", () => {
   it("clears when pierre reports no selection", () => {

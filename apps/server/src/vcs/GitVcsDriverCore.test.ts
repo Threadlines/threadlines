@@ -60,7 +60,7 @@ const writeTextFile = (
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const pathService = yield* Path.Path;
-    const filePath = pathService.join(cwd, relativePath);
+    const filePath = pathService.join(cwd, ...relativePath.split("/"));
     yield* fileSystem.makeDirectory(pathService.dirname(filePath), { recursive: true });
     yield* fileSystem.writeFileString(filePath, contents);
   });
@@ -298,33 +298,35 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
-    it.effect("decodes Git-quoted working tree paths with escaped control characters", () =>
-      Effect.gen(function* () {
-        const cwd = yield* makeTmpDir();
-        yield* initRepoWithCommit(cwd);
-        const untrackedPath = "@AGENTS.md\n";
-        const modifiedPath = "src/tracked\nfile.txt";
+    (process.platform === "win32" ? it.effect.skip : it.effect)(
+      "decodes Git-quoted working tree paths with escaped control characters",
+      () =>
+        Effect.gen(function* () {
+          const cwd = yield* makeTmpDir();
+          yield* initRepoWithCommit(cwd);
+          const untrackedPath = "@AGENTS.md\n";
+          const modifiedPath = "src/tracked\nfile.txt";
 
-        yield* writeTextFile(cwd, modifiedPath, "before\n");
-        yield* git(cwd, ["add", "."]);
-        yield* git(cwd, ["commit", "-m", "add quoted path fixture"]);
-        yield* writeTextFile(cwd, modifiedPath, "before\nafter\n");
-        yield* writeTextFile(cwd, untrackedPath, "@AGENTS.md\n");
+          yield* writeTextFile(cwd, modifiedPath, "before\n");
+          yield* git(cwd, ["add", "."]);
+          yield* git(cwd, ["commit", "-m", "add quoted path fixture"]);
+          yield* writeTextFile(cwd, modifiedPath, "before\nafter\n");
+          yield* writeTextFile(cwd, untrackedPath, "@AGENTS.md\n");
 
-        const status = yield* (yield* GitVcsDriver.GitVcsDriver).statusDetails(cwd);
-        const paths = status.workingTree.files.map((file) => file.path);
-        const modified = status.workingTree.files.find((file) => file.path === modifiedPath);
-        const untracked = status.workingTree.files.find((file) => file.path === untrackedPath);
+          const status = yield* (yield* GitVcsDriver.GitVcsDriver).statusDetails(cwd);
+          const paths = status.workingTree.files.map((file) => file.path);
+          const modified = status.workingTree.files.find((file) => file.path === modifiedPath);
+          const untracked = status.workingTree.files.find((file) => file.path === untrackedPath);
 
-        assert.include(paths, modifiedPath);
-        assert.include(paths, untrackedPath);
-        assert.notInclude(paths, '"@AGENTS.md\\n"');
-        assert.notInclude(paths, '"src/tracked\\nfile.txt"');
-        assert.equal(modified?.worktreeStatus, "modified");
-        assert.equal(modified?.unstagedInsertions, 1);
-        assert.equal(untracked?.worktreeStatus, "untracked");
-        assert.equal(untracked?.unstagedInsertions, 1);
-      }),
+          assert.include(paths, modifiedPath);
+          assert.include(paths, untrackedPath);
+          assert.notInclude(paths, '"@AGENTS.md\\n"');
+          assert.notInclude(paths, '"src/tracked\\nfile.txt"');
+          assert.equal(modified?.worktreeStatus, "modified");
+          assert.equal(modified?.unstagedInsertions, 1);
+          assert.equal(untracked?.worktreeStatus, "untracked");
+          assert.equal(untracked?.unstagedInsertions, 1);
+        }),
     );
 
     it.effect("reports default-branch delta separately from upstream delta", () =>

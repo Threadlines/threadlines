@@ -62,6 +62,29 @@ function makeNeverFinishingProcess() {
   });
 }
 
+function getErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const record = error as { cause?: unknown; code?: unknown; reason?: unknown };
+  if (typeof record.code === "string") return record.code;
+  if (record.cause && typeof record.cause === "object") {
+    const causeCode = (record.cause as { code?: unknown }).code;
+    if (typeof causeCode === "string") return causeCode;
+  }
+  if (record.reason && typeof record.reason === "object") {
+    const reason = record.reason as { cause?: unknown; code?: unknown };
+    if (typeof reason.code === "string") return reason.code;
+    if (reason.cause && typeof reason.cause === "object") {
+      const reasonCauseCode = (reason.cause as { code?: unknown }).code;
+      if (typeof reasonCauseCode === "string") return reasonCauseCode;
+    }
+  }
+  return undefined;
+}
+
+function isUnavailableWindowsSymlink(error: unknown) {
+  return process.platform === "win32" && getErrorCode(error) === "EPERM";
+}
+
 function makeProcessResult(stdout: string, stderr = "", code = 0) {
   return ChildProcessSpawner.makeHandle({
     pid: ChildProcessSpawner.ProcessId(456),
@@ -729,7 +752,15 @@ describe("provider extensions inventory", () => {
       });
       const symlinkTarget = "@AGENTS.md\n";
 
-      yield* fileSystem.symlink(symlinkTarget, path.join(cwd, "CLAUDE.md"));
+      const symlinkCreated = yield* fileSystem
+        .symlink(symlinkTarget, path.join(cwd, "CLAUDE.md"))
+        .pipe(
+          Effect.as(true),
+          Effect.catch((error) =>
+            isUnavailableWindowsSymlink(error) ? Effect.succeed(false) : Effect.fail(error),
+          ),
+        );
+      if (!symlinkCreated) return;
 
       const files = yield* readProviderInstructionFiles({ cwd });
       const claudeFile = files.instructionFiles.find((file) => file.kind === "claude-instructions");

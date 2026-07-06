@@ -8,6 +8,7 @@ import { File as PierreFile } from "@pierre/diffs/react";
 
 import { DIFF_PANEL_UNSAFE_CSS } from "../DiffPanel.styles";
 import { DiffWorkerPoolProvider } from "../DiffWorkerPoolProvider";
+import { findRenderedPierreLineElement } from "./FileViewerOverlay.logic";
 
 // Mirrors FileViewerPreview's pierre usage so lifecycle regressions in the
 // wrapper (mount/unmount assertions, stale renders on file switch) surface in
@@ -114,6 +115,27 @@ describe("FileViewer pierre integration", () => {
     );
     await settle();
     screen.unmount();
+  });
+
+  it("finds rendered line elements inside pierre's shadow root", () => {
+    const host = document.createElement("diffs-container");
+    const shadowRoot = host.shadowRoot ?? host.attachShadow({ mode: "open" });
+    shadowRoot.innerHTML = `
+      <pre data-file>
+        <code data-code>
+          <div data-gutter>
+            <div data-column-number="2" data-line-index="1"></div>
+          </div>
+          <div data-content>
+            <div data-line="2" data-line-index="1"></div>
+          </div>
+        </code>
+      </pre>
+    `;
+    document.body.append(host);
+
+    const lineElement = findRenderedPierreLineElement(document, 1);
+    expect(lineElement?.getAttribute("data-line")).toBe("2");
   });
 
   it("survives mount-then-immediate-unmount (fast open/close)", async () => {

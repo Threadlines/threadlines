@@ -4299,14 +4299,14 @@ describe("deriveActiveStatusLabel", () => {
     ).toBe("Sending");
   });
 
-  it("shows explicit session startup after the server acknowledges a new turn", () => {
+  it("shows turn preparation after the server acknowledges a new turn", () => {
     expect(
       deriveActiveStatusLabel({
-        phase: "ready",
+        phase: "connecting",
         workLogEntries: [],
         isSessionStarting: true,
       }),
-    ).toBe("Starting session");
+    ).toBe("Preparing turn");
   });
 
   it("prioritizes pending approvals over generic running state", () => {

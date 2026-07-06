@@ -124,6 +124,7 @@ const ENVIRONMENT_ID = EnvironmentId.make("source-control-browser-test");
 const CWD = "/repo/project";
 const TARGET: SourceControlProjectTarget = {
   environmentId: ENVIRONMENT_ID,
+  projectCwd: CWD,
   cwd: CWD,
   name: "Threadlines",
   environmentLabel: null,
@@ -289,10 +290,13 @@ async function renderPanel(
   input: {
     readonly status?: VcsStatusResult;
     readonly environmentApi?: EnvironmentApi;
+    readonly target?: SourceControlProjectTarget;
+    readonly onActiveBranchChange?: (branch: string | null, worktreePath: string | null) => void;
     readonly onOpenDiff?: (filePath?: string) => void;
   } = {},
 ) {
   const environmentApi = input.environmentApi ?? makeEnvironmentApi();
+  const target = input.target ?? TARGET;
   gitStatusMock.data = input.status ?? makeStatus();
   __setEnvironmentApiOverrideForTests(ENVIRONMENT_ID, environmentApi);
 
@@ -311,8 +315,11 @@ async function renderPanel(
     <AppAtomRegistryProvider>
       <QueryClientProvider client={queryClient}>
         <SourceControlPanel
-          target={TARGET}
+          target={target}
           activeThreadRef={null}
+          {...(input.onActiveBranchChange
+            ? { onActiveBranchChange: input.onActiveBranchChange }
+            : {})}
           {...(input.onOpenDiff ? { onOpenDiff: input.onOpenDiff } : {})}
         />
       </QueryClientProvider>
@@ -1250,6 +1257,63 @@ describe("SourceControlPanel changes", () => {
       expect(document.documentElement.hasAttribute("data-base-ui-scroll-locked")).toBe(false);
       expect(Math.abs(after.top - before.top)).toBeLessThan(0.5);
       expect(Math.abs(after.height - before.height)).toBeLessThan(0.5);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("clears worktree context when switching a worktree target to the primary checkout", async () => {
+    const worktreePath = "/repo/project/.threadlines/worktrees/feature-source-control";
+    const listRefs: EnvironmentApi["vcs"]["listRefs"] = vi.fn(async () => ({
+      isRepo: true,
+      hasPrimaryRemote: true,
+      nextCursor: null,
+      totalCount: 2,
+      refs: [
+        {
+          name: "feature/source-control",
+          current: true,
+          isDefault: false,
+          worktreePath,
+        },
+        {
+          name: "main",
+          current: false,
+          isDefault: true,
+          worktreePath: CWD,
+        },
+      ],
+    }));
+    const switchRef: EnvironmentApi["vcs"]["switchRef"] = vi.fn(async (input) => ({
+      refName: input.refName,
+    }));
+    const onActiveBranchChange = vi.fn();
+    const mounted = await renderPanel({
+      target: {
+        ...TARGET,
+        cwd: worktreePath,
+        worktreePath,
+      },
+      status: makeStatus({ refName: "feature/source-control" }),
+      environmentApi: makeEnvironmentApi({ vcs: { listRefs, switchRef } }),
+      onActiveBranchChange,
+    });
+
+    try {
+      await expect
+        .element(page.getByRole("button", { name: "Branch: feature/source-control" }))
+        .toBeVisible();
+      await page.getByRole("button", { name: "Branch: feature/source-control" }).click();
+      await expect.element(page.getByText("Switch to")).toBeVisible();
+      await page.getByText("Switch to").hover();
+      const mainMenuItem = page.getByRole("menuitem", { name: /main/ });
+      await expect.element(mainMenuItem).toBeVisible();
+      await mainMenuItem.click();
+
+      await vi.waitFor(() => {
+        expect(switchRef).toHaveBeenCalledWith({ cwd: CWD, refName: "main" });
+      });
+      expect(onActiveBranchChange).toHaveBeenCalledWith("main", null);
     } finally {
       await mounted.cleanup();
     }

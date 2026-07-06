@@ -86,9 +86,9 @@ describe("SessionStartupNotice", () => {
     );
 
     try {
-      await expect.element(page.getByText("Session startup:", { exact: true })).toBeVisible();
+      await expect.element(page.getByText("Turn startup:", { exact: true })).toBeVisible();
       await expect
-        .element(page.getByText("Starting this session is taking longer than usual."))
+        .element(page.getByText("Preparing this turn is taking longer than usual."))
         .toBeVisible();
       await expect
         .element(page.getByRole("link", { name: "Open diagnostics" }))
@@ -115,7 +115,7 @@ describe("SessionStartupNotice", () => {
 
     try {
       await expect
-        .element(page.getByText("Session startup:", { exact: true }))
+        .element(page.getByText("Turn startup:", { exact: true }))
         .not.toBeInTheDocument();
       expect(refreshProvidersMock).not.toHaveBeenCalled();
     } finally {
@@ -135,7 +135,7 @@ describe("SessionStartupNotice", () => {
 
     try {
       await expect
-        .element(page.getByText("Session startup:", { exact: true }))
+        .element(page.getByText("Turn startup:", { exact: true }))
         .not.toBeInTheDocument();
     } finally {
       await screen.unmount();
@@ -148,7 +148,7 @@ describe("SessionStartupNotice", () => {
     );
 
     try {
-      await expect.element(page.getByText("Session startup:", { exact: true })).toBeVisible();
+      await expect.element(page.getByText("Turn startup:", { exact: true })).toBeVisible();
       await expect
         .element(page.getByRole("button", { name: "Refresh provider status" }))
         .not.toBeInTheDocument();

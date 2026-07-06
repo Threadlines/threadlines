@@ -25,7 +25,15 @@ import { useFileViewerStore, type FileViewerContext } from "../../fileViewerStor
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { useTheme } from "../../hooks/useTheme";
-import { resolveCoarseLineSelection } from "./FileViewerOverlay.logic";
+import type { RevealLineNotice } from "./FileViewerOverlay.logic";
+import {
+  countRenderableTextLines,
+  findRenderedPierreLineElement,
+  formatRevealLineNoticeLabel,
+  formatSelectedLineRangeLabel,
+  resolveCoarseLineSelection,
+  resolveRevealLineTarget,
+} from "./FileViewerOverlay.logic";
 import { formatFileSelectionLineRange, sliceFileSelection } from "../../lib/fileSelectionContext";
 import { resolveDiffThemeName } from "../../lib/diffRendering";
 import { DIFF_PANEL_UNSAFE_CSS } from "../DiffPanel.styles";
@@ -117,6 +125,14 @@ function ancestorsOf(path: string): string[] {
     ancestors.push(segments.slice(0, index).join("/"));
   }
   return ancestors;
+}
+
+function scrollElementToContainerCenter(container: HTMLElement, element: HTMLElement): void {
+  const containerRect = container.getBoundingClientRect();
+  const elementRect = element.getBoundingClientRect();
+  const targetTop =
+    elementRect.top - containerRect.top + container.scrollTop - container.clientHeight / 2;
+  container.scrollTop = Math.max(0, targetTop + elementRect.height / 2);
 }
 
 const TreeRow = memo(function TreeRow({
@@ -372,16 +388,22 @@ function AddSelectionToChatFooter({
   activePath,
   file,
   selectedLines,
+  revealLineNotice,
 }: {
   threadRef: ScopedThreadRef;
   activePath: string;
   file: ProjectTextFileContent;
   selectedLines: SelectedLineRange | null;
+  revealLineNotice: RevealLineNotice | null;
 }) {
   const addFileSelectionContext = useComposerDraftStore((state) => state.addFileSelectionContext);
   const close = useFileViewerStore((state) => state.close);
   const isCoarsePointer = useMediaQuery({ pointer: "coarse" });
   const selectionCount = selectedLines ? Math.abs(selectedLines.end - selectedLines.start) + 1 : 0;
+  const selectionLabel = selectedLines ? formatSelectedLineRangeLabel(selectedLines) : null;
+  const revealLineNoticeLabel = revealLineNotice
+    ? formatRevealLineNoticeLabel(revealLineNotice)
+    : null;
 
   const handleAddToChat = useCallback(() => {
     const startLine = selectedLines ? Math.min(selectedLines.start, selectedLines.end) : 1;
@@ -411,19 +433,24 @@ function AddSelectionToChatFooter({
     close();
   }, [activePath, addFileSelectionContext, close, file.content, selectedLines, threadRef]);
 
-  const selectionLabel = `${selectionCount} line${selectionCount === 1 ? "" : "s"} selected`;
   return (
     // Bottom padding tracks the home-indicator inset on notched phones, where
     // the sheet runs to the screen edge.
     <div className="flex items-center justify-between gap-2 border-t border-border/60 px-3 py-1.5 max-sm:pb-[max(0.375rem,env(safe-area-inset-bottom))]">
-      <span className="text-[11px] text-muted-foreground/70">
-        {selectionCount > 0
-          ? isCoarsePointer
-            ? `${selectionLabel} — tap another line number to extend, tap the selection to clear.`
-            : selectionLabel
-          : isCoarsePointer
-            ? "Tap a line number to select it, or attach the whole file as a reference."
-            : "Click a line number to select (drag for a range), or attach the whole file as a reference."}
+      <span
+        className={cn(
+          "text-[11px]",
+          revealLineNoticeLabel ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground/70",
+        )}
+      >
+        {revealLineNoticeLabel ??
+          (selectionLabel
+            ? isCoarsePointer
+              ? `${selectionLabel} — tap another line number to extend, tap the selection to clear.`
+              : selectionLabel
+            : isCoarsePointer
+              ? "Tap a line number to select it, or attach the whole file as a reference."
+              : "Click a line number to select (drag for a range), or attach the whole file as a reference.")}
       </span>
       <button
         type="button"
@@ -452,6 +479,7 @@ function FileViewerPreview({
   const isCoarsePointer = useMediaQuery({ pointer: "coarse" });
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const [selectedLines, setSelectedLines] = useState<SelectedLineRange | null>(null);
+  const [revealLineNotice, setRevealLineNotice] = useState<RevealLineNotice | null>(null);
 
   const fileQuery = useQuery(
     projectReadFileQueryOptions({
@@ -464,34 +492,43 @@ function FileViewerPreview({
 
   useEffect(() => {
     setSelectedLines(null);
+    setRevealLineNotice(null);
   }, [activePath]);
 
-  // Reveal a requested line once content is available: highlight it via the
-  // selection, ratio-scroll immediately for fast feedback, then snap to the
-  // exact row once pierre's (async, worker-highlighted) DOM carries it.
+  // Reveal a requested line once content is available: select it only when it
+  // exists, ratio-scroll immediately for fast feedback, then snap to the exact
+  // row once pierre's (async, worker-highlighted) DOM carries it.
   useEffect(() => {
     if (!revealLine || !file || file.kind !== "text") {
+      setRevealLineNotice(null);
       return;
     }
-    const totalLines = Math.max(1, file.content.split("\n").length);
-    const clampedLine = Math.min(Math.max(1, revealLine), totalLines);
-    const clampedEndLine = revealEndLine
-      ? Math.min(Math.max(clampedLine, revealEndLine), totalLines)
-      : clampedLine;
-    setSelectedLines({ start: clampedLine, end: clampedEndLine });
+    const totalLines = countRenderableTextLines(file.content);
+    const revealTarget = resolveRevealLineTarget({
+      line: revealLine,
+      endLine: revealEndLine,
+      totalLines,
+    });
+    setSelectedLines(revealTarget.selectedRange);
+    setRevealLineNotice(revealTarget.notice);
 
     const container = scrollContainerRef.current;
     if (container) {
-      const ratio = (clampedLine - 1) / totalLines;
+      const ratio = (revealTarget.scrollRange.start - 1) / totalLines;
       container.scrollTop = Math.max(
         0,
         container.scrollHeight * ratio - container.clientHeight / 2,
       );
     }
 
-    // Pierre stamps rows with a 0-based `data-line-index`.
+    // Pierre stamps rows inside a shadow root with a 0-based `data-line-index`.
     const findLineElement = () =>
-      scrollContainerRef.current?.querySelector(`[data-line-index="${clampedLine - 1}"]`) ?? null;
+      scrollContainerRef.current
+        ? findRenderedPierreLineElement(
+            scrollContainerRef.current,
+            revealTarget.scrollRange.start - 1,
+          )
+        : null;
     const deadline = performance.now() + 2_500;
     let cancelled = false;
     const attemptPreciseScroll = () => {
@@ -500,7 +537,10 @@ function FileViewerPreview({
       }
       const lineElement = findLineElement();
       if (lineElement) {
-        lineElement.scrollIntoView({ block: "center" });
+        const container = scrollContainerRef.current;
+        if (container) {
+          scrollElementToContainerCenter(container, lineElement);
+        }
         return;
       }
       if (performance.now() < deadline) {
@@ -529,6 +569,7 @@ function FileViewerPreview({
       // selection affordance (GitHub-style), no gutter utility.
       lineHoverHighlight: "both" as const,
       onLineSelected: (range: SelectedLineRange | null) => {
+        setRevealLineNotice(null);
         setSelectedLines((previous) =>
           isCoarsePointer ? resolveCoarseLineSelection(previous, range) : range,
         );
@@ -628,6 +669,7 @@ function FileViewerPreview({
           activePath={activePath}
           file={file}
           selectedLines={selectedLines}
+          revealLineNotice={revealLineNotice}
         />
       ) : null}
     </div>

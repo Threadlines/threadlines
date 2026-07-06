@@ -91,7 +91,7 @@ export const createOxlintRuleHarness = (
     const sourcePath = path.join(fixtureDir, `fixture.${extension}`);
     const repoRoot = path.join(import.meta.dirname, "..", "..");
     const pluginRoot = path.join(repoRoot, "oxlint-plugin-threadlines");
-    const oxlintBin = path.join(pluginRoot, "node_modules", ".bin", "oxlint");
+    const oxlintBin = path.join(pluginRoot, "node_modules", "oxlint", "bin", "oxlint");
     const pluginPath = path.join(pluginRoot, "index.ts");
 
     yield* fs.writeFileString(
@@ -104,7 +104,9 @@ export const createOxlintRuleHarness = (
     yield* fs.writeFileString(sourcePath, source);
 
     const output = yield* spawnAndCollectOutput(
-      ChildProcess.make(oxlintBin, ["--config", configPath, sourcePath], { cwd: repoRoot }),
+      ChildProcess.make(process.execPath, [oxlintBin, "--config", configPath, sourcePath], {
+        cwd: repoRoot,
+      }),
     );
 
     if (output.exitCode !== 0) {

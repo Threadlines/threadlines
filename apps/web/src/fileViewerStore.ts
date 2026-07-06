@@ -138,18 +138,36 @@ function toPosixPath(input: string): string {
   return input.replaceAll("\\", "/");
 }
 
+function normalizeFileViewerPath(input: string): string {
+  const posixPath = toPosixPath(input);
+  const gitBashDriveMatch = /^\/([A-Za-z])(?=\/|$)/.exec(posixPath);
+  if (!gitBashDriveMatch) {
+    return posixPath;
+  }
+  return `${gitBashDriveMatch[1]?.toUpperCase() ?? ""}:${posixPath.slice(2)}`;
+}
+
+function normalizePathForComparison(input: string): string {
+  const normalized = normalizeFileViewerPath(input);
+  return isWindowsAbsolutePath(normalized) || normalized.startsWith("//")
+    ? normalized.toLowerCase()
+    : normalized;
+}
+
 /**
  * Convert an absolute path into a workspace-relative one, or return null when
  * the path lives outside the workspace root (those fall back to the external
  * editor — the server refuses reads outside the root).
  */
 export function relativePathWithinCwd(targetPath: string, cwd: string): string | null {
-  const normalizedTarget = toPosixPath(targetPath);
-  const normalizedCwd = toPosixPath(cwd).replace(/\/+$/, "");
-  if (normalizedTarget === normalizedCwd) {
+  const normalizedTarget = normalizeFileViewerPath(targetPath);
+  const normalizedCwd = normalizeFileViewerPath(cwd).replace(/\/+$/, "");
+  const comparableTarget = normalizePathForComparison(normalizedTarget);
+  const comparableCwd = normalizePathForComparison(normalizedCwd);
+  if (comparableTarget === comparableCwd) {
     return null;
   }
-  if (!normalizedTarget.startsWith(`${normalizedCwd}/`)) {
+  if (!comparableTarget.startsWith(`${comparableCwd}/`)) {
     return null;
   }
   const relativePath = normalizedTarget.slice(normalizedCwd.length + 1);
@@ -294,9 +312,11 @@ export function openFileInViewer(input: OpenFileInViewerInput): boolean {
       line = Number.parseInt(lineSuffix[1] ?? "", 10) || undefined;
     }
   }
-  const normalizedPath = toPosixPath(targetPath);
+  const normalizedPath = normalizeFileViewerPath(targetPath);
   const relativePath =
-    normalizedPath.startsWith("/") || isWindowsAbsolutePath(targetPath)
+    normalizedPath.startsWith("/") ||
+    isWindowsAbsolutePath(targetPath) ||
+    isWindowsAbsolutePath(normalizedPath)
       ? relativePathWithinCwd(normalizedPath, input.cwd)
       : normalizedPath;
   if (!relativePath) {

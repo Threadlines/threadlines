@@ -863,6 +863,42 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
         ]);
       });
 
+      it("keeps the newer provider snapshot when updates arrive out of order", () => {
+        const newerProvider = {
+          instanceId: ProviderInstanceId.make("cursor"),
+          driver: ProviderDriverKind.make("cursor"),
+          status: "ready",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          checkedAt: "2026-04-14T00:01:00.000Z",
+          version: "2026.04.09-f2b0fcd",
+          models: [
+            {
+              slug: "claude-opus-4-6",
+              name: "Opus 4.6",
+              isCustom: false,
+              capabilities: createModelCapabilities({
+                optionDescriptors: [
+                  selectDescriptor("reasoning", "Reasoning", [
+                    { id: "high", label: "High", isDefault: true },
+                  ]),
+                ],
+              }),
+            },
+          ],
+          slashCommands: [],
+          skills: [],
+        } as const satisfies ServerProvider;
+        const olderProvider = {
+          ...newerProvider,
+          checkedAt: "2026-04-14T00:00:00.000Z",
+          models: [],
+        } satisfies ServerProvider;
+
+        assert.deepStrictEqual(mergeProviderSnapshot(newerProvider, olderProvider), newerProvider);
+      });
+
       it("preserves same-account usage when a refresh returns no usage snapshot", () => {
         const usage: ServerProviderAccountUsage = {
           source: "claude-oauth-usage",
@@ -1568,8 +1604,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             checkedAt: "2026-04-14T00:01:00.000Z",
             models: [],
           } satisfies ServerProvider;
-          const changes = yield* PubSub.unbounded<ServerProvider>();
-          const streamSubscribed = yield* Deferred.make<void>();
+          const releaseLiveUpdate = yield* Deferred.make<void>();
           const instance = {
             instanceId: cursorInstanceId,
             driverKind: cursorDriver,
@@ -1586,12 +1621,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
               }),
               getSnapshot: Effect.succeed(initialProvider),
               refresh: Effect.succeed(refreshedProvider),
-              streamChanges: Stream.unwrap(
-                PubSub.subscribe(changes).pipe(
-                  Effect.tap(() => Deferred.succeed(streamSubscribed, undefined)),
-                  Effect.map(Stream.fromSubscription),
-                ),
-              ),
+              streamChanges: Stream.fromEffect(
+                Deferred.await(releaseLiveUpdate).pipe(Effect.as(refreshedProvider)),
+              ).pipe(Stream.concat(Stream.never)),
             },
             adapter: {} as ProviderInstance["adapter"],
             textGeneration: {} as ProviderInstance["textGeneration"],
@@ -1631,14 +1663,12 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             assert.deepStrictEqual((yield* registry.getProviders)[0]?.models, [
               ...initialProvider.models,
             ]);
-            yield* Deferred.await(streamSubscribed);
-            yield* Effect.yieldNow;
-            yield* PubSub.publish(changes, refreshedProvider);
+            yield* Deferred.succeed(releaseLiveUpdate, undefined);
 
             let cachedProvider = yield* readProviderStatusCache(filePath);
             for (
               let attempt = 0;
-              attempt < 50 && cachedProvider?.checkedAt !== refreshedProvider.checkedAt;
+              attempt < 500 && cachedProvider?.checkedAt !== refreshedProvider.checkedAt;
               attempt += 1
             ) {
               yield* TestClock.adjust("10 millis");

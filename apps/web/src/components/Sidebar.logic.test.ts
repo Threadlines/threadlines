@@ -545,7 +545,7 @@ describe("resolveThreadStatusPill", () => {
     ).toMatchObject({ label: "Working", pulse: true });
   });
 
-  it("shows connecting from the orchestration starting status even if the legacy status lags", () => {
+  it("shows starting from the orchestration starting status even if the legacy status lags", () => {
     expect(
       resolveThreadStatusPill({
         thread: {
@@ -557,7 +557,7 @@ describe("resolveThreadStatusPill", () => {
           },
         },
       }),
-    ).toMatchObject({ label: "Connecting", pulse: true });
+    ).toMatchObject({ label: "Starting", pulse: true });
   });
 
   it("does not infer working from a recent user message when the provider is ready", () => {

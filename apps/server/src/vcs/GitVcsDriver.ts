@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import * as nodePath from "node:path";
 
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -731,6 +732,13 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       args: ["rev-parse", "--show-toplevel"],
     }).pipe(Effect.map((result) => result.stdout.trim()));
 
+  const isInsideToplevel = (toplevel: string, absolutePath: string) => {
+    const relativePath = nodePath.relative(toplevel, absolutePath);
+    return (
+      relativePath === "" || (!relativePath.startsWith("..") && !nodePath.isAbsolute(relativePath))
+    );
+  };
+
   const parseRefListing = (stdout: string): ReadonlyArray<string> =>
     stdout
       .split("\n")
@@ -1052,8 +1060,8 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
         }
 
         for (const relativePath of input.deletePaths) {
-          const absolutePath = path.resolve(toplevel, relativePath);
-          if (!absolutePath.startsWith(`${toplevel}${path.sep}`)) {
+          const absolutePath = nodePath.resolve(toplevel, relativePath);
+          if (!isInsideToplevel(toplevel, absolutePath)) {
             return yield* new VcsProcessExitError({
               operation,
               command: "rm",

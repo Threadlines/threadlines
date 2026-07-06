@@ -14,6 +14,7 @@ import { useShallow } from "zustand/react/shallow";
 
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import { ELECTRON_HEADER_HEIGHT_CLASS } from "../desktopChrome";
+import { usePrimaryEnvironmentId } from "../environments/primary";
 import { isElectron } from "../env";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import {
@@ -21,6 +22,7 @@ import {
   startNewThreadFromContext,
   startNewThreadInProjectFromContext,
 } from "../lib/chatThreadActions";
+import { resolveGeneralChatsProjectRef } from "../lib/generalChats";
 import { sortThreads } from "../lib/threadSort";
 import {
   selectGeneralChatsProjectAcrossEnvironments,
@@ -170,6 +172,8 @@ export function NoActiveThreadState() {
   const setCommandPaletteOpen = useCommandPaletteStore((store) => store.setOpen);
   const openAddProject = useCommandPaletteStore((store) => store.openAddProject);
   const threads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
+  const activeEnvironmentId = useStore((state) => state.activeEnvironmentId);
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
 
   const recentThreads = useMemo(
     () =>
@@ -192,10 +196,12 @@ export function NoActiveThreadState() {
   const generalChatsProject = useStore(selectGeneralChatsProjectAcrossEnvironments);
   const generalChatsRef = useMemo(
     () =>
-      generalChatsProject
-        ? scopeProjectRef(generalChatsProject.environmentId, generalChatsProject.id)
-        : null,
-    [generalChatsProject],
+      resolveGeneralChatsProjectRef({
+        generalChatsProject,
+        activeEnvironmentId,
+        primaryEnvironmentId,
+      }),
+    [activeEnvironmentId, generalChatsProject, primaryEnvironmentId],
   );
 
   const hasProject = defaultProjectRef !== null;
@@ -282,7 +288,7 @@ export function NoActiveThreadState() {
                   ? "Jump back in, or start something new."
                   : "Resume one from the sidebar, or start fresh."
                 : generalChatsRef
-                  ? "Add a project, or just start chatting."
+                  ? "Start a general chat, or add a project for repo-aware work."
                   : "Add a project to begin."}
             </EmptyDescription>
 
@@ -362,15 +368,6 @@ export function NoActiveThreadState() {
                 </Group>
               ) : (
                 <>
-                  <Button
-                    data-testid="no-thread-add-project-button"
-                    onClick={openAddProject}
-                    size="sm"
-                    variant="outline"
-                  >
-                    <FolderPlusIcon />
-                    Add a project
-                  </Button>
                   {generalChatsRef ? (
                     <Button
                       data-testid="no-thread-new-general-chat-button"
@@ -382,6 +379,15 @@ export function NoActiveThreadState() {
                       New general chat
                     </Button>
                   ) : null}
+                  <Button
+                    data-testid="no-thread-add-project-button"
+                    onClick={openAddProject}
+                    size="sm"
+                    variant="outline"
+                  >
+                    <FolderPlusIcon />
+                    Add a project
+                  </Button>
                 </>
               )}
               <Button

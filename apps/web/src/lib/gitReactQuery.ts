@@ -292,15 +292,28 @@ export function gitCheckoutMutationOptions(input: {
   cwd: string | null;
   queryClient: QueryClient;
 }) {
+  type CheckoutMutationInput =
+    | string
+    | {
+        readonly cwd?: string | null;
+        readonly refName: string;
+      };
+  const resolveCheckoutInput = (args: CheckoutMutationInput) =>
+    typeof args === "string"
+      ? { cwd: input.cwd, refName: args }
+      : { cwd: args.cwd ?? input.cwd, refName: args.refName };
+
   return mutationOptions({
     mutationKey: gitMutationKeys.switchRef(input.environmentId, input.cwd),
-    mutationFn: async (refName: string) => {
-      if (!input.cwd || !input.environmentId) throw new Error("Git switchRef is unavailable.");
+    mutationFn: async (args: CheckoutMutationInput) => {
+      const checkout = resolveCheckoutInput(args);
+      if (!checkout.cwd || !input.environmentId) throw new Error("Git switchRef is unavailable.");
       const api = ensureEnvironmentApi(input.environmentId);
-      return api.vcs.switchRef({ cwd: input.cwd, refName });
+      return api.vcs.switchRef({ cwd: checkout.cwd, refName: checkout.refName });
     },
-    onSettled: async () => {
-      await invalidateGitBranchQueries(input.queryClient, input.environmentId, input.cwd);
+    onSettled: async (_data, _error, args) => {
+      const checkout = resolveCheckoutInput(args);
+      await invalidateGitBranchQueries(input.queryClient, input.environmentId, checkout.cwd);
     },
   });
 }

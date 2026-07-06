@@ -31,7 +31,7 @@ export type ThreadTraversalDirection = "previous" | "next";
 export interface ThreadStatusPill {
   label:
     | "Working"
-    | "Connecting"
+    | "Starting"
     | "Completed"
     | "Pending Approval"
     | "Awaiting Input"
@@ -46,7 +46,7 @@ const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
   "Pending Approval": 5,
   "Awaiting Input": 4,
   Working: 3,
-  Connecting: 3,
+  Starting: 3,
   "Plan Ready": 2,
   Background: 2,
   Completed: 1,
@@ -376,7 +376,7 @@ export function resolveThreadStatusPill(input: {
     thread.session?.orchestrationStatus === "starting"
   ) {
     return {
-      label: "Connecting",
+      label: "Starting",
       colorClass: "text-primary-readable",
       dotClass: THREAD_STATUS_DOT_CLASSES.blue,
       pulse: true,

@@ -2,7 +2,7 @@ import { scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
 import { projectScriptCwd } from "@threadlines/shared/projectScripts";
 import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo } from "react";
 import ChatView from "../components/ChatView";
 import { threadHasPromotableServerActivity } from "../components/ChatView.logic";
 import { ChatRightPanelInlineSidebar } from "../components/ChatRightPanelInlineSidebar";
@@ -32,11 +32,28 @@ import {
   createThreadSelectorAcrossEnvironments,
 } from "../storeSelectors";
 import { useStore } from "../store";
+import { setActiveFileViewerContext, useFileViewerStore } from "../fileViewerStore";
 import {
   buildDraftThreadRouteParams,
   buildThreadRouteParams,
   resolveDraftCanonicalThreadRef,
 } from "../threadRoutes";
+
+const FileViewerOverlay = lazy(() => import("../components/file-viewer/FileViewerOverlay"));
+
+/** Mount the heavy viewer chunk only after the first open request. */
+function LazyFileViewerOverlay() {
+  const isOpen = useFileViewerStore((state) => state.isOpen);
+  const hasContext = useFileViewerStore((state) => state.context !== null);
+  if (!isOpen && !hasContext) {
+    return null;
+  }
+  return (
+    <Suspense fallback={null}>
+      <FileViewerOverlay />
+    </Suspense>
+  );
+}
 
 function DraftChatThreadRouteView() {
   const navigate = useNavigate();
@@ -85,6 +102,7 @@ function DraftChatThreadRouteView() {
 
     return {
       environmentId: draftSession.environmentId,
+      projectCwd: draftProject.cwd,
       cwd: projectScriptCwd({
         project: { cwd: draftProject.cwd },
         worktreePath: draftSession.worktreePath,
@@ -108,6 +126,25 @@ function DraftChatThreadRouteView() {
     onAutoHide: closeRightPanel,
   });
   const sourceControlOpen = rawSourceControlOpen && !sourceControlAutoHidden && !isGeneralChatDraft;
+  const fileViewerCwd = isGeneralChatDraft
+    ? draftProject && draftThreadRef
+      ? `${draftProject.cwd}/threads/${draftThreadRef.threadId}`
+      : null
+    : (sourceControlTarget?.cwd ?? null);
+  useEffect(() => {
+    if (!draftThreadRef || !fileViewerCwd) {
+      setActiveFileViewerContext(null);
+      return;
+    }
+    setActiveFileViewerContext({
+      environmentId: draftThreadRef.environmentId,
+      cwd: fileViewerCwd,
+      threadRef: draftThreadRef,
+    });
+    return () => {
+      setActiveFileViewerContext(null);
+    };
+  }, [draftThreadRef, fileViewerCwd]);
   const openSourceControl = useCallback(() => {
     void navigate({
       to: "/draft/$draftId",
@@ -230,6 +267,7 @@ function DraftChatThreadRouteView() {
         >
           {sourceControlPanel}
         </ChatRightPanelInlineSidebar>
+        <LazyFileViewerOverlay />
       </>
     );
   }
@@ -247,6 +285,7 @@ function DraftChatThreadRouteView() {
       <RightPanelSheet open={sourceControlOpen} onClose={closeRightPanel} size="sourceControl">
         {sourceControlPanel}
       </RightPanelSheet>
+      <LazyFileViewerOverlay />
     </>
   );
 }

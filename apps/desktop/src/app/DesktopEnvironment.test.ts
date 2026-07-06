@@ -119,7 +119,8 @@ describe("DesktopEnvironment", () => {
     Effect.gen(function* () {
       const environment = yield* makeEnvironment(
         {
-          resolveDevAppVersion: (rootDir) => (rootDir === "/repo" ? "1.5.0-nightly.9" : undefined),
+          resolveDevAppVersion: (rootDir) =>
+            toPortablePath(rootDir) === "/repo" ? "1.5.0-nightly.9" : undefined,
         },
         { VITE_DEV_SERVER_URL: "http://localhost:5173" },
       );

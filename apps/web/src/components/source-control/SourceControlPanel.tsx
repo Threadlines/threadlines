@@ -157,9 +157,11 @@ import {
   type SourceControlFileTreeNode,
   takeCommitGraphRowRefs,
 } from "./SourceControlPanel.logic";
+import { resolveBranchSelectionTarget } from "../BranchToolbar.logic";
 
 export interface SourceControlProjectTarget {
   readonly environmentId: EnvironmentId;
+  readonly projectCwd: string;
   readonly cwd: string;
   readonly name: string;
   readonly environmentLabel: string | null;
@@ -1454,9 +1456,9 @@ function SourceControlBranchMenu({
   });
 
   const syncActiveThreadBranch = useCallback(
-    (branch: string | null) => {
+    (branch: string | null, worktreePath: string | null = target.worktreePath) => {
       if (onActiveBranchChange) {
-        onActiveBranchChange(branch, target.worktreePath);
+        onActiveBranchChange(branch, worktreePath);
         return;
       }
       if (!activeThreadRef) {
@@ -1470,11 +1472,11 @@ function SourceControlBranchMenu({
             commandId: newCommandId(),
             threadId: activeThreadRef.threadId,
             branch,
-            worktreePath: target.worktreePath,
+            worktreePath,
           })
           .catch(() => undefined);
       }
-      setThreadBranch(activeThreadRef, branch, target.worktreePath);
+      setThreadBranch(activeThreadRef, branch, worktreePath);
     },
     [
       activeThreadRef,
@@ -1487,11 +1489,18 @@ function SourceControlBranchMenu({
 
   const runSwitchRef = useCallback(
     (ref: VcsRef) => {
-      const promise = checkoutMutation.mutateAsync(ref.name).then((result) => {
-        const nextBranch = result.refName ?? ref.name;
-        syncActiveThreadBranch(nextBranch);
-        return nextBranch;
+      const selectionTarget = resolveBranchSelectionTarget({
+        activeProjectCwd: target.projectCwd,
+        activeWorktreePath: target.worktreePath,
+        refName: ref,
       });
+      const promise = checkoutMutation
+        .mutateAsync({ cwd: selectionTarget.checkoutCwd, refName: ref.name })
+        .then((result) => {
+          const nextBranch = result.refName ?? ref.name;
+          syncActiveThreadBranch(nextBranch, selectionTarget.nextWorktreePath);
+          return nextBranch;
+        });
       void toastManager.promise(promise, {
         loading: { title: `Switching to ${ref.name}...` },
         success: (branch) => ({
@@ -1505,7 +1514,13 @@ function SourceControlBranchMenu({
       });
       void promise.then(refreshPanel, () => undefined);
     },
-    [checkoutMutation, refreshPanel, syncActiveThreadBranch],
+    [
+      checkoutMutation,
+      refreshPanel,
+      syncActiveThreadBranch,
+      target.projectCwd,
+      target.worktreePath,
+    ],
   );
 
   const runCreateBranch = useCallback(() => {

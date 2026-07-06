@@ -398,8 +398,14 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
     if (openFileInActiveViewer({ path: targetPath, line })) {
       return;
     }
-    handleOpenExternally();
-  }, [handleOpenExternally, line, targetPath]);
+    toastManager.add(
+      stackedThreadToast({
+        type: "error",
+        title: "Unable to open in file viewer",
+        description: `${displayPath} is not available in the active project workspace.`,
+      }),
+    );
+  }, [displayPath, line, targetPath]);
 
   const handleCopy = useCallback((value: string, title: string) => {
     if (typeof window === "undefined" || !navigator.clipboard?.writeText) {

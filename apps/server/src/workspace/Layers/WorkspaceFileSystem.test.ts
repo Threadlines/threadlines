@@ -53,6 +53,29 @@ const writeTextFile = Effect.fn("writeTextFile")(function* (
   yield* fileSystem.writeFileString(absolutePath, contents).pipe(Effect.orDie);
 });
 
+function getErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const record = error as { cause?: unknown; code?: unknown; reason?: unknown };
+  if (typeof record.code === "string") return record.code;
+  if (record.cause && typeof record.cause === "object") {
+    const causeCode = (record.cause as { code?: unknown }).code;
+    if (typeof causeCode === "string") return causeCode;
+  }
+  if (record.reason && typeof record.reason === "object") {
+    const reason = record.reason as { cause?: unknown; code?: unknown };
+    if (typeof reason.code === "string") return reason.code;
+    if (reason.cause && typeof reason.cause === "object") {
+      const reasonCauseCode = (reason.cause as { code?: unknown }).code;
+      if (typeof reasonCauseCode === "string") return reasonCauseCode;
+    }
+  }
+  return undefined;
+}
+
+function isUnavailableWindowsSymlink(error: unknown) {
+  return process.platform === "win32" && getErrorCode(error) === "EPERM";
+}
+
 it.layer(TestLayer)("WorkspaceFileSystemLive", (it) => {
   describe("writeFile", () => {
     it.effect("writes files relative to the workspace root", () =>
@@ -274,9 +297,15 @@ it.layer(TestLayer)("WorkspaceFileSystemLive", (it) => {
         yield* fileSystem
           .writeFileString(path.join(outside, "secret.txt"), "secret")
           .pipe(Effect.orDie);
-        yield* fileSystem
+        const symlinkCreated = yield* fileSystem
           .symlink(path.join(outside, "secret.txt"), path.join(cwd, "link.txt"))
-          .pipe(Effect.orDie);
+          .pipe(
+            Effect.as(true),
+            Effect.catch((error) =>
+              isUnavailableWindowsSymlink(error) ? Effect.succeed(false) : Effect.fail(error),
+            ),
+          );
+        if (!symlinkCreated) return;
 
         const error = yield* workspaceFileSystem
           .readFile({

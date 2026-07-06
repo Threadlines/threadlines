@@ -122,15 +122,17 @@ export const mergeProviderSnapshot = (
 ): ServerProvider =>
   !previousProvider
     ? nextProvider
-    : {
-        ...nextProvider,
-        models: mergeProviderModels(previousProvider.models, nextProvider.models, {
-          preserveMissingPreviousModels: !hasAuthoritativeModelList(nextProvider),
-        }),
-        ...(shouldPreservePreviousAccountUsage(previousProvider, nextProvider)
-          ? { accountUsage: previousProvider.accountUsage }
-          : {}),
-      };
+    : previousProvider.checkedAt > nextProvider.checkedAt
+      ? previousProvider
+      : {
+          ...nextProvider,
+          models: mergeProviderModels(previousProvider.models, nextProvider.models, {
+            preserveMissingPreviousModels: !hasAuthoritativeModelList(nextProvider),
+          }),
+          ...(shouldPreservePreviousAccountUsage(previousProvider, nextProvider)
+            ? { accountUsage: previousProvider.accountUsage }
+            : {}),
+        };
 
 const shouldPreservePreviousAccountUsage = (
   previousProvider: ServerProvider,

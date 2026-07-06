@@ -1,5 +1,7 @@
 import "../index.css";
 
+import { scopeThreadRef } from "@threadlines/client-runtime";
+import { EnvironmentId, ThreadId } from "@threadlines/contracts";
 import { page } from "vitest/browser";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
@@ -24,9 +26,28 @@ vi.mock("../localApi", () => ({
 }));
 
 import ChatMarkdown from "./ChatMarkdown";
+import { setActiveFileViewerContext, useFileViewerStore } from "../fileViewerStore";
+
+const CHAT_MARKDOWN_ENVIRONMENT_ID = EnvironmentId.make("environment-chat-markdown-browser");
+const CHAT_MARKDOWN_THREAD_ID = ThreadId.make("thread-chat-markdown-browser");
+const CHAT_MARKDOWN_THREAD_REF = scopeThreadRef(
+  CHAT_MARKDOWN_ENVIRONMENT_ID,
+  CHAT_MARKDOWN_THREAD_ID,
+);
 
 describe("ChatMarkdown", () => {
   afterEach(() => {
+    setActiveFileViewerContext(null);
+    useFileViewerStore.setState({
+      isOpen: false,
+      context: null,
+      tabs: [],
+      activePath: null,
+      revealLine: null,
+      revealEndLine: null,
+      revealRequestId: 0,
+      coarsePointerWordWrap: null,
+    });
     openInPreferredEditorMock.mockClear();
     readLocalApiMock.mockClear();
     localStorage.clear();
@@ -44,12 +65,6 @@ describe("ChatMarkdown", () => {
       const link = page.getByRole("link", { name: "PermissionRule.ts" });
       await expect.element(link).toBeInTheDocument();
       await expect.element(link).toHaveAttribute("href", filePath);
-
-      await link.click();
-
-      await vi.waitFor(() => {
-        expect(openInPreferredEditorMock).toHaveBeenCalledWith(expect.anything(), filePath);
-      });
     } finally {
       await screen.unmount();
     }
@@ -66,12 +81,84 @@ describe("ChatMarkdown", () => {
       const link = page.getByRole("link", { name: "PermissionRule.ts · L1" });
       await expect.element(link).toBeInTheDocument();
       await expect.element(link).toHaveAttribute("href", `${filePath}:1`);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("does not launch an external editor from the primary file-link click", async () => {
+    const filePath =
+      "/Users/yashsingh/p/sco/claude-code-extract/src/utils/permissions/PermissionRule.ts";
+    const screen = await render(
+      <ChatMarkdown text={`[PermissionRule.ts](file://${filePath})`} cwd="/repo/project" />,
+    );
+
+    try {
+      const link = page.getByRole("link", { name: "PermissionRule.ts" });
+      await link.click();
+
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+      expect(openInPreferredEditorMock).not.toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("opens file links in the active project file viewer before using external editors", async () => {
+    const cwd = "/repo/project";
+    const filePath = "/repo/project/src/utils/permissions/PermissionRule.ts";
+    setActiveFileViewerContext({
+      environmentId: CHAT_MARKDOWN_ENVIRONMENT_ID,
+      cwd,
+      threadRef: CHAT_MARKDOWN_THREAD_REF,
+    });
+    const screen = await render(
+      <ChatMarkdown text={`[PermissionRule.ts:7](file://${filePath}#L7)`} cwd={cwd} />,
+    );
+
+    try {
+      const link = page.getByRole("link", { name: /PermissionRule\.ts.*L7/ });
+      await expect.element(link).toBeInTheDocument();
 
       await link.click();
 
       await vi.waitFor(() => {
-        expect(openInPreferredEditorMock).toHaveBeenCalledWith(expect.anything(), `${filePath}:1`);
+        const state = useFileViewerStore.getState();
+        expect(state.isOpen).toBe(true);
+        expect(state.activePath).toBe("src/utils/permissions/PermissionRule.ts");
+        expect(state.revealLine).toBe(7);
       });
+      expect(openInPreferredEditorMock).not.toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("opens Git Bash Windows absolute file links in the active project file viewer", async () => {
+    const cwd = "C:/Users/wilfr/OneDrive/Desktop/GitHubCode/badcode";
+    const filePath = "/c/Users/wilfr/OneDrive/Desktop/GitHubCode/badcode/AGENTS.md";
+    setActiveFileViewerContext({
+      environmentId: CHAT_MARKDOWN_ENVIRONMENT_ID,
+      cwd,
+      threadRef: CHAT_MARKDOWN_THREAD_REF,
+    });
+    const screen = await render(
+      <ChatMarkdown text={`[AGENTS.md:87](file://${filePath}#L87)`} cwd={cwd} />,
+    );
+
+    try {
+      const link = page.getByRole("link", { name: /AGENTS\.md.*L87/ });
+      await expect.element(link).toBeInTheDocument();
+
+      await link.click();
+
+      await vi.waitFor(() => {
+        const state = useFileViewerStore.getState();
+        expect(state.isOpen).toBe(true);
+        expect(state.activePath).toBe("AGENTS.md");
+        expect(state.revealLine).toBe(87);
+      });
+      expect(openInPreferredEditorMock).not.toHaveBeenCalled();
     } finally {
       await screen.unmount();
     }
@@ -88,15 +175,6 @@ describe("ChatMarkdown", () => {
       const link = page.getByRole("link", { name: "PermissionRule.ts · L1:C7" });
       await expect.element(link).toBeInTheDocument();
       await expect.element(link).toHaveAttribute("href", `${filePath}:1:7`);
-
-      await link.click();
-
-      await vi.waitFor(() => {
-        expect(openInPreferredEditorMock).toHaveBeenCalledWith(
-          expect.anything(),
-          `${filePath}:1:7`,
-        );
-      });
     } finally {
       await screen.unmount();
     }

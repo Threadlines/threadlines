@@ -259,6 +259,7 @@ export type ProjectScript = typeof ProjectScript.Type;
 export const ProjectKind = Schema.Literals(["workspace", "general-chat"]);
 export type ProjectKind = typeof ProjectKind.Type;
 export const DEFAULT_PROJECT_KIND: ProjectKind = "workspace";
+export const GENERAL_CHATS_PROJECT_ID = ProjectId.make("project-general-chats");
 
 export const OrchestrationProject = Schema.Struct({
   id: ProjectId,

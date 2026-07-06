@@ -138,6 +138,7 @@ function ChatThreadRouteView() {
 
     return {
       environmentId: threadRef.environmentId,
+      projectCwd: activeProject.cwd,
       cwd: projectScriptCwd({
         project: { cwd: activeProject.cwd },
         worktreePath: sourceControlThread.worktreePath ?? null,

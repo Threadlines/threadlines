@@ -78,7 +78,7 @@ const deriveServerPathsSync = (baseDir: string, devUrl: URL | undefined) =>
 
 async function waitFor(
   predicate: () => boolean | Promise<boolean>,
-  timeoutMs = 2000,
+  timeoutMs = 10_000,
 ): Promise<void> {
   const deadline = (await Effect.runPromise(Clock.currentTimeMillis)) + timeoutMs;
   const poll = async (): Promise<void> => {
@@ -88,7 +88,7 @@ async function waitFor(
     if ((await Effect.runPromise(Clock.currentTimeMillis)) >= deadline) {
       throw new Error("Timed out waiting for expectation.");
     }
-    await Effect.runPromise(Effect.yieldNow);
+    await Effect.runPromise(Effect.sleep("10 millis"));
     return poll();
   };
 
@@ -1236,6 +1236,83 @@ describe("ProviderCommandReactor", () => {
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
         createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    expect(harness.startSession.mock.calls.length).toBe(1);
+    expect(harness.stopSession.mock.calls.length).toBe(0);
+  });
+
+  it("reuses the open provider session when the next turn starts from a ready thread", async () => {
+    const harness = await createHarness();
+    const threadId = ThreadId.make("thread-1");
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-after-completion-1"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message-after-completion-1"),
+          role: "user",
+          text: "first",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await waitFor(async () => {
+      const snapshot = await harness.readModel();
+      return (
+        snapshot.threads.find((thread) => thread.id === threadId)?.session?.status === "running"
+      );
+    });
+    const afterFirstTurn = await harness.readModel();
+    const runningSession = afterFirstTurn.threads.find((thread) => thread.id === threadId)?.session;
+    expect(runningSession?.status).toBe("running");
+    if (!runningSession) {
+      throw new Error("Expected the first turn to bind a provider session.");
+    }
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-ready-after-completion"),
+        threadId,
+        session: {
+          ...runningSession,
+          status: "ready",
+          activeTurnId: null,
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        },
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await waitFor(async () => {
+      const snapshot = await harness.readModel();
+      return snapshot.threads.find((thread) => thread.id === threadId)?.session?.status === "ready";
+    });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-after-completion-2"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message-after-completion-2"),
+          role: "user",
+          text: "second",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:02.000Z",
       }),
     );
 

@@ -261,6 +261,7 @@ interface ClaudeSessionContext {
   turnState: ClaudeTurnState | undefined;
   lastKnownContextWindow: number | undefined;
   lastKnownTokenUsage: ThreadTokenUsageSnapshot | undefined;
+  lastEmittedTokenUsage: ThreadTokenUsageSnapshot | undefined;
   lastAssistantUuid: string | undefined;
   lastCompletedTurnId: TurnId | undefined;
   lastThreadStartedId: string | undefined;
@@ -517,6 +518,71 @@ function normalizeClaudeContextUsage(
     lastUsedTokens: usedTokens,
     ...(maxTokens !== undefined ? { maxTokens } : {}),
     compactsAutomatically: value.isAutoCompactEnabled,
+  };
+}
+
+const THREAD_TOKEN_USAGE_SNAPSHOT_KEYS = [
+  "usedTokens",
+  "totalProcessedTokens",
+  "maxTokens",
+  "inputTokens",
+  "cachedInputTokens",
+  "outputTokens",
+  "reasoningOutputTokens",
+  "lastUsedTokens",
+  "lastInputTokens",
+  "lastCachedInputTokens",
+  "lastOutputTokens",
+  "lastReasoningOutputTokens",
+  "toolUses",
+  "durationMs",
+  "compactsAutomatically",
+] as const satisfies ReadonlyArray<keyof ThreadTokenUsageSnapshot>;
+
+function areThreadTokenUsageSnapshotsEqual(
+  left: ThreadTokenUsageSnapshot | undefined,
+  right: ThreadTokenUsageSnapshot | undefined,
+): boolean {
+  if (!left || !right) {
+    return false;
+  }
+  return THREAD_TOKEN_USAGE_SNAPSHOT_KEYS.every((key) => left[key] === right[key]);
+}
+
+function normalizeClaudeCompactBoundaryUsage(
+  value: SDKMessage,
+  lastKnownUsage: ThreadTokenUsageSnapshot | undefined,
+  lastKnownContextWindow: number | undefined,
+): ThreadTokenUsageSnapshot | undefined {
+  if (sdkMessageSubtype(value) !== "compact_boundary") {
+    return undefined;
+  }
+
+  const metadata =
+    value && typeof value === "object"
+      ? (value as { readonly compact_metadata?: unknown }).compact_metadata
+      : undefined;
+  if (!metadata || typeof metadata !== "object") {
+    return undefined;
+  }
+
+  const postTokens = asPositiveFiniteInteger(
+    (metadata as { readonly post_tokens?: unknown }).post_tokens,
+  );
+  if (postTokens === undefined) {
+    return undefined;
+  }
+
+  const maxTokens = lastKnownUsage?.maxTokens ?? lastKnownContextWindow;
+  return {
+    usedTokens: postTokens,
+    lastUsedTokens: postTokens,
+    ...(maxTokens !== undefined && Number.isFinite(maxTokens) && maxTokens > 0
+      ? { maxTokens: Math.round(maxTokens) }
+      : {}),
+    ...(lastKnownUsage?.compactsAutomatically !== undefined
+      ? { compactsAutomatically: lastKnownUsage.compactsAutomatically }
+      : {}),
   };
 }
 
@@ -1971,6 +2037,146 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   const offerRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
     Queue.offer(runtimeEventQueue, event).pipe(Effect.asVoid);
 
+  const rememberClaudeContextUsage = (
+    context: ClaudeSessionContext,
+    usage: ThreadTokenUsageSnapshot,
+  ): void => {
+    context.lastKnownTokenUsage = usage;
+    if (usage.maxTokens !== undefined) {
+      context.lastKnownContextWindow = usage.maxTokens;
+    }
+  };
+
+  const readCurrentClaudeContextUsage = Effect.fn("readCurrentClaudeContextUsage")(function* (
+    context: ClaudeSessionContext,
+    options?: {
+      readonly failureLogLevel?: "debug" | "warning";
+    },
+  ) {
+    if (!context.query.getContextUsage) {
+      return undefined;
+    }
+
+    const queryWithContextUsage = context.query as ClaudeQueryRuntime & {
+      readonly getContextUsage: () => Promise<SDKControlGetContextUsageResponse>;
+    };
+
+    const currentContextUsage = yield* Effect.promise(
+      async (): Promise<ClaudeContextUsageReadResult> => {
+        try {
+          return {
+            ok: true,
+            value: await queryWithContextUsage.getContextUsage(),
+          };
+        } catch (cause) {
+          return {
+            ok: false,
+            cause,
+          };
+        }
+      },
+    ).pipe(
+      Effect.flatMap((result) => {
+        if (result.ok) {
+          return Effect.succeed(result.value);
+        }
+
+        const detail = {
+          threadId: context.session.threadId,
+          cause: result.cause,
+        };
+        return options?.failureLogLevel === "debug"
+          ? Effect.logDebug("claude.context-usage.failed", detail).pipe(Effect.as(undefined))
+          : Effect.logWarning("claude.context-usage.failed", detail).pipe(Effect.as(undefined));
+      }),
+    );
+
+    return normalizeClaudeContextUsage(currentContextUsage);
+  });
+
+  const buildClaudeContextUsageSnapshot = Effect.fn("buildClaudeContextUsageSnapshot")(function* (
+    context: ClaudeSessionContext,
+    options?: {
+      readonly accumulatedTotals?: ClaudeUsageTotals;
+      readonly allowLastKnownFallback?: boolean;
+      readonly applyThinkingTokens?: boolean;
+      readonly fallbackUsage?: ThreadTokenUsageSnapshot;
+      readonly failureLogLevel?: "debug" | "warning";
+      readonly preferFallbackUsage?: boolean;
+    },
+  ) {
+    const readOptions = options?.failureLogLevel
+      ? { failureLogLevel: options.failureLogLevel }
+      : undefined;
+    const currentContextSnapshot = yield* readCurrentClaudeContextUsage(context, readOptions);
+    const freshUsage =
+      options?.preferFallbackUsage === true
+        ? (options.fallbackUsage ?? currentContextSnapshot)
+        : (currentContextSnapshot ?? options?.fallbackUsage);
+    if (freshUsage) {
+      rememberClaudeContextUsage(context, freshUsage);
+    }
+
+    const lastGoodUsage =
+      freshUsage ??
+      (options?.allowLastKnownFallback === true ? context.lastKnownTokenUsage : undefined);
+    if (!lastGoodUsage) {
+      return undefined;
+    }
+
+    const maxTokens =
+      currentContextSnapshot?.maxTokens ??
+      lastGoodUsage.maxTokens ??
+      context.lastKnownContextWindow;
+    const compactsAutomatically =
+      lastGoodUsage.compactsAutomatically ?? currentContextSnapshot?.compactsAutomatically;
+    const usageWithContextWindow = {
+      ...lastGoodUsage,
+      ...(typeof maxTokens === "number" && Number.isFinite(maxTokens) && maxTokens > 0
+        ? { maxTokens }
+        : {}),
+      ...(compactsAutomatically !== undefined ? { compactsAutomatically } : {}),
+    };
+    const withProcessedTotals = mergeClaudeProcessedUsageTotals(
+      usageWithContextWindow,
+      options?.accumulatedTotals,
+    );
+
+    return options?.applyThinkingTokens === false
+      ? withProcessedTotals
+      : applyClaudeThinkingTokenUsage(withProcessedTotals, context.turnState);
+  });
+
+  const emitClaudeContextUsageSnapshot = Effect.fn("emitClaudeContextUsageSnapshot")(function* (
+    context: ClaudeSessionContext,
+    usage: ThreadTokenUsageSnapshot | undefined,
+    options?: {
+      readonly turnId?: TurnId;
+    },
+  ) {
+    if (!usage) {
+      return;
+    }
+    if (areThreadTokenUsageSnapshotsEqual(context.lastEmittedTokenUsage, usage)) {
+      return;
+    }
+    context.lastEmittedTokenUsage = usage;
+
+    const stamp = yield* makeEventStamp();
+    yield* offerRuntimeEvent({
+      type: "thread.token-usage.updated",
+      eventId: stamp.eventId,
+      provider: PROVIDER,
+      createdAt: stamp.createdAt,
+      threadId: context.session.threadId,
+      ...(options?.turnId ? { turnId: options.turnId } : {}),
+      payload: {
+        usage,
+      },
+      providerRefs: options?.turnId ? nativeProviderRefs(context) : {},
+    });
+  });
+
   const logNativeSdkMessage = Effect.fn("logNativeSdkMessage")(function* (
     context: ClaudeSessionContext,
     message: SDKMessage,
@@ -2381,83 +2587,18 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       context.lastKnownContextWindow = resultContextWindow;
     }
 
-    // The SDK result.usage contains *accumulated* totals across all API calls
-    // (input_tokens, cache_read_input_tokens, etc. summed over every request).
-    // This does NOT represent the current context window size.
-    // Instead, ask the SDK for current context usage when available, then
-    // merge accumulated totals only as processed-token metadata.
-    const currentContextUsage = yield* Effect.suspend(() => {
-      if (!context.query.getContextUsage) {
-        return Effect.sync(() => undefined);
-      }
-      const queryWithContextUsage = context.query as ClaudeQueryRuntime & {
-        readonly getContextUsage: () => Promise<SDKControlGetContextUsageResponse>;
-      };
-
-      return Effect.promise(async (): Promise<ClaudeContextUsageReadResult> => {
-        try {
-          return {
-            ok: true,
-            value: await queryWithContextUsage.getContextUsage(),
-          };
-        } catch (cause) {
-          return {
-            ok: false,
-            cause,
-          };
-        }
-      }).pipe(
-        Effect.flatMap((result) =>
-          result.ok
-            ? Effect.succeed(result.value)
-            : Effect.logWarning("claude.context-usage.failed", {
-                threadId: context.session.threadId,
-                cause: result.cause,
-              }).pipe(Effect.as(undefined)),
-        ),
-      );
-    });
-    const currentContextSnapshot = normalizeClaudeContextUsage(currentContextUsage);
-    if (currentContextSnapshot) {
-      context.lastKnownTokenUsage = currentContextSnapshot;
-      if (currentContextSnapshot.maxTokens !== undefined) {
-        context.lastKnownContextWindow = currentContextSnapshot.maxTokens;
-      }
-    }
-
+    // Claude result usage is accumulated processed-token metadata, not the
+    // current context window size. The snapshot builder queries context usage
+    // first, then merges these totals only as extra metadata.
     const accumulatedTotals = readClaudeUsageTotals(result?.usage);
-    const lastGoodUsage = currentContextSnapshot ?? context.lastKnownTokenUsage;
-    const maxTokens = currentContextSnapshot?.maxTokens ?? lastGoodUsage?.maxTokens;
-    const usageSnapshot = applyClaudeThinkingTokenUsage(
-      lastGoodUsage
-        ? mergeClaudeProcessedUsageTotals(
-            {
-              ...lastGoodUsage,
-              ...(typeof maxTokens === "number" && Number.isFinite(maxTokens) && maxTokens > 0
-                ? { maxTokens }
-                : {}),
-            },
-            accumulatedTotals,
-          )
-        : undefined,
-      turnState,
-    );
+    const usageSnapshot = yield* buildClaudeContextUsageSnapshot(context, {
+      ...(accumulatedTotals ? { accumulatedTotals } : {}),
+      allowLastKnownFallback: true,
+      failureLogLevel: "warning",
+    });
     if (!turnState) {
       context.lastCompletedTurnId = undefined;
-      if (usageSnapshot) {
-        const usageStamp = yield* makeEventStamp();
-        yield* offerRuntimeEvent({
-          type: "thread.token-usage.updated",
-          eventId: usageStamp.eventId,
-          provider: PROVIDER,
-          createdAt: usageStamp.createdAt,
-          threadId: context.session.threadId,
-          payload: {
-            usage: usageSnapshot,
-          },
-          providerRefs: {},
-        });
-      }
+      yield* emitClaudeContextUsageSnapshot(context, usageSnapshot);
 
       const stamp = yield* makeEventStamp();
       yield* offerRuntimeEvent({
@@ -2533,21 +2674,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     });
     context.lastCompletedTurnId = status === "completed" ? turnState.turnId : undefined;
 
-    if (usageSnapshot) {
-      const usageStamp = yield* makeEventStamp();
-      yield* offerRuntimeEvent({
-        type: "thread.token-usage.updated",
-        eventId: usageStamp.eventId,
-        provider: PROVIDER,
-        createdAt: usageStamp.createdAt,
-        threadId: context.session.threadId,
-        turnId: turnState.turnId,
-        payload: {
-          usage: usageSnapshot,
-        },
-        providerRefs: nativeProviderRefs(context),
-      });
-    }
+    yield* emitClaudeContextUsageSnapshot(context, usageSnapshot, { turnId: turnState.turnId });
 
     const stamp = yield* makeEventStamp();
     yield* offerRuntimeEvent({
@@ -3187,6 +3314,15 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
     context.lastAssistantUuid = message.uuid;
     yield* updateResumeCursor(context);
+
+    const usageSnapshot = yield* buildClaudeContextUsageSnapshot(context, {
+      failureLogLevel: "debug",
+    });
+    yield* emitClaudeContextUsageSnapshot(
+      context,
+      usageSnapshot,
+      context.turnState ? { turnId: context.turnState.turnId } : undefined,
+    );
   });
 
   const handleResultMessage = Effect.fn("handleResultMessage")(function* (
@@ -3337,6 +3473,23 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             detail: message,
           },
         });
+        {
+          const fallbackUsage = normalizeClaudeCompactBoundaryUsage(
+            message,
+            context.lastKnownTokenUsage,
+            context.lastKnownContextWindow,
+          );
+          const usageSnapshot = yield* buildClaudeContextUsageSnapshot(context, {
+            ...(fallbackUsage ? { fallbackUsage } : {}),
+            failureLogLevel: "debug",
+            preferFallbackUsage: true,
+          });
+          yield* emitClaudeContextUsageSnapshot(
+            context,
+            usageSnapshot,
+            context.turnState ? { turnId: context.turnState.turnId } : undefined,
+          );
+        }
         return;
       case "hook_started":
         yield* offerRuntimeEvent({
@@ -4411,6 +4564,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         turnState: undefined,
         lastKnownContextWindow: undefined,
         lastKnownTokenUsage: undefined,
+        lastEmittedTokenUsage: undefined,
         lastAssistantUuid: resumeState?.resumeSessionAt,
         lastCompletedTurnId: undefined,
         lastThreadStartedId: undefined,

@@ -9,7 +9,7 @@ import {
 export const SESSION_STARTUP_SLOW_NOTICE_DELAY_MS = 30_000;
 
 const SESSION_STARTUP_SLOW_MESSAGE =
-  "Starting this session is taking longer than usual. Refresh provider status or open diagnostics if it stays stuck.";
+  "Preparing this turn is taking longer than usual. Refresh provider status or open diagnostics if it stays stuck.";
 
 export function getSessionStartupNoticeDelayMs(input: {
   readonly isSessionStarting: boolean;
@@ -77,7 +77,7 @@ export const SessionStartupNotice = memo(function SessionStartupNotice({
 
   return (
     <CompactStatusNoticeRow
-      title="Session startup"
+      title="Turn startup"
       message={SESSION_STARTUP_SLOW_MESSAGE}
       errorText={refreshError}
       actions={

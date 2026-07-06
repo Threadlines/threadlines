@@ -17,8 +17,9 @@ import * as Path from "effect/Path";
 
 import {
   CommandId,
-  ProjectId,
+  GENERAL_CHATS_PROJECT_ID,
   type OrchestrationProjectShell,
+  type ProjectId,
   type ThreadId,
 } from "@threadlines/contracts";
 
@@ -32,7 +33,6 @@ import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
  * General Chat threads without a discovery round-trip and keeps the ensure
  * step idempotent across restarts.
  */
-export const GENERAL_CHATS_PROJECT_ID = ProjectId.make("project-general-chats");
 export const GENERAL_CHATS_PROJECT_TITLE = "General Chats";
 const GENERAL_CHATS_DIR_NAME = "general-chats";
 const GENERAL_CHATS_THREADS_DIR_NAME = "threads";

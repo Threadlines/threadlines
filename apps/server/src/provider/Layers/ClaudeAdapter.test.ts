@@ -66,6 +66,8 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
     readonly userMessageId: string;
     readonly options?: { readonly dryRun?: boolean };
   }> = [];
+  private contextUsageResponses: Array<SDKControlGetContextUsageResponse> = [];
+  private lastContextUsageResponse: SDKControlGetContextUsageResponse | undefined;
   public getContextUsage?: () => Promise<SDKControlGetContextUsageResponse>;
   public rewindFilesResult: RewindFilesResult = {
     canRewind: true,
@@ -76,8 +78,18 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
   public closeCalls = 0;
 
   setContextUsageResponse(response: SDKControlGetContextUsageResponse): void {
+    this.setContextUsageResponses([response]);
+  }
+
+  setContextUsageResponses(responses: ReadonlyArray<SDKControlGetContextUsageResponse>): void {
+    this.contextUsageResponses = [...responses];
+    this.lastContextUsageResponse = responses[responses.length - 1];
     this.getContextUsage = async function (this: FakeClaudeQuery) {
       this.getContextUsageCalls.push(undefined);
+      const response = this.contextUsageResponses.shift() ?? this.lastContextUsageResponse;
+      if (!response) {
+        throw new Error("No fake Claude context usage response configured.");
+      }
       return response;
     } as () => Promise<SDKControlGetContextUsageResponse>;
   }
@@ -3287,6 +3299,247 @@ describe("ClaudeAdapterLive", () => {
             lastInputTokens: 23863,
             lastCachedInputTokens: 21144,
             lastOutputTokens: 679,
+            compactsAutomatically: true,
+          },
+        });
+      }
+      assert.equal(harness.query.getContextUsageCalls.length, 1);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("refreshes Claude context window after assistant response snapshots", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 10).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "hello",
+        attachments: [],
+      });
+
+      harness.query.setContextUsageResponses([
+        makeContextUsageResponse({
+          totalTokens: 22000,
+          maxTokens: 200000,
+        }),
+        makeContextUsageResponse({
+          totalTokens: 24000,
+          maxTokens: 200000,
+        }),
+      ]);
+
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-assistant-usage",
+        uuid: "assistant-usage",
+        parent_tool_use_id: null,
+        message: {
+          id: "assistant-message-usage",
+          content: [{ type: "text", text: "Working on it" }],
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        duration_ms: 1234,
+        duration_api_ms: 1200,
+        num_turns: 1,
+        result: "done",
+        stop_reason: "end_turn",
+        session_id: "sdk-session-assistant-usage",
+        usage: {
+          input_tokens: 100,
+          cache_read_input_tokens: 20,
+          output_tokens: 80,
+        },
+      } as unknown as SDKMessage);
+      harness.query.finish();
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const usageEvents = runtimeEvents.filter(
+        (event) => event.type === "thread.token-usage.updated",
+      );
+      assert.equal(usageEvents.length, 2);
+
+      assert.deepEqual(usageEvents[0]?.payload, {
+        usage: {
+          usedTokens: 22000,
+          lastUsedTokens: 22000,
+          maxTokens: 200000,
+          compactsAutomatically: true,
+        },
+      });
+      assert.deepEqual(usageEvents[1]?.payload, {
+        usage: {
+          usedTokens: 24000,
+          lastUsedTokens: 24000,
+          inputTokens: 120,
+          cachedInputTokens: 20,
+          outputTokens: 80,
+          maxTokens: 200000,
+          lastInputTokens: 120,
+          lastCachedInputTokens: 20,
+          lastOutputTokens: 80,
+          compactsAutomatically: true,
+        },
+      });
+
+      const firstUsageIndex = runtimeEvents.indexOf(usageEvents[0]!);
+      const secondUsageIndex = runtimeEvents.indexOf(usageEvents[1]!);
+      const turnCompletedIndex = runtimeEvents.findIndex(
+        (event) => event.type === "turn.completed",
+      );
+      assert.equal(
+        firstUsageIndex >= 0 &&
+          secondUsageIndex > firstUsageIndex &&
+          turnCompletedIndex > secondUsageIndex,
+        true,
+      );
+      assert.equal(harness.query.getContextUsageCalls.length, 2);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("skips duplicate Claude context window snapshots at turn completion", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 9).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "hello",
+        attachments: [],
+      });
+
+      harness.query.setContextUsageResponses([
+        makeContextUsageResponse({
+          totalTokens: 22000,
+          maxTokens: 200000,
+        }),
+        makeContextUsageResponse({
+          totalTokens: 22000,
+          maxTokens: 200000,
+        }),
+      ]);
+
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-duplicate-usage",
+        uuid: "assistant-duplicate-usage",
+        parent_tool_use_id: null,
+        message: {
+          id: "assistant-message-duplicate-usage",
+          content: [{ type: "text", text: "Working on it" }],
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        duration_ms: 1234,
+        duration_api_ms: 1200,
+        num_turns: 1,
+        result: "done",
+        stop_reason: "end_turn",
+        session_id: "sdk-session-duplicate-usage",
+      } as unknown as SDKMessage);
+      harness.query.finish();
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const usageEvents = runtimeEvents.filter(
+        (event) => event.type === "thread.token-usage.updated",
+      );
+      assert.equal(usageEvents.length, 1);
+      assert.deepEqual(usageEvents[0]?.payload, {
+        usage: {
+          usedTokens: 22000,
+          lastUsedTokens: 22000,
+          maxTokens: 200000,
+          compactsAutomatically: true,
+        },
+      });
+      assert.equal(harness.query.getContextUsageCalls.length, 2);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("emits Claude context window from compact boundary post tokens", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 6).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      harness.query.setContextUsageResponse(
+        makeContextUsageResponse({
+          totalTokens: 190000,
+          maxTokens: 200000,
+        }),
+      );
+
+      harness.query.emit({
+        type: "system",
+        subtype: "compact_boundary",
+        compact_metadata: {
+          trigger: "manual",
+          pre_tokens: 190000,
+          post_tokens: 4500,
+        },
+        session_id: "sdk-session-compact-usage",
+        uuid: "compact-boundary-usage",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const usageEvent = runtimeEvents.find((event) => event.type === "thread.token-usage.updated");
+      assert.equal(usageEvent?.type, "thread.token-usage.updated");
+      if (usageEvent?.type === "thread.token-usage.updated") {
+        assert.deepEqual(usageEvent.payload, {
+          usage: {
+            usedTokens: 4500,
+            lastUsedTokens: 4500,
+            maxTokens: 200000,
             compactsAutomatically: true,
           },
         });

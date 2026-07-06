@@ -72,6 +72,7 @@ import { isElectron } from "../env";
 import { APP_BASE_NAME, APP_STAGE_LABEL, APP_VERSION } from "../branding";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { cn, isMacPlatform, newCommandId } from "../lib/utils";
+import { resolveGeneralChatsProjectRef } from "../lib/generalChats";
 import {
   selectGeneralChatsProjectAcrossEnvironments,
   selectProjectByRef,
@@ -3043,12 +3044,16 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
 export default function Sidebar() {
   const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
   const generalChatsProject = useStore(selectGeneralChatsProjectAcrossEnvironments);
+  const activeEnvironmentId = useStore((state) => state.activeEnvironmentId);
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
   const generalChatsProjectRef = useMemo(
     () =>
-      generalChatsProject
-        ? scopeProjectRef(generalChatsProject.environmentId, generalChatsProject.id)
-        : null,
-    [generalChatsProject],
+      resolveGeneralChatsProjectRef({
+        generalChatsProject,
+        activeEnvironmentId,
+        primaryEnvironmentId,
+      }),
+    [activeEnvironmentId, generalChatsProject, primaryEnvironmentId],
   );
   const workspaceProjectsLength = projects.filter(
     (project) => project.kind !== "general-chat",
@@ -3089,7 +3094,6 @@ export default function Sidebar() {
   const platform = navigator.platform;
   const shortcutModifiers = useShortcutModifierState();
   const modelPickerOpen = useModelPickerOpen();
-  const primaryEnvironmentId = usePrimaryEnvironmentId();
   const savedEnvironmentRegistry = useSavedEnvironmentRegistryStore((s) => s.byId);
   const savedEnvironmentRuntimeById = useSavedEnvironmentRuntimeStore((s) => s.byId);
   const orderedProjects = useMemo(() => {

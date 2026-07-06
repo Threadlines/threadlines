@@ -335,15 +335,13 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
     );
 
     yield* Effect.logDebug("startup phase: ensuring general chats project");
-    yield* Effect.forkScoped(
-      runStartupPhase(
-        "general-chats.ensure",
-        ensureGeneralChatsProject().pipe(
-          Effect.catch((cause) =>
-            Effect.logWarning("failed to ensure the General Chats system project", {
-              cause,
-            }),
-          ),
+    yield* runStartupPhase(
+      "general-chats.ensure",
+      ensureGeneralChatsProject().pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("failed to ensure the General Chats system project", {
+            cause,
+          }),
         ),
       ),
     );
