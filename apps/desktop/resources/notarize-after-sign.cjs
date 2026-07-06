@@ -7,6 +7,13 @@ const path = require("node:path");
 const DEFAULT_TIMEOUT_SECONDS = 45 * 60;
 const DEFAULT_POLL_SECONDS = 30;
 const MAX_CONSECUTIVE_POLL_ERRORS = 8;
+const NON_RETRYABLE_SUBMIT_PATTERNS = [
+  /HTTP status code:\s*(401|403)\b/u,
+  /A required agreement is missing or has expired/u,
+  /This request requires an in-effect agreement/u,
+  /Unable to authenticate/u,
+  /Invalid credentials/u,
+];
 
 class FatalNotaryStatusError extends Error {}
 
@@ -50,6 +57,21 @@ function runJsonNotarytool(args) {
   } catch (error) {
     throw new Error(`notarytool returned non-JSON output:\n\n${output}`, { cause: error });
   }
+}
+
+function isNonRetryableSubmitError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return NON_RETRYABLE_SUBMIT_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+function formatNonRetryableSubmitFailure(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return [
+    "Apple notarization cannot continue because notarytool returned a non-retryable account/authentication error.",
+    "If this mentions a missing or expired agreement, sign the pending Apple Developer or App Store Connect agreement for the team used by APPLE_API_ISSUER, then rerun the release.",
+    "",
+    message,
+  ].join("\n");
 }
 
 function sleep(seconds) {
@@ -98,6 +120,9 @@ function submit(zipPath) {
       return result.id;
     } catch (error) {
       lastError = error;
+      if (isNonRetryableSubmitError(error)) {
+        throw new Error(formatNonRetryableSubmitFailure(error), { cause: error });
+      }
       if (attempt < maxAttempts) {
         console.warn(
           `[threadlines-notary] Submit failed; retrying in 30 seconds.\n${error.message}`,
@@ -187,3 +212,6 @@ module.exports = async function notarizeAfterSign(context) {
     rmSync(tempDir, { recursive: true, force: true });
   }
 };
+
+module.exports.isNonRetryableSubmitError = isNonRetryableSubmitError;
+module.exports.formatNonRetryableSubmitFailure = formatNonRetryableSubmitFailure;
