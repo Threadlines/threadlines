@@ -1,7 +1,7 @@
 import { EnvironmentId } from "@threadlines/contracts";
 import { describe, expect, it } from "vitest";
 
-import { shouldShowOpenInPicker } from "./ChatHeader";
+import { resolveContinueInProjectHeaderState, shouldShowOpenInPicker } from "./ChatHeader";
 
 describe("shouldShowOpenInPicker", () => {
   const primaryEnvironmentId = EnvironmentId.make("environment-primary");
@@ -44,5 +44,25 @@ describe("shouldShowOpenInPicker", () => {
         primaryEnvironmentId,
       }),
     ).toBe(false);
+  });
+});
+
+describe("resolveContinueInProjectHeaderState", () => {
+  it("uses the default tooltip when continuation is available", () => {
+    expect(resolveContinueInProjectHeaderState(null)).toEqual({
+      disabled: false,
+      tooltip: "Start a project thread seeded with this chat",
+    });
+  });
+
+  it("uses the disabled reason as the tooltip when continuation is blocked", () => {
+    expect(
+      resolveContinueInProjectHeaderState(
+        "Wait for the current response to finish before continuing into a project.",
+      ),
+    ).toEqual({
+      disabled: true,
+      tooltip: "Wait for the current response to finish before continuing into a project.",
+    });
   });
 });

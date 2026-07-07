@@ -22,6 +22,7 @@ import {
   type ThreadTaskProgressState,
 } from "./ThreadActivityPopover";
 import type { SubagentProgressState } from "../../session-logic";
+import { cn } from "../../lib/utils";
 
 export interface ForkHeaderContext {
   readonly sourceThreadId: ThreadId;
@@ -62,6 +63,7 @@ interface ChatHeaderProps {
   onToggleSourceControl: () => void;
   /** Present only for General Chat threads that can continue into a project. */
   onContinueInProject?: ((event: React.MouseEvent<HTMLButtonElement>) => void) | undefined;
+  continueInProjectDisabledReason?: string | null;
 }
 
 export function shouldShowOpenInPicker(input: {
@@ -74,6 +76,17 @@ export function shouldShowOpenInPicker(input: {
     input.primaryEnvironmentId !== null &&
     input.activeThreadEnvironmentId === input.primaryEnvironmentId
   );
+}
+
+export function resolveContinueInProjectHeaderState(disabledReason: string | null | undefined): {
+  readonly disabled: boolean;
+  readonly tooltip: string;
+} {
+  const disabled = typeof disabledReason === "string" && disabledReason.length > 0;
+  return {
+    disabled,
+    tooltip: disabled ? disabledReason : "Start a project thread seeded with this chat",
+  };
 }
 
 export const ChatHeader = memo(function ChatHeader({
@@ -107,6 +120,7 @@ export const ChatHeader = memo(function ChatHeader({
   onToggleTerminal,
   onToggleSourceControl,
   onContinueInProject,
+  continueInProjectDisabledReason,
 }: ChatHeaderProps) {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const showOpenInPicker =
@@ -116,6 +130,9 @@ export const ChatHeader = memo(function ChatHeader({
       activeThreadEnvironmentId,
       primaryEnvironmentId,
     });
+  const continueInProjectState = resolveContinueInProjectHeaderState(
+    continueInProjectDisabledReason,
+  );
 
   return (
     <div className="@container/header-actions flex min-w-0 flex-1 items-center gap-2">
@@ -201,17 +218,22 @@ export const ChatHeader = memo(function ChatHeader({
                   <button
                     type="button"
                     aria-label="Continue in project"
-                    className="inline-flex h-6 shrink-0 cursor-pointer items-center gap-1.5 rounded-md border border-border/70 bg-background px-2 text-[11px] text-foreground/85 transition-colors hover:bg-foreground/10 hover:text-foreground"
-                    onClick={onContinueInProject}
+                    aria-disabled={continueInProjectState.disabled || undefined}
+                    data-disabled={continueInProjectState.disabled ? "true" : undefined}
+                    className={cn(
+                      "inline-flex h-6 shrink-0 items-center gap-1.5 rounded-md border border-border/70 bg-background px-2 text-[11px] transition-colors",
+                      continueInProjectState.disabled
+                        ? "cursor-default text-muted-foreground/70 opacity-70 hover:bg-background hover:text-muted-foreground/70"
+                        : "cursor-pointer text-foreground/85 hover:bg-foreground/10 hover:text-foreground",
+                    )}
+                    onClick={continueInProjectState.disabled ? undefined : onContinueInProject}
                   >
                     <FolderInputIcon className="size-3" />
                     <span className="max-sm:hidden">Continue in project</span>
                   </button>
                 }
               />
-              <TooltipPopup side="bottom">
-                Start a project thread seeded with this chat
-              </TooltipPopup>
+              <TooltipPopup side="bottom">{continueInProjectState.tooltip}</TooltipPopup>
             </Tooltip>
           ) : null}
           {fileBrowserAvailable ? (

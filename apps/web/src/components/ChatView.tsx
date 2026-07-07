@@ -1765,6 +1765,30 @@ export default function ChatView(props: ChatViewProps) {
     isConnecting ||
     isRevertingCheckpoint;
   const activeTurnInProgress = isWorking || (activeLatestTurn !== null && !latestTurnSettled);
+  const continueInProjectDisabledReason = useMemo(() => {
+    if (activeEnvironmentUnavailable) {
+      return "Reconnect this environment before continuing into a project.";
+    }
+    if (phase === "connecting" || isSessionStarting || isConnecting) {
+      return "Wait for this thread to reconnect before continuing into a project.";
+    }
+    if (isRevertingCheckpoint) {
+      return "Wait for the checkpoint revert to finish before continuing into a project.";
+    }
+    if (phase === "running" || isSendBusy || (activeLatestTurn !== null && !latestTurnSettled)) {
+      return "Wait for the current response to finish before continuing into a project.";
+    }
+    return null;
+  }, [
+    activeEnvironmentUnavailable,
+    activeLatestTurn,
+    isConnecting,
+    isRevertingCheckpoint,
+    isSendBusy,
+    isSessionStarting,
+    latestTurnSettled,
+    phase,
+  ]);
   const activeStatusLabel = deriveActiveStatusLabel({
     phase,
     workLogEntries,
@@ -4770,7 +4794,7 @@ export default function ChatView(props: ChatViewProps) {
       if (
         !activeThread ||
         !isServerThread ||
-        phase === "running" ||
+        activeTurnInProgress ||
         isSendBusy ||
         isConnecting ||
         activeEnvironmentUnavailable ||
@@ -4796,10 +4820,10 @@ export default function ChatView(props: ChatViewProps) {
     [
       activeEnvironmentUnavailable,
       activeThread,
+      activeTurnInProgress,
       isConnecting,
       isSendBusy,
       isServerThread,
-      phase,
       resolveInitialForkModelSelection,
     ],
   );
@@ -4809,7 +4833,7 @@ export default function ChatView(props: ChatViewProps) {
       if (
         !activeThread ||
         !isServerThread ||
-        phase === "running" ||
+        activeTurnInProgress ||
         isSendBusy ||
         isConnecting ||
         activeEnvironmentUnavailable ||
@@ -4863,10 +4887,10 @@ export default function ChatView(props: ChatViewProps) {
     [
       activeEnvironmentUnavailable,
       activeThread,
+      activeTurnInProgress,
       isConnecting,
       isSendBusy,
       isServerThread,
-      phase,
       resolveInitialForkModelSelection,
     ],
   );
@@ -5353,6 +5377,7 @@ export default function ChatView(props: ChatViewProps) {
               ? onContinueInProject
               : undefined
           }
+          continueInProjectDisabledReason={continueInProjectDisabledReason}
         />
       </header>
 
