@@ -488,6 +488,66 @@ describe("MessagesTimeline", () => {
     }
   });
 
+  it("keeps following new live output after a parent stick request", async () => {
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation(
+      (callback: FrameRequestCallback) => {
+        callback(0);
+        return 1;
+      },
+    );
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
+
+    const props = buildProps();
+    const initialEntries = [buildUserTimelineEntry("Message before send.")];
+    const screen = await renderTimeline(
+      <MessagesTimeline {...props} stickToBottomRequestKey={0} timelineEntries={initialEntries} />,
+    );
+
+    try {
+      let legendList = document.querySelector<HTMLElement>('[data-testid="legend-list"]');
+      expect(legendList).not.toBeNull();
+
+      legendList?.dispatchEvent(new WheelEvent("wheel", { deltaY: -24, bubbles: true }));
+
+      await vi.waitFor(() => {
+        legendList = document.querySelector<HTMLElement>('[data-testid="legend-list"]');
+        expect(legendList?.getAttribute("data-maintain-scroll-at-end")).toBe("false");
+      });
+
+      await screen.rerender(
+        <MessagesTimeline
+          {...props}
+          stickToBottomRequestKey={1}
+          timelineEntries={initialEntries}
+        />,
+      );
+
+      await vi.waitFor(() => {
+        legendList = document.querySelector<HTMLElement>('[data-testid="legend-list"]');
+        expect(legendList?.getAttribute("data-maintain-scroll-at-end")).toBe("true");
+      });
+
+      scrollToEndSpy.mockClear();
+      props.onIsAtEndChange.mockClear();
+
+      await screen.rerender(
+        <MessagesTimeline
+          {...props}
+          activeTurnInProgress
+          stickToBottomRequestKey={1}
+          timelineEntries={[
+            initialEntries[0]!,
+            buildAssistantTimelineEntry("Streaming response has started."),
+          ]}
+        />,
+      );
+
+      expect(scrollToEndSpy).toHaveBeenCalledWith({ animated: false });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("ignores transient away-from-end scroll events while bottom sticking is armed", async () => {
     const props = buildProps();
     const screen = await renderTimeline(

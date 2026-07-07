@@ -119,6 +119,114 @@ describe("SidebarVersionTag", () => {
     await expect.element(page.getByText(/Checked just now/)).toBeVisible();
   });
 
+  it("keeps the card footprint stable after a completed update check", async () => {
+    const bridge = stubDesktopBridge();
+    await mountTag();
+
+    await versionChip().click();
+    await expect.element(checkNowAction()).toBeVisible();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const before = versionCard().element().getBoundingClientRect();
+
+    await checkNowAction().click();
+
+    expect(bridge.checkForUpdate).toHaveBeenCalledTimes(1);
+    await expect.element(page.getByText(/Checked just now/)).toBeVisible();
+    const after = versionCard().element().getBoundingClientRect();
+    expect(Math.round(after.width)).toBe(Math.round(before.width));
+    expect(Math.round(after.height)).toBe(Math.round(before.height));
+  });
+
+  it("keeps the card footprint stable while checking for updates", async () => {
+    let updateStateListener: ((state: DesktopUpdateState) => void) | null = null;
+    const bridge = stubDesktopBridge({
+      onUpdateState: vi.fn((listener: (state: DesktopUpdateState) => void) => {
+        updateStateListener = listener;
+        return () => {
+          updateStateListener = null;
+        };
+      }),
+      checkForUpdate: vi.fn(() => {
+        updateStateListener?.({
+          ...idleUpdateState,
+          status: "checking",
+          checkedAt: new Date().toISOString(),
+        });
+        return new Promise(() => {});
+      }),
+    } as unknown as Partial<DesktopBridge>);
+    await mountTag();
+
+    await versionChip().click();
+    await expect.element(checkNowAction()).toBeVisible();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const before = versionCard().element().getBoundingClientRect();
+
+    await checkNowAction().click();
+
+    expect(bridge.checkForUpdate).toHaveBeenCalledTimes(1);
+    await expect.element(page.getByText("Checking")).toBeVisible();
+    await expect.element(page.getByText("Checking for updates…")).not.toBeInTheDocument();
+    const after = versionCard().element().getBoundingClientRect();
+    expect(Math.round(after.width)).toBe(Math.round(before.width));
+    expect(Math.round(after.height)).toBe(Math.round(before.height));
+  });
+
+  it("uses compact controls for download, downloading, and restart states", async () => {
+    let updateStateListener: ((state: DesktopUpdateState) => void) | null = null;
+    stubDesktopBridge({
+      getUpdateState: vi.fn().mockResolvedValue({
+        ...idleUpdateState,
+        status: "available",
+        availableVersion: "1.0.1",
+      }),
+      onUpdateState: vi.fn((listener: (state: DesktopUpdateState) => void) => {
+        updateStateListener = listener;
+        return () => {
+          updateStateListener = null;
+        };
+      }),
+    } as unknown as Partial<DesktopBridge>);
+    await mountTag();
+    const emitUpdateState = (state: DesktopUpdateState) => {
+      if (updateStateListener === null) {
+        throw new Error("Desktop update listener was not registered.");
+      }
+      updateStateListener(state);
+    };
+
+    await versionChip().click();
+    await expect.element(page.getByRole("button", { name: "Download update" })).toBeVisible();
+    await expect.element(page.getByText("Download")).toBeVisible();
+    const available = versionCard().element().getBoundingClientRect();
+
+    emitUpdateState({
+      ...idleUpdateState,
+      status: "downloading",
+      availableVersion: "1.0.1",
+      downloadPercent: 42,
+    });
+    await expect.element(page.getByText("Downloading", { exact: true })).toBeVisible();
+    await expect.element(page.getByText("v1.0.1 · 42%")).toBeVisible();
+    await expect.element(page.getByText("Downloading v1.0.1 · 42%")).not.toBeInTheDocument();
+    const downloading = versionCard().element().getBoundingClientRect();
+    expect(Math.abs(downloading.height - available.height)).toBeLessThanOrEqual(1);
+
+    emitUpdateState({
+      ...idleUpdateState,
+      status: "downloaded",
+      availableVersion: "1.0.1",
+      downloadedVersion: "1.0.1",
+      downloadPercent: 100,
+    });
+    await expect
+      .element(versionCard().getByRole("button", { name: "Restart to install" }))
+      .toBeVisible();
+    await expect.element(page.getByText("Restart")).toBeVisible();
+    const downloaded = versionCard().element().getBoundingClientRect();
+    expect(Math.abs(downloaded.height - available.height)).toBeLessThanOrEqual(1);
+  });
+
   it("omits updater controls when no desktop bridge is present", async () => {
     Reflect.deleteProperty(window, "desktopBridge");
     await mountTag();

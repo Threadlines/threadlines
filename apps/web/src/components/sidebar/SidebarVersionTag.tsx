@@ -6,8 +6,8 @@ import { useDesktopUpdateAction } from "../../hooks/useDesktopUpdateAction";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
 import {
+  compactVersionLabel,
   type DesktopUpdateActionKind,
-  getDesktopUpdateCardActionLabel,
   getDesktopUpdateStatusLine,
   getSidebarDesktopUpdateTagPresentation,
   shouldShowDesktopUpdaterControls,
@@ -38,6 +38,34 @@ function getUpdateIcon(tone: SidebarDesktopUpdateTagTone) {
   return null;
 }
 
+function getCompactCardActionLabel(
+  state: DesktopUpdateState | null,
+  actionKind: DesktopUpdateActionKind,
+) {
+  if (actionKind === "download") return "Download";
+  if (actionKind === "install") return "Restart";
+  if (state?.status === "checking") return "Checking";
+  if (state?.status === "downloading") return "Downloading";
+  return "Check";
+}
+
+function getCompactCardActionAriaLabel(actionKind: DesktopUpdateActionKind) {
+  if (actionKind === "check") return "Check now";
+  if (actionKind === "download") return "Download update";
+  if (actionKind === "install") return "Restart to install";
+  return undefined;
+}
+
+function getCompactDownloadingDetail(state: DesktopUpdateState | null) {
+  if (state?.status !== "downloading") return null;
+  const targetLabel = state.availableVersion
+    ? compactVersionLabel(state.availableVersion)
+    : "Update";
+  const progressLabel =
+    typeof state.downloadPercent === "number" ? `${Math.floor(state.downloadPercent)}%` : null;
+  return [targetLabel, progressLabel].filter(Boolean).join(" · ");
+}
+
 /**
  * Build/updater details behind the sidebar version chip: build stage, full
  * version, update track, updater status, and the adaptive update action.
@@ -57,66 +85,93 @@ function SidebarVersionCard({
 }) {
   // Only ticks while the card is open — the popup unmounts on close.
   useRelativeTimeTick(30_000);
+  const isCheckingForUpdate = state?.status === "checking";
+  const isDownloadingUpdate = state?.status === "downloading";
   const statusLine = getDesktopUpdateStatusLine(state);
   // Updater state only ever comes from the desktop bridge, so operational
   // updater controls double as the "running in the desktop app" signal.
   const showUpdaterControls = shouldShowDesktopUpdaterControls(state);
   const trackLabel = showUpdaterControls
     ? state?.channel === "nightly"
-      ? "Nightly track"
-      : "Stable track"
+      ? "Nightly"
+      : "Stable"
     : null;
-  const checkedLabel = state?.checkedAt
-    ? `Checked ${formatRelativeTimeLabel(state.checkedAt)}`
-    : null;
-  const metaLine = [trackLabel, checkedLabel].filter(Boolean).join(" · ");
-  // The idle check action rides inline on the meta row; only a pending
-  // download/install earns a full action button.
-  const showInlineCheckAction = showUpdaterControls && actionKind === "check";
-  const showActionButton = actionKind === "download" || actionKind === "install";
+  const checkedLabel =
+    state?.checkedAt && !isCheckingForUpdate
+      ? `Checked ${formatRelativeTimeLabel(state.checkedAt)}`
+      : null;
+  const downloadingDetail = getCompactDownloadingDetail(state);
+  const detailLine =
+    downloadingDetail ??
+    (isCheckingForUpdate && trackLabel
+      ? trackLabel
+      : (statusLine?.text ?? [trackLabel, checkedLabel].filter(Boolean).join(" · ")));
+  const showCompactAction =
+    showUpdaterControls && (actionKind !== "none" || isCheckingForUpdate || isDownloadingUpdate);
+  const compactActionLabel = getCompactCardActionLabel(state, actionKind);
+  const compactActionTone = statusLine?.tone ?? "neutral";
+  const compactAction = showCompactAction ? (
+    actionKind === "check" || actionKind === "download" || actionKind === "install" ? (
+      <Button
+        aria-label={getCompactCardActionAriaLabel(actionKind)}
+        className="h-5 min-w-[4.5rem] rounded-sm px-1.5 text-[10px] leading-none sm:h-5 sm:text-[10px]"
+        disabled={actionDisabled || isCheckingForUpdate}
+        onClick={onAction}
+        size="xs"
+        variant={actionKind === "install" ? "default" : "outline"}
+      >
+        {compactActionLabel}
+      </Button>
+    ) : (
+      <span
+        aria-live={isCheckingForUpdate ? "polite" : undefined}
+        className={cn(
+          "inline-flex h-5 min-w-[4.5rem] shrink-0 items-center justify-center rounded-sm border px-1.5 text-[10px] leading-none font-medium",
+          compactActionTone === "progress" &&
+            "border-primary/18 bg-primary/8 text-primary-readable",
+          compactActionTone === "success" && "border-success/20 bg-success/8 text-success",
+          compactActionTone === "error" &&
+            "border-destructive/24 bg-destructive/8 text-destructive",
+          compactActionTone === "neutral" &&
+            "border-muted-foreground/20 bg-muted-foreground/8 text-muted-foreground",
+        )}
+        role={isCheckingForUpdate ? "status" : undefined}
+      >
+        {compactActionLabel}
+      </span>
+    )
+  ) : null;
 
   return (
-    // Content-hugging width (capped) so short cards — dev builds, plain
-    // browser sessions — don't trail empty space after their widest row.
-    <div className="flex max-w-56 flex-col gap-1.5 p-1" data-testid="sidebar-version-card">
+    <div
+      className={cn("flex max-w-56 flex-col gap-1 p-1", showUpdaterControls && "w-[13.25rem]")}
+      data-testid="sidebar-version-card"
+    >
       <div className="flex items-center justify-between gap-2">
         <UpdateStatusBadge tone="neutral">{APP_STAGE_LABEL}</UpdateStatusBadge>
         <code className="min-w-0 break-all text-right text-[10px] font-medium tabular-nums text-muted-foreground">
           v{APP_VERSION}
         </code>
       </div>
-      {metaLine ? (
-        <p className="text-[10px] leading-4 text-muted-foreground/70">
-          {metaLine}
-          {showInlineCheckAction ? (
-            <>
-              {" · "}
-              <button
-                className="cursor-pointer font-medium text-foreground/75 underline-offset-2 transition-colors hover:text-foreground hover:underline"
-                onClick={onAction}
-                type="button"
-              >
-                Check now
-              </button>
-            </>
-          ) : null}
-        </p>
-      ) : null}
-      {statusLine ? (
-        <p className={cn("text-[11px] leading-4", UPDATE_STATUS_TEXT_STYLES[statusLine.tone])}>
-          {statusLine.text}
-        </p>
-      ) : null}
-      {showActionButton ? (
-        <Button
-          className="w-full"
-          disabled={actionDisabled}
-          onClick={onAction}
-          size="xs"
-          variant={actionKind === "install" ? "default" : "outline"}
-        >
-          {getDesktopUpdateCardActionLabel(state)}
-        </Button>
+      {detailLine || compactAction ? (
+        <div className="flex min-h-5 items-center gap-2">
+          {detailLine ? (
+            <p
+              className={cn(
+                "min-w-0 flex-1 truncate text-[10px] leading-4",
+                statusLine
+                  ? UPDATE_STATUS_TEXT_STYLES[statusLine.tone]
+                  : "text-muted-foreground/70",
+              )}
+              title={detailLine}
+            >
+              {detailLine}
+            </p>
+          ) : (
+            <span className="min-w-0 flex-1" />
+          )}
+          {compactAction}
+        </div>
       ) : null}
     </div>
   );

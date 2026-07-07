@@ -551,10 +551,12 @@ function getProviderUpdateSidebarProgress(
   ).length;
   const progressPercent = Math.max(0, Math.min(100, (completeCount / items.length) * 100));
   const hasActiveItem = items.some((item) => item.status === "queued" || item.status === "running");
+  const progressLabel =
+    items.length > 1 ? `${completeCount}/${items.length} done` : `${Math.floor(progressPercent)}%`;
 
   return {
-    ...(hasActiveItem && progressPercent < 100 ? { progressIndeterminate: true } : {}),
-    progressLabel: `${Math.floor(progressPercent)}%`,
+    ...(hasActiveItem && items.length === 1 ? { progressIndeterminate: true } : {}),
+    progressLabel,
     progressPercent,
   };
 }

@@ -1,6 +1,11 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback } from "react";
-import type { DesktopUpdateActionResult, DesktopUpdateState } from "@threadlines/contracts";
+import type {
+  DesktopBridge,
+  DesktopUpdateActionResult,
+  DesktopUpdateCheckResult,
+  DesktopUpdateState,
+} from "@threadlines/contracts";
 
 import {
   type DesktopUpdateActionKind,
@@ -22,6 +27,14 @@ function toastUpdateError(title: string, description: string) {
 function toastAcceptedActionFailure(result: DesktopUpdateActionResult, title: string) {
   const actionError = getDesktopUpdateActionError(result);
   if (actionError) toastUpdateError(title, actionError);
+}
+
+async function checkForDesktopUpdate(bridge: DesktopBridge): Promise<DesktopUpdateCheckResult> {
+  const previewResult = import.meta.env.DEV
+    ? await window.__threadlinesDesktopUpdatePreviewCheckForUpdate?.()
+    : null;
+  if (previewResult) return previewResult;
+  return bridge.checkForUpdate();
 }
 
 export interface DesktopUpdateAction {
@@ -83,8 +96,7 @@ export function useDesktopUpdateAction(): DesktopUpdateAction {
     }
 
     if (kind !== "check" || typeof bridge.checkForUpdate !== "function") return;
-    void bridge
-      .checkForUpdate()
+    void checkForDesktopUpdate(bridge)
       .then((result) => {
         setDesktopUpdateStateQueryData(queryClient, result.state);
         if (!result.checked) {

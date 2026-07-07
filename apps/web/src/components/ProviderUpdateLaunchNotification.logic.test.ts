@@ -536,8 +536,7 @@ describe("provider update launch notification logic", () => {
       title: "Provider updates",
       summary: "2 active",
       description: "Codex updating. Cursor queued.",
-      progressIndeterminate: true,
-      progressLabel: "0%",
+      progressLabel: "0/2 done",
       progressPercent: 0,
       items: [
         {
@@ -586,8 +585,7 @@ describe("provider update launch notification logic", () => {
     expect(view).toMatchObject({
       tone: "loading",
       title: "Provider updates",
-      progressIndeterminate: true,
-      progressLabel: "50%",
+      progressLabel: "1/2 done",
       progressPercent: 50,
       items: [
         {
@@ -621,6 +619,9 @@ describe("provider update launch notification logic", () => {
       tone: "loading",
       title: "Updating Codex",
       description: "Codex update in progress.",
+      progressIndeterminate: true,
+      progressLabel: "0%",
+      progressPercent: 0,
     });
   });
 
@@ -724,7 +725,7 @@ describe("provider update launch notification logic", () => {
       tone: "success",
       title: "2 providers updated",
       summary: "2 done",
-      progressLabel: "100%",
+      progressLabel: "2/2 done",
       progressPercent: 100,
       items: [
         {

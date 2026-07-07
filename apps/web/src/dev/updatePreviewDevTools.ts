@@ -1,5 +1,6 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type {
+  DesktopUpdateCheckResult,
   DesktopUpdateState,
   ServerConfig,
   ServerProviderUpdateStatus,
@@ -84,6 +85,7 @@ declare global {
 }
 
 const DESKTOP_ANIMATION_TICK_MS = 250;
+const DESKTOP_CHECK_PREVIEW_DELAY_MS = 1_200;
 const PROVIDER_ANIMATION_TICK_MS = 400;
 
 function nextPatchVersion(version: string): string {
@@ -152,6 +154,42 @@ function makeDesktopUpdatePreviewState(
   }
 }
 
+function isSameDesktopUpdateState(
+  left: DesktopUpdateState | null | undefined,
+  right: DesktopUpdateState,
+) {
+  return (
+    left !== null &&
+    left !== undefined &&
+    left.enabled === right.enabled &&
+    left.status === right.status &&
+    left.channel === right.channel &&
+    left.currentVersion === right.currentVersion &&
+    left.hostArch === right.hostArch &&
+    left.appArch === right.appArch &&
+    left.runningUnderArm64Translation === right.runningUnderArm64Translation &&
+    left.availableVersion === right.availableVersion &&
+    left.downloadedVersion === right.downloadedVersion &&
+    left.downloadPercent === right.downloadPercent &&
+    left.checkedAt === right.checkedAt &&
+    left.message === right.message &&
+    left.errorContext === right.errorContext &&
+    left.canRetry === right.canRetry
+  );
+}
+
+function isRealUpdateActivityState(state: unknown): state is DesktopUpdateState {
+  if (typeof state !== "object" || state === null) return false;
+  const status = (state as Partial<DesktopUpdateState>).status;
+  return (
+    status === "checking" ||
+    status === "available" ||
+    status === "downloading" ||
+    status === "downloaded" ||
+    status === "error"
+  );
+}
+
 function withProviderUpdateStates(
   baseline: ServerConfig,
   statuses: ReadonlyArray<ProviderUpdatePreviewStatus | undefined>,
@@ -187,26 +225,122 @@ export function installUpdatePreviewDevTools(queryClient: QueryClient): void {
   let desktopTimer: number | null = null;
   let providerTimer: number | null = null;
   let releaseBootPreviewPin: (() => void) | null = null;
+  let desktopPreviewCheckEnabled = false;
+  let applyDesktopPreviewState = (state: DesktopUpdateState) => {
+    setDesktopUpdateStateQueryData(queryClient, state);
+  };
+  let previewDesktopActionActive = false;
 
   const releaseBootPreview = () => {
     releaseBootPreviewPin?.();
     releaseBootPreviewPin = null;
+    applyDesktopPreviewState = (state) => {
+      setDesktopUpdateStateQueryData(queryClient, state);
+    };
+  };
+
+  const simulateDesktopCheckForUpdate = async (): Promise<DesktopUpdateCheckResult | null> => {
+    const currentState =
+      queryClient.getQueryData<DesktopUpdateState | null>(desktopUpdateQueryKeys.state()) ?? null;
+    if (!desktopPreviewCheckEnabled || !currentState?.enabled || currentState.status === "disabled")
+      return null;
+
+    previewDesktopActionActive = true;
+    try {
+      const checkingState: DesktopUpdateState = {
+        ...currentState,
+        status: "checking",
+        checkedAt: new Date().toISOString(),
+        downloadPercent: null,
+        message: null,
+        errorContext: null,
+        canRetry: false,
+      };
+      applyDesktopPreviewState(checkingState);
+
+      await new Promise((resolve) => window.setTimeout(resolve, DESKTOP_CHECK_PREVIEW_DELAY_MS));
+      const latestState =
+        queryClient.getQueryData<DesktopUpdateState | null>(desktopUpdateQueryKeys.state()) ??
+        checkingState;
+      if (
+        !desktopPreviewCheckEnabled ||
+        !latestState.enabled ||
+        latestState.status === "disabled"
+      ) {
+        return null;
+      }
+
+      const resultState: DesktopUpdateState = {
+        ...latestState,
+        status: "up-to-date",
+        availableVersion: null,
+        downloadedVersion: null,
+        downloadPercent: null,
+        checkedAt: new Date().toISOString(),
+        message: null,
+        errorContext: null,
+        canRetry: false,
+      };
+      applyDesktopPreviewState(resultState);
+      return { checked: true, state: resultState };
+    } finally {
+      previewDesktopActionActive = false;
+    }
   };
 
   const pinBootDesktopPreview = () => {
     const mode = readBootDesktopUpdatePreviewMode();
     if (!mode) return;
-    const pinnedState = makeDesktopUpdatePreviewState(mode);
+    let pinnedState = makeDesktopUpdatePreviewState(mode);
     const stateKey = JSON.stringify(desktopUpdateQueryKeys.state());
-    setDesktopUpdateStateQueryData(queryClient, pinnedState);
+    let released = false;
+    let reapplyQueued = false;
+
+    const setPinnedState = (state: DesktopUpdateState) => {
+      pinnedState = state;
+      setDesktopUpdateStateQueryData(queryClient, state);
+    };
+
+    const queuePinnedStateReapply = () => {
+      if (released || reapplyQueued) return;
+      reapplyQueued = true;
+      window.queueMicrotask(() => {
+        reapplyQueued = false;
+        if (released) return;
+        const currentState = queryClient.getQueryData<DesktopUpdateState | null>(
+          desktopUpdateQueryKeys.state(),
+        );
+        if (isSameDesktopUpdateState(currentState, pinnedState)) return;
+        setDesktopUpdateStateQueryData(queryClient, pinnedState);
+      });
+    };
+
+    applyDesktopPreviewState = setPinnedState;
+    desktopPreviewCheckEnabled = true;
+    setPinnedState(pinnedState);
     // The initial mount fetch (and any desktop-bridge push) overwrites the
-    // cache, so re-apply until a console preview call releases the pin.
-    releaseBootPreviewPin = queryClient.getQueryCache().subscribe((event) => {
+    // cache, so re-apply inert states until a console preview call or a real
+    // update check releases the pin.
+    const unsubscribe = queryClient.getQueryCache().subscribe((event) => {
       if (event.type !== "updated") return;
       if (JSON.stringify(event.query.queryKey) !== stateKey) return;
-      if (event.query.state.data === pinnedState) return;
-      setDesktopUpdateStateQueryData(queryClient, pinnedState);
+      if (
+        isSameDesktopUpdateState(event.query.state.data as DesktopUpdateState | null, pinnedState)
+      ) {
+        return;
+      }
+      if (isRealUpdateActivityState(event.query.state.data)) {
+        if (previewDesktopActionActive) return;
+        desktopPreviewCheckEnabled = false;
+        releaseBootPreview();
+        return;
+      }
+      queuePinnedStateReapply();
     });
+    releaseBootPreviewPin = () => {
+      released = true;
+      unsubscribe();
+    };
     console.debug(
       `[threadlines] desktop update preview "${mode}" pinned (dev default; pick a mode or "off" via ?${DESKTOP_UPDATE_PREVIEW_PARAM}= or localStorage["${DESKTOP_UPDATE_PREVIEW_STORAGE_KEY}"]). Release for this session with threadlinesUpdatePreview.clearDesktopUpdate().`,
     );
@@ -239,26 +373,24 @@ export function installUpdatePreviewDevTools(queryClient: QueryClient): void {
     desktopUpdate(mode = "downloading", options) {
       releaseBootPreview();
       stopDesktopTimer();
-      setDesktopUpdateStateQueryData(queryClient, makeDesktopUpdatePreviewState(mode, options));
+      desktopPreviewCheckEnabled = true;
+      applyDesktopPreviewState(makeDesktopUpdatePreviewState(mode, options));
     },
 
     animateDesktopDownload(durationMs = 6_000) {
       releaseBootPreview();
       stopDesktopTimer();
+      desktopPreviewCheckEnabled = true;
       const version = nextPatchVersion(APP_VERSION);
       const startedAt = Date.now();
       const tick = () => {
         const percent = Math.min(100, ((Date.now() - startedAt) / durationMs) * 100);
         if (percent >= 100) {
           stopDesktopTimer();
-          setDesktopUpdateStateQueryData(
-            queryClient,
-            makeDesktopUpdatePreviewState("downloaded", { version }),
-          );
+          applyDesktopPreviewState(makeDesktopUpdatePreviewState("downloaded", { version }));
           return;
         }
-        setDesktopUpdateStateQueryData(
-          queryClient,
+        applyDesktopPreviewState(
           makeDesktopUpdatePreviewState("downloading", { version, percent }),
         );
       };
@@ -269,6 +401,7 @@ export function installUpdatePreviewDevTools(queryClient: QueryClient): void {
     clearDesktopUpdate() {
       releaseBootPreview();
       stopDesktopTimer();
+      desktopPreviewCheckEnabled = false;
       setDesktopUpdateStateQueryData(queryClient, null);
       void queryClient.invalidateQueries({ queryKey: desktopUpdateQueryKeys.state() });
     },
@@ -322,6 +455,8 @@ export function installUpdatePreviewDevTools(queryClient: QueryClient): void {
       });
     },
   };
+
+  window.__threadlinesDesktopUpdatePreviewCheckForUpdate = simulateDesktopCheckForUpdate;
 
   pinBootDesktopPreview();
 

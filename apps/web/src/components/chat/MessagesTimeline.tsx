@@ -549,6 +549,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   );
 
   const hasRows = rows.length > 0;
+  const lastRow = hasRows ? rows[rows.length - 1] : null;
 
   useEffect(() => {
     if (!hasRows) {
@@ -627,6 +628,26 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     setAutoStickToBottomState,
     stickToBottomRequestKey,
   ]);
+
+  useEffect(() => {
+    if (!lastRow || (!activeTurnInProgress && !stickToBottomRequestPending)) {
+      return;
+    }
+    if (!autoStickToBottomRef.current && !stickToBottomRequestPending) {
+      return;
+    }
+
+    const frameId = window.requestAnimationFrame(() => {
+      if (!autoStickToBottomRef.current && !stickToBottomRequestPending) {
+        return;
+      }
+      void listRef.current?.scrollToEnd?.({ animated: false });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [activeTurnInProgress, lastRow, listRef, stickToBottomRequestPending]);
 
   useEffect(() => {
     return () => {
