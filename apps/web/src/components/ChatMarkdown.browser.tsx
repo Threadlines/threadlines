@@ -6,11 +6,12 @@ import { page } from "vitest/browser";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
-const { openInPreferredEditorMock, readLocalApiMock } = vi.hoisted(() => ({
+const { openInEditorMock, openInPreferredEditorMock, readLocalApiMock } = vi.hoisted(() => ({
+  openInEditorMock: vi.fn(async () => undefined),
   openInPreferredEditorMock: vi.fn(async () => "vscode"),
   readLocalApiMock: vi.fn(() => ({
     server: { getConfig: vi.fn(async () => ({ availableEditors: ["vscode"] })) },
-    shell: { openInEditor: vi.fn(async () => undefined) },
+    shell: { openInEditor: openInEditorMock },
   })),
 }));
 
@@ -27,6 +28,7 @@ vi.mock("../localApi", () => ({
 
 import ChatMarkdown from "./ChatMarkdown";
 import { setActiveFileViewerContext, useFileViewerStore } from "../fileViewerStore";
+import { toMarkdownFileUrlHref } from "../markdown-links";
 
 const CHAT_MARKDOWN_ENVIRONMENT_ID = EnvironmentId.make("environment-chat-markdown-browser");
 const CHAT_MARKDOWN_THREAD_ID = ThreadId.make("thread-chat-markdown-browser");
@@ -48,13 +50,14 @@ describe("ChatMarkdown", () => {
       revealRequestId: 0,
       coarsePointerWordWrap: null,
     });
+    openInEditorMock.mockClear();
     openInPreferredEditorMock.mockClear();
     readLocalApiMock.mockClear();
     localStorage.clear();
     document.body.innerHTML = "";
   });
 
-  it("rewrites file uri hrefs into direct paths before rendering", async () => {
+  it("renders local file links with copyable file url hrefs", async () => {
     const filePath =
       "/Users/yashsingh/p/sco/claude-code-extract/src/utils/permissions/PermissionRule.ts";
     const screen = await render(
@@ -64,7 +67,7 @@ describe("ChatMarkdown", () => {
     try {
       const link = page.getByRole("link", { name: "PermissionRule.ts" });
       await expect.element(link).toBeInTheDocument();
-      await expect.element(link).toHaveAttribute("href", filePath);
+      await expect.element(link).toHaveAttribute("href", toMarkdownFileUrlHref(filePath));
     } finally {
       await screen.unmount();
     }
@@ -80,13 +83,15 @@ describe("ChatMarkdown", () => {
     try {
       const link = page.getByRole("link", { name: "PermissionRule.ts · L1" });
       await expect.element(link).toBeInTheDocument();
-      await expect.element(link).toHaveAttribute("href", `${filePath}:1`);
+      await expect
+        .element(link)
+        .toHaveAttribute("href", toMarkdownFileUrlHref(filePath, { line: 1 }));
     } finally {
       await screen.unmount();
     }
   });
 
-  it("does not launch an external editor from the primary file-link click", async () => {
+  it("opens file links through the platform opener when the active viewer cannot handle them", async () => {
     const filePath =
       "/Users/yashsingh/p/sco/claude-code-extract/src/utils/permissions/PermissionRule.ts";
     const screen = await render(
@@ -99,6 +104,7 @@ describe("ChatMarkdown", () => {
 
       await new Promise((resolve) => window.setTimeout(resolve, 0));
       expect(openInPreferredEditorMock).not.toHaveBeenCalled();
+      expect(openInEditorMock).toHaveBeenCalledWith(filePath, "file-manager");
     } finally {
       await screen.unmount();
     }
@@ -129,6 +135,7 @@ describe("ChatMarkdown", () => {
         expect(state.revealLine).toBe(7);
       });
       expect(openInPreferredEditorMock).not.toHaveBeenCalled();
+      expect(openInEditorMock).not.toHaveBeenCalled();
     } finally {
       await screen.unmount();
     }
@@ -159,6 +166,7 @@ describe("ChatMarkdown", () => {
         expect(state.revealLine).toBe(87);
       });
       expect(openInPreferredEditorMock).not.toHaveBeenCalled();
+      expect(openInEditorMock).not.toHaveBeenCalled();
     } finally {
       await screen.unmount();
     }
@@ -174,7 +182,35 @@ describe("ChatMarkdown", () => {
     try {
       const link = page.getByRole("link", { name: "PermissionRule.ts · L1:C7" });
       await expect.element(link).toBeInTheDocument();
-      await expect.element(link).toHaveAttribute("href", `${filePath}:1:7`);
+      await expect
+        .element(link)
+        .toHaveAttribute("href", toMarkdownFileUrlHref(filePath, { line: 1, column: 7 }));
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("recognizes absolute file paths with encoded spaces as local file links", async () => {
+    const encodedHref =
+      "/Users/will/Downloads/CMMC%20Implementation%20Proposal%20-%20GEG%20-%20July%207%202026.pdf";
+    const decodedPath =
+      "/Users/will/Downloads/CMMC Implementation Proposal - GEG - July 7 2026.pdf";
+    const screen = await render(
+      <ChatMarkdown text={`[CMMC proposal](${encodedHref})`} cwd="/repo/project" />,
+    );
+
+    try {
+      const link = page.getByRole("link", {
+        name: "CMMC Implementation Proposal - GEG - July 7 2026.pdf",
+      });
+      await expect.element(link).toBeInTheDocument();
+      await expect.element(link).toHaveAttribute("href", toMarkdownFileUrlHref(decodedPath));
+
+      await link.click();
+      await vi.waitFor(() => {
+        expect(openInEditorMock).toHaveBeenCalledWith(decodedPath, "file-manager");
+      });
+      expect(openInPreferredEditorMock).not.toHaveBeenCalled();
     } finally {
       await screen.unmount();
     }

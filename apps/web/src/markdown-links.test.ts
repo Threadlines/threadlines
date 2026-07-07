@@ -4,6 +4,7 @@ import {
   resolveMarkdownFileLinkMeta,
   resolveMarkdownFileLinkTarget,
   rewriteMarkdownFileUriHref,
+  toMarkdownFileUrlHref,
 } from "./markdown-links";
 
 describe("rewriteMarkdownFileUriHref", () => {
@@ -116,5 +117,25 @@ describe("resolveMarkdownFileLinkTarget", () => {
 
   it("does not treat app routes as file links", () => {
     expect(resolveMarkdownFileLinkTarget("/chat/settings")).toBeNull();
+  });
+});
+
+describe("toMarkdownFileUrlHref", () => {
+  it("formats absolute posix file paths as encoded file urls", () => {
+    expect(
+      toMarkdownFileUrlHref("/Users/will/Downloads/CMMC Implementation Proposal - GEG.pdf"),
+    ).toBe("file:///Users/will/Downloads/CMMC%20Implementation%20Proposal%20-%20GEG.pdf");
+  });
+
+  it("preserves line anchors for copied file links", () => {
+    expect(toMarkdownFileUrlHref("/Users/will/project/src/main.ts", { line: 42, column: 7 })).toBe(
+      "file:///Users/will/project/src/main.ts#L42C7",
+    );
+  });
+
+  it("formats windows drive paths as file urls", () => {
+    expect(toMarkdownFileUrlHref("D:/Programme/t3code/file name.ts")).toBe(
+      "file:///D:/Programme/t3code/file%20name.ts",
+    );
   });
 });

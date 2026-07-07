@@ -398,6 +398,32 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
     if (openFileInActiveViewer({ path: targetPath, line })) {
       return;
     }
+    const api = readLocalApi();
+    if (!api) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Unable to open file",
+          description: "Local file opening is unavailable before a backend is paired.",
+        }),
+      );
+      return;
+    }
+    void api.shell.openInEditor(targetPath, "file-manager").catch((error) => {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Unable to open file",
+          description: error instanceof Error ? error.message : displayPath,
+        }),
+      );
+    });
+  }, [displayPath, line, targetPath]);
+
+  const handleOpenInViewer = useCallback(() => {
+    if (openFileInActiveViewer({ path: targetPath, line })) {
+      return;
+    }
     toastManager.add(
       stackedThreadToast({
         type: "error",
@@ -458,7 +484,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
       );
 
       if (clicked === "open") {
-        handleOpen();
+        handleOpenInViewer();
         return;
       }
       if (clicked === "open-external") {
@@ -473,7 +499,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         handleCopy(targetPath, "Full path");
       }
     },
-    [displayPath, handleCopy, handleOpen, handleOpenExternally, targetPath],
+    [displayPath, handleCopy, handleOpenExternally, handleOpenInViewer, targetPath],
   );
 
   return (
@@ -636,7 +662,7 @@ function ChatMarkdownDocument({
 
         return (
           <MarkdownFileLink
-            href={fileLinkMeta.targetPath}
+            href={fileLinkMeta.href}
             targetPath={fileLinkMeta.targetPath}
             displayPath={fileLinkMeta.displayPath}
             filePath={fileLinkMeta.filePath}

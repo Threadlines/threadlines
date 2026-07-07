@@ -25,6 +25,7 @@ const POSIX_FILE_ROOT_PREFIXES = [
 export interface MarkdownFileLinkMeta {
   filePath: string;
   targetPath: string;
+  href: string;
   displayPath: string;
   basename: string;
   line?: number;
@@ -58,6 +59,29 @@ function stripSearchAndHash(value: string): { path: string; hash: string } {
 
 function normalizeWindowsDrivePath(path: string): string {
   return /^\/[A-Za-z]:[\\/]/.test(path) ? path.slice(1) : path;
+}
+
+function encodeFileUrlPath(path: string): string {
+  return path
+    .split("/")
+    .map((segment, index) =>
+      index === 0 && /^[A-Za-z]:$/.test(segment) ? segment : encodeURIComponent(segment),
+    )
+    .join("/");
+}
+
+export function toMarkdownFileUrlHref(
+  filePath: string,
+  position?: { readonly line?: number | undefined; readonly column?: number | undefined },
+): string {
+  const normalizedPath = filePath.replaceAll("\\", "/");
+  const fileUrlPath = WINDOWS_DRIVE_PATH_PATTERN.test(normalizedPath)
+    ? `/${encodeFileUrlPath(normalizedPath)}`
+    : encodeFileUrlPath(normalizedPath);
+  const line = position?.line;
+  const column = position?.column;
+  const hash = line ? `#L${line}${column ? `C${column}` : ""}` : "";
+  return `file://${fileUrlPath}${hash}`;
 }
 
 function parseFileUrlHref(
@@ -190,6 +214,7 @@ export function resolveMarkdownFileLinkMeta(
   return {
     filePath: path,
     targetPath,
+    href: toMarkdownFileUrlHref(path, { line: lineNumber, column: columnNumber }),
     displayPath: formatWorkspaceRelativePath(targetPath, cwd),
     basename: basenameOfPath(path),
     ...(lineNumber !== undefined ? { line: lineNumber } : {}),
