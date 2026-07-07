@@ -1,6 +1,7 @@
 "use client";
 
 import { AlertDialog as AlertDialogPrimitive } from "@base-ui/react/alert-dialog";
+import { useCallback, useRef } from "react";
 
 import { cn } from "~/lib/utils";
 
@@ -9,6 +10,38 @@ const AlertDialogCreateHandle = AlertDialogPrimitive.createHandle;
 const AlertDialog = AlertDialogPrimitive.Root;
 
 const AlertDialogPortal = AlertDialogPrimitive.Portal;
+
+type AlertDialogInitialFocusResolver = Extract<
+  NonNullable<AlertDialogPrimitive.Popup.Props["initialFocus"]>,
+  (...args: never[]) => unknown
+>;
+type AlertDialogOpenInteraction = Parameters<AlertDialogInitialFocusResolver>[0];
+
+const explicitPrimaryActionSelector =
+  '[data-alert-dialog-primary-action="true"]:not(:disabled):not([aria-disabled="true"])';
+const footerButtonSelector =
+  '[data-slot="alert-dialog-footer"] button:not(:disabled):not([aria-disabled="true"])';
+
+function resolveAlertDialogInitialFocus(
+  popup: HTMLElement | null,
+  openType: AlertDialogOpenInteraction,
+): ReturnType<AlertDialogInitialFocusResolver> {
+  if (openType === "touch") {
+    return popup ?? true;
+  }
+
+  if (!popup) {
+    return true;
+  }
+
+  const explicitPrimaryAction = popup.querySelector<HTMLElement>(explicitPrimaryActionSelector);
+  if (explicitPrimaryAction) {
+    return explicitPrimaryAction;
+  }
+
+  const footerButtons = popup.querySelectorAll<HTMLElement>(footerButtonSelector);
+  return footerButtons[footerButtons.length - 1] ?? true;
+}
 
 function AlertDialogTrigger(props: AlertDialogPrimitive.Trigger.Props) {
   return <AlertDialogPrimitive.Trigger data-slot="alert-dialog-trigger" {...props} />;
@@ -43,10 +76,17 @@ function AlertDialogViewport({ className, ...props }: AlertDialogPrimitive.Viewp
 function AlertDialogPopup({
   className,
   bottomStickOnMobile = true,
+  initialFocus,
   ...props
 }: AlertDialogPrimitive.Popup.Props & {
   bottomStickOnMobile?: boolean;
 }) {
+  const popupRef = useRef<HTMLDivElement | null>(null);
+  const defaultInitialFocus = useCallback<AlertDialogInitialFocusResolver>(
+    (openType) => resolveAlertDialogInitialFocus(popupRef.current, openType),
+    [],
+  );
+
   return (
     <AlertDialogPortal>
       <AlertDialogBackdrop />
@@ -61,6 +101,8 @@ function AlertDialogPopup({
             className,
           )}
           data-slot="alert-dialog-popup"
+          initialFocus={initialFocus ?? defaultInitialFocus}
+          ref={popupRef}
           {...props}
         />
       </AlertDialogViewport>
