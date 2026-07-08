@@ -168,6 +168,13 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
   Record<ProviderDriverKind, Record<string, string>>
 > = {
   [CODEX_DRIVER_KIND]: {
+    "5.6": "gpt-5.6-sol",
+    sol: "gpt-5.6-sol",
+    "5.6-sol": "gpt-5.6-sol",
+    terra: "gpt-5.6-terra",
+    "5.6-terra": "gpt-5.6-terra",
+    luna: "gpt-5.6-luna",
+    "5.6-luna": "gpt-5.6-luna",
     "gpt-5-codex": "gpt-5.5",
     "5.5": "gpt-5.5",
     "gpt-5.5-codex": "gpt-5.5",

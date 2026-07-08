@@ -14,6 +14,7 @@ const CLAUDE = ProviderDriverKind.make("claudeAgent");
 function model(input: {
   readonly slug: string;
   readonly isCustom?: boolean;
+  readonly isDefault?: boolean;
   readonly isHidden?: boolean;
   readonly inputModalities?: NonNullable<
     NonNullable<ServerProviderModel["capabilities"]>["inputModalities"]
@@ -23,6 +24,7 @@ function model(input: {
     slug: input.slug,
     name: input.slug,
     isCustom: input.isCustom ?? false,
+    ...(input.isDefault ? { isDefault: true } : {}),
     ...(input.isHidden ? { isHidden: true } : {}),
     capabilities: {
       ...(input.inputModalities ? { inputModalities: input.inputModalities } : {}),
@@ -68,6 +70,22 @@ describe("providerModelSupportsInputModality", () => {
 });
 
 describe("getDefaultServerModel", () => {
+  it("prefers the live provider default when the provider marks one", () => {
+    const providers = [
+      provider({
+        driver: CODEX,
+        instanceId: "codex",
+        models: [
+          model({ slug: "gpt-5.5" }),
+          model({ slug: "gpt-5.6-sol", isDefault: true }),
+          model({ slug: "gpt-5.6-terra" }),
+        ],
+      }),
+    ];
+
+    expect(getDefaultServerModel(providers, CODEX)).toBe("gpt-5.6-sol");
+  });
+
   it("prefers the configured provider default when it is in the live model list", () => {
     const providers = [
       provider({

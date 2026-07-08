@@ -69,6 +69,7 @@ const REASONING_EFFORT_LABELS: Record<CodexSchema.V2ModelListResponse__Reasoning
   medium: "Medium",
   high: "High",
   xhigh: "Extra High",
+  max: "Max",
 };
 
 const DEFAULT_CODEX_SERVICE_TIER_LABEL = "Standard";
