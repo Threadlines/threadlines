@@ -1698,9 +1698,9 @@ describe("SourceControlPanel commit graph", () => {
 
     let forcePanelRender: (() => void) | null = null;
     function PanelHarness() {
-      const [renderVersion, setRenderVersion] = useState(0);
+      const [panelTarget, setPanelTarget] = useState(TARGET);
       useEffect(() => {
-        forcePanelRender = () => setRenderVersion((version) => version + 1);
+        forcePanelRender = () => setPanelTarget((currentTarget) => ({ ...currentTarget }));
         return () => {
           forcePanelRender = null;
         };
@@ -1709,9 +1709,7 @@ describe("SourceControlPanel commit graph", () => {
       return (
         <AppAtomRegistryProvider>
           <QueryClientProvider client={queryClient}>
-            <div data-version={renderVersion}>
-              <SourceControlPanel target={TARGET} activeThreadRef={null} />
-            </div>
+            <SourceControlPanel target={panelTarget} activeThreadRef={null} />
           </QueryClientProvider>
         </AppAtomRegistryProvider>
       );

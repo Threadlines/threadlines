@@ -42,6 +42,7 @@ export default defineConfig({
       "*.tsbuildinfo",
       "**/routeTree.gen.ts",
       "**/worker-configuration.d.ts",
+      "packages/effect-codex-app-server/src/_generated/schema.gen.ts",
       "apps/web/public/mockServiceWorker.js",
       "apps/web/src/lib/vendor/qrcodegen.ts",
       "*.icon/**",
