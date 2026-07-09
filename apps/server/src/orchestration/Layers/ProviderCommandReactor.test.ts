@@ -314,6 +314,7 @@ describe("ProviderCommandReactor", () => {
       startSession: startSession as ProviderServiceShape["startSession"],
       sendTurn: sendTurn as ProviderServiceShape["sendTurn"],
       steerTurn: steerTurn as ProviderServiceShape["steerTurn"],
+      startReview: () => unsupported(),
       interruptTurn: interruptTurn as ProviderServiceShape["interruptTurn"],
       compactContext,
       respondToRequest: respondToRequest as ProviderServiceShape["respondToRequest"],
@@ -1096,6 +1097,37 @@ describe("ProviderCommandReactor", () => {
     expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
       threadId: ThreadId.make("thread-1"),
       interactionMode: "plan",
+    });
+  });
+
+  it("forwards the persisted model and reasoning options when a turn omits a selection", async () => {
+    const modelSelection = createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.6-sol", [
+      { id: "reasoningEffort", value: "low" },
+    ]);
+    const harness = await createHarness({ threadModelSelection: modelSelection });
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-persisted-selection"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-persisted-selection"),
+          role: "user",
+          text: "use the configured model",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+      threadId: ThreadId.make("thread-1"),
+      modelSelection,
     });
   });
 

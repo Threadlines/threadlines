@@ -88,7 +88,7 @@ describe("buildTurnStartParams", () => {
     });
   });
 
-  it("includes default collaboration mode and image attachments", () => {
+  it("preserves the model default reasoning effort in default collaboration mode", () => {
     const params = Effect.runSync(
       buildTurnStartParams({
         threadId: "provider-thread-1",
@@ -126,7 +126,6 @@ describe("buildTurnStartParams", () => {
         mode: "default",
         settings: {
           model: "gpt-5.3-codex",
-          reasoning_effort: "medium",
           developer_instructions: CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
         },
       },

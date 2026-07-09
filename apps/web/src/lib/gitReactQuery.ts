@@ -3,6 +3,7 @@ import {
   type GitActionProgressEvent,
   type GitAuthRemediationActionId,
   type GitStackedAction,
+  type ProviderReviewTarget,
   type SourceControlPublishRepositoryInput,
   type ThreadId,
 } from "@threadlines/contracts";
@@ -73,6 +74,8 @@ export const gitMutationKeys = {
     ["git", "mutation", "run-stacked-action", environmentId ?? null, cwd] as const,
   generateCommitMessage: (environmentId: EnvironmentId | null, cwd: string | null) =>
     ["git", "mutation", "generate-commit-message", environmentId ?? null, cwd] as const,
+  startProviderReview: (environmentId: EnvironmentId | null, cwd: string | null) =>
+    ["git", "mutation", "start-provider-review", environmentId ?? null, cwd] as const,
   pull: (environmentId: EnvironmentId | null, cwd: string | null) =>
     ["git", "mutation", "pull", environmentId ?? null, cwd] as const,
   preparePullRequestThread: (environmentId: EnvironmentId | null, cwd: string | null) =>
@@ -494,6 +497,27 @@ export function gitGenerateCommitMessageMutationOptions(input: {
       return requireEnvironmentConnection(input.environmentId).client.git.generateCommitMessage({
         cwd: input.cwd,
         ...(args?.filePaths && args.filePaths.length > 0 ? { filePaths: args.filePaths } : {}),
+      });
+    },
+  });
+}
+
+export function gitStartProviderReviewMutationOptions(input: {
+  environmentId: EnvironmentId | null;
+  cwd: string | null;
+  threadId: ThreadId | null;
+}) {
+  return mutationOptions({
+    mutationKey: gitMutationKeys.startProviderReview(input.environmentId, input.cwd),
+    mutationFn: async (args: { target: ProviderReviewTarget }) => {
+      if (!input.cwd || !input.environmentId || !input.threadId) {
+        throw new Error("Codex review is unavailable for this thread.");
+      }
+      return requireEnvironmentConnection(input.environmentId).client.server.startProviderReview({
+        threadId: input.threadId,
+        cwd: input.cwd,
+        target: args.target,
+        delivery: "inline",
       });
     },
   });

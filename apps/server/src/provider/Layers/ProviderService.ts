@@ -20,6 +20,7 @@ import {
   ProviderRespondToUserInputInput,
   ProviderSendTurnInput,
   ProviderSessionStartInput,
+  ProviderStartReviewInput,
   ProviderSteerTurnInput,
   ProviderStopSessionInput,
   type ProviderInstanceId,
@@ -117,6 +118,14 @@ const decodeInputOrValidationError = <S extends Schema.Top>(input: {
     ),
   );
 };
+
+function isMissingProviderBindingForReview(error: unknown): error is ProviderValidationError {
+  return (
+    error instanceof ProviderValidationError &&
+    error.operation === "ProviderService.startReview" &&
+    error.issue.includes("no persisted provider binding exists")
+  );
+}
 
 function toRuntimeStatus(session: ProviderSession): "starting" | "running" | "stopped" | "error" {
   switch (session.status) {
@@ -943,6 +952,116 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
+  const startReview: ProviderServiceShape["startReview"] = Effect.fn("startReview")(
+    function* (rawInput) {
+      const parsed = yield* decodeInputOrValidationError({
+        operation: "ProviderService.startReview",
+        schema: ProviderStartReviewInput,
+        payload: rawInput,
+      });
+      const input = {
+        ...parsed,
+        delivery: parsed.delivery ?? "inline",
+      };
+      if (input.delivery !== "inline") {
+        return yield* toValidationError(
+          "ProviderService.startReview",
+          "Detached provider reviews are not supported yet.",
+        );
+      }
+      yield* Effect.annotateCurrentSpan({
+        "provider.operation": "start-review",
+        "provider.thread_id": input.threadId,
+        "provider.review_target": input.target.type,
+        "provider.review_delivery": input.delivery,
+      });
+      let metricProvider = "unknown";
+      const startReviewInRoutedSession = Effect.gen(function* () {
+        const routed = yield* resolveRoutableSession({
+          threadId: input.threadId,
+          operation: "ProviderService.startReview",
+          allowRecovery: true,
+        });
+        metricProvider = routed.adapter.provider;
+        yield* Effect.annotateCurrentSpan({
+          "provider.kind": routed.adapter.provider,
+        });
+        if (
+          routed.adapter.capabilities.reviewStart !== "supported" ||
+          routed.adapter.startReview === undefined
+        ) {
+          return yield* toValidationError(
+            "ProviderService.startReview",
+            `Provider '${routed.adapter.provider}' does not support native code reviews.`,
+          );
+        }
+
+        const turn = yield* routed.adapter.startReview(input);
+        yield* directory.upsert({
+          threadId: input.threadId,
+          provider: routed.adapter.provider,
+          providerInstanceId: routed.instanceId,
+          status: "running",
+          ...(turn.resumeCursor !== undefined ? { resumeCursor: turn.resumeCursor } : {}),
+          runtimePayload: {
+            activeTurnId: turn.turnId,
+            lastRuntimeEvent: "provider.startReview",
+            lastRuntimeEventAt: yield* nowIso,
+          },
+        });
+        yield* analytics.record("provider.review.started", {
+          provider: routed.adapter.provider,
+          targetType: input.target.type,
+          delivery: input.delivery,
+        });
+        return turn;
+      });
+
+      return yield* startReviewInRoutedSession.pipe(
+        Effect.catchIf(isMissingProviderBindingForReview, () =>
+          Effect.gen(function* () {
+            if (
+              input.cwd === undefined ||
+              input.modelSelection === undefined ||
+              input.runtimeMode === undefined
+            ) {
+              return yield* toValidationError(
+                "ProviderService.startReview",
+                `Cannot start provider review for thread '${input.threadId}' because no provider session exists yet.`,
+              );
+            }
+
+            yield* Effect.annotateCurrentSpan({
+              "provider.review_bootstrap": true,
+              "provider.instance_id": input.modelSelection.instanceId,
+              "provider.runtime_mode": input.runtimeMode,
+            });
+            yield* startSession(input.threadId, {
+              threadId: input.threadId,
+              providerInstanceId: input.modelSelection.instanceId,
+              cwd: input.cwd,
+              modelSelection: input.modelSelection,
+              runtimeMode: input.runtimeMode,
+            });
+            return yield* startReviewInRoutedSession;
+          }),
+        ),
+        withMetrics({
+          counter: providerTurnsTotal,
+          timer: providerTurnDuration,
+          attributes: () =>
+            providerTurnMetricAttributes({
+              provider: metricProvider,
+              model: undefined,
+              extra: {
+                operation: "review",
+              },
+            }),
+        }),
+      );
+    },
+  );
+
   const interruptTurn: ProviderServiceShape["interruptTurn"] = Effect.fn("interruptTurn")(
     function* (rawInput) {
       const input = yield* decodeInputOrValidationError({
@@ -1431,6 +1550,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     startSession,
     sendTurn,
     steerTurn,
+    startReview,
     interruptTurn,
     compactContext,
     respondToRequest,

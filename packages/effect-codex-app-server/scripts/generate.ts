@@ -17,7 +17,7 @@ import {
 } from "effect/unstable/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-const UPSTREAM_REF = "rust-v0.141.0";
+const UPSTREAM_REF = "rust-v0.144.0";
 const USER_AGENT = "effect-codex-app-server-generator";
 const GITHUB_API_BASE =
   "https://api.github.com/repos/openai/codex/contents/codex-rs/app-server-protocol";
@@ -349,10 +349,12 @@ function resolveResponseTypeName(
     "account/logout": "LogoutAccountResponse",
     "account/rateLimits/read": "GetAccountRateLimitsResponse",
     "account/usage/read": "GetAccountTokenUsageResponse",
+    "account/workspaceMessages/read": "GetWorkspaceMessagesResponse",
     "config/batchWrite": "ConfigWriteResponse",
     "config/mcpServer/reload": "McpServerRefreshResponse",
     "config/value/write": "ConfigWriteResponse",
     "configRequirements/read": "ConfigRequirementsReadResponse",
+    "externalAgentConfig/import/readHistories": "ExternalAgentConfigImportHistoriesReadResponse",
   };
 
   const override = overrides[method];
@@ -746,7 +748,13 @@ const generateFiles = Effect.fn("generateFiles")(function* () {
   yield* Effect.log(`Generated Codex App Server schemas from ${UPSTREAM_REF}`);
 
   yield* Effect.service(ChildProcessSpawner.ChildProcessSpawner).pipe(
-    Effect.flatMap((spawner) => spawner.spawn(ChildProcess.make("vp", ["fmt", generatedDir]))),
+    Effect.flatMap((spawner) =>
+      spawner.spawn(
+        ChildProcess.make("vp", ["fmt", generatedDir], {
+          shell: process.platform === "win32",
+        }),
+      ),
+    ),
     Effect.flatMap((child) => child.exitCode),
     Effect.tap((code) =>
       code === 0

@@ -169,6 +169,7 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
 > = {
   [CODEX_DRIVER_KIND]: {
     "5.6": "gpt-5.6-sol",
+    "gpt-5.6": "gpt-5.6-sol",
     sol: "gpt-5.6-sol",
     "5.6-sol": "gpt-5.6-sol",
     terra: "gpt-5.6-terra",

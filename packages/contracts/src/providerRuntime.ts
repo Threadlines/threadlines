@@ -195,6 +195,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "mcp.status.updated",
   "mcp.oauth.completed",
   "model.rerouted",
+  "model.safety-buffering.updated",
   "config.warning",
   "deprecation.notice",
   "files.persisted",
@@ -246,6 +247,7 @@ const AccountRateLimitsUpdatedType = Schema.Literal("account.rate-limits.updated
 const McpStatusUpdatedType = Schema.Literal("mcp.status.updated");
 const McpOauthCompletedType = Schema.Literal("mcp.oauth.completed");
 const ModelReroutedType = Schema.Literal("model.rerouted");
+const ModelSafetyBufferingUpdatedType = Schema.Literal("model.safety-buffering.updated");
 const ConfigWarningType = Schema.Literal("config.warning");
 const DeprecationNoticeType = Schema.Literal("deprecation.notice");
 const FilesPersistedType = Schema.Literal("files.persisted");
@@ -581,6 +583,15 @@ const ModelReroutedPayload = Schema.Struct({
   reason: TrimmedNonEmptyStringSchema,
 });
 export type ModelReroutedPayload = typeof ModelReroutedPayload.Type;
+
+const ModelSafetyBufferingUpdatedPayload = Schema.Struct({
+  model: TrimmedNonEmptyStringSchema,
+  useCases: Schema.Array(TrimmedNonEmptyStringSchema),
+  reasons: Schema.Array(TrimmedNonEmptyStringSchema),
+  showBufferingUi: Schema.Boolean,
+  fasterModel: Schema.NullOr(TrimmedNonEmptyStringSchema),
+});
+export type ModelSafetyBufferingUpdatedPayload = typeof ModelSafetyBufferingUpdatedPayload.Type;
 
 const ConfigWarningPayload = Schema.Struct({
   summary: TrimmedNonEmptyStringSchema,
@@ -948,6 +959,15 @@ const ProviderRuntimeModelReroutedEvent = Schema.Struct({
 });
 export type ProviderRuntimeModelReroutedEvent = typeof ProviderRuntimeModelReroutedEvent.Type;
 
+const ProviderRuntimeModelSafetyBufferingUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: ModelSafetyBufferingUpdatedType,
+  turnId: TurnId,
+  payload: ModelSafetyBufferingUpdatedPayload,
+});
+export type ProviderRuntimeModelSafetyBufferingUpdatedEvent =
+  typeof ProviderRuntimeModelSafetyBufferingUpdatedEvent.Type;
+
 const ProviderRuntimeConfigWarningEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: ConfigWarningType,
@@ -1028,6 +1048,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeMcpStatusUpdatedEvent,
   ProviderRuntimeMcpOauthCompletedEvent,
   ProviderRuntimeModelReroutedEvent,
+  ProviderRuntimeModelSafetyBufferingUpdatedEvent,
   ProviderRuntimeConfigWarningEvent,
   ProviderRuntimeDeprecationNoticeEvent,
   ProviderRuntimeFilesPersistedEvent,

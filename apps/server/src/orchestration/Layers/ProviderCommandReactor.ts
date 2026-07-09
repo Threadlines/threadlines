@@ -680,17 +680,6 @@ const make = Effect.gen(function* () {
       .pipe(
         Effect.map((sessions) => sessions.find((session) => session.threadId === input.threadId)),
       );
-    const sessionModelSwitch =
-      activeSession === undefined
-        ? "in-session"
-        : activeSession.providerInstanceId === undefined
-          ? yield* new ProviderAdapterRequestError({
-              provider: providerErrorLabel(activeSession.provider),
-              method: "thread.turn.start",
-              detail: `Active provider session '${activeSession.threadId}' is missing a provider instance id.`,
-            })
-          : (yield* providerService.getCapabilities(activeSession.providerInstanceId))
-              .sessionModelSwitch;
     const requestedModelSelection =
       input.modelSelection ?? threadModelSelections.get(input.threadId) ?? thread.modelSelection;
     const forkContextActivity = thread.activities.find(
@@ -722,14 +711,13 @@ const make = Effect.gen(function* () {
           }
         : undefined;
     const modelForTurn =
-      sessionModelSwitch === "unsupported" && input.modelSelection === undefined
-        ? activeSession?.model !== undefined
-          ? {
-              ...requestedModelSelection,
-              model: activeSession.model,
-            }
-          : requestedModelSelection
-        : input.modelSelection;
+      input.modelSelection ??
+      (activeSession?.model !== undefined
+        ? {
+            ...requestedModelSelection,
+            model: activeSession.model,
+          }
+        : requestedModelSelection);
 
     return {
       threadId: input.threadId,

@@ -374,6 +374,8 @@ function codexPluginSource(source: CodexSchema.V2PluginListResponse__PluginSourc
       return source.path;
     case "git":
       return source.url;
+    case "npm":
+      return source.version ? `${source.package}@${source.version}` : source.package;
     case "remote":
       return "Remote catalog";
   }

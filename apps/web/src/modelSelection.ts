@@ -1,6 +1,7 @@
 import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
   DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
+  DEFAULT_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
   type ModelSelection,
   ProviderDriverKind,
@@ -73,6 +74,7 @@ export interface AppModelOption {
   shortName?: string;
   subProvider?: string;
   isCustom: boolean;
+  isDefault?: boolean;
 }
 
 function toAppModelOption(model: ServerProvider["models"][number]): AppModelOption {
@@ -83,6 +85,7 @@ function toAppModelOption(model: ServerProvider["models"][number]): AppModelOpti
   };
   if (model.shortName) option.shortName = model.shortName;
   if (model.subProvider) option.subProvider = model.subProvider;
+  if (model.isDefault !== undefined) option.isDefault = model.isDefault;
   return option;
 }
 
@@ -247,8 +250,17 @@ export function resolveAppModelSelectionForInstance(
   );
   if (!entry) return null;
   const options = getAppModelOptionsForInstance(settings, entry);
+  const visibleBuiltInOptions = options.filter((option) => !option.isCustom);
+  const liveDefault = visibleBuiltInOptions.find((option) => option.isDefault === true)?.slug;
+  const configuredDefault = resolveSelectableModel(
+    entry.driverKind,
+    DEFAULT_MODEL_BY_PROVIDER[entry.driverKind],
+    visibleBuiltInOptions,
+  );
   return (
     resolveSelectableModel(entry.driverKind, selectedModel, options) ??
+    liveDefault ??
+    configuredDefault ??
     options[0]?.slug ??
     entry.models[0]?.slug ??
     null

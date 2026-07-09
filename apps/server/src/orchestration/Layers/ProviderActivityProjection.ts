@@ -1040,6 +1040,29 @@ export function projectRuntimeEventToActivities(
         }),
       ];
 
+    case "model.safety-buffering.updated": {
+      const providerThreadId = event.providerRefs?.providerThreadId ?? "primary";
+      return [
+        baseActivity(event, {
+          id: EventId.make(
+            `activity:model-safety-buffering:${event.threadId}:${event.turnId}:${providerThreadId}`,
+          ),
+          tone: "thinking",
+          kind: "provider.model.safety-buffering",
+          summary: "Additional safety checks",
+          payload: {
+            detail: "This request requires additional safety checks, which can take extra time.",
+            model: event.payload.model,
+            useCases: event.payload.useCases,
+            reasons: event.payload.reasons,
+            showBufferingUi: event.payload.showBufferingUi,
+            fasterModel: event.payload.fasterModel,
+            ...(event.payload.showBufferingUi ? { status: "inProgress" } : {}),
+          },
+        }),
+      ];
+    }
+
     case "config.warning":
       return [
         baseActivity(event, {

@@ -149,12 +149,62 @@ export const ProviderSteerTurnInput = Schema.Struct({
 });
 export type ProviderSteerTurnInput = typeof ProviderSteerTurnInput.Type;
 
+export const ProviderReviewDelivery = Schema.Literals(["inline", "detached"]);
+export type ProviderReviewDelivery = typeof ProviderReviewDelivery.Type;
+
+export const ProviderReviewTarget = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("uncommittedChanges"),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("baseBranch"),
+    branch: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("commit"),
+    sha: TrimmedNonEmptyString,
+    title: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("custom"),
+    instructions: TrimmedNonEmptyString,
+  }),
+]);
+export type ProviderReviewTarget = typeof ProviderReviewTarget.Type;
+
+export const ProviderStartReviewInput = Schema.Struct({
+  threadId: ThreadId,
+  target: ProviderReviewTarget,
+  delivery: Schema.optional(ProviderReviewDelivery),
+  cwd: Schema.optional(TrimmedNonEmptyString),
+  modelSelection: Schema.optional(ModelSelection),
+  runtimeMode: Schema.optional(RuntimeMode),
+});
+export type ProviderStartReviewInput = typeof ProviderStartReviewInput.Type;
+
 export const ProviderTurnStartResult = Schema.Struct({
   threadId: ThreadId,
   turnId: TurnId,
   resumeCursor: Schema.optional(Schema.Unknown),
 });
 export type ProviderTurnStartResult = typeof ProviderTurnStartResult.Type;
+
+export const ProviderStartReviewResult = Schema.Struct({
+  threadId: ThreadId,
+  turnId: TurnId,
+  resumeCursor: Schema.optional(Schema.Unknown),
+  reviewThreadId: TrimmedNonEmptyString,
+  delivery: ProviderReviewDelivery,
+});
+export type ProviderStartReviewResult = typeof ProviderStartReviewResult.Type;
+
+export class ProviderStartReviewError extends Schema.TaggedErrorClass<ProviderStartReviewError>()(
+  "ProviderStartReviewError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect),
+  },
+) {}
 
 export const ProviderInterruptTurnInput = Schema.Struct({
   threadId: ThreadId,

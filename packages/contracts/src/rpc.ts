@@ -78,6 +78,11 @@ import {
   OrchestrationReplayEventsInput,
   OrchestrationRpcSchemas,
 } from "./orchestration.ts";
+import {
+  ProviderStartReviewError,
+  ProviderStartReviewInput,
+  ProviderStartReviewResult,
+} from "./provider.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import {
   ProviderExtensionMcpOAuthStartInput,
@@ -239,6 +244,7 @@ export const WS_METHODS = {
   // Server meta
   serverGetConfig: "server.getConfig",
   serverRefreshProviders: "server.refreshProviders",
+  serverStartProviderReview: "server.startProviderReview",
   serverConsumeProviderRateLimitResetCredit: "server.consumeProviderRateLimitResetCredit",
   serverUpdateProvider: "server.updateProvider",
   serverResolveProviderUpdateBlockers: "server.resolveProviderUpdateBlockers",
@@ -313,6 +319,12 @@ export const WsServerRefreshProvidersRpc = Rpc.make(WS_METHODS.serverRefreshProv
     instanceId: Schema.optional(ProviderInstanceId),
   }),
   success: ServerProviderUpdatedPayload,
+});
+
+export const WsServerStartProviderReviewRpc = Rpc.make(WS_METHODS.serverStartProviderReview, {
+  payload: ProviderStartReviewInput,
+  success: ProviderStartReviewResult,
+  error: ProviderStartReviewError,
 });
 
 export const WsServerConsumeProviderRateLimitResetCreditRpc = Rpc.make(
@@ -873,6 +885,7 @@ export const WsSubscribeAuthAccessRpc = Rpc.make(WS_METHODS.subscribeAuthAccess,
 export const WsRpcGroup = RpcGroup.make(
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
+  WsServerStartProviderReviewRpc,
   WsServerConsumeProviderRateLimitResetCreditRpc,
   WsServerUpdateProviderRpc,
   WsServerResolveProviderUpdateBlockersRpc,

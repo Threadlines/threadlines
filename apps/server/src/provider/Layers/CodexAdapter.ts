@@ -24,6 +24,7 @@ import {
   RuntimeRequestId,
   RuntimeTaskId,
   ProviderApprovalDecision,
+  type ProviderStartReviewInput,
   ThreadId,
   TurnId,
   type ProviderSteerTurnInput,
@@ -700,7 +701,7 @@ function mapItemLifecycle(
   };
 }
 
-function mapToRuntimeEvents(
+export function mapToRuntimeEvents(
   event: ProviderEvent,
   canonicalThreadId: ThreadId,
 ): ReadonlyArray<ProviderRuntimeEvent> {
@@ -1499,6 +1500,30 @@ function mapToRuntimeEvents(
     ];
   }
 
+  if (event.method === "model/safetyBuffering/updated") {
+    const payload = readPayload(
+      EffectCodexSchema.V2ModelSafetyBufferingUpdatedNotification,
+      event.payload,
+    );
+    if (!payload) {
+      return [];
+    }
+    return [
+      {
+        type: "model.safety-buffering.updated",
+        ...runtimeEventBase(event, canonicalThreadId),
+        turnId: event.turnId ?? TurnId.make(payload.turnId),
+        payload: {
+          model: payload.model,
+          useCases: payload.useCases,
+          reasons: payload.reasons,
+          showBufferingUi: payload.showBufferingUi,
+          fasterModel: payload.fasterModel ?? null,
+        },
+      },
+    ];
+  }
+
   if (event.method === "model/verification") {
     const payload = readPayload(EffectCodexSchema.V2ModelVerificationNotification, event.payload);
     if (!payload || payload.verifications.length === 0) {
@@ -2150,6 +2175,20 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       .pipe(Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "turn/steer", cause)));
   });
 
+  const startReview: NonNullable<CodexAdapterShape["startReview"]> = Effect.fn("startReview")(
+    function* (input: ProviderStartReviewInput) {
+      const session = yield* requireSession(input.threadId);
+      return yield* session.runtime
+        .startReview({
+          target: input.target,
+          ...(input.delivery !== undefined ? { delivery: input.delivery } : {}),
+        })
+        .pipe(
+          Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "review/start", cause)),
+        );
+    },
+  );
+
   const requireSession = Effect.fn("requireSession")(function* (threadId: ThreadId) {
     const session = sessions.get(threadId);
     if (!session || session.stopped) {
@@ -2318,10 +2357,12 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       sessionModelSwitch: "in-session",
       manualContextCompaction: "supported",
       activeTurnSteering: "supported",
+      reviewStart: "supported",
     },
     startSession,
     sendTurn,
     steerTurn,
+    startReview,
     interruptTurn,
     compactContext,
     readThread,

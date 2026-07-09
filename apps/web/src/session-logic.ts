@@ -1500,6 +1500,7 @@ function formatSubagentCount(count: number, singular: string, plural: string): s
 
 export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
+  activeTurnId?: TurnId | null,
 ): WorkLogEntry[] {
   const ordered =
     filterSupersededManualContextCompactionActivities(activities).toSorted(
@@ -1517,6 +1518,11 @@ export function deriveWorkLogEntries(
     .filter((activity) => activity.kind !== "mcp.status.updated")
     .filter((activity) => activity.kind !== "mcp.oauth.completed")
     .filter((activity) => activity.kind !== "prompt-suggestion.updated")
+    .filter(
+      (activity) =>
+        activity.kind !== "provider.model.safety-buffering" ||
+        (activity.turnId === activeTurnId && asRecord(activity.payload)?.showBufferingUi === true),
+    )
     .filter((activity) => activity.summary !== "Checkpoint captured")
     .filter((activity) => !isPlanBoundaryToolActivity(activity))
     .filter((activity) => !isSubagentNotificationReplayActivity(activity))

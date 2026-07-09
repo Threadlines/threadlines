@@ -199,6 +199,7 @@ describe("ProviderSessionReaper", () => {
       startSession: () => unsupported(),
       sendTurn: () => unsupported(),
       steerTurn: () => unsupported(),
+      startReview: () => unsupported(),
       interruptTurn: () => unsupported(),
       compactContext: () => unsupported(),
       respondToRequest: () => unsupported(),

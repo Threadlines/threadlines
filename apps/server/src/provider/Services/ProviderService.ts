@@ -21,6 +21,8 @@ import type {
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
+  ProviderStartReviewInput,
+  ProviderStartReviewResult,
   ProviderSteerTurnInput,
   ProviderStopSessionInput,
   ThreadId,
@@ -59,6 +61,13 @@ export interface ProviderServiceShape {
   readonly steerTurn: (
     input: ProviderSteerTurnInput,
   ) => Effect.Effect<ProviderTurnStartResult, ProviderServiceError>;
+
+  /**
+   * Start a native provider review on an active provider session.
+   */
+  readonly startReview: (
+    input: ProviderStartReviewInput,
+  ) => Effect.Effect<ProviderStartReviewResult, ProviderServiceError>;
 
   /**
    * Interrupt a running provider turn.

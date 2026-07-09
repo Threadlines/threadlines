@@ -14,6 +14,7 @@ import {
   type ProviderApprovalDecision,
   type ProviderEvent,
   type ProviderSession,
+  type ProviderStartReviewResult,
   type ProviderTurnStartResult,
   type ProviderUserInputAnswers,
   ThreadId,
@@ -44,6 +45,7 @@ import {
   type CodexSessionRuntimeOptions,
   type CodexSessionRuntimeSendTurnInput,
   type CodexSessionRuntimeShape,
+  type CodexSessionRuntimeStartReviewInput,
   type CodexSessionRuntimeSteerTurnInput,
   type CodexThreadSnapshot,
 } from "./CodexSessionRuntime.ts";
@@ -91,6 +93,16 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
       Promise.resolve({
         threadId: this.options.threadId,
         turnId: input.expectedTurnId,
+      }),
+  );
+
+  public readonly startReviewImpl = vi.fn(
+    (_input: CodexSessionRuntimeStartReviewInput): Promise<ProviderStartReviewResult> =>
+      Promise.resolve({
+        threadId: this.options.threadId,
+        turnId: asTurnId("review-turn-1"),
+        reviewThreadId: "provider-thread-1",
+        delivery: "inline",
       }),
   );
 
@@ -148,6 +160,10 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
 
   steerTurn(input: CodexSessionRuntimeSteerTurnInput) {
     return Effect.promise(() => this.steerTurnImpl(input));
+  }
+
+  startReview(input: CodexSessionRuntimeStartReviewInput) {
+    return Effect.promise(() => this.startReviewImpl(input));
   }
 
   interruptTurn(turnId?: TurnId) {
@@ -385,6 +401,42 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
     }),
   );
 
+  it.effect("starts Codex reviews through the active runtime session", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("sess-review");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const runtime = sessionRuntimeFactory.lastRuntime;
+      assert.ok(runtime);
+      runtime.startReviewImpl.mockClear();
+      assert.ok(adapter.startReview);
+
+      const result = yield* adapter.startReview({
+        threadId,
+        target: {
+          type: "commit",
+          sha: "abc123",
+          title: "Review target",
+        },
+        delivery: "inline",
+      });
+
+      assert.equal(result?.turnId, asTurnId("review-turn-1"));
+      assert.deepStrictEqual(runtime.startReviewImpl.mock.calls[0]?.[0], {
+        target: {
+          type: "commit",
+          sha: "abc123",
+          title: "Review target",
+        },
+        delivery: "inline",
+      });
+    }),
+  );
+
   it.effect("keeps legacy fastMode selections working for Codex turns", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;
@@ -589,6 +641,72 @@ function startLifecycleRuntime() {
 }
 
 lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
+  it.effect("maps safety-buffering updates and preserves a remapped parent turn", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      yield* runtime.emit({
+        id: asEventId("evt-safety-buffering"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-07-09T00:00:00.000Z",
+        method: "model/safetyBuffering/updated",
+        threadId: asThreadId("thread-1"),
+        providerThreadId: "provider-child-thread-1",
+        turnId: asTurnId("parent-turn-1"),
+        payload: {
+          threadId: "provider-child-thread-1",
+          turnId: "provider-child-turn-1",
+          model: "gpt-5.6-sol",
+          useCases: ["cyber"],
+          reasons: ["additional-review"],
+          showBufferingUi: true,
+          fasterModel: "gpt-5.5",
+        },
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      assert.deepStrictEqual(firstEvent.value, {
+        type: "model.safety-buffering.updated",
+        eventId: "evt-safety-buffering",
+        provider: "codex",
+        threadId: "thread-1",
+        createdAt: "2026-07-09T00:00:00.000Z",
+        turnId: "parent-turn-1",
+        providerRefs: {
+          providerThreadId: "provider-child-thread-1",
+          providerTurnId: "parent-turn-1",
+        },
+        raw: {
+          source: "codex.notification",
+          method: "model/safetyBuffering/updated",
+          payload: {
+            threadId: "provider-child-thread-1",
+            turnId: "provider-child-turn-1",
+            model: "gpt-5.6-sol",
+            useCases: ["cyber"],
+            reasons: ["additional-review"],
+            showBufferingUi: true,
+            fasterModel: "gpt-5.5",
+          },
+        },
+        payload: {
+          model: "gpt-5.6-sol",
+          useCases: ["cyber"],
+          reasons: ["additional-review"],
+          showBufferingUi: true,
+          fasterModel: "gpt-5.5",
+        },
+      });
+    }),
+  );
+
   it.effect("uses item startedAtMs for canonical item.started timestamps", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();

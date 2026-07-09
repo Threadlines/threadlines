@@ -8,6 +8,8 @@ import {
   type VcsStatusStreamEvent,
   type LocalApi,
   ORCHESTRATION_WS_METHODS,
+  type ProviderStartReviewInput,
+  type ProviderStartReviewResult,
   type ServerSettingsPatch,
   WS_METHODS,
 } from "@threadlines/contracts";
@@ -145,6 +147,9 @@ export interface WsRpcClient {
     readonly refreshProviders: (
       input?: RpcInput<typeof WS_METHODS.serverRefreshProviders>,
     ) => ReturnType<RpcUnaryMethod<typeof WS_METHODS.serverRefreshProviders>>;
+    readonly startProviderReview: (
+      input: ProviderStartReviewInput,
+    ) => Promise<ProviderStartReviewResult>;
     readonly consumeProviderRateLimitResetCredit: RpcUnaryMethod<
       typeof WS_METHODS.serverConsumeProviderRateLimitResetCredit
     >;
@@ -416,6 +421,8 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       getConfig: () => transport.request((client) => client[WS_METHODS.serverGetConfig]({})),
       refreshProviders: (input) =>
         transport.request((client) => client[WS_METHODS.serverRefreshProviders](input ?? {})),
+      startProviderReview: (input) =>
+        transport.request((client) => client[WS_METHODS.serverStartProviderReview](input)),
       consumeProviderRateLimitResetCredit: (input) =>
         transport.request((client) =>
           client[WS_METHODS.serverConsumeProviderRateLimitResetCredit](input).pipe(

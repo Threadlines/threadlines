@@ -13,6 +13,8 @@ import type {
   ProviderDriverKind,
   ProviderUserInputAnswers,
   ProviderRuntimeEvent,
+  ProviderStartReviewInput,
+  ProviderStartReviewResult,
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
@@ -28,6 +30,7 @@ import type * as Stream from "effect/Stream";
 export type ProviderSessionModelSwitchMode = "in-session" | "unsupported";
 export type ProviderManualContextCompactionMode = "supported" | "unsupported";
 export type ProviderActiveTurnSteeringMode = "supported" | "unsupported";
+export type ProviderReviewStartMode = "supported" | "unsupported";
 
 export interface ProviderAdapterCapabilities {
   /**
@@ -44,6 +47,11 @@ export interface ProviderAdapterCapabilities {
    * Declares whether this adapter can add user input to the active running turn.
    */
   readonly activeTurnSteering?: ProviderActiveTurnSteeringMode;
+
+  /**
+   * Declares whether this adapter can start native provider code reviews.
+   */
+  readonly reviewStart?: ProviderReviewStartMode;
 }
 
 export interface ProviderThreadTurnSnapshot {
@@ -95,6 +103,13 @@ export interface ProviderAdapterShape<TError> {
   readonly steerTurn?: (
     input: ProviderSteerTurnInput,
   ) => Effect.Effect<ProviderTurnStartResult, TError>;
+
+  /**
+   * Start a native provider review against an active provider session.
+   */
+  readonly startReview?: (
+    input: ProviderStartReviewInput,
+  ) => Effect.Effect<ProviderStartReviewResult, TError>;
 
   /**
    * Interrupt an active turn.

@@ -349,17 +349,16 @@ function normalizeCodexAccountUsage(
 function mapCodexModelCapabilities(
   model: CodexSchema.V2ModelListResponse__Model,
 ): ModelCapabilities {
-  const reasoningOptions = model.supportedReasoningEfforts.map(({ reasoningEffort }) =>
-    reasoningEffort === model.defaultReasoningEffort
-      ? {
-          id: reasoningEffort,
-          label: reasoningEffortLabel(reasoningEffort),
-          isDefault: true,
-        }
-      : {
-          id: reasoningEffort,
-          label: reasoningEffortLabel(reasoningEffort),
-        },
+  const reasoningOptions = model.supportedReasoningEfforts.map(
+    ({ reasoningEffort, description }) => {
+      const normalizedDescription = optionalString(description);
+      return {
+        id: reasoningEffort,
+        label: reasoningEffortLabel(reasoningEffort),
+        ...(normalizedDescription ? { description: normalizedDescription } : {}),
+        ...(reasoningEffort === model.defaultReasoningEffort ? { isDefault: true } : {}),
+      };
+    },
   );
   const defaultReasoning = reasoningOptions.find((option) => option.isDefault)?.id;
   const serviceTierOptions = mapCodexServiceTierOptions(model);

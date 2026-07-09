@@ -4,6 +4,7 @@ import {
   type GitActionProgressEvent,
   type GitRemoteAuthFailure,
   type GitStackedAction,
+  type ProviderReviewTarget,
   type ScopedThreadRef,
   type VcsCommitDetailsResult,
   type VcsCommitGraphCommit,
@@ -76,6 +77,7 @@ import {
   gitPullMutationOptions,
   gitQueryKeys,
   gitRunStackedActionMutationOptions,
+  gitStartProviderReviewMutationOptions,
   gitStageChangesMutationOptions,
   gitUnstageChangesMutationOptions,
 } from "~/lib/gitReactQuery";
@@ -447,6 +449,7 @@ type CommitGraphContextAction =
   | "copy-title"
   | "copy-full-message"
   | "open-commit"
+  | "review-commit"
   | "create-tag"
   | `delete-branch:${string}`;
 
@@ -1996,6 +1999,13 @@ export function SourceControlPanel({
       cwd,
     }),
   );
+  const providerReviewMutation = useMutation(
+    gitStartProviderReviewMutationOptions({
+      environmentId,
+      cwd,
+      threadId: activeThreadRef?.threadId ?? null,
+    }),
+  );
   const initMutation = useMutation(
     gitInitMutationOptions({
       environmentId,
@@ -2145,6 +2155,20 @@ export function SourceControlPanel({
       : generateCommitMessageMutation.isPending
         ? "Commit message generation in progress."
         : null;
+  const reviewChangesDisabledReason = !activeThreadRef
+    ? "Open a thread to run a Codex review."
+    : !status?.isRepo
+      ? "Repository unavailable."
+      : changedFileCount === 0
+        ? "No working tree changes."
+        : providerReviewMutation.isPending
+          ? "Review already in progress."
+          : null;
+  const reviewCommitDisabledReason = !activeThreadRef
+    ? "Open a thread to run a Codex review."
+    : providerReviewMutation.isPending
+      ? "Review already in progress."
+      : null;
   const primaryCommitPushDisabledReason = generateCommitMessageMutation.isPending
     ? "Commit message generation in progress."
     : commitAndPushDisabledReason;
@@ -2785,6 +2809,35 @@ export function SourceControlPanel({
     void promise.then(refreshPanel, () => refreshPanel());
   }, [deleteBranchMutation, pendingDeleteBranch, refreshPanel, threadToastData]);
 
+  const startProviderReview = useCallback(
+    async (reviewTarget: ProviderReviewTarget, description: string) => {
+      if (!activeThreadRef) {
+        return;
+      }
+      try {
+        await providerReviewMutation.mutateAsync({ target: reviewTarget });
+        toastManager.add(
+          stackedThreadToast({
+            type: "success",
+            title: "Codex review started",
+            description,
+            ...(threadToastData !== undefined ? { data: threadToastData } : {}),
+          }),
+        );
+      } catch (error) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Review failed",
+            description: error instanceof Error ? error.message : "An error occurred.",
+            ...(threadToastData !== undefined ? { data: threadToastData } : {}),
+          }),
+        );
+      }
+    },
+    [activeThreadRef, providerReviewMutation, threadToastData],
+  );
+
   const handleCommitContextMenu = useCallback(
     async (commit: VcsCommitGraphCommit, position: { readonly x: number; readonly y: number }) => {
       const api = readLocalApi();
@@ -2807,6 +2860,11 @@ export function SourceControlPanel({
                 },
               ] satisfies readonly ContextMenuItem<CommitGraphContextAction>[])
             : []),
+          {
+            id: "review-commit",
+            label: "Review this commit",
+            disabled: reviewCommitDisabledReason !== null,
+          },
           {
             id: "create-tag",
             label: "Create tag...",
@@ -2837,6 +2895,17 @@ export function SourceControlPanel({
         openCommitUrl(commit);
         return;
       }
+      if (clicked === "review-commit") {
+        void startProviderReview(
+          {
+            type: "commit",
+            sha: commit.sha,
+            title: commit.subject.trim().length > 0 ? commit.subject : null,
+          },
+          commit.subject.trim().length > 0 ? commit.subject : commit.shortSha,
+        );
+        return;
+      }
       if (clicked === "create-tag") {
         openCreateTagDialog(commit);
         return;
@@ -2857,9 +2926,11 @@ export function SourceControlPanel({
       environmentId,
       openCreateTagDialog,
       openCommitUrl,
+      reviewCommitDisabledReason,
       sourceControlPresentation.providerName,
       status?.sourceControlProvider?.kind,
       status?.refName,
+      startProviderReview,
     ],
   );
 
@@ -3634,6 +3705,18 @@ export function SourceControlPanel({
                     >
                       <SparklesIcon className="size-3.5" />
                       <span>Generate message</span>
+                    </MenuItem>
+                    <MenuItem
+                      disabled={reviewChangesDisabledReason !== null}
+                      onClick={() =>
+                        void startProviderReview(
+                          { type: "uncommittedChanges" },
+                          "Reviewing working tree changes",
+                        )
+                      }
+                    >
+                      <ListTreeIcon className="size-3.5" />
+                      <span>Review changes</span>
                     </MenuItem>
                     <MenuItem
                       disabled={commitDisabledReason !== null}

@@ -65,6 +65,58 @@ describe("ProviderActivityProjection", () => {
     ]);
   });
 
+  it("uses one transient activity for safety-buffering show and hide updates", () => {
+    const base = {
+      type: "model.safety-buffering.updated" as const,
+      provider: ProviderDriverKind.make("codex"),
+      threadId: ThreadId.make("thread-1"),
+      turnId: TurnId.make("turn-1"),
+      createdAt: "2026-07-09T00:00:00.000Z" as const,
+      providerRefs: { providerThreadId: "provider-child-thread-1" },
+      payload: {
+        model: "gpt-5.6-sol",
+        useCases: ["cyber"],
+        reasons: ["additional-review"],
+        fasterModel: null,
+      },
+    };
+    const visible = projectRuntimeEventToActivities({
+      ...base,
+      eventId: EventId.make("evt-safety-buffering-visible"),
+      payload: { ...base.payload, showBufferingUi: true },
+    } satisfies ProviderRuntimeEvent);
+    const hidden = projectRuntimeEventToActivities({
+      ...base,
+      eventId: EventId.make("evt-safety-buffering-hidden"),
+      payload: { ...base.payload, showBufferingUi: false },
+    } satisfies ProviderRuntimeEvent);
+
+    expect(visible).toEqual([
+      expect.objectContaining({
+        id: "activity:model-safety-buffering:thread-1:turn-1:provider-child-thread-1",
+        kind: "provider.model.safety-buffering",
+        tone: "thinking",
+        summary: "Additional safety checks",
+        payload: {
+          detail: "This request requires additional safety checks, which can take extra time.",
+          model: "gpt-5.6-sol",
+          useCases: ["cyber"],
+          reasons: ["additional-review"],
+          showBufferingUi: true,
+          fasterModel: null,
+          status: "inProgress",
+        },
+      }),
+    ]);
+    expect(hidden).toEqual([
+      expect.objectContaining({
+        id: visible[0]?.id,
+        summary: "Additional safety checks",
+        payload: expect.not.objectContaining({ status: expect.anything() }),
+      }),
+    ]);
+  });
+
   it("projects provider prompt suggestions for composer reuse", () => {
     const activities = projectRuntimeEventToActivities({
       type: "turn.prompt-suggestion.updated",

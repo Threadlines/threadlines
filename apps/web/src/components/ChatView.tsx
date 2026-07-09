@@ -1624,7 +1624,11 @@ export default function ChatView(props: ChatViewProps) {
   const phase = derivePhase(activeThread?.session ?? null);
   const isSessionStarting = activeThread?.session?.orchestrationStatus === "starting";
   const threadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
-  const workLogEntries = useMemo(() => deriveWorkLogEntries(threadActivities), [threadActivities]);
+  const activeTurnId = activeThread?.session?.activeTurnId ?? null;
+  const workLogEntries = useMemo(
+    () => deriveWorkLogEntries(threadActivities, activeTurnId),
+    [activeTurnId, threadActivities],
+  );
   const forkContextEntries = useMemo(
     () => deriveForkContextEntries(threadActivities),
     [threadActivities],

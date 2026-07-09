@@ -83,6 +83,7 @@ import {
   ProviderRegistry,
   type ProviderRegistryShape,
 } from "./provider/Services/ProviderRegistry.ts";
+import { ProviderService, type ProviderServiceShape } from "./provider/Services/ProviderService.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "./provider/providerMaintenance.ts";
 import { ServerLifecycleEvents, type ServerLifecycleEventsShape } from "./serverLifecycleEvents.ts";
 import { ServerRuntimeStartup, type ServerRuntimeStartupShape } from "./serverRuntimeStartup.ts";
@@ -327,6 +328,7 @@ const buildAppUnderTest = (options?: {
   layers?: {
     keybindings?: Partial<KeybindingsShape>;
     providerRegistry?: Partial<ProviderRegistryShape>;
+    providerService?: Partial<ProviderServiceShape>;
     serverSettings?: Partial<ServerSettingsShape>;
     externalLauncher?: Partial<ExternalLauncher.ExternalLauncherShape>;
     vcsDriver?: Partial<VcsDriver.VcsDriverShape>;
@@ -535,20 +537,50 @@ const buildAppUnderTest = (options?: {
         }),
       ),
       Layer.provide(
-        Layer.mock(ProviderRegistry)({
-          getProviders: Effect.succeed([]),
-          refresh: () => Effect.succeed([]),
-          refreshInstance: () => Effect.succeed([]),
-          consumeRateLimitResetCredit: () =>
-            Effect.succeed({ outcome: "nothingToReset", providers: [] }),
-          getProviderMaintenanceCapabilitiesForInstance: (_instanceId, provider) =>
-            Effect.succeed(
-              makeManualOnlyProviderMaintenanceCapabilities({ provider, packageName: null }),
-            ),
-          setProviderMaintenanceActionState: () => Effect.succeed([]),
-          streamChanges: Stream.empty,
-          ...options?.layers?.providerRegistry,
-        }),
+        Layer.mergeAll(
+          Layer.mock(ProviderRegistry)({
+            getProviders: Effect.succeed([]),
+            refresh: () => Effect.succeed([]),
+            refreshInstance: () => Effect.succeed([]),
+            consumeRateLimitResetCredit: () =>
+              Effect.succeed({ outcome: "nothingToReset", providers: [] }),
+            getProviderMaintenanceCapabilitiesForInstance: (_instanceId, provider) =>
+              Effect.succeed(
+                makeManualOnlyProviderMaintenanceCapabilities({ provider, packageName: null }),
+              ),
+            setProviderMaintenanceActionState: () => Effect.succeed([]),
+            streamChanges: Stream.empty,
+            ...options?.layers?.providerRegistry,
+          }),
+          Layer.mock(ProviderService)({
+            startSession: () => Effect.die(new Error("Unsupported provider call in test")),
+            sendTurn: () => Effect.die(new Error("Unsupported provider call in test")),
+            steerTurn: () => Effect.die(new Error("Unsupported provider call in test")),
+            startReview: () => Effect.die(new Error("Unsupported provider call in test")),
+            interruptTurn: () => Effect.die(new Error("Unsupported provider call in test")),
+            compactContext: () => Effect.die(new Error("Unsupported provider call in test")),
+            respondToRequest: () => Effect.die(new Error("Unsupported provider call in test")),
+            respondToUserInput: () => Effect.die(new Error("Unsupported provider call in test")),
+            stopSession: () => Effect.die(new Error("Unsupported provider call in test")),
+            listSessions: () => Effect.succeed([]),
+            getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
+            getInstanceInfo: (instanceId) =>
+              Effect.succeed({
+                instanceId,
+                driverKind: ProviderDriverKind.make("codex"),
+                displayName: undefined,
+                enabled: true,
+                continuationIdentity: {
+                  driverKind: ProviderDriverKind.make("codex"),
+                  continuationKey: `codex:instance:${instanceId}`,
+                },
+              }),
+            rollbackConversation: () => Effect.die(new Error("Unsupported provider call in test")),
+            deleteThread: () => Effect.die(new Error("Unsupported provider call in test")),
+            streamEvents: Stream.empty,
+            ...options?.layers?.providerService,
+          }),
+        ),
       ),
       Layer.provide(
         Layer.mock(ServerSettingsService)({

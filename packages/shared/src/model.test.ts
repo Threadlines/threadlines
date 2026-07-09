@@ -70,6 +70,7 @@ describe("normalizeModelSlug", () => {
   it("maps known aliases to canonical slugs", () => {
     const claude = ProviderDriverKind.make("claudeAgent");
     expect(normalizeModelSlug("5.6")).toBe("gpt-5.6-sol");
+    expect(normalizeModelSlug("gpt-5.6")).toBe("gpt-5.6-sol");
     expect(normalizeModelSlug("sol")).toBe("gpt-5.6-sol");
     expect(normalizeModelSlug("terra")).toBe("gpt-5.6-terra");
     expect(normalizeModelSlug("luna")).toBe("gpt-5.6-luna");
@@ -127,6 +128,14 @@ describe("resolveSelectableModel", () => {
     );
     expect(resolveSelectableModel(ProviderDriverKind.make("claudeAgent"), "sonnet", options)).toBe(
       "claude-sonnet-5",
+    );
+  });
+
+  it("resolves the official GPT-5.6 alias to the Sol catalog entry", () => {
+    const options = [{ slug: "gpt-5.6-sol", name: "GPT-5.6 Sol" }];
+
+    expect(resolveSelectableModel(ProviderDriverKind.make("codex"), "gpt-5.6", options)).toBe(
+      "gpt-5.6-sol",
     );
   });
 });

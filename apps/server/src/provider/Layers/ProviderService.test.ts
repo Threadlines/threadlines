@@ -8,6 +8,8 @@ import type {
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
   ProviderSession,
+  ProviderStartReviewInput,
+  ProviderStartReviewResult,
   ProviderTurnStartResult,
 } from "@threadlines/contracts";
 import {
@@ -144,6 +146,18 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     (_threadId: ThreadId): Effect.Effect<void, ProviderAdapterError> => Effect.void,
   );
 
+  const startReview = vi.fn(
+    (
+      input: ProviderStartReviewInput,
+    ): Effect.Effect<ProviderStartReviewResult, ProviderAdapterError> =>
+      Effect.succeed({
+        threadId: input.threadId,
+        turnId: asTurnId("review-turn-1"),
+        reviewThreadId: "provider-review-thread-1",
+        delivery: input.delivery ?? "inline",
+      }),
+  );
+
   const respondToRequest = vi.fn(
     (
       _threadId: ThreadId,
@@ -219,9 +233,11 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     capabilities: {
       sessionModelSwitch: "in-session",
       manualContextCompaction: "supported",
+      reviewStart: "supported",
     },
     startSession,
     sendTurn,
+    startReview,
     interruptTurn,
     compactContext,
     respondToRequest,
@@ -259,6 +275,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     updateSession,
     startSession,
     sendTurn,
+    startReview,
     interruptTurn,
     compactContext,
     respondToRequest,
@@ -822,6 +839,18 @@ routing.layer("ProviderServiceLive routing", (it) => {
       });
       assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
 
+      const review = yield* provider.startReview({
+        threadId: session.threadId,
+        target: { type: "uncommittedChanges" },
+        delivery: "inline",
+      });
+      assert.equal(review.turnId, asTurnId("review-turn-1"));
+      assert.deepEqual(routing.codex.startReview.mock.calls[0]?.[0], {
+        threadId: session.threadId,
+        target: { type: "uncommittedChanges" },
+        delivery: "inline",
+      });
+
       yield* provider.interruptTurn({ threadId: session.threadId });
       assert.deepEqual(routing.codex.interruptTurn.mock.calls, [[session.threadId, undefined]]);
 
@@ -903,6 +932,42 @@ routing.layer("ProviderServiceLive routing", (it) => {
         assert.equal(startPayload.threadId, session.threadId);
       }
       assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+    }),
+  );
+
+  it.effect("bootstraps a provider session for reviews on new threads", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-review-new");
+      const modelSelection = createModelSelection(codexInstanceId, "gpt-5.5");
+
+      const review = yield* provider.startReview({
+        threadId,
+        cwd: "/tmp/project",
+        modelSelection,
+        runtimeMode: "full-access",
+        target: { type: "uncommittedChanges" },
+        delivery: "inline",
+      });
+
+      assert.equal(review.turnId, asTurnId("review-turn-1"));
+      assert.equal(routing.codex.startSession.mock.calls.length, 1);
+      assert.deepEqual(routing.codex.startSession.mock.calls[0]?.[0], {
+        threadId,
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        cwd: "/tmp/project",
+        modelSelection,
+        runtimeMode: "full-access",
+      });
+      assert.deepEqual(routing.codex.startReview.mock.calls[0]?.[0], {
+        threadId,
+        cwd: "/tmp/project",
+        modelSelection,
+        runtimeMode: "full-access",
+        target: { type: "uncommittedChanges" },
+        delivery: "inline",
+      });
     }),
   );
 

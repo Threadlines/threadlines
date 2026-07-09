@@ -8,8 +8,11 @@ import {
   type ProviderApprovalDecision,
   type ProviderEvent,
   type ProviderInteractionMode,
+  type ProviderReviewDelivery,
+  type ProviderReviewTarget,
   type ProviderRequestKind,
   type ProviderSession,
+  type ProviderStartReviewResult,
   type ProviderTurnStartResult,
   type ProviderUserInputAnswers,
   RuntimeMode,
@@ -45,6 +48,9 @@ import {
   CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
 } from "../CodexDeveloperInstructions.ts";
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
+const decodeV2ReviewStartResponse = Schema.decodeUnknownEffect(
+  EffectCodexSchema.V2ReviewStartResponse,
+);
 const decodeV2TurnSteerParams = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnSteerParams);
 const decodeV2TurnSteerResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnSteerResponse);
 
@@ -143,6 +149,11 @@ export interface CodexSessionRuntimeSteerTurnInput {
   }>;
 }
 
+export interface CodexSessionRuntimeStartReviewInput {
+  readonly target: ProviderReviewTarget;
+  readonly delivery?: ProviderReviewDelivery;
+}
+
 export interface CodexThreadTurnSnapshot {
   readonly id: TurnId;
   readonly items: ReadonlyArray<CodexThreadItem>;
@@ -162,6 +173,9 @@ export interface CodexSessionRuntimeShape {
   readonly steerTurn: (
     input: CodexSessionRuntimeSteerTurnInput,
   ) => Effect.Effect<ProviderTurnStartResult, CodexSessionRuntimeError>;
+  readonly startReview: (
+    input: CodexSessionRuntimeStartReviewInput,
+  ) => Effect.Effect<ProviderStartReviewResult, CodexSessionRuntimeError>;
   readonly interruptTurn: (turnId?: TurnId) => Effect.Effect<void, CodexSessionRuntimeError>;
   readonly compactContext: Effect.Effect<void, CodexSessionRuntimeError>;
   readonly readThread: Effect.Effect<CodexThreadSnapshot, CodexSessionRuntimeError>;
@@ -380,7 +394,7 @@ function buildCodexCollaborationMode(input: {
     mode: input.interactionMode,
     settings: {
       model,
-      reasoning_effort: input.effort ?? "medium",
+      ...(input.effort ? { reasoning_effort: input.effort } : {}),
       developer_instructions:
         input.interactionMode === "plan"
           ? CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS
@@ -663,6 +677,7 @@ function readNotificationThreadId(notification: CodexServerNotification): string
     case "thread/name/updated":
     case "thread/tokenUsage/updated":
     case "turn/started":
+    case "model/safetyBuffering/updated":
     case "hook/started":
     case "turn/completed":
     case "hook/completed":
@@ -736,6 +751,7 @@ function readRouteFields(notification: CodexServerNotification): {
       };
     case "turn/diff/updated":
     case "turn/plan/updated":
+    case "model/safetyBuffering/updated":
       return {
         turnId: TurnId.make(notification.params.turnId),
         itemId: undefined,
@@ -1727,6 +1743,39 @@ export const makeCodexSessionRuntime = (
               ? { resumeCursor: { threadId: resumedProviderThreadId } }
               : {}),
           } satisfies ProviderTurnStartResult;
+        }),
+      startReview: (input) =>
+        Effect.gen(function* () {
+          const providerThreadId = yield* readProviderThreadId;
+          const delivery = input.delivery ?? "inline";
+          const rawResponse = yield* withCodexRequestTimeout(
+            "start a Codex review",
+            client.raw.request("review/start", {
+              threadId: providerThreadId,
+              target: input.target,
+              delivery,
+            }),
+          );
+          const response = yield* decodeV2ReviewStartResponse(rawResponse).pipe(
+            Effect.mapError((error) =>
+              toProtocolParseError("Invalid review/start response payload", error),
+            ),
+          );
+          const turnId = TurnId.make(response.turn.id);
+          yield* updateSession(sessionRef, {
+            status: "running",
+            activeTurnId: turnId,
+          });
+          const resumedProviderThreadId = currentProviderThreadId(yield* Ref.get(sessionRef));
+          return {
+            threadId: options.threadId,
+            turnId,
+            reviewThreadId: response.reviewThreadId,
+            delivery,
+            ...(resumedProviderThreadId
+              ? { resumeCursor: { threadId: resumedProviderThreadId } }
+              : {}),
+          } satisfies ProviderStartReviewResult;
         }),
       steerTurn: (input) =>
         Effect.gen(function* () {

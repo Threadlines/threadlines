@@ -17,7 +17,14 @@ import {
 function provider(input: {
   provider?: ProviderDriverKind;
   instanceId: string;
-  models?: ReadonlyArray<string | { readonly slug: string; readonly isHidden?: boolean }>;
+  models?: ReadonlyArray<
+    | string
+    | {
+        readonly slug: string;
+        readonly isDefault?: boolean;
+        readonly isHidden?: boolean;
+      }
+  >;
 }): ServerProvider {
   const driver =
     input.provider ??
@@ -35,19 +42,12 @@ function provider(input: {
     checkedAt: "2026-01-01T00:00:00.000Z",
     models: (input.models ?? []).map((entry) => {
       const slug = typeof entry === "string" ? entry : entry.slug;
-      if (typeof entry !== "string" && entry.isHidden === true) {
-        return {
-          slug,
-          name: slug,
-          isCustom: false,
-          isHidden: true,
-          capabilities: {},
-        };
-      }
       return {
         slug,
         name: slug,
         isCustom: false,
+        ...(typeof entry !== "string" && entry.isDefault === true ? { isDefault: true } : {}),
+        ...(typeof entry !== "string" && entry.isHidden === true ? { isHidden: true } : {}),
         capabilities: {},
       };
     }),
@@ -117,6 +117,31 @@ describe("instance-scoped model selection", () => {
         "openai/gpt-5.5",
       ),
     ).toBe("openai/gpt-5.5");
+  });
+
+  it("deduplicates the official GPT-5.6 alias against the Sol built-in", () => {
+    const providers = [
+      provider({
+        instanceId: "codex",
+        models: ["gpt-5.6-sol"],
+      }),
+    ];
+    const settings: UnifiedSettings = {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      providerInstances: {
+        [ProviderInstanceId.make("codex")]: {
+          driver: ProviderDriverKind.make("codex"),
+          config: { customModels: ["gpt-5.6"] },
+        },
+      },
+    };
+    const codex = deriveProviderInstanceEntries(providers).find(
+      (entry) => entry.instanceId === "codex",
+    )!;
+
+    expect(getAppModelOptionsForInstance(settings, codex)).toEqual([
+      expect.objectContaining({ slug: "gpt-5.6-sol", isCustom: false }),
+    ]);
   });
 
   it("does not inject an unknown selected slug into the stock instance list", () => {
@@ -236,6 +261,42 @@ describe("instance-scoped model selection", () => {
         "claude-opus-4-6",
       ),
     ).toBe("claude-sonnet-4-6");
+  });
+
+  it("prefers the visible live default when the instance model list is reordered", () => {
+    const providers = [
+      provider({
+        instanceId: "codex",
+        models: ["gpt-5.6-terra", { slug: "gpt-5.5", isDefault: true }, "gpt-5.6-sol"],
+      }),
+    ];
+
+    expect(
+      resolveAppModelSelectionForInstance(
+        ProviderInstanceId.make("codex"),
+        DEFAULT_UNIFIED_SETTINGS,
+        providers,
+        null,
+      ),
+    ).toBe("gpt-5.5");
+  });
+
+  it("uses the configured provider default before the first visible model", () => {
+    const providers = [
+      provider({
+        instanceId: "codex",
+        models: ["gpt-5.6-terra", "gpt-5.5", "gpt-5.6-sol"],
+      }),
+    ];
+
+    expect(
+      resolveAppModelSelectionForInstance(
+        ProviderInstanceId.make("codex"),
+        DEFAULT_UNIFIED_SETTINGS,
+        providers,
+        undefined,
+      ),
+    ).toBe("gpt-5.5");
   });
 
   it("falls back instead of resolving a custom slug against the wrong instance", () => {

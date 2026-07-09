@@ -700,6 +700,44 @@ describe("findSidebarProposedPlan", () => {
 });
 
 describe("deriveWorkLogEntries", () => {
+  it("shows safety buffering only while its matching turn is active", () => {
+    const visible = makeActivity({
+      id: "safety-buffering-visible",
+      kind: "provider.model.safety-buffering",
+      summary: "Additional safety checks",
+      tone: "thinking",
+      turnId: "turn-1",
+      payload: {
+        detail: "This request requires additional safety checks, which can take extra time.",
+        showBufferingUi: true,
+        status: "inProgress",
+      },
+    });
+    const hidden = makeActivity({
+      id: "safety-buffering-hidden",
+      kind: "provider.model.safety-buffering",
+      summary: "Additional safety checks",
+      tone: "thinking",
+      turnId: "turn-1",
+      payload: {
+        detail: "This request requires additional safety checks, which can take extra time.",
+        showBufferingUi: false,
+      },
+    });
+
+    expect(deriveWorkLogEntries([visible], TurnId.make("turn-1"))).toEqual([
+      expect.objectContaining({
+        id: "safety-buffering-visible",
+        label: "Additional safety checks",
+        tone: "thinking",
+        executionState: "running",
+      }),
+    ]);
+    expect(deriveWorkLogEntries([hidden], TurnId.make("turn-1"))).toEqual([]);
+    expect(deriveWorkLogEntries([visible], TurnId.make("turn-2"))).toEqual([]);
+    expect(deriveWorkLogEntries([visible], null)).toEqual([]);
+  });
+
   it("omits tool started entries and keeps completed entries", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

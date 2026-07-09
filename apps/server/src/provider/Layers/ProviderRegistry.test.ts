@@ -419,8 +419,17 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
                   label: "Reasoning",
                   type: "select",
                   options: [
-                    { id: "low", label: "Low" },
-                    { id: "medium", label: "Medium", isDefault: true },
+                    {
+                      id: "low",
+                      label: "Low",
+                      description: "Faster, lighter reasoning.",
+                    },
+                    {
+                      id: "medium",
+                      label: "Medium",
+                      description: "Balanced reasoning.",
+                      isDefault: true,
+                    },
                   ],
                   currentValue: "medium",
                 },

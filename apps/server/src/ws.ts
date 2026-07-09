@@ -38,6 +38,7 @@ import {
   OrchestrationReplayEventsError,
   FilesystemBrowseError,
   ProviderExtensionsError,
+  ProviderStartReviewError,
   ThreadId,
   type TerminalEvent,
   WS_METHODS,
@@ -65,6 +66,7 @@ import {
 } from "./observability/RpcInstrumentation.ts";
 import { ProjectFaviconResolver } from "./project/Services/ProjectFaviconResolver.ts";
 import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
+import { ProviderService } from "./provider/Services/ProviderService.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import {
   callProviderExtensionMcpTool,
@@ -209,6 +211,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
       const terminalManager = yield* TerminalManager;
       const providerRegistry = yield* ProviderRegistry;
+      const providerService = yield* ProviderService;
       const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
       const config = yield* ServerConfig;
       const fileSystem = yield* FileSystem.FileSystem;
@@ -967,6 +970,36 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               ? providerRegistry.refreshInstance(input.instanceId)
               : providerRegistry.refresh()
             ).pipe(Effect.map((providers) => ({ providers }))),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverStartProviderReview]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverStartProviderReview,
+            Effect.gen(function* () {
+              const threadShell = yield* projectionSnapshotQuery
+                .getThreadShellById(input.threadId)
+                .pipe(
+                  Effect.map(Option.getOrUndefined),
+                  Effect.catch(() => Effect.succeed(undefined)),
+                );
+              return yield* providerService.startReview({
+                ...input,
+                ...(threadShell !== undefined
+                  ? {
+                      modelSelection: threadShell.modelSelection,
+                      runtimeMode: threadShell.runtimeMode,
+                    }
+                  : {}),
+              });
+            }).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderStartReviewError({
+                    message: cause.message || "Failed to start provider review.",
+                    cause,
+                  }),
+              ),
+            ),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverConsumeProviderRateLimitResetCredit]: (input) =>
