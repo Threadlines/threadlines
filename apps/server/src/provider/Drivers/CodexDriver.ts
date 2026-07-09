@@ -22,6 +22,7 @@
  * @module provider/Drivers/CodexDriver
  */
 import { CodexSettings, ProviderDriverKind, type ServerProvider } from "@threadlines/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -39,6 +40,7 @@ import {
   checkCodexProviderStatus,
   consumeCodexRateLimitResetCredit,
   makePendingCodexProvider,
+  mergeCodexAccountUsageRateLimits,
 } from "../Layers/CodexProvider.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
@@ -150,11 +152,6 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       // here; the registry only has to worry about snapshot-build and
       // spawner-availability failures surfaced from `checkCodexProviderStatus`
       // below.
-      const adapter = yield* makeCodexAdapter(effectiveConfig, {
-        instanceId,
-        environment: processEnv,
-        ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
-      });
       const textGeneration = yield* makeCodexTextGeneration(effectiveConfig, processEnv);
 
       // Build a managed snapshot whose settings never change — mutations come
@@ -190,6 +187,28 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
             }),
         ),
       );
+
+      // The adapter is built after the snapshot so rolling rate-limit
+      // notifications can be folded straight into the live provider snapshot —
+      // account usage then updates in real time instead of waiting for the
+      // periodic `account/rateLimits/read` probe.
+      const adapter = yield* makeCodexAdapter(effectiveConfig, {
+        instanceId,
+        environment: processEnv,
+        ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
+        onAccountRateLimitsUpdated: (rateLimits) =>
+          Effect.gen(function* () {
+            const checkedAt = DateTime.formatIso(yield* DateTime.now);
+            yield* snapshot.patchSnapshot((current) => {
+              const accountUsage = mergeCodexAccountUsageRateLimits(
+                current.accountUsage,
+                rateLimits,
+                checkedAt,
+              );
+              return accountUsage ? { ...current, accountUsage } : null;
+            });
+          }),
+      });
 
       return {
         instanceId,

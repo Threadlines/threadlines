@@ -940,6 +940,8 @@ routing.layer("ProviderServiceLive routing", (it) => {
       const provider = yield* ProviderService;
       const threadId = asThreadId("thread-review-new");
       const modelSelection = createModelSelection(codexInstanceId, "gpt-5.5");
+      routing.codex.startSession.mockClear();
+      routing.codex.startReview.mockClear();
 
       const review = yield* provider.startReview({
         threadId,

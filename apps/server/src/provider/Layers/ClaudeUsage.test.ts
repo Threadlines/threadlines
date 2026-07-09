@@ -9,6 +9,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import { describe, expect, it } from "vitest";
 
 import {
+  applyClaudeRateLimitInfoToAccountUsage,
   CLAUDE_CODE_OAUTH_TOKEN_ENV,
   CLAUDE_MACOS_KEYCHAIN_SERVICE,
   extractClaudeOAuthCredential,
@@ -626,6 +627,153 @@ describe("normalizeClaudeAccountUsage", () => {
     ).toBeUndefined();
     expect(
       normalizeClaudeAccountUsage({ five_hour: null, seven_day: null, limits: [] }, checkedAt),
+    ).toBeUndefined();
+  });
+});
+
+describe("applyClaudeRateLimitInfoToAccountUsage", () => {
+  const checkedAt = "2026-07-09T00:00:00.000Z";
+  const baseUsage = normalizeClaudeAccountUsage(
+    {
+      five_hour: { utilization: 31, resets_at: "2026-07-09T02:32:00.000Z" },
+      seven_day: { utilization: 69, resets_at: "2026-07-10T20:48:00.000Z" },
+      limits: [
+        {
+          kind: "weekly_scoped",
+          group: "weekly",
+          percent: 40,
+          resets_at: "2026-07-10T03:00:00.000Z",
+          scope: { model: { display_name: "Opus" }, surface: null },
+        },
+      ],
+    },
+    "2026-07-08T23:00:00.000Z",
+  )!;
+
+  it("creates a fresh snapshot from a five_hour event when no usage exists", () => {
+    expect(
+      applyClaudeRateLimitInfoToAccountUsage(
+        undefined,
+        { rateLimitType: "five_hour", utilization: 42.4, resetsAt: 1_783_000_000 },
+        checkedAt,
+      ),
+    ).toEqual({
+      source: "claude-oauth-usage",
+      checkedAt,
+      primaryLimitId: "claude",
+      limits: [
+        {
+          limitId: "claude",
+          primary: {
+            usedPercent: 42,
+            remainingPercent: 58,
+            resetsAt: 1_783_000_000,
+            windowDurationMins: 300,
+          },
+        },
+      ],
+    });
+  });
+
+  it("patches the 5h window and preserves the weekly and scoped windows", () => {
+    const next = applyClaudeRateLimitInfoToAccountUsage(
+      baseUsage,
+      { rateLimitType: "five_hour", utilization: 55, resetsAt: 1_783_111_111 },
+      checkedAt,
+    );
+    expect(next).toEqual({
+      ...baseUsage,
+      checkedAt,
+      limits: [
+        {
+          ...baseUsage.limits[0]!,
+          primary: {
+            usedPercent: 55,
+            remainingPercent: 45,
+            resetsAt: 1_783_111_111,
+            windowDurationMins: 300,
+          },
+        },
+      ],
+    });
+    expect(next?.limits[0]?.secondary).toEqual(baseUsage.limits[0]?.secondary);
+    expect(next?.limits[0]?.scoped).toEqual(baseUsage.limits[0]?.scoped);
+  });
+
+  it("patches the weekly window from a seven_day event", () => {
+    const next = applyClaudeRateLimitInfoToAccountUsage(
+      baseUsage,
+      { rateLimitType: "seven_day", utilization: 71 },
+      checkedAt,
+    );
+    expect(next?.limits[0]?.secondary).toEqual({
+      usedPercent: 71,
+      remainingPercent: 29,
+      windowDurationMins: 10_080,
+    });
+    expect(next?.limits[0]?.primary).toEqual(baseUsage.limits[0]?.primary);
+  });
+
+  it("patches a matching scoped window from a per-model event", () => {
+    const next = applyClaudeRateLimitInfoToAccountUsage(
+      baseUsage,
+      { rateLimitType: "seven_day_opus", utilization: 62, resetsAt: 1_783_222_222 },
+      checkedAt,
+    );
+    expect(next?.limits[0]?.scoped).toEqual([
+      {
+        scopeLabel: "Opus",
+        usedPercent: 62,
+        remainingPercent: 38,
+        resetsAt: 1_783_222_222,
+        windowDurationMins: 10_080,
+      },
+    ]);
+    expect(next?.limits[0]?.primary).toEqual(baseUsage.limits[0]?.primary);
+  });
+
+  it("skips per-model events without a matching scoped window", () => {
+    expect(
+      applyClaudeRateLimitInfoToAccountUsage(
+        baseUsage,
+        { rateLimitType: "seven_day_sonnet", utilization: 62 },
+        checkedAt,
+      ),
+    ).toBeUndefined();
+    expect(
+      applyClaudeRateLimitInfoToAccountUsage(
+        undefined,
+        { rateLimitType: "seven_day_opus", utilization: 62 },
+        checkedAt,
+      ),
+    ).toBeUndefined();
+  });
+
+  it("skips unknown window types and events without utilization", () => {
+    expect(
+      applyClaudeRateLimitInfoToAccountUsage(
+        baseUsage,
+        { rateLimitType: "overage", utilization: 10 },
+        checkedAt,
+      ),
+    ).toBeUndefined();
+    expect(
+      applyClaudeRateLimitInfoToAccountUsage(baseUsage, { rateLimitType: "five_hour" }, checkedAt),
+    ).toBeUndefined();
+    expect(applyClaudeRateLimitInfoToAccountUsage(baseUsage, {}, checkedAt)).toBeUndefined();
+  });
+
+  it("skips events that would not change the stored window", () => {
+    expect(
+      applyClaudeRateLimitInfoToAccountUsage(
+        baseUsage,
+        {
+          rateLimitType: "five_hour",
+          utilization: 31,
+          resetsAt: Date.parse("2026-07-09T02:32:00.000Z"),
+        },
+        checkedAt,
+      ),
     ).toBeUndefined();
   });
 });

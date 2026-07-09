@@ -16,6 +16,7 @@ import {
   type PermissionUpdate,
   type SDKControlGetContextUsageResponse,
   type SDKMessage,
+  type SDKRateLimitInfo,
   type RewindFilesResult,
   type SDKResultMessage,
   type SettingSource,
@@ -294,6 +295,12 @@ export interface ClaudeAdapterLiveOptions {
   }) => ClaudeQueryRuntime;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
+  /**
+   * Invoked whenever the SDK reports changed rate-limit info mid-turn. The
+   * driver folds these into the instance's provider snapshot so account
+   * usage updates live instead of waiting for the next probe.
+   */
+  readonly onAccountRateLimitsUpdated?: (rateLimitInfo: SDKRateLimitInfo) => Effect.Effect<void>;
 }
 
 function isUuid(value: string): boolean {
@@ -3823,6 +3830,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           rateLimits: message,
         },
       });
+      if (options?.onAccountRateLimitsUpdated) {
+        yield* options
+          .onAccountRateLimitsUpdated(message.rate_limit_info)
+          .pipe(Effect.ignoreCause({ log: true }));
+      }
       return;
     }
   });

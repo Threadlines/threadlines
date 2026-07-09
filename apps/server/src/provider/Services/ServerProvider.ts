@@ -8,4 +8,13 @@ export interface ServerProviderShape {
   readonly getSnapshot: Effect.Effect<ServerProvider>;
   readonly refresh: Effect.Effect<ServerProvider>;
   readonly streamChanges: Stream.Stream<ServerProvider>;
+  /**
+   * Apply an out-of-band update to the current snapshot without running a
+   * probe — e.g. folding a mid-turn rate-limit notification into
+   * `accountUsage`. The patch returns the next snapshot, or `null` to leave
+   * the snapshot untouched (nothing is published).
+   */
+  readonly patchSnapshot: (
+    patch: (current: ServerProvider) => ServerProvider | null,
+  ) => Effect.Effect<void>;
 }

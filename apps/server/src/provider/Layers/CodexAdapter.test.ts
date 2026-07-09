@@ -684,7 +684,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
           providerTurnId: "parent-turn-1",
         },
         raw: {
-          source: "codex.notification",
+          source: "codex.app-server.notification",
           method: "model/safetyBuffering/updated",
           payload: {
             threadId: "provider-child-thread-1",

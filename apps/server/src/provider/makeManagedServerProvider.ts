@@ -134,6 +134,31 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     return yield* applySnapshot(nextSettings, { forceRefresh: true });
   });
 
+  // Out-of-band snapshot patch (no probe, no enrichment restart). Keeps the
+  // enrichment generation untouched so an in-flight enrichment still wins its
+  // own race; a lost patch is refreshed by the next provider event or probe.
+  const patchSnapshot = Effect.fn("patchSnapshot")(function* (
+    patch: (current: ServerProvider) => ServerProvider | null,
+  ) {
+    const snapshotToPublish = yield* Ref.modify(snapshotStateRef, (state) => {
+      const nextSnapshot = patch(state.snapshot);
+      if (nextSnapshot === null || nextSnapshot === state.snapshot) {
+        return [null, state] as const;
+      }
+      return [
+        nextSnapshot,
+        {
+          ...state,
+          snapshot: nextSnapshot,
+        },
+      ] as const;
+    });
+    if (snapshotToPublish === null) {
+      return;
+    }
+    yield* PubSub.publish(changesPubSub, snapshotToPublish);
+  });
+
   yield* Stream.runForEach(input.streamSettings, (nextSettings) =>
     Effect.asVoid(applySnapshot(nextSettings)),
   ).pipe(Effect.forkScoped);
@@ -159,5 +184,6 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     get streamChanges() {
       return Stream.fromPubSub(changesPubSub);
     },
+    patchSnapshot,
   } satisfies ServerProviderShape;
 });

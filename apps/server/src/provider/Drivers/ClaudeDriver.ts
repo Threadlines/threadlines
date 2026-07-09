@@ -14,6 +14,7 @@
  */
 import { ClaudeSettings, ProviderDriverKind, type ServerProvider } from "@threadlines/contracts";
 import * as Cache from "effect/Cache";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -33,7 +34,10 @@ import {
   probeClaudeCapabilities,
   readClaudeNormalAuthEmail,
 } from "../Layers/ClaudeProvider.ts";
-import { fetchClaudeAccountUsage } from "../Layers/ClaudeUsage.ts";
+import {
+  applyClaudeRateLimitInfoToAccountUsage,
+  fetchClaudeAccountUsage,
+} from "../Layers/ClaudeUsage.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import {
@@ -224,12 +228,6 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         continuationGroupKey,
       });
 
-      const adapterOptions = {
-        instanceId,
-        environment: processEnv,
-        ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
-      };
-      const adapter = yield* makeClaudeAdapter(effectiveConfig, adapterOptions);
       const textGeneration = yield* makeClaudeTextGeneration(effectiveConfig, processEnv);
 
       // Per-instance capabilities cache: keyed on binary + resolved HOME so
@@ -291,6 +289,28 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
             }),
         ),
       );
+
+      // The adapter is built after the snapshot so mid-turn `rate_limit_event`
+      // messages can be folded straight into the live provider snapshot —
+      // account usage then updates in real time instead of waiting for the
+      // periodic probe of the OAuth usage endpoint.
+      const adapter = yield* makeClaudeAdapter(effectiveConfig, {
+        instanceId,
+        environment: processEnv,
+        ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
+        onAccountRateLimitsUpdated: (rateLimitInfo) =>
+          Effect.gen(function* () {
+            const checkedAt = DateTime.formatIso(yield* DateTime.now);
+            yield* snapshot.patchSnapshot((current) => {
+              const accountUsage = applyClaudeRateLimitInfoToAccountUsage(
+                current.accountUsage,
+                rateLimitInfo,
+                checkedAt,
+              );
+              return accountUsage ? { ...current, accountUsage } : null;
+            });
+          }),
+      });
 
       return {
         instanceId,

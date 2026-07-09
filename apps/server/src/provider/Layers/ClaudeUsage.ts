@@ -1,12 +1,15 @@
 /**
  * ClaudeUsage — subscription usage snapshot for the Claude provider card.
  *
- * Claude Code does not expose an on-demand "read rate limits" RPC the way the
- * Codex app-server does (`account/rateLimits/read`). The data behind Claude
- * Code's `/usage` screen is served by Anthropic's OAuth usage endpoint, which
- * the wider Claude Code tooling ecosystem (statusline plugins, usage
- * monitors) reads with the same scoped OAuth credential Claude Code maintains
- * in `<home>/.claude/.credentials.json` or macOS Keychain.
+ * The data behind Claude Code's `/usage` screen is served by Anthropic's
+ * OAuth usage endpoint, which the wider Claude Code tooling ecosystem
+ * (statusline plugins, usage monitors) reads with the same scoped OAuth
+ * credential Claude Code maintains in `<home>/.claude/.credentials.json` or
+ * macOS Keychain. (The Agent SDK now also exposes an experimental `get_usage`
+ * control request on live sessions, but the probe needs usage without a
+ * running session, so the endpoint remains the source here. Mid-turn deltas
+ * arrive separately via `rate_limit_event` — see
+ * `applyClaudeRateLimitInfoToAccountUsage` below.)
  *
  * `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` is intentionally not
  * used here. It is valid for long-lived inference auth, but the usage endpoint
@@ -225,6 +228,167 @@ export function normalizeClaudeAccountUsage(
         ...(scoped.length > 0 ? { scoped } : {}),
       },
     ],
+  };
+}
+
+/**
+ * One rate-limit window from the Agent SDK's `rate_limit_event` stream
+ * message. Structural subset of the SDK's `SDKRateLimitInfo` so this module
+ * stays decoupled from the SDK package.
+ */
+export interface ClaudeRateLimitEventInfo {
+  readonly rateLimitType?: string | undefined;
+  readonly utilization?: number | undefined;
+  readonly resetsAt?: number | undefined;
+}
+
+const CLAUDE_RATE_LIMIT_EVENT_WINDOWS: Record<
+  string,
+  { readonly field: "primary" | "secondary"; readonly windowDurationMins: number }
+> = {
+  five_hour: { field: "primary", windowDurationMins: FIVE_HOUR_WINDOW_MINS },
+  seven_day: { field: "secondary", windowDurationMins: SEVEN_DAY_WINDOW_MINS },
+};
+
+/**
+ * Per-model window types map onto the scoped windows the OAuth endpoint
+ * reports. The event only carries the enum (no display label), so patches
+ * apply to an existing scoped entry whose label matches — never create one.
+ */
+const CLAUDE_RATE_LIMIT_EVENT_SCOPED_KEYWORDS: Record<string, string> = {
+  seven_day_opus: "opus",
+  seven_day_sonnet: "sonnet",
+};
+
+type ClaudeUsageLimit = ServerProviderAccountUsage["limits"][number];
+
+function claudeUsageLimitIndex(usage: ServerProviderAccountUsage): number {
+  const targetLimitId = usage.primaryLimitId ?? "claude";
+  const index = usage.limits.findIndex((limit) => limit.limitId === targetLimitId);
+  return index >= 0 ? index : 0;
+}
+
+function usageWindowsEqual(
+  left: ServerProviderUsageWindow | undefined,
+  right: ServerProviderUsageWindow,
+): boolean {
+  return (
+    left !== undefined &&
+    left.usedPercent === right.usedPercent &&
+    left.remainingPercent === right.remainingPercent &&
+    left.resetsAt === right.resetsAt &&
+    left.windowDurationMins === right.windowDurationMins
+  );
+}
+
+function withClaudeUsageWindow(
+  limit: ClaudeUsageLimit,
+  field: "primary" | "secondary",
+  window: ServerProviderUsageWindow,
+): ClaudeUsageLimit {
+  return field === "primary" ? { ...limit, primary: window } : { ...limit, secondary: window };
+}
+
+/**
+ * Merge one live rate-limit window (the Agent SDK's `rate_limit_event`) into
+ * the usage snapshot fetched from the OAuth endpoint. The event carries a
+ * single window at a time, so only the matching window is patched; the rest
+ * of the snapshot is preserved. Returns `undefined` when there is nothing to
+ * apply (unknown window type, missing utilization, or no change).
+ */
+export function applyClaudeRateLimitInfoToAccountUsage(
+  current: ServerProviderAccountUsage | undefined,
+  info: ClaudeRateLimitEventInfo,
+  checkedAt: string,
+): ServerProviderAccountUsage | undefined {
+  if (typeof info.utilization !== "number" || !Number.isFinite(info.utilization)) {
+    return undefined;
+  }
+  if (!info.rateLimitType) return undefined;
+
+  const usedPercent = normalizeUsagePercent(info.utilization);
+  const remainingPercent = Math.max(0, 100 - usedPercent);
+  const resetsAt = normalizeClaudeUsageResetsAt(info.resetsAt);
+
+  const windowTarget = CLAUDE_RATE_LIMIT_EVENT_WINDOWS[info.rateLimitType];
+  if (windowTarget) {
+    const nextWindow: ServerProviderUsageWindow = {
+      usedPercent,
+      remainingPercent,
+      ...(resetsAt !== undefined ? { resetsAt } : {}),
+      windowDurationMins: windowTarget.windowDurationMins,
+    };
+    if (!current) {
+      return {
+        source: "claude-oauth-usage",
+        checkedAt,
+        primaryLimitId: "claude",
+        limits: [withClaudeUsageWindow({ limitId: "claude" }, windowTarget.field, nextWindow)],
+      };
+    }
+
+    const limitIndex = claudeUsageLimitIndex(current);
+    const existingLimit = current.limits[limitIndex];
+    if (!existingLimit) {
+      return {
+        ...current,
+        checkedAt,
+        limits: [
+          ...current.limits,
+          withClaudeUsageWindow({ limitId: "claude" }, windowTarget.field, nextWindow),
+        ],
+      };
+    }
+    if (usageWindowsEqual(existingLimit[windowTarget.field], nextWindow)) {
+      return undefined;
+    }
+    return {
+      ...current,
+      checkedAt,
+      limits: current.limits.map((limit, index) =>
+        index === limitIndex ? withClaudeUsageWindow(limit, windowTarget.field, nextWindow) : limit,
+      ),
+    };
+  }
+
+  const scopedKeyword = CLAUDE_RATE_LIMIT_EVENT_SCOPED_KEYWORDS[info.rateLimitType];
+  if (!scopedKeyword || !current) return undefined;
+
+  const limitIndex = claudeUsageLimitIndex(current);
+  const existingLimit = current.limits[limitIndex];
+  const scoped = existingLimit?.scoped;
+  if (!existingLimit || !scoped) return undefined;
+
+  const scopedIndex = scoped.findIndex((window) =>
+    window.scopeLabel.toLowerCase().includes(scopedKeyword),
+  );
+  const existingScoped = scopedIndex >= 0 ? scoped[scopedIndex] : undefined;
+  if (!existingScoped) return undefined;
+
+  const nextScoped: ServerProviderScopedUsageWindow = {
+    ...existingScoped,
+    usedPercent,
+    remainingPercent,
+    ...(resetsAt !== undefined ? { resetsAt } : {}),
+  };
+  if (
+    existingScoped.usedPercent === nextScoped.usedPercent &&
+    existingScoped.remainingPercent === nextScoped.remainingPercent &&
+    existingScoped.resetsAt === nextScoped.resetsAt
+  ) {
+    return undefined;
+  }
+  return {
+    ...current,
+    checkedAt,
+    limits: current.limits.map((limit, index) =>
+      index === limitIndex
+        ? {
+            ...limit,
+            scoped: scoped.map((window, index2) => (index2 === scopedIndex ? nextScoped : window)),
+          }
+        : limit,
+    ),
   };
 }
 

@@ -346,6 +346,57 @@ function normalizeCodexAccountUsage(
   };
 }
 
+/**
+ * Fold a sparse `account/rateLimits/updated` notification into the usage
+ * snapshot from the last full probe. Per the app-server protocol, rolling
+ * updates carry only changed values and must be merged into the most recent
+ * `account/rateLimits/read` response. Returns `undefined` when the
+ * notification carries nothing usable.
+ */
+export function mergeCodexAccountUsageRateLimits(
+  current: ServerProviderAccountUsage | undefined,
+  rateLimits: CodexSchema.V2AccountRateLimitsUpdatedNotification["rateLimits"],
+  checkedAt: string,
+): ServerProviderAccountUsage | undefined {
+  const sparseLimit = normalizeCodexUsageLimit(rateLimits);
+  if (!sparseLimit) return undefined;
+
+  if (!current) {
+    return {
+      source: "codex-rate-limits",
+      checkedAt,
+      ...(sparseLimit.limitId ? { primaryLimitId: sparseLimit.limitId } : {}),
+      limits: [sparseLimit],
+    };
+  }
+
+  // An update with a limit id merges into that limit (or appends when the
+  // limit is new). An id-less update refers to the account's main limit —
+  // the primary limit when known, otherwise the first.
+  let limitIndex: number;
+  if (sparseLimit.limitId !== undefined) {
+    limitIndex = current.limits.findIndex((limit) => limit.limitId === sparseLimit.limitId);
+  } else if (current.primaryLimitId !== undefined) {
+    const primaryIndex = current.limits.findIndex(
+      (limit) => limit.limitId === current.primaryLimitId,
+    );
+    limitIndex = primaryIndex >= 0 ? primaryIndex : current.limits.length > 0 ? 0 : -1;
+  } else {
+    limitIndex = current.limits.length > 0 ? 0 : -1;
+  }
+  const limits =
+    limitIndex === -1
+      ? [...current.limits, sparseLimit]
+      : current.limits.map((limit, index) =>
+          index === limitIndex ? { ...limit, ...sparseLimit } : limit,
+        );
+  return {
+    ...current,
+    checkedAt,
+    limits,
+  };
+}
+
 function mapCodexModelCapabilities(
   model: CodexSchema.V2ModelListResponse__Model,
 ): ModelCapabilities {

@@ -93,6 +93,14 @@ export interface CodexAdapterLiveOptions {
   >;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
+  /**
+   * Invoked whenever the app-server pushes a rolling rate-limit update. The
+   * driver folds these into the instance's provider snapshot so account
+   * usage updates live instead of waiting for the next probe.
+   */
+  readonly onAccountRateLimitsUpdated?: (
+    rateLimits: EffectCodexSchema.V2AccountRateLimitsUpdatedNotification["rateLimits"],
+  ) => Effect.Effect<void>;
 }
 
 interface CodexAdapterSessionContext {
@@ -2028,6 +2036,20 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               return;
             }
             yield* Queue.offerAll(runtimeEventQueue, runtimeEvents);
+            if (
+              options?.onAccountRateLimitsUpdated &&
+              event.method === "account/rateLimits/updated"
+            ) {
+              const rateLimitsPayload = readPayload(
+                EffectCodexSchema.V2AccountRateLimitsUpdatedNotification,
+                event.payload,
+              );
+              if (rateLimitsPayload) {
+                yield* options
+                  .onAccountRateLimitsUpdated(rateLimitsPayload.rateLimits)
+                  .pipe(Effect.ignoreCause({ log: true }));
+              }
+            }
             if (hasAuthenticationRuntimeError(runtimeEvents)) {
               yield* Queue.offer(runtimeEventQueue, makeAuthenticationSessionExitedEvent(event));
               const session = sessions.get(event.threadId);
