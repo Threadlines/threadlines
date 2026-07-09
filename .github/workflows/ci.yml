@@ -34,7 +34,7 @@ jobs:
         run: node scripts/ensure-electron-binary.ts
 
       - name: Format
-        run: vp exec vp fmt --check
+        run: vp fmt --check
 
       - name: Lint
         run: vp exec vp lint --report-unused-disable-directives
