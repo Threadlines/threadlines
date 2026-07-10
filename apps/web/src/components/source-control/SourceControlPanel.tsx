@@ -34,6 +34,7 @@ import {
   ExternalLinkIcon,
   FileTextIcon,
   FolderClosedIcon,
+  FolderGit2Icon,
   GitBranchIcon,
   GitCommitIcon,
   GitMergeIcon,
@@ -175,6 +176,7 @@ import {
   takeCommitGraphRowRefs,
 } from "./SourceControlPanel.logic";
 import { resolveBranchSelectionTarget } from "../BranchToolbar.logic";
+import { threadWorkingCwdLabel } from "@threadlines/shared/threadCwd";
 
 export interface SourceControlProjectTarget {
   readonly environmentId: EnvironmentId;
@@ -183,6 +185,13 @@ export interface SourceControlProjectTarget {
   readonly name: string;
   readonly environmentLabel: string | null;
   readonly worktreePath: string | null;
+  /**
+   * The provider session's observed working directory when it moved away
+   * from the configured checkout (agent entered a worktree mid-session).
+   * When set, `cwd` already points at it; the header surfaces it as a
+   * "working in" chip so the divergence is never silent.
+   */
+  readonly effectiveCwd: string | null;
 }
 
 interface SourceControlPanelProps {
@@ -3566,6 +3575,18 @@ export function SourceControlPanel({
           >
             {target.name}
           </span>
+          {target.effectiveCwd ? (
+            <TooltipWrapper
+              tooltip={`The agent moved this session's working directory to ${target.effectiveCwd}; showing that checkout.`}
+            >
+              <span className="inline-flex min-w-0 max-w-[45%] shrink-0 items-center gap-1 rounded-sm border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] leading-none text-amber-600 dark:text-amber-400">
+                <FolderGit2Icon className="size-3 shrink-0 opacity-70" />
+                <span className="min-w-0 truncate">
+                  {threadWorkingCwdLabel(target.effectiveCwd)}
+                </span>
+              </span>
+            </TooltipWrapper>
+          ) : null}
           {status?.refName ? (
             <TooltipWrapper tooltip={`Branch: ${status.refName}`}>
               <span className="inline-flex min-w-0 max-w-[45%] shrink-0 items-center gap-1 rounded-sm border border-border/70 bg-muted/45 px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground/80">

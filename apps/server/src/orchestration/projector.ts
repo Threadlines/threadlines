@@ -33,6 +33,7 @@ import {
   ThreadUnpinnedPayload,
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
+  ThreadEffectiveCwdSetPayload,
   ThreadFollowUpSubmittedPayload,
   ThreadFollowUpAcceptedPayload,
   ThreadTurnDiffCompletedPayload,
@@ -559,6 +560,26 @@ export function projectEvent(
                       completedAt: thread.latestTurn.completedAt ?? session.updatedAt,
                     }
                   : thread.latestTurn,
+            updatedAt: event.occurredAt,
+          }),
+        };
+      });
+
+    case "thread.effective-cwd-set":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          ThreadEffectiveCwdSetPayload,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        if (!nextBase.threads.some((entry) => entry.id === payload.threadId)) {
+          return nextBase;
+        }
+        return {
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            effectiveCwd: payload.effectiveCwd,
             updatedAt: event.occurredAt,
           }),
         };

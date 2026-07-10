@@ -303,6 +303,26 @@ export interface ClaudeAdapterLiveOptions {
   readonly onAccountRateLimitsUpdated?: (rateLimitInfo: SDKRateLimitInfo) => Effect.Effect<void>;
 }
 
+/**
+ * Directory a successful EnterWorktree call moved the session into.
+ * Entering an existing worktree passes it as the `path` input; created
+ * worktrees are parsed from the result sentence ("Created worktree at
+ * <path> on branch <name>"). Undefined when unrecognized — the next
+ * session init reports the effective cwd and self-corrects.
+ */
+export function parseEnterWorktreeCwd(
+  input: Record<string, unknown>,
+  resultText: string,
+): string | undefined {
+  const explicitPath = input["path"];
+  if (typeof explicitPath === "string" && explicitPath.trim().length > 0) {
+    return explicitPath.trim();
+  }
+  const created = /Created worktree at (.+?) on branch /.exec(resultText);
+  const parsed = created?.[1]?.trim();
+  return parsed && parsed.length > 0 ? parsed : undefined;
+}
+
 function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
@@ -3249,6 +3269,39 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         yield* emitPlanTrackerUpdated(context);
       }
 
+      // EnterWorktree/ExitWorktree move the session's working directory
+      // mid-turn; report it immediately instead of waiting for the next
+      // session init. A parse miss is safe — the next init self-corrects.
+      if (!toolResult.isError) {
+        const movedCwd =
+          tool.toolName === "EnterWorktree"
+            ? parseEnterWorktreeCwd(tool.input, toolResult.text)
+            : tool.toolName === "ExitWorktree"
+              ? context.session.cwd
+              : undefined;
+        if (movedCwd !== undefined && movedCwd.length > 0) {
+          const cwdStamp = yield* makeEventStamp();
+          yield* offerRuntimeEvent({
+            type: "session.cwd.changed",
+            eventId: cwdStamp.eventId,
+            provider: PROVIDER,
+            createdAt: cwdStamp.createdAt,
+            threadId: context.session.threadId,
+            ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+            payload: {
+              cwd: movedCwd,
+              reason: tool.toolName === "EnterWorktree" ? "worktree-entered" : "worktree-exited",
+            },
+            providerRefs: nativeProviderRefs(context),
+            raw: {
+              source: "claude.sdk.message",
+              method: "claude/user",
+              payload: message,
+            },
+          });
+        }
+      }
+
       context.inFlightTools.delete(index);
     }
   });
@@ -3468,7 +3521,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     switch (message.subtype) {
-      case "init":
+      case "init": {
         yield* offerRuntimeEvent({
           ...base,
           type: "session.configured",
@@ -3476,7 +3529,20 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             config: message as Record<string, unknown>,
           },
         });
+        // Init reports where the session actually runs. Resumed sessions
+        // keep a mid-session worktree switch (EnterWorktree) across turns,
+        // so this diverges from the thread's configured checkout; ingestion
+        // compares and records the divergence on the thread.
+        const initCwd = (message as { cwd?: unknown }).cwd;
+        if (typeof initCwd === "string" && initCwd.trim().length > 0) {
+          yield* offerRuntimeEvent({
+            ...base,
+            type: "session.cwd.changed",
+            payload: { cwd: initCwd, reason: "session-init" },
+          });
+        }
         return;
+      }
       case "status":
         yield* offerRuntimeEvent({
           ...base,

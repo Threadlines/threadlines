@@ -30,6 +30,7 @@ import {
 import { createModelSelection, normalizeModelSlug } from "@threadlines/shared/model";
 import { normalizeTerminalActivityCommand } from "@threadlines/shared/terminalCommandTracker";
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@threadlines/shared/projectScripts";
+import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import { formatForkSourceExcerpt, truncate } from "@threadlines/shared/String";
 import { Debouncer } from "@tanstack/react-pacer";
 import * as Option from "effect/Option";
@@ -780,6 +781,7 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
   const storeSetActiveTerminal = useTerminalStateStore((state) => state.setActiveTerminal);
   const [localFocusRequestId, setLocalFocusRequestId] = useState(0);
   const worktreePath = serverThread?.worktreePath ?? draftThread?.worktreePath ?? null;
+  const threadEffectiveCwd = serverThread?.effectiveCwd ?? null;
   const effectiveWorktreePath = useMemo(() => {
     if (launchContext !== null) {
       return launchContext.worktreePath;
@@ -790,12 +792,13 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
     () =>
       launchContext?.cwd ??
       (project
-        ? projectScriptCwd({
-            project: { cwd: project.cwd },
+        ? resolveThreadWorkingCwd({
+            projectCwd: project.cwd,
             worktreePath: effectiveWorktreePath,
+            effectiveCwd: launchContext !== null ? null : threadEffectiveCwd,
           })
         : null),
-    [effectiveWorktreePath, launchContext?.cwd, project],
+    [effectiveWorktreePath, launchContext, project, threadEffectiveCwd],
   );
   const runtimeEnv = useMemo(
     () =>
@@ -2126,9 +2129,10 @@ export default function ChatView(props: ChatViewProps) {
     return deriveCompletionDividerBeforeEntryId(timelineEntries, activeLatestTurn);
   }, [activeLatestTurn, completionSummary, latestTurnSettled, timelineEntries]);
   const gitCwd = activeProject
-    ? projectScriptCwd({
-        project: { cwd: activeProject.cwd },
+    ? resolveThreadWorkingCwd({
+        projectCwd: activeProject.cwd,
         worktreePath: activeThread?.worktreePath ?? null,
+        effectiveCwd: activeThread?.effectiveCwd ?? null,
       })
     : null;
   const gitStatusQuery = useGitStatus({ environmentId, cwd: gitCwd });
@@ -2248,7 +2252,8 @@ export default function ChatView(props: ChatViewProps) {
   const threadErrorBannerVisible = Boolean(activeThread?.error);
   const activeProjectCwd = activeProject?.cwd ?? null;
   const activeThreadWorktreePath = activeThread?.worktreePath ?? null;
-  const activeWorkspaceRoot = activeThreadWorktreePath ?? activeProjectCwd ?? undefined;
+  const activeWorkspaceRoot =
+    activeThread?.effectiveCwd ?? activeThreadWorktreePath ?? activeProjectCwd ?? undefined;
   const activeMcpAuthProviderInstanceId =
     activeProviderInstanceId ??
     (activeProviderDriver === CODEX_PROVIDER_DRIVER

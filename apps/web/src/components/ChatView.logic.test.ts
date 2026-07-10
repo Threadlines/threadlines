@@ -1518,6 +1518,7 @@ const makeThread = (input?: {
     : null,
   branch: null,
   worktreePath: null,
+  effectiveCwd: null,
   turnDiffSummaries: input?.turnDiffSummaries ?? [],
   activities: input?.activities ?? [],
 });
@@ -1620,6 +1621,7 @@ function setStoreThreads(threads: ReadonlyArray<ReturnType<typeof makeThread>>) 
           updatedAt: thread.updatedAt,
           branch: thread.branch,
           worktreePath: thread.worktreePath,
+          effectiveCwd: thread.effectiveCwd,
         },
       ]),
     ),
@@ -1879,6 +1881,7 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
       latestTurn: previousLatestTurn,
       branch: null,
       worktreePath: null,
+      effectiveCwd: null,
       turnDiffSummaries: [],
       activities: [],
     });
@@ -1917,6 +1920,7 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
       latestTurn: previousLatestTurn,
       branch: null,
       worktreePath: null,
+      effectiveCwd: null,
       turnDiffSummaries: [],
       activities: [],
     });
@@ -1964,6 +1968,7 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
       latestTurn: previousLatestTurn,
       branch: null,
       worktreePath: null,
+      effectiveCwd: null,
       turnDiffSummaries: [],
       activities: [],
     });
@@ -2008,6 +2013,7 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
       latestTurn: previousLatestTurn,
       branch: null,
       worktreePath: null,
+      effectiveCwd: null,
       turnDiffSummaries: [],
       activities: [],
     });
@@ -2052,6 +2058,7 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
       latestTurn: previousLatestTurn,
       branch: null,
       worktreePath: null,
+      effectiveCwd: null,
       turnDiffSummaries: [],
       activities: [],
     });
@@ -2103,6 +2110,7 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
       latestTurn: previousLatestTurn,
       branch: null,
       worktreePath: null,
+      effectiveCwd: null,
       turnDiffSummaries: [],
       activities: [],
     });

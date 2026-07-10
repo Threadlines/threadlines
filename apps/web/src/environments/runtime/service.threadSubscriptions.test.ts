@@ -112,6 +112,7 @@ function makeThreadShellSnapshot(params: {
         interactionMode: "default",
         branch: null,
         worktreePath: null,
+        effectiveCwd: null,
         latestTurn:
           params.sessionStatus === "running"
             ? {

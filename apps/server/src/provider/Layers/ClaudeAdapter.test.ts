@@ -40,7 +40,11 @@ import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterValidationError } from "../Errors.ts";
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
-import { makeClaudeAdapter, type ClaudeAdapterLiveOptions } from "./ClaudeAdapter.ts";
+import {
+  makeClaudeAdapter,
+  parseEnterWorktreeCwd,
+  type ClaudeAdapterLiveOptions,
+} from "./ClaudeAdapter.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 // Test-local service tag so the rest of the file can keep using `yield* ClaudeAdapter`.
@@ -333,6 +337,32 @@ async function readFirstPromptMessage(
 
 const THREAD_ID = ThreadId.make("thread-claude-1");
 const RESUME_THREAD_ID = ThreadId.make("thread-claude-resume");
+
+describe("parseEnterWorktreeCwd", () => {
+  it("prefers the explicit path input when entering an existing worktree", () => {
+    assert.strictEqual(
+      parseEnterWorktreeCwd(
+        { path: "/repo/.claude/worktrees/feature" },
+        "Entered existing worktree.",
+      ),
+      "/repo/.claude/worktrees/feature",
+    );
+  });
+
+  it("parses the created-worktree sentence, including paths with spaces", () => {
+    assert.strictEqual(
+      parseEnterWorktreeCwd(
+        { name: "feature" },
+        "Created worktree at /Users/w/My Repo/.claude/worktrees/feature on branch worktree-feature. The session is now working in the worktree.",
+      ),
+      "/Users/w/My Repo/.claude/worktrees/feature",
+    );
+  });
+
+  it("returns undefined for unrecognized result wording", () => {
+    assert.strictEqual(parseEnterWorktreeCwd({}, "Switched somewhere unexpected."), undefined);
+  });
+});
 
 describe("ClaudeAdapterLive", () => {
   it.effect("returns validation error for non-claude provider on startSession", () => {

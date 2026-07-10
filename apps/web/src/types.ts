@@ -116,6 +116,12 @@ export interface Thread {
   pendingSourceProposedPlan?: OrchestrationLatestTurn["sourceProposedPlan"];
   branch: string | null;
   worktreePath: string | null;
+  /**
+   * The provider session's observed working directory when it differs from
+   * the configured checkout (agent entered a worktree mid-session); null
+   * while the session works where the thread was configured to.
+   */
+  effectiveCwd: string | null;
   turnDiffSummaries: TurnDiffSummary[];
   activities: OrchestrationThreadActivity[];
 }
@@ -136,6 +142,8 @@ export interface ThreadShell {
   updatedAt?: string | undefined;
   branch: string | null;
   worktreePath: string | null;
+  /** See Thread.effectiveCwd. */
+  effectiveCwd: string | null;
 }
 
 export interface ThreadTurnState {

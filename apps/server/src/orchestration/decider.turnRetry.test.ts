@@ -46,6 +46,7 @@ function makeThread(overrides: Partial<OrchestrationThread> = {}): Orchestration
     interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
     branch: null,
     worktreePath: null,
+    effectiveCwd: null,
     latestTurn: {
       turnId: TurnId.make("turn-failed"),
       state: "error",

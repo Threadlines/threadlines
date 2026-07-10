@@ -958,6 +958,29 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.effective-cwd.set": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+          metadata: {},
+        }),
+        type: "thread.effective-cwd-set",
+        payload: {
+          threadId: command.threadId,
+          effectiveCwd: command.effectiveCwd,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
     case "thread.message.assistant.delta": {
       yield* requireThread({
         readModel,

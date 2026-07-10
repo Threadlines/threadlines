@@ -315,6 +315,7 @@ describe("ProviderRuntimeIngestion", () => {
 
     return {
       engine,
+      workspaceRoot,
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
       emit: provider.emit,
       setProviderSession: provider.setSession,
@@ -362,6 +363,41 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(thread.session?.status).toBe("error");
     expect(thread.session?.lastError).toBe("turn failed");
+  });
+
+  it("records and clears the session's observed cwd divergence", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    await waitForThread(harness.readModel, (thread) => thread.session?.status === "ready");
+
+    // A cwd away from the configured checkout records the divergence.
+    harness.emit({
+      type: "session.cwd.changed",
+      eventId: asEventId("evt-cwd-worktree"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      payload: {
+        cwd: `${harness.workspaceRoot}/.claude/worktrees/feature`,
+        reason: "worktree-entered",
+      },
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.effectiveCwd === `${harness.workspaceRoot}/.claude/worktrees/feature`,
+    );
+
+    // Observing the configured checkout again clears it (trailing
+    // separators are ignored by the comparison).
+    harness.emit({
+      type: "session.cwd.changed",
+      eventId: asEventId("evt-cwd-configured"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      payload: { cwd: `${harness.workspaceRoot}/`, reason: "session-init" },
+    });
+    await waitForThread(harness.readModel, (thread) => thread.effectiveCwd === null);
   });
 
   it("tracks pending provider tasks on the thread session", async () => {

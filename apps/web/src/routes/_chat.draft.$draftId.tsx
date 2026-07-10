@@ -110,6 +110,8 @@ function DraftChatThreadRouteView() {
       name: draftProject.name,
       environmentLabel: null,
       worktreePath: draftSession.worktreePath,
+      // Drafts have no provider session, so no observed cwd divergence.
+      effectiveCwd: null,
     };
   }, [draftProject, draftSession, isGeneralChatDraft]);
   const closeRightPanel = useCallback(() => {

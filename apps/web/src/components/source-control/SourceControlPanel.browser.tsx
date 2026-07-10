@@ -129,6 +129,7 @@ const TARGET: SourceControlProjectTarget = {
   name: "Threadlines",
   environmentLabel: null,
   worktreePath: null,
+  effectiveCwd: null,
 };
 
 const GRAPH: VcsCommitGraphResult = {

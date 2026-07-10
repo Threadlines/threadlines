@@ -89,6 +89,7 @@ export function buildLocalDraftThread(
     latestTurn: null,
     branch: draftThread.branch,
     worktreePath: draftThread.worktreePath,
+    effectiveCwd: null,
     turnDiffSummaries: [],
     activities: [],
     proposedPlans: [],

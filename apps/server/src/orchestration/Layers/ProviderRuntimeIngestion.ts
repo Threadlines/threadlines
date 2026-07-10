@@ -22,11 +22,13 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@threadlines/shared/DrainableWorker";
 
 import { parseTurnDiffFilesFromUnifiedDiff } from "../../checkpointing/Diffs.ts";
+import { resolveThreadProviderCwd } from "../generalChats.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
@@ -964,6 +966,7 @@ const make = Effect.gen(function* () {
   const providerService = yield* ProviderService;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   const serverSettingsService = yield* ServerSettingsService;
+  const path = yield* Path.Path;
 
   const turnMessageIdsByTurnKey = yield* Cache.make<string, Set<MessageId>>({
     capacity: TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY,
@@ -1826,6 +1829,41 @@ const make = Effect.gen(function* () {
           sessionProvider: thread.session?.providerName,
           sessionProviderInstanceId: thread.session?.providerInstanceId,
         });
+        return;
+      }
+
+      if (event.type === "session.cwd.changed") {
+        // The session's working directory moved (or a fresh session reported
+        // where it actually runs). Persist only divergence from the thread's
+        // configured checkout — observing the configured cwd clears the
+        // field, so worktree exits and plain restarts self-correct.
+        const project = Option.getOrUndefined(
+          yield* projectionSnapshotQuery.getProjectShellById(thread.projectId),
+        );
+        const configuredCwd = resolveThreadProviderCwd({
+          thread: {
+            id: thread.id,
+            projectId: thread.projectId,
+            worktreePath: thread.worktreePath,
+          },
+          project,
+          path,
+        });
+        const normalizeCwd = (value: string) => value.replace(/[/\\]+$/, "");
+        const observedCwd = normalizeCwd(event.payload.cwd);
+        const effectiveCwd =
+          configuredCwd !== undefined && normalizeCwd(configuredCwd) === observedCwd
+            ? null
+            : observedCwd;
+        if ((thread.effectiveCwd ?? null) !== effectiveCwd) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.effective-cwd.set",
+            commandId: providerCommandId(event, "effective-cwd"),
+            threadId: thread.id,
+            effectiveCwd,
+            createdAt: event.createdAt,
+          });
+        }
         return;
       }
 

@@ -33,6 +33,7 @@ const readModelAfterProviderDelivery: OrchestrationReadModel = {
       interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
       branch: null,
       worktreePath: null,
+      effectiveCwd: null,
       latestTurn: {
         turnId: TurnId.make("turn-follow-up"),
         state: "completed",

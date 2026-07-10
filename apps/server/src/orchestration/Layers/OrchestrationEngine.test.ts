@@ -143,6 +143,7 @@ describe("OrchestrationEngine", () => {
           runtimeMode: "full-access" as const,
           branch: null,
           worktreePath: null,
+          effectiveCwd: null,
           latestTurn: null,
           createdAt: "2026-03-03T00:00:02.000Z",
           updatedAt: "2026-03-03T00:00:03.000Z",

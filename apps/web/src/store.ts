@@ -274,6 +274,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     pendingSourceProposedPlan: thread.latestTurn?.sourceProposedPlan,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
+    effectiveCwd: thread.effectiveCwd,
     turnDiffSummaries: thread.checkpoints.map(mapTurnDiffSummary),
     activities: thread.activities.map((activity) => ({ ...activity })),
   };
@@ -305,6 +306,7 @@ function mapThreadShell(
     updatedAt: thread.updatedAt,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
+    effectiveCwd: thread.effectiveCwd,
   };
   const session = thread.session ? mapSession(thread.session) : null;
   const turnState: ThreadTurnState = {
@@ -355,6 +357,7 @@ function toThreadShell(thread: Thread): ThreadShell {
     updatedAt: thread.updatedAt,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
+    effectiveCwd: thread.effectiveCwd,
   };
 }
 
@@ -508,7 +511,8 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     left.pinnedAt === right.pinnedAt &&
     left.updatedAt === right.updatedAt &&
     left.branch === right.branch &&
-    left.worktreePath === right.worktreePath
+    left.worktreePath === right.worktreePath &&
+    left.effectiveCwd === right.effectiveCwd
   );
 }
 
@@ -1426,6 +1430,7 @@ function applyEnvironmentOrchestrationEvent(
           interactionMode: event.payload.interactionMode,
           branch: event.payload.branch,
           worktreePath: event.payload.worktreePath,
+          effectiveCwd: null,
           latestTurn: null,
           createdAt: event.payload.createdAt,
           updatedAt: event.payload.updatedAt,
@@ -1499,6 +1504,13 @@ function applyEnvironmentOrchestrationEvent(
       return updateThreadState(state, event.payload.threadId, (thread) => ({
         ...thread,
         interactionMode: event.payload.interactionMode,
+        updatedAt: event.payload.updatedAt,
+      }));
+
+    case "thread.effective-cwd-set":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        effectiveCwd: event.payload.effectiveCwd,
         updatedAt: event.payload.updatedAt,
       }));
 

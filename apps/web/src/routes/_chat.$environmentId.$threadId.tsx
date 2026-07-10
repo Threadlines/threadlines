@@ -1,5 +1,5 @@
 import { scopeProjectRef } from "@threadlines/client-runtime";
-import { projectScriptCwd } from "@threadlines/shared/projectScripts";
+import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, retainSearchParams, useNavigate } from "@tanstack/react-router";
 import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
@@ -131,6 +131,9 @@ function ChatThreadRouteView() {
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
   // General Chat threads never expose source control, even via deep links.
   const isGeneralChatThread = activeProject?.kind === "general-chat";
+  // Drafts never have a provider session, so only server threads carry an
+  // observed cwd divergence (agent entered a worktree mid-session).
+  const threadEffectiveCwd = serverThread?.effectiveCwd ?? null;
   const sourceControlTarget = useMemo<SourceControlProjectTarget | null>(() => {
     if (!threadRef || !sourceControlThread || !activeProject || isGeneralChatThread) {
       return null;
@@ -139,15 +142,17 @@ function ChatThreadRouteView() {
     return {
       environmentId: threadRef.environmentId,
       projectCwd: activeProject.cwd,
-      cwd: projectScriptCwd({
-        project: { cwd: activeProject.cwd },
+      cwd: resolveThreadWorkingCwd({
+        projectCwd: activeProject.cwd,
         worktreePath: sourceControlThread.worktreePath ?? null,
+        effectiveCwd: threadEffectiveCwd,
       }),
       name: activeProject.name,
       environmentLabel: null,
       worktreePath: sourceControlThread.worktreePath ?? null,
+      effectiveCwd: threadEffectiveCwd,
     };
-  }, [activeProject, isGeneralChatThread, sourceControlThread, threadRef]);
+  }, [activeProject, isGeneralChatThread, sourceControlThread, threadEffectiveCwd, threadRef]);
   const handleDraftSourceControlBranchChange = useCallback(
     (branch: string | null, worktreePath: string | null) => {
       if (!threadRef) {

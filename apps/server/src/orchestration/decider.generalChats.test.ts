@@ -161,6 +161,7 @@ function makeThread(input: {
     interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
     branch: null,
     worktreePath: null,
+    effectiveCwd: null,
     latestTurn: null,
     createdAt: now,
     updatedAt: now,

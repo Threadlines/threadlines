@@ -134,6 +134,10 @@
     "./terminalCommandTracker": {
       "types": "./src/terminalCommandTracker.ts",
       "import": "./src/terminalCommandTracker.ts"
+    },
+    "./threadCwd": {
+      "types": "./src/threadCwd.ts",
+      "import": "./src/threadCwd.ts"
     }
   },
   "scripts": {

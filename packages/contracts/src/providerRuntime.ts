@@ -155,6 +155,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "session.started",
   "session.configured",
   "session.state.changed",
+  "session.cwd.changed",
   "session.exited",
   "thread.started",
   "thread.state.changed",
@@ -207,6 +208,7 @@ export type ProviderRuntimeEventType = typeof ProviderRuntimeEventType.Type;
 const SessionStartedType = Schema.Literal("session.started");
 const SessionConfiguredType = Schema.Literal("session.configured");
 const SessionStateChangedType = Schema.Literal("session.state.changed");
+const SessionCwdChangedType = Schema.Literal("session.cwd.changed");
 const SessionExitedType = Schema.Literal("session.exited");
 const ThreadStartedType = Schema.Literal("thread.started");
 const ThreadStateChangedType = Schema.Literal("thread.state.changed");
@@ -288,6 +290,17 @@ const SessionStateChangedPayload = Schema.Struct({
   detail: Schema.optional(Schema.Unknown),
 });
 export type SessionStateChangedPayload = typeof SessionStateChangedPayload.Type;
+
+/**
+ * The provider session's working directory no longer matches the checkout
+ * the thread was configured with — e.g. the agent created and entered a git
+ * worktree mid-session. `cwd` is the session's current absolute directory.
+ */
+const SessionCwdChangedPayload = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  reason: Schema.optional(Schema.Literals(["worktree-entered", "worktree-exited", "session-init"])),
+});
+export type SessionCwdChangedPayload = typeof SessionCwdChangedPayload.Type;
 
 const SessionExitedPayload = Schema.Struct({
   reason: Schema.optional(TrimmedNonEmptyStringSchema),
@@ -664,6 +677,14 @@ const ProviderRuntimeSessionStateChangedEvent = Schema.Struct({
 export type ProviderRuntimeSessionStateChangedEvent =
   typeof ProviderRuntimeSessionStateChangedEvent.Type;
 
+const ProviderRuntimeSessionCwdChangedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: SessionCwdChangedType,
+  payload: SessionCwdChangedPayload,
+});
+export type ProviderRuntimeSessionCwdChangedEvent =
+  typeof ProviderRuntimeSessionCwdChangedEvent.Type;
+
 const ProviderRuntimeSessionExitedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: SessionExitedType,
@@ -1008,6 +1029,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeSessionStartedEvent,
   ProviderRuntimeSessionConfiguredEvent,
   ProviderRuntimeSessionStateChangedEvent,
+  ProviderRuntimeSessionCwdChangedEvent,
   ProviderRuntimeSessionExitedEvent,
   ProviderRuntimeThreadStartedEvent,
   ProviderRuntimeThreadStateChangedEvent,
