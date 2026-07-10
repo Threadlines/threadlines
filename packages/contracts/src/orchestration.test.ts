@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import {
+  ChatAttachment,
   ChatAttachmentListLenient,
   ClientOrchestrationCommand,
   DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -50,6 +51,7 @@ function getOptionValue(
   return options?.find((option) => option.id === id)?.value;
 }
 const decodeThreadCreatedPayload = Schema.decodeUnknownEffect(ThreadCreatedPayload);
+const decodeChatAttachment = Schema.decodeUnknownEffect(ChatAttachment);
 const decodeClientOrchestrationCommand = Schema.decodeUnknownEffect(ClientOrchestrationCommand);
 const decodeOrchestrationCommand = Schema.decodeUnknownEffect(OrchestrationCommand);
 const decodeOrchestrationEvent = Schema.decodeUnknownEffect(OrchestrationEvent);
@@ -905,7 +907,7 @@ it.effect("ChatAttachmentListLenient keeps decodable attachments and drops unkno
       mimeType: "image/png",
       sizeBytes: 1024,
     };
-    const newerBuildFile = {
+    const file = {
       type: "file",
       kind: "pdf",
       id: "attachment-2",
@@ -913,8 +915,21 @@ it.effect("ChatAttachmentListLenient keeps decodable attachments and drops unkno
       mimeType: "application/pdf",
       sizeBytes: 689467,
     };
-    const decoded = yield* decodeLenientAttachments([newerBuildFile, image, { garbage: true }]);
-    assert.deepStrictEqual(decoded, [image]);
+    const newerBuildKind = {
+      type: "file",
+      kind: "archive",
+      id: "attachment-3",
+      name: "bundle.zip",
+      mimeType: "application/zip",
+      sizeBytes: 4096,
+    };
+    const decoded = yield* decodeLenientAttachments([
+      file,
+      image,
+      newerBuildKind,
+      { garbage: true },
+    ]);
+    assert.deepStrictEqual(decoded, [file, image]);
   }),
 );
 
@@ -930,5 +945,51 @@ it.effect("ChatAttachmentListLenient round-trips retained attachments on encode"
     const decoded = yield* decodeLenientAttachments([image]);
     const encoded = yield* encodeLenientAttachments(decoded);
     assert.deepStrictEqual(encoded, [image]);
+  }),
+);
+
+it.effect("ChatAttachment decodes persisted image attachments (back-compat)", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeChatAttachment({
+      type: "image",
+      id: "thread-1-00000000-0000-4000-8000-000000000001",
+      name: "diagram.png",
+      mimeType: "image/png",
+      sizeBytes: 1024,
+    });
+    assert.strictEqual(parsed.type, "image");
+  }),
+);
+
+it.effect("ChatAttachment decodes file attachments with a kind", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeChatAttachment({
+      type: "file",
+      kind: "pdf",
+      id: "thread-1-00000000-0000-4000-8000-000000000002",
+      name: "report.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 2048,
+    });
+    assert.strictEqual(parsed.type, "file");
+    if (parsed.type === "file") {
+      assert.strictEqual(parsed.kind, "pdf");
+    }
+  }),
+);
+
+it.effect("ChatAttachment rejects unknown file kinds", () =>
+  Effect.gen(function* () {
+    const result = yield* Effect.exit(
+      decodeChatAttachment({
+        type: "file",
+        kind: "archive",
+        id: "thread-1-00000000-0000-4000-8000-000000000003",
+        name: "bundle.zip",
+        mimeType: "application/zip",
+        sizeBytes: 2048,
+      }),
+    );
+    assert.strictEqual(result._tag, "Failure");
   }),
 );

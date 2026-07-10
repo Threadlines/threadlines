@@ -36,6 +36,7 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as CodexErrors from "effect-codex-app-server/errors";
 
+import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterValidationError } from "../Errors.ts";
@@ -398,6 +399,54 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
         effort: "high",
         serviceTier: "priority",
       });
+    }),
+  );
+
+  it.effect("sends file attachments as staged-path text notes", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const { attachmentsDir } = yield* ServerConfig;
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("sess-missing"),
+        runtimeMode: "full-access",
+      });
+      const runtime = sessionRuntimeFactory.lastRuntime;
+      assert.ok(runtime);
+      runtime.sendTurnImpl.mockClear();
+
+      const attachment = {
+        type: "file" as const,
+        kind: "pdf" as const,
+        id: "sess-missing-12345678-1234-1234-1234-123456789abc",
+        name: "report.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 13,
+      };
+      const attachmentPath = path.join(attachmentsDir, attachmentRelativePath(attachment));
+      fs.mkdirSync(path.dirname(attachmentPath), { recursive: true });
+      fs.writeFileSync(attachmentPath, "%PDF-1.4 fake");
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => fs.rmSync(attachmentPath, { force: true })),
+      );
+
+      yield* Effect.ignore(
+        adapter.sendTurn({
+          threadId: asThreadId("sess-missing"),
+          input: "Summarize this file.",
+          attachments: [attachment],
+        }),
+      );
+
+      const sentInput = runtime.sendTurnImpl.mock.calls[0]?.[0];
+      assert.ok(sentInput);
+      assert.equal(sentInput.input, "Summarize this file.");
+      assert.equal(sentInput.attachments?.length, 1);
+      const note = sentInput.attachments?.[0];
+      assert.equal(note?.type, "text");
+      assert.ok(note?.type === "text" && note.text.includes('"report.pdf"'));
+      assert.ok(note?.type === "text" && note.text.includes(attachmentPath));
+      assert.ok(note?.type === "text" && note.text.includes("PDF"));
     }),
   );
 

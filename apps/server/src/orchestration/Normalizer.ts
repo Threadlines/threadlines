@@ -8,6 +8,7 @@ import {
   type OrchestrationCommand,
   OrchestrationDispatchCommandError,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   type ThreadForkContextPayload,
 } from "@threadlines/contracts";
@@ -21,6 +22,10 @@ import { formatForkSourceExcerpt, truncate } from "@threadlines/shared/String";
 
 import { createAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts";
 import { ServerConfig } from "../config.ts";
+import {
+  resolveFileAttachmentType,
+  sniffFileAttachmentBytes,
+} from "@threadlines/shared/fileAttachments";
 import { parseBase64DataUrl } from "../imageMime.ts";
 import { WorkspacePaths } from "../workspace/Services/WorkspacePaths.ts";
 import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
@@ -178,7 +183,7 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
           role: message.role,
           text:
             message.attachments && message.attachments.length > 0
-              ? `${message.text.trim()}\n[${message.attachments.length} image attachment${
+              ? `${message.text.trim()}\n[${message.attachments.length} attachment${
                   message.attachments.length === 1 ? "" : "s"
                 } included in the fork context.]`.trim()
               : message.text,
@@ -278,6 +283,37 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
       return command as OrchestrationCommand;
     }
 
+    const persistAttachmentBytes = (attachment: ChatAttachment, bytes: Buffer) =>
+      Effect.gen(function* () {
+        const attachmentPath = resolveAttachmentPath({
+          attachmentsDir: serverConfig.attachmentsDir,
+          attachment,
+        });
+        if (!attachmentPath) {
+          return yield* new OrchestrationDispatchCommandError({
+            message: `Failed to resolve persisted path for '${attachment.name}'.`,
+          });
+        }
+
+        yield* fileSystem.makeDirectory(path.dirname(attachmentPath), { recursive: true }).pipe(
+          Effect.mapError(
+            () =>
+              new OrchestrationDispatchCommandError({
+                message: `Failed to create attachment directory for '${attachment.name}'.`,
+              }),
+          ),
+        );
+        yield* fileSystem.writeFile(attachmentPath, bytes).pipe(
+          Effect.mapError(
+            () =>
+              new OrchestrationDispatchCommandError({
+                message: `Failed to persist attachment '${attachment.name}'.`,
+              }),
+          ),
+        );
+        return attachment;
+      });
+
     const normalizeAttachments = (
       attachments: typeof command.message.attachments,
       threadId: typeof command.threadId,
@@ -287,16 +323,20 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
         (attachment) =>
           Effect.gen(function* () {
             const parsed = parseBase64DataUrl(attachment.dataUrl);
-            if (!parsed || !parsed.mimeType.startsWith("image/")) {
+            if (!parsed) {
               return yield* new OrchestrationDispatchCommandError({
-                message: `Invalid image attachment payload for '${attachment.name}'.`,
+                message: `Invalid attachment payload for '${attachment.name}'.`,
               });
             }
 
             const bytes = Buffer.from(parsed.base64, "base64");
-            if (bytes.byteLength === 0 || bytes.byteLength > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
+            const maxBytes =
+              attachment.type === "image"
+                ? PROVIDER_SEND_TURN_MAX_IMAGE_BYTES
+                : PROVIDER_SEND_TURN_MAX_FILE_BYTES;
+            if (bytes.byteLength === 0 || bytes.byteLength > maxBytes) {
               return yield* new OrchestrationDispatchCommandError({
-                message: `Image attachment '${attachment.name}' is empty or too large.`,
+                message: `Attachment '${attachment.name}' is empty or too large.`,
               });
             }
 
@@ -307,42 +347,49 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
               });
             }
 
-            const persistedAttachment = {
-              type: "image" as const,
-              id: attachmentId,
-              name: attachment.name,
-              mimeType: parsed.mimeType.toLowerCase(),
-              sizeBytes: bytes.byteLength,
-            };
-
-            const attachmentPath = resolveAttachmentPath({
-              attachmentsDir: serverConfig.attachmentsDir,
-              attachment: persistedAttachment,
-            });
-            if (!attachmentPath) {
-              return yield* new OrchestrationDispatchCommandError({
-                message: `Failed to resolve persisted path for '${attachment.name}'.`,
-              });
+            if (attachment.type === "image") {
+              if (!parsed.mimeType.startsWith("image/")) {
+                return yield* new OrchestrationDispatchCommandError({
+                  message: `Invalid image attachment payload for '${attachment.name}'.`,
+                });
+              }
+              return yield* persistAttachmentBytes(
+                {
+                  type: "image" as const,
+                  id: attachmentId,
+                  name: attachment.name,
+                  mimeType: parsed.mimeType.toLowerCase(),
+                  sizeBytes: bytes.byteLength,
+                },
+                bytes,
+              );
             }
 
-            yield* fileSystem.makeDirectory(path.dirname(attachmentPath), { recursive: true }).pipe(
-              Effect.mapError(
-                () =>
-                  new OrchestrationDispatchCommandError({
-                    message: `Failed to create attachment directory for '${attachment.name}'.`,
-                  }),
-              ),
+            const fileType = resolveFileAttachmentType({
+              mimeType: parsed.mimeType,
+              fileName: attachment.name,
+            });
+            if (!fileType) {
+              return yield* new OrchestrationDispatchCommandError({
+                message: `Unsupported file attachment type for '${attachment.name}'. Supported: PDF, plain text, Markdown, CSV.`,
+              });
+            }
+            if (!sniffFileAttachmentBytes(fileType.kind, bytes)) {
+              return yield* new OrchestrationDispatchCommandError({
+                message: `File attachment '${attachment.name}' does not look like a valid ${fileType.kind === "pdf" ? "PDF" : "text"} file.`,
+              });
+            }
+            return yield* persistAttachmentBytes(
+              {
+                type: "file" as const,
+                kind: fileType.kind,
+                id: attachmentId,
+                name: attachment.name,
+                mimeType: fileType.mimeType,
+                sizeBytes: bytes.byteLength,
+              },
+              bytes,
             );
-            yield* fileSystem.writeFile(attachmentPath, bytes).pipe(
-              Effect.mapError(
-                () =>
-                  new OrchestrationDispatchCommandError({
-                    message: `Failed to persist attachment '${attachment.name}'.`,
-                  }),
-              ),
-            );
-
-            return persistedAttachment;
           }),
         { concurrency: 1 },
       );

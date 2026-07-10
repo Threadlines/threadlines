@@ -1,30 +1,32 @@
 import { memo } from "react";
-import { CameraIcon, ImageUpIcon, LoaderCircleIcon, PlusIcon } from "lucide-react";
+import { CameraIcon, FileUpIcon, ImageUpIcon, LoaderCircleIcon, PlusIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 export interface ComposerAttachmentMenuProps {
-  /** Desktop bridge can capture screenshots (adds a second action to the menu). */
+  /** Desktop bridge can capture screenshots (adds a third action to the menu). */
   canCaptureScreenshot: boolean;
   isCapturingScreenshot: boolean;
-  /** Attachments can't be added right now (model can't accept images, pending prompt, etc.). */
+  /** Attachments can't be added right now (pending prompt, approval state, etc.). */
   disabled: boolean;
   disabledReason: string | null;
-  /** Opens the native file picker. On phones this surfaces the camera / photo library / files. */
-  onUploadImage: () => void;
+  /** Opens the native picker filtered to images. On phones this surfaces the camera / photo library. */
+  onAddImage: () => void;
+  /** Opens the native picker filtered to the supported document types. */
+  onAddFile: () => void;
   onCaptureScreenshot: () => void;
 }
 
 const TRIGGER_CLASS_NAME = "rounded-full text-muted-foreground/70 hover:text-foreground/80";
 
 /**
- * Adaptive composer "Add" control.
+ * Composer "Add" control.
  *
  * - Disabled: a single inert "+" button explaining why (no menu to open).
- * - Upload only (e.g. mobile/web without desktop screenshot capture): the "+"
- *   opens the native file picker directly so phones take a single tap.
- * - Upload + screenshot (desktop): the "+" opens a menu to choose between them.
+ * - Otherwise: the "+" opens a menu with separate image and file uploads
+ *   (each opens a picker pre-filtered to its types), plus screenshot capture
+ *   on desktop.
  */
 export const ComposerAttachmentMenu = memo(function ComposerAttachmentMenu(
   props: ComposerAttachmentMenuProps,
@@ -34,7 +36,8 @@ export const ComposerAttachmentMenu = memo(function ComposerAttachmentMenu(
     isCapturingScreenshot,
     disabled,
     disabledReason,
-    onUploadImage,
+    onAddImage,
+    onAddFile,
     onCaptureScreenshot,
   } = props;
 
@@ -60,28 +63,6 @@ export const ComposerAttachmentMenu = memo(function ComposerAttachmentMenu(
     );
   }
 
-  if (!canCaptureScreenshot) {
-    return (
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              className={TRIGGER_CLASS_NAME}
-              aria-label="Add image"
-              onClick={onUploadImage}
-            />
-          }
-        >
-          <PlusIcon className="size-4" aria-hidden="true" />
-        </TooltipTrigger>
-        <TooltipPopup side="top">Add image</TooltipPopup>
-      </Tooltip>
-    );
-  }
-
   return (
     <Menu>
       <MenuTrigger
@@ -102,18 +83,24 @@ export const ComposerAttachmentMenu = memo(function ComposerAttachmentMenu(
         )}
       </MenuTrigger>
       <MenuPopup align="end" side="top">
-        <MenuItem onClick={onUploadImage}>
+        <MenuItem onClick={onAddImage}>
           <ImageUpIcon aria-hidden="true" />
-          Upload image
+          Add image
         </MenuItem>
-        <MenuItem onClick={onCaptureScreenshot} disabled={isCapturingScreenshot}>
-          {isCapturingScreenshot ? (
-            <LoaderCircleIcon className="animate-spin" aria-hidden="true" />
-          ) : (
-            <CameraIcon aria-hidden="true" />
-          )}
-          Capture screenshot
+        <MenuItem onClick={onAddFile}>
+          <FileUpIcon aria-hidden="true" />
+          Add file
         </MenuItem>
+        {canCaptureScreenshot && (
+          <MenuItem onClick={onCaptureScreenshot} disabled={isCapturingScreenshot}>
+            {isCapturingScreenshot ? (
+              <LoaderCircleIcon className="animate-spin" aria-hidden="true" />
+            ) : (
+              <CameraIcon aria-hidden="true" />
+            )}
+            Capture screenshot
+          </MenuItem>
+        )}
       </MenuPopup>
     </Menu>
   );

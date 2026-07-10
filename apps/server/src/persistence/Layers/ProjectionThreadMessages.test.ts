@@ -126,16 +126,24 @@ layer("ProjectionThreadMessageRepository", (it) => {
         mimeType: "image/png",
         sizeBytes: 5,
       };
-      // Simulate a schema-diverged instance (e.g. a feature worktree sharing
-      // the same state directory) having persisted an attachment kind this
-      // build does not know.
-      const newerBuildFile = {
-        type: "file",
-        kind: "pdf",
+      const file = {
+        type: "file" as const,
+        kind: "pdf" as const,
         id: "thread-unknown-attachment-att-2",
         name: "datasheet.pdf",
         mimeType: "application/pdf",
         sizeBytes: 689467,
+      };
+      // Simulate a schema-diverged instance (e.g. a feature worktree sharing
+      // the same state directory) having persisted an attachment kind this
+      // build does not know.
+      const newerBuildKind = {
+        type: "file",
+        kind: "archive",
+        id: "thread-unknown-attachment-att-3",
+        name: "bundle.zip",
+        mimeType: "application/zip",
+        sizeBytes: 4096,
       };
 
       yield* sql`
@@ -145,14 +153,14 @@ layer("ProjectionThreadMessageRepository", (it) => {
         ) VALUES (
           ${messageId}, ${threadId}, NULL, 'user', 'pdf test', 0,
           '2026-02-28T19:20:00.000Z', '2026-02-28T19:20:01.000Z',
-          ${JSON.stringify([newerBuildFile, image])}
+          ${JSON.stringify([newerBuildKind, file, image])}
         )
       `;
 
       const rows = yield* repository.listByThreadId({ threadId });
       assert.equal(rows.length, 1);
       assert.equal(rows[0]?.text, "pdf test");
-      assert.deepEqual(rows[0]?.attachments, [image]);
+      assert.deepEqual(rows[0]?.attachments, [file, image]);
     }),
   );
 });

@@ -1,4 +1,5 @@
 import type {
+  ChatFileAttachmentKind,
   EnvironmentId,
   ModelSelection,
   OrchestrationLatestTurn,
@@ -42,7 +43,16 @@ export interface ChatImageAttachment {
   previewUrl?: string;
 }
 
-export type ChatAttachment = ChatImageAttachment;
+export interface ChatFileAttachment {
+  type: "file";
+  kind: ChatFileAttachmentKind;
+  id: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+}
+
+export type ChatAttachment = ChatImageAttachment | ChatFileAttachment;
 
 export interface ChatMessage {
   id: MessageId;

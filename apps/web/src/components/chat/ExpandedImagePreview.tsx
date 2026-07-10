@@ -9,7 +9,7 @@ export interface ExpandedImagePreview {
 }
 
 export function buildExpandedImagePreview(
-  images: ReadonlyArray<{ id: string; name: string; previewUrl?: string }>,
+  images: ReadonlyArray<{ id: string; name: string; previewUrl?: string | undefined }>,
   selectedImageId: string,
 ): ExpandedImagePreview | null {
   const previewableImages = images.flatMap((image) =>

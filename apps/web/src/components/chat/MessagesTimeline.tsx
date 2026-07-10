@@ -35,7 +35,7 @@ import {
   type ProviderAuthReconnectAction,
 } from "../../session-logic";
 import { DEFAULT_SCROLL_END_TOLERANCE_PX, isScrollMetricsAtEnd } from "../ChatView.logic";
-import { type TurnDiffSummary } from "../../types";
+import { type ChatAttachment, type TurnDiffSummary } from "../../types";
 import { chatAttachmentPreviewQueryOptions } from "../../lib/attachmentPreviewQuery";
 import { environmentUsesRelayTransport } from "../../environments/runtime";
 import { summarizeTurnDiffStats } from "../../lib/turnDiffTree";
@@ -47,10 +47,10 @@ import {
   CircleAlertIcon,
   CopyIcon,
   EyeIcon,
+  FileTextIcon,
   GlobeIcon,
   HammerIcon,
   KeyRoundIcon,
-  type LucideIcon,
   LoaderIcon,
   LogInIcon,
   SearchIcon,
@@ -58,6 +58,7 @@ import {
   SplitIcon,
   SquarePenIcon,
   TerminalIcon,
+  type LucideIcon,
   Undo2Icon,
   WrenchIcon,
   ZapIcon,
@@ -67,6 +68,8 @@ import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Textarea } from "../ui/textarea";
 import { LiveNode, SpineRow } from "../ui/threadline";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
+import type { FilePreviewRequest } from "./FilePreviewDialog";
+import { loadChatAttachmentBlob } from "../../lib/attachmentPreviewQuery";
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import { ChangedFilesTree } from "./ChangedFilesTree";
 import { DiffStatLabel, hasNonZeroStat } from "./DiffStatLabel";
@@ -136,6 +139,7 @@ interface TimelineRowSharedState {
   onRevertUserMessage: (messageId: MessageId) => void;
   onContinueInNewThread?: (messageId: MessageId) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
+  onPreviewFile: (request: FilePreviewRequest) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   onRunProviderAuthReconnect?: (action: ProviderAuthReconnectAction) => void;
   onRunMcpAuthReconnect?: (action: McpAuthReconnectAction) => void;
@@ -277,6 +281,7 @@ interface MessagesTimelineProps {
   onAddTranscriptHighlightContext?: (selection: TranscriptHighlightContextSelection) => void;
   isRevertingCheckpoint: boolean;
   onImageExpand: (preview: ExpandedImagePreview) => void;
+  onPreviewFile: (request: FilePreviewRequest) => void;
   activeThreadEnvironmentId: EnvironmentId;
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
@@ -314,6 +319,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onAddTranscriptHighlightContext,
   isRevertingCheckpoint,
   onImageExpand,
+  onPreviewFile,
   activeThreadEnvironmentId,
   markdownCwd,
   resolvedTheme,
@@ -671,6 +677,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onRevertUserMessage,
       ...(onContinueInNewThread ? { onContinueInNewThread } : {}),
       onImageExpand,
+      onPreviewFile,
       onOpenTurnDiff,
       ...(onRunProviderAuthReconnect ? { onRunProviderAuthReconnect } : {}),
       ...(onRunMcpAuthReconnect ? { onRunMcpAuthReconnect } : {}),
@@ -690,6 +697,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onRevertUserMessage,
       onContinueInNewThread,
       onImageExpand,
+      onPreviewFile,
       onOpenTurnDiff,
       onRunProviderAuthReconnect,
       onRunMcpAuthReconnect,
@@ -1151,9 +1159,47 @@ function useResolvedAttachmentPreviews(
   });
 }
 
+function TimelineFileAttachmentChips(props: {
+  attachments: ReadonlyArray<ChatAttachment>;
+  className?: string | undefined;
+}) {
+  const ctx = use(TimelineRowCtx);
+  const files = props.attachments.filter((attachment) => attachment.type === "file");
+  if (files.length === 0) {
+    return null;
+  }
+  const environmentId = ctx.activeThreadEnvironmentId;
+  return (
+    <div className={cn("flex flex-wrap gap-1.5", props.className)}>
+      {files.map((file) => (
+        <button
+          key={file.id}
+          type="button"
+          title={file.name}
+          aria-label={`Preview ${file.name}`}
+          className="inline-flex max-w-[260px] cursor-zoom-in items-center gap-1.5 rounded-md border border-border/80 bg-background/70 px-2 py-1 text-xs text-muted-foreground hover:text-foreground/80"
+          onClick={() =>
+            ctx.onPreviewFile({
+              name: file.name,
+              kind: file.kind,
+              loadBlob: () => loadChatAttachmentBlob({ environmentId, attachmentId: file.id }),
+            })
+          }
+        >
+          <FileTextIcon className="size-3.5 shrink-0" />
+          <span className="truncate">{file.name}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
-  const userImages = useResolvedAttachmentPreviews(row.message.attachments ?? []);
+  const messageAttachments = row.message.attachments ?? [];
+  const userImages = useResolvedAttachmentPreviews(
+    messageAttachments.filter((attachment) => attachment.type === "image"),
+  );
   const displayedUserMessage = deriveDisplayedUserMessageState(row.message.text);
   const terminalContexts = displayedUserMessage.contexts;
   const transcriptHighlights = displayedUserMessage.transcriptHighlights;
@@ -1162,6 +1208,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   return (
     <div className="flex justify-end">
       <div className="group relative max-w-[80%] rounded-2xl rounded-br-sm border border-border bg-secondary px-4 py-3">
+        <TimelineFileAttachmentChips attachments={messageAttachments} className="mb-2" />
         <TimelineImagePreviewGrid
           images={userImages}
           className="mb-2 max-w-[420px]"

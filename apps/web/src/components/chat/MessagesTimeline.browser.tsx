@@ -104,6 +104,7 @@ function buildProps() {
     onRevertUserMessage: vi.fn(),
     isRevertingCheckpoint: false,
     onImageExpand: vi.fn(),
+    onPreviewFile: vi.fn(),
     activeThreadEnvironmentId: EnvironmentId.make("environment-local"),
     markdownCwd: undefined,
     resolvedTheme: "dark" as const,

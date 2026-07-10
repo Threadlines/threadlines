@@ -3,9 +3,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import type { ChatAttachmentId } from "@threadlines/contracts";
 import { describe, expect, it } from "vitest";
 
 import {
+  attachmentRelativePath,
   createAttachmentId,
   parseThreadSegmentFromAttachmentId,
   resolveAttachmentPathById,
@@ -56,6 +58,46 @@ describe("attachmentStore", () => {
         attachmentId,
       });
       expect(resolved).toBe(pngPath);
+    } finally {
+      fs.rmSync(attachmentsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("builds storage paths for file attachments from their canonical extension", () => {
+    expect(
+      attachmentRelativePath({
+        type: "file",
+        kind: "pdf",
+        id: "thread-1-file" as ChatAttachmentId,
+        name: "report.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 10,
+      }),
+    ).toBe("thread-1-file.pdf");
+    expect(
+      attachmentRelativePath({
+        type: "file",
+        kind: "text",
+        id: "thread-1-notes" as ChatAttachmentId,
+        name: "notes.markdown",
+        mimeType: "text/markdown",
+        sizeBytes: 10,
+      }),
+    ).toBe("thread-1-notes.md");
+  });
+
+  it("resolves file attachment paths by id", () => {
+    const attachmentsDir = fs.mkdtempSync(path.join(os.tmpdir(), "threadlines-attachment-store-"));
+    try {
+      const attachmentId = "thread-1-doc";
+      const pdfPath = path.join(attachmentsDir, `${attachmentId}.pdf`);
+      fs.writeFileSync(pdfPath, Buffer.from("%PDF-1.4"));
+
+      const resolved = resolveAttachmentPathById({
+        attachmentsDir,
+        attachmentId,
+      });
+      expect(resolved).toBe(pdfPath);
     } finally {
       fs.rmSync(attachmentsDir, { recursive: true, force: true });
     }

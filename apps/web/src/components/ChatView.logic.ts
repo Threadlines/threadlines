@@ -17,7 +17,7 @@ import { normalizeTerminalActivityCommand } from "@threadlines/shared/terminalCo
 import type { DesktopCapturedScreenshot } from "@threadlines/contracts";
 import { isProviderUsageLimitErrorMessage } from "./ProviderRateLimitResetCredit";
 import { type ChatMessage, type SessionPhase, type Thread, type ThreadSession } from "../types";
-import { type ComposerImageAttachment, type DraftThreadState } from "../composerDraftStore";
+import { type ComposerAttachment, type DraftThreadState } from "../composerDraftStore";
 import * as Schema from "effect/Schema";
 import { selectThreadByRef, useStore } from "../store";
 import {
@@ -1338,25 +1338,29 @@ export function resolveSendEnvMode(input: {
   return input.isGitRepo ? input.requestedEnvMode : "local";
 }
 
-export function cloneComposerImageForRetry(
-  image: ComposerImageAttachment,
-): ComposerImageAttachment {
-  if (typeof URL === "undefined" || !image.previewUrl.startsWith("blob:")) {
-    return image;
+export function cloneComposerAttachmentForRetry(
+  attachment: ComposerAttachment,
+): ComposerAttachment {
+  if (
+    attachment.type !== "image" ||
+    typeof URL === "undefined" ||
+    !attachment.previewUrl.startsWith("blob:")
+  ) {
+    return attachment;
   }
   try {
     return {
-      ...image,
-      previewUrl: URL.createObjectURL(image.file),
+      ...attachment,
+      previewUrl: URL.createObjectURL(attachment.file),
     };
   } catch {
-    return image;
+    return attachment;
   }
 }
 
 export function deriveComposerSendState(options: {
   prompt: string;
-  imageCount: number;
+  attachmentCount: number;
   terminalContexts: ReadonlyArray<TerminalContextDraft>;
   transcriptHighlightContexts?: ReadonlyArray<TranscriptHighlightContextDraft> | undefined;
   fileSelectionContextCount?: number | undefined;
@@ -1379,7 +1383,7 @@ export function deriveComposerSendState(options: {
     expiredTerminalContextCount,
     hasSendableContent:
       trimmedPrompt.length > 0 ||
-      options.imageCount > 0 ||
+      options.attachmentCount > 0 ||
       sendableTerminalContexts.length > 0 ||
       sendableTranscriptHighlightContexts.length > 0 ||
       (options.fileSelectionContextCount ?? 0) > 0,

@@ -126,13 +126,17 @@ export interface CodexSessionRuntimeOptions {
   readonly resumeCursor?: CodexResumeCursor;
 }
 
+/** Attachment input items appended after the prompt text. Codex app-server
+ *  has no document input type, so non-image attachments arrive as extra
+ *  text items referencing their staged local path. */
+export type CodexTurnAttachmentInput =
+  | { readonly type: "image"; readonly url: string }
+  | { readonly type: "text"; readonly text: string };
+
 export interface CodexSessionRuntimeSendTurnInput {
   readonly clientUserMessageId?: string;
   readonly input?: string;
-  readonly attachments?: ReadonlyArray<{
-    readonly type: "image";
-    readonly url: string;
-  }>;
+  readonly attachments?: ReadonlyArray<CodexTurnAttachmentInput>;
   readonly model?: string;
   readonly serviceTier?: CodexServiceTier | undefined;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort | undefined;
@@ -143,10 +147,7 @@ export interface CodexSessionRuntimeSteerTurnInput {
   readonly expectedTurnId: TurnId;
   readonly clientUserMessageId?: string;
   readonly input?: string;
-  readonly attachments?: ReadonlyArray<{
-    readonly type: "image";
-    readonly url: string;
-  }>;
+  readonly attachments?: ReadonlyArray<CodexTurnAttachmentInput>;
 }
 
 export interface CodexSessionRuntimeStartReviewInput {
@@ -407,10 +408,7 @@ export function buildTurnStartParams(input: {
   readonly threadId: string;
   readonly runtimeMode: RuntimeMode;
   readonly prompt?: string;
-  readonly attachments?: ReadonlyArray<{
-    readonly type: "image";
-    readonly url: string;
-  }>;
+  readonly attachments?: ReadonlyArray<CodexTurnAttachmentInput>;
   readonly clientUserMessageId?: string;
   readonly model?: string;
   readonly serviceTier?: CodexServiceTier;
@@ -458,10 +456,7 @@ export function buildTurnSteerParams(input: {
   readonly threadId: string;
   readonly expectedTurnId: TurnId;
   readonly prompt?: string;
-  readonly attachments?: ReadonlyArray<{
-    readonly type: "image";
-    readonly url: string;
-  }>;
+  readonly attachments?: ReadonlyArray<CodexTurnAttachmentInput>;
   readonly clientUserMessageId?: string;
 }): Effect.Effect<
   EffectCodexSchema.V2TurnSteerParams,

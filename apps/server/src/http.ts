@@ -191,6 +191,7 @@ export const attachmentsRouteLayer = HttpRouter.add(
       status: 200,
       headers: {
         "Cache-Control": "public, max-age=31536000, immutable",
+        "X-Content-Type-Options": "nosniff",
       },
     }).pipe(
       Effect.catch(() =>

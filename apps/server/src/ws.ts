@@ -51,6 +51,7 @@ import { resolveAttachmentPathById } from "./attachmentStore.ts";
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery.ts";
 import { CheckpointRevert } from "./checkpointing/Services/CheckpointRevert.ts";
 import { ServerConfig } from "./config.ts";
+import { fileAttachmentMimeTypeForExtension } from "@threadlines/shared/fileAttachments";
 import { IMAGE_MIME_TYPE_BY_EXTENSION } from "./imageMime.ts";
 import { Keybindings } from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
@@ -1394,7 +1395,10 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               const extension = NodePath.extname(filePath).toLowerCase();
               return {
                 attachmentId: input.attachmentId,
-                mimeType: IMAGE_MIME_TYPE_BY_EXTENSION[extension] ?? "application/octet-stream",
+                mimeType:
+                  IMAGE_MIME_TYPE_BY_EXTENSION[extension] ??
+                  fileAttachmentMimeTypeForExtension(extension) ??
+                  "application/octet-stream",
                 base64: Buffer.from(bytes).toString("base64"),
                 sizeBytes: bytes.byteLength,
               };

@@ -40,6 +40,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import { buildFileAttachmentNote } from "../fileAttachmentPrompt.ts";
 import { ServerConfig } from "../../config.ts";
 import {
   ProviderAdapterProcessError,
@@ -897,6 +898,15 @@ export function makeCursorAdapter(
                 method: "session/prompt",
                 detail: `Invalid attachment id '${attachment.id}'.`,
               });
+            }
+            if (attachment.type === "file") {
+              // ACP prompt input has no document type; the agent reads the
+              // staged file from disk instead (see buildFileAttachmentNote).
+              promptParts.push({
+                type: "text",
+                text: buildFileAttachmentNote(attachment, attachmentPath),
+              });
+              continue;
             }
             const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
               Effect.mapError(

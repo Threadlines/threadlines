@@ -1223,10 +1223,10 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           turnId: null,
           role: "user",
           text: "fix the graph rendering",
-          // The file-kind entry simulates a schema-diverged instance sharing
+          // The unknown-kind entry simulates a schema-diverged instance sharing
           // this state directory; hydration must drop it, not fail the row.
           attachments:
-            '[{"type":"file","kind":"pdf","id":"attachment-0","name":"datasheet.pdf","mimeType":"application/pdf","sizeBytes":689467},{"type":"image","id":"attachment-1","name":"screenshot.png","mimeType":"image/png","sizeBytes":2048}]',
+            '[{"type":"file","kind":"archive","id":"attachment-0","name":"bundle.zip","mimeType":"application/zip","sizeBytes":4096},{"type":"file","kind":"pdf","id":"attachment-2","name":"datasheet.pdf","mimeType":"application/pdf","sizeBytes":689467},{"type":"image","id":"attachment-1","name":"screenshot.png","mimeType":"image/png","sizeBytes":2048}]',
           isStreaming: 0,
           createdAt: "2026-04-02T00:00:02.000Z",
         },
@@ -1304,8 +1304,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         threadB?.messages.map((message) => message.id),
         [asMessageId("message-b-1")],
       );
-      assert.equal(threadA?.messages[0]?.attachments?.length, 1);
-      assert.equal(threadA?.messages[0]?.attachments?.[0]?.name, "screenshot.png");
+      assert.equal(threadA?.messages[0]?.attachments?.length, 2);
+      assert.equal(threadA?.messages[0]?.attachments?.[0]?.name, "datasheet.pdf");
+      assert.equal(threadA?.messages[0]?.attachments?.[1]?.name, "screenshot.png");
       assert.equal(threadA?.messages[1]?.streaming, true);
       assert.equal(threadA?.messages[1]?.turnId, asTurnId("turn-a-1"));
 

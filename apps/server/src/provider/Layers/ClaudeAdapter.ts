@@ -1496,6 +1496,32 @@ function buildClaudeImageContentBlock(input: {
   };
 }
 
+/** Claude reads PDFs natively as base64 document blocks and text-shaped
+ *  files (plain text, markdown, CSV) as text document sources; both were
+ *  verified end-to-end through the agent SDK streaming input path. */
+function buildClaudeDocumentContentBlock(input: {
+  readonly kind: "pdf" | "text";
+  readonly name: string;
+  readonly bytes: Uint8Array;
+}): Record<string, unknown> {
+  return {
+    type: "document",
+    title: input.name,
+    source:
+      input.kind === "pdf"
+        ? {
+            type: "base64",
+            media_type: "application/pdf",
+            data: Buffer.from(input.bytes).toString("base64"),
+          }
+        : {
+            type: "text",
+            media_type: "text/plain",
+            data: Buffer.from(input.bytes).toString("utf8"),
+          },
+  };
+}
+
 const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
   input: Pick<
     ProviderSendTurnInput | ProviderSteerTurnInput,
@@ -1521,11 +1547,10 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
   }
 
   for (const attachment of input.attachments ?? []) {
-    if (attachment.type !== "image") {
-      continue;
-    }
-
-    if (!SUPPORTED_CLAUDE_IMAGE_MIME_TYPES.has(attachment.mimeType)) {
+    if (
+      attachment.type === "image" &&
+      !SUPPORTED_CLAUDE_IMAGE_MIME_TYPES.has(attachment.mimeType)
+    ) {
       return yield* new ProviderAdapterRequestError({
         provider: PROVIDER,
         method,
@@ -1558,10 +1583,16 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
     );
 
     sdkContent.push(
-      buildClaudeImageContentBlock({
-        mimeType: attachment.mimeType,
-        bytes,
-      }),
+      attachment.type === "image"
+        ? buildClaudeImageContentBlock({
+            mimeType: attachment.mimeType,
+            bytes,
+          })
+        : buildClaudeDocumentContentBlock({
+            kind: attachment.kind,
+            name: attachment.name,
+            bytes,
+          }),
     );
   }
 

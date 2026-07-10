@@ -1164,6 +1164,96 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("embeds file attachments as native Claude document blocks", () => {
+    const baseDir = mkdtempSync(path.join(os.tmpdir(), "claude-file-attachments-"));
+    const harness = makeHarness({
+      cwd: "/tmp/project-claude-file-attachments",
+      baseDir,
+    });
+    return Effect.gen(function* () {
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() =>
+          rmSync(baseDir, {
+            recursive: true,
+            force: true,
+          }),
+        ),
+      );
+
+      const adapter = yield* ClaudeAdapter;
+      const { attachmentsDir } = yield* ServerConfig;
+
+      const pdfBytes = Buffer.from("%PDF-1.4 fake");
+      const pdfAttachment = {
+        type: "file" as const,
+        kind: "pdf" as const,
+        id: "thread-claude-attachment-12345678-1234-1234-1234-123456789abc",
+        name: "report.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: pdfBytes.byteLength,
+      };
+      const textAttachment = {
+        type: "file" as const,
+        kind: "text" as const,
+        id: "thread-claude-attachment-12345678-1234-1234-1234-123456789abd",
+        name: "notes.md",
+        mimeType: "text/markdown",
+        sizeBytes: 7,
+      };
+      for (const [attachment, bytes] of [
+        [pdfAttachment, pdfBytes],
+        [textAttachment, Buffer.from("# notes")],
+      ] as const) {
+        const attachmentPath = path.join(attachmentsDir, attachmentRelativePath(attachment));
+        mkdirSync(path.dirname(attachmentPath), { recursive: true });
+        writeFileSync(attachmentPath, bytes);
+      }
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "Summarize these files.",
+        attachments: [pdfAttachment, textAttachment],
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      const promptMessage = yield* Effect.promise(() => readFirstPromptMessage(createInput));
+      assert.isDefined(promptMessage);
+      assert.deepEqual(promptMessage?.message.content, [
+        {
+          type: "text",
+          text: "Summarize these files.",
+        },
+        {
+          type: "document",
+          title: "report.pdf",
+          source: {
+            type: "base64",
+            media_type: "application/pdf",
+            data: pdfBytes.toString("base64"),
+          },
+        },
+        {
+          type: "document",
+          title: "notes.md",
+          source: {
+            type: "text",
+            media_type: "text/plain",
+            data: "# notes",
+          },
+        },
+      ]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("maps Claude stream/runtime messages to canonical provider runtime events", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

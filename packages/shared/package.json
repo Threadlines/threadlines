@@ -15,6 +15,10 @@
       "types": "./src/desktopIdentity.ts",
       "import": "./src/desktopIdentity.ts"
     },
+    "./fileAttachments": {
+      "types": "./src/fileAttachments.ts",
+      "import": "./src/fileAttachments.ts"
+    },
     "./git": {
       "types": "./src/git.ts",
       "import": "./src/git.ts"

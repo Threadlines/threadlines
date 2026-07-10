@@ -30,6 +30,7 @@ import {
 } from "@threadlines/shared/threadLimits";
 import { create } from "zustand";
 import {
+  type ChatAttachment,
   type ChatMessage,
   type Project,
   type ProposedPlan,
@@ -41,6 +42,7 @@ import {
   type TurnDiffSummary,
 } from "./types";
 import { resolveEnvironmentHttpUrl } from "./environments/runtime";
+import { attachmentPreviewRoutePath } from "./lib/attachmentPreviewQuery";
 import { sanitizeThreadErrorMessage } from "./rpc/transportError";
 import {
   derivePendingApprovals,
@@ -181,17 +183,29 @@ function resolveSessionProviderFromModelSelection(input: {
 }
 
 function mapMessage(environmentId: EnvironmentId, message: OrchestrationMessage): ChatMessage {
-  const attachments = message.attachments?.map((attachment) => ({
-    type: "image" as const,
-    id: attachment.id,
-    name: attachment.name,
-    mimeType: attachment.mimeType,
-    sizeBytes: attachment.sizeBytes,
-    previewUrl: resolveEnvironmentHttpUrl({
-      environmentId,
-      pathname: attachmentPreviewRoutePath(attachment.id),
-    }),
-  }));
+  const attachments = message.attachments?.map(
+    (attachment): ChatAttachment =>
+      attachment.type === "image"
+        ? {
+            type: "image",
+            id: attachment.id,
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            sizeBytes: attachment.sizeBytes,
+            previewUrl: resolveEnvironmentHttpUrl({
+              environmentId,
+              pathname: attachmentPreviewRoutePath(attachment.id),
+            }),
+          }
+        : {
+            type: "file",
+            kind: attachment.kind,
+            id: attachment.id,
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            sizeBytes: attachment.sizeBytes,
+          },
+  );
 
   return {
     id: message.id,
@@ -1181,10 +1195,6 @@ function toLegacyProvider(providerName: string | null): ProviderDriverKind {
     return providerName;
   }
   return ProviderDriverKind.make("codex");
-}
-
-function attachmentPreviewRoutePath(attachmentId: string): string {
-  return `/attachments/${encodeURIComponent(attachmentId)}`;
 }
 
 function updateThreadState(

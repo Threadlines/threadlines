@@ -58,6 +58,7 @@ import {
 import { type CodexAdapterShape } from "../Services/CodexAdapter.ts";
 import { addProviderAuthHint, isProviderAuthErrorMessage } from "../providerAuthHints.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import { buildFileAttachmentNote } from "../fileAttachmentPrompt.ts";
 import { ServerConfig } from "../../config.ts";
 import {
   CodexResumeCursorSchema,
@@ -2123,6 +2124,24 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         method,
         detail: `Invalid attachment id '${attachment.id}'.`,
       });
+    }
+    if (attachment.type === "file") {
+      // Codex app-server input has no document type; the agent reads the
+      // staged file from disk instead (see buildFileAttachmentNote).
+      const stagedFileExists = yield* fileSystem
+        .exists(attachmentPath)
+        .pipe(Effect.catch(() => Effect.succeed(false)));
+      if (!stagedFileExists) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method,
+          detail: `Attachment file '${attachment.name}' is missing.`,
+        });
+      }
+      return {
+        type: "text" as const,
+        text: buildFileAttachmentNote(attachment, attachmentPath),
+      };
     }
     const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
       Effect.mapError(
