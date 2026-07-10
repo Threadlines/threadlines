@@ -5,7 +5,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
-import { ChatAttachment } from "@threadlines/contracts";
+import { ChatAttachmentListLenient } from "@threadlines/contracts";
 
 import { toPersistenceSqlError } from "../Errors.ts";
 import {
@@ -20,7 +20,7 @@ import {
 const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
   Struct.assign({
     isStreaming: Schema.Number,
-    attachments: Schema.NullOr(Schema.fromJsonString(Schema.Array(ChatAttachment))),
+    attachments: Schema.NullOr(Schema.fromJsonString(ChatAttachmentListLenient)),
   }),
 );
 

@@ -1221,8 +1221,10 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           turnId: null,
           role: "user",
           text: "fix the graph rendering",
+          // The file-kind entry simulates a schema-diverged instance sharing
+          // this state directory; hydration must drop it, not fail the row.
           attachments:
-            '[{"type":"image","id":"attachment-1","name":"screenshot.png","mimeType":"image/png","sizeBytes":2048}]',
+            '[{"type":"file","kind":"pdf","id":"attachment-0","name":"datasheet.pdf","mimeType":"application/pdf","sizeBytes":689467},{"type":"image","id":"attachment-1","name":"screenshot.png","mimeType":"image/png","sizeBytes":2048}]',
           isStreaming: 0,
           createdAt: "2026-04-02T00:00:02.000Z",
         },

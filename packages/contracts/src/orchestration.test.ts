@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import {
+  ChatAttachmentListLenient,
   ClientOrchestrationCommand,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
@@ -889,5 +890,45 @@ it.effect("ModelSelection rejects malformed instance ids", () =>
       }),
     );
     assert.strictEqual(result._tag, "Failure");
+  }),
+);
+
+const decodeLenientAttachments = Schema.decodeUnknownEffect(ChatAttachmentListLenient);
+const encodeLenientAttachments = Schema.encodeEffect(ChatAttachmentListLenient);
+
+it.effect("ChatAttachmentListLenient keeps decodable attachments and drops unknown kinds", () =>
+  Effect.gen(function* () {
+    const image = {
+      type: "image",
+      id: "attachment-1",
+      name: "screenshot.png",
+      mimeType: "image/png",
+      sizeBytes: 1024,
+    };
+    const newerBuildFile = {
+      type: "file",
+      kind: "pdf",
+      id: "attachment-2",
+      name: "datasheet.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 689467,
+    };
+    const decoded = yield* decodeLenientAttachments([newerBuildFile, image, { garbage: true }]);
+    assert.deepStrictEqual(decoded, [image]);
+  }),
+);
+
+it.effect("ChatAttachmentListLenient round-trips retained attachments on encode", () =>
+  Effect.gen(function* () {
+    const image = {
+      type: "image",
+      id: "attachment-1",
+      name: "screenshot.png",
+      mimeType: "image/png",
+      sizeBytes: 1024,
+    };
+    const decoded = yield* decodeLenientAttachments([image]);
+    const encoded = yield* encodeLenientAttachments(decoded);
+    assert.deepStrictEqual(encoded, [image]);
   }),
 );

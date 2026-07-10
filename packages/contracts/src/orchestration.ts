@@ -1,4 +1,5 @@
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
@@ -201,6 +202,31 @@ export const ChatAttachment = Schema.Union([ChatImageAttachment]);
 export type ChatAttachment = typeof ChatAttachment.Type;
 const UploadChatAttachment = Schema.Union([UploadChatImageAttachment]);
 export type UploadChatAttachment = typeof UploadChatAttachment.Type;
+
+const decodeChatAttachmentExit = Schema.decodeUnknownExit(ChatAttachment);
+
+/**
+ * Persistence-read variant of `Schema.Array(ChatAttachment)` that drops
+ * entries the current build cannot decode instead of failing the whole row.
+ * Stored attachments outlive the build that wrote them — a schema-diverged
+ * instance sharing the same state directory (or a later release) may persist
+ * attachment kinds this build does not know. Those must degrade to
+ * "attachment not shown" on read paths, never fail the surrounding record.
+ */
+export const ChatAttachmentListLenient = Schema.Array(Schema.Unknown).pipe(
+  Schema.decodeTo(
+    Schema.Array(ChatAttachment),
+    SchemaTransformation.transformOrFail({
+      decode: (entries) =>
+        Effect.succeed(
+          entries.filter((entry) =>
+            Exit.isSuccess(decodeChatAttachmentExit(entry)),
+          ) as ReadonlyArray<typeof ChatAttachment.Encoded>,
+        ),
+      encode: (attachments) => Effect.succeed(attachments as ReadonlyArray<unknown>),
+    }),
+  ),
+);
 
 /**
  * Reads stored attachment bytes over the WebSocket RPC channel. Relay-paired

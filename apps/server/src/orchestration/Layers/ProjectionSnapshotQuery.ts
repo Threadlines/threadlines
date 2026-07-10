@@ -1,5 +1,5 @@
 import {
-  ChatAttachment,
+  ChatAttachmentListLenient,
   CheckpointRef,
   IsoDateTime,
   MessageId,
@@ -69,7 +69,7 @@ const ProjectionProjectDbRowSchema = ProjectionProject.mapFields(
 const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
   Struct.assign({
     isStreaming: Schema.Number,
-    attachments: Schema.NullOr(Schema.fromJsonString(Schema.Array(ChatAttachment))),
+    attachments: Schema.NullOr(Schema.fromJsonString(ChatAttachmentListLenient)),
   }),
 );
 const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan;
