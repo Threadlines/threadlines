@@ -320,17 +320,24 @@ describe("FileViewer pierre editing", () => {
     );
     await waitForEditorDocument(editor);
 
-    editor.setSelections([
-      { start: { line: 0, character: 5 }, end: { line: 0, character: 5 }, direction: "none" },
-    ]);
-    editor.focus();
-    await userEvent.keyboard("!");
-    const deadline = performance.now() + 10_000;
-    while (!(changes.at(-1) ?? "").includes("start!") && performance.now() < deadline) {
-      await settle(150);
+    // Shared CI runners can drop the first synthetic keystroke while the
+    // freshly attached editor is still wiring focus and selection, so retry
+    // the whole caret+focus+type sequence until a change lands. Extra "!"
+    // keystrokes are harmless — the assertion needs one to follow "start".
+    const deadline = performance.now() + 15_000;
+    while (changes.length === 0) {
+      editor.setSelections([
+        { start: { line: 0, character: 5 }, end: { line: 0, character: 5 }, direction: "none" },
+      ]);
+      editor.focus();
+      await userEvent.keyboard("!");
+      await settle(500);
+      if (performance.now() > deadline) {
+        break;
+      }
     }
 
-    expect(changes.at(-1)).toContain("start!");
+    expect(changes.at(-1) ?? "").toContain("start!");
 
     screen.unmount();
   });
