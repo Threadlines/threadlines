@@ -155,10 +155,11 @@ function SidebarVersionCard({
       </div>
       {detailLine || compactAction ? (
         <div className="flex min-h-5 items-center gap-2">
+          {compactAction}
           {detailLine ? (
             <p
               className={cn(
-                "min-w-0 flex-1 truncate text-[10px] leading-4",
+                "min-w-0 flex-1 truncate text-right text-[10px] leading-4",
                 statusLine
                   ? UPDATE_STATUS_TEXT_STYLES[statusLine.tone]
                   : "text-muted-foreground/70",
@@ -170,7 +171,6 @@ function SidebarVersionCard({
           ) : (
             <span className="min-w-0 flex-1" />
           )}
-          {compactAction}
         </div>
       ) : null}
     </div>
