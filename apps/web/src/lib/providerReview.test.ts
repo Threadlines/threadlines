@@ -119,6 +119,7 @@ function serverThread(input: {
     latestTurn: null,
     branch: "main",
     worktreePath: null,
+    effectiveCwd: null,
     turnDiffSummaries: [],
     activities: [],
     proposedPlans: [],

@@ -37,6 +37,7 @@ function makeThreadShell(
     interactionMode: "default",
     branch: "main",
     worktreePath: null,
+    effectiveCwd: null,
     latestTurn: null,
     createdAt: NOW,
     updatedAt: NOW,
