@@ -1186,7 +1186,7 @@ describe("backgroundRunCommandsMatch", () => {
     const tracked =
       "until gh run list --commit 75bdfb9 --json status | jq -e 'all(.status == \"completed\")'; do sleep 60; done";
     const detected =
-      "zsh -c source /Users/will/.claude/shell-snapshots/snapshot-zsh-123.sh 2>/dev/null || true && setopt NO_EXTENDED_GLOB 2>/dev/null || true && eval 'until gh run list --commit 75bdfb9 --json status | jq -e '\"'\"'all(.status == \"completed\")'\"'\"'; do sleep 60; done'";
+      "zsh -c source /Users/demo/.claude/shell-snapshots/snapshot-zsh-123.sh 2>/dev/null || true && setopt NO_EXTENDED_GLOB 2>/dev/null || true && eval 'until gh run list --commit 75bdfb9 --json status | jq -e '\"'\"'all(.status == \"completed\")'\"'\"'; do sleep 60; done'";
 
     expect(backgroundRunCommandsMatch(detected, tracked)).toBe(true);
     expect(backgroundRunCommandsMatch(detected, "vp run dev")).toBe(false);
@@ -1246,7 +1246,7 @@ describe("filterUnresolvedProviderBackgroundRuns", () => {
           {
             urls: [],
             command:
-              "zsh -c source /Users/will/.claude/shell-snapshots/snapshot-zsh-123.sh 2>/dev/null || true && eval 'until gh run list --commit 75bdfb9 --json status | jq -e '\"'\"'all(.status == \"completed\")'\"'\"'; do sleep 60; done'",
+              "zsh -c source /Users/demo/.claude/shell-snapshots/snapshot-zsh-123.sh 2>/dev/null || true && eval 'until gh run list --commit 75bdfb9 --json status | jq -e '\"'\"'all(.status == \"completed\")'\"'\"'; do sleep 60; done'",
           },
         ],
       }),

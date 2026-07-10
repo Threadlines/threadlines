@@ -1211,6 +1211,40 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
+  it("projects a completed native review into an assistant message", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-review-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-review"),
+      itemId: asItemId("review-result"),
+      payload: {
+        itemType: "review_exited",
+        status: "completed",
+        title: "Review completed",
+        detail: "Found one correctness issue in the reconnect path.",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === "assistant:review-result" && !message.streaming,
+      ),
+    );
+    const message = thread.messages.find(
+      (entry: ProviderRuntimeTestMessage) => entry.id === "assistant:review-result",
+    );
+    expect(message?.role).toBe("assistant");
+    expect(message?.turnId).toBe("turn-review");
+    expect(message?.text).toBe("Found one correctness issue in the reconnect path.");
+  });
+
   it("preserves completed tool metadata on projected tool activities", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

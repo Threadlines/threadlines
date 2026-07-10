@@ -57,13 +57,16 @@ describe("DesktopEnvironment", () => {
           THREADLINES_PORT: "4949",
           VITE_DEV_SERVER_URL: "http://localhost:5173",
           THREADLINES_DEV_REMOTE_THREADLINES_SERVER_ENTRY_PATH: " /remote/server.mjs ",
+          THREADLINES_DESKTOP_APP_DATA_DIR: " /tmp/threadlines-app-data ",
+          THREADLINES_DESKTOP_BACKEND_CWD: " /tmp/threadlines-demo-project ",
+          THREADLINES_DESKTOP_USER_DATA_DIR_NAME: " threadlines-marketing-studio ",
           THREADLINES_OTLP_TRACES_URL: " http://127.0.0.1:4318/v1/traces ",
           THREADLINES_OTLP_EXPORT_INTERVAL_MS: "2500",
         },
       );
 
       assert.equal(environment.isDevelopment, true);
-      assertPathEqual(environment.appDataDirectory, "/Users/alice/Library/Application Support");
+      assertPathEqual(environment.appDataDirectory, "/tmp/threadlines-app-data");
       assertPathEqual(environment.baseDir, "/tmp/threadlines");
       assertPathEqual(environment.stateDir, "/tmp/threadlines/dev");
       assertPathEqual(
@@ -81,10 +84,11 @@ describe("DesktopEnvironment", () => {
       assertPathEqual(environment.appRoot, "/repo");
       assertPathEqual(environment.developmentDockIconPath, "/repo/apps/desktop/resources/icon.png");
       assertPathEqual(environment.backendEntryPath, "/repo/apps/server/dist/bin.mjs");
-      assertPathEqual(environment.backendCwd, "/repo");
+      assertPathEqual(environment.backendCwd, "/tmp/threadlines-demo-project");
       assert.equal(environment.appUserModelId, DESKTOP_DEVELOPMENT_APP_ID);
       assert.equal(environment.linuxWmClass, "threadlines-dev");
       assert.equal(environment.displayName, "Threadlines (Dev)");
+      assert.equal(environment.userDataDirName, "threadlines-marketing-studio");
       assert.deepEqual(
         Option.map(environment.devServerUrl, (url) => url.href),
         Option.some("http://localhost:5173/"),
@@ -112,6 +116,20 @@ describe("DesktopEnvironment", () => {
       );
 
       assert.equal(environment.openDevToolsInDevelopment, true);
+    }),
+  );
+
+  it.effect("ignores unsafe development user-data directory names", () =>
+    Effect.gen(function* () {
+      const environment = yield* makeEnvironment(
+        {},
+        {
+          VITE_DEV_SERVER_URL: "http://localhost:5173",
+          THREADLINES_DESKTOP_USER_DATA_DIR_NAME: "../outside",
+        },
+      );
+
+      assert.equal(environment.userDataDirName, "threadlines-dev");
     }),
   );
 
@@ -158,18 +176,31 @@ describe("DesktopEnvironment", () => {
     }),
   );
 
+  it.effect("keeps packaged backend execution rooted in the user's home", () =>
+    Effect.gen(function* () {
+      const environment = yield* makeEnvironment(
+        { isPackaged: true },
+        { THREADLINES_DESKTOP_BACKEND_CWD: "/tmp/ignored-demo-project" },
+      );
+
+      assertPathEqual(environment.backendCwd, "/Users/alice");
+    }),
+  );
+
   it.effect("derives production state paths under userdata", () =>
     Effect.gen(function* () {
       const environment = yield* makeEnvironment(
         {},
         {
           THREADLINES_HOME: "/tmp/threadlines",
+          THREADLINES_DESKTOP_USER_DATA_DIR_NAME: "threadlines-marketing-studio",
         },
       );
 
       assert.equal(environment.isDevelopment, false);
       assert.equal(environment.displayName, "Threadlines");
       assert.equal(environment.appUserModelId, DESKTOP_RELEASE_APP_ID);
+      assert.equal(environment.userDataDirName, "threadlines");
       assertPathEqual(environment.stateDir, "/tmp/threadlines/userdata");
       assertPathEqual(environment.logDir, "/tmp/threadlines/userdata/logs");
       assertPathEqual(environment.serverSettingsPath, "/tmp/threadlines/userdata/settings.json");

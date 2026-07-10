@@ -89,6 +89,7 @@ export class DesktopEnvironment extends Context.Service<
 >()("threadlines/desktop/Environment") {}
 
 const APP_BASE_NAME = "Threadlines";
+const SAFE_USER_DATA_DIR_NAME_PATTERN = /^[a-zA-Z0-9._-]+$/;
 
 function resolveDesktopAppStageLabel(input: {
   readonly isDevelopment: boolean;
@@ -152,7 +153,7 @@ const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
   const homeDirectory = input.homeDirectory;
   const devServerUrl = config.devServerUrl;
   const isDevelopment = Option.isSome(devServerUrl);
-  const appDataDirectory =
+  const defaultAppDataDirectory =
     input.platform === "win32"
       ? Option.getOrElse(config.appDataDirectory, () =>
           path.join(homeDirectory, "AppData", "Roaming"),
@@ -160,6 +161,10 @@ const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
       : input.platform === "darwin"
         ? path.join(homeDirectory, "Library", "Application Support")
         : Option.getOrElse(config.xdgConfigHome, () => path.join(homeDirectory, ".config"));
+  const appDataDirectory = Option.match(config.desktopAppDataDirectory, {
+    onNone: () => defaultAppDataDirectory,
+    onSome: path.resolve,
+  });
   const baseDir = Option.getOrElse(config.threadlinesHome, () =>
     path.join(homeDirectory, ".threadlines"),
   );
@@ -179,7 +184,15 @@ const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
   });
   const displayName = branding.displayName;
   const stateDir = path.join(baseDir, isDevelopment ? "dev" : "userdata");
-  const userDataDirName = isDevelopment ? "threadlines-dev" : "threadlines";
+  const userDataDirName = isDevelopment
+    ? Option.getOrElse(
+        Option.filter(
+          config.desktopUserDataDirName,
+          (value) => SAFE_USER_DATA_DIR_NAME_PATTERN.test(value) && value !== "." && value !== "..",
+        ),
+        () => "threadlines-dev",
+      )
+    : "threadlines";
   const legacyUserDataDirName = isDevelopment ? "badcode-dev" : "badcode";
   const resourcesPath = input.resourcesPath;
 
@@ -205,7 +218,12 @@ const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
     rootDir,
     appRoot,
     backendEntryPath: path.join(appRoot, "apps/server/dist/bin.mjs"),
-    backendCwd: input.isPackaged ? homeDirectory : appRoot,
+    backendCwd: input.isPackaged
+      ? homeDirectory
+      : Option.match(config.desktopBackendCwd, {
+          onNone: () => appRoot,
+          onSome: path.resolve,
+        }),
     preloadPath: path.join(input.dirname, "preload.cjs"),
     appUpdateYmlPath: input.isPackaged
       ? path.join(resourcesPath, "app-update.yml")

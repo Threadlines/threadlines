@@ -1015,7 +1015,7 @@ describe("SourceControlPanel changes", () => {
     }
   });
 
-  it("toggles changed files into a compact tree view", async () => {
+  it("defaults changed files to a compact tree and toggles to a list", async () => {
     const status = makeStatus({
       hasWorkingTreeChanges: true,
       workingTree: {
@@ -1042,23 +1042,33 @@ describe("SourceControlPanel changes", () => {
     const mounted = await renderPanel({ status });
 
     try {
-      await page.getByRole("button", { name: "View changes as tree" }).click();
-
       await expect
         .element(page.getByRole("button", { name: "View changes as list" }))
         .toBeVisible();
-      await expect.element(page.getByText("apps/web/src/components/source-control")).toBeVisible();
+      await expect
+        .element(
+          page.getByRole("button", {
+            name: "Collapse apps/web/src/components/source-control",
+          }),
+        )
+        .toBeVisible();
       await expect.element(page.getByText("SourceControlPanel.tsx")).toBeVisible();
       await expect.element(page.getByText("SourceControlPanel.browser.tsx")).toBeVisible();
 
-      await page
-        .getByRole("button", { name: "Collapse apps/web/src/components/source-control" })
-        .click();
+      await page.getByRole("button", { name: "View changes as list" }).click();
 
-      await expect.element(page.getByText("SourceControlPanel.tsx")).not.toBeInTheDocument();
       await expect
-        .element(page.getByText("SourceControlPanel.browser.tsx"))
+        .element(page.getByRole("button", { name: "View changes as tree" }))
+        .toBeVisible();
+      await expect
+        .element(
+          page.getByRole("button", {
+            name: "Collapse apps/web/src/components/source-control",
+          }),
+        )
         .not.toBeInTheDocument();
+      await expect.element(page.getByText("SourceControlPanel.tsx")).toBeVisible();
+      await expect.element(page.getByText("SourceControlPanel.browser.tsx")).toBeVisible();
     } finally {
       await mounted.cleanup();
     }

@@ -11,6 +11,7 @@ import {
   clearAllTrackedRpcRequests,
   trackRpcRequestSent,
 } from "./requestLatencyState";
+import { applyRelayFrameChunking } from "./relayFrameChunking";
 import {
   getWsReconnectDelayMsForRetry,
   recordWsConnectionAttempt,
@@ -66,6 +67,12 @@ export type WsRpcProtocolSocketUrlProvider = string | (() => Promise<string>);
 export interface WsRpcProtocolOptions {
   readonly preservePath?: boolean;
   readonly protocols?: string | readonly string[];
+  /**
+   * Split oversized outgoing frames and reassemble incoming chunk frames.
+   * Required on relay connections, where Cloudflare drops WebSocket messages
+   * over 1 MiB.
+   */
+  readonly chunkFrames?: boolean;
 }
 
 function formatSocketErrorMessage(error: unknown): string {
@@ -195,6 +202,9 @@ export function createWsRpcProtocolLayer(
     (socketUrl, protocols) => {
       lifecycle.onAttempt(socketUrl);
       const socket = new globalThis.WebSocket(socketUrl, protocols);
+      if (options?.chunkFrames) {
+        applyRelayFrameChunking(socket);
+      }
 
       socket.addEventListener(
         "open",

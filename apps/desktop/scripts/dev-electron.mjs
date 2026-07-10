@@ -37,6 +37,38 @@ const restartOnRebuild = readBooleanEnv(
   ],
   true,
 );
+const devInstance = readStringEnv([
+  "THREADLINES_DEV_INSTANCE",
+  "BADCODE_DEV_INSTANCE",
+  "T3CODE_DEV_INSTANCE",
+]);
+const devProcessIdentity = devInstance
+  ? `${desktopDir}::${devInstance.replaceAll(/[^a-zA-Z0-9._-]/g, "-")}`
+  : desktopDir;
+const desktopAppDataDirectory = readStringEnv([
+  "THREADLINES_DESKTOP_APP_DATA_DIR",
+  "BADCODE_DESKTOP_APP_DATA_DIR",
+  "T3CODE_DESKTOP_APP_DATA_DIR",
+]);
+const configuredUserDataDirName = readStringEnv([
+  "THREADLINES_DESKTOP_USER_DATA_DIR_NAME",
+  "BADCODE_DESKTOP_USER_DATA_DIR_NAME",
+  "T3CODE_DESKTOP_USER_DATA_DIR_NAME",
+]);
+const userDataDirName =
+  configuredUserDataDirName === null ||
+  (/^[a-zA-Z0-9._-]+$/.test(configuredUserDataDirName) &&
+    configuredUserDataDirName !== "." &&
+    configuredUserDataDirName !== "..")
+    ? (configuredUserDataDirName ?? "threadlines-dev")
+    : "threadlines-dev";
+if (configuredUserDataDirName !== null && userDataDirName !== configuredUserDataDirName) {
+  console.warn(
+    "[desktop-dev] Ignoring unsafe desktop user-data directory name: " + configuredUserDataDirName,
+  );
+}
+const desktopUserDataDirectory =
+  desktopAppDataDirectory === null ? null : join(desktopAppDataDirectory, userDataDirName);
 
 await waitForResources({
   baseDir: desktopDir,
@@ -78,6 +110,14 @@ function readBooleanEnv(names, defaultValue) {
   return defaultValue;
 }
 
+function readStringEnv(names) {
+  return (
+    names
+      .map((name) => process.env[name]?.trim())
+      .find((value) => value !== undefined && value.length > 0) ?? null
+  );
+}
+
 function killChildTreeByPid(pid, signal) {
   if (typeof pid !== "number") {
     return;
@@ -99,7 +139,7 @@ function killChildTreeByPid(pid, signal) {
 }
 
 function cleanupStaleDevApps() {
-  const needle = `--threadlines-dev-root=${desktopDir}`;
+  const needle = `--threadlines-dev-root=${devProcessIdentity}`;
 
   if (process.platform === "win32") {
     // Match only Electron mains carrying our dev-root flag, then take each
@@ -125,15 +165,16 @@ function startApp() {
     return;
   }
 
-  const app = spawn(
-    resolveElectronPath(),
-    [`--threadlines-dev-root=${desktopDir}`, "dist-electron/main.cjs"],
-    {
-      cwd: desktopDir,
-      env: childEnv,
-      stdio: "inherit",
-    },
-  );
+  const launchArgs = [
+    "--threadlines-dev-root=" + devProcessIdentity,
+    ...(desktopUserDataDirectory === null ? [] : ["--user-data-dir=" + desktopUserDataDirectory]),
+    "dist-electron/main.cjs",
+  ];
+  const app = spawn(resolveElectronPath(), launchArgs, {
+    cwd: desktopDir,
+    env: childEnv,
+    stdio: "inherit",
+  });
 
   currentApp = app;
 

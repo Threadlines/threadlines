@@ -10,6 +10,7 @@ import {
   RELAY_WEBSOCKET_PROTOCOL,
   RelayCreateSessionResult,
 } from "@threadlines/contracts/relay";
+import { createRelayChunkReassembler, splitRelayFrame } from "@threadlines/shared/relayChunking";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
@@ -401,6 +402,10 @@ function openBridge(input: {
       let detachLocal: () => void = () => {};
       let pendingDeviceFrames: Array<string | ArrayBufferLike | Blob | ArrayBufferView> = [];
       let currentDeviceConnectionId: string | null = null;
+      // Device frames can arrive split into relay chunk frames (Cloudflare
+      // drops WebSocket messages over 1 MiB); they are reassembled here so
+      // the local backend only ever sees complete RPC frames.
+      const deviceFrameReassembler = createRelayChunkReassembler();
 
       const teardownLocal = () => {
         localGeneration += 1;
@@ -426,6 +431,7 @@ function openBridge(input: {
         }
         closed = true;
         pendingDeviceFrames = [];
+        deviceFrameReassembler.reset();
         teardownLocal();
         detachRelay();
         closeSocket(relaySocket);
@@ -437,9 +443,18 @@ function openBridge(input: {
 
       const attachLocal = (socket: WebSocket) => {
         const onLocalMessage = (event: MessageEvent) => {
-          if (relaySocket.readyState === WebSocket.OPEN) {
-            relaySocket.send(event.data);
+          if (relaySocket.readyState !== WebSocket.OPEN) {
+            return;
           }
+          // Backend frames above Cloudflare's 1 MiB message cap must be
+          // chunked before they cross the relay; the device reassembles.
+          if (typeof event.data === "string") {
+            for (const part of splitRelayFrame(event.data)) {
+              relaySocket.send(part);
+            }
+            return;
+          }
+          relaySocket.send(event.data);
         };
         const onLocalClosed = () => {
           if (closed || localSocket !== socket) {
@@ -513,6 +528,7 @@ function openBridge(input: {
           }
           if (control.type === "relay.peer-joined") {
             currentDeviceConnectionId = control.connectionId;
+            deviceFrameReassembler.reset();
             if (localUsedByDevice) {
               teardownLocal();
             }
@@ -524,19 +540,31 @@ function openBridge(input: {
           }
           currentDeviceConnectionId = null;
           pendingDeviceFrames = [];
+          deviceFrameReassembler.reset();
           teardownLocal();
           return;
         }
 
+        let frame: string | ArrayBufferLike | Blob | ArrayBufferView;
+        if (typeof data === "string") {
+          const assembled = deviceFrameReassembler.push(data);
+          if (assembled === null) {
+            return;
+          }
+          frame = assembled;
+        } else {
+          frame = event.data;
+        }
+
         if (localSocket && localSocket.readyState === WebSocket.OPEN) {
           localUsedByDevice = true;
-          localSocket.send(event.data);
+          localSocket.send(frame);
           return;
         }
         if (pendingDeviceFrames.length >= MAX_PENDING_DEVICE_FRAMES) {
           pendingDeviceFrames.shift();
         }
-        pendingDeviceFrames.push(event.data);
+        pendingDeviceFrames.push(frame);
         void ensureLocalSocket().catch(() => markClosed(null));
       };
       const onRelayClose = (event: CloseEvent) => {

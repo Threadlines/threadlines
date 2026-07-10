@@ -251,8 +251,12 @@ function toCanonicalItemType(raw: string | undefined | null): CanonicalItemType 
   if (type.includes("collab")) return "collab_agent_tool_call";
   if (type.includes("web search")) return "web_search";
   if (type.includes("image")) return "image_view";
-  if (type.includes("review entered")) return "review_entered";
-  if (type.includes("review exited")) return "review_exited";
+  if (type.includes("entered review") || type.includes("review entered")) {
+    return "review_entered";
+  }
+  if (type.includes("exited review") || type.includes("review exited")) {
+    return "review_exited";
+  }
   if (type.includes("compact")) return "context_compaction";
   if (type.includes("error")) return "error";
   return "unknown";
@@ -282,6 +286,10 @@ function itemTitle(itemType: CanonicalItemType): string | undefined {
       return "Web search";
     case "image_view":
       return "Image view";
+    case "review_entered":
+      return "Review started";
+    case "review_exited":
+      return "Review completed";
     case "error":
       return "Error";
     default:
@@ -295,6 +303,7 @@ function itemDetail(item: CodexLifecycleItem): string | undefined {
     "title" in item ? item.title : undefined,
     "summary" in item ? item.summary : undefined,
     "text" in item ? item.text : undefined,
+    "review" in item ? item.review : undefined,
     "path" in item ? item.path : undefined,
     "prompt" in item ? item.prompt : undefined,
   ];

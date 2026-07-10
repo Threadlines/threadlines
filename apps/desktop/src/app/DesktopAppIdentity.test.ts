@@ -146,6 +146,30 @@ const withIdentity = <A, E, R>(
 };
 
 describe("DesktopAppIdentity", () => {
+  it.effect("isolates development user data under an explicit app-data directory", () =>
+    withIdentity(
+      Effect.gen(function* () {
+        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
+        const userDataPath = yield* identity.resolveUserDataPath;
+
+        assert.equal(
+          toPortablePath(userDataPath),
+          "/tmp/studio-app-data/threadlines-marketing-studio",
+        );
+      }),
+      {
+        environment: {
+          isPackaged: false,
+          env: {
+            VITE_DEV_SERVER_URL: "http://localhost:5173",
+            THREADLINES_DESKTOP_APP_DATA_DIR: "/tmp/studio-app-data",
+            THREADLINES_DESKTOP_USER_DATA_DIR_NAME: "threadlines-marketing-studio",
+          },
+        },
+      },
+    ),
+  );
+
   it.effect("keeps using the legacy userData path when it already exists", () =>
     withIdentity(
       Effect.gen(function* () {

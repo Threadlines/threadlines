@@ -3,8 +3,11 @@ import {
   type GitActionProgressEvent,
   type GitAuthRemediationActionId,
   type GitStackedAction,
+  type ModelSelection,
   type ProviderReviewTarget,
+  type RuntimeMode,
   type SourceControlPublishRepositoryInput,
+  type ThreadBootstrapCreateThread,
   type ThreadId,
 } from "@threadlines/contracts";
 import {
@@ -502,20 +505,24 @@ export function gitGenerateCommitMessageMutationOptions(input: {
   });
 }
 
-export function gitStartProviderReviewMutationOptions(input: {
-  environmentId: EnvironmentId | null;
-  cwd: string | null;
-  threadId: ThreadId | null;
-}) {
+export function gitStartProviderReviewMutationOptions() {
   return mutationOptions({
-    mutationKey: gitMutationKeys.startProviderReview(input.environmentId, input.cwd),
-    mutationFn: async (args: { target: ProviderReviewTarget }) => {
-      if (!input.cwd || !input.environmentId || !input.threadId) {
-        throw new Error("Codex review is unavailable for this thread.");
-      }
-      return requireEnvironmentConnection(input.environmentId).client.server.startProviderReview({
-        threadId: input.threadId,
-        cwd: input.cwd,
+    mutationKey: gitMutationKeys.startProviderReview(null, null),
+    mutationFn: async (args: {
+      environmentId: EnvironmentId;
+      cwd: string;
+      threadId: ThreadId;
+      target: ProviderReviewTarget;
+      modelSelection: ModelSelection;
+      runtimeMode: RuntimeMode;
+      bootstrap: ThreadBootstrapCreateThread;
+    }) => {
+      return requireEnvironmentConnection(args.environmentId).client.server.startProviderReview({
+        threadId: args.threadId,
+        cwd: args.cwd,
+        modelSelection: args.modelSelection,
+        runtimeMode: args.runtimeMode,
+        bootstrap: args.bootstrap,
         target: args.target,
         delivery: "inline",
       });

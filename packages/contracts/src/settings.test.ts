@@ -57,6 +57,13 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
     expect(decodeServerSettings({}).enableAssistantStreaming).toBe(true);
   });
 
+  it("prevents sleep during active turns by default", () => {
+    expect(DEFAULT_SERVER_SETTINGS.preventSleepDuringActiveTurns).toBe(true);
+    expect(decodeServerSettings({}).preventSleepDuringActiveTurns).toBe(true);
+    const patch = decodeServerSettingsPatch({ preventSleepDuringActiveTurns: false });
+    expect(patch.preventSleepDuringActiveTurns).toBe(false);
+  });
+
   it("keeps the backup text generation model unset by default", () => {
     expect(DEFAULT_SERVER_SETTINGS.textGenerationBackupModelSelection).toBeNull();
     expect(decodeServerSettings({}).textGenerationBackupModelSelection).toBeNull();

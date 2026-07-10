@@ -380,6 +380,12 @@ export const DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL = Duration.minutes(2);
 
 export const ServerSettings = Schema.Struct({
   enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  // While any thread has a turn in flight, hold an idle-sleep power assertion
+  // so the host machine cannot suspend mid-stream. The display still dims and
+  // locks on its normal schedule. Effective on macOS and Windows.
+  preventSleepDuringActiveTurns: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(true)),
+  ),
   usageAnalyticsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   automaticGitFetchInterval: Schema.DurationFromMillis.pipe(
     Schema.withDecodingDefault(
@@ -492,6 +498,7 @@ const OpenCodeSettingsPatch = Schema.Struct({
 export const ServerSettingsPatch = Schema.Struct({
   // Server settings
   enableAssistantStreaming: Schema.optionalKey(Schema.Boolean),
+  preventSleepDuringActiveTurns: Schema.optionalKey(Schema.Boolean),
   usageAnalyticsEnabled: Schema.optionalKey(Schema.Boolean),
   automaticGitFetchInterval: Schema.optionalKey(Schema.DurationFromMillis),
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),

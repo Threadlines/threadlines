@@ -130,7 +130,7 @@ describe("parseGitRemoteEndpoint", () => {
   });
 
   it("rejects local paths and unsupported shapes", () => {
-    expect(parseGitRemoteEndpoint("/Users/will/some/local/remote")).toBeNull();
+    expect(parseGitRemoteEndpoint("/Users/demo/some/local/remote")).toBeNull();
     expect(parseGitRemoteEndpoint("C:\\repos\\local")).toBeNull();
     expect(parseGitRemoteEndpoint("")).toBeNull();
   });

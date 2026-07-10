@@ -2137,7 +2137,9 @@ const make = Effect.gen(function* () {
       }
 
       const assistantCompletion =
-        event.type === "item.completed" && event.payload.itemType === "assistant_message"
+        event.type === "item.completed" &&
+        (event.payload.itemType === "assistant_message" ||
+          event.payload.itemType === "review_exited")
           ? {
               messageId: MessageId.make(
                 `assistant:${event.itemId ?? event.turnId ?? event.eventId}`,

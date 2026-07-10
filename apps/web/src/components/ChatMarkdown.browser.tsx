@@ -192,16 +192,15 @@ describe("ChatMarkdown", () => {
 
   it("recognizes absolute file paths with encoded spaces as local file links", async () => {
     const encodedHref =
-      "/Users/will/Downloads/CMMC%20Implementation%20Proposal%20-%20GEG%20-%20July%207%202026.pdf";
-    const decodedPath =
-      "/Users/will/Downloads/CMMC Implementation Proposal - GEG - July 7 2026.pdf";
+      "/Users/demo/Downloads/Quarterly%20Report%20-%20Q3%20-%20July%207%202026.pdf";
+    const decodedPath = "/Users/demo/Downloads/Quarterly Report - Q3 - July 7 2026.pdf";
     const screen = await render(
-      <ChatMarkdown text={`[CMMC proposal](${encodedHref})`} cwd="/repo/project" />,
+      <ChatMarkdown text={`[quarterly report](${encodedHref})`} cwd="/repo/project" />,
     );
 
     try {
       const link = page.getByRole("link", {
-        name: "CMMC Implementation Proposal - GEG - July 7 2026.pdf",
+        name: "Quarterly Report - Q3 - July 7 2026.pdf",
       });
       await expect.element(link).toBeInTheDocument();
       await expect.element(link).toHaveAttribute("href", toMarkdownFileUrlHref(decodedPath));

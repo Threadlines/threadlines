@@ -6,6 +6,7 @@ import {
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
+  ProviderStartReviewInput,
   ThreadContextSeed,
 } from "./provider.ts";
 
@@ -14,6 +15,7 @@ const decodeThreadContextSeed = Schema.decodeUnknownSync(ThreadContextSeed);
 const decodeProviderSendTurnInput = Schema.decodeUnknownSync(ProviderSendTurnInput);
 const decodeProviderSession = Schema.decodeUnknownSync(ProviderSession);
 const decodeProviderEvent = Schema.decodeUnknownSync(ProviderEvent);
+const decodeProviderStartReviewInput = Schema.decodeUnknownSync(ProviderStartReviewInput);
 
 function getOptionValue(
   options: ReadonlyArray<{ id: string; value: unknown }> | undefined,
@@ -209,6 +211,31 @@ describe("ProviderSendTurnInput", () => {
     expect(parsed.modelSelection?.instanceId).toBe("claudeAgent");
     expect(getOptionValue(parsed.modelSelection?.options, "effort")).toBe("max");
     expect(getOptionValue(parsed.modelSelection?.options, "fastMode")).toBe(true);
+  });
+});
+
+describe("ProviderStartReviewInput", () => {
+  it("accepts draft-thread bootstrap context", () => {
+    const parsed = decodeProviderStartReviewInput({
+      threadId: "thread-review",
+      cwd: "/tmp/project",
+      target: { type: "commit", sha: "abc123", title: "Review me" },
+      modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
+      runtimeMode: "full-access",
+      bootstrap: {
+        projectId: "project-1",
+        title: "Review: Review me",
+        modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: "main",
+        worktreePath: null,
+        createdAt: "2026-07-09T00:00:00.000Z",
+      },
+    });
+
+    expect(parsed.bootstrap?.projectId).toBe("project-1");
+    expect(parsed.bootstrap?.modelSelection.instanceId).toBe("codex");
   });
 });
 

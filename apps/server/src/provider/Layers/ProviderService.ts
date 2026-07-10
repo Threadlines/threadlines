@@ -976,6 +976,18 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         "provider.review_delivery": input.delivery,
       });
       let metricProvider = "unknown";
+      const requireReviewStart = Effect.fn("requireReviewStart")(function* (
+        adapter: ProviderAdapterShape<ProviderAdapterError>,
+      ) {
+        const startAdapterReview = adapter.startReview;
+        if (adapter.capabilities.reviewStart !== "supported" || startAdapterReview === undefined) {
+          return yield* toValidationError(
+            "ProviderService.startReview",
+            `Provider '${adapter.provider}' does not support native code reviews.`,
+          );
+        }
+        return startAdapterReview;
+      });
       const startReviewInRoutedSession = Effect.gen(function* () {
         const routed = yield* resolveRoutableSession({
           threadId: input.threadId,
@@ -986,17 +998,22 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         yield* Effect.annotateCurrentSpan({
           "provider.kind": routed.adapter.provider,
         });
+        const startAdapterReview = yield* requireReviewStart(routed.adapter);
+        const activeSession = (yield* routed.adapter.listSessions()).find(
+          (session) => session.threadId === input.threadId,
+        );
         if (
-          routed.adapter.capabilities.reviewStart !== "supported" ||
-          routed.adapter.startReview === undefined
+          activeSession?.status === "connecting" ||
+          activeSession?.status === "running" ||
+          activeSession?.activeTurnId !== undefined
         ) {
           return yield* toValidationError(
             "ProviderService.startReview",
-            `Provider '${routed.adapter.provider}' does not support native code reviews.`,
+            `Cannot start a code review for thread '${input.threadId}' while another provider turn is starting or running.`,
           );
         }
 
-        const turn = yield* routed.adapter.startReview(input);
+        const turn = yield* startAdapterReview(input);
         yield* directory.upsert({
           threadId: input.threadId,
           provider: routed.adapter.provider,
@@ -1036,6 +1053,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
               "provider.instance_id": input.modelSelection.instanceId,
               "provider.runtime_mode": input.runtimeMode,
             });
+            const bootstrapAdapter = yield* registry.getByInstance(input.modelSelection.instanceId);
+            yield* requireReviewStart(bootstrapAdapter);
             yield* startSession(input.threadId, {
               threadId: input.threadId,
               providerInstanceId: input.modelSelection.instanceId,

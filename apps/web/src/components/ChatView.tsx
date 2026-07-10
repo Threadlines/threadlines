@@ -4298,7 +4298,18 @@ export default function ChatView(props: ChatViewProps) {
           detectTrigger: true,
         });
       }
-      setThreadError(threadIdForSend, describeDispatchFailure(err, "Failed to send message."));
+      const dispatchFailureMessage = describeDispatchFailure(err, "Failed to send message.");
+      setThreadError(threadIdForSend, dispatchFailureMessage);
+      // The thread error banner only helps if the user is still looking at
+      // this thread when the retry budget runs out (large uploads can take
+      // minutes to exhaust it); the toast makes the failure visible anywhere.
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Message failed to send",
+          description: dispatchFailureMessage,
+        }),
+      );
     });
     sendInFlightRef.current = false;
     if (!dispatchSucceeded && !isSteeringFollowUp) {

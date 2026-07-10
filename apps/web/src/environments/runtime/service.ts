@@ -1280,6 +1280,7 @@ function createSavedEnvironmentClient(
         ? {
             preservePath: true,
             protocols: relayWebSocketProtocols(bearerToken),
+            chunkFrames: true,
           }
         : undefined,
     ),
@@ -1756,6 +1757,7 @@ async function addRelaySavedEnvironment(input: {
       {
         preservePath: true,
         protocols: relayWebSocketProtocols(input.target.credential),
+        chunkFrames: true,
       },
     ),
   );

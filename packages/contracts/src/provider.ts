@@ -23,6 +23,7 @@ import {
   ProviderSandboxMode,
   ProviderUserInputAnswers,
   RuntimeMode,
+  ThreadBootstrapCreateThread,
 } from "./orchestration.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
 
@@ -179,6 +180,7 @@ export const ProviderStartReviewInput = Schema.Struct({
   cwd: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),
   runtimeMode: Schema.optional(RuntimeMode),
+  bootstrap: Schema.optional(ThreadBootstrapCreateThread),
 });
 export type ProviderStartReviewInput = typeof ProviderStartReviewInput.Type;
 

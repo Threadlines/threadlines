@@ -138,7 +138,7 @@ describe("ExtensionsSettings logic", () => {
 
     expect(
       makeExtensionInventoryCacheKey({
-        cwd: "/Users/will/badcode",
+        cwd: "/Users/demo/project",
         providerInstanceId: "",
       }),
     ).toBeNull();

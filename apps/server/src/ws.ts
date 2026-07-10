@@ -38,7 +38,6 @@ import {
   OrchestrationReplayEventsError,
   FilesystemBrowseError,
   ProviderExtensionsError,
-  ProviderStartReviewError,
   ThreadId,
   type TerminalEvent,
   WS_METHODS,
@@ -67,6 +66,7 @@ import {
 import { ProjectFaviconResolver } from "./project/Services/ProjectFaviconResolver.ts";
 import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
 import { ProviderService } from "./provider/Services/ProviderService.ts";
+import { startProviderReviewForThread } from "./provider/ProviderReviewCoordinator.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import {
   callProviderExtensionMcpTool,
@@ -975,31 +975,11 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
         [WS_METHODS.serverStartProviderReview]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverStartProviderReview,
-            Effect.gen(function* () {
-              const threadShell = yield* projectionSnapshotQuery
-                .getThreadShellById(input.threadId)
-                .pipe(
-                  Effect.map(Option.getOrUndefined),
-                  Effect.catch(() => Effect.succeed(undefined)),
-                );
-              return yield* providerService.startReview({
-                ...input,
-                ...(threadShell !== undefined
-                  ? {
-                      modelSelection: threadShell.modelSelection,
-                      runtimeMode: threadShell.runtimeMode,
-                    }
-                  : {}),
-              });
-            }).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ProviderStartReviewError({
-                    message: cause.message || "Failed to start provider review.",
-                    cause,
-                  }),
-              ),
-            ),
+            startProviderReviewForThread(input, {
+              providerService,
+              projectionSnapshotQuery,
+              orchestrationEngine,
+            }),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverConsumeProviderRateLimitResetCredit]: (input) =>

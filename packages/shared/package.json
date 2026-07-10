@@ -99,6 +99,10 @@
       "types": "./src/String.ts",
       "import": "./src/String.ts"
     },
+    "./relayChunking": {
+      "types": "./src/relayChunking.ts",
+      "import": "./src/relayChunking.ts"
+    },
     "./projectScripts": {
       "types": "./src/projectScripts.ts",
       "import": "./src/projectScripts.ts"

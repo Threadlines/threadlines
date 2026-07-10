@@ -705,7 +705,7 @@ const ThreadInteractionModeSetCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
-const ThreadTurnStartBootstrapCreateThread = Schema.Struct({
+export const ThreadBootstrapCreateThread = Schema.Struct({
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
@@ -715,6 +715,7 @@ const ThreadTurnStartBootstrapCreateThread = Schema.Struct({
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
 });
+export type ThreadBootstrapCreateThread = typeof ThreadBootstrapCreateThread.Type;
 
 const ThreadTurnStartBootstrapPrepareWorktree = Schema.Struct({
   projectCwd: TrimmedNonEmptyString,
@@ -723,7 +724,7 @@ const ThreadTurnStartBootstrapPrepareWorktree = Schema.Struct({
 });
 
 const ThreadTurnStartBootstrap = Schema.Struct({
-  createThread: Schema.optional(ThreadTurnStartBootstrapCreateThread),
+  createThread: Schema.optional(ThreadBootstrapCreateThread),
   prepareWorktree: Schema.optional(ThreadTurnStartBootstrapPrepareWorktree),
   runSetupScript: Schema.optional(Schema.Boolean),
 });

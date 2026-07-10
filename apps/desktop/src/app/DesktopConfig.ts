@@ -112,6 +112,21 @@ const compactEnv = (env: Readonly<Record<string, string | undefined>>): Record<s
 
 export const DesktopConfig = Config.all({
   appDataDirectory: trimmedString("APPDATA"),
+  desktopAppDataDirectory: trimmedStringAlias(
+    "THREADLINES_DESKTOP_APP_DATA_DIR",
+    "BADCODE_DESKTOP_APP_DATA_DIR",
+    "T3CODE_DESKTOP_APP_DATA_DIR",
+  ),
+  desktopUserDataDirName: trimmedStringAlias(
+    "THREADLINES_DESKTOP_USER_DATA_DIR_NAME",
+    "BADCODE_DESKTOP_USER_DATA_DIR_NAME",
+    "T3CODE_DESKTOP_USER_DATA_DIR_NAME",
+  ),
+  desktopBackendCwd: trimmedStringAlias(
+    "THREADLINES_DESKTOP_BACKEND_CWD",
+    "BADCODE_DESKTOP_BACKEND_CWD",
+    "T3CODE_DESKTOP_BACKEND_CWD",
+  ),
   xdgConfigHome: trimmedString("XDG_CONFIG_HOME"),
   threadlinesHome: trimmedStringAlias("THREADLINES_HOME", "BADCODE_HOME", "T3CODE_HOME"),
   devServerUrl: Config.url("VITE_DEV_SERVER_URL").pipe(Config.option),

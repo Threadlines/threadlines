@@ -44,6 +44,7 @@ import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderComma
 import { ThreadContextSeedBuilderLive } from "./provider/contextSeed/ThreadContextSeedBuilder.ts";
 import { CheckpointReactorLive } from "./orchestration/Layers/CheckpointReactor.ts";
 import { ThreadDeletionReactorLive } from "./orchestration/Layers/ThreadDeletionReactor.ts";
+import { SleepInhibitorLive } from "./power/Layers/SleepInhibitor.ts";
 import { StorageMaintenanceDaemonLive } from "./persistence/Layers/StorageMaintenance.ts";
 import { ProviderRegistryLive } from "./provider/Layers/ProviderRegistry.ts";
 import { ServerSettingsLive } from "./serverSettings.ts";
@@ -157,6 +158,7 @@ const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(ProviderCommandReactorLive),
   Layer.provideMerge(CheckpointReactorLive),
   Layer.provideMerge(ThreadDeletionReactorLive),
+  Layer.provideMerge(SleepInhibitorLive),
   Layer.provideMerge(StorageMaintenanceDaemonLive),
   Layer.provideMerge(RuntimeReceiptBusLive),
 );

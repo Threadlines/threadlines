@@ -233,7 +233,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     capabilities: {
       sessionModelSwitch: "in-session",
       manualContextCompaction: "supported",
-      reviewStart: "supported",
+      reviewStart: provider === CODEX_DRIVER ? "supported" : "unsupported",
     },
     startSession,
     sendTurn,
@@ -970,6 +970,79 @@ routing.layer("ProviderServiceLive routing", (it) => {
         target: { type: "uncommittedChanges" },
         delivery: "inline",
       });
+    }),
+  );
+
+  it.effect("rejects unsupported review providers before starting a session", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-review-claude");
+      const modelSelection = createModelSelection(claudeAgentInstanceId, "claude-sonnet-4-6");
+      routing.claude.startSession.mockClear();
+      routing.claude.startReview.mockClear();
+
+      const failure = yield* Effect.flip(
+        provider.startReview({
+          threadId,
+          cwd: "/tmp/project",
+          modelSelection,
+          runtimeMode: "full-access",
+          target: { type: "uncommittedChanges" },
+          delivery: "inline",
+        }),
+      );
+
+      assert.instanceOf(failure, ProviderValidationError);
+      assert.include(failure.issue, "does not support native code reviews");
+      assert.equal(routing.claude.startSession.mock.calls.length, 0);
+      assert.equal(routing.claude.startReview.mock.calls.length, 0);
+    }),
+  );
+
+  it.effect("rejects a review while another provider turn is starting or running", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-review-running");
+      yield* provider.startSession(threadId, {
+        threadId,
+        providerInstanceId: codexInstanceId,
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+      });
+      routing.codex.updateSession(threadId, (session) => ({
+        ...session,
+        status: "running",
+        activeTurnId: asTurnId("turn-already-running"),
+      }));
+      routing.codex.startReview.mockClear();
+
+      const failure = yield* Effect.flip(
+        provider.startReview({
+          threadId,
+          target: { type: "uncommittedChanges" },
+          delivery: "inline",
+        }),
+      );
+
+      assert.instanceOf(failure, ProviderValidationError);
+      assert.include(failure.issue, "while another provider turn is starting or running");
+      assert.equal(routing.codex.startReview.mock.calls.length, 0);
+
+      routing.codex.updateSession(threadId, (session) => {
+        const { activeTurnId: _activeTurnId, ...rest } = session;
+        return { ...rest, status: "connecting" };
+      });
+      const connectingFailure = yield* Effect.flip(
+        provider.startReview({
+          threadId,
+          target: { type: "uncommittedChanges" },
+          delivery: "inline",
+        }),
+      );
+
+      assert.instanceOf(connectingFailure, ProviderValidationError);
+      assert.include(connectingFailure.issue, "while another provider turn is starting or running");
+      assert.equal(routing.codex.startReview.mock.calls.length, 0);
     }),
   );
 

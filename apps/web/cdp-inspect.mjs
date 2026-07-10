@@ -1,0 +1,10 @@
+import { chromium } from "playwright";
+const browser = await chromium.connectOverCDP("http://127.0.0.1:9223");
+let page = browser.contexts().flatMap((c) => c.pages()).find((p) => p.url().includes("5733"));
+console.log("url:", page.url());
+await page.waitForTimeout(3000);
+console.log("title:", await page.title());
+const text = await page.evaluate(() => document.body.innerText.slice(0, 500));
+console.log("body:", JSON.stringify(text));
+await page.screenshot({ path: "/tmp/tl-ab-state.png" });
+await browser.close();

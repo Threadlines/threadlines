@@ -4,7 +4,9 @@ import {
   type GitActionProgressEvent,
   type GitRemoteAuthFailure,
   type GitStackedAction,
+  type ModelSelection,
   type ProviderReviewTarget,
+  type RuntimeMode,
   type ScopedThreadRef,
   type VcsCommitDetailsResult,
   type VcsCommitGraphCommit,
@@ -12,6 +14,7 @@ import {
   type VcsStatusResult,
   type VcsWorkingTreeFileChangeKind,
 } from "@threadlines/contracts";
+import { scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
 import { formatGitErrorMessage, gitRemoteAuthFailureFromError } from "@threadlines/shared/git";
 import {
   useInfiniteQuery,
@@ -20,6 +23,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import {
   ChevronDownIcon,
   ChevronRightIcon,
@@ -82,14 +86,25 @@ import {
   gitUnstageChangesMutationOptions,
 } from "~/lib/gitReactQuery";
 import { refreshGitStatus, refreshLocalGitStatus, useGitStatus } from "~/lib/gitStatusState";
-import { cn, newCommandId, randomUUID } from "~/lib/utils";
+import { cn, newCommandId, newThreadId, randomUUID } from "~/lib/utils";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
+import { useSettings } from "~/hooks/useSettings";
 import { readLocalApi } from "~/localApi";
+import { useComposerDraftStore } from "~/composerDraftStore";
+import {
+  resolveProviderReviewContext,
+  type ProviderReviewThreadBootstrap,
+} from "~/lib/providerReview";
+import { getAppModelOptionsForInstance } from "~/modelSelection";
+import { useServerProviders } from "~/rpc/serverState";
 import { getSourceControlPresentation } from "~/sourceControlPresentation";
 import { useStore } from "~/store";
+import { createProjectSelectorByRef, createThreadSelectorByRef } from "~/storeSelectors";
+import { buildThreadRouteParams } from "~/threadRoutes";
 import { resolvePathLinkTarget } from "~/terminal-links";
 import { PublishRepositoryDialog } from "../GitActionsControl";
 import { GitAuthRemediationDialog } from "./GitAuthRemediationDialog";
+import { ProviderReviewDialog } from "./ProviderReviewDialog";
 import { SourceControlIcon } from "../Icons";
 import {
   buildGitActionProgressStages,
@@ -214,6 +229,17 @@ interface PendingDiscardChanges {
 interface PendingDeleteBranch {
   readonly branchName: string;
   readonly commit: VcsCommitGraphCommit;
+}
+
+interface PendingProviderReview {
+  readonly environmentId: EnvironmentId;
+  readonly cwd: string;
+  readonly target: ProviderReviewTarget;
+  readonly targetDescription: string;
+  readonly threadTitle: string;
+  readonly modelSelection: ModelSelection;
+  readonly runtimeMode: RuntimeMode;
+  readonly bootstrap: ProviderReviewThreadBootstrap;
 }
 
 const WORKING_TREE_CHANGE_STATUS_CODES: Record<VcsWorkingTreeFileChangeKind, string> = {
@@ -1773,6 +1799,7 @@ export function SourceControlPanel({
   onPrefetchDiff,
   onClose,
 }: SourceControlPanelProps) {
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [commitMessage, setCommitMessage] = useState("");
   const [commitMessageEditorOpen, setCommitMessageEditorOpen] = useState(false);
@@ -1790,6 +1817,9 @@ export function SourceControlPanel({
     null,
   );
   const [pendingDeleteBranch, setPendingDeleteBranch] = useState<PendingDeleteBranch | null>(null);
+  const [pendingProviderReview, setPendingProviderReview] = useState<PendingProviderReview | null>(
+    null,
+  );
   const [createTagName, setCreateTagName] = useState("");
   const [changesPanelRatio, setChangesPanelRatio] = useLocalStorage(
     SOURCE_CONTROL_CHANGES_PANEL_RATIO_STORAGE_KEY,
@@ -1800,7 +1830,7 @@ export function SourceControlPanel({
   const [changesViewMode, setChangesViewMode] = useLocalStorage<
     SourceControlChangesViewMode,
     string
-  >(SOURCE_CONTROL_CHANGES_VIEW_MODE_STORAGE_KEY, "list", SourceControlChangesViewMode, {
+  >(SOURCE_CONTROL_CHANGES_VIEW_MODE_STORAGE_KEY, "tree", SourceControlChangesViewMode, {
     legacyKeys: LEGACY_SOURCE_CONTROL_CHANGES_VIEW_MODE_STORAGE_KEYS,
   });
   const [changesPanelHeight, setChangesPanelHeight] = useState(DEFAULT_CHANGES_PANEL_HEIGHT);
@@ -1820,6 +1850,55 @@ export function SourceControlPanel({
   } | null>(null);
   const environmentId = target?.environmentId ?? null;
   const cwd = target?.cwd ?? null;
+  const reviewThread = useStore(
+    useMemo(() => createThreadSelectorByRef(activeThreadRef), [activeThreadRef]),
+  );
+  const reviewDraftSession = useComposerDraftStore((store) =>
+    activeThreadRef ? store.getDraftSessionByRef(activeThreadRef) : null,
+  );
+  const reviewComposerDraft = useComposerDraftStore((store) =>
+    activeThreadRef ? store.getComposerDraft(activeThreadRef) : null,
+  );
+  const reviewProjectRef = useMemo(() => {
+    const threadContext = reviewThread ?? reviewDraftSession;
+    return threadContext
+      ? scopeProjectRef(threadContext.environmentId, threadContext.projectId)
+      : null;
+  }, [reviewDraftSession, reviewThread]);
+  const reviewProject = useStore(
+    useMemo(() => createProjectSelectorByRef(reviewProjectRef), [reviewProjectRef]),
+  );
+  const reviewProviders = useServerProviders();
+  const reviewSettings = useSettings();
+  const providerReviewContext = useMemo(
+    () =>
+      resolveProviderReviewContext({
+        thread: reviewThread,
+        draftSession: reviewDraftSession,
+        composerDraft: reviewComposerDraft,
+        project: reviewProject,
+        providers: reviewProviders,
+        settings: reviewSettings,
+      }),
+    [
+      reviewComposerDraft,
+      reviewDraftSession,
+      reviewProject,
+      reviewProviders,
+      reviewSettings,
+      reviewThread,
+    ],
+  );
+  const providerReviewModelOptionsByInstance = useMemo(
+    () =>
+      new Map(
+        providerReviewContext.providerInstanceEntries.map(
+          (entry) =>
+            [entry.instanceId, getAppModelOptionsForInstance(reviewSettings, entry)] as const,
+        ),
+      ),
+    [providerReviewContext.providerInstanceEntries, reviewSettings],
+  );
   const activeGitActionProgressView = useGitActionProgressView({ environmentId, cwd });
   const threadToastData = useMemo(
     () => (activeThreadRef ? { threadRef: activeThreadRef } : undefined),
@@ -1999,13 +2078,7 @@ export function SourceControlPanel({
       cwd,
     }),
   );
-  const providerReviewMutation = useMutation(
-    gitStartProviderReviewMutationOptions({
-      environmentId,
-      cwd,
-      threadId: activeThreadRef?.threadId ?? null,
-    }),
-  );
+  const providerReviewMutation = useMutation(gitStartProviderReviewMutationOptions());
   const initMutation = useMutation(
     gitInitMutationOptions({
       environmentId,
@@ -2810,33 +2883,115 @@ export function SourceControlPanel({
   }, [deleteBranchMutation, pendingDeleteBranch, refreshPanel, threadToastData]);
 
   const startProviderReview = useCallback(
-    async (reviewTarget: ProviderReviewTarget, description: string) => {
-      if (!activeThreadRef) {
+    (reviewTarget: ProviderReviewTarget, targetDescription: string) => {
+      const bootstrap = providerReviewContext.bootstrap;
+      const unavailableReason =
+        providerReviewContext.unavailableReason ??
+        (bootstrap === null
+          ? "The current thread cannot provide a project context for this review."
+          : null);
+      if (unavailableReason !== null || !environmentId || !cwd || bootstrap === null) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "warning",
+            title: "Codex review unavailable",
+            description: unavailableReason ?? "The source control target is unavailable.",
+            ...(threadToastData !== undefined ? { data: threadToastData } : {}),
+          }),
+        );
         return;
       }
-      try {
-        await providerReviewMutation.mutateAsync({ target: reviewTarget });
-        toastManager.add(
-          stackedThreadToast({
-            type: "success",
-            title: "Codex review started",
-            description,
-            ...(threadToastData !== undefined ? { data: threadToastData } : {}),
-          }),
-        );
-      } catch (error) {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Review failed",
-            description: error instanceof Error ? error.message : "An error occurred.",
-            ...(threadToastData !== undefined ? { data: threadToastData } : {}),
-          }),
-        );
+      const threadTitle =
+        reviewTarget.type === "commit"
+          ? `Review: ${reviewTarget.title ?? reviewTarget.sha.slice(0, 12)}`
+          : reviewTarget.type === "uncommittedChanges"
+            ? "Review working tree changes"
+            : "Code review";
+      setPendingProviderReview({
+        environmentId,
+        cwd,
+        target: reviewTarget,
+        targetDescription,
+        threadTitle,
+        modelSelection: providerReviewContext.modelSelection,
+        runtimeMode: providerReviewContext.runtimeMode,
+        bootstrap,
+      });
+    },
+    [
+      cwd,
+      environmentId,
+      providerReviewContext.bootstrap,
+      providerReviewContext.modelSelection,
+      providerReviewContext.runtimeMode,
+      providerReviewContext.unavailableReason,
+      threadToastData,
+    ],
+  );
+
+  const confirmProviderReview = useCallback(async () => {
+    if (!pendingProviderReview) {
+      return;
+    }
+
+    const reviewThreadId = newThreadId();
+    const reviewThreadRef = scopeThreadRef(pendingProviderReview.environmentId, reviewThreadId);
+    try {
+      await providerReviewMutation.mutateAsync({
+        environmentId: pendingProviderReview.environmentId,
+        cwd: pendingProviderReview.cwd,
+        threadId: reviewThreadId,
+        target: pendingProviderReview.target,
+        modelSelection: pendingProviderReview.modelSelection,
+        runtimeMode: pendingProviderReview.runtimeMode,
+        bootstrap: {
+          ...pendingProviderReview.bootstrap,
+          title: pendingProviderReview.threadTitle,
+          modelSelection: pendingProviderReview.modelSelection,
+          createdAt: new Date().toISOString(),
+        },
+      });
+    } catch (error) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Review failed",
+          description: error instanceof Error ? error.message : "An error occurred.",
+          ...(threadToastData !== undefined ? { data: threadToastData } : {}),
+        }),
+      );
+      return;
+    }
+
+    setPendingProviderReview(null);
+    toastManager.add(
+      stackedThreadToast({
+        type: "success",
+        title: "Codex review started in a new thread",
+        description: pendingProviderReview.targetDescription,
+        data: { threadRef: reviewThreadRef },
+      }),
+    );
+    void navigate({
+      to: "/$environmentId/$threadId",
+      params: buildThreadRouteParams(reviewThreadRef),
+    });
+  }, [navigate, pendingProviderReview, providerReviewMutation, threadToastData]);
+
+  const handleProviderReviewDialogOpenChange = useCallback(
+    (open: boolean) => {
+      if (!open && !providerReviewMutation.isPending) {
+        setPendingProviderReview(null);
       }
     },
-    [activeThreadRef, providerReviewMutation, threadToastData],
+    [providerReviewMutation.isPending],
   );
+  const handleProviderReviewModelSelectionChange = useCallback((modelSelection: ModelSelection) => {
+    setPendingProviderReview((pending) => (pending ? { ...pending, modelSelection } : pending));
+  }, []);
+  const submitProviderReview = useCallback(() => {
+    void confirmProviderReview();
+  }, [confirmProviderReview]);
 
   const handleCommitContextMenu = useCallback(
     async (commit: VcsCommitGraphCommit, position: { readonly x: number; readonly y: number }) => {
@@ -2862,7 +3017,7 @@ export function SourceControlPanel({
             : []),
           {
             id: "review-commit",
-            label: "Review this commit",
+            label: "Review this commit with Codex...",
             disabled: reviewCommitDisabledReason !== null,
           },
           {
@@ -3711,12 +3866,12 @@ export function SourceControlPanel({
                       onClick={() =>
                         void startProviderReview(
                           { type: "uncommittedChanges" },
-                          "Reviewing working tree changes",
+                          "Working tree changes",
                         )
                       }
                     >
                       <ListTreeIcon className="size-3.5" />
-                      <span>Review changes</span>
+                      <span>Review changes with Codex...</span>
                     </MenuItem>
                     <MenuItem
                       disabled={commitDisabledReason !== null}
@@ -3931,6 +4086,19 @@ export function SourceControlPanel({
           </section>
         </div>
       </div>
+      <ProviderReviewDialog
+        open={pendingProviderReview !== null}
+        targetDescription={pendingProviderReview?.targetDescription ?? "Code review"}
+        modelSelection={
+          pendingProviderReview?.modelSelection ?? providerReviewContext.modelSelection
+        }
+        providerInstanceEntries={providerReviewContext.providerInstanceEntries}
+        modelOptionsByInstance={providerReviewModelOptionsByInstance}
+        isPending={providerReviewMutation.isPending}
+        onOpenChange={handleProviderReviewDialogOpenChange}
+        onModelSelectionChange={handleProviderReviewModelSelectionChange}
+        onConfirm={submitProviderReview}
+      />
       <Dialog
         open={pendingCreateTagCommit !== null}
         onOpenChange={(open) => {

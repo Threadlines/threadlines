@@ -493,6 +493,10 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.enableAssistantStreaming !== DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming
         ? ["Agent responses"]
         : []),
+      ...(settings.preventSleepDuringActiveTurns !==
+      DEFAULT_UNIFIED_SETTINGS.preventSleepDuringActiveTurns
+        ? ["Prevent sleep during turns"]
+        : []),
       ...(settings.usageAnalyticsEnabled !== DEFAULT_UNIFIED_SETTINGS.usageAnalyticsEnabled
         ? ["Usage analytics"]
         : []),
@@ -529,6 +533,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.diffWordWrap,
       settings.automaticGitFetchInterval,
       settings.enableAssistantStreaming,
+      settings.preventSleepDuringActiveTurns,
       settings.usageAnalyticsEnabled,
       settings.sidebarThreadPreviewCount,
       settings.timestampFormat,
@@ -556,6 +561,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount,
       autoArchiveInactiveThreadsDays: DEFAULT_UNIFIED_SETTINGS.autoArchiveInactiveThreadsDays,
       enableAssistantStreaming: DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming,
+      preventSleepDuringActiveTurns: DEFAULT_UNIFIED_SETTINGS.preventSleepDuringActiveTurns,
       usageAnalyticsEnabled: DEFAULT_UNIFIED_SETTINGS.usageAnalyticsEnabled,
       automaticGitFetchInterval: DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval,
       defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
@@ -823,6 +829,34 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
                   updateSettings({ enableAssistantStreaming: Boolean(checked) })
                 }
                 aria-label="Stream agent responses"
+              />
+            }
+          />
+
+          <SettingsRow
+            title="Prevent sleep during turns"
+            description="Keep the computer awake while any thread has a turn running. The display still locks normally. macOS and Windows."
+            resetAction={
+              settings.preventSleepDuringActiveTurns !==
+              DEFAULT_UNIFIED_SETTINGS.preventSleepDuringActiveTurns ? (
+                <SettingResetButton
+                  label="prevent sleep during turns"
+                  onClick={() =>
+                    updateSettings({
+                      preventSleepDuringActiveTurns:
+                        DEFAULT_UNIFIED_SETTINGS.preventSleepDuringActiveTurns,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={settings.preventSleepDuringActiveTurns}
+                onCheckedChange={(checked) =>
+                  updateSettings({ preventSleepDuringActiveTurns: Boolean(checked) })
+                }
+                aria-label="Prevent sleep during turns"
               />
             }
           />

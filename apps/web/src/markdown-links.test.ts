@@ -23,15 +23,17 @@ describe("rewriteMarkdownFileUriHref", () => {
   it("normalizes file uri hrefs for windows drive paths", () => {
     expect(
       rewriteMarkdownFileUriHref(
-        "file:///D:/Programme/t3code/apps/web/src/components/chat/OpenInPicker.tsx#L69",
+        "file:///D:/Programme/threadlines/apps/web/src/components/chat/OpenInPicker.tsx#L69",
       ),
-    ).toBe("D:/Programme/t3code/apps/web/src/components/chat/OpenInPicker.tsx#L69");
+    ).toBe("D:/Programme/threadlines/apps/web/src/components/chat/OpenInPicker.tsx#L69");
   });
 
   it("unwraps angle-bracketed file uri hrefs", () => {
     expect(
-      rewriteMarkdownFileUriHref(" <file:///D:/Programme/t3code/apps/web/src/markdown-links.ts> "),
-    ).toBe("D:/Programme/t3code/apps/web/src/markdown-links.ts");
+      rewriteMarkdownFileUriHref(
+        " <file:///D:/Programme/threadlines/apps/web/src/markdown-links.ts> ",
+      ),
+    ).toBe("D:/Programme/threadlines/apps/web/src/markdown-links.ts");
   });
 });
 
@@ -79,40 +81,40 @@ describe("resolveMarkdownFileLinkTarget", () => {
   it("formats tooltip display paths relative to the cwd when possible", () => {
     expect(
       resolveMarkdownFileLinkMeta(
-        "file:///C:/Users/mike/dev-stuff/t3code/apps/web/src/session-logic.ts#L501",
-        "C:/Users/mike/dev-stuff/t3code",
+        "file:///C:/Users/mike/dev-stuff/threadlines/apps/web/src/session-logic.ts#L501",
+        "C:/Users/mike/dev-stuff/threadlines",
       ),
     ).toMatchObject({
-      displayPath: "t3code/apps/web/src/session-logic.ts:501",
+      displayPath: "threadlines/apps/web/src/session-logic.ts:501",
     });
   });
 
   it("formats tooltip display paths relative to the cwd for slash-prefixed windows paths", () => {
     expect(
       resolveMarkdownFileLinkMeta(
-        "/C:/Users/mike/dev-stuff/t3code/apps/web/src/components/chat/MessagesTimeline.virtualization.browser.tsx",
-        "C:/Users/mike/dev-stuff/t3code",
+        "/C:/Users/mike/dev-stuff/threadlines/apps/web/src/components/chat/MessagesTimeline.virtualization.browser.tsx",
+        "C:/Users/mike/dev-stuff/threadlines",
       ),
     ).toMatchObject({
       displayPath:
-        "t3code/apps/web/src/components/chat/MessagesTimeline.virtualization.browser.tsx",
+        "threadlines/apps/web/src/components/chat/MessagesTimeline.virtualization.browser.tsx",
     });
   });
 
   it("normalizes slash-prefixed windows drive paths before resolving", () => {
     expect(
       resolveMarkdownFileLinkTarget(
-        "/D:/Programme/t3code/apps/web/src/components/chat/OpenInPicker.tsx#L69",
+        "/D:/Programme/threadlines/apps/web/src/components/chat/OpenInPicker.tsx#L69",
       ),
-    ).toBe("D:/Programme/t3code/apps/web/src/components/chat/OpenInPicker.tsx:69");
+    ).toBe("D:/Programme/threadlines/apps/web/src/components/chat/OpenInPicker.tsx:69");
   });
 
   it("resolves angle-bracketed windows drive paths", () => {
     expect(
       resolveMarkdownFileLinkTarget(
-        "</D:/Programme/t3code/apps/web/src/components/ChatMarkdown.tsx:1>",
+        "</D:/Programme/threadlines/apps/web/src/components/ChatMarkdown.tsx:1>",
       ),
-    ).toBe("D:/Programme/t3code/apps/web/src/components/ChatMarkdown.tsx:1");
+    ).toBe("D:/Programme/threadlines/apps/web/src/components/ChatMarkdown.tsx:1");
   });
 
   it("does not treat app routes as file links", () => {
@@ -122,20 +124,20 @@ describe("resolveMarkdownFileLinkTarget", () => {
 
 describe("toMarkdownFileUrlHref", () => {
   it("formats absolute posix file paths as encoded file urls", () => {
-    expect(
-      toMarkdownFileUrlHref("/Users/will/Downloads/CMMC Implementation Proposal - GEG.pdf"),
-    ).toBe("file:///Users/will/Downloads/CMMC%20Implementation%20Proposal%20-%20GEG.pdf");
+    expect(toMarkdownFileUrlHref("/Users/demo/Downloads/Quarterly Report - Q3.pdf")).toBe(
+      "file:///Users/demo/Downloads/Quarterly%20Report%20-%20Q3.pdf",
+    );
   });
 
   it("preserves line anchors for copied file links", () => {
-    expect(toMarkdownFileUrlHref("/Users/will/project/src/main.ts", { line: 42, column: 7 })).toBe(
-      "file:///Users/will/project/src/main.ts#L42C7",
+    expect(toMarkdownFileUrlHref("/Users/demo/project/src/main.ts", { line: 42, column: 7 })).toBe(
+      "file:///Users/demo/project/src/main.ts#L42C7",
     );
   });
 
   it("formats windows drive paths as file urls", () => {
-    expect(toMarkdownFileUrlHref("D:/Programme/t3code/file name.ts")).toBe(
-      "file:///D:/Programme/t3code/file%20name.ts",
+    expect(toMarkdownFileUrlHref("D:/Programme/threadlines/file name.ts")).toBe(
+      "file:///D:/Programme/threadlines/file%20name.ts",
     );
   });
 });
