@@ -1955,6 +1955,23 @@ function sdkMessageSubtype(value: unknown): string | undefined {
   return typeof record.subtype === "string" ? record.subtype : undefined;
 }
 
+/**
+ * Emitted by Claude Code CLIs around queued slash-command execution but not
+ * declared in the SDK typings (absent as of 0.3.206). Observed states:
+ * started, completed, cancelled, discarded.
+ */
+interface SDKCommandLifecycleMessage {
+  readonly type: "command_lifecycle";
+  readonly command_uuid?: string;
+  readonly state?: string;
+  readonly uuid?: string;
+  readonly session_id?: string;
+}
+
+function isSdkCommandLifecycleMessage(value: unknown): value is SDKCommandLifecycleMessage {
+  return sdkMessageType(value) === "command_lifecycle";
+}
+
 function sdkNativeMethod(message: SDKMessage): string {
   const subtype = sdkMessageSubtype(message);
   if (subtype) {
@@ -3749,20 +3766,32 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       case "session_state_changed":
         return;
       default:
-        // Exhaustive today; newer SDKs may add subtypes we don't know yet.
-        yield* emitRuntimeWarning(
-          context,
-          `Unhandled Claude system message subtype '${(message as { subtype?: string }).subtype ?? "unknown"}'.`,
+        // Exhaustive today; newer CLIs may add subtypes we don't know yet.
+        // Diagnostics for developers, not a user-visible runtime warning.
+        yield* Effect.logDebug("claude.sdk.system-message.unhandled", {
+          threadId: context.session.threadId,
+          subtype: (message as { subtype?: string }).subtype ?? "unknown",
           message,
-        );
+        });
         return;
     }
   });
 
   const handleSdkTelemetryMessage = Effect.fn("handleSdkTelemetryMessage")(function* (
     context: ClaudeSessionContext,
-    message: SDKMessage,
+    message: SDKMessage | SDKCommandLifecycleMessage,
   ) {
+    if (message.type === "command_lifecycle") {
+      // Slash-command bookkeeping; the raw payload is already captured by
+      // logNativeSdkMessage and there is no user-facing activity to project.
+      yield* Effect.logDebug("claude.sdk.command-lifecycle", {
+        threadId: context.session.threadId,
+        state: message.state,
+        commandUuid: message.command_uuid,
+      });
+      return;
+    }
+
     const stamp = yield* makeEventStamp();
     const base = {
       eventId: stamp.eventId,
@@ -3872,11 +3901,18 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         yield* handleSdkTelemetryMessage(context, message);
         return;
       default:
-        yield* emitRuntimeWarning(
-          context,
-          `Unhandled Claude SDK message type '${sdkMessageType(message) ?? "unknown"}'.`,
+        if (isSdkCommandLifecycleMessage(message)) {
+          yield* handleSdkTelemetryMessage(context, message);
+          return;
+        }
+        // The CLI regularly ships message types ahead of the SDK typings;
+        // they are diagnostics for developers, not something to surface as a
+        // user-visible runtime warning.
+        yield* Effect.logDebug("claude.sdk.message.unhandled", {
+          threadId: context.session.threadId,
+          messageType: sdkMessageType(message) ?? "unknown",
           message,
-        );
+        });
         return;
     }
   });

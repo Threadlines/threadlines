@@ -3620,6 +3620,74 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect(
+    "consumes command_lifecycle and unknown SDK message types without runtime warnings",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+
+        const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 6).pipe(
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+
+        yield* adapter.sendTurn({
+          threadId: THREAD_ID,
+          input: "hello",
+          attachments: [],
+        });
+
+        harness.query.emit({
+          type: "command_lifecycle",
+          command_uuid: "command-1",
+          state: "started",
+          session_id: "sdk-session-command-lifecycle",
+          uuid: "command-lifecycle-1",
+        } as unknown as SDKMessage);
+
+        harness.query.emit({
+          type: "command_lifecycle",
+          command_uuid: "command-1",
+          state: "completed",
+          session_id: "sdk-session-command-lifecycle",
+          uuid: "command-lifecycle-2",
+        } as unknown as SDKMessage);
+
+        harness.query.emit({
+          type: "some_future_message_type",
+          session_id: "sdk-session-command-lifecycle",
+          uuid: "future-message-1",
+        } as unknown as SDKMessage);
+
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          errors: [],
+          session_id: "sdk-session-command-lifecycle",
+          uuid: "result-command-lifecycle",
+        } as unknown as SDKMessage);
+        harness.query.finish();
+
+        const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+        assert.deepEqual(
+          runtimeEvents.filter((event) => event.type === "runtime.warning"),
+          [],
+        );
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
   it.effect("consumes Claude thinking token telemetry without surfacing runtime warnings", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
