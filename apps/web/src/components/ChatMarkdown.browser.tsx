@@ -215,6 +215,27 @@ describe("ChatMarkdown", () => {
     }
   });
 
+  it("recognizes angle-bracketed absolute directory paths with spaces", async () => {
+    const directoryPath = "/Users/will/Threadlines Marketing Studio/Captures/Exports";
+    const screen = await render(
+      <ChatMarkdown text={`[Exports](<${directoryPath}>)`} cwd="/repo/project" />,
+    );
+
+    try {
+      const link = page.getByRole("link", { name: "Exports" });
+      await expect.element(link).toBeInTheDocument();
+      await expect.element(link).toHaveAttribute("href", toMarkdownFileUrlHref(directoryPath));
+
+      await link.click();
+      await vi.waitFor(() => {
+        expect(openInEditorMock).toHaveBeenCalledWith(directoryPath, "file-manager");
+      });
+      expect(openInPreferredEditorMock).not.toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("disambiguates duplicate file basenames inline", async () => {
     const firstPath = "/Users/yashsingh/p/t3code/apps/web/src/components/chat/MessagesTimeline.tsx";
     const secondPath = "/Users/yashsingh/p/t3code/apps/web/src/components/MessagesTimeline.tsx";
