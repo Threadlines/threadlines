@@ -13,7 +13,10 @@ import * as Option from "effect/Option";
 import { describe, expect, it, vi } from "vitest";
 
 import { ProviderValidationError } from "./Errors.ts";
-import { startProviderReviewForThread } from "./ProviderReviewCoordinator.ts";
+import {
+  formatProviderReviewRequest,
+  startProviderReviewForThread,
+} from "./ProviderReviewCoordinator.ts";
 
 const THREAD_ID = ThreadId.make("thread-review");
 const PROJECT_ID = ProjectId.make("project-review");
@@ -156,9 +159,16 @@ describe("startProviderReviewForThread", () => {
     expect(result.turnId).toBe("turn-review");
     expect(commands.map((command) => command.type)).toEqual([
       "thread.create",
+      "thread.message.user.record",
       "thread.session.set",
       "thread.session.set",
     ]);
+    const reviewMessage = commands.find((command) => command.type === "thread.message.user.record");
+    expect(reviewMessage).toMatchObject({
+      type: "thread.message.user.record",
+      threadId: THREAD_ID,
+      text: "Review commit abc123: Fix the bug",
+    });
     expect(startReview).toHaveBeenCalledWith({
       threadId: THREAD_ID,
       target: input.target,
@@ -424,6 +434,7 @@ describe("startProviderReviewForThread", () => {
 
     expect(error.message).toContain("Codex rejected the review request");
     expect(commands.map((command) => command.type)).toEqual([
+      "thread.message.user.record",
       "thread.session.set",
       "thread.session.set",
     ]);
@@ -434,5 +445,29 @@ describe("startProviderReviewForThread", () => {
       expect(errorCommand.session.activeTurnId).toBeNull();
       expect(errorCommand.session.lastError).toContain("Codex rejected the review request");
     }
+  });
+});
+
+describe("formatProviderReviewRequest", () => {
+  it("describes each native review target as visible user input", () => {
+    expect(formatProviderReviewRequest({ type: "uncommittedChanges" })).toBe(
+      "Review the current working tree changes",
+    );
+    expect(formatProviderReviewRequest({ type: "baseBranch", branch: "main" })).toBe(
+      "Review changes against main",
+    );
+    expect(
+      formatProviderReviewRequest({
+        type: "commit",
+        sha: "1234567890abcdef",
+        title: "Prevent stale review state",
+      }),
+    ).toBe("Review commit 1234567890ab: Prevent stale review state");
+    expect(
+      formatProviderReviewRequest({
+        type: "custom",
+        instructions: "Review only the cancellation path",
+      }),
+    ).toBe("Review only the cancellation path");
   });
 });

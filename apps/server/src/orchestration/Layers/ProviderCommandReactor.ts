@@ -1162,6 +1162,31 @@ const make = Effect.gen(function* () {
 
     // Orchestration turn ids are not provider turn ids, so interrupt by session.
     yield* providerService.interruptTurn({ threadId: event.payload.threadId });
+
+    // `turn/interrupt` is an acknowledgement that the provider accepted the
+    // cancellation. Settle the orchestration session immediately instead of
+    // leaving the Stop button active while waiting for the asynchronous
+    // provider completion notification. That notification can still advance
+    // the session from interrupted to ready when it arrives.
+    const interruptedThread = yield* resolveThread(event.payload.threadId);
+    const interruptedSession = interruptedThread?.session;
+    if (
+      interruptedSession &&
+      (interruptedSession.status === "running" || interruptedSession.activeTurnId !== null)
+    ) {
+      const interruptedAt = yield* nowIso;
+      yield* setThreadSession({
+        threadId: event.payload.threadId,
+        session: {
+          ...interruptedSession,
+          status: "interrupted",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: interruptedAt,
+        },
+        createdAt: interruptedAt,
+      });
+    }
   });
 
   const processContextCompactRequested = Effect.fn("processContextCompactRequested")(function* (

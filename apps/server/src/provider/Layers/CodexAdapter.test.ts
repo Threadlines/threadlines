@@ -690,6 +690,50 @@ function startLifecycleRuntime() {
 }
 
 lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
+  it.effect("keeps consuming runtime events after the session-start fiber completes", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("thread-session-lifetime");
+      const startupFiber = yield* adapter
+        .startSession({
+          provider: ProviderDriverKind.make("codex"),
+          threadId,
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.forkChild);
+      yield* Fiber.join(startupFiber);
+
+      const runtime = lifecycleRuntimeFactory.lastRuntime;
+      assert.ok(runtime);
+      const eventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      yield* runtime.emit({
+        id: asEventId("evt-after-session-start"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-07-10T00:00:00.000Z",
+        method: "turn/completed",
+        threadId,
+        turnId: asTurnId("turn-after-session-start"),
+        payload: {
+          threadId: "provider-thread-session-lifetime",
+          turn: {
+            id: "turn-after-session-start",
+            items: [],
+            status: "interrupted",
+          },
+        },
+      } satisfies ProviderEvent);
+
+      const event = yield* Fiber.join(eventFiber).pipe(Effect.timeout("1 second"));
+      assert.equal(event._tag, "Some");
+      if (event._tag === "Some") {
+        assert.equal(event.value.type, "turn.completed");
+        assert.equal(event.value.turnId, "turn-after-session-start");
+      }
+    }),
+  );
+
   it.effect("maps safety-buffering updates and preserves a remapped parent turn", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();

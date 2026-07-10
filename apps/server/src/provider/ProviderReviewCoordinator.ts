@@ -1,7 +1,9 @@
 import {
   CommandId,
+  MessageId,
   ProviderStartReviewError,
   type ProviderStartReviewInput,
+  type ProviderReviewTarget,
 } from "@threadlines/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -19,6 +21,21 @@ interface ProviderReviewCoordinatorServices {
   >;
   readonly projectionSnapshotQuery: Pick<ProjectionSnapshotQueryShape, "getThreadShellById">;
   readonly orchestrationEngine: Pick<OrchestrationEngineShape, "dispatch">;
+}
+
+export function formatProviderReviewRequest(target: ProviderReviewTarget): string {
+  switch (target.type) {
+    case "uncommittedChanges":
+      return "Review the current working tree changes";
+    case "baseBranch":
+      return `Review changes against ${target.branch}`;
+    case "commit": {
+      const commit = target.sha.slice(0, 12);
+      return target.title ? `Review commit ${commit}: ${target.title}` : `Review commit ${commit}`;
+    }
+    case "custom":
+      return target.instructions;
+  }
 }
 
 export function startProviderReviewForThread(
@@ -118,6 +135,15 @@ export function startProviderReviewForThread(
         })),
         Effect.catch(() => Effect.succeed(reviewSessionBase)),
       );
+
+    yield* services.orchestrationEngine.dispatch({
+      type: "thread.message.user.record",
+      commandId: CommandId.make(`server:provider-review:user-message:${crypto.randomUUID()}`),
+      threadId: input.threadId,
+      messageId: MessageId.make(`review-request:${crypto.randomUUID()}`),
+      text: formatProviderReviewRequest(input.target),
+      createdAt: reviewRequestedAt,
+    });
 
     yield* services.orchestrationEngine.dispatch({
       type: "thread.session.set",

@@ -2032,6 +2032,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ),
         );
 
+        // The session context owns and explicitly interrupts this fiber. It
+        // must not inherit the short-lived caller that happens to start the
+        // session, otherwise provider events stop as soon as startup returns.
         const eventFiber = yield* Stream.runForEach(runtime.events, (event) =>
           Effect.gen(function* () {
             yield* writeNativeEvent(event);
@@ -2070,7 +2073,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               }
             }
           }),
-        ).pipe(Effect.forkChild);
+        ).pipe(Effect.forkDetach);
 
         const started = yield* runtime.start().pipe(
           Effect.mapError(
