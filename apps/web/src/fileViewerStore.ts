@@ -20,6 +20,16 @@ export interface FileViewerContext {
   threadRef: ScopedThreadRef | null;
 }
 
+/**
+ * Unsaved-edit lifecycle of a file in edit mode. Absence from the map means
+ * the file matches disk. `pending` = debounced write scheduled, `saving` =
+ * write in flight, `error` = last write failed (retried on the next change
+ * or explicit save), `conflict` = the file changed on disk since this
+ * buffer's baseline — autosave is latched until the user reloads or
+ * overwrites.
+ */
+export type FileEditSaveState = "pending" | "saving" | "error" | "conflict";
+
 interface FileViewerState {
   isOpen: boolean;
   context: FileViewerContext | null;
@@ -33,6 +43,19 @@ interface FileViewerState {
   /** Bumped on every reveal request so re-opening the same line re-scrolls. */
   revealRequestId: number;
   /**
+   * Edit mode replaces the read-only preview (line selection for chat) with
+   * an editable surface — pierre disables line selection while an editor is
+   * attached, so the two are exclusive by design. Session-scoped preference.
+   */
+  editMode: boolean;
+  /** Per-path save lifecycle, mirrored here for tab dots and footer status. */
+  editSaveState: Record<string, FileEditSaveState>;
+  /**
+   * Bumped when a conflict is resolved by reloading from disk, so the active
+   * edit pane remounts and re-seeds its editor from the refreshed cache.
+   */
+  editReloadNonce: number;
+  /**
    * Word-wrap override for coarse pointers, where wrap defaults on (panning
    * code sideways on a phone is worse than wrapping). Session-scoped on
    * purpose: the persisted `fileViewerWordWrap` setting is shared across
@@ -40,6 +63,9 @@ interface FileViewerState {
    */
   coarsePointerWordWrap: boolean | null;
   setCoarsePointerWordWrap: (wrap: boolean) => void;
+  setEditMode: (editMode: boolean) => void;
+  setEditSaveState: (path: string, state: FileEditSaveState | null) => void;
+  bumpEditReloadNonce: () => void;
   open: (
     context: FileViewerContext,
     target?: { path: string; line?: number; endLine?: number },
@@ -71,9 +97,28 @@ export const useFileViewerStore = create<FileViewerState>((set) => ({
   revealLine: null,
   revealEndLine: null,
   revealRequestId: 0,
+  editMode: false,
+  editSaveState: {},
+  editReloadNonce: 0,
   coarsePointerWordWrap: null,
 
   setCoarsePointerWordWrap: (wrap) => set({ coarsePointerWordWrap: wrap }),
+
+  setEditMode: (editMode) => set({ editMode }),
+
+  bumpEditReloadNonce: () => set((state) => ({ editReloadNonce: state.editReloadNonce + 1 })),
+
+  setEditSaveState: (path, saveState) =>
+    set((state) => {
+      if (saveState === null) {
+        if (!(path in state.editSaveState)) {
+          return state;
+        }
+        const { [path]: _removed, ...editSaveState } = state.editSaveState;
+        return { editSaveState };
+      }
+      return { editSaveState: { ...state.editSaveState, [path]: saveState } };
+    }),
 
   open: (context, target) =>
     set((state) => {
@@ -96,6 +141,7 @@ export const useFileViewerStore = create<FileViewerState>((set) => ({
         revealLine: target?.line ?? null,
         revealEndLine: target?.endLine ?? null,
         revealRequestId: state.revealRequestId + 1,
+        ...(sameWorkspace ? {} : { editSaveState: {} }),
       };
     }),
 
@@ -118,7 +164,8 @@ export const useFileViewerStore = create<FileViewerState>((set) => ({
         state.activePath === path
           ? (tabs[Math.min(index, tabs.length - 1)] ?? null)
           : state.activePath;
-      return { tabs, activePath, revealLine: null };
+      const { [path]: _removed, ...editSaveState } = state.editSaveState;
+      return { tabs, activePath, revealLine: null, editSaveState };
     }),
 
   closeOtherTabs: (path) =>
@@ -127,9 +174,14 @@ export const useFileViewerStore = create<FileViewerState>((set) => ({
       activePath: state.tabs.includes(path) ? path : null,
       revealLine: null,
       revealEndLine: null,
+      editSaveState:
+        path in state.editSaveState
+          ? { [path]: state.editSaveState[path] as FileEditSaveState }
+          : {},
     })),
 
-  closeAllTabs: () => set({ tabs: [], activePath: null, revealLine: null, revealEndLine: null }),
+  closeAllTabs: () =>
+    set({ tabs: [], activePath: null, revealLine: null, revealEndLine: null, editSaveState: {} }),
 
   close: () => set({ isOpen: false, revealLine: null }),
 }));

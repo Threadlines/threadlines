@@ -1,4 +1,5 @@
 import type { SelectedLineRange } from "@pierre/diffs";
+import { getFiletypeFromFileName, preloadHighlighter } from "@pierre/diffs";
 import { File as PierreFile } from "@pierre/diffs/react";
 import { useQuery } from "@tanstack/react-query";
 import type { ProjectEntry, ScopedThreadRef, ProjectTextFileContent } from "@threadlines/contracts";
@@ -10,6 +11,7 @@ import {
   FileX,
   FolderTree,
   MessageSquarePlus,
+  PencilLine,
   SearchIcon,
   SquareArrowOutUpRight,
   TextWrapIcon,
@@ -18,13 +20,15 @@ import {
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { readLocalApi } from "../../localApi";
-import { cn } from "~/lib/utils";
+import { cn, isMacPlatform } from "~/lib/utils";
 import { openInPreferredEditor } from "../../editorPreferences";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { useFileViewerStore, type FileViewerContext } from "../../fileViewerStore";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { useTheme } from "../../hooks/useTheme";
+import { FileEditorPane } from "./FileEditorPane";
+import { resolveFileConflict } from "./fileEditorSaveCoordinator";
 import type { RevealLineNotice } from "./FileViewerOverlay.logic";
 import {
   countRenderableTextLines,
@@ -35,7 +39,7 @@ import {
   resolveRevealLineTarget,
 } from "./FileViewerOverlay.logic";
 import { formatFileSelectionLineRange, sliceFileSelection } from "../../lib/fileSelectionContext";
-import { resolveDiffThemeName } from "../../lib/diffRendering";
+import { fnv1a32, resolveDiffThemeName } from "../../lib/diffRendering";
 import { DIFF_PANEL_UNSAFE_CSS } from "../DiffPanel.styles";
 
 /**
@@ -464,6 +468,38 @@ function AddSelectionToChatFooter({
   );
 }
 
+/**
+ * Load pierre's shared main-thread highlighter for a file's language and the
+ * active theme before mounting the file surface. The viewer renders files
+ * without the worker pool (pierre 1.3's worker render loses its request
+ * under StrictMode's doubled mount), and the sync path only highlights when
+ * the shared highlighter is already loaded at construction — its lazy init
+ * never triggers a re-render, so a cold mount would stay blank forever.
+ */
+function usePierreHighlighterReady(path: string | null, themeName: string): boolean {
+  const [readyKey, setReadyKey] = useState<string | null>(null);
+  const targetKey = path === null ? null : `${themeName}:${getFiletypeFromFileName(path) ?? ""}`;
+  useEffect(() => {
+    if (targetKey === null || path === null) {
+      return;
+    }
+    let cancelled = false;
+    const language = getFiletypeFromFileName(path);
+    void preloadHighlighter({ themes: [themeName], langs: language ? [language] : [] })
+      // Unknown languages reject; the file then renders unhighlighted.
+      .catch(() => undefined)
+      .then(() => {
+        if (!cancelled) {
+          setReadyKey(targetKey);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [path, targetKey, themeName]);
+  return readyKey === targetKey;
+}
+
 function FileViewerPreview({
   context,
   wordWrap,
@@ -475,6 +511,9 @@ function FileViewerPreview({
   const revealLine = useFileViewerStore((state) => state.revealLine);
   const revealEndLine = useFileViewerStore((state) => state.revealEndLine);
   const revealRequestId = useFileViewerStore((state) => state.revealRequestId);
+  const editMode = useFileViewerStore((state) => state.editMode);
+  const setEditMode = useFileViewerStore((state) => state.setEditMode);
+  const editReloadNonce = useFileViewerStore((state) => state.editReloadNonce);
   const { resolvedTheme } = useTheme();
   const isCoarsePointer = useMediaQuery({ pointer: "coarse" });
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
@@ -489,11 +528,21 @@ function FileViewerPreview({
     }),
   );
   const file = fileQuery.data;
+  const themeName = resolveDiffThemeName(resolvedTheme);
+  const highlighterReady = usePierreHighlighterReady(activePath, themeName);
 
   useEffect(() => {
     setSelectedLines(null);
     setRevealLineNotice(null);
   }, [activePath]);
+
+  // Chat line references always land in view mode: the reveal range is shown
+  // via line selection, which pierre disables while an editor is attached.
+  useEffect(() => {
+    if (revealLine !== null) {
+      setEditMode(false);
+    }
+  }, [revealLine, revealRequestId, setEditMode]);
 
   // Reveal a requested line once content is available: select it only when it
   // exists, ratio-scroll immediately for fast feedback, then snap to the exact
@@ -638,12 +687,14 @@ function FileViewerPreview({
     );
   }
 
+  const isEditing = editMode && !file.truncated && !isCoarsePointer;
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       {file.truncated ? (
         <p className="border-b border-border/60 bg-amber-500/10 px-3 py-1.5 text-[11px] text-amber-600 dark:text-amber-400">
           Large file: showing the first {Math.ceil(file.content.length / 1024)} KB of{" "}
-          {Math.ceil(file.size / 1024)} KB, read-only.
+          {Math.ceil(file.size / 1024)} KB, read-only{editMode ? " (too large to edit)" : ""}.
         </p>
       ) : null}
       <div
@@ -651,19 +702,46 @@ function FileViewerPreview({
         className="min-h-0 flex-1 overflow-auto [background:color-mix(in_srgb,var(--card)_90%,var(--background))]"
       >
         {/* Keyed per file: the wrapper only force-renders on options changes,
-            so in-place file switches would paint stale/blank content. */}
-        <PierreFile
-          key={`${context.cwd}:${activePath}`}
-          file={{
-            name: activePath,
-            contents: file.content,
-            cacheKey: `${context.cwd}:${activePath}:${file.size}`,
-          }}
-          selectedLines={selectedLines}
-          options={pierreOptions}
-        />
+            so in-place file switches would paint stale/blank content. The
+            view key hashes contents so returning from an edit repaints even
+            when the size is unchanged. */}
+        {isEditing ? (
+          <FileEditorPane
+            // The reload nonce remounts the pane when a conflict resolves by
+            // adopting the disk state, re-seeding the editor from the cache.
+            key={`edit:${context.cwd}:${activePath}:${editReloadNonce}`}
+            context={context}
+            path={activePath}
+            initialContents={file.content}
+            initialContentHash={file.contentHash}
+            wordWrap={wordWrap}
+          />
+        ) : !highlighterReady ? (
+          <div className="flex h-full items-center justify-center text-sm text-muted-foreground/70">
+            Loading {basenameOf(activePath)}...
+          </div>
+        ) : (
+          <PierreFile
+            key={`${context.cwd}:${activePath}`}
+            file={{
+              name: activePath,
+              contents: file.content,
+              cacheKey: `${context.cwd}:${activePath}:${fnv1a32(file.content)}`,
+            }}
+            selectedLines={selectedLines}
+            // Main-thread highlighting: pierre 1.3's worker-pool render never
+            // completes for a plain File under StrictMode's doubled mount
+            // (the re-mounted instance waits forever on the first mount's
+            // deduped request). Diffs are unaffected; files are capped at
+            // 1MB, so sync highlighting stays acceptable.
+            disableWorkerPool
+            options={pierreOptions}
+          />
+        )}
       </div>
-      {context.threadRef ? (
+      {isEditing ? (
+        <FileEditorStatusFooter context={context} activePath={activePath} />
+      ) : context.threadRef ? (
         <AddSelectionToChatFooter
           threadRef={context.threadRef}
           activePath={activePath}
@@ -672,6 +750,78 @@ function FileViewerPreview({
           revealLineNotice={revealLineNotice}
         />
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * Edit-mode footer: save lifecycle for the active file. Autosave means the
+ * status usually reads "All changes saved" within a second of typing. A
+ * conflict (the file changed on disk under this buffer) swaps the footer for
+ * an inline resolution prompt.
+ */
+function FileEditorStatusFooter({
+  context,
+  activePath,
+}: {
+  context: FileViewerContext;
+  activePath: string;
+}) {
+  const saveState = useFileViewerStore((state) => state.editSaveState[activePath]);
+  const saveShortcutLabel = isMacPlatform(navigator.platform) ? "⌘S" : "Ctrl+S";
+
+  if (saveState === "conflict") {
+    const target = {
+      environmentId: context.environmentId,
+      cwd: context.cwd,
+      path: activePath,
+    };
+    return (
+      <div className="flex items-center justify-between gap-2 border-t border-border/60 bg-amber-500/10 px-3 py-1.5 max-sm:pb-[max(0.375rem,env(safe-area-inset-bottom))]">
+        <span className="text-[11px] text-amber-600 dark:text-amber-400">
+          This file changed on disk while you were editing.
+        </span>
+        <span className="flex items-center gap-1.5">
+          <button
+            type="button"
+            className="inline-flex cursor-pointer items-center rounded-md border border-border/70 bg-background px-2 py-1 text-[11px] text-foreground transition-colors hover:bg-foreground/10"
+            onClick={() => {
+              void resolveFileConflict(target, "reload");
+            }}
+          >
+            Reload file
+          </button>
+          <button
+            type="button"
+            className="inline-flex cursor-pointer items-center rounded-md border border-border/70 bg-background px-2 py-1 text-[11px] text-foreground transition-colors hover:bg-foreground/10"
+            onClick={() => {
+              void resolveFileConflict(target, "overwrite");
+            }}
+          >
+            Keep my version
+          </button>
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center justify-between gap-2 border-t border-border/60 px-3 py-1.5 max-sm:pb-[max(0.375rem,env(safe-area-inset-bottom))]">
+      <span
+        className={cn(
+          "text-[11px]",
+          saveState === "error" ? "text-red-600 dark:text-red-400" : "text-muted-foreground/70",
+        )}
+      >
+        {saveState === "error"
+          ? `Save failed — press ${saveShortcutLabel} to retry.`
+          : saveState
+            ? "Saving..."
+            : "All changes saved"}
+      </span>
+      <span className="text-[11px] text-muted-foreground/50">
+        Changes save automatically · {saveShortcutLabel} saves now
+      </span>
     </div>
   );
 }
@@ -686,6 +836,7 @@ function FileViewerTabs({
 }) {
   const tabs = useFileViewerStore((state) => state.tabs);
   const activePath = useFileViewerStore((state) => state.activePath);
+  const editSaveState = useFileViewerStore((state) => state.editSaveState);
   const setActivePath = useFileViewerStore((state) => state.setActivePath);
   const closeTab = useFileViewerStore((state) => state.closeTab);
   const closeOtherTabs = useFileViewerStore((state) => state.closeOtherTabs);
@@ -758,41 +909,66 @@ function FileViewerTabs({
       className="min-w-0 flex-1 self-stretch [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:mx-1 [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:my-0.5 [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:h-1 [&_[data-slot=scroll-area-scrollbar][data-orientation=horizontal]]:opacity-100"
     >
       <div className="flex h-full items-center gap-1">
-        {tabs.map((tab) => (
-          <div
-            key={tab}
-            className={cn(
-              "flex shrink-0 items-center gap-0.5 rounded-md border border-transparent py-0.5 pl-2 pr-0.5 text-xs text-muted-foreground/80 transition-colors hover:bg-foreground/8",
-              tab === activePath && "border-border/70 bg-foreground/8 text-foreground",
-            )}
-            onContextMenu={(event) => handleTabContextMenu(event, tab)}
-          >
-            <button
-              type="button"
-              className="cursor-pointer border-0 bg-transparent p-0 py-0.5 text-inherit pointer-coarse:py-1.5"
-              onClick={() => {
-                setActivePath(tab);
-                onTabSelected?.();
-              }}
-            >
-              {basenameOf(tab)}
-            </button>
-            <button
-              type="button"
-              aria-label={`Close ${tab}`}
+        {tabs.map((tab) => {
+          const tabSaveState = editSaveState[tab];
+          return (
+            <div
+              key={tab}
               className={cn(
-                "inline-flex cursor-pointer items-center rounded-sm border-0 bg-transparent p-1 text-muted-foreground/45 transition-colors hover:bg-foreground/10 hover:text-foreground pointer-coarse:p-2",
-                tab !== activePath && "text-muted-foreground/30",
+                "group flex shrink-0 items-center gap-0.5 rounded-md border border-transparent py-0.5 pl-2 pr-0.5 text-xs text-muted-foreground/80 transition-colors hover:bg-foreground/8",
+                tab === activePath && "border-border/70 bg-foreground/8 text-foreground",
               )}
-              onClick={(event) => {
-                event.stopPropagation();
-                closeTab(tab);
-              }}
+              onContextMenu={(event) => handleTabContextMenu(event, tab)}
             >
-              <X className="size-3" />
-            </button>
-          </div>
-        ))}
+              <button
+                type="button"
+                className="cursor-pointer border-0 bg-transparent p-0 py-0.5 text-inherit pointer-coarse:py-1.5"
+                onClick={() => {
+                  setActivePath(tab);
+                  onTabSelected?.();
+                }}
+              >
+                {basenameOf(tab)}
+              </button>
+              <button
+                type="button"
+                aria-label={`Close ${tab}`}
+                className={cn(
+                  "inline-flex cursor-pointer items-center rounded-sm border-0 bg-transparent p-1 text-muted-foreground/45 transition-colors hover:bg-foreground/10 hover:text-foreground pointer-coarse:p-2",
+                  tab !== activePath && "text-muted-foreground/30",
+                )}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  closeTab(tab);
+                }}
+              >
+                {/* Unsaved dot swaps to the close X on tab hover, VS Code style. */}
+                {tabSaveState ? (
+                  <>
+                    <span
+                      className="inline-flex size-3 items-center justify-center group-hover:hidden"
+                      aria-hidden
+                    >
+                      <span
+                        className={cn(
+                          "size-1.5 rounded-full",
+                          tabSaveState === "error"
+                            ? "bg-red-500"
+                            : tabSaveState === "conflict"
+                              ? "bg-amber-500"
+                              : "bg-foreground/70",
+                        )}
+                      />
+                    </span>
+                    <X className="hidden size-3 group-hover:inline-flex" />
+                  </>
+                ) : (
+                  <X className="size-3" />
+                )}
+              </button>
+            </div>
+          );
+        })}
         {activePath ? (
           <TooltipWrapper tooltip="Open in external editor">
             <button
@@ -813,6 +989,8 @@ function FileViewerTabs({
 function FileViewerLayout({ context }: { context: FileViewerContext }) {
   const activePath = useFileViewerStore((state) => state.activePath);
   const close = useFileViewerStore((state) => state.close);
+  const editMode = useFileViewerStore((state) => state.editMode);
+  const setEditMode = useFileViewerStore((state) => state.setEditMode);
   const isCoarsePointer = useMediaQuery({ pointer: "coarse" });
   // Persisted preference: the toggle writes straight to settings (optimistic
   // local apply + fire-and-forget RPC), so it sticks until toggled again.
@@ -850,6 +1028,21 @@ function FileViewerLayout({ context }: { context: FileViewerContext }) {
           </button>
         ) : null}
         <FileViewerTabs context={context} onTabSelected={showPreviewPane} />
+        {activePath && !isCoarsePointer ? (
+          <Toggle
+            aria-label={editMode ? "Done editing" : "Edit file"}
+            tooltip={editMode ? "Done editing" : "Edit file"}
+            variant="outline"
+            size="xs"
+            className="shrink-0"
+            pressed={editMode}
+            onPressedChange={(pressed) => {
+              setEditMode(Boolean(pressed));
+            }}
+          >
+            <PencilLine className="size-3" />
+          </Toggle>
+        ) : null}
         {activePath ? (
           <Toggle
             aria-label={wordWrap ? "Disable line wrapping" : "Enable line wrapping"}

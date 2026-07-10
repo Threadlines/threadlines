@@ -1,10 +1,12 @@
+import { createHash } from "node:crypto";
+
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 
-import type { ProjectReadFileResult } from "@threadlines/contracts";
+import type { ProjectReadFileResult, ProjectWriteFileResult } from "@threadlines/contracts";
 
 import { IMAGE_MIME_TYPE_BY_EXTENSION, SAFE_IMAGE_FILE_EXTENSIONS } from "../../imageMime.ts";
 import {
@@ -20,11 +22,27 @@ export const WORKSPACE_TEXT_READ_MAX_BYTES = 1_048_576;
 /** Images beyond this many bytes are reported as binary instead of inlined. */
 export const WORKSPACE_IMAGE_READ_MAX_BYTES = 10_485_760;
 
+function sha256Hex(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
 export const makeWorkspaceFileSystem = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const workspacePaths = yield* WorkspacePaths;
   const workspaceEntries = yield* WorkspaceEntries;
+
+  const readError = (input: { cwd: string; relativePath: string }, operation: string) =>
+    Effect.mapError(
+      (cause: { readonly message: string }) =>
+        new WorkspaceFileSystemError({
+          cwd: input.cwd,
+          relativePath: input.relativePath,
+          operation,
+          detail: cause.message,
+          cause,
+        }),
+    );
 
   const writeFile: WorkspaceFileSystemShape["writeFile"] = Effect.fn(
     "WorkspaceFileSystem.writeFile",
@@ -33,6 +51,31 @@ export const makeWorkspaceFileSystem = Effect.gen(function* () {
       workspaceRoot: input.cwd,
       relativePath: input.relativePath,
     });
+
+    // Optimistic-concurrency check: refuse to clobber content another writer
+    // (typically an agent) changed since the caller's baseline read. A file
+    // that vanished entirely is NOT a conflict — the caller is actively
+    // editing it, so the write simply recreates it.
+    if (input.expectedContentHash !== undefined) {
+      const currentBytes = yield* fileSystem.readFile(target.absolutePath).pipe(
+        Effect.catch((cause) =>
+          cause.reason._tag === "NotFound" ? Effect.succeed(null) : Effect.fail(cause),
+        ),
+        readError(input, "workspaceFileSystem.readForConflictCheck"),
+      );
+      if (currentBytes !== null) {
+        const currentHash = sha256Hex(currentBytes);
+        if (currentHash !== input.expectedContentHash) {
+          return {
+            kind: "conflict",
+            relativePath: target.relativePath,
+            content: new TextDecoder().decode(currentBytes),
+            contentHash: currentHash,
+            size: currentBytes.length,
+          } satisfies ProjectWriteFileResult;
+        }
+      }
+    }
 
     yield* fileSystem.makeDirectory(path.dirname(target.absolutePath), { recursive: true }).pipe(
       Effect.mapError(
@@ -59,20 +102,12 @@ export const makeWorkspaceFileSystem = Effect.gen(function* () {
       ),
     );
     yield* workspaceEntries.invalidate(input.cwd);
-    return { relativePath: target.relativePath };
+    return {
+      kind: "written",
+      relativePath: target.relativePath,
+      contentHash: sha256Hex(Buffer.from(input.contents, "utf8")),
+    } satisfies ProjectWriteFileResult;
   });
-
-  const readError = (input: { cwd: string; relativePath: string }, operation: string) =>
-    Effect.mapError(
-      (cause: { readonly message: string }) =>
-        new WorkspaceFileSystemError({
-          cwd: input.cwd,
-          relativePath: input.relativePath,
-          operation,
-          detail: cause.message,
-          cause,
-        }),
-    );
 
   const readFilePrefix = (absolutePath: string, maxBytes: number) =>
     Effect.scoped(
@@ -193,6 +228,7 @@ export const makeWorkspaceFileSystem = Effect.gen(function* () {
         content: new TextDecoder().decode(prefix),
         size,
         truncated: size > prefix.length,
+        contentHash: sha256Hex(prefix),
       } satisfies ProjectReadFileResult;
     },
   );

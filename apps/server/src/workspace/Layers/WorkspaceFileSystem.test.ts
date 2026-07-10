@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it, describe, expect } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -38,6 +40,10 @@ const makeTempDir = Effect.gen(function* () {
     prefix: "threadlines-workspace-files-",
   });
 });
+
+function sha256HexOf(contents: string): string {
+  return createHash("sha256").update(Buffer.from(contents, "utf8")).digest("hex");
+}
 
 const writeTextFile = Effect.fn("writeTextFile")(function* (
   cwd: string,
@@ -93,8 +99,83 @@ it.layer(TestLayer)("WorkspaceFileSystemLive", (it) => {
           .readFileString(path.join(cwd, "plans/effect-rpc.md"))
           .pipe(Effect.orDie);
 
-        expect(result).toEqual({ relativePath: "plans/effect-rpc.md" });
+        expect(result).toEqual({
+          kind: "written",
+          relativePath: "plans/effect-rpc.md",
+          contentHash: sha256HexOf("# Plan\n"),
+        });
         expect(saved).toBe("# Plan\n");
+      }),
+    );
+
+    it.effect("writes when the expected content hash matches the disk state", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const cwd = yield* makeTempDir;
+        yield* writeTextFile(cwd, "notes.md", "v1");
+
+        const result = yield* workspaceFileSystem.writeFile({
+          cwd,
+          relativePath: "notes.md",
+          contents: "v2",
+          expectedContentHash: sha256HexOf("v1"),
+        });
+
+        expect(result).toEqual({
+          kind: "written",
+          relativePath: "notes.md",
+          contentHash: sha256HexOf("v2"),
+        });
+      }),
+    );
+
+    it.effect("refuses stale-baseline writes with a conflict carrying disk state", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir;
+        // Another writer moved the file past the caller's baseline ("v1").
+        yield* writeTextFile(cwd, "notes.md", "external v2");
+
+        const result = yield* workspaceFileSystem.writeFile({
+          cwd,
+          relativePath: "notes.md",
+          contents: "my edit on top of v1",
+          expectedContentHash: sha256HexOf("v1"),
+        });
+
+        expect(result).toEqual({
+          kind: "conflict",
+          relativePath: "notes.md",
+          content: "external v2",
+          contentHash: sha256HexOf("external v2"),
+          size: 11,
+        });
+        const disk = yield* fileSystem
+          .readFileString(path.join(cwd, "notes.md"))
+          .pipe(Effect.orDie);
+        expect(disk).toBe("external v2");
+      }),
+    );
+
+    it.effect("recreates externally deleted files instead of reporting a conflict", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const cwd = yield* makeTempDir;
+
+        const result = yield* workspaceFileSystem.writeFile({
+          cwd,
+          relativePath: "gone.md",
+          contents: "recreated",
+          expectedContentHash: sha256HexOf("old baseline"),
+        });
+
+        expect(result).toEqual({
+          kind: "written",
+          relativePath: "gone.md",
+          contentHash: sha256HexOf("recreated"),
+        });
       }),
     );
 
@@ -179,6 +260,7 @@ it.layer(TestLayer)("WorkspaceFileSystemLive", (it) => {
           content: "export const answer = 42;\n",
           size: 26,
           truncated: false,
+          contentHash: sha256HexOf("export const answer = 42;\n"),
         });
       }),
     );

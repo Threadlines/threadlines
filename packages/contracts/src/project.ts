@@ -1,3 +1,4 @@
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
@@ -38,12 +39,47 @@ export const ProjectWriteFileInput = Schema.Struct({
   cwd: TrimmedNonEmptyString,
   relativePath: TrimmedNonEmptyString.check(Schema.isMaxLength(PROJECT_WRITE_FILE_PATH_MAX_LENGTH)),
   contents: Schema.String,
+  /**
+   * Optimistic-concurrency guard: sha256 (hex) of the content the writer
+   * last read. When set and the file's current on-disk hash differs, the
+   * write is refused with a `conflict` result instead of clobbering changes
+   * made by another writer (typically an agent editing the same tree).
+   * Omit to write unconditionally.
+   */
+  expectedContentHash: Schema.optional(TrimmedNonEmptyString),
 });
 export type ProjectWriteFileInput = typeof ProjectWriteFileInput.Type;
 
-export const ProjectWriteFileResult = Schema.Struct({
+export const ProjectFileWritten = Schema.Struct({
+  // Both fields tolerate absence so responses from servers that predate the
+  // written/conflict union (hosted-app version skew) still decode: a bare
+  // `{relativePath}` reads as an unguarded successful write.
+  kind: Schema.Literal("written").pipe(Schema.withDecodingDefault(Effect.succeed("written"))),
   relativePath: TrimmedNonEmptyString,
+  /**
+   * sha256 (hex) of the bytes just written — the writer's next baseline.
+   * Empty on responses from servers that predate the field.
+   */
+  contentHash: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
 });
+export type ProjectFileWritten = typeof ProjectFileWritten.Type;
+
+/**
+ * The file changed on disk since the writer's baseline. Modeled as a result
+ * rather than an error because concurrent edits are an expected state; the
+ * current disk text is included so clients can offer "reload" inline
+ * without a follow-up read.
+ */
+export const ProjectWriteFileConflict = Schema.Struct({
+  kind: Schema.Literal("conflict"),
+  relativePath: TrimmedNonEmptyString,
+  content: Schema.String,
+  contentHash: TrimmedNonEmptyString,
+  size: NonNegativeInt,
+});
+export type ProjectWriteFileConflict = typeof ProjectWriteFileConflict.Type;
+
+export const ProjectWriteFileResult = Schema.Union([ProjectFileWritten, ProjectWriteFileConflict]);
 export type ProjectWriteFileResult = typeof ProjectWriteFileResult.Type;
 
 export class ProjectWriteFileError extends Schema.TaggedErrorClass<ProjectWriteFileError>()(
@@ -86,6 +122,13 @@ export const ProjectTextFileContent = Schema.Struct({
   /** Total file size in bytes; `content` may cover only a truncated prefix. */
   size: NonNegativeInt,
   truncated: Schema.Boolean,
+  /**
+   * sha256 (hex) of the served content bytes. Editors send it back as
+   * `expectedContentHash` so stale buffers cannot clobber newer writes.
+   * Empty when the response came from a server that predates the field
+   * (hosted-app version skew) — writers then skip the conflict guard.
+   */
+  contentHash: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
 });
 export type ProjectTextFileContent = typeof ProjectTextFileContent.Type;
 
