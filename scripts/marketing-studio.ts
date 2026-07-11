@@ -10,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const STUDIO_KIND = "threadlines-marketing-studio";
 const APP_DATA_KIND = "threadlines-marketing-studio-app-data";
 const STUDIO_VERSION = 1;
-const THREAD_SEED_VERSION = 2;
+const THREAD_SEED_VERSION = 4;
 const PROJECT_NAME = "Orbit";
 const USER_DATA_DIR_NAME_PATTERN = /^[a-zA-Z0-9._-]+$/;
 const REPO_ROOT = NodePath.resolve(NodePath.dirname(fileURLToPath(import.meta.url)), "..");
@@ -356,7 +356,7 @@ const writeStudioReadme = (): void => {
       "2. Select a few useful lines and attach the selection to chat.",
       "3. Inspect staged and unstaged changes by file, then undo one file.",
       "4. Read the visual Git graph and inspect the open feature branches.",
-      "5. Show the inhabited sidebar with 4 Orbit, 3 Northstar, and 2 Lumen threads.",
+      "5. Show the inhabited sidebar with 6 Orbit, 5 Northstar, and 5 Lumen threads.",
       "",
       "Run from the Threadlines source checkout:",
       "",
@@ -1264,6 +1264,20 @@ const buildProjectThreadSeeds = (): ReadonlyArray<MarketingProjectThreadSeed> =>
           createdAt: createdAtMinutesAgo(now, 1_380),
           modelSelection: CLAUDE_FABLE_HIGH,
         },
+        {
+          title: "Design token cleanup",
+          branch: null,
+          worktreePath: null,
+          createdAt: createdAtMinutesAgo(now, 2_160),
+          modelSelection: GPT_SOL_MAX,
+        },
+        {
+          title: "Release checklist",
+          branch: null,
+          worktreePath: null,
+          createdAt: createdAtMinutesAgo(now, 5_760),
+          modelSelection: CLAUDE_FABLE_HIGH,
+        },
       ],
     },
     {
@@ -1290,6 +1304,20 @@ const buildProjectThreadSeeds = (): ReadonlyArray<MarketingProjectThreadSeed> =>
           createdAt: createdAtMinutesAgo(now, 2_880),
           modelSelection: CLAUDE_FABLE_HIGH,
         },
+        {
+          title: "Error budget dashboard",
+          branch: null,
+          worktreePath: null,
+          createdAt: createdAtMinutesAgo(now, 4_920),
+          modelSelection: GPT_SOL_MAX,
+        },
+        {
+          title: "Canary analysis",
+          branch: null,
+          worktreePath: null,
+          createdAt: createdAtMinutesAgo(now, 8_640),
+          modelSelection: CLAUDE_FABLE_HIGH,
+        },
       ],
     },
     {
@@ -1308,6 +1336,27 @@ const buildProjectThreadSeeds = (): ReadonlyArray<MarketingProjectThreadSeed> =>
           worktreePath: threadWorktreePath("Lumen", "evaluation-cache"),
           createdAt: createdAtMinutesAgo(now, 4_320),
           modelSelection: CLAUDE_FABLE_HIGH,
+        },
+        {
+          title: "Flag targeting",
+          branch: null,
+          worktreePath: null,
+          createdAt: createdAtMinutesAgo(now, 5_400),
+          modelSelection: GPT_SOL_MAX,
+        },
+        {
+          title: "SDK migration",
+          branch: null,
+          worktreePath: null,
+          createdAt: createdAtMinutesAgo(now, 7_200),
+          modelSelection: CLAUDE_FABLE_HIGH,
+        },
+        {
+          title: "Experiment guardrails",
+          branch: null,
+          worktreePath: null,
+          createdAt: createdAtMinutesAgo(now, 10_080),
+          modelSelection: GPT_SOL_MAX,
         },
       ],
     },
@@ -1361,7 +1410,7 @@ const seedStudioThreads = (): void => {
   }
 
   writeTextFile(paths.threadSeedMarker, String(THREAD_SEED_VERSION) + "\n");
-  console.log("Seeded 4 Orbit, 3 Northstar, and 2 Lumen threads.");
+  console.log("Seeded 6 Orbit, 5 Northstar, and 5 Lumen threads.");
 };
 
 const seedStudioProjects = (): void => {
@@ -1477,6 +1526,8 @@ const launchStudio = (): void => {
         THREADLINES_DESKTOP_BACKEND_CWD: paths.project,
         THREADLINES_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "1",
         THREADLINES_DESKTOP_OPEN_DEVTOOLS: "0",
+        THREADLINES_DESKTOP_RESTART_ON_REBUILD:
+          process.env.THREADLINES_DESKTOP_RESTART_ON_REBUILD ?? "0",
         THREADLINES_DISABLE_AUTO_UPDATE: "1",
         PATH: paths.fixtureBin + NodePath.delimiter + (process.env.PATH ?? ""),
         SHELL: NodePath.join(paths.fixtureBin, "threadlines-studio-shell"),

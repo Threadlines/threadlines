@@ -40,12 +40,39 @@ import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterValidationError } from "../Errors.ts";
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
+import { claudeProjectDirectoryName } from "../Drivers/ClaudeSessionTranscripts.ts";
 import {
   makeClaudeAdapter,
   parseEnterWorktreeCwd,
   type ClaudeAdapterLiveOptions,
 } from "./ClaudeAdapter.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
+
+/**
+ * Adapter environment pointing Claude transcript lookups at a directory that
+ * never exists, so tests neither scan nor mutate the developer's real
+ * `~/.claude/projects`. Resume tests that need a transcript on disk seed a
+ * real config dir instead (see `seedClaudeTranscript`).
+ */
+const missingClaudeConfigEnvironment = (): NodeJS.ProcessEnv => ({
+  ...process.env,
+  CLAUDE_CONFIG_DIR: path.join(os.tmpdir(), "threadlines-claude-adapter-test-no-config"),
+});
+
+/** Create a temp Claude config dir holding a resumable transcript for `sessionId`. */
+function seedClaudeTranscript(sessionId: string): {
+  readonly environment: NodeJS.ProcessEnv;
+  readonly cleanup: () => void;
+} {
+  const configDir = mkdtempSync(path.join(os.tmpdir(), "claude-adapter-transcripts-"));
+  const projectDir = path.join(configDir, "projects", claudeProjectDirectoryName(process.cwd()));
+  mkdirSync(projectDir, { recursive: true });
+  writeFileSync(path.join(projectDir, `${sessionId}.jsonl`), "");
+  return {
+    environment: { ...process.env, CLAUDE_CONFIG_DIR: configDir },
+    cleanup: () => rmSync(configDir, { recursive: true, force: true }),
+  };
+}
 
 // Test-local service tag so the rest of the file can keep using `yield* ClaudeAdapter`.
 class ClaudeAdapter extends Context.Service<ClaudeAdapter, ClaudeAdapterShape>()(
@@ -227,6 +254,7 @@ function makeHarness(config?: {
   readonly baseDir?: string;
   readonly claudeConfig?: Partial<ClaudeSettings>;
   readonly instanceId?: ProviderInstanceId;
+  readonly environment?: NodeJS.ProcessEnv;
 }) {
   const query = new FakeClaudeQuery();
   let createInput:
@@ -237,6 +265,7 @@ function makeHarness(config?: {
     | undefined;
 
   const adapterOptions: ClaudeAdapterLiveOptions = {
+    environment: config?.environment ?? missingClaudeConfigEnvironment(),
     ...(config?.instanceId ? { instanceId: config.instanceId } : {}),
     createQuery: (input) => {
       createInput = input;
@@ -2490,6 +2519,7 @@ describe("ClaudeAdapterLive", () => {
       Effect.gen(function* () {
         const claudeConfig = decodeClaudeSettings({});
         return yield* makeClaudeAdapter(claudeConfig, {
+          environment: missingClaudeConfigEnvironment(),
           createQuery: () => {
             const query = new FakeClaudeQuery();
             queries.push(query);
@@ -4836,7 +4866,8 @@ describe("ClaudeAdapterLive", () => {
   });
 
   it.effect("passes Claude resume ids without pinning a stale assistant checkpoint", () => {
-    const harness = makeHarness();
+    const seeded = seedClaudeTranscript("550e8400-e29b-41d4-a716-446655440000");
+    const harness = makeHarness({ environment: seeded.environment });
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
 
@@ -4867,11 +4898,52 @@ describe("ClaudeAdapterLive", () => {
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
+      Effect.ensuring(Effect.sync(seeded.cleanup)),
+    );
+  });
+
+  it.effect("falls back to a fresh session when the resume transcript is missing", () => {
+    const missingSessionId = "0f0e0d0c-0b0a-4908-8706-050403020100";
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const session = yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        resumeCursor: {
+          threadId: "resume-thread-1",
+          resume: missingSessionId,
+          resumeSessionAt: "assistant-99",
+          turnCount: 3,
+        },
+        runtimeMode: "full-access",
+      });
+
+      // No transcript on disk means a native resume would fail every retry;
+      // the adapter starts fresh with an app-generated session id instead.
+      const createInput = harness.getLastCreateQueryInput();
+      assert.equal(createInput?.options.resume, undefined);
+      assert.equal(typeof createInput?.options.sessionId, "string");
+      assert.notEqual(createInput?.options.sessionId, missingSessionId);
+
+      const resumeCursor = session.resumeCursor as {
+        readonly resume?: string;
+        readonly resumeSessionAt?: string;
+        readonly turnCount?: number;
+      };
+      assert.equal(resumeCursor.resume, createInput?.options.sessionId);
+      assert.equal(resumeCursor.resumeSessionAt, undefined);
+      assert.equal(resumeCursor.turnCount, 0);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
     );
   });
 
   it.effect("preserves durable resume ids across Claude resume hooks", () => {
-    const harness = makeHarness();
+    const seeded = seedClaudeTranscript("550e8400-e29b-41d4-a716-446655440000");
+    const harness = makeHarness({ environment: seeded.environment });
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
       const durableSessionId = "550e8400-e29b-41d4-a716-446655440000";
@@ -4957,6 +5029,7 @@ describe("ClaudeAdapterLive", () => {
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
+      Effect.ensuring(Effect.sync(seeded.cleanup)),
     );
   });
 

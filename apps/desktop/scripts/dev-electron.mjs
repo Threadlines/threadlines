@@ -69,6 +69,23 @@ if (configuredUserDataDirName !== null && userDataDirName !== configuredUserData
 }
 const desktopUserDataDirectory =
   desktopAppDataDirectory === null ? null : join(desktopAppDataDirectory, userDataDirName);
+const configuredRemoteDebuggingPort = readStringEnv(["THREADLINES_CAPTURE_DEBUG_PORT"]);
+const parsedRemoteDebuggingPort = configuredRemoteDebuggingPort
+  ? Number.parseInt(configuredRemoteDebuggingPort, 10)
+  : null;
+const remoteDebuggingPort =
+  parsedRemoteDebuggingPort !== null &&
+  Number.isInteger(parsedRemoteDebuggingPort) &&
+  parsedRemoteDebuggingPort > 0 &&
+  parsedRemoteDebuggingPort <= 65_535
+    ? parsedRemoteDebuggingPort
+    : null;
+if (configuredRemoteDebuggingPort !== null && remoteDebuggingPort === null) {
+  console.warn(
+    "[desktop-dev] Ignoring invalid THREADLINES_CAPTURE_DEBUG_PORT=" +
+      configuredRemoteDebuggingPort,
+  );
+}
 
 await waitForResources({
   baseDir: desktopDir,
@@ -168,6 +185,7 @@ function startApp() {
   const launchArgs = [
     "--threadlines-dev-root=" + devProcessIdentity,
     ...(desktopUserDataDirectory === null ? [] : ["--user-data-dir=" + desktopUserDataDirectory]),
+    ...(remoteDebuggingPort === null ? [] : ["--remote-debugging-port=" + remoteDebuggingPort]),
     "dist-electron/main.cjs",
   ];
   const app = spawn(resolveElectronPath(), launchArgs, {

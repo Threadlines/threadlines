@@ -149,6 +149,7 @@ const seedThreads = (input: MarketingStudioSeedInput) =>
     const snapshot = yield* snapshots.getSnapshot();
     let createdCount = 0;
     let updatedCount = 0;
+    let unarchivedCount = 0;
     let removedPlaceholderCount = 0;
 
     for (const projectSeed of input.projects) {
@@ -182,6 +183,14 @@ const seedThreads = (input: MarketingStudioSeedInput) =>
           (thread) => thread.title === threadSeed.title && thread.title !== "New thread",
         );
         if (existing) {
+          if (existing.archivedAt !== null) {
+            yield* engine.dispatch({
+              type: "thread.unarchive",
+              commandId: CommandId.make(crypto.randomUUID()),
+              threadId: existing.id,
+            });
+            unarchivedCount += 1;
+          }
           if (
             existing.branch !== threadSeed.branch ||
             existing.worktreePath !== threadSeed.worktreePath ||
@@ -217,7 +226,7 @@ const seedThreads = (input: MarketingStudioSeedInput) =>
       }
     }
 
-    return { createdCount, updatedCount, removedPlaceholderCount };
+    return { createdCount, updatedCount, unarchivedCount, removedPlaceholderCount };
   });
 
 const main = async (): Promise<void> => {
@@ -237,7 +246,7 @@ const main = async (): Promise<void> => {
   );
 
   console.log(
-    `Marketing Studio threads: ${result.createdCount} created, ${result.updatedCount} updated, ${result.removedPlaceholderCount} placeholders removed.`,
+    `Marketing Studio threads: ${result.createdCount} created, ${result.updatedCount} updated, ${result.unarchivedCount} unarchived, ${result.removedPlaceholderCount} placeholders removed.`,
   );
 };
 

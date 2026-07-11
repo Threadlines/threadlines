@@ -79,7 +79,7 @@ describe("marketing-studio", () => {
       };
       assert.deepEqual(
         threadSeed.projects.map((seededProject) => seededProject.threads.length),
-        [4, 3, 2],
+        [6, 5, 5],
       );
       assert.deepEqual(
         threadSeed.projects.flatMap((seededProject) =>

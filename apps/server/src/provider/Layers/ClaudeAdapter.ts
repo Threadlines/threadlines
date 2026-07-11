@@ -77,6 +77,7 @@ import { countStructuredPatchStats, type FileChangeStat } from "@threadlines/sha
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
+import { ensureClaudeSessionTranscript } from "../Drivers/ClaudeSessionTranscripts.ts";
 import { addProviderAuthHint, isProviderAuthErrorMessage } from "../providerAuthHints.ts";
 import {
   claudeModelSupportsAutoRuntimeMode,
@@ -4203,8 +4204,51 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }
 
       const startedAt = yield* nowIso;
-      const resumeState = readClaudeResumeState(input.resumeCursor);
+      const requestedResumeState = readClaudeResumeState(input.resumeCursor);
       const threadId = input.threadId;
+
+      // Claude Code scopes transcript lookup to the cwd-derived project
+      // directory, so resuming after the session's original cwd disappeared
+      // (e.g. a cleaned-up worktree) fails every retry even though the
+      // transcript still exists. Relocate the transcript when it lives under
+      // another project directory; start fresh when it is gone entirely.
+      let resumeState = requestedResumeState;
+      if (requestedResumeState?.resume !== undefined) {
+        const transcriptResolution = yield* ensureClaudeSessionTranscript({
+          environment: claudeEnvironment,
+          cwd: input.cwd ?? process.cwd(),
+          sessionId: requestedResumeState.resume,
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+          // Verification is best-effort: on filesystem errors keep the
+          // native resume as-is rather than blocking session start.
+          Effect.catch((cause) =>
+            Effect.logWarning("claude.resume.transcript-check-failed", {
+              threadId,
+              sessionId: requestedResumeState.resume,
+              cause,
+            }).pipe(Effect.as(undefined)),
+          ),
+        );
+        if (transcriptResolution?.outcome === "relocated") {
+          yield* Effect.logInfo("claude.resume.transcript-relocated", {
+            threadId,
+            sessionId: requestedResumeState.resume,
+            sourcePath: transcriptResolution.sourcePath,
+            transcriptPath: transcriptResolution.transcriptPath,
+          });
+        } else if (transcriptResolution?.outcome === "missing") {
+          yield* Effect.logWarning("claude.resume.transcript-missing", {
+            threadId,
+            sessionId: requestedResumeState.resume,
+            cwd: input.cwd ?? process.cwd(),
+            reason: "starting a fresh session because no project directory holds the transcript",
+          });
+          resumeState = undefined;
+        }
+      }
+
       const existingResumeSessionId = resumeState?.resume;
       const newSessionId = existingResumeSessionId === undefined ? yield* randomUUIDv4 : undefined;
       const sessionId = existingResumeSessionId ?? newSessionId;
@@ -4713,9 +4757,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         lastCompletedTurnId: undefined,
         lastThreadStartedId: undefined,
         // Render the cross-driver handoff seed once at start; consumed on the
-        // first turn. Only honored when there is no native resume to defer to.
+        // first turn. Only honored when there is no native resume to defer to
+        // (including when a requested resume fell back to a fresh start).
         pendingContextSeedText:
-          input.contextSeed !== undefined && input.resumeCursor === undefined
+          input.contextSeed !== undefined && resumeState === undefined
             ? renderThreadContextSeed(input.contextSeed)
             : undefined,
         stopped: false,
@@ -4730,7 +4775,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         provider: PROVIDER,
         createdAt: sessionStartedStamp.createdAt,
         threadId,
-        payload: input.resumeCursor !== undefined ? { resume: input.resumeCursor } : {},
+        // Reflect the effective resume: when the transcript is gone and the
+        // session fell back to a fresh start, don't claim a resume happened.
+        payload:
+          resumeState !== undefined && input.resumeCursor !== undefined
+            ? { resume: input.resumeCursor }
+            : {},
         providerRefs: {},
       });
 
