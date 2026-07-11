@@ -11,7 +11,7 @@ import {
   type ServerProvider,
 } from "@threadlines/contracts";
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@threadlines/shared/keybindings";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
   getServerConfig,

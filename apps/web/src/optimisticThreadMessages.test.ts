@@ -1,6 +1,6 @@
 import { scopeThreadRef } from "@threadlines/client-runtime";
 import { EnvironmentId, MessageId, ThreadId } from "@threadlines/contracts";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import {
   EMPTY_OPTIMISTIC_THREAD_MESSAGES,

@@ -13,7 +13,7 @@ import {
   type TerminalEvent,
   ThreadId,
 } from "@threadlines/contracts";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import type { ContextMenuItem } from "@threadlines/contracts";
 

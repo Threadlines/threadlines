@@ -1,5 +1,5 @@
 import { EnvironmentId, type PersistedSavedEnvironmentRecord } from "@threadlines/contracts";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 const testEnvironmentId = EnvironmentId.make("environment-1");
 

@@ -10,7 +10,7 @@ import {
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import { ProviderValidationError } from "./Errors.ts";
 import {

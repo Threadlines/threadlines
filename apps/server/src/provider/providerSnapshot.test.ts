@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { ProviderDriverKind, type ModelCapabilities } from "@threadlines/contracts";
 import { createModelCapabilities } from "@threadlines/shared/model";
 

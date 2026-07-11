@@ -4,7 +4,7 @@ import {
   ProviderInstanceId,
   type ProviderInstanceConfig,
 } from "@threadlines/contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   buildArchivedThreadBulkDeleteConfirmationMessage,
   buildProviderInstanceUpdatePatch,

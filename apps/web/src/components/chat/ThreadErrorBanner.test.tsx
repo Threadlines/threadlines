@@ -1,6 +1,6 @@
 import { ProviderDriverKind } from "@threadlines/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { ThreadErrorBanner } from "./ThreadErrorBanner";
 

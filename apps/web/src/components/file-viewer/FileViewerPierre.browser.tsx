@@ -1,8 +1,8 @@
 import "../../index.css";
 
 import { StrictMode, useEffect, useState } from "react";
-import { afterEach, describe, expect, it } from "vitest";
-import { userEvent } from "vitest/browser";
+import { afterEach, describe, expect, it } from "vite-plus/test";
+import { userEvent } from "vite-plus/test/browser";
 import { render } from "vitest-browser-react";
 import type { SelectedLineRange } from "@pierre/diffs";
 import { getFiletypeFromFileName, preloadHighlighter } from "@pierre/diffs";

@@ -1,6 +1,6 @@
 import { scopeProjectRef } from "@threadlines/client-runtime";
 import { EnvironmentId, GENERAL_CHATS_PROJECT_ID, ProjectId } from "@threadlines/contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { resolveGeneralChatsProjectRef, scopeGeneralChatsProjectRef } from "./generalChats";
 

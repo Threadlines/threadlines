@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { scopeThreadRef } from "@threadlines/client-runtime";
 import { ThreadId } from "@threadlines/contracts";
 import { DraftId } from "./composerDraftStore";

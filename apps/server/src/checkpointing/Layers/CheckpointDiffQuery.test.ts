@@ -2,7 +2,7 @@ import { CheckpointRef, ProjectId, ThreadId, TurnId } from "@threadlines/contrac
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   ProjectionSnapshotQuery,

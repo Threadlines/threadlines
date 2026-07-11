@@ -8,7 +8,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
-import { describe, expect } from "vitest";
+import { describe, expect } from "vite-plus/test";
 
 import { AcpSessionRuntime, type AcpSessionRequestLogEvent } from "./AcpSessionRuntime.ts";
 import type * as EffectAcpProtocol from "effect-acp/protocol";

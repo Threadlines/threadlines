@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import { delimiter, join, resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { cliSpawnNeedsShell } from "./cliSpawn.ts";
 

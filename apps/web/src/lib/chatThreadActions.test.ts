@@ -1,6 +1,6 @@
 import { scopeProjectRef } from "@threadlines/client-runtime";
 import { EnvironmentId, ProjectId } from "@threadlines/contracts";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import {
   resolveThreadActionProjectRef,
   startNewLocalThreadFromContext,

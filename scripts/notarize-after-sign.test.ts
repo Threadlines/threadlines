@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { expect, it } from "vitest";
+import { expect, it } from "vite-plus/test";
 
 const require = createRequire(import.meta.url);
 const notarizeAfterSign = require("../apps/desktop/resources/notarize-after-sign.cjs") as {

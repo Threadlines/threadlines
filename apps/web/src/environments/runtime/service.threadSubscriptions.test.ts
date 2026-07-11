@@ -7,7 +7,7 @@ import {
   TurnId,
   type OrchestrationShellSnapshot,
 } from "@threadlines/contracts";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const mockSubscribeThread = vi.fn();
 const mockThreadUnsubscribe = vi.fn();

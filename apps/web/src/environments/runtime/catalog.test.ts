@@ -3,7 +3,7 @@ import {
   type LocalApi,
   type PersistedSavedEnvironmentRecord,
 } from "@threadlines/contracts";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
   resetSavedEnvironmentRegistryStoreForTests,

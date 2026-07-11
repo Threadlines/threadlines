@@ -6,7 +6,7 @@ import {
 } from "@threadlines/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import type { ProjectionSnapshotQueryShape } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { PersistenceSqlError } from "../../persistence/Errors.ts";

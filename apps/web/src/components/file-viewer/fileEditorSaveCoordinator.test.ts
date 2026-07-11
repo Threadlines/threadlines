@@ -1,6 +1,6 @@
 import { QueryClient } from "@tanstack/react-query";
 import type { EnvironmentId, ProjectReadFileResult } from "@threadlines/contracts";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const harness = vi.hoisted(() => ({
   writeFile: vi.fn<(input: unknown) => Promise<unknown>>(),

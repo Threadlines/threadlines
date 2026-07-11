@@ -7,7 +7,7 @@ import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { createModelSelection } from "@threadlines/shared/model";
-import { expect } from "vitest";
+import { expect } from "vite-plus/test";
 
 import {
   CodexSettings,

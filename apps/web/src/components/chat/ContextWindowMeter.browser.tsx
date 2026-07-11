@@ -1,7 +1,7 @@
 import "../../index.css";
 
-import { page } from "vitest/browser";
-import { describe, expect, it, vi } from "vitest";
+import { page } from "vite-plus/test/browser";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import type { ContextWindowSnapshot } from "../../lib/contextWindow";

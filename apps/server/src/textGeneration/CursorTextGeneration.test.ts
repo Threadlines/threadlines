@@ -12,7 +12,7 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { createModelSelection } from "@threadlines/shared/model";
-import { expect } from "vitest";
+import { expect } from "vite-plus/test";
 
 import { CursorSettings, ProviderInstanceId } from "@threadlines/contracts";
 

@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 
 import { isProcessAlive, listDescendantProcessIds, signalProcessSilently } from "./processTree.ts";
 

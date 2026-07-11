@@ -20,8 +20,8 @@ import {
 } from "@tanstack/react-router";
 import { flushSync } from "react-dom";
 import { type ReactNode, useEffect, useState } from "react";
-import { page } from "vitest/browser";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { page } from "vite-plus/test/browser";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import {

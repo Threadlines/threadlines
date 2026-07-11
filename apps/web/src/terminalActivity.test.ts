@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import type { TerminalEvent, TerminalSessionSnapshot } from "@threadlines/contracts";
 import { terminalRunningSubprocessFromEvent } from "./terminalActivity";

@@ -4,7 +4,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type * as EffectAcpSchema from "effect-acp/schema";
 import type { CursorSettings, ServerProviderModel } from "@threadlines/contracts";
 import { createModelCapabilities } from "@threadlines/shared/model";

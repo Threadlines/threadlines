@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import type { ChatAttachmentId } from "@threadlines/contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   attachmentRelativePath,

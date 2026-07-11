@@ -1,5 +1,5 @@
 import { EnvironmentId } from "@threadlines/contracts";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import { createEnvironmentConnection } from "./connection";
 import type { WsRpcClient } from "~/rpc/wsRpcClient";

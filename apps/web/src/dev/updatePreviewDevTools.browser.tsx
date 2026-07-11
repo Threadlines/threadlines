@@ -2,8 +2,8 @@ import "../index.css";
 
 import type { DesktopBridge, DesktopUpdateState } from "@threadlines/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { page } from "vitest/browser";
-import { afterEach, expect, it, vi } from "vitest";
+import { page } from "vite-plus/test/browser";
+import { afterEach, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import { SidebarVersionTag } from "../components/sidebar/SidebarVersionTag";

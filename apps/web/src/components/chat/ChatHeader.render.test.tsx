@@ -1,7 +1,7 @@
 import { EnvironmentId } from "@threadlines/contracts";
 import type { ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import { SidebarProvider } from "../ui/sidebar";
 import { ChatHeader } from "./ChatHeader";

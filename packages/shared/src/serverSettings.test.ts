@@ -3,7 +3,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
 } from "@threadlines/contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { createModelSelection } from "./model.ts";
 import {
   applyServerSettingsPatch,

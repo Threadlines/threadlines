@@ -3,7 +3,7 @@ import "../index.css";
 
 import { parsePatchFiles } from "@pierre/diffs";
 import { FileDiff, type FileDiffMetadata } from "@pierre/diffs/react";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 import { DIFF_PANEL_HOST_STYLE, DIFF_PANEL_UNSAFE_CSS } from "./DiffPanel.styles";

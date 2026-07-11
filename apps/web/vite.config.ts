@@ -6,7 +6,7 @@ import { resolveGitReleaseVersion } from "@threadlines/shared/gitVersion";
 import { defineProject, type TestProjectInlineConfiguration } from "vite-plus/test/config";
 import "vite-plus/test/config";
 import { defineConfig } from "vite-plus";
-import type { PluginOption } from "vite";
+import type { PluginOption } from "vite-plus";
 import pkg from "./package.json" with { type: "json" };
 
 const port = Number(process.env.PORT ?? 5733);

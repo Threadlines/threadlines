@@ -1,5 +1,5 @@
 import { ProviderDriverKind, type ThreadContextSeedEntry } from "@threadlines/contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   DEFAULT_SEED_BUDGET,

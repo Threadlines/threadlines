@@ -1,5 +1,5 @@
 import { isRelayChunkFrame, RELAY_CHUNK_MAX_CHARS } from "@threadlines/shared/relayChunking";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { applyRelayFrameChunking } from "./relayFrameChunking";
 

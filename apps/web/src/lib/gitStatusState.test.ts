@@ -1,5 +1,5 @@
 import { EnvironmentId, type VcsStatusResult } from "@threadlines/contracts";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import type { WsRpcClient } from "../rpc/wsRpcClient";
 import { resetAppAtomRegistryForTests } from "../rpc/atomRegistry";

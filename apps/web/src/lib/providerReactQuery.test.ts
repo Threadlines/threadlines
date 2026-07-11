@@ -1,6 +1,6 @@
 import { EnvironmentId, ThreadId, type EnvironmentApi } from "@threadlines/contracts";
 import { QueryClient } from "@tanstack/react-query";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { checkpointDiffQueryOptions, providerQueryKeys } from "./providerReactQuery";
 import * as environmentApi from "../environmentApi";
 

@@ -46,6 +46,7 @@
     "@oxlint/plugins": "^1.73.0",
     "@types/node": "catalog:",
     "@typescript/native-preview": "catalog:",
+    "vite": "catalog:",
     "vite-plus": "catalog:"
   },
   "engines": {

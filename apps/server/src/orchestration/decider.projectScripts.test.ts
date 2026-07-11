@@ -8,7 +8,7 @@ import {
   ProviderInstanceId,
 } from "@threadlines/contracts";
 import { createModelSelection } from "@threadlines/shared/model";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import * as Effect from "effect/Effect";
 
 import { decideOrchestrationCommand } from "./decider.ts";

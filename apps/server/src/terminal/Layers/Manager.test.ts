@@ -21,7 +21,7 @@ import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
 import { TestClock } from "effect/testing";
 import { ChildProcessSpawner } from "effect/unstable/process";
-import { expect } from "vitest";
+import { expect } from "vite-plus/test";
 
 import type { TerminalManagerShape } from "../Services/Manager.ts";
 import {

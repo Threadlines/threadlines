@@ -9,7 +9,7 @@ import {
 } from "@threadlines/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@threadlines/contracts/settings";
 import { createModelCapabilities } from "@threadlines/shared/model";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import type { DraftSessionState } from "../composerDraftStore";
 import type { Thread } from "../types";

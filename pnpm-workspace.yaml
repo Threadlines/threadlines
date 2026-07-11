@@ -21,10 +21,11 @@ catalog:
   "@typescript/native-preview": 7.0.0-dev.20260604.1
   effect: 4.0.0-beta.59
   typescript: ^5.7.3
-  vite: npm:@voidzero-dev/vite-plus-core@0.1.24
-  vite-plus: 0.1.24
-  vitest: npm:@voidzero-dev/vite-plus-test@0.1.24
+  vite: npm:@voidzero-dev/vite-plus-core@0.2.4
+  vite-plus: 0.2.4
+  vitest: 4.1.10
   yaml: ^2.9.0
+  "@vitest/browser-playwright": 4.1.10
 
 ignoredBuiltDependencies:
   - msw

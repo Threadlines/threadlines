@@ -2,7 +2,7 @@ import { EnvironmentId, MessageId, ProviderDriverKind, TurnId } from "@threadlin
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRef, type ReactElement, type ReactNode, type Ref } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import type { LegendListRef } from "@legendapp/list/react";
 
 vi.mock("@legendapp/list/react", async () => {

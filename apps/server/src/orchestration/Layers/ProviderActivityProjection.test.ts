@@ -12,7 +12,7 @@ import {
   MAX_THREAD_ACTIVITY_PAYLOAD_AGENT_RESULT_TEXT_LENGTH,
   MAX_THREAD_ACTIVITY_PAYLOAD_TEXT_LENGTH,
 } from "@threadlines/shared/threadLimits";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { projectRuntimeEventToActivities } from "./ProviderActivityProjection.ts";
 

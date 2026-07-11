@@ -6,7 +6,7 @@ import {
   ThreadId,
 } from "@threadlines/contracts";
 import { scopedProjectKey, scopeProjectRef } from "@threadlines/client-runtime";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   selectProjectsAcrossEnvironments,

@@ -1,5 +1,5 @@
 import { EnvironmentId, type GitActionProgressEvent } from "@threadlines/contracts";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { resetAppAtomRegistryForTests } from "../rpc/atomRegistry";
 import {

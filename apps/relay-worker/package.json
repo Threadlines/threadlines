@@ -16,6 +16,7 @@
   },
   "devDependencies": {
     "typescript": "catalog:",
+    "vite": "catalog:",
     "vite-plus": "catalog:",
     "vitest": "catalog:",
     "wrangler": "^4.110.0"

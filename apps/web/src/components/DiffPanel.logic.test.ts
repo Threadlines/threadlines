@@ -1,6 +1,6 @@
 import type { FileDiffMetadata } from "@pierre/diffs/react";
 import type { VcsStatusResult } from "@threadlines/contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   buildWorkingTreeStatusDigest,

@@ -11,7 +11,7 @@ import * as Path from "effect/Path";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
-import { beforeEach, vi } from "vitest";
+import { beforeEach, vi } from "vite-plus/test";
 
 const { createFromBufferMock, getMediaAccessStatusMock, readImageMock } = vi.hoisted(() => ({
   createFromBufferMock: vi.fn(),

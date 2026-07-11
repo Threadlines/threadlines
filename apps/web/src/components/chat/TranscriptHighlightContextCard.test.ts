@@ -1,5 +1,5 @@
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
   handleTranscriptHighlightNoteFormSubmit,

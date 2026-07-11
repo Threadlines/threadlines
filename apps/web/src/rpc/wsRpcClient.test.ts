@@ -3,7 +3,7 @@ import type {
   VcsStatusRemoteResult,
   VcsStatusStreamEvent,
 } from "@threadlines/contracts";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 vi.mock("./wsTransport", () => ({
   WsTransport: class WsTransport {

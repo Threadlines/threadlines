@@ -15,6 +15,8 @@
     "@effect/vitest": "catalog:",
     "oxlint": "^1.73.0",
     "typescript": "catalog:",
-    "vite-plus": "catalog:"
+    "vite": "catalog:",
+    "vite-plus": "catalog:",
+    "vitest": "catalog:"
   }
 }
