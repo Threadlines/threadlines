@@ -3582,7 +3582,7 @@ export function SourceControlPanel({
             <TooltipWrapper
               tooltip={`The agent moved this session's working directory to ${target.effectiveCwd}; showing that checkout.`}
             >
-              <span className="inline-flex min-w-0 max-w-[45%] shrink-0 items-center gap-1 rounded-sm border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] leading-none text-amber-600 dark:text-amber-400">
+              <span className="inline-flex min-w-0 max-w-[45%] items-center gap-1 rounded-sm border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] leading-none text-amber-600 dark:text-amber-400">
                 <FolderGit2Icon className="size-3 shrink-0 opacity-70" />
                 <span className="min-w-0 truncate">
                   {threadWorkingCwdLabel(target.effectiveCwd)}
@@ -3593,7 +3593,7 @@ export function SourceControlPanel({
           {gitHubLinks ? <GitHubLinksMenu links={gitHubLinks} /> : null}
           {status?.refName ? (
             <TooltipWrapper tooltip={`Branch: ${status.refName}`}>
-              <span className="inline-flex min-w-0 max-w-[45%] shrink-0 items-center gap-1 rounded-sm border border-border/70 bg-muted/45 px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground/80">
+              <span className="inline-flex min-w-0 max-w-[45%] items-center gap-1 rounded-sm border border-border/70 bg-muted/45 px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground/80">
                 <GitBranchIcon className="size-3 shrink-0 opacity-70" />
                 <span className="min-w-0 truncate">{status.refName}</span>
               </span>

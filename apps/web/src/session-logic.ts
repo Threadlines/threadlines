@@ -17,6 +17,11 @@ import {
 } from "@threadlines/contracts";
 import { countUnifiedDiffStats, type FileChangeStat } from "@threadlines/shared/diffStats";
 import {
+  APPROVAL_ACTIVITY_KINDS,
+  collectOpenPendingRequests,
+  USER_INPUT_ACTIVITY_KINDS,
+} from "@threadlines/shared/pendingRequests";
+import {
   isProviderAuthErrorMessage,
   providerAuthReconnectCommand,
 } from "@threadlines/shared/providerAuth";
@@ -431,81 +436,44 @@ function requestKindFromRequestType(requestType: unknown): PendingApproval["requ
   }
 }
 
-function isStalePendingRequestFailureDetail(detail: string | undefined): boolean {
-  const normalized = detail?.toLowerCase();
-  if (!normalized) {
-    return false;
-  }
-  return (
-    normalized.includes("stale pending approval request") ||
-    normalized.includes("stale pending user-input request") ||
-    normalized.includes("unknown pending approval request") ||
-    normalized.includes("unknown pending codex approval request") ||
-    normalized.includes("unknown pending permission request") ||
-    normalized.includes("unknown pending user-input request") ||
-    normalized.includes("unknown pending user input request") ||
-    normalized.includes("unknown pending codex user input request")
-  );
-}
-
 export function derivePendingApprovals(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): PendingApproval[] {
-  const openByRequestId = new Map<ApprovalRequestId, PendingApproval>();
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
 
-  for (const activity of ordered) {
-    const payload =
-      activity.payload && typeof activity.payload === "object"
-        ? (activity.payload as Record<string, unknown>)
-        : null;
-    const requestId =
-      payload && typeof payload.requestId === "string"
-        ? ApprovalRequestId.make(payload.requestId)
-        : null;
-    const requestKind =
-      payload &&
-      (payload.requestKind === "command" ||
-        payload.requestKind === "file-read" ||
-        payload.requestKind === "file-change" ||
-        payload.requestKind === "permissions")
-        ? payload.requestKind
-        : payload
-          ? requestKindFromRequestType(payload.requestType)
+  return collectOpenPendingRequests(ordered, APPROVAL_ACTIVITY_KINDS)
+    .flatMap<PendingApproval>(({ requestId, activity }) => {
+      const payload =
+        activity.payload && typeof activity.payload === "object"
+          ? (activity.payload as Record<string, unknown>)
           : null;
-    const detail = payload && typeof payload.detail === "string" ? payload.detail : undefined;
-    const environmentId =
-      payload && typeof payload.environmentId === "string" ? payload.environmentId : undefined;
-
-    if (activity.kind === "approval.requested" && requestId && requestKind) {
-      openByRequestId.set(requestId, {
-        requestId,
-        requestKind,
-        createdAt: activity.createdAt,
-        ...(environmentId ? { environmentId } : {}),
-        ...(detail ? { detail } : {}),
-      });
-      continue;
-    }
-
-    if (activity.kind === "approval.resolved" && requestId) {
-      openByRequestId.delete(requestId);
-      continue;
-    }
-
-    if (
-      activity.kind === "provider.approval.respond.failed" &&
-      requestId &&
-      isStalePendingRequestFailureDetail(detail)
-    ) {
-      openByRequestId.delete(requestId);
-      continue;
-    }
-  }
-
-  return [...openByRequestId.values()].toSorted((left, right) =>
-    left.createdAt.localeCompare(right.createdAt),
-  );
+      const requestKind =
+        payload &&
+        (payload.requestKind === "command" ||
+          payload.requestKind === "file-read" ||
+          payload.requestKind === "file-change" ||
+          payload.requestKind === "permissions")
+          ? payload.requestKind
+          : payload
+            ? requestKindFromRequestType(payload.requestType)
+            : null;
+      if (!requestKind) {
+        return [];
+      }
+      const detail = payload && typeof payload.detail === "string" ? payload.detail : undefined;
+      const environmentId =
+        payload && typeof payload.environmentId === "string" ? payload.environmentId : undefined;
+      return [
+        {
+          requestId: ApprovalRequestId.make(requestId),
+          requestKind,
+          createdAt: activity.createdAt,
+          ...(environmentId ? { environmentId } : {}),
+          ...(detail ? { detail } : {}),
+        },
+      ];
+    })
+    .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
 }
 
 function parseUserInputQuestions(
@@ -561,50 +529,27 @@ function parseUserInputQuestions(
 export function derivePendingUserInputs(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): PendingUserInput[] {
-  const openByRequestId = new Map<ApprovalRequestId, PendingUserInput>();
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
 
-  for (const activity of ordered) {
-    const payload =
-      activity.payload && typeof activity.payload === "object"
-        ? (activity.payload as Record<string, unknown>)
-        : null;
-    const requestId =
-      payload && typeof payload.requestId === "string"
-        ? ApprovalRequestId.make(payload.requestId)
-        : null;
-    const detail = payload && typeof payload.detail === "string" ? payload.detail : undefined;
-
-    if (activity.kind === "user-input.requested" && requestId) {
+  return collectOpenPendingRequests(ordered, USER_INPUT_ACTIVITY_KINDS)
+    .flatMap<PendingUserInput>(({ requestId, activity }) => {
+      const payload =
+        activity.payload && typeof activity.payload === "object"
+          ? (activity.payload as Record<string, unknown>)
+          : null;
       const questions = parseUserInputQuestions(payload);
       if (!questions) {
-        continue;
+        return [];
       }
-      openByRequestId.set(requestId, {
-        requestId,
-        createdAt: activity.createdAt,
-        questions,
-      });
-      continue;
-    }
-
-    if (activity.kind === "user-input.resolved" && requestId) {
-      openByRequestId.delete(requestId);
-      continue;
-    }
-
-    if (
-      activity.kind === "provider.user-input.respond.failed" &&
-      requestId &&
-      isStalePendingRequestFailureDetail(detail)
-    ) {
-      openByRequestId.delete(requestId);
-    }
-  }
-
-  return [...openByRequestId.values()].toSorted((left, right) =>
-    left.createdAt.localeCompare(right.createdAt),
-  );
+      return [
+        {
+          requestId: ApprovalRequestId.make(requestId),
+          createdAt: activity.createdAt,
+          questions,
+        },
+      ];
+    })
+    .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
 }
 
 export function deriveActivePlanState(

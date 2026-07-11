@@ -17,6 +17,12 @@ import {
 } from "@threadlines/contracts";
 import { withContextSeedPreamble } from "@threadlines/shared/contextSeed";
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@threadlines/shared/git";
+import {
+  APPROVAL_ACTIVITY_KINDS,
+  collectOpenPendingRequests,
+  PENDING_REQUEST_EXPIRED_REASON,
+  USER_INPUT_ACTIVITY_KINDS,
+} from "@threadlines/shared/pendingRequests";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
@@ -66,7 +72,8 @@ type ProviderIntentEvent = Extract<
       | "thread.context-compact-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
-      | "thread.session-stop-requested";
+      | "thread.session-stop-requested"
+      | "thread.session-set";
   }
 >;
 
@@ -1342,6 +1349,65 @@ const make = Effect.gen(function* () {
     });
   });
 
+  /**
+   * Pending approval / user-input prompts are answered through the live
+   * provider session; once that session stops (explicit stop, inactivity
+   * reap, startup reconcile after a server restart) the provider-side
+   * request is gone and the prompt can never be answered. Close each open
+   * prompt with an expiry activity so clients stop offering a Submit that
+   * is guaranteed to fail.
+   */
+  const processSessionSet = Effect.fn("processSessionSet")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.session-set" }>,
+  ) {
+    if (event.payload.session.status !== "stopped") {
+      return;
+    }
+    const thread = yield* resolveThread(event.payload.threadId);
+    if (!thread) {
+      return;
+    }
+
+    const expirations = [
+      ...collectOpenPendingRequests(thread.activities, APPROVAL_ACTIVITY_KINDS).map((open) => ({
+        open,
+        kind: APPROVAL_ACTIVITY_KINDS.resolved,
+        summary: "Approval request expired",
+      })),
+      ...collectOpenPendingRequests(thread.activities, USER_INPUT_ACTIVITY_KINDS).map((open) => ({
+        open,
+        kind: USER_INPUT_ACTIVITY_KINDS.resolved,
+        summary: "User input request expired",
+      })),
+    ];
+    if (expirations.length === 0) {
+      return;
+    }
+
+    const createdAt = yield* nowIso;
+    for (const { open, kind, summary } of expirations) {
+      yield* orchestrationEngine.dispatch({
+        type: "thread.activity.append",
+        commandId: serverCommandId("pending-request-expired"),
+        threadId: event.payload.threadId,
+        activity: {
+          id: EventId.make(crypto.randomUUID()),
+          tone: "info",
+          kind,
+          summary,
+          payload: {
+            requestId: open.requestId,
+            reason: PENDING_REQUEST_EXPIRED_REASON,
+            detail: "The provider session stopped before the request was answered.",
+          },
+          turnId: open.activity.turnId,
+          createdAt,
+        },
+        createdAt,
+      });
+    }
+  });
+
   const processDomainEvent = Effect.fn("processDomainEvent")(function* (
     event: ProviderIntentEvent,
   ) {
@@ -1388,6 +1454,9 @@ const make = Effect.gen(function* () {
       case "thread.session-stop-requested":
         yield* processSessionStopRequested(event);
         return;
+      case "thread.session-set":
+        yield* processSessionSet(event);
+        return;
     }
   });
 
@@ -1416,7 +1485,8 @@ const make = Effect.gen(function* () {
         event.type === "thread.context-compact-requested" ||
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||
-        event.type === "thread.session-stop-requested"
+        event.type === "thread.session-stop-requested" ||
+        event.type === "thread.session-set"
       ) {
         return yield* worker.enqueue(event);
       }

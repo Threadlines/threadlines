@@ -11,6 +11,11 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import {
+  collectOpenPendingRequests,
+  isStalePendingRequestFailureDetail,
+  USER_INPUT_ACTIVITY_KINDS,
+} from "@threadlines/shared/pendingRequests";
 
 import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
@@ -99,70 +104,15 @@ function extractActivityRequestId(payload: unknown): ApprovalRequestId | null {
   return typeof requestId === "string" ? ApprovalRequestId.make(requestId) : null;
 }
 
-function isStalePendingApprovalFailureDetail(detail: string | null): boolean {
-  if (detail === null) {
-    return false;
-  }
-  return (
-    detail.includes("stale pending approval request") ||
-    detail.includes("unknown pending approval request") ||
-    detail.includes("unknown pending codex approval request") ||
-    detail.includes("unknown pending permission request")
-  );
-}
-
-function isStalePendingUserInputFailureDetail(detail: string | null): boolean {
-  if (detail === null) {
-    return false;
-  }
-  return (
-    detail.includes("stale pending user-input request") ||
-    detail.includes("unknown pending user-input request") ||
-    detail.includes("unknown pending user input request") ||
-    detail.includes("unknown pending codex user input request")
-  );
-}
-
 function derivePendingUserInputCountFromActivities(
   activities: ReadonlyArray<ProjectionThreadActivity>,
 ): number {
-  const openRequestIds = new Set<string>();
   const ordered = [...activities].toSorted(
     (left, right) =>
       left.createdAt.localeCompare(right.createdAt) ||
       left.activityId.localeCompare(right.activityId),
   );
-
-  for (const activity of ordered) {
-    const requestId = extractActivityRequestId(activity.payload);
-    if (requestId === null) {
-      continue;
-    }
-    const payload =
-      typeof activity.payload === "object" && activity.payload !== null
-        ? (activity.payload as Record<string, unknown>)
-        : null;
-    const detail = typeof payload?.detail === "string" ? payload.detail.toLowerCase() : null;
-
-    if (activity.kind === "user-input.requested") {
-      openRequestIds.add(requestId);
-      continue;
-    }
-
-    if (activity.kind === "user-input.resolved") {
-      openRequestIds.delete(requestId);
-      continue;
-    }
-
-    if (
-      activity.kind === "provider.user-input.respond.failed" &&
-      isStalePendingUserInputFailureDetail(detail)
-    ) {
-      openRequestIds.delete(requestId);
-    }
-  }
-
-  return openRequestIds.size;
+  return collectOpenPendingRequests(ordered, USER_INPUT_ACTIVITY_KINDS).length;
 }
 
 function activityMayAffectThreadShellSummary(activity: { readonly kind: string }): boolean {
@@ -1440,9 +1390,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               event.payload.activity.payload !== null
                 ? (event.payload.activity.payload as Record<string, unknown>)
                 : null;
-            const detail =
-              typeof payload?.detail === "string" ? payload.detail.toLowerCase() : null;
-            if (isStalePendingApprovalFailureDetail(detail)) {
+            const detail = typeof payload?.detail === "string" ? payload.detail : null;
+            if (isStalePendingRequestFailureDetail(detail)) {
               if (Option.isNone(existingRow)) {
                 return;
               }

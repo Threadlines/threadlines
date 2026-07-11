@@ -224,6 +224,11 @@ export const BranchToolbar = memo(function BranchToolbar({
   const activeProject = useStore(activeProjectSelector);
   const hasActiveThread = serverThread !== undefined || draftThread !== null;
   const activeWorktreePath = serverThread?.worktreePath ?? draftThread?.worktreePath ?? null;
+  // Display-only: when the agent moved the session's working directory
+  // (effectiveCwd diverged), the workspace label follows it so the footer
+  // matches the source-control surfaces. Mode/lock semantics stay keyed to
+  // the configured worktree.
+  const displayWorktreePath = serverThread?.effectiveCwd ?? activeWorktreePath;
   const effectiveEnvMode =
     effectiveEnvModeOverride ??
     resolveEffectiveEnvMode({
@@ -251,7 +256,7 @@ export const BranchToolbar = memo(function BranchToolbar({
           showEnvironmentPicker={showEnvironmentPicker}
           onEnvironmentChange={onEnvironmentChange}
           effectiveEnvMode={effectiveEnvMode}
-          activeWorktreePath={activeWorktreePath}
+          activeWorktreePath={displayWorktreePath}
           onEnvModeChange={onEnvModeChange}
         />
       ) : (
@@ -270,7 +275,7 @@ export const BranchToolbar = memo(function BranchToolbar({
           <BranchToolbarEnvModeSelector
             envLocked={envModeLocked}
             effectiveEnvMode={effectiveEnvMode}
-            activeWorktreePath={activeWorktreePath}
+            activeWorktreePath={displayWorktreePath}
             onEnvModeChange={onEnvModeChange}
           />
         </div>

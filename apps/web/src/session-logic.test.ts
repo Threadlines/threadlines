@@ -302,6 +302,35 @@ describe("derivePendingApprovals", () => {
 
     expect(derivePendingApprovals(activities)).toEqual([]);
   });
+
+  it("clears pending approvals once a response fails because no provider session is bound", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "approval-open-no-session",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "approval.requested",
+        summary: "Command approval requested",
+        tone: "approval",
+        payload: {
+          requestId: "req-no-session-1",
+          requestKind: "command",
+        },
+      }),
+      makeActivity({
+        id: "approval-failed-no-session",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "provider.approval.respond.failed",
+        summary: "Provider approval response failed",
+        tone: "error",
+        payload: {
+          requestId: "req-no-session-1",
+          detail: "No active provider session is bound to this thread.",
+        },
+      }),
+    ];
+
+    expect(derivePendingApprovals(activities)).toEqual([]);
+  });
 });
 
 describe("derivePendingUserInputs", () => {
@@ -427,6 +456,91 @@ describe("derivePendingUserInputs", () => {
         payload: {
           requestId: "req-user-input-stale-1",
           detail: "Unknown pending Codex user input request: req-user-input-stale-1",
+        },
+      }),
+    ];
+
+    expect(derivePendingUserInputs(activities)).toEqual([]);
+  });
+
+  it("clears pending user-input prompts once a response fails because no provider session is bound", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "user-input-open-no-session",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "user-input.requested",
+        summary: "User input requested",
+        tone: "info",
+        payload: {
+          requestId: "req-user-input-no-session-1",
+          questions: [
+            {
+              id: "notification_level",
+              header: "Alerts",
+              question: "Which notification level should be used?",
+              options: [
+                {
+                  label: "Important only",
+                  description: "Failures and approvals",
+                },
+              ],
+              multiSelect: false,
+            },
+          ],
+        },
+      }),
+      makeActivity({
+        id: "user-input-failed-no-session",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "provider.user-input.respond.failed",
+        summary: "Provider user input response failed",
+        tone: "error",
+        payload: {
+          requestId: "req-user-input-no-session-1",
+          detail: "No active provider session is bound to this thread.",
+        },
+      }),
+    ];
+
+    expect(derivePendingUserInputs(activities)).toEqual([]);
+  });
+
+  it("clears pending user-input prompts expired by the server after a session stop", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "user-input-open-expired",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "user-input.requested",
+        summary: "User input requested",
+        tone: "info",
+        payload: {
+          requestId: "req-user-input-expired-1",
+          questions: [
+            {
+              id: "notification_level",
+              header: "Alerts",
+              question: "Which notification level should be used?",
+              options: [
+                {
+                  label: "Important only",
+                  description: "Failures and approvals",
+                },
+              ],
+              multiSelect: false,
+            },
+          ],
+        },
+      }),
+      makeActivity({
+        id: "user-input-expired",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "user-input.resolved",
+        summary: "User input request expired",
+        tone: "info",
+        payload: {
+          requestId: "req-user-input-expired-1",
+          reason: "session-stopped",
+          detail: "The provider session stopped before the request was answered.",
         },
       }),
     ];

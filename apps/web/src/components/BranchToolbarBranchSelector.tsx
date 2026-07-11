@@ -1,5 +1,6 @@
 import { scopeProjectRef, scopeThreadRef } from "@threadlines/client-runtime";
 import type { EnvironmentId, VcsRef, ThreadId } from "@threadlines/contracts";
+import { resolveThreadWorkingCwd } from "@threadlines/shared/threadCwd";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { ChevronDownIcon } from "lucide-react";
@@ -124,7 +125,13 @@ export function BranchToolbarBranchSelector({
       : (serverThread?.branch ?? draftThread?.branch ?? null);
   const activeWorktreePath = serverThread?.worktreePath ?? draftThread?.worktreePath ?? null;
   const activeProjectCwd = activeProject?.cwd ?? null;
-  const branchCwd = activeWorktreePath ?? activeProjectCwd;
+  const branchCwd = activeProjectCwd
+    ? resolveThreadWorkingCwd({
+        projectCwd: activeProjectCwd,
+        worktreePath: activeWorktreePath,
+        effectiveCwd: serverThread?.effectiveCwd ?? null,
+      })
+    : activeWorktreePath;
   const hasServerThread = serverThread !== undefined;
   const effectiveEnvMode =
     effectiveEnvModeOverride ??
