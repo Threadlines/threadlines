@@ -72,7 +72,7 @@ jobs:
         with:
           node-version-file: package.json
           cache: true
-          version: "0.1.24"
+          version: "0.2.4"
           run-install: false
 
       - name: Verify required CI checks passed
@@ -278,7 +278,7 @@ jobs:
         with:
           node-version-file: package.json
           cache: true
-          version: "0.1.24"
+          version: "0.2.4"
           run-install: false
 
       - name: Install dependencies
@@ -339,7 +339,7 @@ jobs:
         with:
           node-version-file: package.json
           cache: true
-          version: "0.1.24"
+          version: "0.2.4"
           run-install: false
 
       - name: Install dependencies
@@ -498,7 +498,7 @@ jobs:
         with:
           node-version-file: package.json
           cache: true
-          version: "0.1.24"
+          version: "0.2.4"
           run-install: false
 
       - name: Cache desktop build downloads
@@ -686,7 +686,7 @@ jobs:
         with:
           node-version-file: package.json
           cache: true
-          version: "0.1.24"
+          version: "0.2.4"
           run-install: false
 
       - name: Install dependencies
