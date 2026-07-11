@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import { HOSTED_STATIC_SETTINGS_NAV_ITEMS, SETTINGS_NAV_ITEMS } from "./SettingsSidebarNav";
 import {
   DEFAULT_SETTINGS_SECTION_PATH,
+  HOSTED_STATIC_DEFAULT_SETTINGS_SECTION_PATH,
+  HOSTED_STATIC_SETTINGS_NAV_ITEMS,
   HOSTED_STATIC_SETTINGS_SECTION_PATHS,
   rememberVisibleSettingsSection,
   resetRememberedSettingsSectionForTest,
   resolveSettingsEntryPath,
+  resolveSettingsEntryRedirect,
+  SETTINGS_NAV_ITEMS,
   VISIBLE_SETTINGS_SECTION_PATHS,
 } from "./settingsNavigation";
 
@@ -51,5 +54,74 @@ describe("settings entry navigation", () => {
     rememberVisibleSettingsSection("/settings/diagnostics");
 
     expect(resolveSettingsEntryPath()).toBe("/settings/providers");
+  });
+});
+
+describe("resolveSettingsEntryRedirect", () => {
+  it("redirects the bare settings path to the entry section on desktop", () => {
+    resetRememberedSettingsSectionForTest();
+
+    expect(
+      resolveSettingsEntryRedirect({
+        pathname: "/settings",
+        isHostedStatic: false,
+        isMobileViewport: false,
+      }),
+    ).toBe(DEFAULT_SETTINGS_SECTION_PATH);
+
+    rememberVisibleSettingsSection("/settings/providers");
+    expect(
+      resolveSettingsEntryRedirect({
+        pathname: "/settings",
+        isHostedStatic: false,
+        isMobileViewport: false,
+      }),
+    ).toBe("/settings/providers");
+  });
+
+  it("keeps the bare settings path on mobile so the section index renders", () => {
+    expect(
+      resolveSettingsEntryRedirect({
+        pathname: "/settings",
+        isHostedStatic: false,
+        isMobileViewport: true,
+      }),
+    ).toBeNull();
+
+    expect(
+      resolveSettingsEntryRedirect({
+        pathname: "/settings",
+        isHostedStatic: true,
+        isMobileViewport: true,
+      }),
+    ).toBeNull();
+  });
+
+  it("redirects hosted static sessions away from desktop-only sections", () => {
+    expect(
+      resolveSettingsEntryRedirect({
+        pathname: "/settings/providers",
+        isHostedStatic: true,
+        isMobileViewport: true,
+      }),
+    ).toBe(HOSTED_STATIC_DEFAULT_SETTINGS_SECTION_PATH);
+
+    expect(
+      resolveSettingsEntryRedirect({
+        pathname: "/settings/connections",
+        isHostedStatic: true,
+        isMobileViewport: true,
+      }),
+    ).toBeNull();
+  });
+
+  it("renders visible sections without redirecting", () => {
+    expect(
+      resolveSettingsEntryRedirect({
+        pathname: "/settings/keybindings",
+        isHostedStatic: false,
+        isMobileViewport: false,
+      }),
+    ).toBeNull();
   });
 });

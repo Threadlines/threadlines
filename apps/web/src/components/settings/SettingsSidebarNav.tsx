@@ -1,15 +1,6 @@
-import { useCallback, type ComponentType } from "react";
-import {
-  ArchiveIcon,
-  ArrowLeftIcon,
-  BotIcon,
-  FileTextIcon,
-  KeyboardIcon,
-  PlugIcon,
-  Settings2Icon,
-  SmartphoneIcon,
-} from "lucide-react";
-import { useCanGoBack, useNavigate } from "@tanstack/react-router";
+import { useCallback } from "react";
+import { ArrowLeftIcon } from "lucide-react";
+import { useCanGoBack, useNavigate, useRouter } from "@tanstack/react-router";
 
 import {
   SidebarContent,
@@ -19,62 +10,43 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarSeparator,
-  useSidebar,
 } from "../ui/sidebar";
-import { SourceControlIcon } from "../Icons";
 import { SidebarVersionTag } from "../sidebar/SidebarVersionTag";
 import { isHostedStaticApp } from "../../hostedPairing";
 import {
-  HOSTED_STATIC_SETTINGS_SECTION_PATHS,
+  HOSTED_STATIC_SETTINGS_NAV_ITEMS,
+  SETTINGS_NAV_ITEMS,
   type SettingsSectionPath,
 } from "./settingsNavigation";
 
-export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
-  label: string;
-  to: SettingsSectionPath;
-  icon: ComponentType<{ className?: string }>;
-}> = [
-  { label: "General", to: "/settings/general", icon: Settings2Icon },
-  { label: "Providers", to: "/settings/providers", icon: BotIcon },
-  { label: "Plugins", to: "/settings/plugins", icon: PlugIcon },
-  { label: "Agent Instructions", to: "/settings/instructions", icon: FileTextIcon },
-  { label: "Source Control", to: "/settings/source-control", icon: SourceControlIcon },
-  { label: "Devices", to: "/settings/connections", icon: SmartphoneIcon },
-  { label: "Keybindings", to: "/settings/keybindings", icon: KeyboardIcon },
-  { label: "Archives", to: "/settings/archived", icon: ArchiveIcon },
-];
-
-export const HOSTED_STATIC_SETTINGS_NAV_ITEMS = SETTINGS_NAV_ITEMS.filter((item) =>
-  (HOSTED_STATIC_SETTINGS_SECTION_PATHS as readonly string[]).includes(item.to),
-);
-
+/**
+ * Desktop-only settings section rail. Mobile viewports never render this:
+ * there the sidebar sheet keeps showing threads and `/settings` renders a
+ * full-page section index instead.
+ */
 export function SettingsSidebarNav({ pathname }: { pathname: string }) {
   const navigate = useNavigate();
+  const router = useRouter();
   const canGoBack = useCanGoBack();
-  const { isMobile, setOpenMobile } = useSidebar();
   const navItems =
     typeof window !== "undefined" && isHostedStaticApp(new URL(window.location.href))
       ? HOSTED_STATIC_SETTINGS_NAV_ITEMS
       : SETTINGS_NAV_ITEMS;
   const handleSectionClick = useCallback(
     (to: SettingsSectionPath) => {
-      if (isMobile) {
-        setOpenMobile(false);
-      }
       void navigate({ to, replace: true });
     },
-    [isMobile, navigate, setOpenMobile],
+    [navigate],
   );
   const handleBackClick = useCallback(() => {
-    if (isMobile) {
-      setOpenMobile(false);
-    }
     if (canGoBack) {
-      window.history.back();
+      // Through the router's history (not window.history) so hash and memory
+      // histories stay within the app document.
+      router.history.back();
       return;
     }
     void navigate({ to: "/" });
-  }, [canGoBack, isMobile, navigate, setOpenMobile]);
+  }, [canGoBack, navigate, router]);
 
   return (
     <>

@@ -82,6 +82,44 @@ export function UpdateStatusBadge({
 }
 
 /**
+ * Segmented status rail: one segment per tracked item, colored by that
+ * item's tone. Running segments shimmer, queued (neutral) segments stay an
+ * empty track, terminal segments fill solid — the rail itself is the
+ * aggregate progress story, so no percent math is needed.
+ */
+export function UpdateSegmentedRail({
+  segments,
+  className,
+}: {
+  segments: ReadonlyArray<{ readonly key: string; readonly tone: UpdateStatusTone }>;
+  className?: string;
+}) {
+  return (
+    <span aria-hidden="true" className={cn("flex h-0.5 w-full gap-0.5", className)}>
+      {segments.map(({ key, tone }) => (
+        <span
+          className="relative min-w-0 flex-1 overflow-hidden rounded-full bg-foreground/8"
+          key={key}
+        >
+          {tone === "progress" ? (
+            <span
+              className={cn(
+                "update-indeterminate-rail absolute inset-y-0 left-0 w-[45%] rounded-full",
+                UPDATE_STATUS_RAIL_FILL_STYLES.progress,
+              )}
+            />
+          ) : tone === "neutral" ? null : (
+            <span
+              className={cn("absolute inset-0 rounded-full", UPDATE_STATUS_RAIL_FILL_STYLES[tone])}
+            />
+          )}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/**
  * Determinate progress rail with an indeterminate shimmer over the remainder
  * while work is still in flight. Size/position via className (h-0.5 default).
  */

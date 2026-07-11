@@ -1153,7 +1153,7 @@ function CommitGraphRow({
             className={cn(
               "grid w-full cursor-pointer appearance-none items-center gap-2 border-0 bg-transparent px-2.5 text-left transition-colors hover:bg-accent/60",
               isCurrentBranchCommit && "bg-primary/10 hover:bg-primary/15",
-              isPinned && "bg-accent/70 ring-1 ring-primary/80",
+              isPinned && "bg-primary/20 hover:bg-primary/25 ring-1 ring-primary/80",
             )}
             style={{
               gridTemplateColumns: `${graphWidth}px minmax(0, 1fr)`,

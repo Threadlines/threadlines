@@ -2133,7 +2133,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("hides mobile thread timestamps while touch actions are visible", async () => {
+  it("shows mobile thread timestamps beside the touch actions", async () => {
     const mounted = await mountChatView({
       viewport: PHONE_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
@@ -2161,16 +2161,91 @@ describe("ChatView timeline estimator parity (full app)", () => {
         "Unable to find archive button.",
       );
       const compactActions = archiveButton.parentElement;
-      const timestampWrapper =
-        Array.from(threadRow.querySelectorAll<HTMLElement>("span")).find((element) =>
-          element.className.includes("max-sm:hidden"),
-        ) ?? null;
+      const timestampWrapper = await waitForElement(
+        () => threadRow.querySelector<HTMLElement>(`[data-testid="thread-meta-${THREAD_ID}"]`),
+        "Unable to find thread timestamp.",
+      );
 
       expect(compactActions).not.toBeNull();
-      expect(timestampWrapper).not.toBeNull();
       expect(getComputedStyle(compactActions!).opacity).toBe("1");
       expect(getComputedStyle(compactActions!).pointerEvents).toBe("auto");
-      expect(getComputedStyle(timestampWrapper!).display).toBe("none");
+      const timestampStyle = getComputedStyle(timestampWrapper);
+      expect(timestampStyle.display).not.toBe("none");
+      expect(timestampStyle.opacity).toBe("1");
+      // The timestamp sits fully left of the always-visible touch actions.
+      const timestampRect = timestampWrapper.getBoundingClientRect();
+      const actionsRect = compactActions!.getBoundingClientRect();
+      expect(timestampRect.right).toBeLessThanOrEqual(actionsRect.left);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("navigates phone settings through the full-page section index", async () => {
+    const mounted = await mountChatView({
+      viewport: PHONE_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-phone-settings-index" as MessageId,
+        targetText: "phone settings index",
+      }),
+    });
+
+    try {
+      const sidebarTrigger = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('button[data-sidebar="trigger"]'),
+        "Unable to find mobile sidebar trigger.",
+      );
+      sidebarTrigger.click();
+      await waitForLayout();
+
+      const settingsButton = await waitForElement(
+        () => findButtonContainingText("Settings"),
+        "Unable to find the sidebar settings button.",
+      );
+      settingsButton.click();
+
+      // Phone viewports keep /settings as a full-page section index instead
+      // of redirecting to a section.
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname === "/settings",
+        "Expected the settings section index route.",
+      );
+      const generalLink = await waitForElement(
+        () => document.querySelector<HTMLAnchorElement>('a[href="/settings/general"]'),
+        "Unable to find the General section link.",
+      );
+      expect(document.querySelector('a[href="/settings/providers"]')).not.toBeNull();
+
+      generalLink.click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname === "/settings/general",
+        "Expected the General section route.",
+      );
+
+      // Section pages offer a back control that returns to the index.
+      const backButton = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('button[aria-label="All settings"]'),
+        "Unable to find the settings back button.",
+      );
+      backButton.click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname === "/settings",
+        "Expected to return to the settings section index.",
+      );
+
+      const closeButton = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('button[aria-label="Close settings"]'),
+        "Unable to find the settings close button.",
+      );
+      closeButton.click();
+      await waitForURL(
+        mounted.router,
+        (pathname) => !pathname.startsWith("/settings"),
+        "Expected closing settings to leave the settings routes.",
+      );
     } finally {
       await mounted.cleanup();
     }

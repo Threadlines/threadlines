@@ -102,6 +102,27 @@ describe("SidebarVersionTag", () => {
     await expect.element(versionCard()).not.toBeInTheDocument();
   });
 
+  it("pins a hover-opened card once the update action runs", async () => {
+    const bridge = stubDesktopBridge();
+    await mountTag();
+
+    // Hover-open only — the trigger is never clicked, so the popover would
+    // normally close as soon as the pointer leaves it.
+    await versionChip().hover();
+    await expect.element(checkNowAction()).toBeVisible();
+
+    await checkNowAction().click();
+    expect(bridge.checkForUpdate).toHaveBeenCalledTimes(1);
+
+    await page.getByRole("button", { name: "elsewhere" }).hover();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    await expect.element(versionCard()).toBeVisible();
+
+    // A real click away still dismisses the pinned card.
+    await page.getByRole("button", { name: "elsewhere" }).click();
+    await expect.element(versionCard()).not.toBeInTheDocument();
+  });
+
   it("pins the card open on click so the update check can run", async () => {
     const bridge = stubDesktopBridge();
     await mountTag();
@@ -165,8 +186,7 @@ describe("SidebarVersionTag", () => {
     await checkNowAction().click();
 
     expect(bridge.checkForUpdate).toHaveBeenCalledTimes(1);
-    await expect.element(page.getByText("Checking")).toBeVisible();
-    await expect.element(page.getByText("Checking for updates…")).not.toBeInTheDocument();
+    await expect.element(page.getByText("Checking for updates…")).toBeVisible();
     const after = versionCard().element().getBoundingClientRect();
     expect(Math.round(after.width)).toBe(Math.round(before.width));
     expect(Math.round(after.height)).toBe(Math.round(before.height));
@@ -198,6 +218,9 @@ describe("SidebarVersionTag", () => {
     await versionChip().click();
     await expect.element(page.getByRole("button", { name: "Download update" })).toBeVisible();
     await expect.element(page.getByText("Download")).toBeVisible();
+    // Let the popup's opening scale transition settle before taking the
+    // reference footprint (same guard as the check-flow footprint tests).
+    await new Promise((resolve) => setTimeout(resolve, 300));
     const available = versionCard().element().getBoundingClientRect();
 
     emitUpdateState({
@@ -206,9 +229,7 @@ describe("SidebarVersionTag", () => {
       availableVersion: "1.0.1",
       downloadPercent: 42,
     });
-    await expect.element(page.getByText("Downloading", { exact: true })).toBeVisible();
-    await expect.element(page.getByText("v1.0.1 · 42%")).toBeVisible();
-    await expect.element(page.getByText("Downloading v1.0.1 · 42%")).not.toBeInTheDocument();
+    await expect.element(page.getByText("Downloading v1.0.1 · 42%")).toBeVisible();
     const downloading = versionCard().element().getBoundingClientRect();
     expect(Math.abs(downloading.height - available.height)).toBeLessThanOrEqual(1);
 

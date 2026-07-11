@@ -1,4 +1,4 @@
-import { RotateCcwIcon } from "lucide-react";
+import { ArrowLeftIcon, RotateCcwIcon, XIcon } from "lucide-react";
 import {
   Outlet,
   createFileRoute,
@@ -6,16 +6,16 @@ import {
   useCanGoBack,
   useLocation,
   useNavigate,
+  useRouter,
 } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 
 import { useSettingsRestore } from "../components/settings/SettingsPanels";
 import {
-  HOSTED_STATIC_DEFAULT_SETTINGS_SECTION_PATH,
-  isHostedStaticSettingsSectionPath,
   isVisibleSettingsSectionPath,
   rememberVisibleSettingsSection,
-  resolveSettingsEntryPath,
+  resolveSettingsEntryRedirect,
+  settingsSectionLabelForPath,
 } from "../components/settings/settingsNavigation";
 import { Button } from "../components/ui/button";
 import { SidebarInset, SidebarOpenTrigger } from "../components/ui/sidebar";
@@ -50,18 +50,28 @@ function SettingsContentLayout() {
   const location = useLocation();
   const { authGateState } = Route.useRouteContext();
   const navigate = useNavigate();
+  const router = useRouter();
   const canGoBack = useCanGoBack();
   const [restoreSignal, setRestoreSignal] = useState(0);
   const isHostedStatic = authGateState.status === "hosted-static";
   const showRestoreDefaults = location.pathname === "/settings/general" && !isHostedStatic;
+  const isSettingsIndex = location.pathname === "/settings" || location.pathname === "/settings/";
+  // On mobile the header titles the current section and offers ← back to the
+  // full-page section index; desktop always titles the page "Settings" (the
+  // sidebar rail shows the section).
+  const mobileHeaderTitle = isSettingsIndex
+    ? "Settings"
+    : (settingsSectionLabelForPath(location.pathname) ?? "Settings");
   const handleRestored = () => setRestoreSignal((value) => value + 1);
   const navigateBackWithinApp = useCallback(() => {
     if (canGoBack) {
-      window.history.back();
+      // Through the router's history (not window.history) so hash and memory
+      // histories stay within the app document.
+      router.history.back();
       return;
     }
     void navigate({ to: "/" });
-  }, [canGoBack, navigate]);
+  }, [canGoBack, navigate, router]);
 
   useEffect(() => {
     rememberVisibleSettingsSection(location.pathname);
@@ -96,18 +106,38 @@ function SettingsContentLayout() {
             )}
           >
             <div className="flex min-h-7 items-center gap-2 sm:min-h-6">
-              <SidebarOpenTrigger className="size-7 shrink-0" />
-              <span className="text-sm font-medium text-foreground">Settings</span>
+              {!isSettingsIndex ? (
+                <Button
+                  size="icon-xs"
+                  variant="ghost"
+                  aria-label="All settings"
+                  className="shrink-0 text-muted-foreground hover:text-foreground md:hidden"
+                  onClick={() => void navigate({ to: "/settings", replace: true })}
+                >
+                  <ArrowLeftIcon />
+                </Button>
+              ) : null}
+              <span className="text-sm font-medium text-foreground">
+                <span className="md:hidden">{mobileHeaderTitle}</span>
+                <span className="hidden md:inline">Settings</span>
+              </span>
               {isHostedStatic ? (
                 <span className="rounded-sm border border-border/70 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
                   Phone
                 </span>
               ) : null}
-              {showRestoreDefaults ? (
-                <div className="ms-auto flex items-center gap-2">
-                  <RestoreDefaultsButton onRestored={handleRestored} />
-                </div>
-              ) : null}
+              <div className="ms-auto flex items-center gap-2">
+                {showRestoreDefaults ? <RestoreDefaultsButton onRestored={handleRestored} /> : null}
+                <Button
+                  size="icon-xs"
+                  variant="ghost"
+                  aria-label="Close settings"
+                  className="shrink-0 text-muted-foreground hover:text-foreground"
+                  onClick={navigateBackWithinApp}
+                >
+                  <XIcon />
+                </Button>
+              </div>
             </div>
           </header>
         )}
@@ -155,17 +185,17 @@ export const Route = createFileRoute("/settings")({
 
     const isHostedStatic = context.authGateState.status === "hosted-static";
 
-    if (location.pathname === "/settings") {
-      throw redirect({
-        to: isHostedStatic
-          ? HOSTED_STATIC_DEFAULT_SETTINGS_SECTION_PATH
-          : resolveSettingsEntryPath(),
-        replace: true,
-      });
-    }
-
-    if (isHostedStatic && !isHostedStaticSettingsSectionPath(location.pathname)) {
-      throw redirect({ to: HOSTED_STATIC_DEFAULT_SETTINGS_SECTION_PATH, replace: true });
+    // Matches useIsMobile()'s max-md breakpoint. Checked here (outside React)
+    // because the redirect decision has to land before the route renders.
+    const isMobileViewport =
+      typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches;
+    const redirectTo = resolveSettingsEntryRedirect({
+      pathname: location.pathname,
+      isHostedStatic,
+      isMobileViewport,
+    });
+    if (redirectTo !== null) {
+      throw redirect({ to: redirectTo, replace: true });
     }
 
     if (isVisibleSettingsSectionPath(location.pathname)) {

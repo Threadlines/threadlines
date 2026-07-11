@@ -532,20 +532,22 @@ describe("provider update launch notification logic", () => {
     ]);
 
     expect(view).toMatchObject({
+      key: "updating:codex|cursor",
       tone: "loading",
       title: "Provider updates",
-      summary: "2 active",
+      statusChipLabel: "2 updating",
+      statusChipTone: "running",
       description: "Codex updating. Cursor queued.",
-      progressLabel: "0/2 done",
-      progressPercent: 0,
       items: [
         {
+          key: "codex",
           label: "Codex",
           status: "running",
           statusLabel: "Updating",
           tone: "running",
         },
         {
+          key: "cursor",
           label: "Cursor",
           status: "queued",
           statusLabel: "Queued",
@@ -555,7 +557,7 @@ describe("provider update launch notification logic", () => {
     });
   });
 
-  it("counts completed providers toward multi-provider sidebar progress", () => {
+  it("keeps a stable batch key and an active-count chip while providers finish", () => {
     const view = getProviderUpdateSidebarPillView([
       provider({
         driver: driver("codex"),
@@ -583,14 +585,58 @@ describe("provider update launch notification logic", () => {
     ]);
 
     expect(view).toMatchObject({
+      key: "updating:codex|cursor",
       tone: "loading",
       title: "Provider updates",
-      progressLabel: "1/2 done",
-      progressPercent: 50,
+      statusChipLabel: "1 updating",
+      statusChipTone: "running",
       items: [
         {
           label: "Codex",
           status: "succeeded",
+        },
+        {
+          label: "Cursor",
+          status: "running",
+        },
+      ],
+    });
+  });
+
+  it("surfaces a failure in the chip while other providers are still updating", () => {
+    const view = getProviderUpdateSidebarPillView([
+      provider({
+        driver: driver("claudeAgent"),
+        updateState: {
+          status: "failed",
+          startedAt: checkedAt,
+          finishedAt: checkedAt,
+          message: "Update command exited with code 1.",
+          output: null,
+        },
+      }),
+      provider({
+        driver: driver("cursor"),
+        updateState: {
+          status: "running",
+          startedAt: checkedAt,
+          finishedAt: null,
+          message: "Updating provider.",
+          output: null,
+        },
+      }),
+    ]);
+
+    expect(view).toMatchObject({
+      key: "updating:claudeAgent|cursor",
+      tone: "loading",
+      statusChipLabel: "1 failed",
+      statusChipTone: "error",
+      items: [
+        {
+          label: "Claude",
+          status: "failed",
+          message: "Update command exited with code 1.",
         },
         {
           label: "Cursor",
@@ -615,13 +661,19 @@ describe("provider update launch notification logic", () => {
     ]);
 
     expect(view).toMatchObject({
-      key: "loading:codex:running:pending",
+      key: "updating:codex",
       tone: "loading",
-      title: "Updating Codex",
+      title: "Codex",
+      statusChipLabel: "Updating",
+      statusChipTone: "running",
       description: "Codex update in progress.",
-      progressIndeterminate: true,
-      progressLabel: "0%",
-      progressPercent: 0,
+      items: [
+        {
+          key: "codex",
+          label: "Codex",
+          status: "running",
+        },
+      ],
     });
   });
 
@@ -643,10 +695,19 @@ describe("provider update launch notification logic", () => {
     );
 
     expect(view).toMatchObject({
-      key: "failed:claudeAgent:2026-04-23T10:00:00.000Z:Update command exited with code 1.",
+      key: "done:claudeAgent:failed:2026-04-23T10:00:00.000Z",
       tone: "error",
-      title: "Claude v1.1.0 update failed",
+      title: "Claude v1.1.0",
+      statusChipLabel: "Failed",
+      statusChipTone: "error",
       description: "Update command exited with code 1.",
+      items: [
+        {
+          label: "Claude",
+          status: "failed",
+          message: "Update command exited with code 1.",
+        },
+      ],
       dismissible: true,
     });
   });
@@ -672,9 +733,11 @@ describe("provider update launch notification logic", () => {
     );
 
     expect(view).toMatchObject({
-      key: "succeeded:codex:2026-04-23T10:00:00.000Z:Provider updated.",
+      key: "done:codex:succeeded:2026-04-23T10:00:00.000Z",
       tone: "success",
       title: "Codex updated",
+      statusChipLabel: "v1.1.0",
+      statusChipTone: "success",
       items: [
         {
           label: "Codex",
@@ -723,10 +786,9 @@ describe("provider update launch notification logic", () => {
 
     expect(view).toMatchObject({
       tone: "success",
-      title: "2 providers updated",
-      summary: "2 done",
-      progressLabel: "2/2 done",
-      progressPercent: 100,
+      title: "Provider updates",
+      statusChipLabel: "2 updated",
+      statusChipTone: "success",
       items: [
         {
           label: "Codex",
@@ -760,7 +822,7 @@ describe("provider update launch notification logic", () => {
       visibleAfterIso: sessionStartedAt,
     });
 
-    expect(successView?.key).toBe("succeeded:codex:2026-04-23T10:00:00.000Z:Provider updated.");
+    expect(successView?.key).toBe("done:codex:succeeded:2026-04-23T10:00:00.000Z");
     expect(
       getProviderUpdateSidebarPillView(providers, {
         visibleAfterIso: sessionStartedAt,
@@ -787,9 +849,18 @@ describe("provider update launch notification logic", () => {
     );
 
     expect(view).toMatchObject({
-      key: "unchanged:cursor:2026-04-23T10:00:00.000Z:still old",
+      key: "done:cursor:unchanged:2026-04-23T10:00:00.000Z",
       tone: "warning",
-      title: "Cursor still needs an update",
+      title: "Cursor",
+      statusChipLabel: "Needs update",
+      statusChipTone: "warning",
+      items: [
+        {
+          label: "Cursor",
+          status: "unchanged",
+          message: "still old",
+        },
+      ],
       dismissible: true,
     });
   });
@@ -814,7 +885,7 @@ describe("provider update launch notification logic", () => {
     ).toBeNull();
   });
 
-  it("shows a newer success before falling back to an older failure", () => {
+  it("combines mixed terminal outcomes into a single card led by the failure", () => {
     const providers = [
       provider({
         driver: driver("claudeAgent"),
@@ -841,30 +912,38 @@ describe("provider update launch notification logic", () => {
       }),
     ] satisfies ReadonlyArray<ServerProvider>;
 
-    const successView = getProviderUpdateSidebarPillView(providers, {
+    const mixedView = getProviderUpdateSidebarPillView(providers, {
       visibleAfterIso: sessionStartedAt,
     });
-    expect(successView).toMatchObject({
-      key: "succeeded:codex:2026-04-23T10:01:00.000Z:Provider updated.",
-      tone: "success",
-      title: "Codex updated",
+    expect(mixedView).toMatchObject({
+      key: "done:claudeAgent:failed:2026-04-23T10:00:00.000Z|codex:succeeded:2026-04-23T10:01:00.000Z",
+      tone: "error",
+      title: "Provider updates",
+      statusChipLabel: "1 failed",
+      statusChipTone: "error",
       items: [
         {
+          label: "Claude",
+          status: "failed",
+          message: "Update command exited with code 1.",
+        },
+        {
           label: "Codex",
+          status: "succeeded",
           statusLabel: "v1.2.0",
         },
       ],
+      dismissible: true,
     });
+    // Mixed outcomes never auto-hide; the failure needs an explicit dismissal.
+    expect(mixedView?.dismissAfterVisibleMs).toBeUndefined();
 
-    const failureView = getProviderUpdateSidebarPillView(providers, {
-      visibleAfterIso: sessionStartedAt,
-      dismissedKeys: new Set(["succeeded:codex:2026-04-23T10:01:00.000Z:Provider updated."]),
-    });
-    expect(failureView).toMatchObject({
-      key: "failed:claudeAgent:2026-04-23T10:00:00.000Z:Update command exited with code 1.",
-      tone: "error",
-      title: "Claude v1.1.0 update failed",
-    });
+    expect(
+      getProviderUpdateSidebarPillView(providers, {
+        visibleAfterIso: sessionStartedAt,
+        dismissedKeys: new Set([mixedView!.key]),
+      }),
+    ).toBeNull();
   });
 
   it("does not show a sidebar pill for passive update availability", () => {

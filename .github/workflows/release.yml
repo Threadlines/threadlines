@@ -31,6 +31,11 @@ on:
           - mac-arm64-windows
           - mac-all
           - all
+      deploy_web:
+        description: "Deploy app.threadlines.dev after the release publishes."
+        required: false
+        default: true
+        type: boolean
 permissions:
   actions: read
   checks: read
@@ -770,6 +775,17 @@ jobs:
           fi
 
           gh "${args[@]}"
+
+  deploy_web_app:
+    name: Deploy app.threadlines.dev
+    needs:
+      - preflight
+      - publish
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.deploy_web == true }}
+    uses: ./.github/workflows/deploy-web.yml
+    with:
+      ref: ${{ needs.preflight.outputs.ref }}
+    secrets: inherit
 
   cleanup_failed_release:
     name: Cleanup failed draft release

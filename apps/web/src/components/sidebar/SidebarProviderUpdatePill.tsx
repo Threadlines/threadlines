@@ -1,6 +1,13 @@
 import { useNavigate } from "@tanstack/react-router";
 import type { ServerProvider } from "@threadlines/contracts";
-import { XIcon } from "lucide-react";
+import {
+  CheckIcon,
+  CircleAlertIcon,
+  CircleDashedIcon,
+  LoaderCircleIcon,
+  TriangleAlertIcon,
+  XIcon,
+} from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 import { useDismissedProviderUpdateNotificationKeys } from "../../providerUpdateDismissal";
@@ -12,26 +19,25 @@ import {
 } from "../ProviderUpdateLaunchNotification.logic";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
-  UPDATE_STATUS_DOT_STYLES,
   UPDATE_STATUS_SURFACE_STYLES,
   UPDATE_STATUS_TEXT_STYLES,
-  UpdateProgressRail,
+  UpdateSegmentedRail,
   UpdateStatusBadge,
   type UpdateStatusTone,
 } from "./updateStatusVisuals";
 import { cn } from "~/lib/utils";
 
 // Hover feedback lives on the container but only when the main button (not
-// the dismiss affordance) is hovered, hence the group-has selector.
+// the dismiss affordance) is hovered, hence the has selector.
 const PROVIDER_UPDATE_SURFACE_HOVER_STYLES: Record<Exclude<UpdateStatusTone, "neutral">, string> = {
   progress:
-    "group-has-[button.provider-update-main:hover]/provider-update:border-primary/40 group-has-[button.provider-update-main:hover]/provider-update:bg-sidebar-accent/75",
+    "has-[button.provider-update-main:hover]:border-primary/40 has-[button.provider-update-main:hover]:bg-sidebar-accent/75",
   success:
-    "group-has-[button.provider-update-main:hover]/provider-update:border-success/40 group-has-[button.provider-update-main:hover]/provider-update:bg-sidebar-accent/72",
+    "has-[button.provider-update-main:hover]:border-success/40 has-[button.provider-update-main:hover]:bg-sidebar-accent/72",
   warning:
-    "group-has-[button.provider-update-main:hover]/provider-update:border-warning/45 group-has-[button.provider-update-main:hover]/provider-update:bg-sidebar-accent/72",
+    "has-[button.provider-update-main:hover]:border-warning/45 has-[button.provider-update-main:hover]:bg-sidebar-accent/72",
   error:
-    "group-has-[button.provider-update-main:hover]/provider-update:border-destructive/45 group-has-[button.provider-update-main:hover]/provider-update:bg-sidebar-accent/72",
+    "has-[button.provider-update-main:hover]:border-destructive/45 has-[button.provider-update-main:hover]:bg-sidebar-accent/72",
 };
 
 function viewToneToStatusTone(
@@ -44,6 +50,23 @@ function itemToneToStatusTone(tone: ProviderUpdateSidebarPillItem["tone"]): Upda
   if (tone === "running") return "progress";
   if (tone === "queued") return "neutral";
   return tone;
+}
+
+function ProviderUpdateItemIcon({ tone }: { tone: ProviderUpdateSidebarPillItem["tone"] }) {
+  switch (tone) {
+    case "running":
+      return (
+        <LoaderCircleIcon className="size-3 shrink-0 animate-spin text-primary-readable motion-reduce:animate-none" />
+      );
+    case "queued":
+      return <CircleDashedIcon className="size-3 shrink-0 text-muted-foreground/60" />;
+    case "success":
+      return <CheckIcon className="size-3 shrink-0 text-success" />;
+    case "warning":
+      return <TriangleAlertIcon className="size-3 shrink-0 text-warning" />;
+    case "error":
+      return <CircleAlertIcon className="size-3 shrink-0 text-destructive" />;
+  }
 }
 
 let providerUpdateSidebarVisibleAfterIso: string | undefined;
@@ -67,61 +90,30 @@ function SidebarProviderUpdateRows({
     <div className="grid w-full gap-1">
       {items.map((item) => (
         <div
-          className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1"
+          className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-1.5 gap-y-0.5"
           key={item.key}
         >
-          <span
-            aria-hidden="true"
-            className={cn(
-              "size-1 rounded-full",
-              UPDATE_STATUS_DOT_STYLES[itemToneToStatusTone(item.tone)],
-            )}
-          />
-          <span className="min-w-0 truncate text-[10.5px] leading-3 text-foreground/82">
+          <ProviderUpdateItemIcon tone={item.tone} />
+          <span className="min-w-0 truncate text-[11px] leading-4 text-foreground/85">
             {item.label}
           </span>
           <span
             className={cn(
-              "shrink-0 text-[9.5px] leading-3 font-medium",
+              "shrink-0 text-[10px] leading-4 font-medium",
               UPDATE_STATUS_TEXT_STYLES[itemToneToStatusTone(item.tone)],
             )}
           >
             {item.statusLabel}
           </span>
+          {item.message !== undefined && (
+            <span className="col-span-2 col-start-2 min-w-0 truncate text-[10px] leading-3.5 text-muted-foreground">
+              {item.message}
+            </span>
+          )}
         </div>
       ))}
     </div>
   );
-}
-
-function sidebarProviderUpdateFallbackStatus(
-  tone: ProviderUpdateSidebarPillView["tone"],
-): ProviderUpdateSidebarPillItem["statusLabel"] {
-  switch (tone) {
-    case "loading":
-      return "Updating";
-    case "success":
-      return "Updated";
-    case "warning":
-      return "Review";
-    case "error":
-      return "Failed";
-  }
-}
-
-function sidebarProviderUpdatePrimaryTone(
-  tone: ProviderUpdateSidebarPillView["tone"],
-): ProviderUpdateSidebarPillItem["tone"] {
-  switch (tone) {
-    case "loading":
-      return "running";
-    case "success":
-      return "success";
-    case "warning":
-      return "warning";
-    case "error":
-      return "error";
-  }
 }
 
 export function SidebarProviderUpdatePill() {
@@ -153,24 +145,14 @@ export function SidebarProviderUpdatePill() {
   const openProviderSettings = useCallback(() => {
     void navigate({ to: "/settings/providers" });
   }, [navigate]);
-  const displayedView = renderedView ?? view;
+  // Views are keyed by batch, not by status, so content changes within a key
+  // must render live; the frozen snapshot only backs the exit animation.
+  const displayedView =
+    exitingKey === null && view !== null && renderedView !== null && view.key === renderedView.key
+      ? view
+      : (renderedView ?? view);
   const dismissAfterVisibleMs = displayedView?.dismissAfterVisibleMs;
   const viewKey = displayedView?.key ?? null;
-  const displayedItems = displayedView?.items ?? [];
-  const showMultiProviderDetails = displayedItems.length > 1;
-  const singleItem = displayedItems.length === 1 ? displayedItems[0]! : null;
-  const primaryTone =
-    singleItem?.tone ??
-    (displayedView ? sidebarProviderUpdatePrimaryTone(displayedView.tone) : "running");
-  const statusLabel =
-    singleItem?.statusLabel ??
-    (displayedView ? sidebarProviderUpdateFallbackStatus(displayedView.tone) : "");
-  const badgeLabel =
-    showMultiProviderDetails && displayedView?.tone === "loading" && displayedView.progressLabel
-      ? displayedView.progressLabel
-      : showMultiProviderDetails && displayedView?.summary
-        ? displayedView.summary
-        : statusLabel;
 
   const startExit = useCallback(
     (key: string, nextView: ProviderUpdateSidebarPillView | null, dismissKey?: string) => {
@@ -204,7 +186,7 @@ export function SidebarProviderUpdatePill() {
       return;
     }
     if (view.key !== renderedView.key) {
-      startExit(renderedView.key, view);
+      setRenderedView(view);
       return;
     }
   }, [exitingKey, renderedView, startExit, view]);
@@ -227,11 +209,13 @@ export function SidebarProviderUpdatePill() {
     return null;
   }
 
+  const items = displayedView.items;
+  const singleItem = items.length === 1 ? items[0]! : null;
+
   return (
     <div
       className={cn(
-        "group/provider-update relative w-full overflow-hidden rounded-md text-xs font-medium transform-gpu transition-all duration-180 ease-[cubic-bezier(0.22,1,0.36,1)] will-change-transform",
-        showMultiProviderDetails ? "min-h-[4.25rem]" : "min-h-[2.5rem]",
+        "relative w-full overflow-hidden rounded-md text-xs font-medium transform-gpu transition-all duration-180 ease-[cubic-bezier(0.22,1,0.36,1)] will-change-transform",
         "border text-foreground",
         UPDATE_STATUS_SURFACE_STYLES[viewToneToStatusTone(displayedView.tone)],
         PROVIDER_UPDATE_SURFACE_HOVER_STYLES[viewToneToStatusTone(displayedView.tone)],
@@ -258,51 +242,43 @@ export function SidebarProviderUpdatePill() {
               type="button"
               aria-label={displayedView.description}
               className={cn(
-                "provider-update-main relative z-[1] flex w-full min-w-0 flex-col gap-1.5 text-left",
-                showMultiProviderDetails ? "px-2 py-2" : "px-2 py-1.5",
+                "provider-update-main relative z-[1] flex w-full min-w-0 flex-col gap-1.5 px-2 py-2 text-left",
                 displayedView.dismissible && "pr-6",
               )}
               onClick={openProviderSettings}
             >
-              <span className="flex w-full min-w-0 items-start gap-1.5">
-                <span
-                  aria-hidden="true"
-                  className={cn(
-                    "mt-1 size-1.5 shrink-0 rounded-full",
-                    UPDATE_STATUS_DOT_STYLES[itemToneToStatusTone(primaryTone)],
-                  )}
-                />
-                <span className="grid min-w-0 flex-1">
-                  <span className="min-w-0 truncate text-[11px] leading-3.5 font-semibold text-foreground">
-                    {displayedView.title}
-                  </span>
+              <span className="flex w-full min-w-0 items-center gap-1.5">
+                {singleItem !== null && <ProviderUpdateItemIcon tone={singleItem.tone} />}
+                <span className="min-w-0 flex-1 truncate text-[11px] leading-4 font-semibold text-foreground">
+                  {displayedView.title}
                 </span>
-                <UpdateStatusBadge tone={itemToneToStatusTone(primaryTone)}>
-                  {badgeLabel}
+                <UpdateStatusBadge tone={itemToneToStatusTone(displayedView.statusChipTone)}>
+                  {displayedView.statusChipLabel}
                 </UpdateStatusBadge>
               </span>
-              {showMultiProviderDetails ? (
-                <>
-                  <UpdateProgressRail
-                    className="h-1"
-                    indeterminate={displayedView.progressIndeterminate === true}
-                    percent={displayedView.progressPercent}
-                    tone={viewToneToStatusTone(displayedView.tone)}
-                  />
-                  <SidebarProviderUpdateRows items={displayedItems} />
-                </>
+              <UpdateSegmentedRail
+                className="h-1"
+                segments={items.map((item) => ({
+                  key: item.key,
+                  tone: itemToneToStatusTone(item.tone),
+                }))}
+              />
+              {singleItem !== null ? (
+                singleItem.message !== undefined && (
+                  <span className="min-w-0 truncate text-[10px] leading-3.5 text-muted-foreground">
+                    {singleItem.message}
+                  </span>
+                )
               ) : (
-                <UpdateProgressRail
-                  className="h-1"
-                  indeterminate={displayedView.progressIndeterminate === true}
-                  percent={displayedView.progressPercent}
-                  tone={viewToneToStatusTone(displayedView.tone)}
-                />
+                <SidebarProviderUpdateRows items={items} />
               )}
             </button>
           }
         />
-        <TooltipPopup side="top">{displayedView.description}</TooltipPopup>
+        <TooltipPopup side="top">
+          <span className="block">{displayedView.description}</span>
+          <span className="block text-muted-foreground">Click to open provider settings.</span>
+        </TooltipPopup>
       </Tooltip>
       {displayedView.dismissible && (
         <Tooltip>
@@ -311,7 +287,7 @@ export function SidebarProviderUpdatePill() {
               <button
                 type="button"
                 aria-label="Dismiss provider update notice"
-                className="absolute top-0.5 right-0.5 z-[2] inline-flex size-[1.125rem] items-center justify-center rounded-sm opacity-70 transition-opacity hover:opacity-100"
+                className="absolute top-1 right-1 z-[2] inline-flex size-[1.125rem] items-center justify-center rounded-sm opacity-70 transition-opacity hover:opacity-100"
                 onClick={() => startExit(displayedView.key, null, displayedView.key)}
               >
                 <XIcon className="size-3" />

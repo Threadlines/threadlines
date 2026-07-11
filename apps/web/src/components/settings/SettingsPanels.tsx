@@ -581,6 +581,152 @@ export function useSettingsRestore(onRestored?: () => void) {
   };
 }
 
+// Server-authoritative rows shared between the desktop General page and the
+// phone surface's "This Computer" section. Each row reads and writes the
+// unified settings store itself so both surfaces stay in sync by construction.
+function AssistantStreamingRow() {
+  const settings = useSettings();
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      title="Agent responses"
+      description="Stream response text while a turn is in progress."
+      resetAction={
+        settings.enableAssistantStreaming !== DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming ? (
+          <SettingResetButton
+            label="agent responses"
+            onClick={() =>
+              updateSettings({
+                enableAssistantStreaming: DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          checked={settings.enableAssistantStreaming}
+          onCheckedChange={(checked) =>
+            updateSettings({ enableAssistantStreaming: Boolean(checked) })
+          }
+          aria-label="Stream agent responses"
+        />
+      }
+    />
+  );
+}
+
+function PreventSleepRow() {
+  const settings = useSettings();
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      title="Prevent sleep during turns"
+      description="Keep the computer awake while any thread has a turn running. The display still locks normally. macOS and Windows."
+      resetAction={
+        settings.preventSleepDuringActiveTurns !==
+        DEFAULT_UNIFIED_SETTINGS.preventSleepDuringActiveTurns ? (
+          <SettingResetButton
+            label="prevent sleep during turns"
+            onClick={() =>
+              updateSettings({
+                preventSleepDuringActiveTurns:
+                  DEFAULT_UNIFIED_SETTINGS.preventSleepDuringActiveTurns,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          checked={settings.preventSleepDuringActiveTurns}
+          onCheckedChange={(checked) =>
+            updateSettings({ preventSleepDuringActiveTurns: Boolean(checked) })
+          }
+          aria-label="Prevent sleep during turns"
+        />
+      }
+    />
+  );
+}
+
+function DefaultThreadEnvModeRow() {
+  const settings = useSettings();
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      title="New threads"
+      description="Pick the default workspace mode for newly created draft threads."
+      resetAction={
+        settings.defaultThreadEnvMode !== DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode ? (
+          <SettingResetButton
+            label="new threads"
+            onClick={() =>
+              updateSettings({
+                defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Select
+          value={settings.defaultThreadEnvMode}
+          onValueChange={(value) => {
+            if (value === "local" || value === "worktree") {
+              updateSettings({ defaultThreadEnvMode: value });
+            }
+          }}
+        >
+          <SelectTrigger className="w-full sm:w-44" aria-label="Default thread mode">
+            <SelectValue>
+              {settings.defaultThreadEnvMode === "worktree" ? "New worktree" : "Local"}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false}>
+            <SelectItem hideIndicator value="local">
+              Local
+            </SelectItem>
+            <SelectItem hideIndicator value="worktree">
+              New worktree
+            </SelectItem>
+          </SelectPopup>
+        </Select>
+      }
+    />
+  );
+}
+
+function UsageAnalyticsRow() {
+  const settings = useSettings();
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <SettingsRow
+      title="Usage analytics"
+      description="Share anonymous usage events so we can understand installs, active usage, providers, and reliability. Threadlines does not send prompts, code, file paths, repository names, terminal output, or secrets."
+      resetAction={
+        settings.usageAnalyticsEnabled !== DEFAULT_UNIFIED_SETTINGS.usageAnalyticsEnabled ? (
+          <SettingResetButton
+            label="usage analytics"
+            onClick={() =>
+              updateSettings({
+                usageAnalyticsEnabled: DEFAULT_UNIFIED_SETTINGS.usageAnalyticsEnabled,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          checked={settings.usageAnalyticsEnabled}
+          onCheckedChange={(checked) => updateSettings({ usageAnalyticsEnabled: Boolean(checked) })}
+          aria-label="Share anonymous usage analytics"
+        />
+      }
+    />
+  );
+}
+
 export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | "phone" }) {
   const { theme, setTheme } = useTheme();
   const settings = useSettings();
@@ -806,60 +952,9 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
 
       {!isPhoneSurface ? (
         <SettingsSection title="Agent Behavior">
-          <SettingsRow
-            title="Agent responses"
-            description="Stream response text while a turn is in progress."
-            resetAction={
-              settings.enableAssistantStreaming !==
-              DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming ? (
-                <SettingResetButton
-                  label="agent responses"
-                  onClick={() =>
-                    updateSettings({
-                      enableAssistantStreaming: DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming,
-                    })
-                  }
-                />
-              ) : null
-            }
-            control={
-              <Switch
-                checked={settings.enableAssistantStreaming}
-                onCheckedChange={(checked) =>
-                  updateSettings({ enableAssistantStreaming: Boolean(checked) })
-                }
-                aria-label="Stream agent responses"
-              />
-            }
-          />
+          <AssistantStreamingRow />
 
-          <SettingsRow
-            title="Prevent sleep during turns"
-            description="Keep the computer awake while any thread has a turn running. The display still locks normally. macOS and Windows."
-            resetAction={
-              settings.preventSleepDuringActiveTurns !==
-              DEFAULT_UNIFIED_SETTINGS.preventSleepDuringActiveTurns ? (
-                <SettingResetButton
-                  label="prevent sleep during turns"
-                  onClick={() =>
-                    updateSettings({
-                      preventSleepDuringActiveTurns:
-                        DEFAULT_UNIFIED_SETTINGS.preventSleepDuringActiveTurns,
-                    })
-                  }
-                />
-              ) : null
-            }
-            control={
-              <Switch
-                checked={settings.preventSleepDuringActiveTurns}
-                onCheckedChange={(checked) =>
-                  updateSettings({ preventSleepDuringActiveTurns: Boolean(checked) })
-                }
-                aria-label="Prevent sleep during turns"
-              />
-            }
-          />
+          <PreventSleepRow />
 
           <SettingsRow
             title="Text generation model"
@@ -1048,46 +1143,7 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
       <SettingsSection title="Projects & Threads">
         {!isPhoneSurface ? (
           <>
-            <SettingsRow
-              title="New threads"
-              description="Pick the default workspace mode for newly created draft threads."
-              resetAction={
-                settings.defaultThreadEnvMode !== DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode ? (
-                  <SettingResetButton
-                    label="new threads"
-                    onClick={() =>
-                      updateSettings({
-                        defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
-                      })
-                    }
-                  />
-                ) : null
-              }
-              control={
-                <Select
-                  value={settings.defaultThreadEnvMode}
-                  onValueChange={(value) => {
-                    if (value === "local" || value === "worktree") {
-                      updateSettings({ defaultThreadEnvMode: value });
-                    }
-                  }}
-                >
-                  <SelectTrigger className="w-full sm:w-44" aria-label="Default thread mode">
-                    <SelectValue>
-                      {settings.defaultThreadEnvMode === "worktree" ? "New worktree" : "Local"}
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectPopup align="end" alignItemWithTrigger={false}>
-                    <SelectItem hideIndicator value="local">
-                      Local
-                    </SelectItem>
-                    <SelectItem hideIndicator value="worktree">
-                      New worktree
-                    </SelectItem>
-                  </SelectPopup>
-                </Select>
-              }
-            />
+            <DefaultThreadEnvModeRow />
 
             <SettingsRow
               title="Add project starts in"
@@ -1172,6 +1228,18 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
         />
       </SettingsSection>
 
+      {isPhoneSurface ? (
+        // Server-authoritative settings that matter most while away from the
+        // computer: keeping it awake mid-turn, streaming, and the default
+        // workspace mode for threads started remotely.
+        <SettingsSection title="This Computer">
+          <PreventSleepRow />
+          <AssistantStreamingRow />
+          <DefaultThreadEnvModeRow />
+          <UsageAnalyticsRow />
+        </SettingsSection>
+      ) : null}
+
       <SettingsSection title="About">
         {isElectron ? (
           <AboutVersionSection />
@@ -1183,32 +1251,7 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
         )}
         {!isPhoneSurface ? (
           <>
-            <SettingsRow
-              title="Usage analytics"
-              description="Share anonymous usage events so we can understand installs, active usage, providers, and reliability. Threadlines does not send prompts, code, file paths, repository names, terminal output, or secrets."
-              resetAction={
-                settings.usageAnalyticsEnabled !==
-                DEFAULT_UNIFIED_SETTINGS.usageAnalyticsEnabled ? (
-                  <SettingResetButton
-                    label="usage analytics"
-                    onClick={() =>
-                      updateSettings({
-                        usageAnalyticsEnabled: DEFAULT_UNIFIED_SETTINGS.usageAnalyticsEnabled,
-                      })
-                    }
-                  />
-                ) : null
-              }
-              control={
-                <Switch
-                  checked={settings.usageAnalyticsEnabled}
-                  onCheckedChange={(checked) =>
-                    updateSettings({ usageAnalyticsEnabled: Boolean(checked) })
-                  }
-                  aria-label="Share anonymous usage analytics"
-                />
-              }
-            />
+            <UsageAnalyticsRow />
             <SettingsRow
               title="Diagnostics"
               description={diagnosticsDescription}
@@ -1222,7 +1265,9 @@ export function GeneralSettingsPanel({ surface = "full" }: { surface?: "full" | 
         ) : (
           <SettingsRow
             title="Phone settings"
-            description="Only browser-local preferences are shown here on the hosted phone app."
+            description={
+              'Appearance and thread preferences are stored in this browser. Settings under "This Computer" apply to your paired computer.'
+            }
           />
         )}
       </SettingsSection>

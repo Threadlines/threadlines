@@ -1,0 +1,85 @@
+name: Deploy Web App
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref to build and deploy. Defaults to the caller's commit."
+        required: false
+        type: string
+
+jobs:
+  deploy:
+    name: Deploy app.threadlines.dev
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: deploy-app-threadlines-dev
+      cancel-in-progress: false
+    environment:
+      name: app.threadlines.dev
+      url: https://app.threadlines.dev
+    env:
+      VERCEL_CLI_VERSION: 54.14.5
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      VITE_HOSTED_APP_CHANNEL: latest
+      VITE_HOSTED_APP_URL: https://app.threadlines.dev
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 0
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          version: "0.1.24"
+          run-install: false
+
+      - name: Install dependencies
+        run: vp install --frozen-lockfile
+
+      - name: Install Vercel CLI
+        run: npm install --global "vercel@${VERCEL_CLI_VERSION}"
+
+      - name: Verify Vercel deployment secrets
+        shell: bash
+        run: |
+          missing=()
+          for name in VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID; do
+            if [[ -z "${!name:-}" ]]; then
+              missing+=("$name")
+            fi
+          done
+
+          if (( ${#missing[@]} > 0 )); then
+            printf '::error::Missing required GitHub secret(s): %s\n' "${missing[*]}"
+            echo "Add VERCEL_TOKEN, VERCEL_ORG_ID, and VERCEL_PROJECT_ID to this repository's Actions secrets." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Pull Vercel production environment
+        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+
+      - name: Build Vercel production artifact
+        run: vercel build --prod --token="$VERCEL_TOKEN"
+
+      - name: Deploy Vercel production artifact
+        shell: bash
+        run: |
+          vercel deploy --prebuilt --prod --yes --token="$VERCEL_TOKEN" | tee /tmp/vercel-deploy.log
+          deployment_url="$(grep -Eo 'https://[^ ]+' /tmp/vercel-deploy.log | tail -n 1)"
+          {
+            echo "### app.threadlines.dev deployment"
+            echo
+            echo "- Commit: $(git rev-parse HEAD)"
+            if [[ -n "$deployment_url" ]]; then
+              echo "- Deployment: $deployment_url"
+            fi
+            echo "- Production URL: https://app.threadlines.dev"
+          } >> "$GITHUB_STEP_SUMMARY"

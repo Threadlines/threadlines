@@ -1,32 +1,50 @@
 import "../index.css";
 
 import { scopeThreadRef } from "@threadlines/client-runtime";
-import { EnvironmentId, ThreadId } from "@threadlines/contracts";
+import { EnvironmentId, type EnvironmentApi, ThreadId } from "@threadlines/contracts";
 import { page } from "vitest/browser";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
-const { openInEditorMock, openInPreferredEditorMock, readLocalApiMock } = vi.hoisted(() => ({
-  openInEditorMock: vi.fn(async () => undefined),
-  openInPreferredEditorMock: vi.fn(async () => "vscode"),
-  readLocalApiMock: vi.fn(() => ({
-    server: { getConfig: vi.fn(async () => ({ availableEditors: ["vscode"] })) },
-    shell: { openInEditor: openInEditorMock },
-  })),
-}));
+const { filesystemBrowseMock, openInEditorMock, openInPreferredEditorMock, readLocalApiMock } =
+  vi.hoisted(() => {
+    const filesystemBrowseMock = vi.fn(
+      async (): Promise<{
+        parentPath: string;
+        entries: Array<{ name: string; fullPath: string }>;
+      }> => ({ parentPath: "/", entries: [] }),
+    );
+    const openInEditorMock = vi.fn(async () => undefined);
+    const openInPreferredEditorMock = vi.fn(async () => "vscode");
+    return {
+      filesystemBrowseMock,
+      openInEditorMock,
+      openInPreferredEditorMock,
+      readLocalApiMock: vi.fn(() => ({
+        server: { getConfig: vi.fn(async () => ({ availableEditors: ["vscode"] })) },
+        shell: { openInEditor: openInEditorMock },
+        persistence: {
+          getClientSettings: vi.fn(async () => null),
+          setClientSettings: vi.fn(async () => undefined),
+        },
+      })),
+    };
+  });
 
 vi.mock("../editorPreferences", () => ({
   openInPreferredEditor: openInPreferredEditorMock,
 }));
 
 vi.mock("../localApi", () => ({
-  ensureLocalApi: vi.fn(() => {
-    throw new Error("ensureLocalApi not implemented in browser test");
-  }),
+  ensureLocalApi: readLocalApiMock,
   readLocalApi: readLocalApiMock,
 }));
 
 import ChatMarkdown from "./ChatMarkdown";
+import {
+  __resetEnvironmentApiOverridesForTests,
+  __setEnvironmentApiOverrideForTests,
+} from "../environmentApi";
 import { setActiveFileViewerContext, useFileViewerStore } from "../fileViewerStore";
 import { toMarkdownFileUrlHref } from "../markdown-links";
 
@@ -37,6 +55,12 @@ const CHAT_MARKDOWN_THREAD_REF = scopeThreadRef(
   CHAT_MARKDOWN_THREAD_ID,
 );
 
+function installFilesystemBrowseEnvironment() {
+  __setEnvironmentApiOverrideForTests(CHAT_MARKDOWN_ENVIRONMENT_ID, {
+    filesystem: { browse: filesystemBrowseMock },
+  } as unknown as EnvironmentApi);
+}
+
 describe("ChatMarkdown", () => {
   afterEach(() => {
     setActiveFileViewerContext(null);
@@ -45,6 +69,8 @@ describe("ChatMarkdown", () => {
       context: null,
       tabs: [],
       activePath: null,
+      treeRevealPath: null,
+      treeRevealRequestId: 0,
       revealLine: null,
       revealEndLine: null,
       revealRequestId: 0,
@@ -52,6 +78,8 @@ describe("ChatMarkdown", () => {
     });
     openInEditorMock.mockClear();
     openInPreferredEditorMock.mockClear();
+    filesystemBrowseMock.mockClear();
+    __resetEnvironmentApiOverridesForTests();
     readLocalApiMock.mockClear();
     localStorage.clear();
     document.body.innerHTML = "";
@@ -60,14 +88,26 @@ describe("ChatMarkdown", () => {
   it("renders local file links with copyable file url hrefs", async () => {
     const filePath =
       "/Users/yashsingh/p/sco/claude-code-extract/src/utils/permissions/PermissionRule.ts";
+    installFilesystemBrowseEnvironment();
     const screen = await render(
-      <ChatMarkdown text={`[PermissionRule.ts](file://${filePath})`} cwd="/repo/project" />,
+      <ChatMarkdown
+        text={`[PermissionRule.ts](file://${filePath})`}
+        cwd="/repo/project"
+        environmentId={CHAT_MARKDOWN_ENVIRONMENT_ID}
+      />,
     );
 
     try {
       const link = page.getByRole("link", { name: "PermissionRule.ts" });
       await expect.element(link).toBeInTheDocument();
       await expect.element(link).toHaveAttribute("href", toMarkdownFileUrlHref(filePath));
+      await expect.element(link).toHaveAttribute("data-entry-kind", "file");
+      await vi.waitFor(() => {
+        expect(filesystemBrowseMock).toHaveBeenCalledWith({
+          partialPath: "/Users/yashsingh/p/sco/claude-code-extract/src/utils/permissions/",
+          cwd: "/repo/project",
+        });
+      });
     } finally {
       await screen.unmount();
     }
@@ -216,20 +256,47 @@ describe("ChatMarkdown", () => {
   });
 
   it("recognizes angle-bracketed absolute directory paths with spaces", async () => {
-    const directoryPath = "/Users/will/Threadlines Marketing Studio/Captures/Exports";
+    const cwd = "/Users/will/Threadlines Marketing Studio";
+    const directoryPath = "/Users/will/Threadlines Marketing Studio/Captures/Exports/";
+    const resolvedDirectoryPath = directoryPath.slice(0, -1);
+    filesystemBrowseMock.mockResolvedValueOnce({
+      parentPath: "/Users/will/Threadlines Marketing Studio/Captures",
+      entries: [{ name: "Exports", fullPath: resolvedDirectoryPath }],
+    });
+    installFilesystemBrowseEnvironment();
+    setActiveFileViewerContext({
+      environmentId: CHAT_MARKDOWN_ENVIRONMENT_ID,
+      cwd,
+      threadRef: CHAT_MARKDOWN_THREAD_REF,
+    });
     const screen = await render(
-      <ChatMarkdown text={`[Exports](<${directoryPath}>)`} cwd="/repo/project" />,
+      <ChatMarkdown
+        text={`[Exports](<${directoryPath}>)`}
+        cwd={cwd}
+        environmentId={CHAT_MARKDOWN_ENVIRONMENT_ID}
+      />,
     );
 
     try {
       const link = page.getByRole("link", { name: "Exports" });
       await expect.element(link).toBeInTheDocument();
       await expect.element(link).toHaveAttribute("href", toMarkdownFileUrlHref(directoryPath));
+      await expect.element(link).toHaveAttribute("data-entry-kind", "directory");
+      expect(filesystemBrowseMock).toHaveBeenCalledWith({
+        partialPath: "/Users/will/Threadlines Marketing Studio/Captures/",
+        cwd,
+      });
 
       await link.click();
       await vi.waitFor(() => {
-        expect(openInEditorMock).toHaveBeenCalledWith(directoryPath, "file-manager");
+        expect(useFileViewerStore.getState()).toMatchObject({
+          isOpen: true,
+          activePath: null,
+          tabs: [],
+          treeRevealPath: "Captures/Exports",
+        });
       });
+      expect(openInEditorMock).not.toHaveBeenCalled();
       expect(openInPreferredEditorMock).not.toHaveBeenCalled();
     } finally {
       await screen.unmount();

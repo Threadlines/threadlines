@@ -1,6 +1,6 @@
 import { DiffsHighlighter, getSharedHighlighter, SupportedLanguages } from "@pierre/diffs";
 import { CheckIcon, CopyIcon } from "lucide-react";
-import type { ServerProviderSkill } from "@threadlines/contracts";
+import type { EnvironmentId, ServerProviderSkill } from "@threadlines/contracts";
 import React, {
   Children,
   Suspense,
@@ -27,6 +27,7 @@ import { stackedThreadToast, toastManager } from "./ui/toast";
 import { openInPreferredEditor } from "../editorPreferences";
 import {
   openChatFileReference,
+  openDirectoryInActiveViewer,
   openFileInActiveViewer,
   parseChatFileReference,
 } from "../fileViewerStore";
@@ -40,6 +41,10 @@ import {
   rewriteMarkdownFileUriHref,
 } from "../markdown-links";
 import { readLocalApi } from "../localApi";
+import {
+  type MarkdownFileLinkKind,
+  useMarkdownFileLinkKinds,
+} from "../hooks/useMarkdownFileLinkKinds";
 import { cn } from "../lib/utils";
 
 class CodeHighlightErrorBoundary extends React.Component<
@@ -66,6 +71,7 @@ class CodeHighlightErrorBoundary extends React.Component<
 interface ChatMarkdownProps {
   text: string;
   cwd: string | undefined;
+  environmentId?: EnvironmentId | undefined;
   isStreaming?: boolean;
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
 }
@@ -276,18 +282,18 @@ interface MarkdownFileLinkProps {
   targetPath: string;
   displayPath: string;
   filePath: string;
+  kind: MarkdownFileLinkKind;
   line?: number | undefined;
   label: string;
   theme: "light" | "dark";
   className?: string | undefined;
 }
 
-const MARKDOWN_LINK_HREF_PATTERN = /\[[^\]]*]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g;
+const MARKDOWN_LINK_HREF_PATTERN = /\[[^\]]*]\(\s*(<[^>]+>|[^)\s]+)(?:\s+["'][^"']*["'])?\s*\)/g;
 const MARKDOWN_FILE_LINK_CLASS_NAME =
   "chat-markdown-file-link relative top-[2px] max-w-full no-underline";
 const MARKDOWN_FILE_LINK_ICON_CLASS_NAME = "chat-markdown-file-link-icon size-3.5 shrink-0";
 const MARKDOWN_FILE_LINK_LABEL_CLASS_NAME = "chat-markdown-file-link-label truncate";
-
 function pathParentSegments(path: string): string[] {
   const normalized = path.replaceAll("\\", "/");
   const segments = normalized.split("/").filter((segment) => segment.length > 0);
@@ -368,11 +374,14 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   targetPath,
   displayPath,
   filePath,
+  kind,
   line,
   label,
   theme,
   className,
 }: MarkdownFileLinkProps) {
+  const entryLabel = kind === "directory" ? "folder" : "file";
+
   const handleOpenExternally = useCallback(() => {
     const api = readLocalApi();
     if (!api) {
@@ -387,15 +396,23 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: "Unable to open file",
+          title: `Unable to open ${entryLabel}`,
           description: error instanceof Error ? error.message : "An error occurred.",
         }),
       );
     });
-  }, [targetPath]);
+  }, [entryLabel, targetPath]);
+
+  const openInInternalViewer = useCallback(
+    () =>
+      kind === "directory"
+        ? openDirectoryInActiveViewer({ path: targetPath })
+        : openFileInActiveViewer({ path: targetPath, line }),
+    [kind, line, targetPath],
+  );
 
   const handleOpen = useCallback(() => {
-    if (openFileInActiveViewer({ path: targetPath, line })) {
+    if (openInInternalViewer()) {
       return;
     }
     const api = readLocalApi();
@@ -403,8 +420,8 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: "Unable to open file",
-          description: "Local file opening is unavailable before a backend is paired.",
+          title: `Unable to open ${entryLabel}`,
+          description: `Local ${entryLabel} opening is unavailable before a backend is paired.`,
         }),
       );
       return;
@@ -413,15 +430,15 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: "Unable to open file",
+          title: `Unable to open ${entryLabel}`,
           description: error instanceof Error ? error.message : displayPath,
         }),
       );
     });
-  }, [displayPath, line, targetPath]);
+  }, [displayPath, entryLabel, openInInternalViewer, targetPath]);
 
   const handleOpenInViewer = useCallback(() => {
-    if (openFileInActiveViewer({ path: targetPath, line })) {
+    if (openInInternalViewer()) {
       return;
     }
     toastManager.add(
@@ -431,7 +448,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         description: `${displayPath} is not available in the active project workspace.`,
       }),
     );
-  }, [displayPath, line, targetPath]);
+  }, [displayPath, openInInternalViewer]);
 
   const handleCopy = useCallback((value: string, title: string) => {
     if (typeof window === "undefined" || !navigator.clipboard?.writeText) {
@@ -475,8 +492,11 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
 
       const clicked = await api.contextMenu.show(
         [
-          { id: "open", label: "Open in file viewer" },
-          { id: "open-external", label: "Open in editor" },
+          { id: "open", label: kind === "directory" ? "Browse folder" : "Open in file viewer" },
+          {
+            id: "open-external",
+            label: kind === "directory" ? "Open folder in editor" : "Open in editor",
+          },
           { id: "copy-relative", label: "Copy relative path" },
           { id: "copy-full", label: "Copy full path" },
         ] as const,
@@ -499,7 +519,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         handleCopy(targetPath, "Full path");
       }
     },
-    [displayPath, handleCopy, handleOpenExternally, handleOpenInViewer, targetPath],
+    [displayPath, handleCopy, handleOpenExternally, handleOpenInViewer, kind, targetPath],
   );
 
   return (
@@ -509,6 +529,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
           <a
             href={href}
             className={cn(MARKDOWN_FILE_LINK_CLASS_NAME, className)}
+            data-entry-kind={kind}
             onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
@@ -518,7 +539,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
           >
             <VscodeEntryIcon
               pathValue={filePath}
-              kind="file"
+              kind={kind}
               theme={theme}
               className={cn(MARKDOWN_FILE_LINK_ICON_CLASS_NAME, "text-current")}
             />
@@ -547,6 +568,7 @@ function areMarkdownFileLinkPropsEqual(
     previous.targetPath === next.targetPath &&
     previous.displayPath === next.displayPath &&
     previous.filePath === next.filePath &&
+    previous.kind === next.kind &&
     previous.line === next.line &&
     previous.label === next.label &&
     previous.theme === next.theme &&
@@ -607,6 +629,7 @@ export function splitMarkdownBlocks(text: string): string[] {
 function ChatMarkdownDocument({
   text,
   cwd,
+  environmentId,
   isStreaming = false,
   skills = EMPTY_MARKDOWN_SKILLS,
 }: ChatMarkdownProps) {
@@ -631,6 +654,11 @@ function ChatMarkdownDocument({
     const filePaths = [...markdownFileLinkMetaByHref.values()].map((meta) => meta.filePath);
     return buildFileLinkParentSuffixByPath(filePaths);
   }, [markdownFileLinkMetaByHref]);
+  const fileLinkKindByPath = useMarkdownFileLinkKinds(
+    markdownFileLinkMetaByHref,
+    environmentId,
+    cwd,
+  );
   const markdownUrlTransform = useCallback((href: string) => {
     return rewriteMarkdownFileUriHref(href) ?? defaultUrlTransform(href);
   }, []);
@@ -669,6 +697,7 @@ function ChatMarkdownDocument({
             targetPath={fileLinkMeta.targetPath}
             displayPath={fileLinkMeta.displayPath}
             filePath={fileLinkMeta.filePath}
+            kind={fileLinkKindByPath.get(fileLinkMeta.filePath) ?? "file"}
             line={fileLinkMeta.line}
             label={labelParts.join(" · ")}
             theme={resolvedTheme}
@@ -754,6 +783,7 @@ function ChatMarkdownDocument({
     [
       cwd,
       diffThemeName,
+      fileLinkKindByPath,
       fileLinkParentSuffixByPath,
       isStreaming,
       markdownFileLinkMetaByHref,
@@ -778,17 +808,27 @@ const MemoChatMarkdownDocument = memo(ChatMarkdownDocument);
 function StreamingTailBlock({
   text,
   cwd,
+  environmentId,
   skills = EMPTY_MARKDOWN_SKILLS,
 }: Omit<ChatMarkdownProps, "isStreaming">) {
   // Lets React drop intermediate parses when deltas outpace rendering
   // (older CPUs) instead of parsing every 50ms server flush.
   const deferredText = useDeferredValue(text);
-  return <MemoChatMarkdownDocument text={deferredText} cwd={cwd} isStreaming skills={skills} />;
+  return (
+    <MemoChatMarkdownDocument
+      text={deferredText}
+      cwd={cwd}
+      environmentId={environmentId}
+      isStreaming
+      skills={skills}
+    />
+  );
 }
 
 function ChatMarkdown({
   text,
   cwd,
+  environmentId,
   isStreaming = false,
   skills = EMPTY_MARKDOWN_SKILLS,
 }: ChatMarkdownProps) {
@@ -799,23 +839,38 @@ function ChatMarkdown({
     // blocks, and keying by content would remount the tail on every delta.
     const blocks = splitMarkdownBlocks(text);
     const tailIndex = blocks.length - 1;
+    /* oxlint-disable react/no-array-index-key -- streaming only appends blocks; index is the stable identity */
     body = blocks.map((block, index) =>
       index === tailIndex ? (
-        // oxlint-disable-next-line react/no-array-index-key
-        <StreamingTailBlock key={index} text={block} cwd={cwd} skills={skills} />
-      ) : (
-        <MemoChatMarkdownDocument
-          // oxlint-disable-next-line react/no-array-index-key
+        <StreamingTailBlock
           key={index}
           text={block}
           cwd={cwd}
+          environmentId={environmentId}
+          skills={skills}
+        />
+      ) : (
+        <MemoChatMarkdownDocument
+          key={index}
+          text={block}
+          cwd={cwd}
+          environmentId={environmentId}
           isStreaming={false}
           skills={skills}
         />
       ),
     );
+    /* oxlint-enable react/no-array-index-key */
   } else {
-    body = <MemoChatMarkdownDocument text={text} cwd={cwd} isStreaming={false} skills={skills} />;
+    body = (
+      <MemoChatMarkdownDocument
+        text={text}
+        cwd={cwd}
+        environmentId={environmentId}
+        isStreaming={false}
+        skills={skills}
+      />
+    );
   }
 
   return (

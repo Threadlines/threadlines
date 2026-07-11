@@ -41,18 +41,19 @@ export interface ProviderUpdateSidebarPillItem {
   readonly status: ProviderUpdateSidebarPillItemStatus;
   readonly statusLabel: string;
   readonly tone: ProviderUpdateSidebarPillItemTone;
+  /** Failure/unchanged detail shown inline under the row. */
+  readonly message?: string;
 }
 
 export interface ProviderUpdateSidebarPillView {
   readonly key: string;
   readonly tone: ProviderUpdateSidebarPillTone;
   readonly title: string;
-  readonly summary?: string;
+  /** Worst-state chip beside the title ("1 failed", "2 updating", "v1.2.0"). */
+  readonly statusChipLabel: string;
+  readonly statusChipTone: ProviderUpdateSidebarPillItemTone;
   readonly description: string;
-  readonly progressIndeterminate?: boolean;
-  readonly progressLabel?: string;
-  readonly progressPercent: number;
-  readonly items?: readonly ProviderUpdateSidebarPillItem[];
+  readonly items: readonly ProviderUpdateSidebarPillItem[];
   readonly dismissible?: boolean;
   readonly dismissAfterVisibleMs?: number;
 }
@@ -132,6 +133,15 @@ function getProviderFailedUpdateTitle(
   return attemptedVersion
     ? `${providerName} ${formatVersion(attemptedVersion)} update failed`
     : `${providerName} update failed`;
+}
+
+/** "Claude v1.2.0" — the provider plus the version the update attempted. */
+function getProviderAttemptedVersionTitle(
+  provider: Pick<ServerProvider, "driver" | "versionAdvisory">,
+): string {
+  const providerName = getProviderDisplayName(provider);
+  const attemptedVersion = provider.versionAdvisory?.latestVersion;
+  return attemptedVersion ? `${providerName} ${formatVersion(attemptedVersion)}` : providerName;
 }
 
 function getProviderDisplayName(provider: Pick<ServerProvider, "driver">): string {
@@ -409,16 +419,6 @@ function isRecentTerminalProvider(
   return finishedAt !== null && finishedAt >= visibleAfterIso;
 }
 
-function latestFinishedAtForProviders(providers: ReadonlyArray<ServerProvider>): string | null {
-  return providers.reduce<string | null>((latest, provider) => {
-    const finishedAt = getUpdateFinishedAt(provider);
-    if (finishedAt === null) {
-      return latest;
-    }
-    return latest === null || finishedAt > latest ? finishedAt : latest;
-  }, null);
-}
-
 function isProviderUpdateSidebarItemStatus(
   status: ServerProviderUpdateStatus | undefined,
 ): status is ProviderUpdateSidebarPillItemStatus {
@@ -448,12 +448,6 @@ function getProviderUpdateSidebarItemTone(
   }
 }
 
-function isTerminalProviderUpdateSidebarItemStatus(
-  status: ProviderUpdateSidebarPillItemStatus,
-): boolean {
-  return status === "succeeded" || status === "failed" || status === "unchanged";
-}
-
 function getProviderUpdateSidebarStatusLabel(
   provider: Pick<ServerProvider, "version">,
   status: ProviderUpdateSidebarPillItemStatus,
@@ -480,13 +474,17 @@ function collectProviderUpdateSidebarItems(
     if (!isProviderUpdateSidebarItemStatus(status)) {
       return [];
     }
+    const message = provider.updateState?.message;
     return [
       {
-        key: `${provider.driver}:${status}:${provider.updateState?.finishedAt ?? "pending"}`,
+        // Providers are deduped by driver, so the driver is a stable row
+        // identity that survives status transitions within an update batch.
+        key: provider.driver,
         label: getProviderDisplayName(provider),
         status,
         statusLabel: getProviderUpdateSidebarStatusLabel(provider, status),
         tone: getProviderUpdateSidebarItemTone(status),
+        ...((status === "failed" || status === "unchanged") && message ? { message } : {}),
       },
     ];
   });
@@ -502,63 +500,42 @@ function formatCountLabel(count: number, singular: string, plural: string): stri
   return `${count} ${count === 1 ? singular : plural}`;
 }
 
-function formatProviderUpdateSidebarSummary(
-  items: ReadonlyArray<ProviderUpdateSidebarPillItem>,
-): string | undefined {
+/**
+ * Chip beside the card title. Single-provider cards echo the row's status
+ * ("Updating", "v1.2.0", "Failed"); multi-provider cards surface the worst
+ * state so a failure is visible even while other updates are still running.
+ */
+function getProviderUpdateSidebarChip(items: ReadonlyArray<ProviderUpdateSidebarPillItem>): {
+  readonly label: string;
+  readonly tone: ProviderUpdateSidebarPillItemTone;
+} {
+  if (items.length === 1) {
+    const item = items[0]!;
+    return { label: item.statusLabel, tone: item.tone };
+  }
+
   const failedCount = items.filter((item) => item.status === "failed").length;
   if (failedCount > 0) {
-    return formatCountLabel(failedCount, "failed", "failed");
+    return { label: formatCountLabel(failedCount, "failed", "failed"), tone: "error" };
   }
 
   const unchangedCount = items.filter((item) => item.status === "unchanged").length;
   if (unchangedCount > 0) {
-    return formatCountLabel(unchangedCount, "needs attention", "need attention");
+    return {
+      label: formatCountLabel(unchangedCount, "needs update", "need update"),
+      tone: "warning",
+    };
   }
 
   const activeCount = items.filter(
     (item) => item.status === "running" || item.status === "queued",
   ).length;
   if (activeCount > 0) {
-    return formatCountLabel(activeCount, "active", "active");
+    return { label: formatCountLabel(activeCount, "updating", "updating"), tone: "running" };
   }
 
   const succeededCount = items.filter((item) => item.status === "succeeded").length;
-  if (succeededCount > 0) {
-    return formatCountLabel(succeededCount, "done", "done");
-  }
-
-  return undefined;
-}
-
-function optionalProviderUpdateSidebarSummary(
-  summary: string | undefined,
-): { readonly summary: string } | Record<string, never> {
-  return summary === undefined ? {} : { summary };
-}
-
-function getProviderUpdateSidebarProgress(
-  items: ReadonlyArray<ProviderUpdateSidebarPillItem>,
-): Pick<
-  ProviderUpdateSidebarPillView,
-  "progressIndeterminate" | "progressLabel" | "progressPercent"
-> {
-  if (items.length === 0) {
-    return { progressPercent: 0 };
-  }
-
-  const completeCount = items.filter((item) =>
-    isTerminalProviderUpdateSidebarItemStatus(item.status),
-  ).length;
-  const progressPercent = Math.max(0, Math.min(100, (completeCount / items.length) * 100));
-  const hasActiveItem = items.some((item) => item.status === "queued" || item.status === "running");
-  const progressLabel =
-    items.length > 1 ? `${completeCount}/${items.length} done` : `${Math.floor(progressPercent)}%`;
-
-  return {
-    ...(hasActiveItem && items.length === 1 ? { progressIndeterminate: true } : {}),
-    progressLabel,
-    progressPercent,
-  };
+  return { label: formatCountLabel(succeededCount, "updated", "updated"), tone: "success" };
 }
 
 export function getProviderUpdateSidebarPillView(
@@ -568,152 +545,97 @@ export function getProviderUpdateSidebarPillView(
   const dedupedProviders = dedupeProvidersByDriver(providers);
   const activeProviders = dedupedProviders.filter(isProviderUpdateActive);
   if (activeProviders.length > 0) {
-    const activeProvider = activeProviders[0]!;
-    const activeProviderName = getProviderDisplayName(activeProvider);
     const visibleProviders = dedupedProviders.filter(
       (provider) =>
         isProviderUpdateActive(provider) ||
         isRecentTerminalProvider(provider, options?.visibleAfterIso),
     );
     const items = collectProviderUpdateSidebarItems(visibleProviders);
-    const showItemDetails = items.length > 1;
+    const chip = getProviderUpdateSidebarChip(items);
     return {
-      key: `loading:${visibleProviders
-        .map(
-          (provider) =>
-            `${provider.driver}:${provider.updateState?.status ?? "idle"}:${provider.updateState?.finishedAt ?? "pending"}`,
-        )
+      // Keyed by batch membership only: status transitions within the batch
+      // morph the card in place instead of re-keying (and re-animating) it.
+      key: `updating:${visibleProviders
+        .map((provider) => provider.driver)
         .toSorted()
         .join("|")}`,
       tone: "loading",
-      title: showItemDetails ? "Provider updates" : `Updating ${activeProviderName}`,
-      ...getProviderUpdateSidebarProgress(items),
-      ...(showItemDetails
-        ? optionalProviderUpdateSidebarSummary(formatProviderUpdateSidebarSummary(items))
-        : {}),
-      description: showItemDetails
-        ? formatProviderUpdateSidebarItemDescription(items)
-        : `${formatProviderList(activeProviders)} update in progress.`,
-      ...(items.length > 0 ? { items } : {}),
+      title: items.length === 1 ? getProviderDisplayName(activeProviders[0]!) : "Provider updates",
+      statusChipLabel: chip.label,
+      statusChipTone: chip.tone,
+      description:
+        items.length > 1
+          ? formatProviderUpdateSidebarItemDescription(items)
+          : `${formatProviderList(activeProviders)} update in progress.`,
+      items,
     };
   }
 
   const recentTerminalProviders = dedupedProviders.filter((provider) =>
     isRecentTerminalProvider(provider, options?.visibleAfterIso),
   );
-  const terminalCandidates: ProviderUpdateSidebarPillView[] = [];
+  const items = collectProviderUpdateSidebarItems(recentTerminalProviders);
+  if (items.length === 0) {
+    return null;
+  }
+
+  const key = `done:${recentTerminalProviders
+    .map(
+      (provider) =>
+        `${provider.driver}:${provider.updateState?.status ?? "idle"}:${provider.updateState?.finishedAt ?? "pending"}`,
+    )
+    .toSorted()
+    .join("|")}`;
+  if (options?.dismissedKeys?.has(key)) {
+    return null;
+  }
 
   const failedProviders = recentTerminalProviders.filter(
     (provider) => provider.updateState?.status === "failed",
   );
-  if (failedProviders.length > 0) {
-    const failedProvider = failedProviders[0]!;
-    const items = collectProviderUpdateSidebarItems(failedProviders);
-    terminalCandidates.push({
-      key: `failed:${failedProviders
-        .map(
-          (provider) =>
-            `${provider.driver}:${provider.updateState?.finishedAt ?? "pending"}:${provider.updateState?.message ?? ""}`,
-        )
-        .toSorted()
-        .join("|")}`,
-      tone: "error",
-      title:
-        failedProviders.length === 1
-          ? getProviderFailedUpdateTitle(failedProvider)
-          : `${failedProviders.length} provider updates failed`,
-      ...getProviderUpdateSidebarProgress(items),
-      ...(failedProviders.length > 1
-        ? optionalProviderUpdateSidebarSummary(formatProviderUpdateSidebarSummary(items))
-        : {}),
-      description: getFailedProviderUpdateDescription(failedProviders),
-      ...(items.length > 0 ? { items } : {}),
-      dismissible: true,
-    });
-  }
-
   const unchangedProviders = recentTerminalProviders.filter(
     (provider) => provider.updateState?.status === "unchanged",
   );
-  if (unchangedProviders.length > 0) {
-    const unchangedProvider = unchangedProviders[0]!;
-    const unchangedProviderName = getProviderDisplayName(unchangedProvider);
-    const items = collectProviderUpdateSidebarItems(unchangedProviders);
-    terminalCandidates.push({
-      key: `unchanged:${unchangedProviders
-        .map(
-          (provider) =>
-            `${provider.driver}:${provider.updateState?.finishedAt ?? "pending"}:${provider.updateState?.message ?? ""}`,
-        )
-        .toSorted()
-        .join("|")}`,
-      tone: "warning",
-      title:
-        unchangedProviders.length === 1
-          ? `${unchangedProviderName} still needs an update`
-          : `${unchangedProviders.length} providers still need updates`,
-      ...getProviderUpdateSidebarProgress(items),
-      ...(unchangedProviders.length > 1
-        ? optionalProviderUpdateSidebarSummary(formatProviderUpdateSidebarSummary(items))
-        : {}),
-      description: `${formatProviderList(unchangedProviders)} ${
-        unchangedProviders.length === 1 ? "still appears" : "still appear"
-      } outdated. Review provider settings for details.`,
-      ...(items.length > 0 ? { items } : {}),
-      dismissible: true,
-    });
-  }
-
   const succeededProviders = recentTerminalProviders.filter(
     (provider) => provider.updateState?.status === "succeeded",
   );
-  if (succeededProviders.length > 0) {
-    const succeededProvider = succeededProviders[0]!;
-    const items = collectProviderUpdateSidebarItems(succeededProviders);
-    terminalCandidates.push({
-      key: `succeeded:${succeededProviders
-        .map(
-          (provider) =>
-            `${provider.driver}:${provider.updateState?.finishedAt ?? "pending"}:${provider.updateState?.message ?? ""}`,
-        )
-        .toSorted()
-        .join("|")}`,
-      tone: "success",
-      title:
-        succeededProviders.length === 1
-          ? `${getProviderDisplayName(succeededProvider)} updated`
-          : `${succeededProviders.length} providers updated`,
-      ...getProviderUpdateSidebarProgress(items),
-      ...(succeededProviders.length > 1
-        ? optionalProviderUpdateSidebarSummary(formatProviderUpdateSidebarSummary(items))
-        : {}),
-      description: getProviderUpdatedDescription(succeededProviders.length),
-      ...(items.length > 0 ? { items } : {}),
-      dismissAfterVisibleMs: PROVIDER_UPDATE_SUCCESS_VISIBLE_MS,
-    });
-  }
+  const tone =
+    failedProviders.length > 0 ? "error" : unchangedProviders.length > 0 ? "warning" : "success";
+  const chip = getProviderUpdateSidebarChip(items);
 
-  return (
-    terminalCandidates
-      .toSorted((left, right) => {
-        const leftProviders =
-          left.tone === "error"
-            ? failedProviders
-            : left.tone === "warning"
-              ? unchangedProviders
-              : succeededProviders;
-        const rightProviders =
-          right.tone === "error"
-            ? failedProviders
-            : right.tone === "warning"
-              ? unchangedProviders
-              : succeededProviders;
-        const leftFinishedAt = latestFinishedAtForProviders(leftProviders) ?? "";
-        const rightFinishedAt = latestFinishedAtForProviders(rightProviders) ?? "";
-        return rightFinishedAt.localeCompare(leftFinishedAt);
-      })
-      .find((candidate) => !options?.dismissedKeys?.has(candidate.key)) ?? null
-  );
+  // The chip already carries the status word, so single-provider titles are
+  // identity only ("Claude v1.2.0" + [Failed]) and never truncate on it.
+  const title =
+    items.length > 1
+      ? "Provider updates"
+      : tone === "error"
+        ? getProviderAttemptedVersionTitle(failedProviders[0]!)
+        : tone === "warning"
+          ? getProviderDisplayName(unchangedProviders[0]!)
+          : `${getProviderDisplayName(succeededProviders[0]!)} updated`;
+  const description =
+    tone === "error"
+      ? getFailedProviderUpdateDescription(failedProviders)
+      : tone === "warning"
+        ? `${formatProviderList(unchangedProviders)} ${
+            unchangedProviders.length === 1 ? "still appears" : "still appear"
+          } outdated. Review provider settings for details.`
+        : getProviderUpdatedDescription(succeededProviders.length);
+
+  return {
+    key,
+    tone,
+    title,
+    statusChipLabel: chip.label,
+    statusChipTone: chip.tone,
+    description,
+    items,
+    // Fully-successful batches auto-hide; anything needing attention sticks
+    // around until explicitly dismissed.
+    ...(tone === "success"
+      ? { dismissAfterVisibleMs: PROVIDER_UPDATE_SUCCESS_VISIBLE_MS }
+      : { dismissible: true }),
+  };
 }
 
 function getProviderUpdateInitialToastTitle(

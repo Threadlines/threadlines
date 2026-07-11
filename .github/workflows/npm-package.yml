@@ -11,18 +11,6 @@ on:
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
       - "vite.config.ts"
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/npm-package.yml"
-      - "apps/server/**"
-      - "apps/web/**"
-      - "packages/**"
-      - "package.json"
-      - "pnpm-lock.yaml"
-      - "pnpm-workspace.yaml"
-      - "vite.config.ts"
   workflow_dispatch:
     inputs:
       version:

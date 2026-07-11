@@ -689,7 +689,6 @@ describe("wsApi", () => {
 
   it("reads and writes persistence through the desktop bridge when available", async () => {
     const clientSettings = {
-      autoArchiveInactiveThreadsDays: 30 as const,
       autoOpenPlanSidebar: false,
       chatChangedFilesDefaultExpanded: false,
       confirmThreadArchive: true,
@@ -758,7 +757,6 @@ describe("wsApi", () => {
     const { createLocalApi } = await import("./localApi");
     const api = createLocalApi(rpcClientMock as never);
     const clientSettings = {
-      autoArchiveInactiveThreadsDays: 30 as const,
       autoOpenPlanSidebar: false,
       chatChangedFilesDefaultExpanded: false,
       confirmThreadArchive: true,

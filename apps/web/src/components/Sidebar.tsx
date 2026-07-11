@@ -400,9 +400,13 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
   const isConfirmingArchive = confirmingArchiveThreadKey === threadKey && !isThreadArchiveDisabled;
   const isPinned = thread.pinnedAt !== null;
+  // On phone layouts the pin/archive cluster is always visible (absolutely
+  // positioned at the row's right edge), so the timestamp stays visible and
+  // shifts left of the cluster instead of hiding; the hover/focus fade-out
+  // only applies at sm+ where the cluster overlays the timestamp's spot.
   const threadMetaClassName = isConfirmingArchive
     ? "pointer-events-none opacity-0"
-    : "pointer-events-none transition-opacity duration-150 max-sm:hidden group-hover/menu-sub-item:opacity-0 group-focus-within/menu-sub-item:opacity-0";
+    : "pointer-events-none transition-opacity duration-150 max-sm:mr-15 sm:group-hover/menu-sub-item:opacity-0 sm:group-focus-within/menu-sub-item:opacity-0";
   const clearConfirmingArchive = useCallback(() => {
     setConfirmingArchiveThreadKey((current) => (current === threadKey ? null : current));
   }, [setConfirmingArchiveThreadKey, threadKey]);
@@ -749,7 +753,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 )}
               </div>
             )}
-            <span className={threadMetaClassName}>
+            <span className={threadMetaClassName} data-testid={`thread-meta-${thread.id}`}>
               <span className="inline-flex items-center gap-1">
                 {isRemoteThread && (
                   <Tooltip>
@@ -2710,6 +2714,8 @@ const SidebarChromeHeader = memo(function SidebarChromeHeader({
 const SidebarChromeFooter = memo(function SidebarChromeFooter() {
   const navigate = useNavigate();
   const { isMobile, setOpenMobile } = useSidebar();
+  // On mobile, /settings renders a full-page section index, so the sheet
+  // closes to reveal it; the sheet itself never hosts settings navigation.
   const handleSettingsClick = useCallback(() => {
     if (isMobile) {
       setOpenMobile(false);
@@ -3602,7 +3608,9 @@ export default function Sidebar() {
     <>
       <SidebarChromeHeader isElectron={isElectron} />
 
-      {isOnSettings ? (
+      {isOnSettings && !isMobile ? (
+        // Desktop only: mobile keeps the thread list in the sheet and gets a
+        // full-page section index at /settings instead of a sidebar nav swap.
         <SettingsSidebarNav pathname={pathname} />
       ) : (
         <>

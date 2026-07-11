@@ -4,8 +4,8 @@
  * The internal file viewer is a large overlay that browses and previews
  * project files without leaving Threadlines. It is the default destination
  * for file-opening interactions (chat file chips, diff-panel files, the
- * terminal-adjacent entry point); `openFileInViewer` is the single routing
- * helper those call sites share so file-reference handling is not duplicated.
+ * terminal-adjacent entry point); the routing helpers below keep file and
+ * directory targets distinct so only actual files reach the preview pane.
  */
 import { create } from "zustand";
 
@@ -30,12 +30,20 @@ export interface FileViewerContext {
  */
 export type FileEditSaveState = "pending" | "saving" | "error" | "conflict";
 
+type FileViewerOpenTarget =
+  | { kind: "file"; path: string; line?: number; endLine?: number }
+  | { kind: "directory"; path: string };
+
 interface FileViewerState {
   isOpen: boolean;
   context: FileViewerContext | null;
   /** Open files, in tab order. Paths are workspace-relative. */
   tabs: string[];
   activePath: string | null;
+  /** Directory the tree should reveal. An empty string targets the workspace root. */
+  treeRevealPath: string | null;
+  /** Bumped so repeatedly opening the same directory still re-focuses it. */
+  treeRevealRequestId: number;
   /** 1-based line to reveal in the active file. */
   revealLine: number | null;
   /** Optional inclusive end of the reveal range (selection restore). */
@@ -66,10 +74,7 @@ interface FileViewerState {
   setEditMode: (editMode: boolean) => void;
   setEditSaveState: (path: string, state: FileEditSaveState | null) => void;
   bumpEditReloadNonce: () => void;
-  open: (
-    context: FileViewerContext,
-    target?: { path: string; line?: number; endLine?: number },
-  ) => void;
+  open: (context: FileViewerContext, target?: FileViewerOpenTarget) => void;
   openFile: (path: string, line?: number, endLine?: number) => void;
   setActivePath: (path: string) => void;
   closeTab: (path: string) => void;
@@ -94,6 +99,8 @@ export const useFileViewerStore = create<FileViewerState>((set) => ({
   context: null,
   tabs: [],
   activePath: null,
+  treeRevealPath: null,
+  treeRevealRequestId: 0,
   revealLine: null,
   revealEndLine: null,
   revealRequestId: 0,
@@ -126,7 +133,7 @@ export const useFileViewerStore = create<FileViewerState>((set) => ({
         state.context?.environmentId === context.environmentId && state.context.cwd === context.cwd;
       const tabs = sameWorkspace ? [...state.tabs] : [];
       let activePath = sameWorkspace ? state.activePath : null;
-      if (target) {
+      if (target?.kind === "file") {
         if (!tabs.includes(target.path)) {
           tabs.push(target.path);
         }
@@ -138,8 +145,10 @@ export const useFileViewerStore = create<FileViewerState>((set) => ({
         context,
         tabs: withTabCap(tabs, nextActivePath),
         activePath: nextActivePath,
-        revealLine: target?.line ?? null,
-        revealEndLine: target?.endLine ?? null,
+        treeRevealPath: target?.kind === "directory" ? target.path : null,
+        treeRevealRequestId: state.treeRevealRequestId + (target?.kind === "directory" ? 1 : 0),
+        revealLine: target?.kind === "file" ? (target.line ?? null) : null,
+        revealEndLine: target?.kind === "file" ? (target.endLine ?? null) : null,
         revealRequestId: state.revealRequestId + 1,
         ...(sameWorkspace ? {} : { editSaveState: {} }),
       };
@@ -149,12 +158,14 @@ export const useFileViewerStore = create<FileViewerState>((set) => ({
     set((state) => ({
       tabs: withTabCap(state.tabs.includes(path) ? state.tabs : [...state.tabs, path], path),
       activePath: path,
+      treeRevealPath: null,
       revealLine: line ?? null,
       revealEndLine: endLine ?? null,
       revealRequestId: state.revealRequestId + 1,
     })),
 
-  setActivePath: (path) => set({ activePath: path, revealLine: null, revealEndLine: null }),
+  setActivePath: (path) =>
+    set({ activePath: path, treeRevealPath: null, revealLine: null, revealEndLine: null }),
 
   closeTab: (path) =>
     set((state) => {
@@ -206,24 +217,40 @@ function normalizePathForComparison(input: string): string {
     : normalized;
 }
 
-/**
- * Convert an absolute path into a workspace-relative one, or return null when
- * the path lives outside the workspace root (those fall back to the external
- * editor — the server refuses reads outside the root).
- */
-export function relativePathWithinCwd(targetPath: string, cwd: string): string | null {
-  const normalizedTarget = normalizeFileViewerPath(targetPath);
+function relativePathWithinCwdOrRoot(targetPath: string, cwd: string): string | null {
+  const normalizedTarget = normalizeFileViewerPath(targetPath).replace(/\/+$/u, "");
   const normalizedCwd = normalizeFileViewerPath(cwd).replace(/\/+$/, "");
   const comparableTarget = normalizePathForComparison(normalizedTarget);
   const comparableCwd = normalizePathForComparison(normalizedCwd);
   if (comparableTarget === comparableCwd) {
-    return null;
+    return "";
   }
   if (!comparableTarget.startsWith(`${comparableCwd}/`)) {
     return null;
   }
   const relativePath = normalizedTarget.slice(normalizedCwd.length + 1);
   return relativePath.length > 0 ? relativePath : null;
+}
+
+/**
+ * Convert an absolute file path into a workspace-relative one, or return null
+ * when the path is the workspace root or lives outside it.
+ */
+export function relativePathWithinCwd(targetPath: string, cwd: string): string | null {
+  const relativePath = relativePathWithinCwdOrRoot(targetPath, cwd);
+  return relativePath && relativePath.length > 0 ? relativePath : null;
+}
+
+function resolveViewerWorkspacePath(targetPath: string, cwd: string): string | null {
+  const normalizedTarget = normalizeFileViewerPath(targetPath);
+  const isAbsolute =
+    normalizedTarget.startsWith("/") ||
+    isWindowsAbsolutePath(targetPath) ||
+    isWindowsAbsolutePath(normalizedTarget);
+  const pathWithoutTrailingSeparators = normalizedTarget.replace(/\/+$/u, "");
+  return isAbsolute
+    ? relativePathWithinCwdOrRoot(pathWithoutTrailingSeparators, cwd)
+    : pathWithoutTrailingSeparators;
 }
 
 /**
@@ -274,6 +301,23 @@ export function openFileInActiveViewer(input: {
     path: input.path,
     line: input.line,
     ...(input.endLine !== undefined ? { endLine: input.endLine } : {}),
+  });
+}
+
+/**
+ * Reveal a directory in the active workspace's file tree without treating it
+ * as an open file. Returns false when no viewer context is registered or the
+ * directory is outside the workspace.
+ */
+export function openDirectoryInActiveViewer(input: { path: string }): boolean {
+  if (!activeFileViewerContext) {
+    return false;
+  }
+  return openDirectoryInViewer({
+    environmentId: activeFileViewerContext.environmentId,
+    cwd: activeFileViewerContext.cwd,
+    threadRef: activeFileViewerContext.threadRef,
+    path: input.path,
   });
 }
 
@@ -346,6 +390,28 @@ export interface OpenFileInViewerInput {
   endLine?: number | undefined;
 }
 
+export type OpenDirectoryInViewerInput = Omit<OpenFileInViewerInput, "line" | "endLine">;
+
+/**
+ * Open the viewer with a directory revealed in the project tree. Directories
+ * never become tabs or active preview paths, so no file read is attempted.
+ */
+export function openDirectoryInViewer(input: OpenDirectoryInViewerInput): boolean {
+  const relativePath = resolveViewerWorkspacePath(input.path, input.cwd);
+  if (relativePath === null) {
+    return false;
+  }
+  useFileViewerStore.getState().open(
+    {
+      environmentId: input.environmentId,
+      cwd: input.cwd,
+      threadRef: input.threadRef ?? null,
+    },
+    { kind: "directory", path: relativePath },
+  );
+  return true;
+}
+
 /**
  * Route a file-open interaction into the internal viewer.
  *
@@ -364,13 +430,7 @@ export function openFileInViewer(input: OpenFileInViewerInput): boolean {
       line = Number.parseInt(lineSuffix[1] ?? "", 10) || undefined;
     }
   }
-  const normalizedPath = normalizeFileViewerPath(targetPath);
-  const relativePath =
-    normalizedPath.startsWith("/") ||
-    isWindowsAbsolutePath(targetPath) ||
-    isWindowsAbsolutePath(normalizedPath)
-      ? relativePathWithinCwd(normalizedPath, input.cwd)
-      : normalizedPath;
+  const relativePath = resolveViewerWorkspacePath(targetPath, input.cwd);
   if (!relativePath) {
     return false;
   }
@@ -381,6 +441,7 @@ export function openFileInViewer(input: OpenFileInViewerInput): boolean {
       threadRef: input.threadRef ?? null,
     },
     {
+      kind: "file",
       path: relativePath,
       ...(line !== undefined ? { line } : {}),
       ...(input.endLine !== undefined ? { endLine: input.endLine } : {}),

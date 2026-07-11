@@ -1,7 +1,12 @@
 import { EnvironmentId } from "@threadlines/contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { openFileInViewer, relativePathWithinCwd, useFileViewerStore } from "./fileViewerStore";
+import {
+  openDirectoryInViewer,
+  openFileInViewer,
+  relativePathWithinCwd,
+  useFileViewerStore,
+} from "./fileViewerStore";
 
 const TEST_ENVIRONMENT_ID = EnvironmentId.make("environment-file-viewer-store");
 const WINDOWS_CWD = "C:/Users/wilfr/OneDrive/Desktop/GitHubCode/badcode";
@@ -13,6 +18,8 @@ function resetFileViewerStore(): void {
     context: null,
     tabs: [],
     activePath: null,
+    treeRevealPath: null,
+    treeRevealRequestId: 0,
     revealLine: null,
     revealEndLine: null,
     revealRequestId: 0,
@@ -41,6 +48,41 @@ describe("fileViewerStore", () => {
       isOpen: true,
       activePath: "AGENTS.md",
       revealLine: 87,
+    });
+  });
+
+  it("reveals nested directories without opening them as file tabs", () => {
+    expect(
+      openDirectoryInViewer({
+        environmentId: TEST_ENVIRONMENT_ID,
+        cwd: "/Users/will/badcode",
+        path: "/Users/will/badcode/apps/server/",
+      }),
+    ).toBe(true);
+
+    expect(useFileViewerStore.getState()).toMatchObject({
+      isOpen: true,
+      activePath: null,
+      tabs: [],
+      treeRevealPath: "apps/server",
+      treeRevealRequestId: 1,
+    });
+  });
+
+  it("opens workspace-root directory links without creating a file tab", () => {
+    expect(
+      openDirectoryInViewer({
+        environmentId: TEST_ENVIRONMENT_ID,
+        cwd: "/Users/will/badcode",
+        path: "/Users/will/badcode/",
+      }),
+    ).toBe(true);
+
+    expect(useFileViewerStore.getState()).toMatchObject({
+      isOpen: true,
+      activePath: null,
+      tabs: [],
+      treeRevealPath: "",
     });
   });
 });

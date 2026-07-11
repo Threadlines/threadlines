@@ -4,7 +4,8 @@ import { useEffect, useEffectEvent, useMemo, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { readEnvironmentApi } from "../environmentApi";
-import { useClientSettingsHydrated, useSettings } from "../hooks/useSettings";
+import { useSettings } from "../hooks/useSettings";
+import { useServerConfig } from "../rpc/serverState";
 import { refreshArchivedThreadsForEnvironment } from "../lib/archivedThreadsState";
 import { newCommandId } from "../lib/utils";
 import { selectAutoArchiveCandidates, type AutoArchiveCandidate } from "../threadAutoArchive";
@@ -24,7 +25,10 @@ function threadKey(thread: Pick<AutoArchiveCandidate, "environmentId" | "id">): 
 }
 
 export function AutoArchiveInactiveThreadsCoordinator() {
-  const clientSettingsHydrated = useClientSettingsHydrated();
+  // The retention policy is server-authoritative; hold enforcement until the
+  // real server config has loaded so the pre-load default can't be mistaken
+  // for the user's setting.
+  const serverConfigLoaded = useServerConfig() !== null;
   const autoArchiveInactiveThreadsDays = useSettings(
     (settings) => settings.autoArchiveInactiveThreadsDays,
   );
@@ -138,11 +142,7 @@ export function AutoArchiveInactiveThreadsCoordinator() {
   });
 
   useEffect(() => {
-    if (
-      !clientSettingsHydrated ||
-      autoArchiveInactiveThreadsDays === 0 ||
-      candidates.length === 0
-    ) {
+    if (!serverConfigLoaded || autoArchiveInactiveThreadsDays === 0 || candidates.length === 0) {
       return;
     }
 
@@ -157,7 +157,7 @@ export function AutoArchiveInactiveThreadsCoordinator() {
     lastCandidateKeyRef.current = candidateKey;
     lastAttemptMsRef.current = nowMs;
     void archiveCandidates(candidates);
-  }, [autoArchiveInactiveThreadsDays, candidateKey, candidates, clientSettingsHydrated]);
+  }, [autoArchiveInactiveThreadsDays, candidateKey, candidates, serverConfigLoaded]);
 
   return null;
 }

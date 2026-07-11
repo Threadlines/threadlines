@@ -194,8 +194,18 @@ export function resolveMarkdownFileLinkTarget(
 }
 
 function basenameOfPath(path: string): string {
-  const separatorIndex = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
-  return separatorIndex >= 0 ? path.slice(separatorIndex + 1) : path;
+  const pathWithoutTrailingSeparators = path.replace(/[\\/]+$/u, "");
+  if (pathWithoutTrailingSeparators.length === 0) {
+    return path;
+  }
+
+  const separatorIndex = Math.max(
+    pathWithoutTrailingSeparators.lastIndexOf("/"),
+    pathWithoutTrailingSeparators.lastIndexOf("\\"),
+  );
+  return separatorIndex >= 0
+    ? pathWithoutTrailingSeparators.slice(separatorIndex + 1)
+    : pathWithoutTrailingSeparators;
 }
 
 export function resolveMarkdownFileLinkMeta(

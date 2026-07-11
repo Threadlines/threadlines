@@ -163,6 +163,7 @@ const TreeRow = memo(function TreeRow({
     <>
       <button
         type="button"
+        data-file-viewer-tree-path={node.entry.path}
         className={cn(
           "flex w-full cursor-pointer items-center gap-1.5 rounded-sm border-0 bg-transparent py-1 pr-2 text-left text-xs text-foreground/85 transition-colors hover:bg-foreground/8 pointer-coarse:py-2 pointer-coarse:text-sm",
           isActive && "bg-foreground/10 text-foreground",
@@ -218,8 +219,12 @@ function FileViewerTree({
   onFileOpened?: () => void;
 }) {
   const activePath = useFileViewerStore((state) => state.activePath);
+  const treeRevealPath = useFileViewerStore((state) => state.treeRevealPath);
+  const treeRevealRequestId = useFileViewerStore((state) => state.treeRevealRequestId);
   const storeOpenFile = useFileViewerStore((state) => state.openFile);
   const { resolvedTheme } = useTheme();
+  const treeViewportRef = useRef<HTMLDivElement>(null);
+  const focusedTreeRevealRequestRef = useRef(-1);
   const [query, setQuery] = useState("");
   const trimmedQuery = query.trim();
   const entriesQuery = useQuery(
@@ -262,9 +267,14 @@ function FileViewerTree({
   }, []);
 
   useEffect(() => {
-    if (!activePath) {
+    if (treeRevealPath !== null) {
+      if (treeRevealPath.length > 0) {
+        expandPathWithAncestors(treeRevealPath);
+      }
       return;
     }
+    if (!activePath) return;
+
     setExpandedPaths((previous) => {
       const ancestors = ancestorsOf(activePath);
       if (ancestors.every((ancestor) => previous.has(ancestor))) {
@@ -276,7 +286,30 @@ function FileViewerTree({
       }
       return next;
     });
-  }, [activePath]);
+  }, [activePath, expandPathWithAncestors, treeRevealPath, treeRevealRequestId]);
+
+  useEffect(() => {
+    if (
+      treeRevealPath === null ||
+      treeRevealPath.length === 0 ||
+      !entriesQuery.data ||
+      focusedTreeRevealRequestRef.current === treeRevealRequestId
+    ) {
+      return;
+    }
+    const animationFrame = window.requestAnimationFrame(() => {
+      const container = treeViewportRef.current;
+      if (!container) return;
+      const target = [
+        ...container.querySelectorAll<HTMLElement>("[data-file-viewer-tree-path]"),
+      ].find((element) => element.dataset.fileViewerTreePath === treeRevealPath);
+      if (!target) return;
+      focusedTreeRevealRequestRef.current = treeRevealRequestId;
+      target.focus({ preventScroll: true });
+      scrollElementToContainerCenter(container, target);
+    });
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [entriesQuery.data, expandedPaths, treeRevealPath, treeRevealRequestId]);
 
   const handleToggleDirectory = useCallback((path: string) => {
     setExpandedPaths((previous) => {
@@ -330,7 +363,7 @@ function FileViewerTree({
           />
         </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto py-1 pr-1">
+      <div ref={treeViewportRef} className="min-h-0 flex-1 overflow-y-auto py-1 pr-1">
         {isSearching ? (
           searchQuery.isPending ? (
             <p className="px-3 py-2 text-xs text-muted-foreground/75">Searching...</p>
@@ -370,7 +403,7 @@ function FileViewerTree({
               node={node}
               depth={0}
               expandedPaths={expandedPaths}
-              activePath={activePath}
+              activePath={treeRevealPath !== null ? treeRevealPath : activePath}
               theme={resolvedTheme}
               onToggleDirectory={handleToggleDirectory}
               onOpenFile={openFile}
@@ -623,6 +656,19 @@ function FileViewerPreview({
           isCoarsePointer ? resolveCoarseLineSelection(previous, range) : range,
         );
       },
+      // `selectedLines` puts pierre in controlled-selection mode, where drags
+      // paint nothing until the host echoes the range back. Mirror each drag
+      // delta into state so the highlight tracks the pointer. Fine pointers
+      // only: coarse taps resolve against the previous selection above, which
+      // live raw updates would clobber.
+      ...(isCoarsePointer
+        ? {}
+        : {
+            onLineSelectionChange: (range: SelectedLineRange | null) => {
+              setRevealLineNotice(null);
+              setSelectedLines(range);
+            },
+          }),
     }),
     [isCoarsePointer, resolvedTheme, wordWrap],
   );
@@ -988,6 +1034,7 @@ function FileViewerTabs({
 
 function FileViewerLayout({ context }: { context: FileViewerContext }) {
   const activePath = useFileViewerStore((state) => state.activePath);
+  const treeRevealPath = useFileViewerStore((state) => state.treeRevealPath);
   const close = useFileViewerStore((state) => state.close);
   const editMode = useFileViewerStore((state) => state.editMode);
   const setEditMode = useFileViewerStore((state) => state.setEditMode);
@@ -1006,11 +1053,13 @@ function FileViewerLayout({ context }: { context: FileViewerContext }) {
   // time (a 256px tree beside code is unusable on a phone); every file-open
   // interaction lands on the preview, and the header's tree button goes back.
   // Desktop ignores this state entirely — both panes stay visible.
-  const [mobilePane, setMobilePane] = useState<"tree" | "preview">(activePath ? "preview" : "tree");
+  const [mobilePane, setMobilePane] = useState<"tree" | "preview">(
+    treeRevealPath !== null || !activePath ? "tree" : "preview",
+  );
   const showPreviewPane = useCallback(() => setMobilePane("preview"), []);
   useEffect(() => {
-    setMobilePane(activePath ? "preview" : "tree");
-  }, [activePath]);
+    setMobilePane(treeRevealPath !== null || !activePath ? "tree" : "preview");
+  }, [activePath, treeRevealPath]);
 
   return (
     <>

@@ -78,6 +78,20 @@ describe("resolveMarkdownFileLinkTarget", () => {
     );
   });
 
+  it("keeps the directory name for POSIX paths ending in a separator", () => {
+    expect(resolveMarkdownFileLinkMeta("/Users/will/badcode/")).toMatchObject({
+      basename: "badcode",
+      filePath: "/Users/will/badcode/",
+    });
+  });
+
+  it("keeps the directory name for Windows paths ending in a separator", () => {
+    expect(resolveMarkdownFileLinkMeta("C:\\Users\\will\\badcode\\")).toMatchObject({
+      basename: "badcode",
+      filePath: "C:\\Users\\will\\badcode\\",
+    });
+  });
+
   it("formats tooltip display paths relative to the cwd when possible", () => {
     expect(
       resolveMarkdownFileLinkMeta(

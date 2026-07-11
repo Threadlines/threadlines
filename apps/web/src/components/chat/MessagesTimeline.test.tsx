@@ -206,7 +206,7 @@ describe("MessagesTimeline", () => {
       sourceRole: "assistant" as const,
       selectedText: "selected text",
       left: 24,
-      top: 36,
+      anchor: { top: 36 },
       mode: "note" as const,
       note: "draft note",
     };

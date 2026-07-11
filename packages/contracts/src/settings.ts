@@ -56,9 +56,6 @@ export const DEFAULT_AUTO_ARCHIVE_INACTIVE_THREADS_DAYS: AutoArchiveInactiveThre
 
 export const ClientSettingsSchema = Schema.Struct({
   autoOpenPlanSidebar: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
-  autoArchiveInactiveThreadsDays: AutoArchiveInactiveThreadsDays.pipe(
-    Schema.withDecodingDefault(Effect.succeed(DEFAULT_AUTO_ARCHIVE_INACTIVE_THREADS_DAYS)),
-  ),
   chatChangedFilesDefaultExpanded: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
@@ -380,6 +377,12 @@ export const DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL = Duration.minutes(2);
 
 export const ServerSettings = Schema.Struct({
   enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  // Machine-wide thread retention policy (0 = disabled). Server-authoritative
+  // so every connected client (desktop, phone) enforces the same value;
+  // enforcement currently runs in the web client's auto-archive coordinator.
+  autoArchiveInactiveThreadsDays: AutoArchiveInactiveThreadsDays.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_AUTO_ARCHIVE_INACTIVE_THREADS_DAYS)),
+  ),
   // While any thread has a turn in flight, hold an idle-sleep power assertion
   // so the host machine cannot suspend mid-stream. The display still dims and
   // locks on its normal schedule. Effective on macOS and Windows.
@@ -498,6 +501,7 @@ const OpenCodeSettingsPatch = Schema.Struct({
 export const ServerSettingsPatch = Schema.Struct({
   // Server settings
   enableAssistantStreaming: Schema.optionalKey(Schema.Boolean),
+  autoArchiveInactiveThreadsDays: Schema.optionalKey(AutoArchiveInactiveThreadsDays),
   preventSleepDuringActiveTurns: Schema.optionalKey(Schema.Boolean),
   usageAnalyticsEnabled: Schema.optionalKey(Schema.Boolean),
   automaticGitFetchInterval: Schema.optionalKey(Schema.DurationFromMillis),
@@ -529,7 +533,6 @@ export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 
 export const ClientSettingsPatch = Schema.Struct({
   autoOpenPlanSidebar: Schema.optionalKey(Schema.Boolean),
-  autoArchiveInactiveThreadsDays: Schema.optionalKey(AutoArchiveInactiveThreadsDays),
   chatChangedFilesDefaultExpanded: Schema.optionalKey(Schema.Boolean),
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),

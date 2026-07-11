@@ -1,3 +1,4 @@
+import { useCallback, useRef } from "react";
 import { CheckIcon, DownloadIcon, RotateCwIcon } from "lucide-react";
 import type { DesktopUpdateState } from "@threadlines/contracts";
 
@@ -6,7 +7,6 @@ import { useDesktopUpdateAction } from "../../hooks/useDesktopUpdateAction";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
 import {
-  compactVersionLabel,
   type DesktopUpdateActionKind,
   getDesktopUpdateStatusLine,
   getSidebarDesktopUpdateTagPresentation,
@@ -19,7 +19,6 @@ import {
   UPDATE_STATUS_SURFACE_STYLES,
   UPDATE_STATUS_TEXT_STYLES,
   UpdateProgressRail,
-  UpdateStatusBadge,
 } from "./updateStatusVisuals";
 import { cn } from "~/lib/utils";
 
@@ -38,39 +37,26 @@ function getUpdateIcon(tone: SidebarDesktopUpdateTagTone) {
   return null;
 }
 
-function getCompactCardActionLabel(
-  state: DesktopUpdateState | null,
-  actionKind: DesktopUpdateActionKind,
-) {
-  if (actionKind === "download") return "Download";
+function getCardActionLabel(state: DesktopUpdateState | null, actionKind: DesktopUpdateActionKind) {
   if (actionKind === "install") return "Restart";
-  if (state?.status === "checking") return "Checking";
-  if (state?.status === "downloading") return "Downloading";
+  if (actionKind === "download") return state?.status === "error" ? "Retry" : "Download";
   return "Check";
 }
 
-function getCompactCardActionAriaLabel(actionKind: DesktopUpdateActionKind) {
+function getCardActionAriaLabel(actionKind: DesktopUpdateActionKind) {
   if (actionKind === "check") return "Check now";
   if (actionKind === "download") return "Download update";
   if (actionKind === "install") return "Restart to install";
   return undefined;
 }
 
-function getCompactDownloadingDetail(state: DesktopUpdateState | null) {
-  if (state?.status !== "downloading") return null;
-  const targetLabel = state.availableVersion
-    ? compactVersionLabel(state.availableVersion)
-    : "Update";
-  const progressLabel =
-    typeof state.downloadPercent === "number" ? `${Math.floor(state.downloadPercent)}%` : null;
-  return [targetLabel, progressLabel].filter(Boolean).join(" · ");
-}
-
 /**
- * Build/updater details behind the sidebar version chip: build stage, full
- * version, update track, updater status, and the adaptive update action.
- * Rows render only when they carry information — a browser session shows just
- * the stage/version header.
+ * Build/updater details behind the sidebar version chip. The header states
+ * the build (stage/track meta line over the full version); the footer strip
+ * carries updater status text beside the single adaptive action — the only
+ * button-shaped element on the card, so the affordance is unambiguous. A
+ * browser session shows just the header; a fixed footer height keeps the
+ * card footprint stable across updater states.
  */
 function SidebarVersionCard({
   state,
@@ -96,81 +82,84 @@ function SidebarVersionCard({
       ? "Nightly"
       : "Stable"
     : null;
-  const checkedLabel =
-    state?.checkedAt && !isCheckingForUpdate
-      ? `Checked ${formatRelativeTimeLabel(state.checkedAt)}`
+  const checkedLabel = state?.checkedAt
+    ? `Checked ${formatRelativeTimeLabel(state.checkedAt)}`
+    : "Not checked yet";
+  const statusText = statusLine?.text ?? (showUpdaterControls ? checkedLabel : null);
+  // While a check is in flight the action kind resolves to "none"; keep the
+  // (disabled) Check button mounted so the footer never reflows.
+  const showAction = showUpdaterControls && (actionKind !== "none" || isCheckingForUpdate);
+  // Pending-update actions (download/install/retry) get the primary button;
+  // a routine check stays as the quiet outline. Beside a primary button the
+  // progress-blue status text is redundant (same hue, same message) and
+  // drops to neutral; success green and error red stay — they carry state
+  // the button color doesn't, and keep the card in tune with the chip.
+  const actionIsPrimary = actionKind === "download" || actionKind === "install";
+  const statusToneClass =
+    statusLine && (!actionIsPrimary || statusLine.tone !== "progress")
+      ? UPDATE_STATUS_TEXT_STYLES[statusLine.tone]
+      : "text-muted-foreground/70";
+  const downloadPercent =
+    state?.status === "downloading" && typeof state.downloadPercent === "number"
+      ? state.downloadPercent
       : null;
-  const downloadingDetail = getCompactDownloadingDetail(state);
-  const detailLine =
-    downloadingDetail ??
-    (isCheckingForUpdate && trackLabel
-      ? trackLabel
-      : (statusLine?.text ?? [trackLabel, checkedLabel].filter(Boolean).join(" · ")));
-  const showCompactAction =
-    showUpdaterControls && (actionKind !== "none" || isCheckingForUpdate || isDownloadingUpdate);
-  const compactActionLabel = getCompactCardActionLabel(state, actionKind);
-  const compactActionTone = statusLine?.tone ?? "neutral";
-  const compactAction = showCompactAction ? (
-    actionKind === "check" || actionKind === "download" || actionKind === "install" ? (
-      <Button
-        aria-label={getCompactCardActionAriaLabel(actionKind)}
-        className="h-5 min-w-[4.5rem] rounded-sm px-1.5 text-[10px] leading-none sm:h-5 sm:text-[10px]"
-        disabled={actionDisabled || isCheckingForUpdate}
-        onClick={onAction}
-        size="xs"
-        variant={actionKind === "install" ? "default" : "outline"}
-      >
-        {compactActionLabel}
-      </Button>
-    ) : (
-      <span
-        aria-live={isCheckingForUpdate ? "polite" : undefined}
-        className={cn(
-          "inline-flex h-5 min-w-[4.5rem] shrink-0 items-center justify-center rounded-sm border px-1.5 text-[10px] leading-none font-medium",
-          compactActionTone === "progress" &&
-            "border-primary/18 bg-primary/8 text-primary-readable",
-          compactActionTone === "success" && "border-success/20 bg-success/8 text-success",
-          compactActionTone === "error" &&
-            "border-destructive/24 bg-destructive/8 text-destructive",
-          compactActionTone === "neutral" &&
-            "border-muted-foreground/20 bg-muted-foreground/8 text-muted-foreground",
-        )}
-        role={isCheckingForUpdate ? "status" : undefined}
-      >
-        {compactActionLabel}
-      </span>
-    )
-  ) : null;
 
   return (
+    // The version header alone sets the card width: the footer's inner row is
+    // w-0/min-w-full so its (state-dependent) status text never contributes
+    // to the intrinsic size, keeping the footprint stable across updater
+    // states without padding the card out to a wide fixed width.
     <div
-      className={cn("flex max-w-56 flex-col gap-1 p-1", showUpdaterControls && "w-[13.25rem]")}
+      className={cn("flex w-fit max-w-64 flex-col", showUpdaterControls && "min-w-48")}
       data-testid="sidebar-version-card"
     >
-      <div className="flex items-center justify-between gap-2">
-        <UpdateStatusBadge tone="neutral">{APP_STAGE_LABEL}</UpdateStatusBadge>
-        <code className="min-w-0 break-all text-right text-[10px] font-medium tabular-nums text-muted-foreground">
+      <div className="flex flex-col gap-1 px-1 pt-1 pb-1.5">
+        <span className="text-[9px] font-semibold tracking-[0.1em] uppercase text-muted-foreground/60">
+          {trackLabel ? `${APP_STAGE_LABEL} · ${trackLabel}` : APP_STAGE_LABEL}
+        </span>
+        <code
+          className="truncate text-[11px] leading-none font-medium tabular-nums text-foreground/90 select-all"
+          title={`v${APP_VERSION}`}
+        >
           v{APP_VERSION}
         </code>
       </div>
-      {detailLine || compactAction ? (
-        <div className="flex min-h-5 items-center gap-2">
-          {compactAction}
-          {detailLine ? (
+      {statusText !== null || showAction ? (
+        <div className="-mx-2 -mb-1 rounded-b-[calc(var(--radius-md)-1px)] border-t border-border/60 bg-muted/30">
+          <div className="flex h-7 w-0 min-w-full items-center gap-2 px-3">
+            {/* Action sits bottom-left: the popup opens above the chip, so the
+                cursor only travels straight up from the hover target. */}
+            {showAction ? (
+              <Button
+                aria-label={getCardActionAriaLabel(actionKind)}
+                className="h-5 min-w-14 shrink-0 rounded-sm px-2 text-[10px] leading-none sm:h-5 sm:text-[10px]"
+                disabled={actionDisabled || isCheckingForUpdate}
+                onClick={onAction}
+                size="xs"
+                variant={actionIsPrimary ? "default" : "outline"}
+              >
+                {getCardActionLabel(state, actionKind)}
+              </Button>
+            ) : isDownloadingUpdate ? (
+              <UpdateProgressRail
+                className="w-12 shrink-0"
+                indeterminate={downloadPercent === null}
+                percent={downloadPercent ?? 0}
+                tone="progress"
+              />
+            ) : null}
             <p
+              aria-live={isCheckingForUpdate || isDownloadingUpdate ? "polite" : undefined}
               className={cn(
                 "min-w-0 flex-1 truncate text-right text-[10px] leading-4",
-                statusLine
-                  ? UPDATE_STATUS_TEXT_STYLES[statusLine.tone]
-                  : "text-muted-foreground/70",
+                statusToneClass,
               )}
-              title={detailLine}
+              role={isCheckingForUpdate || isDownloadingUpdate ? "status" : undefined}
+              title={statusText ?? undefined}
             >
-              {detailLine}
+              {statusText}
             </p>
-          ) : (
-            <span className="min-w-0 flex-1" />
-          )}
+          </div>
         </div>
       ) : null}
     </div>
@@ -188,6 +177,28 @@ export function SidebarVersionTag() {
   // by the desktop bridge (or the dev preview tools), so plain-browser
   // sessions stay idle either way.
   const { state, kind, disabled, run } = useDesktopUpdateAction();
+  // Running the update action from a hover-opened card pins it: the user is
+  // now waiting on the result, so moving the pointer away must not dismiss
+  // it. Outside-press/escape closes still clear the pin below.
+  const pinnedByActionRef = useRef(false);
+  const runAndPin = useCallback(() => {
+    pinnedByActionRef.current = true;
+    run();
+  }, [run]);
+  const handleOpenChange = useCallback(
+    (open: boolean, eventDetails: { reason: string; cancel: () => void }) => {
+      if (open) return;
+      if (
+        pinnedByActionRef.current &&
+        (eventDetails.reason === "trigger-hover" || eventDetails.reason === "focus-out")
+      ) {
+        eventDetails.cancel();
+        return;
+      }
+      pinnedByActionRef.current = false;
+    },
+    [],
+  );
   const presentation = getSidebarDesktopUpdateTagPresentation(state, APP_VERSION);
   const hasKnownDownloadProgress =
     presentation.tone === "downloading" && presentation.indicatorLabel !== null;
@@ -246,7 +257,7 @@ export function SidebarVersionTag() {
       : presentation.tooltip;
 
   return (
-    <Popover>
+    <Popover onOpenChange={handleOpenChange}>
       <PopoverTrigger
         closeDelay={100}
         delay={250}
@@ -266,7 +277,7 @@ export function SidebarVersionTag() {
         <SidebarVersionCard
           actionDisabled={disabled}
           actionKind={kind}
-          onAction={run}
+          onAction={runAndPin}
           state={state}
         />
       </PopoverPopup>

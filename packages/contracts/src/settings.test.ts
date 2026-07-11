@@ -24,13 +24,6 @@ describe("ClientSettings defaults", () => {
     expect(decodeClientSettings({}).autoOpenPlanSidebar).toBe(false);
   });
 
-  it("keeps inactive thread auto-archive off by default", () => {
-    expect(DEFAULT_CLIENT_SETTINGS.autoArchiveInactiveThreadsDays).toBe(0);
-    expect(decodeClientSettings({}).autoArchiveInactiveThreadsDays).toBe(0);
-    const patch = decodeClientSettingsPatch({ autoArchiveInactiveThreadsDays: 30 });
-    expect(patch.autoArchiveInactiveThreadsDays).toBe(30);
-  });
-
   it("shows diff changes only by default", () => {
     expect(DEFAULT_CLIENT_SETTINGS.diffChangesOnly).toBe(true);
     expect(decodeClientSettings({}).diffChangesOnly).toBe(true);
@@ -55,6 +48,13 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
   it("streams agent responses by default so chat output appears progressively", () => {
     expect(DEFAULT_SERVER_SETTINGS.enableAssistantStreaming).toBe(true);
     expect(decodeServerSettings({}).enableAssistantStreaming).toBe(true);
+  });
+
+  it("keeps inactive thread auto-archive off by default and patchable", () => {
+    expect(DEFAULT_SERVER_SETTINGS.autoArchiveInactiveThreadsDays).toBe(0);
+    expect(decodeServerSettings({}).autoArchiveInactiveThreadsDays).toBe(0);
+    const patch = decodeServerSettingsPatch({ autoArchiveInactiveThreadsDays: 30 });
+    expect(patch.autoArchiveInactiveThreadsDays).toBe(30);
   });
 
   it("prevents sleep during active turns by default", () => {
