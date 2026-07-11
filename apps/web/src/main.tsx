@@ -3,9 +3,9 @@ import ReactDOM from "react-dom/client";
 import { RouterProvider } from "@tanstack/react-router";
 import { createHashHistory, createBrowserHistory } from "@tanstack/react-router";
 
-import "@fontsource-variable/schibsted-grotesk";
+import "@fontsource-variable/schibsted-grotesk/index.css";
 import "@fontsource-variable/schibsted-grotesk/wght-italic.css";
-import "@fontsource-variable/cascadia-mono";
+import "@fontsource-variable/cascadia-mono/index.css";
 import "@xterm/xterm/css/xterm.css";
 import "./index.css";
 

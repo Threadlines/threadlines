@@ -2286,7 +2286,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           Width is capped below half the composer so it never reaches the centered
           scroll-to-bottom button that shares this band. */}
       {latestPromptSuggestion && latestPromptSuggestionDisplayText && !isComposerCollapsedMobile ? (
-        <div className="absolute inset-x-0 bottom-full z-20 mb-2 flex px-1">
+        <div className="absolute inset-x-0 bottom-full z-20 mb-1 flex px-1">
           <Tooltip>
             <TooltipTrigger
               render={

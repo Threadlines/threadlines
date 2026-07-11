@@ -400,7 +400,7 @@ function openBridge(input: {
       let localOpenChain: Promise<void> = Promise.resolve();
       let localUsedByDevice = false;
       let detachLocal: () => void = () => {};
-      let pendingDeviceFrames: Array<string | ArrayBufferLike | Blob | ArrayBufferView> = [];
+      let pendingDeviceFrames: Array<string | Blob | BufferSource> = [];
       let currentDeviceConnectionId: string | null = null;
       // Device frames can arrive split into relay chunk frames (Cloudflare
       // drops WebSocket messages over 1 MiB); they are reassembled here so
@@ -545,7 +545,7 @@ function openBridge(input: {
           return;
         }
 
-        let frame: string | ArrayBufferLike | Blob | ArrayBufferView;
+        let frame: string | Blob | BufferSource;
         if (typeof data === "string") {
           const assembled = deviceFrameReassembler.push(data);
           if (assembled === null) {
