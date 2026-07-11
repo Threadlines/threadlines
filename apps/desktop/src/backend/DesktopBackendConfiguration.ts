@@ -1,10 +1,10 @@
 import { parsePersistedServerObservabilitySettings } from "@threadlines/shared/serverSettings";
 import * as Context from "effect/Context";
+import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Random from "effect/Random";
 import * as Ref from "effect/Ref";
 
 import * as DesktopBackendManager from "./DesktopBackendManager.ts";
@@ -114,7 +114,7 @@ const getOrCreateBootstrapToken = Effect.fn("desktop.backendConfiguration.bootst
 
     let token = "";
     while (token.length < 48) {
-      token += (yield* Random.nextUUIDv4).replace(/-/g, "");
+      token += (yield* randomUUIDv4).replace(/-/g, "");
     }
     token = token.slice(0, 48);
     yield* Ref.set(tokenRef, Option.some(token));

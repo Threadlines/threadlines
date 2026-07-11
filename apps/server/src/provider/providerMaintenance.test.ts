@@ -5,8 +5,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import os from "node:os";
 import path from "node:path";
 import { ProviderDriverKind } from "@threadlines/contracts";
+import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Effect from "effect/Effect";
-import * as Random from "effect/Random";
 import {
   clearLatestProviderVersionCacheForTests,
   createProviderVersionAdvisory,
@@ -27,7 +27,7 @@ const windowsInstallerCommandEncoded = Buffer.from(windowsInstallerCommand, "utf
   "base64",
 );
 const makeTempDir = Effect.fn("makeTempDir")(function* (name: string) {
-  const id = yield* Random.nextUUIDv4;
+  const id = yield* randomUUIDv4;
   return path.join(os.tmpdir(), `${name}-${id}`);
 });
 

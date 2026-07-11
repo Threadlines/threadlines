@@ -6,10 +6,10 @@ import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
+import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Random from "effect/Random";
 import * as Ref from "effect/Ref";
 
 import * as IpcChannels from "../ipc/channels.ts";
@@ -230,7 +230,7 @@ const make = Effect.fn("desktop.sshPasswordPrompts.make")(function* (options: La
       });
     }
 
-    const requestId = yield* Random.nextUUIDv4;
+    const requestId = yield* randomUUIDv4;
     const now = yield* DateTime.now;
     const expiresAt = DateTime.formatIso(
       DateTime.add(now, { milliseconds: passwordPromptTimeoutMs }),

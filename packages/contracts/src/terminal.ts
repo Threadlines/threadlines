@@ -12,13 +12,18 @@ const TerminalRowsSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)).ch
   Schema.isLessThanOrEqualTo(500),
 );
 const TerminalIdSchema = TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(128));
-const TerminalEnvKeySchema = Schema.String.check(
-  Schema.isPattern(/^[A-Za-z_][A-Za-z0-9_]*$/),
-).check(Schema.isMaxLength(128));
+const TERMINAL_ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const TerminalEnvValueSchema = Schema.String.check(Schema.isMaxLength(8_192));
-const TerminalEnvSchema = Schema.Record(TerminalEnvKeySchema, TerminalEnvValueSchema).check(
-  Schema.isMaxProperties(128),
-);
+// Schema.Record silently drops keys that fail the key schema (effect
+// 4.0.0-beta.97), but this is a validation boundary: a request with a
+// malformed env key must be rejected, not quietly stripped.
+const TerminalEnvSchema = Schema.Record(Schema.String, TerminalEnvValueSchema)
+  .check(Schema.isMaxProperties(128))
+  .check(
+    Schema.makeFilter((env: Readonly<Record<string, string>>) =>
+      Object.keys(env).every((key) => TERMINAL_ENV_KEY_PATTERN.test(key) && key.length <= 128),
+    ),
+  );
 
 const TerminalIdWithDefaultSchema = TerminalIdSchema.pipe(
   Schema.withDecodingDefault(Effect.succeed(DEFAULT_TERMINAL_ID)),
@@ -160,7 +165,7 @@ export class TerminalCwdError extends Schema.TaggedErrorClass<TerminalCwdError>(
   {
     cwd: Schema.String,
     reason: Schema.Literals(["notFound", "notDirectory", "statFailed"]),
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message() {
@@ -189,7 +194,7 @@ export class TerminalHistoryError extends Schema.TaggedErrorClass<TerminalHistor
     operation: Schema.Literals(["read", "truncate", "migrate"]),
     threadId: Schema.String,
     terminalId: Schema.String,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message() {

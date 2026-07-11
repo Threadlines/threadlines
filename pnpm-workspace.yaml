@@ -7,20 +7,20 @@ packages:
 catalog:
   "@anthropic-ai/claude-agent-sdk": ^0.3.207
   "@anthropic-ai/sdk": ^0.111.0
-  "@effect/atom-react": 4.0.0-beta.59
-  "@effect/openapi-generator": 4.0.0-beta.59
-  "@effect/platform-bun": 4.0.0-beta.59
-  "@effect/platform-node": 4.0.0-beta.59
-  "@effect/platform-node-shared": 4.0.0-beta.59
-  "@effect/sql-sqlite-bun": 4.0.0-beta.59
+  "@effect/atom-react": 4.0.0-beta.97
+  "@effect/openapi-generator": 4.0.0-beta.97
+  "@effect/platform-bun": 4.0.0-beta.97
+  "@effect/platform-node": 4.0.0-beta.97
+  "@effect/platform-node-shared": 4.0.0-beta.97
+  "@effect/sql-sqlite-bun": 4.0.0-beta.97
   "@effect/tsgo": 0.13.2
-  "@effect/vitest": 4.0.0-beta.59
+  "@effect/vitest": 4.0.0-beta.97
   "@pierre/diffs": 1.3.0-beta.9
   "@types/bun": ^1.3.11
   "@types/node": ^24.10.13
   "@typescript/native-preview": 7.0.0-dev.20260604.1
   "@vitest/browser-playwright": 4.1.10
-  effect: 4.0.0-beta.59
+  effect: 4.0.0-beta.97
   typescript: ^5.7.3
   vite: npm:@voidzero-dev/vite-plus-core@0.2.4
   vite-plus: 0.2.4
@@ -44,8 +44,6 @@ overrides:
   "@effect/platform-node-shared": "catalog:"
   "@effect/sql-sqlite-bun": "catalog:"
   "@effect/vitest": "catalog:"
-  "@effect/vitest>@vitest/runner": "-"
-  "@effect/vitest>vitest": "-"
   "@types/node": "catalog:"
   effect: "catalog:"
   vite: "catalog:"
@@ -53,20 +51,13 @@ overrides:
   yaml: "catalog:"
 
 packageExtensions:
-  "@effect/vitest@*":
-    dependencies:
-      vite-plus: "catalog:"
-    peerDependenciesMeta:
-      vitest:
-        optional: true
   vite-plus@*:
     dependencies:
       vite: "catalog:"
 
 patchedDependencies:
-  "@effect/platform-node-shared@4.0.0-beta.59": patches/@effect__platform-node-shared@4.0.0-beta.59.patch
-  "@effect/vitest@4.0.0-beta.59": patches/@effect__vitest@4.0.0-beta.59.patch
-  effect@4.0.0-beta.59: patches/effect@4.0.0-beta.59.patch
+  "@effect/platform-node-shared@4.0.0-beta.97": patches/@effect__platform-node-shared@4.0.0-beta.97.patch
+  effect@4.0.0-beta.97: patches/effect@4.0.0-beta.97.patch
   lexical@0.47.0: patches/lexical@0.47.0.patch
 
 peerDependencyRules:

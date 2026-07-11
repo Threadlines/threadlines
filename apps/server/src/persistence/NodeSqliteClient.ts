@@ -144,30 +144,32 @@ const makeWithDatabase = Effect.fn("makeWithDatabase")(function* (
     const run = (sql: string, params: ReadonlyArray<unknown>, raw = false) =>
       Effect.flatMap(Cache.get(prepareCache, sql), (s) => runStatement(s, params, raw));
 
+    const runValuesStatement = (statement: StatementSync, params: ReadonlyArray<unknown>) =>
+      Effect.try({
+        try: () => {
+          if (hasRows(statement)) {
+            statement.setReturnArrays(true);
+            // Safe to cast to array after we've setReturnArrays(true)
+            return statement.all(...(params as any)) as unknown as ReadonlyArray<
+              ReadonlyArray<unknown>
+            >;
+          }
+          statement.run(...(params as any));
+          return [];
+        },
+        catch: (cause) =>
+          new SqlError({
+            reason: classifySqliteError(cause, {
+              message: "Failed to execute statement",
+              operation: "execute",
+            }),
+          }),
+      });
+
     const runValues = (sql: string, params: ReadonlyArray<unknown>) =>
       Effect.acquireUseRelease(
         Cache.get(prepareCache, sql),
-        (statement) =>
-          Effect.try({
-            try: () => {
-              if (hasRows(statement)) {
-                statement.setReturnArrays(true);
-                // Safe to cast to array after we've setReturnArrays(true)
-                return statement.all(...(params as any)) as unknown as ReadonlyArray<
-                  ReadonlyArray<unknown>
-                >;
-              }
-              statement.run(...(params as any));
-              return [];
-            },
-            catch: (cause) =>
-              new SqlError({
-                reason: classifySqliteError(cause, {
-                  message: "Failed to execute statement",
-                  operation: "execute",
-                }),
-              }),
-          }),
+        (statement) => runValuesStatement(statement, params),
         (statement) =>
           Effect.sync(() => {
             if (hasRows(statement)) {
@@ -185,6 +187,9 @@ const makeWithDatabase = Effect.fn("makeWithDatabase")(function* (
       },
       executeValues(sql, params) {
         return runValues(sql, params);
+      },
+      executeValuesUnprepared(sql, params) {
+        return runValuesStatement(db.prepare(sql), params ?? []);
       },
       executeUnprepared(sql, params, rowTransform) {
         const effect = runStatement(db.prepare(sql), params ?? [], false);
@@ -255,7 +260,7 @@ export const layerConfig = (
 ): Layer.Layer<Client.SqlClient, Config.ConfigError> =>
   Layer.effectContext(
     Config.unwrap(config)
-      .asEffect()
+
       .pipe(
         Effect.flatMap(make),
         Effect.map((client) =>

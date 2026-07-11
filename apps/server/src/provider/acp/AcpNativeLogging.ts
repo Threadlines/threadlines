@@ -1,8 +1,8 @@
 import type { ProviderDriverKind, ThreadId } from "@threadlines/contracts";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
+import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Effect from "effect/Effect";
-import * as Random from "effect/Random";
 import type * as EffectAcpProtocol from "effect-acp/protocol";
 
 import type { EventNdjsonLogger } from "../Layers/EventNdjsonLogger.ts";
@@ -22,7 +22,7 @@ function writeNativeAcpLog(input: {
       {
         observedAt,
         event: {
-          id: yield* Random.nextUUIDv4,
+          id: yield* randomUUIDv4,
           kind: input.kind,
           provider: input.provider,
           createdAt: observedAt,

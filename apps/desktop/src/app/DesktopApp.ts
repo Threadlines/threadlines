@@ -1,8 +1,8 @@
 import * as Cause from "effect/Cause";
 import * as Data from "effect/Data";
+import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import * as Random from "effect/Random";
 import * as Ref from "effect/Ref";
 
 import * as NetService from "@threadlines/shared/Net";
@@ -28,7 +28,7 @@ const MAX_TCP_PORT = 65_535;
 const DESKTOP_LOCAL_ONLY_PORT_PROBE_HOSTS = ["127.0.0.1"] as const;
 const DESKTOP_NETWORK_ACCESSIBLE_PORT_PROBE_HOSTS = ["0.0.0.0"] as const;
 
-const makeDesktopRunId = Random.nextUUIDv4.pipe(
+const makeDesktopRunId = randomUUIDv4.pipe(
   Effect.map((value) => value.replaceAll("-", "").slice(0, 12)),
 );
 

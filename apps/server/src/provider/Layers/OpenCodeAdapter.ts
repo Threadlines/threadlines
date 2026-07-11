@@ -14,10 +14,10 @@ import {
 } from "@threadlines/contracts";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
+import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Queue from "effect/Queue";
-import * as Random from "effect/Random";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -148,7 +148,7 @@ const buildEventBase = (input: {
   >
 > =>
   Effect.gen(function* () {
-    const uuid = yield* Random.nextUUIDv4;
+    const uuid = yield* randomUUIDv4;
     const createdAt = input.createdAt ?? (yield* nowIso);
     return {
       eventId: EventId.make(uuid),
@@ -1142,7 +1142,7 @@ export function makeOpenCodeAdapter(
 
     const sendTurn: OpenCodeAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
       const context = ensureSessionContext(sessions, input.threadId);
-      const turnId = TurnId.make(`opencode-turn-${yield* Random.nextUUIDv4}`);
+      const turnId = TurnId.make(`opencode-turn-${yield* randomUUIDv4}`);
       const modelSelection =
         input.modelSelection ??
         (context.session.model

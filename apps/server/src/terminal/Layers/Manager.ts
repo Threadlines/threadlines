@@ -69,7 +69,7 @@ class TerminalSubprocessCheckError extends Schema.TaggedErrorClass<TerminalSubpr
   "TerminalSubprocessCheckError",
   {
     message: Schema.String,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(Schema.Defect()),
     terminalPid: Schema.Number,
   },
 ) {}
@@ -78,7 +78,7 @@ class TerminalProcessSignalError extends Schema.TaggedErrorClass<TerminalProcess
   "TerminalProcessSignalError",
   {
     message: Schema.String,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(Schema.Defect()),
     signal: Schema.optional(Schema.Literals(["SIGTERM", "SIGKILL"])),
   },
 ) {}

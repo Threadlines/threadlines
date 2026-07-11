@@ -7,13 +7,13 @@ import {
 import { fromLenientJson } from "@threadlines/shared/schemaJson";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
+import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
-import * as Random from "effect/Random";
 import * as Schema from "effect/Schema";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
@@ -224,7 +224,7 @@ const writeSettings = Effect.fn("desktop.settings.writeSettings")(function* (inp
   readonly defaultSettings: DesktopSettings;
 }): Effect.fn.Return<void, PlatformError.PlatformError | Schema.SchemaError> {
   const directory = input.path.dirname(input.settingsPath);
-  const suffix = (yield* Random.nextUUIDv4).replace(/-/g, "");
+  const suffix = (yield* randomUUIDv4).replace(/-/g, "");
   const tempPath = `${input.settingsPath}.${process.pid}.${suffix}.tmp`;
   const encoded = yield* encodeDesktopSettingsJson(
     toDesktopSettingsDocument(input.settings, input.defaultSettings),

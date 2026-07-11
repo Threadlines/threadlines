@@ -7,8 +7,8 @@ import type {
   VcsStatusResult,
   VcsStatusStreamEvent,
 } from "@threadlines/contracts";
+import { randomUUIDv4 } from "./uuid.ts";
 import * as Effect from "effect/Effect";
-import * as Random from "effect/Random";
 import { detectSourceControlProviderFromRemoteUrl } from "./sourceControl.ts";
 
 export const WORKTREE_BRANCH_PREFIX = "threadlines";
@@ -92,7 +92,7 @@ export function deriveLocalBranchNameFromRemoteRef(branchName: string): string {
 }
 
 export function buildTemporaryWorktreeBranchName(): string {
-  const token = Effect.runSync(Random.nextUUIDv4).replace(/-/g, "").slice(0, 8).toLowerCase();
+  const token = Effect.runSync(randomUUIDv4).replace(/-/g, "").slice(0, 8).toLowerCase();
   return `${WORKTREE_BRANCH_PREFIX}/${token}`;
 }
 
