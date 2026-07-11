@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// @effect-diagnostics globalConsole:off globalDate:off globalTimers:off nodeBuiltinImport:off
 
 import {
   chmodSync,

@@ -1,3 +1,4 @@
+// @effect-diagnostics globalConsole:off globalDate:off globalTimers:off nodeBuiltinImport:off
 /**
  * Fails when the built web entry chunk exceeds the gzip budget.
  *

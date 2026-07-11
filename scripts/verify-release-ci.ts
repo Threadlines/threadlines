@@ -1,3 +1,4 @@
+// @effect-diagnostics globalConsole:off globalDate:off globalTimers:off nodeBuiltinImport:off
 import { appendFileSync } from "node:fs";
 
 type GitHubApp = {

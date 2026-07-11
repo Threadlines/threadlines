@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

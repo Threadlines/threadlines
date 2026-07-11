@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// @effect-diagnostics globalConsole:off globalDate:off globalTimers:off nodeBuiltinImport:off
 
 import * as ChildProcess from "node:child_process";
 import * as FileSystem from "node:fs";

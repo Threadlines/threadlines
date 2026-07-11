@@ -1,3 +1,4 @@
+// @effect-diagnostics cryptoRandomUUIDInEffect:off
 import * as Effect from "effect/Effect";
 
 /**

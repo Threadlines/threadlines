@@ -1,3 +1,4 @@
+// @effect-diagnostics globalRandom:off
 // Frame chunking for the phone-link relay path.
 //
 // The relay runs on Cloudflare Workers, which reject any WebSocket message

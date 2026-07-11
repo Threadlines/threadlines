@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off cryptoRandomUUID:off globalConsole:off
 import { DurableObject } from "cloudflare:workers";
 
 import type {

@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off
 import { spawn, type ChildProcess } from "node:child_process";
 import { afterAll, describe, expect, it } from "vite-plus/test";
 

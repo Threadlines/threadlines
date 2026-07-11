@@ -270,6 +270,7 @@ async function assertReleaseBuildIdentity(): Promise<void> {
 
   const windowsBuildConfig = await Effect.runPromise(
     createBuildConfig("win", "nsis", "9.9.9-smoke.0", true, false, undefined).pipe(
+      // @effect-diagnostics-next-line multipleEffectProvide:off
       Effect.provide(
         ConfigProvider.layer(
           ConfigProvider.fromEnv({

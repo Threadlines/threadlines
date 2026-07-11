@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// @effect-diagnostics globalConsole:off globalDate:off globalTimers:off nodeBuiltinImport:off
 
 import * as NodeOS from "node:os";
 import { existsSync } from "node:fs";
