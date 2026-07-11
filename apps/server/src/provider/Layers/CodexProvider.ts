@@ -34,6 +34,7 @@ import { RUNTIME_MODES, ServerSettingsError } from "@threadlines/contracts";
 import { createModelCapabilities } from "@threadlines/shared/model";
 import { isCommandAvailable } from "@threadlines/shared/shell";
 import { DEFAULT_CODEX_SERVICE_TIER_SELECTION } from "../../codexServiceTier.ts";
+import { CODEX_APP_SERVER_ARGS } from "../codexAppServerArgs.ts";
 import {
   AUTH_PROBE_TIMEOUT_MS,
   buildServerProvider,
@@ -654,7 +655,7 @@ const makeCodexAppServerClient = Effect.fn("makeCodexAppServerClient")(function*
 }) {
   if (!isCommandAvailable(input.binaryPath, { env: input.environment ?? process.env })) {
     return yield* new CodexErrors.CodexAppServerSpawnError({
-      command: `${input.binaryPath} app-server`,
+      command: [input.binaryPath, ...CODEX_APP_SERVER_ARGS].join(" "),
       cause: new Error("Codex CLI is not available on PATH."),
     });
   }
@@ -667,7 +668,7 @@ const makeCodexAppServerClient = Effect.fn("makeCodexAppServerClient")(function*
   const clientContext = yield* Layer.build(
     CodexClient.layerCommand({
       command: input.binaryPath,
-      args: ["app-server"],
+      args: CODEX_APP_SERVER_ARGS,
       cwd: input.cwd,
       env: {
         ...(input.environment ?? process.env),

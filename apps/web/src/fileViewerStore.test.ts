@@ -23,6 +23,8 @@ function resetFileViewerStore(): void {
     revealLine: null,
     revealEndLine: null,
     revealRequestId: 0,
+    editMode: false,
+    editSeed: null,
     coarsePointerWordWrap: null,
   });
 }
@@ -84,5 +86,56 @@ describe("fileViewerStore", () => {
       tabs: [],
       treeRevealPath: "",
     });
+  });
+
+  it("hands an edit seed to exactly one claim for the seeded path", () => {
+    const seed = { path: "src/a.ts", line: 4, character: 0, insertText: "x" };
+    useFileViewerStore.getState().setEditMode(true, seed);
+    expect(useFileViewerStore.getState()).toMatchObject({ editMode: true, editSeed: seed });
+
+    expect(useFileViewerStore.getState().claimEditSeed("src/other.ts")).toBeNull();
+    expect(useFileViewerStore.getState().editSeed).toEqual(seed);
+
+    expect(useFileViewerStore.getState().claimEditSeed("src/a.ts")).toEqual(seed);
+    expect(useFileViewerStore.getState().claimEditSeed("src/a.ts")).toBeNull();
+  });
+
+  it("buffers pre-attach keystrokes onto the pending seed, then stops once claimed", () => {
+    useFileViewerStore
+      .getState()
+      .setEditMode(true, { path: "src/a.ts", line: 4, character: 0, insertText: "x" });
+
+    expect(useFileViewerStore.getState().appendToEditSeed("src/other.ts", "n")).toBe(false);
+    expect(useFileViewerStore.getState().appendToEditSeed("src/a.ts", "y")).toBe(true);
+    expect(useFileViewerStore.getState().appendToEditSeed("src/a.ts", "z")).toBe(true);
+    expect(useFileViewerStore.getState().claimEditSeed("src/a.ts")).toEqual({
+      path: "src/a.ts",
+      line: 4,
+      character: 0,
+      insertText: "xyz",
+    });
+    expect(useFileViewerStore.getState().appendToEditSeed("src/a.ts", "w")).toBe(false);
+  });
+
+  it("starts a caret-only seed's buffered input from the keystroke itself", () => {
+    useFileViewerStore.getState().setEditMode(true, { path: "src/a.ts", line: 2, character: 7 });
+    expect(useFileViewerStore.getState().appendToEditSeed("src/a.ts", "q")).toBe(true);
+    expect(useFileViewerStore.getState().claimEditSeed("src/a.ts")).toEqual({
+      path: "src/a.ts",
+      line: 2,
+      character: 7,
+      insertText: "q",
+    });
+  });
+
+  it("drops any pending seed when edit mode is entered plainly or left", () => {
+    const seed = { path: "src/a.ts", line: 1, character: 2 };
+    useFileViewerStore.getState().setEditMode(true, seed);
+    useFileViewerStore.getState().setEditMode(false);
+    expect(useFileViewerStore.getState().editSeed).toBeNull();
+
+    useFileViewerStore.getState().setEditMode(true, seed);
+    useFileViewerStore.getState().setEditMode(true);
+    expect(useFileViewerStore.getState()).toMatchObject({ editMode: true, editSeed: null });
   });
 });

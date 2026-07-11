@@ -31,6 +31,8 @@ import {
   hasServerAcknowledgedLocalDispatch,
   isRetryableThreadError,
   isScrollMetricsAtEnd,
+  deriveTimelineScrolledFarFromEnd,
+  TIMELINE_SCROLLED_FAR_FROM_END_PX,
   mergeLocalDraftThreadWithServerThread,
   threadHasPromotableServerActivity,
   reconcileSteeringHandoffStatuses,
@@ -93,6 +95,73 @@ describe("isScrollMetricsAtEnd", () => {
         contentInsetEnd: 20,
       }),
     ).toBe(true);
+  });
+});
+
+describe("deriveTimelineScrolledFarFromEnd", () => {
+  it("clears immediately when the timeline reports at-end", () => {
+    expect(
+      deriveTimelineScrolledFarFromEnd({ current: true, isAtEnd: true, distanceFromEnd: 500 }),
+    ).toBe(false);
+  });
+
+  it("engages only beyond the far threshold", () => {
+    expect(
+      deriveTimelineScrolledFarFromEnd({
+        current: false,
+        isAtEnd: false,
+        distanceFromEnd: TIMELINE_SCROLLED_FAR_FROM_END_PX,
+      }),
+    ).toBe(true);
+    expect(
+      deriveTimelineScrolledFarFromEnd({
+        current: false,
+        isAtEnd: false,
+        distanceFromEnd: TIMELINE_SCROLLED_FAR_FROM_END_PX - 1,
+      }),
+    ).toBe(false);
+  });
+
+  it("holds the current state inside the hysteresis band so panel height changes cannot oscillate it", () => {
+    // Collapsing the panel shrinks the composer and reveals ~200px more timeline;
+    // a mid-band distance must not flip the signal in either direction.
+    expect(
+      deriveTimelineScrolledFarFromEnd({ current: true, isAtEnd: false, distanceFromEnd: 120 }),
+    ).toBe(true);
+    expect(
+      deriveTimelineScrolledFarFromEnd({ current: false, isAtEnd: false, distanceFromEnd: 120 }),
+    ).toBe(false);
+  });
+
+  it("releases once the user is back within the at-end tolerance", () => {
+    expect(
+      deriveTimelineScrolledFarFromEnd({ current: true, isAtEnd: false, distanceFromEnd: 10 }),
+    ).toBe(false);
+  });
+
+  it("holds the current state when scroll metrics are unavailable", () => {
+    expect(
+      deriveTimelineScrolledFarFromEnd({ current: true, isAtEnd: false, distanceFromEnd: null }),
+    ).toBe(true);
+  });
+
+  it("uses a measured panel threshold when provided", () => {
+    expect(
+      deriveTimelineScrolledFarFromEnd({
+        current: false,
+        isAtEnd: false,
+        distanceFromEnd: 200,
+        farThresholdPx: 180,
+      }),
+    ).toBe(true);
+    expect(
+      deriveTimelineScrolledFarFromEnd({
+        current: false,
+        isAtEnd: false,
+        distanceFromEnd: 160,
+        farThresholdPx: 180,
+      }),
+    ).toBe(false);
   });
 });
 

@@ -30,6 +30,23 @@ export interface FileViewerContext {
  */
 export type FileEditSaveState = "pending" | "saving" | "error" | "conflict";
 
+/**
+ * Caret handoff for edit-mode entry gestures (type-to-edit, double-click).
+ * Stored alongside `editMode` and claimed once by the editor pane when the
+ * pierre editor attaches, so the caret lands where the gesture happened and
+ * the keystroke that entered edit mode is replayed instead of swallowed.
+ */
+export interface FileEditSeed {
+  /** Workspace-relative path the seed targets; other panes must not claim it. */
+  path: string;
+  /** 0-based caret line. */
+  line: number;
+  /** 0-based caret character within the line. */
+  character: number;
+  /** Text (the entry keystroke) inserted at the caret on attach. */
+  insertText?: string;
+}
+
 type FileViewerOpenTarget =
   | { kind: "file"; path: string; line?: number; endLine?: number }
   | { kind: "directory"; path: string };
@@ -56,6 +73,8 @@ interface FileViewerState {
    * attached, so the two are exclusive by design. Session-scoped preference.
    */
   editMode: boolean;
+  /** Pending caret handoff for the next editor attach; null once claimed. */
+  editSeed: FileEditSeed | null;
   /** Per-path save lifecycle, mirrored here for tab dots and footer status. */
   editSaveState: Record<string, FileEditSaveState>;
   /**
@@ -71,7 +90,17 @@ interface FileViewerState {
    */
   coarsePointerWordWrap: boolean | null;
   setCoarsePointerWordWrap: (wrap: boolean) => void;
-  setEditMode: (editMode: boolean) => void;
+  setEditMode: (editMode: boolean, seed?: FileEditSeed) => void;
+  /** Return and clear the pending seed when it targets `path`, else null. */
+  claimEditSeed: (path: string) => FileEditSeed | null;
+  /**
+   * Buffer a keystroke that arrived after edit-mode entry but before the
+   * editor attached and claimed the seed (the attach is deferred across a
+   * remount plus a rAF, long enough for burst typing to land keystrokes in
+   * between). Returns false when no seed for `path` is pending, i.e. the
+   * editor is attached and the keystroke should flow to it normally.
+   */
+  appendToEditSeed: (path: string, text: string) => boolean;
   setEditSaveState: (path: string, state: FileEditSaveState | null) => void;
   bumpEditReloadNonce: () => void;
   open: (context: FileViewerContext, target?: FileViewerOpenTarget) => void;
@@ -94,7 +123,7 @@ function withTabCap(tabs: string[], activePath: string | null): string[] {
   return evictable ? tabs.filter((tab) => tab !== evictable) : tabs;
 }
 
-export const useFileViewerStore = create<FileViewerState>((set) => ({
+export const useFileViewerStore = create<FileViewerState>((set, get) => ({
   isOpen: false,
   context: null,
   tabs: [],
@@ -105,13 +134,32 @@ export const useFileViewerStore = create<FileViewerState>((set) => ({
   revealEndLine: null,
   revealRequestId: 0,
   editMode: false,
+  editSeed: null,
   editSaveState: {},
   editReloadNonce: 0,
   coarsePointerWordWrap: null,
 
   setCoarsePointerWordWrap: (wrap) => set({ coarsePointerWordWrap: wrap }),
 
-  setEditMode: (editMode) => set({ editMode }),
+  setEditMode: (editMode, seed) => set({ editMode, editSeed: editMode ? (seed ?? null) : null }),
+
+  claimEditSeed: (path) => {
+    const seed = get().editSeed;
+    if (!seed || seed.path !== path) {
+      return null;
+    }
+    set({ editSeed: null });
+    return seed;
+  },
+
+  appendToEditSeed: (path, text) => {
+    const seed = get().editSeed;
+    if (!seed || seed.path !== path) {
+      return false;
+    }
+    set({ editSeed: { ...seed, insertText: (seed.insertText ?? "") + text } });
+    return true;
+  },
 
   bumpEditReloadNonce: () => set((state) => ({ editReloadNonce: state.editReloadNonce + 1 })),
 

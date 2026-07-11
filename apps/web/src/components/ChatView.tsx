@@ -211,6 +211,8 @@ import {
   hasServerAcknowledgedLocalDispatch,
   isRetryableThreadError,
   isScrollMetricsAtEnd,
+  scrollMetricsDistanceFromEnd,
+  deriveTimelineScrolledFarFromEnd,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
   LEGACY_LAST_INVOKED_SCRIPT_BY_PROJECT_KEYS,
   LastInvokedScriptByProjectSchema,
@@ -298,7 +300,11 @@ function finiteScrollMetric(value: number | null | undefined): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function isScrollableNodeAtEnd(node: unknown): boolean | null {
+function scrollableNodeMetrics(node: unknown): {
+  readonly scrollOffset: number;
+  readonly viewportLength: number;
+  readonly contentLength: number;
+} | null {
   if (!node || typeof node !== "object") {
     return null;
   }
@@ -314,12 +320,49 @@ function isScrollableNodeAtEnd(node: unknown): boolean | null {
     return null;
   }
 
-  return isScrollMetricsAtEnd({
+  return {
     scrollOffset: finiteScrollMetric(metrics.scrollTop) ?? 0,
     viewportLength,
     contentLength,
+  };
+}
+
+function isScrollableNodeAtEnd(node: unknown): boolean | null {
+  const metrics = scrollableNodeMetrics(node);
+  if (metrics === null) {
+    return null;
+  }
+
+  return isScrollMetricsAtEnd({
+    ...metrics,
     tolerancePx: DEFAULT_SCROLL_END_TOLERANCE_PX,
   });
+}
+
+function legendListDistanceFromEnd(list: LegendListRef | null): number | null {
+  const metrics = scrollableNodeMetrics(list?.getScrollableNode());
+  return metrics === null ? null : scrollMetricsDistanceFromEnd(metrics);
+}
+
+// Collapsing the questions panel frees (expanded height − collapsed bar height) of
+// timeline space. Auto-collapse is only safe once the user has scrolled past that
+// amount plus the at-end tolerance — any earlier and the reveal shifts their view
+// or flips the at-end signal back on (see deriveTimelineScrolledFarFromEnd).
+const QUESTIONS_COLLAPSED_BAR_PX = 44;
+const QUESTIONS_COLLAPSE_GUARD_PX = 36;
+
+function questionsPanelCollapseThresholdPx(): number | null {
+  const node = document.querySelector('[data-composer-questions-expanded="true"]');
+  if (!(node instanceof HTMLElement)) {
+    return null;
+  }
+  return Math.max(
+    QUESTIONS_COLLAPSE_GUARD_PX + DEFAULT_SCROLL_END_TOLERANCE_PX,
+    node.offsetHeight -
+      QUESTIONS_COLLAPSED_BAR_PX +
+      DEFAULT_SCROLL_END_TOLERANCE_PX +
+      QUESTIONS_COLLAPSE_GUARD_PX,
+  );
 }
 
 function isLegendListVisiblyAtEnd(list: LegendListRef | null): boolean {
@@ -394,7 +437,7 @@ function SteeringQueueIndicator({
   const countLabel = messages.length > 1 ? `${messages.length} pending` : "Pending";
 
   return (
-    <div className="mx-auto mb-2 max-w-208 px-1">
+    <div className="mx-auto mb-2 max-w-4xl px-1">
       <div className="flex min-w-0 items-start gap-2 rounded-lg border border-primary/20 bg-primary/8 px-3 py-2 text-xs shadow-sm">
         <CornerDownRightIcon className="mt-0.5 size-3.5 shrink-0 text-primary-readable" />
         <div className="min-w-0 flex-1">
@@ -999,6 +1042,9 @@ export default function ChatView(props: ChatViewProps) {
   const localComposerRef = useRef<ChatComposerHandle | null>(null);
   const composerRef = useComposerHandleContext() ?? localComposerRef;
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  // Hysteresis-gated "far from bottom" signal for the composer questions panel —
+  // see deriveTimelineScrolledFarFromEnd for why plain at-end would oscillate.
+  const [isTimelineScrolledFarFromEnd, setIsTimelineScrolledFarFromEnd] = useState(false);
   const [stickToBottomRequestKey, setStickToBottomRequestKey] = useState(0);
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
   const [previewedFile, setPreviewedFile] = useState<FilePreviewRequest | null>(null);
@@ -3452,6 +3498,7 @@ export default function ChatView(props: ChatViewProps) {
         isAtEndRef.current = true;
         showScrollDebouncer.current.cancel();
         setShowScrollToBottom(false);
+        setIsTimelineScrolledFarFromEnd(false);
         return legendListRef.current?.scrollToEnd?.({ animated: nextAnimated });
       };
       const scheduleSettlingFrame = (remainingFrames: number): void => {
@@ -3480,6 +3527,16 @@ export default function ChatView(props: ChatViewProps) {
 
   const onIsAtEndChange = useCallback((isAtEnd: boolean) => {
     const nextIsAtEnd = isAtEnd || isLegendListVisiblyAtEnd(legendListRef.current);
+    const distanceFromEnd = legendListDistanceFromEnd(legendListRef.current);
+    const farThresholdPx = questionsPanelCollapseThresholdPx();
+    setIsTimelineScrolledFarFromEnd((current) =>
+      deriveTimelineScrolledFarFromEnd({
+        current,
+        isAtEnd: nextIsAtEnd,
+        distanceFromEnd,
+        ...(farThresholdPx !== null ? { farThresholdPx } : {}),
+      }),
+    );
     if (isAtEndRef.current === nextIsAtEnd) return;
     if (
       !nextIsAtEnd &&
@@ -3505,6 +3562,7 @@ export default function ChatView(props: ChatViewProps) {
     isAtEndRef.current = true;
     showScrollDebouncer.current.cancel();
     setShowScrollToBottom(false);
+    setIsTimelineScrolledFarFromEnd(false);
   }, [activeThread?.id, clearTimelineStickFrames]);
 
   useEffect(() => {
@@ -5518,18 +5576,20 @@ export default function ChatView(props: ChatViewProps) {
               onIsAtEndChange={onIsAtEndChange}
             />
 
-            {/* scroll to bottom pill — shown when user has scrolled away from the bottom */}
+            {/* scroll to bottom button — shown when user has scrolled away from the bottom.
+                The prompt-suggestion pill floats left-aligned in the same band and caps its
+                width at half the composer, so the centered button stays clear of it. */}
             {showScrollToBottom && (
-              <div className="pointer-events-none absolute bottom-1 left-1/2 z-30 flex -translate-x-1/2 justify-center py-1.5">
+              <div className="pointer-events-none absolute bottom-2 left-1/2 z-30 -translate-x-1/2 py-1.5">
                 <button
                   type="button"
+                  aria-label="Scroll to bottom"
                   onClick={() => {
                     void requestTimelineStickToBottom(true);
                   }}
-                  className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-border/60 bg-card px-3 py-1 text-muted-foreground text-xs shadow-sm transition-colors hover:border-border hover:text-foreground hover:cursor-pointer"
+                  className="pointer-events-auto flex size-8 items-center justify-center rounded-full border border-border/60 bg-card text-muted-foreground shadow-sm transition-colors hover:border-border hover:text-foreground hover:cursor-pointer"
                 >
-                  <ChevronDownIcon className="size-3.5" />
-                  Scroll to bottom
+                  <ChevronDownIcon className="size-4" />
                 </button>
               </div>
             )}
@@ -5538,7 +5598,7 @@ export default function ChatView(props: ChatViewProps) {
           {/* Input bar */}
           <div
             className={cn(
-              "pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-1.5 sm:pl-[calc(env(safe-area-inset-left)+1.25rem)] sm:pr-[calc(env(safe-area-inset-right)+1.25rem)] sm:pt-2",
+              "pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] sm:pl-[calc(env(safe-area-inset-left)+1.25rem)] sm:pr-[calc(env(safe-area-inset-right)+1.25rem)]",
               isGitRepo
                 ? "pb-[calc(env(safe-area-inset-bottom)+0.25rem)]"
                 : "pb-[calc(env(safe-area-inset-bottom)+0.75rem)] sm:pb-[calc(env(safe-area-inset-bottom)+1rem)]",
@@ -5574,6 +5634,7 @@ export default function ChatView(props: ChatViewProps) {
                   activePendingDraftAnswers={activePendingDraftAnswers}
                   activePendingQuestionIndex={activePendingQuestionIndex}
                   respondingRequestIds={respondingRequestIds}
+                  isTimelineScrolledAway={isTimelineScrolledFarFromEnd}
                   showPlanFollowUpPrompt={showPlanFollowUpPrompt}
                   activeProposedPlan={activeProposedPlan}
                   runtimeMode={runtimeMode}

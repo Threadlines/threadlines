@@ -8,6 +8,8 @@ import {
 import { memo } from "react";
 import { FolderInputIcon, FolderOpenIcon, GitForkIcon, TerminalSquareIcon } from "lucide-react";
 import { Badge } from "../ui/badge";
+import { Button } from "../ui/button";
+import { Group } from "../ui/group";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import ProjectScriptsControl, { type NewProjectScriptInput } from "../ProjectScriptsControl";
 import { Toggle } from "../ui/toggle";
@@ -66,7 +68,7 @@ interface ChatHeaderProps {
   continueInProjectDisabledReason?: string | null;
 }
 
-export function shouldShowOpenInPicker(input: {
+export function shouldShowOpenInEditor(input: {
   readonly activeProjectName: string | undefined;
   readonly activeThreadEnvironmentId: EnvironmentId;
   readonly primaryEnvironmentId: EnvironmentId | null;
@@ -123,13 +125,11 @@ export const ChatHeader = memo(function ChatHeader({
   continueInProjectDisabledReason,
 }: ChatHeaderProps) {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const showOpenInPicker =
-    openInCwd !== null &&
-    shouldShowOpenInPicker({
-      activeProjectName,
-      activeThreadEnvironmentId,
-      primaryEnvironmentId,
-    });
+  const showOpenInEditor = shouldShowOpenInEditor({
+    activeProjectName,
+    activeThreadEnvironmentId,
+    primaryEnvironmentId,
+  });
   const continueInProjectState = resolveContinueInProjectHeaderState(
     continueInProjectDisabledReason,
   );
@@ -199,7 +199,7 @@ export const ChatHeader = memo(function ChatHeader({
             onDeleteScript={onDeleteProjectScript}
           />
         )}
-        {showOpenInPicker && (
+        {showOpenInEditor && openInCwd !== null && (
           // Desktop affordance: "open in editor" acts on the machine running
           // the server, so it earns no room in the phone-width header.
           <div className="flex shrink-0 items-center max-sm:hidden">
@@ -240,19 +240,18 @@ export const ChatHeader = memo(function ChatHeader({
             <Tooltip>
               <TooltipTrigger
                 render={
-                  <Toggle
+                  <Button
                     className="shrink-0"
-                    pressed={false}
-                    onPressedChange={() => {
+                    onClick={() => {
                       openActiveFileViewer();
                     }}
                     aria-label="Browse project files"
                     variant="outline"
-                    size="xs"
+                    size="icon-xs"
                     disabled={!terminalAvailable}
                   >
                     <FolderOpenIcon className="size-3" />
-                  </Toggle>
+                  </Button>
                 }
               />
               <TooltipPopup side="bottom">
@@ -262,56 +261,58 @@ export const ChatHeader = memo(function ChatHeader({
               </TooltipPopup>
             </Tooltip>
           ) : null}
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Toggle
-                  className="shrink-0"
-                  pressed={terminalOpen}
-                  onPressedChange={onToggleTerminal}
-                  aria-label="Toggle terminal drawer"
-                  variant="outline"
-                  size="xs"
-                  disabled={!terminalAvailable}
-                >
-                  <TerminalSquareIcon className="size-3" />
-                </Toggle>
-              }
-            />
-            <TooltipPopup side="bottom">
-              {!terminalAvailable
-                ? "Terminal is unavailable until this thread has an active project."
-                : terminalToggleShortcutLabel
-                  ? `Toggle terminal drawer (${terminalToggleShortcutLabel})`
-                  : "Toggle terminal drawer"}
-            </TooltipPopup>
-          </Tooltip>
-          {sourceControlAvailable || sourceControlOpen ? (
+          <Group aria-label="Thread panels">
             <Tooltip>
               <TooltipTrigger
                 render={
                   <Toggle
                     className="shrink-0"
-                    pressed={sourceControlOpen}
-                    onPressedChange={onToggleSourceControl}
-                    aria-label="Toggle source control panel"
+                    pressed={terminalOpen}
+                    onPressedChange={onToggleTerminal}
+                    aria-label="Toggle terminal drawer"
                     variant="outline"
                     size="xs"
-                    disabled={!sourceControlAvailable && !sourceControlOpen}
+                    disabled={!terminalAvailable}
                   >
-                    <SourceControlIcon className="size-[11px]" />
+                    <TerminalSquareIcon className="size-3" />
                   </Toggle>
                 }
               />
               <TooltipPopup side="bottom">
-                {!sourceControlAvailable && !sourceControlOpen
-                  ? "Source control is unavailable until this thread has an active project."
-                  : sourceControlToggleShortcutLabel
-                    ? `Toggle source control panel (${sourceControlToggleShortcutLabel})`
-                    : "Toggle source control panel"}
+                {!terminalAvailable
+                  ? "Terminal is unavailable until this thread has an active project."
+                  : terminalToggleShortcutLabel
+                    ? `Toggle terminal drawer (${terminalToggleShortcutLabel})`
+                    : "Toggle terminal drawer"}
               </TooltipPopup>
             </Tooltip>
-          ) : null}
+            {sourceControlAvailable || sourceControlOpen ? (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Toggle
+                      className="shrink-0"
+                      pressed={sourceControlOpen}
+                      onPressedChange={onToggleSourceControl}
+                      aria-label="Toggle source control panel"
+                      variant="outline"
+                      size="xs"
+                      disabled={!sourceControlAvailable && !sourceControlOpen}
+                    >
+                      <SourceControlIcon className="size-[11px]" />
+                    </Toggle>
+                  }
+                />
+                <TooltipPopup side="bottom">
+                  {!sourceControlAvailable && !sourceControlOpen
+                    ? "Source control is unavailable until this thread has an active project."
+                    : sourceControlToggleShortcutLabel
+                      ? `Toggle source control panel (${sourceControlToggleShortcutLabel})`
+                      : "Toggle source control panel"}
+                </TooltipPopup>
+              </Tooltip>
+            ) : null}
+          </Group>
         </div>
       </div>
     </div>

@@ -402,6 +402,16 @@ export function parseGitHubRepositoryNameWithOwnerFromRemoteUrl(url: string | nu
   return repositoryNameWithOwner.length > 0 ? repositoryNameWithOwner : null;
 }
 
+/**
+ * Best-effort conversion of a git remote URL into the repository's web URL
+ * (e.g. `https://github.com/owner/repo`). Returns null for local paths and
+ * other shapes without a host and repository path.
+ */
+export function parseRepositoryWebUrlFromRemoteUrl(url: string | null): string | null {
+  const endpoint = url === null ? null : parseGitRemoteEndpoint(url);
+  return endpoint ? `https://${endpoint.host}/${endpoint.path}` : null;
+}
+
 function deriveLocalBranchNameCandidatesFromRemoteRef(
   branchName: string,
   remoteName?: string,
@@ -491,6 +501,7 @@ function toLocalStatusPart(status: VcsStatusResult): VcsStatusLocalResult {
     ...(status.sourceControlProvider
       ? { sourceControlProvider: status.sourceControlProvider }
       : {}),
+    ...(status.remoteWebUrl === undefined ? {} : { remoteWebUrl: status.remoteWebUrl }),
     hasPrimaryRemote: status.hasPrimaryRemote,
     isDefaultRef: status.isDefaultRef,
     refName: status.refName,

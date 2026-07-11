@@ -34,6 +34,7 @@ import {
 } from "@threadlines/contracts";
 import {
   detectSourceControlProviderFromGitRemoteUrl,
+  parseRepositoryWebUrlFromRemoteUrl,
   mergeGitStatusParts,
   resolveAutoFeatureBranchName,
   sanitizeBranchFragment,
@@ -825,13 +826,12 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
       .pipe(
         Effect.catchIf(isNotGitRepositoryError, () => Effect.succeed(nonRepositoryStatusDetails)),
       );
-    const hostingProvider = details.isRepo
-      ? yield* resolveHostingProvider(cwd, details.branch)
-      : null;
+    const hosting = details.isRepo ? yield* resolveHostingContext(cwd, details.branch) : null;
 
     return {
       isRepo: details.isRepo,
-      ...(hostingProvider ? { sourceControlProvider: hostingProvider } : {}),
+      ...(hosting?.provider ? { sourceControlProvider: hosting.provider } : {}),
+      remoteWebUrl: hosting?.remoteWebUrl ?? null,
       hasPrimaryRemote: details.hasOriginRemote,
       isDefaultRef: details.isDefaultBranch,
       refName: details.branch,
@@ -918,7 +918,7 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
     },
   );
 
-  const resolveHostingProvider = Effect.fn("resolveHostingProvider")(function* (
+  const resolveHostingContext = Effect.fn("resolveHostingContext")(function* (
     cwd: string,
     branch: string | null,
   ) {
@@ -930,7 +930,10 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
       (yield* readConfigValueNullable(cwd, `remote.${preferredRemoteName}.url`)) ??
       (yield* readConfigValueNullable(cwd, "remote.origin.url"));
 
-    return remoteUrl ? detectSourceControlProviderFromGitRemoteUrl(remoteUrl) : null;
+    return {
+      provider: remoteUrl ? detectSourceControlProviderFromGitRemoteUrl(remoteUrl) : null,
+      remoteWebUrl: parseRepositoryWebUrlFromRemoteUrl(remoteUrl),
+    };
   });
 
   const resolveRemoteRepositoryContext = Effect.fn("resolveRemoteRepositoryContext")(function* (

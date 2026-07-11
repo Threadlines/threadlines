@@ -2364,6 +2364,26 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  async function clickOpenInPrimaryButton(editorLabel: string) {
+    const openButton = await waitForElement(
+      () =>
+        document.querySelector<HTMLButtonElement>(`button[aria-label="Open in ${editorLabel}"]`),
+      `Unable to find Open in ${editorLabel} button.`,
+    );
+    await vi.waitFor(() => {
+      expect((openButton as HTMLButtonElement).disabled).toBe(false);
+    });
+    (openButton as HTMLButtonElement).click();
+  }
+
+  async function openEditorPickerMenu() {
+    const menuButton = await waitForElement(
+      () => document.querySelector<HTMLButtonElement>('button[aria-label="Open project options"]'),
+      "Unable to find Open picker menu button.",
+    );
+    (menuButton as HTMLButtonElement).click();
+  }
+
   it("opens the project cwd for draft threads without a worktree path", async () => {
     setDraftThreadWithoutWorktree();
 
@@ -2380,17 +2400,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
     try {
       await waitForServerConfigToApply();
-      const openButton = await waitForElement(
-        () =>
-          Array.from(document.querySelectorAll("button")).find(
-            (button) => button.textContent?.trim() === "Open",
-          ) as HTMLButtonElement | null,
-        "Unable to find Open button.",
-      );
-      await vi.waitFor(() => {
-        expect(openButton.disabled).toBe(false);
-      });
-      openButton.click();
+      await clickOpenInPrimaryButton("VS Code");
 
       await vi.waitFor(
         () => {
@@ -2851,11 +2861,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await new Promise((resolve) => window.setTimeout(resolve, 220));
       await waitForLayout();
 
-      expect(
-        Array.from(document.querySelectorAll("button")).some(
-          (button) => button.textContent?.trim() === "Scroll to bottom",
-        ),
-      ).toBe(false);
+      expect(document.querySelector('button[aria-label="Scroll to bottom"]')).toBeNull();
     } finally {
       await mounted.cleanup();
     }
@@ -2877,17 +2883,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
     try {
       await waitForServerConfigToApply();
-      const openButton = await waitForElement(
-        () =>
-          Array.from(document.querySelectorAll("button")).find(
-            (button) => button.textContent?.trim() === "Open",
-          ) as HTMLButtonElement | null,
-        "Unable to find Open button.",
-      );
-      await vi.waitFor(() => {
-        expect(openButton.disabled).toBe(false);
-      });
-      openButton.click();
+      await clickOpenInPrimaryButton("VS Code Insiders");
 
       await vi.waitFor(
         () => {
@@ -2923,17 +2919,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
     try {
       await waitForServerConfigToApply();
-      const openButton = await waitForElement(
-        () =>
-          Array.from(document.querySelectorAll("button")).find(
-            (button) => button.textContent?.trim() === "Open",
-          ) as HTMLButtonElement | null,
-        "Unable to find Open button.",
-      );
-      await vi.waitFor(() => {
-        expect(openButton.disabled).toBe(false);
-      });
-      openButton.click();
+      await clickOpenInPrimaryButton("Trae");
 
       await vi.waitFor(
         () => {
@@ -2969,26 +2955,18 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
     try {
       await waitForServerConfigToApply();
-      const menuButton = await waitForElement(
-        () => document.querySelector('button[aria-label="Choose editor"]'),
-        "Unable to find Open picker button.",
-      );
-      (menuButton as HTMLButtonElement).click();
+      await openEditorPickerMenu();
 
       const kiroItem = await waitForElement(
         () =>
-          Array.from(
-            document.querySelectorAll('[data-slot="menu-item"], [data-slot="menu-radio-item"]'),
-          ).find((item) => item.textContent?.includes("Kiro")) ?? null,
+          Array.from(document.querySelectorAll('[data-slot="menu-radio-item"]')).find((item) =>
+            item.textContent?.includes("Kiro"),
+          ) ?? null,
         "Unable to find Kiro menu item.",
       );
       (kiroItem as HTMLElement).click();
 
-      const openInKiroButton = await waitForElement(
-        () => document.querySelector<HTMLButtonElement>('button[aria-label="Open in Kiro"]'),
-        "Unable to find Open in Kiro button.",
-      );
-      openInKiroButton.click();
+      await clickOpenInPrimaryButton("Kiro");
 
       await vi.waitFor(
         () => {
@@ -3024,40 +3002,32 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
     try {
       await waitForServerConfigToApply();
-      const menuButton = await waitForElement(
-        () => document.querySelector('button[aria-label="Choose editor"]'),
-        "Unable to find Open picker button.",
-      );
-      (menuButton as HTMLButtonElement).click();
+      await openEditorPickerMenu();
 
       await waitForElement(
         () =>
-          Array.from(
-            document.querySelectorAll('[data-slot="menu-item"], [data-slot="menu-radio-item"]'),
-          ).find((item) => item.textContent?.includes("VS Code Insiders")) ?? null,
+          Array.from(document.querySelectorAll('[data-slot="menu-radio-item"]')).find((item) =>
+            item.textContent?.includes("VS Code Insiders"),
+          ) ?? null,
         "Unable to find VS Code Insiders menu item.",
       );
 
       expect(
-        Array.from(
-          document.querySelectorAll('[data-slot="menu-item"], [data-slot="menu-radio-item"]'),
-        ).some((item) => item.textContent?.includes("Zed")),
+        Array.from(document.querySelectorAll('[data-slot="menu-radio-item"]')).some((item) =>
+          item.textContent?.includes("Zed"),
+        ),
       ).toBe(false);
 
       const vscodiumItem = await waitForElement(
         () =>
-          Array.from(
-            document.querySelectorAll('[data-slot="menu-item"], [data-slot="menu-radio-item"]'),
-          ).find((item) => item.textContent?.includes("VSCodium")) ?? null,
+          Array.from(document.querySelectorAll('[data-slot="menu-radio-item"]')).find((item) =>
+            item.textContent?.includes("VSCodium"),
+          ) ?? null,
         "Unable to find VSCodium menu item.",
       );
       (vscodiumItem as HTMLElement).click();
 
-      const openInVscodiumButton = await waitForElement(
-        () => document.querySelector<HTMLButtonElement>('button[aria-label="Open in VSCodium"]'),
-        "Unable to find Open in VSCodium button.",
-      );
-      openInVscodiumButton.click();
+      await clickOpenInPrimaryButton("VSCodium");
 
       await vi.waitFor(
         () => {
@@ -3094,17 +3064,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
     try {
       await waitForServerConfigToApply();
-      const openButton = await waitForElement(
-        () =>
-          Array.from(document.querySelectorAll("button")).find(
-            (button) => button.textContent?.trim() === "Open",
-          ) as HTMLButtonElement | null,
-        "Unable to find Open button.",
-      );
-      await vi.waitFor(() => {
-        expect(openButton.disabled).toBe(false);
-      });
-      openButton.click();
+      // The unavailable stored favorite falls back to the first installed
+      // editor as the primary open target.
+      await clickOpenInPrimaryButton("VS Code Insiders");
 
       await vi.waitFor(
         () => {
@@ -4645,11 +4607,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await new Promise((resolve) => window.setTimeout(resolve, 220));
       await waitForLayout();
 
-      expect(
-        Array.from(document.querySelectorAll("button")).some(
-          (button) => button.textContent?.trim() === "Scroll to bottom",
-        ),
-      ).toBe(false);
+      expect(document.querySelector('button[aria-label="Scroll to bottom"]')).toBeNull();
     } finally {
       await mounted.cleanup();
     }

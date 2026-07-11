@@ -66,6 +66,7 @@ import {
   type ServerSettings,
 } from "@threadlines/contracts";
 
+import { CODEX_APP_SERVER_ARGS } from "./codexAppServerArgs.ts";
 import { makeClaudeEnvironment } from "./Drivers/ClaudeHome.ts";
 import { materializeCodexShadowHome, resolveCodexHomeLayout } from "./Drivers/CodexHomeLayout.ts";
 import { buildCodexInitializeParams } from "./Layers/CodexProvider.ts";
@@ -834,7 +835,7 @@ function runCodexAppServerAction<A>(
       const clientContext = yield* Layer.build(
         CodexClient.layerCommand({
           command: context.config.binaryPath,
-          args: ["app-server"],
+          args: CODEX_APP_SERVER_ARGS,
           cwd: context.cwd,
           env: context.environment,
         }),
@@ -950,7 +951,7 @@ const readCodexAppServerInventory = Effect.fn("providerExtensions.readCodexAppSe
         const clientContext = yield* Layer.build(
           CodexClient.layerCommand({
             command: input.config.binaryPath,
-            args: ["app-server"],
+            args: CODEX_APP_SERVER_ARGS,
             cwd: input.cwd,
             env,
           }),
@@ -2256,7 +2257,7 @@ export const startProviderExtensionMcpOAuth = Effect.fn(
     const clientContext = yield* Layer.buildWithScope(
       CodexClient.layerCommand({
         command: context.config.binaryPath,
-        args: ["app-server"],
+        args: CODEX_APP_SERVER_ARGS,
         cwd: context.cwd,
         env: context.environment,
       }),

@@ -39,7 +39,7 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   if (authReconnect) {
     const label = providerLabel?.trim() || "Provider";
     return (
-      <div className="pt-3 mx-auto max-w-3xl">
+      <div className="pt-3 mx-auto max-w-4xl">
         <Alert variant="error">
           <CircleAlertIcon />
           <AlertTitle>{label} sign-in required</AlertTitle>
@@ -78,7 +78,7 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   }
 
   return (
-    <div className="pt-3 mx-auto max-w-3xl">
+    <div className="pt-3 mx-auto max-w-4xl">
       <Alert variant="error">
         <CircleAlertIcon />
         <AlertDescription className="line-clamp-3" title={error}>

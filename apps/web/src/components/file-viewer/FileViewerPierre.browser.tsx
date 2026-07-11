@@ -11,7 +11,7 @@ import { EditorProvider, File as PierreFile } from "@pierre/diffs/react";
 
 import { DIFF_PANEL_UNSAFE_CSS } from "../DiffPanel.styles";
 import { DiffWorkerPoolProvider } from "../DiffWorkerPoolProvider";
-import { findRenderedPierreLineElement } from "./FileViewerOverlay.logic";
+import { applyEditSeedToEditor, findRenderedPierreLineElement } from "./FileViewerOverlay.logic";
 
 // Mirrors FileViewerPreview's pierre usage so lifecycle regressions in the
 // wrapper (mount/unmount assertions, stale renders on file switch) surface in
@@ -387,6 +387,41 @@ describe("FileViewer pierre editing", () => {
     await settle();
 
     expect(editor.getState().file.contents).toContain("const w = 7;");
+    expect(editor.canUndo).toBe(true);
+
+    screen.unmount();
+  });
+
+  it("applies an edit seed on attach: caret placed, keystroke replayed, undoable", async () => {
+    // Mirrors FileEditorPane's onAttach wiring for the type-to-edit entry
+    // gesture: the seed lands once pierre's rAF-deferred onAttach fires with
+    // the document already built, so applyEdits/setSelections are safe here.
+    const editor = new Editor<undefined>({
+      onAttach: (attached) => {
+        applyEditSeedToEditor(attached, {
+          path: "seed.ts",
+          line: 0,
+          character: 5,
+          insertText: "!",
+        });
+      },
+    });
+
+    const screen = await render(
+      <EditableHarness path="seed.ts" contents={"start\nnext\n"} editor={editor} />,
+    );
+    await waitForEditorDocument(editor);
+
+    const deadline = performance.now() + 15_000;
+    while (!editor.getState().file.contents.includes("start!") && performance.now() < deadline) {
+      await settle(150);
+    }
+
+    expect(editor.getState().file.contents).toContain("start!\nnext");
+    expect(editor.getState().selections?.[0]).toMatchObject({
+      start: { line: 0, character: 6 },
+      end: { line: 0, character: 6 },
+    });
     expect(editor.canUndo).toBe(true);
 
     screen.unmount();

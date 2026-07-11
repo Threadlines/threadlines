@@ -47,6 +47,7 @@ import {
   CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
   CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
 } from "../CodexDeveloperInstructions.ts";
+import { CODEX_APP_SERVER_ARGS } from "../codexAppServerArgs.ts";
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
 const decodeV2ReviewStartResponse = Schema.decodeUnknownEffect(
   EffectCodexSchema.V2ReviewStartResponse,
@@ -1090,7 +1091,7 @@ export const makeCodexSessionRuntime = (
       .spawn(
         ChildProcess.make(
           options.binaryPath,
-          ["app-server"],
+          [...CODEX_APP_SERVER_ARGS],
           hideWindowsConsole({
             cwd: options.cwd,
             env,
@@ -1104,7 +1105,7 @@ export const makeCodexSessionRuntime = (
         Effect.mapError(
           (cause) =>
             new CodexErrors.CodexAppServerSpawnError({
-              command: `${options.binaryPath} app-server`,
+              command: [options.binaryPath, ...CODEX_APP_SERVER_ARGS].join(" "),
               cause,
             }),
         ),

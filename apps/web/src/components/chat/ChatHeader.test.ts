@@ -1,14 +1,14 @@
 import { EnvironmentId } from "@threadlines/contracts";
 import { describe, expect, it } from "vitest";
 
-import { resolveContinueInProjectHeaderState, shouldShowOpenInPicker } from "./ChatHeader";
+import { resolveContinueInProjectHeaderState, shouldShowOpenInEditor } from "./ChatHeader";
 
-describe("shouldShowOpenInPicker", () => {
+describe("shouldShowOpenInEditor", () => {
   const primaryEnvironmentId = EnvironmentId.make("environment-primary");
 
   it("shows the picker for projects in the primary environment", () => {
     expect(
-      shouldShowOpenInPicker({
+      shouldShowOpenInEditor({
         activeProjectName: "codething-mvp",
         activeThreadEnvironmentId: primaryEnvironmentId,
         primaryEnvironmentId,
@@ -18,7 +18,7 @@ describe("shouldShowOpenInPicker", () => {
 
   it("hides the picker when hosted static mode has no primary environment", () => {
     expect(
-      shouldShowOpenInPicker({
+      shouldShowOpenInEditor({
         activeProjectName: "codething-mvp",
         activeThreadEnvironmentId: EnvironmentId.make("environment-remote"),
         primaryEnvironmentId: null,
@@ -28,7 +28,7 @@ describe("shouldShowOpenInPicker", () => {
 
   it("hides the picker for remote environments", () => {
     expect(
-      shouldShowOpenInPicker({
+      shouldShowOpenInEditor({
         activeProjectName: "codething-mvp",
         activeThreadEnvironmentId: EnvironmentId.make("environment-remote"),
         primaryEnvironmentId,
@@ -38,7 +38,7 @@ describe("shouldShowOpenInPicker", () => {
 
   it("hides the picker when there is no active project", () => {
     expect(
-      shouldShowOpenInPicker({
+      shouldShowOpenInEditor({
         activeProjectName: undefined,
         activeThreadEnvironmentId: primaryEnvironmentId,
         primaryEnvironmentId,

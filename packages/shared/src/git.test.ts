@@ -14,6 +14,7 @@ import {
   isTemporaryWorktreeBranch,
   normalizeGitRemoteUrl,
   parseGitHubRepositoryNameWithOwnerFromRemoteUrl,
+  parseRepositoryWebUrlFromRemoteUrl,
   WORKTREE_BRANCH_PREFIX,
 } from "./git.ts";
 
@@ -107,6 +108,25 @@ describe("isGitRepositoryMetadataCorruptionErrorMessage", () => {
         "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
       ),
     ).toBe(false);
+  });
+});
+
+describe("parseRepositoryWebUrlFromRemoteUrl", () => {
+  it("builds https web URLs from https, ssh, and scp-style remotes", () => {
+    expect(
+      parseRepositoryWebUrlFromRemoteUrl("https://github.com/badcuban/fire-alarm-tycoon.git"),
+    ).toBe("https://github.com/badcuban/fire-alarm-tycoon");
+    expect(parseRepositoryWebUrlFromRemoteUrl("git@github.com:Threadlines/threadlines.git")).toBe(
+      "https://github.com/Threadlines/threadlines",
+    );
+    expect(
+      parseRepositoryWebUrlFromRemoteUrl("ssh://git@gitlab.company.com:2222/team/project.git"),
+    ).toBe("https://gitlab.company.com/team/project");
+  });
+
+  it("returns null for local paths and missing remotes", () => {
+    expect(parseRepositoryWebUrlFromRemoteUrl("/Users/demo/some/local/remote")).toBeNull();
+    expect(parseRepositoryWebUrlFromRemoteUrl(null)).toBeNull();
   });
 });
 

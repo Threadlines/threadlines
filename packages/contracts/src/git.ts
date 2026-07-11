@@ -382,6 +382,8 @@ const VcsStatusChangeRequest = Schema.Struct({
 const VcsStatusLocalShape = {
   isRepo: Schema.Boolean,
   sourceControlProvider: Schema.optional(SourceControlProviderInfo),
+  /** Repository web URL derived from the tracked remote, e.g. `https://github.com/owner/repo`. */
+  remoteWebUrl: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
   hasPrimaryRemote: Schema.Boolean,
   isDefaultRef: Schema.Boolean,
   refName: Schema.NullOr(TrimmedNonEmptyStringSchema),

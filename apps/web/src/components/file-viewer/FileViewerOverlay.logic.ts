@@ -1,5 +1,7 @@
 import type { SelectedLineRange } from "@pierre/diffs";
 
+import type { FileEditSeed } from "../../fileViewerStore";
+
 export interface RevealLineNotice {
   requestedLine: number;
 }
@@ -121,6 +123,120 @@ export function findRenderedPierreLineElement(
  * Multi-line input is passed through untouched: it is either a managed drag
  * pierre completed before scrolling took over, or a programmatic restore.
  */
+interface KeydownLike {
+  key: string;
+  altKey: boolean;
+  ctrlKey: boolean;
+  metaKey: boolean;
+}
+
+/**
+ * Whether a keydown produces a plain printable character: modifier chords
+ * stay hotkeys and multi-character keys (Enter, Escape, arrows, F-keys)
+ * keep their navigation meaning. This is the filter for buffering onto a
+ * pending edit seed, where space is ordinary typing.
+ */
+export function isPrintableKeydown(event: KeydownLike): boolean {
+  if (event.altKey || event.ctrlKey || event.metaKey) {
+    return false;
+  }
+  return event.key.length === 1;
+}
+
+/**
+ * Whether a view-mode keydown reads as typing intent, i.e. should flip the
+ * preview into edit mode and replay the keystroke there. Space is excluded
+ * on top of the printable filter so it remains available for scrolling.
+ */
+export function isTypeToEditKeydown(event: KeydownLike): boolean {
+  return isPrintableKeydown(event) && event.key !== " ";
+}
+
+/**
+ * Whether the (composed-path-innermost) event target already accepts text
+ * input — the tree's search box, or any editable surface — so type-to-edit
+ * must not steal the keystroke.
+ */
+export function isEditableEventTarget(target: EventTarget | null | undefined): boolean {
+  const element = target as Partial<Element> | null | undefined;
+  if (!element || typeof element.closest !== "function") {
+    return false;
+  }
+  return element.closest("input, textarea, select, [contenteditable]") !== null;
+}
+
+export type DoubleClickEditTarget =
+  | { kind: "code"; lineIndex: number | null }
+  | { kind: "line-number-gutter" };
+
+/**
+ * Classify a double-click inside the preview from its composed event path
+ * (pierre renders into a shadow root, so `event.target` alone is the host).
+ * Line numbers and the gutter are the line-selection affordance and never
+ * enter edit mode; clicks on code resolve the 0-based line they landed on,
+ * or null when the click hit padding outside any rendered row.
+ */
+export function resolveDoubleClickEditTarget(
+  eventPath: readonly EventTarget[],
+): DoubleClickEditTarget {
+  for (const target of eventPath) {
+    const element = target as Partial<Element>;
+    if (typeof element.getAttribute !== "function" || typeof element.hasAttribute !== "function") {
+      continue;
+    }
+    if (element.hasAttribute("data-column-number") || element.hasAttribute("data-gutter")) {
+      return { kind: "line-number-gutter" };
+    }
+    const lineIndexValue = element.getAttribute("data-line-index");
+    if (lineIndexValue !== null) {
+      const lineIndex = Number.parseInt(lineIndexValue, 10);
+      return { kind: "code", lineIndex: Number.isNaN(lineIndex) ? null : lineIndex };
+    }
+  }
+  return { kind: "code", lineIndex: null };
+}
+
+/** Character offset of the end of a 0-based line, clamped into the file. */
+export function lineEndCharacter(content: string, lineIndex: number): number {
+  const lines = content.split("\n");
+  const clampedIndex = Math.min(Math.max(lineIndex, 0), lines.length - 1);
+  return lines[clampedIndex]?.length ?? 0;
+}
+
+interface EditorCaretPosition {
+  line: number;
+  character: number;
+}
+
+/** The slice of pierre's `Editor` that seed application needs. */
+export interface EditSeedEditor {
+  setSelections(
+    selections: {
+      start: EditorCaretPosition;
+      end: EditorCaretPosition;
+      direction: "none" | "forward" | "backward";
+    }[],
+  ): void;
+  applyEdits(
+    edits: { range: { start: EditorCaretPosition; end: EditorCaretPosition }; newText: string }[],
+    updateHistory?: boolean,
+  ): void;
+}
+
+/**
+ * Land the caret where the edit-mode entry gesture happened and replay the
+ * keystroke that triggered it (as a normal, undoable edit).
+ */
+export function applyEditSeedToEditor(editor: EditSeedEditor, seed: FileEditSeed): void {
+  const caret = { line: seed.line, character: seed.character };
+  editor.setSelections([{ start: caret, end: caret, direction: "none" }]);
+  if (seed.insertText !== undefined && seed.insertText.length > 0) {
+    editor.applyEdits([{ range: { start: caret, end: caret }, newText: seed.insertText }], true);
+    const afterInsert = { line: seed.line, character: seed.character + seed.insertText.length };
+    editor.setSelections([{ start: afterInsert, end: afterInsert, direction: "none" }]);
+  }
+}
+
 export function resolveCoarseLineSelection(
   previous: SelectedLineRange | null,
   incoming: SelectedLineRange | null,

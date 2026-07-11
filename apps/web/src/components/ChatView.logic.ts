@@ -37,13 +37,12 @@ export const DEFAULT_SCROLL_END_TOLERANCE_PX = 24;
 
 export const LastInvokedScriptByProjectSchema = Schema.Record(ProjectId, Schema.String);
 
-export function isScrollMetricsAtEnd(input: {
+export function scrollMetricsDistanceFromEnd(input: {
   readonly scrollOffset: number;
   readonly viewportLength: number;
   readonly contentLength: number;
   readonly contentInsetEnd?: number | null;
-  readonly tolerancePx?: number;
-}): boolean {
+}): number {
   const scrollOffset = Number.isFinite(input.scrollOffset) ? input.scrollOffset : 0;
   const viewportLength = Number.isFinite(input.viewportLength) ? input.viewportLength : 0;
   const contentLength = Number.isFinite(input.contentLength) ? input.contentLength : 0;
@@ -53,16 +52,62 @@ export function isScrollMetricsAtEnd(input: {
     Number.isFinite(input.contentInsetEnd)
       ? input.contentInsetEnd
       : 0;
+
+  if (viewportLength <= 0 || contentLength <= 0) {
+    return 0;
+  }
+
+  return Math.max(0, contentLength - scrollOffset - viewportLength - contentInsetEnd);
+}
+
+export function isScrollMetricsAtEnd(input: {
+  readonly scrollOffset: number;
+  readonly viewportLength: number;
+  readonly contentLength: number;
+  readonly contentInsetEnd?: number | null;
+  readonly tolerancePx?: number;
+}): boolean {
   const tolerancePx =
     input.tolerancePx !== undefined && Number.isFinite(input.tolerancePx)
       ? Math.max(0, input.tolerancePx)
       : DEFAULT_SCROLL_END_TOLERANCE_PX;
 
-  if (viewportLength <= 0 || contentLength <= 0) {
+  return scrollMetricsDistanceFromEnd(input) <= tolerancePx;
+}
+
+// Collapsing the composer questions panel shrinks the composer, which grows the
+// timeline viewport and can flip the at-end signal right back — an expand/collapse
+// oscillation. Hysteresis breaks the loop: only collapse once the user is farther
+// from the bottom than the height the collapse frees (so the reveal can never flip
+// at-end back on or clamp the scroll position), and only re-expand once they
+// actually reach the bottom. In between, hold the current state.
+// Fallback threshold when the panel cannot be measured.
+export const TIMELINE_SCROLLED_FAR_FROM_END_PX = 320;
+
+export function deriveTimelineScrolledFarFromEnd(input: {
+  readonly current: boolean;
+  readonly isAtEnd: boolean;
+  readonly distanceFromEnd: number | null;
+  readonly farThresholdPx?: number;
+}): boolean {
+  const farThresholdPx =
+    input.farThresholdPx !== undefined && Number.isFinite(input.farThresholdPx)
+      ? Math.max(DEFAULT_SCROLL_END_TOLERANCE_PX, input.farThresholdPx)
+      : TIMELINE_SCROLLED_FAR_FROM_END_PX;
+
+  if (input.isAtEnd) {
+    return false;
+  }
+  if (input.distanceFromEnd === null) {
+    return input.current;
+  }
+  if (input.distanceFromEnd >= farThresholdPx) {
     return true;
   }
-
-  return contentLength - scrollOffset - viewportLength - contentInsetEnd <= tolerancePx;
+  if (input.distanceFromEnd <= DEFAULT_SCROLL_END_TOLERANCE_PX) {
+    return false;
+  }
+  return input.current;
 }
 
 export function buildLocalDraftThread(

@@ -88,7 +88,7 @@ export function CompactStatusNoticeRow({
   actions: ReactNode;
 }) {
   return (
-    <div className="mx-auto w-full max-w-3xl px-4 pt-2 sm:px-0">
+    <div className="mx-auto w-full max-w-4xl px-4 pt-2 sm:px-0">
       <div
         className="mx-auto flex max-w-2xl flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-warning/20 bg-warning/5 px-2.5 py-1.5 text-xs shadow-sm shadow-warning/5"
         role="status"

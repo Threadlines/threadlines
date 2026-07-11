@@ -35,7 +35,12 @@ import {
   findRenderedPierreLineElement,
   formatRevealLineNoticeLabel,
   formatSelectedLineRangeLabel,
+  isEditableEventTarget,
+  isPrintableKeydown,
+  isTypeToEditKeydown,
+  lineEndCharacter,
   resolveCoarseLineSelection,
+  resolveDoubleClickEditTarget,
   resolveRevealLineTarget,
 } from "./FileViewerOverlay.logic";
 import { formatFileSelectionLineRange, sliceFileSelection } from "../../lib/fileSelectionContext";
@@ -426,12 +431,15 @@ function AddSelectionToChatFooter({
   file,
   selectedLines,
   revealLineNotice,
+  canEdit,
 }: {
   threadRef: ScopedThreadRef;
   activePath: string;
   file: ProjectTextFileContent;
   selectedLines: SelectedLineRange | null;
   revealLineNotice: RevealLineNotice | null;
+  /** Surfaces the edit-entry gestures in the idle hint when editing is available. */
+  canEdit: boolean;
 }) {
   const addFileSelectionContext = useComposerDraftStore((state) => state.addFileSelectionContext);
   const close = useFileViewerStore((state) => state.close);
@@ -487,7 +495,9 @@ function AddSelectionToChatFooter({
               : selectionLabel
             : isCoarsePointer
               ? "Tap a line number to select it, or attach the whole file as a reference."
-              : "Click a line number to select (drag for a range), or attach the whole file as a reference.")}
+              : canEdit
+                ? "Click a line number to select (drag for a range); double-click or start typing to edit."
+                : "Click a line number to select (drag for a range), or attach the whole file as a reference.")}
       </span>
       <button
         type="button"
@@ -636,6 +646,100 @@ function FileViewerPreview({
     };
   }, [file, revealEndLine, revealLine, revealRequestId]);
 
+  const canEnterEdit =
+    !isCoarsePointer && activePath !== null && file?.kind === "text" && !file.truncated;
+
+  // Scroll a line into view before the editor pane replaces the preview (the
+  // shared scroll container keeps its position across the swap): center the
+  // rendered row when it exists off-screen, else ratio-scroll toward it.
+  const ensureLineVisible = useCallback(
+    (lineIndex: number) => {
+      const container = scrollContainerRef.current;
+      if (!container || !file || file.kind !== "text") {
+        return;
+      }
+      const lineElement = findRenderedPierreLineElement(container, lineIndex);
+      if (lineElement) {
+        const containerRect = container.getBoundingClientRect();
+        const lineRect = lineElement.getBoundingClientRect();
+        if (lineRect.top >= containerRect.top && lineRect.bottom <= containerRect.bottom) {
+          return;
+        }
+        scrollElementToContainerCenter(container, lineElement);
+        return;
+      }
+      const totalLines = countRenderableTextLines(file.content);
+      const ratio = lineIndex / totalLines;
+      container.scrollTop = Math.max(
+        0,
+        container.scrollHeight * ratio - container.clientHeight / 2,
+      );
+    },
+    [file],
+  );
+
+  // Type-to-edit: a plain printable keystroke in view mode carries editing
+  // intent, so enter edit mode and replay it there instead of swallowing it.
+  // The caret lands on the selected line when one is picked, else at the top.
+  // The listener stays mounted in edit mode to catch burst typing that lands
+  // before the editor attaches (a remount plus a rAF away): those keystrokes
+  // extend the pending seed instead of dropping. Once the editor is attached
+  // and focused, keystrokes target its editable surface and skip both paths.
+  useEffect(() => {
+    if (!canEnterEdit || !activePath || !file || file.kind !== "text") {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || !isPrintableKeydown(event)) {
+        return;
+      }
+      if (isEditableEventTarget(event.composedPath()[0] ?? event.target)) {
+        return;
+      }
+      const store = useFileViewerStore.getState();
+      if (store.editMode) {
+        // Mid-burst keystrokes are ordinary typing, space included.
+        if (store.appendToEditSeed(activePath, event.key)) {
+          event.preventDefault();
+        }
+        return;
+      }
+      if (!isTypeToEditKeydown(event)) {
+        return;
+      }
+      event.preventDefault();
+      const caretLine = selectedLines ? Math.min(selectedLines.start, selectedLines.end) - 1 : 0;
+      ensureLineVisible(caretLine);
+      setEditMode(true, { path: activePath, line: caretLine, character: 0, insertText: event.key });
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [activePath, canEnterEdit, ensureLineVisible, file, selectedLines, setEditMode]);
+
+  // Double-click on code enters edit mode with the caret at the end of the
+  // clicked line. Line numbers and the gutter stay reserved for selection.
+  const handlePreviewDoubleClick = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      if (!canEnterEdit || editMode || !activePath || !file || file.kind !== "text") {
+        return;
+      }
+      const target = resolveDoubleClickEditTarget(event.nativeEvent.composedPath());
+      if (target.kind === "line-number-gutter") {
+        return;
+      }
+      if (target.lineIndex === null) {
+        setEditMode(true);
+        return;
+      }
+      setEditMode(true, {
+        path: activePath,
+        line: target.lineIndex,
+        character: lineEndCharacter(file.content, target.lineIndex),
+      });
+    },
+    [activePath, canEnterEdit, editMode, file, setEditMode],
+  );
+
   const pierreOptions = useMemo(
     () => ({
       disableFileHeader: true,
@@ -746,6 +850,7 @@ function FileViewerPreview({
       <div
         ref={scrollContainerRef}
         className="min-h-0 flex-1 overflow-auto [background:color-mix(in_srgb,var(--card)_90%,var(--background))]"
+        onDoubleClick={isEditing ? undefined : handlePreviewDoubleClick}
       >
         {/* Keyed per file: the wrapper only force-renders on options changes,
             so in-place file switches would paint stale/blank content. The
@@ -794,6 +899,7 @@ function FileViewerPreview({
           file={file}
           selectedLines={selectedLines}
           revealLineNotice={revealLineNotice}
+          canEdit={canEnterEdit}
         />
       ) : null}
     </div>
@@ -1083,13 +1189,14 @@ function FileViewerLayout({ context }: { context: FileViewerContext }) {
             tooltip={editMode ? "Done editing" : "Edit file"}
             variant="outline"
             size="xs"
-            className="shrink-0"
+            className="shrink-0 gap-1 px-1.5"
             pressed={editMode}
             onPressedChange={(pressed) => {
               setEditMode(Boolean(pressed));
             }}
           >
             <PencilLine className="size-3" />
+            <span className="text-xs">{editMode ? "Done" : "Edit"}</span>
           </Toggle>
         ) : null}
         {activePath ? (

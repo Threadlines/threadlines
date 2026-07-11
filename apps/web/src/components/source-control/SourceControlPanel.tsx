@@ -107,6 +107,8 @@ import { PublishRepositoryDialog } from "../GitActionsControl";
 import { GitAuthRemediationDialog } from "./GitAuthRemediationDialog";
 import { ProviderReviewDialog } from "./ProviderReviewDialog";
 import { SourceControlIcon } from "../Icons";
+import { GitHubLinksMenu } from "./GitHubLinksMenu";
+import { deriveGitHubQuickLinks } from "~/lib/gitHubQuickLinks";
 import {
   buildGitActionProgressStages,
   requiresDefaultBranchConfirmation,
@@ -3515,6 +3517,7 @@ export function SourceControlPanel({
   }
 
   const headerTitle = status?.refName ? `${target.name} - ${status.refName}` : target.name;
+  const gitHubLinks = deriveGitHubQuickLinks(status);
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-rail">
@@ -3587,6 +3590,7 @@ export function SourceControlPanel({
               </span>
             </TooltipWrapper>
           ) : null}
+          {gitHubLinks ? <GitHubLinksMenu links={gitHubLinks} /> : null}
           {status?.refName ? (
             <TooltipWrapper tooltip={`Branch: ${status.refName}`}>
               <span className="inline-flex min-w-0 max-w-[45%] shrink-0 items-center gap-1 rounded-sm border border-border/70 bg-muted/45 px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground/80">

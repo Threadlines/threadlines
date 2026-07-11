@@ -20,10 +20,11 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Editor } from "@pierre/diffs/editor";
 import { EditorProvider, File as PierreFile } from "@pierre/diffs/react";
 
-import type { FileViewerContext } from "../../fileViewerStore";
+import { useFileViewerStore, type FileViewerContext } from "../../fileViewerStore";
 import { useTheme } from "../../hooks/useTheme";
 import { resolveDiffThemeName } from "../../lib/diffRendering";
 import { DIFF_PANEL_UNSAFE_CSS } from "../DiffPanel.styles";
+import { applyEditSeedToEditor } from "./FileViewerOverlay.logic";
 import { flushFileEdits, queueFileEdit } from "./fileEditorSaveCoordinator";
 
 export function FileEditorPane({
@@ -45,15 +46,31 @@ export function FileEditorPane({
   const { resolvedTheme } = useTheme();
   const latestContentsRef = useRef(initialContents);
   const handleChangeRef = useRef<(contents: string) => void>(() => undefined);
+  const handleAttachRef = useRef<(attached: Editor<undefined>) => void>(() => undefined);
   const [editor] = useState(
     () =>
       new Editor<undefined>({
         onChange: (file) => {
           handleChangeRef.current(file.contents);
         },
+        onAttach: (attached) => {
+          handleAttachRef.current(attached);
+        },
       }),
   );
   const [editableReady, setEditableReady] = useState(false);
+
+  // Entry gestures (type-to-edit, double-click) stash a caret seed in the
+  // store; land it once the document exists, then focus so typing continues
+  // uninterrupted. preventScroll keeps the scroll position carried over from
+  // view mode (the preview scrolls the seed line into view itself).
+  handleAttachRef.current = (attached) => {
+    const seed = useFileViewerStore.getState().claimEditSeed(path);
+    if (seed) {
+      applyEditSeedToEditor(attached, seed);
+    }
+    attached.focus({ preventScroll: true });
+  };
 
   handleChangeRef.current = (contents) => {
     latestContentsRef.current = contents;
