@@ -25,7 +25,7 @@ export class WorkspaceEntriesError extends Schema.TaggedErrorClass<WorkspaceEntr
     cwd: Schema.String,
     operation: Schema.String,
     detail: Schema.String,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(Schema.Defect()),
   },
 ) {}
 
@@ -36,7 +36,7 @@ export class WorkspaceEntriesBrowseError extends Schema.TaggedErrorClass<Workspa
     partialPath: Schema.String,
     operation: Schema.String,
     detail: Schema.String,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(Schema.Defect()),
   },
 ) {}
 

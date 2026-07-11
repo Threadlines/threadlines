@@ -10,9 +10,9 @@ import {
   TurnId,
   ProviderDriverKind,
 } from "@threadlines/contracts";
+import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
-import * as Random from "effect/Random";
 import * as Stream from "effect/Stream";
 
 import {
@@ -309,7 +309,7 @@ export const makeTestProviderAdapterHarness = (options?: MakeTestProviderAdapter
         for (const fixtureEvent of response.events) {
           const rawEvent: Record<string, unknown> = {
             ...(fixtureEvent as Record<string, unknown>),
-            eventId: yield* Random.nextUUIDv4,
+            eventId: yield* randomUUIDv4,
             provider,
             sessionId: RuntimeSessionId.make(String(input.threadId)),
           };
@@ -366,7 +366,7 @@ export const makeTestProviderAdapterHarness = (options?: MakeTestProviderAdapter
         if (deferredTurnCompletedEvents.length === 0) {
           yield* emit({
             type: "turn.completed",
-            eventId: EventId.make(yield* Random.nextUUIDv4),
+            eventId: EventId.make(yield* randomUUIDv4),
             provider,
             createdAt: nowIso(),
             threadId: state.snapshot.threadId,

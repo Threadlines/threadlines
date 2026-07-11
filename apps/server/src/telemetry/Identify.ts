@@ -1,13 +1,13 @@
+import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
-import * as Random from "effect/Random";
 import * as Schema from "effect/Schema";
 import * as Crypto from "node:crypto";
 import { ServerConfig } from "../config.ts";
 
 class IdentifyUserError extends Schema.TaggedErrorClass<IdentifyUserError>()("IdentifyUserError", {
   message: Schema.String,
-  cause: Schema.optional(Schema.Defect),
+  cause: Schema.optional(Schema.Defect()),
 }) {}
 
 const hash = (value: string) =>
@@ -27,7 +27,7 @@ const upsertAnonymousId = Effect.gen(function* () {
   const anonymousId = yield* fileSystem.readFileString(anonymousIdPath).pipe(
     Effect.catch(() =>
       Effect.gen(function* () {
-        const randomId = yield* Random.nextUUIDv4;
+        const randomId = yield* randomUUIDv4;
         yield* fileSystem.writeFileString(anonymousIdPath, randomId);
         return randomId;
       }),

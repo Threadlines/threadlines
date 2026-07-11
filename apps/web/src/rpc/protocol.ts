@@ -246,7 +246,7 @@ export function createWsRpcProtocolLayer(
   // Retry forever with capped backoff: giving up permanently meant mobile
   // browsers that dropped the socket while backgrounded came back to a dead
   // page. The online/visibility handlers reset the loop with a fresh session.
-  const retryPolicy = Schedule.addDelay(Schedule.forever, (retryCount) =>
+  const retryPolicy = Schedule.addDelay(Schedule.forever, ({ output: retryCount }) =>
     Effect.succeed(Duration.millis(getWsReconnectDelayMsForRetry(retryCount))),
   );
   const protocolLayer = Layer.effect(

@@ -382,6 +382,6 @@ export class ProviderExtensionsError extends Schema.TaggedErrorClass<ProviderExt
   "ProviderExtensionsError",
   {
     message: TrimmedNonEmptyString,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(Schema.Defect()),
   },
 ) {}

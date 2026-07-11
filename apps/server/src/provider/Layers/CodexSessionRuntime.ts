@@ -24,6 +24,7 @@ import { normalizeModelSlug } from "@threadlines/shared/model";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
+import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -31,7 +32,6 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
-import * as Random from "effect/Random";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SchemaIssue from "effect/SchemaIssue";
@@ -1139,7 +1139,7 @@ export const makeCodexSessionRuntime = (
 
     const emitEvent = (event: Omit<ProviderEvent, "id" | "provider" | "createdAt">) =>
       Effect.gen(function* () {
-        const id = yield* Random.nextUUIDv4;
+        const id = yield* randomUUIDv4;
         return yield* offerEvent({
           id: EventId.make(id),
           provider: PROVIDER,
@@ -1324,7 +1324,7 @@ export const makeCodexSessionRuntime = (
 
     yield* client.handleServerRequest("item/commandExecution/requestApproval", (payload) =>
       Effect.gen(function* () {
-        const requestId = ApprovalRequestId.make(yield* Random.nextUUIDv4);
+        const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
         const turnId = TurnId.make(payload.turnId);
         const itemId = ProviderItemId.make(payload.itemId);
         const decision = yield* Deferred.make<ProviderApprovalDecision>();
@@ -1380,7 +1380,7 @@ export const makeCodexSessionRuntime = (
 
     yield* client.handleServerRequest("item/fileChange/requestApproval", (payload) =>
       Effect.gen(function* () {
-        const requestId = ApprovalRequestId.make(yield* Random.nextUUIDv4);
+        const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
         const turnId = TurnId.make(payload.turnId);
         const itemId = ProviderItemId.make(payload.itemId);
         const decision = yield* Deferred.make<ProviderApprovalDecision>();
@@ -1436,7 +1436,7 @@ export const makeCodexSessionRuntime = (
 
     yield* client.handleServerRequest("item/permissions/requestApproval", (payload) =>
       Effect.gen(function* () {
-        const requestId = ApprovalRequestId.make(yield* Random.nextUUIDv4);
+        const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
         const turnId = TurnId.make(payload.turnId);
         const itemId = ProviderItemId.make(payload.itemId);
         const decision = yield* Deferred.make<ProviderApprovalDecision>();
@@ -1490,7 +1490,7 @@ export const makeCodexSessionRuntime = (
 
     yield* client.handleServerRequest("item/tool/requestUserInput", (payload) =>
       Effect.gen(function* () {
-        const requestId = ApprovalRequestId.make(yield* Random.nextUUIDv4);
+        const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
         const turnId = TurnId.make(payload.turnId);
         const itemId = ProviderItemId.make(payload.itemId);
         const answers = yield* Deferred.make<ProviderUserInputAnswers>();

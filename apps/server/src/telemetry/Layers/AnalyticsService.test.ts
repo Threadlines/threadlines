@@ -74,7 +74,9 @@ it.layer(NodeServices.layer)("AnalyticsService test", (it) => {
         ConfigProvider.fromUnknown({
           THREADLINES_TELEMETRY_ENABLED: true,
           THREADLINES_POSTHOG_KEY: "phc_test_key",
-          THREADLINES_POSTHOG_HOST: "",
+          // "." keeps the batch URL relative so it resolves to the in-process
+          // test server; Config treats "" as unset since effect 4.0.0-beta.97.
+          THREADLINES_POSTHOG_HOST: ".",
           THREADLINES_TELEMETRY_FLUSH_BATCH_SIZE: 20,
         }),
       );
@@ -153,7 +155,9 @@ it.layer(NodeServices.layer)("AnalyticsService test", (it) => {
       const configLayer = ConfigProvider.layer(
         ConfigProvider.fromUnknown({
           THREADLINES_TELEMETRY_ENABLED: true,
-          THREADLINES_POSTHOG_HOST: "",
+          // "." keeps the batch URL relative so it resolves to the in-process
+          // test server; Config treats "" as unset since effect 4.0.0-beta.97.
+          THREADLINES_POSTHOG_HOST: ".",
           THREADLINES_TELEMETRY_FLUSH_BATCH_SIZE: 1,
         }),
       );
@@ -186,7 +190,9 @@ it.layer(NodeServices.layer)("AnalyticsService test", (it) => {
       const configLayer = ConfigProvider.layer(
         ConfigProvider.fromUnknown({
           THREADLINES_POSTHOG_KEY: "phc_test_key",
-          THREADLINES_POSTHOG_HOST: "",
+          // "." keeps the batch URL relative so it resolves to the in-process
+          // test server; Config treats "" as unset since effect 4.0.0-beta.97.
+          THREADLINES_POSTHOG_HOST: ".",
           THREADLINES_TELEMETRY_FLUSH_BATCH_SIZE: 1,
         }),
       );
@@ -225,7 +231,9 @@ it.layer(NodeServices.layer)("AnalyticsService test", (it) => {
       const configLayer = ConfigProvider.layer(
         ConfigProvider.fromUnknown({
           THREADLINES_POSTHOG_KEY: "phc_test_key",
-          THREADLINES_POSTHOG_HOST: "",
+          // "." keeps the batch URL relative so it resolves to the in-process
+          // test server; Config treats "" as unset since effect 4.0.0-beta.97.
+          THREADLINES_POSTHOG_HOST: ".",
           THREADLINES_TELEMETRY_FLUSH_BATCH_SIZE: 1,
         }),
       );

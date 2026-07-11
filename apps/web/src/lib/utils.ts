@@ -1,7 +1,7 @@
 import { CommandId, MessageId, ProjectId, ThreadId } from "@threadlines/contracts";
 import { type CxOptions, cx } from "class-variance-authority";
 import { twMerge } from "tailwind-merge";
-import * as Random from "effect/Random";
+import { randomUUIDv4 } from "@threadlines/shared/uuid";
 import * as Effect from "effect/Effect";
 import { DraftId } from "../composerDraftStore";
 
@@ -25,7 +25,7 @@ export function randomUUID(): string {
   if (typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
   }
-  return Effect.runSync(Random.nextUUIDv4);
+  return Effect.runSync(randomUUIDv4);
 }
 
 export const newCommandId = (): CommandId => CommandId.make(randomUUID());

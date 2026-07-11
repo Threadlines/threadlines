@@ -82,10 +82,10 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
   const notificationQueue = yield* Queue.unbounded<AcpIncomingNotification>();
   const disconnects = yield* Queue.unbounded<number>();
   const outgoing = yield* Queue.unbounded<string | Uint8Array, Cause.Done<void>>();
-  const nextRequestId = yield* Ref.make(1n);
+  const nextRequestId = yield* Ref.make(1);
   const terminationHandled = yield* Ref.make(false);
   const extPending = yield* Ref.make(
-    new Map<string, Deferred.Deferred<unknown, AcpError.AcpError>>(),
+    new Map<string | number, Deferred.Deferred<unknown, AcpError.AcpError>>(),
   );
 
   const logProtocol = (event: AcpProtocolLogEvent) => {
@@ -131,7 +131,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
   });
 
   const resolveExtPending = (
-    requestId: string,
+    requestId: string | number,
     onFound: (deferred: Deferred.Deferred<unknown, AcpError.AcpError>) => Effect.Effect<void>,
   ) =>
     Ref.modify(extPending, (pending) => {
@@ -144,7 +144,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       return [onFound(deferred), next] as const;
     }).pipe(Effect.flatten);
 
-  const removeExtPending = (requestId: string) =>
+  const removeExtPending = (requestId: string | number) =>
     Ref.update(extPending, (pending) => {
       if (!pending.has(requestId)) {
         return pending;
@@ -154,10 +154,10 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       return next;
     });
 
-  const completeExtPendingFailure = (requestId: string, error: AcpError.AcpError) =>
+  const completeExtPendingFailure = (requestId: string | number, error: AcpError.AcpError) =>
     resolveExtPending(requestId, (deferred) => Deferred.fail(deferred, error));
 
-  const completeExtPendingSuccess = (requestId: string, value: unknown) =>
+  const completeExtPendingSuccess = (requestId: string | number, value: unknown) =>
     resolveExtPending(requestId, (deferred) => Deferred.succeed(deferred, value));
 
   const failAllExtPending = (error: AcpError.AcpError) =>
@@ -212,7 +212,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       ] as const;
     }).pipe(Effect.flatten);
 
-  const respondWithSuccess = (requestId: string, value: unknown) =>
+  const respondWithSuccess = (requestId: string | number, value: unknown) =>
     offerOutgoing({
       _tag: "Exit",
       requestId,
@@ -222,7 +222,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       },
     });
 
-  const respondWithError = (requestId: string, error: AcpError.AcpRequestError) =>
+  const respondWithError = (requestId: string | number, error: AcpError.AcpRequestError) =>
     offerOutgoing({
       _tag: "Exit",
       requestId,
@@ -478,23 +478,21 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
   const sendRequest = Effect.fn("sendRequest")(function* (method: string, payload: unknown) {
     const requestId = yield* Ref.modify(
       nextRequestId,
-      (current) => [current, current + 1n] as const,
+      (current) => [current, current + 1] as const,
     );
     const deferred = yield* Deferred.make<unknown, AcpError.AcpError>();
-    yield* Ref.update(extPending, (pending) => new Map(pending).set(String(requestId), deferred));
+    yield* Ref.update(extPending, (pending) => new Map(pending).set(requestId, deferred));
     yield* offerOutgoing({
       _tag: "Request",
-      id: String(requestId),
+      id: requestId,
       tag: method,
       payload,
       headers: [],
     }).pipe(
-      Effect.catch((error) =>
-        removeExtPending(String(requestId)).pipe(Effect.andThen(Effect.fail(error))),
-      ),
+      Effect.catch((error) => removeExtPending(requestId).pipe(Effect.andThen(Effect.fail(error)))),
     );
     return yield* Deferred.await(deferred).pipe(
-      Effect.onInterrupt(() => removeExtPending(String(requestId))),
+      Effect.onInterrupt(() => removeExtPending(requestId)),
     );
   });
 

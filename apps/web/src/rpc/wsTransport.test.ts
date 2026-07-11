@@ -543,7 +543,7 @@ describe("WsTransport", () => {
     await waitFor(() => {
       expect(getSlowRpcAckRequests()).toMatchObject([
         {
-          requestId: requestMessage.id,
+          requestId: String(requestMessage.id),
           tag: WS_METHODS.serverUpsertKeybinding,
         },
       ]);
@@ -600,7 +600,7 @@ describe("WsTransport", () => {
     await waitFor(() => {
       expect(getSlowRpcAckRequests()).toMatchObject([
         {
-          requestId: firstRequest.id,
+          requestId: String(firstRequest.id),
           tag: WS_METHODS.serverUpsertKeybinding,
         },
       ]);

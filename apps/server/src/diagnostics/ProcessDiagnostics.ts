@@ -66,7 +66,7 @@ class ProcessDiagnosticsError extends Schema.TaggedErrorClass<ProcessDiagnostics
   "ProcessDiagnosticsError",
   {
     message: Schema.String,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(Schema.Defect()),
   },
 ) {}
 const isProcessDiagnosticsError = Schema.is(ProcessDiagnosticsError);

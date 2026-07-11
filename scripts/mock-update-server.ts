@@ -33,7 +33,7 @@ const resolveMockUpdateServerConfig = Effect.gen(function* () {
       Config.string("BADCODE_DESKTOP_MOCK_UPDATE_SERVER_ROOT").pipe(Config.option),
       Config.string("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_ROOT").pipe(Config.option),
     ]).pipe(Config.map((values) => firstSome(values) ?? "../release-mock")),
-  }).asEffect();
+  });
 
   const resolvedRoot = path.resolve(import.meta.dirname, config.root);
 

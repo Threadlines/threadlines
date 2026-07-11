@@ -21,7 +21,7 @@
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 
-import type { PersistenceSqlError } from "../Errors.ts";
+import type { ProjectionRepositoryError } from "../Errors.ts";
 
 export interface StorageMaintenanceReport {
   /** Command receipts removed by TTL. */
@@ -41,7 +41,7 @@ export interface StorageMaintenanceReport {
 
 export interface StorageMaintenanceShape {
   /** Run one full maintenance pass and report what was pruned. */
-  readonly runOnce: Effect.Effect<StorageMaintenanceReport, PersistenceSqlError>;
+  readonly runOnce: Effect.Effect<StorageMaintenanceReport, ProjectionRepositoryError>;
 }
 
 export class StorageMaintenance extends Context.Service<

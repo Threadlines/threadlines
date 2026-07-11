@@ -746,7 +746,7 @@ export class ServerProviderRateLimitResetCreditError extends Schema.TaggedErrorC
   {
     instanceId: ProviderInstanceId,
     reason: TrimmedNonEmptyString,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message(): string {
@@ -759,7 +759,7 @@ export class ServerProviderUpdateError extends Schema.TaggedErrorClass<ServerPro
   {
     provider: ProviderDriverKind,
     reason: TrimmedNonEmptyString,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message(): string {

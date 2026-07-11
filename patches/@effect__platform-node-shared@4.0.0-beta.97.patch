@@ -1,9 +1,9 @@
 diff --git a/dist/NodeChildProcessSpawner.js b/dist/NodeChildProcessSpawner.js
-index 30011d88660c57a4337ad6afbd85011c0352ef18..1bdef71b12f834467c614d2440292c7dd1e68dc7 100644
+index 384b19c2265cb753509f7c988cb6b450042d975e..e009c950a4d9d0c7366b44c84d5a859c33cef65d 100644
 --- a/dist/NodeChildProcessSpawner.js
 +++ b/dist/NodeChildProcessSpawner.js
-@@ -323,13 +323,15 @@ const make = /*#__PURE__*/Effect.gen(function* () {
-           let cleanupOnNonZeroExit = false;
+@@ -336,13 +336,15 @@ const make = /*#__PURE__*/Effect.gen(function* () {
+           let isReferenced = true;
            const cwd = yield* resolveWorkingDirectory(cmd.options);
            const env = resolveEnvironment(cmd.options);
 +          const commandOptions = cmd.options;
@@ -20,10 +20,10 @@ index 30011d88660c57a4337ad6afbd85011c0352ef18..1bdef71b12f834467c614d2440292c7d
              const exited = yield* Deferred.isDone(exitSignal);
              const killWithTimeout = withTimeout(childProcess, cmd, cmd.options);
 diff --git a/src/NodeChildProcessSpawner.ts b/src/NodeChildProcessSpawner.ts
-index f111b7a86aed891e867fd6437e71cc13fda25d30..0780c01b84dbf366b52a784ca3704cc997354e71 100644
+index ec7da1d3444463ee4883411e1cc2a2ce14ef9644..a88217f388eb419e8b9ca26168602dd366713363 100644
 --- a/src/NodeChildProcessSpawner.ts
 +++ b/src/NodeChildProcessSpawner.ts
-@@ -441,6 +441,9 @@ const make = Effect.gen(function*() {
+@@ -468,6 +468,9 @@ const make = Effect.gen(function*() {
  
          const cwd = yield* resolveWorkingDirectory(cmd.options)
          const env = resolveEnvironment(cmd.options)
@@ -33,7 +33,7 @@ index f111b7a86aed891e867fd6437e71cc13fda25d30..0780c01b84dbf366b52a784ca3704cc9
          const stdio = buildStdioArray(stdinConfig, stdoutConfig, stderrConfig, resolvedAdditionalFds)
  
          const [childProcess, exitSignal] = yield* Effect.acquireRelease(
-@@ -449,7 +452,8 @@ const make = Effect.gen(function*() {
+@@ -476,7 +479,8 @@ const make = Effect.gen(function*() {
              env,
              stdio,
              detached: cmd.options.detached ?? process.platform !== "win32",

@@ -204,7 +204,7 @@ export class ProviderStartReviewError extends Schema.TaggedErrorClass<ProviderSt
   "ProviderStartReviewError",
   {
     message: TrimmedNonEmptyString,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(Schema.Defect()),
   },
 ) {}
 
