@@ -3056,6 +3056,71 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("selects the file manager as the sticky open target without opening it immediately", async () => {
+    setDraftThreadWithoutWorktree();
+    const fileManagerName = isMacPlatform(navigator.platform)
+      ? "Finder"
+      : navigator.platform.toLowerCase().startsWith("win")
+        ? "Explorer"
+        : "Files";
+
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createDraftOnlySnapshot(),
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          availableEditors: ["cursor", "file-manager"],
+        };
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await openEditorPickerMenu();
+
+      const fileManagerItem = await waitForElement(
+        () =>
+          Array.from(document.querySelectorAll('[data-slot="menu-radio-item"]')).find(
+            (item) => item.textContent?.trim() === fileManagerName,
+          ) ?? null,
+        `Unable to find ${fileManagerName} menu item.`,
+      );
+      (fileManagerItem as HTMLElement).click();
+
+      await waitForElement(
+        () =>
+          document.querySelector<HTMLButtonElement>(
+            `button[aria-label="Open in ${fileManagerName}"]`,
+          ),
+        `Unable to find selected ${fileManagerName} primary button.`,
+      );
+
+      expect(wsRequests.some((request) => request._tag === WS_METHODS.shellOpenInEditor)).toBe(
+        false,
+      );
+      expect(localStorage.getItem("threadlines:last-editor")).toBe(JSON.stringify("file-manager"));
+
+      await clickOpenInPrimaryButton(fileManagerName);
+
+      await vi.waitFor(
+        () => {
+          const openRequest = wsRequests.find(
+            (request) => request._tag === WS_METHODS.shellOpenInEditor,
+          );
+          expect(openRequest).toMatchObject({
+            _tag: WS_METHODS.shellOpenInEditor,
+            cwd: "/repo/project",
+            editor: "file-manager",
+          });
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("falls back to the first installed editor when the stored favorite is unavailable", async () => {
     localStorage.setItem("threadlines:last-editor", JSON.stringify("vscodium"));
     setDraftThreadWithoutWorktree();

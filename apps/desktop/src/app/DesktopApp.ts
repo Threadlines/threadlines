@@ -206,8 +206,6 @@ const startup = Effect.gen(function* () {
   const statusIndicator = yield* DesktopStatusIndicator.DesktopStatusIndicator;
 
   yield* shellEnvironment.installIntoProcess;
-  const userDataPath = yield* appIdentity.resolveUserDataPath;
-  yield* electronApp.setPath("userData", userDataPath);
   yield* logStartupInfo("runtime logging configured", { logDir: environment.logDir });
   yield* desktopSettings.load;
 

@@ -339,4 +339,37 @@ describe("ChatMarkdown", () => {
       await screen.unmount();
     }
   });
+
+  it("wraps long fenced text and shows copy feedback", async () => {
+    const code = `Please run ${"a-very-long-unbroken-value".repeat(20)} when ready.`;
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const screen = await render(
+      <div style={{ width: 260 }}>
+        <ChatMarkdown text={`\`\`\`text\n${code}\n\`\`\``} cwd="/repo/project" isStreaming />
+      </div>,
+    );
+
+    try {
+      const copyButton = page.getByRole("button", { name: "Copy code block" });
+      await expect.element(copyButton).toBeVisible();
+
+      const pre = document.querySelector<HTMLElement>(".chat-markdown-codeblock pre");
+      expect(pre).not.toBeNull();
+      expect(getComputedStyle(pre!).whiteSpace).toBe("pre-wrap");
+      expect(pre!.scrollWidth).toBeLessThanOrEqual(pre!.clientWidth + 1);
+
+      await copyButton.click();
+
+      await vi.waitFor(() => {
+        expect(writeText).toHaveBeenCalledWith(`${code}\n`);
+        expect(document.querySelector(".chat-markdown-copy-button .text-success")).not.toBeNull();
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
 });

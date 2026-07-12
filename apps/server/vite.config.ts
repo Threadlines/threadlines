@@ -10,9 +10,18 @@ const bundledPackagePrefixes = [
   "effect-codex-app-server",
 ];
 
-const bundledPosthogKey = process.env.THREADLINES_POSTHOG_KEY?.trim() ?? "";
-const bundledPosthogHost =
-  process.env.THREADLINES_POSTHOG_HOST?.trim() || "https://us.i.posthog.com";
+export function resolveBundledTelemetryConfig(env: NodeJS.ProcessEnv = process.env): {
+  readonly posthogKey: string;
+  readonly posthogHost: string;
+} {
+  const telemetryEnabled = env.THREADLINES_TELEMETRY_ENABLED?.trim().toLowerCase() !== "false";
+  return {
+    posthogKey: telemetryEnabled ? (env.THREADLINES_POSTHOG_KEY?.trim() ?? "") : "",
+    posthogHost: env.THREADLINES_POSTHOG_HOST?.trim() || "https://us.i.posthog.com",
+  };
+}
+
+const bundledTelemetryConfig = resolveBundledTelemetryConfig();
 
 export function shouldBundleCliDependency(id: string): boolean {
   return bundledPackagePrefixes.some((prefix) => id.startsWith(prefix));
@@ -21,10 +30,6 @@ export function shouldBundleCliDependency(id: string): boolean {
 export default mergeConfig(
   baseConfig,
   defineConfig({
-    define: {
-      __THREADLINES_BUNDLED_POSTHOG_KEY__: JSON.stringify(bundledPosthogKey),
-      __THREADLINES_BUNDLED_POSTHOG_HOST__: JSON.stringify(bundledPosthogHost),
-    },
     run: {
       tasks: {
         build: {
@@ -35,6 +40,10 @@ export default mergeConfig(
       },
     },
     pack: {
+      define: {
+        __THREADLINES_BUNDLED_POSTHOG_KEY__: JSON.stringify(bundledTelemetryConfig.posthogKey),
+        __THREADLINES_BUNDLED_POSTHOG_HOST__: JSON.stringify(bundledTelemetryConfig.posthogHost),
+      },
       entry: ["src/bin.ts"],
       outDir: "dist",
       sourcemap: true,

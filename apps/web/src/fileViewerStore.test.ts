@@ -18,6 +18,7 @@ function resetFileViewerStore(): void {
     context: null,
     tabs: [],
     activePath: null,
+    previewPath: null,
     treeRevealPath: null,
     treeRevealRequestId: 0,
     revealLine: null,
@@ -25,6 +26,7 @@ function resetFileViewerStore(): void {
     revealRequestId: 0,
     editMode: false,
     editSeed: null,
+    editSaveState: {},
     coarsePointerWordWrap: null,
   });
 }
@@ -125,6 +127,95 @@ describe("fileViewerStore", () => {
       line: 2,
       character: 7,
       insertText: "q",
+    });
+  });
+
+  it("reuses the preview tab's slot for successive preview opens", () => {
+    const store = useFileViewerStore.getState();
+    store.openFile("src/a.ts");
+    store.openFile("src/b.ts");
+    expect(useFileViewerStore.getState()).toMatchObject({
+      tabs: ["src/b.ts"],
+      activePath: "src/b.ts",
+      previewPath: "src/b.ts",
+    });
+  });
+
+  it("keeps pinned tabs out of the preview slot and replaces the preview in place", () => {
+    const store = useFileViewerStore.getState();
+    store.openFile("src/a.ts");
+    store.openFile("src/pinned.ts", { pinned: true });
+    store.openFile("src/c.ts");
+    expect(useFileViewerStore.getState()).toMatchObject({
+      tabs: ["src/c.ts", "src/pinned.ts"],
+      activePath: "src/c.ts",
+      previewPath: "src/c.ts",
+    });
+  });
+
+  it("never demotes a permanent tab re-opened as a preview", () => {
+    const store = useFileViewerStore.getState();
+    store.openFile("src/a.ts", { pinned: true });
+    store.openFile("src/a.ts");
+    expect(useFileViewerStore.getState()).toMatchObject({
+      tabs: ["src/a.ts"],
+      previewPath: null,
+    });
+  });
+
+  it("promotes the preview tab on pin, pinned re-open, edit entry, and unsaved changes", () => {
+    const store = useFileViewerStore.getState();
+
+    store.openFile("src/a.ts");
+    store.pinTab("src/a.ts");
+    expect(useFileViewerStore.getState().previewPath).toBeNull();
+
+    store.openFile("src/b.ts");
+    store.openFile("src/b.ts", { pinned: true });
+    expect(useFileViewerStore.getState().previewPath).toBeNull();
+
+    store.openFile("src/c.ts");
+    store.setEditMode(true);
+    expect(useFileViewerStore.getState().previewPath).toBeNull();
+    store.setEditMode(false);
+
+    store.openFile("src/d.ts");
+    store.setEditSaveState("src/d.ts", "pending");
+    expect(useFileViewerStore.getState().previewPath).toBeNull();
+
+    expect(useFileViewerStore.getState().tabs).toEqual([
+      "src/a.ts",
+      "src/b.ts",
+      "src/c.ts",
+      "src/d.ts",
+    ]);
+  });
+
+  it("clears the preview slot when the preview tab closes", () => {
+    const store = useFileViewerStore.getState();
+    store.openFile("src/a.ts", { pinned: true });
+    store.openFile("src/b.ts");
+    store.closeTab("src/b.ts");
+    expect(useFileViewerStore.getState()).toMatchObject({
+      tabs: ["src/a.ts"],
+      activePath: "src/a.ts",
+      previewPath: null,
+    });
+  });
+
+  it("opens external file references (chat/diff) into the preview slot", () => {
+    useFileViewerStore.getState().openFile("src/a.ts");
+    expect(
+      openFileInViewer({
+        environmentId: TEST_ENVIRONMENT_ID,
+        cwd: "/Users/will/badcode",
+        path: "/Users/will/badcode/AGENTS.md",
+      }),
+    ).toBe(true);
+    expect(useFileViewerStore.getState()).toMatchObject({
+      tabs: ["AGENTS.md"],
+      activePath: "AGENTS.md",
+      previewPath: "AGENTS.md",
     });
   });
 

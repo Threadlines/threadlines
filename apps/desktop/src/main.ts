@@ -1,7 +1,9 @@
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -51,6 +53,29 @@ import * as DesktopState from "./app/DesktopState.ts";
 import * as DesktopUpdates from "./updates/DesktopUpdates.ts";
 import * as DesktopWindow from "./window/DesktopWindow.ts";
 import * as DesktopStatusIndicator from "./window/DesktopStatusIndicator.ts";
+import {
+  readDesktopUserDataConfigFromEnv,
+  resolveDesktopUserDataLocation,
+  resolveDesktopUserDataPath,
+} from "./app/desktopUserData.ts";
+
+// userData must be final before Electron's "ready" event: Chromium spawns its
+// sandboxed helper processes (GPU, network service) at ready with sandbox
+// profiles derived from the then-current userData path, and the async startup
+// effect below loses that race. See desktopUserData.ts.
+Electron.app.setPath(
+  "userData",
+  resolveDesktopUserDataPath({
+    location: resolveDesktopUserDataLocation({
+      platform: process.platform,
+      homeDirectory: NodeOS.homedir(),
+      config: readDesktopUserDataConfigFromEnv(process.env),
+      path: NodePath,
+    }),
+    path: NodePath,
+    directoryExists: NodeFS.existsSync,
+  }),
+);
 
 const desktopEnvironmentLayer = Layer.unwrap(
   Effect.gen(function* () {

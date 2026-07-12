@@ -78,6 +78,7 @@ export interface GitStatusDetails {
   hasOriginRemote: boolean;
   isDefaultBranch: boolean;
   branch: string | null;
+  headSha: string | null;
   upstreamRef: string | null;
   hasWorkingTreeChanges: boolean;
   workingTree: VcsStatusResult["workingTree"];

@@ -40,6 +40,12 @@ Threadlines does not send:
 - provider API keys, auth tokens, secrets, or environment variable values;
 - Codex, Claude, GitHub, or other third-party account identifiers.
 
+Threadlines does not add an IP address to the analytics payload. As with any
+HTTPS request, the receiving service can see the source IP at the transport
+layer. The Threadlines PostHog project is configured to discard client IP data
+after any transient GeoIP enrichment or bot detection, so it is not stored with
+events.
+
 ## Anonymous Identifier
 
 When telemetry is enabled, Threadlines creates a random install identifier in
@@ -59,5 +65,8 @@ Environment variables:
 - `THREADLINES_POSTHOG_HOST`: PostHog host. Defaults to `https://us.i.posthog.com`.
 - `THREADLINES_TELEMETRY_ENABLED`: optional process-level override for local
   development and testing. Set to `false` to disable telemetry for the process.
+  Release builds also use `false` as a build-time kill switch and omit the
+  bundled PostHog token; `true` permits bundling while the in-app opt-out remains
+  authoritative at runtime.
 - `THREADLINES_TELEMETRY_FLUSH_BATCH_SIZE`: optional batch size override.
 - `THREADLINES_TELEMETRY_MAX_BUFFERED_EVENTS`: optional in-memory buffer limit.

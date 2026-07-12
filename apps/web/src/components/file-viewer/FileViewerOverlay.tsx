@@ -5,23 +5,26 @@ import { useQuery } from "@tanstack/react-query";
 import type { ProjectEntry, ScopedThreadRef, ProjectTextFileContent } from "@threadlines/contracts";
 import {
   ChevronDown,
+  ChevronDownIcon,
   ChevronRight,
   FileImage,
   FileWarning,
   FileX,
+  FolderClosedIcon,
   FolderTree,
   MessageSquarePlus,
   PencilLine,
   SearchIcon,
-  SquareArrowOutUpRight,
   TextWrapIcon,
   X,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import type { EditorId } from "@threadlines/contracts";
 import { readLocalApi } from "../../localApi";
 import { cn, isMacPlatform } from "~/lib/utils";
-import { openInPreferredEditor } from "../../editorPreferences";
+import { usePreferredEditor } from "../../editorPreferences";
+import { useServerAvailableEditors } from "../../rpc/serverState";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { useFileViewerStore, type FileViewerContext } from "../../fileViewerStore";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
@@ -83,11 +86,19 @@ import {
 } from "../../lib/projectReactQuery";
 import { VscodeEntryIcon } from "../chat/VscodeEntryIcon";
 import { DiffWorkerPoolProvider } from "../DiffWorkerPoolProvider";
+import {
+  EditorOpenRadioGroup,
+  editorOpenActionLabel,
+  fileManagerLabel,
+  useEditorOpenOptions,
+} from "../EditorOpenOptions";
+import { Button } from "../ui/button";
 import { Dialog, DialogPopup, DialogTitle } from "../ui/dialog";
+import { Group } from "../ui/group";
+import { Menu, MenuPopup, MenuTrigger } from "../ui/menu";
 import { ScrollArea } from "../ui/scroll-area";
 import { Toggle } from "../ui/toggle";
 import { stackedThreadToast, toastManager } from "../ui/toast";
-import { TooltipWrapper } from "../ui/tooltip";
 
 interface FileTreeNode {
   entry: ProjectEntry;
@@ -127,6 +138,84 @@ function basenameOf(path: string): string {
   return path.split("/").at(-1) ?? path;
 }
 
+function workspaceAbsolutePath(cwd: string, path: string): string {
+  return `${cwd.replace(/[/\\]+$/, "")}/${path}`;
+}
+
+function copyRelativePathToClipboard(path: string): void {
+  void navigator.clipboard?.writeText(path).then(() => {
+    toastManager.add({ type: "success", title: "Path copied", description: path });
+  });
+}
+
+function openPathInEditor(cwd: string, path: string, editor: EditorId): void {
+  const api = readLocalApi();
+  if (!api) {
+    return;
+  }
+  void api.shell.openInEditor(workspaceAbsolutePath(cwd, path), editor).catch((error: unknown) => {
+    toastManager.add(
+      stackedThreadToast({
+        type: "error",
+        title: "Unable to open file externally",
+        description: error instanceof Error ? error.message : "An error occurred.",
+      }),
+    );
+  });
+}
+
+type OpenWithMenuId = "open-external" | "reveal" | "copy-path";
+
+/**
+ * The shared "open elsewhere" tail of the viewer's context menus (tab strip
+ * and tree): open in the preferred editor — named, so it is no longer a
+ * mystery which one launches — reveal in the platform file manager, and copy
+ * the relative path.
+ */
+function useOpenWithMenu(context: FileViewerContext): {
+  openWithItems: ReadonlyArray<{ id: OpenWithMenuId; label: string }>;
+  handleOpenWithSelection: (clicked: string | null, path: string) => boolean;
+} {
+  const availableEditors = useServerAvailableEditors();
+  const [preferredEditor] = usePreferredEditor(availableEditors);
+  const options = useEditorOpenOptions(availableEditors);
+  const preferredOption = options.find(({ value }) => value === preferredEditor) ?? null;
+  const canReveal = availableEditors.includes("file-manager");
+
+  const openWithItems = useMemo(
+    () => [
+      // When the preferred "editor" is the file manager the reveal entry
+      // below already covers it.
+      ...(preferredOption && preferredOption.value !== "file-manager"
+        ? [{ id: "open-external" as const, label: `Open in ${preferredOption.label}` }]
+        : []),
+      ...(canReveal
+        ? [{ id: "reveal" as const, label: `Reveal in ${fileManagerLabel(navigator.platform)}` }]
+        : []),
+      { id: "copy-path" as const, label: "Copy relative path" },
+    ],
+    [canReveal, preferredOption],
+  );
+
+  const handleOpenWithSelection = useCallback(
+    (clicked: string | null, path: string): boolean => {
+      if (clicked === "open-external" && preferredEditor) {
+        openPathInEditor(context.cwd, path, preferredEditor);
+      } else if (clicked === "reveal") {
+        openPathInEditor(context.cwd, path, "file-manager");
+      } else if (clicked === "copy-path") {
+        copyRelativePathToClipboard(path);
+      } else {
+        return false;
+      }
+      return true;
+    },
+    [context.cwd, preferredEditor],
+  );
+
+  return { openWithItems, handleOpenWithSelection };
+}
+
 function ancestorsOf(path: string): string[] {
   const segments = path.split("/");
   const ancestors: string[] = [];
@@ -152,6 +241,8 @@ const TreeRow = memo(function TreeRow({
   theme,
   onToggleDirectory,
   onOpenFile,
+  onPinFile,
+  onFileContextMenu,
 }: {
   node: FileTreeNode;
   depth: number;
@@ -160,6 +251,9 @@ const TreeRow = memo(function TreeRow({
   theme: "light" | "dark";
   onToggleDirectory: (path: string) => void;
   onOpenFile: (path: string) => void;
+  /** Double-click: promote the (already preview-opened) file to a permanent tab. */
+  onPinFile: (path: string) => void;
+  onFileContextMenu: (event: React.MouseEvent, path: string) => void;
 }) {
   const isDirectory = node.entry.kind === "directory";
   const isExpanded = isDirectory && expandedPaths.has(node.entry.path);
@@ -176,6 +270,10 @@ const TreeRow = memo(function TreeRow({
         style={{ paddingLeft: `${depth * 14 + 8}px` }}
         onClick={() =>
           isDirectory ? onToggleDirectory(node.entry.path) : onOpenFile(node.entry.path)
+        }
+        onDoubleClick={isDirectory ? undefined : () => onPinFile(node.entry.path)}
+        onContextMenu={
+          isDirectory ? undefined : (event) => onFileContextMenu(event, node.entry.path)
         }
       >
         {isDirectory ? (
@@ -206,6 +304,8 @@ const TreeRow = memo(function TreeRow({
               theme={theme}
               onToggleDirectory={onToggleDirectory}
               onOpenFile={onOpenFile}
+              onPinFile={onPinFile}
+              onFileContextMenu={onFileContextMenu}
             />
           ))
         : null}
@@ -227,6 +327,7 @@ function FileViewerTree({
   const treeRevealPath = useFileViewerStore((state) => state.treeRevealPath);
   const treeRevealRequestId = useFileViewerStore((state) => state.treeRevealRequestId);
   const storeOpenFile = useFileViewerStore((state) => state.openFile);
+  const pinTab = useFileViewerStore((state) => state.pinTab);
   const { resolvedTheme } = useTheme();
   const treeViewportRef = useRef<HTMLDivElement>(null);
   const focusedTreeRevealRequestRef = useRef(-1);
@@ -255,6 +356,36 @@ function FileViewerTree({
       onFileOpened?.();
     },
     [onFileOpened, storeOpenFile],
+  );
+
+  // The double-click's leading single-click already opened the file as a
+  // preview tab, so pinning is all that is left to do.
+  const handlePinFile = useCallback((path: string) => pinTab(path), [pinTab]);
+
+  const { openWithItems, handleOpenWithSelection } = useOpenWithMenu(context);
+
+  const handleFileContextMenu = useCallback(
+    (event: React.MouseEvent, path: string) => {
+      event.preventDefault();
+      const api = readLocalApi();
+      if (!api) {
+        return;
+      }
+      const position = { x: event.clientX, y: event.clientY };
+      void (async () => {
+        const clicked = await api.contextMenu.show(
+          [{ id: "open-new-tab" as const, label: "Open in new tab" }, ...openWithItems],
+          position,
+        );
+        if (clicked === "open-new-tab") {
+          storeOpenFile(path, { pinned: true });
+          onFileOpened?.();
+        } else {
+          handleOpenWithSelection(clicked, path);
+        }
+      })();
+    },
+    [handleOpenWithSelection, onFileOpened, openWithItems, storeOpenFile],
   );
 
   const expandPathWithAncestors = useCallback((path: string) => {
@@ -412,6 +543,8 @@ function FileViewerTree({
               theme={resolvedTheme}
               onToggleDirectory={handleToggleDirectory}
               onOpenFile={openFile}
+              onPinFile={handlePinFile}
+              onFileContextMenu={handleFileContextMenu}
             />
           ))
         )}
@@ -988,11 +1121,14 @@ function FileViewerTabs({
 }) {
   const tabs = useFileViewerStore((state) => state.tabs);
   const activePath = useFileViewerStore((state) => state.activePath);
+  const previewPath = useFileViewerStore((state) => state.previewPath);
   const editSaveState = useFileViewerStore((state) => state.editSaveState);
   const setActivePath = useFileViewerStore((state) => state.setActivePath);
+  const pinTab = useFileViewerStore((state) => state.pinTab);
   const closeTab = useFileViewerStore((state) => state.closeTab);
   const closeOtherTabs = useFileViewerStore((state) => state.closeOtherTabs);
   const closeAllTabs = useFileViewerStore((state) => state.closeAllTabs);
+  const { openWithItems, handleOpenWithSelection } = useOpenWithMenu(context);
 
   const handleTabContextMenu = useCallback(
     (event: React.MouseEvent, tab: string) => {
@@ -1005,52 +1141,38 @@ function FileViewerTabs({
       void (async () => {
         const clicked = await api.contextMenu.show(
           [
-            { id: "close", label: "Close" },
-            { id: "close-others", label: "Close others", disabled: tabs.length <= 1 },
-            { id: "close-all", label: "Close all" },
-            { id: "open-external", label: "Open in external editor" },
-            { id: "copy-path", label: "Copy relative path" },
-          ] as const,
+            ...(tab === previewPath ? [{ id: "keep-open" as const, label: "Keep open" }] : []),
+            { id: "close" as const, label: "Close" },
+            { id: "close-others" as const, label: "Close others", disabled: tabs.length <= 1 },
+            { id: "close-all" as const, label: "Close all" },
+            ...openWithItems,
+          ],
           position,
         );
-        if (clicked === "close") {
+        if (clicked === "keep-open") {
+          pinTab(tab);
+        } else if (clicked === "close") {
           closeTab(tab);
         } else if (clicked === "close-others") {
           closeOtherTabs(tab);
         } else if (clicked === "close-all") {
           closeAllTabs();
-        } else if (clicked === "open-external") {
-          const absolutePath = `${context.cwd.replace(/[/\\]+$/, "")}/${tab}`;
-          void openInPreferredEditor(api, absolutePath).catch(() => undefined);
-        } else if (clicked === "copy-path") {
-          void navigator.clipboard?.writeText(tab).then(() => {
-            toastManager.add({ type: "success", title: "Path copied", description: tab });
-          });
+        } else {
+          handleOpenWithSelection(clicked, tab);
         }
       })();
     },
-    [closeAllTabs, closeOtherTabs, closeTab, context.cwd, tabs.length],
+    [
+      closeAllTabs,
+      closeOtherTabs,
+      closeTab,
+      handleOpenWithSelection,
+      openWithItems,
+      pinTab,
+      previewPath,
+      tabs.length,
+    ],
   );
-
-  const handleOpenExternally = useCallback(() => {
-    if (!activePath) {
-      return;
-    }
-    const api = readLocalApi();
-    if (!api) {
-      return;
-    }
-    const absolutePath = `${context.cwd.replace(/[/\\]+$/, "")}/${activePath}`;
-    void openInPreferredEditor(api, absolutePath).catch((error) => {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Unable to open file externally",
-          description: error instanceof Error ? error.message : "An error occurred.",
-        }),
-      );
-    });
-  }, [activePath, context.cwd]);
 
   return (
     // ScrollArea gives overflow discoverability without geometry changes:
@@ -1074,11 +1196,17 @@ function FileViewerTabs({
             >
               <button
                 type="button"
-                className="cursor-pointer border-0 bg-transparent p-0 py-0.5 text-inherit pointer-coarse:py-1.5"
+                className={cn(
+                  "cursor-pointer border-0 bg-transparent p-0 py-0.5 text-inherit pointer-coarse:py-1.5",
+                  // Preview tab: italic title, VS Code style. Double-click
+                  // (here or in the tree) keeps it open for good.
+                  tab === previewPath && "italic",
+                )}
                 onClick={() => {
                   setActivePath(tab);
                   onTabSelected?.();
                 }}
+                onDoubleClick={() => pinTab(tab)}
               >
                 {basenameOf(tab)}
               </button>
@@ -1121,20 +1249,65 @@ function FileViewerTabs({
             </div>
           );
         })}
-        {activePath ? (
-          <TooltipWrapper tooltip="Open in external editor">
-            <button
-              type="button"
-              aria-label="Open in external editor"
-              className="ml-1 inline-flex shrink-0 cursor-pointer items-center rounded-sm border-0 bg-transparent p-1 text-muted-foreground/60 transition-colors hover:bg-foreground/10 hover:text-foreground pointer-coarse:p-2"
-              onClick={handleOpenExternally}
-            >
-              <SquareArrowOutUpRight className="size-3.5" />
-            </button>
-          </TooltipWrapper>
-        ) : null}
       </div>
     </ScrollArea>
+  );
+}
+
+/**
+ * Open-the-active-file counterpart of the chat header's OpenInPicker: the
+ * primary button shows which editor will launch (icon + named tooltip), the
+ * chevron menu switches the shared preferred-editor choice. Selecting the
+ * file manager makes the primary action reveal the file.
+ */
+function FileViewerOpenInControl({
+  context,
+  activePath,
+}: {
+  context: FileViewerContext;
+  activePath: string;
+}) {
+  const availableEditors = useServerAvailableEditors();
+  const [preferredEditor, setPreferredEditor] = usePreferredEditor(availableEditors);
+  const options = useEditorOpenOptions(availableEditors);
+  const primaryOption = options.find(({ value }) => value === preferredEditor) ?? null;
+  const primaryLabel = primaryOption ? editorOpenActionLabel(primaryOption) : "Open in editor";
+
+  return (
+    <Group aria-label="Open file in editor" className="shrink-0">
+      <Button
+        size="icon-xs"
+        variant="outline"
+        disabled={!preferredEditor}
+        onClick={() => {
+          if (preferredEditor) {
+            openPathInEditor(context.cwd, activePath, preferredEditor);
+          }
+        }}
+        aria-label={primaryLabel}
+        tooltip={primaryLabel}
+      >
+        {primaryOption ? (
+          <primaryOption.Icon aria-hidden="true" className="size-3.5" />
+        ) : (
+          <FolderClosedIcon aria-hidden="true" className="size-3.5" />
+        )}
+      </Button>
+      <Menu>
+        <MenuTrigger
+          render={<Button aria-label="Open file options" size="icon-xs" variant="outline" />}
+        >
+          <ChevronDownIcon aria-hidden="true" className="size-3.5" />
+        </MenuTrigger>
+        <MenuPopup align="end">
+          <EditorOpenRadioGroup
+            options={options}
+            preferredEditor={preferredEditor}
+            onSelect={setPreferredEditor}
+          />
+        </MenuPopup>
+      </Menu>
+    </Group>
   );
 }
 
@@ -1183,6 +1356,7 @@ function FileViewerLayout({ context }: { context: FileViewerContext }) {
           </button>
         ) : null}
         <FileViewerTabs context={context} onTabSelected={showPreviewPane} />
+        {activePath ? <FileViewerOpenInControl context={context} activePath={activePath} /> : null}
         {activePath && !isCoarsePointer ? (
           <Toggle
             aria-label={editMode ? "Done editing" : "Edit file"}

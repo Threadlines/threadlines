@@ -51,12 +51,30 @@ type FileViewerOpenTarget =
   | { kind: "file"; path: string; line?: number; endLine?: number }
   | { kind: "directory"; path: string };
 
+export interface OpenFileOptions {
+  /** 1-based line to reveal. */
+  line?: number | undefined;
+  /** Optional inclusive end of the reveal range. */
+  endLine?: number | undefined;
+  /** Open as a permanent tab instead of reusing the preview tab. */
+  pinned?: boolean | undefined;
+}
+
 interface FileViewerState {
   isOpen: boolean;
   context: FileViewerContext | null;
   /** Open files, in tab order. Paths are workspace-relative. */
   tabs: string[];
   activePath: string | null;
+  /**
+   * The preview tab (VS Code-style): single-shot opens — tree clicks, search
+   * results, chat/diff references — reuse this tab in place instead of
+   * accumulating tabs. Null means every open tab is permanent. Invariant:
+   * when non-null it is a member of `tabs`. Any keep-intent signal promotes
+   * it to permanent (clears this field): entering edit mode, unsaved
+   * changes, or an explicit pin (tree/tab double-click, "open in new tab").
+   */
+  previewPath: string | null;
   /** Directory the tree should reveal. An empty string targets the workspace root. */
   treeRevealPath: string | null;
   /** Bumped so repeatedly opening the same directory still re-focuses it. */
@@ -104,7 +122,9 @@ interface FileViewerState {
   setEditSaveState: (path: string, state: FileEditSaveState | null) => void;
   bumpEditReloadNonce: () => void;
   open: (context: FileViewerContext, target?: FileViewerOpenTarget) => void;
-  openFile: (path: string, line?: number, endLine?: number) => void;
+  openFile: (path: string, options?: OpenFileOptions) => void;
+  /** Promote the preview tab to a permanent tab when it is `path`. */
+  pinTab: (path: string) => void;
   setActivePath: (path: string) => void;
   closeTab: (path: string) => void;
   closeOtherTabs: (path: string) => void;
@@ -123,11 +143,45 @@ function withTabCap(tabs: string[], activePath: string | null): string[] {
   return evictable ? tabs.filter((tab) => tab !== evictable) : tabs;
 }
 
+/**
+ * Merge an opened file into the tab list. Preview opens reuse the preview
+ * tab's slot in place; pinned opens append. Re-opening an already-open path
+ * never demotes a permanent tab, while pinning one that is previewed
+ * promotes it.
+ */
+function withOpenedFile(
+  state: Pick<FileViewerState, "tabs" | "previewPath">,
+  path: string,
+  pinned: boolean,
+): Pick<FileViewerState, "tabs" | "previewPath"> {
+  if (state.tabs.includes(path)) {
+    return {
+      tabs: state.tabs,
+      previewPath: pinned && state.previewPath === path ? null : state.previewPath,
+    };
+  }
+  if (!pinned && state.previewPath !== null && state.tabs.includes(state.previewPath)) {
+    return {
+      tabs: state.tabs.map((tab) => (tab === state.previewPath ? path : tab)),
+      previewPath: path,
+    };
+  }
+  const tabs = withTabCap([...state.tabs, path], path);
+  // The cap can evict the preview tab (it evicts the leftmost non-active
+  // tab); a dangling previewPath must not survive that.
+  const previewPath = pinned ? state.previewPath : path;
+  return {
+    tabs,
+    previewPath: previewPath !== null && tabs.includes(previewPath) ? previewPath : null,
+  };
+}
+
 export const useFileViewerStore = create<FileViewerState>((set, get) => ({
   isOpen: false,
   context: null,
   tabs: [],
   activePath: null,
+  previewPath: null,
   treeRevealPath: null,
   treeRevealRequestId: 0,
   revealLine: null,
@@ -141,7 +195,16 @@ export const useFileViewerStore = create<FileViewerState>((set, get) => ({
 
   setCoarsePointerWordWrap: (wrap) => set({ coarsePointerWordWrap: wrap }),
 
-  setEditMode: (editMode, seed) => set({ editMode, editSeed: editMode ? (seed ?? null) : null }),
+  setEditMode: (editMode, seed) =>
+    set((state) => ({
+      editMode,
+      editSeed: editMode ? (seed ?? null) : null,
+      // Entering edit mode is keep-intent: promote a previewed active file so
+      // the buffer being edited can't be swapped out by the next tree click.
+      ...(editMode && state.previewPath !== null && state.previewPath === state.activePath
+        ? { previewPath: null }
+        : {}),
+    })),
 
   claimEditSeed: (path) => {
     const seed = get().editSeed;
@@ -172,27 +235,32 @@ export const useFileViewerStore = create<FileViewerState>((set, get) => ({
         const { [path]: _removed, ...editSaveState } = state.editSaveState;
         return { editSaveState };
       }
-      return { editSaveState: { ...state.editSaveState, [path]: saveState } };
+      return {
+        editSaveState: { ...state.editSaveState, [path]: saveState },
+        // Backstop for the edit-mode promotion: a tab with an unsaved buffer
+        // must never stay a preview tab (its slot gets reused on open).
+        ...(state.previewPath === path ? { previewPath: null } : {}),
+      };
     }),
 
   open: (context, target) =>
     set((state) => {
       const sameWorkspace =
         state.context?.environmentId === context.environmentId && state.context.cwd === context.cwd;
-      const tabs = sameWorkspace ? [...state.tabs] : [];
+      let openState: Pick<FileViewerState, "tabs" | "previewPath"> = sameWorkspace
+        ? { tabs: state.tabs, previewPath: state.previewPath }
+        : { tabs: [], previewPath: null };
       let activePath = sameWorkspace ? state.activePath : null;
       if (target?.kind === "file") {
-        if (!tabs.includes(target.path)) {
-          tabs.push(target.path);
-        }
+        openState = withOpenedFile(openState, target.path, false);
         activePath = target.path;
       }
-      const nextActivePath = activePath ?? tabs[0] ?? null;
       return {
         isOpen: true,
         context,
-        tabs: withTabCap(tabs, nextActivePath),
-        activePath: nextActivePath,
+        tabs: openState.tabs,
+        previewPath: openState.previewPath,
+        activePath: activePath ?? openState.tabs[0] ?? null,
         treeRevealPath: target?.kind === "directory" ? target.path : null,
         treeRevealRequestId: state.treeRevealRequestId + (target?.kind === "directory" ? 1 : 0),
         revealLine: target?.kind === "file" ? (target.line ?? null) : null,
@@ -202,15 +270,17 @@ export const useFileViewerStore = create<FileViewerState>((set, get) => ({
       };
     }),
 
-  openFile: (path, line, endLine) =>
+  openFile: (path, options) =>
     set((state) => ({
-      tabs: withTabCap(state.tabs.includes(path) ? state.tabs : [...state.tabs, path], path),
+      ...withOpenedFile(state, path, options?.pinned ?? false),
       activePath: path,
       treeRevealPath: null,
-      revealLine: line ?? null,
-      revealEndLine: endLine ?? null,
+      revealLine: options?.line ?? null,
+      revealEndLine: options?.endLine ?? null,
       revealRequestId: state.revealRequestId + 1,
     })),
+
+  pinTab: (path) => set((state) => (state.previewPath === path ? { previewPath: null } : state)),
 
   setActivePath: (path) =>
     set({ activePath: path, treeRevealPath: null, revealLine: null, revealEndLine: null }),
@@ -224,13 +294,20 @@ export const useFileViewerStore = create<FileViewerState>((set, get) => ({
           ? (tabs[Math.min(index, tabs.length - 1)] ?? null)
           : state.activePath;
       const { [path]: _removed, ...editSaveState } = state.editSaveState;
-      return { tabs, activePath, revealLine: null, editSaveState };
+      return {
+        tabs,
+        activePath,
+        revealLine: null,
+        editSaveState,
+        ...(state.previewPath === path ? { previewPath: null } : {}),
+      };
     }),
 
   closeOtherTabs: (path) =>
     set((state) => ({
       tabs: state.tabs.includes(path) ? [path] : [],
       activePath: state.tabs.includes(path) ? path : null,
+      previewPath: state.tabs.includes(path) && state.previewPath === path ? path : null,
       revealLine: null,
       revealEndLine: null,
       editSaveState:
@@ -240,7 +317,14 @@ export const useFileViewerStore = create<FileViewerState>((set, get) => ({
     })),
 
   closeAllTabs: () =>
-    set({ tabs: [], activePath: null, revealLine: null, revealEndLine: null, editSaveState: {} }),
+    set({
+      tabs: [],
+      activePath: null,
+      previewPath: null,
+      revealLine: null,
+      revealEndLine: null,
+      editSaveState: {},
+    }),
 
   close: () => set({ isOpen: false, revealLine: null }),
 }));

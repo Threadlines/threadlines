@@ -1217,6 +1217,38 @@ describe("SourceControlPanel changes", () => {
     }
   });
 
+  it("renders provider-aware links and closes them through the no-drag menu backdrop", async () => {
+    const mounted = await renderPanel({
+      status: makeStatus({
+        sourceControlProvider: {
+          kind: "gitlab",
+          name: "GitLab",
+          baseUrl: "https://gitlab.com",
+        },
+        remoteWebUrl: "https://gitlab.com/threadlines/threadlines",
+      }),
+    });
+
+    try {
+      await page.getByRole("button", { name: "GitLab links" }).click();
+      await expect.element(page.getByText("Merge requests", { exact: true })).toBeVisible();
+      await expect.element(page.getByText("Pipelines", { exact: true })).toBeVisible();
+
+      const backdrop = document.querySelector('[data-slot="menu-backdrop"]');
+      expect(backdrop).toBeInstanceOf(HTMLElement);
+      expect(getComputedStyle(backdrop!).getPropertyValue("-webkit-app-region")).toBe("no-drag");
+
+      backdrop!.dispatchEvent(
+        new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }),
+      );
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-slot="menu-popup"]')).toBeNull();
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("keeps the branch trigger fixed when opening branch actions", async () => {
     const listRefs: EnvironmentApi["vcs"]["listRefs"] = vi.fn(async () => ({
       isRepo: true,

@@ -62,6 +62,7 @@ jobs:
         env:
           THREADLINES_POSTHOG_KEY: ${{ secrets.THREADLINES_POSTHOG_KEY }}
           THREADLINES_POSTHOG_HOST: ${{ vars.THREADLINES_POSTHOG_HOST }}
+          THREADLINES_TELEMETRY_ENABLED: ${{ vars.THREADLINES_TELEMETRY_ENABLED }}
         run: vp exec vp run --filter @threadlines/server build:bundle
 
       - name: Prepare npm package
@@ -103,6 +104,7 @@ jobs:
         env:
           THREADLINES_POSTHOG_KEY: ${{ secrets.THREADLINES_POSTHOG_KEY }}
           THREADLINES_POSTHOG_HOST: ${{ vars.THREADLINES_POSTHOG_HOST }}
+          THREADLINES_TELEMETRY_ENABLED: ${{ vars.THREADLINES_TELEMETRY_ENABLED }}
         run: vp exec vp run --filter @threadlines/server build:bundle
 
       - name: Prepare npm package

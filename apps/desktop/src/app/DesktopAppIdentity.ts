@@ -21,7 +21,6 @@ const AppPackageMetadata = Schema.Struct({
 const decodeAppPackageMetadata = Schema.decodeEffect(Schema.fromJsonString(AppPackageMetadata));
 
 export interface DesktopAppIdentityShape {
-  readonly resolveUserDataPath: Effect.Effect<string>;
   readonly configure: Effect.Effect<void>;
 }
 
@@ -86,19 +85,6 @@ const make = Effect.gen(function* () {
     return commitHash;
   });
 
-  const resolveUserDataPath = Effect.gen(function* () {
-    const legacyPath = environment.path.join(
-      environment.appDataDirectory,
-      environment.legacyUserDataDirName,
-    );
-    const legacyPathExists = yield* fileSystem
-      .exists(legacyPath)
-      .pipe(Effect.orElseSucceed(() => false));
-    return legacyPathExists
-      ? legacyPath
-      : environment.path.join(environment.appDataDirectory, environment.userDataDirName);
-  }).pipe(Effect.withSpan("desktop.appIdentity.resolveUserDataPath"));
-
   const syncDockIcon = Effect.gen(function* () {
     if (environment.platform !== "darwin") {
       return;
@@ -143,7 +129,6 @@ const make = Effect.gen(function* () {
   }).pipe(Effect.withSpan("desktop.appIdentity.configure"));
 
   return DesktopAppIdentity.of({
-    resolveUserDataPath,
     configure,
   });
 });

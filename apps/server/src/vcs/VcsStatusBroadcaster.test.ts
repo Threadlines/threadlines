@@ -445,6 +445,109 @@ describe("VcsStatusBroadcaster", () => {
     );
   });
 
+  it.effect("revalidates a stale cached snapshot in the background on subscribe", () => {
+    const state = {
+      currentLocalStatus: baseLocalStatus,
+      currentRemoteStatus: baseRemoteStatus,
+      localStatusCalls: 0,
+      remoteStatusCalls: 0,
+      localInvalidationCalls: 0,
+      remoteInvalidationCalls: 0,
+    };
+
+    return Effect.gen(function* () {
+      const broadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
+      yield* broadcaster.getStatus({ cwd: "/repo" });
+      assert.equal(state.localStatusCalls, 1);
+
+      yield* TestClock.adjust(Duration.seconds(10));
+      state.currentLocalStatus = {
+        ...baseLocalStatus,
+        refName: "feature/revalidated",
+      };
+
+      const localUpdatedDeferred = yield* Deferred.make<VcsStatusStreamEvent>();
+      yield* Stream.runForEach(broadcaster.streamStatus({ cwd: "/repo" }), (event) =>
+        event._tag === "localUpdated"
+          ? Deferred.succeed(localUpdatedDeferred, event).pipe(Effect.ignore)
+          : Effect.void,
+      ).pipe(Effect.forkScoped);
+
+      const localUpdated = yield* Deferred.await(localUpdatedDeferred);
+      assert.deepStrictEqual(localUpdated, {
+        _tag: "localUpdated",
+        local: state.currentLocalStatus,
+      } satisfies VcsStatusStreamEvent);
+      assert.equal(state.localStatusCalls, 2);
+      assert.equal(state.localInvalidationCalls, 1);
+      // Ten seconds is inside the remote revalidation window, so only the
+      // local part refreshes.
+      assert.equal(state.remoteStatusCalls, 1);
+      assert.equal(state.remoteInvalidationCalls, 0);
+    }).pipe(Effect.provide(Layer.merge(makeTestLayer(state), TestClock.layer())));
+  });
+
+  // Live clock: real fs.watch events have to flow through the debounce.
+  it.live("refreshes the status when the git metadata directory changes", () => {
+    const state = {
+      currentLocalStatus: baseLocalStatus,
+      currentRemoteStatus: baseRemoteStatus,
+      localStatusCalls: 0,
+      remoteStatusCalls: 0,
+      localInvalidationCalls: 0,
+      remoteInvalidationCalls: 0,
+    };
+
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const repoDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-vcs-status-watch-",
+      });
+      const gitDir = path.join(repoDir, ".git");
+      yield* fileSystem.makeDirectory(gitDir);
+      yield* fileSystem.writeFileString(path.join(gitDir, "HEAD"), "ref: refs/heads/main\n");
+
+      const broadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
+      const snapshotDeferred = yield* Deferred.make<VcsStatusStreamEvent>();
+      const localUpdatedDeferred = yield* Deferred.make<VcsStatusStreamEvent>();
+      yield* Stream.runForEach(broadcaster.streamStatus({ cwd: repoDir }), (event) => {
+        if (event._tag === "snapshot") {
+          return Deferred.succeed(snapshotDeferred, event).pipe(Effect.ignore);
+        }
+        if (event._tag === "localUpdated") {
+          return Deferred.succeed(localUpdatedDeferred, event).pipe(Effect.ignore);
+        }
+        return Effect.void;
+      }).pipe(Effect.forkScoped);
+
+      yield* Deferred.await(snapshotDeferred);
+      state.currentLocalStatus = {
+        ...baseLocalStatus,
+        refName: "feature/watched",
+      };
+
+      // The watcher registers asynchronously; keep touching the git dir
+      // (spaced out beyond the debounce window) until the refresh lands.
+      let attempt = 0;
+      while (Option.isNone(yield* Deferred.poll(localUpdatedDeferred))) {
+        attempt += 1;
+        yield* fileSystem.writeFileString(
+          path.join(gitDir, "HEAD"),
+          `ref: refs/heads/feature/watched ${attempt}\n`,
+        );
+        yield* Effect.sleep(Duration.millis(500));
+      }
+
+      const localUpdated = yield* Deferred.await(localUpdatedDeferred);
+      assert.deepStrictEqual(localUpdated, {
+        _tag: "localUpdated",
+        local: state.currentLocalStatus,
+      } satisfies VcsStatusStreamEvent);
+      assert.isAtLeast(state.localStatusCalls, 2);
+    }).pipe(Effect.provide(makeTestLayer(state)));
+  });
+
   it.effect("stops the remote poller after the last stream subscriber disconnects", () => {
     const state = {
       currentLocalStatus: baseLocalStatus,

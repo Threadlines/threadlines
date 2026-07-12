@@ -75,8 +75,6 @@ const makeAssetsLayer = (input: { readonly png: Option.Option<string> }) =>
     resolveResourcePath: () => Effect.succeed(Option.none()),
   } satisfies DesktopAssets.DesktopAssetsShape);
 
-const toPortablePath = (value: string) => value.replaceAll("\\", "/").replace(/^[A-Za-z]:/, "");
-
 const makeEnvironmentLayer = (overrides: TestEnvironmentInput = {}) => {
   const { env, ...environmentOverrides } = overrides;
   return DesktopEnvironment.layer({
@@ -106,7 +104,6 @@ const withIdentity = <A, E, R>(
   input: {
     readonly calls?: ElectronAppCalls;
     readonly environment?: TestEnvironmentInput;
-    readonly legacyPathExists?: boolean;
     readonly bundledAdaptiveIconExists?: boolean;
     readonly packageJson?: string;
     readonly pngIconPath?: Option.Option<string>;
@@ -125,9 +122,7 @@ const withIdentity = <A, E, R>(
           FileSystem.layerNoop({
             exists: (path) =>
               Effect.succeed(
-                path.endsWith("Assets.car")
-                  ? input.bundledAdaptiveIconExists === true
-                  : input.legacyPathExists === true && path.includes("badcode"),
+                path.endsWith("Assets.car") && input.bundledAdaptiveIconExists === true,
               ),
             readFileString: () =>
               Effect.succeed(input.packageJson ?? '{"threadlinesCommitHash":"abcdef1234567890"}'),
@@ -146,45 +141,6 @@ const withIdentity = <A, E, R>(
 };
 
 describe("DesktopAppIdentity", () => {
-  it.effect("isolates development user data under an explicit app-data directory", () =>
-    withIdentity(
-      Effect.gen(function* () {
-        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
-        const userDataPath = yield* identity.resolveUserDataPath;
-
-        assert.equal(
-          toPortablePath(userDataPath),
-          "/tmp/studio-app-data/threadlines-marketing-studio",
-        );
-      }),
-      {
-        environment: {
-          isPackaged: false,
-          env: {
-            VITE_DEV_SERVER_URL: "http://localhost:5173",
-            THREADLINES_DESKTOP_APP_DATA_DIR: "/tmp/studio-app-data",
-            THREADLINES_DESKTOP_USER_DATA_DIR_NAME: "threadlines-marketing-studio",
-          },
-        },
-      },
-    ),
-  );
-
-  it.effect("keeps using the legacy userData path when it already exists", () =>
-    withIdentity(
-      Effect.gen(function* () {
-        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
-        const userDataPath = yield* identity.resolveUserDataPath;
-
-        assert.equal(
-          toPortablePath(userDataPath),
-          "/Users/alice/Library/Application Support/badcode",
-        );
-      }),
-      { legacyPathExists: true },
-    ),
-  );
-
   it.effect("configures app identity from the environment commit override", () => {
     const calls: ElectronAppCalls = {
       setAboutPanelOptions: [],

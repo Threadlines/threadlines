@@ -80,6 +80,7 @@ const NON_REPOSITORY_STATUS_DETAILS = Object.freeze<GitVcsDriver.GitStatusDetail
   hasOriginRemote: false,
   isDefaultBranch: false,
   branch: null,
+  headSha: null,
   upstreamRef: null,
   hasWorkingTreeChanges: false,
   workingTree: { files: [], insertions: 0, deletions: 0 },
@@ -1903,6 +1904,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         : null;
 
     let refName: string | null = null;
+    let headSha: string | null = null;
     let upstreamRef: string | null = null;
     let aheadCount = 0;
     let behindCount = 0;
@@ -1911,6 +1913,11 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const changedFilesByPath = new Map<string, ParsedPorcelainChange>();
 
     for (const line of statusStdout.split(/\r?\n/g)) {
+      if (line.startsWith("# branch.oid ")) {
+        const value = line.slice("# branch.oid ".length).trim();
+        headSha = value.length > 0 && !value.startsWith("(") ? value : null;
+        continue;
+      }
       if (line.startsWith("# branch.head ")) {
         const value = line.slice("# branch.head ".length).trim();
         refName = value.startsWith("(") ? null : value;
@@ -2102,6 +2109,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       hasOriginRemote: hasPrimaryRemote,
       isDefaultBranch,
       branch: refName,
+      headSha,
       upstreamRef,
       hasWorkingTreeChanges,
       workingTree: {
@@ -2146,6 +2154,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         hasPrimaryRemote: details.hasOriginRemote,
         isDefaultRef: details.isDefaultBranch,
         refName: details.branch,
+        headSha: details.headSha,
         hasWorkingTreeChanges: details.hasWorkingTreeChanges,
         workingTree: details.workingTree,
         hasUpstream: details.hasUpstream,

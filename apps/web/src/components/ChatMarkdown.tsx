@@ -1,5 +1,4 @@
 import { DiffsHighlighter, getSharedHighlighter, SupportedLanguages } from "@pierre/diffs";
-import { CheckIcon, CopyIcon } from "lucide-react";
 import type { EnvironmentId, ServerProviderSkill } from "@threadlines/contracts";
 import React, {
   Children,
@@ -12,8 +11,6 @@ import React, {
   useDeferredValue,
   useEffect,
   useMemo,
-  useRef,
-  useState,
   type ReactNode,
 } from "react";
 import type { Components } from "react-markdown";
@@ -21,6 +18,7 @@ import ReactMarkdown from "react-markdown";
 import { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { VscodeEntryIcon } from "./chat/VscodeEntryIcon";
+import { MessageCopyButton } from "./chat/MessageCopyButton";
 import { renderSkillInlineMarkdownChildren } from "./chat/SkillInlineText";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { stackedThreadToast, toastManager } from "./ui/toast";
@@ -116,10 +114,10 @@ function extractCodeBlock(
   }
 
   const onlyChild = childNodes[0];
-  if (
-    !isValidElement<{ className?: string; children?: ReactNode }>(onlyChild) ||
-    onlyChild.type !== "code"
-  ) {
+  // react-markdown passes the configured code renderer element here rather
+  // than a literal `code` host element, so inspecting `type` drops every
+  // fenced block whenever a custom code renderer is installed.
+  if (!isValidElement<{ className?: string; children?: ReactNode }>(onlyChild)) {
     return null;
   }
 
@@ -159,48 +157,15 @@ function getHighlighterPromise(language: string): Promise<DiffsHighlighter> {
 }
 
 function MarkdownCodeBlock({ code, children }: { code: string; children: ReactNode }) {
-  const [copied, setCopied] = useState(false);
-  const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const handleCopy = useCallback(() => {
-    if (typeof navigator === "undefined" || navigator.clipboard == null) {
-      return;
-    }
-    void navigator.clipboard
-      .writeText(code)
-      .then(() => {
-        if (copiedTimerRef.current != null) {
-          clearTimeout(copiedTimerRef.current);
-        }
-        setCopied(true);
-        copiedTimerRef.current = setTimeout(() => {
-          setCopied(false);
-          copiedTimerRef.current = null;
-        }, 1200);
-      })
-      .catch(() => undefined);
-  }, [code]);
-
-  useEffect(
-    () => () => {
-      if (copiedTimerRef.current != null) {
-        clearTimeout(copiedTimerRef.current);
-        copiedTimerRef.current = null;
-      }
-    },
-    [],
-  );
-
   return (
     <div className="chat-markdown-codeblock leading-snug">
-      <button
-        type="button"
+      <MessageCopyButton
+        text={code}
+        ariaLabel="Copy code block"
+        size="icon-xs"
+        variant="outline"
         className="chat-markdown-copy-button"
-        onClick={handleCopy}
-        title={copied ? "Copied" : "Copy code"}
-        aria-label={copied ? "Copied" : "Copy code"}
-      >
-        {copied ? <CheckIcon className="size-3" /> : <CopyIcon className="size-3" />}
-      </button>
+      />
       {children}
     </div>
   );

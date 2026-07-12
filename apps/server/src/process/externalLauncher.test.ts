@@ -543,6 +543,46 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
     }),
   );
 
+  it.effect("reveals file targets in the file manager instead of opening them", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-file-manager-test-" });
+      const filePath = path.join(dir, "preview.html");
+      yield* fs.writeFileString(filePath, "<!doctype html>");
+
+      const darwinLaunch = yield* resolveEditorLaunch(
+        { cwd: filePath, editor: "file-manager" },
+        "darwin",
+        { PATH: "" },
+      );
+      assert.deepEqual(darwinLaunch, {
+        command: "open",
+        args: ["-R", filePath],
+      });
+
+      const linuxLaunch = yield* resolveEditorLaunch(
+        { cwd: filePath, editor: "file-manager" },
+        "linux",
+        { PATH: "" },
+      );
+      assert.deepEqual(linuxLaunch, {
+        command: "xdg-open",
+        args: [dir],
+      });
+
+      const darwinDirectoryLaunch = yield* resolveEditorLaunch(
+        { cwd: dir, editor: "file-manager" },
+        "darwin",
+        { PATH: "" },
+      );
+      assert.deepEqual(darwinDirectoryLaunch, {
+        command: "open",
+        args: [dir],
+      });
+    }),
+  );
+
   it.effect("strips editor line positions before launching a file manager target", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

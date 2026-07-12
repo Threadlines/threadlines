@@ -393,6 +393,7 @@ jobs:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           THREADLINES_POSTHOG_KEY: ${{ secrets.THREADLINES_POSTHOG_KEY }}
           THREADLINES_POSTHOG_HOST: ${{ vars.THREADLINES_POSTHOG_HOST }}
+          THREADLINES_TELEMETRY_ENABLED: ${{ vars.THREADLINES_TELEMETRY_ENABLED }}
         run: >
           vp exec vp run dist:desktop:artifact --
           --platform win
@@ -557,6 +558,7 @@ jobs:
           THREADLINES_NOTARY_SUBMIT_ATTEMPTS: "3"
           THREADLINES_POSTHOG_KEY: ${{ secrets.THREADLINES_POSTHOG_KEY }}
           THREADLINES_POSTHOG_HOST: ${{ vars.THREADLINES_POSTHOG_HOST }}
+          THREADLINES_TELEMETRY_ENABLED: ${{ vars.THREADLINES_TELEMETRY_ENABLED }}
         run: |
           set -euo pipefail
 

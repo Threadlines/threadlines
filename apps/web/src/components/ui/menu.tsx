@@ -28,6 +28,7 @@ function MenuPopup({
   alignOffset,
   side = "bottom",
   anchor,
+  backdrop = true,
   ...props
 }: MenuPrimitive.Popup.Props & {
   align?: MenuPrimitive.Positioner.Props["align"];
@@ -35,9 +36,13 @@ function MenuPopup({
   alignOffset?: MenuPrimitive.Positioner.Props["alignOffset"];
   side?: MenuPrimitive.Positioner.Props["side"];
   anchor?: MenuPrimitive.Positioner.Props["anchor"];
+  backdrop?: boolean;
 }) {
   return (
     <MenuPrimitive.Portal>
+      {backdrop ? (
+        <MenuPrimitive.Backdrop className="fixed inset-0 z-50" data-slot="menu-backdrop" />
+      ) : null}
       <MenuPrimitive.Positioner
         align={align}
         alignOffset={alignOffset}
@@ -265,6 +270,7 @@ function MenuSubPopup({
     <MenuPopup
       align={align}
       alignOffset={alignOffset ?? defaultAlignOffset}
+      backdrop={false}
       className={className}
       data-slot="menu-sub-content"
       side="inline-end"

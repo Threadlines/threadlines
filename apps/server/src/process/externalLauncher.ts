@@ -265,9 +265,17 @@ const resolveFileManagerLaunch = Effect.fn("resolveFileManagerLaunch")(function*
     return yield* resolveWindowsFileManagerLaunch(openTarget, env);
   }
 
+  // File targets reveal in the file manager (matching Windows' `/select`)
+  // instead of launching the default application for the file type: `open -R`
+  // on macOS, the containing directory on Linux (xdg-open has no reveal flag).
+  const targetType = yield* statTargetType(openTarget);
+  if (targetType === "file" && platform === "darwin") {
+    return { command: "open", args: ["-R", openTarget] };
+  }
+  const path = yield* Path.Path;
   return {
     command: fileManagerCommandForPlatform(platform),
-    args: [openTarget],
+    args: [targetType === "file" ? path.dirname(openTarget) : openTarget],
   };
 });
 

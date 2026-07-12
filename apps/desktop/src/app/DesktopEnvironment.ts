@@ -21,6 +21,7 @@ import {
   resolveDefaultDesktopSettings,
 } from "../settings/DesktopAppSettings.ts";
 import * as DesktopConfig from "./DesktopConfig.ts";
+import { resolveDesktopUserDataLocation } from "./desktopUserData.ts";
 import { isNightlyDesktopVersion } from "../updates/updateChannels.ts";
 
 export interface MakeDesktopEnvironmentInput {
@@ -89,7 +90,6 @@ export class DesktopEnvironment extends Context.Service<
 >()("threadlines/desktop/Environment") {}
 
 const APP_BASE_NAME = "Threadlines";
-const SAFE_USER_DATA_DIR_NAME_PATTERN = /^[a-zA-Z0-9._-]+$/;
 
 function resolveDesktopAppStageLabel(input: {
   readonly isDevelopment: boolean;
@@ -153,17 +153,18 @@ const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
   const homeDirectory = input.homeDirectory;
   const devServerUrl = config.devServerUrl;
   const isDevelopment = Option.isSome(devServerUrl);
-  const defaultAppDataDirectory =
-    input.platform === "win32"
-      ? Option.getOrElse(config.appDataDirectory, () =>
-          path.join(homeDirectory, "AppData", "Roaming"),
-        )
-      : input.platform === "darwin"
-        ? path.join(homeDirectory, "Library", "Application Support")
-        : Option.getOrElse(config.xdgConfigHome, () => path.join(homeDirectory, ".config"));
-  const appDataDirectory = Option.match(config.desktopAppDataDirectory, {
-    onNone: () => defaultAppDataDirectory,
-    onSome: path.resolve,
+  // Same rules main.ts applies synchronously before ready; see desktopUserData.ts.
+  const userDataLocation = resolveDesktopUserDataLocation({
+    platform: input.platform,
+    homeDirectory,
+    path,
+    config: {
+      isDevelopment,
+      windowsAppDataDirectory: Option.getOrUndefined(config.appDataDirectory),
+      xdgConfigHome: Option.getOrUndefined(config.xdgConfigHome),
+      appDataDirectoryOverride: Option.getOrUndefined(config.desktopAppDataDirectory),
+      userDataDirNameOverride: Option.getOrUndefined(config.desktopUserDataDirName),
+    },
   });
   const baseDir = Option.getOrElse(config.threadlinesHome, () =>
     path.join(homeDirectory, ".threadlines"),
@@ -184,16 +185,6 @@ const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
   });
   const displayName = branding.displayName;
   const stateDir = path.join(baseDir, isDevelopment ? "dev" : "userdata");
-  const userDataDirName = isDevelopment
-    ? Option.getOrElse(
-        Option.filter(
-          config.desktopUserDataDirName,
-          (value) => SAFE_USER_DATA_DIR_NAME_PATTERN.test(value) && value !== "." && value !== "..",
-        ),
-        () => "threadlines-dev",
-      )
-    : "threadlines";
-  const legacyUserDataDirName = isDevelopment ? "badcode-dev" : "badcode";
   const resourcesPath = input.resourcesPath;
 
   return DesktopEnvironment.of({
@@ -207,7 +198,7 @@ const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
     appPath: input.appPath,
     resourcesPath,
     homeDirectory,
-    appDataDirectory,
+    appDataDirectory: userDataLocation.appDataDirectory,
     baseDir,
     stateDir,
     desktopSettingsPath: path.join(stateDir, "desktop-settings.json"),
@@ -240,8 +231,8 @@ const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
     appUserModelId: isDevelopment ? DESKTOP_DEVELOPMENT_APP_ID : DESKTOP_RELEASE_APP_ID,
     linuxDesktopEntryName: isDevelopment ? "threadlines-dev.desktop" : "threadlines.desktop",
     linuxWmClass: isDevelopment ? "threadlines-dev" : "threadlines",
-    userDataDirName,
-    legacyUserDataDirName,
+    userDataDirName: userDataLocation.userDataDirName,
+    legacyUserDataDirName: userDataLocation.legacyUserDataDirName,
     defaultDesktopSettings: resolveDefaultDesktopSettings(appVersion),
     runtimeInfo: resolveDesktopRuntimeInfo({
       platform: input.platform,

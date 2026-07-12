@@ -387,6 +387,8 @@ const VcsStatusLocalShape = {
   hasPrimaryRemote: Schema.Boolean,
   isDefaultRef: Schema.Boolean,
   refName: Schema.NullOr(TrimmedNonEmptyStringSchema),
+  /** Current HEAD commit id; null before the first commit. Lets consumers detect history rewrites (amend, rebase, reset) that leave the working-tree summary unchanged. */
+  headSha: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
   hasWorkingTreeChanges: Schema.Boolean,
   workingTree: Schema.Struct({
     files: Schema.Array(
