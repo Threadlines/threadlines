@@ -62,6 +62,7 @@ import { AppAtomRegistryProvider } from "../rpc/atomRegistry";
 import { getServerConfig } from "../rpc/serverState";
 import { getRouter } from "../router";
 import { deriveLogicalProjectKeyFromSettings } from "../logicalProject";
+import { RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH } from "../rightPanelLayout";
 import { selectBootstrapCompleteForActiveEnvironment, useStore } from "../store";
 import { useTerminalStateStore } from "../terminalStateStore";
 import { useUiStateStore } from "../uiStateStore";
@@ -2535,7 +2536,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("auto-hides explicit source control on compact routes and reopens as a full-width sheet", async () => {
+  it("auto-hides explicit source control on compact routes and reopens as a partial-width sheet", async () => {
     const draftId = DraftId.make("draft-source-control-compact-reopen");
     useComposerDraftStore.setState({
       draftThreadsByThreadKey: {
@@ -2596,10 +2597,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await waitForLayout();
 
       expect(mounted.router.state.location.search).toMatchObject({ sourceControl: "1" });
-      // Below the `sm` breakpoint the sheet goes full-width; the fixed panel
-      // width crushed filenames and actions on phones.
+      // Source control keeps the inline panel's fixed width on phones so a
+      // dismissible slice of the conversation remains visible.
       expect(Math.round(sheetPopup?.getBoundingClientRect().width ?? 0)).toBe(
-        COMPACT_FOOTER_VIEWPORT.width,
+        RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH,
       );
     } finally {
       await mounted.cleanup();
