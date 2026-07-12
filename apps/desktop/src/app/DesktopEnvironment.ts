@@ -55,6 +55,7 @@ export interface DesktopEnvironmentShape {
   readonly desktopSettingsPath: string;
   readonly clientSettingsPath: string;
   readonly savedEnvironmentRegistryPath: string;
+  readonly relayPairingSessionPath: string;
   readonly serverSettingsPath: string;
   readonly logDir: string;
   readonly rootDir: string;
@@ -204,6 +205,7 @@ const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
     desktopSettingsPath: path.join(stateDir, "desktop-settings.json"),
     clientSettingsPath: path.join(stateDir, "client-settings.json"),
     savedEnvironmentRegistryPath: path.join(stateDir, "saved-environments.json"),
+    relayPairingSessionPath: path.join(stateDir, "relay-pairing-session.json"),
     serverSettingsPath: path.join(stateDir, "settings.json"),
     logDir: path.join(stateDir, "logs"),
     rootDir,

@@ -55,6 +55,15 @@ const websiteStructuredData = {
     <meta name="twitter:description" content={description} />
     <meta name="twitter:image" content={socialImageUrl} />
     <meta name="theme-color" content="#09090b" />
+    <script is:inline>
+      // Runs before first paint. Dark is the default; light only on explicit opt-in.
+      try {
+        if (localStorage.getItem("tl-theme") === "light") {
+          document.documentElement.dataset.theme = "light";
+          document.currentScript.previousElementSibling.setAttribute("content", "#fbfbfc");
+        }
+      } catch {}
+    </script>
     <link rel="canonical" href={canonicalUrl} />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -90,12 +99,12 @@ const websiteStructuredData = {
                 </linearGradient>
               </defs>
               <g stroke-linecap="round" stroke-width="10">
-                <path d="M 44 98 L 212 98" stroke="rgba(255, 255, 255, 0.32)"></path>
+                <path d="M 44 98 L 212 98" stroke="var(--line-strong)"></path>
                 <path
                   d="M 108 98 C 134 98 134 162 160 162 L 188 162"
                   stroke="url(#nav-glyph-live)"></path>
               </g>
-              <g fill="rgba(255, 255, 255, 0.45)">
+              <g fill="var(--node-strong)">
                 <circle cx="70" cy="98" r="7"></circle>
                 <circle cx="108" cy="98" r="8.5"></circle>
                 <circle cx="178" cy="98" r="7"></circle>
@@ -106,6 +115,10 @@ const websiteStructuredData = {
             <span class="nav-brand-name">Threadlines</span>
           </a>
           <div class="nav-right">
+            <button class="nav-theme" id="tl-theme-toggle" type="button" aria-label="Switch to light theme">
+              <svg class="nav-theme-sun" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+              <svg class="nav-theme-moon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+            </button>
             <a
               class="nav-gh"
               href="https://github.com/Threadlines/threadlines"
@@ -117,7 +130,7 @@ const websiteStructuredData = {
               </svg>
               <span>GitHub</span>
             </a>
-            <a class="nav-dl" href="/download"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M4.5 19.5h15"/></svg><span>Download</span></a>
+            <a class="nav-dl" href="/download"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M4.5 19.5h15"/></svg><span>Download</span></a>
           </div>
         </div>
       </nav>
@@ -137,6 +150,26 @@ const websiteStructuredData = {
         </div>
       </footer>
     </div>
+    <script>
+      const toggle = document.getElementById("tl-theme-toggle");
+      const themeColor = document.querySelector('meta[name="theme-color"]');
+      const syncToggle = () => {
+        const light = document.documentElement.dataset.theme === "light";
+        toggle?.setAttribute("aria-label", light ? "Switch to dark theme" : "Switch to light theme");
+        themeColor?.setAttribute("content", light ? "#fbfbfc" : "#09090b");
+      };
+      toggle?.addEventListener("click", () => {
+        const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+        if (next === "light") document.documentElement.dataset.theme = "light";
+        else delete document.documentElement.dataset.theme;
+        try {
+          localStorage.setItem("tl-theme", next);
+        } catch {}
+        syncToggle();
+        document.dispatchEvent(new CustomEvent("tl-themechange"));
+      });
+      syncToggle();
+    </script>
   </body>
 </html>
 
@@ -155,6 +188,16 @@ const websiteStructuredData = {
     --accent: oklch(0.62 0.19 var(--accent-h));
     --accent-bright: oklch(0.7 0.17 var(--accent-h));
     --accent-dim: oklch(0.62 0.19 var(--accent-h) / 0.14);
+    --accent-soft: oklch(0.62 0.19 var(--accent-h) / 0.4);
+    --accent-contrast: #0b0d10;
+    --surface: rgba(255, 255, 255, 0.015);
+    --surface-hover: rgba(255, 255, 255, 0.04);
+    --line-strong: rgba(255, 255, 255, 0.32);
+    --line-dim: rgba(255, 255, 255, 0.17);
+    --line-faint: rgba(255, 255, 255, 0.12);
+    --node: rgba(255, 255, 255, 0.3);
+    --node-strong: rgba(255, 255, 255, 0.45);
+    --underline: rgba(255, 255, 255, 0.18);
     --ok: oklch(0.72 0.16 150);
     --warn: oklch(0.76 0.15 75);
     --font-sans: "Hanken Grotesk", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
@@ -162,6 +205,31 @@ const websiteStructuredData = {
     --radius: 12px;
     --radius-sm: 8px;
     --radius-lg: 16px;
+  }
+
+  [data-theme="light"] {
+    --bg: #fbfbfc;
+    --bg-elev: #f4f4f5;
+    --bg-card: #ffffff;
+    --fg: #18181b;
+    --fg-muted: #52525b;
+    --fg-dim: #71717a;
+    --fg-faint: #a1a1aa;
+    --border: rgba(0, 0, 0, 0.1);
+    --border-strong: rgba(0, 0, 0, 0.18);
+    --accent: oklch(0.52 0.19 var(--accent-h));
+    --accent-bright: oklch(0.55 0.18 var(--accent-h));
+    --accent-dim: oklch(0.52 0.19 var(--accent-h) / 0.1);
+    --accent-soft: oklch(0.52 0.19 var(--accent-h) / 0.45);
+    --accent-contrast: #ffffff;
+    --surface: rgba(0, 0, 0, 0.025);
+    --surface-hover: rgba(0, 0, 0, 0.05);
+    --line-strong: rgba(0, 0, 0, 0.4);
+    --line-dim: rgba(0, 0, 0, 0.26);
+    --line-faint: rgba(0, 0, 0, 0.16);
+    --node: rgba(0, 0, 0, 0.35);
+    --node-strong: rgba(0, 0, 0, 0.5);
+    --underline: rgba(0, 0, 0, 0.22);
   }
 
   * {
@@ -173,6 +241,10 @@ const websiteStructuredData = {
   html {
     color-scheme: dark;
     scroll-behavior: smooth;
+  }
+
+  html[data-theme="light"] {
+    color-scheme: light;
   }
 
   body {
@@ -274,7 +346,40 @@ const websiteStructuredData = {
   }
 
   .nav-brand:hover {
-    color: #fff;
+    color: var(--fg);
+  }
+
+  .nav-theme {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: transparent;
+    color: var(--fg-muted);
+    cursor: pointer;
+    transition: color 0.2s ease, background 0.2s ease, border-color 0.2s ease;
+  }
+
+  .nav-theme:hover {
+    color: var(--fg);
+    background: var(--surface-hover);
+    border-color: var(--border-strong);
+  }
+
+  .nav-theme-moon {
+    display: none;
+  }
+
+  html[data-theme="light"] .nav-theme-sun {
+    display: none;
+  }
+
+  html[data-theme="light"] .nav-theme-moon {
+    display: block;
   }
 
   /* The glyph's accent node stands in for the wordmark's period — never both. */
@@ -312,18 +417,20 @@ const websiteStructuredData = {
 
   .nav-gh:hover {
     color: var(--fg);
-    background: rgba(255, 255, 255, 0.04);
+    background: var(--surface-hover);
     border-color: var(--border-strong);
   }
 
   .nav-dl {
     display: inline-flex;
     align-items: center;
-    gap: 7px;
+    /* the icon glyph has ~2px of built-in viewBox padding on its right edge,
+       so the rendered gap reads wider than this value */
+    gap: 4px;
     padding: 7px 14px;
     border-radius: 8px;
     background: var(--accent-bright);
-    color: #0b0d10;
+    color: var(--accent-contrast);
     font-size: 13px;
     font-weight: 600;
     transition: transform 0.2s ease, filter 0.2s ease;
@@ -335,8 +442,12 @@ const websiteStructuredData = {
   }
 
   .nav-dl svg {
-    width: 13px;
-    height: 13px;
+    width: 12px;
+    height: 12px;
+    /* optical correction: sized and nudged so the arrow sits within the
+       text's x-height band instead of poking above the ascenders, with the
+       tray landing on the baseline */
+    transform: translateY(0.5px);
   }
 
   .main {

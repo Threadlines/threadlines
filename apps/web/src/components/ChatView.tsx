@@ -990,6 +990,9 @@ export default function ChatView(props: ChatViewProps) {
     select: (params) => parseDiffRouteSearch(params),
   });
   const shouldUseRightPanelSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
+  // Auto-focusing the composer on touch devices pops the on-screen keyboard
+  // over the conversation, so thread-entry focus is desktop-only.
+  const isCoarsePointer = useMediaQuery({ pointer: "coarse" });
   const { resolvedTheme } = useTheme();
   // Granular store selectors — avoid subscribing to prompt changes.
   const composerRuntimeMode = useComposerDraftStore(
@@ -3615,14 +3618,14 @@ export default function ChatView(props: ChatViewProps) {
   }, [activeThread?.id]);
 
   useEffect(() => {
-    if (!activeThread?.id || terminalState.terminalOpen) return;
+    if (!activeThread?.id || terminalState.terminalOpen || isCoarsePointer) return;
     const frame = window.requestAnimationFrame(() => {
       focusComposer();
     });
     return () => {
       window.cancelAnimationFrame(frame);
     };
-  }, [activeThread?.id, focusComposer, terminalState.terminalOpen]);
+  }, [activeThread?.id, focusComposer, isCoarsePointer, terminalState.terminalOpen]);
 
   useEffect(() => {
     if (!activeThread?.id) return;
@@ -3808,6 +3811,7 @@ export default function ChatView(props: ChatViewProps) {
       return;
     } else if (previous && !current) {
       terminalOpenByThreadRef.current[activeThreadKey] = current;
+      if (isCoarsePointer) return;
       const frame = window.requestAnimationFrame(() => {
         focusComposer();
       });
@@ -3817,7 +3821,7 @@ export default function ChatView(props: ChatViewProps) {
     }
 
     terminalOpenByThreadRef.current[activeThreadKey] = current;
-  }, [activeThreadKey, focusComposer, terminalState.terminalOpen]);
+  }, [activeThreadKey, focusComposer, isCoarsePointer, terminalState.terminalOpen]);
 
   useEffect(() => {
     const handler = (event: globalThis.KeyboardEvent) => {

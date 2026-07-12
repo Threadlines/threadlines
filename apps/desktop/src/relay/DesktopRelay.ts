@@ -9,6 +9,7 @@ import {
   RELAY_TOKEN_PROTOCOL_PREFIX,
   RELAY_WEBSOCKET_PROTOCOL,
   RelayCreateSessionResult,
+  RelayRenewSessionResult,
 } from "@threadlines/contracts/relay";
 import { createRelayChunkReassembler, splitRelayFrame } from "@threadlines/shared/relayChunking";
 import * as Context from "effect/Context";
@@ -22,6 +23,7 @@ import * as Schema from "effect/Schema";
 import * as DesktopBackendManager from "../backend/DesktopBackendManager.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
+import * as DesktopRelayStore from "./DesktopRelayStore.ts";
 
 export interface DesktopRelayShape {
   readonly getPairingSession: Effect.Effect<DesktopRelayPairingSession | null>;
@@ -42,6 +44,7 @@ interface ActiveRelayBridge {
   reconnectInFlight: boolean;
   reconnectAttempt: number;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
+  renewTimer: ReturnType<typeof setInterval> | null;
   status: DesktopRelayPairingSessionStatus;
   lastError: string | null;
 }
@@ -53,6 +56,7 @@ interface RelayBridgeHandle {
 
 type DesktopRelayOperation =
   | "create-relay-session"
+  | "renew-relay-session"
   | "bootstrap-bearer-session"
   | "issue-websocket-token"
   | "open-relay-bridge";
@@ -73,6 +77,7 @@ const BootstrapBearerRequestBody = Schema.Struct({
 const EmptyJsonRequestBody = Schema.Struct({});
 
 const decodeRelayCreateSessionResult = Schema.decodeUnknownEffect(RelayCreateSessionResult);
+const decodeRelayRenewSessionResult = Schema.decodeUnknownEffect(RelayRenewSessionResult);
 const decodeAuthBearerBootstrapResult = Schema.decodeUnknownEffect(AuthBearerBootstrapResult);
 const decodeAuthWebSocketTokenResult = Schema.decodeUnknownEffect(AuthWebSocketTokenResult);
 const decodeUnknownJsonString = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
@@ -90,6 +95,10 @@ type DesktopRelayPairingSessionStatus = NonNullable<DesktopRelayPairingSession["
 // bridge closes are rare, real failures; a 10s cap keeps the phone's
 // worst-case wait for the desktop short.
 const RELAY_RECONNECT_DELAYS_MS = [500, 1_000, 2_000, 5_000, 10_000] as const;
+
+// Sessions expire after 12h at the relay; renewing every 4h keeps the link
+// alive indefinitely while the desktop runs, with slack for sleep gaps.
+const RELAY_SESSION_RENEW_INTERVAL_MS = 4 * 60 * 60 * 1000;
 
 // Device frames buffered while the local backend socket is (re)opening.
 // Localhost opens in milliseconds; the cap only guards against a stuck
@@ -355,6 +364,26 @@ const createLocalWebSocketUrl = Effect.fn("desktop.relay.createLocalWebSocketUrl
   );
 
   return toWebSocketUrl(config.httpBaseUrl, wsToken.token);
+});
+
+const renewRelaySession = Effect.fn("desktop.relay.renewRelaySession")(function* (input: {
+  readonly relayOrigin: string;
+  readonly sessionId: string;
+  readonly desktopToken: string;
+}) {
+  const url = new URL(
+    `/v1/sessions/${encodeURIComponent(input.sessionId)}/renew`,
+    input.relayOrigin,
+  );
+  return yield* readJsonResponse("renew-relay-session", url, {
+    method: "POST",
+    headers: { authorization: `Bearer ${input.desktopToken}` },
+  }).pipe(
+    Effect.flatMap(decodeRelayRenewSessionResult),
+    Effect.mapError(
+      mapRelayDecodeError("renew-relay-session", "Relay returned an invalid session renewal."),
+    ),
+  );
 });
 
 const createRelaySession = Effect.fn("desktop.relay.createRelaySession")(function* (relayUrl: URL) {
@@ -627,6 +656,7 @@ function openBridge(input: {
 const make = Effect.gen(function* () {
   const config = yield* DesktopConfig.DesktopConfig;
   const backendManager = yield* DesktopBackendManager.DesktopBackendManager;
+  const store = yield* DesktopRelayStore.DesktopRelayStore;
   const activeBridgeRef = yield* Ref.make(Option.none<ActiveRelayBridge>());
 
   function clearReconnectTimer(active: ActiveRelayBridge): void {
@@ -635,6 +665,72 @@ const make = Effect.gen(function* () {
     }
     clearTimeout(active.reconnectTimer);
     active.reconnectTimer = null;
+  }
+
+  function clearRenewTimer(active: ActiveRelayBridge): void {
+    if (!active.renewTimer) {
+      return;
+    }
+    clearInterval(active.renewTimer);
+    active.renewTimer = null;
+  }
+
+  const persistActiveSession = (active: ActiveRelayBridge) =>
+    store
+      .save({
+        sessionId: active.session.sessionId,
+        pairingUrl: active.session.pairingUrl,
+        relayOrigin: active.session.relayOrigin,
+        desktopSocketUrl: active.relayDesktopSocketUrl,
+        expiresAt: active.session.expiresAt,
+        desktopToken: active.relayDesktopToken,
+      })
+      .pipe(
+        Effect.flatMap((persisted) =>
+          persisted
+            ? Effect.void
+            : logRelayWarning("relay pairing session was not persisted", {
+                sessionId: active.session.sessionId,
+              }),
+        ),
+      );
+
+  function renewActiveSession(active: ActiveRelayBridge): Effect.Effect<void> {
+    return Effect.gen(function* () {
+      const current = yield* Ref.get(activeBridgeRef);
+      if (Option.isNone(current) || current.value !== active || active.intentionalClose) {
+        return;
+      }
+      if (isSessionExpired(active.session)) {
+        return;
+      }
+
+      const renewed = yield* renewRelaySession({
+        relayOrigin: active.session.relayOrigin,
+        sessionId: active.session.sessionId,
+        desktopToken: active.relayDesktopToken,
+      });
+      active.session = { ...active.session, expiresAt: renewed.expiresAt };
+      yield* persistActiveSession(active);
+      yield* logRelayInfo("relay pairing session renewed", {
+        sessionId: active.session.sessionId,
+        expiresAt: active.session.expiresAt,
+      });
+    }).pipe(
+      Effect.catch((error: DesktopRelayError) =>
+        logRelayWarning("failed to renew relay pairing session", {
+          sessionId: active.session.sessionId,
+          error: error.message,
+        }),
+      ),
+    );
+  }
+
+  function startRenewTimer(active: ActiveRelayBridge): void {
+    clearRenewTimer(active);
+    active.renewTimer = setInterval(() => {
+      void Effect.runPromise(renewActiveSession(active)).catch(() => undefined);
+    }, RELAY_SESSION_RENEW_INTERVAL_MS);
   }
 
   const disconnectPairingSession = Effect.gen(function* () {
@@ -646,7 +742,9 @@ const make = Effect.gen(function* () {
     active.value.intentionalClose = true;
     active.value.status = "disconnected";
     clearReconnectTimer(active.value);
+    clearRenewTimer(active.value);
     active.value.bridge.close();
+    yield* store.clear;
     yield* logRelayInfo("relay pairing session disconnected", {
       sessionId: active.value.session.sessionId,
     });
@@ -793,6 +891,10 @@ const make = Effect.gen(function* () {
       active.status = "open";
       active.lastError = null;
       active.reconnectAttempt = 0;
+      startRenewTimer(active);
+      // Renew right away: after a restart or long sleep the persisted expiry
+      // may be close, and a fresh device connection deserves the full TTL.
+      yield* renewActiveSession(active).pipe(Effect.forkDetach);
       yield* logRelayInfo("relay pairing bridge reconnected", {
         sessionId: active.session.sessionId,
       });
@@ -879,12 +981,15 @@ const make = Effect.gen(function* () {
       reconnectInFlight: false,
       reconnectAttempt: 0,
       reconnectTimer: null,
+      renewTimer: null,
       status: "open",
       lastError: null,
     };
     active.bridge = yield* openActiveBridge(active);
 
     yield* Ref.set(activeBridgeRef, Option.some(active));
+    yield* persistActiveSession(active);
+    startRenewTimer(active);
     yield* logRelayInfo("relay pairing session created", {
       sessionId: session.sessionId,
       relayOrigin: session.relayOrigin,
@@ -899,6 +1004,66 @@ const make = Effect.gen(function* () {
     ),
   );
 
+  // A desktop restart used to orphan every paired phone because the relay
+  // session lived only in memory; restoring it lets phones reconnect to the
+  // same session without re-scanning a QR code.
+  const restorePersistedPairingSession = Effect.gen(function* () {
+    const persisted = yield* store.load;
+    if (Option.isNone(persisted)) {
+      return;
+    }
+
+    const saved = persisted.value;
+    const expiresAtMs = Date.parse(saved.expiresAt);
+    if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) {
+      yield* store.clear;
+      return;
+    }
+
+    const active: ActiveRelayBridge = {
+      session: {
+        pairingUrl: saved.pairingUrl,
+        relayOrigin: saved.relayOrigin,
+        sessionId: saved.sessionId,
+        expiresAt: saved.expiresAt,
+      },
+      relayDesktopSocketUrl: saved.desktopSocketUrl,
+      relayDesktopToken: saved.desktopToken,
+      bridge: createClosedBridgeHandle(),
+      intentionalClose: false,
+      reconnectInFlight: false,
+      reconnectAttempt: 0,
+      reconnectTimer: null,
+      renewTimer: null,
+      status: "reconnecting",
+      lastError: null,
+    };
+    const claimed = yield* Ref.modify(activeBridgeRef, (current) =>
+      Option.isSome(current) ? ([false, current] as const) : ([true, Option.some(active)] as const),
+    );
+    if (!claimed) {
+      return;
+    }
+
+    yield* logRelayInfo("restoring persisted relay pairing session", {
+      sessionId: saved.sessionId,
+      expiresAt: saved.expiresAt,
+    });
+    // reconnectActiveBridge retries with backoff, so a backend that is still
+    // starting up (the common case right after launch) is handled here.
+    yield* reconnectActiveBridge(active);
+  });
+
+  yield* restorePersistedPairingSession.pipe(
+    Effect.tapError((error) =>
+      logRelayWarning("failed to restore persisted relay pairing session", {
+        error: errorMessage(error),
+      }),
+    ),
+    Effect.orElseSucceed(() => undefined),
+    Effect.forkDetach,
+  );
+
   return DesktopRelay.of({
     getPairingSession,
     createPairingSession,
@@ -906,4 +1071,4 @@ const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(DesktopRelay, make);
+export const layer = Layer.effect(DesktopRelay, make).pipe(Layer.provide(DesktopRelayStore.layer));

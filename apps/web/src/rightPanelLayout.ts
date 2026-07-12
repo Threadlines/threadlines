@@ -23,11 +23,14 @@ export const RIGHT_PANEL_INLINE_SIDEBAR_MAX_WIDTH = 256 * 16;
 // popups re-enable pointer events because their shared viewport disables
 // them to let presses over the header reach the header.
 const RIGHT_PANEL_SHEET_BELOW_HEADER_CLASS_NAME =
-  "pointer-events-auto mt-[var(--chat-header-bottom)] h-[calc(100%-var(--chat-header-bottom))] max-h-[calc(100%-var(--chat-header-bottom))] p-0 max-sm:w-full max-sm:min-w-0 max-sm:max-w-none";
+  "pointer-events-auto mt-[var(--chat-header-bottom)] h-[calc(100%-var(--chat-header-bottom))] max-h-[calc(100%-var(--chat-header-bottom))] p-0";
 // Diff sheet width tiers: desktop keeps the fixed panel, the 640-760px band
 // keeps the near-full 88vw sheet (disjoint `sm:max-[760px]:` so no cascade
-// ordering is relied on), and phones go full width via the shared class.
-export const RIGHT_PANEL_SHEET_CLASS_NAME = `${RIGHT_PANEL_SHEET_BELOW_HEADER_CLASS_NAME} w-[min(42vw,28rem)] min-w-80 max-w-[28rem] sm:max-[760px]:w-[min(88vw,24rem)] sm:max-[760px]:min-w-0`;
+// ordering is relied on), and phones go full width.
+export const RIGHT_PANEL_SHEET_CLASS_NAME = `${RIGHT_PANEL_SHEET_BELOW_HEADER_CLASS_NAME} w-[min(42vw,28rem)] min-w-80 max-w-[28rem] sm:max-[760px]:w-[min(88vw,24rem)] sm:max-[760px]:min-w-0 max-sm:w-full max-sm:min-w-0 max-sm:max-w-none`;
+// Phones keep source control at the same fixed width as everywhere else so it
+// overlays as a partial sheet (matching the app sidebar's rendered mobile
+// width) with a slice of the conversation visible and tappable to dismiss.
 export const RIGHT_PANEL_SOURCE_CONTROL_SHEET_CLASS_NAME = `${RIGHT_PANEL_SHEET_BELOW_HEADER_CLASS_NAME} w-[var(--right-panel-inline-min-width)] min-w-[var(--right-panel-inline-min-width)] max-w-[var(--right-panel-inline-min-width)]`;
 export const RIGHT_PANEL_SHEET_VIEWPORT_CLASS_NAME = "pointer-events-none";
 export const RIGHT_PANEL_SHEET_BACKDROP_CLASS_NAME = "mt-[var(--chat-header-bottom)]";

@@ -1,14 +1,16 @@
 # Threadlines marketing capture retake
 
-This folder contains the refreshed marketing set captured against the July 11, 2026 layout. Every video is exported at 1600×934, 60 fps in both H.264 MP4 and VP9 WebM. Matching poster frames are in `Posters/`.
+This folder contains the refreshed marketing set captured against the July 12, 2026 layout. Every video is exported at a constant 60 fps. `activity-header-dark`, `rich-subagent-chat`, and `project-files-edit` are 3200×1868 Retina exports; the remaining clips are 1600×934. Matching poster frames use the same resolution as their clips and are stored in `Posters/`.
 
-The staged sidebar has two expanded projects and one collapsed project, five or more threads per project, merged and branch indicators, and a running-terminal cue. The native-looking red, yellow, and green macOS controls are centered consistently across every export; the screen-control badge is not present in the final files.
+WebM is the primary format: VP9 Profile 2, 10-bit `yuv420p10le`, CRF 30 with no bitrate cap. MP4 is the Safari fallback: H.264 High profile, 8-bit `yuv420p`, CRF 18 with the slow preset.
+
+The staged sidebar has two expanded projects and one collapsed project, five or more threads per project, merged and branch indicators, and a running-terminal cue. The calibrated traffic-light clean plate is used on unobstructed full-window captures; it preserves the normal control spacing and leaves the real sidebar toggle untouched. It is intentionally omitted from the two opaque file-viewer clips so it cannot appear to float above the viewer layer.
 
 ## Recommended site use
 
-- `activity-header-dark` — strongest hero candidate. Opens the compact activity dropdown with 4/6 tasks, two active subagents, and one background run.
+- `activity-header-dark` — strongest hero candidate. Opens the compact activity dropdown with 4/6 tasks, two active subagents, and one background run, then moves through the live work without expanding the six-step list or leaving focus rings.
 - `rich-subagent-chat` — full conversation with a substantial Scout subagent result and follow-up responses.
-- `project-files-edit` — tabbed project-file browser with syntax highlighting, editing, line selection, and attach-to-chat controls.
+- `project-files-edit` — browses the project tree, opens a tab, enters editing by double-click, saves a small change, then selects an exact line range and attaches it to chat; the current edit icon remains visible in the toolbar.
 - `source-control-by-file` — switches through individual file diffs, then returns to the per-file source-control view.
 - `git-history-visual` — pauses for the hover preview, clicks through three commits in one persistent detail card, then closes the final card; `main` and `v0.9.0-rc.1` remain on separate commits.
 - `code-selection-to-chat` — selects a code range and attaches it to the composer.
@@ -31,8 +33,8 @@ The staged sidebar has two expanded projects and one collapsed project, five or 
 
 - `*.mp4` — broadly compatible website video.
 - `*.webm` — smaller modern-browser alternative.
-- `Posters/*.png` — selected 1600×934 poster frame for each video.
+- `Posters/*.png` — selected poster frame at the matching video resolution.
 - `*.png` at this folder level — standalone light-mode screenshots.
 - `poster-contact-sheet.png` — quick visual review of the complete poster and still set.
 
-The lossless source captures remain in the external Threadlines Marketing Studio archive and are intentionally not duplicated in this repository.
+The lossless source captures remain in the Threadlines Marketing Studio archive.

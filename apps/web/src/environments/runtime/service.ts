@@ -11,6 +11,7 @@ import {
   type TerminalEvent,
   ThreadId,
 } from "@threadlines/contracts";
+import { RELAY_CLOSE_CODE_SESSION_EXPIRED } from "@threadlines/contracts/relay";
 import { type QueryClient } from "@tanstack/react-query";
 import { Throttler } from "@tanstack/react-pacer";
 import {
@@ -886,6 +887,27 @@ async function issueDesktopSshBearerSession(record: SavedEnvironmentRecord): Pro
   };
 }
 
+export const RELAY_LINK_EXPIRED_MESSAGE =
+  "Mobile connection expired. Create a new phone link from the desktop app.";
+
+/**
+ * Marks a relay-paired environment as permanently unpairable (relay session
+ * expired or deleted) and tears down its connection so the transport stops
+ * retrying a handshake that can never succeed.
+ */
+export async function markRelaySavedEnvironmentLinkExpired(
+  environmentId: EnvironmentId,
+): Promise<void> {
+  await disconnectSavedEnvironment(environmentId).catch(() => undefined);
+  useSavedEnvironmentRuntimeStore.getState().patch(environmentId, {
+    authState: "requires-auth",
+    connectionState: "disconnected",
+    role: null,
+    lastError: RELAY_LINK_EXPIRED_MESSAGE,
+    lastErrorAt: isoNow(),
+  });
+}
+
 function setRuntimeConnecting(environmentId: EnvironmentId) {
   useSavedEnvironmentRuntimeStore.getState().patch(environmentId, {
     connectionState: "connecting",
@@ -1265,6 +1287,14 @@ function createSavedEnvironmentClient(
           if (context.intentional) {
             return;
           }
+          if (
+            details.code === RELAY_CLOSE_CODE_SESSION_EXPIRED &&
+            getSavedEnvironmentRecord(environmentId)?.relay
+          ) {
+            // The relay deleted the session; reconnecting can never succeed.
+            void markRelaySavedEnvironmentLinkExpired(environmentId);
+            return;
+          }
           setRuntimeDisconnected(
             environmentId,
             appendVersionMismatchHint(
@@ -1416,7 +1446,7 @@ async function ensureSavedEnvironmentConnection(
             authState: "requires-auth",
             role: null,
             connectionState: "disconnected",
-            lastError: "Mobile connection expired. Create a new phone link from the desktop app.",
+            lastError: RELAY_LINK_EXPIRED_MESSAGE,
             lastErrorAt: isoNow(),
           });
           throw new Error("Saved relay connection is missing its device token.");

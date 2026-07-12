@@ -48,6 +48,19 @@ export const RelayCreateSessionResult = Schema.Struct({
 });
 export type RelayCreateSessionResult = typeof RelayCreateSessionResult.Type;
 
+export const RelayRenewSessionResult = Schema.Struct({
+  expiresAt: IsoDateTime,
+});
+export type RelayRenewSessionResult = typeof RelayRenewSessionResult.Type;
+
+export const RelaySessionStatusResult = Schema.Struct({
+  exists: Schema.Boolean,
+  expired: Schema.Boolean,
+  desktopConnected: Schema.Boolean,
+  expiresAt: Schema.optionalKey(IsoDateTime),
+});
+export type RelaySessionStatusResult = typeof RelaySessionStatusResult.Type;
+
 export const RelayForwardMessage = Schema.Struct({
   version: Schema.Literal(1),
   type: Schema.Literal("relay.forward"),

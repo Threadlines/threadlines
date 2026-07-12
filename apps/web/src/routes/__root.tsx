@@ -20,6 +20,7 @@ import { AutoArchiveInactiveThreadsCoordinator } from "../components/AutoArchive
 import { CommandPalette } from "../components/CommandPalette";
 import { SshPasswordPromptDialog } from "../components/desktop/SshPasswordPromptDialog";
 import { ProviderUpdateLaunchNotification } from "../components/ProviderUpdateLaunchNotification";
+import { SavedEnvironmentConnectionOverlay } from "../components/SavedEnvironmentConnectionOverlay";
 import {
   WebSocketConnectionCoordinator,
   WebSocketConnectionSurface,
@@ -154,6 +155,7 @@ function RootRouteView() {
         ) : (
           appShell
         )}
+        {authGateState.status === "hosted-static" ? <SavedEnvironmentConnectionOverlay /> : null}
       </AnchoredToastProvider>
     </ToastProvider>
   );

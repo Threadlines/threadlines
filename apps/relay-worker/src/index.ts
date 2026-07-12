@@ -9,6 +9,8 @@ import type {
   RelayPeerLeftEvent,
   RelayPeerSummary,
   RelayReadyEvent,
+  RelayRenewSessionResult,
+  RelaySessionStatusResult,
 } from "@threadlines/contracts/relay";
 import {
   RELAY_CLOSE_CODE_PEER_UNAVAILABLE,
@@ -19,6 +21,7 @@ import {
 import {
   createJsonResponse,
   isRelayConnectionRole,
+  parseBearerToken,
   parseRelayClientMessage,
   parseRelayTokenProtocol,
   RELAY_WEBSOCKET_PROTOCOL,
@@ -100,6 +103,14 @@ export class RelaySession extends DurableObject<Env> {
   }
 
   override async fetch(request: Request): Promise<Response> {
+    if (request.method === "GET" && new URL(request.url).pathname.endsWith("/status")) {
+      return this.handleStatusRequest(request);
+    }
+
+    if (request.method === "POST" && new URL(request.url).pathname.endsWith("/renew")) {
+      return this.handleRenewRequest(request);
+    }
+
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       return createJsonResponse({ error: "Expected WebSocket upgrade." }, { status: 400 });
     }
@@ -182,6 +193,96 @@ export class RelaySession extends DurableObject<Env> {
       webSocket: client,
       headers,
     });
+  }
+
+  // Browser WebSockets cannot observe handshake failures (404/410/401), so
+  // paired devices probe this endpoint to distinguish "desktop offline" from
+  // "session gone, re-pair" and render the right reconnect UX.
+  private async handleStatusRequest(request: Request): Promise<Response> {
+    if (!isAllowedOrigin(request, this.env)) {
+      return createJsonResponse({ error: "Origin is not allowed." }, { status: 403 });
+    }
+
+    const token =
+      parseBearerToken(request.headers.get("Authorization")) ??
+      new URL(request.url).searchParams.get("token");
+    if (!token) {
+      return createJsonResponse({ error: "Missing relay token." }, { status: 401 });
+    }
+
+    const session = this.readSession();
+    if (!session) {
+      return createJsonResponse({
+        exists: false,
+        expired: false,
+        desktopConnected: false,
+      } satisfies RelaySessionStatusResult);
+    }
+
+    const tokenHash = await sha256Base64Url(token);
+    if (tokenHash !== session.desktop_token_hash && tokenHash !== session.device_token_hash) {
+      return createJsonResponse({ error: "Invalid relay token." }, { status: 401 });
+    }
+
+    if (session.expires_at <= Date.now()) {
+      await this.expireSession("session-expired");
+      return createJsonResponse({
+        exists: true,
+        expired: true,
+        desktopConnected: false,
+      } satisfies RelaySessionStatusResult);
+    }
+
+    return createJsonResponse({
+      exists: true,
+      expired: false,
+      desktopConnected: this.getPeerSummary().desktopConnected,
+      expiresAt: new Date(session.expires_at).toISOString(),
+    } satisfies RelaySessionStatusResult);
+  }
+
+  // Slides the session expiry forward so a phone link stays usable for as
+  // long as the desktop keeps renewing it, instead of dying at the original
+  // TTL. Desktop-token gated: only the session owner can extend it.
+  private async handleRenewRequest(request: Request): Promise<Response> {
+    if (!isAllowedOrigin(request, this.env)) {
+      return createJsonResponse({ error: "Origin is not allowed." }, { status: 403 });
+    }
+
+    const token = parseBearerToken(request.headers.get("Authorization"));
+    if (!token) {
+      return createJsonResponse({ error: "Missing relay token." }, { status: 401 });
+    }
+
+    const session = this.readSession();
+    if (!session) {
+      return createJsonResponse({ error: "Relay session was not found." }, { status: 404 });
+    }
+
+    if (session.expires_at <= Date.now()) {
+      await this.expireSession("session-expired");
+      return createJsonResponse({ error: "Relay session expired." }, { status: 410 });
+    }
+
+    const tokenHash = await sha256Base64Url(token);
+    if (tokenHash !== session.desktop_token_hash) {
+      return createJsonResponse({ error: "Invalid relay token." }, { status: 401 });
+    }
+
+    const expiresAt = Math.max(
+      session.expires_at,
+      Date.now() + resolveSessionTtlSeconds(this.env) * 1000,
+    );
+    this.ctx.storage.sql.exec(
+      "UPDATE relay_sessions SET expires_at = ? WHERE session_id = ?",
+      expiresAt,
+      session.session_id,
+    );
+    await this.ctx.storage.setAlarm(expiresAt);
+
+    return createJsonResponse({
+      expiresAt: new Date(expiresAt).toISOString(),
+    } satisfies RelayRenewSessionResult);
   }
 
   override async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
@@ -471,6 +572,26 @@ export default {
         return stub.fetch(request);
       }
 
+      const statusMatch = /^\/v1\/sessions\/([^/]+)\/status$/u.exec(url.pathname);
+      if (request.method === "GET" && statusMatch) {
+        const sessionId = statusMatch[1];
+        if (!sessionId) {
+          return createJsonResponse({ error: "Missing relay session." }, { status: 400 });
+        }
+        const stub = env.RELAY_SESSION.getByName(sessionId);
+        return withCors(request, env, await stub.fetch(request));
+      }
+
+      const renewMatch = /^\/v1\/sessions\/([^/]+)\/renew$/u.exec(url.pathname);
+      if (request.method === "POST" && renewMatch) {
+        const sessionId = renewMatch[1];
+        if (!sessionId) {
+          return createJsonResponse({ error: "Missing relay session." }, { status: 400 });
+        }
+        const stub = env.RELAY_SESSION.getByName(sessionId);
+        return withCors(request, env, await stub.fetch(request));
+      }
+
       return withCors(request, env, createJsonResponse({ error: "Not found." }, { status: 404 }));
     } catch (error) {
       log("error", "relay request failed", {
@@ -625,7 +746,7 @@ function corsHeaders(request: Request, env: Env): Headers {
     headers.set("Vary", "Origin");
   }
   headers.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  headers.set("Access-Control-Allow-Headers", "Content-Type");
+  headers.set("Access-Control-Allow-Headers", "Authorization,Content-Type");
   return headers;
 }
 

@@ -21,7 +21,7 @@ Use concrete capability language. Avoid unverifiable claims such as “the only 
 
 ## Approved media
 
-All motion assets have matching VP9 WebM and H.264 MP4 files at 1600×934/60 fps. Posters use the same basename under `Posters/`.
+All motion assets run at a constant 60 fps and have matching 10-bit VP9 Profile 2 WebM files (primary) plus H.264 High-profile MP4 files (Safari fallback). `activity-header-dark`, `rich-subagent-chat`, and `project-files-edit` are 3200×1868 Retina exports; the remaining clips are 1600×934. Posters use the same dimensions as their matching video and the same basename under `Posters/`.
 
 Base URL: `/Screenshots/launch`
 
@@ -32,7 +32,7 @@ Base URL: `/Screenshots/launch`
 | `chat-highlight-note`        | Highlight text, add a note, attach it, reopen it, edit it, and save                       | Exact-context section                   |
 | `terminal-selection-to-chat` | Select terminal output, attach it, and reopen the exact-line preview                      | Exact-context section                   |
 | `code-selection-to-chat`     | Select a code range and attach it to the composer                                         | Exact-context or project-files section  |
-| `project-files-edit`         | Browse project files, use tabs, edit/save code, select lines, and attach to chat          | Dedicated project-files showcase        |
+| `project-files-edit`         | Browse the tree, open a tab, double-click to edit, save, select lines, and attach to chat | Dedicated project-files showcase        |
 | `source-control-by-file`     | Review changes file by file and return to the grouped source-control tree                 | Source-control showcase                 |
 | `git-history-visual`         | Hover a commit preview, click through persistent commit details, and close the final card | Git-history showcase                    |
 | `activity-header-light`      | Light-theme version of the activity flow                                                  | Optional theme proof, not primary media |

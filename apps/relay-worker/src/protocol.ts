@@ -36,6 +36,15 @@ export function parseRelayTokenProtocol(header: string | null): RelayTokenProtoc
   };
 }
 
+export function parseBearerToken(header: string | null): string | null {
+  if (!header) {
+    return null;
+  }
+
+  const match = /^Bearer\s+(\S+)$/iu.exec(header.trim());
+  return match?.[1] ?? null;
+}
+
 export function isRelayConnectionRole(value: string | null): value is RelayConnectionRole {
   return value === "desktop" || value === "device";
 }

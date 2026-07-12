@@ -1,0 +1,58 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        width: 1500px;
+        height: 500px;
+        background: #0a0a0a;
+        overflow: hidden;
+        position: relative;
+      }
+      .glow {
+        position: absolute;
+        left: 250px;
+        top: -100px;
+        width: 1000px;
+        height: 600px;
+        background: radial-gradient(
+          ellipse at center,
+          rgba(110, 148, 250, 0.1) 0%,
+          rgba(110, 148, 250, 0) 65%
+        );
+      }
+      .window {
+        position: absolute;
+        left: 162px;
+        top: 44px;
+        width: 1176px;
+        border-radius: 14px 14px 0 0;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-bottom: none;
+        box-shadow:
+          0 -2px 60px rgba(110, 148, 250, 0.1),
+          0 8px 40px rgba(0, 0, 0, 0.6);
+      }
+      .window img {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="glow"></div>
+    <div class="window">
+      <img
+        src="file:///Users/will/badcode/apps/marketing/public/Screenshots/launch/Posters/activity-header-dark.png"
+      />
+    </div>
+  </body>
+</html>

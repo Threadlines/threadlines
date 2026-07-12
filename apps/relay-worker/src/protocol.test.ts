@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  parseBearerToken,
   parseRelayClientMessage,
   parseRelayTokenProtocol,
   RELAY_WEBSOCKET_PROTOCOL,
@@ -32,6 +33,15 @@ describe("relay protocol helpers", () => {
       version: 1,
       type: "relay.ping",
     });
+  });
+
+  it("parses bearer tokens from Authorization headers", () => {
+    expect(parseBearerToken("Bearer device-token")).toBe("device-token");
+    expect(parseBearerToken("bearer device-token")).toBe("device-token");
+    expect(parseBearerToken("  Bearer   device-token ")).toBe("device-token");
+    expect(parseBearerToken("Basic dXNlcjpwYXNz")).toBe(null);
+    expect(parseBearerToken("Bearer")).toBe(null);
+    expect(parseBearerToken(null)).toBe(null);
   });
 
   it("rejects malformed client messages", () => {
