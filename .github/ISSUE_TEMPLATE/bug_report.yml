@@ -90,8 +90,8 @@ body:
     id: environment
     attributes:
       label: Environment
-      description: OS, browser or desktop app version, Node/Bun version, provider/model if relevant.
-      placeholder: macOS 15.3, Chrome 135, Bun 1.3.9, Codex app-server ...
+      description: OS, browser or desktop app version, Node/Vite+ version, provider/model if relevant.
+      placeholder: macOS 15.3, Chrome 135, Node 24.10, Vite+ 0.2.4, Codex app-server ...
 
   - type: textarea
     id: logs

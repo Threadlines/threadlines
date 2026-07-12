@@ -17,11 +17,12 @@ normal release workflow yet because there is no tested Linux install/update path
 Threadlines keeps the fork's Git history, but uses its own app versions.
 
 - First Threadlines alpha: `0.0.1`
-- Stable tags: `v0.0.1`, `v0.0.2`, `v0.1.0`
-- Nightly tags: `v0.0.18-nightly.20260529.123`
+- First public open-source release: `0.2.0`
+- Stable tags: `v0.1.0`, `v0.1.1`, `v0.2.0`
+- Nightly tags: `v0.2.0-nightly.20260712.160`
 
 The release workflow aligns the releasable package versions during the build,
-so a tag like `v0.0.1` produces an installer and updater metadata for `0.0.1`.
+so a tag like `v0.2.0` produces installer and updater metadata for `0.2.0`.
 Nightly releases are based on the next patch after the latest plain stable tag.
 For example, if the latest stable tag is `v0.0.17`, a nightly dispatch from
 `main` produces `0.0.18-nightly.<YYYYMMDD>.<run-number>`.
@@ -37,7 +38,7 @@ Use this when you want a local installer before publishing a GitHub Release:
 
 ```powershell
 vp install --frozen-lockfile
-vp run dist:desktop:artifact -- --platform win --target nsis --arch x64 --build-version 0.0.1
+vp run dist:desktop:artifact -- --platform win --target nsis --arch x64 --build-version 0.2.0
 ```
 
 The artifacts and updater metadata are written to `release/`.
@@ -46,7 +47,7 @@ On macOS, build a local DMG plus updater ZIP with:
 
 ```bash
 vp install --frozen-lockfile
-vp run dist:desktop:artifact -- --platform mac --target dmg --arch arm64 --build-version 0.0.1
+vp run dist:desktop:artifact -- --platform mac --target dmg --arch arm64 --build-version 0.2.0
 ```
 
 Use `--arch x64` on an Intel Mac runner. The macOS build uses `sips` and
@@ -56,7 +57,7 @@ To override the GitHub update repository while building:
 
 ```powershell
 $env:THREADLINES_DESKTOP_UPDATE_REPOSITORY = "Threadlines/threadlines"
-vp run dist:desktop:artifact -- --platform win --target nsis --arch x64 --build-version 0.0.1
+vp run dist:desktop:artifact -- --platform win --target nsis --arch x64 --build-version 0.2.0
 ```
 
 The desktop artifact script accepts `THREADLINES_DESKTOP_*` variables. New
@@ -85,8 +86,8 @@ artifacts, so they do not consume Actions artifact retention/storage quota.
 To publish by tag:
 
 ```powershell
-git tag v0.0.1
-git push origin v0.0.1
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 To publish a nightly from `main`, open GitHub Actions, run **Desktop Release**,
@@ -99,20 +100,20 @@ gh workflow run release.yml --ref main -f channel=nightly
 ```
 
 To publish a stable manually from `main`, choose `stable` and enter a version
-such as `0.0.18`, or leave it blank to use the next patch after the latest
+such as `0.2.0`, or leave it blank to use the next patch after the latest
 stable tag.
 
 To promote a tested nightly such as
-`v0.0.18-nightly.20260529.123` to stable, create a fresh stable release from the
+`v0.2.0-nightly.20260712.160` to stable, create a fresh stable release from the
 same commit instead of editing the prerelease in place:
 
 ```powershell
-$sha = git rev-list -n 1 v0.0.18-nightly.20260529.123
-git tag v0.0.18 $sha
-git push origin v0.0.18
+$sha = git rev-list -n 1 v0.2.0-nightly.20260712.160
+git tag v0.2.0 $sha
+git push origin v0.2.0
 ```
 
-This builds a new stable installer with version `0.0.18`, marks it as the
+This builds a new stable installer with version `0.2.0`, marks it as the
 latest GitHub Release, and gives stable-channel installs a normal update target.
 
 ## Release Notes
@@ -188,8 +189,8 @@ There are two different Windows publisher surfaces:
 - Installed app metadata can be set by the installer package. Threadlines'
   desktop artifact script stages the package author as `Threadlines`.
 - UAC, SmartScreen, and Authenticode publisher identity come from the signing
-  certificate. Threadlines releases use a Threadlines-owned Azure Trusted Signing
-  identity for Windows.
+  certificate. Current Threadlines releases use Wilfredo Leon's verified Azure
+  Trusted Signing identity.
 
 ## Auto-Updates
 
@@ -227,7 +228,7 @@ secrets used by `.github/workflows/release.yml`.
 The local script can build a Linux AppImage:
 
 ```bash
-vp run dist:desktop:artifact -- --platform linux --target AppImage --arch x64 --build-version 0.0.1
+vp run dist:desktop:artifact -- --platform linux --target AppImage --arch x64 --build-version 0.2.0
 ```
 
 Keep Linux out of normal stable/nightly releases until there is at least one

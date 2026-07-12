@@ -1,6 +1,5 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "buildCommand": "pnpm run build",
-  "outputDirectory": "dist",
-  "ignoreCommand": "echo 'Marketing deploys frozen during redesign (remove ignoreCommand to re-enable)' && exit 0"
+  "outputDirectory": "dist"
 }

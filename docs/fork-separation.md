@@ -6,7 +6,8 @@ product direction, visible app identity, release lane, and compatibility policy.
 
 ## Current Direction
 
-- Threadlines is a Windows-first native desktop app for Codex and Claude Code.
+- Threadlines is a local-first desktop app for macOS and Windows, focused on
+  Codex and Claude Code.
 - Codex and Claude are the maintained provider paths.
 - Remote, hosted-web, SSH, Tailscale, Cursor, and OpenCode surfaces are being
   phased out unless they directly support the desktop workflow.

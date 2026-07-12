@@ -1,5 +1,13 @@
 # Threadlines
 
+<p align="center">
+  <img src="apps/marketing/public/og.png" alt="Threadlines, the open-source workspace for Claude Code and Codex" width="100%" />
+</p>
+
+[![CI](https://github.com/Threadlines/threadlines/actions/workflows/ci.yml/badge.svg)](https://github.com/Threadlines/threadlines/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/Threadlines/threadlines)](https://github.com/Threadlines/threadlines/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+
 Threadlines is a local-first desktop workspace for Codex and Claude Code.
 
 It brings agent threads, terminals, diffs, branches, source-control workflows,
@@ -30,16 +38,15 @@ lane yet.
 
 ### Server CLI
 
-The npm package is for advanced CLI/server usage and remote bootstrap flows:
+The npm package supports advanced CLI/server and remote-bootstrap usage:
 
 ```bash
 npx @threadlines/server@latest --help
 ```
 
 > [!IMPORTANT]
-> The server requires **Node.js 22.16+, 23.11+, or 24+** — it uses the
-> built-in `node:sqlite` module and exits with a version error on older
-> Node releases (including 22.x below 22.16).
+> The server requires **Node.js 22.22.2+, 24.15+, or 26+**. Odd-numbered Node
+> releases are not supported.
 
 ### Local development
 
@@ -56,7 +63,7 @@ output noticeably slows installs, builds, and file watching.
 
 ```powershell
 vp install --frozen-lockfile
-vp run dist:desktop:artifact -- --platform win --target nsis --arch x64 --build-version 0.0.1
+vp run dist:desktop:artifact -- --platform win --target nsis --arch x64 --build-version 0.2.0
 ```
 
 The artifact is written to `release/`.
@@ -68,7 +75,7 @@ It now has its own product direction, branding, desktop release pipeline,
 provider orchestration, source-control workflow, signing/notarization setup, and
 compatibility policy.
 
-The upstream Git history and MIT license notice are kept intact.
+The upstream Git history and MIT attribution are kept intact.
 
 See [docs/fork-separation.md](./docs/fork-separation.md) for the current origin
 and compatibility policy.

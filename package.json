@@ -50,7 +50,7 @@
     "vite-plus": "catalog:"
   },
   "engines": {
-    "node": "^22.16 || ^23.11 || >=24.10"
+    "node": "^22.22.2 || ^24.15.0 || >=26"
   },
   "packageManager": "pnpm@10.24.0",
   "msw": {
