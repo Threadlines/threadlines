@@ -643,7 +643,7 @@ const writeUsageTests = (): void => {
   writeProjectFile(
     "tests/usage.test.ts",
     lines(
-      'import { describe, expect, it } from "vitest";',
+      'import { describe, expect, it } from "vite-plus/test";',
       "",
       'import { usagePercentage } from "../src/lib/usage";',
       "",
@@ -692,7 +692,7 @@ const writeRetrySupport = (): void => {
   writeProjectFile(
     "tests/retry.test.ts",
     lines(
-      'import { describe, expect, it, vi } from "vitest";',
+      'import { describe, expect, it, vi } from "vite-plus/test";',
       "",
       'import { withRetry } from "../src/lib/retry";',
       "",

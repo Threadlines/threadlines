@@ -73,6 +73,9 @@ export default defineConfig({
       "unicorn/consistent-function-scoping": "off",
       "oxc/no-map-spread": "off",
       "react-in-jsx-scope": "off",
+      // Component factories passed as props/options (react-markdown
+      // components maps, memoized icon builders) are stable by construction.
+      "react/no-unstable-nested-components": ["warn", { "allowAsProps": true }],
       "react-hooks/exhaustive-deps": "off",
       "eslint/no-shadow": "off",
       "eslint/no-await-in-loop": "off",

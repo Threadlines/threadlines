@@ -67,3 +67,4 @@ peerDependencyRules:
   allowedVersions:
     vite: "*"
     vitest: "*"
+    "@voidzero-dev/vite-plus-core>typescript": "7"
