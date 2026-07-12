@@ -1530,7 +1530,10 @@ const launchStudio = (): void => {
           process.env.THREADLINES_DESKTOP_RESTART_ON_REBUILD ?? "0",
         THREADLINES_DISABLE_AUTO_UPDATE: "1",
         PATH: paths.fixtureBin + NodePath.delimiter + (process.env.PATH ?? ""),
-        SHELL: NodePath.join(paths.fixtureBin, "threadlines-studio-shell"),
+        // Keep this path whitespace-free: terminal shell resolution treats the
+        // configured value as a command and the studio root intentionally has
+        // spaces in its name. The fixture bin is already prepended to PATH.
+        SHELL: "threadlines-studio-shell",
       },
       stdio: "inherit",
     },
