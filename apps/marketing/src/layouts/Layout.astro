@@ -5,6 +5,7 @@ import {
   DEFAULT_SITE_DESCRIPTION,
   SITE_NAME,
   SITE_SOCIAL_IMAGE,
+  SITE_TWITTER_HANDLE,
 } from "../lib/site";
 
 interface Props {
@@ -12,6 +13,7 @@ interface Props {
   description?: string;
   canonicalPath?: string;
   noindex?: boolean;
+  structuredData?: Record<string, unknown>[];
 }
 
 const {
@@ -19,6 +21,7 @@ const {
   description = DEFAULT_SITE_DESCRIPTION,
   canonicalPath = Astro.url.pathname,
   noindex = false,
+  structuredData = [],
 } = Astro.props;
 
 const canonicalUrl = absoluteSiteUrl(canonicalPath);
@@ -47,10 +50,15 @@ const websiteStructuredData = {
     <meta property="og:url" content={canonicalUrl} />
     <meta property="og:site_name" content={SITE_NAME} />
     <meta property="og:image" content={socialImageUrl} />
-    <meta property="og:image:alt" content="Threadlines app icon" />
-    <meta property="og:image:width" content="1024" />
-    <meta property="og:image:height" content="1024" />
-    <meta name="twitter:card" content="summary" />
+    <meta
+      property="og:image:alt"
+      content="Threadlines: the open-source workspace for Claude Code and Codex, next to a screenshot of the app"
+    />
+    <meta property="og:image:width" content="2400" />
+    <meta property="og:image:height" content="1260" />
+    <meta property="og:locale" content="en_US" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:site" content={SITE_TWITTER_HANDLE} />
     <meta name="twitter:title" content={title} />
     <meta name="twitter:description" content={description} />
     <meta name="twitter:image" content={socialImageUrl} />
@@ -77,6 +85,11 @@ const websiteStructuredData = {
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>{title}</title>
     <script is:inline type="application/ld+json" set:html={JSON.stringify(websiteStructuredData)} />
+    {
+      structuredData.map((data) => (
+        <script is:inline type="application/ld+json" set:html={JSON.stringify(data)} />
+      ))
+    }
     <Analytics />
   </head>
   <body>

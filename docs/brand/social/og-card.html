@@ -1,0 +1,156 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        width: 1200px;
+        height: 630px;
+        background: #0a0a0a;
+        overflow: hidden;
+        position: relative;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      .glow {
+        position: absolute;
+        left: 400px;
+        top: -150px;
+        width: 900px;
+        height: 700px;
+        background: radial-gradient(
+          ellipse at center,
+          rgba(110, 148, 250, 0.12) 0%,
+          rgba(110, 148, 250, 0) 65%
+        );
+      }
+      .brand {
+        position: absolute;
+        left: 72px;
+        top: 64px;
+        display: flex;
+        align-items: center;
+        gap: 18px;
+      }
+      .brand svg {
+        width: 64px;
+        height: 44px;
+      }
+      .brand-name {
+        color: #fafafa;
+        font-size: 44px;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+      }
+      .tagline {
+        position: absolute;
+        left: 72px;
+        top: 150px;
+        width: 620px;
+        color: #fafafa;
+        font-size: 40px;
+        font-weight: 650;
+        line-height: 1.2;
+        letter-spacing: -0.015em;
+      }
+      .tagline .accent {
+        color: #6e94fa;
+      }
+      .sub {
+        position: absolute;
+        left: 72px;
+        top: 292px;
+        width: 560px;
+        color: rgba(255, 255, 255, 0.6);
+        font-size: 24px;
+        line-height: 1.45;
+      }
+      .badges {
+        position: absolute;
+        left: 72px;
+        top: 396px;
+        display: flex;
+        gap: 12px;
+      }
+      .badge {
+        color: rgba(255, 255, 255, 0.75);
+        font-size: 19px;
+        font-weight: 600;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        border-radius: 999px;
+        padding: 8px 18px;
+      }
+      .window {
+        position: absolute;
+        left: 700px;
+        top: 470px;
+        width: 1150px;
+        border-radius: 14px;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        box-shadow:
+          0 -6px 80px rgba(110, 148, 250, 0.14),
+          0 8px 40px rgba(0, 0, 0, 0.6);
+        transform: translateY(-330px);
+      }
+      .window img {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="glow"></div>
+    <div class="brand">
+      <svg viewBox="36 86 184 100" fill="none" aria-hidden="true">
+        <defs>
+          <linearGradient
+            id="og-glyph-live"
+            gradientUnits="userSpaceOnUse"
+            x1="108"
+            y1="98"
+            x2="194"
+            y2="162"
+          >
+            <stop offset="0" stop-color="#a1a1aa" stop-opacity="0.45" />
+            <stop offset="1" stop-color="#6e94fa" />
+          </linearGradient>
+        </defs>
+        <g stroke-linecap="round" stroke-width="10">
+          <path d="M 44 98 L 212 98" stroke="rgba(255,255,255,0.35)" />
+          <path d="M 108 98 C 134 98 134 162 160 162 L 188 162" stroke="url(#og-glyph-live)" />
+        </g>
+        <g fill="rgba(255,255,255,0.75)">
+          <circle cx="70" cy="98" r="7" />
+          <circle cx="108" cy="98" r="8.5" />
+          <circle cx="178" cy="98" r="7" />
+        </g>
+        <circle cx="194" cy="162" r="21" fill="#6e94fa" opacity="0.16" />
+        <circle cx="194" cy="162" r="12.5" fill="#6e94fa" />
+      </svg>
+      <span class="brand-name">Threadlines</span>
+    </div>
+    <div class="tagline">
+      The open-source workspace for <span class="accent">Claude&nbsp;Code</span> and
+      <span class="accent">Codex</span>
+    </div>
+    <div class="sub">
+      Parallel agent threads with real source control, a file editor, and nothing running invisibly.
+    </div>
+    <div class="badges">
+      <span class="badge">Free &amp; MIT</span>
+      <span class="badge">macOS + Windows</span>
+      <span class="badge">Local-first</span>
+    </div>
+    <div class="window">
+      <img
+        src="file:///Users/will/badcode/apps/marketing/public/Screenshots/launch/Posters/rich-subagent-chat.png"
+      />
+    </div>
+  </body>
+</html>

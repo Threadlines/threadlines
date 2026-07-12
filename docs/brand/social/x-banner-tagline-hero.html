@@ -1,0 +1,98 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        width: 1500px;
+        height: 500px;
+        background: #0a0a0a;
+        overflow: hidden;
+        position: relative;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      .glow {
+        position: absolute;
+        left: 600px;
+        top: -150px;
+        width: 900px;
+        height: 700px;
+        background: radial-gradient(
+          ellipse at center,
+          rgba(110, 148, 250, 0.12) 0%,
+          rgba(110, 148, 250, 0) 65%
+        );
+      }
+      .tagline {
+        position: absolute;
+        left: 84px;
+        top: 118px;
+        width: 600px;
+        color: #fafafa;
+        font-size: 46px;
+        font-weight: 650;
+        line-height: 1.22;
+        letter-spacing: -0.015em;
+      }
+      .tagline .accent {
+        color: #6e94fa;
+      }
+      .badges {
+        position: absolute;
+        left: 84px;
+        top: 296px;
+        display: flex;
+        gap: 12px;
+      }
+      .badge {
+        color: rgba(255, 255, 255, 0.75);
+        font-size: 19px;
+        font-weight: 600;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        border-radius: 999px;
+        padding: 8px 18px;
+      }
+      .window {
+        position: absolute;
+        left: 760px;
+        top: 60px;
+        width: 780px;
+        border-radius: 14px 0 0 0;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-right: none;
+        border-bottom: none;
+        box-shadow:
+          0 -6px 80px rgba(110, 148, 250, 0.14),
+          0 8px 40px rgba(0, 0, 0, 0.6);
+      }
+      .window img {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="glow"></div>
+    <div class="tagline">
+      The open-source workspace for <span class="accent">Claude&nbsp;Code</span> and
+      <span class="accent">Codex</span>
+    </div>
+    <div class="badges">
+      <span class="badge">Free &amp; MIT</span>
+      <span class="badge">macOS + Windows</span>
+      <span class="badge">Local-first</span>
+    </div>
+    <div class="window">
+      <img
+        src="file:///Users/will/badcode/apps/marketing/public/Screenshots/launch/Posters/rich-subagent-chat.png"
+      />
+    </div>
+  </body>
+</html>

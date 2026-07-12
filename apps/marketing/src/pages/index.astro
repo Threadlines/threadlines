@@ -1,7 +1,22 @@
 ---
 import Layout from "../layouts/Layout.astro";
+import { absoluteSiteUrl, DEFAULT_SITE_DESCRIPTION } from "../lib/site";
 
 const L = "/Screenshots/launch";
+
+const appStructuredData = {
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  name: "Threadlines",
+  operatingSystem: "macOS, Windows",
+  applicationCategory: "DeveloperApplication",
+  offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+  description: DEFAULT_SITE_DESCRIPTION,
+  url: absoluteSiteUrl("/"),
+  downloadUrl: absoluteSiteUrl("/download"),
+  license: "https://opensource.org/license/mit/",
+  sameAs: ["https://github.com/Threadlines/threadlines", "https://x.com/threadlinesdev"],
+};
 
 const contextClips = [
   {
@@ -30,6 +45,7 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
   title="Threadlines: a local workspace for coding agents"
   description="Run Claude Code and Codex in parallel threads with real source control, live usage meters, and full visibility into every task, subagent, and background run."
   canonicalPath="/"
+  structuredData={[appStructuredData]}
 >
   <section class="pv-hero">
     <div class="pv-glow pv-glow-hero" aria-hidden="true"></div>
