@@ -246,7 +246,10 @@ import {
   useOptimisticThreadMessagesStore,
 } from "../optimisticThreadMessages";
 import { describeDispatchFailure, sanitizeThreadErrorMessage } from "~/rpc/transportError";
-import { retainThreadDetailSubscription } from "../environments/runtime/service";
+import {
+  refreshThreadDetailSubscription,
+  retainThreadDetailSubscription,
+} from "../environments/runtime/service";
 import { hasActiveContextCompactionActivity } from "~/lib/contextCompactionActivities";
 import { deriveProviderAccountUsagePresentationForProvider } from "~/lib/providerUsage";
 import { Button } from "./ui/button";
@@ -680,6 +683,8 @@ const SCRIPT_TERMINAL_COLS = 120;
 
 const SCRIPT_TERMINAL_ROWS = 30;
 
+const LOCAL_DISPATCH_RECONCILIATION_DELAY_MS = 2_000;
+
 type ChatViewProps =
   | {
       environmentId: EnvironmentId;
@@ -715,9 +720,14 @@ function useLocalDispatchState(input: {
   threadError: string | null | undefined;
 }) {
   const [localDispatch, setLocalDispatch] = useState<LocalDispatchSnapshot | null>(null);
+  const [acceptedLocalDispatch, setAcceptedLocalDispatch] = useState<{
+    readonly threadRef: ScopedThreadRef;
+    readonly acceptedAt: number;
+  } | null>(null);
 
   const beginLocalDispatch = useCallback(
     (options?: { preparingWorktree?: boolean }) => {
+      setAcceptedLocalDispatch(null);
       const preparingWorktree = Boolean(options?.preparingWorktree);
       setLocalDispatch((current) => {
         if (current) {
@@ -733,6 +743,11 @@ function useLocalDispatchState(input: {
 
   const resetLocalDispatch = useCallback(() => {
     setLocalDispatch(null);
+    setAcceptedLocalDispatch(null);
+  }, []);
+
+  const markLocalDispatchAccepted = useCallback((threadRef: ScopedThreadRef) => {
+    setAcceptedLocalDispatch({ threadRef, acceptedAt: Date.now() });
   }, []);
 
   const serverAcknowledgedLocalDispatch = useMemo(
@@ -764,8 +779,25 @@ function useLocalDispatchState(input: {
     resetLocalDispatch();
   }, [resetLocalDispatch, serverAcknowledgedLocalDispatch]);
 
+  useEffect(() => {
+    if (!localDispatch || !acceptedLocalDispatch || serverAcknowledgedLocalDispatch) {
+      return;
+    }
+
+    const timeoutId = globalThis.setTimeout(() => {
+      refreshThreadDetailSubscription(
+        acceptedLocalDispatch.threadRef.environmentId,
+        acceptedLocalDispatch.threadRef.threadId,
+      );
+    }, LOCAL_DISPATCH_RECONCILIATION_DELAY_MS);
+    return () => {
+      globalThis.clearTimeout(timeoutId);
+    };
+  }, [acceptedLocalDispatch, localDispatch, serverAcknowledgedLocalDispatch]);
+
   return {
     beginLocalDispatch,
+    markLocalDispatchAccepted,
     resetLocalDispatch,
     localDispatchStartedAt: localDispatch?.startedAt ?? null,
     isPreparingWorktree: localDispatch?.preparingWorktree ?? false,
@@ -1804,6 +1836,7 @@ export default function ChatView(props: ChatViewProps) {
   const activePendingApproval = pendingApprovals[0] ?? null;
   const {
     beginLocalDispatch,
+    markLocalDispatchAccepted,
     resetLocalDispatch,
     localDispatchStartedAt,
     isPreparingWorktree,
@@ -4336,6 +4369,7 @@ export default function ChatView(props: ChatViewProps) {
         createdAt: messageCreatedAt,
       });
       dispatchSucceeded = true;
+      markLocalDispatchAccepted(threadRefForSend);
       if (isServerThread && ctxSelectedModel) {
         await persistThreadSettingsForNextTurn({
           threadId: threadIdForSend,
@@ -4786,6 +4820,7 @@ export default function ChatView(props: ChatViewProps) {
             : {}),
           createdAt: messageCreatedAt,
         });
+        markLocalDispatchAccepted(threadRefForSend);
         if (ctxSelectedModel) {
           await persistThreadSettingsForNextTurn({
             threadId: threadIdForSend,
@@ -4813,6 +4848,7 @@ export default function ChatView(props: ChatViewProps) {
       isConnecting,
       isSendBusy,
       isServerThread,
+      markLocalDispatchAccepted,
       persistThreadSettingsForNextTurn,
       resetLocalDispatch,
       removeOptimisticThreadMessages,
