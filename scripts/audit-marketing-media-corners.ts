@@ -66,7 +66,9 @@ const probeDimensions = (filePath: string): Dimensions => {
     filePath,
   ]);
   const output = result.stdout.toString("utf8").trim();
-  const [width, height] = output.split("x").map(Number);
+  const [widthText, heightText] = output.split("x");
+  const width = Number(widthText);
+  const height = Number(heightText);
 
   if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
     throw new Error(`Could not read media dimensions for ${filePath}`);
