@@ -118,3 +118,10 @@ vp install
 ```
 
 Read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening an issue or PR.
+
+## Support development
+
+Threadlines is free and open source. Optional sponsorships help cover ongoing
+development and operating costs such as domains, code signing, CI, and hosted
+Phone Link infrastructure. See [SUPPORT.md](./SUPPORT.md) for the no-perks
+sponsorship policy and support channels.

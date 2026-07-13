@@ -73,6 +73,36 @@ Recommended before real user testing:
 No Cloudflare secret is required for the current MVP. Tokens are generated per
 relay session with Web Crypto and stored as SHA-256 hashes in the Durable Object.
 
+## Privacy and trust boundary
+
+Phone Link is an opt-in remote-access path. Its WebSockets use TLS, but the app
+protocol is not currently end-to-end encrypted above that transport. Relay
+frames can contain prompts, responses, file contents, diffs, and terminal data.
+The Worker forwards those frames in memory and does not intentionally persist
+their contents, while Cloudflare remains part of the transport trust boundary.
+
+Users who do not want project traffic to pass through the hosted relay should
+leave Phone Link disconnected, use a direct or SSH connection, or self-host the
+relay and set `THREADLINES_RELAY_URL` to that deployment.
+
+## Cost and abuse controls
+
+The public relay uses Cloudflare's Durable Object WebSocket Hibernation API, so
+idle connections remain attached without continuously accruing active-duration
+charges. The deployment also applies:
+
+- at most five new relay sessions per minute per Cloudflare client IP;
+- at most 3,000 incoming frames per minute per relay session;
+- at most four connected phone/browser devices per relay session; and
+- a session-creation kill switch through
+  `THREADLINES_RELAY_SESSION_CREATION_ENABLED=false`.
+
+The rate-limit counters are intentionally permissive and local to a Cloudflare
+location. They reduce accidental and single-source abuse but are not an exact
+billing ledger. Keep the relay on Workers Free for a hard platform usage ceiling
+at launch. If the account moves to Workers Paid, configure several account-wide
+budget alerts; Cloudflare budget alerts notify but do not stop usage.
+
 ## Commands
 
 From the repo root:
@@ -137,7 +167,8 @@ Preferred WebSocket auth uses subprotocols:
 new WebSocket(socketUrl, ["threadlines-relay", `threadlines-token.${token}`]);
 ```
 
-The Worker still accepts `?token=` as a manual testing fallback.
+Tokens are not accepted in query strings because URLs may be retained in logs
+or browser history. Status and renewal requests use `Authorization: Bearer`.
 
 ## Next Integration Steps
 

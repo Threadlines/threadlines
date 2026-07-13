@@ -15,8 +15,27 @@
     "THREADLINES_APP_ORIGIN": "https://app.threadlines.dev",
     "THREADLINES_ALLOWED_ORIGINS": "https://app.threadlines.dev,http://localhost:5733,http://127.0.0.1:5733",
     "THREADLINES_RELAY_PUBLIC_ORIGIN": "",
+    "THREADLINES_RELAY_SESSION_CREATION_ENABLED": "true",
     "THREADLINES_RELAY_SESSION_TTL_SECONDS": "43200",
   },
+  "ratelimits": [
+    {
+      "name": "SESSION_CREATE_RATE_LIMITER",
+      "namespace_id": "2026071201",
+      "simple": {
+        "limit": 5,
+        "period": 60,
+      },
+    },
+    {
+      "name": "RELAY_MESSAGE_RATE_LIMITER",
+      "namespace_id": "2026071202",
+      "simple": {
+        "limit": 3000,
+        "period": 60,
+      },
+    },
+  ],
   "durable_objects": {
     "bindings": [
       {
