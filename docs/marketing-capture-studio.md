@@ -171,9 +171,10 @@ this story; it competes with the differentiated part of the UI.
 
 ### 04 — Git history you can understand visually
 
-Target: a 6–8 second clip and a full-height graph crop.
+Target: a 12–16 second clip and a full-height graph crop.
 
-1. Use the Release guard thread so Claude Fable 5 and High remain visible.
+1. Use the Release guard thread and keep Scout's completed release-risk review visible
+   so the graph is shown beside a real subagent result, not an empty conversation.
 2. Open the Git graph within Source Control.
 3. Pause on the merge lane connecting feature/usage-insights.
 4. Select the checkout timeout commit on its unmerged branch.

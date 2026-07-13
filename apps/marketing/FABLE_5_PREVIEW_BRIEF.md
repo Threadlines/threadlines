@@ -34,7 +34,7 @@ Base URL: `/Screenshots/launch`
 | `code-selection-to-chat`     | Select a code range and attach it to the composer                                         | Exact-context or project-files section  |
 | `project-files-edit`         | Browse the tree, open a tab, double-click to edit, save, select lines, and attach to chat | Dedicated project-files showcase        |
 | `source-control-by-file`     | Review changes file by file and return to the grouped source-control tree                 | Source-control showcase                 |
-| `git-history-visual`         | Hover a commit preview, click through persistent commit details, and close the final card | Git-history showcase                    |
+| `git-history-visual`         | Keep Scout's result visible while previewing and opening commits on the Git graph         | Git-history showcase                    |
 | `activity-header-light`      | Light-theme version of the activity flow                                                  | Optional theme proof, not primary media |
 
 Standalone light screenshots are also available:

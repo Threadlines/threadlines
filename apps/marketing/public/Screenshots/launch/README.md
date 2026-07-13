@@ -12,7 +12,7 @@ The staged sidebar has two expanded projects and one collapsed project, five or 
 - `rich-subagent-chat` — full conversation with a substantial Scout subagent result and follow-up responses.
 - `project-files-edit` — browses the project tree, opens a tab, enters editing by double-click, saves a small change, then selects an exact line range and attaches it to chat; the current edit icon remains visible in the toolbar.
 - `source-control-by-file` — switches through individual file diffs, then returns to the per-file source-control view.
-- `git-history-visual` — pauses for the hover preview, clicks through three commits in one persistent detail card, then closes the final card; `main` and `v0.9.0-rc.1` remain on separate commits.
+- `git-history-visual` — keeps Scout's completed release-risk review visible beside the graph, pauses for a hover preview, clicks through three commits in one persistent detail card, then closes it; `main` and `v0.9.0-rc.1` remain on separate commits.
 - `code-selection-to-chat` — selects a code range and attaches it to the composer.
 - `chat-highlight-note` — highlights assistant text, adds a note, reopens it from the composer, edits it, and saves.
 - `terminal-selection-to-chat` — selects real terminal output, attaches it, and opens the exact-line preview from the composer.
@@ -26,8 +26,8 @@ The staged sidebar has two expanded projects and one collapsed project, five or 
 
 ## Model coverage
 
-- Fable 5 / High appears in the activity, rich-chat, project-file, note, and terminal scenes.
-- GPT-5.6-Sol / Max appears in the source-control and Git-history scenes.
+- Fable 5 / High appears in the activity, rich-chat, project-file, note, terminal, and Git-history scenes.
+- GPT-5.6-Sol / Max appears in the source-control scene.
 
 ## Folder layout
 
