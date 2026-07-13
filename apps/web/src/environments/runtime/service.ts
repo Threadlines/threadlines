@@ -649,6 +649,29 @@ export function retainThreadDetailSubscription(
   };
 }
 
+export function refreshThreadDetailSubscription(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+): boolean {
+  const entry = threadDetailSubscriptions.get(
+    getThreadDetailSubscriptionKey(environmentId, threadId),
+  );
+  if (!entry) {
+    return false;
+  }
+
+  clearThreadDetailSubscriptionEviction(entry);
+  entry.unsubscribeConnectionListener?.();
+  entry.unsubscribeConnectionListener = null;
+  entry.unsubscribe();
+  entry.unsubscribe = NOOP;
+  entry.lastAccessedAt = Date.now();
+  if (!attachThreadDetailSubscription(entry)) {
+    watchThreadDetailSubscriptionConnection(entry);
+  }
+  return true;
+}
+
 function emitEnvironmentConnectionRegistryChange() {
   for (const listener of environmentConnectionListeners) {
     listener();
