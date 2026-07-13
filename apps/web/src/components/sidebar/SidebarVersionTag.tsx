@@ -115,7 +115,7 @@ function SidebarVersionCard({
     >
       <div className="flex flex-col gap-1 px-1 pt-1 pb-1.5">
         <span className="text-[9px] font-semibold tracking-[0.1em] uppercase text-muted-foreground/60">
-          {trackLabel ? `${APP_STAGE_LABEL} · ${trackLabel}` : APP_STAGE_LABEL}
+          {trackLabel ? `${APP_STAGE_LABEL} build · ${trackLabel} updates` : APP_STAGE_LABEL}
         </span>
         <code
           className="truncate text-[11px] leading-none font-medium tabular-nums text-foreground/90 select-all"
