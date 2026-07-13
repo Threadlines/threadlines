@@ -7509,24 +7509,34 @@ describe("ChatView timeline estimator parity (full app)", () => {
         targetMessageId: "msg-user-skill-tooltip-target" as MessageId,
         targetText: "skill tooltip thread",
       }),
-      configureFixture: (nextFixture) => {
-        const provider = nextFixture.serverConfig.providers[0];
-        if (!provider) {
-          throw new Error("Expected default provider in test fixture.");
+      resolveRpc: (body) => {
+        if (body._tag !== WS_METHODS.serverGetProviderExtensions) {
+          return undefined;
         }
-        (
-          provider as {
-            skills: ServerConfig["providers"][number]["skills"];
-          }
-        ).skills = [
-          {
-            name: "agent-browser",
-            displayName: "Agent Browser",
-            description: "Open pages, click around, and inspect web apps.",
-            path: "/Users/test/.agents/skills/agent-browser/SKILL.md",
-            enabled: true,
-          },
-        ];
+        return {
+          cwd: "/repo/project",
+          generatedAt: NOW_ISO,
+          providers: [
+            {
+              instanceId: ProviderInstanceId.make("codex"),
+              driver: ProviderDriverKind.make("codex"),
+              status: "ready",
+              plugins: [],
+              skills: [
+                {
+                  name: "agent-browser",
+                  displayName: "Agent Browser",
+                  description: "Open pages, click around, and inspect web apps.",
+                  path: "/Users/test/.agents/skills/agent-browser/SKILL.md",
+                  enabled: true,
+                },
+              ],
+              mcpServers: [],
+              apps: [],
+            },
+          ],
+          instructionFiles: [],
+        };
       },
     });
 
@@ -7534,11 +7544,11 @@ describe("ChatView timeline estimator parity (full app)", () => {
       useComposerDraftStore.getState().setPrompt(THREAD_REF, "use the $agent-browser ");
       await waitForComposerText("use the $agent-browser ");
 
-      await waitForElement(
+      const skillChip = await waitForElement(
         () => document.querySelector<HTMLElement>('[data-composer-skill-chip="true"]'),
         "Unable to find rendered composer skill chip.",
       );
-      await page.getByText("Agent Browser").hover();
+      await page.elementLocator(skillChip).hover();
 
       await vi.waitFor(
         () => {
