@@ -1,6 +1,5 @@
 // @effect-diagnostics globalDate:off cryptoRandomUUID:off globalConsole:off
 import { DurableObject } from "cloudflare:workers";
-
 import type {
   RelayConnectionId,
   RelayConnectionRole,
@@ -27,6 +26,12 @@ import {
   RELAY_WEBSOCKET_PROTOCOL,
 } from "./protocol.ts";
 
+type ThreadlinesRelayEnv = Env & {
+  readonly RELAY_MESSAGE_RATE_LIMITER: RateLimit;
+  readonly SESSION_CREATE_RATE_LIMITER: RateLimit;
+  readonly THREADLINES_RELAY_SESSION_CREATION_ENABLED: string;
+};
+
 interface StoredSessionRow extends Record<string, SqlStorageValue> {
   readonly session_id: string;
   readonly desktop_token_hash: string;
@@ -48,6 +53,8 @@ interface SocketAttachment {
   readonly connectionId: string;
   readonly connectedAt: number;
   readonly mode: "envelope" | "raw";
+  /** Optional for sockets accepted before the rate-limit rollout. */
+  readonly sessionId?: string;
 }
 
 const DEFAULT_APP_ORIGIN = "https://app.threadlines.dev";
@@ -58,10 +65,10 @@ const DEFAULT_ALLOWED_ORIGINS = [
 ];
 const DEFAULT_SESSION_TTL_SECONDS = 12 * 60 * 60;
 const MAX_SESSION_TTL_SECONDS = 24 * 60 * 60;
-const MAX_CREATE_SESSION_BODY_BYTES = 4096;
+const MAX_DEVICE_CONNECTIONS = 4;
 
-export class RelaySession extends DurableObject<Env> {
-  constructor(ctx: DurableObjectState, env: Env) {
+export class RelaySession extends DurableObject<ThreadlinesRelayEnv> {
+  constructor(ctx: DurableObjectState, env: ThreadlinesRelayEnv) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
       this.ctx.storage.sql.exec(`
@@ -125,7 +132,7 @@ export class RelaySession extends DurableObject<Env> {
       return createJsonResponse({ error: "Missing or invalid relay role." }, { status: 400 });
     }
 
-    const token = readConnectionToken(request, url);
+    const token = readConnectionToken(request);
     if (!token) {
       return createJsonResponse({ error: "Missing relay token." }, { status: 401 });
     }
@@ -147,6 +154,13 @@ export class RelaySession extends DurableObject<Env> {
       return createJsonResponse({ error: "Invalid relay token." }, { status: 401 });
     }
 
+    if (role === "device" && this.getPeerSummary().deviceCount >= MAX_DEVICE_CONNECTIONS) {
+      return createJsonResponse(
+        { error: "This relay session already has the maximum number of devices." },
+        { status: 429, headers: { "Retry-After": "60" } },
+      );
+    }
+
     if (role === "desktop") {
       // A half-dead desktop socket (sleep, network drop) can look OPEN here
       // for minutes. Replace it instead of rejecting the reconnect.
@@ -162,6 +176,7 @@ export class RelaySession extends DurableObject<Env> {
       connectionId: crypto.randomUUID(),
       connectedAt: Date.now(),
       mode,
+      sessionId: session.session_id,
     };
     server.serializeAttachment(attachment);
     this.ctx.acceptWebSocket(server);
@@ -203,9 +218,7 @@ export class RelaySession extends DurableObject<Env> {
       return createJsonResponse({ error: "Origin is not allowed." }, { status: 403 });
     }
 
-    const token =
-      parseBearerToken(request.headers.get("Authorization")) ??
-      new URL(request.url).searchParams.get("token");
+    const token = parseBearerToken(request.headers.get("Authorization"));
     if (!token) {
       return createJsonResponse({ error: "Missing relay token." }, { status: 401 });
     }
@@ -290,6 +303,35 @@ export class RelaySession extends DurableObject<Env> {
     if (!attachment) {
       this.sendError(ws, "not-authenticated", "This device is not connected to the relay.");
       ws.close(1008, "Missing relay connection.");
+      return;
+    }
+
+    const sessionId = attachment.sessionId ?? this.readSession()?.session_id;
+    if (!sessionId) {
+      ws.close(1013, "Relay session unavailable.");
+      return;
+    }
+
+    let messageAllowed = false;
+    try {
+      messageAllowed = (
+        await this.env.RELAY_MESSAGE_RATE_LIMITER.limit({ key: `session:${sessionId}` })
+      ).success;
+    } catch (error) {
+      log("error", "relay message rate limiter failed", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      ws.close(1013, "Relay rate limiter unavailable.");
+      return;
+    }
+    if (!messageAllowed) {
+      log("warn", "relay message rate limit exceeded", {
+        sessionId,
+        connectionId: attachment.connectionId,
+        role: attachment.role,
+      });
+      ws.close(1013, "Relay message rate limit exceeded.");
       return;
     }
 
@@ -536,7 +578,7 @@ export class RelaySession extends DurableObject<Env> {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: ThreadlinesRelayEnv): Promise<Response> {
     const url = new URL(request.url);
 
     if (request.method === "OPTIONS") {
@@ -559,6 +601,34 @@ export default {
       }
 
       if (request.method === "POST" && url.pathname === "/v1/sessions") {
+        if (!isSessionCreationEnabled(env)) {
+          return withCors(
+            request,
+            env,
+            createJsonResponse(
+              { error: "Relay session creation is temporarily unavailable." },
+              { status: 503 },
+            ),
+          );
+        }
+
+        const rateLimitKey = request.headers.get("CF-Connecting-IP")?.trim() || "unknown";
+        const creationAllowed = await env.SESSION_CREATE_RATE_LIMITER.limit({
+          key: `create:${rateLimitKey}`,
+        });
+        if (!creationAllowed.success) {
+          log("warn", "relay session creation rate limit exceeded", {
+            colo: request.cf?.colo,
+          });
+          return withCors(
+            request,
+            env,
+            createJsonResponse(
+              { error: "Too many relay sessions were created. Try again in a minute." },
+              { status: 429, headers: { "Retry-After": "60" } },
+            ),
+          );
+        }
         return withCors(request, env, await createRelaySession(request, env));
       }
 
@@ -608,9 +678,7 @@ export default {
   },
 };
 
-async function createRelaySession(request: Request, env: Env): Promise<Response> {
-  await readSmallJsonObject(request);
-
+async function createRelaySession(request: Request, env: ThreadlinesRelayEnv): Promise<Response> {
   const createdAt = Date.now();
   const expiresAt = createdAt + resolveSessionTtlSeconds(env) * 1000;
   const sessionId = crypto.randomUUID();
@@ -650,32 +718,11 @@ async function createRelaySession(request: Request, env: Env): Promise<Response>
   );
 }
 
-async function readSmallJsonObject(request: Request): Promise<Record<string, unknown>> {
-  const contentLength = Number(request.headers.get("content-length") ?? "0");
-  if (Number.isFinite(contentLength) && contentLength > MAX_CREATE_SESSION_BODY_BYTES) {
-    throw new Error("Request body is too large.");
-  }
-
-  const text = await request.text();
-  if (text.length > MAX_CREATE_SESSION_BODY_BYTES) {
-    throw new Error("Request body is too large.");
-  }
-  if (text.trim().length === 0) {
-    return {};
-  }
-
-  const parsed = JSON.parse(text) as unknown;
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("Request body must be a JSON object.");
-  }
-  return parsed as Record<string, unknown>;
-}
-
-function readConnectionToken(request: Request, url: URL): string | null {
+function readConnectionToken(request: Request): string | null {
   const protocolToken = parseRelayTokenProtocol(
     request.headers.get("Sec-WebSocket-Protocol"),
   ).token;
-  return protocolToken ?? url.searchParams.get("token");
+  return protocolToken;
 }
 
 function readSocketAttachment(ws: WebSocket): SocketAttachment | null {
@@ -711,15 +758,15 @@ function buildPairingUrl(
   return url.toString();
 }
 
-function resolvePublicRelayOrigin(request: Request, env: Env): string {
+function resolvePublicRelayOrigin(request: Request, env: ThreadlinesRelayEnv): string {
   return env.THREADLINES_RELAY_PUBLIC_ORIGIN?.trim() || new URL(request.url).origin;
 }
 
-function resolveAppOrigin(env: Env): string {
+function resolveAppOrigin(env: ThreadlinesRelayEnv): string {
   return env.THREADLINES_APP_ORIGIN?.trim() || DEFAULT_APP_ORIGIN;
 }
 
-function resolveAllowedOrigins(env: Env): ReadonlySet<string> {
+function resolveAllowedOrigins(env: ThreadlinesRelayEnv): ReadonlySet<string> {
   const configured = env.THREADLINES_ALLOWED_ORIGINS?.trim();
   const origins = configured
     ? configured
@@ -730,7 +777,7 @@ function resolveAllowedOrigins(env: Env): ReadonlySet<string> {
   return new Set(origins);
 }
 
-function isAllowedOrigin(request: Request, env: Env): boolean {
+function isAllowedOrigin(request: Request, env: ThreadlinesRelayEnv): boolean {
   const origin = request.headers.get("Origin");
   if (!origin) {
     return true;
@@ -738,7 +785,7 @@ function isAllowedOrigin(request: Request, env: Env): boolean {
   return resolveAllowedOrigins(env).has(origin);
 }
 
-function corsHeaders(request: Request, env: Env): Headers {
+function corsHeaders(request: Request, env: ThreadlinesRelayEnv): Headers {
   const headers = new Headers();
   const origin = request.headers.get("Origin");
   if (origin && resolveAllowedOrigins(env).has(origin)) {
@@ -750,7 +797,7 @@ function corsHeaders(request: Request, env: Env): Headers {
   return headers;
 }
 
-function withCors(request: Request, env: Env, response: Response): Response {
+function withCors(request: Request, env: ThreadlinesRelayEnv, response: Response): Response {
   const headers = new Headers(response.headers);
   for (const [key, value] of corsHeaders(request, env)) {
     headers.set(key, value);
@@ -762,12 +809,17 @@ function withCors(request: Request, env: Env, response: Response): Response {
   });
 }
 
-function resolveSessionTtlSeconds(env: Env): number {
+function resolveSessionTtlSeconds(env: ThreadlinesRelayEnv): number {
   const value = Number(env.THREADLINES_RELAY_SESSION_TTL_SECONDS ?? DEFAULT_SESSION_TTL_SECONDS);
   if (!Number.isFinite(value) || value <= 0) {
     return DEFAULT_SESSION_TTL_SECONDS;
   }
   return Math.min(Math.floor(value), MAX_SESSION_TTL_SECONDS);
+}
+
+function isSessionCreationEnabled(env: ThreadlinesRelayEnv): boolean {
+  const configured = env.THREADLINES_RELAY_SESSION_CREATION_ENABLED?.trim().toLowerCase();
+  return configured !== "false" && configured !== "0" && configured !== "off";
 }
 
 function generateToken(byteLength = 32): string {
@@ -790,12 +842,17 @@ function base64UrlEncode(bytes: Uint8Array): string {
 }
 
 function log(level: "info" | "warn" | "error", message: string, data?: Record<string, unknown>) {
-  console.log(
-    JSON.stringify({
-      level,
-      message,
-      timestamp: new Date().toISOString(),
-      ...data,
-    }),
-  );
+  const entry = JSON.stringify({
+    level,
+    message,
+    timestamp: new Date().toISOString(),
+    ...data,
+  });
+  if (level === "error") {
+    console.error(entry);
+  } else if (level === "warn") {
+    console.warn(entry);
+  } else {
+    console.log(entry);
+  }
 }
