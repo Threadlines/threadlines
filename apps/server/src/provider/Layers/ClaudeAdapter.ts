@@ -225,6 +225,26 @@ interface ClaudeTaskSnapshot {
   readonly taskType?: string;
 }
 
+type ClaudeStructuredAgentToolResult =
+  | {
+      readonly status: "async_launched";
+      readonly agentId: string;
+      readonly description?: string;
+      readonly raw: Record<string, unknown>;
+    }
+  | {
+      readonly status: "remote_launched";
+      readonly remoteTaskId: string;
+      readonly description?: string;
+      readonly raw: Record<string, unknown>;
+    }
+  | {
+      readonly status: "completed";
+      readonly agentId: string;
+      readonly resultText?: string;
+      readonly raw: Record<string, unknown>;
+    };
+
 interface ClaudeSessionContext {
   session: ProviderSession;
   readonly promptQueue: Queue.Queue<PromptQueueItem>;
@@ -251,10 +271,25 @@ interface ClaudeSessionContext {
    *  settle between turns and may notify more than once) can re-emit the
    *  originating tool item with the agent's real final message. */
   readonly collabAgentToolsByItemId: Map<string, ToolInFlight>;
+  /** Final background-agent results already replayed onto their originating
+   *  tool item. The SDK can surface the same completion through both a
+   *  structured tool_use_result and a legacy task-notification message. */
+  readonly completedCollabAgentItemIds: Set<string>;
+  /** Structured final results already applied. Kept separately so a richer
+   *  structured result can supersede an earlier legacy notification once. */
+  readonly structuredCompletedCollabAgentItemIds: Set<string>;
   /** Per-file +/- counts captured by the PostToolUse hook, keyed by tool_use_id.
    *  Consumed when the matching tool_result is emitted. */
   readonly fileChangeStatsByToolUseId: Map<string, FileChangeStat>;
   readonly tasks: Map<string, ClaudeTaskSnapshot>;
+  /** Task ids whose lifecycle start edge was already emitted in this Claude
+   *  process. Kept separate from task metadata so reordered progress cannot
+   *  suppress the real start edge. */
+  readonly startedTaskIds: Set<string>;
+  /** Whether this Claude process has demonstrated support for authoritative
+   *  background-task snapshots. Older user-configured binaries retain the
+   *  legacy edge-counting fallback until this becomes true. */
+  backgroundTaskSnapshotObserved: boolean;
   /** Mirror of the SDK task tracker (TaskCreate/TaskUpdate/TaskList), keyed
    *  by task id once the create result reveals it. Session-scoped because the
    *  tracker list persists across turns. */
@@ -1037,6 +1072,11 @@ function completedTaskStatusFromClaudeStatus(
     default:
       return undefined;
   }
+}
+
+function isClaudeAgentTaskType(value: string | undefined): boolean {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === "local_agent" || normalized === "remote_agent";
 }
 
 function describeClaudeTaskStatus(status: ClaudeTaskStatus | undefined): string {
@@ -1864,6 +1904,105 @@ function toolResultBlocksFromUserMessage(message: SDKMessage): Array<{
   }
 
   return blocks;
+}
+
+/** The SDK exposes Agent/Task results twice: a model-facing tool_result block
+ *  and this structured, tool-specific value. Prefer the structured value for
+ *  identity and final output; its shape is versioned with the installed SDK
+ *  and avoids parsing human-readable launch acknowledgements. */
+function structuredAgentToolResultFromUserMessage(
+  message: SDKMessage,
+): ClaudeStructuredAgentToolResult | undefined {
+  if (message.type !== "user") {
+    return undefined;
+  }
+
+  const value = (message as SDKUserMessage).tool_use_result;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const raw = value as Record<string, unknown>;
+  const status = nonEmptyString(raw.status);
+  if (status === "async_launched") {
+    const agentId = nonEmptyString(raw.agentId);
+    if (
+      !agentId ||
+      !nonEmptyString(raw.description) ||
+      !nonEmptyString(raw.prompt) ||
+      !nonEmptyString(raw.outputFile)
+    ) {
+      return undefined;
+    }
+    const description = nonEmptyString(raw.description);
+    return {
+      status,
+      agentId,
+      ...(description ? { description } : {}),
+      raw,
+    };
+  }
+  if (status === "remote_launched") {
+    const remoteTaskId = nonEmptyString(raw.taskId);
+    if (
+      !remoteTaskId ||
+      !nonEmptyString(raw.description) ||
+      !nonEmptyString(raw.prompt) ||
+      !nonEmptyString(raw.sessionUrl) ||
+      !nonEmptyString(raw.outputFile)
+    ) {
+      return undefined;
+    }
+    const description = nonEmptyString(raw.description);
+    return {
+      status,
+      remoteTaskId,
+      ...(description ? { description } : {}),
+      raw,
+    };
+  }
+  if (status !== "completed") {
+    return undefined;
+  }
+
+  const agentId = nonEmptyString(raw.agentId);
+  if (
+    !agentId ||
+    !Array.isArray(raw.content) ||
+    !nonEmptyString(raw.prompt) ||
+    !raw.usage ||
+    typeof raw.usage !== "object" ||
+    Array.isArray(raw.usage) ||
+    typeof raw.totalToolUseCount !== "number" ||
+    typeof raw.totalDurationMs !== "number" ||
+    typeof raw.totalTokens !== "number"
+  ) {
+    return undefined;
+  }
+  const resultText = extractTextContent(raw.content).trim();
+  return {
+    status,
+    agentId,
+    ...(resultText ? { resultText } : {}),
+    raw,
+  };
+}
+
+function toolResultBlockWithStructuredAgentOutput(
+  toolResult: ReturnType<typeof toolResultBlocksFromUserMessage>[number],
+  structuredResult: ClaudeStructuredAgentToolResult | undefined,
+): Record<string, unknown> {
+  if (structuredResult?.status !== "completed") {
+    return toolResult.block;
+  }
+  const structuredContent = structuredResult.raw.content;
+  if (!Array.isArray(structuredContent)) {
+    return toolResult.block;
+  }
+  return {
+    ...toolResult.block,
+    content: structuredContent,
+  };
 }
 
 interface ClaudeTaskNotification {
@@ -3096,6 +3235,107 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     });
   });
 
+  const emitTaskStartedOnce = Effect.fn("emitTaskStartedOnce")(function* (
+    context: ClaudeSessionContext,
+    task: {
+      readonly taskId: string;
+      readonly description?: string;
+      readonly toolUseId?: string;
+      readonly subagentType?: string;
+      readonly taskType?: string;
+    },
+    message: SDKMessage,
+  ) {
+    const previous = context.tasks.get(task.taskId);
+    if (completedTaskStatusFromClaudeStatus(previous?.status) !== undefined) {
+      return false;
+    }
+    context.tasks.set(task.taskId, {
+      ...previous,
+      ...(task.description ? { description: task.description } : {}),
+      ...(task.toolUseId ? { toolUseId: task.toolUseId } : {}),
+      ...(task.subagentType ? { subagentType: task.subagentType } : {}),
+      ...(task.taskType ? { taskType: task.taskType } : {}),
+      status: "running",
+    });
+    if (context.startedTaskIds.has(task.taskId)) {
+      return false;
+    }
+    context.startedTaskIds.add(task.taskId);
+
+    const stamp = yield* makeEventStamp();
+    yield* offerRuntimeEvent({
+      type: "task.started",
+      eventId: stamp.eventId,
+      provider: PROVIDER,
+      createdAt: stamp.createdAt,
+      threadId: context.session.threadId,
+      ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+      payload: {
+        taskId: RuntimeTaskId.make(task.taskId),
+        ...(task.description ? { description: task.description } : {}),
+        ...(task.taskType ? { taskType: task.taskType } : {}),
+        ...(task.toolUseId ? { toolUseId: task.toolUseId } : {}),
+        ...(task.subagentType ? { subagentType: task.subagentType } : {}),
+        ...(context.backgroundTaskSnapshotObserved ? { pendingCountManagedBySnapshot: true } : {}),
+      },
+      providerRefs: nativeProviderRefs(context),
+      raw: {
+        source: "claude.sdk.message",
+        method: sdkNativeMethod(message),
+        payload: message,
+      },
+    });
+    return true;
+  });
+
+  const emitTaskCompletedOnce = Effect.fn("emitTaskCompletedOnce")(function* (
+    context: ClaudeSessionContext,
+    task: {
+      readonly taskId: string;
+      readonly status: "completed" | "failed" | "stopped";
+      readonly summary?: string;
+      readonly toolUseId?: string;
+      readonly usage?: unknown;
+    },
+    message: SDKMessage,
+  ) {
+    const previous = context.tasks.get(task.taskId);
+    if (completedTaskStatusFromClaudeStatus(previous?.status) !== undefined) {
+      return false;
+    }
+
+    context.tasks.set(task.taskId, {
+      ...previous,
+      status:
+        task.status === "completed" ? "completed" : task.status === "failed" ? "failed" : "killed",
+    });
+    const stamp = yield* makeEventStamp();
+    yield* offerRuntimeEvent({
+      type: "task.completed",
+      eventId: stamp.eventId,
+      provider: PROVIDER,
+      createdAt: stamp.createdAt,
+      threadId: context.session.threadId,
+      ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+      payload: {
+        taskId: RuntimeTaskId.make(task.taskId),
+        status: task.status,
+        ...(task.summary ? { summary: task.summary } : {}),
+        ...(task.usage !== undefined ? { usage: task.usage } : {}),
+        ...(task.toolUseId ? { toolUseId: task.toolUseId } : {}),
+        ...(context.backgroundTaskSnapshotObserved ? { pendingCountManagedBySnapshot: true } : {}),
+      },
+      providerRefs: nativeProviderRefs(context),
+      raw: {
+        source: "claude.sdk.message",
+        method: sdkNativeMethod(message),
+        payload: message,
+      },
+    });
+    return true;
+  });
+
   // A background subagent's Task tool_result is only a launch acknowledgment;
   // the agent's real final message arrives later inside a <task-notification>
   // user message. Replay it as a completion of the originating tool item so
@@ -3119,12 +3359,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       // get their notification replayed as a collab-agent completion.
       const isAgentTask =
         tool !== undefined ||
-        knownTask?.taskType === "local_agent" ||
+        isClaudeAgentTaskType(knownTask?.taskType) ||
         knownTask?.subagentType !== undefined ||
         isAgentTaskNotificationSummary(notification.summary);
-      if (!isAgentTask) {
+      if (!isAgentTask || context.completedCollabAgentItemIds.has(notification.toolUseId)) {
         return;
       }
+      context.completedCollabAgentItemIds.add(notification.toolUseId);
       const itemId = tool?.itemId ?? notification.toolUseId;
       const detail = tool?.detail ?? notification.summary;
 
@@ -3173,6 +3414,73 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     },
   );
 
+  const emitCollabAgentStructuredResult = Effect.fn("emitCollabAgentStructuredResult")(function* (
+    context: ClaudeSessionContext,
+    tool: ToolInFlight,
+    toolResult: ReturnType<typeof toolResultBlocksFromUserMessage>[number],
+    structuredResult: Extract<ClaudeStructuredAgentToolResult, { status: "completed" }>,
+    message: SDKMessage,
+  ) {
+    if (context.structuredCompletedCollabAgentItemIds.has(tool.itemId)) {
+      return;
+    }
+    context.structuredCompletedCollabAgentItemIds.add(tool.itemId);
+    context.completedCollabAgentItemIds.add(tool.itemId);
+
+    const linkedTaskEntry = Array.from(context.tasks.entries()).find(
+      ([, task]) => task.toolUseId === tool.itemId,
+    );
+    const taskId = linkedTaskEntry?.[0];
+    const task = linkedTaskEntry?.[1];
+    if (task && taskId && completedTaskStatusFromClaudeStatus(task.status) === undefined) {
+      yield* emitTaskCompletedOnce(
+        context,
+        {
+          taskId,
+          status: "completed",
+          ...(structuredResult.resultText ? { summary: structuredResult.resultText } : {}),
+          toolUseId: tool.itemId,
+        },
+        message,
+      );
+    }
+
+    const stamp = yield* makeEventStamp();
+    yield* offerRuntimeEvent({
+      type: "item.completed",
+      eventId: stamp.eventId,
+      provider: PROVIDER,
+      createdAt: stamp.createdAt,
+      threadId: context.session.threadId,
+      ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+      itemId: asRuntimeItemId(tool.itemId),
+      payload: {
+        itemType: "collab_agent_tool_call",
+        status: "completed",
+        title: tool.title,
+        ...(tool.detail ? { detail: tool.detail } : {}),
+        data: {
+          toolName: tool.toolName,
+          input: tool.input,
+          result: toolResultBlockWithStructuredAgentOutput(toolResult, structuredResult),
+          structuredResult: structuredResult.raw,
+          taskNotification: {
+            ...(taskId ? { taskId } : {}),
+            status: "completed",
+          },
+        },
+      },
+      providerRefs: nativeProviderRefs(context, {
+        providerItemId: tool.itemId,
+      }),
+      raw: {
+        source: "claude.sdk.message",
+        method: "claude/user",
+        payload: message,
+      },
+    });
+  });
+
   const handleUserMessage = Effect.fn("handleUserMessage")(function* (
     context: ClaudeSessionContext,
     message: SDKMessage,
@@ -3185,15 +3493,45 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       context.turnState.items.push(message.message);
     }
 
-    for (const notification of taskNotificationsFromUserMessage(message)) {
-      yield* emitCollabAgentNotificationResult(context, notification, message);
-    }
-
-    for (const toolResult of toolResultBlocksFromUserMessage(message)) {
+    const toolResults = toolResultBlocksFromUserMessage(message);
+    // SDKUserMessage.tool_use_result describes the matching Agent/Task output
+    // but does not carry its tool_use_id. Current SDK messages contain one
+    // tool_result when this field is present; do not guess if that changes.
+    const structuredAgentResult =
+      toolResults.length === 1 ? structuredAgentToolResultFromUserMessage(message) : undefined;
+    for (const toolResult of toolResults) {
       const toolEntry = Array.from(context.inFlightTools.entries()).find(
         ([, tool]) => tool.itemId === toolResult.toolUseId,
       );
       if (!toolEntry) {
+        const completedTool = context.collabAgentToolsByItemId.get(toolResult.toolUseId);
+        if (completedTool && structuredAgentResult?.status === "completed") {
+          yield* emitCollabAgentStructuredResult(
+            context,
+            completedTool,
+            toolResult,
+            structuredAgentResult,
+            message,
+          );
+        } else if (structuredAgentResult?.status === "completed") {
+          // A resumed CLI process can deliver the structured final result after
+          // the in-memory launch record was lost. Preserve the result on a
+          // stable synthesized item instead of silently dropping it.
+          yield* emitCollabAgentStructuredResult(
+            context,
+            {
+              itemId: toolResult.toolUseId,
+              itemType: "collab_agent_tool_call",
+              toolName: "Agent",
+              title: "Subagent task",
+              input: {},
+              partialInputJson: "",
+            },
+            toolResult,
+            structuredAgentResult,
+            message,
+          );
+        }
         continue;
       }
 
@@ -3202,6 +3540,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         // Background agents settle after this tool_result; keep the launch so
         // a later task notification can complete the item with the real result.
         context.collabAgentToolsByItemId.set(tool.itemId, tool);
+        if (structuredAgentResult?.status === "completed") {
+          context.structuredCompletedCollabAgentItemIds.add(tool.itemId);
+          context.completedCollabAgentItemIds.add(tool.itemId);
+        }
       }
       const itemStatus = toolResult.isError ? "failed" : "completed";
       const fileChangeStat = context.fileChangeStatsByToolUseId.get(toolResult.toolUseId);
@@ -3209,7 +3551,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const toolData = {
         toolName: tool.toolName,
         input: tool.input,
-        result: toolResult.block,
+        result: toolResultBlockWithStructuredAgentOutput(
+          toolResult,
+          tool.itemType === "collab_agent_tool_call" ? structuredAgentResult : undefined,
+        ),
+        ...(tool.itemType === "collab_agent_tool_call" && structuredAgentResult
+          ? { structuredResult: structuredAgentResult.raw }
+          : {}),
         ...(fileChangeStat ? { changes: [fileChangeStat] } : {}),
       };
 
@@ -3335,6 +3683,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }
 
       context.inFlightTools.delete(index);
+    }
+
+    // Prefer structured Agent/Task output when both representations are
+    // present on the same SDK message; the XML notification remains a
+    // backward-compatible fallback for older Claude processes.
+    for (const notification of taskNotificationsFromUserMessage(message)) {
+      yield* emitCollabAgentNotificationResult(context, notification, message);
     }
   });
 
@@ -3650,34 +4005,62 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           },
         });
         return;
+      case "background_tasks_changed": {
+        // This is a level signal with replace semantics. Forward the complete
+        // set so orchestration can set the pending count absolutely; do not
+        // infer terminal outcomes for disappeared ids because the snapshot
+        // intentionally carries no completion status or tool correlation.
+        context.backgroundTaskSnapshotObserved = true;
+        const tasksById = new Map<
+          string,
+          {
+            readonly taskId: RuntimeTaskId;
+            readonly taskType?: string;
+            readonly description?: string;
+          }
+        >();
+        for (const task of message.tasks) {
+          const description = nonEmptyString(task.description);
+          const taskType = nonEmptyString(task.task_type);
+          tasksById.set(task.task_id, {
+            taskId: RuntimeTaskId.make(task.task_id),
+            ...(description ? { description } : {}),
+            ...(taskType ? { taskType } : {}),
+          });
+        }
+        yield* offerRuntimeEvent({
+          ...base,
+          type: "task.snapshot.updated",
+          payload: {
+            tasks: Array.from(tasksById.values()),
+          },
+        });
+        return;
+      }
       case "task_started": {
         const description = nonEmptyString(message.description);
         const toolUseId = nonEmptyString(message.tool_use_id);
         const subagentType = nonEmptyString(message.subagent_type);
         const taskType = nonEmptyString(message.task_type);
-        context.tasks.set(message.task_id, {
-          ...(description ? { description } : {}),
-          ...(toolUseId ? { toolUseId } : {}),
-          ...(subagentType ? { subagentType } : {}),
-          ...(taskType ? { taskType } : {}),
-          status: "running",
-        });
-        yield* offerRuntimeEvent({
-          ...base,
-          type: "task.started",
-          payload: {
-            taskId: RuntimeTaskId.make(message.task_id),
-            description: message.description,
-            ...(message.task_type ? { taskType: message.task_type } : {}),
+        yield* emitTaskStartedOnce(
+          context,
+          {
+            taskId: message.task_id,
+            ...(description ? { description } : {}),
             ...(toolUseId ? { toolUseId } : {}),
             ...(subagentType ? { subagentType } : {}),
+            ...(taskType ? { taskType } : {}),
           },
-        });
+          message,
+        );
         return;
       }
       case "task_progress": {
         const description = nonEmptyString(message.description);
         const previous = context.tasks.get(message.task_id);
+        if (completedTaskStatusFromClaudeStatus(previous?.status) !== undefined) {
+          return;
+        }
         const toolUseId = nonEmptyString(message.tool_use_id) ?? previous?.toolUseId;
         const subagentType = nonEmptyString(message.subagent_type) ?? previous?.subagentType;
         context.tasks.set(message.task_id, {
@@ -3719,27 +4102,27 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         }
         const description = nonEmptyString(patch.description) ?? previous?.description;
         const error = nonEmptyString(patch.error);
+        const completedStatus = completedTaskStatusFromClaudeStatus(status);
+        if (completedStatus) {
+          const summary = error ?? description;
+          yield* emitTaskCompletedOnce(
+            context,
+            {
+              taskId: message.task_id,
+              status: completedStatus,
+              ...(summary ? { summary } : {}),
+              ...(previous?.toolUseId ? { toolUseId: previous.toolUseId } : {}),
+            },
+            message,
+          );
+          return;
+        }
+
         context.tasks.set(message.task_id, {
           ...previous,
           ...(description ? { description } : {}),
           ...(status ? { status } : {}),
         });
-
-        const completedStatus = completedTaskStatusFromClaudeStatus(status);
-        if (completedStatus) {
-          const summary = error ?? description;
-          yield* offerRuntimeEvent({
-            ...base,
-            type: "task.completed",
-            payload: {
-              taskId: RuntimeTaskId.make(message.task_id),
-              status: completedStatus,
-              ...(summary ? { summary } : {}),
-              ...(previous?.toolUseId ? { toolUseId: previous.toolUseId } : {}),
-            },
-          });
-          return;
-        }
 
         yield* offerRuntimeEvent({
           ...base,
@@ -3759,27 +4142,18 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         if (completedTaskStatusFromClaudeStatus(previous?.status) !== undefined) {
           return;
         }
-        context.tasks.set(message.task_id, {
-          ...previous,
-          status:
-            message.status === "completed"
-              ? "completed"
-              : message.status === "failed"
-                ? "failed"
-                : "killed",
-        });
         const toolUseId = nonEmptyString(message.tool_use_id) ?? previous?.toolUseId;
-        yield* offerRuntimeEvent({
-          ...base,
-          type: "task.completed",
-          payload: {
-            taskId: RuntimeTaskId.make(message.task_id),
+        yield* emitTaskCompletedOnce(
+          context,
+          {
+            taskId: message.task_id,
             status: message.status,
             ...(message.summary ? { summary: message.summary } : {}),
             ...(message.usage ? { usage: message.usage } : {}),
             ...(toolUseId ? { toolUseId } : {}),
           },
-        });
+          message,
+        );
         return;
       }
       case "files_persisted":
@@ -4745,8 +5119,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         turns: [],
         inFlightTools,
         collabAgentToolsByItemId: new Map(),
+        completedCollabAgentItemIds: new Set(),
+        structuredCompletedCollabAgentItemIds: new Set(),
         fileChangeStatsByToolUseId,
         tasks: new Map(),
+        startedTaskIds: new Set(),
+        backgroundTaskSnapshotObserved: false,
         planTracker: new Map(),
         lastEmittedPlanTrackerFingerprint: undefined,
         turnState: undefined,

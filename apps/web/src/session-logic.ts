@@ -98,6 +98,10 @@ export interface WorkLogEntry {
   tone: "thinking" | "tool" | "info" | "warning" | "error";
   toolTitle?: string;
   itemType?: ToolLifecycleItemType;
+  /** Whether a subagent tool row creates an agent or only coordinates one.
+   *  Coordination calls stay in the transcript without inflating delegation
+   *  counts in the compact activity summary. */
+  subagentOperation?: "delegation" | "coordination";
   requestKind?: PendingApproval["requestKind"];
   executionState?: "running" | "completed" | "failed";
   authReconnect?: ProviderAuthReconnectAction;
@@ -691,7 +695,13 @@ export function deriveSubagentProgressState(input: {
   const records = collectSubagentActivityRecords(input.activities, {
     latestTurnId: input.latestTurnId ?? null,
   });
-  const visibleRecords = records.filter((record) => record.status !== "completed");
+  // Finished agents remain useful while their parent turn is still running:
+  // they explain a shrinking active count and make the completed badge/state
+  // reachable. Once the turn settles, successful agents clear with the rest
+  // of the transient activity UI while failures remain actionable.
+  const visibleRecords = records.filter(
+    (record) => record.status !== "completed" || input.latestTurnSettled === false,
+  );
   const items = visibleRecords.map(
     ({
       resultActivityId: _resultActivityId,
@@ -937,6 +947,7 @@ function collectSubagentActivityRecords(
         asTrimmedString(item.agentRole) ??
         asTrimmedString(item.role) ??
         parsedObjective.role ??
+        subagentRoleFromAgentPath(asTrimmedString(item.agentPath)) ??
         previous?.role ??
         null;
       const nickname =
@@ -1031,6 +1042,7 @@ function asClaudeSubagentActivityItem(input: {
     asTrimmedString(input.payload.status) ?? claudeSubagentStatusFromActivityKind(input.activity);
   const resultText = extractClaudeSubagentResultText(input.data?.result);
   const notificationStatus = asTrimmedString(asRecord(input.data?.taskNotification)?.status);
+  const structuredResultStatus = asTrimmedString(asRecord(input.data?.structuredResult)?.status);
   // A background launch acknowledgment is harness plumbing, not agent output:
   // the agent keeps running and its real message arrives later through the
   // task-notification completion replay (which carries data.taskNotification).
@@ -1039,9 +1051,11 @@ function asClaudeSubagentActivityItem(input: {
       ? claudeSubagentStateStatus(
           notificationStatus === "stopped" ? "interrupted" : notificationStatus,
         )
-      : isClaudeAsyncAgentLaunchAcknowledgment(resultText)
+      : structuredResultStatus === "async_launched" || structuredResultStatus === "remote_launched"
         ? "running"
-        : claudeSubagentStateStatus(itemStatus);
+        : isClaudeAsyncAgentLaunchAcknowledgment(resultText)
+          ? "running"
+          : claudeSubagentStateStatus(itemStatus);
   const agentMessage = isTerminalClaudeSubagentState(stateStatus) ? resultText : null;
   const role =
     asTrimmedString(toolInput?.subagent_type) ??
@@ -1213,6 +1227,14 @@ function stringArray(value: unknown): string[] {
 
 function isSpawnAgentTool(tool: string | null): boolean {
   return tool?.trim().toLowerCase() === "spawnagent";
+}
+
+function subagentRoleFromAgentPath(agentPath: string | null): string | null {
+  const lastSegment = agentPath
+    ?.split(/[\\/]+/u)
+    .findLast((segment) => segment.trim().length > 0)
+    ?.trim();
+  return lastSegment && lastSegment.toLowerCase() !== "root" ? lastSegment : null;
 }
 
 function isTerminalSubagentResult(input: {
@@ -1650,6 +1672,10 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   }
   if (itemType) {
     entry.itemType = itemType;
+  }
+  const subagentOperation = extractSubagentWorkOperation(payload, itemType);
+  if (subagentOperation) {
+    entry.subagentOperation = subagentOperation;
   }
   if (requestKind) {
     entry.requestKind = requestKind;
@@ -2743,6 +2769,29 @@ function isImagePreviewPayload(payload: Record<string, unknown> | null): boolean
 function extractToolCallId(payload: Record<string, unknown> | null): string | null {
   const data = asRecord(payload?.data);
   return asTrimmedString(payload?.toolCallId) ?? asTrimmedString(data?.toolCallId);
+}
+
+function extractSubagentWorkOperation(
+  payload: Record<string, unknown> | null,
+  itemType: ToolLifecycleItemType | undefined,
+): WorkLogEntry["subagentOperation"] | undefined {
+  if (itemType !== "collab_agent_tool_call") {
+    return undefined;
+  }
+
+  const data = asRecord(payload?.data);
+  const item = asRecord(data?.item);
+  const nativeKind = normalizeStatusToken(asTrimmedString(item?.kind));
+  if (nativeKind === "started") {
+    return "delegation";
+  }
+  if (nativeKind === "interacted" || nativeKind === "interrupted") {
+    return "coordination";
+  }
+
+  const tool =
+    asTrimmedString(item?.tool) ?? asTrimmedString(data?.tool) ?? asTrimmedString(data?.toolName);
+  return isSpawnAgentTool(tool) || isClaudeSubagentToolName(tool) ? "delegation" : "coordination";
 }
 
 interface ToolCallIdentity {

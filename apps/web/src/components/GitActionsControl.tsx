@@ -1461,20 +1461,40 @@ export default function GitActionsControl({
     }
     if (quickAction.kind === "run_pull") {
       const runPullWithToast = () => {
-        const promise = pullMutation.mutateAsync();
+        const promise = pullMutation.mutateAsync(undefined);
         void toastManager.promise<
           Awaited<ReturnType<typeof pullMutation.mutateAsync>>,
           ThreadToastData
         >(promise, {
           loading: { title: "Pulling...", data: threadToastData },
-          success: (result) => ({
-            title: result.status === "pulled" ? "Pulled" : "Already up to date",
-            description:
-              result.status === "pulled"
-                ? `Updated ${result.refName} from ${result.upstreamRef ?? "upstream"}`
-                : `${result.refName} is already synchronized.`,
-            data: threadToastData,
-          }),
+          success: (result) => {
+            switch (result.status) {
+              case "pulled":
+                return {
+                  title: "Pulled",
+                  description: `Updated ${result.refName} from ${result.upstreamRef ?? "upstream"}`,
+                  data: threadToastData,
+                };
+              case "skipped_up_to_date":
+                return {
+                  title: "Already up to date",
+                  description: `${result.refName} is already synchronized.`,
+                  data: threadToastData,
+                };
+              case "requires_history_reconciliation":
+                return {
+                  title: "Upstream history changed",
+                  description: "Open Source Control and pull again to review the safe recovery.",
+                  data: threadToastData,
+                };
+              case "reconciled":
+                return {
+                  title: "Updated from rewritten upstream",
+                  description: `Backed up ${result.refName} to ${result.recoveryRef}, then updated it from ${result.upstreamRef}.`,
+                  data: threadToastData,
+                };
+            }
+          },
           error: (err) => {
             const authFailure = gitRemoteAuthFailureFromError(err);
             if (authFailure) {

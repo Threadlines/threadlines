@@ -12,6 +12,8 @@ import {
   GitRunStackedActionInput,
   GitResolvePullRequestResult,
   VcsMergeRefResult,
+  VcsPullInput,
+  VcsPullResult,
 } from "./git.ts";
 
 const decodeCommitGraphInput = Schema.decodeUnknownSync(VcsCommitGraphInput);
@@ -26,6 +28,8 @@ const decodeRunStackedActionInput = Schema.decodeUnknownSync(GitRunStackedAction
 const decodeRunStackedActionResult = Schema.decodeUnknownSync(GitRunStackedActionResult);
 const decodeResolvePullRequestResult = Schema.decodeUnknownSync(GitResolvePullRequestResult);
 const decodeMergeRefResult = Schema.decodeUnknownSync(VcsMergeRefResult);
+const decodePullInput = Schema.decodeUnknownSync(VcsPullInput);
+const decodePullResult = Schema.decodeUnknownSync(VcsPullResult);
 
 describe("VcsCreateWorktreeInput", () => {
   it("accepts omitted newRefName for existing-refName worktrees", () => {
@@ -113,6 +117,45 @@ describe("VcsMergeRefResult", () => {
     });
 
     expect(parsed.push?.upstreamBranch).toBe("origin/main");
+  });
+});
+
+describe("VcsPull", () => {
+  it("decodes SHA-bound rewritten-history confirmation", () => {
+    const parsed = decodePullInput({
+      cwd: "/repo",
+      historyReconciliation: {
+        refName: "main",
+        upstreamRef: "origin/main",
+        expectedLocalSha: "89abcdef0123456789abcdef0123456789abcdef",
+        expectedUpstreamSha: "0123456789abcdef0123456789abcdef01234567",
+      },
+    });
+
+    expect(parsed.historyReconciliation?.refName).toBe("main");
+    expect(parsed.historyReconciliation?.expectedUpstreamSha).toBe(
+      "0123456789abcdef0123456789abcdef01234567",
+    );
+  });
+
+  it("decodes required and completed rewritten-history results", () => {
+    const required = decodePullResult({
+      status: "requires_history_reconciliation",
+      refName: "main",
+      upstreamRef: "origin/main",
+      localSha: "89abcdef0123456789abcdef0123456789abcdef",
+      upstreamSha: "0123456789abcdef0123456789abcdef01234567",
+      equivalentUpstreamCommitSha: "fedcba9876543210fedcba9876543210fedcba98",
+    });
+    const reconciled = decodePullResult({
+      status: "reconciled",
+      refName: "main",
+      upstreamRef: "origin/main",
+      recoveryRef: "refs/threadlines/recovery/main/89abcdef0123-example",
+    });
+
+    expect(required.status).toBe("requires_history_reconciliation");
+    expect(reconciled.status).toBe("reconciled");
   });
 });
 

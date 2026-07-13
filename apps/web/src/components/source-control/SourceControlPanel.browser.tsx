@@ -8,6 +8,7 @@ import {
   type LocalApi,
   type VcsCommitDetailsResult,
   type VcsCommitGraphResult,
+  type VcsPullResult,
   type VcsStatusResult,
 } from "@threadlines/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -121,6 +122,7 @@ vi.mock("../ui/toast", () => ({
 }));
 
 const ENVIRONMENT_ID = EnvironmentId.make("source-control-browser-test");
+const OTHER_ENVIRONMENT_ID = EnvironmentId.make("source-control-browser-test-other");
 const CWD = "/repo/project";
 const TARGET: SourceControlProjectTarget = {
   environmentId: ENVIRONMENT_ID,
@@ -511,6 +513,185 @@ describe("SourceControlPanel changes", () => {
       expect(Math.abs(optionsRect.width - 24)).toBeLessThanOrEqual(1);
     } finally {
       await mounted.cleanup();
+    }
+  });
+
+  it("confirms a rewritten upstream with an equivalent snapshot before recovering", async () => {
+    const results: VcsPullResult[] = [
+      {
+        status: "requires_history_reconciliation",
+        refName: "main",
+        upstreamRef: "origin/main",
+        localSha: "1111111111111111111111111111111111111111",
+        upstreamSha: "2222222222222222222222222222222222222222",
+        equivalentUpstreamCommitSha: "3333333333333333333333333333333333333333",
+      },
+      {
+        status: "reconciled",
+        refName: "main",
+        upstreamRef: "origin/main",
+        recoveryRef: "refs/threadlines/recovery/main-20260713T120000Z",
+      },
+    ];
+    const pull: EnvironmentApi["vcs"]["pull"] = vi.fn(async () => {
+      const result = results.shift();
+      if (!result) {
+        throw new Error("Unexpected pull");
+      }
+      return result;
+    });
+    const mounted = await renderPanel({
+      status: makeStatus({ behindCount: 1 }),
+      environmentApi: makeEnvironmentApi({ vcs: { pull } }),
+    });
+
+    try {
+      await page.getByRole("button", { name: "Pull" }).click();
+
+      await expect.element(page.getByText("Upstream history changed")).toBeInTheDocument();
+      await expect
+        .element(page.getByText(/Git found your current file snapshot/))
+        .toBeInTheDocument();
+      await expect.element(page.getByText(/333333333333/)).toBeInTheDocument();
+
+      await page.getByRole("button", { name: "Back up & use upstream" }).click();
+
+      await vi.waitFor(() => {
+        expect(pull).toHaveBeenCalledTimes(2);
+        expect(pull).toHaveBeenLastCalledWith({
+          cwd: CWD,
+          historyReconciliation: {
+            refName: "main",
+            upstreamRef: "origin/main",
+            expectedLocalSha: "1111111111111111111111111111111111111111",
+            expectedUpstreamSha: "2222222222222222222222222222222222222222",
+          },
+        });
+      });
+      await expect.element(page.getByText("Upstream history changed")).not.toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("warns when rewritten upstream has no equivalent snapshot and cancels safely", async () => {
+    const pull: EnvironmentApi["vcs"]["pull"] = vi.fn(async () => ({
+      status: "requires_history_reconciliation" as const,
+      refName: "main",
+      upstreamRef: "origin/main",
+      localSha: "1111111111111111111111111111111111111111",
+      upstreamSha: "2222222222222222222222222222222222222222",
+      equivalentUpstreamCommitSha: null,
+    }));
+    const mounted = await renderPanel({
+      status: makeStatus({ behindCount: 1 }),
+      environmentApi: makeEnvironmentApi({ vcs: { pull } }),
+    });
+
+    try {
+      await page.getByRole("button", { name: "Pull" }).click();
+
+      await expect
+        .element(page.getByText(/Git could not find your current file snapshot/))
+        .toBeInTheDocument();
+      await expect
+        .element(page.getByText(/recovery ref preserves the old history locally/))
+        .toBeInTheDocument();
+
+      await page.getByRole("button", { name: "Cancel" }).click();
+
+      await expect.element(page.getByText("Upstream history changed")).not.toBeInTheDocument();
+      expect(pull).toHaveBeenCalledTimes(1);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("ignores a rewritten-history response after switching checkouts", async () => {
+    const deferred = createDeferredPromise<VcsPullResult>();
+    const pullFromFirstCheckout: EnvironmentApi["vcs"]["pull"] = vi.fn(
+      async () => deferred.promise,
+    );
+    const pullFromSecondCheckout: EnvironmentApi["vcs"]["pull"] = vi.fn(async () => ({
+      status: "skipped_up_to_date" as const,
+      refName: "main",
+      upstreamRef: "origin/main",
+    }));
+    const firstEnvironmentApi = makeEnvironmentApi({
+      vcs: { pull: pullFromFirstCheckout },
+    });
+    const secondEnvironmentApi = makeEnvironmentApi({
+      vcs: { pull: pullFromSecondCheckout },
+    });
+    const secondTarget: SourceControlProjectTarget = {
+      ...TARGET,
+      environmentId: OTHER_ENVIRONMENT_ID,
+      projectCwd: "/repo/other",
+      cwd: "/repo/other",
+      name: "Other checkout",
+    };
+    gitStatusMock.data = makeStatus({ behindCount: 1 });
+    __setEnvironmentApiOverrideForTests(ENVIRONMENT_ID, firstEnvironmentApi);
+    __setEnvironmentApiOverrideForTests(OTHER_ENVIRONMENT_ID, secondEnvironmentApi);
+
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+    const host = document.createElement("div");
+    host.style.width = "420px";
+    host.style.height = "720px";
+    document.body.append(host);
+    let switchCheckout: (() => void) | null = null;
+
+    function PanelHarness() {
+      const [panelTarget, setPanelTarget] = useState(TARGET);
+      useEffect(() => {
+        switchCheckout = () => setPanelTarget(secondTarget);
+        return () => {
+          switchCheckout = null;
+        };
+      }, []);
+
+      return (
+        <AppAtomRegistryProvider>
+          <QueryClientProvider client={queryClient}>
+            <SourceControlPanel target={panelTarget} activeThreadRef={null} />
+          </QueryClientProvider>
+        </AppAtomRegistryProvider>
+      );
+    }
+
+    const router = createTestRouter(<PanelHarness />);
+    const screen = await render(<RouterProvider router={router} />, { container: host });
+
+    try {
+      await page.getByRole("button", { name: "Pull" }).click();
+      await vi.waitFor(() => expect(pullFromFirstCheckout).toHaveBeenCalledTimes(1));
+
+      flushSync(() => switchCheckout?.());
+      deferred.resolve({
+        status: "requires_history_reconciliation",
+        refName: "main",
+        upstreamRef: "origin/main",
+        localSha: "1111111111111111111111111111111111111111",
+        upstreamSha: "2222222222222222222222222222222222222222",
+        equivalentUpstreamCommitSha: "3333333333333333333333333333333333333333",
+      });
+
+      await expect.element(page.getByRole("button", { name: "Pull" })).toBeEnabled();
+      await expect.element(page.getByText("Upstream history changed")).not.toBeInTheDocument();
+      await expect
+        .element(page.getByRole("button", { name: "Back up & use upstream" }))
+        .not.toBeInTheDocument();
+      expect(pullFromFirstCheckout).toHaveBeenCalledTimes(1);
+      expect(pullFromSecondCheckout).not.toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+      queryClient.clear();
+      host.remove();
     }
   });
 

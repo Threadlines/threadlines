@@ -842,40 +842,41 @@ describe("deriveProviderBackgroundRuns", () => {
     expect(runs[0]?.pids).toEqual([4242]);
   });
 
-  it("hides local_agent tasks from background runs even without active subagent records", () => {
-    const { runs } = deriveProviderBackgroundRuns({
-      activities: [
-        taskActivity(
-          "task.started",
-          {
-            taskId: "task-bg-agent",
-            taskType: "local_agent",
-            detail: "Inventory Threadlines features thoroughly",
-            toolUseId: "tool-agent-bg",
-            subagentType: "Explore",
-          },
-          1,
-        ),
-        // Progress activities never repeat taskType; the suppression from the
-        // task.started classification must stick.
-        taskActivity(
-          "task.progress",
-          {
-            taskId: "task-bg-agent",
-            detail: "Reading packages/contracts/src/rpc.ts",
-            lastToolName: "Read",
-            toolUseId: "tool-agent-bg",
-          },
-          2,
-          TurnId.make("turn-2"),
-        ),
-      ],
-      messages: [],
-      pendingBackgroundTaskCount: 1,
-      activeSubagentCount: 0,
-    });
+  it("hides local and remote agent tasks without active subagent records", () => {
+    for (const taskType of ["local_agent", "remote_agent"]) {
+      const { runs } = deriveProviderBackgroundRuns({
+        activities: [
+          taskActivity(
+            "task.started",
+            {
+              taskId: `task-bg-${taskType}`,
+              taskType,
+              detail: "Inventory Threadlines features thoroughly",
+              toolUseId: `tool-${taskType}`,
+            },
+            1,
+          ),
+          // Progress activities never repeat taskType; the suppression from the
+          // task.started classification must stick.
+          taskActivity(
+            "task.progress",
+            {
+              taskId: `task-bg-${taskType}`,
+              detail: "Reading packages/contracts/src/rpc.ts",
+              lastToolName: "Read",
+              toolUseId: `tool-${taskType}`,
+            },
+            2,
+            TurnId.make("turn-2"),
+          ),
+        ],
+        messages: [],
+        pendingBackgroundTaskCount: 1,
+        activeSubagentCount: 0,
+      });
 
-    expect(runs).toEqual([]);
+      expect(runs).toEqual([]);
+    }
   });
 
   it("hides tasks tagged with a subagent type from background runs", () => {

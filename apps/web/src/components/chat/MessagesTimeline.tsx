@@ -2636,9 +2636,7 @@ function summarizeLiveHiddenWorkEntries(
     return null;
   }
   const runningCount = hiddenEntries.filter((entry) => entry.executionState === "running").length;
-  const delegatedCount = hiddenEntries.filter(
-    (entry) => entry.itemType === "collab_agent_tool_call",
-  ).length;
+  const delegatedCount = hiddenEntries.filter(isSubagentDelegationEntry).length;
   const parts = [
     runningCount > 0 ? formatActivityCount(runningCount, "active item", "active items") : null,
     delegatedCount > 0
@@ -2748,6 +2746,13 @@ function classifySummarizableActivityEntry(
   }
 
   if (entry.itemType === "collab_agent_tool_call") {
+    if (!isSubagentDelegationEntry(entry)) {
+      return {
+        kind: "tool",
+        signal: "tool",
+        commandName: normalizedToolName(entry),
+      };
+    }
     return {
       kind: "agent",
       signal: "agent",
@@ -3766,6 +3771,16 @@ function isSubagentWorkEntry(workEntry: TimelineWorkEntry): boolean {
     workEntry.itemType === "collab_agent_tool_call" ||
     /sub-?agent|delegat/i.test(`${workEntry.toolTitle ?? ""} ${workEntry.label}`)
   );
+}
+
+function isSubagentDelegationEntry(workEntry: TimelineWorkEntry): boolean {
+  if (workEntry.itemType !== "collab_agent_tool_call") {
+    return false;
+  }
+  // Older persisted rows predate this discriminator and represented actual
+  // spawn calls, so retain their existing presentation. Newly projected wait,
+  // send, resume, and close calls are explicitly marked as coordination.
+  return workEntry.subagentOperation !== "coordination";
 }
 
 function capitalizePhrase(value: string): string {

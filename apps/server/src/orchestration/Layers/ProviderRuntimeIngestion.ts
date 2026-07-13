@@ -2016,7 +2016,7 @@ const make = Effect.gen(function* () {
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
               activeTurnId: nextActiveTurnId,
               pendingBackgroundTaskCount:
-                event.type === "session.exited"
+                event.type === "session.started" || event.type === "session.exited"
                   ? 0
                   : (thread.session?.pendingBackgroundTaskCount ?? 0),
               lastError,
@@ -2027,13 +2027,32 @@ const make = Effect.gen(function* () {
         }
       }
 
-      // Track provider tasks (e.g. backgrounded shell commands) on the session
-      // so the UI can show a settled thread as waiting on background work. The
-      // provider self-wakes with a fresh turn when a task settles; this count
-      // only mirrors what is still running.
+      // A provider snapshot is an authoritative level signal. Apply it as an
+      // absolute count so missed or reordered task edges cannot wedge the
+      // session in a stale background-work state.
+      if (event.type === "task.snapshot.updated" && thread.session != null) {
+        const nextPendingCount = new Set(event.payload.tasks.map((task) => task.taskId)).size;
+        if (nextPendingCount !== (thread.session.pendingBackgroundTaskCount ?? 0)) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: providerCommandId(event, "task-snapshot-session-set"),
+            threadId: thread.id,
+            session: {
+              ...thread.session,
+              pendingBackgroundTaskCount: nextPendingCount,
+              updatedAt: now,
+            },
+            createdAt: now,
+          });
+        }
+      }
+
+      // Track provider task edges when no authoritative snapshot owns the
+      // count. Edge events still project lifecycle details in either mode.
       if (
         (event.type === "task.started" || event.type === "task.completed") &&
-        thread.session != null
+        thread.session != null &&
+        event.payload.pendingCountManagedBySnapshot !== true
       ) {
         const currentPendingCount = thread.session.pendingBackgroundTaskCount ?? 0;
         if (event.type === "task.completed" && currentPendingCount === 0) {

@@ -5,6 +5,7 @@ import { VcsDriverKind } from "./vcs.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const GIT_LIST_BRANCHES_MAX_LIMIT = 200;
+const VcsCommitSha = TrimmedNonEmptyStringSchema.check(Schema.isPattern(/^[0-9a-fA-F]{7,64}$/));
 
 // Domain Types
 
@@ -114,8 +115,17 @@ export const VcsStatusInput = Schema.Struct({
 });
 export type VcsStatusInput = typeof VcsStatusInput.Type;
 
+export const VcsPullHistoryReconciliation = Schema.Struct({
+  refName: TrimmedNonEmptyStringSchema,
+  upstreamRef: TrimmedNonEmptyStringSchema,
+  expectedLocalSha: VcsCommitSha,
+  expectedUpstreamSha: VcsCommitSha,
+});
+export type VcsPullHistoryReconciliation = typeof VcsPullHistoryReconciliation.Type;
+
 export const VcsPullInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
+  historyReconciliation: Schema.optional(VcsPullHistoryReconciliation),
 });
 export type VcsPullInput = typeof VcsPullInput.Type;
 
@@ -215,8 +225,6 @@ export const VcsCommitGraphInput = Schema.Struct({
   limit: Schema.optional(PositiveInt.check(Schema.isLessThanOrEqualTo(100))),
 });
 export type VcsCommitGraphInput = typeof VcsCommitGraphInput.Type;
-
-const VcsCommitSha = TrimmedNonEmptyStringSchema.check(Schema.isPattern(/^[0-9a-fA-F]{7,64}$/));
 
 export const VcsCommitDetailsInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
@@ -538,11 +546,33 @@ export const GitGenerateCommitMessageResult = Schema.Struct({
 });
 export type GitGenerateCommitMessageResult = typeof GitGenerateCommitMessageResult.Type;
 
-export const VcsPullResult = Schema.Struct({
+const VcsPullCompletedResult = Schema.Struct({
   status: Schema.Literals(["pulled", "skipped_up_to_date"]),
   refName: TrimmedNonEmptyStringSchema,
   upstreamRef: TrimmedNonEmptyStringSchema.pipe(Schema.NullOr),
 });
+
+const VcsPullHistoryReconciliationRequiredResult = Schema.Struct({
+  status: Schema.Literal("requires_history_reconciliation"),
+  refName: TrimmedNonEmptyStringSchema,
+  upstreamRef: TrimmedNonEmptyStringSchema,
+  localSha: VcsCommitSha,
+  upstreamSha: VcsCommitSha,
+  equivalentUpstreamCommitSha: VcsCommitSha.pipe(Schema.NullOr),
+});
+
+const VcsPullHistoryReconciledResult = Schema.Struct({
+  status: Schema.Literal("reconciled"),
+  refName: TrimmedNonEmptyStringSchema,
+  upstreamRef: TrimmedNonEmptyStringSchema,
+  recoveryRef: TrimmedNonEmptyStringSchema,
+});
+
+export const VcsPullResult = Schema.Union([
+  VcsPullCompletedResult,
+  VcsPullHistoryReconciliationRequiredResult,
+  VcsPullHistoryReconciledResult,
+]);
 export type VcsPullResult = typeof VcsPullResult.Type;
 
 // RPC / domain errors

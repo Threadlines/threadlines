@@ -40,6 +40,7 @@ import {
   type VcsListRefsResult,
   type VcsMergeRefInput,
   type VcsMergeRefResult,
+  type VcsPullInput,
   type VcsPullResult,
   type VcsRemoveWorktreeInput,
   type VcsStatusInput,
@@ -242,7 +243,9 @@ export interface GitVcsDriverShape {
   readonly unstageChanges: (
     input: VcsUnstageChangesInput,
   ) => Effect.Effect<VcsUnstageChangesResult, GitCommandError>;
-  readonly pullCurrentBranch: (cwd: string) => Effect.Effect<VcsPullResult, GitCommandError>;
+  readonly pullCurrentBranch: (
+    input: VcsPullInput,
+  ) => Effect.Effect<VcsPullResult, GitCommandError>;
   readonly createWorktree: (
     input: VcsCreateWorktreeInput,
   ) => Effect.Effect<VcsCreateWorktreeResult, GitCommandError>;

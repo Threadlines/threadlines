@@ -9,6 +9,7 @@ import {
   type SourceControlPublishRepositoryInput,
   type ThreadBootstrapCreateThread,
   type ThreadId,
+  type VcsPullHistoryReconciliation,
 } from "@threadlines/contracts";
 import {
   keepPreviousData,
@@ -540,10 +541,13 @@ export function gitPullMutationOptions(input: {
 }) {
   return mutationOptions({
     mutationKey: gitMutationKeys.pull(input.environmentId, input.cwd),
-    mutationFn: async () => {
+    mutationFn: async (historyReconciliation?: VcsPullHistoryReconciliation) => {
       if (!input.cwd || !input.environmentId) throw new Error("Git pull is unavailable.");
       const api = ensureEnvironmentApi(input.environmentId);
-      return api.vcs.pull({ cwd: input.cwd });
+      return api.vcs.pull({
+        cwd: input.cwd,
+        ...(historyReconciliation === undefined ? {} : { historyReconciliation }),
+      });
     },
     onSuccess: async () => {
       await invalidateGitBranchQueries(input.queryClient, input.environmentId, input.cwd);

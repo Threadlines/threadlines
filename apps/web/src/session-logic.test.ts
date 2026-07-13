@@ -147,6 +147,64 @@ describe("deriveWorkLogEntries model fallback metadata", () => {
   });
 });
 
+describe("deriveWorkLogEntries subagent operations", () => {
+  it("distinguishes real delegation from empty coordination polls", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "native-agent-started",
+        createdAt: "2026-07-13T18:38:47.000Z",
+        kind: "tool.completed",
+        summary: "Subagent task",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          title: "Subagent task",
+          data: {
+            item: {
+              type: "subAgentActivity",
+              agentThreadId: "agent-1",
+              agentPath: "/root/reviewer",
+              kind: "started",
+              tool: "spawnAgent",
+              status: "inProgress",
+              receiverThreadIds: ["agent-1"],
+              agentsStates: { "agent-1": { status: "running", message: null } },
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "empty-wait",
+        createdAt: "2026-07-13T18:38:48.000Z",
+        kind: "tool.completed",
+        summary: "Subagent task",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          title: "Subagent task",
+          data: {
+            item: {
+              id: "call-wait",
+              type: "collabAgentToolCall",
+              tool: "wait",
+              status: "completed",
+              receiverThreadIds: [],
+              agentsStates: {},
+            },
+          },
+        },
+      }),
+    ]);
+
+    expect(entries).toEqual([
+      expect.objectContaining({ id: "native-agent-started", subagentOperation: "delegation" }),
+      expect.objectContaining({ id: "empty-wait", subagentOperation: "coordination" }),
+    ]);
+  });
+});
+
 describe("derivePendingApprovals", () => {
   it("tracks open approvals and removes resolved ones", () => {
     const activities: OrchestrationThreadActivity[] = [
@@ -3495,7 +3553,15 @@ describe("deriveSubagentProgressState", () => {
       latestTurnId: TurnId.make("turn-1"),
       latestTurnSettled: false,
     });
-    expect(completedState).toBeNull();
+    expect(completedState).toMatchObject({
+      activeCount: 0,
+      completedCount: 1,
+      failedCount: 0,
+      totalCount: 1,
+      summary: "1 subagent finished",
+      badge: { label: "1", tone: "complete", pulse: false },
+      items: [expect.objectContaining({ status: "completed", statusLabel: "Done" })],
+    });
 
     expect(
       deriveSubagentProgressState({
@@ -3619,6 +3685,142 @@ describe("deriveSubagentProgressState", () => {
         }),
       ],
     });
+  });
+
+  it("tracks native Codex subagent activity by agent identity", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "native-agent-started",
+        createdAt: "2026-07-13T18:38:47.000Z",
+        kind: "tool.completed",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          data: {
+            item: {
+              type: "subAgentActivity",
+              agentThreadId: "agent-native-1",
+              agentPath: "/root/implementation_review",
+              kind: "started",
+              tool: "spawnAgent",
+              status: "inProgress",
+              receiverThreadIds: ["agent-native-1"],
+              agentsStates: {
+                "agent-native-1": { status: "running", message: null },
+              },
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "empty-wait-poll",
+        createdAt: "2026-07-13T18:38:48.000Z",
+        kind: "tool.completed",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          data: {
+            item: {
+              id: "call-wait",
+              type: "collabAgentToolCall",
+              tool: "wait",
+              status: "completed",
+              receiverThreadIds: [],
+              agentsStates: {},
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "native-agent-interacted",
+        createdAt: "2026-07-13T18:38:49.000Z",
+        kind: "tool.completed",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          data: {
+            item: {
+              type: "subAgentActivity",
+              agentThreadId: "agent-native-1",
+              agentPath: "/root/implementation_review",
+              kind: "interacted",
+              tool: "sendInput",
+              status: "inProgress",
+              receiverThreadIds: ["agent-native-1"],
+              agentsStates: {
+                "agent-native-1": { status: "running", message: null },
+              },
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "synthetic-native-agent-result",
+        createdAt: "2026-07-13T18:38:50.000Z",
+        kind: "subagent.result",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          data: {
+            item: {
+              id: "subagent-response:agent-native-1",
+              type: "collabAgentToolCall",
+              tool: "wait",
+              status: "completed",
+              receiverThreadIds: ["agent-native-1"],
+              agentsStates: {
+                "agent-native-1": { status: "completed", message: "Review complete." },
+              },
+            },
+          },
+        },
+      }),
+    ];
+
+    const runningState = deriveSubagentProgressState({
+      activities: activities.slice(0, 3),
+      latestTurnId: TurnId.make("turn-1"),
+      latestTurnSettled: false,
+    });
+    expect(runningState).toMatchObject({
+      activeCount: 1,
+      completedCount: 0,
+      totalCount: 1,
+      items: [
+        expect.objectContaining({
+          id: "agent-native-1",
+          agentThreadId: "agent-native-1",
+          role: "implementation_review",
+          label: "Implementation review subagent",
+          status: "running",
+        }),
+      ],
+    });
+
+    const completedState = deriveSubagentProgressState({
+      activities,
+      latestTurnId: TurnId.make("turn-1"),
+      latestTurnSettled: false,
+    });
+    expect(completedState).toMatchObject({
+      activeCount: 0,
+      completedCount: 1,
+      totalCount: 1,
+      summary: "1 subagent finished",
+      items: [expect.objectContaining({ id: "agent-native-1", status: "completed" })],
+    });
+
+    expect(
+      deriveSubagentProgressState({
+        activities,
+        latestTurnId: TurnId.make("turn-1"),
+        latestTurnSettled: true,
+      }),
+    ).toBeNull();
   });
 });
 
@@ -3948,6 +4150,54 @@ describe("deriveSubagentResultEntries", () => {
     ]);
   });
 
+  it("trusts Claude's structured async launch status over acknowledgment prose", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "claude-structured-bg-agent-launch",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.completed",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          title: "Subagent task",
+          toolCallId: "tool-structured-agent-bg",
+          data: {
+            toolName: "Agent",
+            input: {
+              description: "Review snapshot handling",
+              subagent_type: "code-reviewer",
+              run_in_background: true,
+            },
+            result: {
+              type: "tool_result",
+              tool_use_id: "tool-structured-agent-bg",
+              content: [{ type: "text", text: "Background work accepted." }],
+            },
+            structuredResult: {
+              status: "async_launched",
+              agentId: "agent-structured-1",
+              description: "Review snapshot handling",
+              prompt: "Review the implementation.",
+              outputFile: "C:/tmp/agent-structured-1.output",
+            },
+          },
+        },
+      }),
+    ];
+
+    expect(deriveSubagentResultEntries(activities)).toEqual([]);
+    expect(
+      deriveSubagentProgressState({ activities, latestTurnId: TurnId.make("turn-1") })?.items,
+    ).toEqual([
+      expect.objectContaining({
+        agentThreadId: "tool-structured-agent-bg",
+        role: "code-reviewer",
+        status: "running",
+      }),
+    ]);
+  });
+
   it("keeps a live background agent visible after a new turn starts", () => {
     const spawnActivities: OrchestrationThreadActivity[] = [
       makeActivity({
@@ -4111,6 +4361,68 @@ describe("deriveSubagentResultEntries", () => {
         model: null,
         reasoningEffort: null,
       },
+    ]);
+  });
+
+  it("lets a structured Claude result supersede an earlier legacy replay", () => {
+    const completion = (
+      id: string,
+      createdAt: string,
+      body: string,
+      structured: boolean,
+    ): OrchestrationThreadActivity =>
+      makeActivity({
+        id,
+        createdAt,
+        kind: "tool.completed",
+        turnId: "turn-1",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "completed",
+          title: "Subagent task",
+          toolCallId: "tool-agent-race",
+          data: {
+            toolName: "Agent",
+            input: {
+              description: "Review snapshot ordering",
+              subagent_type: "code-reviewer",
+            },
+            result: {
+              type: "tool_result",
+              tool_use_id: "tool-agent-race",
+              content: [{ type: "text", text: body }],
+            },
+            ...(structured
+              ? {
+                  structuredResult: {
+                    status: "completed",
+                    agentId: "agent-race",
+                  },
+                }
+              : {}),
+            taskNotification: {
+              taskId: "task-agent-race",
+              status: "completed",
+            },
+          },
+        },
+      });
+
+    const activities = [
+      completion("claude-agent-legacy", "2026-02-23T00:00:08.000Z", "Legacy result.", false),
+      completion(
+        "claude-agent-structured",
+        "2026-02-23T00:00:09.000Z",
+        "Structured final report.",
+        true,
+      ),
+    ];
+
+    expect(deriveSubagentResultEntries(activities)).toEqual([
+      expect.objectContaining({
+        agentThreadId: "tool-agent-race",
+        body: "Structured final report.",
+      }),
     ]);
   });
 

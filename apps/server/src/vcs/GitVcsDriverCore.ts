@@ -2720,49 +2720,124 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     };
   });
 
-  const pullCurrentBranch: GitVcsDriver.GitVcsDriverShape["pullCurrentBranch"] = Effect.fn(
-    "pullCurrentBranch",
-  )(function* (cwd) {
-    const details = yield* statusDetails(cwd);
-    const refName = details.branch;
-    if (!refName) {
-      return yield* createGitCommandError(
-        "GitVcsDriver.pullCurrentBranch",
-        cwd,
-        ["pull", "--ff-only"],
-        "Cannot pull from detached HEAD.",
-      );
+  const pullRefsHaveCommonAncestor = Effect.fn("pullRefsHaveCommonAncestor")(function* (
+    cwd: string,
+    localSha: string,
+    upstreamSha: string,
+  ) {
+    const args = ["merge-base", localSha, upstreamSha] as const;
+    const result = yield* executeGit("GitVcsDriver.pullCurrentBranch.mergeBase", cwd, args, {
+      allowNonZeroExit: true,
+      timeoutMs: 10_000,
+    });
+    if (result.exitCode === 0) {
+      return true;
     }
-    if (!details.hasUpstream) {
-      return yield* createGitCommandError(
-        "GitVcsDriver.pullCurrentBranch",
-        cwd,
-        ["pull", "--ff-only"],
-        "Current branch has no upstream configured. Push with upstream first.",
-      );
+    if (result.exitCode === 1) {
+      return false;
     }
-    const currentUpstream = yield* resolveCurrentUpstream(cwd);
-    if (!currentUpstream) {
-      return yield* createGitCommandError(
-        "GitVcsDriver.pullCurrentBranch",
-        cwd,
-        ["pull", "--ff-only"],
-        "Current branch upstream could not be resolved.",
-      );
-    }
-    const beforeSha = yield* runGitStdout(
-      "GitVcsDriver.pullCurrentBranch.beforeSha",
+    return yield* createGitCommandError(
+      "GitVcsDriver.pullCurrentBranch.mergeBase",
       cwd,
-      ["rev-parse", "HEAD"],
+      args,
+      result.stderr.trim() || "git merge-base failed",
+    );
+  });
+
+  const findEquivalentUpstreamCommit = Effect.fn("findEquivalentUpstreamCommit")(function* (
+    cwd: string,
+    localSha: string,
+    upstreamSha: string,
+  ) {
+    const localTree = yield* runGitStdout(
+      "GitVcsDriver.pullCurrentBranch.localTree",
+      cwd,
+      ["rev-parse", `${localSha}^{tree}`],
       true,
     ).pipe(Effect.map((stdout) => stdout.trim()));
-    const upstreamTrackingRef = remoteTrackingRef(
-      currentUpstream.remoteName,
-      currentUpstream.branchName,
+    const upstreamCommits = yield* runGitStdoutWithOptions(
+      "GitVcsDriver.pullCurrentBranch.upstreamTrees",
+      cwd,
+      ["log", "--format=%H%x09%T", "--max-count=5000", upstreamSha],
+      { maxOutputBytes: 1024 * 1024 },
     );
-    yield* withGitFetchPermitForCwd(
+    for (const line of upstreamCommits.split(/\r?\n/u)) {
+      const [commitSha, treeSha] = line.trim().split("\t");
+      if (commitSha && treeSha === localTree) {
+        return commitSha;
+      }
+    }
+    return null;
+  });
+
+  const findReconciliationPreviousHead = Effect.fn("findReconciliationPreviousHead")(function* (
+    cwd: string,
+    reflogAction: string,
+  ) {
+    const reflog = yield* runGitStdoutWithOptions(
+      "GitVcsDriver.pullCurrentBranch.reconciliationReflog",
+      cwd,
+      ["reflog", "show", "--format=%H%x09%gs", "--max-count=100", "HEAD"],
+      { maxOutputBytes: 128 * 1024 },
+    );
+    const entries = reflog
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    const resetSubject = `${reflogAction}: updating HEAD`;
+    const resetIndex = entries.findIndex((entry) => entry.split("\t", 2)[1] === resetSubject);
+    const previousEntry = resetIndex >= 0 ? entries[resetIndex + 1] : undefined;
+    const previousSha = previousEntry?.split("\t", 1)[0]?.trim();
+    if (previousSha) {
+      return previousSha;
+    }
+
+    return yield* runGitStdout(
+      "GitVcsDriver.pullCurrentBranch.reconciliationOrigHead",
+      cwd,
+      ["rev-parse", "ORIG_HEAD"],
+      true,
+    ).pipe(Effect.map((stdout) => stdout.trim()));
+  });
+
+  const pullCurrentBranch: GitVcsDriver.GitVcsDriverShape["pullCurrentBranch"] = Effect.fn(
+    "pullCurrentBranch",
+  )(function* (input) {
+    const { cwd, historyReconciliation } = input;
+    return yield* withGitFetchPermitForCwd(
       cwd,
       Effect.gen(function* () {
+        const details = yield* statusDetails(cwd);
+        const refName = details.branch;
+        if (!refName) {
+          return yield* createGitCommandError(
+            "GitVcsDriver.pullCurrentBranch",
+            cwd,
+            ["pull", "--ff-only"],
+            "Cannot pull from detached HEAD.",
+          );
+        }
+        if (!details.hasUpstream) {
+          return yield* createGitCommandError(
+            "GitVcsDriver.pullCurrentBranch",
+            cwd,
+            ["pull", "--ff-only"],
+            "Current branch has no upstream configured. Push with upstream first.",
+          );
+        }
+        const currentUpstream = yield* resolveCurrentUpstream(cwd);
+        if (!currentUpstream) {
+          return yield* createGitCommandError(
+            "GitVcsDriver.pullCurrentBranch",
+            cwd,
+            ["pull", "--ff-only"],
+            "Current branch upstream could not be resolved.",
+          );
+        }
+        const upstreamTrackingRef = remoteTrackingRef(
+          currentUpstream.remoteName,
+          currentUpstream.branchName,
+        );
         yield* executeGit(
           "GitVcsDriver.pullCurrentBranch.fetch",
           cwd,
@@ -2777,6 +2852,186 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             fallbackErrorMessage: "git fetch upstream failed",
           },
         );
+
+        const refreshedBeforePull = yield* statusDetails(cwd);
+        const refreshedUpstream = yield* resolveCurrentUpstream(cwd);
+        if (
+          refreshedBeforePull.branch !== refName ||
+          refreshedUpstream?.upstreamRef !== currentUpstream.upstreamRef
+        ) {
+          return yield* createGitCommandError(
+            "GitVcsDriver.pullCurrentBranch.revalidate",
+            cwd,
+            ["pull", "--ff-only"],
+            "The current branch or its upstream changed while the pull was fetching. Review the updated repository state and pull again.",
+          );
+        }
+        const localSha = yield* runGitStdout(
+          "GitVcsDriver.pullCurrentBranch.localSha",
+          cwd,
+          ["rev-parse", "HEAD"],
+          true,
+        ).pipe(Effect.map((stdout) => stdout.trim()));
+        const upstreamSha = yield* runGitStdout(
+          "GitVcsDriver.pullCurrentBranch.upstreamSha",
+          cwd,
+          ["rev-parse", upstreamTrackingRef],
+          true,
+        ).pipe(Effect.map((stdout) => stdout.trim()));
+        if (historyReconciliation) {
+          const mismatch =
+            refName !== historyReconciliation.refName
+              ? `Current branch changed from '${historyReconciliation.refName}' to '${refName}'.`
+              : currentUpstream.upstreamRef !== historyReconciliation.upstreamRef
+                ? `Upstream changed from '${historyReconciliation.upstreamRef}' to '${currentUpstream.upstreamRef}'.`
+                : localSha !== historyReconciliation.expectedLocalSha
+                  ? `Local HEAD changed from '${historyReconciliation.expectedLocalSha}' to '${localSha}'.`
+                  : upstreamSha !== historyReconciliation.expectedUpstreamSha
+                    ? `Upstream HEAD changed from '${historyReconciliation.expectedUpstreamSha}' to '${upstreamSha}'.`
+                    : refreshedBeforePull.hasWorkingTreeChanges
+                      ? "The working tree has uncommitted changes. Commit or stash them before reconciling rewritten history."
+                      : null;
+          if (mismatch) {
+            return yield* createGitCommandError(
+              "GitVcsDriver.pullCurrentBranch.reconcile",
+              cwd,
+              ["pull", "--ff-only"],
+              `${mismatch} Review the updated repository state and confirm again.`,
+            );
+          }
+        }
+        const hasCommonAncestor = yield* pullRefsHaveCommonAncestor(cwd, localSha, upstreamSha);
+
+        if (!hasCommonAncestor) {
+          if (!historyReconciliation) {
+            const equivalentUpstreamCommitSha = yield* findEquivalentUpstreamCommit(
+              cwd,
+              localSha,
+              upstreamSha,
+            ).pipe(Effect.catch(() => Effect.succeed(null)));
+            return {
+              status: "requires_history_reconciliation" as const,
+              refName,
+              upstreamRef: currentUpstream.upstreamRef,
+              localSha,
+              upstreamSha,
+              equivalentUpstreamCommitSha,
+            };
+          }
+
+          const preResetDetails = yield* statusDetails(cwd);
+          const preResetUpstream = yield* resolveCurrentUpstream(cwd);
+          const preResetLocalSha = yield* runGitStdout(
+            "GitVcsDriver.pullCurrentBranch.preResetLocalSha",
+            cwd,
+            ["rev-parse", "HEAD"],
+            true,
+          ).pipe(Effect.map((stdout) => stdout.trim()));
+          const preResetUpstreamSha = yield* runGitStdout(
+            "GitVcsDriver.pullCurrentBranch.preResetUpstreamSha",
+            cwd,
+            ["rev-parse", upstreamTrackingRef],
+            true,
+          ).pipe(Effect.map((stdout) => stdout.trim()));
+          const preResetMismatch =
+            preResetDetails.branch !== historyReconciliation.refName
+              ? `Current branch changed from '${historyReconciliation.refName}' to '${preResetDetails.branch ?? "detached HEAD"}'.`
+              : preResetUpstream?.upstreamRef !== historyReconciliation.upstreamRef
+                ? `Upstream changed from '${historyReconciliation.upstreamRef}' to '${preResetUpstream?.upstreamRef ?? "none"}'.`
+                : preResetLocalSha !== historyReconciliation.expectedLocalSha
+                  ? `Local HEAD changed from '${historyReconciliation.expectedLocalSha}' to '${preResetLocalSha}'.`
+                  : preResetUpstreamSha !== historyReconciliation.expectedUpstreamSha
+                    ? `Upstream HEAD changed from '${historyReconciliation.expectedUpstreamSha}' to '${preResetUpstreamSha}'.`
+                    : preResetDetails.hasWorkingTreeChanges
+                      ? "The working tree has uncommitted changes. Commit or stash them before reconciling rewritten history."
+                      : null;
+          if (preResetMismatch) {
+            return yield* createGitCommandError(
+              "GitVcsDriver.pullCurrentBranch.revalidateBeforeReset",
+              cwd,
+              ["pull", "--ff-only"],
+              `${preResetMismatch} Review the updated repository state and confirm again.`,
+            );
+          }
+          if (yield* pullRefsHaveCommonAncestor(cwd, preResetLocalSha, preResetUpstreamSha)) {
+            return yield* createGitCommandError(
+              "GitVcsDriver.pullCurrentBranch.revalidateBeforeReset",
+              cwd,
+              ["pull", "--ff-only"],
+              "The local and upstream branches no longer have unrelated histories. Review the updated repository state and pull again.",
+            );
+          }
+
+          const recoveryRef = `refs/threadlines/recovery/${refName}/${localSha.slice(0, 12)}-${randomUUID()}`;
+          yield* runGit("GitVcsDriver.pullCurrentBranch.createRecoveryRef", cwd, [
+            "update-ref",
+            recoveryRef,
+            localSha,
+            "",
+          ]);
+
+          const reconciliationId = randomUUID();
+          const reflogAction = `threadlines-history-reconciliation-${reconciliationId}`;
+          yield* executeGit(
+            "GitVcsDriver.pullCurrentBranch.reset",
+            cwd,
+            ["reset", "--keep", upstreamSha],
+            {
+              env: { GIT_REFLOG_ACTION: reflogAction },
+              timeoutMs: 30_000,
+              fallbackErrorMessage: "git history reconciliation reset failed",
+            },
+          );
+          const actualPreviousHead = yield* findReconciliationPreviousHead(cwd, reflogAction);
+          yield* runGit("GitVcsDriver.pullCurrentBranch.updateRecoveryRef", cwd, [
+            "update-ref",
+            recoveryRef,
+            actualPreviousHead,
+            localSha,
+          ]);
+          const [reconciledHeadSha, recoveredHeadSha, reconciledDetails, reconciledUpstream] =
+            yield* Effect.all([
+              runGitStdout("GitVcsDriver.pullCurrentBranch.reconciledHeadSha", cwd, [
+                "rev-parse",
+                "HEAD",
+              ]).pipe(Effect.map((stdout) => stdout.trim())),
+              runGitStdout("GitVcsDriver.pullCurrentBranch.recoveredHeadSha", cwd, [
+                "rev-parse",
+                recoveryRef,
+              ]).pipe(Effect.map((stdout) => stdout.trim())),
+              statusDetails(cwd),
+              resolveCurrentUpstream(cwd),
+            ]);
+          if (
+            reconciledHeadSha !== upstreamSha ||
+            recoveredHeadSha !== actualPreviousHead ||
+            reconciledDetails.branch !== refName ||
+            reconciledUpstream?.upstreamRef !== currentUpstream.upstreamRef
+          ) {
+            return yield* createGitCommandError(
+              "GitVcsDriver.pullCurrentBranch.verifyReconciliation",
+              cwd,
+              ["rev-parse", "HEAD"],
+              `History reconciliation post-verification failed. The recovery ref '${recoveryRef}' preserves commit '${recoveredHeadSha}'. Review the repository state before continuing.`,
+            );
+          }
+          return {
+            status: "reconciled" as const,
+            refName,
+            upstreamRef: currentUpstream.upstreamRef,
+            recoveryRef,
+          };
+        }
+
+        if (historyReconciliation) {
+          return yield* createGitCommandError(
+            "GitVcsDriver.pullCurrentBranch.reconcile",
+            cwd,
+            ["pull", "--ff-only"],
+            "The local and upstream branches no longer have unrelated histories. Review the updated repository state and pull again.",
+          );
+        }
+
         yield* executeGit(
           "GitVcsDriver.pullCurrentBranch.merge",
           cwd,
@@ -2786,21 +3041,24 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             fallbackErrorMessage: "git fast-forward merge failed",
           },
         );
+
+        const afterSha = yield* runGitStdout(
+          "GitVcsDriver.pullCurrentBranch.afterSha",
+          cwd,
+          ["rev-parse", "HEAD"],
+          true,
+        ).pipe(Effect.map((stdout) => stdout.trim()));
+        const refreshed = yield* statusDetails(cwd);
+        return {
+          status:
+            localSha.length > 0 && localSha === afterSha
+              ? ("skipped_up_to_date" as const)
+              : ("pulled" as const),
+          refName,
+          upstreamRef: refreshed.upstreamRef,
+        };
       }),
     );
-    const afterSha = yield* runGitStdout(
-      "GitVcsDriver.pullCurrentBranch.afterSha",
-      cwd,
-      ["rev-parse", "HEAD"],
-      true,
-    ).pipe(Effect.map((stdout) => stdout.trim()));
-
-    const refreshed = yield* statusDetails(cwd);
-    return {
-      status: beforeSha.length > 0 && beforeSha === afterSha ? "skipped_up_to_date" : "pulled",
-      refName,
-      upstreamRef: refreshed.upstreamRef,
-    };
   });
 
   const readRangeContext: GitVcsDriver.GitVcsDriverShape["readRangeContext"] = Effect.fn(

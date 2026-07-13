@@ -149,6 +149,8 @@ type CodexLifecycleItem =
   | EffectCodexSchema.V2ItemStartedNotification["item"]
   | EffectCodexSchema.V2ItemCompletedNotification["item"];
 
+type CodexSubAgentActivityItem = Extract<CodexLifecycleItem, { readonly type: "subAgentActivity" }>;
+
 type CodexToolUserInputQuestion =
   | EffectCodexSchema.ServerRequest__ToolRequestUserInputQuestion
   | EffectCodexSchema.ToolRequestUserInputParams__ToolRequestUserInputQuestion;
@@ -249,6 +251,7 @@ function toCanonicalItemType(raw: string | undefined | null): CanonicalItemType 
     return "file_change";
   if (type.includes("mcp")) return "mcp_tool_call";
   if (type.includes("dynamic tool")) return "dynamic_tool_call";
+  if (type.includes("sub agent activity")) return "collab_agent_tool_call";
   if (type.includes("collab")) return "collab_agent_tool_call";
   if (type.includes("web search")) return "web_search";
   if (type.includes("image")) return "image_view";
@@ -261,6 +264,44 @@ function toCanonicalItemType(raw: string | undefined | null): CanonicalItemType 
   if (type.includes("compact")) return "context_compaction";
   if (type.includes("error")) return "error";
   return "unknown";
+}
+
+function canonicalSubAgentActivityItem(item: CodexSubAgentActivityItem): Record<string, unknown> {
+  const running = item.kind !== "interrupted";
+  return {
+    ...item,
+    // Keep the native fields above while exposing the stable collab-agent
+    // fields consumed by projections shared across providers.
+    tool:
+      item.kind === "started"
+        ? "spawnAgent"
+        : item.kind === "interacted"
+          ? "sendInput"
+          : "closeAgent",
+    status: running ? "inProgress" : "completed",
+    receiverThreadIds: [item.agentThreadId],
+    agentsStates: {
+      [item.agentThreadId]: {
+        status: running ? "running" : "interrupted",
+      },
+    },
+  };
+}
+
+function canonicalItemLifecycleData(
+  payload:
+    | EffectCodexSchema.V2ItemStartedNotification
+    | EffectCodexSchema.V2ItemCompletedNotification,
+  item: CodexLifecycleItem,
+): unknown {
+  if (item.type !== "subAgentActivity") {
+    return payload;
+  }
+
+  return {
+    ...payload,
+    item: canonicalSubAgentActivityItem(item),
+  };
 }
 
 function itemTitle(itemType: CanonicalItemType): string | undefined {
@@ -714,7 +755,7 @@ function mapItemLifecycle(
       ...(status ? { status } : {}),
       ...(itemTitle(itemType) ? { title: itemTitle(itemType) } : {}),
       ...(detail ? { detail } : {}),
-      ...(event.payload !== undefined ? { data: event.payload } : {}),
+      data: canonicalItemLifecycleData(payload, item),
     },
   };
 }

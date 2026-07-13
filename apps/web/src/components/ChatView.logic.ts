@@ -1250,11 +1250,11 @@ function isSubagentProviderTask(input: {
   activeSubagentCount: number;
 }): boolean {
   const taskType = asBackgroundRunString(input.payload.taskType);
-  // Claude tags agent tasks explicitly (task_type "local_agent", plus the
-  // subagent type when set); both are definitive and independent of the
-  // heuristics below, which lose track once the spawn turn is no longer the
-  // latest turn.
-  if (taskType?.toLowerCase() === "local_agent") {
+  // Claude tags agent tasks explicitly (task_type "local_agent" or
+  // "remote_agent", plus the subagent type when set); both are definitive and
+  // independent of the heuristics below, which lose track once the spawn turn
+  // is no longer the latest turn.
+  if (taskType && ["local_agent", "remote_agent"].includes(taskType.toLowerCase())) {
     return true;
   }
   if (asBackgroundRunString(input.payload.subagentType) !== null) {

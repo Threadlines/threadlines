@@ -873,6 +873,34 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain('data-subagent-activity-details="true"');
   });
 
+  it("does not count subagent coordination polls as delegated tasks", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={["wait", "sendInput"].map((operation, index) => ({
+          id: `entry-subagent-${operation}`,
+          kind: "work" as const,
+          createdAt: `2026-07-13T18:38:4${index}.000Z`,
+          entry: {
+            id: `work-subagent-${operation}`,
+            createdAt: `2026-07-13T18:38:4${index}.000Z`,
+            label: "Subagent task",
+            detail: operation,
+            tone: "tool" as const,
+            itemType: "collab_agent_tool_call" as const,
+            subagentOperation: "coordination" as const,
+            executionState: "completed" as const,
+          },
+        }))}
+      />,
+    );
+
+    expect(markup).toContain("Used 2 tools");
+    expect(markup).not.toContain("Delegated work");
+    expect(markup).not.toContain("2 subagent tasks");
+  });
+
   it("renders final subagent results as distinct timeline rows", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderTimeline(

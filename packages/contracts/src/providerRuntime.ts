@@ -183,6 +183,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "user-input.requested",
   "user-input.resolved",
   "task.started",
+  "task.snapshot.updated",
   "task.progress",
   "task.completed",
   "hook.started",
@@ -236,6 +237,7 @@ const RequestResolvedType = Schema.Literal("request.resolved");
 const UserInputRequestedType = Schema.Literal("user-input.requested");
 const UserInputResolvedType = Schema.Literal("user-input.resolved");
 const TaskStartedType = Schema.Literal("task.started");
+const TaskSnapshotUpdatedType = Schema.Literal("task.snapshot.updated");
 const TaskProgressType = Schema.Literal("task.progress");
 const TaskCompletedType = Schema.Literal("task.completed");
 const HookStartedType = Schema.Literal("hook.started");
@@ -497,8 +499,24 @@ const TaskStartedPayload = Schema.Struct({
   /** Subagent type for agent tasks (e.g. "Explore"), when the provider
    *  reports one. */
   subagentType: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** Authoritative live-task snapshots own this provider's pending count, so
+   *  this edge enriches lifecycle UI without incrementing it. */
+  pendingCountManagedBySnapshot: Schema.optional(Schema.Boolean),
 });
 export type TaskStartedPayload = typeof TaskStartedPayload.Type;
+
+const TaskSnapshotUpdatedPayload = Schema.Struct({
+  /** Authoritative replace-all set of background tasks currently alive in
+   *  the provider process. */
+  tasks: Schema.Array(
+    Schema.Struct({
+      taskId: RuntimeTaskId,
+      taskType: Schema.optional(TrimmedNonEmptyStringSchema),
+      description: Schema.optional(TrimmedNonEmptyStringSchema),
+    }),
+  ),
+});
+export type TaskSnapshotUpdatedPayload = typeof TaskSnapshotUpdatedPayload.Type;
 
 const TaskProgressPayload = Schema.Struct({
   taskId: RuntimeTaskId,
@@ -519,6 +537,9 @@ const TaskCompletedPayload = Schema.Struct({
   /** Tool call that started the task (e.g. a background subagent's Task tool
    *  use), so consumers can settle the originating tool's UI state. */
   toolUseId: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** Authoritative live-task snapshots own this provider's pending count, so
+   *  this edge enriches lifecycle UI without decrementing it. */
+  pendingCountManagedBySnapshot: Schema.optional(Schema.Boolean),
 });
 export type TaskCompletedPayload = typeof TaskCompletedPayload.Type;
 
@@ -887,6 +908,14 @@ const ProviderRuntimeTaskStartedEvent = Schema.Struct({
 });
 export type ProviderRuntimeTaskStartedEvent = typeof ProviderRuntimeTaskStartedEvent.Type;
 
+const ProviderRuntimeTaskSnapshotUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: TaskSnapshotUpdatedType,
+  payload: TaskSnapshotUpdatedPayload,
+});
+export type ProviderRuntimeTaskSnapshotUpdatedEvent =
+  typeof ProviderRuntimeTaskSnapshotUpdatedEvent.Type;
+
 const ProviderRuntimeTaskProgressEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: TaskProgressType,
@@ -1057,6 +1086,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeUserInputRequestedEvent,
   ProviderRuntimeUserInputResolvedEvent,
   ProviderRuntimeTaskStartedEvent,
+  ProviderRuntimeTaskSnapshotUpdatedEvent,
   ProviderRuntimeTaskProgressEvent,
   ProviderRuntimeTaskCompletedEvent,
   ProviderRuntimeHookStartedEvent,

@@ -727,6 +727,11 @@ export function projectRuntimeEventToActivities(
         }),
       ];
 
+    case "task.snapshot.updated":
+      // This is a level signal used to reconcile session state. Individual
+      // task edge events remain the user-visible activity stream.
+      return [];
+
     case "task.progress":
       return [
         baseActivity(event, {

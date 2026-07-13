@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, it } from "vite-plus/test";
-import { ThreadId } from "@threadlines/contracts";
+import { ThreadId, TurnId } from "@threadlines/contracts";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexRpc from "effect-codex-app-server/rpc";
 
@@ -20,6 +20,8 @@ import {
   makeCodexStderrLineClassifier,
   openCodexThread,
   readCollabChildThreadMetadata,
+  readCollabReceiverThreadIds,
+  rememberCollabReceiverTurns,
   shouldAcceptCodexNotificationForSession,
   type CodexServerNotification,
 } from "./CodexSessionRuntime.ts";
@@ -230,6 +232,30 @@ describe("shouldAcceptCodexNotificationForSession", () => {
 });
 
 describe("collab child thread metadata", () => {
+  it("seeds child-turn routing from native subagent activity", () => {
+    const notification = {
+      method: "item/completed",
+      params: {
+        threadId: "parent-thread",
+        turnId: "turn-1",
+        completedAtMs: 10,
+        item: {
+          id: "subagent-activity-1",
+          type: "subAgentActivity",
+          kind: "started",
+          agentPath: "/root/implement_pull_server",
+          agentThreadId: "child-thread-1",
+        },
+      },
+    } as unknown as CodexServerNotification;
+
+    assert.deepStrictEqual(readCollabReceiverThreadIds(notification), ["child-thread-1"]);
+
+    const childTurns = new Map<string, TurnId>();
+    rememberCollabReceiverTurns(childTurns, notification, TurnId.make("turn-1"));
+    assert.equal(childTurns.get("child-thread-1"), "turn-1");
+  });
+
   it("reads the runtime nickname and role from child thread starts", () => {
     const notification = {
       method: "thread/started",

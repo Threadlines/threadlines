@@ -2959,7 +2959,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("routes websocket rpc git.pull errors", () =>
+  it.effect("routes websocket rpc git.pull errors after starting a status refresh", () =>
     Effect.gen(function* () {
       const gitError = new GitCommandError({
         operation: "pull",
@@ -2967,10 +2967,17 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         cwd: "/tmp/repo",
         detail: "upstream missing",
       });
+      let refreshCalls = 0;
       let invalidationCalls = 0;
       let statusCalls = 0;
       yield* buildAppUnderTest({
         layers: {
+          vcsStatusBroadcaster: {
+            refreshStatus: () => {
+              refreshCalls += 1;
+              return Effect.never;
+            },
+          },
           gitVcsDriver: {
             pullCurrentBranch: () => Effect.fail(gitError),
           },
@@ -3034,6 +3041,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       );
 
       assertFailure(result, gitError);
+      assert.equal(refreshCalls, 1);
       assert.equal(invalidationCalls, 0);
       assert.equal(statusCalls, 0);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),

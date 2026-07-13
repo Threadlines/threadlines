@@ -468,6 +468,130 @@ describe("ProviderRuntimeIngestion", () => {
       (thread) => thread.session?.pendingBackgroundTaskCount === 0,
     );
 
+    // A detailed edge can arrive before a snapshot-capable process proves that
+    // support. The compatibility fallback counts it until the level signal
+    // replaces the count absolutely.
+    harness.emit({
+      type: "task.started",
+      eventId: asEventId("evt-background-task-edge-before-snapshot"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      payload: {
+        taskId: "background-task-snapshot-1",
+        description: "Reviewing provider state",
+      },
+    });
+
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.pendingBackgroundTaskCount === 1 &&
+        thread.activities.some(
+          (activity: ProviderRuntimeTestActivity) =>
+            activity.id === "evt-background-task-edge-before-snapshot",
+        ),
+    );
+
+    harness.emit({
+      type: "task.snapshot.updated",
+      eventId: asEventId("evt-background-task-snapshot-running"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      payload: {
+        tasks: [
+          { taskId: "background-task-snapshot-1", taskType: "local_agent" },
+          // Defensive duplicate: snapshot semantics are a set even if a
+          // provider accidentally repeats an id in its array.
+          { taskId: "background-task-snapshot-1", taskType: "local_agent" },
+          { taskId: "background-task-snapshot-2", taskType: "local_bash" },
+        ],
+      },
+    });
+
+    const snapshotThread = await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.pendingBackgroundTaskCount === 2,
+    );
+    expect(
+      snapshotThread.activities.some(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.id === "evt-background-task-snapshot-running",
+      ),
+    ).toBe(false);
+
+    // The snapshot already counted this task. Its richer edge remains visible
+    // without incrementing the session count again.
+    harness.emit({
+      type: "task.started",
+      eventId: asEventId("evt-background-task-snapshot-edge-started"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      payload: {
+        taskId: "background-task-snapshot-2",
+        description: "Running provider checks",
+        pendingCountManagedBySnapshot: true,
+      },
+    });
+
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.pendingBackgroundTaskCount === 2 &&
+        thread.activities.some(
+          (activity: ProviderRuntimeTestActivity) =>
+            activity.id === "evt-background-task-snapshot-edge-started",
+        ),
+    );
+
+    harness.emit({
+      type: "task.snapshot.updated",
+      eventId: asEventId("evt-background-task-snapshot-settled"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      payload: { tasks: [] },
+    });
+
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.pendingBackgroundTaskCount === 0,
+    );
+
+    // A terminal edge arriving after the replace-all snapshot must not
+    // decrement another task or hide its real completion status.
+    harness.emit({
+      type: "task.completed",
+      eventId: asEventId("evt-background-task-snapshot-edge-completed"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      payload: {
+        taskId: "background-task-snapshot-1",
+        status: "failed",
+        summary: "Review failed",
+        pendingCountManagedBySnapshot: true,
+      },
+    });
+
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.pendingBackgroundTaskCount === 0 &&
+        thread.activities.some(
+          (activity: ProviderRuntimeTestActivity) =>
+            activity.id === "evt-background-task-snapshot-edge-completed" &&
+            activity.tone === "error",
+        ),
+    );
+
     harness.emit({
       type: "task.started",
       eventId: asEventId("evt-background-task-started-before-exit"),
@@ -478,6 +602,39 @@ describe("ProviderRuntimeIngestion", () => {
       payload: {
         taskId: "background-task-2",
         description: "Running another background command",
+      },
+    });
+
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.pendingBackgroundTaskCount === 1,
+    );
+
+    harness.emit({
+      type: "session.started",
+      eventId: asEventId("evt-session-restarted-clears-background-task"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      payload: {},
+    });
+
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.pendingBackgroundTaskCount === 0,
+    );
+
+    harness.emit({
+      type: "task.started",
+      eventId: asEventId("evt-background-task-started-before-exit-2"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      payload: {
+        taskId: "background-task-3",
+        description: "Running after restart",
       },
     });
 

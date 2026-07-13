@@ -1452,9 +1452,13 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
         [WS_METHODS.vcsPull]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsPull,
-            gitWorkflow.pullCurrentBranch(input.cwd).pipe(
+            gitWorkflow.pullCurrentBranch(input).pipe(
               Effect.matchCauseEffect({
-                onFailure: (cause) => Effect.failCause(cause),
+                onFailure: (cause) =>
+                  refreshGitStatus(input.cwd).pipe(
+                    Effect.ignore({ log: true }),
+                    Effect.andThen(Effect.failCause(cause)),
+                  ),
                 onSuccess: (result) =>
                   refreshGitStatus(input.cwd).pipe(Effect.ignore({ log: true }), Effect.as(result)),
               }),

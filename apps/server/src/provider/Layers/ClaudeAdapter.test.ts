@@ -2788,12 +2788,18 @@ describe("ClaudeAdapterLive", () => {
       } as unknown as SDKMessage);
 
       const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const startedEvent = runtimeEvents.find((event) => event.type === "task.started");
+      assert.equal(startedEvent?.type, "task.started");
+      if (startedEvent?.type === "task.started") {
+        assert.isUndefined(startedEvent.payload.pendingCountManagedBySnapshot);
+      }
       const completedEvent = runtimeEvents.find((event) => event.type === "task.completed");
       assert.equal(completedEvent?.type, "task.completed");
       if (completedEvent?.type === "task.completed") {
         assert.equal(completedEvent.payload.taskId, "task-updated-completed");
         assert.equal(completedEvent.payload.status, "completed");
         assert.equal(completedEvent.payload.summary, "Reviewing implementation details");
+        assert.isUndefined(completedEvent.payload.pendingCountManagedBySnapshot);
       }
       assert.isUndefined(runtimeEvents.find((event) => event.type === "runtime.warning"));
     }).pipe(
@@ -2968,6 +2974,527 @@ describe("ClaudeAdapterLive", () => {
           event.type === "task.started" && event.payload.taskId === "task-notified-first-marker",
       );
       assert.isDefined(markerStarted);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("uses structured Agent results for async launch and completion", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 12).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "delegate with structured results",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-structured-agent",
+        uuid: "stream-structured-agent-start",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "tool-structured-agent",
+            name: "Agent",
+            input: {
+              description: "Review the provider adapter",
+              prompt: "Review the adapter and report risks.",
+              subagent_type: "code-reviewer",
+              run_in_background: true,
+            },
+          },
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "user",
+        session_id: "sdk-session-structured-agent",
+        uuid: "user-structured-agent-launch",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool-structured-agent",
+              content: "Background work accepted.",
+            },
+          ],
+        },
+        tool_use_result: {
+          status: "async_launched",
+          isAsync: true,
+          agentId: "agent-structured-identity",
+          description: "Review the provider adapter",
+          prompt: "Review the adapter and report risks.",
+          outputFile: "/tmp/tasks/agent-structured-identity.output",
+          canReadOutputFile: true,
+        },
+      } as unknown as SDKMessage);
+
+      // The task id is a separate SDK identity. The structured agentId above
+      // must not create a phantom task lifecycle entry.
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-structured-agent",
+        tool_use_id: "tool-structured-agent",
+        description: "Review the provider adapter",
+        subagent_type: "code-reviewer",
+        task_type: "local_agent",
+        session_id: "sdk-session-structured-agent",
+        uuid: "structured-agent-task-started",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "user",
+        session_id: "sdk-session-structured-agent",
+        uuid: "user-structured-agent-completed",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool-structured-agent",
+              content: "Model-facing result with an internal agent trailer.",
+            },
+          ],
+        },
+        tool_use_result: {
+          status: "completed",
+          agentId: "agent-structured-identity",
+          agentType: "code-reviewer",
+          content: [{ type: "text", text: "## Review\n\nNo correctness risks found." }],
+          prompt: "Review the adapter and report risks.",
+          totalToolUseCount: 4,
+          totalDurationMs: 3200,
+          totalTokens: 840,
+          usage: {
+            input_tokens: 640,
+            output_tokens: 200,
+            cache_creation_input_tokens: null,
+            cache_read_input_tokens: null,
+            server_tool_use: null,
+            service_tier: null,
+            cache_creation: null,
+          },
+        },
+      } as unknown as SDKMessage);
+
+      // Duplicate and legacy fallbacks may arrive after the structured result;
+      // neither should create a second lifecycle or item completion.
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-structured-agent",
+        tool_use_id: "tool-structured-agent",
+        description: "Review the provider adapter",
+        task_type: "local_agent",
+        session_id: "sdk-session-structured-agent",
+        uuid: "structured-agent-task-started-duplicate",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "user",
+        session_id: "sdk-session-structured-agent",
+        uuid: "user-structured-agent-legacy-notification",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: [
+                "<task-notification>",
+                "<task-id>task-structured-agent</task-id>",
+                "<tool-use-id>tool-structured-agent</tool-use-id>",
+                "<status>completed</status>",
+                '<summary>Agent "Review the provider adapter" finished</summary>',
+                "<result>Legacy duplicate result.</result>",
+                "</task-notification>",
+              ].join("\n"),
+            },
+          ],
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-structured-agent",
+        tool_use_id: "tool-structured-agent",
+        status: "completed",
+        summary: 'Agent "Review the provider adapter" finished',
+        output_file: "/tmp/tasks/agent-structured-identity.output",
+        session_id: "sdk-session-structured-agent",
+        uuid: "structured-agent-task-notification-duplicate",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-structured-marker",
+        description: "Marker task",
+        session_id: "sdk-session-structured-agent",
+        uuid: "structured-agent-marker",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const taskStarts = runtimeEvents.filter(
+        (event) =>
+          event.type === "task.started" && event.payload.taskId === "task-structured-agent",
+      );
+      assert.equal(taskStarts.length, 1);
+      assert.isUndefined(
+        runtimeEvents.find(
+          (event) =>
+            event.type === "task.started" && event.payload.taskId === "agent-structured-identity",
+        ),
+      );
+      if (taskStarts[0]?.type === "task.started") {
+        assert.isUndefined(taskStarts[0].payload.pendingCountManagedBySnapshot);
+        assert.equal(taskStarts[0].payload.toolUseId, "tool-structured-agent");
+      }
+
+      const taskCompletions = runtimeEvents.filter(
+        (event) =>
+          event.type === "task.completed" && event.payload.taskId === "task-structured-agent",
+      );
+      assert.equal(taskCompletions.length, 1);
+      if (taskCompletions[0]?.type === "task.completed") {
+        assert.isUndefined(taskCompletions[0].payload.pendingCountManagedBySnapshot);
+      }
+
+      const structuredCompletions = runtimeEvents.filter((event) => {
+        if (event.type !== "item.completed") {
+          return false;
+        }
+        const data = event.payload.data as { structuredResult?: { status?: string } } | undefined;
+        return data?.structuredResult?.status === "completed";
+      });
+      assert.equal(structuredCompletions.length, 1);
+      const structuredCompletion = structuredCompletions[0];
+      if (structuredCompletion?.type === "item.completed") {
+        const data = structuredCompletion.payload.data as {
+          result?: { content?: Array<{ text?: string }> };
+          taskNotification?: { taskId?: string };
+        };
+        assert.equal(data.result?.content?.[0]?.text, "## Review\n\nNo correctness risks found.");
+        assert.equal(data.taskNotification?.taskId, "task-structured-agent");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("forwards authoritative background task snapshots without inferring edges", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 11).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [
+          {
+            task_id: "task-snapshot-a",
+            task_type: "subagent",
+            description: "Review provider logic",
+          },
+          {
+            task_id: "task-snapshot-b",
+            task_type: "shell",
+            description: "Watch CI",
+          },
+          {
+            task_id: "task-snapshot-a",
+            task_type: "subagent",
+            description: "Review provider logic",
+          },
+        ],
+        session_id: "sdk-session-task-snapshot",
+        uuid: "task-snapshot-initial",
+      } as unknown as SDKMessage);
+
+      for (const task of [
+        {
+          task_id: "task-snapshot-a",
+          description: "Review provider logic",
+          task_type: "local_agent",
+          tool_use_id: "tool-snapshot-a",
+        },
+        {
+          task_id: "task-snapshot-b",
+          description: "Watch CI",
+          task_type: "local_bash",
+          tool_use_id: "tool-snapshot-b",
+        },
+      ]) {
+        harness.query.emit({
+          type: "system",
+          subtype: "task_started",
+          ...task,
+          session_id: "sdk-session-task-snapshot",
+          uuid: `${task.task_id}-started`,
+        } as unknown as SDKMessage);
+      }
+
+      // Edge first, level second.
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-snapshot-a",
+        tool_use_id: "tool-snapshot-a",
+        status: "completed",
+        summary: "Review complete",
+        output_file: "/tmp/tasks/task-snapshot-a.output",
+        session_id: "sdk-session-task-snapshot",
+        uuid: "task-snapshot-a-completed",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [
+          {
+            task_id: "task-snapshot-b",
+            task_type: "shell",
+            description: "Watch CI",
+          },
+        ],
+        session_id: "sdk-session-task-snapshot",
+        uuid: "task-snapshot-a-removed",
+      } as unknown as SDKMessage);
+
+      // Level first, edge second.
+      harness.query.emit({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [],
+        session_id: "sdk-session-task-snapshot",
+        uuid: "task-snapshot-b-removed",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-snapshot-b",
+        tool_use_id: "tool-snapshot-b",
+        status: "failed",
+        summary: "CI watcher failed",
+        output_file: "/tmp/tasks/task-snapshot-b.output",
+        session_id: "sdk-session-task-snapshot",
+        uuid: "task-snapshot-b-completed",
+      } as unknown as SDKMessage);
+
+      // Terminal duplicates and stale progress must not re-open either task.
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-snapshot-b",
+        status: "failed",
+        summary: "Duplicate failure",
+        output_file: "/tmp/tasks/task-snapshot-b.output",
+        session_id: "sdk-session-task-snapshot",
+        uuid: "task-snapshot-b-completed-duplicate",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_updated",
+        task_id: "task-snapshot-b",
+        patch: { status: "running", description: "Stale running update" },
+        session_id: "sdk-session-task-snapshot",
+        uuid: "task-snapshot-b-stale-update",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-snapshot-marker",
+        description: "Marker task",
+        session_id: "sdk-session-task-snapshot",
+        uuid: "task-snapshot-marker-started",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const snapshots = runtimeEvents.filter((event) => event.type === "task.snapshot.updated");
+      assert.equal(snapshots.length, 3);
+      if (snapshots[0]?.type === "task.snapshot.updated") {
+        assert.deepEqual(
+          snapshots[0].payload.tasks.map((task) => task.taskId),
+          ["task-snapshot-a", "task-snapshot-b"],
+        );
+      }
+      if (snapshots[1]?.type === "task.snapshot.updated") {
+        assert.deepEqual(
+          snapshots[1].payload.tasks.map((task) => task.taskId),
+          ["task-snapshot-b"],
+        );
+      }
+      if (snapshots[2]?.type === "task.snapshot.updated") {
+        assert.deepEqual(snapshots[2].payload.tasks, []);
+      }
+
+      const starts = runtimeEvents.filter(
+        (event) =>
+          event.type === "task.started" &&
+          (event.payload.taskId === "task-snapshot-a" ||
+            event.payload.taskId === "task-snapshot-b"),
+      );
+      assert.equal(starts.length, 2);
+      assert.isTrue(
+        starts.every(
+          (event) =>
+            event.type === "task.started" && event.payload.pendingCountManagedBySnapshot === true,
+        ),
+      );
+
+      const completions = runtimeEvents.filter(
+        (event) =>
+          event.type === "task.completed" &&
+          (event.payload.taskId === "task-snapshot-a" ||
+            event.payload.taskId === "task-snapshot-b"),
+      );
+      assert.equal(completions.length, 2);
+      assert.isTrue(
+        completions.every(
+          (event) =>
+            event.type === "task.completed" && event.payload.pendingCountManagedBySnapshot === true,
+        ),
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("replays structured Agent completion after a restart loses launch state", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 6).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      // A legacy replay can win the race after restart. The later structured
+      // result must supersede its lower-quality output on the same item id.
+      harness.query.emit({
+        type: "user",
+        session_id: "sdk-session-structured-restart",
+        uuid: "user-structured-restart-legacy",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: [
+                "<task-notification>",
+                "<task-id>task-structured-restart</task-id>",
+                "<tool-use-id>tool-structured-restart</tool-use-id>",
+                "<status>completed</status>",
+                '<summary>Agent "Interrupted review" finished</summary>',
+                "<result>Legacy duplicate.</result>",
+                "</task-notification>",
+              ].join("\n"),
+            },
+          ],
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "user",
+        session_id: "sdk-session-structured-restart",
+        uuid: "user-structured-restart-completed",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool-structured-restart",
+              content: "Model-facing fallback result.",
+            },
+          ],
+        },
+        tool_use_result: {
+          status: "completed",
+          agentId: "agent-structured-restart",
+          content: [{ type: "text", text: "Recovered structured final report." }],
+          prompt: "Finish the interrupted review.",
+          totalToolUseCount: 2,
+          totalDurationMs: 1400,
+          totalTokens: 420,
+          usage: {
+            input_tokens: 300,
+            output_tokens: 120,
+            cache_creation_input_tokens: null,
+            cache_read_input_tokens: null,
+            server_tool_use: null,
+            service_tier: null,
+            cache_creation: null,
+          },
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-structured-restart-marker",
+        description: "Marker task",
+        session_id: "sdk-session-structured-restart",
+        uuid: "structured-restart-marker-started",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const completedItems = runtimeEvents.filter((event) => event.type === "item.completed");
+      const replay = completedItems.at(-1);
+      assert.equal(replay?.type, "item.completed");
+      if (replay?.type === "item.completed") {
+        assert.equal(String(replay.itemId), "tool-structured-restart");
+        assert.equal(replay.payload.itemType, "collab_agent_tool_call");
+        const data = replay.payload.data as {
+          result?: { content?: Array<{ text?: string }> };
+          structuredResult?: { agentId?: string };
+        };
+        assert.equal(data.result?.content?.[0]?.text, "Recovered structured final report.");
+        assert.equal(data.structuredResult?.agentId, "agent-structured-restart");
+      }
+      assert.equal(completedItems.length, 2);
+      assert.isTrue(
+        completedItems.every((event) => String(event.itemId) === "tool-structured-restart"),
+      );
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

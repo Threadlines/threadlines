@@ -1233,7 +1233,7 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         assert.notEqual(plainPull.exitCode, 0);
         assert.match(plainPull.stderr, /Cannot fast-forward to multiple branches/);
 
-        const result = yield* driver.pullCurrentBranch(cwd);
+        const result = yield* driver.pullCurrentBranch({ cwd });
 
         assert.deepEqual(result, {
           status: "pulled",
@@ -1280,7 +1280,7 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         yield* git(upstreamCwd, ["commit", "-m", "Remote update"]);
         yield* git(upstreamCwd, ["push", "origin", "main"]);
 
-        const result = yield* driver.pullCurrentBranch(cwd);
+        const result = yield* driver.pullCurrentBranch({ cwd });
 
         assert.deepEqual(result, {
           status: "pulled",
@@ -1289,6 +1289,123 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         });
         assert.equal(yield* git(cwd, ["log", "-1", "--pretty=%s"]), "Remote update");
         assert.equal(yield* fileSystem.readFileString(fetchHeadPath), fetchHeadBefore);
+      }),
+    );
+
+    it.effect("requires confirmation before following rewritten upstream history", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const remote = yield* makeTmpDir("git-remote-");
+        const rewrittenCwd = yield* makeTmpDir("git-rewritten-");
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        yield* git(cwd, ["branch", "-M", "main"]);
+        yield* git(remote, ["init", "--bare"]);
+        yield* git(cwd, ["remote", "add", "origin", remote]);
+        yield* git(cwd, ["push", "-u", "origin", "main"]);
+        const localSha = yield* git(cwd, ["rev-parse", "HEAD"]);
+
+        yield* driver.initRepo({ cwd: rewrittenCwd });
+        yield* git(rewrittenCwd, ["config", "user.email", "test@test.com"]);
+        yield* git(rewrittenCwd, ["config", "user.name", "Test"]);
+        yield* git(rewrittenCwd, ["branch", "-M", "main"]);
+        yield* writeTextFile(rewrittenCwd, "README.md", "# test\n");
+        yield* git(rewrittenCwd, ["add", "."]);
+        yield* git(rewrittenCwd, ["commit", "-m", "sanitized initial commit"]);
+        const equivalentUpstreamCommitSha = yield* git(rewrittenCwd, ["rev-parse", "HEAD"]);
+        yield* writeTextFile(rewrittenCwd, "remote.txt", "remote\n");
+        yield* git(rewrittenCwd, ["add", "."]);
+        yield* git(rewrittenCwd, ["commit", "-m", "Remote update"]);
+        const upstreamSha = yield* git(rewrittenCwd, ["rev-parse", "HEAD"]);
+        yield* git(rewrittenCwd, ["remote", "add", "origin", remote]);
+        yield* git(rewrittenCwd, ["push", "--force", "origin", "main"]);
+
+        const required = yield* driver.pullCurrentBranch({ cwd });
+
+        assert.deepEqual(required, {
+          status: "requires_history_reconciliation",
+          refName: "main",
+          upstreamRef: "origin/main",
+          localSha,
+          upstreamSha,
+          equivalentUpstreamCommitSha,
+        });
+        assert.equal(yield* git(cwd, ["rev-parse", "HEAD"]), localSha);
+
+        if (required.status !== "requires_history_reconciliation") {
+          return assert.fail("Expected history reconciliation to be required.");
+        }
+        const reconciled = yield* driver.pullCurrentBranch({
+          cwd,
+          historyReconciliation: {
+            refName: required.refName,
+            upstreamRef: required.upstreamRef,
+            expectedLocalSha: required.localSha,
+            expectedUpstreamSha: required.upstreamSha,
+          },
+        });
+
+        assert.equal(reconciled.status, "reconciled");
+        if (reconciled.status !== "reconciled") {
+          return assert.fail("Expected history reconciliation to complete.");
+        }
+        assert.match(reconciled.recoveryRef, /^refs\/threadlines\/recovery\/main\//u);
+        assert.equal(yield* git(cwd, ["rev-parse", reconciled.recoveryRef]), localSha);
+        assert.equal(yield* git(cwd, ["rev-parse", "HEAD"]), upstreamSha);
+        assert.equal(yield* git(cwd, ["status", "--porcelain"]), "");
+      }),
+    );
+
+    it.effect("rejects stale rewritten-history confirmation without resetting HEAD", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const remote = yield* makeTmpDir("git-remote-");
+        const rewrittenCwd = yield* makeTmpDir("git-rewritten-");
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        yield* git(cwd, ["branch", "-M", "main"]);
+        yield* git(remote, ["init", "--bare"]);
+        yield* git(cwd, ["remote", "add", "origin", remote]);
+        yield* git(cwd, ["push", "-u", "origin", "main"]);
+
+        yield* driver.initRepo({ cwd: rewrittenCwd });
+        yield* git(rewrittenCwd, ["config", "user.email", "test@test.com"]);
+        yield* git(rewrittenCwd, ["config", "user.name", "Test"]);
+        yield* git(rewrittenCwd, ["branch", "-M", "main"]);
+        yield* writeTextFile(rewrittenCwd, "README.md", "rewritten\n");
+        yield* git(rewrittenCwd, ["add", "."]);
+        yield* git(rewrittenCwd, ["commit", "-m", "Sanitized history"]);
+        yield* git(rewrittenCwd, ["remote", "add", "origin", remote]);
+        yield* git(rewrittenCwd, ["push", "--force", "origin", "main"]);
+
+        const required = yield* driver.pullCurrentBranch({ cwd });
+        if (required.status !== "requires_history_reconciliation") {
+          return assert.fail("Expected history reconciliation to be required.");
+        }
+
+        yield* writeTextFile(cwd, "local.txt", "local\n");
+        yield* git(cwd, ["add", "."]);
+        yield* git(cwd, ["commit", "-m", "Local commit after confirmation"]);
+        const changedLocalSha = yield* git(cwd, ["rev-parse", "HEAD"]);
+
+        const error = yield* driver
+          .pullCurrentBranch({
+            cwd,
+            historyReconciliation: {
+              refName: required.refName,
+              upstreamRef: required.upstreamRef,
+              expectedLocalSha: required.localSha,
+              expectedUpstreamSha: required.upstreamSha,
+            },
+          })
+          .pipe(Effect.flip);
+
+        assert.match(error.detail, /Local HEAD changed/u);
+        assert.equal(yield* git(cwd, ["rev-parse", "HEAD"]), changedLocalSha);
+        assert.equal(
+          yield* git(cwd, ["for-each-ref", "--format=%(refname)", "refs/threadlines/recovery"]),
+          "",
+        );
       }),
     );
 

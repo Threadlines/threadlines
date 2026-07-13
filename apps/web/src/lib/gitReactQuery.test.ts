@@ -26,6 +26,7 @@ import {
   gitRunStackedActionMutationOptions,
   invalidateGitQueries,
 } from "./gitReactQuery";
+import { ensureEnvironmentApi } from "../environmentApi";
 
 const BRANCH_QUERY_RESULT: VcsListRefsResult = {
   refs: [],
@@ -85,6 +86,43 @@ describe("git mutation options", () => {
       queryClient,
     });
     expect(options.mutationKey).toEqual(gitMutationKeys.pull(ENVIRONMENT_A, "/repo/a"));
+  });
+
+  it("passes an explicit rewritten-history confirmation to the pull API", async () => {
+    const pull = vi.fn(async () => ({
+      status: "reconciled" as const,
+      refName: "main",
+      upstreamRef: "origin/main",
+      recoveryRef: "refs/threadlines/recovery/main-20260713T120000Z",
+    }));
+    vi.mocked(ensureEnvironmentApi).mockReturnValue({ vcs: { pull } } as never);
+    const options = gitPullMutationOptions({
+      environmentId: ENVIRONMENT_A,
+      cwd: "/repo/a",
+      queryClient,
+    });
+    const mutationFn = options.mutationFn;
+    expect(mutationFn).toBeDefined();
+
+    await mutationFn?.(
+      {
+        refName: "main",
+        upstreamRef: "origin/main",
+        expectedLocalSha: "1111111111111111111111111111111111111111",
+        expectedUpstreamSha: "2222222222222222222222222222222222222222",
+      },
+      {} as never,
+    );
+
+    expect(pull).toHaveBeenCalledWith({
+      cwd: "/repo/a",
+      historyReconciliation: {
+        refName: "main",
+        upstreamRef: "origin/main",
+        expectedLocalSha: "1111111111111111111111111111111111111111",
+        expectedUpstreamSha: "2222222222222222222222222222222222222222",
+      },
+    });
   });
 
   it("attaches cwd-scoped mutation key for preparePullRequestThread", () => {

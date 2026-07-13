@@ -10,6 +10,8 @@ import {
   type ScopedThreadRef,
   type VcsCommitDetailsResult,
   type VcsCommitGraphCommit,
+  type VcsPullHistoryReconciliation,
+  type VcsPullResult,
   type VcsRef,
   type VcsStatusResult,
   type VcsWorkingTreeFileChangeKind,
@@ -47,6 +49,7 @@ import {
   Rows3Icon,
   SparklesIcon,
   TagIcon,
+  TriangleAlertIcon,
   Undo2Icon,
   UploadIcon,
   XIcon,
@@ -251,6 +254,26 @@ interface PendingProviderReview {
   readonly modelSelection: ModelSelection;
   readonly runtimeMode: RuntimeMode;
   readonly bootstrap: ProviderReviewThreadBootstrap;
+}
+
+type HistoryReconciliationRequiredResult = Extract<
+  VcsPullResult,
+  { readonly status: "requires_history_reconciliation" }
+>;
+
+interface PullRequestTarget {
+  readonly environmentId: EnvironmentId | null;
+  readonly cwd: string | null;
+}
+
+interface PendingHistoryReconciliation extends PullRequestTarget {
+  readonly environmentId: EnvironmentId;
+  readonly cwd: string;
+  readonly result: HistoryReconciliationRequiredResult;
+}
+
+function isSamePullRequestTarget(a: PullRequestTarget, b: PullRequestTarget): boolean {
+  return a.environmentId === b.environmentId && a.cwd === b.cwd;
 }
 
 const WORKING_TREE_CHANGE_STATUS_CODES: Record<VcsWorkingTreeFileChangeKind, string> = {
@@ -1820,6 +1843,8 @@ export function SourceControlPanel({
   const [authRemediationFailure, setAuthRemediationFailure] = useState<GitRemoteAuthFailure | null>(
     null,
   );
+  const [pendingHistoryReconciliation, setPendingHistoryReconciliation] =
+    useState<PendingHistoryReconciliation | null>(null);
   const [pendingDefaultBranchAction, setPendingDefaultBranchAction] =
     useState<DefaultBranchConfirmableAction | null>(null);
   const [pendingDiscardChanges, setPendingDiscardChanges] = useState<PendingDiscardChanges | null>(
@@ -1862,6 +1887,17 @@ export function SourceControlPanel({
   } | null>(null);
   const environmentId = target?.environmentId ?? null;
   const cwd = target?.cwd ?? null;
+  const currentPullTargetRef = useRef<PullRequestTarget>({ environmentId, cwd });
+  currentPullTargetRef.current = { environmentId, cwd };
+  const activeHistoryReconciliation =
+    pendingHistoryReconciliation &&
+    isSamePullRequestTarget(pendingHistoryReconciliation, currentPullTargetRef.current)
+      ? pendingHistoryReconciliation
+      : null;
+
+  useEffect(() => {
+    setPendingHistoryReconciliation(null);
+  }, [cwd, environmentId]);
   const reviewThread = useStore(
     useMemo(() => createThreadSelectorByRef(activeThreadRef), [activeThreadRef]),
   );
@@ -2440,48 +2476,108 @@ export function SourceControlPanel({
     ],
   );
 
-  const runPull = useCallback(() => {
-    const promise = pullMutation.mutateAsync();
-    void toastManager.promise<
-      Awaited<ReturnType<typeof pullMutation.mutateAsync>>,
-      ThreadToastData
-    >(promise, {
-      loading: { title: "Pulling...", data: threadToastData },
-      success: (result) => ({
-        title: result.status === "pulled" ? "Pulled" : "Already up to date",
-        description:
-          result.status === "pulled"
-            ? `Updated ${result.refName} from ${result.upstreamRef ?? "upstream"}`
-            : `${result.refName} is already synchronized.`,
-        data: threadToastData,
-      }),
-      error: (error) => {
-        const authFailure = gitRemoteAuthFailureFromError(error);
-        if (authFailure) {
+  const executePull = useCallback(
+    (historyReconciliation?: VcsPullHistoryReconciliation) => {
+      const requestTarget: PullRequestTarget = { environmentId, cwd };
+      const promise = pullMutation.mutateAsync(historyReconciliation);
+      void toastManager.promise<
+        Awaited<ReturnType<typeof pullMutation.mutateAsync>>,
+        ThreadToastData
+      >(promise, {
+        loading: {
+          title: historyReconciliation ? "Updating from rewritten upstream..." : "Pulling...",
+          data: threadToastData,
+        },
+        success: (result) => {
+          switch (result.status) {
+            case "pulled":
+              return {
+                title: "Pulled",
+                description: `Updated ${result.refName} from ${result.upstreamRef ?? "upstream"}`,
+                data: threadToastData,
+              };
+            case "skipped_up_to_date":
+              return {
+                title: "Already up to date",
+                description: `${result.refName} is already synchronized.`,
+                data: threadToastData,
+              };
+            case "requires_history_reconciliation":
+              return {
+                title: "Pull needs confirmation",
+                description: `The history for ${result.upstreamRef} changed upstream.`,
+                data: threadToastData,
+              };
+            case "reconciled":
+              return {
+                title: "Updated from rewritten upstream",
+                description: `Backed up ${result.refName} to ${result.recoveryRef}, then updated it from ${result.upstreamRef}.`,
+                data: threadToastData,
+              };
+          }
+        },
+        error: (error) => {
+          const authFailure = gitRemoteAuthFailureFromError(error);
+          if (authFailure) {
+            return {
+              title: "Pull failed",
+              description: formatGitErrorMessage(error),
+              timeout: 0,
+              actionProps: {
+                children: "Fix authentication...",
+                onClick: () => setAuthRemediationFailure(authFailure),
+              },
+              data: {
+                ...threadToastData,
+                actionLayout: "stacked-end" as const,
+                actionVariant: "default" as const,
+              },
+            };
+          }
           return {
             title: "Pull failed",
             description: formatGitErrorMessage(error),
-            timeout: 0,
-            actionProps: {
-              children: "Fix authentication...",
-              onClick: () => setAuthRemediationFailure(authFailure),
-            },
-            data: {
-              ...threadToastData,
-              actionLayout: "stacked-end" as const,
-              actionVariant: "default" as const,
-            },
+            data: threadToastData,
           };
-        }
-        return {
-          title: "Pull failed",
-          description: formatGitErrorMessage(error),
-          data: threadToastData,
-        };
-      },
-    });
-    void promise.then(refreshPanel, () => undefined);
-  }, [pullMutation, refreshPanel, threadToastData]);
+        },
+      });
+      void promise.then(
+        (result) => {
+          if (!isSamePullRequestTarget(requestTarget, currentPullTargetRef.current)) {
+            return;
+          }
+          if (result.status === "requires_history_reconciliation") {
+            if (requestTarget.environmentId && requestTarget.cwd) {
+              setPendingHistoryReconciliation({
+                environmentId: requestTarget.environmentId,
+                cwd: requestTarget.cwd,
+                result,
+              });
+            }
+          } else {
+            setPendingHistoryReconciliation(null);
+          }
+          refreshPanel();
+        },
+        () => {
+          if (
+            historyReconciliation &&
+            isSamePullRequestTarget(requestTarget, currentPullTargetRef.current)
+          ) {
+            // A failed confirmation may mean HEAD or the upstream moved. Require a fresh probe
+            // instead of leaving a stale destructive confirmation available for retry.
+            setPendingHistoryReconciliation(null);
+            refreshPanel();
+          }
+        },
+      );
+    },
+    [cwd, environmentId, pullMutation, refreshPanel, threadToastData],
+  );
+
+  const runPull = useCallback(() => {
+    executePull();
+  }, [executePull]);
 
   const initializeRepository = useCallback(() => {
     const promise = initMutation.mutateAsync();
@@ -4297,6 +4393,93 @@ export function SourceControlPanel({
         environmentId={target.environmentId}
         gitCwd={target.cwd}
       />
+      <AlertDialog
+        open={activeHistoryReconciliation !== null}
+        onOpenChange={(open) => {
+          if (!open && !pullMutation.isPending) {
+            setPendingHistoryReconciliation(null);
+          }
+        }}
+      >
+        <AlertDialogPopup className="max-w-lg">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <TriangleAlertIcon className="size-4 text-amber-500" />
+              Upstream history changed
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {activeHistoryReconciliation ? (
+                <span className="space-y-2">
+                  <span className="block">
+                    Pull detected that{" "}
+                    <span className="font-mono">
+                      {activeHistoryReconciliation.result.upstreamRef}
+                    </span>{" "}
+                    no longer shares commit history with your local{" "}
+                    <span className="font-mono">{activeHistoryReconciliation.result.refName}</span>.
+                  </span>
+                  {activeHistoryReconciliation.result.equivalentUpstreamCommitSha ? (
+                    <span className="block">
+                      Git found your current file snapshot in the rewritten upstream at{" "}
+                      <span className="font-mono">
+                        {activeHistoryReconciliation.result.equivalentUpstreamCommitSha.slice(
+                          0,
+                          12,
+                        )}
+                      </span>
+                      . Threadlines can keep your current HEAD under a local recovery ref, then
+                      update the branch to the rewritten upstream.
+                    </span>
+                  ) : (
+                    <span className="block">
+                      Git could not find your current file snapshot in the rewritten upstream.
+                      Continuing will keep your current HEAD under a local recovery ref, then
+                      replace the branch with the upstream version. Review or recover the saved
+                      history if it contained local work you still need.
+                    </span>
+                  )}
+                  <span className="block">
+                    The recovery ref preserves the old history locally and is not pushed. Do not
+                    push it. If the old history must be removed from this machine, verify the
+                    upstream and use a fresh clone.
+                  </span>
+                </span>
+              ) : null}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose
+              render={<Button variant="outline" size="sm" disabled={pullMutation.isPending} />}
+            >
+              Cancel
+            </AlertDialogClose>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={pullMutation.isPending || activeHistoryReconciliation === null}
+              onClick={() => {
+                if (
+                  !activeHistoryReconciliation ||
+                  !isSamePullRequestTarget(
+                    activeHistoryReconciliation,
+                    currentPullTargetRef.current,
+                  )
+                ) {
+                  return;
+                }
+                executePull({
+                  refName: activeHistoryReconciliation.result.refName,
+                  upstreamRef: activeHistoryReconciliation.result.upstreamRef,
+                  expectedLocalSha: activeHistoryReconciliation.result.localSha,
+                  expectedUpstreamSha: activeHistoryReconciliation.result.upstreamSha,
+                });
+              }}
+            >
+              Back up &amp; use upstream
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
       <GitAuthRemediationDialog
         open={authRemediationFailure !== null}
         onOpenChange={(open) => {

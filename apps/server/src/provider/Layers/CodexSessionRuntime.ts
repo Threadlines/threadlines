@@ -792,7 +792,7 @@ function readRouteFields(notification: CodexServerNotification): {
   }
 }
 
-function rememberCollabReceiverTurns(
+export function rememberCollabReceiverTurns(
   collabReceiverTurns: Map<string, TurnId>,
   notification: CodexServerNotification,
   parentTurnId: TurnId | undefined,
@@ -805,13 +805,26 @@ function rememberCollabReceiverTurns(
     return;
   }
 
-  if (notification.params.item.type !== "collabAgentToolCall") {
-    return;
-  }
-
-  for (const receiverThreadId of notification.params.item.receiverThreadIds) {
+  for (const receiverThreadId of readCollabReceiverThreadIds(notification)) {
     collabReceiverTurns.set(receiverThreadId, parentTurnId);
   }
+}
+
+export function readCollabReceiverThreadIds(
+  notification: CodexServerNotification,
+): ReadonlyArray<string> {
+  if (notification.method !== "item/started" && notification.method !== "item/completed") {
+    return [];
+  }
+
+  const item = notification.params.item;
+  if (item.type === "collabAgentToolCall") {
+    return item.receiverThreadIds;
+  }
+  if (item.type === "subAgentActivity") {
+    return [item.agentThreadId];
+  }
+  return [];
 }
 
 function readTrimmedString(value: unknown): string | undefined {
