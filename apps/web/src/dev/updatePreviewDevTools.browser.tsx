@@ -6,6 +6,7 @@ import { page } from "vite-plus/test/browser";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
+import { APP_BUILD_CHANNEL_LABEL } from "../branding";
 import { SidebarVersionTag } from "../components/sidebar/SidebarVersionTag";
 import {
   desktopUpdateQueryKeys,
@@ -49,7 +50,7 @@ it("pins an up-to-date boot preview by default so the updater card renders witho
 
   // The mount fetch resolves null (no bridge) after the pin was applied — the
   // pin must win, or the card would render bridge-less without the action.
-  await expect.element(page.getByText("Stable")).toBeVisible();
+  await expect.element(page.getByText(APP_BUILD_CHANNEL_LABEL)).toBeVisible();
   await expect.element(page.getByRole("button", { name: "Check now" })).toBeVisible();
 
   // Releasing via the console API reverts to the real bridge-less card.
