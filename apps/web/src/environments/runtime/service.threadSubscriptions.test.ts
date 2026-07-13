@@ -256,6 +256,52 @@ describe("retainThreadDetailSubscription", () => {
     await resetEnvironmentServiceForTests();
   });
 
+  it("restarts a retained thread detail subscription to request a fresh snapshot", async () => {
+    const {
+      refreshThreadDetailSubscription,
+      retainThreadDetailSubscription,
+      startEnvironmentConnectionService,
+      resetEnvironmentServiceForTests,
+    } = await import("./service");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    const environmentId = EnvironmentId.make("env-1");
+    const threadId = ThreadId.make("thread-refresh");
+
+    const release = retainThreadDetailSubscription(environmentId, threadId);
+    expect(mockSubscribeThread).toHaveBeenCalledTimes(1);
+
+    expect(refreshThreadDetailSubscription(environmentId, threadId)).toBe(true);
+    expect(mockThreadUnsubscribe).toHaveBeenCalledTimes(1);
+    expect(mockSubscribeThread).toHaveBeenCalledTimes(2);
+    expect(mockSubscribeThread).toHaveBeenLastCalledWith({ threadId }, expect.any(Function));
+
+    release();
+    stop();
+    await resetEnvironmentServiceForTests();
+  });
+
+  it("does not create an unretained subscription during a targeted refresh", async () => {
+    const {
+      refreshThreadDetailSubscription,
+      startEnvironmentConnectionService,
+      resetEnvironmentServiceForTests,
+    } = await import("./service");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+
+    expect(
+      refreshThreadDetailSubscription(
+        EnvironmentId.make("env-1"),
+        ThreadId.make("thread-not-retained"),
+      ),
+    ).toBe(false);
+    expect(mockSubscribeThread).not.toHaveBeenCalled();
+
+    stop();
+    await resetEnvironmentServiceForTests();
+  });
+
   it("does not start the primary connection until the known environment has an id", async () => {
     mockGetPrimaryKnownEnvironment.mockReturnValue({
       id: "env-1",

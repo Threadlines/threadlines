@@ -3993,6 +3993,66 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("refreshes stale thread detail state after an accepted send has no projection ack", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-stale-send" as MessageId,
+        targetText: "stale send",
+      }),
+      resolveRpc: (body) => {
+        if (body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand) {
+          return {
+            sequence: fixture.snapshot.snapshotSequence + 1,
+          };
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      await waitForThreadDetailSubscription(THREAD_ID);
+      const initialSubscriptionCount = wsRequests.filter(
+        (request) =>
+          request._tag === ORCHESTRATION_WS_METHODS.subscribeThread &&
+          request.threadId === THREAD_ID,
+      ).length;
+
+      useComposerDraftStore.getState().setPrompt(THREAD_REF, "reconcile this send");
+      const sendButton = await waitForSendButton();
+      sendButton.click();
+
+      await vi.waitFor(
+        () => {
+          expect(
+            wsRequests.some(
+              (request) =>
+                request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+                request.type === "thread.turn.start",
+            ),
+          ).toBe(true);
+          expect(document.querySelector('button[aria-label="Sending"]')).toBeTruthy();
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      await vi.waitFor(
+        () => {
+          expect(
+            wsRequests.filter(
+              (request) =>
+                request._tag === ORCHESTRATION_WS_METHODS.subscribeThread &&
+                request.threadId === THREAD_ID,
+            ).length,
+          ).toBeGreaterThan(initialSubscriptionCount);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("toggles plan mode with Shift+Tab only while the composer is focused", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
