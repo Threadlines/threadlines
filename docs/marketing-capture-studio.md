@@ -117,6 +117,24 @@ Before recording:
 5. Avoid hovering controls long enough to show accidental tooltips.
 6. Prefer one deliberate action per beat; the UI should be readable without narration.
 
+### Preserve the native window corners
+
+The rounded window frame is system-rendered on macOS. Do not recreate its corner with a
+hard circular mask or a guessed numeric radius. If a recording badge obscures the window
+controls, derive the replacement plate from the untouched opposite corner at the same
+resolution so the continuous curve, border, and antialiasing remain native. Composite the
+traffic lights above that native corner raster rather than replacing the curve itself.
+
+Before publishing refreshed media, compare both top corners and both vertical edges:
+
+```sh
+vp run marketing:media:audit-corners
+```
+
+The audit checks every launch poster, MP4, WebM, and standalone still. A corner plate must
+match the opposite edge's antialias and solid-border transition within the small tolerance
+needed for video chroma subsampling.
+
 ## Capture stories
 
 ### 01 — Project files are a workspace, not a side panel

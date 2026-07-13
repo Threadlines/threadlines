@@ -17,6 +17,7 @@
     "marketing:studio:paths": "node scripts/marketing-studio.ts paths",
     "marketing:studio:reset": "node scripts/marketing-studio.ts reset",
     "marketing:studio:setup": "node scripts/marketing-studio.ts setup",
+    "marketing:media:audit-corners": "node scripts/audit-marketing-media-corners.ts",
     "build": "vp run --filter './apps/*' --filter './packages/*' --filter './oxlint-plugin-threadlines' --filter './scripts' build",
     "check:web-bundle-size": "node scripts/check-web-bundle-size.ts",
     "build:marketing": "vp run --filter @threadlines/marketing build",

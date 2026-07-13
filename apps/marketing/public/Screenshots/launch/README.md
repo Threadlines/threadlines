@@ -4,7 +4,7 @@ This folder contains the refreshed marketing set captured against the July 12, 2
 
 WebM is the primary format: VP9 Profile 2, 10-bit `yuv420p10le`, CRF 30 with no bitrate cap. MP4 is the Safari fallback: H.264 High profile, 8-bit `yuv420p`, CRF 18 with the slow preset.
 
-The staged sidebar has two expanded projects and one collapsed project, five or more threads per project, merged and branch indicators, and a running-terminal cue. The calibrated traffic-light clean plate is used on unobstructed full-window captures; it preserves the normal control spacing and leaves the real sidebar toggle untouched. It is intentionally omitted from the two opaque file-viewer clips so it cannot appear to float above the viewer layer.
+The staged sidebar has two expanded projects and one collapsed project, five or more threads per project, merged and branch indicators, and a running-terminal cue. The calibrated traffic-light clean plate is used on unobstructed full-window captures; its outer curve is mirrored from the untouched native corner at each export resolution, preserving macOS border antialiasing, normal control spacing, and the real sidebar toggle. It is intentionally omitted from the two opaque file-viewer clips so it cannot appear to float above the viewer layer.
 
 ## Recommended site use
 
