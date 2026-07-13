@@ -20,6 +20,8 @@ export const APP_STAGE_LABEL =
   injectedDesktopAppBranding?.stageLabel ??
   HOSTED_APP_CHANNEL_LABEL ??
   (import.meta.env.DEV ? "Dev" : "Alpha");
+export const APP_BUILD_CHANNEL_LABEL =
+  APP_STAGE_LABEL === "Dev" ? "Dev" : APP_STAGE_LABEL === "Nightly" ? "Nightly" : "Stable";
 export const APP_DISPLAY_NAME =
   injectedDesktopAppBranding?.displayName ??
   (APP_STAGE_LABEL === "Dev" ? `${APP_BASE_NAME} (${APP_STAGE_LABEL})` : APP_BASE_NAME);

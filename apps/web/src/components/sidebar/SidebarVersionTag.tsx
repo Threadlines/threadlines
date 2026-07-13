@@ -2,7 +2,7 @@ import { useCallback, useRef } from "react";
 import { CheckIcon, DownloadIcon, RotateCwIcon } from "lucide-react";
 import type { DesktopUpdateState } from "@threadlines/contracts";
 
-import { APP_STAGE_LABEL, APP_VERSION } from "../../branding";
+import { APP_BUILD_CHANNEL_LABEL, APP_VERSION } from "../../branding";
 import { useDesktopUpdateAction } from "../../hooks/useDesktopUpdateAction";
 import { useRelativeTimeTick } from "../../hooks/useRelativeTimeTick";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
@@ -52,7 +52,7 @@ function getCardActionAriaLabel(actionKind: DesktopUpdateActionKind) {
 
 /**
  * Build/updater details behind the sidebar version chip. The header states
- * the build (stage/track meta line over the full version); the footer strip
+ * the installed build channel over the full version; the footer strip
  * carries updater status text beside the single adaptive action — the only
  * button-shaped element on the card, so the affordance is unambiguous. A
  * browser session shows just the header; a fixed footer height keeps the
@@ -77,11 +77,6 @@ function SidebarVersionCard({
   // Updater state only ever comes from the desktop bridge, so operational
   // updater controls double as the "running in the desktop app" signal.
   const showUpdaterControls = shouldShowDesktopUpdaterControls(state);
-  const trackLabel = showUpdaterControls
-    ? state?.channel === "nightly"
-      ? "Nightly"
-      : "Stable"
-    : null;
   const checkedLabel = state?.checkedAt
     ? `Checked ${formatRelativeTimeLabel(state.checkedAt)}`
     : "Not checked yet";
@@ -115,7 +110,7 @@ function SidebarVersionCard({
     >
       <div className="flex flex-col gap-1 px-1 pt-1 pb-1.5">
         <span className="text-[9px] font-semibold tracking-[0.1em] uppercase text-muted-foreground/60">
-          {trackLabel ? `${APP_STAGE_LABEL} build · ${trackLabel} updates` : APP_STAGE_LABEL}
+          {APP_BUILD_CHANNEL_LABEL}
         </span>
         <code
           className="truncate text-[11px] leading-none font-medium tabular-nums text-foreground/90 select-all"
@@ -253,7 +248,7 @@ export function SidebarVersionTag() {
   );
   const ariaLabel =
     presentation.tone === "idle"
-      ? `${APP_STAGE_LABEL} · Version ${APP_VERSION}`
+      ? `${APP_BUILD_CHANNEL_LABEL} · Version ${APP_VERSION}`
       : presentation.tooltip;
 
   return (

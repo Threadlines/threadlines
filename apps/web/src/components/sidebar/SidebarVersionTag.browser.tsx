@@ -6,7 +6,7 @@ import { page, userEvent } from "vite-plus/test/browser";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
-import { APP_STAGE_LABEL, APP_VERSION } from "../../branding";
+import { APP_BUILD_CHANNEL_LABEL, APP_VERSION } from "../../branding";
 import { SidebarVersionTag } from "./SidebarVersionTag";
 
 const idleUpdateState: DesktopUpdateState = {
@@ -96,23 +96,22 @@ describe("SidebarVersionTag", () => {
 
     await versionChip().hover();
     await expect.element(versionCard()).toBeVisible();
-    await expect.element(page.getByText(`${APP_STAGE_LABEL} build · Stable updates`)).toBeVisible();
+    await expect.element(page.getByText(APP_BUILD_CHANNEL_LABEL)).toBeVisible();
     await expect.element(checkNowAction()).toBeVisible();
 
     await page.getByRole("button", { name: "elsewhere" }).hover();
     await expect.element(versionCard()).not.toBeInTheDocument();
   });
 
-  it("labels the build stage separately from the nightly update track", async () => {
+  it("keeps the installed build label independent of the nightly update preference", async () => {
     stubDesktopBridge({
       getUpdateState: vi.fn().mockResolvedValue({ ...idleUpdateState, channel: "nightly" }),
     });
     await mountTag();
 
     await versionChip().hover();
-    await expect
-      .element(page.getByText(`${APP_STAGE_LABEL} build · Nightly updates`))
-      .toBeVisible();
+    await expect.element(page.getByText(APP_BUILD_CHANNEL_LABEL)).toBeVisible();
+    await expect.element(page.getByText(/Nightly updates/)).not.toBeInTheDocument();
   });
 
   it("pins a hover-opened card once the update action runs", async () => {

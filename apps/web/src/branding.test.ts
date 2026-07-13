@@ -33,6 +33,7 @@ describe("branding", () => {
 
     expect(branding.APP_BASE_NAME).toBe("Threadlines");
     expect(branding.APP_STAGE_LABEL).toBe("Nightly");
+    expect(branding.APP_BUILD_CHANNEL_LABEL).toBe("Nightly");
     expect(branding.APP_DISPLAY_NAME).toBe("Threadlines (Nightly)");
     expect(branding.APP_VERSION).toBe("1.2.3-nightly.4");
   });
@@ -56,6 +57,7 @@ describe("branding", () => {
     const branding = await import("./branding");
 
     expect(branding.APP_STAGE_LABEL).toBe("Dev");
+    expect(branding.APP_BUILD_CHANNEL_LABEL).toBe("Dev");
     expect(branding.APP_VERSION).toBe(import.meta.env.APP_VERSION);
     expect(branding.APP_VERSION).not.toBe("41.5.0");
   });
@@ -68,7 +70,28 @@ describe("branding", () => {
     expect(branding.HOSTED_APP_CHANNEL).toBe("nightly");
     expect(branding.HOSTED_APP_CHANNEL_LABEL).toBe("Nightly");
     expect(branding.APP_STAGE_LABEL).toBe("Nightly");
+    expect(branding.APP_BUILD_CHANNEL_LABEL).toBe("Nightly");
     expect(branding.APP_DISPLAY_NAME).toBe("Threadlines");
+  });
+
+  it("labels regular packaged builds as stable", async () => {
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: {
+        desktopBridge: {
+          getAppBranding: () => ({
+            baseName: "Threadlines",
+            stageLabel: "Alpha",
+            displayName: "Threadlines",
+            version: "1.2.3",
+          }),
+        },
+      },
+    });
+
+    const branding = await import("./branding");
+
+    expect(branding.APP_BUILD_CHANNEL_LABEL).toBe("Stable");
   });
 
   it("ignores unknown hosted app channels", async () => {
