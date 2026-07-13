@@ -2240,6 +2240,15 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           : {}),
         ...(serviceTier ? { serviceTier } : {}),
         ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
+        ...(input.skills !== undefined
+          ? {
+              skills: input.skills.map((skill) => ({
+                type: "skill" as const,
+                name: skill.name,
+                path: skill.path,
+              })),
+            }
+          : {}),
         ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
       })
       .pipe(Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "turn/start", cause)));
@@ -2264,6 +2273,15 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         expectedTurnId: input.expectedTurnId,
         ...(input.messageId !== undefined ? { clientUserMessageId: input.messageId } : {}),
         ...(input.input !== undefined ? { input: input.input } : {}),
+        ...(input.skills !== undefined
+          ? {
+              skills: input.skills.map((skill) => ({
+                type: "skill" as const,
+                name: skill.name,
+                path: skill.path,
+              })),
+            }
+          : {}),
         ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
       })
       .pipe(Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "turn/steer", cause)));

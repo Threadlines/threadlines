@@ -481,6 +481,12 @@ describe("ProviderCommandReactor", () => {
           role: "user",
           text: "hello reactor",
           attachments: [],
+          skills: [
+            {
+              name: "review",
+              path: "/tmp/provider-project/.codex/skills/review/SKILL.md",
+            },
+          ],
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
@@ -494,6 +500,12 @@ describe("ProviderCommandReactor", () => {
       threadId: ThreadId.make("thread-1"),
       messageId: asMessageId("user-message-1"),
       input: "hello reactor",
+      skills: [
+        {
+          name: "review",
+          path: "/tmp/provider-project/.codex/skills/review/SKILL.md",
+        },
+      ],
     });
     expect(harness.startSession.mock.calls[0]?.[0]).toEqual(ThreadId.make("thread-1"));
     expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({

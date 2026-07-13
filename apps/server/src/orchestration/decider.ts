@@ -620,6 +620,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           role: "user",
           text: command.message.text,
           attachments: command.message.attachments,
+          ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
           turnId: null,
           streaming: false,
           createdAt: command.createdAt,
@@ -675,6 +676,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           runtimeMode: targetThread.runtimeMode,
           interactionMode: targetThread.interactionMode,
           ...(sourceProposedPlan !== undefined ? { sourceProposedPlan } : {}),
+          ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
           createdAt: command.createdAt,
         },
       };
@@ -753,6 +755,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           messageId: lastUserMessage.id,
           runtimeMode: targetThread.runtimeMode,
           interactionMode: targetThread.interactionMode,
+          ...(lastUserMessage.skills !== undefined ? { skills: lastUserMessage.skills } : {}),
           createdAt: command.createdAt,
         },
       };
@@ -793,6 +796,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           role: "user",
           text: command.message.text,
           attachments: command.message.attachments,
+          ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
           createdAt: command.createdAt,
         },
       };
@@ -1084,6 +1088,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           role: "user",
           text: command.message.text,
           attachments: command.message.attachments,
+          ...(command.message.skills !== undefined ? { skills: command.message.skills } : {}),
           createdAt: command.createdAt,
         },
       };

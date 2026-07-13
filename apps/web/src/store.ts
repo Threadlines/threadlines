@@ -216,6 +216,7 @@ function mapMessage(environmentId: EnvironmentId, message: OrchestrationMessage)
     streaming: message.streaming,
     ...(message.streaming ? {} : { completedAt: message.updatedAt }),
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
+    ...(message.skills !== undefined ? { skills: [...message.skills] } : {}),
   };
 }
 

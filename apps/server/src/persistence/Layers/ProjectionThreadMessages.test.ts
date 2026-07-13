@@ -13,6 +13,49 @@ const layer = it.layer(
 );
 
 layer("ProjectionThreadMessageRepository", (it) => {
+  it.effect("round-trips and preserves selected skill references", () =>
+    Effect.gen(function* () {
+      const repository = yield* ProjectionThreadMessageRepository;
+      const threadId = ThreadId.make("thread-preserve-skills");
+      const messageId = MessageId.make("message-preserve-skills");
+      const createdAt = "2026-07-13T19:00:00.000Z";
+      const skills = [
+        {
+          name: "review",
+          path: "/tmp/project/.codex/skills/review/SKILL.md",
+        },
+      ];
+
+      yield* repository.upsert({
+        messageId,
+        threadId,
+        turnId: null,
+        role: "user",
+        text: "Use $review",
+        skills,
+        isStreaming: false,
+        createdAt,
+        updatedAt: createdAt,
+      });
+      yield* repository.upsert({
+        messageId,
+        threadId,
+        turnId: null,
+        role: "user",
+        text: "Use $review again",
+        isStreaming: false,
+        createdAt,
+        updatedAt: "2026-07-13T19:00:01.000Z",
+      });
+
+      const row = yield* repository.getByMessageId({ messageId });
+      assert.equal(row._tag, "Some");
+      if (row._tag === "Some") {
+        assert.deepEqual(row.value.skills, skills);
+      }
+    }),
+  );
+
   it.effect("preserves existing attachments when upsert omits attachments", () =>
     Effect.gen(function* () {
       const repository = yield* ProjectionThreadMessageRepository;

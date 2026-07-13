@@ -230,6 +230,36 @@ it.effect("decodes thread.turn.start defaults for provider and runtime mode", ()
   }),
 );
 
+it.effect("preserves structured skill references in thread.turn.start", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeThreadTurnStartCommand({
+      type: "thread.turn.start",
+      commandId: "cmd-turn-skill",
+      threadId: "thread-1",
+      message: {
+        messageId: "msg-skill",
+        role: "user",
+        text: "Use $review",
+        attachments: [],
+        skills: [
+          {
+            name: "review",
+            path: "/tmp/project/.codex/skills/review/SKILL.md",
+          },
+        ],
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    assert.deepStrictEqual(parsed.message.skills, [
+      {
+        name: "review",
+        path: "/tmp/project/.codex/skills/review/SKILL.md",
+      },
+    ]);
+  }),
+);
+
 it.effect("preserves explicit provider and runtime mode in thread.turn.start", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeThreadTurnStartCommand({

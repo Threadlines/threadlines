@@ -134,6 +134,35 @@ describe("buildTurnStartParams", () => {
     });
   });
 
+  it("sends selected skills as structured app-server input", () => {
+    const params = Effect.runSync(
+      buildTurnStartParams({
+        threadId: "provider-thread-1",
+        runtimeMode: "full-access",
+        prompt: "Use $review to inspect this",
+        skills: [
+          {
+            type: "skill",
+            name: "review",
+            path: "/tmp/project/.codex/skills/review/SKILL.md",
+          },
+        ],
+      }),
+    );
+
+    assert.deepStrictEqual(params.input, [
+      {
+        type: "text",
+        text: "Use $review to inspect this",
+      },
+      {
+        type: "skill",
+        name: "review",
+        path: "/tmp/project/.codex/skills/review/SKILL.md",
+      },
+    ]);
+  });
+
   it("omits collaboration mode when interaction mode is absent", () => {
     const params = Effect.runSync(
       buildTurnStartParams({

@@ -195,6 +195,26 @@ describe("ProviderSendTurnInput", () => {
     expect(getOptionValue(parsed.modelSelection?.options, "fastMode")).toBe(true);
   });
 
+  it("accepts structured skill references", () => {
+    const parsed = decodeProviderSendTurnInput({
+      threadId: "thread-1",
+      input: "Use $review",
+      skills: [
+        {
+          name: "review",
+          path: "/tmp/project/.codex/skills/review/SKILL.md",
+        },
+      ],
+    });
+
+    expect(parsed.skills).toEqual([
+      {
+        name: "review",
+        path: "/tmp/project/.codex/skills/review/SKILL.md",
+      },
+    ]);
+  });
+
   it("accepts claude modelSelection with effort options", () => {
     const parsed = decodeProviderSendTurnInput({
       threadId: "thread-1",

@@ -165,6 +165,7 @@ export type ProviderUserInputAnswers = typeof ProviderUserInputAnswers.Type;
 
 export const PROVIDER_SEND_TURN_MAX_INPUT_CHARS = 120_000;
 export const PROVIDER_SEND_TURN_MAX_ATTACHMENTS = 8;
+export const PROVIDER_SEND_TURN_MAX_SKILLS = 32;
 export const PROVIDER_SEND_TURN_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 export const PROVIDER_SEND_TURN_MAX_FILE_BYTES = 10 * 1024 * 1024;
 const PROVIDER_SEND_TURN_MAX_ATTACHMENT_DATA_URL_CHARS = 14_000_000;
@@ -231,6 +232,18 @@ export const ChatAttachment = Schema.Union([ChatImageAttachment, ChatFileAttachm
 export type ChatAttachment = typeof ChatAttachment.Type;
 const UploadChatAttachment = Schema.Union([UploadChatImageAttachment, UploadChatFileAttachment]);
 export type UploadChatAttachment = typeof UploadChatAttachment.Type;
+
+/** A skill explicitly selected in the composer. The visible `$name` marker
+ * remains in message text while this reference preserves the provider-native
+ * path needed to load the exact skill without another discovery pass. */
+export const ChatSkillReference = Schema.Struct({
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
+  path: TrimmedNonEmptyString.check(Schema.isMaxLength(4_096)),
+});
+export type ChatSkillReference = typeof ChatSkillReference.Type;
+export const ChatSkillReferenceList = Schema.Array(ChatSkillReference).check(
+  Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_SKILLS),
+);
 
 const decodeChatAttachmentExit = Schema.decodeUnknownExit(ChatAttachment);
 
@@ -338,6 +351,7 @@ export const OrchestrationMessage = Schema.Struct({
   role: OrchestrationMessageRole,
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
+  skills: Schema.optional(ChatSkillReferenceList),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
   createdAt: IsoDateTime,
@@ -808,6 +822,7 @@ export const ThreadTurnStartCommand = Schema.Struct({
     role: Schema.Literal("user"),
     text: Schema.String,
     attachments: Schema.Array(ChatAttachment),
+    skills: Schema.optional(ChatSkillReferenceList),
   }),
   modelSelection: Schema.optional(ModelSelection),
   titleSeed: Schema.optional(TrimmedNonEmptyString),
@@ -830,6 +845,7 @@ export const ThreadFollowUpSubmitCommand = Schema.Struct({
     role: Schema.Literal("user"),
     text: Schema.String,
     attachments: Schema.Array(ChatAttachment),
+    skills: Schema.optional(ChatSkillReferenceList),
   }),
   createdAt: IsoDateTime,
 });
@@ -843,6 +859,7 @@ const ClientThreadTurnStartCommand = Schema.Struct({
     role: Schema.Literal("user"),
     text: Schema.String,
     attachments: Schema.Array(UploadChatAttachment),
+    skills: Schema.optional(ChatSkillReferenceList),
   }),
   modelSelection: Schema.optional(ModelSelection),
   titleSeed: Schema.optional(TrimmedNonEmptyString),
@@ -863,6 +880,7 @@ const ClientThreadFollowUpSubmitCommand = Schema.Struct({
     role: Schema.Literal("user"),
     text: Schema.String,
     attachments: Schema.Array(UploadChatAttachment),
+    skills: Schema.optional(ChatSkillReferenceList),
   }),
   createdAt: IsoDateTime,
 });
@@ -1070,6 +1088,7 @@ const ThreadFollowUpAcceptCommand = Schema.Struct({
     role: Schema.Literal("user"),
     text: Schema.String,
     attachments: Schema.Array(ChatAttachment),
+    skills: Schema.optional(ChatSkillReferenceList),
   }),
   createdAt: IsoDateTime,
 });
@@ -1236,6 +1255,7 @@ export const ThreadMessageSentPayload = Schema.Struct({
   role: OrchestrationMessageRole,
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
+  skills: Schema.optional(ChatSkillReferenceList),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
   createdAt: IsoDateTime,
@@ -1254,6 +1274,7 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
   providerContext: Schema.optional(Schema.String),
   providerAttachments: Schema.optional(Schema.Array(ChatAttachment)),
+  skills: Schema.optional(ChatSkillReferenceList),
   createdAt: IsoDateTime,
 });
 
@@ -1264,6 +1285,7 @@ export const ThreadFollowUpSubmittedPayload = Schema.Struct({
   role: Schema.Literal("user"),
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
+  skills: Schema.optional(ChatSkillReferenceList),
   createdAt: IsoDateTime,
 });
 

@@ -23,6 +23,9 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
       readFile: rpcClient.projects.readFile,
       favicon: rpcClient.projects.favicon,
     },
+    providers: {
+      getExtensions: rpcClient.server.getProviderExtensions,
+    },
     attachments: {
       read: rpcClient.attachments.read,
     },

@@ -1,5 +1,6 @@
 import {
   ChatAttachmentListLenient,
+  ChatSkillReferenceList,
   CheckpointRef,
   IsoDateTime,
   MessageId,
@@ -70,6 +71,7 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
   Struct.assign({
     isStreaming: Schema.Number,
     attachments: Schema.NullOr(Schema.fromJsonString(ChatAttachmentListLenient)),
+    skills: Schema.NullOr(Schema.fromJsonString(ChatSkillReferenceList)),
   }),
 );
 const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan;
@@ -233,6 +235,7 @@ function mapThreadMessageRow(
     role: row.role,
     text: row.text,
     ...(row.attachments !== null ? { attachments: row.attachments } : {}),
+    ...(row.skills !== null ? { skills: row.skills } : {}),
     turnId: row.turnId,
     streaming: row.isStreaming === 1,
     createdAt: row.createdAt,
@@ -440,6 +443,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           role,
           text,
           attachments_json AS "attachments",
+          skills_json AS "skills",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -475,6 +479,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           role,
           text,
           attachments_json AS "attachments",
+          skills_json AS "skills",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -859,6 +864,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           role,
           text,
           attachments_json AS "attachments",
+          skills_json AS "skills",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"

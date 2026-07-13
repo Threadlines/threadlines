@@ -86,6 +86,9 @@ function groupCommandItems(
   if (triggerKind === "skill") {
     return items.length > 0 ? [{ id: "skills", label: "Skills", items }] : [];
   }
+  if (triggerKind === "path") {
+    return items.length > 0 ? [{ id: "paths", label: "Files & folders", items }] : [];
+  }
   if (triggerKind !== "slash-command" || !groupSlashCommandSections) {
     return [{ id: "default", label: null, items }];
   }
@@ -184,7 +187,7 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
             ) : (
               <p className="text-muted-foreground/70 text-xs">
                 {props.isLoading
-                  ? "Searching workspace files..."
+                  ? "Loading files and folders..."
                   : (props.emptyStateText ??
                     (props.triggerKind === "path"
                       ? "No matching files or folders."

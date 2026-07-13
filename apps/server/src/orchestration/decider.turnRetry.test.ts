@@ -83,6 +83,12 @@ function makeThread(overrides: Partial<OrchestrationThread> = {}): Orchestration
         id: MessageId.make("message-user-2"),
         role: "user",
         text: "ask that failed",
+        skills: [
+          {
+            name: "review",
+            path: "/tmp/project/.codex/skills/review/SKILL.md",
+          },
+        ],
         turnId: null,
         streaming: false,
         createdAt: "2026-01-01T00:00:03.000Z",
@@ -147,6 +153,12 @@ describe("decider turn retry", () => {
         messageId: MessageId.make("message-user-2"),
         runtimeMode: "full-access",
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        skills: [
+          {
+            name: "review",
+            path: "/tmp/project/.codex/skills/review/SKILL.md",
+          },
+        ],
       },
     });
   });

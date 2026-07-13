@@ -3,10 +3,26 @@ import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
-import { ProjectReadFileResult, ProjectWriteFileResult } from "./project.ts";
+import {
+  ProjectReadFileResult,
+  ProjectSearchEntriesInput,
+  ProjectWriteFileResult,
+} from "./project.ts";
 
 const decodeReadResult = Schema.decodeUnknownEffect(ProjectReadFileResult);
 const decodeWriteResult = Schema.decodeUnknownEffect(ProjectWriteFileResult);
+const decodeSearchEntriesInput = Schema.decodeUnknownEffect(ProjectSearchEntriesInput);
+
+it.effect("accepts an empty workspace-entry query for initial browsing", () =>
+  Effect.gen(function* () {
+    const input = yield* decodeSearchEntriesInput({
+      cwd: "/tmp/project",
+      query: "",
+      limit: 80,
+    });
+    assert.equal(input.query, "");
+  }),
+);
 
 // Hosted-app version skew: a newer web bundle must tolerate responses from a
 // server that predates content hashing and the written/conflict union.

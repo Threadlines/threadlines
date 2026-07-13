@@ -1,5 +1,6 @@
 import type {
   ChatFileAttachmentKind,
+  ChatSkillReference,
   EnvironmentId,
   ModelSelection,
   OrchestrationLatestTurn,
@@ -59,6 +60,7 @@ export interface ChatMessage {
   role: "user" | "assistant" | "system";
   text: string;
   attachments?: ChatAttachment[];
+  skills?: ChatSkillReference[];
   turnId?: TurnId | null;
   createdAt: string;
   completedAt?: string | undefined;

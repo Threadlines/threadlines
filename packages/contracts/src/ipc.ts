@@ -760,6 +760,13 @@ export interface EnvironmentApi {
     readFile: (input: ProjectReadFileInput) => Promise<ProjectReadFileResult>;
     favicon: (input: ProjectFaviconInput) => Promise<ProjectFaviconResult>;
   };
+  /** Provider capabilities scoped to this backend environment. Optional so
+   * newer clients can still connect to older Threadlines servers. */
+  providers?: {
+    getExtensions: (
+      input: ProviderExtensionsInventoryInput,
+    ) => Promise<ProviderExtensionsInventoryResult>;
+  };
   attachments: {
     read: (input: ChatAttachmentReadInput) => Promise<ChatAttachmentReadResult>;
   };

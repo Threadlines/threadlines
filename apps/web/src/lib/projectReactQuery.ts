@@ -33,6 +33,7 @@ export function projectSearchEntriesQueryOptions(input: {
   cwd: string | null;
   query: string;
   enabled?: boolean;
+  allowEmptyQuery?: boolean;
   limit?: number;
   staleTime?: number;
 }) {
@@ -54,7 +55,7 @@ export function projectSearchEntriesQueryOptions(input: {
       (input.enabled ?? true) &&
       input.environmentId !== null &&
       input.cwd !== null &&
-      input.query.length > 0,
+      (input.allowEmptyQuery === true || input.query.length > 0),
     staleTime: input.staleTime ?? DEFAULT_SEARCH_ENTRIES_STALE_TIME,
     placeholderData: (previous) => previous ?? EMPTY_SEARCH_ENTRIES_RESULT,
   });

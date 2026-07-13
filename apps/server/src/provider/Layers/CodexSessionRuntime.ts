@@ -134,9 +134,16 @@ export type CodexTurnAttachmentInput =
   | { readonly type: "image"; readonly url: string }
   | { readonly type: "text"; readonly text: string };
 
+export interface CodexTurnSkillInput {
+  readonly type: "skill";
+  readonly name: string;
+  readonly path: string;
+}
+
 export interface CodexSessionRuntimeSendTurnInput {
   readonly clientUserMessageId?: string;
   readonly input?: string;
+  readonly skills?: ReadonlyArray<CodexTurnSkillInput>;
   readonly attachments?: ReadonlyArray<CodexTurnAttachmentInput>;
   readonly model?: string;
   readonly serviceTier?: CodexServiceTier | undefined;
@@ -148,6 +155,7 @@ export interface CodexSessionRuntimeSteerTurnInput {
   readonly expectedTurnId: TurnId;
   readonly clientUserMessageId?: string;
   readonly input?: string;
+  readonly skills?: ReadonlyArray<CodexTurnSkillInput>;
   readonly attachments?: ReadonlyArray<CodexTurnAttachmentInput>;
 }
 
@@ -409,6 +417,7 @@ export function buildTurnStartParams(input: {
   readonly threadId: string;
   readonly runtimeMode: RuntimeMode;
   readonly prompt?: string;
+  readonly skills?: ReadonlyArray<CodexTurnSkillInput>;
   readonly attachments?: ReadonlyArray<CodexTurnAttachmentInput>;
   readonly clientUserMessageId?: string;
   readonly model?: string;
@@ -425,6 +434,9 @@ export function buildTurnStartParams(input: {
       type: "text",
       text: input.prompt,
     });
+  }
+  for (const skill of input.skills ?? []) {
+    turnInput.push(skill);
   }
   for (const attachment of input.attachments ?? []) {
     turnInput.push(attachment);
@@ -457,6 +469,7 @@ export function buildTurnSteerParams(input: {
   readonly threadId: string;
   readonly expectedTurnId: TurnId;
   readonly prompt?: string;
+  readonly skills?: ReadonlyArray<CodexTurnSkillInput>;
   readonly attachments?: ReadonlyArray<CodexTurnAttachmentInput>;
   readonly clientUserMessageId?: string;
 }): Effect.Effect<
@@ -469,6 +482,9 @@ export function buildTurnSteerParams(input: {
       type: "text",
       text: input.prompt,
     });
+  }
+  for (const skill of input.skills ?? []) {
+    turnInput.push(skill);
   }
   for (const attachment of input.attachments ?? []) {
     turnInput.push(attachment);
@@ -1723,6 +1739,7 @@ export const makeCodexSessionRuntime = (
               ? { clientUserMessageId: input.clientUserMessageId }
               : {}),
             ...(input.input ? { prompt: input.input } : {}),
+            ...(input.skills ? { skills: input.skills } : {}),
             ...(input.attachments ? { attachments: input.attachments } : {}),
             ...(normalizedModel ? { model: normalizedModel } : {}),
             ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
@@ -1796,6 +1813,7 @@ export const makeCodexSessionRuntime = (
               ? { clientUserMessageId: input.clientUserMessageId }
               : {}),
             ...(input.input ? { prompt: input.input } : {}),
+            ...(input.skills ? { skills: input.skills } : {}),
             ...(input.attachments ? { attachments: input.attachments } : {}),
           });
           const rawResponse = yield* withCodexRequestTimeout(

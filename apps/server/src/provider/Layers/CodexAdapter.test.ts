@@ -388,6 +388,12 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
             { id: "reasoningEffort", value: "high" },
             { id: "serviceTier", value: "priority" },
           ]),
+          skills: [
+            {
+              name: "review",
+              path: "/tmp/project/.codex/skills/review/SKILL.md",
+            },
+          ],
           attachments: [],
         }),
       );
@@ -398,6 +404,13 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
         model: "gpt-5.3-codex",
         effort: "high",
         serviceTier: "priority",
+        skills: [
+          {
+            type: "skill",
+            name: "review",
+            path: "/tmp/project/.codex/skills/review/SKILL.md",
+          },
+        ],
       });
     }),
   );

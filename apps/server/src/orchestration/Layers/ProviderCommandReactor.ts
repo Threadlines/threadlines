@@ -1,5 +1,6 @@
 import {
   type ChatAttachment,
+  type ChatSkillReference,
   CommandId,
   EventId,
   type MessageId,
@@ -654,6 +655,7 @@ const make = Effect.gen(function* () {
     readonly messageId: MessageId;
     readonly messageText: string;
     readonly attachments?: ReadonlyArray<ChatAttachment>;
+    readonly skills?: ReadonlyArray<ChatSkillReference>;
     readonly providerContext?: string;
     readonly providerAttachments?: ReadonlyArray<ChatAttachment>;
     readonly modelSelection?: ModelSelection;
@@ -731,6 +733,7 @@ const make = Effect.gen(function* () {
       messageId: input.messageId,
       ...(normalizedInput ? { input: normalizedInput } : {}),
       ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
+      ...(input.skills !== undefined && input.skills.length > 0 ? { skills: input.skills } : {}),
       ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
       ...(telemetryContext !== undefined ? { telemetryContext } : {}),
@@ -1013,6 +1016,7 @@ const make = Effect.gen(function* () {
       messageId: event.payload.messageId,
       messageText: message.text,
       ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+      ...(event.payload.skills !== undefined ? { skills: event.payload.skills } : {}),
       ...(event.payload.providerContext !== undefined
         ? { providerContext: event.payload.providerContext }
         : {}),
@@ -1112,6 +1116,7 @@ const make = Effect.gen(function* () {
         messageId: event.payload.messageId,
         ...(normalizedInput ? { input: normalizedInput } : {}),
         ...(attachments.length > 0 ? { attachments } : {}),
+        ...(event.payload.skills !== undefined ? { skills: event.payload.skills } : {}),
       })
       .pipe(
         Effect.as(true),
@@ -1143,6 +1148,7 @@ const make = Effect.gen(function* () {
         role: "user",
         text: event.payload.text,
         attachments,
+        ...(event.payload.skills !== undefined ? { skills: event.payload.skills } : {}),
       },
       createdAt: event.payload.createdAt,
     });

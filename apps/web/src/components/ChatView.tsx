@@ -4067,6 +4067,7 @@ export default function ChatView(props: ChatViewProps) {
       fileSelectionContexts: composerFileSelectionContexts,
       selectedModel: ctxSelectedModel,
       selectedModelSelection: ctxSelectedModelSelection,
+      skillReferences: composerSkillReferences,
     } = sendCtx;
     const promptForSend = promptRef.current;
     const {
@@ -4206,6 +4207,7 @@ export default function ChatView(props: ChatViewProps) {
       role: "user",
       text: outgoingMessageText,
       ...(optimisticAttachments.length > 0 ? { attachments: optimisticAttachments } : {}),
+      ...(composerSkillReferences.length > 0 ? { skills: composerSkillReferences } : {}),
       ...(isSteeringFollowUp && activeSteerTurnId !== null ? { turnId: activeSteerTurnId } : {}),
       createdAt: messageCreatedAt,
       streaming: false,
@@ -4294,6 +4296,7 @@ export default function ChatView(props: ChatViewProps) {
             role: "user",
             text: outgoingMessageText,
             attachments: turnAttachments,
+            ...(composerSkillReferences.length > 0 ? { skills: composerSkillReferences } : {}),
           },
           createdAt: messageCreatedAt,
         });
@@ -4360,6 +4363,7 @@ export default function ChatView(props: ChatViewProps) {
           role: "user",
           text: outgoingMessageText,
           attachments: turnAttachments,
+          ...(composerSkillReferences.length > 0 ? { skills: composerSkillReferences } : {}),
         },
         modelSelection: ctxSelectedModelSelection,
         titleSeed: title,
@@ -5692,6 +5696,7 @@ export default function ChatView(props: ChatViewProps) {
                   keybindings={keybindings}
                   terminalOpen={Boolean(terminalState.terminalOpen)}
                   gitCwd={gitCwd}
+                  canReferenceWorkspaceFiles={!isGeneralChatThread && gitCwd !== null}
                   promptRef={promptRef}
                   composerAttachmentsRef={composerAttachmentsRef}
                   composerTerminalContextsRef={composerTerminalContextsRef}

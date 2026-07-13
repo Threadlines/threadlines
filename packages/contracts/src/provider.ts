@@ -12,6 +12,7 @@ import {
 } from "./baseSchemas.ts";
 import {
   ChatAttachment,
+  ChatSkillReferenceList,
   ModelSelection,
   OrchestrationMessageRole,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
@@ -122,6 +123,7 @@ export const ProviderSendTurnInput = Schema.Struct({
   attachments: Schema.optional(
     Schema.Array(ChatAttachment).check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_ATTACHMENTS)),
   ),
+  skills: Schema.optional(ChatSkillReferenceList),
   modelSelection: Schema.optional(ModelSelection),
   interactionMode: Schema.optional(ProviderInteractionMode),
   telemetryContext: Schema.optional(
@@ -147,6 +149,7 @@ export const ProviderSteerTurnInput = Schema.Struct({
   attachments: Schema.optional(
     Schema.Array(ChatAttachment).check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_ATTACHMENTS)),
   ),
+  skills: Schema.optional(ChatSkillReferenceList),
 });
 export type ProviderSteerTurnInput = typeof ProviderSteerTurnInput.Type;
 

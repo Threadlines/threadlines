@@ -1,5 +1,6 @@
 import type {
   ApprovalRequestId,
+  ChatSkillReference,
   EnvironmentId,
   ModelSelection,
   ProjectEntry,
@@ -35,6 +36,7 @@ import { useDebouncedValue } from "@tanstack/react-pacer";
 import { serializeComposerMentionPath } from "~/composerMentionPath";
 import type { FileSelectionContextDraft } from "~/lib/fileSelectionContext";
 import { projectSearchEntriesQueryOptions } from "~/lib/projectReactQuery";
+import { providerSkillsQueryOptions } from "~/lib/providerSkillsReactQuery";
 import { ComposerPendingFileSelectionContexts } from "./ComposerPendingFileSelectionContexts";
 import {
   clampCollapsedComposerCursor,
@@ -85,6 +87,7 @@ import { ComposerPendingTranscriptHighlightContexts } from "./ComposerPendingTra
 import { ComposerPendingTerminalContexts } from "./ComposerPendingTerminalContexts";
 import { resolveComposerMenuActiveItemId } from "./composerMenuHighlight";
 import { searchSlashCommandItems } from "./composerSlashCommandSearch";
+import { buildDefaultComposerPlaceholder } from "./composerPlaceholder";
 import {
   getComposerProviderState,
   renderProviderTraitsMenuContent,
@@ -144,13 +147,16 @@ import {
   resolveFileAttachmentType,
 } from "@threadlines/shared/fileAttachments";
 import { searchProviderSkills } from "../../providerSkillSearch";
+import { resolveComposerSkillReferences } from "../../providerSkillReferences";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 
 const ATTACHMENT_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES / (1024 * 1024))}MB`;
 
 const COMPOSER_PATH_QUERY_DEBOUNCE_MS = 120;
+const CODEX_AGENT_PROVIDER = ProviderDriverKind.make("codex");
 const CLAUDE_AGENT_PROVIDER = ProviderDriverKind.make("claudeAgent");
 const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
+const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 const COMPOSER_FLOATING_LAYER_SELECTOR = [
   '[data-slot="popover-popup"]',
   '[data-slot="menu-popup"]',
@@ -412,6 +418,7 @@ export interface ChatComposerHandle {
     selectedProvider: ProviderDriverKind;
     selectedModel: string;
     selectedProviderModels: ReadonlyArray<ServerProvider["models"][number]>;
+    skillReferences: ChatSkillReference[];
   };
 }
 
@@ -485,6 +492,7 @@ export interface ChatComposerProps {
   keybindings: ResolvedKeybindingsConfig;
   terminalOpen: boolean;
   gitCwd: string | null;
+  canReferenceWorkspaceFiles: boolean;
 
   // Refs the parent needs kept in sync
   promptRef: React.RefObject<string>;
@@ -577,6 +585,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     keybindings,
     terminalOpen,
     gitCwd,
+    canReferenceWorkspaceFiles,
     promptRef,
     composerRef,
     composerAttachmentsRef,
@@ -777,6 +786,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     () => selectedProviderEntry?.snapshot ?? null,
     [selectedProviderEntry],
   );
+  const projectSkillsQuery = useQuery(
+    providerSkillsQueryOptions({
+      environmentId,
+      cwd: gitCwd,
+      providerInstanceId: selectedInstanceId,
+      enabled: selectedProvider === CODEX_AGENT_PROVIDER,
+    }),
+  );
+  const composerSkills = projectSkillsQuery.data ?? EMPTY_PROVIDER_SKILLS;
   // Account-level usage (5h/weekly windows) for the instance the composer
   // is targeting — surfaced in the context window meter's hover card.
   const selectedProviderAccountUsage = useMemo(
@@ -975,7 +993,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // ------------------------------------------------------------------
   const composerTriggerKind = composerTrigger?.kind ?? null;
   const pathTriggerQuery = composerTrigger?.kind === "path" ? composerTrigger.query : "";
-  const isPathTrigger = composerTriggerKind === "path";
+  const isPathTrigger = composerTriggerKind === "path" && canReferenceWorkspaceFiles;
   const [debouncedPathQuery, composerPathQueryDebouncer] = useDebouncedValue(
     pathTriggerQuery,
     { wait: COMPOSER_PATH_QUERY_DEBOUNCE_MS },
@@ -988,6 +1006,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       cwd: gitCwd,
       query: effectivePathQuery,
       enabled: isPathTrigger,
+      allowEmptyQuery: true,
       limit: 80,
     }),
   );
@@ -1047,22 +1066,20 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       return searchSlashCommandItems(slashCommandItems, query);
     }
     if (composerTrigger.kind === "skill") {
-      return searchProviderSkills(selectedProviderStatus?.skills ?? [], composerTrigger.query).map(
-        (skill) => ({
-          id: `skill:${selectedProvider}:${skill.name}`,
-          type: "skill" as const,
-          provider: selectedProvider,
-          skill,
-          label: formatProviderSkillDisplayName(skill),
-          description:
-            skill.shortDescription ??
-            skill.description ??
-            (skill.scope ? `${skill.scope} skill` : "Run provider skill"),
-        }),
-      );
+      return searchProviderSkills(composerSkills, composerTrigger.query).map((skill) => ({
+        id: `skill:${selectedProvider}:${skill.name}`,
+        type: "skill" as const,
+        provider: selectedProvider,
+        skill,
+        label: formatProviderSkillDisplayName(skill),
+        description:
+          skill.shortDescription ??
+          skill.description ??
+          (skill.scope ? `${skill.scope} skill` : "Run provider skill"),
+      }));
     }
     return [];
-  }, [composerTrigger, selectedProvider, selectedProviderStatus, workspaceEntries]);
+  }, [composerSkills, composerTrigger, selectedProvider, selectedProviderStatus, workspaceEntries]);
 
   const composerMenuOpen = Boolean(composerTrigger);
   const composerMenuSearchKey = composerTrigger
@@ -1160,18 +1177,46 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   ]);
 
   const isComposerMenuLoading =
-    composerTriggerKind === "path" &&
-    ((pathTriggerQuery.length > 0 && composerPathQueryDebouncer.state.isPending) ||
-      workspaceEntriesQuery.isLoading ||
-      workspaceEntriesQuery.isFetching);
+    (isPathTrigger &&
+      ((pathTriggerQuery.length > 0 && composerPathQueryDebouncer.state.isPending) ||
+        workspaceEntriesQuery.isLoading ||
+        workspaceEntriesQuery.isFetching)) ||
+    (composerTriggerKind === "skill" &&
+      (projectSkillsQuery.isLoading || projectSkillsQuery.isFetching));
   const composerMenuEmptyState = useMemo(() => {
     if (composerTriggerKind === "skill") {
+      if (projectSkillsQuery.isError) {
+        return "Could not load skills for this project and provider.";
+      }
       return "No skills found. Try / to browse provider commands.";
     }
-    return composerTriggerKind === "path"
-      ? "No matching files or folders."
-      : "No matching command.";
-  }, [composerTriggerKind]);
+    if (composerTriggerKind === "path") {
+      if (!canReferenceWorkspaceFiles) {
+        return "Continue this chat in a project to reference workspace files.";
+      }
+      if (workspaceEntriesQuery.isError) {
+        return "Could not load files and folders from this workspace.";
+      }
+      return pathTriggerQuery.trim().length === 0
+        ? "No files or folders are available in this workspace."
+        : "No matching files or folders.";
+    }
+    return "No matching command.";
+  }, [
+    composerTriggerKind,
+    canReferenceWorkspaceFiles,
+    pathTriggerQuery,
+    projectSkillsQuery.isError,
+    workspaceEntriesQuery.isError,
+  ]);
+  const defaultComposerPlaceholder = useMemo(
+    () =>
+      buildDefaultComposerPlaceholder({
+        canReferenceFiles: canReferenceWorkspaceFiles,
+        canInvokeSkills: composerSkills.some((skill) => skill.enabled),
+      }),
+    [canReferenceWorkspaceFiles, composerSkills],
+  );
 
   // ------------------------------------------------------------------
   // Provider traits UI
@@ -2249,6 +2294,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         selectedProvider,
         selectedModel,
         selectedProviderModels,
+        skillReferences: resolveComposerSkillReferences(promptRef.current, composerSkills),
       }),
     }),
     [
@@ -2269,6 +2315,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       selectedPromptEffort,
       selectedProvider,
       selectedProviderModels,
+      composerSkills,
     ],
   );
 
@@ -2665,7 +2712,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 }
                 cursor={composerCursor}
                 terminalContexts={[]}
-                skills={selectedProviderStatus?.skills ?? []}
+                skills={composerSkills}
                 {...(showMobilePendingAnswerActions ? { className: "max-sm:pb-11" } : {})}
                 onRemoveTerminalContext={removeComposerTerminalContextFromDraft}
                 onChange={onPromptChange}
@@ -2684,9 +2731,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                                 ? "connecting"
                                 : "disconnected"
                             }`
-                          : phase === "disconnected"
-                            ? "Ask for follow-up changes or attach files"
-                            : "Ask anything, @tag files/folders, $use skills, or / for commands"
+                          : defaultComposerPlaceholder
                 }
                 disabled={
                   isConnecting ||
