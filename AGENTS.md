@@ -2,19 +2,29 @@
 
 ## Task Completion Requirements
 
-- All of `vp fmt`, `vp lint`, and `vp run typecheck` must pass before considering tasks completed.
-- NEVER run `bun test`. The Bun toolchain is not used for repo tasks; use `vp run test` for the full Vitest suite.
+- All of `vp fmt`, `vp lint`, and `vp run typecheck` must pass before considering tasks completed. `vp` (vite-plus) is the repo toolchain — use it for all repo tasks.
+- Run the tests covering the code you changed: `vp run '@threadlines/server#test' <filename substring>` (same pattern for the other packages; the filter matches file names, not repo-relative paths). Reserve `vp run test` (full Vitest suite) for broad or cross-package changes.
+- NEVER run `bun test`. The Bun toolchain is not used for repo tasks.
+
+## Testing Discipline
+
+Tests must earn their maintenance cost. When adding or changing tests:
+
+- Extend the existing test file for a module instead of creating a new one.
+- Test observable behavior at module boundaries (commands in → events/projections out, RPC in → response out), not implementation details.
+- Don't write tests that restate the implementation or assert mock wiring — they pass when the code is wrong and break when the code is refactored.
+- One focused test that would catch a real regression beats five that mirror the code.
 
 ## Project Snapshot
 
-Threadlines is a minimal web GUI for using coding agents like Codex and Claude.
+Threadlines is a minimal web GUI for using coding agents. Codex and Claude are the supported providers.
 
-This repository is a VERY EARLY WIP. Proposing sweeping changes that improve long-term maintainability is encouraged.
+The core architecture — event-sourced orchestration, provider drivers, schema-only contracts — is established. Incremental maintainability improvements are welcome; propose sweeping or cross-cutting changes and get agreement before implementing them.
 
 ## Core Priorities
 
-1. Performance first.
-2. Reliability first.
+1. Reliability and correctness first.
+2. Performance is a close second.
 3. Keep behavior predictable under load and during failures (session restarts, reconnects, partial streams).
 
 If a tradeoff is required, choose correctness and robustness over short-term convenience.
@@ -32,7 +42,7 @@ Long term maintainability is a core priority. If you add new functionality, firs
 
 ## Provider Sessions and Orchestration (Important)
 
-Threadlines is multi-provider. Each provider is wrapped by a driver (`apps/server/src/provider/Drivers/` — Codex, Claude, Cursor, OpenCode); Codex still runs via `codex app-server` (JSON-RPC over stdio). Provider runtime activity is ingested into the event-sourced orchestration core and projected into read models that the browser consumes.
+Threadlines is multi-provider. Each provider is wrapped by a driver in `apps/server/src/provider/Drivers/`. Codex (via `codex app-server`, JSON-RPC over stdio) and Claude are the supported providers; the Cursor and OpenCode drivers exist in the codebase but are not actively supported — keep them compiling, but don't extend them with new features unless explicitly asked. Provider runtime activity is ingested into the event-sourced orchestration core and projected into read models that the browser consumes.
 
 How the pieces fit:
 
