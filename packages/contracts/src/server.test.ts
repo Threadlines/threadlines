@@ -136,6 +136,17 @@ describe("ServerProvider", () => {
         primaryLimitId: "codex",
         rateLimitResetCredits: {
           availableCount: 1,
+          credits: [
+            {
+              id: "reset-1",
+              resetType: "codexRateLimits",
+              status: "available",
+              grantedAt: 1_776_297_600,
+              expiresAt: 1_778_889_600,
+              title: "Full reset",
+              description: "Ready to redeem",
+            },
+          ],
         },
         tokenUsage: {
           checkedAt: "2026-04-10T00:00:00.000Z",
@@ -177,6 +188,7 @@ describe("ServerProvider", () => {
     expect(parsed.accountUsage?.limits[0]?.primary?.remainingPercent).toBe(75);
     expect(parsed.accountUsage?.limits[0]?.individualLimit?.remainingPercent).toBe(75);
     expect(parsed.accountUsage?.rateLimitResetCredits?.availableCount).toBe(1);
+    expect(parsed.accountUsage?.rateLimitResetCredits?.credits?.[0]?.expiresAt).toBe(1_778_889_600);
     expect(parsed.accountUsage?.tokenUsage?.summary.lifetimeTokens).toBe(1200000);
     expect(parsed.accountUsage?.tokenUsage?.dailyBuckets[0]?.tokens).toBe(1200);
   });

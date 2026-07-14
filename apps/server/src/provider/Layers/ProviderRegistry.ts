@@ -556,6 +556,7 @@ export const ProviderRegistryLive = Layer.effect(
     const consumeRateLimitResetCredit = Effect.fn("consumeRateLimitResetCredit")(function* (input: {
       readonly instanceId: ProviderInstanceId;
       readonly idempotencyKey?: string;
+      readonly creditId?: string;
     }) {
       const instance = yield* instanceRegistry.getInstance(input.instanceId);
       if (!instance) {
@@ -575,6 +576,7 @@ export const ProviderRegistryLive = Layer.effect(
 
       const outcome = yield* consume({
         idempotencyKey: input.idempotencyKey ?? randomUUID(),
+        ...(input.creditId ? { creditId: input.creditId } : {}),
       }).pipe(
         Effect.map((result) => result.outcome),
         Effect.mapError(

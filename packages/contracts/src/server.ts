@@ -120,8 +120,32 @@ export const ServerProviderUsageLimit = Schema.Struct({
 });
 export type ServerProviderUsageLimit = typeof ServerProviderUsageLimit.Type;
 
+export const ServerProviderRateLimitResetCreditStatus = Schema.Literals([
+  "available",
+  "redeeming",
+  "redeemed",
+  "unknown",
+]);
+export type ServerProviderRateLimitResetCreditStatus =
+  typeof ServerProviderRateLimitResetCreditStatus.Type;
+
+export const ServerProviderRateLimitResetType = Schema.Literals(["codexRateLimits", "unknown"]);
+export type ServerProviderRateLimitResetType = typeof ServerProviderRateLimitResetType.Type;
+
+export const ServerProviderRateLimitResetCredit = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  resetType: ServerProviderRateLimitResetType,
+  status: ServerProviderRateLimitResetCreditStatus,
+  grantedAt: NonNegativeInt,
+  expiresAt: Schema.optional(NonNegativeInt),
+  title: Schema.optional(TrimmedNonEmptyString),
+  description: Schema.optional(TrimmedNonEmptyString),
+});
+export type ServerProviderRateLimitResetCredit = typeof ServerProviderRateLimitResetCredit.Type;
+
 export const ServerProviderRateLimitResetCredits = Schema.Struct({
   availableCount: NonNegativeInt,
+  credits: Schema.optional(Schema.Array(ServerProviderRateLimitResetCredit)),
 });
 export type ServerProviderRateLimitResetCredits = typeof ServerProviderRateLimitResetCredits.Type;
 
@@ -715,6 +739,7 @@ export type ServerProviderRateLimitResetCreditOutcome =
 export const ServerProviderRateLimitResetCreditConsumeInput = Schema.Struct({
   instanceId: ProviderInstanceId,
   idempotencyKey: Schema.optionalKey(TrimmedNonEmptyString),
+  creditId: Schema.optionalKey(TrimmedNonEmptyString),
 });
 export type ServerProviderRateLimitResetCreditConsumeInput =
   typeof ServerProviderRateLimitResetCreditConsumeInput.Type;

@@ -1618,6 +1618,7 @@ export function ProviderSettingsPanel() {
               liveProvider,
               liveProvider?.accountUsage?.rateLimitResetCredits?.availableCount,
             );
+            const providerResetCredits = liveProvider?.accountUsage?.rateLimitResetCredits;
             const resetLabel = driverOption?.label ?? String(row.driver);
             const headerAction =
               row.isDefault && row.isDirty ? (
@@ -1705,7 +1706,13 @@ export function ProviderSettingsPanel() {
                 }
                 isResolvingUpdateBlockers={isResolvingUpdateBlockers}
                 onResetAccountUsage={
-                  canResetProviderUsage ? requestRateLimitResetCredit : undefined
+                  canResetProviderUsage && providerResetCredits
+                    ? () =>
+                        requestRateLimitResetCredit({
+                          instanceId: row.instanceId,
+                          resetCredits: providerResetCredits,
+                        })
+                    : undefined
                 }
                 accountUsageResetInFlight={
                   pendingRateLimitResetCredit?.instanceId === row.instanceId

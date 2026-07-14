@@ -2,7 +2,6 @@
 
 import { useMemo, useState } from "react";
 import { GaugeIcon, RotateCcwIcon } from "lucide-react";
-import type { ProviderInstanceId } from "@threadlines/contracts";
 
 import {
   formatProviderTokenCount,
@@ -13,7 +12,6 @@ import {
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
-import type { ProviderRateLimitResetCreditRequest } from "./ProviderRateLimitResetCredit";
 
 type TokenActivityMode = "daily" | "weekly" | "cumulative";
 
@@ -362,11 +360,8 @@ function UsageLimitBar(props: {
 export function ProviderUsageDashboard(props: {
   readonly usage: ProviderAccountUsagePresentation;
   readonly displayName: string;
-  readonly instanceId: ProviderInstanceId;
   readonly showLimits?: boolean | undefined;
-  readonly onResetAccountUsage?:
-    | ((request: ProviderRateLimitResetCreditRequest) => void)
-    | undefined;
+  readonly onResetAccountUsage?: (() => void) | undefined;
   readonly accountUsageResetInFlight?: boolean | undefined;
 }) {
   const [activityMode, setActivityMode] = useState<TokenActivityMode>("daily");
@@ -407,16 +402,26 @@ export function ProviderUsageDashboard(props: {
                     variant="outline"
                     className="h-6 gap-1.5 px-2 text-[11px]"
                     disabled={props.accountUsageResetInFlight === true}
-                    onClick={() =>
-                      props.onResetAccountUsage?.({
-                        instanceId: props.instanceId,
-                        availableCount: props.usage.resetCredits?.availableCount ?? 0,
-                      })
+                    onClick={props.onResetAccountUsage}
+                    aria-label={
+                      props.usage.resetCredits.expirationUrgency
+                        ? `Reset ${props.displayName} usage (a reset expires soon)`
+                        : `Reset ${props.displayName} usage`
                     }
-                    aria-label={`Reset ${props.displayName} usage`}
                   >
                     <RotateCcwIcon className="size-3" />
                     {props.accountUsageResetInFlight ? "Resetting" : "Reset"}
+                    {props.usage.resetCredits.expirationUrgency ? (
+                      <span
+                        aria-hidden="true"
+                        className={cn(
+                          "-right-px -top-px absolute h-1.5 w-1.5 rounded-full ring-2 ring-background",
+                          props.usage.resetCredits.expirationUrgency === "critical"
+                            ? "bg-destructive"
+                            : "bg-warning",
+                        )}
+                      />
+                    ) : null}
                   </Button>
                 ) : null}
               </div>

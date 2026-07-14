@@ -331,6 +331,58 @@ function createClaudeProvider(): ServerProvider {
   };
 }
 
+function createCodexProviderWithResetCredits(): ServerProvider {
+  const nowMs = Date.now();
+  return {
+    instanceId: ProviderInstanceId.make("codex"),
+    driver: ProviderDriverKind.make("codex"),
+    displayName: "Codex",
+    enabled: true,
+    installed: true,
+    version: "0.144.3",
+    status: "ready",
+    auth: { status: "authenticated" },
+    checkedAt: new Date(nowMs).toISOString(),
+    models: [],
+    slashCommands: [],
+    skills: [],
+    accountUsage: {
+      source: "codex-rate-limits",
+      checkedAt: new Date(nowMs).toISOString(),
+      rateLimitResetCredits: {
+        availableCount: 4,
+        credits: [
+          {
+            id: "reset-settings-1",
+            resetType: "codexRateLimits",
+            status: "available",
+            grantedAt: Math.floor(nowMs / 1000),
+            expiresAt: Math.floor((nowMs + 86_400_000) / 1000),
+            title: "Full reset",
+          },
+          {
+            id: "reset-settings-2",
+            resetType: "codexRateLimits",
+            status: "available",
+            grantedAt: Math.floor(nowMs / 1000),
+            expiresAt: Math.floor((nowMs + 4 * 86_400_000) / 1000),
+            title: "Full reset",
+          },
+          {
+            id: "reset-settings-3",
+            resetType: "codexRateLimits",
+            status: "available",
+            grantedAt: Math.floor(nowMs / 1000),
+            expiresAt: Math.floor((nowMs + 30 * 86_400_000) / 1000),
+            title: "Full reset",
+          },
+        ],
+      },
+      limits: [],
+    },
+  };
+}
+
 function makeUtc(value: string) {
   return DateTime.makeUnsafe(value);
 }
@@ -1469,6 +1521,28 @@ describe("GeneralSettingsPanel observability", () => {
     await expect.element(page.getByLabelText("Binary path")).toHaveValue("claude");
     await expect.element(page.getByText("Launch arguments", { exact: true })).toBeInTheDocument();
     await expect.element(page.getByPlaceholder("e.g. --chrome")).toBeInTheDocument();
+  });
+
+  it("opens the shared reset-credit picker from provider settings", async () => {
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [createCodexProviderWithResetCredits()],
+    });
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <ProviderSettingsPanel />
+      </AppAtomRegistryProvider>,
+    );
+
+    await page.getByLabelText("Choose a reset credit for Codex usage").click();
+
+    await expect.element(page.getByRole("dialog")).toBeVisible();
+    await expect.element(page.getByText("Codex usage resets")).toBeInTheDocument();
+    await expect.element(page.getByText("Full reset").first()).toBeInTheDocument();
+    await expect.element(page.getByText("in 4 days")).toBeInTheDocument();
+    await expect.element(page.getByText(/^Expires /).first()).toBeInTheDocument();
+    await expect.element(page.getByText("1 additional reset")).toBeInTheDocument();
   });
 
   it("configures Claude fallback models from the provider models list", async () => {

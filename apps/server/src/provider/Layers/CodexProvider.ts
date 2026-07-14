@@ -182,7 +182,41 @@ function normalizeCodexRateLimitResetCredits(
   if (!Number.isInteger(availableCount) || availableCount < 0) {
     return undefined;
   }
-  return { availableCount };
+
+  const detailedCredits = Array.isArray(credits.credits)
+    ? credits.credits.flatMap((credit) => {
+        const id = optionalString(credit.id);
+        const grantedAt = Number(credit.grantedAt);
+        const expiresAt = credit.expiresAt == null ? undefined : Number(credit.expiresAt);
+        if (
+          !id ||
+          !Number.isSafeInteger(grantedAt) ||
+          grantedAt < 0 ||
+          (expiresAt !== undefined && (!Number.isSafeInteger(expiresAt) || expiresAt < 0))
+        ) {
+          return [];
+        }
+
+        const title = optionalString(credit.title);
+        const description = optionalString(credit.description);
+        return [
+          {
+            id,
+            resetType: credit.resetType,
+            status: credit.status,
+            grantedAt,
+            ...(expiresAt !== undefined ? { expiresAt } : {}),
+            ...(title ? { title } : {}),
+            ...(description ? { description } : {}),
+          },
+        ];
+      })
+    : undefined;
+
+  return {
+    availableCount,
+    ...(detailedCredits ? { credits: detailedCredits } : {}),
+  };
 }
 
 function supportsCodexSpendControlLimit(
@@ -743,12 +777,14 @@ export const consumeCodexRateLimitResetCredit = Effect.fn("consumeCodexRateLimit
     readonly homePath?: string;
     readonly cwd: string;
     readonly idempotencyKey: string;
+    readonly creditId?: string;
     readonly environment?: NodeJS.ProcessEnv;
   }) {
     const client = yield* makeCodexAppServerClient(input);
     yield* initializeCodexAppServerClient(client);
     return yield* client.request("account/rateLimitResetCredit/consume", {
       idempotencyKey: input.idempotencyKey,
+      ...(input.creditId ? { creditId: input.creditId } : {}),
     });
   },
 );

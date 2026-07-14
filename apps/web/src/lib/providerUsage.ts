@@ -2,6 +2,7 @@ import type {
   ServerProvider,
   ServerProviderAccountUsage,
   ServerProviderAccountTokenUsage,
+  ServerProviderRateLimitResetCredit,
   ServerProviderScopedUsageWindow,
   ServerProviderSpendControlLimit,
   ServerProviderUsageLimit,
@@ -35,7 +36,63 @@ export interface ProviderAccountUsageSpendControlPresentation {
 export interface ProviderAccountUsageResetCreditsPresentation {
   readonly availableCount: number;
   readonly label: string;
+  /** Compact availability copy for dense rows, e.g. "4 available". */
+  readonly shortLabel: string;
   readonly detail: string;
+  /** Highest expiration urgency among usable credits — render attention affordances. */
+  readonly expirationUrgency?: ProviderRateLimitResetCreditAttentionUrgency;
+}
+
+const RESET_CREDIT_DAY_MS = 24 * 60 * 60 * 1000;
+const RESET_CREDIT_CRITICAL_EXPIRATION_MS = 2 * RESET_CREDIT_DAY_MS;
+const RESET_CREDIT_SOON_EXPIRATION_MS = 7 * RESET_CREDIT_DAY_MS;
+
+export type ProviderRateLimitResetCreditUrgency = "expired" | "critical" | "soon" | "normal";
+
+export function providerRateLimitResetCreditExpirationUrgency(
+  expiresAt: number | undefined,
+  nowMs = Date.now(),
+): ProviderRateLimitResetCreditUrgency {
+  const expiresAtMs = normalizeResetTimestampMs(expiresAt);
+  if (expiresAtMs === null) return "normal";
+  const remainingMs = expiresAtMs - nowMs;
+  if (remainingMs <= 0) return "expired";
+  if (remainingMs < RESET_CREDIT_CRITICAL_EXPIRATION_MS) return "critical";
+  if (remainingMs < RESET_CREDIT_SOON_EXPIRATION_MS) return "soon";
+  return "normal";
+}
+
+export type ProviderRateLimitResetCreditAttentionUrgency = Extract<
+  ProviderRateLimitResetCreditUrgency,
+  "soon" | "critical"
+>;
+
+function soonestUsableResetCreditExpirationMs(
+  credits: ReadonlyArray<ServerProviderRateLimitResetCredit> | undefined,
+  nowMs: number,
+): number | null {
+  let soonest: number | null = null;
+  for (const credit of credits ?? []) {
+    if (credit.status !== "available") continue;
+    const expiresAtMs = normalizeResetTimestampMs(credit.expiresAt);
+    if (expiresAtMs === null || expiresAtMs <= nowMs) continue;
+    if (soonest === null || expiresAtMs < soonest) soonest = expiresAtMs;
+  }
+  return soonest;
+}
+
+export function providerRateLimitResetCreditsExpirationUrgency(
+  credits: ReadonlyArray<ServerProviderRateLimitResetCredit> | undefined,
+  nowMs = Date.now(),
+): ProviderRateLimitResetCreditAttentionUrgency | undefined {
+  let highest: ProviderRateLimitResetCreditAttentionUrgency | undefined;
+  for (const credit of credits ?? []) {
+    if (credit.status !== "available") continue;
+    const urgency = providerRateLimitResetCreditExpirationUrgency(credit.expiresAt, nowMs);
+    if (urgency === "critical") return "critical";
+    if (urgency === "soon") highest = "soon";
+  }
+  return highest;
 }
 
 export interface ProviderAccountTokenUsageBucketPresentation {
@@ -77,23 +134,28 @@ function normalizeResetTimestampMs(resetsAt: number | undefined): number | null 
   return resetsAt < 10_000_000_000 ? resetsAt * 1000 : resetsAt;
 }
 
-function formatResetDetail(resetsAt: number | undefined, nowMs: number): string | null {
-  const resetMs = normalizeResetTimestampMs(resetsAt);
-  if (resetMs === null) return null;
-
-  const diffMinutes = Math.ceil((resetMs - nowMs) / 60_000);
-  if (diffMinutes <= 0) return "resets now";
-  if (diffMinutes < 60) return `resets in ${diffMinutes}m`;
+function formatRemainingDuration(untilMs: number, nowMs: number): string | null {
+  const diffMinutes = Math.ceil((untilMs - nowMs) / 60_000);
+  if (diffMinutes <= 0) return null;
+  if (diffMinutes < 60) return `${diffMinutes}m`;
 
   const hours = Math.floor(diffMinutes / 60);
   const minutes = diffMinutes % 60;
   if (hours < 24) {
-    return minutes > 0 ? `resets in ${hours}h ${minutes}m` : `resets in ${hours}h`;
+    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
   }
 
   const days = Math.floor(hours / 24);
   const remainingHours = hours % 24;
-  return remainingHours > 0 ? `resets in ${days}d ${remainingHours}h` : `resets in ${days}d`;
+  return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days}d`;
+}
+
+function formatResetDetail(resetsAt: number | undefined, nowMs: number): string | null {
+  const resetMs = normalizeResetTimestampMs(resetsAt);
+  if (resetMs === null) return null;
+
+  const remaining = formatRemainingDuration(resetMs, nowMs);
+  return remaining === null ? "resets now" : `resets in ${remaining}`;
 }
 
 function selectProviderUsageLimit(
@@ -249,6 +311,7 @@ function formatSpendControlPresentation(
 
 function formatResetCreditsPresentation(
   usage: ServerProviderAccountUsage,
+  nowMs: number,
 ): ProviderAccountUsageResetCreditsPresentation | undefined {
   const availableCount =
     usage.rateLimitResetCredits?.availableCount ??
@@ -257,10 +320,22 @@ function formatResetCreditsPresentation(
     return undefined;
   }
 
+  const expirationUrgency = providerRateLimitResetCreditsExpirationUrgency(
+    usage.rateLimitResetCredits?.credits,
+    nowMs,
+  );
+  const soonestExpirationMs = soonestUsableResetCreditExpirationMs(
+    usage.rateLimitResetCredits?.credits,
+    nowMs,
+  );
+  const nextExpiration =
+    soonestExpirationMs === null ? null : formatRemainingDuration(soonestExpirationMs, nowMs);
   return {
     availableCount,
     label: availableCount === 1 ? "1 reset available" : `${availableCount} resets available`,
-    detail: "usable for 30 days after grant",
+    shortLabel: availableCount <= 0 ? "None available" : `${availableCount} available`,
+    detail: nextExpiration ? `next expires in ${nextExpiration}` : "expiration dates unavailable",
+    ...(expirationUrgency ? { expirationUrgency } : {}),
   };
 }
 
@@ -362,7 +437,7 @@ export function deriveProviderAccountUsagePresentation(
 ): ProviderAccountUsagePresentation | null {
   if (!usage || !(usage.source in PROVIDER_USAGE_SOURCE_LABELS)) return null;
 
-  const resetCredits = formatResetCreditsPresentation(usage);
+  const resetCredits = formatResetCreditsPresentation(usage, nowMs);
   const tokenUsage = formatTokenUsagePresentation(usage.tokenUsage);
   const limit = selectProviderUsageLimit(usage);
   if (!limit) {

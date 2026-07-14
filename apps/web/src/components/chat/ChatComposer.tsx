@@ -806,7 +806,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     requestRateLimitResetCredit,
     rateLimitResetCreditDialog,
   } = useProviderRateLimitResetCredit();
-  const selectedProviderResetCredits = selectedProviderAccountUsage?.resetCredits ?? null;
+  const selectedProviderResetCredits =
+    selectedProviderStatus?.accountUsage?.rateLimitResetCredits ?? null;
   const canResetSelectedProviderUsage = canRequestProviderRateLimitResetCredit(
     selectedProviderStatus,
     selectedProviderResetCredits?.availableCount,
@@ -815,7 +816,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     if (!canResetSelectedProviderUsage || !selectedProviderResetCredits) return;
     requestRateLimitResetCredit({
       instanceId: selectedInstanceId,
-      availableCount: selectedProviderResetCredits.availableCount,
+      resetCredits: selectedProviderResetCredits,
     });
   }, [
     canResetSelectedProviderUsage,

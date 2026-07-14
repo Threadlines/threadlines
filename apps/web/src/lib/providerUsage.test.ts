@@ -10,6 +10,8 @@ import {
   deriveProviderAccountUsagePresentationForProvider,
   formatProviderTokenCount,
   isProviderUsageNearLimit,
+  providerRateLimitResetCreditsExpirationUrgency,
+  providerRateLimitResetCreditExpirationUrgency,
 } from "./providerUsage";
 
 describe("deriveProviderAccountUsagePresentation", () => {
@@ -43,7 +45,8 @@ describe("deriveProviderAccountUsagePresentation", () => {
       resetCredits: {
         availableCount: 0,
         label: "0 resets available",
-        detail: "usable for 30 days after grant",
+        shortLabel: "None available",
+        detail: "expiration dates unavailable",
       },
       windows: [
         {
@@ -89,7 +92,8 @@ describe("deriveProviderAccountUsagePresentation", () => {
       resetCredits: {
         availableCount: 0,
         label: "0 resets available",
-        detail: "usable for 30 days after grant",
+        shortLabel: "None available",
+        detail: "expiration dates unavailable",
       },
       windows: [
         {
@@ -121,6 +125,15 @@ describe("deriveProviderAccountUsagePresentation", () => {
       primaryLimitId: "codex",
       rateLimitResetCredits: {
         availableCount: 2,
+        credits: [
+          {
+            id: "reset-1",
+            resetType: "codexRateLimits",
+            status: "available",
+            grantedAt: 1_800_000_000,
+            expiresAt: 1_802_592_000,
+          },
+        ],
       },
       limits: [
         {
@@ -141,7 +154,8 @@ describe("deriveProviderAccountUsagePresentation", () => {
       resetCredits: {
         availableCount: 2,
         label: "2 resets available",
-        detail: "usable for 30 days after grant",
+        shortLabel: "2 available",
+        detail: "next expires in 30d",
       },
       windows: [
         {
@@ -154,6 +168,31 @@ describe("deriveProviderAccountUsagePresentation", () => {
           warning: true,
         },
       ],
+    });
+  });
+
+  it("flags reset credits as expiring soon when a usable credit is near expiration", () => {
+    const nowMs = Date.UTC(2026, 6, 14);
+    const usage: ServerProviderAccountUsage = {
+      source: "codex-rate-limits",
+      checkedAt: new Date(nowMs).toISOString(),
+      rateLimitResetCredits: {
+        availableCount: 1,
+        credits: [
+          {
+            id: "reset-1",
+            resetType: "codexRateLimits",
+            status: "available",
+            grantedAt: Math.floor(nowMs / 1000),
+            expiresAt: Math.floor((nowMs + 3 * 24 * 60 * 60 * 1000) / 1000),
+          },
+        ],
+      },
+      limits: [],
+    };
+
+    expect(deriveProviderAccountUsagePresentation(usage, nowMs)?.resetCredits).toMatchObject({
+      expirationUrgency: "soon",
     });
   });
 
@@ -184,7 +223,8 @@ describe("deriveProviderAccountUsagePresentation", () => {
       resetCredits: {
         availableCount: 0,
         label: "0 resets available",
-        detail: "usable for 30 days after grant",
+        shortLabel: "None available",
+        detail: "expiration dates unavailable",
       },
       tokenUsage: {
         label: "Token history",
@@ -241,7 +281,8 @@ describe("deriveProviderAccountUsagePresentation", () => {
       resetCredits: {
         availableCount: 0,
         label: "0 resets available",
-        detail: "usable for 30 days after grant",
+        shortLabel: "None available",
+        detail: "expiration dates unavailable",
       },
       windows: [
         {
@@ -279,7 +320,8 @@ describe("deriveProviderAccountUsagePresentation", () => {
       resetCredits: {
         availableCount: 0,
         label: "0 resets available",
-        detail: "usable for 30 days after grant",
+        shortLabel: "None available",
+        detail: "expiration dates unavailable",
       },
       windows: [
         {
@@ -545,7 +587,8 @@ describe("deriveProviderAccountUsagePresentation", () => {
       resetCredits: {
         availableCount: 0,
         label: "0 resets available",
-        detail: "usable for 30 days after grant",
+        shortLabel: "None available",
+        detail: "expiration dates unavailable",
       },
       windows: [
         {
@@ -601,7 +644,8 @@ describe("deriveProviderAccountUsagePresentation", () => {
       resetCredits: {
         availableCount: 0,
         label: "0 resets available",
-        detail: "usable for 30 days after grant",
+        shortLabel: "None available",
+        detail: "expiration dates unavailable",
       },
       windows: [
         {
@@ -651,7 +695,8 @@ describe("deriveProviderAccountUsagePresentation", () => {
       resetCredits: {
         availableCount: 0,
         label: "0 resets available",
-        detail: "usable for 30 days after grant",
+        shortLabel: "None available",
+        detail: "expiration dates unavailable",
       },
       spendControl: {
         label: "Monthly",
@@ -809,5 +854,52 @@ describe("isProviderUsageNearLimit", () => {
       ],
     };
     expect(isProviderUsageNearLimit(deriveProviderAccountUsagePresentation(usage))).toBe(true);
+  });
+});
+
+describe("providerRateLimitResetCreditExpirationUrgency", () => {
+  const nowMs = Date.UTC(2026, 6, 14);
+  const daysFromNow = (days: number) => (nowMs + days * 24 * 60 * 60 * 1000) / 1000;
+
+  it("grades expiration urgency from remaining time", () => {
+    expect(providerRateLimitResetCreditExpirationUrgency(undefined, nowMs)).toBe("normal");
+    expect(providerRateLimitResetCreditExpirationUrgency(daysFromNow(-1), nowMs)).toBe("expired");
+    expect(providerRateLimitResetCreditExpirationUrgency(daysFromNow(1), nowMs)).toBe("critical");
+    expect(providerRateLimitResetCreditExpirationUrgency(daysFromNow(4), nowMs)).toBe("soon");
+    expect(providerRateLimitResetCreditExpirationUrgency(daysFromNow(30), nowMs)).toBe("normal");
+  });
+
+  it("reports the highest urgency among usable credits only", () => {
+    const credit = (status: "available" | "redeemed", expiresInDays: number) =>
+      ({
+        id: `reset-${status}-${expiresInDays}`,
+        resetType: "codexRateLimits",
+        status,
+        grantedAt: daysFromNow(-30),
+        expiresAt: daysFromNow(expiresInDays),
+      }) as const;
+
+    expect(providerRateLimitResetCreditsExpirationUrgency(undefined, nowMs)).toBeUndefined();
+    expect(
+      providerRateLimitResetCreditsExpirationUrgency([credit("available", 30)], nowMs),
+    ).toBeUndefined();
+    expect(
+      providerRateLimitResetCreditsExpirationUrgency([credit("redeemed", 3)], nowMs),
+    ).toBeUndefined();
+    expect(
+      providerRateLimitResetCreditsExpirationUrgency([credit("available", -1)], nowMs),
+    ).toBeUndefined();
+    expect(
+      providerRateLimitResetCreditsExpirationUrgency(
+        [credit("available", 30), credit("available", 3)],
+        nowMs,
+      ),
+    ).toBe("soon");
+    expect(
+      providerRateLimitResetCreditsExpirationUrgency(
+        [credit("available", 3), credit("available", 1)],
+        nowMs,
+      ),
+    ).toBe("critical");
   });
 });

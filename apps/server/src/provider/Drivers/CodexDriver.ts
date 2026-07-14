@@ -227,6 +227,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
               homePath: effectiveConfig.homePath,
               cwd: process.cwd(),
               idempotencyKey: input.idempotencyKey,
+              ...(input.creditId ? { creditId: input.creditId } : {}),
               environment: processEnv,
             }).pipe(
               Effect.scoped,

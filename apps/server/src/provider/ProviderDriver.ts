@@ -78,6 +78,7 @@ export interface ProviderInstance {
 export interface ProviderAccountUsageActions {
   readonly consumeRateLimitResetCredit?: (input: {
     readonly idempotencyKey: string;
+    readonly creditId?: string;
   }) => Effect.Effect<
     {
       readonly outcome: ServerProviderRateLimitResetCreditOutcome;

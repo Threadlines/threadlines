@@ -573,6 +573,17 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
                   rateLimitsByLimitId: null,
                   rateLimitResetCredits: {
                     availableCount: 2,
+                    credits: [
+                      {
+                        id: "reset-1",
+                        resetType: "codexRateLimits",
+                        status: "available",
+                        grantedAt: 1_800_000_000,
+                        expiresAt: 1_802_592_000,
+                        title: "Full reset",
+                        description: "Ready to redeem",
+                      },
+                    ],
                   },
                 },
               }),
@@ -585,6 +596,17 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             primaryLimitId: "codex",
             rateLimitResetCredits: {
               availableCount: 2,
+              credits: [
+                {
+                  id: "reset-1",
+                  resetType: "codexRateLimits",
+                  status: "available",
+                  grantedAt: 1_800_000_000,
+                  expiresAt: 1_802_592_000,
+                  title: "Full reset",
+                  description: "Ready to redeem",
+                },
+              ],
             },
             limits: [
               {
@@ -1325,7 +1347,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
               rateLimitResetCredits: { availableCount: 0 },
             },
           } as const satisfies ServerProvider;
-          const consumedKeysRef = yield* Ref.make<ReadonlyArray<string>>([]);
+          const consumedCreditsRef = yield* Ref.make<
+            ReadonlyArray<{ readonly idempotencyKey: string; readonly creditId?: string }>
+          >([]);
           const refreshCallsRef = yield* Ref.make(0);
           const instance = {
             instanceId: codexInstanceId,
@@ -1351,10 +1375,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             adapter: {} as ProviderInstance["adapter"],
             textGeneration: {} as ProviderInstance["textGeneration"],
             accountUsage: {
-              consumeRateLimitResetCredit: ({ idempotencyKey }) =>
-                Ref.update(consumedKeysRef, (keys) => [...keys, idempotencyKey]).pipe(
-                  Effect.as({ outcome: "reset" as const }),
-                ),
+              consumeRateLimitResetCredit: ({ idempotencyKey, creditId }) =>
+                Ref.update(consumedCreditsRef, (credits) => [
+                  ...credits,
+                  { idempotencyKey, ...(creditId ? { creditId } : {}) },
+                ]).pipe(Effect.as({ outcome: "reset" as const })),
             },
           } satisfies ProviderInstance;
           const instanceRegistryLayer = Layer.succeed(ProviderInstanceRegistry, {
@@ -1386,11 +1411,14 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             const result = yield* registry.consumeRateLimitResetCredit({
               instanceId: codexInstanceId,
               idempotencyKey: "reset-attempt-1",
+              creditId: "reset-1",
             });
 
             assert.strictEqual(result.outcome, "reset");
             assert.deepStrictEqual(result.providers, [afterProvider]);
-            assert.deepStrictEqual(yield* Ref.get(consumedKeysRef), ["reset-attempt-1"]);
+            assert.deepStrictEqual(yield* Ref.get(consumedCreditsRef), [
+              { idempotencyKey: "reset-attempt-1", creditId: "reset-1" },
+            ]);
             assert.strictEqual(yield* Ref.get(refreshCallsRef), 1);
           }).pipe(Effect.provide(runtimeServices));
         }),

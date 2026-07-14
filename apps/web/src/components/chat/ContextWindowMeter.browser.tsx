@@ -36,7 +36,9 @@ const TEST_ACCOUNT_USAGE: ProviderAccountUsagePresentation = {
   resetCredits: {
     availableCount: 2,
     label: "2 resets available",
-    detail: "usable for 30 days after grant",
+    shortLabel: "2 available",
+    detail: "next expires in 22h",
+    expirationUrgency: "critical",
   },
   windows: [
     {
@@ -89,7 +91,7 @@ describe("ContextWindowMeter", () => {
 
       await expect.element(page.getByText("Codex usage")).toBeVisible();
       await expect.element(page.getByText(/2 available/)).toBeVisible();
-      await expect.element(page.getByText(/30-day grant window/)).toBeVisible();
+      await expect.element(page.getByText(/next expires in 22h/)).toBeVisible();
       await expect.element(page.getByText("Token history")).not.toBeInTheDocument();
       await expect.element(page.getByText(/Lifetime tokens/)).not.toBeInTheDocument();
 

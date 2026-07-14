@@ -19,15 +19,6 @@ function formatPercentage(value: number | null): string | null {
   return `${Math.round(value)}%`;
 }
 
-function formatComposerResetCreditAvailability(availableCount: number): string {
-  if (availableCount <= 0) return "None available";
-  return availableCount === 1 ? "1 available" : `${availableCount} available`;
-}
-
-function formatComposerResetCreditDetail(detail: string): string {
-  return detail === "usable for 30 days after grant" ? "30-day grant window" : detail;
-}
-
 function isDomNode(value: unknown): value is Node {
   return typeof value === "object" && value !== null && "nodeType" in value;
 }
@@ -333,26 +324,36 @@ export function ContextWindowMeter(props: {
                 <div className="flex min-w-0 items-center gap-2 text-xs">
                   <span className="shrink-0 font-medium text-foreground">Resets</span>
                   <span className="min-w-0 truncate text-muted-foreground">
-                    {formatComposerResetCreditAvailability(
-                      accountUsage.resetCredits.availableCount,
-                    )}
-                    {accountUsage.resetCredits.detail ? (
-                      <>
-                        <span className="mx-1" aria-hidden>
-                          -
-                        </span>
-                        {formatComposerResetCreditDetail(accountUsage.resetCredits.detail)}
-                      </>
-                    ) : null}
+                    {accountUsage.resetCredits.shortLabel}
+                    <span className="mx-1" aria-hidden>
+                      -
+                    </span>
+                    {accountUsage.resetCredits.detail}
                   </span>
                   {props.onResetAccountUsage && accountUsage.resetCredits.availableCount > 0 ? (
                     <button
                       type="button"
                       disabled={props.accountUsageResetInFlight === true}
                       onClick={props.onResetAccountUsage}
-                      className={contextWindowActionButtonClassName}
+                      className={cn("relative", contextWindowActionButtonClassName)}
+                      aria-label={
+                        accountUsage.resetCredits.expirationUrgency
+                          ? "Reset usage (a reset expires soon)"
+                          : undefined
+                      }
                     >
                       {props.accountUsageResetInFlight ? "Resetting" : "Reset"}
+                      {accountUsage.resetCredits.expirationUrgency ? (
+                        <span
+                          aria-hidden="true"
+                          className={cn(
+                            "-right-px -top-px absolute h-1.5 w-1.5 rounded-full ring-2 ring-popover",
+                            accountUsage.resetCredits.expirationUrgency === "critical"
+                              ? "bg-destructive"
+                              : "bg-warning",
+                          )}
+                        />
+                      ) : null}
                     </button>
                   ) : null}
                 </div>

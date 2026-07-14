@@ -54,7 +54,6 @@ import {
 import { ProviderModelsSection } from "./ProviderModelsSection";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { ProviderUsageDashboard } from "../ProviderUsageDashboard";
-import type { ProviderRateLimitResetCreditRequest } from "../ProviderRateLimitResetCredit";
 import { RedactedSensitiveText } from "./RedactedSensitiveText";
 import {
   getProviderVersionAdvisoryPresentation,
@@ -1079,15 +1078,6 @@ function shouldIgnoreProviderCardToggle(target: EventTarget | null): boolean {
   return target instanceof Element && target.closest(PROVIDER_CARD_TOGGLE_IGNORE_SELECTOR) !== null;
 }
 
-function formatResetCreditAvailability(availableCount: number): string {
-  if (availableCount <= 0) return "None available";
-  return availableCount === 1 ? "1 available" : `${availableCount} available`;
-}
-
-function formatResetCreditDetail(detail: string): string {
-  return detail === "usable for 30 days after grant" ? "30-day grant window" : detail;
-}
-
 function ProviderUsageSummaryBar(props: {
   readonly usageLabel: string;
   readonly label: string;
@@ -1124,10 +1114,7 @@ function ProviderUsageSummaryBar(props: {
 function ProviderUsageSummary(props: {
   readonly usage: ProviderAccountUsagePresentation;
   readonly displayName: string;
-  readonly instanceId: ProviderInstanceId;
-  readonly onResetAccountUsage?:
-    | ((request: ProviderRateLimitResetCreditRequest) => void)
-    | undefined;
+  readonly onResetAccountUsage?: (() => void) | undefined;
   readonly accountUsageResetInFlight?: boolean | undefined;
 }) {
   const hasLimitSummary =
@@ -1149,9 +1136,9 @@ function ProviderUsageSummary(props: {
         {props.usage.resetCredits ? (
           <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
             <span className="min-w-10 font-medium text-foreground">Resets</span>
-            <span>{formatResetCreditAvailability(props.usage.resetCredits.availableCount)}</span>
+            <span>{props.usage.resetCredits.shortLabel}</span>
             <span aria-hidden>·</span>
-            <span>{formatResetCreditDetail(props.usage.resetCredits.detail)}</span>
+            <span>{props.usage.resetCredits.detail}</span>
             {canReset ? (
               <Button
                 type="button"
@@ -1159,16 +1146,26 @@ function ProviderUsageSummary(props: {
                 variant="outline"
                 className="ml-1 h-5 gap-1 rounded px-1.5 text-[10px] leading-none [&_svg]:size-2.5"
                 disabled={props.accountUsageResetInFlight === true}
-                onClick={() =>
-                  props.onResetAccountUsage?.({
-                    instanceId: props.instanceId,
-                    availableCount: props.usage.resetCredits?.availableCount ?? 0,
-                  })
+                onClick={props.onResetAccountUsage}
+                aria-label={
+                  props.usage.resetCredits.expirationUrgency
+                    ? `Choose a reset credit for ${props.displayName} usage (a reset expires soon)`
+                    : `Choose a reset credit for ${props.displayName} usage`
                 }
-                aria-label={`Use one reset credit for ${props.displayName} usage`}
               >
                 <RotateCcwIcon className="size-3" />
                 {props.accountUsageResetInFlight ? "Using" : "Use reset"}
+                {props.usage.resetCredits.expirationUrgency ? (
+                  <span
+                    aria-hidden="true"
+                    className={cn(
+                      "-right-px -top-px absolute h-1.5 w-1.5 rounded-full ring-2 ring-card",
+                      props.usage.resetCredits.expirationUrgency === "critical"
+                        ? "bg-destructive"
+                        : "bg-warning",
+                    )}
+                  />
+                ) : null}
               </Button>
             ) : null}
           </div>
@@ -1345,9 +1342,7 @@ interface ProviderInstanceCardProps {
   readonly isUpdating?: boolean | undefined;
   readonly onResolveUpdateBlockers?: (() => void) | undefined;
   readonly isResolvingUpdateBlockers?: boolean | undefined;
-  readonly onResetAccountUsage?:
-    | ((request: ProviderRateLimitResetCreditRequest) => void)
-    | undefined;
+  readonly onResetAccountUsage?: (() => void) | undefined;
   readonly accountUsageResetInFlight?: boolean | undefined;
   readonly onRunTerminalCommand?:
     | ((request: ProviderAccountTerminalCommandRequest) => Promise<void> | void)
@@ -1856,7 +1851,6 @@ export function ProviderInstanceCard({
               <ProviderUsageSummary
                 usage={usagePresentation}
                 displayName={displayName}
-                instanceId={instanceId}
                 onResetAccountUsage={onResetAccountUsage}
                 accountUsageResetInFlight={accountUsageResetInFlight}
               />
@@ -1898,7 +1892,6 @@ export function ProviderInstanceCard({
               <ProviderUsageDashboard
                 usage={usagePresentation}
                 displayName={displayName}
-                instanceId={instanceId}
                 showLimits={false}
                 onResetAccountUsage={onResetAccountUsage}
                 accountUsageResetInFlight={accountUsageResetInFlight}

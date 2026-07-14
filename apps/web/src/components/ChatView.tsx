@@ -253,7 +253,6 @@ import {
   retainThreadDetailSubscription,
 } from "../environments/runtime/service";
 import { hasActiveContextCompactionActivity } from "~/lib/contextCompactionActivities";
-import { deriveProviderAccountUsagePresentationForProvider } from "~/lib/providerUsage";
 import { Button } from "./ui/button";
 import { Textarea } from "./ui/textarea";
 import {
@@ -2310,16 +2309,13 @@ export default function ChatView(props: ChatViewProps) {
   const activeProviderLabel =
     activeProviderStatus?.displayName?.trim() ||
     formatProviderDriverKindLabel(activeProviderDriver);
-  const activeProviderAccountUsage = useMemo(
-    () => deriveProviderAccountUsagePresentationForProvider(activeProviderStatus),
-    [activeProviderStatus],
-  );
   const {
     isConsumingRateLimitResetCredit: isConsumingThreadErrorRateLimitResetCredit,
     requestRateLimitResetCredit: requestThreadErrorRateLimitResetCredit,
     rateLimitResetCreditDialog: threadErrorRateLimitResetCreditDialog,
   } = useProviderRateLimitResetCredit();
-  const activeProviderResetCredits = activeProviderAccountUsage?.resetCredits ?? null;
+  const activeProviderResetCredits =
+    activeProviderStatus?.accountUsage?.rateLimitResetCredits ?? null;
   const canResetActiveProviderUsage = canRequestProviderRateLimitResetCredit(
     activeProviderStatus,
     activeProviderResetCredits?.availableCount,
@@ -2330,7 +2326,7 @@ export default function ChatView(props: ChatViewProps) {
     }
     requestThreadErrorRateLimitResetCredit({
       instanceId: activeProviderStatus.instanceId,
-      availableCount: activeProviderResetCredits.availableCount,
+      resetCredits: activeProviderResetCredits,
     });
   }, [
     activeProviderResetCredits,
