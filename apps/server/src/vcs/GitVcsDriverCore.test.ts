@@ -412,6 +412,36 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
+    it.effect("force-refreshes remote refs even while the background fetch cache is warm", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const remote = yield* makeTmpDir("git-vcs-driver-remote-");
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        yield* git(remote, ["init", "--bare"]);
+        yield* git(cwd, ["remote", "add", "origin", remote]);
+        yield* git(cwd, ["push", "-u", "origin", initialBranch]);
+
+        const initialStatus = yield* driver.statusDetailsRemote(cwd);
+        assert.equal(initialStatus.behindCount, 0);
+
+        const peer = yield* makeTmpDir("git-vcs-driver-peer-");
+        yield* git(peer, ["clone", "--branch", initialBranch, remote, "."]);
+        yield* git(peer, ["config", "user.email", "test@test.com"]);
+        yield* git(peer, ["config", "user.name", "Test"]);
+        yield* writeTextFile(peer, "peer.txt", "peer\n");
+        yield* git(peer, ["add", "."]);
+        yield* git(peer, ["commit", "-m", "peer advances remote"]);
+        yield* git(peer, ["push", "origin", initialBranch]);
+
+        const cachedStatus = yield* driver.statusDetailsRemote(cwd);
+        assert.equal(cachedStatus.behindCount, 0);
+
+        const refreshedStatus = yield* driver.statusDetailsRemote(cwd, { forceRefresh: true });
+        assert.equal(refreshedStatus.behindCount, 1);
+      }),
+    );
+
     it.effect("uses origin HEAD for default-branch detection with a non-origin upstream", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();

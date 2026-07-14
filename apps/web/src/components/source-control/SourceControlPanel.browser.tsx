@@ -1487,7 +1487,9 @@ describe("SourceControlPanel changes", () => {
   });
 
   it("clears worktree context when switching a worktree target to the primary checkout", async () => {
-    const worktreePath = "/repo/project/.threadlines/worktrees/feature-source-control";
+    const projectCwd = "C:\\Users\\Ada\\Code\\Threadlines";
+    const primaryWorktreePath = "c:/users/ada/code/threadlines/";
+    const worktreePath = "C:\\Users\\Ada\\.threadlines\\worktrees\\feature-source-control";
     const listRefs: EnvironmentApi["vcs"]["listRefs"] = vi.fn(async () => ({
       isRepo: true,
       hasPrimaryRemote: true,
@@ -1504,7 +1506,7 @@ describe("SourceControlPanel changes", () => {
           name: "main",
           current: false,
           isDefault: true,
-          worktreePath: CWD,
+          worktreePath: primaryWorktreePath,
         },
       ],
     }));
@@ -1515,6 +1517,7 @@ describe("SourceControlPanel changes", () => {
     const mounted = await renderPanel({
       target: {
         ...TARGET,
+        projectCwd,
         cwd: worktreePath,
         worktreePath,
       },
@@ -1535,7 +1538,7 @@ describe("SourceControlPanel changes", () => {
       await mainMenuItem.click();
 
       await vi.waitFor(() => {
-        expect(switchRef).toHaveBeenCalledWith({ cwd: CWD, refName: "main" });
+        expect(switchRef).toHaveBeenCalledWith({ cwd: primaryWorktreePath, refName: "main" });
       });
       expect(onActiveBranchChange).toHaveBeenCalledWith("main", null);
     } finally {
@@ -1548,6 +1551,9 @@ describe("SourceControlPanel commit graph", () => {
   let writeText: ReturnType<typeof vi.fn>;
 
   beforeEach(async () => {
+    gitStatusMock.refreshGitStatus.mockReset();
+    gitStatusMock.refreshGitStatus.mockResolvedValue(null);
+    gitActionMock.toastAdd.mockClear();
     writeText = vi.fn(async () => undefined);
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -1578,6 +1584,81 @@ describe("SourceControlPanel commit graph", () => {
 
       graphDeferred.resolve(GRAPH);
 
+      await expect.element(page.getByText("Polish source control graph")).toBeVisible();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("waits for a forced status refresh before reloading the commit graph", async () => {
+    const refreshDeferred = createDeferredPromise<null>();
+    gitStatusMock.refreshGitStatus.mockReturnValueOnce(refreshDeferred.promise);
+    let commitGraphCalls = 0;
+    const commitGraph: EnvironmentApi["vcs"]["commitGraph"] = vi.fn(async () => {
+      commitGraphCalls += 1;
+      return commitGraphCalls === 1
+        ? GRAPH
+        : {
+            truncated: false,
+            commits: [
+              {
+                ...GRAPH.commits[0]!,
+                sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                shortSha: "bbbbbbb",
+                subject: "Remote main refreshed",
+              },
+              ...GRAPH.commits,
+            ],
+          };
+    });
+    const mounted = await renderPanel({
+      environmentApi: makeEnvironmentApi({ vcs: { commitGraph } }),
+    });
+
+    try {
+      await expect.element(page.getByText("Polish source control graph")).toBeVisible();
+      await page.getByRole("button", { name: "Refresh source control" }).click();
+
+      expect(gitStatusMock.refreshGitStatus).toHaveBeenCalledWith(
+        { environmentId: ENVIRONMENT_ID, cwd: CWD },
+        undefined,
+        { force: true },
+      );
+      expect(commitGraph).toHaveBeenCalledTimes(1);
+      await expect
+        .element(page.getByRole("button", { name: "Refreshing source control" }))
+        .toBeVisible();
+
+      refreshDeferred.resolve(null);
+
+      await expect.element(page.getByText("Remote main refreshed")).toBeVisible();
+      expect(commitGraph).toHaveBeenCalledTimes(2);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the current graph and surfaces a failed manual refresh", async () => {
+    gitStatusMock.refreshGitStatus.mockRejectedValueOnce(new Error("remote fetch timed out"));
+    const commitGraph = vi.fn(async () => GRAPH);
+    const mounted = await renderPanel({
+      environmentApi: makeEnvironmentApi({ vcs: { commitGraph } }),
+    });
+
+    try {
+      await expect.element(page.getByText("Polish source control graph")).toBeVisible();
+      await page.getByRole("button", { name: "Refresh source control" }).click();
+
+      await vi.waitFor(() => {
+        expect(gitActionMock.toastAdd).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "error",
+            title: "Refresh failed",
+            description: "remote fetch timed out",
+          }),
+        );
+      });
+      expect(commitGraph).toHaveBeenCalledTimes(1);
       await expect.element(page.getByText("Polish source control graph")).toBeVisible();
     } finally {
       await mounted.cleanup();

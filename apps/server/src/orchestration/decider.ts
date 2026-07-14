@@ -6,6 +6,7 @@ import {
 } from "@threadlines/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import { areFilesystemPathsEqual } from "@threadlines/shared/path";
 
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import {
@@ -24,6 +25,12 @@ import {
 import { projectEvent } from "./projector.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+
+function normalizeWorktreePath(worktreePath: string | null, workspaceRoot: string): string | null {
+  return worktreePath !== null && areFilesystemPathsEqual(worktreePath, workspaceRoot)
+    ? null
+    : worktreePath;
+}
 
 function withEventBase(
   input: Pick<OrchestrationCommand, "commandId"> & {
@@ -229,7 +236,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           runtimeMode: command.runtimeMode,
           interactionMode: command.interactionMode,
           branch: command.branch,
-          worktreePath: command.worktreePath,
+          worktreePath: normalizeWorktreePath(command.worktreePath, project.workspaceRoot),
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
         },
@@ -237,7 +244,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.fork": {
-      yield* requireProject({
+      const project = yield* requireProject({
         readModel,
         command,
         projectId: command.projectId,
@@ -286,7 +293,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           runtimeMode: command.runtimeMode,
           interactionMode: command.interactionMode,
           branch: command.branch,
-          worktreePath: command.worktreePath,
+          worktreePath: normalizeWorktreePath(command.worktreePath, project.workspaceRoot),
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
         },
@@ -503,11 +510,20 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.meta.update": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
+      const project = yield* requireProject({
+        readModel,
+        command,
+        projectId: thread.projectId,
+      });
+      const worktreePath =
+        command.worktreePath === undefined
+          ? undefined
+          : normalizeWorktreePath(command.worktreePath, project.workspaceRoot);
       const occurredAt = yield* nowIso;
       return {
         ...withEventBase({
@@ -524,7 +540,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             ? { modelSelection: command.modelSelection }
             : {}),
           ...(command.branch !== undefined ? { branch: command.branch } : {}),
-          ...(command.worktreePath !== undefined ? { worktreePath: command.worktreePath } : {}),
+          ...(worktreePath !== undefined ? { worktreePath } : {}),
           updatedAt: occurredAt,
         },
       };

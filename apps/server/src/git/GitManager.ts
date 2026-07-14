@@ -51,7 +51,11 @@ import { ProjectSetupScriptRunner } from "../project/Services/ProjectSetupScript
 import { extractBranchNameFromRemoteRef } from "./remoteRefs.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import type { GitManagerServiceError } from "@threadlines/contracts";
-import { GitVcsDriver, type GitStatusDetails } from "../vcs/GitVcsDriver.ts";
+import {
+  GitVcsDriver,
+  type GitRemoteStatusOptions,
+  type GitStatusDetails,
+} from "../vcs/GitVcsDriver.ts";
 import { SourceControlProviderRegistry } from "../sourceControl/SourceControlProviderRegistry.ts";
 import type { ChangeRequest } from "@threadlines/contracts";
 
@@ -73,6 +77,7 @@ export interface GitManagerShape {
   ) => Effect.Effect<VcsStatusLocalResult, GitManagerServiceError>;
   readonly remoteStatus: (
     input: VcsStatusInput,
+    options?: GitRemoteStatusOptions,
   ) => Effect.Effect<VcsStatusRemoteResult | null, GitManagerServiceError>;
   readonly invalidateLocalStatus: (cwd: string) => Effect.Effect<void, never>;
   readonly invalidateRemoteStatus: (cwd: string) => Effect.Effect<void, never>;
@@ -849,9 +854,12 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
     normalizeStatusCacheKey(cwd).pipe(
       Effect.flatMap((cacheKey) => Cache.invalidate(localStatusResultCache, cacheKey)),
     );
-  const readRemoteStatus = Effect.fn("readRemoteStatus")(function* (cwd: string) {
+  const readRemoteStatus = Effect.fn("readRemoteStatus")(function* (
+    cwd: string,
+    options?: GitRemoteStatusOptions,
+  ) {
     const details = yield* gitCore
-      .statusDetailsRemote(cwd)
+      .statusDetailsRemote(cwd, options)
       .pipe(Effect.catchIf(isNotGitRepositoryError, () => Effect.succeed(null)));
     if (details === null || !details.isRepo) {
       return null;
@@ -1549,8 +1557,12 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
     return yield* Cache.get(localStatusResultCache, cacheKey);
   });
   const remoteStatus: GitManagerShape["remoteStatus"] = Effect.fn("remoteStatus")(
-    function* (input) {
+    function* (input, options) {
       const cacheKey = yield* normalizeStatusCacheKey(input.cwd);
+      if (options?.forceRefresh === true) {
+        yield* Cache.invalidate(remoteStatusResultCache, cacheKey);
+        return yield* readRemoteStatus(cacheKey, options);
+      }
       return yield* Cache.get(remoteStatusResultCache, cacheKey);
     },
   );

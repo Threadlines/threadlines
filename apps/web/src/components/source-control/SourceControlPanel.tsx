@@ -1877,6 +1877,7 @@ export function SourceControlPanel({
   }>(() => ({ key: "", overrides: {} }));
   const [commitGraphLimit, setCommitGraphLimit] = useState(GRAPH_INITIAL_LIMIT);
   const [pinnedCommitSha, setPinnedCommitSha] = useState<string | null>(null);
+  const [isManualRefreshPending, setIsManualRefreshPending] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
   const changesSectionRef = useRef<HTMLElement>(null);
   const commitControlsRef = useRef<HTMLElement>(null);
@@ -1996,7 +1997,8 @@ export function SourceControlPanel({
     graphQuery.isError && !graphHasData
       ? resolveCommitGraphErrorPresentation(graphQuery.error)
       : null;
-  const isSourceControlRefreshing = gitStatus.isPending || isCommitGraphRefreshing;
+  const isSourceControlRefreshing =
+    gitStatus.isPending || isManualRefreshPending || isCommitGraphRefreshing;
   const isCommitGraphLoadingMore =
     graphQuery.isFetching &&
     graphQuery.data?.truncated === true &&
@@ -2318,6 +2320,30 @@ export function SourceControlPanel({
       queryKey: gitQueryKeys.commitGraphPrefix(environmentId, cwd),
     });
   }, [cwd, environmentId, queryClient]);
+
+  const refreshPanelFromRemote = useCallback(() => {
+    if (!environmentId || !cwd) {
+      return;
+    }
+    setIsManualRefreshPending(true);
+    void refreshGitStatus({ environmentId, cwd }, undefined, { force: true })
+      .then(() =>
+        queryClient.invalidateQueries({
+          queryKey: gitQueryKeys.commitGraphPrefix(environmentId, cwd),
+        }),
+      )
+      .catch((error: unknown) => {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Refresh failed",
+            description: toGitActionErrorMessage(error),
+            ...(threadToastData !== undefined ? { data: threadToastData } : {}),
+          }),
+        );
+      })
+      .finally(() => setIsManualRefreshPending(false));
+  }, [cwd, environmentId, queryClient, threadToastData]);
 
   useLayoutEffect(() => {
     const targetKey = environmentId && cwd ? `${environmentId}\0${cwd}` : null;
@@ -3644,7 +3670,7 @@ export function SourceControlPanel({
                     }
                     variant="ghost"
                     size="icon-xs"
-                    onClick={refreshPanel}
+                    onClick={refreshPanelFromRemote}
                   />
                 }
               >

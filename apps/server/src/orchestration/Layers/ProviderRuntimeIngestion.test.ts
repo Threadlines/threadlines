@@ -365,6 +365,81 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.lastError).toBe("turn failed");
   });
 
+  it("settles a running session from a fresh provider thread idle signal", async () => {
+    const harness = await createHarness();
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-before-thread-idle"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      turnId: asTurnId("turn-thread-idle"),
+    });
+
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.status === "running" && thread.session.activeTurnId === "turn-thread-idle",
+    );
+
+    harness.emit({
+      type: "thread.state.changed",
+      eventId: asEventId("evt-thread-idle-after-lost-turn-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      payload: { state: "idle" },
+    });
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.status === "ready" && entry.session.activeTurnId === null,
+    );
+    expect(thread.session).toMatchObject({
+      status: "ready",
+      activeTurnId: null,
+      lastError: null,
+    });
+  });
+
+  it("does not let an older thread idle signal settle a newer running turn", async () => {
+    const harness = await createHarness();
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-newer-turn-started-before-stale-thread-idle"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:03.000Z",
+      turnId: asTurnId("turn-newer-than-thread-idle"),
+    });
+
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.status === "running" &&
+        thread.session.activeTurnId === "turn-newer-than-thread-idle",
+    );
+
+    harness.emit({
+      type: "thread.state.changed",
+      eventId: asEventId("evt-stale-thread-idle"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      payload: { state: "idle" },
+    });
+    await harness.drain();
+
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === asThreadId("thread-1"));
+    expect(thread?.session).toMatchObject({
+      status: "running",
+      activeTurnId: "turn-newer-than-thread-idle",
+    });
+  });
+
   it("records and clears the session's observed cwd divergence", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
@@ -387,15 +462,18 @@ describe("ProviderRuntimeIngestion", () => {
       (thread) => thread.effectiveCwd === `${harness.workspaceRoot}/.claude/worktrees/feature`,
     );
 
-    // Observing the configured checkout again clears it (trailing
-    // separators are ignored by the comparison).
+    // Observing the configured checkout again clears it. Windows drive paths
+    // may arrive with different slash and drive-letter casing.
+    const equivalentConfiguredCwd = /^[a-zA-Z]:[/\\]/u.test(harness.workspaceRoot)
+      ? `${harness.workspaceRoot.replaceAll("\\", "/").toUpperCase()}/`
+      : `${harness.workspaceRoot}/`;
     harness.emit({
       type: "session.cwd.changed",
       eventId: asEventId("evt-cwd-configured"),
       provider: ProviderDriverKind.make("codex"),
       threadId: asThreadId("thread-1"),
       createdAt: now,
-      payload: { cwd: `${harness.workspaceRoot}/`, reason: "session-init" },
+      payload: { cwd: equivalentConfiguredCwd, reason: "session-init" },
     });
     await waitForThread(harness.readModel, (thread) => thread.effectiveCwd === null);
   });

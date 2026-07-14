@@ -1792,11 +1792,28 @@ export interface SteeringHandoffState {
   readonly status: SteeringHandoffStatus;
 }
 
+export const THREAD_DETAIL_STALL_PROBE_INTERVAL_MS = 5_000;
+export const THREAD_DETAIL_STALL_REFRESH_THRESHOLD_MS = 10_000;
+export const THREAD_DETAIL_STALL_REFRESH_COOLDOWN_MS = 30_000;
+
+export function shouldRefreshThreadDetailAfterEventLoopStall(input: {
+  readonly eventLoopDelayMs: number;
+  readonly elapsedSinceRefreshMs: number;
+  readonly isDocumentVisible: boolean;
+}): boolean {
+  return (
+    input.isDocumentVisible &&
+    input.eventLoopDelayMs >= THREAD_DETAIL_STALL_REFRESH_THRESHOLD_MS &&
+    input.elapsedSinceRefreshMs >= THREAD_DETAIL_STALL_REFRESH_COOLDOWN_MS
+  );
+}
+
 export function reconcileSteeringHandoffStatuses<T extends SteeringHandoffState>(input: {
   readonly messagesById: Record<string, T>;
   readonly activeThreadKey: string | null | undefined;
   readonly latestTurn: Pick<NonNullable<Thread["latestTurn"]>, "requestedAt"> | null | undefined;
   readonly serverMessageIds: ReadonlySet<string>;
+  readonly failedMessageIds: ReadonlySet<string>;
 }): Record<string, T> {
   const { activeThreadKey } = input;
   if (!activeThreadKey) {
@@ -1807,6 +1824,11 @@ export function reconcileSteeringHandoffStatuses<T extends SteeringHandoffState>
   const next = { ...input.messagesById };
   for (const [id, message] of Object.entries(input.messagesById)) {
     if (message.threadKey !== activeThreadKey || message.status !== "queued") {
+      continue;
+    }
+    if (input.failedMessageIds.has(message.id)) {
+      delete next[id];
+      changed = true;
       continue;
     }
     const hasAcceptedTurn = input.latestTurn?.requestedAt === message.createdAt;

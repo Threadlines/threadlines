@@ -227,8 +227,10 @@ import {
   resolveSendEnvMode,
   revokeBlobPreviewUrl,
   revokeUserMessagePreviewUrls,
+  shouldRefreshThreadDetailAfterEventLoopStall,
   shouldConfirmTerminalKill,
   shouldWriteThreadErrorToCurrentServerThread,
+  THREAD_DETAIL_STALL_PROBE_INTERVAL_MS,
   waitForStartedServerThread,
   mergeLocalDraftThreadWithServerThread,
   buildRevertConfirmView,
@@ -1723,6 +1725,35 @@ export default function ChatView(props: ChatViewProps) {
   );
   const selectedProvider: ProviderDriverKind = lockedProvider ?? unlockedSelectedProvider;
   const phase = derivePhase(activeThread?.session ?? null);
+  useEffect(() => {
+    if (!shouldRetainThreadDetailSubscription || phase !== "running") {
+      return;
+    }
+
+    let expectedProbeAt = performance.now() + THREAD_DETAIL_STALL_PROBE_INTERVAL_MS;
+    let lastRefreshAt = Number.NEGATIVE_INFINITY;
+    const intervalId = globalThis.setInterval(() => {
+      const observedAt = performance.now();
+      const eventLoopDelayMs = Math.max(0, observedAt - expectedProbeAt);
+      expectedProbeAt = observedAt + THREAD_DETAIL_STALL_PROBE_INTERVAL_MS;
+      if (
+        !shouldRefreshThreadDetailAfterEventLoopStall({
+          eventLoopDelayMs,
+          elapsedSinceRefreshMs: observedAt - lastRefreshAt,
+          isDocumentVisible: document.visibilityState === "visible",
+        })
+      ) {
+        return;
+      }
+
+      lastRefreshAt = observedAt;
+      refreshThreadDetailSubscription(environmentId, threadId);
+    }, THREAD_DETAIL_STALL_PROBE_INTERVAL_MS);
+
+    return () => {
+      globalThis.clearInterval(intervalId);
+    };
+  }, [environmentId, phase, shouldRetainThreadDetailSubscription, threadId]);
   const isSessionStarting = activeThread?.session?.orchestrationStatus === "starting";
   const threadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
   const activeTurnId = activeThread?.session?.activeTurnId ?? null;
@@ -1984,6 +2015,24 @@ export default function ChatView(props: ChatViewProps) {
     () => new Set(queuedSteeringMessages.map((message) => message.id)),
     [queuedSteeringMessages],
   );
+  const failedSteeringMessageIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const activity of threadActivities) {
+      if (activity.kind !== "provider.follow-up.failed") {
+        continue;
+      }
+      const payload = activity.payload;
+      if (
+        typeof payload === "object" &&
+        payload !== null &&
+        "requestId" in payload &&
+        typeof payload.requestId === "string"
+      ) {
+        ids.add(payload.requestId);
+      }
+    }
+    return ids;
+  }, [threadActivities]);
 
   useEffect(() => {
     if (!activeThreadKey) {
@@ -1997,9 +2046,10 @@ export default function ChatView(props: ChatViewProps) {
         activeThreadKey,
         latestTurn: activeThread?.latestTurn,
         serverMessageIds,
+        failedMessageIds: failedSteeringMessageIds,
       });
     });
-  }, [activeThread?.latestTurn, activeThreadKey, serverMessages]);
+  }, [activeThread?.latestTurn, activeThreadKey, failedSteeringMessageIds, serverMessages]);
   useEffect(() => {
     if (typeof Image === "undefined" || !serverMessages || serverMessages.length === 0) {
       return;

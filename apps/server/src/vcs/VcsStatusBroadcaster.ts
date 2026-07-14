@@ -270,9 +270,10 @@ export const layer = Layer.effect(
 
     const refreshRemoteStatus = Effect.fn("VcsStatusBroadcaster.refreshRemoteStatus")(function* (
       cwd: string,
+      options?: { readonly forceRefresh?: boolean },
     ) {
       yield* workflow.invalidateRemoteStatus(cwd);
-      const remote = yield* workflow.remoteStatus({ cwd });
+      const remote = yield* workflow.remoteStatus({ cwd }, options);
       return yield* updateCachedRemoteStatus(cwd, remote, { publish: true });
     });
 
@@ -282,7 +283,7 @@ export const layer = Layer.effect(
       const cwd = yield* withFileSystem(normalizeCwd(rawCwd));
       const [local, remote] = yield* Effect.all([
         refreshLocalStatus(cwd),
-        refreshRemoteStatus(cwd),
+        refreshRemoteStatus(cwd, { forceRefresh: true }),
       ]);
       return mergeGitStatusParts(local, remote.value);
     });

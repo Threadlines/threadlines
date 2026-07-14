@@ -3470,8 +3470,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.deepEqual(searchResult, {
         matches: [
           {
-            threadId: "thread-1",
-            messageId: "message-1",
+            threadId: ThreadId.make("thread-1"),
+            messageId: MessageId.make("message-1"),
             role: "assistant",
             snippet: "Matched navbar",
             score: 0,

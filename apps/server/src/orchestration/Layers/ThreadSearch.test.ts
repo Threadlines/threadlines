@@ -1,4 +1,4 @@
-import { ProjectId } from "@threadlines/contracts";
+import { ProjectId, ThreadId } from "@threadlines/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -365,7 +365,7 @@ layer("ThreadSearch", (it) => {
       assert.isBelow(matches.matches[1]?.score ?? Infinity, matches.matches[2]?.score ?? 0);
       assert.notInclude(
         matches.matches.map((match) => match.threadId),
-        "thread-missing",
+        ThreadId.make("thread-missing"),
       );
       const scatteredSnippet = matches.matches.find(
         (match) => match.threadId === "thread-scattered",

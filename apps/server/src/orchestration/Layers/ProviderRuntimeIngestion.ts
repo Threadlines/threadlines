@@ -26,6 +26,7 @@ import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@threadlines/shared/DrainableWorker";
+import { areFilesystemPathsEqual } from "@threadlines/shared/path";
 
 import { parseTurnDiffFilesFromUnifiedDiff } from "../../checkpointing/Diffs.ts";
 import { resolveThreadProviderCwd } from "../generalChats.ts";
@@ -1852,7 +1853,7 @@ const make = Effect.gen(function* () {
         const normalizeCwd = (value: string) => value.replace(/[/\\]+$/, "");
         const observedCwd = normalizeCwd(event.payload.cwd);
         const effectiveCwd =
-          configuredCwd !== undefined && normalizeCwd(configuredCwd) === observedCwd
+          configuredCwd !== undefined && areFilesystemPathsEqual(configuredCwd, observedCwd)
             ? null
             : observedCwd;
         if ((thread.effectiveCwd ?? null) !== effectiveCwd) {
@@ -2025,6 +2026,32 @@ const make = Effect.gen(function* () {
             createdAt: now,
           });
         }
+      }
+
+      // Codex also publishes an authoritative thread-level idle signal. If a
+      // turn/completed notification is lost under load, use a fresh idle
+      // observation to settle the matching projected session instead of
+      // leaving the UI's working timer running forever.
+      if (
+        event.type === "thread.state.changed" &&
+        event.payload.state === "idle" &&
+        thread.session?.status === "running" &&
+        thread.session.activeTurnId !== null &&
+        event.createdAt >= thread.session.updatedAt
+      ) {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.session.set",
+          commandId: providerCommandId(event, "thread-idle-session-set"),
+          threadId: thread.id,
+          session: {
+            ...thread.session,
+            status: "ready",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: now,
+          },
+          createdAt: now,
+        });
       }
 
       // A provider snapshot is an authoritative level signal. Apply it as an

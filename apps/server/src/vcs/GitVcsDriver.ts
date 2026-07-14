@@ -100,6 +100,10 @@ export interface GitRemoteStatusDetails {
   aheadOfDefaultCount: number;
 }
 
+export interface GitRemoteStatusOptions {
+  readonly forceRefresh?: boolean;
+}
+
 export interface GitPreparedCommitContext {
   stagedSummary: string;
   stagedPatch: string;
@@ -196,6 +200,7 @@ export interface GitVcsDriverShape {
   readonly statusDetailsLocal: (cwd: string) => Effect.Effect<GitStatusDetails, GitCommandError>;
   readonly statusDetailsRemote: (
     cwd: string,
+    options?: GitRemoteStatusOptions,
   ) => Effect.Effect<GitRemoteStatusDetails, GitCommandError>;
   readonly prepareCommitContext: (
     cwd: string,

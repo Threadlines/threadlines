@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  areFilesystemPathsEqual,
   isExplicitRelativePath,
   isUncPath,
   isWindowsAbsolutePath,
   isWindowsDrivePath,
+  normalizeFilesystemPathForComparison,
 } from "./path.ts";
 
 describe("path helpers", () => {
@@ -30,5 +32,16 @@ describe("path helpers", () => {
     expect(isExplicitRelativePath("./repo")).toBe(true);
     expect(isExplicitRelativePath("..\\repo")).toBe(true);
     expect(isExplicitRelativePath("~/repo")).toBe(false);
+  });
+
+  it("normalizes filesystem paths according to their path shape", () => {
+    expect(normalizeFilesystemPathForComparison(" C:/Work/Repo/ ")).toBe("c:\\work\\repo");
+    expect(normalizeFilesystemPathForComparison("/Work/Repo/")).toBe("/Work/Repo");
+    expect(normalizeFilesystemPathForComparison("/")).toBe("/");
+  });
+
+  it("compares equivalent Windows path spellings", () => {
+    expect(areFilesystemPathsEqual("C:\\Work\\Repo", "c:/work/repo/")).toBe(true);
+    expect(areFilesystemPathsEqual("C:\\Work\\Repo", "C:\\Work\\Other")).toBe(false);
   });
 });

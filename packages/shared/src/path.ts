@@ -20,3 +20,21 @@ export function isExplicitRelativePath(value: string): boolean {
     value.startsWith("..\\")
   );
 }
+
+export function normalizeFilesystemPathForComparison(value: string): string {
+  const trimmed = value.trim();
+  const isWindowsPath = isWindowsAbsolutePath(trimmed);
+  const normalized = isWindowsPath ? trimmed.replaceAll("/", "\\").toLowerCase() : trimmed;
+  const withoutTrailingSeparators = isWindowsPath
+    ? normalized.replace(/\\+$/u, "")
+    : normalized.replace(/\/+$/u, "");
+
+  if (withoutTrailingSeparators.length > 0) {
+    return withoutTrailingSeparators;
+  }
+  return normalized.startsWith("/") ? "/" : normalized;
+}
+
+export function areFilesystemPathsEqual(left: string, right: string): boolean {
+  return normalizeFilesystemPathForComparison(left) === normalizeFilesystemPathForComparison(right);
+}

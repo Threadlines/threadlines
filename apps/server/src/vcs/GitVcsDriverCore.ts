@@ -51,14 +51,14 @@ const RANGE_DIFF_SUMMARY_MAX_OUTPUT_BYTES = 19_000;
 const RANGE_DIFF_PATCH_MAX_OUTPUT_BYTES = 59_000;
 const STATUS_UPSTREAM_REFRESH_INTERVAL = Duration.minutes(2);
 // Healthy single-branch fetches have been observed taking up to ~6s on
-// Windows (credential helper + network jitter), so 5s produced recurring
-// false timeouts; refreshes run on background pollers, so a longer bound
-// does not block interactive status reads once the cache is warm.
-const STATUS_UPSTREAM_REFRESH_TIMEOUT = Duration.seconds(15);
+// Windows (credential helper + network jitter), while large rewritten remotes
+// can exceed 15s. Background pollers do not block interactive reads once the
+// cache is warm; explicit refreshes surface a bounded failure to the caller.
+const STATUS_UPSTREAM_REFRESH_TIMEOUT = Duration.seconds(60);
 const STATUS_UPSTREAM_REFRESH_FAILURE_COOLDOWN = Duration.minutes(10);
 const STATUS_UPSTREAM_REFRESH_CACHE_CAPACITY = 2_048;
 const REMOTE_REFS_REFRESH_INTERVAL = Duration.minutes(2);
-const REMOTE_REFS_REFRESH_TIMEOUT = Duration.seconds(15);
+const REMOTE_REFS_REFRESH_TIMEOUT = Duration.seconds(60);
 const REMOTE_REFS_REFRESH_FAILURE_COOLDOWN = Duration.minutes(10);
 const REMOTE_REFS_REFRESH_CACHE_CAPACITY = 2_048;
 const GIT_FETCH_NO_WRITE_FETCH_HEAD = "--no-write-fetch-head";
@@ -1291,27 +1291,34 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   ): Effect.Effect<void, GitCommandError> => {
     const fetchCwd =
       path.basename(gitCommonDir) === ".git" ? path.dirname(gitCommonDir) : gitCommonDir;
+    const fetchArgs = [
+      "--git-dir",
+      gitCommonDir,
+      "fetch",
+      GIT_FETCH_NO_WRITE_FETCH_HEAD,
+      "--quiet",
+      "--no-tags",
+      upstream.remoteName,
+      remoteBranchFetchRefspec(upstream.remoteName, upstream.branchName),
+    ];
     return withGitFetchPermitForCommonDir(
       gitCommonDir,
-      executeGit(
-        "GitVcsDriver.fetchRemoteForStatus",
-        fetchCwd,
-        [
-          "--git-dir",
-          gitCommonDir,
-          "fetch",
-          GIT_FETCH_NO_WRITE_FETCH_HEAD,
-          "--quiet",
-          "--no-tags",
-          upstream.remoteName,
-          remoteBranchFetchRefspec(upstream.remoteName, upstream.branchName),
-        ],
-        {
-          allowNonZeroExit: true,
-          env: BACKGROUND_GIT_FETCH_ENV,
-          timeoutMs: Duration.toMillis(STATUS_UPSTREAM_REFRESH_TIMEOUT),
-        },
-      ).pipe(Effect.asVoid),
+      executeGit("GitVcsDriver.fetchRemoteForStatus", fetchCwd, fetchArgs, {
+        allowNonZeroExit: true,
+        env: BACKGROUND_GIT_FETCH_ENV,
+        timeoutMs: Duration.toMillis(STATUS_UPSTREAM_REFRESH_TIMEOUT),
+      }).pipe(
+        Effect.flatMap((result) =>
+          result.exitCode === 0
+            ? Effect.void
+            : createGitCommandError(
+                "GitVcsDriver.fetchRemoteForStatus",
+                fetchCwd,
+                fetchArgs,
+                result.stderr.trim() || "git fetch upstream status failed",
+              ),
+        ),
+      ),
     );
   };
 
@@ -1497,19 +1504,23 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       Exit.isSuccess(exit) ? REMOTE_REFS_REFRESH_INTERVAL : REMOTE_REFS_REFRESH_FAILURE_COOLDOWN,
   });
 
-  const refreshRemoteRefsIfStale = Effect.fn("refreshRemoteRefsIfStale")(function* (
+  const refreshRemoteRefs = Effect.fn("refreshRemoteRefs")(function* (
     cwd: string,
-    options?: { readonly includeTags?: boolean },
+    options?: { readonly includeTags?: boolean; readonly force?: boolean },
   ) {
     const gitCommonDir = yield* resolveGitCommonDir(cwd);
-    yield* Cache.get(
-      remoteRefsRefreshCache,
-      new RemoteRefsRefreshCacheKey({
-        gitCommonDir,
-        includeTags: options?.includeTags === true,
-      }),
-    );
+    const cacheKey = new RemoteRefsRefreshCacheKey({
+      gitCommonDir,
+      includeTags: options?.includeTags === true,
+    });
+    if (options?.force === true) {
+      yield* Cache.invalidate(remoteRefsRefreshCache, cacheKey);
+    }
+    yield* Cache.get(remoteRefsRefreshCache, cacheKey);
   });
+
+  const refreshRemoteRefsIfStale = (cwd: string, options?: { readonly includeTags?: boolean }) =>
+    refreshRemoteRefs(cwd, options);
 
   const refreshRemoteRefsBestEffort = (
     operation: string,
@@ -2139,11 +2150,17 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
 
   const statusDetailsRemote: GitVcsDriver.GitVcsDriverShape["statusDetailsRemote"] = Effect.fn(
     "statusDetailsRemote",
-  )(function* (cwd) {
-    yield* refreshStatusUpstreamIfStale(cwd).pipe(
-      Effect.catchIf(isMissingGitCwdError, () => Effect.void),
-      Effect.ignoreCause({ log: true }),
-    );
+  )(function* (cwd, options) {
+    if (options?.forceRefresh === true) {
+      yield* refreshRemoteRefs(cwd, { includeTags: true, force: true }).pipe(
+        Effect.catchIf(isMissingGitCwdError, () => Effect.void),
+      );
+    } else {
+      yield* refreshStatusUpstreamIfStale(cwd).pipe(
+        Effect.catchIf(isMissingGitCwdError, () => Effect.void),
+        Effect.ignoreCause({ log: true }),
+      );
+    }
     return yield* readStatusDetailsRemote(cwd);
   });
 

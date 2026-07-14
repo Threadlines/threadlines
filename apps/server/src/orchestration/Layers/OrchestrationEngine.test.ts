@@ -294,6 +294,66 @@ describe("OrchestrationEngine", () => {
     await system.dispose();
   });
 
+  it("normalizes the primary Windows checkout out of thread worktree metadata", async () => {
+    const createdAt = now();
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+    const projectId = asProjectId("project-windows-worktree");
+    const threadId = ThreadId.make("thread-windows-worktree");
+    const workspaceRoot = "C:\\Users\\dev\\Threadlines";
+
+    await system.run(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-project-windows-worktree-create"),
+        projectId,
+        title: "Windows checkout",
+        workspaceRoot,
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        createdAt,
+      }),
+    );
+    await system.run(
+      engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-thread-windows-worktree-create"),
+        threadId,
+        projectId,
+        title: "Primary checkout",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: "main",
+        worktreePath: "c:/users/dev/threadlines/",
+        createdAt,
+      }),
+    );
+
+    expect(
+      (await system.readModel()).threads.find((thread) => thread.id === threadId)?.worktreePath,
+    ).toBeNull();
+
+    await system.run(
+      engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-thread-windows-worktree-update"),
+        threadId,
+        worktreePath: "C:/Users/dev/Threadlines/",
+      }),
+    );
+
+    expect(
+      (await system.readModel()).threads.find((thread) => thread.id === threadId)?.worktreePath,
+    ).toBeNull();
+    await system.dispose();
+  });
+
   it("archives and unarchives threads through orchestration commands", async () => {
     const system = await createOrchestrationSystem();
     const { engine } = system;

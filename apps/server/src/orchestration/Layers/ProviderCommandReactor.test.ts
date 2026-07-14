@@ -228,7 +228,7 @@ describe("ProviderCommandReactor", () => {
         turnId: asTurnId("turn-1"),
       }),
     );
-    const steerTurn = vi.fn((input: unknown) =>
+    const steerTurn = vi.fn<ProviderServiceShape["steerTurn"]>((input: unknown) =>
       Effect.succeed({
         threadId:
           typeof input === "object" && input !== null && "threadId" in input
@@ -622,6 +622,86 @@ describe("ProviderCommandReactor", () => {
       text: "adjust the running command",
       turnId,
     });
+  });
+
+  it("settles a stale running session when the provider reports no active turn to steer", async () => {
+    const harness = await createHarness();
+    const turnId = asTurnId("turn-stale");
+    const messageId = asMessageId("user-message-stale-follow-up");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-stale-follow-up-session"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: turnId,
+          pendingBackgroundTaskCount: 0,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        },
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    harness.steerTurn.mockImplementationOnce(() =>
+      Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: "codex",
+          method: "turn/steer",
+          detail: "no active turn to steer",
+        }),
+      ),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.follow-up.submit",
+        commandId: CommandId.make("cmd-stale-follow-up-submit"),
+        threadId: ThreadId.make("thread-1"),
+        turnId,
+        message: {
+          messageId,
+          role: "user",
+          text: "continue after the stale turn",
+          attachments: [],
+        },
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      return (
+        thread?.session?.status === "ready" &&
+        thread.session.activeTurnId === null &&
+        thread.activities.some((entry) => entry.kind === "provider.follow-up.failed")
+      );
+    });
+
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(thread?.session).toMatchObject({
+      status: "ready",
+      activeTurnId: null,
+      pendingBackgroundTaskCount: 0,
+      lastError: null,
+    });
+    expect(
+      thread?.activities.find((entry) => entry.kind === "provider.follow-up.failed"),
+    ).toMatchObject({
+      payload: {
+        detail: "no active turn to steer",
+        requestId: messageId,
+      },
+      turnId,
+    });
+    expect(thread?.messages.some((entry) => entry.id === messageId)).toBe(false);
   });
 
   it("generates a thread title on the first turn", async () => {

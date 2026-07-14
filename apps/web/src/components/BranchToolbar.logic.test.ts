@@ -4,6 +4,7 @@ import {
   dedupeRemoteBranchesWithLocalMatches,
   deriveLocalBranchNameFromRemoteRef,
   resolveEnvironmentOptionLabel,
+  resolveActiveWorktreePath,
   resolveBranchSelectionTarget,
   resolveCurrentWorkspaceLabel,
   resolveDraftEnvModeAfterBranchChange,
@@ -170,6 +171,26 @@ describe("resolveLockedWorkspaceLabel", () => {
   });
 });
 
+describe("resolveActiveWorktreePath", () => {
+  it("self-heals primary checkouts previously stored as worktrees", () => {
+    expect(
+      resolveActiveWorktreePath(
+        "C:\\Users\\Ada\\Code\\Threadlines",
+        "c:/users/ada/code/threadlines/",
+      ),
+    ).toBeNull();
+  });
+
+  it("preserves a distinct secondary worktree", () => {
+    expect(
+      resolveActiveWorktreePath(
+        "C:\\Users\\Ada\\Code\\Threadlines",
+        "C:\\Users\\Ada\\.threadlines\\worktrees\\feature-a",
+      ),
+    ).toBe("C:\\Users\\Ada\\.threadlines\\worktrees\\feature-a");
+  });
+});
+
 describe("deriveLocalBranchNameFromRemoteRef", () => {
   it("strips the remote prefix from a remote ref", () => {
     expect(deriveLocalBranchNameFromRemoteRef("origin/feature/demo")).toBe("feature/demo");
@@ -323,6 +344,23 @@ describe("resolveBranchSelectionTarget", () => {
       }),
     ).toEqual({
       checkoutCwd: "/repo",
+      nextWorktreePath: null,
+      reuseExistingWorktree: true,
+    });
+  });
+
+  it("recognizes the main Windows checkout across slash and case differences", () => {
+    expect(
+      resolveBranchSelectionTarget({
+        activeProjectCwd: "C:\\Users\\Ada\\Code\\Threadlines",
+        activeWorktreePath: null,
+        refName: {
+          isDefault: true,
+          worktreePath: "c:/users/ada/code/threadlines/",
+        },
+      }),
+    ).toEqual({
+      checkoutCwd: "c:/users/ada/code/threadlines/",
       nextWorktreePath: null,
       reuseExistingWorktree: true,
     });

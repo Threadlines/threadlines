@@ -39,7 +39,10 @@ import {
   reconcileMountedTerminalThreadIds,
   resolveSendEnvMode,
   shouldConfirmTerminalKill,
+  shouldRefreshThreadDetailAfterEventLoopStall,
   shouldWriteThreadErrorToCurrentServerThread,
+  THREAD_DETAIL_STALL_REFRESH_COOLDOWN_MS,
+  THREAD_DETAIL_STALL_REFRESH_THRESHOLD_MS,
   waitForStartedServerThread,
 } from "./ChatView.logic";
 
@@ -2223,6 +2226,7 @@ describe("reconcileSteeringHandoffStatuses", () => {
         requestedAt: "2026-03-29T00:00:00.000Z",
       },
       serverMessageIds: new Set([queuedMessage.id]),
+      failedMessageIds: new Set(),
     });
 
     expect(next[queuedMessage.id]?.status).toBe("read");
@@ -2240,10 +2244,65 @@ describe("reconcileSteeringHandoffStatuses", () => {
         requestedAt: "2026-03-29T00:00:00.000Z",
       },
       serverMessageIds: new Set(),
+      failedMessageIds: new Set(),
     });
 
     expect(next).toBe(messagesById);
     expect(next[queuedMessage.id]?.status).toBe("queued");
+  });
+
+  it("removes a queued steering handoff after the server rejects it", () => {
+    const messagesById = {
+      [queuedMessage.id]: queuedMessage,
+    };
+
+    const next = reconcileSteeringHandoffStatuses({
+      messagesById,
+      activeThreadKey: queuedMessage.threadKey,
+      latestTurn: {
+        requestedAt: "2026-03-29T00:00:00.000Z",
+      },
+      serverMessageIds: new Set(),
+      failedMessageIds: new Set([queuedMessage.id]),
+    });
+
+    expect(next[queuedMessage.id]).toBeUndefined();
+  });
+});
+
+describe("shouldRefreshThreadDetailAfterEventLoopStall", () => {
+  it("refreshes after a visible renderer stall and respects the cooldown", () => {
+    expect(
+      shouldRefreshThreadDetailAfterEventLoopStall({
+        eventLoopDelayMs: THREAD_DETAIL_STALL_REFRESH_THRESHOLD_MS,
+        elapsedSinceRefreshMs: THREAD_DETAIL_STALL_REFRESH_COOLDOWN_MS,
+        isDocumentVisible: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldRefreshThreadDetailAfterEventLoopStall({
+        eventLoopDelayMs: THREAD_DETAIL_STALL_REFRESH_THRESHOLD_MS - 1,
+        elapsedSinceRefreshMs: THREAD_DETAIL_STALL_REFRESH_COOLDOWN_MS,
+        isDocumentVisible: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRefreshThreadDetailAfterEventLoopStall({
+        eventLoopDelayMs: THREAD_DETAIL_STALL_REFRESH_THRESHOLD_MS,
+        elapsedSinceRefreshMs: THREAD_DETAIL_STALL_REFRESH_COOLDOWN_MS - 1,
+        isDocumentVisible: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not refresh a hidden document after a delayed timer", () => {
+    expect(
+      shouldRefreshThreadDetailAfterEventLoopStall({
+        eventLoopDelayMs: THREAD_DETAIL_STALL_REFRESH_THRESHOLD_MS * 2,
+        elapsedSinceRefreshMs: THREAD_DETAIL_STALL_REFRESH_COOLDOWN_MS * 2,
+        isDocumentVisible: false,
+      }),
+    ).toBe(false);
   });
 });
 describe("buildRevertConfirmView", () => {

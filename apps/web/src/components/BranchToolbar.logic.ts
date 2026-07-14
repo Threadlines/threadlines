@@ -1,4 +1,5 @@
 import type { EnvironmentId, VcsRef, ProjectId } from "@threadlines/contracts";
+import { areFilesystemPathsEqual } from "@threadlines/shared/path";
 import * as Schema from "effect/Schema";
 export {
   dedupeRemoteBranchesWithLocalMatches,
@@ -52,6 +53,16 @@ export function resolveCurrentWorkspaceLabel(activeWorktreePath: string | null):
 
 export function resolveLockedWorkspaceLabel(activeWorktreePath: string | null): string {
   return activeWorktreePath ? "Worktree" : "Local checkout";
+}
+
+export function resolveActiveWorktreePath(
+  projectCwd: string | null,
+  worktreePath: string | null,
+): string | null {
+  if (!projectCwd || !worktreePath) {
+    return worktreePath;
+  }
+  return areFilesystemPathsEqual(projectCwd, worktreePath) ? null : worktreePath;
 }
 
 export function resolveEffectiveEnvMode(input: {
@@ -109,9 +120,10 @@ export function resolveBranchSelectionTarget(input: {
   const { activeProjectCwd, activeWorktreePath, refName } = input;
 
   if (refName.worktreePath) {
+    const isPrimaryCheckout = areFilesystemPathsEqual(refName.worktreePath, activeProjectCwd);
     return {
       checkoutCwd: refName.worktreePath,
-      nextWorktreePath: refName.worktreePath === activeProjectCwd ? null : refName.worktreePath,
+      nextWorktreePath: isPrimaryCheckout ? null : refName.worktreePath,
       reuseExistingWorktree: true,
     };
   }

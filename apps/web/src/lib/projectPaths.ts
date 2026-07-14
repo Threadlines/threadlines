@@ -3,6 +3,7 @@ import {
   isUncPath,
   isWindowsAbsolutePath,
   isWindowsDrivePath,
+  normalizeFilesystemPathForComparison,
 } from "@threadlines/shared/path";
 import { isWindowsPlatform } from "./utils";
 
@@ -169,11 +170,7 @@ export function resolveCloneDestinationPathForDispatch(input: {
 }
 
 export function normalizeProjectPathForComparison(value: string): string {
-  const normalized = normalizeProjectPathForDispatch(value);
-  if (isWindowsDrivePath(normalized) || normalized.startsWith("\\\\")) {
-    return normalized.replaceAll("/", "\\").toLowerCase();
-  }
-  return normalized;
+  return normalizeFilesystemPathForComparison(value);
 }
 
 export function findProjectByPath<T extends { cwd: string }>(

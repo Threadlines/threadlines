@@ -183,6 +183,16 @@ function isUnknownPendingUserInputRequestError(cause: Cause.Cause<ProviderServic
   );
 }
 
+function isNoActiveTurnSteerError(cause: Cause.Cause<ProviderServiceError>): boolean {
+  const error = findProviderAdapterRequestError(cause);
+  if (!error || error.method !== "turn/steer") {
+    return false;
+  }
+
+  const detail = error.detail.toLowerCase();
+  return detail.includes("no active") && detail.includes("turn") && detail.includes("steer");
+}
+
 function stalePendingRequestDetail(
   requestKind: "approval" | "user-input",
   requestId: string,
@@ -1079,6 +1089,7 @@ const make = Effect.gen(function* () {
             : `Expected active turn '${event.payload.turnId}' but thread is running '${activeTurnId}'.`,
         turnId: event.payload.turnId,
         createdAt: event.payload.createdAt,
+        requestId: event.payload.messageId,
       });
     }
     const normalizedInput = toNonEmptyProviderInput(event.payload.text);
@@ -1091,23 +1102,55 @@ const make = Effect.gen(function* () {
         detail: "Either input text or at least one attachment is required.",
         turnId: event.payload.turnId,
         createdAt: event.payload.createdAt,
+        requestId: event.payload.messageId,
       });
     }
 
-    const recoverFollowUpFailure = (cause: Cause.Cause<unknown>) => {
+    const recoverFollowUpFailure = Effect.fnUntraced(function* (
+      cause: Cause.Cause<ProviderServiceError>,
+    ) {
       if (Cause.hasInterruptsOnly(cause)) {
-        return Effect.void;
+        return;
       }
       const detail = formatFailureDetail(cause);
-      return appendProviderFailureActivity({
+      yield* appendProviderFailureActivity({
         threadId: event.payload.threadId,
         kind: "provider.follow-up.failed",
         summary: "Follow-up send failed",
         detail,
         turnId: event.payload.turnId,
         createdAt: event.payload.createdAt,
-      }).pipe(Effect.asVoid);
-    };
+        requestId: event.payload.messageId,
+      });
+
+      if (!isNoActiveTurnSteerError(cause)) {
+        return;
+      }
+
+      // A provider's explicit "no active turn" rejection is authoritative.
+      // Re-read before updating so a concurrent lifecycle event or new turn is
+      // never overwritten by recovery from an older steer request.
+      const latestThread = yield* resolveThread(event.payload.threadId);
+      const latestSession = latestThread?.session;
+      if (
+        latestSession?.status !== "running" ||
+        latestSession.activeTurnId !== event.payload.turnId
+      ) {
+        return;
+      }
+
+      yield* setThreadSession({
+        threadId: event.payload.threadId,
+        session: {
+          ...latestSession,
+          status: "ready",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: event.payload.createdAt,
+        },
+        createdAt: event.payload.createdAt,
+      });
+    });
 
     const delivered = yield* providerService
       .steerTurn({

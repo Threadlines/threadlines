@@ -17,6 +17,7 @@ import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeS
 import {
   type EnvMode,
   type EnvironmentOption,
+  resolveActiveWorktreePath,
   resolveCurrentWorkspaceLabel,
   resolveEnvModeLabel,
   resolveEffectiveEnvMode,
@@ -223,7 +224,11 @@ export const BranchToolbar = memo(function BranchToolbar({
   );
   const activeProject = useStore(activeProjectSelector);
   const hasActiveThread = serverThread !== undefined || draftThread !== null;
-  const activeWorktreePath = serverThread?.worktreePath ?? draftThread?.worktreePath ?? null;
+  const storedWorktreePath = serverThread?.worktreePath ?? draftThread?.worktreePath ?? null;
+  const activeWorktreePath = resolveActiveWorktreePath(
+    activeProject?.cwd ?? null,
+    storedWorktreePath,
+  );
   // Display-only: when the agent moved the session's working directory
   // (effectiveCwd diverged), the workspace label follows it so the footer
   // matches the source-control surfaces. Mode/lock semantics stay keyed to

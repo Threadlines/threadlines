@@ -22,6 +22,7 @@ import type {
 
 import * as VcsStatusBroadcaster from "./VcsStatusBroadcaster.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
+import type { GitRemoteStatusOptions } from "./GitVcsDriver.ts";
 
 const baseLocalStatus: VcsStatusLocalResult = {
   isRepo: true,
@@ -49,14 +50,19 @@ const baseStatus: VcsStatusResult = {
   ...baseRemoteStatus,
 };
 
-function makeTestLayer(state: {
-  currentLocalStatus: VcsStatusLocalResult;
-  currentRemoteStatus: VcsStatusRemoteResult | null;
-  localStatusCalls: number;
-  remoteStatusCalls: number;
-  localInvalidationCalls: number;
-  remoteInvalidationCalls: number;
-}) {
+function makeTestLayer(
+  state: {
+    currentLocalStatus: VcsStatusLocalResult;
+    currentRemoteStatus: VcsStatusRemoteResult | null;
+    localStatusCalls: number;
+    remoteStatusCalls: number;
+    localInvalidationCalls: number;
+    remoteInvalidationCalls: number;
+  },
+  options?: {
+    readonly onRemoteStatusOptions?: (options: GitRemoteStatusOptions | undefined) => void;
+  },
+) {
   return VcsStatusBroadcaster.layer.pipe(
     Layer.provideMerge(NodeServices.layer),
     Layer.provide(
@@ -66,8 +72,9 @@ function makeTestLayer(state: {
             state.localStatusCalls += 1;
             return state.currentLocalStatus;
           }),
-        remoteStatus: () =>
+        remoteStatus: (_input, remoteOptions) =>
           Effect.sync(() => {
+            options?.onRemoteStatusOptions?.(remoteOptions);
             state.remoteStatusCalls += 1;
             return state.currentRemoteStatus;
           }),
@@ -111,6 +118,7 @@ describe("VcsStatusBroadcaster", () => {
   });
 
   it.effect("refreshes the cached snapshot after explicit invalidation", () => {
+    const remoteStatusOptions: Array<GitRemoteStatusOptions | undefined> = [];
     const state = {
       currentLocalStatus: baseLocalStatus,
       currentRemoteStatus: baseRemoteStatus,
@@ -148,7 +156,14 @@ describe("VcsStatusBroadcaster", () => {
       assert.equal(state.remoteStatusCalls, 2);
       assert.equal(state.localInvalidationCalls, 1);
       assert.equal(state.remoteInvalidationCalls, 1);
-    }).pipe(Effect.provide(makeTestLayer(state)));
+      assert.deepStrictEqual(remoteStatusOptions, [undefined, { forceRefresh: true }]);
+    }).pipe(
+      Effect.provide(
+        makeTestLayer(state, {
+          onRemoteStatusOptions: (options) => remoteStatusOptions.push(options),
+        }),
+      ),
+    );
   });
 
   it.effect("refreshes only the cached local snapshot when requested", () => {
