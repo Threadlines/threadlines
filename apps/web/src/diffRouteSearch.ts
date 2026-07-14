@@ -1,4 +1,4 @@
-import { TurnId } from "@threadlines/contracts";
+import { MessageId, TurnId } from "@threadlines/contracts";
 
 export interface DiffRouteSearch {
   diff?: "1" | undefined;
@@ -7,6 +7,9 @@ export interface DiffRouteSearch {
   sourceControlReturn?: "1" | undefined;
   diffTurnId?: TurnId | undefined;
   diffFilePath?: string | undefined;
+  focusMessageId?: MessageId | undefined;
+  focusQuery?: string | undefined;
+  focusRequest?: string | undefined;
 }
 
 function isDiffOpenValue(value: unknown): boolean {
@@ -140,6 +143,12 @@ export function parseDiffRouteSearch(search: Record<string, unknown>): DiffRoute
     diff && diffMode !== "workingTree" ? normalizeSearchString(search.diffTurnId) : undefined;
   const diffTurnId = diffTurnIdRaw ? TurnId.make(diffTurnIdRaw) : undefined;
   const diffFilePath = diff ? normalizeSearchString(search.diffFilePath) : undefined;
+  const focusMessageIdRaw = normalizeSearchString(search.focusMessageId);
+  const focusMessageId = focusMessageIdRaw ? MessageId.make(focusMessageIdRaw) : undefined;
+  const focusQuery = focusMessageId
+    ? normalizeSearchString(search.focusQuery)?.slice(0, 256)
+    : undefined;
+  const focusRequest = focusMessageId ? normalizeSearchString(search.focusRequest) : undefined;
 
   return {
     ...(diff ? { diff } : {}),
@@ -148,5 +157,8 @@ export function parseDiffRouteSearch(search: Record<string, unknown>): DiffRoute
     ...(sourceControlReturn ? { sourceControlReturn } : {}),
     ...(diffTurnId ? { diffTurnId } : {}),
     ...(diffFilePath ? { diffFilePath } : {}),
+    ...(focusMessageId ? { focusMessageId } : {}),
+    ...(focusQuery ? { focusQuery } : {}),
+    ...(focusRequest ? { focusRequest } : {}),
   };
 }

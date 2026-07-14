@@ -13,6 +13,7 @@ import {
 } from "@threadlines/contracts";
 import { deriveRepositoryDirectoryName, normalizeGitRemoteUrl } from "@threadlines/shared/git";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useDebouncedValue } from "@tanstack/react-pacer";
 import { useLocation, useNavigate, useParams } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import {
@@ -50,6 +51,7 @@ import {
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useSettings } from "../hooks/useSettings";
 import { readLocalApi } from "../localApi";
+import { closeRightPanelSearchParams } from "../diffRouteSearch";
 import {
   getSourceControlDiscoverySnapshot,
   refreshSourceControlDiscovery,
@@ -76,6 +78,7 @@ import {
 } from "../lib/projectPaths";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { getLatestThreadForProject } from "../lib/threadSort";
+import { threadSearchQueryOptions, type ThreadSearchTarget } from "../lib/threadSearchReactQuery";
 import { cn, isMacPlatform, isWindowsPlatform, newCommandId, newProjectId } from "../lib/utils";
 import {
   selectProjectsAcrossEnvironments,
@@ -86,6 +89,7 @@ import { selectThreadTerminalState, useTerminalStateStore } from "../terminalSta
 import { buildThreadRouteParams, resolveThreadRouteTarget } from "../threadRoutes";
 import {
   ADDON_ICON_CLASS,
+  applyThreadContentSearchMatches,
   buildBrowseGroups,
   buildProjectActionItems,
   buildRootGroups,
@@ -98,6 +102,7 @@ import {
   getCommandPaletteInputPlaceholder,
   getCommandPaletteMode,
   ITEM_ICON_CLASS,
+  normalizeSearchText,
   RECENT_THREAD_LIMIT,
 } from "./CommandPalette.logic";
 import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
@@ -126,6 +131,8 @@ const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
 const BROWSE_STALE_TIME_MS = 30_000;
 const GITHUB_REPOSITORY_LIST_LIMIT = 100;
 const GITHUB_REPOSITORY_LIST_STALE_TIME_MS = 60_000;
+const THREAD_CONTENT_SEARCH_DEBOUNCE_MS = 180;
+const EMPTY_THREAD_CONTENT_MATCHES = [] as const;
 
 function getLocalFileManagerName(platform: string): string {
   if (isMacPlatform(platform)) {
@@ -780,6 +787,47 @@ function OpenCommandPaletteDialog() {
     [activeThreadId, navigate, projectTitleById, settings.sidebarThreadSortOrder, threads],
   );
   const recentThreadItems = allThreadItems.slice(0, RECENT_THREAD_LIMIT);
+  const threadContentSearchTargets = useMemo<ReadonlyArray<ThreadSearchTarget>>(() => {
+    const scopedProjectIds = currentView?.threadSearchProjectIdsByEnvironment;
+    if (currentView && !scopedProjectIds) {
+      return [];
+    }
+    if (scopedProjectIds) {
+      return [...scopedProjectIds].map(([environmentId, projectIds]) => ({
+        environmentId,
+        projectIds,
+      }));
+    }
+
+    return [...new Set(threads.map((thread) => thread.environmentId))].map((environmentId) => ({
+      environmentId,
+    }));
+  }, [currentView, threads]);
+  const [debouncedThreadContentQuery] = useDebouncedValue(
+    deferredQuery,
+    { wait: THREAD_CONTENT_SEARCH_DEBOUNCE_MS },
+    (debouncerState) => ({ isPending: debouncerState.isPending }),
+  );
+  const threadContentSearchQuery = useQuery(
+    threadSearchQueryOptions({
+      query: debouncedThreadContentQuery,
+      targets: threadContentSearchTargets,
+      enabled: !isActionsOnly,
+    }),
+  );
+  const threadContentMatches =
+    normalizeSearchText(debouncedThreadContentQuery) === normalizeSearchText(deferredQuery)
+      ? (threadContentSearchQuery.data?.matches ?? EMPTY_THREAD_CONTENT_MATCHES)
+      : EMPTY_THREAD_CONTENT_MATCHES;
+  const allThreadSearchItems = useMemo(
+    () =>
+      applyThreadContentSearchMatches({
+        items: allThreadItems,
+        matches: threadContentMatches,
+        query: deferredQuery,
+      }),
+    [allThreadItems, deferredQuery, threadContentMatches],
+  );
 
   function pushPaletteView(view: CommandPaletteView): void {
     setViewStack((previousViews) => [
@@ -789,6 +837,11 @@ function OpenCommandPaletteDialog() {
         groups: view.groups,
         ...(view.initialQuery ? { initialQuery: view.initialQuery } : {}),
         ...(view.inputPlaceholder ? { inputPlaceholder: view.inputPlaceholder } : {}),
+        ...(view.threadSearchProjectIdsByEnvironment
+          ? {
+              threadSearchProjectIdsByEnvironment: view.threadSearchProjectIdsByEnvironment,
+            }
+          : {}),
       },
     ]);
     setHighlightedItemValue(null);
@@ -1062,9 +1115,18 @@ function OpenCommandPaletteDialog() {
         scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
       ),
     );
+    const projectIdsByEnvironment = new Map<EnvironmentId, ProjectId[]>();
+    for (const thread of projectThreads) {
+      const projectIds = projectIdsByEnvironment.get(thread.environmentId) ?? [];
+      if (!projectIds.includes(thread.projectId)) {
+        projectIds.push(thread.projectId);
+        projectIdsByEnvironment.set(thread.environmentId, projectIds);
+      }
+    }
     pushPaletteView({
       addonIcon: <MessageSquareIcon className={ADDON_ICON_CLASS} />,
       inputPlaceholder: `Search threads in ${openIntent.projectName}...`,
+      threadSearchProjectIdsByEnvironment: projectIdsByEnvironment,
       groups: [
         {
           value: "project-threads",
@@ -1193,14 +1255,23 @@ function OpenCommandPaletteDialog() {
   });
 
   const rootGroups = buildRootGroups({ actionItems, recentThreadItems });
-  const activeGroups = currentView ? currentView.groups : rootGroups;
+  const activeGroups = currentView
+    ? currentView.groups.map((group) => ({
+        ...group,
+        items: applyThreadContentSearchMatches({
+          items: group.items,
+          matches: threadContentMatches,
+          query: deferredQuery,
+        }),
+      }))
+    : rootGroups;
 
   const filteredGroups = filterCommandPaletteGroups({
     activeGroups,
     query: deferredQuery,
     isInSubmenu: currentView !== null,
     projectSearchItems: projectSearchItems,
-    threadSearchItems: allThreadItems,
+    threadSearchItems: allThreadSearchItems,
   });
 
   const handleAddProject = useCallback(
@@ -1698,7 +1769,23 @@ function OpenCommandPaletteDialog() {
       setOpen(false);
     }
 
-    void item.run().catch((error: unknown) => {
+    const execution =
+      item.threadRef && item.threadContentMatch
+        ? navigate({
+            to: "/$environmentId/$threadId",
+            params: buildThreadRouteParams(
+              scopeThreadRef(item.threadRef.environmentId, item.threadRef.id),
+            ),
+            search: (current) => ({
+              ...closeRightPanelSearchParams(current),
+              focusMessageId: item.threadContentMatch?.messageId,
+              focusQuery: item.threadContentMatch?.query,
+              focusRequest: newCommandId(),
+            }),
+          })
+        : item.run();
+
+    void execution.catch((error: unknown) => {
       toastManager.add(
         stackedThreadToast({
           type: "error",
@@ -1880,6 +1967,7 @@ function OpenCommandPaletteDialog() {
             highlightedItemValue={highlightedItemValue}
             isActionsOnly={isActionsOnly}
             keybindings={keybindings}
+            query={deferredQuery}
             onExecuteItem={executeItem}
             {...(addProjectCloneFlow?.step === "repository"
               ? {

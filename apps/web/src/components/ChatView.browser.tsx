@@ -246,6 +246,10 @@ function createMockEnvironmentApi(input: {
           Promise.reject(
             new Error("Not implemented in browser test."),
           )) as EnvironmentApi["orchestration"]["getRevertPlan"]),
+      searchThreads: (async () => ({
+        matches: [],
+        truncated: false,
+      })) as EnvironmentApi["orchestration"]["searchThreads"],
       getArchivedShellSnapshot: (() => {
         throw new Error("Not implemented in browser test.");
       }) as EnvironmentApi["orchestration"]["getArchivedShellSnapshot"],
@@ -5818,6 +5822,412 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await expect
         .element(palette.getByText("New thread in Project", { exact: true }))
         .not.toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("highlights quoted phrase matches in titles and messages and jumps to the message", async () => {
+    const matchedThreadTitle = "Release codename deltafrogs thread";
+    const searchQuery = `"release codename"`;
+    const searchSnapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-command-palette-content-search" as MessageId,
+      targetText: "Release codename deltafrogs is approved.",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...searchSnapshot,
+        threads: searchSnapshot.threads.map((thread) =>
+          thread.id === THREAD_ID ? { ...thread, title: matchedThreadTitle } : thread,
+        ),
+      },
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          keybindings: [
+            {
+              command: "commandPalette.toggle",
+              shortcut: {
+                key: "k",
+                metaKey: false,
+                ctrlKey: false,
+                shiftKey: false,
+                altKey: false,
+                modKey: true,
+              },
+              whenAst: {
+                type: "not",
+                node: { type: "identifier", name: "terminalFocus" },
+              },
+            },
+          ],
+        };
+      },
+      resolveRpc: (body) => {
+        if (body._tag === ORCHESTRATION_WS_METHODS.searchThreads) {
+          return {
+            matches: [
+              {
+                threadId: THREAD_ID,
+                messageId: "msg-user-command-palette-content-search" as MessageId,
+                role: "user",
+                snippet: "…release codename deltafrogs is approved…",
+                score: 0,
+              },
+            ],
+            truncated: false,
+          };
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      await waitForCommandPaletteShortcutLabel();
+      const palette = page.getByTestId("command-palette");
+      await openCommandPaletteFromTrigger();
+
+      await page.getByPlaceholder("Search commands, projects, and threads...").fill(searchQuery);
+      await vi.waitFor(
+        () => {
+          expect(
+            wsRequests.some(
+              (request) =>
+                request._tag === ORCHESTRATION_WS_METHODS.searchThreads &&
+                request.query === searchQuery,
+            ),
+          ).toBe(true);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      await expect
+        .element(palette.getByText(matchedThreadTitle, { exact: true }))
+        .toBeInTheDocument();
+      await expect
+        .element(palette.getByText("…release codename deltafrogs is approved…"))
+        .toBeInTheDocument();
+      await vi.waitFor(
+        () => {
+          const highlightedQuery = [...document.querySelectorAll("mark")].find(
+            (element) => element.textContent === "release codename",
+          );
+          expect(highlightedQuery).toBeTruthy();
+          expect(document.querySelector(".thread-search-title-match")?.textContent).toBe(
+            "Release codename",
+          );
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      await palette.getByText(matchedThreadTitle, { exact: true }).click();
+      await vi.waitFor(
+        () => {
+          expect(mounted.router.state.location.search).toMatchObject({
+            sourceControl: "0",
+            focusMessageId: "msg-user-command-palette-content-search",
+            focusQuery: searchQuery,
+          });
+          const targetRow = document.querySelector<HTMLElement>(
+            '[data-message-id="msg-user-command-palette-content-search"]',
+          );
+          expect(targetRow?.dataset.threadSearchTarget).toBe("true");
+          expect(targetRow?.querySelector(".thread-search-inline-match")?.textContent).toBe(
+            "Release codename",
+          );
+          const messageList = document.querySelector<HTMLElement>(
+            '[data-chat-messages-list="true"]',
+          );
+          const targetBounds = targetRow?.getBoundingClientRect();
+          const listBounds = messageList?.getBoundingClientRect();
+          expect(targetBounds && listBounds && targetBounds.bottom > listBounds.top).toBe(true);
+          expect(targetBounds && listBounds && targetBounds.top < listBounds.bottom).toBe(true);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps focused-search highlights visible inside boxed markdown text", async () => {
+    const targetMessageId = "msg-assistant-boxed-search-match" as MessageId;
+    const baseSnapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-before-boxed-search-match" as MessageId,
+      targetText: "show the boxed search match",
+    });
+    const snapshot: OrchestrationReadModel = {
+      ...baseSnapshot,
+      threads: baseSnapshot.threads.map((thread) => ({
+        ...thread,
+        messages: thread.messages.map((message) =>
+          message.id === ("msg-assistant-3" as MessageId)
+            ? {
+                ...message,
+                id: targetMessageId,
+                text: [
+                  "Use `deltafrogs` as the inline value.",
+                  "",
+                  "```ts",
+                  "const deltafrogs = true;",
+                  "```",
+                ].join("\n"),
+              }
+            : message,
+        ),
+      })),
+    };
+    const focusSearch = {
+      sourceControl: "0" as const,
+      focusMessageId: targetMessageId,
+      focusQuery: "deltafrogs",
+      focusRequest: "boxed-search-browser-test",
+    };
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot,
+    });
+
+    try {
+      await mounted.router.navigate({
+        to: "/$environmentId/$threadId",
+        params: {
+          environmentId: LOCAL_ENVIRONMENT_ID,
+          threadId: THREAD_ID,
+        },
+        search: focusSearch,
+      });
+      const getTargetRow = () =>
+        document.querySelector<HTMLElement>(`[data-message-id="${targetMessageId}"]`);
+      await vi.waitFor(
+        () => {
+          const currentTargetRow = getTargetRow();
+          const inlineMatch = currentTargetRow?.querySelector<HTMLElement>(
+            "p > code .thread-search-inline-match",
+          );
+          expect(inlineMatch?.textContent).toBe("deltafrogs");
+          expect(currentTargetRow?.querySelector(".chat-markdown-shiki")).toBeTruthy();
+          const messageList = document.querySelector<HTMLElement>(
+            '[data-chat-messages-list="true"]',
+          );
+          const matchBounds = inlineMatch?.getBoundingClientRect();
+          const listBounds = messageList?.getBoundingClientRect();
+          expect(matchBounds && listBounds && matchBounds.top >= listBounds.top + 16).toBe(true);
+          expect(matchBounds && listBounds && matchBounds.bottom <= listBounds.bottom - 16).toBe(
+            true,
+          );
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      const targetRow = getTargetRow();
+      expect(targetRow).toBeTruthy();
+
+      const getConnectedCodeHighlightRanges = (): Range[] => {
+        const css = Reflect.get(globalThis, "CSS") as
+          | { highlights?: { get: (name: string) => unknown } }
+          | undefined;
+        const highlight = css?.highlights?.get("threadlines-thread-search-match");
+        return highlight
+          ? [...(highlight as Iterable<Range>)].filter(
+              (range) =>
+                range.startContainer.isConnected &&
+                range.startContainer.parentElement?.closest(".chat-markdown-codeblock") !== null,
+            )
+          : [];
+      };
+      await vi.waitFor(
+        () => {
+          expect(
+            getConnectedCodeHighlightRanges().some(
+              (range) => range.toString().toLowerCase() === "deltafrogs",
+            ),
+          ).toBe(true);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      const shiki = targetRow?.querySelector(".chat-markdown-shiki");
+      const walker = shiki ? document.createTreeWalker(shiki, NodeFilter.SHOW_TEXT) : null;
+      let boxedMatchTextNode: Text | null = null;
+      for (let node = walker?.nextNode() ?? null; node; node = walker?.nextNode() ?? null) {
+        if ((node as Text).data.includes("deltafrogs")) {
+          boxedMatchTextNode = node as Text;
+          break;
+        }
+      }
+      expect(boxedMatchTextNode).toBeTruthy();
+      boxedMatchTextNode?.replaceWith(boxedMatchTextNode.cloneNode(true));
+
+      await vi.waitFor(
+        () => {
+          expect(
+            getConnectedCodeHighlightRanges().some(
+              (range) => range.toString().toLowerCase() === "deltafrogs",
+            ),
+          ).toBe(true);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("reveals the exact match near the top of an oversized message", async () => {
+    const targetMessageId = "msg-user-oversized-search-match" as MessageId;
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId,
+      targetText: [
+        "deltafrogs appears at the top of this message.",
+        ...Array.from({ length: 100 }, (_, index) => `Long message filler line ${index}.`),
+      ].join("\n"),
+    });
+    const focusSearch = {
+      sourceControl: "0" as const,
+      focusMessageId: targetMessageId,
+      focusQuery: "deltafrogs",
+      focusRequest: "oversized-search-browser-test",
+    };
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot,
+    });
+
+    try {
+      await mounted.router.navigate({
+        to: "/$environmentId/$threadId",
+        params: {
+          environmentId: LOCAL_ENVIRONMENT_ID,
+          threadId: THREAD_ID,
+        },
+        search: focusSearch,
+      });
+      await vi.waitFor(
+        () => {
+          const targetRow = document.querySelector<HTMLElement>(
+            `[data-message-id="${targetMessageId}"]`,
+          );
+          const exactMatch = targetRow?.querySelector<HTMLElement>(".thread-search-inline-match");
+          const messageList = document.querySelector<HTMLElement>(
+            '[data-chat-messages-list="true"]',
+          );
+          const matchBounds = exactMatch?.getBoundingClientRect();
+          const listBounds = messageList?.getBoundingClientRect();
+          expect(exactMatch?.textContent).toBe("deltafrogs");
+          expect(matchBounds && listBounds && matchBounds.top >= listBounds.top + 16).toBe(true);
+          expect(matchBounds && listBounds && matchBounds.bottom <= listBounds.bottom - 16).toBe(
+            true,
+          );
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("reliably reveals a search match while switching to another thread", async () => {
+    const secondThreadId = "thread-search-cross-thread-target" as ThreadId;
+    const targetMessageId = "msg-user-cross-thread-search-match" as MessageId;
+    const firstThreadSnapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-cross-thread-start" as MessageId,
+      targetText: "the initially open thread",
+    });
+    const targetThreadSource = createSnapshotForTargetUser({
+      targetMessageId,
+      targetText: [
+        "deltafrogs is near the top of the other thread.",
+        ...Array.from({ length: 100 }, (_, index) => `Other thread filler line ${index}.`),
+      ].join("\n"),
+    });
+    const targetThreadMessages = (targetThreadSource.threads[0]?.messages ?? []).map(
+      (message, index) =>
+        message.id === targetMessageId
+          ? message
+          : { ...message, id: `msg-cross-thread-filler-${index}` as MessageId },
+    );
+    const snapshotWithSecondThread = addThreadToSnapshot(firstThreadSnapshot, secondThreadId);
+    const snapshot: OrchestrationReadModel = {
+      ...snapshotWithSecondThread,
+      threads: snapshotWithSecondThread.threads.map((thread) =>
+        thread.id === secondThreadId
+          ? {
+              ...thread,
+              title: "Cross-thread search target",
+              messages: targetThreadMessages,
+            }
+          : thread,
+      ),
+    };
+    const mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot });
+
+    try {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (attempt > 0) {
+          await mounted.router.navigate({
+            to: "/$environmentId/$threadId",
+            params: {
+              environmentId: LOCAL_ENVIRONMENT_ID,
+              threadId: THREAD_ID,
+            },
+            search: { sourceControl: "0" },
+          });
+          await vi.waitFor(
+            () => {
+              expect(mounted.router.state.location.pathname).toBe(serverThreadPath(THREAD_ID));
+              expect(document.querySelector(`[data-message-id="${targetMessageId}"]`)).toBeNull();
+            },
+            { timeout: 8_000, interval: 16 },
+          );
+        }
+
+        if (document.activeElement instanceof HTMLElement) {
+          document.activeElement.blur();
+        }
+
+        await mounted.router.navigate({
+          to: "/$environmentId/$threadId",
+          params: {
+            environmentId: LOCAL_ENVIRONMENT_ID,
+            threadId: secondThreadId,
+          },
+          search: {
+            sourceControl: "0",
+            focusMessageId: targetMessageId,
+            focusQuery: "deltafrogs",
+            focusRequest: `cross-thread-search-browser-test-${attempt}`,
+          },
+        });
+
+        await vi.waitFor(
+          () => {
+            expect(mounted.router.state.location.pathname).toBe(serverThreadPath(secondThreadId));
+            const targetRow = document.querySelector<HTMLElement>(
+              `[data-message-id="${targetMessageId}"]`,
+            );
+            const exactMatch = targetRow?.querySelector<HTMLElement>(".thread-search-inline-match");
+            const messageList = document.querySelector<HTMLElement>(
+              '[data-chat-messages-list="true"]',
+            );
+            const composerEditor = document.querySelector<HTMLElement>(
+              '[data-testid="composer-editor"]',
+            );
+            const matchBounds = exactMatch?.getBoundingClientRect();
+            const listBounds = messageList?.getBoundingClientRect();
+            expect(targetRow?.dataset.threadSearchTarget).toBe("true");
+            expect(exactMatch?.textContent).toBe("deltafrogs");
+            expect(
+              document.activeElement === composerEditor ||
+                Boolean(composerEditor?.matches(":focus-within")),
+            ).toBe(false);
+            expect(matchBounds && listBounds && matchBounds.top >= listBounds.top + 16).toBe(true);
+            expect(matchBounds && listBounds && matchBounds.bottom <= listBounds.bottom - 16).toBe(
+              true,
+            );
+          },
+          { timeout: 8_000, interval: 16 },
+        );
+      }
     } finally {
       await mounted.cleanup();
     }

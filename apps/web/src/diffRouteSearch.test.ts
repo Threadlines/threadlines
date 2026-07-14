@@ -121,6 +121,21 @@ describe("parseDiffRouteSearch", () => {
       diff: "1",
     });
   });
+
+  it("parses a message focus target and ignores an orphaned query", () => {
+    expect(
+      parseDiffRouteSearch({
+        focusMessageId: "message-1",
+        focusQuery: "  testing  ",
+        focusRequest: "request-1",
+      }),
+    ).toEqual({
+      focusMessageId: "message-1",
+      focusQuery: "testing",
+      focusRequest: "request-1",
+    });
+    expect(parseDiffRouteSearch({ focusQuery: "testing" })).toEqual({});
+  });
 });
 
 describe("isSourceControlPanelOpen", () => {

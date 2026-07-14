@@ -84,6 +84,7 @@ import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
+import { ThreadSearchLive } from "./orchestration/Layers/ThreadSearch.ts";
 import {
   clearPersistedServerRuntimeState,
   makePersistedServerRuntimeState,
@@ -309,8 +310,9 @@ const RuntimeDependenciesLive = RuntimeCoreDependenciesLive.pipe(
   Layer.provide(NetService.layer),
 );
 
-const RuntimeServicesLive = ServerRuntimeStartupLive.pipe(
-  Layer.provideMerge(RuntimeDependenciesLive),
+const RuntimeServicesLive = Layer.mergeAll(
+  ServerRuntimeStartupLive.pipe(Layer.provideMerge(RuntimeDependenciesLive)),
+  ThreadSearchLive.pipe(Layer.provide(PersistenceLayerLive)),
 );
 
 export const makeRoutesLayer = Layer.mergeAll(

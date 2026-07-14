@@ -1,12 +1,90 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  analyzeSearchText,
+  buildSearchTextSnippet,
   compareRankedSearchResults,
   insertRankedSearchResult,
   normalizeSearchQuery,
+  parseSearchQuery,
+  searchQueryHighlightValues,
   scoreQueryMatch,
   scoreSubsequenceMatch,
 } from "./searchRanking.ts";
+
+describe("parseSearchQuery", () => {
+  it("keeps quoted phrases intact while splitting unquoted required terms", () => {
+    expect(parseSearchQuery(`testing "how there" now`)).toEqual({
+      clauses: [
+        { value: "testing", quoted: false },
+        { value: "how there", quoted: true },
+        { value: "now", quoted: false },
+      ],
+      phrase: "testing how there now",
+    });
+  });
+
+  it("supports escaped and unfinished quotes without throwing", () => {
+    expect(parseSearchQuery(`say "hello \\"there\\"`)).toEqual({
+      clauses: [
+        { value: "say", quoted: false },
+        { value: `hello "there"`, quoted: true },
+      ],
+      phrase: `say hello "there"`,
+    });
+  });
+});
+
+describe("analyzeSearchText", () => {
+  it("requires every clause and ranks phrase, ordered, then unordered matches", () => {
+    const phrase = analyzeSearchText("testing how there works", "testing how there");
+    const ordered = analyzeSearchText("testing can explain how we got there", "testing how there");
+    const unordered = analyzeSearchText("there is a testing note about how", "testing how there");
+
+    expect(phrase?.kind).toBe("exact-phrase");
+    expect(ordered?.kind).toBe("ordered");
+    expect(unordered?.kind).toBe("unordered");
+    expect(phrase!.score).toBeLessThan(ordered!.score);
+    expect(ordered!.score).toBeLessThan(unordered!.score);
+    expect(analyzeSearchText("testing only", "testing how there")).toBeNull();
+  });
+
+  it("requires quoted clauses to occur as an exact phrase", () => {
+    expect(analyzeSearchText("testing how there works", `testing "how there"`)).not.toBeNull();
+    expect(analyzeSearchText("testing how we got there", `testing "how there"`)).toBeNull();
+  });
+});
+
+describe("search snippets and highlights", () => {
+  it("uses compact fragments that visibly account for scattered query terms", () => {
+    const text = `testing ${"filler ".repeat(40)}how ${"more ".repeat(40)}there`;
+    const snippet = buildSearchTextSnippet(text, "testing how there", { maxLength: 100 });
+
+    expect(snippet).toContain("testing");
+    expect(snippet).toContain("how");
+    expect(snippet).toContain("there");
+    expect(snippet.length).toBeLessThan(150);
+  });
+
+  it("keeps unordered fragments in their original document order", () => {
+    const text = `there ${"filler ".repeat(40)}testing ${"more ".repeat(40)}how`;
+    const snippet = buildSearchTextSnippet(text, "testing how there", { maxLength: 100 });
+
+    expect(snippet.indexOf("there")).toBeLessThan(snippet.indexOf("testing"));
+    expect(snippet.indexOf("testing")).toBeLessThan(snippet.indexOf("how"));
+    expect(snippet).not.toContain("… …");
+  });
+
+  it("prefers the full phrase while retaining word fallbacks for split renderers", () => {
+    expect(searchQueryHighlightValues(`testing "how there"`)).toEqual([
+      "testing how there",
+      "how there",
+      "testing",
+      "there",
+      "how",
+    ]);
+  });
+});
 
 describe("normalizeSearchQuery", () => {
   it("trims and lowercases queries", () => {

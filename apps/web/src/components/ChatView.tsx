@@ -1021,6 +1021,19 @@ export default function ChatView(props: ChatViewProps) {
     strict: false,
     select: (params) => parseDiffRouteSearch(params),
   });
+  const timelineSearchTarget = useMemo(
+    () =>
+      rawSearch.focusMessageId
+        ? {
+            messageId: rawSearch.focusMessageId,
+            query: rawSearch.focusQuery ?? "",
+            requestKey: rawSearch.focusRequest ?? "initial",
+          }
+        : null,
+    [rawSearch.focusMessageId, rawSearch.focusQuery, rawSearch.focusRequest],
+  );
+  const timelineSearchTargetRef = useRef(timelineSearchTarget);
+  timelineSearchTargetRef.current = timelineSearchTarget;
   const shouldUseRightPanelSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   // Auto-focusing the composer on touch devices pops the on-screen keyboard
   // over the conversation, so thread-entry focus is desktop-only.
@@ -1130,6 +1143,7 @@ export default function ChatView(props: ChatViewProps) {
   const sendInFlightRef = useRef(false);
   const terminalOpenByThreadRef = useRef<Record<string, boolean>>({});
   const timelineStickFrameIdsRef = useRef<number[]>([]);
+  const layoutStickThreadIdRef = useRef<ThreadId | null>(null);
   const programmaticStickToBottomSuppressUntilRef = useRef(0);
 
   const terminalState = useTerminalStateStore((state) =>
@@ -3608,7 +3622,11 @@ export default function ChatView(props: ChatViewProps) {
   }, [clearTimelineStickFrames]);
 
   useEffect(() => {
-    if (!activeThread?.id) return;
+    const activeThreadId = activeThread?.id ?? null;
+    const isThreadEntry = layoutStickThreadIdRef.current !== activeThreadId;
+    layoutStickThreadIdRef.current = activeThreadId;
+    if (!activeThreadId) return;
+    if (isThreadEntry && timelineSearchTargetRef.current) return;
     if (!isAtEndRef.current && !isLegendListVisiblyAtEnd(legendListRef.current)) {
       return;
     }
@@ -3651,7 +3669,14 @@ export default function ChatView(props: ChatViewProps) {
   }, [activeThread?.id]);
 
   useEffect(() => {
-    if (!activeThread?.id || terminalState.terminalOpen || isCoarsePointer) return;
+    if (
+      !activeThread?.id ||
+      timelineSearchTargetRef.current ||
+      terminalState.terminalOpen ||
+      isCoarsePointer
+    ) {
+      return;
+    }
     const frame = window.requestAnimationFrame(() => {
       focusComposer();
     });
@@ -5618,6 +5643,7 @@ export default function ChatView(props: ChatViewProps) {
               mcpAuthReconnectStatusByServerName={activeMcpAuthReconnectStatusByServerName}
               onRunMcpAuthReconnect={runMcpAuthReconnect}
               onIsAtEndChange={onIsAtEndChange}
+              searchTarget={timelineSearchTarget}
             />
 
             {/* scroll to bottom button — shown when user has scrolled away from the bottom.

@@ -1,7 +1,14 @@
 import { describe, expect, it, vi } from "vite-plus/test";
-import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@threadlines/contracts";
+import {
+  EnvironmentId,
+  MessageId,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+} from "@threadlines/contracts";
 import type { Thread } from "../types";
 import {
+  applyThreadContentSearchMatches,
   buildThreadActionItems,
   filterCommandPaletteGroups,
   type CommandPaletteGroup,
@@ -141,6 +148,66 @@ describe("buildThreadActionItems", () => {
     expect(groups[0]?.items.map((item) => item.value)).toEqual(["thread:project-context-only"]);
   });
 
+  it("requires every unquoted word and ranks phrase, ordered, then unordered title matches", () => {
+    const makeItem = (value: string, title: string) => ({
+      kind: "action" as const,
+      value,
+      searchTerms: [title],
+      title,
+      icon: null,
+      run: async () => undefined,
+    });
+    const group: CommandPaletteGroup = {
+      value: "search-ranking",
+      label: "Search ranking",
+      items: [
+        makeItem("missing", "Testing without the other terms"),
+        makeItem("unordered", "There is a testing note about how"),
+        makeItem("ordered", "Testing can explain how we got there"),
+        makeItem("phrase", "Testing how there should rank first"),
+      ],
+    };
+
+    const groups = filterCommandPaletteGroups({
+      activeGroups: [group],
+      query: "testing how there",
+      isInSubmenu: true,
+      projectSearchItems: [],
+      threadSearchItems: [],
+    });
+
+    expect(groups[0]?.items.map((item) => item.value)).toEqual(["phrase", "ordered", "unordered"]);
+  });
+
+  it("treats quoted words as one required exact phrase", () => {
+    const makeItem = (value: string, title: string) => ({
+      kind: "action" as const,
+      value,
+      searchTerms: [title],
+      title,
+      icon: null,
+      run: async () => undefined,
+    });
+    const groups = filterCommandPaletteGroups({
+      activeGroups: [
+        {
+          value: "quoted-search",
+          label: "Quoted search",
+          items: [
+            makeItem("separated", "Testing can explain how we got there"),
+            makeItem("phrase", "Notes about testing how there works"),
+          ],
+        },
+      ],
+      query: `"testing how there"`,
+      isInSubmenu: true,
+      projectSearchItems: [],
+      threadSearchItems: [],
+    });
+
+    expect(groups[0]?.items.map((item) => item.value)).toEqual(["phrase"]);
+  });
+
   it("filters archived threads out of thread search items", () => {
     const items = buildThreadActionItems({
       threads: [
@@ -164,5 +231,113 @@ describe("buildThreadActionItems", () => {
     });
 
     expect(items.map((item) => item.value)).toEqual(["thread:thread-active"]);
+  });
+
+  it("adds body matches without outranking thread-title matches", () => {
+    const items = buildThreadActionItems({
+      threads: [
+        makeThread({
+          id: ThreadId.make("thread-body-match"),
+          title: "Fix navbar spacing",
+        }),
+        makeThread({
+          id: ThreadId.make("thread-title-match"),
+          title: "Database migration",
+        }),
+      ],
+      projectTitleById: new Map([[PROJECT_ID, "Project"]]),
+      sortOrder: "updated_at",
+      icon: null,
+      runThread: async (_thread) => undefined,
+    });
+    const matchedItems = applyThreadContentSearchMatches({
+      items,
+      query: "database",
+      matches: [
+        {
+          environmentId: LOCAL_ENVIRONMENT_ID,
+          threadId: ThreadId.make("thread-body-match"),
+          messageId: MessageId.make("message-body-match"),
+          snippet: "The database pool was exhausted.",
+          score: 0,
+        },
+      ],
+    });
+
+    const groups = filterCommandPaletteGroups({
+      activeGroups: [],
+      query: "database",
+      isInSubmenu: false,
+      projectSearchItems: [],
+      threadSearchItems: matchedItems,
+    });
+
+    expect(groups[0]?.items.map((item) => item.value)).toEqual([
+      "thread:thread-title-match",
+      "thread:thread-body-match",
+    ]);
+    expect(groups[0]?.items[1]?.threadContentMatch).toEqual({
+      environmentId: LOCAL_ENVIRONMENT_ID,
+      threadId: "thread-body-match",
+      messageId: "message-body-match",
+      snippet: "The database pool was exhausted.",
+      score: 0,
+      query: "database",
+    });
+  });
+
+  it("uses server phrase and proximity scores to rank body-only matches", () => {
+    const items = buildThreadActionItems({
+      threads: [
+        makeThread({ id: ThreadId.make("thread-unordered"), title: "Unrelated one" }),
+        makeThread({ id: ThreadId.make("thread-phrase"), title: "Unrelated two" }),
+        makeThread({ id: ThreadId.make("thread-ordered"), title: "Unrelated three" }),
+      ],
+      projectTitleById: new Map([[PROJECT_ID, "Project"]]),
+      sortOrder: "updated_at",
+      icon: null,
+      runThread: async (_thread) => undefined,
+    });
+    const matchedItems = applyThreadContentSearchMatches({
+      items,
+      query: "testing how there",
+      matches: [
+        {
+          environmentId: LOCAL_ENVIRONMENT_ID,
+          threadId: ThreadId.make("thread-unordered"),
+          messageId: MessageId.make("message-unordered"),
+          snippet: "There is a testing note about how.",
+          score: 200_000_000,
+        },
+        {
+          environmentId: LOCAL_ENVIRONMENT_ID,
+          threadId: ThreadId.make("thread-phrase"),
+          messageId: MessageId.make("message-phrase"),
+          snippet: "Testing how there works.",
+          score: 0,
+        },
+        {
+          environmentId: LOCAL_ENVIRONMENT_ID,
+          threadId: ThreadId.make("thread-ordered"),
+          messageId: MessageId.make("message-ordered"),
+          snippet: "Testing can explain how we got there.",
+          score: 100_000_000,
+        },
+      ],
+    });
+
+    const groups = filterCommandPaletteGroups({
+      activeGroups: [],
+      query: "testing how there",
+      isInSubmenu: false,
+      projectSearchItems: [],
+      threadSearchItems: matchedItems,
+    });
+
+    expect(groups[0]?.items.map((item) => item.value)).toEqual([
+      "thread:thread-phrase",
+      "thread:thread-ordered",
+      "thread:thread-unordered",
+    ]);
   });
 });

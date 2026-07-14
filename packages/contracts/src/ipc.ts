@@ -128,6 +128,8 @@ import type {
   OrchestrationGetFullThreadDiffResult,
   OrchestrationGetRevertPlanInput,
   OrchestrationGetRevertPlanResult,
+  OrchestrationThreadSearchInput,
+  OrchestrationThreadSearchResult,
   OrchestrationGetTurnDiffInput,
   OrchestrationGetTurnDiffResult,
   OrchestrationShellSnapshot,
@@ -836,6 +838,9 @@ export interface EnvironmentApi {
     getRevertPlan: (
       input: OrchestrationGetRevertPlanInput,
     ) => Promise<OrchestrationGetRevertPlanResult>;
+    searchThreads: (
+      input: OrchestrationThreadSearchInput,
+    ) => Promise<OrchestrationThreadSearchResult>;
     getArchivedShellSnapshot: () => Promise<OrchestrationShellSnapshot>;
     subscribeShell: (
       callback: (event: OrchestrationShellStreamItem) => void,

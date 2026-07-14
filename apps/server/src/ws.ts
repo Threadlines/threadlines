@@ -28,6 +28,7 @@ import {
   OrchestrationGetRevertPlanError,
   OrchestrationGetSnapshotError,
   OrchestrationGetTurnDiffError,
+  OrchestrationThreadSearchError,
   ORCHESTRATION_WS_METHODS,
   ChatAttachmentReadError,
   ProjectFaviconError,
@@ -59,6 +60,7 @@ import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
 import { coalesceLatestAggregateEvents } from "./orchestration/shellStreamCoalescing.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadSearch } from "./orchestration/Services/ThreadSearch.ts";
 import {
   observeRpcEffect,
   observeRpcStream,
@@ -201,6 +203,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+      const threadSearch = yield* ThreadSearch;
       const orchestrationEngine = yield* OrchestrationEngineService;
       const checkpointDiffQuery = yield* CheckpointDiffQuery;
       const checkpointRevert = yield* CheckpointRevert;
@@ -815,6 +818,20 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                       cause._tag === "CheckpointUnavailableError"
                         ? cause.message
                         : "Failed to compute revert plan",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.searchThreads]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.searchThreads,
+            threadSearch.search(input).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationThreadSearchError({
+                    message: "Failed to search thread messages",
                     cause,
                   }),
               ),

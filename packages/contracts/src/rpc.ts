@@ -72,6 +72,8 @@ import {
   OrchestrationGetRevertPlanError,
   OrchestrationGetRevertPlanInput,
   OrchestrationGetSnapshotError,
+  OrchestrationThreadSearchError,
+  OrchestrationThreadSearchInput,
   OrchestrationGetTurnDiffError,
   OrchestrationGetTurnDiffInput,
   OrchestrationReplayEventsError,
@@ -825,6 +827,12 @@ export const WsOrchestrationGetRevertPlanRpc = Rpc.make(ORCHESTRATION_WS_METHODS
   error: OrchestrationGetRevertPlanError,
 });
 
+export const WsOrchestrationSearchThreadsRpc = Rpc.make(ORCHESTRATION_WS_METHODS.searchThreads, {
+  payload: OrchestrationThreadSearchInput,
+  success: OrchestrationRpcSchemas.searchThreads.output,
+  error: OrchestrationThreadSearchError,
+});
+
 export const WsOrchestrationReplayEventsRpc = Rpc.make(ORCHESTRATION_WS_METHODS.replayEvents, {
   payload: OrchestrationReplayEventsInput,
   success: OrchestrationRpcSchemas.replayEvents.output,
@@ -966,6 +974,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationGetTurnDiffRpc,
   WsOrchestrationGetFullThreadDiffRpc,
   WsOrchestrationGetRevertPlanRpc,
+  WsOrchestrationSearchThreadsRpc,
   WsOrchestrationReplayEventsRpc,
   WsOrchestrationGetArchivedShellSnapshotRpc,
   WsOrchestrationSubscribeShellRpc,

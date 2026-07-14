@@ -13,6 +13,7 @@ import {
   OrchestrationCommand,
   OrchestrationEvent,
   OrchestrationGetFullThreadDiffInput,
+  OrchestrationThreadSearchInput,
   OrchestrationGetTurnDiffInput,
   OrchestrationLatestTurn,
   ProjectCreatedPayload,
@@ -31,6 +32,7 @@ import { ProviderInstanceId } from "./providerInstance.ts";
 
 const decodeTurnDiffInput = Schema.decodeUnknownEffect(OrchestrationGetTurnDiffInput);
 const decodeFullThreadDiffInput = Schema.decodeUnknownEffect(OrchestrationGetFullThreadDiffInput);
+const decodeThreadSearchInput = Schema.decodeUnknownEffect(OrchestrationThreadSearchInput);
 const decodeThreadTurnDiff = Schema.decodeUnknownEffect(ThreadTurnDiff);
 const decodeProjectCreateCommand = Schema.decodeUnknownEffect(ProjectCreateCommand);
 const decodeProjectCreatedPayload = Schema.decodeUnknownEffect(ProjectCreatedPayload);
@@ -90,6 +92,26 @@ it.effect("parses full thread diff input with whitespace ignoring enabled", () =
       ignoreWhitespace: true,
     });
     assert.strictEqual(parsed.ignoreWhitespace, true);
+  }),
+);
+
+it.effect("trims and validates bounded thread search input", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeThreadSearchInput({
+      query: "  navbar spacing  ",
+      projectIds: ["project-1"],
+      limit: 25,
+    });
+    assert.strictEqual(parsed.query, "navbar spacing");
+    assert.deepStrictEqual(parsed.projectIds, ["project-1"]);
+    assert.strictEqual(parsed.limit, 25);
+  }),
+);
+
+it.effect("rejects an empty thread search query", () =>
+  Effect.gen(function* () {
+    const result = yield* Effect.exit(decodeThreadSearchInput({ query: "   ", limit: 25 }));
+    assert.strictEqual(result._tag, "Failure");
   }),
 );
 

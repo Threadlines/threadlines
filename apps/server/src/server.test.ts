@@ -77,6 +77,7 @@ import {
   ProjectionSnapshotQuery,
   type ProjectionSnapshotQueryShape,
 } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadSearch, type ThreadSearchShape } from "./orchestration/Services/ThreadSearch.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 import { PersistenceSqlError } from "./persistence/Errors.ts";
 import {
@@ -344,6 +345,7 @@ const buildAppUnderTest = (options?: {
     terminalManager?: Partial<TerminalManagerShape>;
     orchestrationEngine?: Partial<OrchestrationEngineShape>;
     projectionSnapshotQuery?: Partial<ProjectionSnapshotQueryShape>;
+    threadSearch?: Partial<ThreadSearchShape>;
     checkpointDiffQuery?: Partial<CheckpointDiffQueryShape>;
     checkpointRevert?: Partial<CheckpointRevertShape>;
     browserTraceCollector?: Partial<BrowserTraceCollectorShape>;
@@ -581,6 +583,10 @@ const buildAppUnderTest = (options?: {
             deleteThread: () => Effect.die(new Error("Unsupported provider call in test")),
             streamEvents: Stream.empty,
             ...options?.layers?.providerService,
+          }),
+          Layer.mock(ThreadSearch)({
+            search: () => Effect.succeed({ matches: [], truncated: false }),
+            ...options?.layers?.threadSearch,
           }),
         ),
       ),
@@ -3401,6 +3407,21 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                 diff: "full-diff",
               }),
           },
+          threadSearch: {
+            search: (input) =>
+              Effect.succeed({
+                matches: [
+                  {
+                    threadId: ThreadId.make("thread-1"),
+                    messageId: MessageId.make("message-1"),
+                    role: "assistant" as const,
+                    snippet: `Matched ${input.query}`,
+                    score: 0,
+                  },
+                ],
+                truncated: false,
+              }),
+          },
         },
       });
 
@@ -3437,6 +3458,27 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         ),
       );
       assert.equal(fullDiffResult.diff, "full-diff");
+
+      const searchResult = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.searchThreads]({
+            query: "navbar",
+            limit: 10,
+          }),
+        ),
+      );
+      assert.deepEqual(searchResult, {
+        matches: [
+          {
+            threadId: "thread-1",
+            messageId: "message-1",
+            role: "assistant",
+            snippet: "Matched navbar",
+            score: 0,
+          },
+        ],
+        truncated: false,
+      });
 
       const replayResult = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>

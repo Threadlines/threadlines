@@ -976,6 +976,88 @@ label:has(> select#reasoning-effort) select {
   background-color: var(--text-selection);
 }
 
+::highlight(threadlines-thread-search-match) {
+  color: var(--foreground);
+  background-color: color-mix(in srgb, var(--primary-readable) 58%, transparent);
+  text-decoration: underline 2px color-mix(in srgb, var(--primary-readable) 85%, transparent);
+}
+
+.thread-search-title-match,
+.thread-search-palette-match,
+.thread-search-inline-match {
+  padding: 0;
+  color: inherit;
+  border-radius: 2px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.thread-search-title-match {
+  background-color: color-mix(in srgb, var(--primary-readable) 11%, transparent);
+  text-decoration-line: underline;
+  text-decoration-color: color-mix(in srgb, var(--primary-readable) 52%, transparent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.thread-search-palette-match {
+  background-color: color-mix(in srgb, var(--primary-readable) 18%, transparent);
+}
+
+.thread-search-inline-match {
+  color: var(--foreground);
+  background-color: color-mix(in srgb, var(--primary-readable) 48%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary-readable) 20%, transparent);
+  text-decoration-line: underline;
+  text-decoration-color: color-mix(in srgb, var(--primary-readable) 85%, transparent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 2px;
+  animation: thread-search-inline-match-pulse 2s cubic-bezier(0.16, 0.75, 0.22, 1) both;
+}
+
+@keyframes thread-search-inline-match-pulse {
+  0% {
+    background-color: color-mix(in srgb, var(--primary-readable) 72%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-readable) 24%, transparent);
+  }
+  38% {
+    background-color: color-mix(in srgb, var(--primary-readable) 58%, transparent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary-readable) 18%, transparent);
+  }
+  100% {
+    background-color: color-mix(in srgb, var(--primary-readable) 42%, transparent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary-readable) 10%, transparent);
+  }
+}
+
+@keyframes thread-search-target-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary-readable) 20%, transparent);
+  }
+  28% {
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary-readable) 11%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 4px transparent;
+  }
+}
+
+.thread-search-target-pulse {
+  border-radius: var(--radius-xl);
+  animation: thread-search-target-pulse 1.8s cubic-bezier(0.16, 0.75, 0.22, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thread-search-target-pulse {
+    animation: none;
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary-readable) 12%, transparent);
+  }
+
+  .thread-search-inline-match {
+    animation: none;
+  }
+}
+
 /* The overlay sits on top of the text, so it blends instead of covering:
    darken keeps dark glyphs legible on the light theme, lighten keeps light
    glyphs legible on the dark theme — matching how native selection paints

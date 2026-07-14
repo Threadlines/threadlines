@@ -1,5 +1,15 @@
-import { type KeybindingCommand, type FilesystemBrowseEntry } from "@threadlines/contracts";
+import {
+  type EnvironmentId,
+  type KeybindingCommand,
+  type FilesystemBrowseEntry,
+  type MessageId,
+} from "@threadlines/contracts";
 import type { SidebarThreadSortOrder } from "@threadlines/contracts/settings";
+import {
+  analyzeSearchText,
+  parseSearchQuery,
+  type ParsedSearchQuery,
+} from "@threadlines/shared/searchRanking";
 import { type ReactNode } from "react";
 import { sortThreads } from "../lib/threadSort";
 import { formatRelativeTimeLabel } from "../timestampFormat";
@@ -23,6 +33,8 @@ export interface CommandPaletteItem {
   /** Optional content rendered inline after the title text (before the timestamp). */
   readonly titleTrailingContent?: ReactNode;
   readonly shortcutCommand?: KeybindingCommand;
+  readonly threadRef?: Pick<SidebarThreadSummary, "environmentId" | "id">;
+  readonly threadContentMatch?: ThreadContentSearchMatch & { readonly query: string };
 }
 
 export interface CommandPaletteActionItem extends CommandPaletteItem {
@@ -49,6 +61,10 @@ export interface CommandPaletteView {
   readonly groups: ReadonlyArray<CommandPaletteGroup>;
   readonly initialQuery?: string;
   readonly inputPlaceholder?: string;
+  readonly threadSearchProjectIdsByEnvironment?: ReadonlyMap<
+    EnvironmentId,
+    ReadonlyArray<Project["id"]>
+  >;
 }
 
 export type CommandPaletteMode = "root" | "root-browse" | "submenu" | "submenu-browse";
@@ -164,6 +180,7 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
       {
         kind: "action" as const,
         value: `thread:${thread.id}`,
+        threadRef: { environmentId: thread.environmentId, id: thread.id },
         searchTerms: [thread.title, projectTitle ?? ``, thread.branch ?? ``],
         title: thread.title,
         description: descriptionParts.join(` · `),
@@ -183,37 +200,80 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
   });
 }
 
-function rankSearchFieldMatch(field: string, normalizedQuery: string): number {
-  const normalizedField = normalizeSearchText(field);
-  if (normalizedField.length === 0 || !normalizedField.includes(normalizedQuery)) {
-    return Number.NEGATIVE_INFINITY;
-  }
-  if (normalizedField === normalizedQuery) {
-    return 3;
-  }
-  if (normalizedField.startsWith(normalizedQuery)) {
-    return 2;
-  }
-  return 1;
+export interface ThreadContentSearchMatch {
+  readonly environmentId: EnvironmentId;
+  readonly threadId: Thread["id"];
+  readonly messageId: MessageId;
+  readonly snippet: string;
+  readonly score: number;
 }
+
+function threadContentSearchKey(environmentId: EnvironmentId, threadId: Thread["id"]): string {
+  return `${environmentId}\u0000${threadId}`;
+}
+
+export function applyThreadContentSearchMatches<TItem extends CommandPaletteItem>(input: {
+  items: ReadonlyArray<TItem>;
+  matches: ReadonlyArray<ThreadContentSearchMatch>;
+  query: string;
+}): TItem[] {
+  const matchByThread = new Map(
+    input.matches.map((match) => [
+      threadContentSearchKey(match.environmentId, match.threadId),
+      match,
+    ]),
+  );
+
+  return input.items.map((item) => {
+    if (!item.threadRef) {
+      return item;
+    }
+    const match = matchByThread.get(
+      threadContentSearchKey(item.threadRef.environmentId, item.threadRef.id),
+    );
+    if (!match) {
+      return item;
+    }
+
+    return {
+      ...item,
+      threadContentMatch: { ...match, query: input.query },
+    };
+  });
+}
+
+const SEARCH_FIELD_RANK_BASE = 3_000_000_000;
+const SEARCH_FIELD_RANK_PENALTY = 400_000_000;
+const SEARCH_COMBINED_FIELD_RANK_BASE = 1_400_000_000;
+const SEARCH_THREAD_BODY_RANK_BASE = 1_000_000_000;
 
 function rankCommandPaletteItemMatch(
   item: CommandPaletteActionItem | CommandPaletteSubmenuItem,
-  normalizedQuery: string,
+  query: ParsedSearchQuery,
 ): number {
   const terms = item.searchTerms.filter((term) => term.length > 0);
-  if (terms.length === 0) {
-    return 0;
-  }
+  let bestRank = Number.NEGATIVE_INFINITY;
 
   for (const [index, field] of terms.entries()) {
-    const fieldRank = rankSearchFieldMatch(field, normalizedQuery);
-    if (fieldRank !== Number.NEGATIVE_INFINITY) {
-      return 1_000 - index * 100 + fieldRank;
+    const analysis = analyzeSearchText(field, query);
+    if (analysis) {
+      bestRank = Math.max(
+        bestRank,
+        SEARCH_FIELD_RANK_BASE - index * SEARCH_FIELD_RANK_PENALTY - analysis.score,
+      );
     }
   }
 
-  return 0;
+  const combinedAnalysis = analyzeSearchText(terms.join(" "), query);
+  if (combinedAnalysis) {
+    bestRank = Math.max(bestRank, SEARCH_COMBINED_FIELD_RANK_BASE - combinedAnalysis.score);
+  }
+
+  if (item.threadContentMatch) {
+    bestRank = Math.max(bestRank, SEARCH_THREAD_BODY_RANK_BASE - item.threadContentMatch.score);
+  }
+
+  return bestRank;
 }
 
 export function filterCommandPaletteGroups(input: {
@@ -225,9 +285,9 @@ export function filterCommandPaletteGroups(input: {
 }): CommandPaletteGroup[] {
   const isActionsFilter = input.query.startsWith(">");
   const searchQuery = isActionsFilter ? input.query.slice(1) : input.query;
-  const normalizedQuery = normalizeSearchText(searchQuery);
+  const parsedQuery = parseSearchQuery(searchQuery);
 
-  if (normalizedQuery.length === 0) {
+  if (parsedQuery.clauses.length === 0) {
     if (isActionsFilter) {
       return input.activeGroups.filter((group) => group.value === "actions");
     }
@@ -262,15 +322,15 @@ export function filterCommandPaletteGroups(input: {
   return searchableGroups.flatMap((group) => {
     const items = group.items
       .map((item, index) => {
-        const haystack = normalizeSearchText(item.searchTerms.join(" "));
-        if (!haystack.includes(normalizedQuery)) {
+        const rank = rankCommandPaletteItemMatch(item, parsedQuery);
+        if (rank === Number.NEGATIVE_INFINITY) {
           return null;
         }
 
         return {
           item,
           index,
-          rank: rankCommandPaletteItemMatch(item, normalizedQuery),
+          rank,
         };
       })
       .filter(

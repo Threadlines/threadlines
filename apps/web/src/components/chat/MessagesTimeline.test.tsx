@@ -280,7 +280,7 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("1 search");
     expect(markup).toContain("1 file read");
     expect(markup).toContain("2 git checks");
-    expect(markup).toContain("View transcript");
+    expect(markup).toContain("Show activity");
     expect(markup).not.toContain("git status --short");
     expect(markup).not.toContain("apps/web/src/session-logic.ts");
   });
@@ -695,7 +695,7 @@ describe("MessagesTimeline", () => {
     expect((markup.match(/class="thread-halo /gu) ?? []).length).toBe(1);
     expect(markup).not.toContain("Tool still running");
     expect(markup).not.toContain("Explored project");
-    expect(markup).not.toContain("View transcript");
+    expect(markup).not.toContain("Show activity");
   });
 
   it("renders warning and error work activity with solid threadline spine dots", async () => {
@@ -837,7 +837,7 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain("Verified changes");
     expect(markup).toContain("bun test, bun lint, bun typecheck");
-    expect(markup).toContain("View transcript");
+    expect(markup).toContain("Show activity");
     expect(markup).not.toContain("MessagesTimeline.test.tsx");
   });
 

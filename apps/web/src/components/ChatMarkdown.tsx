@@ -19,7 +19,10 @@ import { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { VscodeEntryIcon } from "./chat/VscodeEntryIcon";
 import { MessageCopyButton } from "./chat/MessageCopyButton";
-import { renderSkillInlineMarkdownChildren } from "./chat/SkillInlineText";
+import {
+  renderSkillInlineMarkdownChildren,
+  SearchHighlightedInlineText,
+} from "./chat/SkillInlineText";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { openInPreferredEditor } from "../editorPreferences";
@@ -72,6 +75,7 @@ interface ChatMarkdownProps {
   environmentId?: EnvironmentId | undefined;
   isStreaming?: boolean;
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
+  searchHighlightQuery?: string | undefined;
 }
 
 const EMPTY_MARKDOWN_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
@@ -597,6 +601,7 @@ function ChatMarkdownDocument({
   environmentId,
   isStreaming = false,
   skills = EMPTY_MARKDOWN_SKILLS,
+  searchHighlightQuery,
 }: ChatMarkdownProps) {
   const { resolvedTheme } = useTheme();
   const diffThemeName = resolveDiffThemeName(resolvedTheme);
@@ -630,10 +635,18 @@ function ChatMarkdownDocument({
   const markdownComponents = useMemo<Components>(
     () => ({
       p({ node: _node, children, ...props }) {
-        return <p {...props}>{renderSkillInlineMarkdownChildren(children, skills)}</p>;
+        return (
+          <p {...props}>
+            {renderSkillInlineMarkdownChildren(children, skills, searchHighlightQuery)}
+          </p>
+        );
       },
       li({ node: _node, children, ...props }) {
-        return <li {...props}>{renderSkillInlineMarkdownChildren(children, skills)}</li>;
+        return (
+          <li {...props}>
+            {renderSkillInlineMarkdownChildren(children, skills, searchHighlightQuery)}
+          </li>
+        );
       },
       a({ node: _node, href, ...props }) {
         const normalizedHref = href ? normalizeMarkdownLinkHrefKey(href) : "";
@@ -675,10 +688,15 @@ function ChatMarkdownDocument({
         // opens the internal file viewer; bare names resolve via workspace
         // search. Fenced blocks carry a language class and are skipped.
         const text = typeof children === "string" ? children : null;
+        const renderedChildren = text ? (
+          <SearchHighlightedInlineText text={text} query={searchHighlightQuery} />
+        ) : (
+          children
+        );
         if (className || !text || !parseChatFileReference(text)) {
           return (
             <code {...props} className={className}>
-              {children}
+              {renderedChildren}
             </code>
           );
         }
@@ -708,7 +726,7 @@ function ChatMarkdownDocument({
               }
             }}
           >
-            {children}
+            {renderedChildren}
           </code>
         );
       },
@@ -753,6 +771,7 @@ function ChatMarkdownDocument({
       isStreaming,
       markdownFileLinkMetaByHref,
       resolvedTheme,
+      searchHighlightQuery,
       skills,
     ],
   );
@@ -775,6 +794,7 @@ function StreamingTailBlock({
   cwd,
   environmentId,
   skills = EMPTY_MARKDOWN_SKILLS,
+  searchHighlightQuery,
 }: Omit<ChatMarkdownProps, "isStreaming">) {
   // Lets React drop intermediate parses when deltas outpace rendering
   // (older CPUs) instead of parsing every 50ms server flush.
@@ -786,6 +806,7 @@ function StreamingTailBlock({
       environmentId={environmentId}
       isStreaming
       skills={skills}
+      searchHighlightQuery={searchHighlightQuery}
     />
   );
 }
@@ -796,6 +817,7 @@ function ChatMarkdown({
   environmentId,
   isStreaming = false,
   skills = EMPTY_MARKDOWN_SKILLS,
+  searchHighlightQuery,
 }: ChatMarkdownProps) {
   let body: ReactNode;
   if (isStreaming) {
@@ -813,6 +835,7 @@ function ChatMarkdown({
           cwd={cwd}
           environmentId={environmentId}
           skills={skills}
+          searchHighlightQuery={searchHighlightQuery}
         />
       ) : (
         <MemoChatMarkdownDocument
@@ -822,6 +845,7 @@ function ChatMarkdown({
           environmentId={environmentId}
           isStreaming={false}
           skills={skills}
+          searchHighlightQuery={searchHighlightQuery}
         />
       ),
     );
@@ -834,6 +858,7 @@ function ChatMarkdown({
         environmentId={environmentId}
         isStreaming={false}
         skills={skills}
+        searchHighlightQuery={searchHighlightQuery}
       />
     );
   }

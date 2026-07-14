@@ -15,6 +15,7 @@ import {
   IsoDateTime,
   MessageId,
   NonNegativeInt,
+  PositiveInt,
   ProjectId,
   ProviderItemId,
   ThreadId,
@@ -28,6 +29,7 @@ export const ORCHESTRATION_WS_METHODS = {
   getTurnDiff: "orchestration.getTurnDiff",
   getFullThreadDiff: "orchestration.getFullThreadDiff",
   getRevertPlan: "orchestration.getRevertPlan",
+  searchThreads: "orchestration.searchThreads",
   replayEvents: "orchestration.replayEvents",
   getArchivedShellSnapshot: "orchestration.getArchivedShellSnapshot",
   subscribeShell: "orchestration.subscribeShell",
@@ -1675,6 +1677,40 @@ export type OrchestrationRevertPlan = typeof OrchestrationRevertPlan.Type;
 export const OrchestrationGetRevertPlanResult = OrchestrationRevertPlan;
 export type OrchestrationGetRevertPlanResult = typeof OrchestrationGetRevertPlanResult.Type;
 
+export const ORCHESTRATION_THREAD_SEARCH_MAX_QUERY_CHARS = 256;
+export const ORCHESTRATION_THREAD_SEARCH_MAX_PROJECTS = 200;
+export const ORCHESTRATION_THREAD_SEARCH_MAX_LIMIT = 100;
+
+export const OrchestrationThreadSearchInput = Schema.Struct({
+  query: TrimmedNonEmptyString.check(
+    Schema.isMaxLength(ORCHESTRATION_THREAD_SEARCH_MAX_QUERY_CHARS),
+  ),
+  projectIds: Schema.optionalKey(
+    Schema.Array(ProjectId).check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(ORCHESTRATION_THREAD_SEARCH_MAX_PROJECTS),
+    ),
+  ),
+  limit: PositiveInt.check(Schema.isLessThanOrEqualTo(ORCHESTRATION_THREAD_SEARCH_MAX_LIMIT)),
+});
+export type OrchestrationThreadSearchInput = typeof OrchestrationThreadSearchInput.Type;
+
+export const OrchestrationThreadSearchMatch = Schema.Struct({
+  threadId: ThreadId,
+  messageId: MessageId,
+  role: OrchestrationMessageRole,
+  snippet: Schema.String,
+  /** Lower scores represent stronger phrase and proximity matches. */
+  score: NonNegativeInt,
+});
+export type OrchestrationThreadSearchMatch = typeof OrchestrationThreadSearchMatch.Type;
+
+export const OrchestrationThreadSearchResult = Schema.Struct({
+  matches: Schema.Array(OrchestrationThreadSearchMatch),
+  truncated: Schema.Boolean,
+});
+export type OrchestrationThreadSearchResult = typeof OrchestrationThreadSearchResult.Type;
+
 export const OrchestrationReplayEventsInput = Schema.Struct({
   fromSequenceExclusive: NonNegativeInt,
 });
@@ -1699,6 +1735,10 @@ export const OrchestrationRpcSchemas = {
   getRevertPlan: {
     input: OrchestrationGetRevertPlanInput,
     output: OrchestrationGetRevertPlanResult,
+  },
+  searchThreads: {
+    input: OrchestrationThreadSearchInput,
+    output: OrchestrationThreadSearchResult,
   },
   replayEvents: {
     input: OrchestrationReplayEventsInput,
@@ -1752,6 +1792,14 @@ export class OrchestrationGetFullThreadDiffError extends Schema.TaggedErrorClass
 
 export class OrchestrationGetRevertPlanError extends Schema.TaggedErrorClass<OrchestrationGetRevertPlanError>()(
   "OrchestrationGetRevertPlanError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
+
+export class OrchestrationThreadSearchError extends Schema.TaggedErrorClass<OrchestrationThreadSearchError>()(
+  "OrchestrationThreadSearchError",
   {
     message: TrimmedNonEmptyString,
     cause: Schema.optional(Schema.Defect()),
