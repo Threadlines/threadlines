@@ -812,6 +812,7 @@ export function rememberCollabReceiverTurns(
   collabReceiverTurns: Map<string, TurnId>,
   notification: CodexServerNotification,
   parentTurnId: TurnId | undefined,
+  rootThreadId?: string,
 ): void {
   if (!parentTurnId) {
     return;
@@ -822,8 +823,28 @@ export function rememberCollabReceiverTurns(
   }
 
   for (const receiverThreadId of readCollabReceiverThreadIds(notification)) {
+    // A child may send input or activity back to its root conversation. The
+    // root must never enter the child-route map or its terminal notifications
+    // will subsequently be suppressed as child lifecycle noise.
+    if (receiverThreadId === rootThreadId) {
+      continue;
+    }
     collabReceiverTurns.set(receiverThreadId, parentTurnId);
   }
+}
+
+export function readCollabParentTurnId(input: {
+  readonly collabReceiverTurns: ReadonlyMap<string, TurnId>;
+  readonly providerConversationId: string | undefined;
+  readonly rootThreadId: string | undefined;
+}): TurnId | undefined {
+  if (
+    input.providerConversationId === undefined ||
+    input.providerConversationId === input.rootThreadId
+  ) {
+    return undefined;
+  }
+  return input.collabReceiverTurns.get(input.providerConversationId);
 }
 
 export function readCollabReceiverThreadIds(
@@ -1216,12 +1237,12 @@ export const makeCodexSessionRuntime = (
         const collabChildThreadMetadata = yield* Ref.get(collabChildThreadMetadataRef);
         rememberCollabChildThreadMetadata(collabChildThreadMetadata, notification);
         const providerConversationId = readNotificationThreadId(notification);
-        const childParentTurnId = (() => {
-          return providerConversationId
-            ? collabReceiverTurns.get(providerConversationId)
-            : undefined;
-        })();
         const providerThreadId = currentProviderThreadId(yield* Ref.get(sessionRef));
+        const childParentTurnId = readCollabParentTurnId({
+          collabReceiverTurns,
+          providerConversationId,
+          rootThreadId: providerThreadId,
+        });
 
         if (
           !shouldAcceptCodexNotificationForSession({
@@ -1234,7 +1255,13 @@ export const makeCodexSessionRuntime = (
           return;
         }
 
-        rememberCollabReceiverTurns(collabReceiverTurns, notification, route.turnId);
+        const effectiveTurnId = childParentTurnId ?? route.turnId;
+        rememberCollabReceiverTurns(
+          collabReceiverTurns,
+          notification,
+          effectiveTurnId,
+          providerThreadId,
+        );
         if (childParentTurnId && shouldSuppressChildConversationNotification(notification.method)) {
           yield* Ref.set(collabReceiverTurnsRef, collabReceiverTurns);
           yield* Ref.set(collabChildThreadMetadataRef, collabChildThreadMetadata);
@@ -1243,7 +1270,7 @@ export const makeCodexSessionRuntime = (
 
         let requestId: ApprovalRequestId | undefined;
         let requestKind: ProviderRequestKind | undefined;
-        let turnId = childParentTurnId ?? route.turnId;
+        let turnId = effectiveTurnId;
         let itemId = route.itemId;
 
         if (notification.method === "serverRequest/resolved") {

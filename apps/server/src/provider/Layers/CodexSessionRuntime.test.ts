@@ -20,6 +20,7 @@ import {
   makeCodexStderrLineClassifier,
   openCodexThread,
   readCollabChildThreadMetadata,
+  readCollabParentTurnId,
   readCollabReceiverThreadIds,
   rememberCollabReceiverTurns,
   shouldAcceptCodexNotificationForSession,
@@ -283,6 +284,69 @@ describe("collab child thread metadata", () => {
     const childTurns = new Map<string, TurnId>();
     rememberCollabReceiverTurns(childTurns, notification, TurnId.make("turn-1"));
     assert.equal(childTurns.get("child-thread-1"), "turn-1");
+  });
+
+  it("does not poison the root route when a child reports activity back to it", () => {
+    const notification = {
+      method: "item/completed",
+      params: {
+        threadId: "child-thread-1",
+        turnId: "child-turn-1",
+        completedAtMs: 10,
+        item: {
+          id: "subagent-activity-root",
+          type: "subAgentActivity",
+          kind: "interacted",
+          agentPath: "/root",
+          agentThreadId: "root-thread",
+        },
+      },
+    } as unknown as CodexServerNotification;
+    const childTurns = new Map<string, TurnId>([["child-thread-1", TurnId.make("root-turn")]]);
+
+    rememberCollabReceiverTurns(childTurns, notification, TurnId.make("root-turn"), "root-thread");
+
+    assert.equal(childTurns.has("root-thread"), false);
+    // Root identity remains authoritative even if an earlier buggy event had
+    // already inserted a poisoned entry.
+    childTurns.set("root-thread", TurnId.make("child-turn-1"));
+    assert.equal(
+      readCollabParentTurnId({
+        collabReceiverTurns: childTurns,
+        providerConversationId: "root-thread",
+        rootThreadId: "root-thread",
+      }),
+      undefined,
+    );
+  });
+
+  it("routes nested child receivers to the top-level parent turn", () => {
+    const notification = {
+      method: "item/completed",
+      params: {
+        threadId: "child-thread-1",
+        turnId: "child-turn-1",
+        completedAtMs: 10,
+        item: {
+          id: "subagent-activity-grandchild",
+          type: "subAgentActivity",
+          kind: "started",
+          agentPath: "/root/child/grandchild",
+          agentThreadId: "grandchild-thread-1",
+        },
+      },
+    } as unknown as CodexServerNotification;
+    const rootTurnId = TurnId.make("root-turn");
+    const childTurns = new Map<string, TurnId>([["child-thread-1", rootTurnId]]);
+    const parentTurnId = readCollabParentTurnId({
+      collabReceiverTurns: childTurns,
+      providerConversationId: "child-thread-1",
+      rootThreadId: "root-thread",
+    });
+
+    rememberCollabReceiverTurns(childTurns, notification, parentTurnId, "root-thread");
+
+    assert.equal(childTurns.get("grandchild-thread-1"), rootTurnId);
   });
 
   it("reads the runtime nickname and role from child thread starts", () => {

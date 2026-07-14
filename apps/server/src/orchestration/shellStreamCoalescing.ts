@@ -15,6 +15,14 @@ import * as Stream from "effect/Stream";
  */
 export const SHELL_STREAM_COALESCE_WINDOW_MILLIS = 150;
 
+function removesShellAggregate(event: OrchestrationEvent): boolean {
+  return (
+    event.type === "project.deleted" ||
+    event.type === "thread.deleted" ||
+    event.type === "thread.archived"
+  );
+}
+
 /**
  * Coalesces orchestration events to the latest event per aggregate within a
  * time window.
@@ -35,6 +43,15 @@ export const coalesceLatestAggregateEvents = (
       const pending = new Map<string, OrchestrationEvent>();
 
       const stash = (event: OrchestrationEvent): Stream.Stream<OrchestrationEvent> => {
+        // Removal events cannot be replaced by a later event for the same
+        // aggregate: once the projection excludes the row, resolving that
+        // later event produces no shell update at all. Flush the current batch
+        // before forwarding the removal so downstream sequence guards remain
+        // monotonic and the sidebar always sees the removal edge.
+        if (removesShellAggregate(event)) {
+          return Stream.concat(flush(), Stream.succeed(event));
+        }
+
         const key = `${event.aggregateKind}:${event.aggregateId}`;
         const existing = pending.get(key);
         if (existing === undefined || event.sequence >= existing.sequence) {
