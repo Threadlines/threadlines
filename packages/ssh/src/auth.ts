@@ -211,10 +211,10 @@ export function isSshAuthFailure(error: unknown): boolean {
   const firstMethod =
     permissionStart === -1 || permissionEnd === -1
       ? null
-      : normalized
+      : (normalized
           .slice(permissionStart + permissionMarker.length, permissionEnd)
           .split(",", 1)[0]
-          ?.trim();
+          ?.trim() ?? null);
   const recognizedMethods = new Set([
     "publickey",
     "password",
