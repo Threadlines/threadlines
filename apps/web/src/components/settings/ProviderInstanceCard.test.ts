@@ -301,7 +301,7 @@ describe("Claude authentication presentation", () => {
 
     expect(getProviderSummary(provider)).toEqual({
       headline: "Credential configured · Claude Max Subscription",
-      detail: "A credential was found locally.",
+      detail: null,
     });
   });
 });

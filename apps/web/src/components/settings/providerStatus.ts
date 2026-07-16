@@ -60,7 +60,7 @@ export function getProviderSummary(provider: ServerProvider | undefined) {
   if (chatCapability?.status === "configured") {
     return {
       headline: authLabel ? `Credential configured · ${authLabel}` : "Credential configured",
-      detail: provider.message ?? chatCapability.detail ?? null,
+      detail: provider.message ?? null,
     };
   }
   if (chatCapability?.status === "unavailable") {
