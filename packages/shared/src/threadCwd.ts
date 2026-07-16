@@ -17,7 +17,11 @@ export function resolveThreadWorkingCwd(input: {
 
 /** Compact label for an observed working directory (its basename). */
 export function threadWorkingCwdLabel(cwd: string): string {
-  const trimmed = cwd.replace(/[/\\]+$/, "");
+  let end = cwd.length;
+  while (end > 0 && (cwd[end - 1] === "/" || cwd[end - 1] === "\\")) {
+    end -= 1;
+  }
+  const trimmed = cwd.slice(0, end);
   const segments = trimmed.split(/[/\\]/);
   return segments.at(-1) || trimmed;
 }

@@ -54,4 +54,17 @@ describe("toolActivity", () => {
       summary: "Read file",
     });
   });
+
+  it("removes a trailing command exit-code marker from generic detail", () => {
+    expect(
+      deriveToolActivityPresentation({
+        title: "Custom tool",
+        detail: "Useful output\n<EXITED WITH EXIT CODE 12>",
+        fallbackSummary: "Custom tool",
+      }),
+    ).toEqual({
+      summary: "Custom tool",
+      detail: "Useful output",
+    });
+  });
 });

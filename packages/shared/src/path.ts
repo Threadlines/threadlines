@@ -25,9 +25,12 @@ export function normalizeFilesystemPathForComparison(value: string): string {
   const trimmed = value.trim();
   const isWindowsPath = isWindowsAbsolutePath(trimmed);
   const normalized = isWindowsPath ? trimmed.replaceAll("/", "\\").toLowerCase() : trimmed;
-  const withoutTrailingSeparators = isWindowsPath
-    ? normalized.replace(/\\+$/u, "")
-    : normalized.replace(/\/+$/u, "");
+  const separator = isWindowsPath ? "\\" : "/";
+  let end = normalized.length;
+  while (end > 0 && normalized[end - 1] === separator) {
+    end -= 1;
+  }
+  const withoutTrailingSeparators = normalized.slice(0, end);
 
   if (withoutTrailingSeparators.length > 0) {
     return withoutTrailingSeparators;

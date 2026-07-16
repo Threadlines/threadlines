@@ -33,8 +33,16 @@ function stripTrailingExitCode(value: string | undefined): string | undefined {
   if (!trimmed) {
     return undefined;
   }
-  const match = /^(?<output>[\s\S]*?)(?:\s*<exited with exit code \d+>)\s*$/iu.exec(trimmed);
-  const output = match?.groups?.output?.trim() ?? trimmed;
+  const marker = "<exited with exit code ";
+  const markerIndex = trimmed.toLowerCase().lastIndexOf(marker);
+  const exitCode =
+    markerIndex === -1 || !trimmed.endsWith(">")
+      ? ""
+      : trimmed.slice(markerIndex + marker.length, -1);
+  const output =
+    markerIndex !== -1 && exitCode.length > 0 && [...exitCode].every((value) => /\d/u.test(value))
+      ? trimmed.slice(0, markerIndex).trim()
+      : trimmed;
   return output.length > 0 ? output : undefined;
 }
 
@@ -138,10 +146,21 @@ function normalizeEquivalentValue(value: string | undefined): string | undefined
   if (!trimmed) {
     return undefined;
   }
-  return trimmed
-    .replace(/\s+/gu, " ")
-    .replace(/\s+(?:complete|completed|started)\s*$/iu, "")
-    .trim();
+  const characters: string[] = [];
+  for (const character of trimmed) {
+    if (/\s/u.test(character)) {
+      if (characters.at(-1) !== " ") characters.push(" ");
+    } else {
+      characters.push(character);
+    }
+  }
+  const compact = characters.join("");
+  const lastSeparator = compact.lastIndexOf(" ");
+  if (lastSeparator === -1) return compact;
+  const suffix = compact.slice(lastSeparator + 1).toLowerCase();
+  return suffix === "complete" || suffix === "completed" || suffix === "started"
+    ? compact.slice(0, lastSeparator).trim()
+    : compact.trim();
 }
 
 function isEquivalent(left: string | undefined, right: string | undefined): boolean {

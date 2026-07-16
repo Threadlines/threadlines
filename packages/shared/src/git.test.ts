@@ -15,8 +15,18 @@ import {
   normalizeGitRemoteUrl,
   parseGitHubRepositoryNameWithOwnerFromRemoteUrl,
   parseRepositoryWebUrlFromRemoteUrl,
+  sanitizeBranchFragment,
   WORKTREE_BRANCH_PREFIX,
 } from "./git.ts";
+
+describe("sanitizeBranchFragment", () => {
+  it("collapses separators and trims unsafe ref-name boundaries", () => {
+    expect(sanitizeBranchFragment("  ../Feature///Ship   It---Now...  ")).toBe(
+      "feature/ship-it-now",
+    );
+    expect(sanitizeBranchFragment("'`\"")).toBe("update");
+  });
+});
 
 describe("normalizeGitRemoteUrl", () => {
   it("canonicalizes equivalent GitHub remotes across protocol variants", () => {

@@ -18,26 +18,59 @@ const TEMP_WORKTREE_BRANCH_PATTERNS = [
   ...LEGACY_WORKTREE_BRANCH_PREFIXES,
 ].map((prefix) => new RegExp(`^${prefix}\\/[0-9a-f]{8}$`));
 
+function trimMatchingCharacters(value: string, shouldTrim: (character: string) => boolean): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && shouldTrim(value[start] ?? "")) start += 1;
+  while (end > start && shouldTrim(value[end - 1] ?? "")) end -= 1;
+  return value.slice(start, end);
+}
+
+function trimTrailingCharacter(value: string, character: string): string {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === character) end -= 1;
+  return value.slice(0, end);
+}
+
+function stripGitSuffix(value: string): string {
+  return value.toLowerCase().endsWith(".git") ? value.slice(0, -4) : value;
+}
+
 /**
  * Sanitize an arbitrary string into a valid, lowercase git refName fragment.
  * Strips quotes, collapses separators, limits to 64 chars.
  */
 export function sanitizeBranchFragment(raw: string): string {
-  const normalized = raw
-    .trim()
-    .toLowerCase()
-    .replace(/['"`]/g, "")
-    .replace(/^[./\s_-]+|[./\s_-]+$/g, "");
+  const isOuterSeparator = (character: string) =>
+    character === "." ||
+    character === "/" ||
+    character === "_" ||
+    character === "-" ||
+    /\s/u.test(character);
+  const normalized = trimMatchingCharacters(
+    [...raw.trim().toLowerCase()]
+      .filter((character) => !["'", '"', "`"].includes(character))
+      .join(""),
+    isOuterSeparator,
+  );
 
-  const branchFragment = normalized
-    .replace(/[^a-z0-9/_-]+/g, "-")
-    .replace(/\/+/g, "/")
-    .replace(/-+/g, "-")
-    .replace(/^[./_-]+|[./_-]+$/g, "")
-    .slice(0, 64)
-    .replace(/[./_-]+$/g, "");
+  const characters: string[] = [];
+  for (const character of normalized) {
+    const sanitized = /[a-z0-9/_-]/u.test(character) ? character : "-";
+    const previous = characters.at(-1);
+    if ((sanitized === "/" || sanitized === "-") && previous === sanitized) continue;
+    characters.push(sanitized);
+  }
+  const branchFragment = trimMatchingCharacters(
+    characters.join(""),
+    (character) => character === "." || character === "/" || character === "_" || character === "-",
+  ).slice(0, 64);
+  const boundedFragment = trimMatchingCharacters(
+    branchFragment,
+    (character) => character === "." || character === "/" || character === "_" || character === "-",
+  );
 
-  return branchFragment.length > 0 ? branchFragment : "update";
+  return boundedFragment.length > 0 ? boundedFragment : "update";
 }
 
 /**
@@ -105,11 +138,7 @@ export function isTemporaryWorktreeBranch(refName: string): boolean {
  * Normalize a git remote URL into a stable comparison key.
  */
 export function normalizeGitRemoteUrl(value: string): string {
-  const normalized = value
-    .trim()
-    .replace(/\/+$/g, "")
-    .replace(/\.git$/i, "")
-    .toLowerCase();
+  const normalized = stripGitSuffix(trimTrailingCharacter(value.trim(), "/")).toLowerCase();
 
   if (/^(?:ssh|https?|git):\/\//i.test(normalized)) {
     try {
@@ -279,7 +308,7 @@ export function parseGitRemoteEndpoint(url: string): GitRemoteEndpoint | null {
   }
   const scpStyle = /^[a-z0-9._-]+@([a-z0-9.-]+):([^/\s].*)$/i.exec(trimmed);
   if (scpStyle?.[1] && scpStyle[2]) {
-    const path = scpStyle[2].replace(/\/+$/g, "").replace(/\.git$/i, "");
+    const path = stripGitSuffix(trimTrailingCharacter(scpStyle[2], "/"));
     return path.length > 0 ? { scheme: "ssh", host: scpStyle[1].toLowerCase(), path } : null;
   }
   return null;
@@ -346,13 +375,19 @@ function sanitizeRepositoryDirectoryName(value: string): string | null {
     // Keep the original segment if it is not URI-encoded.
   }
 
-  const sanitized = decoded
-    .replace(/\.git$/i, "")
-    .split("")
-    .map(sanitizeRepositoryDirectoryCharacter)
-    .join("")
-    .replace(/[\\/]+/g, "-")
-    .replace(/^[.\s]+|[.\s]+$/g, "");
+  const characters: string[] = [];
+  for (const character of stripGitSuffix(decoded)) {
+    const sanitizedCharacter = sanitizeRepositoryDirectoryCharacter(character);
+    if (sanitizedCharacter === "/" || sanitizedCharacter === "\\") {
+      if (characters.at(-1) !== "-") characters.push("-");
+    } else {
+      characters.push(sanitizedCharacter);
+    }
+  }
+  const sanitized = trimMatchingCharacters(
+    characters.join(""),
+    (character) => character === "." || /\s/u.test(character),
+  );
   return sanitized.length > 0 ? sanitized : null;
 }
 

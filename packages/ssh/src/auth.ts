@@ -202,11 +202,29 @@ export const buildSshChildEnvironment = Effect.fn("ssh/auth.buildSshChildEnviron
 export function isSshAuthFailure(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   const normalized = message.toLowerCase();
+  const permissionMarker = "permission denied (";
+  const permissionStart = normalized.indexOf(permissionMarker);
+  const permissionEnd =
+    permissionStart === -1
+      ? -1
+      : normalized.indexOf(")", permissionStart + permissionMarker.length);
+  const firstMethod =
+    permissionStart === -1 || permissionEnd === -1
+      ? null
+      : normalized
+          .slice(permissionStart + permissionMarker.length, permissionEnd)
+          .split(",", 1)[0]
+          ?.trim();
+  const recognizedMethods = new Set([
+    "publickey",
+    "password",
+    "keyboard-interactive",
+    "hostbased",
+    "gssapi-with-mic",
+  ]);
   return (
-    /permission denied \((?:publickey|password|keyboard-interactive|hostbased|gssapi-with-mic)[^)]*\)/u.test(
-      normalized,
-    ) ||
-    /authentication failed/u.test(normalized) ||
-    /too many authentication failures/u.test(normalized)
+    (firstMethod !== null && recognizedMethods.has(firstMethod)) ||
+    normalized.includes("authentication failed") ||
+    normalized.includes("too many authentication failures")
   );
 }

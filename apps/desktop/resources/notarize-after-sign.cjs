@@ -42,12 +42,23 @@ function runNotarytool(args, options = {}) {
     encoding: "utf8",
     ...options,
   });
-  const output = `${result.stdout || ""}${result.stderr || ""}`.trim();
+  const output = redactNotarySecrets(`${result.stdout || ""}${result.stderr || ""}`).trim();
   if (result.status !== 0) {
     const suffix = output ? `\n\n${output}` : "";
     throw new Error(`notarytool ${args[0]} failed with exit code ${result.status}.${suffix}`);
   }
   return output;
+}
+
+function redactNotarySecrets(value) {
+  let redacted = value;
+  for (const name of ["APPLE_API_KEY", "APPLE_API_KEY_ID", "APPLE_API_ISSUER"]) {
+    const secret = process.env[name];
+    if (secret) {
+      redacted = redacted.replaceAll(secret, `[REDACTED ${name}]`);
+    }
+  }
+  return redacted;
 }
 
 function runJsonNotarytool(args) {
@@ -124,9 +135,7 @@ function submit(zipPath) {
         throw new Error(formatNonRetryableSubmitFailure(error), { cause: error });
       }
       if (attempt < maxAttempts) {
-        console.warn(
-          `[threadlines-notary] Submit failed; retrying in 30 seconds.\n${error.message}`,
-        );
+        console.warn("[threadlines-notary] Submit failed; retrying in 30 seconds.");
         sleep(30);
       }
     }
@@ -177,7 +186,7 @@ function waitForAccepted(submissionId) {
         throw error;
       }
       console.warn(
-        `[threadlines-notary] Poll failed (${consecutiveErrors}/${MAX_CONSECUTIVE_POLL_ERRORS}); continuing.\n${error.message}`,
+        `[threadlines-notary] Poll failed (${consecutiveErrors}/${MAX_CONSECUTIVE_POLL_ERRORS}); continuing.`,
       );
     }
 
@@ -215,3 +224,4 @@ module.exports = async function notarizeAfterSign(context) {
 
 module.exports.isNonRetryableSubmitError = isNonRetryableSubmitError;
 module.exports.formatNonRetryableSubmitFailure = formatNonRetryableSubmitFailure;
+module.exports.redactNotarySecrets = redactNotarySecrets;
