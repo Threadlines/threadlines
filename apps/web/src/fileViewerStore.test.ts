@@ -2,6 +2,7 @@ import { EnvironmentId } from "@threadlines/contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 
 import {
+  isPathWithinCwd,
   openDirectoryInViewer,
   openFileInViewer,
   relativePathWithinCwd,
@@ -37,6 +38,11 @@ describe("fileViewerStore", () => {
 
   it("relativizes Git Bash Windows absolute paths against a Windows cwd", () => {
     expect(relativePathWithinCwd(GIT_BASH_AGENTS_PATH, WINDOWS_CWD)).toBe("AGENTS.md");
+  });
+
+  it("distinguishes Windows paths outside the active workspace", () => {
+    expect(isPathWithinCwd("C:/Users/wilfr/.claude/CLAUDE.md", WINDOWS_CWD)).toBe(false);
+    expect(isPathWithinCwd(`${WINDOWS_CWD}/AGENTS.md`, WINDOWS_CWD)).toBe(true);
   });
 
   it("opens Git Bash Windows absolute paths with line suffixes in the viewer", () => {

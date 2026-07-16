@@ -21,6 +21,15 @@ describe("formatWorkspaceRelativePath", () => {
     ).toBe("t3code/apps/web/src/session-logic.ts:501");
   });
 
+  it("preserves Windows absolute paths outside the workspace", () => {
+    expect(
+      formatWorkspaceRelativePath(
+        "C:/Users/wilfr/.claude/CLAUDE.md",
+        "C:/Users/wilfr/OneDrive/Desktop/GitHubCode/claude-dotfiles",
+      ),
+    ).toBe("C:/Users/wilfr/.claude/CLAUDE.md");
+  });
+
   it("keeps paths already rooted at the workspace label stable", () => {
     expect(
       formatWorkspaceRelativePath(

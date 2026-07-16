@@ -373,6 +373,11 @@ export function relativePathWithinCwd(targetPath: string, cwd: string): string |
   return relativePath && relativePath.length > 0 ? relativePath : null;
 }
 
+/** Whether an absolute or normalized path belongs to the active workspace root. */
+export function isPathWithinCwd(targetPath: string, cwd: string): boolean {
+  return relativePathWithinCwdOrRoot(targetPath, cwd) !== null;
+}
+
 function resolveViewerWorkspacePath(targetPath: string, cwd: string): string | null {
   const normalizedTarget = normalizeFileViewerPath(targetPath);
   const isAbsolute =

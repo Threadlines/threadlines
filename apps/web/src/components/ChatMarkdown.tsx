@@ -27,6 +27,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { openInPreferredEditor } from "../editorPreferences";
 import {
+  isPathWithinCwd,
   openChatFileReference,
   openDirectoryInActiveViewer,
   openFileInActiveViewer,
@@ -252,6 +253,7 @@ interface MarkdownFileLinkProps {
   displayPath: string;
   filePath: string;
   kind: MarkdownFileLinkKind;
+  isInWorkspace: boolean;
   line?: number | undefined;
   label: string;
   theme: "light" | "dark";
@@ -344,6 +346,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   displayPath,
   filePath,
   kind,
+  isInWorkspace,
   line,
   label,
   theme,
@@ -372,6 +375,27 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
     });
   }, [entryLabel, targetPath]);
 
+  const handleRevealInFileManager = useCallback(() => {
+    const api = readLocalApi();
+    if (!api) {
+      toastManager.add({
+        type: "error",
+        title: "Open in file manager is unavailable",
+      });
+      return;
+    }
+
+    void api.shell.openInEditor(targetPath, "file-manager").catch((error) => {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: kind === "directory" ? "Unable to open folder" : "Unable to reveal file",
+          description: error instanceof Error ? error.message : displayPath,
+        }),
+      );
+    });
+  }, [displayPath, kind, targetPath]);
+
   const openInInternalViewer = useCallback(
     () =>
       kind === "directory"
@@ -384,27 +408,12 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
     if (openInInternalViewer()) {
       return;
     }
-    const api = readLocalApi();
-    if (!api) {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: `Unable to open ${entryLabel}`,
-          description: `Local ${entryLabel} opening is unavailable before a backend is paired.`,
-        }),
-      );
+    if (kind === "directory") {
+      handleRevealInFileManager();
       return;
     }
-    void api.shell.openInEditor(targetPath, "file-manager").catch((error) => {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: `Unable to open ${entryLabel}`,
-          description: error instanceof Error ? error.message : displayPath,
-        }),
-      );
-    });
-  }, [displayPath, entryLabel, openInInternalViewer, targetPath]);
+    handleOpenExternally();
+  }, [handleOpenExternally, handleRevealInFileManager, kind, openInInternalViewer]);
 
   const handleOpenInViewer = useCallback(() => {
     if (openInInternalViewer()) {
@@ -460,15 +469,30 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
       if (!api) return;
 
       const clicked = await api.contextMenu.show(
-        [
-          { id: "open", label: kind === "directory" ? "Browse folder" : "Open in file viewer" },
-          {
-            id: "open-external",
-            label: kind === "directory" ? "Open folder in editor" : "Open in editor",
-          },
-          { id: "copy-relative", label: "Copy relative path" },
-          { id: "copy-full", label: "Copy full path" },
-        ] as const,
+        isInWorkspace
+          ? ([
+              {
+                id: "open",
+                label: kind === "directory" ? "Browse folder" : "Open in file viewer",
+              },
+              {
+                id: "open-external",
+                label: kind === "directory" ? "Open folder in editor" : "Open in editor",
+              },
+              { id: "copy-relative", label: "Copy relative path" },
+              { id: "copy-full", label: "Copy full path" },
+            ] as const)
+          : ([
+              {
+                id: "open-external",
+                label: kind === "directory" ? "Open folder in editor" : "Open in editor",
+              },
+              {
+                id: "reveal",
+                label: kind === "directory" ? "Open in file manager" : "Reveal in file manager",
+              },
+              { id: "copy-full", label: "Copy full path" },
+            ] as const),
         { x: event.clientX, y: event.clientY },
       );
 
@@ -480,6 +504,10 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         handleOpenExternally();
         return;
       }
+      if (clicked === "reveal") {
+        handleRevealInFileManager();
+        return;
+      }
       if (clicked === "copy-relative") {
         handleCopy(displayPath, "Relative path");
         return;
@@ -488,7 +516,16 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         handleCopy(targetPath, "Full path");
       }
     },
-    [displayPath, handleCopy, handleOpenExternally, handleOpenInViewer, kind, targetPath],
+    [
+      displayPath,
+      handleCopy,
+      handleOpenExternally,
+      handleOpenInViewer,
+      handleRevealInFileManager,
+      isInWorkspace,
+      kind,
+      targetPath,
+    ],
   );
 
   return (
@@ -499,6 +536,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
             href={href}
             className={cn(MARKDOWN_FILE_LINK_CLASS_NAME, className)}
             data-entry-kind={kind}
+            data-workspace-scope={isInWorkspace ? "internal" : "external"}
             onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
@@ -523,6 +561,9 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         <div className="markdown-file-link-tooltip-scroll overflow-x-auto whitespace-nowrap">
           {displayPath}
         </div>
+        {!isInWorkspace ? (
+          <div className="mt-1 font-sans text-muted-foreground">Outside active project</div>
+        ) : null}
       </TooltipPopup>
     </Tooltip>
   );
@@ -538,6 +579,7 @@ function areMarkdownFileLinkPropsEqual(
     previous.displayPath === next.displayPath &&
     previous.filePath === next.filePath &&
     previous.kind === next.kind &&
+    previous.isInWorkspace === next.isInWorkspace &&
     previous.line === next.line &&
     previous.label === next.label &&
     previous.theme === next.theme &&
@@ -676,6 +718,7 @@ function ChatMarkdownDocument({
             displayPath={fileLinkMeta.displayPath}
             filePath={fileLinkMeta.filePath}
             kind={fileLinkKindByPath.get(fileLinkMeta.filePath) ?? "file"}
+            isInWorkspace={Boolean(cwd && isPathWithinCwd(fileLinkMeta.filePath, cwd))}
             line={fileLinkMeta.line}
             label={labelParts.join(" · ")}
             theme={resolvedTheme}

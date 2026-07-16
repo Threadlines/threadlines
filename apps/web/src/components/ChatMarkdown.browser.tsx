@@ -6,30 +6,38 @@ import { page } from "vite-plus/test/browser";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
-const { filesystemBrowseMock, openInEditorMock, openInPreferredEditorMock, readLocalApiMock } =
-  vi.hoisted(() => {
-    const filesystemBrowseMock = vi.fn(
-      async (): Promise<{
-        parentPath: string;
-        entries: Array<{ name: string; fullPath: string }>;
-      }> => ({ parentPath: "/", entries: [] }),
-    );
-    const openInEditorMock = vi.fn(async () => undefined);
-    const openInPreferredEditorMock = vi.fn(async () => "vscode");
-    return {
-      filesystemBrowseMock,
-      openInEditorMock,
-      openInPreferredEditorMock,
-      readLocalApiMock: vi.fn(() => ({
-        server: { getConfig: vi.fn(async () => ({ availableEditors: ["vscode"] })) },
-        shell: { openInEditor: openInEditorMock },
-        persistence: {
-          getClientSettings: vi.fn(async () => null),
-          setClientSettings: vi.fn(async () => undefined),
-        },
-      })),
-    };
-  });
+const {
+  contextMenuShowMock,
+  filesystemBrowseMock,
+  openInEditorMock,
+  openInPreferredEditorMock,
+  readLocalApiMock,
+} = vi.hoisted(() => {
+  const contextMenuShowMock = vi.fn(async () => null as string | null);
+  const filesystemBrowseMock = vi.fn(
+    async (): Promise<{
+      parentPath: string;
+      entries: Array<{ name: string; fullPath: string }>;
+    }> => ({ parentPath: "/", entries: [] }),
+  );
+  const openInEditorMock = vi.fn(async () => undefined);
+  const openInPreferredEditorMock = vi.fn(async (_api: unknown, _targetPath: string) => "vscode");
+  return {
+    contextMenuShowMock,
+    filesystemBrowseMock,
+    openInEditorMock,
+    openInPreferredEditorMock,
+    readLocalApiMock: vi.fn(() => ({
+      contextMenu: { show: contextMenuShowMock },
+      server: { getConfig: vi.fn(async () => ({ availableEditors: ["vscode"] })) },
+      shell: { openInEditor: openInEditorMock },
+      persistence: {
+        getClientSettings: vi.fn(async () => null),
+        setClientSettings: vi.fn(async () => undefined),
+      },
+    })),
+  };
+});
 
 vi.mock("../editorPreferences", () => ({
   openInPreferredEditor: openInPreferredEditorMock,
@@ -76,6 +84,7 @@ describe("ChatMarkdown", () => {
       revealRequestId: 0,
       coarsePointerWordWrap: null,
     });
+    contextMenuShowMock.mockClear();
     openInEditorMock.mockClear();
     openInPreferredEditorMock.mockClear();
     filesystemBrowseMock.mockClear();
@@ -131,7 +140,7 @@ describe("ChatMarkdown", () => {
     }
   });
 
-  it("opens file links through the platform opener when the active viewer cannot handle them", async () => {
+  it("opens file links in the preferred editor when the active viewer cannot handle them", async () => {
     const filePath =
       "/Users/yashsingh/p/sco/claude-code-extract/src/utils/permissions/PermissionRule.ts";
     const screen = await render(
@@ -143,8 +152,42 @@ describe("ChatMarkdown", () => {
       await link.click();
 
       await new Promise((resolve) => window.setTimeout(resolve, 0));
-      expect(openInPreferredEditorMock).not.toHaveBeenCalled();
-      expect(openInEditorMock).toHaveBeenCalledWith(filePath, "file-manager");
+      expect(openInPreferredEditorMock).toHaveBeenCalledTimes(1);
+      expect(openInPreferredEditorMock.mock.calls[0]?.[1]).toBe(filePath);
+      expect(openInEditorMock).not.toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("offers external actions for Windows file links outside the active project", async () => {
+    const cwd = "C:/Users/wilfr/OneDrive/Desktop/GitHubCode/claude-dotfiles";
+    const filePath = "C:/Users/wilfr/.claude/CLAUDE.md";
+    const screen = await render(<ChatMarkdown text={`[CLAUDE.md](${filePath})`} cwd={cwd} />);
+
+    try {
+      const link = document.querySelector('a[data-workspace-scope="external"]');
+      expect(link).toBeInstanceOf(HTMLAnchorElement);
+
+      link?.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 44,
+          clientY: 88,
+        }),
+      );
+
+      await vi.waitFor(() => {
+        expect(contextMenuShowMock).toHaveBeenCalledWith(
+          [
+            { id: "open-external", label: "Open in editor" },
+            { id: "reveal", label: "Reveal in file manager" },
+            { id: "copy-full", label: "Copy full path" },
+          ],
+          { x: 44, y: 88 },
+        );
+      });
     } finally {
       await screen.unmount();
     }
@@ -247,9 +290,9 @@ describe("ChatMarkdown", () => {
 
       await link.click();
       await vi.waitFor(() => {
-        expect(openInEditorMock).toHaveBeenCalledWith(decodedPath, "file-manager");
+        expect(openInPreferredEditorMock.mock.calls[0]?.[1]).toBe(decodedPath);
       });
-      expect(openInPreferredEditorMock).not.toHaveBeenCalled();
+      expect(openInEditorMock).not.toHaveBeenCalled();
     } finally {
       await screen.unmount();
     }
