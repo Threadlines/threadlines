@@ -4,6 +4,8 @@
 import {
   chmodSync,
   copyFileSync,
+  cpSync,
+  existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -85,8 +87,16 @@ export function createServerNpmPackageJson(
   };
 }
 
-function copyDistRuntimeFiles(sourceDir: string, targetDir: string) {
+function copyDistRuntimeFiles(
+  sourceDir: string,
+  targetDir: string,
+  skipDirNames: ReadonlySet<string> = new Set(),
+) {
   for (const entry of readdirSync(sourceDir, { withFileTypes: true })) {
+    if (skipDirNames.has(entry.name)) {
+      continue;
+    }
+
     const sourcePath = path.join(sourceDir, entry.name);
     const targetPath = path.join(targetDir, entry.name);
 
@@ -146,9 +156,17 @@ export function prepareServerNpmPackage(options: PrepareServerNpmPackageOptions 
   rmSync(outputDir, { force: true, recursive: true });
   mkdirSync(path.join(outputDir, "dist"), { recursive: true });
 
+  const clientDir = path.join(distDir, "client");
+  if (!existsSync(path.join(clientDir, "index.html"))) {
+    throw new Error(
+      `Missing bundled web client at ${clientDir}. Run 'vp run --filter @threadlines/server build' first.`,
+    );
+  }
+
   copyFileSync(path.join(serverDir, "README.md"), path.join(outputDir, "README.md"));
   copyFileSync(path.join(serverDir, "LICENSE"), path.join(outputDir, "LICENSE"));
-  copyDistRuntimeFiles(distDir, path.join(outputDir, "dist"));
+  copyDistRuntimeFiles(distDir, path.join(outputDir, "dist"), new Set(["client"]));
+  cpSync(clientDir, path.join(outputDir, "dist/client"), { recursive: true });
   writeFileSync(
     path.join(outputDir, "package.json"),
     `${JSON.stringify(preparedPackageJson, null, 2)}\n`,

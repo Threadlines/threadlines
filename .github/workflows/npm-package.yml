@@ -63,14 +63,20 @@ jobs:
           THREADLINES_POSTHOG_KEY: ${{ secrets.THREADLINES_POSTHOG_KEY }}
           THREADLINES_POSTHOG_HOST: ${{ vars.THREADLINES_POSTHOG_HOST }}
           THREADLINES_TELEMETRY_ENABLED: ${{ vars.THREADLINES_TELEMETRY_ENABLED }}
-        run: vp exec vp run --filter @threadlines/server build:bundle
+        run: vp exec vp run --filter @threadlines/server build
 
       - name: Prepare npm package
         run: node scripts/prepare-server-npm-package.ts
 
+      - name: Apply brand assets
+        run: node scripts/apply-web-brand-assets.ts production release/npm-server/dist/client
+
       - name: Dry-run npm package
         working-directory: release/npm-server
-        run: npm pack --dry-run
+        shell: bash
+        run: |
+          npm pack --dry-run 2>&1 | tee /tmp/npm-pack-dry-run.log
+          grep -q "dist/client/index.html" /tmp/npm-pack-dry-run.log
 
   publish:
     name: Publish package
@@ -105,10 +111,17 @@ jobs:
           THREADLINES_POSTHOG_KEY: ${{ secrets.THREADLINES_POSTHOG_KEY }}
           THREADLINES_POSTHOG_HOST: ${{ vars.THREADLINES_POSTHOG_HOST }}
           THREADLINES_TELEMETRY_ENABLED: ${{ vars.THREADLINES_TELEMETRY_ENABLED }}
-        run: vp exec vp run --filter @threadlines/server build:bundle
+        run: vp exec vp run --filter @threadlines/server build
 
       - name: Prepare npm package
         run: node scripts/prepare-server-npm-package.ts
+
+      - name: Apply brand assets
+        shell: bash
+        run: |
+          brand=production
+          if [ "${{ inputs.dist_tag }}" = "nightly" ]; then brand=nightly; fi
+          node scripts/apply-web-brand-assets.ts "$brand" release/npm-server/dist/client
 
       - name: Publish to npm
         working-directory: release/npm-server

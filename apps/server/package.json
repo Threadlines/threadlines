@@ -25,6 +25,7 @@
   },
   "files": [
     "dist/**/*.mjs",
+    "dist/client",
     "LICENSE",
     "README.md"
   ],
