@@ -38,7 +38,7 @@ catalogs:
       version: 0.2.4
 
 overrides:
-  '@effect/atom-react': 4.0.0-beta.97
+  '@effect/atom-react': 4.0.0-beta.98
   '@effect/platform-bun': 4.0.0-beta.98
   '@effect/platform-node': 4.0.0-beta.97
   '@effect/platform-node-shared': 4.0.0-beta.97
@@ -264,8 +264,8 @@ importers:
         specifier: ^3.2.2
         version: 3.2.2(react@19.2.7)
       '@effect/atom-react':
-        specifier: 4.0.0-beta.97
-        version: 4.0.0-beta.97(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(react@19.2.7)(scheduler@0.27.0)
+        specifier: 4.0.0-beta.98
+        version: 4.0.0-beta.98(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(react@19.2.7)(scheduler@0.27.0)
       '@fontsource-variable/cascadia-mono':
         specifier: ^5.2.2
         version: 5.2.2
@@ -1058,8 +1058,8 @@ packages:
     peerDependencies:
       react: '>=16.8.0'
 
-  '@effect/atom-react@4.0.0-beta.97':
-    resolution: {integrity: sha512-yKj5KqgDuAayxkVdXzt0kJaqob0QLozqepPVhGj/I0QPIvGSEfX3OaBGt09irGMyqbP4CKMGtiewyHwRwPZSsw==}
+  '@effect/atom-react@4.0.0-beta.98':
+    resolution: {integrity: sha512-M7BMiXyJZ1sSOwkipkF8/yNYoAp5WA6xhD0u8wobI6h9OIQp5oxx+AvE4FCj0wmfexAsUZPfZ4McCXstXYskbg==}
     peerDependencies:
       effect: 4.0.0-beta.97
       react: ^19.2.4
@@ -6418,7 +6418,7 @@ snapshots:
       react: 19.2.7
       tslib: 2.8.1
 
-  '@effect/atom-react@4.0.0-beta.97(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(react@19.2.7)(scheduler@0.27.0)':
+  '@effect/atom-react@4.0.0-beta.98(effect@4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2))(react@19.2.7)(scheduler@0.27.0)':
     dependencies:
       effect: 4.0.0-beta.97(patch_hash=181986b14edb53e2f3c82527e8e5a9f7675db32427ed6940ee3da64e2f5968e2)
       react: 19.2.7
