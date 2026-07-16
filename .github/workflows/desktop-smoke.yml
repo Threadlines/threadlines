@@ -1,0 +1,155 @@
+name: Desktop Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag for the macOS smoke test. Blank uses the latest release."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  mac-release:
+    name: macOS release smoke
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download release dmg
+        run: |
+          tag="${{ inputs.release_tag }}"
+          if [ -z "$tag" ]; then
+            tag="$(gh release view --repo "${{ github.repository }}" --json tagName --jq .tagName)"
+          fi
+          echo "Smoke-testing release $tag"
+          gh release download "$tag" --repo "${{ github.repository }}" --pattern "*-arm64.dmg"
+          mv Threadlines-*-arm64.dmg Threadlines.dmg
+
+      - name: Gatekeeper assessment (simulated browser download)
+        run: |
+          xattr -w com.apple.quarantine "0083;$(printf '%x' "$(date +%s)");Safari;" Threadlines.dmg
+          spctl --assess --type open --context context:primary-signature -vv Threadlines.dmg
+
+      - name: Verify app signature and notarization
+        run: |
+          hdiutil attach Threadlines.dmg -nobrowse -mountpoint /Volumes/ThreadlinesSmoke
+          cp -R /Volumes/ThreadlinesSmoke/Threadlines.app "$RUNNER_TEMP/Threadlines.app"
+          hdiutil detach /Volumes/ThreadlinesSmoke
+          codesign --verify --deep --strict --verbose=2 "$RUNNER_TEMP/Threadlines.app"
+          spctl --assess --type execute -vv "$RUNNER_TEMP/Threadlines.app"
+          xcrun stapler validate "$RUNNER_TEMP/Threadlines.app"
+
+      - name: Launch app and verify backend serves
+        run: |
+          export THREADLINES_HOME="$RUNNER_TEMP/threadlines-home"
+          "$RUNNER_TEMP/Threadlines.app/Contents/MacOS/Threadlines" > "$RUNNER_TEMP/app.log" 2>&1 &
+          app_pid=$!
+
+          url=""
+          for _ in $(seq 1 45); do
+            if curl -sf -o /dev/null "http://127.0.0.1:3773/"; then
+              url="http://127.0.0.1:3773/"
+              break
+            fi
+            if ! kill -0 "$app_pid" 2>/dev/null; then
+              echo "App process exited early." >&2
+              break
+            fi
+            sleep 2
+          done
+
+          if [ -z "$url" ]; then
+            # Fall back to any loopback port the app family is listening on.
+            for port in $(lsof -a -iTCP -sTCP:LISTEN -P -n 2>/dev/null | awk '/Threadlines|threadlin|node/ {sub(/.*:/, "", $9); print $9}' | sort -u); do
+              if curl -sf -o /dev/null "http://127.0.0.1:${port}/"; then
+                url="http://127.0.0.1:${port}/"
+                break
+              fi
+            done
+          fi
+
+          if [ -z "$url" ]; then
+            echo "Backend never became reachable." >&2
+            exit 1
+          fi
+
+          echo "Backend serving at $url"
+          curl -s "$url" | head -c 400
+          curl -sf -o /dev/null "$url" || exit 1
+          kill "$app_pid" 2>/dev/null || true
+
+      - name: Dump app log on failure
+        if: failure()
+        run: cat "$RUNNER_TEMP/app.log" 2>/dev/null || true
+
+  linux-build:
+    name: Linux build smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          version: "0.2.4"
+          run-install: false
+
+      - name: Install dependencies
+        run: vp install --frozen-lockfile
+
+      - name: Build Linux AppImage
+        run: vp run dist:desktop:artifact -- --platform linux --target AppImage --arch x64 --build-version 0.2.2-smoke.0
+
+      - name: Boot AppImage and verify backend serves
+        run: |
+          command -v xvfb-run >/dev/null || (sudo apt-get update && sudo apt-get install -y xvfb)
+          appimage="$(ls release/*.AppImage | head -1)"
+          echo "Booting $appimage"
+          chmod +x "$appimage"
+          export THREADLINES_HOME="$RUNNER_TEMP/threadlines-home"
+          xvfb-run -a "$appimage" --appimage-extract-and-run --no-sandbox > "$RUNNER_TEMP/app.log" 2>&1 &
+          app_pid=$!
+
+          url=""
+          for _ in $(seq 1 45); do
+            if curl -sf -o /dev/null "http://127.0.0.1:3773/"; then
+              url="http://127.0.0.1:3773/"
+              break
+            fi
+            if ! kill -0 "$app_pid" 2>/dev/null; then
+              echo "App process exited early." >&2
+              break
+            fi
+            sleep 2
+          done
+
+          if [ -z "$url" ]; then
+            for port in $(ss -tlnp 2>/dev/null | awk '/threadlines|node|electron/ {split($4, a, ":"); print a[length(a)]}' | sort -u); do
+              if curl -sf -o /dev/null "http://127.0.0.1:${port}/"; then
+                url="http://127.0.0.1:${port}/"
+                break
+              fi
+            done
+          fi
+
+          if [ -z "$url" ]; then
+            echo "Backend never became reachable." >&2
+            exit 1
+          fi
+
+          echo "Backend serving at $url"
+          curl -s "$url" | head -c 400
+          curl -sf -o /dev/null "$url" || exit 1
+          kill "$app_pid" 2>/dev/null || true
+
+      - name: Dump app log on failure
+        if: failure()
+        run: cat "$RUNNER_TEMP/app.log" 2>/dev/null || true
