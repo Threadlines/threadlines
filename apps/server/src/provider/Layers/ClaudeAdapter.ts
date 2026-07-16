@@ -337,6 +337,13 @@ export interface ClaudeAdapterLiveOptions {
    * usage updates live instead of waiting for the next probe.
    */
   readonly onAccountRateLimitsUpdated?: (rateLimitInfo: SDKRateLimitInfo) => Effect.Effect<void>;
+  /**
+   * Reports authoritative chat-auth edges from live turns. Provider discovery
+   * only proves that a credential is configured; an assistant response
+   * verifies it, while an authentication error invalidates the cached ready
+   * state.
+   */
+  readonly onChatAuthStateChanged?: (status: "verified" | "unauthenticated") => Effect.Effect<void>;
 }
 
 /**
@@ -2695,6 +2702,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       void cause;
     }
     const providerMessage = addProviderAuthHint(PROVIDER, message);
+    const isAuthenticationError = isProviderAuthErrorMessage(providerMessage);
+    if (isAuthenticationError && options?.onChatAuthStateChanged) {
+      yield* options
+        .onChatAuthStateChanged("unauthenticated")
+        .pipe(Effect.ignoreCause({ log: true }));
+    }
     const turnState = context.turnState;
     const stamp = yield* makeEventStamp();
     yield* offerRuntimeEvent({
@@ -2706,9 +2719,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       ...(turnState ? { turnId: asCanonicalTurnId(turnState.turnId) } : {}),
       payload: {
         message: providerMessage,
-        class: isProviderAuthErrorMessage(providerMessage)
-          ? "authentication_error"
-          : "provider_error",
+        class: isAuthenticationError ? "authentication_error" : "provider_error",
         ...(cause !== undefined ? { detail: cause } : {}),
       },
       providerRefs: nativeProviderRefs(context),
@@ -3699,6 +3710,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   ) {
     if (message.type !== "assistant") {
       return;
+    }
+    if (options?.onChatAuthStateChanged) {
+      yield* options.onChatAuthStateChanged("verified").pipe(Effect.ignoreCause({ log: true }));
     }
 
     // Auto-start a synthetic turn for assistant messages that arrive without

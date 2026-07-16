@@ -57,12 +57,39 @@ export const ServerProviderAuthStatus = Schema.Literals([
 ]);
 export type ServerProviderAuthStatus = typeof ServerProviderAuthStatus.Type;
 
+/**
+ * Health of one capability backed by a provider credential. `configured`
+ * means a credential was discovered locally but has not completed a live
+ * provider request yet; it must not be presented as authoritative proof that
+ * the credential is still accepted.
+ */
+export const ServerProviderAuthCapabilityStatus = Schema.Literals([
+  "verified",
+  "configured",
+  "unavailable",
+  "unknown",
+]);
+export type ServerProviderAuthCapabilityStatus = typeof ServerProviderAuthCapabilityStatus.Type;
+
+export const ServerProviderAuthCapability = Schema.Struct({
+  status: ServerProviderAuthCapabilityStatus,
+  detail: Schema.optional(TrimmedNonEmptyString),
+});
+export type ServerProviderAuthCapability = typeof ServerProviderAuthCapability.Type;
+
+export const ServerProviderAuthCapabilities = Schema.Struct({
+  chat: Schema.optional(ServerProviderAuthCapability),
+  usage: Schema.optional(ServerProviderAuthCapability),
+});
+export type ServerProviderAuthCapabilities = typeof ServerProviderAuthCapabilities.Type;
+
 export const ServerProviderAuth = Schema.Struct({
   status: ServerProviderAuthStatus,
   type: Schema.optional(TrimmedNonEmptyString),
   label: Schema.optional(TrimmedNonEmptyString),
   email: Schema.optional(TrimmedNonEmptyString),
   usageEmail: Schema.optional(TrimmedNonEmptyString),
+  capabilities: Schema.optional(ServerProviderAuthCapabilities),
 });
 export type ServerProviderAuth = typeof ServerProviderAuth.Type;
 

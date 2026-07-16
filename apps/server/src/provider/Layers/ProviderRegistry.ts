@@ -116,23 +116,89 @@ const mergeProviderModels = (
     : [...mergedModels, ...previousModels.filter((model) => !nextSlugs.has(model.slug))];
 };
 
+const haveMatchingChatAuthIdentity = (
+  previousProvider: ServerProvider,
+  nextProvider: ServerProvider,
+): boolean => {
+  if (
+    previousProvider.auth.email &&
+    nextProvider.auth.email &&
+    previousProvider.auth.email !== nextProvider.auth.email
+  ) {
+    return false;
+  }
+  if (
+    previousProvider.auth.type &&
+    nextProvider.auth.type &&
+    previousProvider.auth.type !== nextProvider.auth.type
+  ) {
+    return false;
+  }
+  return true;
+};
+
+const shouldPreservePreviousChatAuth = (
+  previousProvider: ServerProvider,
+  nextProvider: ServerProvider,
+): boolean => {
+  const previousStatus = previousProvider.auth.capabilities?.chat?.status;
+  return (
+    nextProvider.enabled &&
+    nextProvider.auth.capabilities?.chat?.status === "configured" &&
+    (previousStatus === "verified" || previousStatus === "unavailable") &&
+    haveMatchingChatAuthIdentity(previousProvider, nextProvider)
+  );
+};
+
 export const mergeProviderSnapshot = (
   previousProvider: ServerProvider | undefined,
   nextProvider: ServerProvider,
-): ServerProvider =>
-  !previousProvider
-    ? nextProvider
-    : previousProvider.checkedAt > nextProvider.checkedAt
-      ? previousProvider
-      : {
-          ...nextProvider,
-          models: mergeProviderModels(previousProvider.models, nextProvider.models, {
-            preserveMissingPreviousModels: !hasAuthoritativeModelList(nextProvider),
-          }),
-          ...(shouldPreservePreviousAccountUsage(previousProvider, nextProvider)
-            ? { accountUsage: previousProvider.accountUsage }
-            : {}),
-        };
+): ServerProvider => {
+  if (!previousProvider) return nextProvider;
+  if (previousProvider.checkedAt > nextProvider.checkedAt) return previousProvider;
+
+  const preserveAccountUsage = shouldPreservePreviousAccountUsage(previousProvider, nextProvider);
+  const preserveChatAuth = shouldPreservePreviousChatAuth(previousProvider, nextProvider);
+  const previousChat = previousProvider.auth.capabilities?.chat;
+  const previousUsage =
+    previousProvider.auth.capabilities?.usage ??
+    (previousProvider.accountUsage
+      ? {
+          status: "verified" as const,
+          detail: "Provider usage was preserved from the last successful account check.",
+        }
+      : undefined);
+  const preserveChatFailure = preserveChatAuth && previousChat?.status === "unavailable";
+  const preserveCapabilities =
+    (preserveChatAuth && previousChat !== undefined) ||
+    (preserveAccountUsage && previousUsage !== undefined);
+  const auth = preserveCapabilities
+    ? {
+        ...nextProvider.auth,
+        ...(preserveChatFailure ? { status: "unauthenticated" as const } : {}),
+        capabilities: {
+          ...nextProvider.auth.capabilities,
+          ...(preserveChatAuth && previousChat ? { chat: previousChat } : {}),
+          ...(preserveAccountUsage && previousUsage ? { usage: previousUsage } : {}),
+        },
+      }
+    : nextProvider.auth;
+
+  return {
+    ...nextProvider,
+    auth,
+    models: mergeProviderModels(previousProvider.models, nextProvider.models, {
+      preserveMissingPreviousModels: !hasAuthoritativeModelList(nextProvider),
+    }),
+    ...(preserveAccountUsage ? { accountUsage: previousProvider.accountUsage } : {}),
+    ...(preserveChatFailure
+      ? {
+          status: previousProvider.status,
+          ...(previousProvider.message ? { message: previousProvider.message } : {}),
+        }
+      : {}),
+  };
+};
 
 const shouldPreservePreviousAccountUsage = (
   previousProvider: ServerProvider,
@@ -147,24 +213,11 @@ const shouldPreservePreviousAccountUsage = (
     return false;
   }
   if (nextProvider.auth.type === "apiKey") return false;
-  if (
-    previousProvider.auth.email &&
-    nextProvider.auth.email &&
-    previousProvider.auth.email !== nextProvider.auth.email
-  ) {
-    return false;
-  }
+  if (!haveMatchingChatAuthIdentity(previousProvider, nextProvider)) return false;
   if (
     previousProvider.auth.usageEmail &&
     nextProvider.auth.usageEmail &&
     previousProvider.auth.usageEmail !== nextProvider.auth.usageEmail
-  ) {
-    return false;
-  }
-  if (
-    previousProvider.auth.type &&
-    nextProvider.auth.type &&
-    previousProvider.auth.type !== nextProvider.auth.type
   ) {
     return false;
   }

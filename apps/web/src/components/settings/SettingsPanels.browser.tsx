@@ -1523,6 +1523,47 @@ describe("GeneralSettingsPanel observability", () => {
     await expect.element(page.getByPlaceholder("e.g. --chrome")).toBeInTheDocument();
   });
 
+  it("distinguishes configured Claude chat auth from verified usage", async () => {
+    const claude = createClaudeProvider();
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [
+        {
+          ...claude,
+          auth: {
+            status: "authenticated",
+            label: "Claude Max Subscription",
+            capabilities: {
+              chat: {
+                status: "configured",
+                detail: "A credential was found locally.",
+              },
+              usage: {
+                status: "verified",
+                detail: "Subscription usage was fetched successfully.",
+              },
+            },
+          },
+        },
+      ],
+    });
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <ProviderSettingsPanel />
+      </AppAtomRegistryProvider>,
+    );
+
+    await expect.element(page.getByText(/Credential configured · Claude Max/)).toBeInTheDocument();
+    await page.getByLabelText("Toggle Claude details").click();
+    await expect.element(page.getByText("Chat configured")).toBeInTheDocument();
+    await expect.element(page.getByText("Usage verified")).toBeInTheDocument();
+    await page.getByText("Advanced: headless chat token").click();
+    await expect
+      .element(page.getByText(/Optional chat-only fallback for remote or headless environments/))
+      .toBeVisible();
+  });
+
   it("opens the shared reset-credit picker from provider settings", async () => {
     setServerConfigSnapshot({
       ...createBaseServerConfig(),

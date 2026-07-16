@@ -59,6 +59,61 @@ const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 const DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
 const CAPABILITIES_PROBE_TTL = Duration.minutes(5);
+const CLAUDE_CHAT_AUTH_REQUIRED_MESSAGE =
+  "Claude chat authentication failed. Refresh the normal Claude sign-in, then retry the turn.";
+
+function clearClaudeChatAuthRequiredMessage(provider: ServerProvider): ServerProvider {
+  const { message, ...providerWithoutMessage } = provider;
+  return message === CLAUDE_CHAT_AUTH_REQUIRED_MESSAGE ? providerWithoutMessage : provider;
+}
+
+export function patchClaudeChatAuthState(
+  provider: ServerProvider,
+  state: "verified" | "unauthenticated",
+): ServerProvider | null {
+  const previousChatStatus = provider.auth.capabilities?.chat?.status;
+  const nextChat =
+    state === "verified"
+      ? {
+          status: "verified" as const,
+          detail: "Claude chat authentication was verified by a successful live turn.",
+        }
+      : {
+          status: "unavailable" as const,
+          detail: "Claude rejected the chat credential. Refresh the normal Claude sign-in.",
+        };
+  const nextAuthStatus = state === "verified" ? "authenticated" : "unauthenticated";
+  if (
+    previousChatStatus === nextChat.status &&
+    provider.auth.status === nextAuthStatus &&
+    (state === "verified" || provider.message === CLAUDE_CHAT_AUTH_REQUIRED_MESSAGE)
+  ) {
+    return null;
+  }
+
+  const baseProvider =
+    state === "verified" ? clearClaudeChatAuthRequiredMessage(provider) : provider;
+  return {
+    ...baseProvider,
+    status:
+      state === "verified"
+        ? provider.message === CLAUDE_CHAT_AUTH_REQUIRED_MESSAGE
+          ? "ready"
+          : provider.status
+        : provider.status === "disabled"
+          ? "disabled"
+          : "warning",
+    auth: {
+      ...provider.auth,
+      status: nextAuthStatus,
+      capabilities: {
+        ...provider.auth.capabilities,
+        chat: nextChat,
+      },
+    },
+    ...(state === "unauthenticated" ? { message: CLAUDE_CHAT_AUTH_REQUIRED_MESSAGE } : {}),
+  };
+}
 const WINDOWS_NATIVE_UPDATE_SCRIPT = String.raw`
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -310,6 +365,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
               return accountUsage ? { ...current, accountUsage } : null;
             });
           }),
+        onChatAuthStateChanged: (state) =>
+          snapshot.patchSnapshot((current) => patchClaudeChatAuthState(current, state)),
       });
 
       return {

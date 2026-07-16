@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import type {
   ProviderInstanceEnvironmentVariable,
+  ServerProvider,
   ServerProviderModel,
 } from "@threadlines/contracts";
 
@@ -8,14 +9,18 @@ import {
   buildClaudeAuthLoginCommand,
   buildClaudeSetupTokenCommand,
   buildCodexLoginCommand,
+  claudeAuthCapabilityBadge,
   deriveClaudeLongLivedOAuthTokenState,
   deriveProviderModelsForDisplay,
   hasClaudeCredentialOverrideEnvironment,
+  preferClaudeNormalSignInEnvironment,
   preferClaudeLongLivedOAuthTokenEnvironment,
+  providerAuthBadge,
   removeClaudeLongLivedOAuthTokenEnvironment,
   sanitizeClaudeLongLivedOAuthTokenInput,
   upsertClaudeLongLivedOAuthTokenEnvironment,
 } from "./ProviderInstanceCard";
+import { getProviderSummary } from "./providerStatus";
 
 describe("deriveProviderModelsForDisplay", () => {
   it("uses current config custom models instead of stale live custom rows", () => {
@@ -168,6 +173,26 @@ describe("Claude long-lived OAuth token environment helpers", () => {
     ).toEqual([{ name: "OTHER_VAR", value: "kept", sensitive: false }]);
   });
 
+  it("switches to normal Claude sign-in while masking inherited credential overrides", () => {
+    expect(
+      preferClaudeNormalSignInEnvironment([
+        { name: "CLAUDE_CODE_OAUTH_TOKEN", value: "oauth-token", sensitive: true },
+        { name: "ANTHROPIC_API_KEY", value: "api-key", sensitive: true },
+        { name: "OTHER_VAR", value: "kept", sensitive: false },
+      ]),
+    ).toEqual([
+      { name: "OTHER_VAR", value: "kept", sensitive: false },
+      {
+        name: "CLAUDE_CODE_OAUTH_TOKEN",
+        value: "",
+        sensitive: false,
+        valueRedacted: false,
+      },
+      { name: "ANTHROPIC_AUTH_TOKEN", value: "", sensitive: false, valueRedacted: false },
+      { name: "ANTHROPIC_API_KEY", value: "", sensitive: false, valueRedacted: false },
+    ]);
+  });
+
   it("detects Claude credential overrides that take precedence over the long-lived token", () => {
     expect(
       hasClaudeCredentialOverrideEnvironment([
@@ -201,6 +226,81 @@ describe("Claude long-lived OAuth token environment helpers", () => {
       { name: "ANTHROPIC_AUTH_TOKEN", value: "", sensitive: false, valueRedacted: false },
       { name: "ANTHROPIC_API_KEY", value: "", sensitive: false, valueRedacted: false },
     ]);
+  });
+});
+
+describe("Claude authentication presentation", () => {
+  it("does not present a locally discovered credential as verified authentication", () => {
+    const auth = {
+      status: "authenticated" as const,
+      capabilities: {
+        chat: { status: "configured" as const },
+        usage: { status: "unavailable" as const },
+      },
+    };
+
+    expect(providerAuthBadge(auth)).toEqual({
+      label: "Credential configured",
+      variant: "secondary",
+    });
+    expect(claudeAuthCapabilityBadge(auth.capabilities.chat, "chat")).toEqual({
+      label: "Chat configured",
+      variant: "secondary",
+    });
+    expect(claudeAuthCapabilityBadge(auth.capabilities.usage, "usage")).toEqual({
+      label: "Usage unavailable",
+      variant: "warning",
+    });
+  });
+
+  it("presents successful live chat and usage checks as verified", () => {
+    const auth = {
+      status: "authenticated" as const,
+      capabilities: {
+        chat: { status: "verified" as const },
+        usage: { status: "verified" as const },
+      },
+    };
+
+    expect(providerAuthBadge(auth)).toEqual({ label: "Authenticated", variant: "success" });
+    expect(claudeAuthCapabilityBadge(auth.capabilities.chat, "chat")).toEqual({
+      label: "Chat verified",
+      variant: "success",
+    });
+    expect(claudeAuthCapabilityBadge(auth.capabilities.usage, "usage")).toEqual({
+      label: "Usage verified",
+      variant: "success",
+    });
+  });
+
+  it("uses configured rather than authenticated language before a live turn succeeds", () => {
+    const provider = {
+      instanceId: "claudeAgent",
+      driver: "claudeAgent",
+      enabled: true,
+      installed: true,
+      version: "2.1.211",
+      status: "ready",
+      auth: {
+        status: "authenticated",
+        label: "Claude Max Subscription",
+        capabilities: {
+          chat: {
+            status: "configured",
+            detail: "A credential was found locally.",
+          },
+        },
+      },
+      checkedAt: "2026-07-15T00:00:00.000Z",
+      models: [],
+      slashCommands: [],
+      skills: [],
+    } as ServerProvider;
+
+    expect(getProviderSummary(provider)).toEqual({
+      headline: "Credential configured · Claude Max Subscription",
+      detail: "A credential was found locally.",
+    });
   });
 });
 

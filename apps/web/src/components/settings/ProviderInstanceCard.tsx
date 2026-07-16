@@ -314,6 +314,25 @@ export function removeClaudeLongLivedOAuthTokenEnvironment(
   return environment.filter((variable) => variable.name !== CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV);
 }
 
+export function preferClaudeNormalSignInEnvironment(
+  environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>,
+): ReadonlyArray<ProviderInstanceEnvironmentVariable> {
+  const credentialNames = new Set<string>([
+    CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV,
+    ...CLAUDE_CREDENTIAL_OVERRIDE_ENV_NAMES,
+  ]);
+  const nextEnvironment = environment.filter((variable) => !credentialNames.has(variable.name));
+  for (const name of credentialNames) {
+    nextEnvironment.push({
+      name,
+      value: "",
+      sensitive: false,
+      valueRedacted: false,
+    });
+  }
+  return nextEnvironment;
+}
+
 export function hasClaudeCredentialOverrideEnvironment(
   environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>,
 ): boolean {
@@ -649,6 +668,7 @@ function ClaudeLongLivedAuthSection(props: {
   const tokenInputId = `${props.idPrefix}-claude-oauth-token`;
   const [tokenDraft, setTokenDraft] = useState("");
   const [isRunningSetupCommand, setIsRunningSetupCommand] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(tokenState.configured);
   const sanitizedTokenDraft = sanitizeClaudeLongLivedOAuthTokenInput(tokenDraft);
   const tokenDraftHasValue = tokenDraft.trim().length > 0;
   const tokenDraftWillBeSanitized = tokenDraftHasValue && sanitizedTokenDraft !== tokenDraft.trim();
@@ -706,115 +726,130 @@ function ClaudeLongLivedAuthSection(props: {
   };
 
   return (
-    <div className="grid gap-3 border-t border-border/50 pt-4">
-      <div className="min-w-0 space-y-0.5">
-        <p className="text-xs font-semibold text-foreground">Long-lived token</p>
+    <details
+      className="group border-t border-border/50 pt-4"
+      open={isExpanded}
+      onToggle={(event) => setIsExpanded(event.currentTarget.open)}
+    >
+      <summary className="cursor-pointer list-none text-xs font-semibold text-foreground marker:hidden">
+        <span className="inline-flex items-center gap-1.5">
+          <ChevronDownIcon className="size-3 transition-transform group-open:rotate-180" />
+          Advanced: headless chat token
+          {tokenState.configured ? (
+            <Badge variant="secondary" size="sm">
+              Active
+            </Badge>
+          ) : null}
+        </span>
+      </summary>
+      <div className="mt-3 grid gap-3">
         <p className="text-xs text-muted-foreground">
-          Keeps Claude sessions signed in. Usage still comes from Claude's normal sign-in.
+          Optional chat-only fallback for remote or headless environments. It does not authenticate
+          subscription usage; normal Claude sign-in is the recommended default.
         </p>
-      </div>
-      <div className="grid gap-2 rounded-md border border-border/70 bg-muted/20 p-2.5">
-        <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
-          <span className="text-xs font-medium text-foreground">Setup command</span>
-          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-            {canRunSetupCommand ? (
+        <div className="grid gap-2 rounded-md border border-border/70 bg-muted/20 p-2.5">
+          <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+            <span className="text-xs font-medium text-foreground">Setup command</span>
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+              {canRunSetupCommand ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="default"
+                  className="h-7 gap-1.5 px-2 text-xs"
+                  disabled={isRunningSetupCommand}
+                  onClick={() => void runSetupCommand()}
+                >
+                  {isRunningSetupCommand ? (
+                    <LoaderIcon className="size-3 animate-spin" />
+                  ) : (
+                    <TerminalIcon className="size-3" />
+                  )}
+                  {isRunningSetupCommand ? "Opening" : "Run"}
+                </Button>
+              ) : null}
               <Button
                 type="button"
                 size="sm"
-                variant="default"
+                variant="outline"
                 className="h-7 gap-1.5 px-2 text-xs"
-                disabled={isRunningSetupCommand}
-                onClick={() => void runSetupCommand()}
+                onClick={() => copyToClipboard(props.setupCommand, "setup-token-command")}
               >
-                {isRunningSetupCommand ? (
-                  <LoaderIcon className="size-3 animate-spin" />
-                ) : (
-                  <TerminalIcon className="size-3" />
-                )}
-                {isRunningSetupCommand ? "Opening" : "Run"}
+                <CopyIcon className="size-3" />
+                {isCopied ? "Copied" : "Copy"}
               </Button>
-            ) : null}
+            </div>
+          </div>
+          <code className="block overflow-x-auto whitespace-nowrap rounded border border-border/60 bg-background/80 px-2 py-1.5 font-mono text-[11px] text-foreground/85">
+            {props.setupCommand}
+          </code>
+          <p className="text-xs text-muted-foreground">
+            Run this in a terminal, finish the browser authorization, then paste the generated token
+            below.
+          </p>
+        </div>
+        <label className="block" htmlFor={tokenInputId}>
+          <span className="text-xs font-medium text-foreground">OAuth token</span>
+          <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-2">
+            <Input
+              id={tokenInputId}
+              className="min-w-64 flex-1"
+              value={tokenDraft}
+              onChange={(event) => setTokenDraft(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  saveToken();
+                }
+              }}
+              type="password"
+              autoComplete="off"
+              placeholder={
+                tokenState.configured
+                  ? "Stored secret - enter a new value to replace"
+                  : "Paste token"
+              }
+              spellCheck={false}
+            />
+            <Button
+              type="button"
+              size="sm"
+              variant="default"
+              className="h-8 px-2 text-xs sm:h-7.5"
+              disabled={sanitizedTokenDraft.length === 0}
+              onClick={saveToken}
+            >
+              Save token
+            </Button>
+          </div>
+          <span className="mt-1 block text-xs text-muted-foreground">
+            This writes <code className="text-foreground">{CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV}</code>{" "}
+            as a sensitive environment variable.
+          </span>
+          {tokenDraftWillBeSanitized ? (
+            <span className="mt-1 block text-xs text-warning">
+              Whitespace will be removed before saving.
+            </span>
+          ) : null}
+        </label>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <Badge variant={tokenState.configured ? "success" : "secondary"} size="sm">
+            {tokenState.configured ? "Configured" : "Not configured"}
+          </Badge>
+          {tokenState.configured ? (
             <Button
               type="button"
               size="sm"
               variant="outline"
-              className="h-7 gap-1.5 px-2 text-xs"
-              onClick={() => copyToClipboard(props.setupCommand, "setup-token-command")}
+              className="h-7 px-2 text-xs"
+              onClick={() => props.onChange(preferClaudeNormalSignInEnvironment(props.environment))}
             >
-              <CopyIcon className="size-3" />
-              {isCopied ? "Copied" : "Copy"}
+              Use normal Claude sign-in
             </Button>
-          </div>
+          ) : null}
         </div>
-        <code className="block overflow-x-auto whitespace-nowrap rounded border border-border/60 bg-background/80 px-2 py-1.5 font-mono text-[11px] text-foreground/85">
-          {props.setupCommand}
-        </code>
-        <p className="text-xs text-muted-foreground">
-          Run this in a terminal, finish the browser authorization, then paste the generated token
-          below.
-        </p>
       </div>
-      <label className="block" htmlFor={tokenInputId}>
-        <span className="text-xs font-medium text-foreground">OAuth token</span>
-        <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-2">
-          <Input
-            id={tokenInputId}
-            className="min-w-64 flex-1"
-            value={tokenDraft}
-            onChange={(event) => setTokenDraft(event.currentTarget.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                saveToken();
-              }
-            }}
-            type="password"
-            autoComplete="off"
-            placeholder={
-              tokenState.configured ? "Stored secret - enter a new value to replace" : "Paste token"
-            }
-            spellCheck={false}
-          />
-          <Button
-            type="button"
-            size="sm"
-            variant="default"
-            className="h-8 px-2 text-xs sm:h-7.5"
-            disabled={sanitizedTokenDraft.length === 0}
-            onClick={saveToken}
-          >
-            Save token
-          </Button>
-        </div>
-        <span className="mt-1 block text-xs text-muted-foreground">
-          This writes <code className="text-foreground">{CLAUDE_LONG_LIVED_OAUTH_TOKEN_ENV}</code>{" "}
-          as a sensitive environment variable.
-        </span>
-        {tokenDraftWillBeSanitized ? (
-          <span className="mt-1 block text-xs text-warning">
-            Whitespace will be removed before saving.
-          </span>
-        ) : null}
-      </label>
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <Badge variant={tokenState.configured ? "success" : "secondary"} size="sm">
-          {tokenState.configured ? "Configured" : "Not configured"}
-        </Badge>
-        {tokenState.configured ? (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-7 px-2 text-xs"
-            onClick={() =>
-              props.onChange(removeClaudeLongLivedOAuthTokenEnvironment(props.environment))
-            }
-          >
-            Clear token
-          </Button>
-        ) : null}
-      </div>
-    </div>
+    </details>
   );
 }
 
@@ -905,10 +940,20 @@ function CopyableProviderCommand(props: {
   );
 }
 
-function providerAuthBadge(input: ServerProvider["auth"] | undefined): {
+export function providerAuthBadge(input: ServerProvider["auth"] | undefined): {
   readonly label: string;
   readonly variant: "success" | "warning" | "secondary";
 } {
+  const chatStatus = input?.capabilities?.chat?.status;
+  if (chatStatus === "verified") {
+    return { label: "Authenticated", variant: "success" };
+  }
+  if (chatStatus === "configured") {
+    return { label: "Credential configured", variant: "secondary" };
+  }
+  if (chatStatus === "unavailable") {
+    return { label: "Needs sign in", variant: "warning" };
+  }
   switch (input?.status) {
     case "authenticated":
       return { label: "Authenticated", variant: "success" };
@@ -916,6 +961,27 @@ function providerAuthBadge(input: ServerProvider["auth"] | undefined): {
       return { label: "Needs sign in", variant: "warning" };
     default:
       return { label: "Checking", variant: "secondary" };
+  }
+}
+
+export function claudeAuthCapabilityBadge(
+  capability: NonNullable<ServerProvider["auth"]["capabilities"]>["chat"] | undefined,
+  kind: "chat" | "usage",
+): {
+  readonly label: string;
+  readonly variant: "success" | "warning" | "secondary";
+} | null {
+  if (!capability) return null;
+  const prefix = kind === "chat" ? "Chat" : "Usage";
+  switch (capability.status) {
+    case "verified":
+      return { label: `${prefix} verified`, variant: "success" };
+    case "configured":
+      return { label: `${prefix} configured`, variant: "secondary" };
+    case "unavailable":
+      return { label: `${prefix} unavailable`, variant: "warning" };
+    case "unknown":
+      return { label: `${prefix} checking`, variant: "secondary" };
   }
 }
 
@@ -945,6 +1011,13 @@ function ProviderAccountSignInSection(props: {
     isClaude && hasClaudeCredentialOverrideEnvironment(props.environment);
   const claudeLongLivedTokenConfigured =
     isClaude && deriveClaudeLongLivedOAuthTokenState(props.environment).configured;
+  const claudeCapabilityBadges = isClaude
+    ? (["chat", "usage"] as const).flatMap((kind) => {
+        const capability = props.liveProvider?.auth.capabilities?.[kind];
+        const presentation = claudeAuthCapabilityBadge(capability, kind);
+        return presentation ? [{ kind, capability, presentation }] : [];
+      })
+    : [];
 
   return (
     <ProviderConfigurationSection
@@ -959,14 +1032,21 @@ function ProviderAccountSignInSection(props: {
           <ProviderAuthEmail email={props.authEmail} prefix="Account" />
           {authLabel ? <span className="text-xs text-muted-foreground">· {authLabel}</span> : null}
           <ProviderAuthEmail email={usageEmailForDisplay} separator prefix="Usage" />
+          {claudeCapabilityBadges.map(({ kind, capability, presentation }) => (
+            <Badge key={kind} variant={presentation.variant} size="sm" title={capability.detail}>
+              {presentation.label}
+            </Badge>
+          ))}
         </div>
 
         <CopyableProviderCommand
           title="Terminal sign-in"
           command={props.terminalLoginCommand}
           description={
-            isClaude && claudeLongLivedTokenConfigured
-              ? "Refreshes Claude's normal sign-in so usage reporting can work."
+            isClaude
+              ? claudeLongLivedTokenConfigured
+                ? "Recommended: use one normal Claude sign-in for chat and usage instead of the active advanced chat-only token."
+                : "Recommended: this normal Claude sign-in is shared by chat and subscription usage."
               : `Run this when ${props.displayName} reports that the account is signed out.`
           }
           copiedTitle={`${props.displayName} sign-in command copied`}

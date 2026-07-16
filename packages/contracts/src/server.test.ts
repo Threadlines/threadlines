@@ -93,6 +93,43 @@ describe("ServerProvider", () => {
     expect(parsed.auth.usageEmail).toBe("usage@example.com");
   });
 
+  it("decodes capability-specific provider authentication health", () => {
+    const parsed = decodeServerProvider({
+      instanceId: "claudeAgent",
+      driver: "claudeAgent",
+      enabled: true,
+      installed: true,
+      version: "2.1.211",
+      status: "ready",
+      auth: {
+        status: "authenticated",
+        capabilities: {
+          chat: {
+            status: "configured",
+            detail: "A credential was found locally.",
+          },
+          usage: {
+            status: "verified",
+            detail: "Usage was fetched successfully.",
+          },
+        },
+      },
+      checkedAt: "2026-07-15T00:00:00.000Z",
+      models: [],
+    });
+
+    expect(parsed.auth.capabilities).toEqual({
+      chat: {
+        status: "configured",
+        detail: "A credential was found locally.",
+      },
+      usage: {
+        status: "verified",
+        detail: "Usage was fetched successfully.",
+      },
+    });
+  });
+
   it("decodes provider model descriptions", () => {
     const parsed = decodeServerProvider({
       instanceId: "claudeAgent",

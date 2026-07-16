@@ -62,6 +62,7 @@ import type { ProviderInstance } from "../ProviderDriver.ts";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
 import { ProviderRegistry } from "../Services/ProviderRegistry.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
+import { patchClaudeChatAuthState } from "../Drivers/ClaudeDriver.ts";
 const decodeServerSettings = Schema.decodeSync(ServerSettings);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const encodedDefaultServerSettings = encodeServerSettings(DEFAULT_SERVER_SETTINGS);
@@ -979,6 +980,75 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
           mergeProviderSnapshot(previousProvider, refreshedProvider).accountUsage,
           usage,
         );
+      });
+
+      it("preserves authoritative live chat auth across local-only provider probes", () => {
+        const providerBase = {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          driver: ProviderDriverKind.make("claudeAgent"),
+          enabled: true,
+          installed: true,
+          version: "2.1.211",
+          models: [],
+          slashCommands: [],
+          skills: [],
+        } as const;
+        const failedLiveProvider = {
+          ...providerBase,
+          status: "warning",
+          auth: {
+            status: "unauthenticated",
+            type: "max",
+            capabilities: {
+              chat: {
+                status: "unavailable",
+                detail: "Claude rejected the chat credential.",
+              },
+            },
+          },
+          checkedAt: "2026-07-15T22:00:00.000Z",
+          message:
+            "Claude chat authentication failed. Refresh the normal Claude sign-in, then retry the turn.",
+        } as const satisfies ServerProvider;
+        const localProbe = {
+          ...providerBase,
+          status: "ready",
+          auth: {
+            status: "authenticated",
+            type: "max",
+            capabilities: {
+              chat: {
+                status: "configured",
+                detail: "Claude sign-in was found locally.",
+              },
+            },
+          },
+          checkedAt: "2026-07-15T22:05:00.000Z",
+        } as const satisfies ServerProvider;
+
+        const mergedFailure = mergeProviderSnapshot(failedLiveProvider, localProbe);
+        assert.strictEqual(mergedFailure.status, "warning");
+        assert.strictEqual(mergedFailure.auth.status, "unauthenticated");
+        assert.strictEqual(mergedFailure.auth.capabilities?.chat?.status, "unavailable");
+        assert.strictEqual(
+          mergedFailure.message,
+          "Claude chat authentication failed. Refresh the normal Claude sign-in, then retry the turn.",
+        );
+
+        const successfulLiveProvider = patchClaudeChatAuthState(mergedFailure, "verified");
+        assert.isNotNull(successfulLiveProvider);
+        if (!successfulLiveProvider) return;
+        const mergedSuccess = mergeProviderSnapshot(mergedFailure, successfulLiveProvider);
+        assert.strictEqual(mergedSuccess.status, "ready");
+        assert.strictEqual(mergedSuccess.auth.status, "authenticated");
+        assert.strictEqual(mergedSuccess.auth.capabilities?.chat?.status, "verified");
+
+        const laterLocalProbe = {
+          ...localProbe,
+          checkedAt: "2026-07-15T22:10:00.000Z",
+        } satisfies ServerProvider;
+        const mergedLaterProbe = mergeProviderSnapshot(mergedSuccess, laterLocalProbe);
+        assert.strictEqual(mergedLaterProbe.auth.capabilities?.chat?.status, "verified");
       });
 
       it("does not preserve usage when the usage auth email changes", () => {
@@ -2401,6 +2471,17 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
           assert.strictEqual(status.status, "ready");
           assert.strictEqual(status.accountUsage, undefined);
           assert.strictEqual(usageRequested, false);
+          assert.deepStrictEqual(status.auth.capabilities, {
+            chat: {
+              status: "configured",
+              detail:
+                "Claude sign-in was found locally. It will be verified by the next live Claude turn.",
+            },
+            usage: {
+              status: "unavailable",
+              detail: "Subscription usage is not available with Claude API-key authentication.",
+            },
+          });
         }).pipe(
           Effect.provide(
             mockSpawnerLayer((args) => {
@@ -2423,6 +2504,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
           assert.strictEqual(status.auth.status, "authenticated");
           assert.strictEqual(status.auth.type, "longLivedOAuthToken");
           assert.strictEqual(status.auth.label, "Long-lived Claude token");
+          assert.strictEqual(status.auth.capabilities?.chat?.status, "configured");
+          assert.strictEqual(status.auth.capabilities?.usage?.status, "unavailable");
         }).pipe(
           Effect.provide(
             mockSpawnerLayer((args) => {
@@ -2485,6 +2568,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
           assert.strictEqual(status.auth.status, "authenticated");
           assert.strictEqual(status.auth.type, "longLivedOAuthToken");
           assert.deepStrictEqual(status.accountUsage, usage);
+          assert.strictEqual(status.auth.capabilities?.chat?.status, "configured");
+          assert.strictEqual(status.auth.capabilities?.usage?.status, "verified");
         }).pipe(
           Effect.provide(
             mockSpawnerLayer((args) => {

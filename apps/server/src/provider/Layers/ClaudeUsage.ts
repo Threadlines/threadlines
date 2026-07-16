@@ -30,6 +30,7 @@ import type {
   ServerProviderScopedUsageWindow,
   ServerProviderUsageWindow,
 } from "@threadlines/contracts";
+import { createHash } from "node:crypto";
 import * as NodeOS from "node:os";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -398,8 +399,15 @@ export interface ClaudeOAuthCredential {
   readonly email?: string;
 }
 
-function claudeUsageBackoffKey(credential: ClaudeOAuthCredential): string {
-  return credential.organizationUuid ?? "default";
+export function claudeUsageBackoffKey(credential: ClaudeOAuthCredential): string {
+  // A fresh login rotates the access token. Include a one-way token
+  // fingerprint so a Retry-After received for an expired credential cannot
+  // suppress the replacement credential for the rest of the old backoff.
+  const tokenFingerprint = createHash("sha256")
+    .update(credential.accessToken)
+    .digest("base64url")
+    .slice(0, 16);
+  return `${credential.organizationUuid ?? "default"}:${tokenFingerprint}`;
 }
 
 function readHeaderValue(headers: unknown, headerName: string): string | undefined {

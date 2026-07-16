@@ -792,6 +792,34 @@ describe("deriveProviderAccountUsagePresentationForProvider", () => {
       },
     ]);
   });
+
+  it("keeps capability-specific usage recovery visible when chat auth fails", () => {
+    const provider = {
+      driver: ProviderDriverKind.make("claudeAgent"),
+      auth: {
+        status: "unauthenticated",
+        type: "maxplan",
+        capabilities: {
+          chat: { status: "unavailable" },
+          usage: {
+            status: "unavailable",
+            detail: "Refresh the normal Claude sign-in for subscription usage.",
+          },
+        },
+      },
+    } satisfies Pick<ServerProvider, "accountUsage" | "auth" | "driver">;
+
+    expect(deriveProviderAccountUsagePresentationForProvider(provider)?.windows).toEqual([
+      expect.objectContaining({
+        key: "primary",
+        detail: "Refresh the normal Claude sign-in for subscription usage.",
+      }),
+      expect.objectContaining({
+        key: "secondary",
+        detail: "Refresh the normal Claude sign-in for subscription usage.",
+      }),
+    ]);
+  });
 });
 
 const makeUsage = (usedPercent: number): ServerProviderAccountUsage => ({

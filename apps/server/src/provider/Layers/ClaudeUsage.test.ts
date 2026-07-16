@@ -12,6 +12,7 @@ import {
   applyClaudeRateLimitInfoToAccountUsage,
   CLAUDE_CODE_OAUTH_TOKEN_ENV,
   CLAUDE_MACOS_KEYCHAIN_SERVICE,
+  claudeUsageBackoffKey,
   extractClaudeOAuthCredential,
   normalizeClaudeAccountUsage,
   normalizeClaudeScopedUsageWindow,
@@ -22,6 +23,17 @@ import {
 } from "./ClaudeUsage.ts";
 
 const encoder = new TextEncoder();
+
+describe("claudeUsageBackoffKey", () => {
+  it("isolates Retry-After state when a fresh login rotates the credential", () => {
+    const previous = claudeUsageBackoffKey({ accessToken: "expired-token" });
+    const refreshed = claudeUsageBackoffKey({ accessToken: "refreshed-token" });
+
+    expect(previous).not.toBe(refreshed);
+    expect(previous).not.toContain("expired-token");
+    expect(refreshed).not.toContain("refreshed-token");
+  });
+});
 
 function mockHandle(result: {
   readonly stdout?: string;

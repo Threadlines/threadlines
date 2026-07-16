@@ -6,6 +6,7 @@ import {
   ProviderDriverKind,
   RUNTIME_MODES,
   type ServerProviderAccountUsage,
+  type ServerProviderAuthCapabilities,
   type ServerProviderModel,
   type ServerProviderSlashCommand,
 } from "@threadlines/contracts";
@@ -547,6 +548,36 @@ function claudeAuthMetadata(input: {
   return undefined;
 }
 
+export function claudeAuthCapabilities(input: {
+  readonly isApiKeyAuth: boolean;
+  readonly isLongLivedOAuthAuth: boolean;
+  readonly hasAccountUsage: boolean;
+}): ServerProviderAuthCapabilities {
+  const chatDetail = input.isLongLivedOAuthAuth
+    ? "Chat-only; verified on the next turn."
+    : "Claude sign-in was found locally. It will be verified by the next live Claude turn.";
+  const usage = input.hasAccountUsage
+    ? {
+        status: "verified" as const,
+        detail: "Claude subscription usage was verified with the normal Claude sign-in.",
+      }
+    : {
+        status: "unavailable" as const,
+        detail: input.isApiKeyAuth
+          ? "Subscription usage is not available with Claude API-key authentication."
+          : input.isLongLivedOAuthAuth
+            ? "Usage needs a normal Claude sign-in; the advanced long-lived token is chat-only."
+            : "Claude subscription usage could not be verified. Refresh the normal Claude sign-in.",
+      };
+  return {
+    chat: {
+      status: "configured",
+      detail: chatDetail,
+    },
+    usage,
+  };
+}
+
 // ── SDK capability probe ────────────────────────────────────────────
 
 const CAPABILITIES_PROBE_TIMEOUT_MS = 8_000;
@@ -924,6 +955,11 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         ...(capabilities.email ? { email: capabilities.email } : {}),
         ...(authMetadata ? authMetadata : {}),
         ...(usageEmail ? { usageEmail } : {}),
+        capabilities: claudeAuthCapabilities({
+          isApiKeyAuth,
+          isLongLivedOAuthAuth,
+          hasAccountUsage: accountUsage !== undefined,
+        }),
       },
       ...(accountUsage ? { accountUsage } : {}),
       ...(upgradeMessage ? { message: upgradeMessage } : {}),

@@ -255,6 +255,7 @@ function makeHarness(config?: {
   readonly claudeConfig?: Partial<ClaudeSettings>;
   readonly instanceId?: ProviderInstanceId;
   readonly environment?: NodeJS.ProcessEnv;
+  readonly onChatAuthStateChanged?: ClaudeAdapterLiveOptions["onChatAuthStateChanged"];
 }) {
   const query = new FakeClaudeQuery();
   let createInput:
@@ -280,6 +281,9 @@ function makeHarness(config?: {
       ? {
           nativeEventLogPath: config.nativeEventLogPath,
         }
+      : {}),
+    ...(config?.onChatAuthStateChanged
+      ? { onChatAuthStateChanged: config.onChatAuthStateChanged }
       : {}),
   };
 
@@ -1510,7 +1514,13 @@ describe("ClaudeAdapterLive", () => {
   });
 
   it.effect("adds login guidance to Claude authentication runtime errors", () => {
-    const harness = makeHarness();
+    const authStates: Array<"verified" | "unauthenticated"> = [];
+    const harness = makeHarness({
+      onChatAuthStateChanged: (state) =>
+        Effect.sync(() => {
+          authStates.push(state);
+        }),
+    });
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
       const authRecoveryEventsFiber = yield* Stream.filter(
@@ -1561,6 +1571,58 @@ describe("ClaudeAdapterLive", () => {
         exitKind: "error",
       });
       assert.equal(harness.query.closeCalls, 1);
+      assert.deepEqual(authStates, ["unauthenticated"]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("verifies chat authentication after a successful live turn", () => {
+    const authStates: Array<"verified" | "unauthenticated"> = [];
+    const harness = makeHarness({
+      onChatAuthStateChanged: (state) =>
+        Effect.sync(() => {
+          authStates.push(state);
+        }),
+    });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const completedFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runHead, Effect.forkChild);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-auth-success",
+        uuid: "assistant-auth-success",
+        message: {
+          id: "assistant-message-auth-success",
+          content: [{ type: "text", text: "Authenticated response" }],
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-auth-success",
+        uuid: "result-auth-success",
+      } as unknown as SDKMessage);
+
+      yield* Fiber.join(completedFiber);
+      assert.deepEqual(authStates, ["verified"]);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

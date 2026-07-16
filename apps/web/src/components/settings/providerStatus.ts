@@ -49,8 +49,27 @@ export function getProviderSummary(provider: ServerProvider | undefined) {
       detail: provider.message ?? "CLI not detected on PATH.",
     };
   }
+  const chatCapability = provider.auth.capabilities?.chat;
+  const authLabel = provider.auth.label ?? provider.auth.type;
+  if (chatCapability?.status === "verified") {
+    return {
+      headline: authLabel ? `Authenticated · ${authLabel}` : "Authenticated",
+      detail: provider.message ?? chatCapability.detail ?? null,
+    };
+  }
+  if (chatCapability?.status === "configured") {
+    return {
+      headline: authLabel ? `Credential configured · ${authLabel}` : "Credential configured",
+      detail: provider.message ?? chatCapability.detail ?? null,
+    };
+  }
+  if (chatCapability?.status === "unavailable") {
+    return {
+      headline: "Not authenticated",
+      detail: provider.message ?? chatCapability.detail ?? null,
+    };
+  }
   if (provider.auth.status === "authenticated") {
-    const authLabel = provider.auth.label ?? provider.auth.type;
     return {
       headline: authLabel ? `Authenticated · ${authLabel}` : "Authenticated",
       detail: provider.message ?? null,

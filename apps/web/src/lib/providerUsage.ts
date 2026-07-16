@@ -527,10 +527,12 @@ export function deriveProviderAccountUsagePresentation(
 function shouldShowClaudeUsageUnavailablePlaceholder(
   provider: ProviderAccountUsagePresentationProvider,
 ): boolean {
+  const usageStatus = provider.auth.capabilities?.usage?.status;
   return (
     provider.driver === "claudeAgent" &&
-    provider.auth.status === "authenticated" &&
-    provider.auth.type?.toLowerCase() !== "apikey"
+    provider.auth.type?.toLowerCase() !== "apikey" &&
+    (usageStatus === "unavailable" ||
+      (usageStatus === undefined && provider.auth.status === "authenticated"))
   );
 }
 
@@ -571,9 +573,10 @@ export function deriveProviderAccountUsagePresentationForProvider(
   if (presentation || !provider) return presentation;
   if (shouldShowClaudeUsageUnavailablePlaceholder(provider)) {
     return makeClaudeUsageUnavailablePresentation(
-      provider.auth.type === "longLivedOAuthToken"
-        ? "needs Claude sign-in for usage"
-        : "usage unavailable",
+      provider.auth.capabilities?.usage?.detail ??
+        (provider.auth.type === "longLivedOAuthToken"
+          ? "needs Claude sign-in for usage"
+          : "usage unavailable"),
     );
   }
   return null;
