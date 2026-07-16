@@ -39,4 +39,6 @@ jobs:
           fi
 
           echo "Dispatching nightly release for ${head_sha:0:12} (newest release: ${newest_tag:-none})."
-          gh workflow run release.yml -f channel=nightly
+          # deploy_web is passed explicitly: workflow_dispatch input defaults are
+          # not applied to omitted inputs on API-triggered dispatches.
+          gh workflow run release.yml -f channel=nightly -f deploy_web=true
