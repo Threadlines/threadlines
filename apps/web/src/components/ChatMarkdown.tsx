@@ -671,9 +671,16 @@ function ChatMarkdownDocument({
     environmentId,
     cwd,
   );
-  const markdownUrlTransform = useCallback((href: string) => {
-    return rewriteMarkdownFileUriHref(href) ?? defaultUrlTransform(href);
-  }, []);
+  const markdownUrlTransform = useCallback(
+    (href: string) => {
+      const rewrittenFileHref = rewriteMarkdownFileUriHref(href);
+      if (rewrittenFileHref) return rewrittenFileHref;
+
+      const fileLinkMeta = resolveMarkdownFileLinkMeta(href, cwd);
+      return fileLinkMeta?.href ?? defaultUrlTransform(href);
+    },
+    [cwd],
+  );
   const markdownComponents = useMemo<Components>(
     () => ({
       p({ node: _node, children, ...props }) {
