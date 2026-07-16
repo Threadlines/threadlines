@@ -32,9 +32,9 @@ surface.
 Install the latest desktop alpha from
 [GitHub Releases](https://github.com/Threadlines/threadlines/releases).
 
-Signed Windows and macOS builds are published through the desktop release
-workflow. Linux packaging exists locally but is not part of the normal release
-lane yet.
+Signed Windows and macOS builds and a Linux x64 AppImage are published through
+the desktop release workflow. Linux builds are unsigned; integrity for
+auto-updates is verified through the updater manifest hashes.
 
 ### Server CLI
 

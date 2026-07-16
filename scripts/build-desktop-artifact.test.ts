@@ -311,7 +311,6 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         provider: "github",
         owner: "threadlines",
         repo: "app",
-        private: true,
         releaseType: "release",
       },
     );
@@ -328,7 +327,6 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         provider: "github",
         owner: "fallback",
         repo: "repo",
-        private: true,
         releaseType: "release",
       },
     );
