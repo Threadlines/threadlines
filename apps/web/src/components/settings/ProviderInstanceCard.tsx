@@ -1014,6 +1014,7 @@ function ProviderAccountSignInSection(props: {
   const claudeCapabilityBadges = isClaude
     ? (["chat", "usage"] as const).flatMap((kind) => {
         const capability = props.liveProvider?.auth.capabilities?.[kind];
+        if (!capability) return [];
         const presentation = claudeAuthCapabilityBadge(capability, kind);
         return presentation ? [{ kind, capability, presentation }] : [];
       })

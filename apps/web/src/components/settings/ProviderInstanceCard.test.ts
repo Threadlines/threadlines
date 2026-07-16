@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
-import type {
-  ProviderInstanceEnvironmentVariable,
-  ServerProvider,
-  ServerProviderModel,
+import {
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ProviderInstanceEnvironmentVariable,
+  type ServerProvider,
+  type ServerProviderModel,
 } from "@threadlines/contracts";
 
 import {
@@ -275,8 +277,8 @@ describe("Claude authentication presentation", () => {
 
   it("uses configured rather than authenticated language before a live turn succeeds", () => {
     const provider = {
-      instanceId: "claudeAgent",
-      driver: "claudeAgent",
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+      driver: ProviderDriverKind.make("claudeAgent"),
       enabled: true,
       installed: true,
       version: "2.1.211",
@@ -295,7 +297,7 @@ describe("Claude authentication presentation", () => {
       models: [],
       slashCommands: [],
       skills: [],
-    } as ServerProvider;
+    } satisfies ServerProvider;
 
     expect(getProviderSummary(provider)).toEqual({
       headline: "Credential configured · Claude Max Subscription",
