@@ -127,7 +127,7 @@ function badgeClassName(tone: ActivityBadgeTone, pulse: boolean) {
     tone === "ready" && "bg-amber-500/15 text-amber-600 dark:text-amber-400",
     tone === "warning" && "bg-destructive/15 text-destructive",
     tone === "idle" && "bg-muted text-muted-foreground",
-    pulse && "animate-pulse",
+    pulse && "animate-status-pulse",
   );
 }
 
@@ -298,7 +298,7 @@ function chipClassName(tone: ActivityBadgeTone, pulse: boolean) {
     tone === "ready" && "bg-amber-500/15 text-amber-600 dark:text-amber-400",
     tone === "warning" && "bg-destructive/15 text-destructive",
     tone === "idle" && "bg-muted text-muted-foreground",
-    pulse && "animate-pulse",
+    pulse && "animate-status-pulse",
   );
 }
 

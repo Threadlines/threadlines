@@ -223,7 +223,7 @@ export function SidebarVersionTag() {
           "relative z-10 inline-flex min-w-0 items-center justify-center gap-1",
           presentation.tone === "downloading" &&
             !hasKnownDownloadProgress &&
-            "motion-safe:animate-pulse",
+            "motion-safe:animate-status-pulse",
         )}
       >
         <span className="min-w-0 truncate">{presentation.label}</span>
@@ -234,7 +234,7 @@ export function SidebarVersionTag() {
               presentation.tone === "error" ? "size-2.5" : "size-3",
               (presentation.tone === "available" ||
                 (presentation.tone === "downloading" && !hasKnownDownloadProgress)) &&
-                "motion-safe:animate-pulse",
+                "motion-safe:animate-status-pulse",
             )}
           />
         ) : null}

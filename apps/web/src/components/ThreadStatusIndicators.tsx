@@ -296,7 +296,9 @@ export function ThreadRowTrailingStatus({ thread }: { thread: SidebarThreadSumma
             aria-label={terminalStatus.label}
             className={`inline-flex items-center justify-center ${terminalStatus.colorClass}`}
           >
-            <TerminalIcon className={`size-3 ${terminalStatus.pulse ? "animate-pulse" : ""}`} />
+            <TerminalIcon
+              className={`size-3 ${terminalStatus.pulse ? "animate-status-pulse" : ""}`}
+            />
           </span>
         </TooltipWrapper>
       ) : null}

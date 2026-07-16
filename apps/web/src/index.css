@@ -44,6 +44,11 @@
     "Cascadia Mono Variable", "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo,
     monospace;
   --animate-skeleton: skeleton 2s -1s infinite linear;
+  /* Duty-cycled indicator animations: long opacity holds with short stepped
+     ramps, so the compositor only produces frames while the value changes
+     instead of presenting a frame every vsync. */
+  --animate-status-pulse: status-pulse 2s infinite;
+  --animate-status-ping: status-ping 2s infinite;
   --color-warning-foreground: var(--warning-foreground);
   --color-warning: var(--warning);
   --color-success-foreground: var(--success-foreground);
@@ -90,6 +95,34 @@
       background-position: -200% 0;
     }
   }
+  @keyframes status-pulse {
+    0%,
+    40% {
+      opacity: 1;
+      animation-timing-function: steps(6);
+    }
+    50%,
+    90% {
+      opacity: 0.5;
+      animation-timing-function: steps(6);
+    }
+    100% {
+      opacity: 1;
+    }
+  }
+  @keyframes status-ping {
+    /* Burst immediately for click/status feedback, then hold invisible. */
+    0% {
+      opacity: 0.9;
+      scale: 0.75;
+      animation-timing-function: steps(8);
+    }
+    40%,
+    100% {
+      opacity: 0;
+      scale: 2;
+    }
+  }
 }
 
 @layer base {
@@ -119,6 +152,14 @@
 }
 @utility pr-safe {
   padding-right: max(env(safe-area-inset-right), 0px);
+}
+
+/* Grain for chrome surfaces that paint their own background above the body.
+   Keeping it in each surface's cached raster avoids a per-frame viewport blend. */
+@utility surface-grain {
+  background-image: var(--surface-grain);
+  background-repeat: repeat;
+  background-size: 256px 256px;
 }
 
 /* Suppress all transitions during theme changes */
@@ -275,22 +316,18 @@ body {
   padding-right: var(--app-window-resize-edge-inset);
 }
 
-body::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  opacity: 0.035;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  background-repeat: repeat;
-  background-size: 256px 256px;
+/* App-chrome grain is baked into each surface's background rather than a fixed
+   overlay above the viewport. A fixed overlay makes every animation-produced
+   frame re-blend the whole window. The opacity is baked into the SVG so the
+   texture stays behind content and does not soften glyph edges. */
+:root {
+  --surface-grain: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");
 }
 
-/* Grain renders over the whole viewport, text included, so in dark mode it speckles
-   glyph edges and softens crispness fast. Keep it low here; for more surface texture
-   without muddying text, move the layer behind content rather than raising opacity. */
-.dark body::after {
-  opacity: 0.015;
+body {
+  background-image: var(--surface-grain);
+  background-repeat: repeat;
+  background-size: 256px 256px;
 }
 
 pre,
@@ -746,11 +783,9 @@ label:has(> select#reasoning-effort) select {
   0% {
     opacity: 0.5;
     transform: scale(1);
+    animation-timing-function: steps(8);
   }
-  70% {
-    opacity: 0;
-    transform: scale(2.4);
-  }
+  40%,
   100% {
     opacity: 0;
     transform: scale(2.4);
@@ -776,8 +811,9 @@ label:has(> select#reasoning-effort) select {
   0% {
     opacity: 0.5;
     transform: scale(1);
+    animation-timing-function: steps(8);
   }
-  70%,
+  40%,
   100% {
     opacity: 0;
     transform: scale(2.4);

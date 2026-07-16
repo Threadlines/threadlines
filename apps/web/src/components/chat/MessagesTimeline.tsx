@@ -4489,7 +4489,7 @@ function RunningToolIndicator({ className }: { className?: string }) {
   // A single accent tick; the halo stays reserved for the working row.
   return (
     <span className={cn("inline-flex items-center", className)} aria-label="Tool still running">
-      <span className="size-1 animate-pulse rounded-full bg-primary-graph/80" />
+      <span className="size-1 animate-status-pulse rounded-full bg-primary-graph/80" />
     </span>
   );
 }
