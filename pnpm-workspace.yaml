@@ -18,7 +18,7 @@ catalog:
   "@pierre/diffs": 1.3.0-beta.9
   "@types/bun": ^1.3.11
   "@types/node": ^24.10.13
-  "@typescript/native-preview": 7.0.0-dev.20260604.1
+  "@typescript/native-preview": 7.0.0-dev.20260707.2
   "@vitest/browser-playwright": 4.1.10
   effect: 4.0.0-beta.97
   typescript: ^7.0.2
