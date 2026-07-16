@@ -152,7 +152,7 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
           playsinline
           loop
           preload="metadata"
-          poster={`${L}/Posters/rich-subagent-chat.png`}
+          poster={`${L}/Posters/rich-subagent-chat.webp`}
           width="3200"
           height="1868"
           aria-label="Scrolling through a Threadlines conversation where a Scout subagent's full findings render as a first-class message, with the source control panel and commit graph beside the thread"
@@ -191,7 +191,7 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
           playsinline
           loop
           preload="none"
-          poster={`${L}/Posters/project-files-edit.png`}
+          poster={`${L}/Posters/project-files-edit.webp`}
           width="1600"
           height="934"
           aria-label="Browsing project files in tabs with syntax highlighting, editing and saving a file, selecting lines, and attaching them to the chat"
@@ -274,7 +274,7 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
               playsinline
               loop
               preload="none"
-              poster={`${L}/Posters/${c.name}.png`}
+              poster={`${L}/Posters/${c.name}.webp`}
               width="1600"
               height="934"
               aria-label={c.label}
@@ -330,7 +330,7 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
           playsinline
           loop
           preload="none"
-          poster={`${L}/Posters/activity-header-dark.png`}
+          poster={`${L}/Posters/activity-header-dark.webp`}
           width="3200"
           height="1868"
           aria-label="Threadlines with the activity dropdown open: a six-item task list with four done, two subagents with model and reasoning-effort labels, and a background release preview with a Stop button"
@@ -416,7 +416,7 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
           playsinline
           loop
           preload="none"
-          poster={`${L}/Posters/source-control-by-file.png`}
+          poster={`${L}/Posters/source-control-by-file.webp`}
           width="1600"
           height="934"
           aria-label="Stepping through changed files one diff at a time, then returning to the grouped source-control tree with staged and unstaged changes"
@@ -446,7 +446,7 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
           playsinline
           loop
           preload="none"
-          poster={`${L}/Posters/git-history-visual.png`}
+          poster={`${L}/Posters/git-history-visual.webp`}
           width="1600"
           height="934"
           aria-label="A Release Guard conversation showing Scout's completed subagent review beside the visual Git graph, followed by a commit preview and three commits opened in a persistent detail card"
@@ -744,7 +744,7 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
     if (themed.dataset.clip === name) return;
     themed.dataset.clip = name;
     const wasPlaying = !themed.paused;
-    themed.poster = `/Screenshots/launch/Posters/${name}.png`;
+    themed.poster = `/Screenshots/launch/Posters/${name}.webp`;
     for (const source of themed.querySelectorAll("source")) {
       const ext = source.type === "video/webm" ? "webm" : "mp4";
       source.src = `/Screenshots/launch/${name}.${ext}`;

@@ -155,7 +155,7 @@ const difference = (left: number, right: number): number => {
 
 const listMedia = (): ReadonlyArray<string> => {
   const posters = FileSystem.readdirSync(POSTER_ROOT)
-    .filter((name) => name.endsWith(".png"))
+    .filter((name) => name.endsWith(".png") || name.endsWith(".webp"))
     .map((name) => NodePath.join(POSTER_ROOT, name));
   const motion = FileSystem.readdirSync(LAUNCH_ROOT)
     .filter((name) => name.endsWith(".mp4") || name.endsWith(".webm"))

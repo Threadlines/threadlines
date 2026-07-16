@@ -102,8 +102,18 @@ Keep every full-app master at that native geometry:
 - Video: 60 fps when possible; 30 fps is acceptable for a smaller web export.
 - Still format: PNG master.
 - Video masters: the recorder's highest-quality source format.
-- Site exports: WebM first, MP4 fallback, plus a PNG or WebP poster.
+- Site exports: WebM first, MP4 fallback, plus a WebP poster (quality 82; PNG stays the
+  master format, but PNG posters are too heavy to ship as the hero LCP image).
+- Posters are the exported clip's FIRST frame, extracted after trimming. Clips autoplay
+  in place when they scroll into view, so any other poster frame produces a visible
+  jump the moment playback starts. Keep end-state money frames as standalone stills.
 - Record one second of stillness before the first action and after the final state.
+- Site exports loop. Trim them so no more than ~1.5 seconds of stillness remains at
+  either end; a long static tail reads as a frozen page, not a hold.
+- Show the pointer only when it performs the story's actions. For scroll-only clips,
+  exclude the cursor from the capture (or park it off-window) — an idle drifting
+  pointer pulls attention and makes the loop feel driven by a ghost operator. Leave
+  the composer unfocused unless typing is part of the story, so no caret blinks.
 
 Do not crop masters. Save the full maximized window and derive crops from it. This keeps
 replacements flexible if the release-site layout changes.
@@ -201,6 +211,24 @@ Target: a 12–16 second clip and a full-height graph crop.
 
 The branch and tag labels were deliberately kept short for this frame. Keep the panel
 wide enough that labels do not truncate.
+
+### 05 — A subagent reporting back (hero loop)
+
+Target: an 8–10 second clip plus the end-state frame as the poster.
+
+1. Open the Release guard thread; its composer should show Claude Fable 5 and High.
+2. Keep Source Control open on the right so the changes list and commit graph frame
+   the conversation.
+3. Start at the top of the thread with the opening user message visible.
+4. Scroll down at a steady reading pace until Scout's completed release-risk review
+   and the follow-up exchange fill the frame.
+5. Hold on the end state: Scout's subagent card, the rollout-policy reply, and the
+   graph all visible together.
+
+This is the autoplaying hero loop: capture it cursor-less (the only motion is the
+scroll), leave the composer unfocused, and keep the hold short — the loop restarts
+from the top-of-thread state, so a long freeze reads as a stall. Like every looping
+export, the poster is the trimmed clip's first frame.
 
 ## Suggested site asset names
 
