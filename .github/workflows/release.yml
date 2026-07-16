@@ -837,6 +837,9 @@ jobs:
     if: ${{ always() && needs.prepare_release.result == 'success' && (needs.macos.result == 'success' || needs.macos.result == 'skipped') && (needs.windows.result == 'success' || needs.windows.result == 'skipped') && (needs.linux.result == 'success' || needs.linux.result == 'skipped') && (needs.macos.result == 'success' || needs.windows.result == 'success' || needs.linux.result == 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: write
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -940,6 +943,21 @@ jobs:
           fi
 
           gh "${args[@]}"
+
+      - name: Publish npm package for stable release
+        if: ${{ needs.preflight.outputs.channel == 'stable' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.preflight.outputs.tag }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh workflow run npm-package.yml \
+            --ref "$TAG" \
+            -f version="$VERSION" \
+            -f dist_tag=latest \
+            -f publish=true
+          echo "Dispatched npm publish of @threadlines/server@$VERSION from $TAG."
 
   deploy_web_app:
     name: Deploy app.threadlines.dev

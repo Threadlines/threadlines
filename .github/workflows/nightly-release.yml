@@ -1,0 +1,42 @@
+name: Nightly Release Cron
+
+on:
+  schedule:
+    # 06:00 ET daily; skips when main has not moved since the newest release.
+    - cron: "0 10 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  dispatch:
+    name: Dispatch nightly release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Dispatch when main has new commits
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch --force --tags origin "refs/tags/*:refs/tags/*"
+          head_sha="$(git rev-parse HEAD)"
+          newest_tag="$(gh api "repos/${{ github.repository }}/releases?per_page=1" --jq '.[0].tag_name // empty')"
+
+          if [[ -n "$newest_tag" ]]; then
+            tag_sha="$(git rev-parse "refs/tags/${newest_tag}^{commit}" 2>/dev/null || echo "")"
+            if [[ "$tag_sha" == "$head_sha" ]]; then
+              echo "main is still at ${newest_tag} (${head_sha:0:12}); skipping nightly."
+              exit 0
+            fi
+          fi
+
+          echo "Dispatching nightly release for ${head_sha:0:12} (newest release: ${newest_tag:-none})."
+          gh workflow run release.yml -f channel=nightly
