@@ -1559,9 +1559,7 @@ describe("GeneralSettingsPanel observability", () => {
     await expect.element(page.getByText("Chat configured")).toBeInTheDocument();
     await expect.element(page.getByText("Usage verified")).toBeInTheDocument();
     await page.getByText("Advanced: headless chat token").click();
-    await expect
-      .element(page.getByText(/Optional chat-only fallback for remote or headless environments/))
-      .toBeVisible();
+    await expect.element(page.getByText(/Optional for remote or headless chat/)).toBeVisible();
   });
 
   it("opens the shared reset-credit picker from provider settings", async () => {

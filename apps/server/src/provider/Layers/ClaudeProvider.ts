@@ -534,7 +534,7 @@ function claudeAuthMetadata(input: {
   if (normalizedAuthMethod === "longLivedOAuthToken" || input.hasLongLivedOAuthToken) {
     return {
       type: "longLivedOAuthToken",
-      label: "Long-lived Claude token",
+      label: "Chat-only token",
     };
   }
 
@@ -554,20 +554,20 @@ export function claudeAuthCapabilities(input: {
   readonly hasAccountUsage: boolean;
 }): ServerProviderAuthCapabilities {
   const chatDetail = input.isLongLivedOAuthAuth
-    ? "Chat-only; verified on the next turn."
-    : "Claude sign-in was found locally. It will be verified by the next live Claude turn.";
+    ? "Verified on the next chat."
+    : "Sign-in found; verified on the next chat.";
   const usage = input.hasAccountUsage
     ? {
         status: "verified" as const,
-        detail: "Claude subscription usage was verified with the normal Claude sign-in.",
+        detail: "Usage verified.",
       }
     : {
         status: "unavailable" as const,
         detail: input.isApiKeyAuth
-          ? "Subscription usage is not available with Claude API-key authentication."
+          ? "Subscription usage is unavailable with an API key."
           : input.isLongLivedOAuthAuth
-            ? "Usage needs a normal Claude sign-in; the advanced long-lived token is chat-only."
-            : "Claude subscription usage could not be verified. Refresh the normal Claude sign-in.",
+            ? "Normal Claude sign-in required for usage."
+            : "Refresh Claude sign-in to restore usage.",
       };
   return {
     chat: {

@@ -4290,7 +4290,7 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("emits a tagged retry status for api_retry system messages", () => {
+  it.effect("surfaces api_retry warnings only once retries escalate past attempt 1", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
@@ -4311,6 +4311,19 @@ describe("ClaudeAdapterLive", () => {
         input: "hello",
         attachments: [],
       });
+
+      // First-attempt retries are diagnostics-only and never reach the feed.
+      harness.query.emit({
+        type: "system",
+        subtype: "api_retry",
+        attempt: 1,
+        max_retries: 10,
+        retry_delay_ms: 1_000,
+        error_status: null,
+        error: "unknown",
+        session_id: "sdk-session-api-retry",
+        uuid: "api-retry-0",
+      } as unknown as SDKMessage);
 
       harness.query.emit({
         type: "system",

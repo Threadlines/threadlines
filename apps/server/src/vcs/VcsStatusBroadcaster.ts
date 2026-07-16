@@ -34,7 +34,12 @@ const VCS_STATUS_REFRESH_UNCHANGED_MAX_DELAY = Duration.minutes(10);
 // echo of our own `git status` opportunistically rewriting the index.
 const GIT_DIR_WATCH_DEBOUNCE = Duration.millis(300);
 const GIT_DIR_RESOLVE_RETRY_INTERVAL = Duration.seconds(30);
-const SNAPSHOT_LOCAL_REVALIDATE_AGE = Duration.seconds(5);
+// Matches GitManager's local status cache TTL: subscribe bursts still coalesce
+// to at most one `git status` per second per cwd, while a freshly opened
+// thread converges after a single status run instead of waiting out a longer
+// staleness window (working-tree edits never touch the git dir, so the
+// watcher cannot catch them).
+const SNAPSHOT_LOCAL_REVALIDATE_AGE = Duration.seconds(1);
 const SNAPSHOT_REMOTE_REVALIDATE_AGE = Duration.seconds(30);
 
 interface VcsStatusChange {

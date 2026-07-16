@@ -729,7 +729,7 @@ describe("deriveProviderAccountUsagePresentationForProvider", () => {
         {
           key: "primary",
           label: "5h",
-          detail: "usage unavailable",
+          detail: "Refresh sign-in",
           usedPercent: 0,
           remainingPercent: 100,
           reachedLimit: false,
@@ -738,7 +738,7 @@ describe("deriveProviderAccountUsagePresentationForProvider", () => {
         {
           key: "secondary",
           label: "Weekly",
-          detail: "usage unavailable",
+          detail: "Refresh sign-in",
           usedPercent: 0,
           remainingPercent: 100,
           reachedLimit: false,
@@ -767,7 +767,7 @@ describe("deriveProviderAccountUsagePresentationForProvider", () => {
       auth: {
         status: "authenticated",
         type: "longLivedOAuthToken",
-        label: "Long-lived Claude token",
+        label: "Chat-only token",
       },
     } satisfies Pick<ServerProvider, "accountUsage" | "auth" | "driver">;
 
@@ -775,7 +775,7 @@ describe("deriveProviderAccountUsagePresentationForProvider", () => {
       {
         key: "primary",
         label: "5h",
-        detail: "needs Claude sign-in for usage",
+        detail: "Normal sign-in needed",
         usedPercent: 0,
         remainingPercent: 100,
         reachedLimit: false,
@@ -784,7 +784,7 @@ describe("deriveProviderAccountUsagePresentationForProvider", () => {
       {
         key: "secondary",
         label: "Weekly",
-        detail: "needs Claude sign-in for usage",
+        detail: "Normal sign-in needed",
         usedPercent: 0,
         remainingPercent: 100,
         reachedLimit: false,
@@ -793,7 +793,7 @@ describe("deriveProviderAccountUsagePresentationForProvider", () => {
     ]);
   });
 
-  it("keeps capability-specific usage recovery visible when chat auth fails", () => {
+  it("uses compact usage recovery copy when chat auth fails", () => {
     const provider = {
       driver: ProviderDriverKind.make("claudeAgent"),
       auth: {
@@ -812,11 +812,11 @@ describe("deriveProviderAccountUsagePresentationForProvider", () => {
     expect(deriveProviderAccountUsagePresentationForProvider(provider)?.windows).toEqual([
       expect.objectContaining({
         key: "primary",
-        detail: "Refresh the normal Claude sign-in for subscription usage.",
+        detail: "Refresh sign-in",
       }),
       expect.objectContaining({
         key: "secondary",
-        detail: "Refresh the normal Claude sign-in for subscription usage.",
+        detail: "Refresh sign-in",
       }),
     ]);
   });

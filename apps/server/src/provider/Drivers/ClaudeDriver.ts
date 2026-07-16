@@ -59,8 +59,7 @@ const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 const DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
 const CAPABILITIES_PROBE_TTL = Duration.minutes(5);
-const CLAUDE_CHAT_AUTH_REQUIRED_MESSAGE =
-  "Claude chat authentication failed. Refresh the normal Claude sign-in, then retry the turn.";
+const CLAUDE_CHAT_AUTH_REQUIRED_MESSAGE = "Claude sign-in expired. Sign in again, then retry.";
 
 function clearClaudeChatAuthRequiredMessage(provider: ServerProvider): ServerProvider {
   const { message, ...providerWithoutMessage } = provider;
@@ -76,11 +75,11 @@ export function patchClaudeChatAuthState(
     state === "verified"
       ? {
           status: "verified" as const,
-          detail: "Claude chat authentication was verified by a successful live turn.",
+          detail: "Verified by a live chat.",
         }
       : {
           status: "unavailable" as const,
-          detail: "Claude rejected the chat credential. Refresh the normal Claude sign-in.",
+          detail: "Chat sign-in expired. Sign in again.",
         };
   const nextAuthStatus = state === "verified" ? "authenticated" : "unauthenticated";
   if (

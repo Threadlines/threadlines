@@ -744,8 +744,7 @@ function ClaudeLongLivedAuthSection(props: {
       </summary>
       <div className="mt-3 grid gap-3">
         <p className="text-xs text-muted-foreground">
-          Optional chat-only fallback for remote or headless environments. It does not authenticate
-          subscription usage; normal Claude sign-in is the recommended default.
+          Optional for remote or headless chat. Usage still requires normal Claude sign-in.
         </p>
         <div className="grid gap-2 rounded-md border border-border/70 bg-muted/20 p-2.5">
           <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
@@ -784,8 +783,7 @@ function ClaudeLongLivedAuthSection(props: {
             {props.setupCommand}
           </code>
           <p className="text-xs text-muted-foreground">
-            Run this in a terminal, finish the browser authorization, then paste the generated token
-            below.
+            Finish browser authorization, then paste the token below.
           </p>
         </div>
         <label className="block" htmlFor={tokenInputId}>
@@ -1046,8 +1044,8 @@ function ProviderAccountSignInSection(props: {
           description={
             isClaude
               ? claudeLongLivedTokenConfigured
-                ? "Recommended: use one normal Claude sign-in for chat and usage instead of the active advanced chat-only token."
-                : "Recommended: this normal Claude sign-in is shared by chat and subscription usage."
+                ? "Recommended: normal sign-in works for both chat and usage."
+                : "This sign-in works for both chat and usage."
               : `Run this when ${props.displayName} reports that the account is signed out.`
           }
           copiedTitle={`${props.displayName} sign-in command copied`}

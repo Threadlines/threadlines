@@ -1007,8 +1007,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             },
           },
           checkedAt: "2026-07-15T22:00:00.000Z",
-          message:
-            "Claude chat authentication failed. Refresh the normal Claude sign-in, then retry the turn.",
+          message: "Claude sign-in expired. Sign in again, then retry.",
         } as const satisfies ServerProvider;
         const localProbe = {
           ...providerBase,
@@ -1032,7 +1031,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
         assert.strictEqual(mergedFailure.auth.capabilities?.chat?.status, "unavailable");
         assert.strictEqual(
           mergedFailure.message,
-          "Claude chat authentication failed. Refresh the normal Claude sign-in, then retry the turn.",
+          "Claude sign-in expired. Sign in again, then retry.",
         );
 
         const successfulLiveProvider = patchClaudeChatAuthState(mergedFailure, "verified");
@@ -2474,12 +2473,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
           assert.deepStrictEqual(status.auth.capabilities, {
             chat: {
               status: "configured",
-              detail:
-                "Claude sign-in was found locally. It will be verified by the next live Claude turn.",
+              detail: "Sign-in found; verified on the next chat.",
             },
             usage: {
               status: "unavailable",
-              detail: "Subscription usage is not available with Claude API-key authentication.",
+              detail: "Subscription usage is unavailable with an API key.",
             },
           });
         }).pipe(
@@ -2503,7 +2501,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
           assert.strictEqual(status.status, "ready");
           assert.strictEqual(status.auth.status, "authenticated");
           assert.strictEqual(status.auth.type, "longLivedOAuthToken");
-          assert.strictEqual(status.auth.label, "Long-lived Claude token");
+          assert.strictEqual(status.auth.label, "Chat-only token");
           assert.strictEqual(status.auth.capabilities?.chat?.status, "configured");
           assert.strictEqual(status.auth.capabilities?.usage?.status, "unavailable");
         }).pipe(

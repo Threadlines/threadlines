@@ -565,6 +565,12 @@ function makeClaudeUsageUnavailablePresentation(
   };
 }
 
+function compactClaudeUsageUnavailableDetail(
+  provider: ProviderAccountUsagePresentationProvider,
+): string {
+  return provider.auth.type === "longLivedOAuthToken" ? "Normal sign-in needed" : "Refresh sign-in";
+}
+
 export function deriveProviderAccountUsagePresentationForProvider(
   provider: ProviderAccountUsagePresentationProvider | null | undefined,
   nowMs: number = Date.now(),
@@ -572,12 +578,7 @@ export function deriveProviderAccountUsagePresentationForProvider(
   const presentation = deriveProviderAccountUsagePresentation(provider?.accountUsage, nowMs);
   if (presentation || !provider) return presentation;
   if (shouldShowClaudeUsageUnavailablePlaceholder(provider)) {
-    return makeClaudeUsageUnavailablePresentation(
-      provider.auth.capabilities?.usage?.detail ??
-        (provider.auth.type === "longLivedOAuthToken"
-          ? "needs Claude sign-in for usage"
-          : "usage unavailable"),
-    );
+    return makeClaudeUsageUnavailablePresentation(compactClaudeUsageUnavailableDetail(provider));
   }
   return null;
 }

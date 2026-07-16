@@ -4218,6 +4218,17 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         return;
       }
       case "api_retry": {
+        // First-attempt retries are routine stream hiccups the SDK absorbs on
+        // its own; keep those in server diagnostics only. Cascades that reach
+        // attempt 2+ still surface as an activity warning.
+        const attempt = (message as { readonly attempt?: unknown }).attempt;
+        if (typeof attempt === "number" && attempt <= 1) {
+          yield* Effect.logInfo("claude.api-retry.first-attempt", {
+            threadId: context.session.threadId,
+            message,
+          });
+          return;
+        }
         yield* emitRuntimeWarning(context, describeApiRetry(message), message, {
           warningKind: "api-retry",
         });

@@ -475,7 +475,9 @@ describe("VcsStatusBroadcaster", () => {
       yield* broadcaster.getStatus({ cwd: "/repo" });
       assert.equal(state.localStatusCalls, 1);
 
-      yield* TestClock.adjust(Duration.seconds(10));
+      // Two seconds: past the one-second local revalidation age, but inside
+      // the remote revalidation window.
+      yield* TestClock.adjust(Duration.seconds(2));
       state.currentLocalStatus = {
         ...baseLocalStatus,
         refName: "feature/revalidated",
@@ -495,7 +497,7 @@ describe("VcsStatusBroadcaster", () => {
       } satisfies VcsStatusStreamEvent);
       assert.equal(state.localStatusCalls, 2);
       assert.equal(state.localInvalidationCalls, 1);
-      // Ten seconds is inside the remote revalidation window, so only the
+      // Two seconds is inside the remote revalidation window, so only the
       // local part refreshes.
       assert.equal(state.remoteStatusCalls, 1);
       assert.equal(state.remoteInvalidationCalls, 0);
