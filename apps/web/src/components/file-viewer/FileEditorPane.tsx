@@ -1,7 +1,7 @@
 /**
  * Editable surface for the file viewer's edit mode.
  *
- * Wraps a `contentEditable` pierre File in an `EditorProvider`. The attach is
+ * Wraps a `contentEditable` pierre File in an `EditProvider`. The attach is
  * deferred to a post-mount effect: attaching during mount is unsafe under
  * StrictMode (the doubled mount effect runs edit → cleanUp → edit and
  * pierre's re-attach render sync short-circuits on cached content, leaving
@@ -18,7 +18,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Editor } from "@pierre/diffs/editor";
-import { EditorProvider, File as PierreFile } from "@pierre/diffs/react";
+import { EditProvider, File as PierreFile } from "@pierre/diffs/react";
 
 import { useFileViewerStore, type FileViewerContext } from "../../fileViewerStore";
 import { useTheme } from "../../hooks/useTheme";
@@ -134,7 +134,7 @@ export function FileEditorPane({
   );
 
   return (
-    <EditorProvider editor={editor}>
+    <EditProvider editor={editor}>
       <PierreFile
         file={{
           name: path,
@@ -151,6 +151,6 @@ export function FileEditorPane({
         disableWorkerPool
         options={pierreOptions}
       />
-    </EditorProvider>
+    </EditProvider>
   );
 }
