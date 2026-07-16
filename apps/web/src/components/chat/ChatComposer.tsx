@@ -151,6 +151,7 @@ import { resolveComposerSkillReferences } from "../../providerSkillReferences";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 
 const ATTACHMENT_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES / (1024 * 1024))}MB`;
+const ALL_ATTACHMENT_ACCEPT = `image/*,${FILE_ATTACHMENT_ACCEPT}`;
 
 const COMPOSER_PATH_QUERY_DEBOUNCE_MS = 120;
 const CODEX_AGENT_PROVIDER = ProviderDriverKind.make("codex");
@@ -954,7 +955,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // ------------------------------------------------------------------
   const composerEditorRef = useRef<ComposerPromptEditorHandle>(null);
   const imageFileInputRef = useRef<HTMLInputElement>(null);
-  const documentFileInputRef = useRef<HTMLInputElement>(null);
+  const attachmentFileInputRef = useRef<HTMLInputElement>(null);
   const composerFormRef = useRef<HTMLFormElement>(null);
   const composerSurfaceRef = useRef<HTMLDivElement>(null);
   const composerFormHeightRef = useRef(0);
@@ -2052,9 +2053,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     imageFileInputRef.current?.click();
   };
 
-  const openDocumentFilePicker = () => {
+  const openAttachmentFilePicker = () => {
     if (attachmentsDisabled) return;
-    documentFileInputRef.current?.click();
+    attachmentFileInputRef.current?.click();
   };
 
   const onAttachmentFileInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -2887,9 +2888,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   onChange={onAttachmentFileInputChange}
                 />
                 <input
-                  ref={documentFileInputRef}
+                  ref={attachmentFileInputRef}
                   type="file"
-                  accept={FILE_ATTACHMENT_ACCEPT}
+                  accept={isMobileViewport ? FILE_ATTACHMENT_ACCEPT : ALL_ATTACHMENT_ACCEPT}
                   multiple
                   className="sr-only"
                   tabIndex={-1}
@@ -2899,10 +2900,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 <ComposerAttachmentMenu
                   canCaptureScreenshot={canCaptureScreenshot}
                   isCapturingScreenshot={isCapturingScreenshot}
+                  isMobileViewport={isMobileViewport}
                   disabled={attachmentsDisabled}
                   disabledReason={attachmentsDisabledReason}
                   onAddImage={openImageFilePicker}
-                  onAddFile={openDocumentFilePicker}
+                  onAttachFiles={openAttachmentFilePicker}
                   onCaptureScreenshot={onCaptureScreenshot}
                 />
                 <ComposerFooterPrimaryActions

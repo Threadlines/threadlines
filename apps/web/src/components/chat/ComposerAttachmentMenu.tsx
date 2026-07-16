@@ -8,13 +8,15 @@ export interface ComposerAttachmentMenuProps {
   /** Desktop bridge can capture screenshots (adds a third action to the menu). */
   canCaptureScreenshot: boolean;
   isCapturingScreenshot: boolean;
+  /** Phones retain their source-specific native photo and document pickers. */
+  isMobileViewport: boolean;
   /** Attachments can't be added right now (pending prompt, approval state, etc.). */
   disabled: boolean;
   disabledReason: string | null;
   /** Opens the native picker filtered to images. On phones this surfaces the camera / photo library. */
   onAddImage: () => void;
-  /** Opens the native picker filtered to the supported document types. */
-  onAddFile: () => void;
+  /** Opens the native picker for every attachment type on desktop and documents on mobile. */
+  onAttachFiles: () => void;
   onCaptureScreenshot: () => void;
 }
 
@@ -24,9 +26,9 @@ const TRIGGER_CLASS_NAME = "rounded-full text-muted-foreground/70 hover:text-for
  * Composer "Add" control.
  *
  * - Disabled: a single inert "+" button explaining why (no menu to open).
- * - Otherwise: the "+" opens a menu with separate image and file uploads
- *   (each opens a picker pre-filtered to its types), plus screenshot capture
- *   on desktop.
+ * - Otherwise: the "+" opens a unified attachment picker on desktop. Phones
+ *   retain separate image and file actions so the native camera/photo-library
+ *   flow remains available.
  */
 export const ComposerAttachmentMenu = memo(function ComposerAttachmentMenu(
   props: ComposerAttachmentMenuProps,
@@ -34,10 +36,11 @@ export const ComposerAttachmentMenu = memo(function ComposerAttachmentMenu(
   const {
     canCaptureScreenshot,
     isCapturingScreenshot,
+    isMobileViewport,
     disabled,
     disabledReason,
     onAddImage,
-    onAddFile,
+    onAttachFiles,
     onCaptureScreenshot,
   } = props;
 
@@ -83,14 +86,23 @@ export const ComposerAttachmentMenu = memo(function ComposerAttachmentMenu(
         )}
       </MenuTrigger>
       <MenuPopup align="end" side="top">
-        <MenuItem onClick={onAddImage}>
-          <ImageUpIcon aria-hidden="true" />
-          Add image
-        </MenuItem>
-        <MenuItem onClick={onAddFile}>
-          <FileUpIcon aria-hidden="true" />
-          Add file
-        </MenuItem>
+        {isMobileViewport ? (
+          <>
+            <MenuItem onClick={onAddImage}>
+              <ImageUpIcon aria-hidden="true" />
+              Add image
+            </MenuItem>
+            <MenuItem onClick={onAttachFiles}>
+              <FileUpIcon aria-hidden="true" />
+              Add file
+            </MenuItem>
+          </>
+        ) : (
+          <MenuItem onClick={onAttachFiles}>
+            <FileUpIcon aria-hidden="true" />
+            Attach files
+          </MenuItem>
+        )}
         {canCaptureScreenshot && (
           <MenuItem onClick={onCaptureScreenshot} disabled={isCapturingScreenshot}>
             {isCapturingScreenshot ? (
