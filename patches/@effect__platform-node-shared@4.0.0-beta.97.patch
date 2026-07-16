@@ -1,8 +1,8 @@
 diff --git a/dist/NodeChildProcessSpawner.js b/dist/NodeChildProcessSpawner.js
-index 384b19c2265cb753509f7c988cb6b450042d975e..e009c950a4d9d0c7366b44c84d5a859c33cef65d 100644
+index 384b19c2265cb753509f7c988cb6b450042d975e..2654a34e7975024d774d7f5b273d40d293ad2fda 100644
 --- a/dist/NodeChildProcessSpawner.js
 +++ b/dist/NodeChildProcessSpawner.js
-@@ -336,13 +336,15 @@ const make = /*#__PURE__*/Effect.gen(function* () {
+@@ -336,20 +336,26 @@ const make = /*#__PURE__*/Effect.gen(function* () {
            let isReferenced = true;
            const cwd = yield* resolveWorkingDirectory(cmd.options);
            const env = resolveEnvironment(cmd.options);
@@ -19,8 +19,32 @@ index 384b19c2265cb753509f7c988cb6b450042d975e..e009c950a4d9d0c7366b44c84d5a859c
            }), Effect.fnUntraced(function* ([childProcess, exitSignal]) {
              const exited = yield* Deferred.isDone(exitSignal);
              const killWithTimeout = withTimeout(childProcess, cmd, cmd.options);
+             if (exited) {
+               // Process already exited, check if children need cleanup
+               const [code] = yield* Deferred.await(exitSignal);
+-              if (code !== 0 && Predicate.isNotNull(code)) {
++              // Skipped on Windows: there are no process groups, and
++              // `taskkill /pid <pid> /T` cannot enumerate the children of an
++              // exited pid — it only spawns a cmd.exe + taskkill.exe that
++              // fail, and a reused pid could kill an unrelated process.
++              if (code !== 0 && Predicate.isNotNull(code) && process.platform !== "win32") {
+                 // Non-zero exit code ,attempt to clean up process group
+                 return yield* Effect.ignore(killWithTimeout(killProcessGroup));
+               }
+@@ -363,7 +369,10 @@ const make = /*#__PURE__*/Effect.gen(function* () {
+           }));
+           const pid = ProcessId(childProcess.pid);
+           childProcess.on("exit", code => {
+-            if (code !== 0 && Predicate.isNotNull(code)) {
++            // Skipped on Windows for the same reason as the release
++            // finalizer above: group cleanup for an exited pid is a no-op
++            // that costs two process spawns per non-zero exit.
++            if (code !== 0 && Predicate.isNotNull(code) && process.platform !== "win32") {
+               killProcessGroupOnExit(childProcess, cmd.options.killSignal ?? "SIGTERM");
+             }
+           });
 diff --git a/src/NodeChildProcessSpawner.ts b/src/NodeChildProcessSpawner.ts
-index ec7da1d3444463ee4883411e1cc2a2ce14ef9644..a88217f388eb419e8b9ca26168602dd366713363 100644
+index ec7da1d3444463ee4883411e1cc2a2ce14ef9644..679a178f24e9272d7cc391a7fe9b01b1fcba9a9e 100644
 --- a/src/NodeChildProcessSpawner.ts
 +++ b/src/NodeChildProcessSpawner.ts
 @@ -468,6 +468,9 @@ const make = Effect.gen(function*() {
@@ -43,3 +67,28 @@ index ec7da1d3444463ee4883411e1cc2a2ce14ef9644..a88217f388eb419e8b9ca26168602dd3
            }),
            Effect.fnUntraced(function*([childProcess, exitSignal]) {
              const exited = yield* Deferred.isDone(exitSignal)
+@@ -484,7 +488,11 @@ const make = Effect.gen(function*() {
+             if (exited) {
+               // Process already exited, check if children need cleanup
+               const [code] = yield* Deferred.await(exitSignal)
+-              if (code !== 0 && Predicate.isNotNull(code)) {
++              // Skipped on Windows: there are no process groups, and
++              // `taskkill /pid <pid> /T` cannot enumerate the children of an
++              // exited pid — it only spawns a cmd.exe + taskkill.exe that
++              // fail, and a reused pid could kill an unrelated process.
++              if (code !== 0 && Predicate.isNotNull(code) && process.platform !== "win32") {
+                 // Non-zero exit code ,attempt to clean up process group
+                 return yield* Effect.ignore(killWithTimeout(killProcessGroup))
+               }
+@@ -508,7 +516,10 @@ const make = Effect.gen(function*() {
+ 
+         const pid = ProcessId(childProcess.pid!)
+         childProcess.on("exit", (code) => {
+-          if (code !== 0 && Predicate.isNotNull(code)) {
++          // Skipped on Windows for the same reason as the release finalizer
++          // above: group cleanup for an exited pid is a no-op that costs two
++          // process spawns per non-zero exit.
++          if (code !== 0 && Predicate.isNotNull(code) && process.platform !== "win32") {
+             killProcessGroupOnExit(childProcess, cmd.options.killSignal ?? "SIGTERM")
+           }
+         })

@@ -209,7 +209,7 @@ describe("ProcessDiagnostics", () => {
                     CommandLine: "agent",
                     Status: "Running",
                     WorkingSetSize: 2048 * 1024,
-                    PercentProcessorTime: 1.5,
+                    CpuTime100ns: 15_000_000,
                   },
                 ]),
               }),
@@ -251,21 +251,52 @@ describe("ProcessDiagnostics", () => {
     }),
   );
 
-  it("builds a batched Windows process-tree query", () => {
+  it("builds a batched Windows process-tree query without WMI perf counters", () => {
     const command = ProcessDiagnostics.buildWindowsProcessQueryCommand(1234);
 
     expect(command).toContain("$serverPid = 1234");
     expect(command).toContain(
-      "Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CommandLine,Status,WorkingSetSize",
+      "Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CommandLine,Status,WorkingSetSize,KernelModeTime,UserModeTime",
     );
-    expect(command).toContain(
-      "Get-CimInstance Win32_PerfFormattedData_PerfProc_Process -Property IDProcess,PercentProcessorTime",
-    );
+    // Win32_PerfFormattedData_PerfProc_Process forces WMI to compute CPU
+    // percentages for every process on the machine; CPU load must come from
+    // raw CPU-time deltas instead.
+    expect(command).not.toContain("Win32_PerfFormattedData_PerfProc_Process");
+    expect(command).toContain("CpuTime100ns = [uint64]$_.KernelModeTime + [uint64]$_.UserModeTime");
     expect(command).toContain("$childrenByParent.ContainsKey($parentPid)");
-    expect(command).toContain("$targetPids.Contains($processId)");
-    expect(command).not.toContain('IDProcess = $processId"');
-    expect(command).toContain("$perfByPid");
     expect(command).not.toContain('ParentProcessId = $parentPid"');
+  });
+
+  it("derives Windows CPU percentages from CPU-time deltas between samples", () => {
+    const tracker = ProcessDiagnostics.makeWindowsCpuTracker();
+    const row = (pid: number, cpuTime100ns: number | null) => ({
+      pid,
+      ppid: 100,
+      pgid: null,
+      status: "Live",
+      cpuPercent: 0,
+      rssBytes: 1024,
+      elapsed: "",
+      command: "agent",
+      cpuTime100ns,
+    });
+
+    // First observation has no baseline.
+    expect(tracker.apply([row(4242, 10_000_000)], 1_000)).toEqual([
+      expect.objectContaining({ pid: 4242, cpuPercent: 0 }),
+    ]);
+    // 2.5s of CPU time over 5s of wall time = 50%.
+    expect(tracker.apply([row(4242, 35_000_000)], 6_000)).toEqual([
+      expect.objectContaining({ pid: 4242, cpuPercent: 50 }),
+    ]);
+    // CPU time going backwards means the pid was reused; reset the baseline.
+    expect(tracker.apply([row(4242, 5_000_000)], 11_000)).toEqual([
+      expect.objectContaining({ pid: 4242, cpuPercent: 0 }),
+    ]);
+    // Rows without CPU time pass through untouched.
+    expect(tracker.apply([row(4243, null)], 16_000)).toEqual([
+      expect.objectContaining({ pid: 4243, cpuPercent: 0 }),
+    ]);
   });
 
   it("parses Windows listening port rows", () => {

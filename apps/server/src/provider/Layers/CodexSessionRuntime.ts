@@ -82,6 +82,9 @@ const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
   "no such thread",
   "unknown thread",
   "does not exist",
+  // Codex app-server >= 0.144 wording when the rollout JSONL backing a
+  // thread id is absent, e.g. "no rollout found for thread id <uuid>".
+  "no rollout found",
 ];
 
 export const CodexResumeCursorSchema = Schema.Struct({

@@ -108,7 +108,13 @@ const MAX_PROGRESS_TEXT_LENGTH = 500;
 const SHORT_SHA_LENGTH = 7;
 const TOAST_DESCRIPTION_MAX = 72;
 const STATUS_RESULT_CACHE_TTL = Duration.seconds(1);
+/** Failed status reads (typically git timeouts under load) are cached briefly
+ *  so subscribers don't relaunch git in a tight retry loop; explicit
+ *  invalidation on git-dir changes still forces a fresh read. */
+const STATUS_RESULT_FAILURE_CACHE_TTL = Duration.seconds(5);
 const STATUS_RESULT_CACHE_CAPACITY = 2_048;
+const statusResultCacheTimeToLive = (exit: Exit.Exit<unknown, unknown>) =>
+  Exit.isSuccess(exit) ? STATUS_RESULT_CACHE_TTL : STATUS_RESULT_FAILURE_CACHE_TTL;
 type StripProgressContext<T> = T extends any ? Omit<T, "actionId" | "cwd" | "action"> : never;
 type GitActionProgressPayload = StripProgressContext<GitActionProgressEvent>;
 type GitActionProgressEmitter = (event: GitActionProgressPayload) => Effect.Effect<void, never>;
@@ -848,7 +854,7 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
   });
   const localStatusResultCache = yield* Cache.makeWith(readLocalStatus, {
     capacity: STATUS_RESULT_CACHE_CAPACITY,
-    timeToLive: (exit) => (Exit.isSuccess(exit) ? STATUS_RESULT_CACHE_TTL : Duration.zero),
+    timeToLive: statusResultCacheTimeToLive,
   });
   const invalidateLocalStatusResultCache = (cwd: string) =>
     normalizeStatusCacheKey(cwd).pipe(
@@ -892,7 +898,7 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
   });
   const remoteStatusResultCache = yield* Cache.makeWith(readRemoteStatus, {
     capacity: STATUS_RESULT_CACHE_CAPACITY,
-    timeToLive: (exit) => (Exit.isSuccess(exit) ? STATUS_RESULT_CACHE_TTL : Duration.zero),
+    timeToLive: statusResultCacheTimeToLive,
   });
   const invalidateRemoteStatusResultCache = (cwd: string) =>
     normalizeStatusCacheKey(cwd).pipe(

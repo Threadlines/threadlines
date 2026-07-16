@@ -158,7 +158,13 @@ export function parsePosixProcessRows(output: string): ReadonlyArray<ProcessRow>
   return rows;
 }
 
-function normalizeWindowsProcessRow(value: unknown): ProcessRow | null {
+export interface WindowsProcessRow extends ProcessRow {
+  /** Cumulative kernel+user CPU time in 100ns units, or null when the query
+   *  did not report it (e.g. protected processes, all-process queries). */
+  readonly cpuTime100ns: number | null;
+}
+
+function normalizeWindowsProcessRow(value: unknown): WindowsProcessRow | null {
   if (typeof value !== "object" || value === null) return null;
   const record = value as Record<string, unknown>;
   const pid = typeof record.ProcessId === "number" ? record.ProcessId : null;
@@ -173,10 +179,12 @@ function normalizeWindowsProcessRow(value: unknown): ProcessRow | null {
     typeof record.WorkingSetSize === "number" && Number.isFinite(record.WorkingSetSize)
       ? Math.max(0, Math.round(record.WorkingSetSize))
       : 0;
-  const cpuPercent =
-    typeof record.PercentProcessorTime === "number" && Number.isFinite(record.PercentProcessorTime)
-      ? Math.max(0, record.PercentProcessorTime)
-      : 0;
+  const cpuTime100ns =
+    typeof record.CpuTime100ns === "number" &&
+    Number.isFinite(record.CpuTime100ns) &&
+    record.CpuTime100ns >= 0
+      ? record.CpuTime100ns
+      : null;
 
   if (!pid || pid <= 0 || ppid === null || ppid < 0 || !commandLine) return null;
   return {
@@ -184,14 +192,15 @@ function normalizeWindowsProcessRow(value: unknown): ProcessRow | null {
     ppid,
     pgid: null,
     status: typeof record.Status === "string" && record.Status.length > 0 ? record.Status : "Live",
-    cpuPercent,
+    cpuPercent: 0,
     rssBytes: workingSet,
     elapsed: "",
     command: commandLine,
+    cpuTime100ns,
   };
 }
 
-function parseWindowsProcessRows(output: string): ReadonlyArray<ProcessRow> {
+export function parseWindowsProcessRows(output: string): ReadonlyArray<WindowsProcessRow> {
   if (output.trim().length === 0) return [];
   try {
     const parsed = JSON.parse(output) as unknown;
@@ -204,6 +213,62 @@ function parseWindowsProcessRows(output: string): ReadonlyArray<ProcessRow> {
     return [];
   }
 }
+
+const WINDOWS_CPU_MIN_SAMPLE_INTERVAL_MS = 250;
+
+interface WindowsCpuSample {
+  readonly cpuTime100ns: number;
+  readonly sampledAtMs: number;
+  readonly cpuPercent: number;
+}
+
+/** Derives per-process CPU percentages from cumulative CPU-time deltas
+ *  between successive Windows process queries. The first observation of a
+ *  pid (and a pid whose CPU time went backwards, i.e. pid reuse) reports 0%
+ *  until the next sample establishes a baseline. State is pruned to the pids
+ *  present in the latest query. */
+export function makeWindowsCpuTracker(): {
+  readonly apply: (
+    rows: ReadonlyArray<WindowsProcessRow>,
+    nowMs: number,
+  ) => ReadonlyArray<ProcessRow>;
+} {
+  let previousByPid = new Map<number, WindowsCpuSample>();
+  return {
+    apply(rows, nowMs) {
+      const nextByPid = new Map<number, WindowsCpuSample>();
+      const result = rows.map(({ cpuTime100ns, ...row }) => {
+        if (cpuTime100ns === null) {
+          return row;
+        }
+        const previous = previousByPid.get(row.pid);
+        let sample: WindowsCpuSample;
+        if (previous === undefined || cpuTime100ns < previous.cpuTime100ns) {
+          sample = { cpuTime100ns, sampledAtMs: nowMs, cpuPercent: 0 };
+        } else if (nowMs - previous.sampledAtMs < WINDOWS_CPU_MIN_SAMPLE_INTERVAL_MS) {
+          // Too close to the previous sample for a stable delta (e.g. a
+          // one-off diagnostics read racing the periodic sampler); keep the
+          // previous baseline and value.
+          sample = previous;
+        } else {
+          const cpuMs = (cpuTime100ns - previous.cpuTime100ns) / 10_000;
+          const wallMs = nowMs - previous.sampledAtMs;
+          sample = {
+            cpuTime100ns,
+            sampledAtMs: nowMs,
+            cpuPercent: Math.round((cpuMs / wallMs) * 1000) / 10,
+          };
+        }
+        nextByPid.set(row.pid, sample);
+        return { ...row, cpuPercent: sample.cpuPercent };
+      });
+      previousByPid = nextByPid;
+      return result;
+    },
+  };
+}
+
+const windowsCpuTracker = makeWindowsCpuTracker();
 
 function normalizeListeningPortRow(value: unknown): ListeningPortRow | null {
   if (typeof value !== "object" || value === null) return null;
@@ -459,13 +524,19 @@ function readPosixProcessRows(): Effect.Effect<
   );
 }
 
+/** CPU load is reported as raw cumulative CPU time (`CpuTime100ns`) rather
+ *  than a WMI percentage: `Win32_PerfFormattedData_PerfProc_Process` makes
+ *  the WMI provider host compute percentages for every process on the
+ *  machine and is expensive enough to show up as system-wide CPU spikes when
+ *  sampled periodically. Percentages are derived in-process from deltas
+ *  between samples (see `makeWindowsCpuTracker`). */
 export function buildWindowsProcessQueryCommand(serverPid = process.pid): string {
   const safeServerPid =
     Number.isInteger(serverPid) && serverPid > 0 ? Math.trunc(serverPid) : process.pid;
   return [
     `$serverPid = ${safeServerPid};`,
     "$rowsByPid = @{};",
-    "$allRows = @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CommandLine,Status,WorkingSetSize -ErrorAction Stop);",
+    "$allRows = @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CommandLine,Status,WorkingSetSize,KernelModeTime,UserModeTime -ErrorAction Stop);",
     "$childrenByParent = @{};",
     "foreach ($row in $allRows) {",
     "$parentPid = [int]$row.ParentProcessId;",
@@ -489,19 +560,8 @@ export function buildWindowsProcessQueryCommand(serverPid = process.pid): string
     "}",
     "}",
     "};",
-    "$perfByPid = @{};",
-    "$targetPids = [System.Collections.Generic.HashSet[int]]::new();",
-    "foreach ($processId in $rowsByPid.Keys) { [void]$targetPids.Add([int]$processId) }",
-    "try {",
-    "Get-CimInstance Win32_PerfFormattedData_PerfProc_Process -Property IDProcess,PercentProcessorTime -ErrorAction Stop | ForEach-Object {",
-    "$processId = [int]$_.IDProcess;",
-    "if ($targetPids.Contains($processId)) { $perfByPid[$processId] = $_.PercentProcessorTime }",
-    "}",
-    "} catch {",
-    "}",
     "@($rowsByPid.Values | ForEach-Object {",
-    "$processId = [int]$_.ProcessId;",
-    "[pscustomobject]@{ ProcessId = $_.ProcessId; ParentProcessId = $_.ParentProcessId; Name = $_.Name; CommandLine = $_.CommandLine; Status = $_.Status; WorkingSetSize = $_.WorkingSetSize; PercentProcessorTime = if ($perfByPid.ContainsKey($processId)) { $perfByPid[$processId] } else { 0 } }",
+    "[pscustomobject]@{ ProcessId = $_.ProcessId; ParentProcessId = $_.ParentProcessId; Name = $_.Name; CommandLine = $_.CommandLine; Status = $_.Status; WorkingSetSize = $_.WorkingSetSize; CpuTime100ns = [uint64]$_.KernelModeTime + [uint64]$_.UserModeTime }",
     "}) | ConvertTo-Json -Compress -Depth 3",
   ].join(" ");
 }
@@ -521,7 +581,14 @@ function readWindowsProcessRows(): Effect.Effect<
         ? Effect.fail(
             toProcessDiagnosticsError(result.stderr.trim() || "PowerShell process query failed."),
           )
-        : Effect.succeed(parseWindowsProcessRows(result.stdout)),
+        : DateTime.now.pipe(
+            Effect.map((now) =>
+              windowsCpuTracker.apply(
+                parseWindowsProcessRows(result.stdout),
+                DateTime.toEpochMillis(now),
+              ),
+            ),
+          ),
     ),
   );
 }
@@ -529,7 +596,7 @@ function readWindowsProcessRows(): Effect.Effect<
 function buildWindowsAllProcessQueryCommand(): string {
   return [
     "Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CommandLine,Status,WorkingSetSize -ErrorAction Stop | ForEach-Object {",
-    "[pscustomobject]@{ ProcessId = $_.ProcessId; ParentProcessId = $_.ParentProcessId; Name = $_.Name; CommandLine = $_.CommandLine; Status = $_.Status; WorkingSetSize = $_.WorkingSetSize; PercentProcessorTime = 0 }",
+    "[pscustomobject]@{ ProcessId = $_.ProcessId; ParentProcessId = $_.ParentProcessId; Name = $_.Name; CommandLine = $_.CommandLine; Status = $_.Status; WorkingSetSize = $_.WorkingSetSize }",
     "} | ConvertTo-Json -Compress -Depth 3",
   ].join(" ");
 }

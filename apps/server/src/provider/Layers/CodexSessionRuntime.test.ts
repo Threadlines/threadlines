@@ -479,6 +479,18 @@ describe("isRecoverableThreadResumeError", () => {
     );
   });
 
+  it("matches missing rollout errors", () => {
+    assert.equal(
+      isRecoverableThreadResumeError(
+        new CodexErrors.CodexAppServerRequestError({
+          code: -32603,
+          errorMessage: "no rollout found for thread id 019f68c4-2fe3-7bc2-93cd-4c367548d975",
+        }),
+      ),
+      true,
+    );
+  });
+
   it("ignores non-recoverable resume errors", () => {
     assert.equal(
       isRecoverableThreadResumeError(
