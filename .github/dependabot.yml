@@ -8,6 +8,11 @@ updates:
       time: "09:00"
       timezone: America/New_York
     open-pull-requests-limit: 5
+    ignore:
+      # Dependabot mishandles this pnpm catalog entry (drops it from the
+      # catalog and hardcodes the lockfile importer), producing unmergeable
+      # PRs. The typecheck toolchain is bumped manually instead.
+      - dependency-name: "@effect/tsgo"
     groups:
       production-dependencies:
         dependency-type: production
