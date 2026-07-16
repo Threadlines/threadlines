@@ -30,6 +30,7 @@ on:
           - mac-arm64
           - mac-arm64-windows
           - mac-all
+          - linux
           - all
       deploy_web:
         description: "Deploy app.threadlines.dev after the release publishes."
@@ -59,6 +60,8 @@ jobs:
       make_latest: ${{ steps.release_meta.outputs.make_latest }}
       build_scope: ${{ steps.release_meta.outputs.build_scope }}
       build_windows: ${{ steps.release_meta.outputs.build_windows }}
+      build_macos: ${{ steps.release_meta.outputs.build_macos }}
+      build_linux: ${{ steps.release_meta.outputs.build_linux }}
       macos_matrix: ${{ steps.release_meta.outputs.macos_matrix }}
       ref: ${{ github.sha }}
     steps:
@@ -220,6 +223,8 @@ jobs:
 
           echo "Resolved build scope: $build_scope"
 
+          build_macos=true
+          build_linux=false
           case "$build_scope" in
             mac-arm64)
               build_windows=false
@@ -233,8 +238,15 @@ jobs:
               build_windows=false
               macos_matrix='{"include":[{"arch":"arm64","runner":"macos-15"},{"arch":"x64","runner":"macos-15-intel"}]}'
               ;;
+            linux)
+              build_windows=false
+              build_macos=false
+              build_linux=true
+              macos_matrix='{"include":[{"arch":"arm64","runner":"macos-15"}]}'
+              ;;
             all)
               build_windows=true
+              build_linux=true
               macos_matrix='{"include":[{"arch":"arm64","runner":"macos-15"},{"arch":"x64","runner":"macos-15-intel"}]}'
               ;;
             *)
@@ -256,6 +268,8 @@ jobs:
           echo "make_latest=$make_latest" >> "$GITHUB_OUTPUT"
           echo "build_scope=$build_scope" >> "$GITHUB_OUTPUT"
           echo "build_windows=$build_windows" >> "$GITHUB_OUTPUT"
+          echo "build_macos=$build_macos" >> "$GITHUB_OUTPUT"
+          echo "build_linux=$build_linux" >> "$GITHUB_OUTPUT"
           echo "macos_matrix=$macos_matrix" >> "$GITHUB_OUTPUT"
 
       - name: Release smoke
@@ -481,6 +495,7 @@ jobs:
     needs:
       - preflight
       - prepare_release
+    if: ${{ needs.preflight.outputs.build_macos == 'true' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 50
     strategy:
@@ -666,6 +681,151 @@ jobs:
           fi
           gh release upload "$TAG" "${assets[@]}" --clobber
 
+  linux:
+    name: Build Linux x64 AppImage
+    needs:
+      - preflight
+      - prepare_release
+    if: ${{ needs.preflight.outputs.build_linux == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ needs.preflight.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          version: "0.2.4"
+          run-install: false
+
+      - name: Cache desktop build downloads
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+          key: linux-x64-desktop-${{ hashFiles('pnpm-lock.yaml', 'package.json', 'apps/desktop/package.json') }}
+          restore-keys: |
+            linux-x64-desktop-
+
+      - name: Install dependencies
+        run: vp install --frozen-lockfile
+
+      - name: Ensure Electron binary is installed
+        run: node scripts/ensure-electron-binary.ts
+
+      - name: Align release package versions
+        run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
+
+      - name: Build Linux AppImage
+        env:
+          THREADLINES_POSTHOG_KEY: ${{ secrets.THREADLINES_POSTHOG_KEY }}
+          THREADLINES_POSTHOG_HOST: ${{ vars.THREADLINES_POSTHOG_HOST }}
+          THREADLINES_TELEMETRY_ENABLED: ${{ vars.THREADLINES_TELEMETRY_ENABLED }}
+        run: >
+          vp exec vp run dist:desktop:artifact --
+          --platform linux
+          --target AppImage
+          --arch x64
+          --build-version "${{ needs.preflight.outputs.version }}"
+          --verbose
+
+      - name: Normalize Linux updater manifests
+        env:
+          CHANNEL: ${{ needs.preflight.outputs.channel }}
+        run: |
+          set -euo pipefail
+          if [[ "$CHANNEL" == "nightly" ]]; then
+            if [[ ! -f release/nightly-linux.yml ]]; then
+              if [[ -f release/latest-linux.yml ]]; then
+                cp release/latest-linux.yml release/nightly-linux.yml
+              else
+                echo "Nightly build did not produce nightly-linux.yml or latest-linux.yml." >&2
+                exit 1
+              fi
+            fi
+            if [[ ! -f release/latest-linux.yml ]]; then
+              cp release/nightly-linux.yml release/latest-linux.yml
+            fi
+          else
+            if [[ ! -f release/latest-linux.yml ]]; then
+              if [[ -f release/nightly-linux.yml ]]; then
+                mv release/nightly-linux.yml release/latest-linux.yml
+              else
+                echo "Stable build did not produce latest-linux.yml or nightly-linux.yml." >&2
+                exit 1
+              fi
+            fi
+            rm -f release/nightly-linux.yml
+          fi
+
+      - name: Remove non-release build metadata
+        run: rm -f release/builder-debug*.yml
+
+      - name: List release assets
+        run: ls -la release
+
+      - name: Boot AppImage and verify backend serves
+        run: |
+          set -euo pipefail
+          command -v xvfb-run >/dev/null || (sudo apt-get update && sudo apt-get install -y xvfb)
+          appimage="$(ls release/*.AppImage | head -1)"
+          chmod +x "$appimage"
+          export THREADLINES_HOME="$RUNNER_TEMP/threadlines-home"
+          xvfb-run -a "$appimage" --appimage-extract-and-run --no-sandbox > "$RUNNER_TEMP/app.log" 2>&1 &
+          app_pid=$!
+
+          url=""
+          for _ in $(seq 1 45); do
+            if curl -sf -o /dev/null "http://127.0.0.1:3773/"; then
+              url="http://127.0.0.1:3773/"
+              break
+            fi
+            if ! kill -0 "$app_pid" 2>/dev/null; then
+              echo "App process exited early." >&2
+              break
+            fi
+            sleep 2
+          done
+
+          if [ -z "$url" ]; then
+            for port in $(ss -tlnp 2>/dev/null | awk '/threadlines|node|electron/ {split($4, a, ":"); print a[length(a)]}' | sort -u); do
+              if curl -sf -o /dev/null "http://127.0.0.1:${port}/"; then
+                url="http://127.0.0.1:${port}/"
+                break
+              fi
+            done
+          fi
+
+          if [ -z "$url" ]; then
+            echo "AppImage backend never became reachable." >&2
+            cat "$RUNNER_TEMP/app.log" || true
+            exit 1
+          fi
+
+          echo "Backend serving at $url"
+          kill "$app_pid" 2>/dev/null || true
+
+      - name: Upload Linux assets to draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.preflight.outputs.tag }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(release/*.AppImage release/*-linux.yml)
+          if (( ${#assets[@]} == 0 )); then
+            echo "No Linux release assets found." >&2
+            exit 1
+          fi
+          gh release upload "$TAG" "${assets[@]}" --clobber
+
   publish:
     name: Publish GitHub Release
     needs:
@@ -673,7 +833,8 @@ jobs:
       - prepare_release
       - windows
       - macos
-    if: ${{ always() && needs.prepare_release.result == 'success' && needs.macos.result == 'success' && (needs.windows.result == 'success' || needs.windows.result == 'skipped') }}
+      - linux
+    if: ${{ always() && needs.prepare_release.result == 'success' && (needs.macos.result == 'success' || needs.macos.result == 'skipped') && (needs.windows.result == 'success' || needs.windows.result == 'skipped') && (needs.linux.result == 'success' || needs.linux.result == 'skipped') && (needs.macos.result == 'success' || needs.windows.result == 'success' || needs.linux.result == 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -695,6 +856,7 @@ jobs:
         run: vp install --frozen-lockfile --ignore-scripts
 
       - name: Download updater manifests
+        if: ${{ needs.macos.result == 'success' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -716,6 +878,7 @@ jobs:
           ls -la release-manifests
 
       - name: Merge macOS updater manifests
+        if: ${{ needs.macos.result == 'success' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -796,8 +959,9 @@ jobs:
       - prepare_release
       - windows
       - macos
+      - linux
       - publish
-    if: ${{ always() && needs.prepare_release.result == 'success' && ((needs.windows.result != 'success' && needs.windows.result != 'skipped') || needs.macos.result != 'success' || needs.publish.result != 'success') }}
+    if: ${{ always() && needs.prepare_release.result == 'success' && ((needs.windows.result != 'success' && needs.windows.result != 'skipped') || (needs.macos.result != 'success' && needs.macos.result != 'skipped') || (needs.linux.result != 'success' && needs.linux.result != 'skipped') || needs.publish.result != 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

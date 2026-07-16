@@ -29,16 +29,20 @@ jobs:
           gh release download "$tag" --repo "${{ github.repository }}" --pattern "*-arm64.dmg"
           mv Threadlines-*-arm64.dmg Threadlines.dmg
 
-      - name: Gatekeeper assessment (simulated browser download)
+      - name: Inspect dmg signature and notarization (informational)
         run: |
+          # electron-builder does not sign the dmg container by default; Gatekeeper
+          # gates on the .app inside, which the next step verifies as the hard gate.
           xattr -w com.apple.quarantine "0083;$(printf '%x' "$(date +%s)");Safari;" Threadlines.dmg
-          spctl --assess --type open --context context:primary-signature -vv Threadlines.dmg
+          spctl --assess --type open --context context:primary-signature -vv Threadlines.dmg || echo "dmg container is not signed (informational)"
+          xcrun stapler validate Threadlines.dmg || echo "dmg has no stapled notarization ticket (informational)"
 
       - name: Verify app signature and notarization
         run: |
           hdiutil attach Threadlines.dmg -nobrowse -mountpoint /Volumes/ThreadlinesSmoke
           cp -R /Volumes/ThreadlinesSmoke/Threadlines.app "$RUNNER_TEMP/Threadlines.app"
           hdiutil detach /Volumes/ThreadlinesSmoke
+          xattr -w com.apple.quarantine "0083;$(printf '%x' "$(date +%s)");Safari;" "$RUNNER_TEMP/Threadlines.app"
           codesign --verify --deep --strict --verbose=2 "$RUNNER_TEMP/Threadlines.app"
           spctl --assess --type execute -vv "$RUNNER_TEMP/Threadlines.app"
           xcrun stapler validate "$RUNNER_TEMP/Threadlines.app"
