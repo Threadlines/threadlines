@@ -8,7 +8,7 @@ const appStructuredData = {
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
   name: "Threadlines",
-  operatingSystem: "macOS, Windows",
+  operatingSystem: "macOS, Windows, Linux",
   applicationCategory: "DeveloperApplication",
   offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
   description: DEFAULT_SITE_DESCRIPTION,
@@ -503,7 +503,7 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
         <div><span>43a45e9</span> Freeze marketing deploys and draft new homepage</div>
         <div><span>6fcd267</span> Link background task notifications to tool calls</div>
       </div>
-      <p class="pv-note">github.com/Threadlines/threadlines · macOS + Windows</p>
+      <p class="pv-note">github.com/Threadlines/threadlines · macOS + Windows + Linux</p>
     </div>
   </section>
 
@@ -528,23 +528,26 @@ const playGlyphs = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="tr
       ""
     ).toLowerCase();
     const isWin = plat.includes("win");
+    const isLinux = plat.includes("linux");
     const label = document.getElementById("pv-dl-label")!;
     if (isWin) {
       label.textContent = "Download for Windows";
       document.getElementById("pv-dl-mac")!.hidden = true;
       document.getElementById("pv-dl-win")!.hidden = false;
-    } else if (plat.includes("linux")) {
-      label.textContent = "Download Threadlines";
+    } else if (isLinux) {
+      label.textContent = "Download for Linux";
       document.getElementById("pv-dl-mac")!.hidden = true;
     }
-    if (isWin || plat.includes("mac")) {
+    if (isWin || isLinux || plat.includes("mac")) {
       // deep-link the button straight to the installer; /download stays the fallback
       fetchLatestRelease()
         .then((release) => {
           const installers = classifyAssets(release.assets);
           const asset = isWin
             ? (installers.winX64 ?? installers.winArm)
-            : (installers.macArm ?? installers.macX64);
+            : isLinux
+              ? installers.linuxX64
+              : (installers.macArm ?? installers.macX64);
           if (asset) dl.href = asset.browser_download_url;
         })
         .catch(() => {});

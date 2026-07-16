@@ -4,7 +4,7 @@ import Layout from "../layouts/Layout.astro";
 
 <Layout
   title="Download Threadlines"
-  description="Download Threadlines for macOS and Windows. Free and open source."
+  description="Download Threadlines for macOS, Windows, and Linux. Free and open source."
   canonicalPath="/download/"
   noindex
 >
@@ -17,6 +17,7 @@ import Layout from "../layouts/Layout.astro";
         <a class="dl-primary" id="dl-primary" href="#" hidden>
           <span class="dl-ico" id="dl-ico-mac"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/></svg></span>
           <span class="dl-ico" id="dl-ico-win" hidden><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 3h8.5v8.5H3zM12.5 3H21v8.5h-8.5zM3 12.5h8.5V21H3zM12.5 12.5H21V21h-8.5z"/></svg></span>
+          <span class="dl-ico" id="dl-ico-linux" hidden><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M4 3h16a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm2.94 4.3 4 3.06a.9.9 0 0 1 0 1.43l-4 3.06a.9.9 0 1 1-1.1-1.43L9 11.07 5.84 8.73A.9.9 0 1 1 6.94 7.3ZM12.5 14.4h4.7a.9.9 0 1 1 0 1.8h-4.7a.9.9 0 1 1 0-1.8Z"/></svg></span>
           <span id="dl-primary-label">Download</span>
           <span class="dl-primary-size" id="dl-primary-size"></span>
         </a>
@@ -43,6 +44,11 @@ import Layout from "../layouts/Layout.astro";
           <span class="dl-row-size"></span>
           <a class="dl-link" href="#">Download .exe</a>
         </div>
+        <div class="dl-row" data-slot="linuxX64">
+          <span class="dl-row-name"><span class="dl-row-ico"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M4 3h16a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm2.94 4.3 4 3.06a.9.9 0 0 1 0 1.43l-4 3.06a.9.9 0 1 1-1.1-1.43L9 11.07 5.84 8.73A.9.9 0 1 1 6.94 7.3ZM12.5 14.4h4.7a.9.9 0 1 1 0 1.8h-4.7a.9.9 0 1 1 0-1.8Z"/></svg></span>Linux · x64</span>
+          <span class="dl-row-size"></span>
+          <a class="dl-link" href="#">Download .AppImage</a>
+        </div>
       </div>
 
       <div id="dl-fallback" hidden>
@@ -61,6 +67,7 @@ import Layout from "../layouts/Layout.astro";
           <div class="dl-panel-rows">
             <span><i>›</i> macOS · Apple Silicon and Intel · <code>.dmg</code></span>
             <span><i>›</i> Windows · x64 · <code>.exe</code></span>
+            <span><i>›</i> Linux · x64 · <code>.AppImage</code></span>
           </div>
         </div>
       </div>
@@ -75,7 +82,7 @@ import Layout from "../layouts/Layout.astro";
       </noscript>
 
       <p class="dl-note">
-        Signed and notarized for macOS · Signed for Windows · All releases and checksums on&nbsp;<a
+        Signed and notarized for macOS · Signed for Windows · AppImage for Linux · All releases and checksums on&nbsp;<a
           class="dl-link"
           href="https://github.com/Threadlines/threadlines/releases"
           target="_blank"
@@ -103,6 +110,7 @@ import Layout from "../layouts/Layout.astro";
   ).toLowerCase();
   const isWindows = platform.includes("win");
   const isMac = platform.includes("mac");
+  const isLinux = platform.includes("linux");
 
   try {
     const release = await fetchLatestRelease();
@@ -126,19 +134,26 @@ import Layout from "../layouts/Layout.astro";
 
     const primaryAsset = isWindows
       ? (installers.winX64 ?? installers.winArm)
-      : (installers.macArm ?? installers.macX64);
-    if (primaryAsset && (isMac || isWindows)) {
+      : isLinux
+        ? installers.linuxX64
+        : (installers.macArm ?? installers.macX64);
+    if (primaryAsset && (isMac || isWindows || isLinux)) {
       primary.href = primaryAsset.browser_download_url;
-      document.getElementById("dl-ico-mac")!.hidden = isWindows;
+      document.getElementById("dl-ico-mac")!.hidden = !isMac;
       document.getElementById("dl-ico-win")!.hidden = !isWindows;
-      primaryLabel.textContent = isWindows ? "Download for Windows" : "Download for macOS";
+      document.getElementById("dl-ico-linux")!.hidden = !isLinux;
+      primaryLabel.textContent = isWindows
+        ? "Download for Windows"
+        : isLinux
+          ? "Download for Linux"
+          : "Download for macOS";
       primarySize.textContent = formatAssetSize(primaryAsset.size);
       primary.hidden = false;
     }
 
     if (!anyRow) throw new Error("No installers in release");
   } catch {
-    versionEl.textContent = "Free and open source · macOS and Windows";
+    versionEl.textContent = "Free and open source · macOS, Windows, and Linux";
     primary.hidden = true;
     list.hidden = true;
     fallback.hidden = false;

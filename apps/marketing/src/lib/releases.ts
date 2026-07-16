@@ -63,6 +63,7 @@ export interface InstallerSet {
   macX64?: ReleaseAsset;
   winX64?: ReleaseAsset;
   winArm?: ReleaseAsset;
+  linuxX64?: ReleaseAsset;
 }
 
 export function classifyAssets(assets: ReadonlyArray<ReleaseAsset>): InstallerSet {
@@ -75,6 +76,8 @@ export function classifyAssets(assets: ReadonlyArray<ReleaseAsset>): InstallerSe
     } else if (name.endsWith(".exe") && !name.includes("blockmap")) {
       if (name.includes("arm64")) set.winArm ??= asset;
       else if (name.includes("x64")) set.winX64 ??= asset;
+    } else if (name.endsWith(".appimage")) {
+      if (name.includes("x86_64") || name.includes("x64")) set.linuxX64 ??= asset;
     }
   }
   return set;
