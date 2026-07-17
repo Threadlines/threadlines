@@ -4283,6 +4283,14 @@ export default function ChatView(props: ChatViewProps) {
       createdAt: messageCreatedAt,
       streaming: false,
     };
+    // Scroll to the current end *before* adding the outgoing message.
+    // This sets LegendList's internal isAtEnd=true and tells the timeline to
+    // re-arm maintainScrollAtEnd before the new item lands. Steering
+    // follow-ups need this too: they queue near the composer first, and
+    // without re-arming here the timeline stays parked wherever the user had
+    // scrolled when the queued message (and the rest of the turn) lands.
+    await requestTimelineStickToBottom(false);
+
     if (isSteeringFollowUp) {
       setSteeringMessagesById((existing) => ({
         ...existing,
@@ -4295,11 +4303,6 @@ export default function ChatView(props: ChatViewProps) {
         },
       }));
     } else {
-      // Scroll to the current end *before* adding the optimistic message.
-      // This sets LegendList's internal isAtEnd=true and tells the timeline to
-      // re-arm maintainScrollAtEnd before the new item lands.
-      await requestTimelineStickToBottom(false);
-
       addOptimisticThreadMessage(threadRefForSend, optimisticMessage);
     }
 
