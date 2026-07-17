@@ -31,6 +31,17 @@ describe("cliSpawnNeedsShell", () => {
     expect(cliSpawnNeedsShell("claude", WIN_ENV, { platform: "win32", exists })).toBe(true);
   });
 
+  it("resolves through the registry env casing GUI-launched processes inherit", () => {
+    // A spread of a GUI process env keys PATH as "Path" and loses process.env's
+    // case-insensitive lookup, which must not break shim resolution.
+    const guiCasedEnv = { Path: WIN_ENV.PATH, PathExt: WIN_ENV.PATHEXT };
+    const exists = existsOver([join(BIN, "codex.CMD")]);
+    expect(cliSpawnNeedsShell("codex", guiCasedEnv, { platform: "win32", exists })).toBe(true);
+    const plan = planCliSpawn("codex", ["--version"], guiCasedEnv, { platform: "win32", exists });
+    expect(plan.options).toEqual({ shell: true });
+    expect(plan.command).toBe("codex --version");
+  });
+
   it("prefers the executable found earliest in PATH (mirrors the OS)", () => {
     // .cmd sits in the first PATH dir, .exe in the second: the shim wins.
     const exists = existsOver([join(BIN, "claude.CMD"), join(ALT, "claude.EXE")]);

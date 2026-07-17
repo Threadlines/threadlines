@@ -22,6 +22,22 @@ interface ResolveOptions {
 }
 
 /**
+ * Windows environment variable names are case-insensitive, and `process.env`
+ * emulates that — but a spread of it (`{ ...process.env }`) is a plain object
+ * keyed with the inherited casing. GUI-launched processes inherit the
+ * registry casing `Path`, so a plain `env.PATH` read misses it.
+ */
+function readEnvCaseInsensitive(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  const direct = env[name];
+  if (direct !== undefined) return direct;
+  const upper = name.toUpperCase();
+  for (const key of Object.keys(env)) {
+    if (key.toUpperCase() === upper) return env[key];
+  }
+  return undefined;
+}
+
+/**
  * Resolve a command name/path to the concrete file Windows would execute,
  * searching `PATH` × `PATHEXT` for bare names. Returns `undefined` when nothing
  * matching exists on disk.
@@ -34,7 +50,7 @@ function resolveWindowsCommandPath(
   const hasExtension = extname(command).length > 0;
   const extensions = hasExtension
     ? [""]
-    : (env.PATHEXT ?? DEFAULT_PATHEXT)
+    : (readEnvCaseInsensitive(env, "PATHEXT") ?? DEFAULT_PATHEXT)
         .split(";")
         .map((ext) => ext.trim())
         .filter((ext) => ext.length > 0);
@@ -45,7 +61,9 @@ function resolveWindowsCommandPath(
     return candidatesFor(resolve(command)).find((candidate) => exists(candidate));
   }
 
-  const pathDirs = (env.PATH ?? "").split(delimiter).filter((dir) => dir.length > 0);
+  const pathDirs = (readEnvCaseInsensitive(env, "PATH") ?? "")
+    .split(delimiter)
+    .filter((dir) => dir.length > 0);
   for (const dir of pathDirs) {
     const match = candidatesFor(join(dir, command)).find((candidate) => exists(candidate));
     if (match) return match;
