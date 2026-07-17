@@ -450,7 +450,11 @@ export const resolveServerConfig = (
         Option.fromUndefinedOr(env.host),
         Option.fromUndefinedOr(bootstrap?.host),
       ),
-      () => (mode === "desktop" ? "127.0.0.1" : undefined),
+      // Local browser startups bind loopback so a plain `threadlines` run
+      // never exposes the agent server to the local network. `serve` exists
+      // for pairing other devices and keeps binding all interfaces; `--host`
+      // overrides either default.
+      () => (mode === "desktop" || !isHeadlessStartup ? "127.0.0.1" : undefined),
     );
     const logLevel = Option.getOrElse(cliLogLevel, () => env.logLevel);
     const appVersion = Option.getOrElse(

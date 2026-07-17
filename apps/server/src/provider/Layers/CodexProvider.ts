@@ -936,7 +936,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
         auth: { status: "unknown" },
         message: installed
           ? `Codex app-server provider probe failed: ${error.message}.`
-          : "Codex CLI (`codex`) is not installed or not on PATH.",
+          : "Codex CLI (`codex`) is not installed or not on PATH. Install it from https://developers.openai.com/codex/cli and run `codex login`.",
       },
     });
   }
