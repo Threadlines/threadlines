@@ -2890,7 +2890,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 <input
                   ref={attachmentFileInputRef}
                   type="file"
-                  accept={isMobileViewport ? FILE_ATTACHMENT_ACCEPT : ALL_ATTACHMENT_ACCEPT}
+                  accept={ALL_ATTACHMENT_ACCEPT}
                   multiple
                   className="sr-only"
                   tabIndex={-1}

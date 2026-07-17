@@ -15,7 +15,7 @@ export interface ComposerAttachmentMenuProps {
   disabledReason: string | null;
   /** Opens the native picker filtered to images. On phones this surfaces the camera / photo library. */
   onAddImage: () => void;
-  /** Opens the native picker for every attachment type on desktop and documents on mobile. */
+  /** Opens the native picker for every attachment type (on phones this is the document picker). */
   onAttachFiles: () => void;
   onCaptureScreenshot: () => void;
 }
