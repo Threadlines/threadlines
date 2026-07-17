@@ -1,3 +1,5 @@
+import { planCliSpawn } from "../cliSpawn.ts";
+
 /**
  * Shared argv for spawning `codex app-server`.
  *
@@ -17,3 +19,16 @@ export const CODEX_APP_SERVER_ARGS: ReadonlyArray<string> = [
   "-c",
   "suppress_unstable_features_warning=true",
 ];
+
+/**
+ * Spawn fields for `CodexClient.layerCommand`, planned so argv survives every
+ * platform: native executables spawn shell-less; Windows batch shims get a
+ * pre-quoted single-string command line with `shell` set.
+ */
+export function codexAppServerCommandOptions(
+  binaryPath: string,
+  env?: NodeJS.ProcessEnv,
+): { command: string; args: ReadonlyArray<string>; shell?: boolean } {
+  const plan = planCliSpawn(binaryPath, CODEX_APP_SERVER_ARGS, { ...process.env, ...env });
+  return { command: plan.command, args: plan.args, ...plan.options };
+}

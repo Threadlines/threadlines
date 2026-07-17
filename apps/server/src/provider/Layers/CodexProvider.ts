@@ -34,7 +34,7 @@ import { RUNTIME_MODES, ServerSettingsError } from "@threadlines/contracts";
 import { createModelCapabilities } from "@threadlines/shared/model";
 import { isCommandAvailable } from "@threadlines/shared/shell";
 import { DEFAULT_CODEX_SERVICE_TIER_SELECTION } from "../../codexServiceTier.ts";
-import { CODEX_APP_SERVER_ARGS } from "../codexAppServerArgs.ts";
+import { CODEX_APP_SERVER_ARGS, codexAppServerCommandOptions } from "../codexAppServerArgs.ts";
 import {
   AUTH_PROBE_TIMEOUT_MS,
   buildServerProvider,
@@ -701,8 +701,7 @@ const makeCodexAppServerClient = Effect.fn("makeCodexAppServerClient")(function*
   const resolvedHomePath = input.homePath ? expandHomePath(input.homePath) : undefined;
   const clientContext = yield* Layer.build(
     CodexClient.layerCommand({
-      command: input.binaryPath,
-      args: CODEX_APP_SERVER_ARGS,
+      ...codexAppServerCommandOptions(input.binaryPath, input.environment),
       cwd: input.cwd,
       env: {
         ...(input.environment ?? process.env),

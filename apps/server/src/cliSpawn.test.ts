@@ -2,7 +2,7 @@
 import { delimiter, join, resolve } from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 
-import { cliSpawnNeedsShell } from "./cliSpawn.ts";
+import { cliSpawnNeedsShell, planCliSpawn } from "./cliSpawn.ts";
 
 const BIN = join(resolve("/"), "fake", "bin");
 const ALT = join(resolve("/"), "alt", "bin");
@@ -57,5 +57,51 @@ describe("cliSpawnNeedsShell", () => {
   it("defaults to no shell when a bare name cannot be resolved", () => {
     const exists = existsOver([]);
     expect(cliSpawnNeedsShell("claude", WIN_ENV, { platform: "win32", exists })).toBe(false);
+  });
+});
+
+describe("planCliSpawn", () => {
+  it("passes argv verbatim for native executables", () => {
+    const exists = existsOver([join(BIN, "claude.exe")]);
+    const plan = planCliSpawn("claude", ["--json-schema", '{"a":"b c"}'], WIN_ENV, {
+      platform: "win32",
+      exists,
+    });
+    expect(plan).toEqual({
+      command: "claude",
+      args: ["--json-schema", '{"a":"b c"}'],
+      options: {},
+    });
+  });
+
+  it("composes a quoted single-string command for batch shims", () => {
+    const exists = existsOver([join(BIN, "claude.CMD")]);
+    const plan = planCliSpawn("claude", ["--json-schema", '{"a":"b c"}'], WIN_ENV, {
+      platform: "win32",
+      exists,
+    });
+    expect(plan.args).toEqual([]);
+    expect(plan.options).toEqual({ shell: true });
+    expect(plan.command).toBe('claude --json-schema "{\\"a\\":\\"b c\\"}"');
+  });
+
+  it("leaves plain flags unquoted and quotes args with spaces", () => {
+    const exists = existsOver([join(BIN, "codex.CMD")]);
+    const plan = planCliSpawn(
+      "codex",
+      ["app-server", "-c", "features.mode=true", "two words"],
+      WIN_ENV,
+      { platform: "win32", exists },
+    );
+    expect(plan.command).toBe('codex app-server -c features.mode=true "two words"');
+  });
+
+  it("doubles trailing backslashes before the closing quote", () => {
+    const exists = existsOver([join(BIN, "tool.CMD")]);
+    const plan = planCliSpawn("tool", ["C:\\path with space\\"], WIN_ENV, {
+      platform: "win32",
+      exists,
+    });
+    expect(plan.command).toBe('tool "C:\\path with space\\\\"');
   });
 });

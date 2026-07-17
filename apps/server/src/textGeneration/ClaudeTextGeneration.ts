@@ -44,7 +44,7 @@ import {
   resolveClaudeEffort,
 } from "../provider/Layers/ClaudeProvider.ts";
 import { makeClaudeEnvironment } from "../provider/Drivers/ClaudeHome.ts";
-import { cliSpawnNeedsShell } from "../cliSpawn.ts";
+import { planCliSpawn } from "../cliSpawn.ts";
 
 const CLAUDE_TIMEOUT_MS = 180_000;
 
@@ -159,7 +159,10 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
 
     const runClaudeCommand = Effect.fn("runClaudeJson.runClaudeCommand")(function* () {
       const claudeBinary = claudeSettings.binaryPath || "claude";
-      const command = ChildProcess.make(
+      // `--json-schema` (and `--settings`) carry inline JSON that must reach
+      // the CLI verbatim; planCliSpawn spawns native executables directly and
+      // quotes a composed command line for batch shims that need cmd.exe.
+      const spawnPlan = planCliSpawn(
         claudeBinary,
         [
           "-p",
@@ -173,15 +176,15 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           ...(settingsJson ? ["--settings", settingsJson] : []),
           "--dangerously-skip-permissions",
         ],
+        claudeEnvironment,
+      );
+      const command = ChildProcess.make(
+        spawnPlan.command,
+        [...spawnPlan.args],
         hideWindowsConsole({
           env: claudeEnvironment,
           cwd,
-          // `--json-schema` (and `--settings`) carry inline JSON. A Windows
-          // shell concatenates argv without escaping (Node DEP0190), which
-          // corrupts the quotes and makes the CLI reject the schema as invalid
-          // JSON, so we spawn the native executable directly and only fall back
-          // to a shell for batch shims that cannot run otherwise.
-          shell: cliSpawnNeedsShell(claudeBinary, claudeEnvironment),
+          ...spawnPlan.options,
           stdin: {
             stream: Stream.encodeText(Stream.make(prompt)),
           },

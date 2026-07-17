@@ -81,3 +81,47 @@ export function cliSpawnNeedsShell(
   const extension = extname(resolved ?? command).toLowerCase();
   return WINDOWS_BATCH_EXTENSIONS.has(extension);
 }
+
+/** Arguments that survive cmd.exe and CommandLineToArgvW without quoting. */
+const WINDOWS_SHELL_SAFE_ARG = /^[A-Za-z0-9_\-+=.,:\\/@]+$/;
+
+/**
+ * Quote a single argument for a cmd.exe command line so the target program's
+ * argv parser (CommandLineToArgvW) reconstructs it verbatim: backslashes
+ * before a quote are doubled and the quote itself is backslash-escaped.
+ * cmd.exe-only metacharacters (`%`, `!`) are not escapable inside quotes; the
+ * CLI arguments composed here never rely on them.
+ */
+function quoteWindowsShellArg(arg: string): string {
+  if (WINDOWS_SHELL_SAFE_ARG.test(arg)) return arg;
+  const escaped = arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, "$1$1");
+  return `"${escaped}"`;
+}
+
+export interface CliSpawnPlan {
+  readonly command: string;
+  readonly args: ReadonlyArray<string>;
+  readonly options: { readonly shell?: true };
+}
+
+/**
+ * Plan how to spawn a CLI so argv arrives intact on every platform.
+ *
+ * Native executables (and everything off-Windows) spawn shell-less with argv
+ * passed verbatim. Windows batch shims (`.cmd`/`.bat`) can only run through
+ * cmd.exe; for those the command line is composed here with explicit quoting
+ * and handed over as a single string, because Node's own `shell: true` argv
+ * handling concatenates arguments unescaped (deprecated as DEP0190).
+ */
+export function planCliSpawn(
+  command: string,
+  args: ReadonlyArray<string>,
+  env: NodeJS.ProcessEnv = process.env,
+  options: ResolveOptions = {},
+): CliSpawnPlan {
+  if (!cliSpawnNeedsShell(command, env, options)) {
+    return { command, args, options: {} };
+  }
+  const commandLine = [quoteWindowsShellArg(command), ...args.map(quoteWindowsShellArg)].join(" ");
+  return { command: commandLine, args: [], options: { shell: true } };
+}

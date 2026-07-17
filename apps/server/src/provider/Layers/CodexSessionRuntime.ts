@@ -20,6 +20,7 @@ import {
   TurnId,
 } from "@threadlines/contracts";
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
+import { planCliSpawn } from "../../cliSpawn.ts";
 import { normalizeModelSlug } from "@threadlines/shared/model";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -1140,16 +1141,17 @@ export const makeCodexSessionRuntime = (
       ...(options.environment ?? process.env),
       ...(resolvedHomePath ? { CODEX_HOME: resolvedHomePath } : {}),
     };
+    const spawnPlan = planCliSpawn(options.binaryPath, CODEX_APP_SERVER_ARGS, env);
     const child = yield* spawner
       .spawn(
         ChildProcess.make(
-          options.binaryPath,
-          [...CODEX_APP_SERVER_ARGS],
+          spawnPlan.command,
+          [...spawnPlan.args],
           hideWindowsConsole({
             cwd: options.cwd,
             env,
             forceKillAfter: CODEX_APP_SERVER_FORCE_KILL_AFTER,
-            shell: process.platform === "win32",
+            ...spawnPlan.options,
           }),
         ),
       )

@@ -283,6 +283,13 @@ export interface CodexAppServerCommandLayerOptions extends CodexAppServerClientO
   readonly args?: ReadonlyArray<string>;
   readonly cwd?: string;
   readonly env?: Record<string, string>;
+  /**
+   * Run the command through a shell. Only set this for Windows batch shims
+   * that cannot spawn directly, and pass the fully quoted command line as
+   * `command` with empty `args` (see planCliSpawn in the server) — a shell
+   * spawn with an args array concatenates them unescaped (Node DEP0190).
+   */
+  readonly shell?: boolean;
 }
 
 export const layerCommand = (
@@ -303,7 +310,7 @@ export const layerCommand = (
           ...(options.cwd ? { cwd: options.cwd } : {}),
           ...(options.env ? { env: { ...process.env, ...options.env } } : {}),
           forceKillAfter: DEFAULT_APP_SERVER_FORCE_KILL_AFTER,
-          shell: process.platform === "win32",
+          ...(options.shell ? { shell: true } : {}),
         }),
       );
       return yield* spawner.spawn(command).pipe(

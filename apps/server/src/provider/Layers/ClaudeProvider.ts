@@ -17,6 +17,7 @@ import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { hideWindowsConsole } from "@threadlines/shared/childProcess";
+import { planCliSpawn } from "../../cliSpawn.ts";
 import {
   createModelCapabilities,
   getProviderOptionCurrentValue,
@@ -740,12 +741,13 @@ const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
   environment: NodeJS.ProcessEnv = process.env,
 ) {
   const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
+  const spawnPlan = planCliSpawn(claudeSettings.binaryPath, args, claudeEnvironment);
   const command = ChildProcess.make(
-    claudeSettings.binaryPath,
-    [...args],
+    spawnPlan.command,
+    [...spawnPlan.args],
     hideWindowsConsole({
       env: claudeEnvironment,
-      shell: process.platform === "win32",
+      ...spawnPlan.options,
     }),
   );
   return yield* spawnAndCollect(claudeSettings.binaryPath, command);
