@@ -778,7 +778,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
           assert.strictEqual(status.auth.status, "unknown");
           assert.strictEqual(
             status.message,
-            "Codex CLI (`codex`) is not installed or not on PATH.",
+            "Codex CLI (`codex`) is not installed or not on PATH. Install it from https://developers.openai.com/codex/cli and run `codex login`.",
           );
         }),
       );
@@ -2098,7 +2098,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             assert.strictEqual(codexPersonal?.installed, false);
             assert.strictEqual(
               codexPersonal?.message,
-              "Codex CLI (`codex`) is not installed or not on PATH.",
+              "Codex CLI (`codex`) is not installed or not on PATH. Install it from https://developers.openai.com/codex/cli and run `codex login`.",
             );
           }).pipe(Effect.provide(runtimeServices));
         }),
@@ -3206,7 +3206,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
           assert.strictEqual(status.auth.status, "unknown");
           assert.strictEqual(
             status.message,
-            "Claude Agent CLI (`claude`) is not installed or not on PATH.",
+            "Claude Agent CLI (`claude`) is not installed or not on PATH. Install Claude Code from https://claude.com/product/claude-code and run `claude` to sign in.",
           );
         }).pipe(Effect.provide(failingSpawnerLayer("spawn claude ENOENT"))),
       );
