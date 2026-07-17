@@ -5,8 +5,8 @@ packages:
   - scripts
 
 catalog:
-  "@anthropic-ai/claude-agent-sdk": ^0.3.211
-  "@anthropic-ai/sdk": ^0.111.0
+  "@anthropic-ai/claude-agent-sdk": ^0.3.212
+  "@anthropic-ai/sdk": ^0.112.1
   "@effect/atom-react": 4.0.0-beta.98
   "@effect/openapi-generator": 4.0.0-beta.98
   "@effect/platform-bun": 4.0.0-beta.98
@@ -23,7 +23,7 @@ catalog:
   effect: 4.0.0-beta.97
   typescript: ^7.0.2
   vite: npm:@voidzero-dev/vite-plus-core@0.2.4
-  vite-plus: 0.2.4
+  vite-plus: 0.2.5
   vitest: 4.1.10
   yaml: ^2.9.0
 

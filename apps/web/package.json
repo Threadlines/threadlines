@@ -23,7 +23,7 @@
     "@fontsource-variable/schibsted-grotesk": "^5.2.8",
     "@formkit/auto-animate": "^0.10.0",
     "@legendapp/list": "^3.3.3",
-    "@lexical/react": "^0.47.0",
+    "@lexical/react": "^0.48.0",
     "@pierre/diffs": "catalog:",
     "@tanstack/react-pacer": "^0.22.1",
     "@tanstack/react-query": "^5.101.2",
