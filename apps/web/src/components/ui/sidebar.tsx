@@ -28,7 +28,9 @@ import * as Schema from "effect/Schema";
 const SIDEBAR_COOKIE_NAME = "sidebar_state";
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
 const SIDEBAR_WIDTH = "16rem";
-const SIDEBAR_WIDTH_MOBILE = "calc(100vw - var(--spacing(3)))";
+// Runtime CSS string: tailwind functions like --spacing() don't exist here,
+// so the 12px edge inset is spelled out as a plain length.
+const SIDEBAR_WIDTH_MOBILE = "calc(100vw - 0.75rem)";
 const SIDEBAR_WIDTH_ICON = "3rem";
 const SIDEBAR_RESIZE_DEFAULT_MIN_WIDTH = 16 * 16;
 type SidebarContextProps = {
