@@ -13,6 +13,10 @@ updates:
       # catalog and hardcodes the lockfile importer), producing unmergeable
       # PRs. The typecheck toolchain is bumped manually instead.
       - dependency-name: "@effect/tsgo"
+      # Electron bumps can regress GPU compositing in ways CI cannot catch
+      # (43.1.1 produced stale-tile strips at the sidebar boundary on
+      # Windows). Bump manually and soak on real hardware first.
+      - dependency-name: "electron"
     groups:
       production-dependencies:
         dependency-type: production
