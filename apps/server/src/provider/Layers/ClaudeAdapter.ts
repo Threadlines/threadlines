@@ -31,6 +31,7 @@ import {
   type ClaudeSettings,
   EventId,
   MessageId,
+  type ModelSelection,
   type ProviderApprovalDecision,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -256,6 +257,7 @@ interface ClaudeSessionContext {
   // turns never inherit the auto-allow of permissive runtime modes.
   currentInteractionMode: ProviderInteractionMode | undefined;
   currentApiModelId: string | undefined;
+  currentFlagSettings: ClaudeFlagSettingsSnapshot;
   readonly currentFallbackModelIds: ReadonlyArray<string>;
   resumeSessionId: string | undefined;
   readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
@@ -314,6 +316,14 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
   readonly setModel: (model?: string) => Promise<void>;
   readonly setPermissionMode: (mode: PermissionMode) => Promise<void>;
   readonly setMaxThinkingTokens: (maxThinkingTokens: number | null) => Promise<void>;
+  /** Optional: absent on user-configured CLI builds that predate the
+   *  apply_flag_settings control request. */
+  readonly applyFlagSettings?: (settings: {
+    readonly effortLevel?: ClaudeSdkEffort | null;
+    readonly alwaysThinkingEnabled?: boolean | null;
+    readonly fastMode?: boolean | null;
+    readonly ultracode?: boolean | null;
+  }) => Promise<void>;
   readonly getContextUsage?: () => Promise<SDKControlGetContextUsageResponse>;
   readonly rewindFiles?: (
     userMessageId: string,
@@ -423,6 +433,54 @@ function normalizeClaudeStreamMessages(
 function getEffectiveClaudeAgentEffort(effort: string | null | undefined): ClaudeSdkEffort | null {
   const normalized = normalizeClaudeCliEffort(effort);
   return normalized ? (normalized as ClaudeSdkEffort) : null;
+}
+
+/** Session option knobs that map to the SDK's flag-settings layer. Derived
+ *  from the model selection at session start and re-derived per turn so
+ *  changes apply in-session via `applyFlagSettings` instead of a restart. */
+interface ClaudeFlagSettingsSnapshot {
+  readonly effortLevel: ClaudeSdkEffort | null;
+  readonly alwaysThinkingEnabled: boolean | null;
+  readonly fastMode: boolean;
+  readonly ultracode: boolean;
+}
+
+function deriveClaudeFlagSettings(
+  modelSelection: ModelSelection | undefined,
+): ClaudeFlagSettingsSnapshot {
+  const caps = getClaudeModelCapabilities(modelSelection?.model);
+  const descriptors = getProviderOptionDescriptors({ caps });
+  const rawEffort = getModelSelectionStringOptionValue(modelSelection, "effort");
+  const effort = resolveClaudeEffort(caps, rawEffort) ?? null;
+  const fastModeSupported = descriptors.some(
+    (descriptor) => descriptor.type === "boolean" && descriptor.id === "fastMode",
+  );
+  const thinkingSupported = descriptors.some(
+    (descriptor) => descriptor.type === "boolean" && descriptor.id === "thinking",
+  );
+  const fastMode =
+    getModelSelectionBooleanOptionValue(modelSelection, "fastMode") === true && fastModeSupported;
+  const thinking = thinkingSupported
+    ? getModelSelectionBooleanOptionValue(modelSelection, "thinking")
+    : undefined;
+  return {
+    effortLevel: getEffectiveClaudeAgentEffort(effort),
+    alwaysThinkingEnabled: typeof thinking === "boolean" ? thinking : null,
+    fastMode,
+    ultracode: isClaudeUltracodeEffort(effort),
+  };
+}
+
+function claudeFlagSettingsEqual(
+  left: ClaudeFlagSettingsSnapshot,
+  right: ClaudeFlagSettingsSnapshot,
+): boolean {
+  return (
+    left.effortLevel === right.effortLevel &&
+    left.alwaysThinkingEnabled === right.alwaysThinkingEnabled &&
+    left.fastMode === right.fastMode &&
+    left.ultracode === right.ultracode
+  );
 }
 
 function isClaudeInterruptedMessage(message: string): boolean {
@@ -4987,30 +5045,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const extraArgs = parseCliArgs(claudeSettings.launchArgs).flags;
       const modelSelection =
         input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
-      const caps = getClaudeModelCapabilities(modelSelection?.model);
-      const descriptors = getProviderOptionDescriptors({ caps });
       const apiModelId = modelSelection ? resolveClaudeApiModelId(modelSelection) : undefined;
       const fallbackModel = resolveClaudeFallbackModelOption(claudeSettings.fallbackModel, [
         modelSelection?.model,
         apiModelId,
       ]);
       const fallbackModelIds = splitClaudeFallbackModelOption(fallbackModel);
-      const rawEffort = getModelSelectionStringOptionValue(modelSelection, "effort");
-      const effort = resolveClaudeEffort(caps, rawEffort) ?? null;
-      const fastModeSupported = descriptors.some(
-        (descriptor) => descriptor.type === "boolean" && descriptor.id === "fastMode",
-      );
-      const thinkingSupported = descriptors.some(
-        (descriptor) => descriptor.type === "boolean" && descriptor.id === "thinking",
-      );
-      const fastMode =
-        getModelSelectionBooleanOptionValue(modelSelection, "fastMode") === true &&
-        fastModeSupported;
-      const thinking = thinkingSupported
-        ? getModelSelectionBooleanOptionValue(modelSelection, "thinking")
-        : undefined;
-      const ultracode = isClaudeUltracodeEffort(effort);
-      const effectiveEffort = getEffectiveClaudeAgentEffort(effort);
+      const flagSettings = deriveClaudeFlagSettings(modelSelection);
+      const effectiveEffort = flagSettings.effortLevel;
       const runtimeModeToPermission: Record<string, PermissionMode> = {
         "auto-accept-edits": "acceptEdits",
         auto: "auto",
@@ -5025,9 +5067,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         !claudeModelSupportsAutoRuntimeMode(modelSelection?.model);
       const permissionMode = autoModeClamped ? "acceptEdits" : requestedPermissionMode;
       const settings = {
-        ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
-        ...(fastMode ? { fastMode: true } : {}),
-        ...(ultracode ? { ultracode: true } : {}),
+        ...(flagSettings.alwaysThinkingEnabled !== null
+          ? { alwaysThinkingEnabled: flagSettings.alwaysThinkingEnabled }
+          : {}),
+        ...(flagSettings.fastMode ? { fastMode: true } : {}),
+        ...(flagSettings.ultracode ? { ultracode: true } : {}),
       };
       const queryOptions: ClaudeQueryOptions = {
         ...(input.cwd ? { cwd: input.cwd } : {}),
@@ -5137,6 +5181,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         basePermissionMode: permissionMode,
         currentInteractionMode: undefined,
         currentApiModelId: apiModelId,
+        currentFlagSettings: flagSettings,
         currentFallbackModelIds: fallbackModelIds,
         resumeSessionId: sessionId,
         pendingApprovals,
@@ -5201,7 +5246,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...(input.cwd ? { cwd: input.cwd } : {}),
             ...(effectiveEffort ? { effort: effectiveEffort } : {}),
             ...(permissionMode ? { permissionMode } : {}),
-            ...(fastMode ? { fastMode: true } : {}),
+            ...(flagSettings.fastMode ? { fastMode: true } : {}),
             fileCheckpointing: true,
             promptSuggestions: true,
           },
@@ -5277,10 +5322,54 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       };
     }
 
+    // Apply option changes (effort, thinking, fast mode, ultracode) to the
+    // running query instead of restarting the session. Best-effort: a failed
+    // apply must not block the user's turn, and an un-updated snapshot means
+    // the next turn retries.
+    if (modelSelection !== undefined) {
+      const desiredFlagSettings = deriveClaudeFlagSettings(modelSelection);
+      if (!claudeFlagSettingsEqual(desiredFlagSettings, context.currentFlagSettings)) {
+        const applyFlagSettings = context.query.applyFlagSettings?.bind(context.query);
+        if (applyFlagSettings === undefined) {
+          yield* Effect.logWarning("claude adapter cannot apply option changes in-session", {
+            threadId: input.threadId,
+            desiredFlagSettings,
+          });
+        } else {
+          yield* Effect.tryPromise({
+            try: () =>
+              applyFlagSettings({
+                effortLevel: desiredFlagSettings.effortLevel,
+                alwaysThinkingEnabled: desiredFlagSettings.alwaysThinkingEnabled,
+                fastMode: desiredFlagSettings.fastMode ? true : null,
+                ultracode: desiredFlagSettings.ultracode ? true : null,
+              }),
+            catch: (cause) => toRequestError(input.threadId, "turn/applyFlagSettings", cause),
+          }).pipe(
+            Effect.tap(() =>
+              Effect.sync(() => {
+                context.currentFlagSettings = desiredFlagSettings;
+              }),
+            ),
+            Effect.catch((error: { readonly message: string }) =>
+              Effect.logWarning("claude adapter failed to apply option changes in-session", {
+                threadId: input.threadId,
+                desiredFlagSettings,
+                error: error.message,
+              }),
+            ),
+          );
+        }
+      }
+    }
+
     // Apply interaction mode by switching the SDK's permission mode.
     // "plan" maps directly to the SDK's "plan" permission mode;
     // "default" restores the session's original permission mode.
     // When interactionMode is absent we leave the current mode unchanged.
+    // Plan turns always re-assert plan mode: the CLI exits plan mode on its
+    // own when a plan is accepted, so our tracked mode may be stale. The
+    // default branch only needs a round-trip when we previously entered plan.
     if (input.interactionMode === "plan") {
       yield* Effect.tryPromise({
         try: () => context.query.setPermissionMode("plan"),
@@ -5288,10 +5377,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       });
       context.currentInteractionMode = "plan";
     } else if (input.interactionMode === "default") {
-      yield* Effect.tryPromise({
-        try: () => context.query.setPermissionMode(context.basePermissionMode ?? "default"),
-        catch: (cause) => toRequestError(input.threadId, "turn/setPermissionMode", cause),
-      });
+      if (context.currentInteractionMode === "plan") {
+        yield* Effect.tryPromise({
+          try: () => context.query.setPermissionMode(context.basePermissionMode ?? "default"),
+          catch: (cause) => toRequestError(input.threadId, "turn/setPermissionMode", cause),
+        });
+      }
       context.currentInteractionMode = "default";
     }
 

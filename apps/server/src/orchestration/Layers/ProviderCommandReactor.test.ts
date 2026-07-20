@@ -535,6 +535,89 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  it("processes commands for different threads concurrently", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-thread-create-2"),
+        threadId: ThreadId.make("thread-2"),
+        projectId: asProjectId("project-1"),
+        title: "Second Thread",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt: now,
+      }),
+    );
+
+    // Gate thread-1's session start: this is the work that runs inline on the
+    // reactor worker (turn sends are forked), so it is what could block other
+    // threads' commands.
+    let releaseFirstStart!: () => void;
+    const firstStartGate = new Promise<void>((resolve) => {
+      releaseFirstStart = resolve;
+    });
+    const defaultStartSession = harness.startSession.getMockImplementation();
+    if (!defaultStartSession) {
+      throw new Error("startSession mock has no implementation");
+    }
+    harness.startSession.mockImplementation((threadId: unknown, input: unknown) => {
+      if (String(threadId) === "thread-1") {
+        return Effect.promise(() => firstStartGate).pipe(
+          Effect.flatMap(() => defaultStartSession(threadId, input)),
+        );
+      }
+      return defaultStartSession(threadId, input);
+    });
+
+    const startTurn = (threadId: string, commandId: string, messageId: string) =>
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(commandId),
+          threadId: ThreadId.make(threadId),
+          message: {
+            messageId: asMessageId(messageId),
+            role: "user",
+            text: `hello from ${threadId}`,
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        }),
+      );
+
+    await startTurn("thread-1", "cmd-concurrent-turn-1", "concurrent-message-1");
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    expect(harness.sendTurn.mock.calls.length).toBe(0);
+
+    // With thread-1's session start still in flight, thread-2's turn must
+    // still reach the provider instead of queueing behind it.
+    await startTurn("thread-2", "cmd-concurrent-turn-2", "concurrent-message-2");
+    await waitFor(() =>
+      harness.sendTurn.mock.calls.some(
+        (call) => String((call[0] as { threadId?: unknown }).threadId) === "thread-2",
+      ),
+    );
+
+    releaseFirstStart();
+    await waitFor(() =>
+      harness.sendTurn.mock.calls.some(
+        (call) => String((call[0] as { threadId?: unknown }).threadId) === "thread-1",
+      ),
+    );
+    await harness.drain();
+  });
+
   it("steers a running provider turn even when latest turn is completed", async () => {
     const harness = await createHarness();
     const turnId = asTurnId("turn-1");
@@ -1580,7 +1663,83 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
-  it("restarts claude sessions when claude effort changes", async () => {
+  it("does not restart when the provider reports the same workspace through a path alias", async () => {
+    const realDir = fs.mkdtempSync(path.join(os.tmpdir(), "threadlines-cwd-alias-"));
+    const linkPath = `${realDir}-link`;
+    fs.symlinkSync(realDir, linkPath);
+    try {
+      const harness = await createHarness();
+      const now = "2026-01-01T00:00:00.000Z";
+
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.make("cmd-thread-cwd-alias-worktree"),
+          threadId: ThreadId.make("thread-1"),
+          worktreePath: linkPath,
+        }),
+      );
+
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-start-cwd-alias-1"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("user-message-cwd-alias-1"),
+            role: "user",
+            text: "first turn in symlinked worktree",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        }),
+      );
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      expect(harness.startSession.mock.calls.length).toBe(1);
+
+      // Simulate the provider reporting its cwd fully resolved (macOS
+      // /tmp vs /private/tmp, worktree symlinks): same directory, different
+      // string. The next turn must not restart the session over it.
+      const sessionIndex = harness.runtimeSessions.findIndex(
+        (session) => session.threadId === ThreadId.make("thread-1"),
+      );
+      expect(sessionIndex).toBeGreaterThanOrEqual(0);
+      const aliasSession = harness.runtimeSessions[sessionIndex];
+      if (!aliasSession) {
+        throw new Error("expected an active session for thread-1");
+      }
+      harness.runtimeSessions[sessionIndex] = {
+        ...aliasSession,
+        cwd: fs.realpathSync(realDir),
+      };
+
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-start-cwd-alias-2"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("user-message-cwd-alias-2"),
+            role: "user",
+            text: "second turn in symlinked worktree",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        }),
+      );
+      await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+      expect(harness.startSession.mock.calls.length).toBe(1);
+    } finally {
+      fs.rmSync(linkPath, { force: true });
+      fs.rmSync(realDir, { recursive: true, force: true });
+    }
+  });
+
+  it("applies claude effort changes in-session without restarting", async () => {
     const harness = await createHarness({
       threadModelSelection: {
         instanceId: ProviderInstanceId.make("claudeAgent"),
@@ -1636,10 +1795,11 @@ describe("ProviderCommandReactor", () => {
       }),
     );
 
-    await waitFor(() => harness.startSession.mock.calls.length === 2);
     await waitFor(() => harness.sendTurn.mock.calls.length === 2);
-    expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
-      resumeCursor: { opaque: "resume-1" },
+    // The adapter applies effort changes on the running query
+    // (applyFlagSettings), so no session restart may happen.
+    expect(harness.startSession.mock.calls.length).toBe(1);
+    expect(harness.sendTurn.mock.calls[1]?.[0]).toMatchObject({
       modelSelection: createModelSelection(
         ProviderInstanceId.make("claudeAgent"),
         "claude-sonnet-4-6",

@@ -56,6 +56,29 @@ export const providerTurnsTotal = Metric.counter("threadlines_provider_turns_tot
   description: "Total provider turn lifecycle operations.",
 });
 
+export const providerSessionStartDuration = Metric.timer(
+  "threadlines_provider_session_start_duration",
+  {
+    description:
+      "Wall-clock duration of provider session starts, by provider and start kind (fresh/restart/handoff).",
+  },
+);
+
+export const providerSessionRestartsTotal = Metric.counter(
+  "threadlines_provider_session_restarts_total",
+  {
+    description: "Provider session restarts triggered by thread state changes, by reason.",
+  },
+);
+
+export const providerFirstOutputDuration = Metric.timer(
+  "threadlines_provider_first_output_duration",
+  {
+    description:
+      "Time from a provider turn starting until its first streamed output event, by provider.",
+  },
+);
+
 export const providerTurnDuration = Metric.timer("threadlines_provider_turn_duration", {
   description: "Provider turn request duration.",
 });

@@ -1,3 +1,6 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
+
 import {
   type ChatAttachment,
   type ChatSkillReference,
@@ -17,6 +20,7 @@ import {
   type TurnId,
 } from "@threadlines/contracts";
 import { withContextSeedPreamble } from "@threadlines/shared/contextSeed";
+import { areFilesystemPathsEqual } from "@threadlines/shared/path";
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@threadlines/shared/git";
 import {
   APPROVAL_ACTIVITY_KINDS,
@@ -29,12 +33,11 @@ import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import * as Equal from "effect/Equal";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import { makeDrainableWorker } from "@threadlines/shared/DrainableWorker";
+import { makeKeyedSequentialWorker } from "@threadlines/shared/KeyedSequentialWorker";
 
 import {
   checkpointPreTurnRefForThreadTurnCount,
@@ -43,7 +46,13 @@ import {
 } from "../../checkpointing/Utils.ts";
 import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
 import { ensureGeneralChatThreadScratchCwd } from "../generalChats.ts";
-import { increment, orchestrationEventsProcessedTotal } from "../../observability/Metrics.ts";
+import {
+  increment,
+  orchestrationEventsProcessedTotal,
+  providerSessionRestartsTotal,
+  providerSessionStartDuration,
+  withMetrics,
+} from "../../observability/Metrics.ts";
 import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import type { ProviderServiceError } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
@@ -81,6 +90,31 @@ type ProviderIntentEvent = Extract<
 function toNonEmptyProviderInput(value: string | undefined): string | undefined {
   const normalized = value?.trim();
   return normalized && normalized.length > 0 ? normalized : undefined;
+}
+
+function resolveWorkspaceRealPath(value: string): string {
+  const resolved = path.resolve(value);
+  try {
+    return fs.realpathSync.native(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+/** Providers may report a session cwd through a different alias than the one
+ *  we derived (macOS `/tmp` vs `/private/tmp`, worktree symlinks). A spurious
+ *  mismatch here silently restarts the provider session on every turn. */
+function isSameWorkspaceCwd(left: string | undefined, right: string | undefined): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (left === undefined || right === undefined) {
+    return false;
+  }
+  if (areFilesystemPathsEqual(left, right)) {
+    return true;
+  }
+  return areFilesystemPathsEqual(resolveWorkspaceRealPath(left), resolveWorkspaceRealPath(right));
 }
 
 function mapProviderSessionStatusToOrchestrationStatus(
@@ -509,21 +543,31 @@ const make = Effect.gen(function* () {
             projects: project ? [project] : [],
           });
 
-    const startProviderSession = (input?: {
-      readonly resumeCursor?: unknown;
-      readonly provider?: ProviderDriverKind;
-      readonly contextSeed?: ThreadContextSeed;
-    }) =>
-      providerService.startSession(threadId, {
-        threadId,
-        ...(preferredProvider ? { provider: preferredProvider } : {}),
-        providerInstanceId: desiredInstanceId,
-        ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
-        modelSelection: desiredModelSelection,
-        ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
-        ...(input?.contextSeed !== undefined ? { contextSeed: input.contextSeed } : {}),
-        runtimeMode: desiredRuntimeMode,
-      });
+    const startProviderSession = (
+      input?: {
+        readonly resumeCursor?: unknown;
+        readonly provider?: ProviderDriverKind;
+        readonly contextSeed?: ThreadContextSeed;
+      },
+      startKind: "fresh" | "restart" | "handoff" = "fresh",
+    ) =>
+      providerService
+        .startSession(threadId, {
+          threadId,
+          ...(preferredProvider ? { provider: preferredProvider } : {}),
+          providerInstanceId: desiredInstanceId,
+          ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
+          modelSelection: desiredModelSelection,
+          ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
+          ...(input?.contextSeed !== undefined ? { contextSeed: input.contextSeed } : {}),
+          runtimeMode: desiredRuntimeMode,
+        })
+        .pipe(
+          withMetrics({
+            timer: providerSessionStartDuration,
+            attributes: { provider: preferredProvider, startKind },
+          }),
+        );
 
     const bindSessionToThread = (session: ProviderSession) =>
       Effect.gen(function* () {
@@ -583,6 +627,7 @@ const make = Effect.gen(function* () {
       });
       const handoffSession = yield* startProviderSession(
         contextSeed !== undefined ? { contextSeed } : undefined,
+        "handoff",
       );
       yield* bindSessionToThread(handoffSession);
       return handoffSession.threadId;
@@ -592,7 +637,7 @@ const make = Effect.gen(function* () {
       thread.session && thread.session.status !== "stopped" && activeSession ? thread.id : null;
     if (existingSessionThreadId) {
       const runtimeModeChanged = thread.runtimeMode !== thread.session?.runtimeMode;
-      const cwdChanged = effectiveCwd !== activeSession?.cwd;
+      const cwdChanged = !isSameWorkspaceCwd(effectiveCwd, activeSession?.cwd);
       const sessionModelSwitch = (yield* providerService.getCapabilities(desiredInstanceId))
         .sessionModelSwitch;
       const modelChanged =
@@ -601,23 +646,27 @@ const make = Effect.gen(function* () {
       const instanceChanged =
         requestedModelSelection !== undefined &&
         activeSession?.providerInstanceId !== requestedModelSelection.instanceId;
+      // Model and option changes on a live session are applied in-session by
+      // the adapters (Claude: setModel/applyFlagSettings on the running query;
+      // Codex: per-turn model/effort params). A restart is only needed when
+      // the driver reports model switching as unsupported.
       const shouldRestartForModelChange = modelChanged && sessionModelSwitch === "unsupported";
-      const previousModelSelection = threadModelSelections.get(threadId);
-      const shouldRestartForModelSelectionChange =
-        preferredProvider === "claudeAgent" &&
-        requestedModelSelection !== undefined &&
-        !Equal.equals(previousModelSelection, requestedModelSelection);
 
-      if (
-        !runtimeModeChanged &&
-        !cwdChanged &&
-        !instanceChanged &&
-        !shouldRestartForModelChange &&
-        !shouldRestartForModelSelectionChange
-      ) {
+      if (!runtimeModeChanged && !cwdChanged && !instanceChanged && !shouldRestartForModelChange) {
         return existingSessionThreadId;
       }
 
+      const restartReason = runtimeModeChanged
+        ? "runtime_mode"
+        : cwdChanged
+          ? "cwd"
+          : instanceChanged
+            ? "instance"
+            : "model";
+      yield* increment(providerSessionRestartsTotal, {
+        provider: preferredProvider,
+        reason: restartReason,
+      });
       const resumeCursor = shouldRestartForModelChange
         ? undefined
         : (activeSession?.resumeCursor ?? undefined);
@@ -637,11 +686,11 @@ const make = Effect.gen(function* () {
         modelChanged,
         instanceChanged,
         shouldRestartForModelChange,
-        shouldRestartForModelSelectionChange,
         hasResumeCursor: resumeCursor !== undefined,
       });
       const restartedSession = yield* startProviderSession(
         resumeCursor !== undefined ? { resumeCursor } : undefined,
+        "restart",
       );
       yield* Effect.logInfo("provider command reactor restarted provider session", {
         threadId,
@@ -1522,7 +1571,12 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const worker = yield* makeDrainableWorker(processDomainEventSafely);
+  // Keyed by thread so one thread's slow provider work (session spawn, turn
+  // RPC round-trips) cannot delay other threads' commands. Events for the
+  // same thread keep strict arrival order.
+  const worker = yield* makeKeyedSequentialWorker((_key: string, event: ProviderIntentEvent) =>
+    processDomainEventSafely(event),
+  );
 
   const start: ProviderCommandReactorShape["start"] = Effect.fn("start")(function* () {
     const processEvent = Effect.fn("processEvent")(function* (event: OrchestrationEvent) {
@@ -1537,7 +1591,7 @@ const make = Effect.gen(function* () {
         event.type === "thread.session-stop-requested" ||
         event.type === "thread.session-set"
       ) {
-        return yield* worker.enqueue(event);
+        return yield* worker.enqueue(String(event.aggregateId), event);
       }
     });
 

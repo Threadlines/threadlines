@@ -92,6 +92,12 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
   public readonly setModelCalls: Array<string | undefined> = [];
   public readonly setPermissionModeCalls: Array<string> = [];
   public readonly setMaxThinkingTokensCalls: Array<number | null> = [];
+  public readonly applyFlagSettingsCalls: Array<{
+    readonly effortLevel?: string | null;
+    readonly alwaysThinkingEnabled?: boolean | null;
+    readonly fastMode?: boolean | null;
+    readonly ultracode?: boolean | null;
+  }> = [];
   public readonly getContextUsageCalls: Array<void> = [];
   public readonly rewindFilesCalls: Array<{
     readonly userMessageId: string;
@@ -173,6 +179,15 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
 
   readonly setMaxThinkingTokens = async (maxThinkingTokens: number | null): Promise<void> => {
     this.setMaxThinkingTokensCalls.push(maxThinkingTokens);
+  };
+
+  readonly applyFlagSettings = async (settings: {
+    readonly effortLevel?: string | null;
+    readonly alwaysThinkingEnabled?: boolean | null;
+    readonly fastMode?: boolean | null;
+    readonly ultracode?: boolean | null;
+  }): Promise<void> => {
+    this.applyFlagSettingsCalls.push(settings);
   };
 
   readonly rewindFiles = async (
@@ -5916,6 +5931,84 @@ describe("ClaudeAdapterLive", () => {
       });
 
       assert.deepEqual(harness.query.setModelCalls, ["claude-opus-4-6[1m]", "claude-opus-4-6"]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("applies effort changes to the running query instead of requiring a restart", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-opus-4-8",
+          [{ id: "effort", value: "medium" }],
+        ),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-opus-4-8",
+          [{ id: "effort", value: "ultracode" }],
+        ),
+        attachments: [],
+      });
+
+      assert.deepEqual(harness.query.applyFlagSettingsCalls, [
+        {
+          effortLevel: "xhigh",
+          alwaysThinkingEnabled: null,
+          fastMode: null,
+          ultracode: true,
+        },
+      ]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("does not call applyFlagSettings when session options are unchanged", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const modelSelection = createModelSelection(
+        ProviderInstanceId.make("claudeAgent"),
+        "claude-opus-4-6",
+        [{ id: "effort", value: "high" }],
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        modelSelection,
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        modelSelection,
+        attachments: [],
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello again",
+        modelSelection,
+        attachments: [],
+      });
+
+      assert.deepEqual(harness.query.applyFlagSettingsCalls, []);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

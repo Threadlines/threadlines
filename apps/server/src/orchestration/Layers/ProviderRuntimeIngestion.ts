@@ -21,6 +21,7 @@ import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
@@ -28,6 +29,7 @@ import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@threadlines/shared/DrainableWorker";
 import { areFilesystemPathsEqual } from "@threadlines/shared/path";
 
+import { metricAttributes, providerFirstOutputDuration } from "../../observability/Metrics.ts";
 import { parseTurnDiffFilesFromUnifiedDiff } from "../../checkpointing/Diffs.ts";
 import { resolveThreadProviderCwd } from "../generalChats.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
@@ -2510,6 +2512,61 @@ const make = Effect.gen(function* () {
       createdAt: event.payload.createdAt,
     });
 
+  // Time from a turn starting until its first streamed output event, using
+  // the provider-stamped event timestamps so queueing delays don't skew it.
+  const turnStartTimestamps = new Map<string, number>();
+  const firstOutputEventTypes: ReadonlySet<string> = new Set([
+    "content.delta",
+    "item.started",
+    "item.updated",
+    "item.completed",
+  ]);
+  const trackFirstOutputLatency = (event: ProviderRuntimeEvent): Effect.Effect<void> => {
+    if (event.type === "turn.started") {
+      if (event.turnId !== undefined) {
+        const startedAtMs = Date.parse(event.createdAt);
+        if (!Number.isNaN(startedAtMs)) {
+          turnStartTimestamps.set(`${event.threadId}:${event.turnId}`, startedAtMs);
+        }
+      }
+      return Effect.void;
+    }
+    if (event.type === "turn.completed" || event.type === "turn.aborted") {
+      if (event.turnId !== undefined) {
+        turnStartTimestamps.delete(`${event.threadId}:${event.turnId}`);
+      }
+      return Effect.void;
+    }
+    if (event.type === "session.exited") {
+      for (const key of turnStartTimestamps.keys()) {
+        if (key.startsWith(`${event.threadId}:`)) {
+          turnStartTimestamps.delete(key);
+        }
+      }
+      return Effect.void;
+    }
+    if (event.turnId === undefined || !firstOutputEventTypes.has(event.type)) {
+      return Effect.void;
+    }
+    const key = `${event.threadId}:${event.turnId}`;
+    const startedAtMs = turnStartTimestamps.get(key);
+    if (startedAtMs === undefined) {
+      return Effect.void;
+    }
+    turnStartTimestamps.delete(key);
+    const firstOutputAtMs = Date.parse(event.createdAt);
+    if (Number.isNaN(firstOutputAtMs)) {
+      return Effect.void;
+    }
+    return Metric.update(
+      Metric.withAttributes(
+        providerFirstOutputDuration,
+        metricAttributes({ provider: event.provider }),
+      ),
+      Duration.millis(Math.max(0, firstOutputAtMs - startedAtMs)),
+    );
+  };
+
   const processInput = (input: RuntimeIngestionInput) => {
     switch (input.source) {
       case "runtime":
@@ -2543,7 +2600,9 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       yield* Effect.forkScoped(
         Stream.runForEach(providerService.streamEvents, (event) =>
-          worker.enqueue({ source: "runtime", event }),
+          trackFirstOutputLatency(event).pipe(
+            Effect.andThen(worker.enqueue({ source: "runtime", event })),
+          ),
         ),
       );
       yield* Effect.forkScoped(
