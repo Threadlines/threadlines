@@ -33,6 +33,7 @@ import {
   ThreadUnpinnedPayload,
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
+  ThreadRealtimeStateSetPayload,
   ThreadEffectiveCwdSetPayload,
   ThreadGoalStateSetPayload,
   ThreadFollowUpSubmittedPayload,
@@ -270,6 +271,7 @@ export function projectEvent(
             interactionMode: payload.interactionMode,
             branch: payload.branch,
             worktreePath: payload.worktreePath,
+            voiceActive: false,
             latestTurn: null,
             createdAt: payload.createdAt,
             updatedAt: payload.updatedAt,
@@ -565,6 +567,23 @@ export function projectEvent(
                     }
                   : thread.latestTurn,
             updatedAt: event.occurredAt,
+          }),
+        };
+      });
+
+    case "thread.realtime-state-set":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          ThreadRealtimeStateSetPayload,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        return {
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            voiceActive: payload.active,
+            updatedAt: payload.updatedAt,
           }),
         };
       });

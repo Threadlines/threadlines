@@ -1037,6 +1037,7 @@ const make = Effect.gen(function* () {
   const pendingStreamingAssistantMessages = yield* Ref.make(
     new Map<MessageId, PendingStreamingAssistantMessage>(),
   );
+  const realtimeAssistantMessageIds = yield* Ref.make(new Map<ThreadId, MessageId>());
   const streamingAssistantTableMessageIds = yield* Ref.make(new Set<MessageId>());
 
   const assistantSegmentStateByTurnKey = yield* Cache.make<string, AssistantSegmentState>({
@@ -1874,6 +1875,15 @@ const make = Effect.gen(function* () {
 
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
+      // Realtime audio/item traffic is intentionally in-memory only. Keep this
+      // guard ahead of every projection lookup or orchestration dispatch so a
+      // future generic branch cannot accidentally persist high-rate PCM.
+      if (
+        event.type === "thread.realtime.audio.delta" ||
+        event.type === "thread.realtime.item-added"
+      ) {
+        return;
+      }
       const thread = yield* resolveThreadShell(event.threadId);
       if (!thread) return;
       if (
@@ -1965,6 +1975,50 @@ const make = Effect.gen(function* () {
       const now = event.createdAt;
       const eventTurnId = toTurnId(event.turnId);
       const activeTurnId = thread.session?.activeTurnId ?? null;
+
+      if (
+        event.type === "thread.realtime.started" ||
+        event.type === "thread.realtime.error" ||
+        event.type === "thread.realtime.closed"
+      ) {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.realtime.state.set",
+          commandId: providerCommandId(event, "realtime-state"),
+          threadId: thread.id,
+          active: event.type === "thread.realtime.started",
+          createdAt: now,
+        });
+        if (event.type === "thread.realtime.error" || event.type === "thread.realtime.closed") {
+          // A session that ends between a transcript delta and its `done`
+          // would otherwise leave the streaming message open and leak its id
+          // into the next realtime session on this thread.
+          const staleMessageId = yield* Ref.modify(realtimeAssistantMessageIds, (current) => {
+            const existing = current.get(thread.id);
+            if (!existing) {
+              return [undefined, current] as const;
+            }
+            const next = new Map(current);
+            next.delete(thread.id);
+            return [existing, next] as const;
+          });
+          if (staleMessageId) {
+            const detailedThread = yield* getLoadedThreadDetail();
+            const existingAssistantMessage = findMessageById(
+              detailedThread?.messages ?? [],
+              staleMessageId,
+            );
+            yield* finalizeAssistantMessage({
+              event,
+              threadId: thread.id,
+              messageId: staleMessageId,
+              createdAt: now,
+              commandTag: "realtime-assistant-abort",
+              finalDeltaCommandTag: "realtime-assistant-delta-abort",
+              hasProjectedMessage: existingAssistantMessage !== undefined,
+            });
+          }
+        }
+      }
 
       const conflictsWithActiveTurn =
         activeTurnId !== null && eventTurnId !== undefined && !sameId(activeTurnId, eventTurnId);
@@ -2219,11 +2273,25 @@ const make = Effect.gen(function* () {
           });
         } else {
           const turnId = toTurnId(event.turnId);
-          const assistantMessageId = yield* getOrCreateAssistantMessageId({
-            threadId: thread.id,
-            event,
-            ...(turnId ? { turnId } : {}),
-          });
+          const assistantMessageId =
+            event.raw?.method === "thread/realtime/transcript/delta"
+              ? yield* Ref.modify(realtimeAssistantMessageIds, (current) => {
+                  const existing = current.get(thread.id);
+                  if (existing) {
+                    return [existing, current] as const;
+                  }
+                  const created = MessageId.make(
+                    `assistant:realtime:${thread.id}:${event.eventId}`,
+                  );
+                  const next = new Map(current);
+                  next.set(thread.id, created);
+                  return [created, next] as const;
+                })
+              : yield* getOrCreateAssistantMessageId({
+                  threadId: thread.id,
+                  event,
+                  ...(turnId ? { turnId } : {}),
+                });
           if (turnId) {
             yield* rememberAssistantMessageId(thread.id, turnId, assistantMessageId);
           }
@@ -2400,6 +2468,52 @@ const make = Effect.gen(function* () {
             yield* clearAssistantSegmentStateForTurn(thread.id, turnId);
           }
         }
+      }
+
+      if (
+        event.type === "thread.realtime.transcript.done" &&
+        event.payload.role === "user" &&
+        event.payload.text.trim().length > 0
+      ) {
+        // Spoken user input never goes through `thread.turn.start`, so record
+        // it explicitly or voice conversations project with no user side.
+        yield* orchestrationEngine.dispatch({
+          type: "thread.message.user.record",
+          commandId: providerCommandId(event, "realtime-user-transcript"),
+          threadId: thread.id,
+          messageId: MessageId.make(`user:realtime:${thread.id}:${event.eventId}`),
+          text: event.payload.text,
+          createdAt: now,
+        });
+      }
+
+      if (event.type === "thread.realtime.transcript.done" && event.payload.role === "assistant") {
+        const assistantMessageId = yield* Ref.modify(realtimeAssistantMessageIds, (current) => {
+          const existing = current.get(thread.id);
+          const next = new Map(current);
+          next.delete(thread.id);
+          return [
+            existing ?? MessageId.make(`assistant:realtime:${thread.id}:${event.eventId}`),
+            next,
+          ] as const;
+        });
+        const detailedThread = yield* getLoadedThreadDetail();
+        const existingAssistantMessage = findMessageById(
+          detailedThread?.messages ?? [],
+          assistantMessageId,
+        );
+        yield* finalizeAssistantMessage({
+          event,
+          threadId: thread.id,
+          messageId: assistantMessageId,
+          createdAt: now,
+          commandTag: "realtime-assistant-complete",
+          finalDeltaCommandTag: "realtime-assistant-delta-finalize",
+          hasProjectedMessage: existingAssistantMessage !== undefined,
+          ...(existingAssistantMessage === undefined || existingAssistantMessage.text.length === 0
+            ? { fallbackText: event.payload.text }
+            : {}),
+        });
       }
 
       if (proposedPlanCompletion) {

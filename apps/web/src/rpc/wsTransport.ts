@@ -30,6 +30,8 @@ interface SubscribeOptions {
   readonly retryDelay?: Duration.Input;
   readonly onResubscribe?: () => void;
   readonly tag?: string;
+  readonly resubscribe?: boolean;
+  readonly onComplete?: () => void;
 }
 
 interface RequestOptions {
@@ -267,9 +269,23 @@ export class WsTransport {
           cancelCurrentStream = runningStream.cancel;
           await runningStream.completed;
           cancelCurrentStream = NOOP;
+          if (options?.resubscribe === false) {
+            if (active) {
+              options.onComplete?.();
+            }
+            return;
+          }
         } catch (error) {
           cancelCurrentStream = NOOP;
           if (!active || this.disposed) {
+            if (active && options?.resubscribe === false) {
+              options.onComplete?.();
+            }
+            return;
+          }
+
+          if (options?.resubscribe === false) {
+            options.onComplete?.();
             return;
           }
 

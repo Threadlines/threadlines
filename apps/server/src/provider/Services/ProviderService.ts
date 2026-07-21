@@ -13,6 +13,11 @@
  */
 import type {
   ProviderInterruptTurnInput,
+  ProviderRealtimeAppendAudioInput,
+  ProviderRealtimeListVoicesInput,
+  ProviderRealtimeListVoicesResult,
+  ProviderRealtimeStartInput,
+  ProviderRealtimeStopInput,
   ProviderInstanceId,
   MessageId,
   ProviderRespondToRequestInput,
@@ -79,6 +84,19 @@ export interface ProviderServiceShape {
   readonly interruptTurn: (
     input: ProviderInterruptTurnInput,
   ) => Effect.Effect<void, ProviderServiceError>;
+
+  readonly realtimeStart?: (
+    input: ProviderRealtimeStartInput,
+  ) => Effect.Effect<void, ProviderServiceError>;
+  readonly realtimeStop?: (
+    input: ProviderRealtimeStopInput,
+  ) => Effect.Effect<void, ProviderServiceError>;
+  readonly realtimeAppendAudio?: (
+    input: ProviderRealtimeAppendAudioInput,
+  ) => Effect.Effect<void, ProviderServiceError>;
+  readonly realtimeListVoices?: (
+    input: ProviderRealtimeListVoicesInput,
+  ) => Effect.Effect<ProviderRealtimeListVoicesResult, ProviderServiceError>;
 
   /**
    * Ask the active provider session to compact its context.

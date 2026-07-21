@@ -298,6 +298,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           worktreePath: null,
           effectiveCwd: null,
           goal: null,
+          voiceActive: false,
           latestTurn: {
             turnId: asTurnId("turn-1"),
             state: "completed",
@@ -416,6 +417,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           worktreePath: null,
           effectiveCwd: null,
           goal: null,
+          voiceActive: false,
           latestTurn: {
             turnId: asTurnId("turn-1"),
             state: "completed",

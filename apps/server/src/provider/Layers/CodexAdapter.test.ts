@@ -139,6 +139,12 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
   public readonly interruptTurnImpl = vi.fn(
     (_turnId?: TurnId): Promise<void> => Promise.resolve(undefined),
   );
+  public readonly realtimeStartImpl = vi.fn((): Promise<void> => Promise.resolve(undefined));
+  public readonly realtimeStopImpl = vi.fn((): Promise<void> => Promise.resolve(undefined));
+  public readonly realtimeAppendAudioImpl = vi.fn((): Promise<void> => Promise.resolve(undefined));
+  public readonly realtimeListVoicesImpl = vi.fn(
+    (): Promise<ReadonlyArray<string>> => Promise.resolve(["alloy"]),
+  );
 
   public readonly compactContextImpl = vi.fn((): Promise<void> => Promise.resolve(undefined));
 
@@ -233,6 +239,16 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
   interruptTurn(turnId?: TurnId) {
     return Effect.promise(() => this.interruptTurnImpl(turnId));
   }
+
+  realtimeStart = Effect.promise(() => this.realtimeStartImpl());
+
+  realtimeStop = Effect.promise(() => this.realtimeStopImpl());
+
+  realtimeAppendAudio() {
+    return Effect.promise(() => this.realtimeAppendAudioImpl());
+  }
+
+  realtimeListVoices = Effect.promise(() => this.realtimeListVoicesImpl());
 
   compactContext = Effect.promise(() => this.compactContextImpl());
 
@@ -1592,6 +1608,54 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("maps realtime transcript completion and SDP notifications", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const eventsFiber = yield* Stream.runCollect(Stream.take(adapter.streamEvents, 2)).pipe(
+        Effect.forkChild,
+      );
+
+      yield* runtime.emit({
+        id: asEventId("evt-realtime-transcript-done"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "thread/realtime/transcript/done",
+        payload: {
+          threadId: "provider-thread-1",
+          role: "assistant",
+          text: "The final spoken answer.",
+        },
+      } satisfies ProviderEvent);
+      yield* runtime.emit({
+        id: asEventId("evt-realtime-sdp"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-01-01T00:00:01.000Z",
+        method: "thread/realtime/sdp",
+        payload: {
+          threadId: "provider-thread-1",
+          sdp: "v=0\r\n",
+        },
+      } satisfies ProviderEvent);
+
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      assert.equal(events[0]?.type, "thread.realtime.transcript.done");
+      if (events[0]?.type === "thread.realtime.transcript.done") {
+        assert.deepEqual(events[0].payload, {
+          role: "assistant",
+          text: "The final spoken answer.",
+        });
+      }
+      assert.equal(events[1]?.type, "thread.realtime.sdp");
+      if (events[1]?.type === "thread.realtime.sdp") {
+        assert.deepEqual(events[1].payload, { sdp: "v=0\r\n" });
+      }
+    }),
+  );
+
   it.effect("maps fatal websocket stderr notifications to runtime.error", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();
@@ -2129,6 +2193,22 @@ it.effect("flushes managed native logs when the adapter layer shuts down", () =>
 
       const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
       yield* runtime.emit({
+        id: asEventId("evt-native-audio-excluded"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-logger"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "thread/realtime/outputAudio/delta",
+        payload: {
+          threadId: "provider-thread-logger",
+          audio: {
+            data: "AAEC",
+            sampleRate: 24_000,
+            numChannels: 1,
+          },
+        },
+      } satisfies ProviderEvent);
+      yield* runtime.emit({
         id: asEventId("evt-native-log"),
         kind: "notification",
         provider: ProviderDriverKind.make("codex"),
@@ -2146,6 +2226,7 @@ it.effect("flushes managed native logs when the adapter layer shuts down", () =>
       assert.equal(fs.existsSync(threadLogPath), true);
       const contents = fs.readFileSync(threadLogPath, "utf8");
       assert.match(contents, /NTIVE: .*"message":"native flush test"/);
+      assert.doesNotMatch(contents, /thread\/realtime\/outputAudio\/delta/);
     } finally {
       if (!scopeClosed) {
         yield* Scope.close(scope, Exit.void);

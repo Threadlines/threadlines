@@ -157,6 +157,7 @@ describe("ProviderCommandReactor", () => {
     /** Fail session starts that request a native fork, to exercise the
      *  context-seed fallback path. */
     readonly failNativeForkStart?: boolean;
+    readonly failRealtimeStart?: boolean;
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -265,6 +266,20 @@ describe("ProviderCommandReactor", () => {
       }),
     );
     const interruptTurn = vi.fn((_: unknown) => Effect.void);
+    const realtimeStart = vi.fn<NonNullable<ProviderServiceShape["realtimeStart"]>>(() =>
+      input?.failRealtimeStart
+        ? Effect.fail(
+            new ProviderAdapterRequestError({
+              provider: "codex",
+              method: "thread/realtime/start",
+              detail: "realtime start failed in test harness",
+            }),
+          )
+        : Effect.void,
+    );
+    const realtimeStop = vi.fn<NonNullable<ProviderServiceShape["realtimeStop"]>>(
+      () => Effect.void,
+    );
     const compactContext = vi.fn<ProviderServiceShape["compactContext"]>(() => Effect.void);
     const setThreadGoal = vi.fn<ProviderServiceShape["setThreadGoal"]>((goalInput) =>
       Effect.succeed({
@@ -355,6 +370,10 @@ describe("ProviderCommandReactor", () => {
       steerTurn: steerTurn as ProviderServiceShape["steerTurn"],
       startReview: () => unsupported(),
       interruptTurn: interruptTurn as ProviderServiceShape["interruptTurn"],
+      realtimeStart,
+      realtimeStop,
+      realtimeAppendAudio: () => unsupported(),
+      realtimeListVoices: () => unsupported(),
       compactContext,
       setThreadGoal: setThreadGoal as ProviderServiceShape["setThreadGoal"],
       pauseThreadGoalForStop,
@@ -498,6 +517,8 @@ describe("ProviderCommandReactor", () => {
       sendTurn,
       steerTurn,
       interruptTurn,
+      realtimeStart,
+      realtimeStop,
       compactContext,
       setThreadGoal,
       pauseThreadGoalForStop,
@@ -2502,6 +2523,45 @@ describe("ProviderCommandReactor", () => {
         thread?.session?.status === "interrupted" &&
         thread.session.activeTurnId === null &&
         thread.latestTurn?.state === "interrupted"
+      );
+    });
+  });
+
+  it("projects realtime start failures into activity and session state", async () => {
+    const harness = await createHarness({ failRealtimeStart: true });
+    const now = "2026-01-01T00:00:00.000Z";
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-realtime-failure-session-set"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.realtime.start",
+        commandId: CommandId.make("cmd-realtime-start-failure"),
+        threadId: ThreadId.make("thread-1"),
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(async () => {
+      const thread = (await harness.readModel()).threads[0];
+      return (
+        thread?.voiceActive === false &&
+        thread.session?.status === "error" &&
+        thread.activities.some((activity) => activity.kind === "provider.realtime.start.failed")
       );
     });
   });

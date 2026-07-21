@@ -39,6 +39,7 @@ import {
   OrchestrationReplayEventsError,
   FilesystemBrowseError,
   ProviderExtensionsError,
+  ProviderRealtimeError,
   ProviderSubagentTranscriptError,
   ThreadId,
   type TerminalEvent,
@@ -93,6 +94,7 @@ import { ServerLifecycleEvents } from "./serverLifecycleEvents.ts";
 import { ServerRuntimeStartup } from "./serverRuntimeStartup.ts";
 import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
 import { TerminalManager } from "./terminal/Services/Manager.ts";
+import { realtimeAudioHub } from "./realtime/RealtimeAudioHub.ts";
 import { WorkspaceEntries } from "./workspace/Services/WorkspaceEntries.ts";
 import { WorkspaceFileSystem } from "./workspace/Services/WorkspaceFileSystem.ts";
 import { WorkspacePathOutsideRootError } from "./workspace/Services/WorkspacePaths.ts";
@@ -143,7 +145,10 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
       | "thread.activity-appended"
       | "thread.turn-diff-completed"
       | "thread.reverted"
-      | "thread.session-set";
+      | "thread.session-set"
+      | "thread.realtime-start-requested"
+      | "thread.realtime-stop-requested"
+      | "thread.realtime-state-set";
   }
 > {
   return (
@@ -154,7 +159,10 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
     event.type === "thread.activity-appended" ||
     event.type === "thread.turn-diff-completed" ||
     event.type === "thread.reverted" ||
-    event.type === "thread.session-set"
+    event.type === "thread.session-set" ||
+    event.type === "thread.realtime-start-requested" ||
+    event.type === "thread.realtime-stop-requested" ||
+    event.type === "thread.realtime-state-set"
   );
 }
 
@@ -1675,6 +1683,28 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               ),
             ),
             { "rpc.aggregate": "terminal" },
+          ),
+        [WS_METHODS.realtimeAppendAudio]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.realtimeAppendAudio,
+            providerService.realtimeAppendAudio!(input).pipe(
+              Effect.mapError(
+                (error) =>
+                  new ProviderRealtimeError({
+                    message:
+                      error.message.trim().length > 0
+                        ? error.message
+                        : "Failed to append realtime audio.",
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "realtime" },
+          ),
+        [WS_METHODS.realtimeSubscribeAudio]: (input) =>
+          observeRpcStream(
+            WS_METHODS.realtimeSubscribeAudio,
+            realtimeAudioHub.subscribe(input.threadId),
+            { "rpc.aggregate": "realtime" },
           ),
         [WS_METHODS.subscribeServerConfig]: (_input) =>
           observeRpcStreamEffect(

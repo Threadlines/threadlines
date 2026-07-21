@@ -78,6 +78,7 @@ const CODEX_DRIVER = ProviderDriverKind.make("codex");
 const CLAUDE_DRIVER = ProviderDriverKind.make("claudeAgent");
 const INVENTORY_COMMAND_TIMEOUT = Duration.seconds(20);
 const CODEX_APP_SERVER_INVENTORY_TIMEOUT = Duration.seconds(20);
+const decodeCodexJson = Schema.decodeUnknownSync(Schema.Json);
 const CODEX_APP_SERVER_REQUEST_TIMEOUT = Duration.seconds(15);
 const CODEX_APP_SERVER_ACTION_TIMEOUT = Duration.seconds(120);
 const CLAUDE_PLUGIN_ACTION_TIMEOUT = Duration.seconds(120);
@@ -2708,7 +2709,9 @@ export const callProviderExtensionMcpTool = Effect.fn(
         server: input.request.serverName,
         tool: input.request.toolName,
         threadId: input.request.providerThreadId,
-        ...(input.request.arguments !== undefined ? { arguments: input.request.arguments } : {}),
+        ...(input.request.arguments !== undefined
+          ? { arguments: decodeCodexJson(input.request.arguments) }
+          : {}),
       }),
     ),
   );

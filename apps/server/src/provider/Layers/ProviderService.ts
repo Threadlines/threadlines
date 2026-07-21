@@ -16,6 +16,10 @@ import {
   NonNegativeInt,
   ThreadId,
   ProviderInterruptTurnInput,
+  ProviderRealtimeAppendAudioInput,
+  ProviderRealtimeListVoicesInput,
+  ProviderRealtimeStartInput,
+  ProviderRealtimeStopInput,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
   ProviderSendTurnInput,
@@ -1131,6 +1135,117 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     },
   );
 
+  const resolveRealtimeAdapter = Effect.fn("resolveRealtimeAdapter")(function* (input: {
+    readonly threadId: ThreadId;
+    readonly operation: string;
+  }) {
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: input.operation,
+      allowRecovery: false,
+    });
+    if (!routed.isActive) {
+      return yield* toValidationError(
+        input.operation,
+        `Cannot use realtime for thread '${input.threadId}' because no active provider session exists.`,
+      );
+    }
+    if (routed.adapter.capabilities.realtimeVoice !== "supported") {
+      return yield* toValidationError(
+        input.operation,
+        `Provider '${routed.adapter.provider}' does not support realtime voice.`,
+      );
+    }
+    return routed;
+  });
+
+  const realtimeStart: NonNullable<ProviderServiceShape["realtimeStart"]> = Effect.fn(
+    "realtimeStart",
+  )(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.realtimeStart",
+      schema: ProviderRealtimeStartInput,
+      payload: rawInput,
+    });
+    const routed = yield* resolveRealtimeAdapter({
+      threadId: input.threadId,
+      operation: "ProviderService.realtimeStart",
+    });
+    if (!routed.adapter.realtimeStart) {
+      return yield* toValidationError(
+        "ProviderService.realtimeStart",
+        "Realtime start capability is missing from the provider adapter.",
+      );
+    }
+    yield* routed.adapter.realtimeStart(
+      routed.threadId,
+      input.outputModality !== undefined ? { outputModality: input.outputModality } : undefined,
+    );
+  });
+
+  const realtimeStop: NonNullable<ProviderServiceShape["realtimeStop"]> = Effect.fn("realtimeStop")(
+    function* (rawInput) {
+      const input = yield* decodeInputOrValidationError({
+        operation: "ProviderService.realtimeStop",
+        schema: ProviderRealtimeStopInput,
+        payload: rawInput,
+      });
+      const routed = yield* resolveRealtimeAdapter({
+        threadId: input.threadId,
+        operation: "ProviderService.realtimeStop",
+      });
+      if (!routed.adapter.realtimeStop) {
+        return yield* toValidationError(
+          "ProviderService.realtimeStop",
+          "Realtime stop capability is missing from the provider adapter.",
+        );
+      }
+      yield* routed.adapter.realtimeStop(routed.threadId);
+    },
+  );
+
+  const realtimeAppendAudio: NonNullable<ProviderServiceShape["realtimeAppendAudio"]> = Effect.fn(
+    "realtimeAppendAudio",
+  )(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.realtimeAppendAudio",
+      schema: ProviderRealtimeAppendAudioInput,
+      payload: rawInput,
+    });
+    const routed = yield* resolveRealtimeAdapter({
+      threadId: input.threadId,
+      operation: "ProviderService.realtimeAppendAudio",
+    });
+    if (!routed.adapter.realtimeAppendAudio) {
+      return yield* toValidationError(
+        "ProviderService.realtimeAppendAudio",
+        "Realtime audio capability is missing from the provider adapter.",
+      );
+    }
+    yield* routed.adapter.realtimeAppendAudio(input);
+  });
+
+  const realtimeListVoices: NonNullable<ProviderServiceShape["realtimeListVoices"]> = Effect.fn(
+    "realtimeListVoices",
+  )(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.realtimeListVoices",
+      schema: ProviderRealtimeListVoicesInput,
+      payload: rawInput,
+    });
+    const routed = yield* resolveRealtimeAdapter({
+      threadId: input.threadId,
+      operation: "ProviderService.realtimeListVoices",
+    });
+    if (!routed.adapter.realtimeListVoices) {
+      return yield* toValidationError(
+        "ProviderService.realtimeListVoices",
+        "Realtime voice-list capability is missing from the provider adapter.",
+      );
+    }
+    return yield* routed.adapter.realtimeListVoices(routed.threadId);
+  });
+
   const compactContext: ProviderServiceShape["compactContext"] = Effect.fn("compactContext")(
     function* (rawInput) {
       const input = yield* decodeInputOrValidationError({
@@ -1771,6 +1886,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     steerTurn,
     startReview,
     interruptTurn,
+    realtimeStart,
+    realtimeStop,
+    realtimeAppendAudio,
+    realtimeListVoices,
     compactContext,
     setThreadGoal,
     pauseThreadGoalForStop,

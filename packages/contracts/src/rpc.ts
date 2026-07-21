@@ -84,6 +84,10 @@ import {
   ProviderStartReviewError,
   ProviderStartReviewInput,
   ProviderStartReviewResult,
+  ProviderRealtimeAppendAudioInput,
+  ProviderRealtimeAudioChunk,
+  ProviderRealtimeError,
+  ProviderRealtimeStartInput,
   ProviderSubagentTranscriptError,
   ProviderSubagentTranscriptInput,
   ProviderSubagentTranscriptResult,
@@ -245,6 +249,10 @@ export const WS_METHODS = {
   terminalClear: "terminal.clear",
   terminalRestart: "terminal.restart",
   terminalClose: "terminal.close",
+
+  // Realtime audio methods
+  realtimeAppendAudio: "realtime.appendAudio",
+  realtimeSubscribeAudio: "realtime.subscribeAudio",
 
   // Server meta
   serverGetConfig: "server.getConfig",
@@ -881,6 +889,18 @@ export const WsSubscribeTerminalEventsRpc = Rpc.make(WS_METHODS.subscribeTermina
   stream: true,
 });
 
+export const WsRealtimeAppendAudioRpc = Rpc.make(WS_METHODS.realtimeAppendAudio, {
+  payload: ProviderRealtimeAppendAudioInput,
+  success: Schema.Void,
+  error: ProviderRealtimeError,
+});
+
+export const WsRealtimeSubscribeAudioRpc = Rpc.make(WS_METHODS.realtimeSubscribeAudio, {
+  payload: ProviderRealtimeStartInput,
+  success: ProviderRealtimeAudioChunk,
+  stream: true,
+});
+
 export const WsSubscribeServerConfigRpc = Rpc.make(WS_METHODS.subscribeServerConfig, {
   payload: Schema.Struct({}),
   success: ServerConfigStreamEvent,
@@ -978,6 +998,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsTerminalRestartRpc,
   WsTerminalCloseRpc,
   WsSubscribeTerminalEventsRpc,
+  WsRealtimeAppendAudioRpc,
+  WsRealtimeSubscribeAudioRpc,
   WsSubscribeServerConfigRpc,
   WsSubscribeServerLifecycleRpc,
   WsSubscribeAuthAccessRpc,

@@ -18,6 +18,7 @@ import {
   ProviderInstanceId,
   type ProviderRuntimeEvent,
   type ProviderRequestKind,
+  type ProviderRealtimeAudioChunk,
   type ProviderSubagentTranscriptEntry,
   type ProviderSubagentTranscriptResult,
   type RuntimeThreadGoalSnapshot,
@@ -230,9 +231,16 @@ function mapCodexStoredItem(
         name: item.namespace ? `${item.namespace}.${item.tool}` : item.tool,
         summary: codexJsonPreview(item.arguments, CODEX_SUBAGENT_TRANSCRIPT_TOOL_SUMMARY_MAX_CHARS),
         outputPreview: (item.contentItems ?? [])
-          .map((content) =>
-            content.type === "inputText" ? content.text : `[image: ${content.imageUrl}]`,
-          )
+          .map((content) => {
+            switch (content.type) {
+              case "inputText":
+                return content.text;
+              case "inputImage":
+                return `[image: ${content.imageUrl}]`;
+              case "inputAudio":
+                return `[audio: ${content.audioUrl}]`;
+            }
+          })
           .join("\n"),
       });
     case "collabAgentToolCall":
@@ -323,6 +331,11 @@ export interface CodexAdapterLiveOptions {
   >;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
+  readonly publishRealtimeAudio?: (
+    threadId: ThreadId,
+    audio: ProviderRealtimeAudioChunk,
+  ) => Effect.Effect<void>;
+  readonly releaseRealtimeAudio?: (threadId: ThreadId) => Effect.Effect<void>;
   /**
    * Invoked whenever the app-server pushes a rolling rate-limit update. The
    * driver folds these into the instance's provider snapshot so account
@@ -2062,7 +2075,18 @@ export function mapToRuntimeEvents(
         type: "thread.realtime.audio.delta",
         ...runtimeEventBase(event, canonicalThreadId),
         payload: {
-          audio: payload.audio,
+          audio: {
+            data: payload.audio.data,
+            sampleRate: payload.audio.sampleRate,
+            numChannels: payload.audio.numChannels,
+            ...(payload.audio.samplesPerChannel !== undefined &&
+            payload.audio.samplesPerChannel !== null
+              ? { samplesPerChannel: payload.audio.samplesPerChannel }
+              : {}),
+            ...(payload.audio.itemId !== undefined && payload.audio.itemId !== null
+              ? { itemId: payload.audio.itemId }
+              : {}),
+          },
         },
       },
     ];
@@ -2097,6 +2121,42 @@ export function mapToRuntimeEvents(
         payload: {
           streamKind: payload.role === "assistant" ? "assistant_text" : "unknown",
           delta: payload.delta,
+        },
+      },
+    ];
+  }
+
+  if (event.method === "thread/realtime/transcript/done") {
+    const payload = readPayload(
+      EffectCodexSchema.V2ThreadRealtimeTranscriptDoneNotification,
+      event.payload,
+    );
+    if (!payload) {
+      return [];
+    }
+    return [
+      {
+        type: "thread.realtime.transcript.done",
+        ...runtimeEventBase(event, canonicalThreadId),
+        payload: {
+          role: payload.role,
+          text: payload.text,
+        },
+      },
+    ];
+  }
+
+  if (event.method === "thread/realtime/sdp") {
+    const payload = readPayload(EffectCodexSchema.V2ThreadRealtimeSdpNotification, event.payload);
+    if (!payload) {
+      return [];
+    }
+    return [
+      {
+        type: "thread.realtime.sdp",
+        ...runtimeEventBase(event, canonicalThreadId),
+        payload: {
+          sdp: payload.sdp,
         },
       },
     ];
@@ -2330,6 +2390,12 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             ? { model: input.modelSelection.model }
             : {}),
           ...(serviceTier ? { serviceTier } : {}),
+          ...(options?.publishRealtimeAudio
+            ? {
+                onRealtimeAudio: (audio: ProviderRealtimeAudioChunk) =>
+                  options.publishRealtimeAudio!(input.threadId, audio),
+              }
+            : {}),
         };
         const sessionScope = yield* Scope.make("sequential");
         let sessionScopeTransferred = false;
@@ -2356,6 +2422,34 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         // session, otherwise provider events stop as soon as startup returns.
         const eventFiber = yield* Stream.runForEach(runtime.events, (event) =>
           Effect.gen(function* () {
+            if (event.method === "thread/realtime/outputAudio/delta") {
+              const payload = readPayload(
+                EffectCodexSchema.V2ThreadRealtimeOutputAudioDeltaNotification,
+                event.payload,
+              );
+              if (payload && options?.publishRealtimeAudio) {
+                yield* options.publishRealtimeAudio(event.threadId, {
+                  data: payload.audio.data,
+                  sampleRate: payload.audio.sampleRate,
+                  numChannels: payload.audio.numChannels,
+                  ...(payload.audio.samplesPerChannel !== undefined &&
+                  payload.audio.samplesPerChannel !== null
+                    ? { samplesPerChannel: payload.audio.samplesPerChannel }
+                    : {}),
+                  ...(payload.audio.itemId !== undefined && payload.audio.itemId !== null
+                    ? { itemId: payload.audio.itemId }
+                    : {}),
+                });
+              }
+              return;
+            }
+            if (
+              (event.method === "thread/realtime/closed" ||
+                event.method === "thread/realtime/error") &&
+              options?.releaseRealtimeAudio
+            ) {
+              yield* options.releaseRealtimeAudio(event.threadId);
+            }
             yield* writeNativeEvent(event);
             const runtimeEvents = mapToRuntimeEvents(event, event.threadId);
             if (runtimeEvents.length === 0) {
@@ -2612,6 +2706,53 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       ),
     );
 
+  const realtimeStart: NonNullable<CodexAdapterShape["realtimeStart"]> = (threadId, options) =>
+    requireSession(threadId).pipe(
+      Effect.flatMap((session) =>
+        session.runtime.realtimeStart(
+          options?.outputModality !== undefined
+            ? { outputModality: options.outputModality }
+            : undefined,
+        ),
+      ),
+      Effect.mapError((cause) =>
+        cause._tag === "ProviderAdapterSessionNotFoundError"
+          ? cause
+          : mapCodexRuntimeError(threadId, "thread/realtime/start", cause),
+      ),
+    );
+
+  const realtimeStop: NonNullable<CodexAdapterShape["realtimeStop"]> = (threadId) =>
+    requireSession(threadId).pipe(
+      Effect.flatMap((session) => session.runtime.realtimeStop),
+      Effect.mapError((cause) =>
+        cause._tag === "ProviderAdapterSessionNotFoundError"
+          ? cause
+          : mapCodexRuntimeError(threadId, "thread/realtime/stop", cause),
+      ),
+    );
+
+  const realtimeAppendAudio: NonNullable<CodexAdapterShape["realtimeAppendAudio"]> = (input) =>
+    requireSession(input.threadId).pipe(
+      Effect.flatMap((session) => session.runtime.realtimeAppendAudio(input.audio)),
+      Effect.mapError((cause) =>
+        cause._tag === "ProviderAdapterSessionNotFoundError"
+          ? cause
+          : mapCodexRuntimeError(input.threadId, "thread/realtime/appendAudio", cause),
+      ),
+    );
+
+  const realtimeListVoices: NonNullable<CodexAdapterShape["realtimeListVoices"]> = (threadId) =>
+    requireSession(threadId).pipe(
+      Effect.flatMap((session) => session.runtime.realtimeListVoices),
+      Effect.map((voices) => ({ voices })),
+      Effect.mapError((cause) =>
+        cause._tag === "ProviderAdapterSessionNotFoundError"
+          ? cause
+          : mapCodexRuntimeError(threadId, "thread/realtime/listVoices", cause),
+      ),
+    );
+
   const compactContext: NonNullable<CodexAdapterShape["compactContext"]> = (threadId) =>
     requireSession(threadId).pipe(
       Effect.flatMap((session) => session.runtime.compactContext),
@@ -2846,12 +2987,17 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       reviewStart: "supported",
       threadGoals: "supported",
       nativeThreadFork: "supported",
+      realtimeVoice: "supported",
     },
     startSession,
     sendTurn,
     steerTurn,
     startReview,
     interruptTurn,
+    realtimeStart,
+    realtimeStop,
+    realtimeAppendAudio,
+    realtimeListVoices,
     compactContext,
     setThreadGoal,
     getThreadGoal,

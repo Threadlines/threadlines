@@ -166,6 +166,8 @@ const ProviderRuntimeEventType = Schema.Literals([
   "thread.realtime.started",
   "thread.realtime.item-added",
   "thread.realtime.audio.delta",
+  "thread.realtime.transcript.done",
+  "thread.realtime.sdp",
   "thread.realtime.error",
   "thread.realtime.closed",
   "turn.started",
@@ -222,6 +224,8 @@ const GoalClearedType = Schema.Literal("goal.cleared");
 const ThreadRealtimeStartedType = Schema.Literal("thread.realtime.started");
 const ThreadRealtimeItemAddedType = Schema.Literal("thread.realtime.item-added");
 const ThreadRealtimeAudioDeltaType = Schema.Literal("thread.realtime.audio.delta");
+const ThreadRealtimeTranscriptDoneType = Schema.Literal("thread.realtime.transcript.done");
+const ThreadRealtimeSdpType = Schema.Literal("thread.realtime.sdp");
 const ThreadRealtimeErrorType = Schema.Literal("thread.realtime.error");
 const ThreadRealtimeClosedType = Schema.Literal("thread.realtime.closed");
 const TurnStartedType = Schema.Literal("turn.started");
@@ -395,9 +399,26 @@ const ThreadRealtimeItemAddedPayload = Schema.Struct({
 export type ThreadRealtimeItemAddedPayload = typeof ThreadRealtimeItemAddedPayload.Type;
 
 const ThreadRealtimeAudioDeltaPayload = Schema.Struct({
-  audio: Schema.Unknown,
+  audio: Schema.Struct({
+    data: Schema.String,
+    sampleRate: NonNegativeInt,
+    numChannels: NonNegativeInt,
+    samplesPerChannel: Schema.optional(NonNegativeInt),
+    itemId: Schema.optional(TrimmedNonEmptyStringSchema),
+  }),
 });
 export type ThreadRealtimeAudioDeltaPayload = typeof ThreadRealtimeAudioDeltaPayload.Type;
+
+const ThreadRealtimeTranscriptDonePayload = Schema.Struct({
+  role: TrimmedNonEmptyStringSchema,
+  text: Schema.String,
+});
+export type ThreadRealtimeTranscriptDonePayload = typeof ThreadRealtimeTranscriptDonePayload.Type;
+
+const ThreadRealtimeSdpPayload = Schema.Struct({
+  sdp: TrimmedNonEmptyStringSchema,
+});
+export type ThreadRealtimeSdpPayload = typeof ThreadRealtimeSdpPayload.Type;
 
 const ThreadRealtimeErrorPayload = Schema.Struct({
   message: TrimmedNonEmptyStringSchema,
@@ -814,6 +835,22 @@ const ProviderRuntimeThreadRealtimeAudioDeltaEvent = Schema.Struct({
 export type ProviderRuntimeThreadRealtimeAudioDeltaEvent =
   typeof ProviderRuntimeThreadRealtimeAudioDeltaEvent.Type;
 
+const ProviderRuntimeThreadRealtimeTranscriptDoneEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: ThreadRealtimeTranscriptDoneType,
+  payload: ThreadRealtimeTranscriptDonePayload,
+});
+export type ProviderRuntimeThreadRealtimeTranscriptDoneEvent =
+  typeof ProviderRuntimeThreadRealtimeTranscriptDoneEvent.Type;
+
+const ProviderRuntimeThreadRealtimeSdpEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: ThreadRealtimeSdpType,
+  payload: ThreadRealtimeSdpPayload,
+});
+export type ProviderRuntimeThreadRealtimeSdpEvent =
+  typeof ProviderRuntimeThreadRealtimeSdpEvent.Type;
+
 const ProviderRuntimeThreadRealtimeErrorEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: ThreadRealtimeErrorType,
@@ -1115,6 +1152,8 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeThreadRealtimeStartedEvent,
   ProviderRuntimeThreadRealtimeItemAddedEvent,
   ProviderRuntimeThreadRealtimeAudioDeltaEvent,
+  ProviderRuntimeThreadRealtimeTranscriptDoneEvent,
+  ProviderRuntimeThreadRealtimeSdpEvent,
   ProviderRuntimeThreadRealtimeErrorEvent,
   ProviderRuntimeThreadRealtimeClosedEvent,
   ProviderRuntimeTurnStartedEvent,

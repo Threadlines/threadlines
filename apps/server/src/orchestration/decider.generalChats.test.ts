@@ -147,6 +147,98 @@ describe("decider general chats guards", () => {
   });
 });
 
+describe("decider realtime command guards", () => {
+  const readModelWithSession = (
+    providerName: string | null,
+    status: "ready" | "stopped" = "ready",
+    voiceActive = false,
+  ): OrchestrationReadModel => {
+    const thread = makeThread({
+      id: "thread-realtime",
+      projectId: "project-realtime",
+      messageId: "message-realtime",
+    });
+    return {
+      ...createEmptyReadModel(now),
+      threads: [
+        {
+          ...thread,
+          voiceActive,
+          session: {
+            threadId: thread.id,
+            status,
+            providerName,
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: now,
+          },
+        },
+      ],
+    };
+  };
+
+  it("accepts realtime start for an active Codex session and stop idempotently", async () => {
+    const start = await Effect.runPromise(
+      decideOrchestrationCommand({
+        readModel: readModelWithSession("codex"),
+        command: {
+          type: "thread.realtime.start",
+          commandId: asCommandId("cmd-realtime-start"),
+          threadId: asThreadId("thread-realtime"),
+          createdAt: now,
+        },
+      }),
+    );
+    expect("type" in start ? start.type : start[0]?.type).toBe("thread.realtime-start-requested");
+
+    const stop = await Effect.runPromise(
+      decideOrchestrationCommand({
+        readModel: readModelWithSession("codex", "ready", false),
+        command: {
+          type: "thread.realtime.stop",
+          commandId: asCommandId("cmd-realtime-stop"),
+          threadId: asThreadId("thread-realtime"),
+          createdAt: now,
+        },
+      }),
+    );
+    expect("type" in stop ? stop.type : stop[0]?.type).toBe("thread.realtime-stop-requested");
+  });
+
+  it("rejects realtime start for non-Codex, inactive, or already-active threads", async () => {
+    for (const readModel of [
+      readModelWithSession("claudeAgent"),
+      readModelWithSession("codex", "stopped"),
+      readModelWithSession("codex", "ready", true),
+    ]) {
+      const error = await decide(
+        {
+          type: "thread.realtime.start",
+          commandId: asCommandId(`cmd-realtime-start-rejected-${crypto.randomUUID()}`),
+          threadId: asThreadId("thread-realtime"),
+          createdAt: now,
+        },
+        readModel,
+      );
+      expect(error?._tag).toBe("OrchestrationCommandInvariantError");
+    }
+  });
+
+  it("rejects realtime stop when the thread does not exist", async () => {
+    const error = await decide(
+      {
+        type: "thread.realtime.stop",
+        commandId: asCommandId("cmd-realtime-stop-missing"),
+        threadId: asThreadId("missing-thread"),
+        createdAt: now,
+      },
+      createEmptyReadModel(now),
+    );
+    expect(error?._tag).toBe("OrchestrationCommandInvariantError");
+  });
+});
+
 function makeThread(input: {
   id: string;
   projectId: string;

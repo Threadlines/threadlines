@@ -103,6 +103,10 @@ function createProviderServiceHarness() {
     steerTurn: () => unsupported(),
     startReview: () => unsupported(),
     interruptTurn: () => unsupported(),
+    realtimeStart: () => unsupported(),
+    realtimeStop: () => unsupported(),
+    realtimeAppendAudio: () => unsupported(),
+    realtimeListVoices: () => unsupported(),
     compactContext: () => unsupported(),
     setThreadGoal: () => unsupported(),
     pauseThreadGoalForStop: () => unsupported(),
@@ -326,6 +330,60 @@ describe("ProviderRuntimeIngestion", () => {
       drain,
     };
   }
+
+  it("drops realtime audio deltas before any orchestration event is persisted", async () => {
+    const harness = await createHarness();
+    const before = await harness.readModel();
+
+    harness.emit({
+      type: "thread.realtime.audio.delta",
+      eventId: asEventId("evt-realtime-audio-dropped"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      payload: {
+        audio: {
+          data: "AAEC",
+          sampleRate: 24_000,
+          numChannels: 1,
+          samplesPerChannel: 2,
+        },
+      },
+    });
+    await Effect.runPromise(Effect.yieldNow);
+    await harness.drain();
+
+    const after = await harness.readModel();
+    expect(after.snapshotSequence).toBe(before.snapshotSequence);
+    expect(after.threads[0]).toEqual(before.threads[0]);
+  });
+
+  it("records finished user realtime transcripts as user messages", async () => {
+    const harness = await createHarness();
+
+    harness.emit({
+      type: "thread.realtime.transcript.done",
+      eventId: asEventId("evt-realtime-user-done"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      payload: {
+        role: "user",
+        text: "What does the failing test cover?",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.role === "user" && message.text === "What does the failing test cover?",
+      ),
+    );
+    const message = thread.messages.find(
+      (entry: ProviderRuntimeTestMessage) => entry.role === "user",
+    );
+    expect(message?.id).toBe("user:realtime:thread-1:evt-realtime-user-done");
+  });
 
   it("maps turn started/completed events into thread session updates", async () => {
     const harness = await createHarness();

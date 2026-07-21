@@ -563,6 +563,7 @@ export const OrchestrationThread = Schema.Struct({
   goal: Schema.NullOr(OrchestrationThreadGoal).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  voiceActive: Schema.optional(Schema.Boolean),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -618,6 +619,7 @@ export const OrchestrationThreadShell = Schema.Struct({
   goal: Schema.NullOr(OrchestrationThreadGoal).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  voiceActive: Schema.optional(Schema.Boolean),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -945,6 +947,21 @@ const ThreadTurnInterruptCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadRealtimeStartCommand = Schema.Struct({
+  type: Schema.Literal("thread.realtime.start"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  outputModality: Schema.optional(Schema.Literals(["audio", "text"])),
+  createdAt: IsoDateTime,
+});
+
+const ThreadRealtimeStopCommand = Schema.Struct({
+  type: Schema.Literal("thread.realtime.stop"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  createdAt: IsoDateTime,
+});
+
 /** Re-requests the thread's last user message after a failed turn. The
  *  server recovers the message from the thread's history, so the client
  *  never rebuilds text or attachments. */
@@ -1052,6 +1069,8 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadTurnStartCommand,
   ThreadFollowUpSubmitCommand,
   ThreadTurnInterruptCommand,
+  ThreadRealtimeStartCommand,
+  ThreadRealtimeStopCommand,
   ThreadTurnRetryCommand,
   ThreadContextCompactRequestCommand,
   ThreadApprovalRespondCommand,
@@ -1082,6 +1101,8 @@ export const ClientOrchestrationCommand = Schema.Union([
   ClientThreadTurnStartCommand,
   ClientThreadFollowUpSubmitCommand,
   ThreadTurnInterruptCommand,
+  ThreadRealtimeStartCommand,
+  ThreadRealtimeStopCommand,
   ThreadTurnRetryCommand,
   ThreadContextCompactRequestCommand,
   ThreadApprovalRespondCommand,
@@ -1099,6 +1120,14 @@ const ThreadSessionSetCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   session: OrchestrationSession,
+  createdAt: IsoDateTime,
+});
+
+const ThreadRealtimeStateSetCommand = Schema.Struct({
+  type: Schema.Literal("thread.realtime.state.set"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  active: Schema.Boolean,
   createdAt: IsoDateTime,
 });
 
@@ -1201,6 +1230,7 @@ const ThreadRevertCompleteCommand = Schema.Struct({
 
 const InternalOrchestrationCommand = Schema.Union([
   ThreadSessionSetCommand,
+  ThreadRealtimeStateSetCommand,
   ThreadEffectiveCwdSetCommand,
   ThreadGoalSetCommand,
   ThreadGoalClearCommand,
@@ -1240,6 +1270,9 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.follow-up-submitted",
   "thread.follow-up-accepted",
   "thread.turn-interrupt-requested",
+  "thread.realtime-start-requested",
+  "thread.realtime-stop-requested",
+  "thread.realtime-state-set",
   "thread.context-compact-requested",
   "thread.approval-response-requested",
   "thread.user-input-response-requested",
@@ -1399,6 +1432,23 @@ export const ThreadTurnInterruptRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   turnId: Schema.optional(TurnId),
   createdAt: IsoDateTime,
+});
+
+export const ThreadRealtimeStartRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  outputModality: Schema.optional(Schema.Literals(["audio", "text"])),
+  createdAt: IsoDateTime,
+});
+
+export const ThreadRealtimeStopRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  createdAt: IsoDateTime,
+});
+
+export const ThreadRealtimeStateSetPayload = Schema.Struct({
+  threadId: ThreadId,
+  active: Schema.Boolean,
+  updatedAt: IsoDateTime,
 });
 
 export const ThreadContextCompactRequestedPayload = Schema.Struct({
@@ -1593,6 +1643,21 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.turn-interrupt-requested"),
     payload: ThreadTurnInterruptRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.realtime-start-requested"),
+    payload: ThreadRealtimeStartRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.realtime-stop-requested"),
+    payload: ThreadRealtimeStopRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.realtime-state-set"),
+    payload: ThreadRealtimeStateSetPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

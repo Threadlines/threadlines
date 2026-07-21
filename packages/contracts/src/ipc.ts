@@ -58,6 +58,11 @@ import type {
 } from "./project.ts";
 import type { ProviderInstanceId } from "./providerInstance.ts";
 import type {
+  ProviderRealtimeAppendAudioInput,
+  ProviderRealtimeAudioChunk,
+  ProviderRealtimeStartInput,
+} from "./provider.ts";
+import type {
   ProviderExtensionMcpOAuthStartInput,
   ProviderExtensionMcpOAuthStartResult,
   ProviderExtensionMcpReloadInput,
@@ -754,6 +759,13 @@ export interface EnvironmentApi {
     restart: (input: typeof TerminalRestartInput.Encoded) => Promise<TerminalSessionSnapshot>;
     close: (input: typeof TerminalCloseInput.Encoded) => Promise<void>;
     onEvent: (callback: (event: TerminalEvent) => void) => () => void;
+  };
+  realtime: {
+    appendAudio: (input: ProviderRealtimeAppendAudioInput) => Promise<void>;
+    subscribeAudio: (
+      input: ProviderRealtimeStartInput,
+      callback: (audio: ProviderRealtimeAudioChunk) => void,
+    ) => () => void;
   };
   projects: {
     searchEntries: (input: ProjectSearchEntriesInput) => Promise<ProjectSearchEntriesResult>;

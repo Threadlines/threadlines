@@ -35,6 +35,7 @@ export const ProjectionThread = Schema.Struct({
   worktreePath: Schema.NullOr(Schema.String),
   effectiveCwd: Schema.NullOr(Schema.String),
   goal: Schema.NullOr(OrchestrationThreadGoal),
+  voiceActive: Schema.optional(NonNegativeInt),
   latestTurnId: Schema.NullOr(TurnId),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,

@@ -83,6 +83,8 @@ type ProviderIntentEvent = Extract<
       | "thread.turn-start-requested"
       | "thread.follow-up-submitted"
       | "thread.turn-interrupt-requested"
+      | "thread.realtime-start-requested"
+      | "thread.realtime-stop-requested"
       | "thread.context-compact-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
@@ -325,6 +327,8 @@ const make = Effect.gen(function* () {
       | "provider.turn.start.failed"
       | "provider.follow-up.failed"
       | "provider.turn.interrupt.failed"
+      | "provider.realtime.start.failed"
+      | "provider.realtime.stop.failed"
       | "provider.context-compact.failed"
       | "provider.approval.respond.failed"
       | "provider.user-input.respond.failed"
@@ -401,6 +405,36 @@ const make = Effect.gen(function* () {
       createdAt: input.createdAt,
     });
   });
+
+  const setThreadSessionErrorOnRealtimeFailure = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly detail: string;
+    readonly createdAt: string;
+  }) {
+    const thread = yield* resolveThread(input.threadId);
+    if (!thread?.session) {
+      return;
+    }
+    yield* setThreadSession({
+      threadId: input.threadId,
+      session: {
+        ...thread.session,
+        status: "error",
+        lastError: input.detail,
+        updatedAt: input.createdAt,
+      },
+      createdAt: input.createdAt,
+    });
+  });
+
+  const setRealtimeState = (threadId: ThreadId, active: boolean, createdAt: string) =>
+    orchestrationEngine.dispatch({
+      type: "thread.realtime.state.set",
+      commandId: serverCommandId("provider-realtime-state"),
+      threadId,
+      active,
+      createdAt,
+    });
 
   const markProviderTurnAccepted = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
@@ -1435,6 +1469,75 @@ const make = Effect.gen(function* () {
     }
   });
 
+  const recoverRealtimeFailure = (input: {
+    readonly event: Extract<
+      ProviderIntentEvent,
+      { type: "thread.realtime-start-requested" | "thread.realtime-stop-requested" }
+    >;
+    readonly operation: "start" | "stop";
+    readonly cause: Cause.Cause<unknown>;
+  }) => {
+    if (Cause.hasInterruptsOnly(input.cause)) {
+      return Effect.void;
+    }
+    const detail = formatFailureDetail(input.cause);
+    return setRealtimeState(
+      input.event.payload.threadId,
+      false,
+      input.event.payload.createdAt,
+    ).pipe(
+      Effect.andThen(
+        setThreadSessionErrorOnRealtimeFailure({
+          threadId: input.event.payload.threadId,
+          detail,
+          createdAt: input.event.payload.createdAt,
+        }),
+      ),
+      Effect.andThen(
+        appendProviderFailureActivity({
+          threadId: input.event.payload.threadId,
+          kind:
+            input.operation === "start"
+              ? "provider.realtime.start.failed"
+              : "provider.realtime.stop.failed",
+          summary:
+            input.operation === "start"
+              ? "Provider realtime start failed"
+              : "Provider realtime stop failed",
+          detail,
+          turnId: null,
+          createdAt: input.event.payload.createdAt,
+        }),
+      ),
+      Effect.asVoid,
+    );
+  };
+
+  const processRealtimeStartRequested = Effect.fn("processRealtimeStartRequested")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.realtime-start-requested" }>,
+  ) {
+    yield* providerService.realtimeStart!({
+      threadId: event.payload.threadId,
+      ...(event.payload.outputModality !== undefined
+        ? { outputModality: event.payload.outputModality }
+        : {}),
+    }).pipe(
+      Effect.catchCause((cause) => recoverRealtimeFailure({ event, operation: "start", cause })),
+    );
+  });
+
+  const processRealtimeStopRequested = Effect.fn("processRealtimeStopRequested")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.realtime-stop-requested" }>,
+  ) {
+    const thread = yield* resolveThread(event.payload.threadId);
+    if (!thread?.session || thread.session.status === "stopped" || thread.voiceActive !== true) {
+      return;
+    }
+    yield* providerService.realtimeStop!({ threadId: event.payload.threadId }).pipe(
+      Effect.catchCause((cause) => recoverRealtimeFailure({ event, operation: "stop", cause })),
+    );
+  });
+
   const processGoalSetRequested = Effect.fn("processGoalSetRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.goal-set-requested" }>,
   ) {
@@ -1644,6 +1747,16 @@ const make = Effect.gen(function* () {
           }),
         ),
       );
+      if (thread.voiceActive === true) {
+        yield* providerService.realtimeStop!({ threadId: thread.id }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("provider realtime teardown failed during session stop", {
+              threadId: thread.id,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        );
+      }
       yield* providerService.stopSession({ threadId: thread.id });
     }
 
@@ -1687,6 +1800,21 @@ const make = Effect.gen(function* () {
     const thread = yield* resolveThread(event.payload.threadId);
     if (!thread) {
       return;
+    }
+
+    // Session shutdown is the single close condition for provider-owned
+    // realtime transport. Issue the provider stop before clearing the flag;
+    // failures are non-blocking because the session is already stopping.
+    if (thread.voiceActive === true) {
+      yield* providerService.realtimeStop!({ threadId: thread.id }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("provider realtime teardown failed after session stopped", {
+            threadId: thread.id,
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      );
+      yield* setRealtimeState(thread.id, false, event.payload.session.updatedAt);
     }
 
     const expirations = [
@@ -1763,6 +1891,12 @@ const make = Effect.gen(function* () {
       case "thread.turn-interrupt-requested":
         yield* processTurnInterruptRequested(event);
         return;
+      case "thread.realtime-start-requested":
+        yield* processRealtimeStartRequested(event);
+        return;
+      case "thread.realtime-stop-requested":
+        yield* processRealtimeStopRequested(event);
+        return;
       case "thread.context-compact-requested":
         yield* processContextCompactRequested(event);
         return;
@@ -1814,6 +1948,8 @@ const make = Effect.gen(function* () {
         event.type === "thread.turn-start-requested" ||
         event.type === "thread.follow-up-submitted" ||
         event.type === "thread.turn-interrupt-requested" ||
+        event.type === "thread.realtime-start-requested" ||
+        event.type === "thread.realtime-stop-requested" ||
         event.type === "thread.context-compact-requested" ||
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||

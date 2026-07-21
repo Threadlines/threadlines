@@ -8,6 +8,8 @@ import {
   type ProviderApprovalDecision,
   type ProviderEvent,
   type ProviderInteractionMode,
+  type ProviderRealtimeAudioChunk,
+  type ProviderRealtimeVoicesList,
   type ProviderReviewDelivery,
   type ProviderReviewTarget,
   type ProviderRequestKind,
@@ -61,6 +63,46 @@ const decodeV2ThreadGoalSetResponse = Schema.decodeUnknownEffect(
 );
 const decodeV2ThreadGoalGetResponse = Schema.decodeUnknownEffect(
   EffectCodexSchema.V2ThreadGoalGetResponse,
+);
+const CodexRealtimeAudioChunk = Schema.Struct({
+  data: Schema.String,
+  sampleRate: Schema.Number,
+  numChannels: Schema.Number,
+  samplesPerChannel: Schema.optional(Schema.Number),
+  itemId: Schema.optional(Schema.String),
+});
+const CodexRealtimeStartParams = Schema.Struct({
+  threadId: Schema.String,
+  outputModality: Schema.Literals(["audio", "text"]),
+  version: Schema.Literal("v3"),
+});
+const CodexRealtimeAppendAudioParams = Schema.Struct({
+  threadId: Schema.String,
+  audio: CodexRealtimeAudioChunk,
+});
+const CodexRealtimeStopParams = Schema.Struct({ threadId: Schema.String });
+const CodexRealtimeListVoicesParams = Schema.Struct({});
+const CodexRealtimeEmptyResponse = Schema.Struct({});
+const CodexRealtimeVoicesList = Schema.Struct({
+  v1: Schema.Array(Schema.String),
+  v2: Schema.Array(Schema.String),
+  defaultV1: Schema.String,
+  defaultV2: Schema.String,
+});
+const CodexRealtimeListVoicesResponse = Schema.Struct({
+  voices: CodexRealtimeVoicesList,
+});
+const decodeCodexRealtimeStartParams = Schema.decodeUnknownEffect(CodexRealtimeStartParams);
+const decodeCodexRealtimeAppendAudioParams = Schema.decodeUnknownEffect(
+  CodexRealtimeAppendAudioParams,
+);
+const decodeCodexRealtimeStopParams = Schema.decodeUnknownEffect(CodexRealtimeStopParams);
+const decodeCodexRealtimeListVoicesParams = Schema.decodeUnknownEffect(
+  CodexRealtimeListVoicesParams,
+);
+const decodeCodexRealtimeEmptyResponse = Schema.decodeUnknownEffect(CodexRealtimeEmptyResponse);
+const decodeCodexRealtimeListVoicesResponse = Schema.decodeUnknownEffect(
+  CodexRealtimeListVoicesResponse,
 );
 
 const PROVIDER = ProviderDriverKind.make("codex");
@@ -141,6 +183,7 @@ export interface CodexSessionRuntimeOptions {
    *  own thread). Fork failures fail the start — the orchestration reactor
    *  owns the fallback to context-seed seeding. */
   readonly forkFrom?: ProviderSessionForkFrom;
+  readonly onRealtimeAudio?: (audio: ProviderRealtimeAudioChunk) => Effect.Effect<void>;
 }
 
 /** Attachment input items appended after the prompt text. Codex app-server
@@ -203,6 +246,14 @@ export interface CodexSessionRuntimeShape {
     input: CodexSessionRuntimeStartReviewInput,
   ) => Effect.Effect<ProviderStartReviewResult, CodexSessionRuntimeError>;
   readonly interruptTurn: (turnId?: TurnId) => Effect.Effect<void, CodexSessionRuntimeError>;
+  readonly realtimeStart: (
+    input?: CodexSessionRuntimeRealtimeStartInput,
+  ) => Effect.Effect<void, CodexSessionRuntimeError>;
+  readonly realtimeStop: Effect.Effect<void, CodexSessionRuntimeError>;
+  readonly realtimeAppendAudio: (
+    audio: ProviderRealtimeAudioChunk,
+  ) => Effect.Effect<void, CodexSessionRuntimeError>;
+  readonly realtimeListVoices: Effect.Effect<ProviderRealtimeVoicesList, CodexSessionRuntimeError>;
   readonly compactContext: Effect.Effect<void, CodexSessionRuntimeError>;
   readonly setGoal: (
     input: CodexSessionRuntimeSetGoalInput,
@@ -232,6 +283,10 @@ export interface CodexSessionRuntimeShape {
 }
 
 export type CodexThreadGoal = EffectCodexSchema.V2ThreadGoalSetResponse__ThreadGoal;
+
+export interface CodexSessionRuntimeRealtimeStartInput {
+  readonly outputModality?: "audio" | "text";
+}
 
 export interface CodexSessionRuntimeSetGoalInput {
   readonly objective?: string;
@@ -1392,6 +1447,23 @@ export const makeCodexSessionRuntime = (
 
         yield* Ref.set(collabReceiverTurnsRef, collabReceiverTurns);
         yield* Ref.set(collabChildThreadMetadataRef, collabChildThreadMetadata);
+        if (notification.method === "thread/realtime/outputAudio/delta") {
+          const audio = notification.params.audio;
+          if (options.onRealtimeAudio) {
+            yield* options.onRealtimeAudio({
+              data: audio.data,
+              sampleRate: audio.sampleRate,
+              numChannels: audio.numChannels,
+              ...(audio.samplesPerChannel !== undefined && audio.samplesPerChannel !== null
+                ? { samplesPerChannel: audio.samplesPerChannel }
+                : {}),
+              ...(audio.itemId !== undefined && audio.itemId !== null
+                ? { itemId: audio.itemId }
+                : {}),
+            });
+          }
+          return;
+        }
         const payload = enrichCollabAgentToolPayload(notification, collabChildThreadMetadata);
         yield* emitEvent({
           kind: "notification",
@@ -1983,6 +2055,83 @@ export const makeCodexSessionRuntime = (
             turnId: effectiveTurnId,
           });
         }),
+      realtimeStart: Effect.fnUntraced(function* (input?: CodexSessionRuntimeRealtimeStartInput) {
+        const providerThreadId = yield* readProviderThreadId;
+        const params = yield* decodeCodexRealtimeStartParams({
+          threadId: providerThreadId,
+          outputModality: input?.outputModality ?? "audio",
+          version: "v3",
+        }).pipe(
+          Effect.mapError((error) =>
+            toProtocolParseError("Invalid thread/realtime/start params", error),
+          ),
+        );
+        const response = yield* withCodexRequestTimeout(
+          "start Codex realtime",
+          client.raw.request("thread/realtime/start", params),
+        );
+        yield* decodeCodexRealtimeEmptyResponse(response).pipe(
+          Effect.mapError((error) =>
+            toProtocolParseError("Invalid thread/realtime/start response payload", error),
+          ),
+        );
+      }),
+      realtimeStop: Effect.gen(function* () {
+        const providerThreadId = yield* readProviderThreadId;
+        const params = yield* decodeCodexRealtimeStopParams({ threadId: providerThreadId }).pipe(
+          Effect.mapError((error) =>
+            toProtocolParseError("Invalid thread/realtime/stop params", error),
+          ),
+        );
+        const response = yield* withCodexRequestTimeout(
+          "stop Codex realtime",
+          client.raw.request("thread/realtime/stop", params),
+        );
+        yield* decodeCodexRealtimeEmptyResponse(response).pipe(
+          Effect.mapError((error) =>
+            toProtocolParseError("Invalid thread/realtime/stop response payload", error),
+          ),
+        );
+      }),
+      realtimeAppendAudio: (audio) =>
+        Effect.gen(function* () {
+          const providerThreadId = yield* readProviderThreadId;
+          const params = yield* decodeCodexRealtimeAppendAudioParams({
+            threadId: providerThreadId,
+            audio,
+          }).pipe(
+            Effect.mapError((error) =>
+              toProtocolParseError("Invalid thread/realtime/appendAudio params", error),
+            ),
+          );
+          const response = yield* withCodexRequestTimeout(
+            "append Codex realtime audio",
+            client.raw.request("thread/realtime/appendAudio", params),
+          );
+          yield* decodeCodexRealtimeEmptyResponse(response).pipe(
+            Effect.mapError((error) =>
+              toProtocolParseError("Invalid thread/realtime/appendAudio response payload", error),
+            ),
+          );
+        }),
+      realtimeListVoices: Effect.gen(function* () {
+        yield* readProviderThreadId;
+        const params = yield* decodeCodexRealtimeListVoicesParams({}).pipe(
+          Effect.mapError((error) =>
+            toProtocolParseError("Invalid thread/realtime/listVoices params", error),
+          ),
+        );
+        const rawResponse = yield* withCodexRequestTimeout(
+          "list Codex realtime voices",
+          client.raw.request("thread/realtime/listVoices", params),
+        );
+        const response = yield* decodeCodexRealtimeListVoicesResponse(rawResponse).pipe(
+          Effect.mapError((error) =>
+            toProtocolParseError("Invalid thread/realtime/listVoices response payload", error),
+          ),
+        );
+        return response.voices;
+      }),
       compactContext: Effect.gen(function* () {
         const providerThreadId = yield* readProviderThreadId;
         yield* withCodexRequestTimeout(

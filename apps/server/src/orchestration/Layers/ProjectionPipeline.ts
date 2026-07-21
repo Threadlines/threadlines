@@ -558,6 +558,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             worktreePath: event.payload.worktreePath,
             effectiveCwd: null,
             goal: null,
+            voiceActive: 0,
             latestTurnId: null,
             createdAt: event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
@@ -709,6 +710,21 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...existingRow.value,
             goal: event.payload.goal,
             updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "thread.realtime-state-set": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            voiceActive: event.payload.active ? 1 : 0,
+            updatedAt: event.occurredAt,
           });
           return;
         }

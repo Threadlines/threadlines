@@ -18,6 +18,9 @@ import type {
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
+  ProviderRealtimeAppendAudioInput,
+  ProviderRealtimeListVoicesResult,
+  ProviderRealtimeOutputModality,
   ProviderSubagentTranscriptInput,
   ProviderSubagentTranscriptResult,
   ProviderSteerTurnInput,
@@ -37,6 +40,7 @@ export type ProviderActiveTurnSteeringMode = "supported" | "unsupported";
 export type ProviderReviewStartMode = "supported" | "unsupported";
 export type ProviderThreadGoalsMode = "supported" | "unsupported";
 export type ProviderNativeThreadForkMode = "supported" | "unsupported";
+export type ProviderRealtimeVoiceMode = "supported" | "unsupported";
 
 /** Partial goal update: omitted fields keep their provider-side values. */
 export interface ProviderSetThreadGoalInput {
@@ -78,6 +82,9 @@ export interface ProviderAdapterCapabilities {
    * of another thread's history (`ProviderSessionStartInput.forkFrom`).
    */
   readonly nativeThreadFork?: ProviderNativeThreadForkMode;
+
+  /** Declares support for Codex-style thread realtime voice sessions. */
+  readonly realtimeVoice?: ProviderRealtimeVoiceMode;
 }
 
 export interface ProviderThreadTurnSnapshot {
@@ -141,6 +148,18 @@ export interface ProviderAdapterShape<TError> {
    * Interrupt an active turn.
    */
   readonly interruptTurn: (threadId: ThreadId, turnId?: TurnId) => Effect.Effect<void, TError>;
+
+  readonly realtimeStart?: (
+    threadId: ThreadId,
+    options?: { readonly outputModality?: ProviderRealtimeOutputModality },
+  ) => Effect.Effect<void, TError>;
+  readonly realtimeStop?: (threadId: ThreadId) => Effect.Effect<void, TError>;
+  readonly realtimeAppendAudio?: (
+    input: ProviderRealtimeAppendAudioInput,
+  ) => Effect.Effect<void, TError>;
+  readonly realtimeListVoices?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ProviderRealtimeListVoicesResult, TError>;
 
   /**
    * Ask the provider to summarize older context for an active session.

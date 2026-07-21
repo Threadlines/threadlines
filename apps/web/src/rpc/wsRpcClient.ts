@@ -29,6 +29,8 @@ type RpcInput<TTag extends RpcTag> = Parameters<RpcMethod<TTag>>[0];
 
 interface StreamSubscriptionOptions {
   readonly onResubscribe?: () => void;
+  /** Fires when a non-resubscribing stream ends for any reason other than unsubscribe. */
+  readonly onComplete?: () => void;
 }
 
 type RpcUnaryMethod<TTag extends RpcTag> =
@@ -71,6 +73,10 @@ export interface WsRpcClient {
     readonly restart: RpcUnaryMethod<typeof WS_METHODS.terminalRestart>;
     readonly close: RpcUnaryMethod<typeof WS_METHODS.terminalClose>;
     readonly onEvent: RpcStreamMethod<typeof WS_METHODS.subscribeTerminalEvents>;
+  };
+  readonly realtime: {
+    readonly appendAudio: RpcUnaryMethod<typeof WS_METHODS.realtimeAppendAudio>;
+    readonly subscribeAudio: RpcInputStreamMethod<typeof WS_METHODS.realtimeSubscribeAudio>;
   };
   readonly projects: {
     readonly searchEntries: RpcUnaryMethod<typeof WS_METHODS.projectsSearchEntries>;
@@ -313,6 +319,20 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
           ...options,
           tag: WS_METHODS.subscribeTerminalEvents,
         }),
+    },
+    realtime: {
+      appendAudio: (input) =>
+        transport.request((client) => client[WS_METHODS.realtimeAppendAudio](input)),
+      subscribeAudio: (input, listener, options) =>
+        transport.subscribe(
+          (client) => client[WS_METHODS.realtimeSubscribeAudio](input),
+          listener,
+          {
+            tag: WS_METHODS.realtimeSubscribeAudio,
+            resubscribe: false,
+            ...(options?.onComplete ? { onComplete: options.onComplete } : {}),
+          },
+        ),
     },
     projects: {
       searchEntries: (input) =>

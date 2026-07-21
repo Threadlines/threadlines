@@ -451,8 +451,11 @@ function mapCodexModelCapabilities(
   const defaultServiceTier = serviceTierOptions.find((option) => option.isDefault)?.id;
   const supportsLegacyFastMode =
     serviceTierOptions.length === 0 && (model.additionalSpeedTiers ?? []).includes("fast");
+  const inputModalities = (model.inputModalities ?? DEFAULT_CODEX_INPUT_MODALITIES).filter(
+    (modality): modality is "text" | "image" => modality === "text" || modality === "image",
+  );
   return createModelCapabilities({
-    inputModalities: model.inputModalities ?? DEFAULT_CODEX_INPUT_MODALITIES,
+    inputModalities,
     supportsPersonality: model.supportsPersonality ?? false,
     optionDescriptors: [
       ...(reasoningOptions.length > 0

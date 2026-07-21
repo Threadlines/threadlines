@@ -16,6 +16,10 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
       close: (input) => rpcClient.terminal.close(input as never),
       onEvent: (callback) => rpcClient.terminal.onEvent(callback),
     },
+    realtime: {
+      appendAudio: rpcClient.realtime.appendAudio,
+      subscribeAudio: (input, callback) => rpcClient.realtime.subscribeAudio(input, callback),
+    },
     projects: {
       searchEntries: rpcClient.projects.searchEntries,
       writeFile: rpcClient.projects.writeFile,

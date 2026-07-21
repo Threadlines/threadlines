@@ -277,6 +277,60 @@ export const ProviderInterruptTurnInput = Schema.Struct({
 });
 export type ProviderInterruptTurnInput = typeof ProviderInterruptTurnInput.Type;
 
+export const ProviderRealtimeAudioChunk = Schema.Struct({
+  data: Schema.String,
+  sampleRate: NonNegativeInt,
+  numChannels: NonNegativeInt,
+  samplesPerChannel: Schema.optional(NonNegativeInt),
+  itemId: Schema.optional(TrimmedNonEmptyString),
+});
+export type ProviderRealtimeAudioChunk = typeof ProviderRealtimeAudioChunk.Type;
+
+export const ProviderRealtimeOutputModality = Schema.Literals(["audio", "text"]);
+export type ProviderRealtimeOutputModality = typeof ProviderRealtimeOutputModality.Type;
+
+export const ProviderRealtimeStartInput = Schema.Struct({
+  threadId: ThreadId,
+  outputModality: Schema.optional(ProviderRealtimeOutputModality),
+});
+export type ProviderRealtimeStartInput = typeof ProviderRealtimeStartInput.Type;
+
+export const ProviderRealtimeStopInput = Schema.Struct({
+  threadId: ThreadId,
+});
+export type ProviderRealtimeStopInput = typeof ProviderRealtimeStopInput.Type;
+
+export const ProviderRealtimeAppendAudioInput = Schema.Struct({
+  threadId: ThreadId,
+  audio: ProviderRealtimeAudioChunk,
+});
+export type ProviderRealtimeAppendAudioInput = typeof ProviderRealtimeAppendAudioInput.Type;
+
+export const ProviderRealtimeListVoicesInput = Schema.Struct({
+  threadId: ThreadId,
+});
+export type ProviderRealtimeListVoicesInput = typeof ProviderRealtimeListVoicesInput.Type;
+
+export const ProviderRealtimeVoicesList = Schema.Struct({
+  v1: Schema.Array(TrimmedNonEmptyString),
+  v2: Schema.Array(TrimmedNonEmptyString),
+  defaultV1: TrimmedNonEmptyString,
+  defaultV2: TrimmedNonEmptyString,
+});
+export type ProviderRealtimeVoicesList = typeof ProviderRealtimeVoicesList.Type;
+
+export const ProviderRealtimeListVoicesResult = Schema.Struct({
+  voices: ProviderRealtimeVoicesList,
+});
+export type ProviderRealtimeListVoicesResult = typeof ProviderRealtimeListVoicesResult.Type;
+
+export class ProviderRealtimeError extends Schema.TaggedErrorClass<ProviderRealtimeError>()(
+  "ProviderRealtimeError",
+  {
+    message: TrimmedNonEmptyString,
+  },
+) {}
+
 export const ProviderStopSessionInput = Schema.Struct({
   threadId: ThreadId,
 });
