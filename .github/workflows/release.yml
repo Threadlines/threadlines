@@ -21,7 +21,7 @@ on:
         required: false
         type: string
       build_scope:
-        description: "Artifacts to build. Auto uses mac-arm64-windows for nightly and all for stable."
+        description: "Artifacts to build. Auto uses mac-arm64-windows-linux for nightly and all for stable."
         required: false
         default: auto
         type: choice
@@ -29,6 +29,7 @@ on:
           - auto
           - mac-arm64
           - mac-arm64-windows
+          - mac-arm64-windows-linux
           - mac-all
           - linux
           - all
@@ -217,7 +218,7 @@ jobs:
             if [[ "$channel" == "stable" ]]; then
               build_scope="all"
             else
-              build_scope="mac-arm64-windows"
+              build_scope="mac-arm64-windows-linux"
             fi
           fi
 
@@ -232,6 +233,11 @@ jobs:
               ;;
             mac-arm64-windows)
               build_windows=true
+              macos_matrix='{"include":[{"arch":"arm64","runner":"macos-15"}]}'
+              ;;
+            mac-arm64-windows-linux)
+              build_windows=true
+              build_linux=true
               macos_matrix='{"include":[{"arch":"arm64","runner":"macos-15"}]}'
               ;;
             mac-all)

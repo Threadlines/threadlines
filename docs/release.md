@@ -2,15 +2,15 @@
 
 Threadlines currently ships desktop release artifacts through GitHub Releases. The
 release pipeline builds a Windows x64 NSIS `.exe` installer plus macOS arm64 and
-x64 `.dmg`/`.zip` artifacts, then publishes them together with Electron updater
-metadata.
+x64 `.dmg`/`.zip` artifacts and a Linux x64 AppImage, then publishes them together
+with Electron updater metadata.
 
 Windows installers are signed with Azure Trusted Signing. macOS releases are
 Developer ID signed, notarized, and stapled when the signing secrets are
 configured.
 
-Linux packaging exists in the local artifact script, but it is not part of the
-normal release workflow yet because there is no tested Linux install/update path.
+The Linux release lane boots the AppImage under Xvfb and verifies that its embedded
+backend is reachable before uploading it.
 
 ## Versioning
 
@@ -67,16 +67,14 @@ automation should not use old fork-era variable names.
 
 The workflow is `.github/workflows/release.yml`.
 
-It runs:
+It verifies the required CI checks for the release commit, runs the release smoke
+checks, and then performs:
 
-- `vp fmt --check`
-- `vp lint --report-unused-disable-directives`
-- `vp run typecheck`
-- `vp run test`
 - Windows x64 NSIS packaging
 - macOS arm64 DMG/ZIP packaging
 - macOS x64 DMG/ZIP packaging
 - macOS updater manifest merging
+- Linux x64 AppImage packaging and boot verification
 - GitHub Release publishing
 
 The platform jobs upload installers directly to a draft GitHub Release with the
@@ -93,7 +91,9 @@ git push origin v0.2.0
 To publish a nightly from `main`, open GitHub Actions, run **Desktop Release**,
 choose `nightly`, and leave the version blank. The workflow uses the latest
 stable tag to choose the next stable target version, then appends the nightly
-date/run suffix. You can also run the same dispatch from the CLI:
+date/run suffix. The automatic nightly scope builds Windows x64, macOS arm64, and
+Linux x64; stable releases additionally build macOS x64. You can also run the same
+dispatch from the CLI:
 
 ```powershell
 gh workflow run release.yml --ref main -f channel=nightly
@@ -132,15 +132,17 @@ The release assets should include:
 - `Threadlines-<version>-arm64.zip`
 - `Threadlines-<version>-x64.dmg`
 - `Threadlines-<version>-x64.zip`
+- `Threadlines-<version>-x86_64.AppImage`
 - `latest.yml`
 - `latest-mac.yml`
+- `latest-linux.yml`
 
 Electron Builder also uploads matching `.blockmap` files for differential
 updates.
 
-Nightly releases may also include `nightly.yml` and `nightly-mac.yml`. The
-workflow keeps latest-channel copies on nightly prereleases so updater checks can
-read the prerelease manifest.
+Nightly releases may also include `nightly.yml`, `nightly-mac.yml`, and
+`nightly-linux.yml`. The workflow keeps latest-channel copies on nightly
+prereleases so updater checks can read the prerelease manifest.
 
 ## Downloads
 
@@ -149,6 +151,7 @@ Download the matching asset from GitHub Releases:
 - Windows: `Threadlines-<version>-x64.exe`
 - Apple Silicon macOS: `Threadlines-<version>-arm64.dmg`
 - Intel macOS: `Threadlines-<version>-x64.dmg`
+- Linux x64: `Threadlines-<version>-x86_64.AppImage`
 
 Windows and macOS public release artifacts are expected to be signed. Windows may
 still show SmartScreen reputation prompts until the signing identity has enough
@@ -223,7 +226,7 @@ The release workflow requires Windows signing before upload. Configure
 `THREADLINES_DESKTOP_SIGNED=true` and the Azure Trusted Signing variables and
 secrets used by `.github/workflows/release.yml`.
 
-## Linux Later
+## Linux AppImage
 
 The local script can build a Linux AppImage:
 
@@ -231,7 +234,5 @@ The local script can build a Linux AppImage:
 vp run dist:desktop:artifact -- --platform linux --target AppImage --arch x64 --build-version 0.2.0
 ```
 
-Keep Linux out of normal stable/nightly releases until there is at least one
-repeatable install/update check on a real Linux desktop or VM. An experimental
-manual artifact job is a reasonable next step after Windows and macOS releases
-are proven.
+Stable and nightly GitHub Releases include the Linux x64 AppImage. The release
+workflow performs a repeatable headless boot check before it publishes the asset.
