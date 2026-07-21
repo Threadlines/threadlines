@@ -33,10 +33,10 @@ on:
           - linux
           - all
       deploy_web:
-        description: "Deploy app.threadlines.dev after the release publishes."
+        description: "Deploy the channel's hosted web app after the release publishes. Set to false to skip."
         required: false
-        default: true
-        type: boolean
+        default: "true"
+        type: string
 permissions:
   actions: read
   checks: read
@@ -964,9 +964,10 @@ jobs:
     needs:
       - preflight
       - publish
-    # API-triggered dispatches have delivered this boolean input inconsistently
-    # (typed true, string "true", or unset); accept both truthy forms.
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.deploy_web == true || inputs.deploy_web == 'true' }}
+    # This gate has never fired as a typed boolean: API dispatches delivered
+    # the input so inconsistently that every historical release skipped the
+    # deploy. String-typed input + string comparison is deterministic.
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.deploy_web != 'false' }}
     uses: ./.github/workflows/deploy-web.yml
     with:
       ref: ${{ needs.preflight.outputs.ref }}

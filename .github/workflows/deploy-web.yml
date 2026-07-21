@@ -12,6 +12,19 @@ on:
         required: false
         type: string
         default: latest
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref (tag or sha) to build and deploy. Use a release tag so the hosted app version matches the desktop build."
+        required: true
+        type: string
+      channel:
+        description: "Hosted app channel: latest deploys app.threadlines.dev, nightly deploys nightly.app.threadlines.dev."
+        required: true
+        type: choice
+        options:
+          - latest
+          - nightly
 
 permissions:
   contents: read
