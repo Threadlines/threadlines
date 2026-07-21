@@ -2462,6 +2462,163 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect(
+    "streams forwarded subagent text into the collab tool item, never the transcript",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+
+        const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.takeUntil((event) => event.type === "turn.completed"),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+
+        yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "delegate this",
+          attachments: [],
+        });
+
+        // The Task tool goes in flight; no tool_result yet — the foreground
+        // agent is still running while its messages stream in.
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session-subagent-live",
+          uuid: "stream-subagent-task-1",
+          parent_tool_use_id: null,
+          event: {
+            type: "content_block_start",
+            index: 0,
+            content_block: {
+              type: "tool_use",
+              id: "tool-task-live",
+              name: "Task",
+              input: {
+                description: "Review the database layer",
+                prompt: "Audit the SQL changes",
+                subagent_type: "code-reviewer",
+              },
+            },
+          },
+        } as unknown as SDKMessage);
+
+        // Complete forwarded envelope -> live text on the collab item.
+        harness.query.emit({
+          type: "assistant",
+          session_id: "sdk-session-subagent-live",
+          uuid: "assistant-subagent-live-1",
+          parent_tool_use_id: "tool-task-live",
+          message: {
+            id: "subagent-message-1",
+            content: [{ type: "text", text: "Scanning the database layer now." }],
+          },
+        } as unknown as SDKMessage);
+
+        // Forwarded deltas, subagent-internal tool results, and messages from
+        // unknown parents are all dropped without emitting anything.
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session-subagent-live",
+          uuid: "stream-subagent-live-1",
+          parent_tool_use_id: "tool-task-live",
+          event: {
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "text_delta", text: "leaked-delta" },
+          },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "user",
+          session_id: "sdk-session-subagent-live",
+          uuid: "user-subagent-live-1",
+          parent_tool_use_id: "tool-task-live",
+          message: {
+            content: [
+              { type: "tool_result", tool_use_id: "subagent-inner-tool", content: "leaked-grep" },
+            ],
+          },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "assistant",
+          session_id: "sdk-session-subagent-live",
+          uuid: "assistant-subagent-unknown-1",
+          parent_tool_use_id: "tool-task-unknown",
+          message: {
+            id: "subagent-message-unknown",
+            content: [{ type: "text", text: "leaked-unknown-parent" }],
+          },
+        } as unknown as SDKMessage);
+
+        // Oversized messages truncate to the live-text cap.
+        harness.query.emit({
+          type: "assistant",
+          session_id: "sdk-session-subagent-live",
+          uuid: "assistant-subagent-live-2",
+          parent_tool_use_id: "tool-task-live",
+          message: {
+            id: "subagent-message-2",
+            content: [{ type: "text", text: "y".repeat(5_000) }],
+          },
+        } as unknown as SDKMessage);
+
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          errors: [],
+          session_id: "sdk-session-subagent-live",
+          uuid: "result-subagent-live-1",
+        } as unknown as SDKMessage);
+
+        const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+
+        const liveUpdates = runtimeEvents.flatMap((event) => {
+          if (event.type !== "item.updated") {
+            return [];
+          }
+          const data = (event.payload as { data?: { subagentLiveText?: unknown } }).data;
+          return typeof data?.subagentLiveText === "string"
+            ? [{ event, liveText: data.subagentLiveText }]
+            : [];
+        });
+        assert.equal(liveUpdates.length, 2);
+        assert.equal(liveUpdates[0]?.liveText, "Scanning the database layer now.");
+        assert.equal(liveUpdates[1]?.liveText?.length, 4_000);
+        for (const update of liveUpdates) {
+          assert.equal(String(update.event.itemId), "tool-task-live");
+          assert.equal(
+            (update.event.payload as { itemType?: unknown }).itemType,
+            "collab_agent_tool_call",
+          );
+        }
+
+        // The forwarded conversation must not surface as transcript items, and
+        // the dropped messages must not emit at all.
+        const assistantItems = runtimeEvents.filter(
+          (event) =>
+            event.type.startsWith("item.") &&
+            (event.payload as { itemType?: unknown }).itemType === "assistant_message",
+        );
+        assert.deepStrictEqual(assistantItems, []);
+        const leaked = runtimeEvents.filter((event) =>
+          JSON.stringify(event.payload).includes("leaked-"),
+        );
+        assert.deepStrictEqual(leaked, []);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
   it.effect("treats user-aborted Claude results as interrupted without a runtime error", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

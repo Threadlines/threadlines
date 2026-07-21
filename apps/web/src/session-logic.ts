@@ -186,6 +186,9 @@ export interface SubagentProgressItem {
   statusLabel: string;
   model: string | null;
   reasoningEffort: string | null;
+  /** Latest streamed message from the still-running agent
+   *  (`forwardSubagentText`); null once the terminal result lands. */
+  liveBody: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -999,6 +1002,12 @@ function collectSubagentActivityRecords(
         ? activity.createdAt
         : (previous?.resultCreatedAt ?? null);
       const resultActivityId = terminalResult ? activity.id : (previous?.resultActivityId ?? null);
+      // Streamed progress text from a still-running agent; the terminal
+      // result supersedes it.
+      const liveBody =
+        resultBody !== null
+          ? null
+          : (asTrimmedString(data?.subagentLiveText) ?? previous?.liveBody ?? null);
 
       byAgentId.set(agentId, {
         id: agentId,
@@ -1012,6 +1021,7 @@ function collectSubagentActivityRecords(
         statusLabel: subagentProgressStatusLabel(status),
         model: model ?? previous?.model ?? null,
         reasoningEffort: reasoningEffort ?? previous?.reasoningEffort ?? null,
+        liveBody,
         createdAt: previous?.createdAt ?? activity.createdAt,
         updatedAt: activity.createdAt,
         resultActivityId,
@@ -1047,6 +1057,8 @@ function applySubagentTaskCompletion(
     ...record,
     status,
     statusLabel: subagentProgressStatusLabel(status),
+    // The task settled; live progress text no longer describes the agent.
+    liveBody: null,
     updatedAt: activity.createdAt,
   });
 }
@@ -1349,7 +1361,7 @@ function normalizeStatusToken(value: string | null): string {
   );
 }
 
-function isActiveSubagentStatus(status: SubagentProgressStatus): boolean {
+export function isActiveSubagentStatus(status: SubagentProgressStatus): boolean {
   return status === "starting" || status === "running" || status === "waiting";
 }
 

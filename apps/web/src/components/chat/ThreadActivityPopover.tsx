@@ -30,6 +30,7 @@ import { proposedPlanTitle } from "../../proposedPlan";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
 import {
   formatSubagentDisplayName,
+  isActiveSubagentStatus,
   shouldShowSubagentDisplayChip,
   type ActivePlanState,
   type LatestProposedPlanState,
@@ -984,6 +985,15 @@ function SubagentSection({ state }: { state: SubagentProgressState }) {
                         <span className="min-w-0 truncate">{chip.label}</span>
                       </span>
                     ))}
+                  </div>
+                ) : null}
+
+                {item.liveBody && isActiveSubagentStatus(item.status) ? (
+                  <div
+                    className="mt-1 line-clamp-3 text-[11px] leading-4 text-muted-foreground/75"
+                    data-subagent-progress-live="true"
+                  >
+                    {normalizeSubagentInlineText(item.liveBody)}
                   </div>
                 ) : null}
               </div>

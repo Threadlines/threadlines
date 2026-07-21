@@ -4,7 +4,7 @@ import { page } from "vite-plus/test/browser";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
-import type { SubagentProgressState } from "../../session-logic";
+import type { SubagentProgressItem, SubagentProgressState } from "../../session-logic";
 import { ThreadActivityPopover, type ThreadTaskProgressState } from "./ThreadActivityPopover";
 
 const TASK_BADGE = {
@@ -159,6 +159,74 @@ describe("ThreadActivityPopover", () => {
       await page.getByRole("button", { name: "1 background run" }).click();
       await page.getByRole("button", { name: 'Close node -e "let n=0"' }).click();
       expect(onToggleBackgroundRunTerminal).toHaveBeenCalledWith("default");
+    } finally {
+      await mounted.unmount();
+    }
+  });
+
+  it("shows live subagent text only while the agent is running", async () => {
+    const baseItem: Omit<SubagentProgressItem, "id" | "status" | "statusLabel" | "liveBody"> = {
+      agentThreadId: "agent-1",
+      turnId: null,
+      label: "Subagent",
+      role: "code-reviewer",
+      objective: "Audit the SQL changes",
+      model: null,
+      reasoningEffort: null,
+      createdAt: "2026-02-23T00:00:01.000Z",
+      updatedAt: "2026-02-23T00:00:02.000Z",
+    };
+    const subagentProgress: SubagentProgressState = {
+      items: [
+        {
+          ...baseItem,
+          id: "agent-running",
+          status: "running",
+          statusLabel: "Working",
+          liveBody: "Scanning migrations now.",
+        },
+        {
+          ...baseItem,
+          id: "agent-done",
+          status: "completed",
+          statusLabel: "Done",
+          // A settled agent must not resurface stale progress text even if a
+          // late-merged snapshot still carries it.
+          liveBody: "stale live text",
+        },
+      ],
+      activeCount: 1,
+      completedCount: 1,
+      failedCount: 0,
+      totalCount: 2,
+      summary: "1 of 2 subagents active",
+      badge: {
+        label: "1/2",
+        ariaLabel: "1 of 2 subagents active",
+        tone: "active",
+        pulse: true,
+      },
+    };
+
+    const mounted = await render(
+      <main style={{ minHeight: 360, padding: 24, width: 960 }}>
+        <ThreadActivityPopover
+          taskProgress={null}
+          subagentProgress={subagentProgress}
+          backgroundRuns={[]}
+          onToggleBackgroundRunTerminal={vi.fn()}
+          onStopBackgroundRun={vi.fn()}
+        />
+      </main>,
+    );
+
+    try {
+      await page.getByRole("button", { name: subagentProgress.badge.ariaLabel }).click();
+      await expect.element(page.getByText("Scanning migrations now.")).toBeVisible();
+      const liveNodes = document.querySelectorAll("[data-subagent-progress-live]");
+      expect(liveNodes).toHaveLength(1);
+      expect(liveNodes[0]?.textContent).toBe("Scanning migrations now.");
+      expect(document.body.textContent).not.toContain("stale live text");
     } finally {
       await mounted.unmount();
     }

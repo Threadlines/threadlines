@@ -3652,6 +3652,100 @@ describe("deriveSubagentProgressState", () => {
     ).toBeNull();
   });
 
+  it("streams live subagent text and clears it once the result lands", () => {
+    const taskInput = {
+      description: "Audit the SQL changes",
+      prompt: "Audit the SQL changes",
+      subagent_type: "code-reviewer",
+    };
+    const spawn = makeActivity({
+      id: "claude-live-spawn",
+      createdAt: "2026-02-23T00:00:01.000Z",
+      kind: "tool.started",
+      turnId: "turn-1",
+      payload: {
+        itemType: "collab_agent_tool_call",
+        status: "inProgress",
+        title: "Subagent task",
+        toolCallId: "tool-agent-live",
+        data: { toolName: "Task", input: taskInput },
+      },
+    });
+    const liveUpdate = makeActivity({
+      id: "claude-live-update",
+      createdAt: "2026-02-23T00:00:02.000Z",
+      kind: "tool.updated",
+      turnId: "turn-1",
+      payload: {
+        itemType: "collab_agent_tool_call",
+        status: "inProgress",
+        title: "Subagent task",
+        toolCallId: "tool-agent-live",
+        data: {
+          toolName: "Task",
+          input: taskInput,
+          subagentLiveText: "Scanning migrations now.",
+          subagentLiveTextAt: "2026-02-23T00:00:02.000Z",
+        },
+      },
+    });
+    const statusOnlyUpdate = makeActivity({
+      id: "claude-live-status",
+      createdAt: "2026-02-23T00:00:03.000Z",
+      kind: "tool.updated",
+      turnId: "turn-1",
+      payload: {
+        itemType: "collab_agent_tool_call",
+        status: "inProgress",
+        title: "Subagent task",
+        toolCallId: "tool-agent-live",
+        data: { toolName: "Task", input: taskInput },
+      },
+    });
+    const completion = makeActivity({
+      id: "claude-live-complete",
+      createdAt: "2026-02-23T00:00:04.000Z",
+      kind: "tool.completed",
+      turnId: "turn-1",
+      payload: {
+        itemType: "collab_agent_tool_call",
+        status: "completed",
+        title: "Subagent task",
+        toolCallId: "tool-agent-live",
+        data: {
+          toolName: "Task",
+          input: taskInput,
+          result: {
+            type: "tool_result",
+            tool_use_id: "tool-agent-live",
+            content: [{ type: "text", text: "Migrations look correct." }],
+          },
+        },
+      },
+    });
+
+    const running = deriveSubagentProgressState({
+      activities: [spawn, liveUpdate, statusOnlyUpdate],
+      latestTurnId: TurnId.make("turn-1"),
+      latestTurnSettled: false,
+    });
+    // Live text survives later status-only merges until the result lands.
+    expect(running?.items[0]).toMatchObject({
+      status: "running",
+      liveBody: "Scanning migrations now.",
+    });
+
+    const completed = deriveSubagentProgressState({
+      activities: [spawn, liveUpdate, statusOnlyUpdate, completion],
+      latestTurnId: TurnId.make("turn-1"),
+      latestTurnSettled: false,
+    });
+    expect(completed?.items[0]).toMatchObject({
+      status: "completed",
+      liveBody: null,
+    });
+  });
+
   it("keeps failed subagents visible after the turn settles", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

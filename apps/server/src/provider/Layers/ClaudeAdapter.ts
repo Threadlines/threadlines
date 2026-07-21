@@ -1863,6 +1863,17 @@ function extractContentBlockText(block: unknown): string {
   return candidate.type === "text" && typeof candidate.text === "string" ? candidate.text : "";
 }
 
+/** Latest live message cap per subagent; long messages truncate rather than
+ *  growing runtime-event payloads unboundedly. */
+const SUBAGENT_LIVE_TEXT_MAX_CHARS = 4_000;
+
+/** Non-null `parent_tool_use_id` marks a message forwarded from inside a
+ *  subagent (`forwardSubagentText`); absent or null means main conversation. */
+function readParentToolUseId(message: SDKMessage): string | undefined {
+  const parent = (message as { parent_tool_use_id?: unknown }).parent_tool_use_id;
+  return typeof parent === "string" && parent.length > 0 ? parent : undefined;
+}
+
 function extractTextContent(value: unknown): string {
   if (typeof value === "string") {
     return value;
@@ -4436,12 +4447,99 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
   });
 
+  /** Messages forwarded from inside a subagent (`forwardSubagentText`).
+   *  Complete assistant envelopes stream into the spawning collab tool item
+   *  as live progress text; parent-attributed stream deltas and the
+   *  subagent's internal user/tool-result messages are dropped — per-message
+   *  granularity keeps event volume bounded under parallel subagents. */
+  const handleSubagentForwardedMessage = Effect.fn("handleSubagentForwardedMessage")(function* (
+    context: ClaudeSessionContext,
+    message: SDKMessage,
+    parentToolUseId: string,
+  ) {
+    if (message.type !== "assistant") {
+      return;
+    }
+    // A foreground agent's Task tool is still in flight while its messages
+    // stream (`collabAgentToolsByItemId` is only populated once the
+    // tool_result lands); background agents are found through the launch
+    // record kept for the session lifetime.
+    const tool =
+      Array.from(context.inFlightTools.values()).find(
+        (inFlight) => inFlight.itemId === parentToolUseId,
+      ) ?? context.collabAgentToolsByItemId.get(parentToolUseId);
+    if (
+      tool === undefined ||
+      tool.itemType !== "collab_agent_tool_call" ||
+      context.completedCollabAgentItemIds.has(parentToolUseId) ||
+      context.structuredCompletedCollabAgentItemIds.has(parentToolUseId)
+    ) {
+      return;
+    }
+    const text = extractTextContent((message.message as { content?: unknown }).content)
+      .trim()
+      .slice(0, SUBAGENT_LIVE_TEXT_MAX_CHARS);
+    if (text.length === 0) {
+      return;
+    }
+    const stamp = yield* makeEventStamp();
+    yield* offerRuntimeEvent({
+      type: "item.updated",
+      eventId: stamp.eventId,
+      provider: PROVIDER,
+      createdAt: stamp.createdAt,
+      threadId: context.session.threadId,
+      ...(context.turnState
+        ? {
+            turnId: asCanonicalTurnId(context.turnState.turnId),
+          }
+        : {}),
+      itemId: asRuntimeItemId(tool.itemId),
+      payload: {
+        itemType: tool.itemType,
+        status: "inProgress",
+        title: tool.title,
+        ...(tool.detail ? { detail: tool.detail } : {}),
+        data: {
+          toolName: tool.toolName,
+          input: tool.input,
+          subagentLiveText: text,
+          subagentLiveTextAt: stamp.createdAt,
+        },
+      },
+      providerRefs: nativeProviderRefs(context, {
+        providerItemId: tool.itemId,
+      }),
+      raw: {
+        source: "claude.sdk.message",
+        method: "claude/assistant/subagent-forwarded",
+        payload: message,
+      },
+    });
+  });
+
   const handleSdkMessage = Effect.fn("handleSdkMessage")(function* (
     context: ClaudeSessionContext,
     message: SDKMessage,
   ) {
     yield* logNativeSdkMessage(context, message);
     yield* ensureThreadId(context, message);
+
+    // Forwarded subagent conversation (`forwardSubagentText`) must never
+    // reach the main-transcript handlers below. Scoped to the conversation
+    // message types: tool_progress also carries parent_tool_use_id but keeps
+    // its existing telemetry routing.
+    if (
+      message.type === "assistant" ||
+      message.type === "user" ||
+      message.type === "stream_event"
+    ) {
+      const parentToolUseId = readParentToolUseId(message);
+      if (parentToolUseId !== undefined) {
+        yield* handleSubagentForwardedMessage(context, message, parentToolUseId);
+        return;
+      }
+    }
 
     switch (message.type) {
       case "stream_event":
@@ -5128,6 +5226,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         includePartialMessages: true,
         enableFileCheckpointing: true,
         promptSuggestions: true,
+        // Subagent conversations arrive as messages tagged with
+        // parent_tool_use_id; routing keeps them out of the main transcript
+        // and streams them into the collab tool item instead. Travels via the
+        // control-protocol initConfig, so older CLIs just ignore it.
+        forwardSubagentText: true,
         canUseTool,
         hooks: {
           PostToolUse: [
