@@ -17,6 +17,12 @@ export const CODEX_APP_SERVER_ARGS: ReadonlyArray<string> = [
   "-c",
   "features.default_mode_request_user_input=true",
   "-c",
+  // Gates thread/realtime/* (voice mode); codex rejects realtime starts on
+  // threads created without it. Realtime additionally requires API-key auth
+  // upstream — with subscription auth codex reports that via
+  // thread/realtime/error, which we surface as a thread activity.
+  "features.realtime_conversation=true",
+  "-c",
   "suppress_unstable_features_warning=true",
 ];
 
