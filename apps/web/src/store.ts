@@ -228,6 +228,7 @@ function mapProposedPlan(proposedPlan: OrchestrationProposedPlan): ProposedPlan 
     planMarkdown: proposedPlan.planMarkdown,
     implementedAt: proposedPlan.implementedAt,
     implementationThreadId: proposedPlan.implementationThreadId,
+    dismissedAt: proposedPlan.dismissedAt,
     createdAt: proposedPlan.createdAt,
     updatedAt: proposedPlan.updatedAt,
   };
