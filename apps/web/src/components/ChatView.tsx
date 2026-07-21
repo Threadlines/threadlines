@@ -178,6 +178,7 @@ import {
   useTerminalStateStore,
 } from "../terminalStateStore";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
+import { type ComposerGoalSetInput } from "./chat/ComposerGoalBar";
 import { getComposerProviderState } from "./chat/composerProviderState";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
@@ -4533,6 +4534,88 @@ export default function ChatView(props: ChatViewProps) {
     });
   };
 
+  const [goalDispatchingThreadId, setGoalDispatchingThreadId] = useState<ThreadId | null>(null);
+
+  const onSetThreadGoal = useCallback(
+    async (input: ComposerGoalSetInput) => {
+      if (!activeThread) {
+        return;
+      }
+      const api = readEnvironmentApi(environmentId);
+      if (!api) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not update goal",
+            description: "Environment API unavailable.",
+          }),
+        );
+        return;
+      }
+      const threadId = activeThread.id;
+      setGoalDispatchingThreadId(threadId);
+      try {
+        await api.orchestration.dispatchCommand({
+          type: "thread.goal.set",
+          commandId: newCommandId(),
+          threadId,
+          ...(input.objective !== undefined ? { objective: input.objective } : {}),
+          ...(input.status !== undefined ? { status: input.status } : {}),
+          ...(input.tokenBudget !== undefined ? { tokenBudget: input.tokenBudget } : {}),
+          createdAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not update goal",
+            description: error instanceof Error ? error.message : "Goal update failed.",
+          }),
+        );
+      } finally {
+        setGoalDispatchingThreadId((current) => (current === threadId ? null : current));
+      }
+    },
+    [activeThread, environmentId],
+  );
+
+  const onClearThreadGoal = useCallback(async () => {
+    if (!activeThread) {
+      return;
+    }
+    const api = readEnvironmentApi(environmentId);
+    if (!api) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not clear goal",
+          description: "Environment API unavailable.",
+        }),
+      );
+      return;
+    }
+    const threadId = activeThread.id;
+    setGoalDispatchingThreadId(threadId);
+    try {
+      await api.orchestration.dispatchCommand({
+        type: "thread.goal.clear",
+        commandId: newCommandId(),
+        threadId,
+        createdAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not clear goal",
+          description: error instanceof Error ? error.message : "Goal clear failed.",
+        }),
+      );
+    } finally {
+      setGoalDispatchingThreadId((current) => (current === threadId ? null : current));
+    }
+  }, [activeThread, environmentId]);
+
   const onCompactContext = useCallback(async () => {
     if (!activeThread || contextCompactDisabledReason !== null) {
       return;
@@ -5782,6 +5865,11 @@ export default function ChatView(props: ChatViewProps) {
                   onSend={onSend}
                   onInterrupt={onInterrupt}
                   onCompactContext={contextCompactControlVisible ? onCompactContext : undefined}
+                  goalDispatching={
+                    activeThread !== undefined && goalDispatchingThreadId === activeThread.id
+                  }
+                  onSetThreadGoal={onSetThreadGoal}
+                  onClearThreadGoal={onClearThreadGoal}
                   contextCompactDisabled={
                     contextCompactControlVisible ? contextCompactDisabled : undefined
                   }

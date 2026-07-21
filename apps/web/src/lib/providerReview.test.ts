@@ -120,6 +120,7 @@ function serverThread(input: {
     branch: "main",
     worktreePath: null,
     effectiveCwd: null,
+    goal: null,
     turnDiffSummaries: [],
     activities: [],
     proposedPlans: [],

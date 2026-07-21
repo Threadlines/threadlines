@@ -8,6 +8,7 @@ import type {
   RepositoryIdentity,
   OrchestrationSessionStatus,
   OrchestrationThreadActivity,
+  OrchestrationThreadGoal,
   ProjectKind,
   ProjectScript as ContractProjectScript,
   ThreadId,
@@ -134,6 +135,8 @@ export interface Thread {
    * while the session works where the thread was configured to.
    */
   effectiveCwd: string | null;
+  /** Long-horizon provider goal attached to this thread (Codex goal mode). */
+  goal: OrchestrationThreadGoal | null;
   turnDiffSummaries: TurnDiffSummary[];
   activities: OrchestrationThreadActivity[];
 }
@@ -156,6 +159,8 @@ export interface ThreadShell {
   worktreePath: string | null;
   /** See Thread.effectiveCwd. */
   effectiveCwd: string | null;
+  /** See Thread.goal. */
+  goal: OrchestrationThreadGoal | null;
 }
 
 export interface ThreadTurnState {

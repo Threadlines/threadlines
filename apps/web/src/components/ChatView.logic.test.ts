@@ -1592,6 +1592,7 @@ const makeThread = (input?: {
   branch: null,
   worktreePath: null,
   effectiveCwd: null,
+  goal: null,
   turnDiffSummaries: input?.turnDiffSummaries ?? [],
   activities: input?.activities ?? [],
 });
@@ -1695,6 +1696,7 @@ function setStoreThreads(threads: ReadonlyArray<ReturnType<typeof makeThread>>) 
           branch: thread.branch,
           worktreePath: thread.worktreePath,
           effectiveCwd: thread.effectiveCwd,
+          goal: null,
         },
       ]),
     ),
@@ -1955,6 +1957,7 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
       branch: null,
       worktreePath: null,
       effectiveCwd: null,
+      goal: null,
       turnDiffSummaries: [],
       activities: [],
     });
@@ -1994,6 +1997,7 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
       branch: null,
       worktreePath: null,
       effectiveCwd: null,
+      goal: null,
       turnDiffSummaries: [],
       activities: [],
     });
@@ -2042,6 +2046,7 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
       branch: null,
       worktreePath: null,
       effectiveCwd: null,
+      goal: null,
       turnDiffSummaries: [],
       activities: [],
     });
@@ -2087,6 +2092,7 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
       branch: null,
       worktreePath: null,
       effectiveCwd: null,
+      goal: null,
       turnDiffSummaries: [],
       activities: [],
     });
@@ -2132,6 +2138,7 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
       branch: null,
       worktreePath: null,
       effectiveCwd: null,
+      goal: null,
       turnDiffSummaries: [],
       activities: [],
     });
@@ -2184,6 +2191,7 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
       branch: null,
       worktreePath: null,
       effectiveCwd: null,
+      goal: null,
       turnDiffSummaries: [],
       activities: [],
     });

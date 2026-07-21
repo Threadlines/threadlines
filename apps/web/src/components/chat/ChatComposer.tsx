@@ -82,6 +82,7 @@ import { ComposerAttachmentMenu } from "./ComposerAttachmentMenu";
 import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
 import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
+import { ComposerGoalBar, type ComposerGoalSetInput } from "./ComposerGoalBar";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
 import { ComposerPendingTranscriptHighlightContexts } from "./ComposerPendingTranscriptHighlightContexts";
 import { ComposerPendingTerminalContexts } from "./ComposerPendingTerminalContexts";
@@ -510,6 +511,10 @@ export interface ChatComposerProps {
   // Callbacks
   onSend: (e?: { preventDefault: () => void }) => void;
   onInterrupt: () => void;
+  // Goal (Codex goal mode)
+  goalDispatching?: boolean | undefined;
+  onSetThreadGoal?: ((input: ComposerGoalSetInput) => void) | undefined;
+  onClearThreadGoal?: (() => void) | undefined;
   onCompactContext?: (() => void) | undefined;
   contextCompactDisabled?: boolean | undefined;
   contextCompactInFlight?: boolean | undefined;
@@ -597,6 +602,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     scheduleStickToBottom,
     onSend,
     onInterrupt,
+    goalDispatching,
+    onSetThreadGoal,
+    onClearThreadGoal,
     onCompactContext,
     contextCompactDisabled,
     contextCompactInFlight,
@@ -689,6 +697,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       explicitSelectedInstanceId,
     ) ?? ProviderDriverKind.make("codex");
   const selectedProvider: ProviderDriverKind = lockedProvider ?? unlockedSelectedProvider;
+  const threadGoal = activeThread?.goal ?? null;
+  const goalSupported =
+    selectedProvider === CODEX_AGENT_PROVIDER &&
+    activeThreadId !== null &&
+    onSetThreadGoal !== undefined &&
+    onClearThreadGoal !== undefined;
   const lockedContinuationGroupKey = useMemo((): string | null => {
     if (!lockedProvider || !activeThread) return null;
     const lockedInstanceId =
@@ -942,6 +956,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const [isComposerFooterCompact, setIsComposerFooterCompact] = useState(false);
   const [isComposerPrimaryActionsCompact, setIsComposerPrimaryActionsCompact] = useState(false);
   const [isComposerModelPickerOpen, setIsComposerModelPickerOpen] = useState(false);
+  const [isGoalEditorOpen, setIsGoalEditorOpen] = useState(false);
+  const goalBarVisible = goalSupported && (threadGoal !== null || isGoalEditorOpen);
+
+  useEffect(() => {
+    setIsGoalEditorOpen(false);
+  }, [activeThreadId]);
   const [, setIsComposerFocused] = useState(false);
   const [isCapturingScreenshot, setIsCapturingScreenshot] = useState(false);
   const isMobileViewport = useMediaQuery("max-sm");
@@ -1035,6 +1055,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           label: "/model",
           description: "Switch response model for this thread",
         },
+        ...(goalSupported
+          ? [
+              {
+                id: "slash:goal",
+                type: "slash-command",
+                command: "goal",
+                label: "/goal",
+                description: threadGoal
+                  ? "Edit this thread's long-running goal"
+                  : "Set a long-running goal for this thread",
+              } satisfies Extract<ComposerCommandItem, { type: "slash-command" }>,
+            ]
+          : []),
         {
           id: "slash:plan",
           type: "slash-command",
@@ -1081,7 +1114,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       }));
     }
     return [];
-  }, [composerSkills, composerTrigger, selectedProvider, selectedProviderStatus, workspaceEntries]);
+  }, [
+    composerSkills,
+    composerTrigger,
+    goalSupported,
+    selectedProvider,
+    selectedProviderStatus,
+    threadGoal,
+    workspaceEntries,
+  ]);
 
   const composerMenuOpen = Boolean(composerTrigger);
   const composerMenuSearchKey = composerTrigger
@@ -1776,6 +1817,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           }
           return;
         }
+        if (item.command === "goal") {
+          const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
+            expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
+            focusEditorAfterReplace: false,
+          });
+          if (applied) {
+            setComposerHighlightedItemId(null);
+            setIsGoalEditorOpen(true);
+          }
+          return;
+        }
         void handleInteractionModeChange(item.command === "plan" ? "plan" : "default");
         const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
           expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
@@ -2394,16 +2446,45 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             scheduleComposerCollapseCheck();
           }}
         >
+          {!isComposerCollapsedMobile && goalBarVisible ? (
+            <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
+              <ComposerGoalBar
+                goal={threadGoal}
+                editorOpen={isGoalEditorOpen}
+                isDispatching={goalDispatching === true}
+                onOpenEditor={() => setIsGoalEditorOpen(true)}
+                onCloseEditor={() => setIsGoalEditorOpen(false)}
+                onSetGoal={(input) => {
+                  onSetThreadGoal?.(input);
+                  setIsGoalEditorOpen(false);
+                }}
+                onClearGoal={() => {
+                  onClearThreadGoal?.();
+                  setIsGoalEditorOpen(false);
+                }}
+              />
+            </div>
+          ) : null}
           {!isComposerCollapsedMobile &&
             (activePendingApproval ? (
-              <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
+              <div
+                className={cn(
+                  goalBarVisible ? null : "rounded-t-[19px]",
+                  "border-b border-border/65 bg-muted/20",
+                )}
+              >
                 <ComposerPendingApprovalPanel
                   approval={activePendingApproval}
                   pendingCount={pendingApprovals.length}
                 />
               </div>
             ) : pendingUserInputs.length > 0 ? (
-              <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
+              <div
+                className={cn(
+                  goalBarVisible ? null : "rounded-t-[19px]",
+                  "border-b border-border/65 bg-muted/20",
+                )}
+              >
                 <ComposerPendingUserInputPanel
                   pendingUserInputs={pendingUserInputs}
                   respondingRequestIds={respondingRequestIds}
@@ -2415,7 +2496,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 />
               </div>
             ) : showPlanFollowUpPrompt && activeProposedPlan ? (
-              <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
+              <div
+                className={cn(
+                  goalBarVisible ? null : "rounded-t-[19px]",
+                  "border-b border-border/65 bg-muted/20",
+                )}
+              >
                 <ComposerPlanFollowUpBanner
                   key={activeProposedPlan.id}
                   planTitle={proposedPlanTitle(activeProposedPlan.planMarkdown) ?? null}

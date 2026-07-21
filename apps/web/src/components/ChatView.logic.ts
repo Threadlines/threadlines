@@ -135,6 +135,7 @@ export function buildLocalDraftThread(
     branch: draftThread.branch,
     worktreePath: draftThread.worktreePath,
     effectiveCwd: null,
+    goal: null,
     turnDiffSummaries: [],
     activities: [],
     proposedPlans: [],

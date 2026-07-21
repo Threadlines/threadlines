@@ -14,6 +14,7 @@ import type {
   OrchestrationThread,
   OrchestrationThreadShell,
   OrchestrationThreadActivity,
+  OrchestrationThreadGoal,
   ProjectId,
   ScopedProjectRef,
   ScopedThreadRef,
@@ -290,6 +291,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     branch: thread.branch,
     worktreePath: thread.worktreePath,
     effectiveCwd: thread.effectiveCwd,
+    goal: thread.goal,
     turnDiffSummaries: thread.checkpoints.map(mapTurnDiffSummary),
     activities: thread.activities.map((activity) => ({ ...activity })),
   };
@@ -322,6 +324,7 @@ function mapThreadShell(
     branch: thread.branch,
     worktreePath: thread.worktreePath,
     effectiveCwd: thread.effectiveCwd,
+    goal: thread.goal,
   };
   const session = thread.session ? mapSession(thread.session) : null;
   const turnState: ThreadTurnState = {
@@ -373,6 +376,7 @@ function toThreadShell(thread: Thread): ThreadShell {
     branch: thread.branch,
     worktreePath: thread.worktreePath,
     effectiveCwd: thread.effectiveCwd,
+    goal: thread.goal,
   };
 }
 
@@ -527,7 +531,28 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     left.updatedAt === right.updatedAt &&
     left.branch === right.branch &&
     left.worktreePath === right.worktreePath &&
-    left.effectiveCwd === right.effectiveCwd
+    left.effectiveCwd === right.effectiveCwd &&
+    threadGoalsEqual(left.goal, right.goal)
+  );
+}
+
+function threadGoalsEqual(
+  left: OrchestrationThreadGoal | null,
+  right: OrchestrationThreadGoal | null,
+): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (left === null || right === null) {
+    return false;
+  }
+  return (
+    left.objective === right.objective &&
+    left.status === right.status &&
+    left.tokenBudget === right.tokenBudget &&
+    left.tokensUsed === right.tokensUsed &&
+    left.timeUsedSeconds === right.timeUsedSeconds &&
+    left.updatedAt === right.updatedAt
   );
 }
 
@@ -1442,6 +1467,7 @@ function applyEnvironmentOrchestrationEvent(
           branch: event.payload.branch,
           worktreePath: event.payload.worktreePath,
           effectiveCwd: null,
+          goal: null,
           latestTurn: null,
           createdAt: event.payload.createdAt,
           updatedAt: event.payload.updatedAt,
@@ -1522,6 +1548,13 @@ function applyEnvironmentOrchestrationEvent(
       return updateThreadState(state, event.payload.threadId, (thread) => ({
         ...thread,
         effectiveCwd: event.payload.effectiveCwd,
+        updatedAt: event.payload.updatedAt,
+      }));
+
+    case "thread.goal-state-set":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        goal: event.payload.goal,
         updatedAt: event.payload.updatedAt,
       }));
 
