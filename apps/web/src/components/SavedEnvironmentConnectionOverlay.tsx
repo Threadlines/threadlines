@@ -10,7 +10,11 @@ import {
   type SavedEnvironmentRecord,
   type SavedEnvironmentRuntimeState,
 } from "../environments/runtime";
-import { probeRelaySessionStatus, type RelaySessionStatusProbe } from "../relaySessionStatus";
+import {
+  assessRelaySessionProbe,
+  probeRelaySessionStatus,
+  type RelaySessionStatusProbe,
+} from "../relaySessionStatus";
 import { useStore } from "../store";
 import { Button } from "./ui/button";
 import { Spinner } from "./ui/spinner";
@@ -45,13 +49,11 @@ export function deriveSavedEnvironmentOverlayPhase(
     return "hidden";
   }
 
+  const probeAssessment = assessRelaySessionProbe(input.probe);
+
   // Terminal states surface immediately; waiting out the grace period would
   // just delay telling the user they need to re-pair.
-  if (
-    input.authState === "requires-auth" ||
-    input.probe?.kind === "unauthorized" ||
-    (input.probe?.kind === "status" && (!input.probe.status.exists || input.probe.status.expired))
-  ) {
+  if (input.authState === "requires-auth" || probeAssessment === "link-invalid") {
     return "link-expired";
   }
 
@@ -66,7 +68,7 @@ export function deriveSavedEnvironmentOverlayPhase(
     return "browser-offline";
   }
 
-  if (input.probe?.kind === "status" && !input.probe.status.desktopConnected) {
+  if (probeAssessment === "desktop-offline") {
     return "desktop-offline";
   }
 

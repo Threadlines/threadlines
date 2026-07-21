@@ -8,11 +8,55 @@ import {
   stripPairingTokenFromUrl,
   submitServerAuthCredential,
 } from "../../environments/primary";
-import { readHostedPairingRequest } from "../../hostedPairing";
+import { hasHostedPairingRouteIntent, readHostedPairingRequest } from "../../hostedPairing";
+import {
+  assessRelaySessionProbe,
+  probeRelaySessionStatus,
+  type RelaySessionProbeAssessment,
+  type RelaySessionStatusProbe,
+} from "../../relaySessionStatus";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 
 const HOSTED_PAIRING_SLOW_FEEDBACK_DELAY_MS = 10_000;
+const HOSTED_PAIRING_STATUS_PROBE_INTERVAL_MS = 10_000;
+
+/**
+ * The pairing WebSocket retries forever and browsers hide its handshake
+ * failures, so without the status probe a dead or refused link spins on
+ * "Connecting..." indefinitely. Maps the probe onto the pairing screen:
+ * a terminal notice for links that can never pair, progress copy while the
+ * desktop is unreachable, and null when pairing should be left alone.
+ */
+export function deriveHostedPairingProbeNotice(
+  assessment: RelaySessionProbeAssessment,
+): { readonly terminal: boolean; readonly message: string } | null {
+  switch (assessment) {
+    case "link-invalid":
+      return {
+        terminal: true,
+        message:
+          "This phone link is no longer valid. On your computer, open Threadlines and create a new phone link, then scan the new QR code.",
+      };
+    case "desktop-offline":
+      return {
+        terminal: false,
+        message:
+          "The relay is reachable, but the Threadlines desktop app is not connected. Open Threadlines on your computer — pairing will continue automatically.",
+      };
+    case "desktop-connected":
+    case "indeterminate":
+      return null;
+  }
+}
+
+function describeMissingHostedPairingRequest(): string {
+  // The token is stripped from the URL once pairing starts, so a manual
+  // reload of this page can never recover it.
+  return hasHostedPairingRouteIntent(new URL(window.location.href))
+    ? "This pairing page cannot be reloaded. Scan the QR code on your computer again to get a fresh link."
+    : "This pairing link is missing its backend host or token.";
+}
 
 export function PairingPendingSurface() {
   return (
@@ -172,9 +216,10 @@ export function HostedPairingRouteSurface() {
   const [message, setMessage] = useState(() =>
     hostedPairingRequestRef.current
       ? describeHostedPairingProgress(hostedPairingRequestRef.current)
-      : "This pairing link is missing its backend host or token.",
+      : describeMissingHostedPairingRequest(),
   );
   const [canRetry, setCanRetry] = useState(false);
+  const [probe, setProbe] = useState<RelaySessionStatusProbe | null>(null);
   const submitAttemptedRef = useRef(false);
   const tokenSubmittedRef = useRef(false);
 
@@ -183,7 +228,7 @@ export function HostedPairingRouteSurface() {
 
     if (!request) {
       setStatus("error");
-      setMessage("This pairing link is missing its backend host or token.");
+      setMessage(describeMissingHostedPairingRequest());
       setCanRetry(false);
       return;
     }
@@ -244,7 +289,44 @@ export function HostedPairingRouteSurface() {
     return () => window.clearTimeout(timeout);
   }, [status]);
 
+  useEffect(() => {
+    const request = hostedPairingRequestRef.current;
+    if (status !== "pairing" || request?.kind !== "relay") {
+      return;
+    }
+
+    let disposed = false;
+    const controller = new AbortController();
+    const runProbe = async () => {
+      const result = await probeRelaySessionStatus({
+        relayOrigin: request.relayOrigin,
+        sessionId: request.sessionId,
+        token: request.token,
+        signal: controller.signal,
+      });
+      if (!disposed) {
+        setProbe(result);
+      }
+    };
+
+    void runProbe();
+    const intervalId = window.setInterval(
+      () => void runProbe(),
+      HOSTED_PAIRING_STATUS_PROBE_INTERVAL_MS,
+    );
+    return () => {
+      disposed = true;
+      controller.abort();
+      window.clearInterval(intervalId);
+    };
+  }, [status]);
+
   const request = hostedPairingRequestRef.current;
+  const probeNotice =
+    status === "pairing" && request?.kind === "relay"
+      ? deriveHostedPairingProbeNotice(assessRelaySessionProbe(probe))
+      : null;
+  const linkInvalid = probeNotice?.terminal === true;
 
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background px-4 py-10 text-foreground sm:px-6">
@@ -263,9 +345,13 @@ export function HostedPairingRouteSurface() {
             ? "Backend paired"
             : status === "error"
               ? "Pairing failed"
-              : "Pairing backend"}
+              : linkInvalid
+                ? "Phone link expired"
+                : "Pairing backend"}
         </h1>
-        <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{message}</p>
+        <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+          {probeNotice?.message ?? message}
+        </p>
 
         {request ? (
           <div className="mt-5 rounded-lg border border-border/70 bg-background/55 px-3 py-3 text-xs leading-relaxed text-muted-foreground">
@@ -285,9 +371,11 @@ export function HostedPairingRouteSurface() {
 
         <div className="mt-6 flex flex-wrap gap-2">
           {status === "pairing" ? (
-            <Button disabled size="sm">
-              Connecting...
-            </Button>
+            linkInvalid ? null : (
+              <Button disabled size="sm">
+                Connecting...
+              </Button>
+            )
           ) : canRetry ? (
             <Button size="sm" onClick={() => void submitHostedPairingRequest()}>
               Try again

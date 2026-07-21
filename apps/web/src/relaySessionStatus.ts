@@ -14,6 +14,32 @@ export type RelaySessionStatusProbe =
   | { readonly kind: "unauthorized" }
   | { readonly kind: "unreachable"; readonly message: string };
 
+/**
+ * What a status probe says about the session's viability. "link-invalid" is
+ * terminal (deleted, expired, or the relay refused this token/origin) —
+ * retrying the WebSocket can never succeed and the user must re-pair.
+ */
+export type RelaySessionProbeAssessment =
+  | "link-invalid"
+  | "desktop-offline"
+  | "desktop-connected"
+  | "indeterminate";
+
+export function assessRelaySessionProbe(
+  probe: RelaySessionStatusProbe | null,
+): RelaySessionProbeAssessment {
+  if (probe === null || probe.kind === "unreachable") {
+    return "indeterminate";
+  }
+  if (probe.kind === "unauthorized") {
+    return "link-invalid";
+  }
+  if (!probe.status.exists || probe.status.expired) {
+    return "link-invalid";
+  }
+  return probe.status.desktopConnected ? "desktop-connected" : "desktop-offline";
+}
+
 export function buildRelaySessionStatusUrl(input: {
   readonly relayOrigin: string;
   readonly sessionId: string;
