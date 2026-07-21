@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off
 import {
   ProviderDriverKind,
   type ServerProvider,
@@ -5,6 +6,7 @@ import {
 } from "@threadlines/contracts";
 import { compareSemverVersions } from "@threadlines/shared/semver";
 import { resolveCommandPath } from "@threadlines/shared/shell";
+import { win32 as WindowsPath } from "node:path";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -29,6 +31,7 @@ export interface ProviderMaintenanceCommandAction {
   readonly executable: string;
   readonly args: ReadonlyArray<string>;
   readonly lockKey: string;
+  readonly environmentPatch?: Readonly<Record<string, string>>;
 }
 
 export interface ProviderMaintenanceCommandDefinition {
@@ -94,6 +97,7 @@ export function makeProviderMaintenanceCapabilities(input: {
   readonly updateArgs: ReadonlyArray<string>;
   readonly updateLockKey: string | null;
   readonly updateDisplayCommand?: string | null | undefined;
+  readonly updateEnvironmentPatch?: Readonly<Record<string, string>> | undefined;
   readonly manualUpdateCommand?: string | null | undefined;
   readonly advisoryMessage?: string | null | undefined;
 }): ProviderMaintenanceCapabilities {
@@ -106,6 +110,9 @@ export function makeProviderMaintenanceCapabilities(input: {
           executable: input.updateExecutable,
           args: input.updateArgs,
           lockKey: input.updateLockKey,
+          ...(input.updateEnvironmentPatch
+            ? { environmentPatch: input.updateEnvironmentPatch }
+            : {}),
         };
   return {
     provider: input.provider,
@@ -135,6 +142,7 @@ export function makeManualOnlyProviderMaintenanceCapabilities(input: {
 
 function makeNpmGlobalProviderMaintenanceCapabilities(
   definition: PackageManagedProviderMaintenanceDefinition,
+  prefix?: string,
 ): ProviderMaintenanceCapabilities {
   return makeProviderMaintenanceCapabilities({
     provider: definition.provider,
@@ -142,6 +150,12 @@ function makeNpmGlobalProviderMaintenanceCapabilities(
     updateExecutable: "npm",
     updateArgs: ["install", "-g", `${definition.npmPackageName}@latest`],
     updateLockKey: "npm-global",
+    ...(prefix
+      ? {
+          updateDisplayCommand: `npm --prefix "${prefix}" install -g ${definition.npmPackageName}@latest`,
+          updateEnvironmentPatch: { NPM_CONFIG_PREFIX: prefix },
+        }
+      : {}),
   });
 }
 
@@ -267,6 +281,49 @@ function isNpmGlobalCommandPath(commandPath: string): boolean {
   );
 }
 
+function resolveWindowsNpmGlobalPrefix(input: {
+  readonly commandPath: string;
+  readonly env: NodeJS.ProcessEnv | undefined;
+  readonly platform: NodeJS.Platform;
+}): string | null {
+  if (
+    input.platform !== "win32" ||
+    WindowsPath.extname(input.commandPath).toLowerCase() !== ".cmd"
+  ) {
+    return null;
+  }
+
+  const commandDirectory = WindowsPath.dirname(input.commandPath);
+  const normalizedCommandDirectory = normalizeCommandPath(commandDirectory);
+  const appData = nonEmptyString(input.env?.APPDATA);
+  const roamingNpmDirectory = appData ? WindowsPath.join(appData, "npm") : null;
+  if (
+    roamingNpmDirectory &&
+    normalizedCommandDirectory === normalizeCommandPath(roamingNpmDirectory)
+  ) {
+    return commandDirectory;
+  }
+  if (
+    normalizedCommandDirectory.includes("/fnm_multishells/") ||
+    normalizedCommandDirectory.includes("/fnm/node-versions/")
+  ) {
+    return commandDirectory;
+  }
+
+  const npmCommandPath = resolveCommandPath("npm", {
+    platform: input.platform,
+    ...(input.env ? { env: input.env } : {}),
+  });
+  if (
+    npmCommandPath &&
+    normalizeCommandPath(WindowsPath.dirname(npmCommandPath)) === normalizedCommandDirectory
+  ) {
+    return commandDirectory;
+  }
+
+  return null;
+}
+
 function isHomebrewCommandPath(commandPath: string): boolean {
   const normalized = normalizeCommandPath(commandPath);
   return (
@@ -331,6 +388,14 @@ export function resolvePackageManagedProviderMaintenance(
     }
     if (commandPaths.some(isPnpmGlobalCommandPath)) {
       return makePnpmGlobalProviderMaintenanceCapabilities(definition);
+    }
+    const windowsNpmPrefix = resolveWindowsNpmGlobalPrefix({
+      commandPath: resolvedCommandPath,
+      env: options?.env,
+      platform,
+    });
+    if (windowsNpmPrefix) {
+      return makeNpmGlobalProviderMaintenanceCapabilities(definition, windowsNpmPrefix);
     }
     if (commandPaths.some(isNpmGlobalCommandPath)) {
       return makeNpmGlobalProviderMaintenanceCapabilities(definition);

@@ -620,6 +620,57 @@ describe("providerMaintenanceRunner", () => {
     );
   });
 
+  it.effect("applies provider-owned environment to update commands", () => {
+    const calls: Array<{
+      environment: ChildProcess.CommandOptions["env"];
+      extendEnv: ChildProcess.CommandOptions["extendEnv"];
+    }> = [];
+    return Effect.gen(function* () {
+      const { registry } = yield* makeRegistry(baseProvider);
+      const runner = yield* makeTestRunner({
+        ...registry,
+        getProviderMaintenanceCapabilitiesForInstance: () =>
+          Effect.succeed(
+            makeProviderMaintenanceCapabilities({
+              provider: CODEX_DRIVER,
+              packageName: "@openai/codex",
+              updateExecutable: "npm",
+              updateArgs: ["install", "-g", "@openai/codex@latest"],
+              updateLockKey: "npm-global",
+              updateEnvironmentPatch: {
+                NPM_CONFIG_PREFIX: "C:\\Users\\Alice Smith\\AppData\\Roaming\\npm",
+              },
+            }),
+          ),
+      });
+
+      const result = yield* runner.updateProvider(CODEX_DRIVER);
+
+      assert.deepStrictEqual(calls, [
+        {
+          environment: {
+            NPM_CONFIG_PREFIX: "C:\\Users\\Alice Smith\\AppData\\Roaming\\npm",
+          },
+          extendEnv: true,
+        },
+      ]);
+      assert.strictEqual(result.providers[0]?.updateState?.status, "succeeded");
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          latestVersionHttpClient("0.0.0"),
+          mockSpawnerLayer((_command, _args, options) => {
+            calls.push({
+              environment: options.env,
+              extendEnv: options.extendEnv,
+            });
+            return { stdout: "updated" };
+          }),
+        ),
+      ),
+    );
+  });
+
   it.effect(
     "marks successful commands as unchanged when the refreshed provider is still outdated",
     () =>

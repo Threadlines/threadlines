@@ -127,6 +127,7 @@ const runProviderMaintenanceCommandWithSpawner = Effect.fn("ProviderMaintenanceR
     readonly spawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
     readonly command: string;
     readonly args: ReadonlyArray<string>;
+    readonly environmentPatch?: Readonly<Record<string, string>>;
   }) {
     const collectCommandResult = Effect.fn("ProviderMaintenanceRunner.collectCommandResult")(
       function* () {
@@ -135,7 +136,12 @@ const runProviderMaintenanceCommandWithSpawner = Effect.fn("ProviderMaintenanceR
             ChildProcess.make(
               input.command,
               [...input.args],
-              hideWindowsConsole(process.platform === "win32" ? { shell: true } : {}),
+              hideWindowsConsole({
+                ...(process.platform === "win32" ? { shell: true as const } : {}),
+                ...(input.environmentPatch
+                  ? { env: input.environmentPatch, extendEnv: true as const }
+                  : {}),
+              }),
             ),
           )
           .pipe(
@@ -408,11 +414,16 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
   const providerRegistry = yield* ProviderRegistry;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const httpClient = yield* HttpClient.HttpClient;
-  const runMaintenanceCommand = (command: string, args: ReadonlyArray<string>) =>
+  const runMaintenanceCommand = (
+    command: string,
+    args: ReadonlyArray<string>,
+    environmentPatch?: Readonly<Record<string, string>>,
+  ) =>
     runProviderMaintenanceCommandWithSpawner({
       spawner,
       command,
       args,
+      ...(environmentPatch ? { environmentPatch } : {}),
     });
   const commandCoordinator = yield* makeProviderMaintenanceCommandCoordinator({
     makeAlreadyRunningError: () =>
@@ -625,7 +636,11 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
               );
             }
 
-            const result = yield* runMaintenanceCommand(update.executable, update.args);
+            const result = yield* runMaintenanceCommand(
+              update.executable,
+              update.args,
+              update.environmentPatch,
+            );
             const finishedAt = yield* nowIso;
             if (result.timedOut || result.exitCode !== 0) {
               return yield* finish(

@@ -288,6 +288,60 @@ describe("providerMaintenance", () => {
       }),
   );
 
+  it("binds Windows npm updates to the prefix containing the resolved provider shim", () => {
+    const appData = "C:\\Users\\Alice Smith\\AppData\\Roaming";
+    const npmPrefix = `${appData}\\npm`;
+
+    expect(
+      packageToolUpdate.resolve({
+        binaryPath: `${npmPrefix}\\package-tool.cmd`,
+        platform: "win32",
+        env: {
+          APPDATA: appData,
+          PATH: "C:\\fnm\\current;C:\\Program Files\\nodejs",
+          PATHEXT: ".COM;.EXE;.BAT;.CMD",
+        },
+      }),
+    ).toEqual({
+      provider: driver("packageTool"),
+      packageName: "@example/package-tool",
+      update: {
+        command: `npm --prefix "${npmPrefix}" install -g @example/package-tool@latest`,
+
+        executable: "npm",
+
+        args: ["install", "-g", "@example/package-tool@latest"],
+
+        lockKey: "npm-global",
+
+        environmentPatch: { NPM_CONFIG_PREFIX: npmPrefix },
+      },
+      ...noManualUpdate,
+    });
+  });
+
+  it("binds FNM-managed Windows provider shims to their multishell prefix", () => {
+    const npmPrefix = "C:\\Users\\alice\\AppData\\Local\\fnm_multishells\\1234_session";
+
+    expect(
+      packageToolUpdate.resolve({
+        binaryPath: `${npmPrefix}\\package-tool.cmd`,
+        platform: "win32",
+        env: {
+          PATH: "C:\\Windows\\System32",
+          PATHEXT: ".COM;.EXE;.BAT;.CMD",
+        },
+      }),
+    ).toMatchObject({
+      update: {
+        command: `npm --prefix "${npmPrefix}" install -g @example/package-tool@latest`,
+        executable: "npm",
+        args: ["install", "-g", "@example/package-tool@latest"],
+        environmentPatch: { NPM_CONFIG_PREFIX: npmPrefix },
+      },
+    });
+  });
+
   it("switches package-tool to Homebrew updates when the binary resolves through Homebrew", () => {
     expect(
       packageToolUpdate.resolve({
