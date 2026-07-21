@@ -958,6 +958,70 @@ describe("deriveWorkLogEntries", () => {
     expect(entries.map((entry) => entry.id)).toEqual(["tool-start"]);
   });
 
+  it("marks subagent task rows and leaves background command tasks unmarked", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "agent-progress",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "task.progress",
+        summary: "Task progress",
+        tone: "thinking",
+        payload: {
+          taskId: "task-agent-1",
+          detail: "Running List source structure of server and web apps",
+          toolUseId: "toolu_agent_spawn",
+          subagentType: "general-purpose",
+        },
+      }),
+      makeActivity({
+        id: "agent-complete",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "task.completed",
+        summary: "Task completed",
+        tone: "info",
+        // task.completed omits subagentType; membership comes from the
+        // taskId seen with one earlier.
+        payload: {
+          taskId: "task-agent-1",
+          status: "completed",
+          detail: "Running Inspect contracts",
+          toolUseId: "toolu_agent_spawn",
+        },
+      }),
+      makeActivity({
+        id: "command-progress",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "task.progress",
+        summary: "Task progress",
+        tone: "thinking",
+        payload: {
+          taskId: "task-bash-1",
+          detail: "Running npm run build",
+          toolUseId: "toolu_bash_bg",
+        },
+      }),
+      makeActivity({
+        id: "plain-tool",
+        createdAt: "2026-02-23T00:00:04.000Z",
+        kind: "tool.started",
+        summary: "Read file",
+        tone: "tool",
+      }),
+    ]);
+
+    const byId = new Map(entries.map((entry) => [entry.id, entry]));
+    expect(byId.get("agent-progress")?.subagentTask).toEqual({
+      subagentType: "general-purpose",
+      toolUseId: "toolu_agent_spawn",
+    });
+    expect(byId.get("agent-complete")?.subagentTask).toEqual({
+      subagentType: null,
+      toolUseId: "toolu_agent_spawn",
+    });
+    expect(byId.get("command-progress")?.subagentTask).toBeUndefined();
+    expect(byId.get("plain-tool")?.subagentTask).toBeUndefined();
+  });
+
   it("omits passive MCP auth startup failures from the work log", () => {
     const entries = deriveWorkLogEntries([
       makeActivity({

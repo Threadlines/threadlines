@@ -104,6 +104,10 @@ export interface WorkLogEntry {
    *  Coordination calls stay in the transcript without inflating delegation
    *  counts in the compact activity summary. */
   subagentOperation?: "delegation" | "coordination";
+  /** Set when this row narrates a spawned subagent's own activity rather than
+   *  the main model's. Drives the indented child-row rendering in the
+   *  timeline. */
+  subagentTask?: { subagentType: string | null; toolUseId: string | null };
   requestKind?: PendingApproval["requestKind"];
   executionState?: "running" | "completed" | "failed";
   authReconnect?: ProviderAuthReconnectAction;
@@ -1513,6 +1517,7 @@ export function deriveWorkLogEntries(
     filterSupersededManualContextCompactionActivities(activities).toSorted(
       compareActivitiesByOrder,
     );
+  const agentTaskIds = collectAgentTaskIds(ordered);
   const entries = ordered
     .filter((activity) => activity.kind !== "task.started")
     .filter((activity) => activity.kind !== "subagent.result")
@@ -1533,7 +1538,7 @@ export function deriveWorkLogEntries(
     .filter((activity) => activity.summary !== "Checkpoint captured")
     .filter((activity) => !isPlanBoundaryToolActivity(activity))
     .filter((activity) => !isSubagentNotificationReplayActivity(activity))
-    .map(toDerivedWorkLogEntry);
+    .map((activity) => toDerivedWorkLogEntry(activity, agentTaskIds));
   return enrichGenericThinkingEntries(
     collapseDerivedWorkLogEntries(entries).filter(shouldKeepDerivedWorkLogEntry),
   ).map(
@@ -1594,7 +1599,35 @@ function isPlanBoundaryToolActivity(activity: OrchestrationThreadActivity): bool
   );
 }
 
-function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWorkLogEntry {
+/** Task ids spawned through the Agent/Task tool. `task.completed` payloads
+ *  omit `subagentType`, so membership is collected from any lifecycle row
+ *  that carries it and applied across the task's whole lifecycle. Background
+ *  command tasks never carry it and stay unmarked. */
+function collectAgentTaskIds(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const activity of activities) {
+    if (
+      activity.kind !== "task.started" &&
+      activity.kind !== "task.progress" &&
+      activity.kind !== "task.completed"
+    ) {
+      continue;
+    }
+    const payload = asRecord(activity.payload);
+    const taskId = asTrimmedString(payload?.taskId);
+    if (taskId && asTrimmedString(payload?.subagentType)) {
+      ids.add(taskId);
+    }
+  }
+  return ids;
+}
+
+function toDerivedWorkLogEntry(
+  activity: OrchestrationThreadActivity,
+  agentTaskIds: ReadonlySet<string>,
+): DerivedWorkLogEntry {
   const payload =
     activity.payload && typeof activity.payload === "object"
       ? (activity.payload as Record<string, unknown>)
@@ -1733,6 +1766,16 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   }
   if (activity.kind === "thinking.progress") {
     entry.redactedThinking = isRedactedThinkingActivity;
+  }
+  if (activity.kind === "task.progress" || activity.kind === "task.completed") {
+    const subagentType = asTrimmedString(payload?.subagentType);
+    const taskId = asTrimmedString(payload?.taskId);
+    if (subagentType !== null || (taskId !== null && agentTaskIds.has(taskId))) {
+      entry.subagentTask = {
+        subagentType,
+        toolUseId: asTrimmedString(payload?.toolUseId),
+      };
+    }
   }
   const collapseKey =
     deriveThinkingCollapseKey(activity, payload) ??
@@ -2040,6 +2083,7 @@ function mergeDerivedWorkLogEntries(
   const collapseKey = next.collapseKey ?? previous.collapseKey;
   const toolCallId = next.toolCallId ?? previous.toolCallId;
   const turnId = next.turnId ?? previous.turnId;
+  const subagentTask = next.subagentTask ?? previous.subagentTask;
   return {
     ...previous,
     ...next,
@@ -2062,6 +2106,7 @@ function mergeDerivedWorkLogEntries(
     ...(collapseKey ? { collapseKey } : {}),
     ...(toolCallId ? { toolCallId } : {}),
     ...(turnId !== undefined ? { turnId } : {}),
+    ...(subagentTask ? { subagentTask } : {}),
   };
 }
 

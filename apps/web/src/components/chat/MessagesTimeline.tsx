@@ -47,6 +47,7 @@ import {
   ChevronDownIcon,
   CircleAlertIcon,
   CopyIcon,
+  CornerDownRightIcon,
   EyeIcon,
   FileTextIcon,
   GlobeIcon,
@@ -2784,7 +2785,7 @@ function ActivityReceipt({
       </div>
       <button
         type="button"
-        className="shrink-0 text-[10px] font-medium text-muted-foreground/55 transition-colors duration-150 hover:text-foreground/75"
+        className="shrink-0 cursor-pointer text-[10px] font-medium text-muted-foreground/55 transition-colors duration-150 hover:text-foreground/75"
         aria-expanded={isExpanded}
         aria-label={isExpanded ? "Hide activity" : "Show activity"}
         data-activity-transcript-toggle="true"
@@ -5024,6 +5025,10 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const displayText = preview
     ? `${heading}${diffStatText} - ${preview}`
     : `${heading}${diffStatText}`;
+  const subagentTask = workEntry.subagentTask;
+  const tooltipText = subagentTask
+    ? `Subagent${subagentTask.subagentType ? ` (${subagentTask.subagentType})` : ""}: ${displayText}`
+    : displayText;
   const hasChangedFiles = (workEntry.changedFiles?.length ?? 0) > 0;
   // A single-file edit whose detail is already that file's path needs no
   // chip row repeating it.
@@ -5070,14 +5075,27 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
 
   const summaryContent = (
     <>
-      {inSpine ? null : (
+      {inSpine ? (
+        // The spine gutter owns the leading node; subagent rows still get the
+        // corner glyph so the child relationship reads inside the group.
+        subagentTask ? (
+          <CornerDownRightIcon className="size-3 shrink-0 text-muted-foreground/50" />
+        ) : null
+      ) : (
         <span
-          className={cn("flex size-5 shrink-0 items-center justify-center", iconConfig.className)}
+          className={cn(
+            "flex size-5 shrink-0 items-center justify-center",
+            subagentTask ? "text-muted-foreground/50" : iconConfig.className,
+          )}
         >
-          <EntryIcon className="size-3" />
+          {subagentTask ? (
+            <CornerDownRightIcon className="size-3" />
+          ) : (
+            <EntryIcon className="size-3" />
+          )}
         </span>
       )}
-      <div className="min-w-0 flex-1 overflow-hidden">
+      <div className={cn("min-w-0 flex-1 overflow-hidden", subagentTask && "opacity-80")}>
         {rawCommand || hasExpandableOutput ? (
           <div className="max-w-full">
             <WorkEntrySummaryLine
@@ -5094,7 +5112,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           </div>
         ) : (
           <Tooltip>
-            <TooltipTrigger className="block min-w-0 w-full text-left" aria-label={displayText}>
+            <TooltipTrigger className="block min-w-0 w-full text-left" aria-label={tooltipText}>
               <WorkEntrySummaryLine
                 className="text-[11px]"
                 heading={heading}
@@ -5108,7 +5126,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
               />
             </TooltipTrigger>
             <TooltipPopup className="max-w-[min(720px,calc(100vw-2rem))]">
-              <p className="whitespace-pre-wrap wrap-break-word text-xs leading-5">{displayText}</p>
+              <p className="whitespace-pre-wrap wrap-break-word text-xs leading-5">{tooltipText}</p>
             </TooltipPopup>
           </Tooltip>
         )}
@@ -5125,7 +5143,10 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   );
 
   return (
-    <div className="rounded-lg px-1 py-1">
+    <div
+      className={cn("rounded-lg px-1 py-1", subagentTask && "pl-4")}
+      {...(subagentTask ? { "data-subagent-work-row": "true" } : {})}
+    >
       {hasExpandableOutput ? (
         <button
           type="button"

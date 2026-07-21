@@ -228,6 +228,52 @@ describe("MessagesTimeline", () => {
     }
   });
 
+  it("indents subagent task rows with the corner glyph while main rows stay flush", async () => {
+    const screen = await renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-main",
+            kind: "work",
+            createdAt: "2026-04-13T12:00:00.000Z",
+            entry: {
+              id: "work-main",
+              createdAt: "2026-04-13T12:00:00.000Z",
+              label: "Running main model step",
+              tone: "thinking",
+            },
+          },
+          {
+            id: "entry-subagent",
+            kind: "work",
+            createdAt: "2026-04-13T12:00:01.000Z",
+            entry: {
+              id: "work-subagent",
+              createdAt: "2026-04-13T12:00:01.000Z",
+              label: "Running List source structure of server and web apps",
+              tone: "thinking",
+              subagentTask: { subagentType: "general-purpose", toolUseId: "toolu_spawn_1" },
+            },
+          },
+        ]}
+      />,
+    );
+
+    try {
+      const subagentRows = document.querySelectorAll("[data-subagent-work-row='true']");
+      expect(subagentRows).toHaveLength(1);
+      expect(subagentRows[0]?.textContent).toContain("List source structure");
+      expect(subagentRows[0]?.querySelector("svg.lucide-corner-down-right")).not.toBeNull();
+      expect(subagentRows[0]?.textContent).not.toContain("Running main model step");
+      await expect
+        .element(page.getByLabelText(/Subagent \(general-purpose\):/))
+        .toBeInTheDocument();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("keeps live command preview aligned with its activity heading", async () => {
     const screen = await renderTimeline(
       <MessagesTimeline
