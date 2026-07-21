@@ -2314,7 +2314,12 @@ export default function ChatView(props: ChatViewProps) {
   }, [activeProviderInstanceId, providerStatuses, selectedProvider]);
   const activeProviderDriver =
     activeProviderStatus?.driver ?? activeThread?.session?.provider ?? selectedProvider;
-  const voiceSupported = activeProviderDriver === ProviderDriverKind.make("codex");
+  // Voice is hidden without API-key auth: codex realtime conversations refuse
+  // ChatGPT-subscription logins ("realtime conversation requires API key
+  // auth"), so showing the mic would offer a feature that can only fail.
+  const voiceSupported =
+    activeProviderDriver === ProviderDriverKind.make("codex") &&
+    activeProviderStatus?.auth.type === "apiKey";
   const voiceConnectionAvailable = activeThread
     ? activeThread.environmentId === primaryEnvironmentId || primaryEnvironmentId === null
       ? primaryWsConnectionStatus.phase === "connected"
