@@ -964,10 +964,12 @@ jobs:
     needs:
       - preflight
       - publish
-    # This gate has never fired as a typed boolean: API dispatches delivered
-    # the input so inconsistently that every historical release skipped the
-    # deploy. String-typed input + string comparison is deterministic.
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.deploy_web != 'false' }}
+    # Real reason this gate never fired: an `if` without a status-check
+    # function gets an implicit `success()`, which evaluates over the
+    # TRANSITIVE needs chain — and `linux` (skipped on most releases) is an
+    # ancestor via `publish`. `publish` shields itself with always(); this job
+    # must do the same and check its direct needs' results explicitly.
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && needs.publish.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.deploy_web != 'false') }}
     uses: ./.github/workflows/deploy-web.yml
     with:
       ref: ${{ needs.preflight.outputs.ref }}
