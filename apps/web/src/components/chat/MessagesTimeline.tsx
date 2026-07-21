@@ -3,6 +3,7 @@ import {
   type MessageId,
   type ProviderDriverKind,
   PROVIDER_DISPLAY_NAMES,
+  type ProviderSubagentTranscriptResult,
   type ServerProviderSkill,
   type ThreadId,
   type TurnId,
@@ -39,6 +40,7 @@ import { DEFAULT_SCROLL_END_TOLERANCE_PX, isScrollMetricsAtEnd } from "../ChatVi
 import { type ChatAttachment, type TurnDiffSummary } from "../../types";
 import { chatAttachmentPreviewQueryOptions } from "../../lib/attachmentPreviewQuery";
 import { environmentUsesRelayTransport } from "../../environments/runtime";
+import { requireEnvironmentConnection } from "../../environments/runtime/service";
 import { summarizeTurnDiffStats } from "../../lib/turnDiffTree";
 import ChatMarkdown from "../ChatMarkdown";
 import {
@@ -136,6 +138,7 @@ interface TimelineRowSharedState {
   workspaceRoot: string | undefined;
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   activeThreadEnvironmentId: EnvironmentId;
+  activeThreadId: ThreadId | null;
   turnDiffSummaryByTurnId: ReadonlyMap<TurnId, TurnDiffSummary>;
   providerAuthReconnect: ProviderAuthReconnectAction | null;
   resolvedProviderAuthReconnectIds: ReadonlySet<string>;
@@ -503,6 +506,9 @@ interface MessagesTimelineProps {
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onPreviewFile: (request: FilePreviewRequest) => void;
   activeThreadEnvironmentId: EnvironmentId;
+  /** Server thread id backing this timeline; null for views without one
+   *  (drafts, previews) — the subagent transcript fetch disables itself. */
+  activeThreadId?: ThreadId | null;
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
   timestampFormat: TimestampFormat;
@@ -557,6 +563,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onImageExpand,
   onPreviewFile,
   activeThreadEnvironmentId,
+  activeThreadId = null,
   markdownCwd,
   resolvedTheme,
   timestampFormat,
@@ -1120,6 +1127,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       workspaceRoot,
       skills,
       activeThreadEnvironmentId,
+      activeThreadId,
       turnDiffSummaryByTurnId,
       providerAuthReconnect,
       resolvedProviderAuthReconnectIds,
@@ -1144,6 +1152,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       workspaceRoot,
       skills,
       activeThreadEnvironmentId,
+      activeThreadId,
       turnDiffSummaryByTurnId,
       providerAuthReconnect,
       resolvedProviderAuthReconnectIds,
@@ -4698,6 +4707,7 @@ const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
   inSpine?: boolean;
 }) {
   const { workEntry, workspaceRoot, compact, inSpine = false } = props;
+  const ctx = use(TimelineRowCtx);
   const [isExpanded, setIsExpanded] = useState(false);
   const isRunningTool = isRunningToolWorkEntry(workEntry);
   const heading = toolWorkEntryHeading(workEntry, workspaceRoot);
@@ -4705,9 +4715,16 @@ const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
   const rawCommand = workEntryRawCommand(workEntry);
   const command = workEntry.command?.trim();
   const detail = workEntry.detail?.trim();
+  const transcriptAgentIds = ctx.activeThreadId !== null ? (workEntry.spawnedAgentIds ?? []) : [];
   const hasDetailBody =
     !compact &&
-    Boolean(detail || command || rawCommand || (workEntry.changedFiles?.length ?? 0) > 0);
+    Boolean(
+      detail ||
+      command ||
+      rawCommand ||
+      (workEntry.changedFiles?.length ?? 0) > 0 ||
+      transcriptAgentIds.length > 0,
+    );
   const displayText = objective ? `${heading} - ${objective}` : heading;
 
   useEffect(() => {
@@ -4787,11 +4804,134 @@ const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
               })}
             </div>
           ) : null}
+          {transcriptAgentIds.length > 0 ? (
+            <SubagentTranscriptSection agentIds={transcriptAgentIds} />
+          ) : null}
         </div>
       ) : null}
     </div>
   );
 });
+
+type SubagentTranscriptFetchState =
+  | { readonly status: "loading" }
+  | { readonly status: "error"; readonly message: string }
+  | {
+      readonly status: "loaded";
+      readonly sections: ReadonlyArray<{
+        readonly agentId: string;
+        readonly result: ProviderSubagentTranscriptResult;
+      }>;
+    };
+
+/** Lazily fetched nested conversation of the spawned agent(s): mounted only
+ *  while the spawn row's details are expanded, fetched once per mount. */
+function SubagentTranscriptSection({ agentIds }: { agentIds: ReadonlyArray<string> }) {
+  const { activeThreadEnvironmentId, activeThreadId } = use(TimelineRowCtx);
+  const [state, setState] = useState<SubagentTranscriptFetchState>({ status: "loading" });
+
+  useEffect(() => {
+    if (activeThreadId === null) {
+      setState({ status: "error", message: "Transcript is unavailable in this view." });
+      return;
+    }
+    let cancelled = false;
+    setState({ status: "loading" });
+    void (async () => {
+      try {
+        const connection = requireEnvironmentConnection(activeThreadEnvironmentId);
+        const sections: Array<{ agentId: string; result: ProviderSubagentTranscriptResult }> = [];
+        for (const agentId of agentIds) {
+          const result = await connection.client.server.readSubagentTranscript({
+            threadId: activeThreadId,
+            agentId,
+          });
+          sections.push({ agentId, result });
+        }
+        if (!cancelled) {
+          setState({ status: "loaded", sections });
+        }
+      } catch (cause) {
+        if (!cancelled) {
+          setState({
+            status: "error",
+            message:
+              cause instanceof Error && cause.message.trim().length > 0
+                ? cause.message
+                : "Failed to load the subagent transcript.",
+          });
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeThreadEnvironmentId, activeThreadId, agentIds]);
+
+  return (
+    <div data-subagent-transcript="true">
+      <p className="mb-1 text-[10px] font-medium tracking-[0.08em] text-muted-foreground/55 uppercase">
+        Transcript
+      </p>
+      {state.status === "loading" ? (
+        <p className="text-[11px] text-muted-foreground/60">Loading transcript...</p>
+      ) : state.status === "error" ? (
+        <p className="text-[11px] text-muted-foreground/60" data-subagent-transcript-error="true">
+          {state.message}
+        </p>
+      ) : (
+        state.sections.map((section) => (
+          <div key={section.agentId} className="space-y-1.5">
+            {state.sections.length > 1 ? (
+              <p className="text-[10px] text-muted-foreground/50">Agent {section.agentId}</p>
+            ) : null}
+            {section.result.entries.map((entry, index) => (
+              <div key={`${section.agentId}:${index}`} data-subagent-transcript-entry={entry.role}>
+                {entry.role === "thinking" ? (
+                  <p className="text-[11px] leading-4 text-muted-foreground/50 italic">
+                    {entry.text}
+                  </p>
+                ) : entry.text.length > 0 ? (
+                  <p className="text-[11px] leading-4 whitespace-pre-wrap wrap-break-word">
+                    <span className="mr-1 text-[9px] tracking-[0.08em] text-muted-foreground/50 uppercase">
+                      {entry.role}
+                    </span>
+                    {entry.text}
+                  </p>
+                ) : null}
+                {entry.toolUses.length > 0 ? (
+                  <div className="mt-0.5 flex flex-wrap gap-1">
+                    {entry.toolUses.map((toolUse, toolIndex) => (
+                      <span
+                        key={`${section.agentId}:${index}:${toolIndex}`}
+                        className="inline-flex max-w-full items-center rounded border border-border/55 bg-background/60 px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground/75"
+                        title={toolUse.summary || toolUse.name}
+                      >
+                        <span className="min-w-0 truncate">
+                          {toolUse.summary ? `${toolUse.name}: ${toolUse.summary}` : toolUse.name}
+                        </span>
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+                {entry.outputPreview ? (
+                  <pre className="mt-0.5 max-h-40 overflow-y-auto rounded-md border border-border/45 bg-background/70 px-2 py-1 font-mono text-[10px] leading-4 whitespace-pre-wrap wrap-break-word text-muted-foreground/70">
+                    {entry.outputPreview}
+                  </pre>
+                ) : null}
+              </div>
+            ))}
+            {section.result.truncated ? (
+              <p className="text-[10px] text-muted-foreground/50">
+                Transcript truncated to the first {section.result.entries.length} entries.
+              </p>
+            ) : null}
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
 
 function providerAuthReconnectProviderLabel(provider: ProviderDriverKind): string {
   return PROVIDER_DISPLAY_NAMES[provider] ?? formatProviderDriverKindLabel(provider);
@@ -5130,7 +5270,10 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           </div>
         ) : (
           <Tooltip>
-            <TooltipTrigger className="block min-w-0 w-full text-left" aria-label={tooltipText}>
+            <TooltipTrigger
+              className="block min-w-0 w-full cursor-default text-left"
+              aria-label={tooltipText}
+            >
               <WorkEntrySummaryLine
                 className="text-[11px]"
                 heading={heading}

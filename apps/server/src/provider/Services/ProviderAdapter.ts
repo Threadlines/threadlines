@@ -18,6 +18,8 @@ import type {
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
+  ProviderSubagentTranscriptInput,
+  ProviderSubagentTranscriptResult,
   ProviderSteerTurnInput,
   MessageId,
   RuntimeThreadGoalSnapshot,
@@ -217,6 +219,15 @@ export interface ProviderAdapterShape<TError> {
    * session while still clearing Threadlines' persisted runtime binding.
    */
   readonly deleteThread?: (threadId: ThreadId) => Effect.Effect<void, TError>;
+
+  /**
+   * Read a spawned subagent's nested transcript for on-demand display.
+   * Optional: drivers without provider-side subagent transcripts omit it.
+   */
+  readonly readSubagentTranscript?: (
+    threadId: ThreadId,
+    input: ProviderSubagentTranscriptInput,
+  ) => Effect.Effect<ProviderSubagentTranscriptResult, TError>;
 
   /**
    * Stop all sessions owned by this adapter.

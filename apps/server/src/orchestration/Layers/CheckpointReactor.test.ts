@@ -148,6 +148,7 @@ function createProviderServiceHarness(
         },
       }),
     rollbackConversation,
+    readSubagentTranscript: () => unsupported(),
     deleteThread: () => unsupported(),
     get streamEvents() {
       return Stream.fromPubSub(runtimeEventPubSub);

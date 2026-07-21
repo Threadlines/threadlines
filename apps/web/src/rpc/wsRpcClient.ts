@@ -9,6 +9,8 @@ import {
   type LocalApi,
   ORCHESTRATION_WS_METHODS,
   type ProviderStartReviewInput,
+  type ProviderSubagentTranscriptInput,
+  type ProviderSubagentTranscriptResult,
   type ProviderStartReviewResult,
   type ServerSettingsPatch,
   WS_METHODS,
@@ -150,6 +152,9 @@ export interface WsRpcClient {
     readonly startProviderReview: (
       input: ProviderStartReviewInput,
     ) => Promise<ProviderStartReviewResult>;
+    readonly readSubagentTranscript: (
+      input: ProviderSubagentTranscriptInput,
+    ) => Promise<ProviderSubagentTranscriptResult>;
     readonly consumeProviderRateLimitResetCredit: RpcUnaryMethod<
       typeof WS_METHODS.serverConsumeProviderRateLimitResetCredit
     >;
@@ -424,6 +429,8 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.serverRefreshProviders](input ?? {})),
       startProviderReview: (input) =>
         transport.request((client) => client[WS_METHODS.serverStartProviderReview](input)),
+      readSubagentTranscript: (input) =>
+        transport.request((client) => client[WS_METHODS.serverReadSubagentTranscript](input)),
       consumeProviderRateLimitResetCredit: (input) =>
         transport.request((client) =>
           client[WS_METHODS.serverConsumeProviderRateLimitResetCredit](input).pipe(

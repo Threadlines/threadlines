@@ -43,6 +43,7 @@ import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { claudeProjectDirectoryName } from "../Drivers/ClaudeSessionTranscripts.ts";
 import {
   makeClaudeAdapter,
+  mapClaudeSubagentTranscript,
   parseEnterWorktreeCwd,
   type ClaudeAdapterLiveOptions,
 } from "./ClaudeAdapter.ts";
@@ -385,6 +386,77 @@ async function readFirstPromptMessage(
 
 const THREAD_ID = ThreadId.make("thread-claude-1");
 const RESUME_THREAD_ID = ThreadId.make("thread-claude-resume");
+
+describe("mapClaudeSubagentTranscript", () => {
+  const transcriptLine = (record: unknown) => JSON.stringify(record);
+
+  it("maps thinking, text, tool calls, and tool results into renderable entries", () => {
+    const jsonl = [
+      "not-json",
+      transcriptLine({ type: "system", message: { content: "ignored" } }),
+      transcriptLine({
+        type: "assistant",
+        message: {
+          content: [
+            { type: "thinking", thinking: "Plan the directory listing first." },
+            { type: "text", text: "Listing the project now." },
+            { type: "tool_use", name: "Bash", input: { command: "ls apps" } },
+          ],
+        },
+      }),
+      transcriptLine({
+        type: "user",
+        message: {
+          content: [{ type: "tool_result", content: [{ type: "text", text: "apps/\npackages/" }] }],
+        },
+      }),
+      transcriptLine({ type: "user", message: { content: "plain user text" } }),
+    ].join("\n");
+
+    const result = mapClaudeSubagentTranscript(jsonl);
+    assert.equal(result.truncated, false);
+    assert.equal(result.entries.length, 4);
+    assert.deepStrictEqual(result.entries[0], {
+      role: "thinking",
+      text: "Plan the directory listing first.",
+      toolUses: [],
+    });
+    assert.equal(result.entries[1]?.role, "assistant");
+    assert.equal(result.entries[1]?.text, "Listing the project now.");
+    assert.equal(result.entries[1]?.toolUses[0]?.name, "Bash");
+    assert.ok(result.entries[1]?.toolUses[0]?.summary.includes("ls apps"));
+    assert.deepStrictEqual(result.entries[2], {
+      role: "user",
+      text: "",
+      toolUses: [],
+      outputPreview: "apps/\npackages/",
+    });
+    assert.deepStrictEqual(result.entries[3], {
+      role: "user",
+      text: "plain user text",
+      toolUses: [],
+    });
+  });
+
+  it("caps entry counts and long content", () => {
+    const longLine = transcriptLine({
+      type: "assistant",
+      message: { content: [{ type: "text", text: "y".repeat(10_000) }] },
+    });
+    const capped = mapClaudeSubagentTranscript(longLine);
+    assert.equal(capped.entries[0]?.text.length, 4_000);
+
+    const many = Array.from({ length: 5 }, () =>
+      transcriptLine({
+        type: "assistant",
+        message: { content: [{ type: "text", text: "step" }] },
+      }),
+    ).join("\n");
+    const limited = mapClaudeSubagentTranscript(many, { limit: 3 });
+    assert.equal(limited.entries.length, 3);
+    assert.equal(limited.truncated, true);
+  });
+});
 
 describe("parseEnterWorktreeCwd", () => {
   it("prefers the explicit path input when entering an existing worktree", () => {

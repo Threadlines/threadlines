@@ -39,6 +39,7 @@ import {
   OrchestrationReplayEventsError,
   FilesystemBrowseError,
   ProviderExtensionsError,
+  ProviderSubagentTranscriptError,
   ThreadId,
   type TerminalEvent,
   WS_METHODS,
@@ -998,6 +999,22 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               projectionSnapshotQuery,
               orchestrationEngine,
             }),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverReadSubagentTranscript]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverReadSubagentTranscript,
+            providerService.readSubagentTranscript(input).pipe(
+              Effect.mapError(
+                (error) =>
+                  new ProviderSubagentTranscriptError({
+                    message:
+                      error.message.trim().length > 0
+                        ? error.message
+                        : "Failed to read the subagent transcript.",
+                  }),
+              ),
+            ),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverConsumeProviderRateLimitResetCredit]: (input) =>

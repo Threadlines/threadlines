@@ -28,6 +28,8 @@ import type {
   RuntimeThreadGoalSnapshot,
   ThreadGoalStatus,
   ThreadId,
+  ProviderSubagentTranscriptInput,
+  ProviderSubagentTranscriptResult,
   ProviderTurnStartResult,
 } from "@threadlines/contracts";
 import * as Context from "effect/Context";
@@ -151,6 +153,14 @@ export interface ProviderServiceShape {
     readonly numTurns: number;
     readonly targetUserMessageId?: MessageId;
   }) => Effect.Effect<void, ProviderServiceError>;
+
+  /**
+   * Read a spawned subagent's nested transcript for on-demand display.
+   * Fails cleanly when the routed driver has no transcript support.
+   */
+  readonly readSubagentTranscript: (
+    input: ProviderSubagentTranscriptInput,
+  ) => Effect.Effect<ProviderSubagentTranscriptResult, ProviderServiceError>;
 
   /**
    * Delete provider-owned runtime state for a thread.

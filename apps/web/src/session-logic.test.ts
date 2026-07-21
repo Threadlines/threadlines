@@ -961,6 +961,20 @@ describe("deriveWorkLogEntries", () => {
   it("marks subagent task rows and leaves background command tasks unmarked", () => {
     const entries = deriveWorkLogEntries([
       makeActivity({
+        id: "agent-spawn",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        kind: "tool.started",
+        summary: "Subagent task started",
+        tone: "tool",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          status: "inProgress",
+          title: "Subagent task",
+          toolCallId: "toolu_agent_spawn",
+          data: { toolName: "Task", input: { subagent_type: "general-purpose" } },
+        },
+      }),
+      makeActivity({
         id: "agent-progress",
         createdAt: "2026-02-23T00:00:01.000Z",
         kind: "task.progress",
@@ -1010,6 +1024,9 @@ describe("deriveWorkLogEntries", () => {
     ]);
 
     const byId = new Map(entries.map((entry) => [entry.id, entry]));
+    // The spawn row learns which agents it launched, for on-demand
+    // transcript fetches.
+    expect(byId.get("agent-spawn")?.spawnedAgentIds).toEqual(["task-agent-1"]);
     expect(byId.get("agent-progress")?.subagentTask).toEqual({
       subagentType: "general-purpose",
       toolUseId: "toolu_agent_spawn",

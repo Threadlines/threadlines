@@ -42,6 +42,8 @@ import {
   type ProviderSendTurnInput,
   type ProviderSession,
   type ProviderSteerTurnInput,
+  type ProviderSubagentTranscriptEntry,
+  type ProviderSubagentTranscriptResult,
   type ThreadTokenUsageSnapshot,
   type ProviderUserInputAnswers,
   type RuntimeSessionExitKind,
@@ -78,7 +80,11 @@ import { countStructuredPatchStats, type FileChangeStat } from "@threadlines/sha
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
-import { ensureClaudeSessionTranscript } from "../Drivers/ClaudeSessionTranscripts.ts";
+import {
+  claudeProjectDirectoryName,
+  ensureClaudeSessionTranscript,
+  resolveClaudeConfigDir,
+} from "../Drivers/ClaudeSessionTranscripts.ts";
 import { addProviderAuthHint, isProviderAuthErrorMessage } from "../providerAuthHints.ts";
 import {
   claudeModelSupportsAutoRuntimeMode,
@@ -1866,6 +1872,147 @@ function extractContentBlockText(block: unknown): string {
 /** Latest live message cap per subagent; long messages truncate rather than
  *  growing runtime-event payloads unboundedly. */
 const SUBAGENT_LIVE_TEXT_MAX_CHARS = 4_000;
+
+const SUBAGENT_TRANSCRIPT_DEFAULT_LIMIT = 200;
+const SUBAGENT_TRANSCRIPT_TEXT_MAX_CHARS = 4_000;
+const SUBAGENT_TRANSCRIPT_OUTPUT_PREVIEW_MAX_CHARS = 2_000;
+/** Agent ids come from the client and end up in a filesystem path; anything
+ *  outside this shape is rejected before it can traverse. */
+const SUBAGENT_AGENT_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+function capTranscriptText(value: string, maxChars: number): string {
+  const trimmed = value.trim();
+  return trimmed.length > maxChars ? trimmed.slice(0, maxChars) : trimmed;
+}
+
+/**
+ * Maps a subagent transcript JSONL (Claude Code's on-disk
+ * `subagents/agent-<id>.jsonl`) into renderable entries: thinking becomes its
+ * own muted entry, assistant text and tool calls stay together, and tool
+ * results surface as capped output previews.
+ */
+export function mapClaudeSubagentTranscript(
+  jsonl: string,
+  options?: { readonly limit?: number },
+): ProviderSubagentTranscriptResult {
+  const limit =
+    options?.limit !== undefined && options.limit > 0
+      ? options.limit
+      : SUBAGENT_TRANSCRIPT_DEFAULT_LIMIT;
+  const entries: Array<ProviderSubagentTranscriptEntry> = [];
+  let truncated = false;
+
+  const push = (entry: ProviderSubagentTranscriptEntry): boolean => {
+    if (entries.length >= limit) {
+      truncated = true;
+      return false;
+    }
+    entries.push(entry);
+    return true;
+  };
+
+  for (const line of jsonl.split("\n")) {
+    if (truncated) {
+      break;
+    }
+    const record = line.trim();
+    if (record.length === 0) {
+      continue;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(record);
+    } catch {
+      continue;
+    }
+    if (!parsed || typeof parsed !== "object") {
+      continue;
+    }
+    const { type, message } = parsed as { type?: unknown; message?: unknown };
+    if (type !== "user" && type !== "assistant") {
+      continue;
+    }
+    const content = (message as { content?: unknown } | undefined)?.content;
+
+    if (typeof content === "string") {
+      const text = capTranscriptText(content, SUBAGENT_TRANSCRIPT_TEXT_MAX_CHARS);
+      if (text.length > 0) {
+        push({ role: type, text, toolUses: [] });
+      }
+      continue;
+    }
+    if (!Array.isArray(content)) {
+      continue;
+    }
+
+    const texts: string[] = [];
+    const toolUses: Array<{ name: string; summary: string }> = [];
+    const resultPreviews: string[] = [];
+    for (const block of content) {
+      if (!block || typeof block !== "object") {
+        continue;
+      }
+      const blockRecord = block as {
+        type?: unknown;
+        text?: unknown;
+        thinking?: unknown;
+        name?: unknown;
+        input?: unknown;
+        content?: unknown;
+      };
+      if (blockRecord.type === "thinking" && typeof blockRecord.thinking === "string") {
+        const thinkingText = capTranscriptText(
+          blockRecord.thinking,
+          SUBAGENT_TRANSCRIPT_TEXT_MAX_CHARS,
+        );
+        if (thinkingText.length > 0) {
+          push({ role: "thinking", text: thinkingText, toolUses: [] });
+        }
+        continue;
+      }
+      if (blockRecord.type === "text" && typeof blockRecord.text === "string") {
+        texts.push(blockRecord.text);
+        continue;
+      }
+      if (blockRecord.type === "tool_use" && typeof blockRecord.name === "string") {
+        const input =
+          blockRecord.input && typeof blockRecord.input === "object"
+            ? (blockRecord.input as Record<string, unknown>)
+            : {};
+        toolUses.push({
+          name: blockRecord.name,
+          summary: summarizeGenericToolArguments(input) ?? "",
+        });
+        continue;
+      }
+      if (blockRecord.type === "tool_result") {
+        const preview = capTranscriptText(
+          extractTextContent(blockRecord.content),
+          SUBAGENT_TRANSCRIPT_OUTPUT_PREVIEW_MAX_CHARS,
+        );
+        if (preview.length > 0) {
+          resultPreviews.push(preview);
+        }
+      }
+    }
+
+    const text = capTranscriptText(texts.join("\n"), SUBAGENT_TRANSCRIPT_TEXT_MAX_CHARS);
+    const outputPreview = capTranscriptText(
+      resultPreviews.join("\n"),
+      SUBAGENT_TRANSCRIPT_OUTPUT_PREVIEW_MAX_CHARS,
+    );
+    if (text.length > 0 || toolUses.length > 0 || outputPreview.length > 0) {
+      push({
+        role: type,
+        text,
+        toolUses,
+        ...(outputPreview.length > 0 ? { outputPreview } : {}),
+      });
+    }
+  }
+
+  return { entries, truncated };
+}
 
 /** Non-null `parent_tool_use_id` marks a message forwarded from inside a
  *  subagent (`forwardSubagentText`); absent or null means main conversation. */
@@ -5660,6 +5807,72 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     },
   );
 
+  const readSubagentTranscript: NonNullable<ClaudeAdapterShape["readSubagentTranscript"]> =
+    Effect.fn("readSubagentTranscript")(function* (threadId, input) {
+      const requestError = (detail: string) =>
+        new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "readSubagentTranscript",
+          detail,
+        });
+      if (!SUBAGENT_AGENT_ID_PATTERN.test(input.agentId)) {
+        return yield* requestError(`Invalid subagent id '${input.agentId}'.`);
+      }
+      const context = yield* requireSession(threadId);
+      const sessionId = context.resumeSessionId;
+      if (!sessionId) {
+        return yield* requestError("The Claude session has not reported a session id yet.");
+      }
+      const cwd = context.session.cwd;
+      if (!cwd) {
+        return yield* requestError("The Claude session has no working directory.");
+      }
+      // Claude Code writes each spawned agent's conversation next to the
+      // parent transcript: <config>/projects/<cwd-slug>/<sessionId>/subagents/.
+      // Resolved through the instance environment so custom CLAUDE_CONFIG_DIR
+      // and HOME overrides are honored.
+      const projectDir = path.join(
+        resolveClaudeConfigDir(claudeEnvironment, path),
+        "projects",
+        claudeProjectDirectoryName(cwd),
+      );
+      const transcriptFileName = `agent-${input.agentId}.jsonl`;
+      const pathExists = (candidate: string) =>
+        fileSystem.exists(candidate).pipe(Effect.catch(() => Effect.succeed(false)));
+      let transcriptPath = path.join(projectDir, sessionId, "subagents", transcriptFileName);
+      if (!(yield* pathExists(transcriptPath))) {
+        // Session ids rotate on resume; the agent may have been spawned by an
+        // earlier session of this cwd. Scan the project's session directories
+        // for the transcript before giving up.
+        const sessionDirs = yield* fileSystem
+          .readDirectory(projectDir)
+          .pipe(Effect.catch(() => Effect.succeed<ReadonlyArray<string>>([])));
+        let found: string | undefined;
+        for (const entry of sessionDirs) {
+          const candidate = path.join(projectDir, entry, "subagents", transcriptFileName);
+          if (yield* pathExists(candidate)) {
+            found = candidate;
+            break;
+          }
+        }
+        if (found === undefined) {
+          return yield* requestError("No transcript found for this subagent yet.");
+        }
+        transcriptPath = found;
+      }
+      const transcript = yield* fileSystem
+        .readFileString(transcriptPath)
+        .pipe(
+          Effect.mapError((cause) =>
+            requestError(`Failed to read the subagent transcript: ${cause.message}`),
+          ),
+        );
+      return mapClaudeSubagentTranscript(
+        transcript,
+        input.limit !== undefined ? { limit: input.limit } : {},
+      );
+    });
+
   const rewindFilesForRollback = Effect.fn("rewindFilesForRollback")(function* (
     context: ClaudeSessionContext,
     targetUserMessageId: MessageId | undefined,
@@ -5814,6 +6027,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     interruptTurn,
     compactContext,
     readThread,
+    readSubagentTranscript,
     rollbackThread,
     respondToRequest,
     respondToUserInput,

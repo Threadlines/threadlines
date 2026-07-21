@@ -21,6 +21,7 @@ import {
   ProviderSendTurnInput,
   ProviderSessionStartInput,
   ProviderStartReviewInput,
+  ProviderSubagentTranscriptInput,
   ProviderSteerTurnInput,
   ProviderStopSessionInput,
   ThreadGoalStatus,
@@ -1595,6 +1596,34 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
+  const readSubagentTranscript: ProviderServiceShape["readSubagentTranscript"] = Effect.fn(
+    "readSubagentTranscript",
+  )(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.readSubagentTranscript",
+      schema: ProviderSubagentTranscriptInput,
+      payload: rawInput,
+    });
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: "ProviderService.readSubagentTranscript",
+      allowRecovery: true,
+    });
+    yield* Effect.annotateCurrentSpan({
+      "provider.operation": "read-subagent-transcript",
+      "provider.kind": routed.adapter.provider,
+      "provider.thread_id": input.threadId,
+    });
+    const readTranscript = routed.adapter.readSubagentTranscript;
+    if (readTranscript === undefined) {
+      return yield* toValidationError(
+        "ProviderService.readSubagentTranscript",
+        `Provider '${routed.adapter.provider}' does not expose subagent transcripts.`,
+      );
+    }
+    return yield* readTranscript(routed.threadId, input);
+  });
+
   const deleteThread: ProviderServiceShape["deleteThread"] = Effect.fn("deleteThread")(
     function* (rawInput) {
       const input = yield* decodeInputOrValidationError({
@@ -1710,6 +1739,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     getCapabilities,
     getInstanceInfo,
     rollbackConversation,
+    readSubagentTranscript,
     deleteThread,
     // Each access creates a fresh PubSub subscription so that multiple
     // consumers (ProviderRuntimeIngestion, CheckpointReactor, etc.) each

@@ -84,6 +84,9 @@ import {
   ProviderStartReviewError,
   ProviderStartReviewInput,
   ProviderStartReviewResult,
+  ProviderSubagentTranscriptError,
+  ProviderSubagentTranscriptInput,
+  ProviderSubagentTranscriptResult,
 } from "./provider.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import {
@@ -247,6 +250,7 @@ export const WS_METHODS = {
   serverGetConfig: "server.getConfig",
   serverRefreshProviders: "server.refreshProviders",
   serverStartProviderReview: "server.startProviderReview",
+  serverReadSubagentTranscript: "server.readSubagentTranscript",
   serverConsumeProviderRateLimitResetCredit: "server.consumeProviderRateLimitResetCredit",
   serverUpdateProvider: "server.updateProvider",
   serverResolveProviderUpdateBlockers: "server.resolveProviderUpdateBlockers",
@@ -327,6 +331,12 @@ export const WsServerStartProviderReviewRpc = Rpc.make(WS_METHODS.serverStartPro
   payload: ProviderStartReviewInput,
   success: ProviderStartReviewResult,
   error: ProviderStartReviewError,
+});
+
+export const WsServerReadSubagentTranscriptRpc = Rpc.make(WS_METHODS.serverReadSubagentTranscript, {
+  payload: ProviderSubagentTranscriptInput,
+  success: ProviderSubagentTranscriptResult,
+  error: ProviderSubagentTranscriptError,
 });
 
 export const WsServerConsumeProviderRateLimitResetCreditRpc = Rpc.make(
@@ -894,6 +904,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
   WsServerStartProviderReviewRpc,
+  WsServerReadSubagentTranscriptRpc,
   WsServerConsumeProviderRateLimitResetCreditRpc,
   WsServerUpdateProviderRpc,
   WsServerResolveProviderUpdateBlockersRpc,

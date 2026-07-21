@@ -111,6 +111,9 @@ export interface WorkLogEntry {
   /** Provider tool call id backing this row, when the activity carried one.
    *  Lets the timeline correlate a subagent lane with its spawn row. */
   toolCallId?: string;
+  /** Provider agent ids spawned by this collab tool call, correlated from
+   *  task activities. Drives the on-demand nested transcript fetch. */
+  spawnedAgentIds?: ReadonlyArray<string>;
   requestKind?: PendingApproval["requestKind"];
   executionState?: "running" | "completed" | "failed";
   authReconnect?: ProviderAuthReconnectAction;
@@ -1519,7 +1522,7 @@ export function deriveWorkLogEntries(
     filterSupersededManualContextCompactionActivities(activities).toSorted(
       compareActivitiesByOrder,
     );
-  const agentTaskIds = collectAgentTaskIds(ordered);
+  const agentTaskIndex = collectAgentTaskIndex(ordered);
   const entries = ordered
     .filter((activity) => activity.kind !== "task.started")
     .filter((activity) => activity.kind !== "subagent.result")
@@ -1540,7 +1543,7 @@ export function deriveWorkLogEntries(
     .filter((activity) => activity.summary !== "Checkpoint captured")
     .filter((activity) => !isPlanBoundaryToolActivity(activity))
     .filter((activity) => !isSubagentNotificationReplayActivity(activity))
-    .map((activity) => toDerivedWorkLogEntry(activity, agentTaskIds));
+    .map((activity) => toDerivedWorkLogEntry(activity, agentTaskIndex));
   return enrichGenericThinkingEntries(
     collapseDerivedWorkLogEntries(entries).filter(shouldKeepDerivedWorkLogEntry),
   ).map(
@@ -1601,14 +1604,21 @@ function isPlanBoundaryToolActivity(activity: OrchestrationThreadActivity): bool
   );
 }
 
-/** Task ids spawned through the Agent/Task tool. `task.completed` payloads
- *  omit `subagentType`, so membership is collected from any lifecycle row
- *  that carries it and applied across the task's whole lifecycle. Background
- *  command tasks never carry it and stay unmarked. */
-function collectAgentTaskIds(
+interface AgentTaskIndex {
+  /** Task ids spawned through the Agent/Task tool. `task.completed` payloads
+   *  omit `subagentType`, so membership is collected from any lifecycle row
+   *  that carries it and applied across the task's whole lifecycle. Background
+   *  command tasks never carry it and stay unmarked. */
+  readonly agentTaskIds: ReadonlySet<string>;
+  /** Spawning collab tool call id → agent (task) ids it launched. */
+  readonly agentIdsByToolUseId: ReadonlyMap<string, ReadonlyArray<string>>;
+}
+
+function collectAgentTaskIndex(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
-): ReadonlySet<string> {
-  const ids = new Set<string>();
+): AgentTaskIndex {
+  const agentTaskIds = new Set<string>();
+  const agentIdsByToolUseId = new Map<string, string[]>();
   for (const activity of activities) {
     if (
       activity.kind !== "task.started" &&
@@ -1619,16 +1629,25 @@ function collectAgentTaskIds(
     }
     const payload = asRecord(activity.payload);
     const taskId = asTrimmedString(payload?.taskId);
-    if (taskId && asTrimmedString(payload?.subagentType)) {
-      ids.add(taskId);
+    if (!taskId || !asTrimmedString(payload?.subagentType)) {
+      continue;
+    }
+    agentTaskIds.add(taskId);
+    const toolUseId = asTrimmedString(payload?.toolUseId);
+    if (toolUseId) {
+      const ids = agentIdsByToolUseId.get(toolUseId) ?? [];
+      if (!ids.includes(taskId)) {
+        ids.push(taskId);
+        agentIdsByToolUseId.set(toolUseId, ids);
+      }
     }
   }
-  return ids;
+  return { agentTaskIds, agentIdsByToolUseId };
 }
 
 function toDerivedWorkLogEntry(
   activity: OrchestrationThreadActivity,
-  agentTaskIds: ReadonlySet<string>,
+  agentTaskIndex: AgentTaskIndex,
 ): DerivedWorkLogEntry {
   const payload =
     activity.payload && typeof activity.payload === "object"
@@ -1772,11 +1791,19 @@ function toDerivedWorkLogEntry(
   if (activity.kind === "task.progress" || activity.kind === "task.completed") {
     const subagentType = asTrimmedString(payload?.subagentType);
     const taskId = asTrimmedString(payload?.taskId);
-    if (subagentType !== null || (taskId !== null && agentTaskIds.has(taskId))) {
+    if (subagentType !== null || (taskId !== null && agentTaskIndex.agentTaskIds.has(taskId))) {
       entry.subagentTask = {
         subagentType,
         toolUseId: asTrimmedString(payload?.toolUseId),
       };
+    }
+  }
+  if (itemType === "collab_agent_tool_call") {
+    const spawnToolUseId = extractToolCallId(payload);
+    const spawnedAgentIds =
+      spawnToolUseId !== null ? agentTaskIndex.agentIdsByToolUseId.get(spawnToolUseId) : undefined;
+    if (spawnedAgentIds !== undefined && spawnedAgentIds.length > 0) {
+      entry.spawnedAgentIds = spawnedAgentIds;
     }
   }
   const collapseKey =
@@ -2086,6 +2113,7 @@ function mergeDerivedWorkLogEntries(
   const toolCallId = next.toolCallId ?? previous.toolCallId;
   const turnId = next.turnId ?? previous.turnId;
   const subagentTask = next.subagentTask ?? previous.subagentTask;
+  const spawnedAgentIds = next.spawnedAgentIds ?? previous.spawnedAgentIds;
   return {
     ...previous,
     ...next,
@@ -2109,6 +2137,7 @@ function mergeDerivedWorkLogEntries(
     ...(toolCallId ? { toolCallId } : {}),
     ...(turnId !== undefined ? { turnId } : {}),
     ...(subagentTask ? { subagentTask } : {}),
+    ...(spawnedAgentIds ? { spawnedAgentIds } : {}),
   };
 }
 

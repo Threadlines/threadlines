@@ -935,6 +935,33 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
+  it.effect("fails subagent transcript reads cleanly when the driver lacks support", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      yield* provider.startSession(asThreadId("thread-transcript"), {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId: asThreadId("thread-transcript"),
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+      });
+
+      const result = yield* provider
+        .readSubagentTranscript({
+          threadId: asThreadId("thread-transcript"),
+          agentId: "agent-1",
+        })
+        .pipe(Effect.result);
+
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        const failure = result.failure as { _tag?: string; issue?: string };
+        assert.equal(failure._tag, "ProviderValidationError");
+        assert.ok((failure.issue ?? "").includes("subagent transcripts"));
+      }
+    }),
+  );
+
   it.effect("bootstraps a provider session for reviews on new threads", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService;

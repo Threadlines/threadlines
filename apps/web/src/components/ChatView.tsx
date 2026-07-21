@@ -15,6 +15,7 @@ import {
   type ThreadId,
   type TurnId,
   type KeybindingCommand,
+  type OrchestrationThreadGoal,
   OrchestrationThreadActivity,
   ProviderInteractionMode,
   ProviderDriverKind,
@@ -52,6 +53,7 @@ import {
 } from "../diffRouteSearch";
 import {
   collapseExpandedComposerCursor,
+  parseComposerGoalCommand,
   parseStandaloneComposerSlashCommand,
 } from "../composer-logic";
 import {
@@ -4183,6 +4185,28 @@ export default function ChatView(props: ChatViewProps) {
       composerRef.current?.resetCursorState();
       return;
     }
+    // `/goal [objective]` submitted as text (the command menu only fires on
+    // Enter-selection; typing past it with space must still work). Bare
+    // `/goal` opens the editor; trailing text becomes the objective directly.
+    const goalCommand =
+      composerAttachments.length === 0 &&
+      sendableComposerTerminalContexts.length === 0 &&
+      sendableTranscriptHighlightContexts.length === 0 &&
+      composerFileSelectionContexts.length === 0 &&
+      selectedProvider === ProviderDriverKind.make("codex")
+        ? parseComposerGoalCommand(trimmed)
+        : null;
+    if (goalCommand) {
+      promptRef.current = "";
+      clearComposerDraftContent(composerDraftTarget);
+      composerRef.current?.resetCursorState();
+      if (goalCommand.objective !== null) {
+        void onSetThreadGoal({ objective: goalCommand.objective });
+      } else {
+        composerRef.current?.openGoalEditor();
+      }
+      return;
+    }
     if (!hasSendableContent) {
       if (expiredTerminalContextCount > 0) {
         const toastCopy = buildExpiredTerminalContextToastCopy(
@@ -4463,6 +4487,34 @@ export default function ChatView(props: ChatViewProps) {
       });
       dispatchSucceeded = true;
       markLocalDispatchAccepted(threadRefForSend);
+      const draftGoalToFlush = draftThreadGoals.get(threadIdForSend);
+      if (draftGoalToFlush !== undefined) {
+        // The bootstrap in the turn.start above materialized the thread, so
+        // the goal captured on the draft can be attached now.
+        setDraftThreadGoals((current) => {
+          const next = new Map(current);
+          next.delete(threadIdForSend);
+          return next;
+        });
+        await api.orchestration
+          .dispatchCommand({
+            type: "thread.goal.set",
+            commandId: newCommandId(),
+            threadId: threadIdForSend,
+            objective: draftGoalToFlush.objective,
+            tokenBudget: draftGoalToFlush.tokenBudget,
+            createdAt: new Date().toISOString(),
+          })
+          .catch((error: unknown) => {
+            toastManager.add(
+              stackedThreadToast({
+                type: "error",
+                title: "Could not set goal",
+                description: error instanceof Error ? error.message : "Goal could not be attached.",
+              }),
+            );
+          });
+      }
       if (isServerThread && ctxSelectedModel) {
         await persistThreadSettingsForNextTurn({
           threadId: threadIdForSend,
@@ -4549,10 +4601,37 @@ export default function ChatView(props: ChatViewProps) {
   };
 
   const [goalDispatchingThreadId, setGoalDispatchingThreadId] = useState<ThreadId | null>(null);
+  // Goals set before the thread exists server-side (draft threads only
+  // materialize with the first turn's bootstrap). Kept client-side and
+  // flushed as thread.goal.set right after the first turn dispatches.
+  const [draftThreadGoals, setDraftThreadGoals] = useState<
+    ReadonlyMap<ThreadId, OrchestrationThreadGoal>
+  >(new Map());
 
   const onSetThreadGoal = useCallback(
     async (input: ComposerGoalSetInput) => {
       if (!activeThread) {
+        return;
+      }
+      if (!isServerThread) {
+        const threadId = activeThread.id;
+        const nowIso = new Date().toISOString();
+        setDraftThreadGoals((current) => {
+          const existing = current.get(threadId);
+          const next = new Map(current);
+          next.set(threadId, {
+            threadId,
+            objective: input.objective ?? existing?.objective ?? "",
+            status: input.status ?? existing?.status ?? "active",
+            tokenBudget:
+              input.tokenBudget !== undefined ? input.tokenBudget : (existing?.tokenBudget ?? null),
+            tokensUsed: 0,
+            timeUsedSeconds: 0,
+            createdAt: existing?.createdAt ?? nowIso,
+            updatedAt: nowIso,
+          });
+          return next;
+        });
         return;
       }
       const api = readEnvironmentApi(environmentId);
@@ -4590,11 +4669,23 @@ export default function ChatView(props: ChatViewProps) {
         setGoalDispatchingThreadId((current) => (current === threadId ? null : current));
       }
     },
-    [activeThread, environmentId],
+    [activeThread, environmentId, isServerThread],
   );
 
   const onClearThreadGoal = useCallback(async () => {
     if (!activeThread) {
+      return;
+    }
+    if (!isServerThread) {
+      const threadId = activeThread.id;
+      setDraftThreadGoals((current) => {
+        if (!current.has(threadId)) {
+          return current;
+        }
+        const next = new Map(current);
+        next.delete(threadId);
+        return next;
+      });
       return;
     }
     const api = readEnvironmentApi(environmentId);
@@ -4628,7 +4719,7 @@ export default function ChatView(props: ChatViewProps) {
     } finally {
       setGoalDispatchingThreadId((current) => (current === threadId ? null : current));
     }
-  }, [activeThread, environmentId]);
+  }, [activeThread, environmentId, isServerThread]);
 
   const onCompactContext = useCallback(async () => {
     if (!activeThread || contextCompactDisabledReason !== null) {
@@ -5868,6 +5959,7 @@ export default function ChatView(props: ChatViewProps) {
               completionSummary={completionSummary}
               turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
               activeThreadEnvironmentId={activeThread.environmentId}
+              activeThreadId={activeThread.id}
               routeThreadKey={routeThreadKey}
               onOpenTurnDiff={onOpenTurnDiff}
               revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
@@ -5981,6 +6073,11 @@ export default function ChatView(props: ChatViewProps) {
                   onCompactContext={contextCompactControlVisible ? onCompactContext : undefined}
                   goalDispatching={
                     activeThread !== undefined && goalDispatchingThreadId === activeThread.id
+                  }
+                  draftGoal={
+                    activeThread !== undefined && !isServerThread
+                      ? (draftThreadGoals.get(activeThread.id) ?? null)
+                      : null
                   }
                   onSetThreadGoal={onSetThreadGoal}
                   onClearThreadGoal={onClearThreadGoal}

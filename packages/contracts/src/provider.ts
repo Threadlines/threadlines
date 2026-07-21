@@ -233,6 +233,44 @@ export class ProviderStartReviewError extends Schema.TaggedErrorClass<ProviderSt
   },
 ) {}
 
+export const ProviderSubagentTranscriptInput = Schema.Struct({
+  threadId: ThreadId,
+  /** Provider-side subagent id — for Claude this is the task id backing the
+   *  spawned agent's transcript file. */
+  agentId: TrimmedNonEmptyString,
+  limit: Schema.optional(NonNegativeInt),
+});
+export type ProviderSubagentTranscriptInput = typeof ProviderSubagentTranscriptInput.Type;
+
+/** One renderable step of a subagent's nested conversation, mapped
+ *  provider-side from the raw transcript. */
+export const ProviderSubagentTranscriptEntry = Schema.Struct({
+  role: Schema.Literals(["user", "assistant", "system", "thinking"]),
+  text: Schema.String,
+  toolUses: Schema.Array(
+    Schema.Struct({
+      name: Schema.String,
+      summary: Schema.String,
+    }),
+  ),
+  outputPreview: Schema.optional(Schema.String),
+});
+export type ProviderSubagentTranscriptEntry = typeof ProviderSubagentTranscriptEntry.Type;
+
+export const ProviderSubagentTranscriptResult = Schema.Struct({
+  entries: Schema.Array(ProviderSubagentTranscriptEntry),
+  truncated: Schema.Boolean,
+});
+export type ProviderSubagentTranscriptResult = typeof ProviderSubagentTranscriptResult.Type;
+
+export class ProviderSubagentTranscriptError extends Schema.TaggedErrorClass<ProviderSubagentTranscriptError>()(
+  "ProviderSubagentTranscriptError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
+
 export const ProviderInterruptTurnInput = Schema.Struct({
   threadId: ThreadId,
   turnId: Schema.optional(TurnId),

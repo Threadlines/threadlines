@@ -225,6 +225,7 @@ describe("ProviderSessionReaper", () => {
         });
       },
       rollbackConversation: () => unsupported(),
+      readSubagentTranscript: () => unsupported(),
       deleteThread: () => unsupported(),
       streamEvents: Stream.empty,
     };
