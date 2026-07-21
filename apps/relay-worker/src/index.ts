@@ -60,6 +60,7 @@ interface SocketAttachment {
 const DEFAULT_APP_ORIGIN = "https://app.threadlines.dev";
 const DEFAULT_ALLOWED_ORIGINS = [
   DEFAULT_APP_ORIGIN,
+  "https://nightly.app.threadlines.dev",
   "http://localhost:5733",
   "http://127.0.0.1:5733",
 ];

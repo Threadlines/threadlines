@@ -13,7 +13,7 @@
   },
   "vars": {
     "THREADLINES_APP_ORIGIN": "https://app.threadlines.dev",
-    "THREADLINES_ALLOWED_ORIGINS": "https://app.threadlines.dev,http://localhost:5733,http://127.0.0.1:5733",
+    "THREADLINES_ALLOWED_ORIGINS": "https://app.threadlines.dev,https://nightly.app.threadlines.dev,http://localhost:5733,http://127.0.0.1:5733",
     "THREADLINES_RELAY_PUBLIC_ORIGIN": "",
     "THREADLINES_RELAY_SESSION_CREATION_ENABLED": "true",
     "THREADLINES_RELAY_SESSION_TTL_SECONDS": "43200",
