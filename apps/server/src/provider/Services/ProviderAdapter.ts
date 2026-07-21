@@ -34,6 +34,7 @@ export type ProviderManualContextCompactionMode = "supported" | "unsupported";
 export type ProviderActiveTurnSteeringMode = "supported" | "unsupported";
 export type ProviderReviewStartMode = "supported" | "unsupported";
 export type ProviderThreadGoalsMode = "supported" | "unsupported";
+export type ProviderNativeThreadForkMode = "supported" | "unsupported";
 
 /** Partial goal update: omitted fields keep their provider-side values. */
 export interface ProviderSetThreadGoalInput {
@@ -69,6 +70,12 @@ export interface ProviderAdapterCapabilities {
    * (Codex goal mode).
    */
   readonly threadGoals?: ProviderThreadGoalsMode;
+
+  /**
+   * Declares whether this adapter can open a session as a provider-side fork
+   * of another thread's history (`ProviderSessionStartInput.forkFrom`).
+   */
+  readonly nativeThreadFork?: ProviderNativeThreadForkMode;
 }
 
 export interface ProviderThreadTurnSnapshot {

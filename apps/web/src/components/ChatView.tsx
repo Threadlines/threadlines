@@ -182,7 +182,7 @@ import { type ComposerGoalSetInput } from "./chat/ComposerGoalBar";
 import { getComposerProviderState } from "./chat/composerProviderState";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
-import { MessagesTimeline } from "./chat/MessagesTimeline";
+import { MessagesTimeline, type TimelineProposedPlanState } from "./chat/MessagesTimeline";
 import { ProviderModelPicker } from "./chat/ProviderModelPicker";
 import { ChatHeader, type ForkHeaderContext } from "./chat/ChatHeader";
 import type { ThreadBackgroundRunItem } from "./chat/ThreadActivityPopover";
@@ -4444,6 +4444,20 @@ export default function ChatView(props: ChatViewProps) {
         titleSeed: title,
         runtimeMode,
         interactionMode,
+        // A default-mode turn on a thread holding an unimplemented plan is the
+        // implementation turn, even when the user typed their own prompt or
+        // switched modes manually — otherwise the plan stays "ready" forever.
+        ...(interactionMode === "default" &&
+        activeThread.id === threadIdForSend &&
+        hasActionableProposedPlan(activeProposedPlan) &&
+        activeProposedPlan
+          ? {
+              sourceProposedPlan: {
+                threadId: activeThread.id,
+                planId: activeProposedPlan.id,
+              },
+            }
+          : {}),
         ...(bootstrap ? { bootstrap } : {}),
         createdAt: messageCreatedAt,
       });
@@ -5440,6 +5454,69 @@ export default function ChatView(props: ChatViewProps) {
     environmentId,
   ]);
 
+  const [planScrollTarget, setPlanScrollTarget] = useState<{
+    planId: string;
+    requestKey: number;
+  } | null>(null);
+
+  useEffect(() => {
+    setPlanScrollTarget(null);
+  }, [activeThread?.id]);
+
+  const onViewProposedPlan = useCallback(() => {
+    if (!sidebarProposedPlan) {
+      return;
+    }
+    const planId = sidebarProposedPlan.id;
+    setPlanScrollTarget((current) => ({
+      planId,
+      requestKey: (current?.requestKey ?? 0) + 1,
+    }));
+  }, [sidebarProposedPlan]);
+
+  const onImplementProposedPlanInThread = useCallback(() => {
+    if (!activeProposedPlan) {
+      return;
+    }
+    void onSubmitPlanFollowUp({
+      text: buildPlanImplementationPrompt(activeProposedPlan.planMarkdown),
+      interactionMode: "default",
+    });
+  }, [activeProposedPlan, onSubmitPlanFollowUp]);
+
+  const canImplementProposedPlan =
+    isServerThread &&
+    !isSendBusy &&
+    !isConnecting &&
+    !activeEnvironmentUnavailable &&
+    latestTurnSettled &&
+    hasActionableProposedPlan(activeProposedPlan);
+
+  const onDismissProposedPlan = useCallback(async () => {
+    const api = readEnvironmentApi(environmentId);
+    if (!api || !activeThread || !activeProposedPlan) {
+      return;
+    }
+    try {
+      await api.orchestration.dispatchCommand({
+        type: "thread.proposed-plan.dismiss",
+        commandId: newCommandId(),
+        threadId: activeThread.id,
+        planId: activeProposedPlan.id,
+        createdAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not dismiss plan",
+          description:
+            err instanceof Error ? err.message : "An error occurred while dismissing the plan.",
+        }),
+      );
+    }
+  }, [activeProposedPlan, activeThread, environmentId]);
+
   const applyModelSelection = useCallback(
     (instanceId: ProviderInstanceId, model: string) => {
       if (!activeThread) return;
@@ -5620,6 +5697,30 @@ export default function ChatView(props: ChatViewProps) {
     [activeThread, navigate],
   );
 
+  const timelineProposedPlanState = useMemo<TimelineProposedPlanState>(
+    () => ({
+      activePlanId: hasActionableProposedPlan(activeProposedPlan)
+        ? (activeProposedPlan?.id ?? null)
+        : null,
+      activeThreadId: activeThread?.id ?? null,
+      onImplement: canImplementProposedPlan ? onImplementProposedPlanInThread : undefined,
+      onImplementInNewThread: canImplementProposedPlan
+        ? () => void onImplementPlanInNewThread()
+        : undefined,
+      onDismiss: canImplementProposedPlan ? () => void onDismissProposedPlan() : undefined,
+      onOpenThread: onOpenForkSourceThread,
+    }),
+    [
+      activeProposedPlan,
+      activeThread?.id,
+      canImplementProposedPlan,
+      onDismissProposedPlan,
+      onImplementPlanInNewThread,
+      onImplementProposedPlanInThread,
+      onOpenForkSourceThread,
+    ],
+  );
+
   const chatHeaderBottomVarRef = useChatHeaderBottomVarRef();
 
   // Empty state: no active thread
@@ -5674,6 +5775,17 @@ export default function ChatView(props: ChatViewProps) {
           onDeleteProjectScript={deleteProjectScript}
           onToggleBackgroundRunTerminal={toggleBackgroundRunTerminal}
           onStopBackgroundRun={stopBackgroundRun}
+          onViewProposedPlan={
+            taskProgressProposedPlan !== null && !isGeneralChatThread
+              ? onViewProposedPlan
+              : undefined
+          }
+          onImplementProposedPlan={
+            canImplementProposedPlan ? onImplementProposedPlanInThread : undefined
+          }
+          onDismissProposedPlan={
+            canImplementProposedPlan ? () => void onDismissProposedPlan() : undefined
+          }
           onOpenForkSourceThread={onOpenForkSourceThread}
           onToggleTerminal={toggleTerminalVisibility}
           onToggleSourceControl={onToggleSourceControl}
@@ -5776,6 +5888,8 @@ export default function ChatView(props: ChatViewProps) {
               onRunMcpAuthReconnect={runMcpAuthReconnect}
               onIsAtEndChange={onIsAtEndChange}
               searchTarget={timelineSearchTarget}
+              planScrollTarget={planScrollTarget}
+              proposedPlanState={timelineProposedPlanState}
             />
 
             {/* scroll to bottom button — shown when user has scrolled away from the bottom.

@@ -27,6 +27,7 @@ import {
 
 import type { PlanTaskBadgeState } from "../../planPanelState";
 import { proposedPlanTitle } from "../../proposedPlan";
+import { formatRelativeTimeLabel } from "../../timestampFormat";
 import {
   formatSubagentDisplayName,
   shouldShowSubagentDisplayChip,
@@ -73,6 +74,9 @@ interface ThreadActivityPopoverProps {
   backgroundRuns: ReadonlyArray<ThreadBackgroundRunItem>;
   onToggleBackgroundRunTerminal: (terminalId: string) => void;
   onStopBackgroundRun: (run: ThreadBackgroundRunItem) => void;
+  onViewProposedPlan?: (() => void) | undefined;
+  onImplementProposedPlan?: (() => void) | undefined;
+  onDismissProposedPlan?: (() => void) | undefined;
 }
 
 type ActivityBadgeTone = PlanTaskBadgeState["tone"] | SubagentProgressState["badge"]["tone"];
@@ -242,37 +246,59 @@ function useActivityPopoverAnchorLayout(open: boolean): {
     let frameId: number | null = null;
 
     const measure = () => {
+      frameId = null;
       const trigger = triggerRef.current;
-      if (trigger) {
-        const triggerRect = trigger.getBoundingClientRect();
-        const boundaryRect = trigger.closest("main")?.getBoundingClientRect();
-        const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
-        const boundaryLeft = boundaryRect?.left ?? ACTIVITY_POPOVER_BOUNDARY_GUTTER_PX;
-        const widthPx = resolveActivityPopoverWidth({
-          triggerRight: triggerRect.right,
-          boundaryLeft,
-          viewportWidth,
-        });
-        const key = [
-          quantizeLayoutValue(triggerRect.right),
-          quantizeLayoutValue(boundaryLeft),
-          quantizeLayoutValue(widthPx),
-        ].join(":");
-
-        setLayout((current) =>
-          current.key === key && current.widthPx === widthPx ? current : { key, widthPx },
-        );
+      if (!trigger) {
+        return;
       }
+      const triggerRect = trigger.getBoundingClientRect();
+      const boundaryRect = trigger.closest("main")?.getBoundingClientRect();
+      const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
+      const boundaryLeft = boundaryRect?.left ?? ACTIVITY_POPOVER_BOUNDARY_GUTTER_PX;
+      const widthPx = resolveActivityPopoverWidth({
+        triggerRight: triggerRect.right,
+        boundaryLeft,
+        viewportWidth,
+      });
+      const key = [
+        quantizeLayoutValue(triggerRect.right),
+        quantizeLayoutValue(boundaryLeft),
+        quantizeLayoutValue(widthPx),
+      ].join(":");
 
-      frameId = window.requestAnimationFrame(measure);
+      setLayout((current) =>
+        current.key === key && current.widthPx === widthPx ? current : { key, widthPx },
+      );
+    };
+
+    const scheduleMeasure = () => {
+      if (frameId === null) {
+        frameId = window.requestAnimationFrame(measure);
+      }
     };
 
     measure();
+
+    const trigger = triggerRef.current;
+    const boundary = trigger?.closest("main") ?? null;
+    const resizeObserver =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(scheduleMeasure);
+    if (trigger) {
+      resizeObserver?.observe(trigger);
+    }
+    if (boundary) {
+      resizeObserver?.observe(boundary);
+    }
+    window.addEventListener("resize", scheduleMeasure);
+    window.visualViewport?.addEventListener("resize", scheduleMeasure);
 
     return () => {
       if (frameId !== null) {
         window.cancelAnimationFrame(frameId);
       }
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", scheduleMeasure);
+      window.visualViewport?.removeEventListener("resize", scheduleMeasure);
     };
   }, [open]);
 
@@ -668,7 +694,17 @@ export function deriveThreadActivityTriggerState(input: {
   };
 }
 
-function TaskSection({ taskProgress }: { taskProgress: ThreadTaskProgressState }) {
+function TaskSection({
+  taskProgress,
+  onViewProposedPlan,
+  onImplementProposedPlan,
+  onDismissProposedPlan,
+}: {
+  taskProgress: ThreadTaskProgressState;
+  onViewProposedPlan?: (() => void) | undefined;
+  onImplementProposedPlan?: (() => void) | undefined;
+  onDismissProposedPlan?: (() => void) | undefined;
+}) {
   const [expanded, setExpanded] = useState(false);
   const [summaryExpanded, setSummaryExpanded] = useState(false);
   const activePlan = taskProgress.activePlan;
@@ -797,18 +833,60 @@ function TaskSection({ taskProgress }: { taskProgress: ThreadTaskProgressState }
           ) : null}
         </div>
       ) : activeProposedPlan ? (
-        <div className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-2 rounded-md border border-border/60 bg-muted/25 px-2 py-2">
-          <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400">
-            <FileTextIcon className="size-3" aria-hidden="true" />
-          </span>
-          <div className="min-w-0">
-            <div className="truncate text-[12px] text-foreground/90" title={planTitle ?? ""}>
-              {planTitle}
+        <div className="rounded-md border border-border/60 bg-muted/25 px-2 py-2">
+          <button
+            type="button"
+            className={cn(
+              "grid w-full grid-cols-[auto_minmax(0,1fr)] items-start gap-2 text-left",
+              onViewProposedPlan &&
+                "cursor-pointer rounded-sm transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring/50",
+            )}
+            disabled={!onViewProposedPlan}
+            aria-label="View plan in conversation"
+            onClick={onViewProposedPlan}
+          >
+            <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400">
+              <FileTextIcon className="size-3" aria-hidden="true" />
+            </span>
+            <span className="min-w-0">
+              <span
+                className="block truncate text-[12px] text-foreground/90"
+                title={planTitle ?? ""}
+              >
+                {planTitle}
+              </span>
+              <span className="mt-0.5 block text-[11px] text-muted-foreground/65">
+                Proposed {formatRelativeTimeLabel(activeProposedPlan.createdAt)} · ready to
+                implement
+              </span>
+            </span>
+          </button>
+          {onImplementProposedPlan || onDismissProposedPlan ? (
+            <div className="mt-1.5 flex justify-end gap-1.5">
+              {onDismissProposedPlan ? (
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="ghost"
+                  className="h-6 px-2 text-[11px] text-muted-foreground/80 hover:text-destructive"
+                  onClick={onDismissProposedPlan}
+                >
+                  Dismiss
+                </Button>
+              ) : null}
+              {onImplementProposedPlan ? (
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="outline"
+                  className="h-6 px-2 text-[11px]"
+                  onClick={onImplementProposedPlan}
+                >
+                  Implement
+                </Button>
+              ) : null}
             </div>
-            <div className="mt-0.5 text-[11px] text-muted-foreground/65">
-              Ready for the next implementation turn.
-            </div>
-          </div>
+          ) : null}
         </div>
       ) : null}
     </section>
@@ -1138,6 +1216,9 @@ export const ThreadActivityPopover = memo(function ThreadActivityPopover({
   backgroundRuns,
   onToggleBackgroundRunTerminal,
   onStopBackgroundRun,
+  onViewProposedPlan,
+  onImplementProposedPlan,
+  onDismissProposedPlan,
 }: ThreadActivityPopoverProps) {
   const [popoverOpen, setPopoverOpen] = useState(false);
   const popoverLayout = useActivityPopoverAnchorLayout(popoverOpen);
@@ -1189,7 +1270,35 @@ export const ThreadActivityPopover = memo(function ThreadActivityPopover({
           style={popoverLayout.widthStyle}
         >
           <div className="min-w-0 space-y-2.5">
-            {taskProgress ? <TaskSection taskProgress={taskProgress} /> : null}
+            {taskProgress ? (
+              <TaskSection
+                taskProgress={taskProgress}
+                onViewProposedPlan={
+                  onViewProposedPlan
+                    ? () => {
+                        setPopoverOpen(false);
+                        onViewProposedPlan();
+                      }
+                    : undefined
+                }
+                onImplementProposedPlan={
+                  onImplementProposedPlan
+                    ? () => {
+                        setPopoverOpen(false);
+                        onImplementProposedPlan();
+                      }
+                    : undefined
+                }
+                onDismissProposedPlan={
+                  onDismissProposedPlan
+                    ? () => {
+                        setPopoverOpen(false);
+                        onDismissProposedPlan();
+                      }
+                    : undefined
+                }
+              />
+            ) : null}
             {subagentProgress ? <SubagentSection state={subagentProgress} /> : null}
             <BackgroundRunsSection
               backgroundRuns={backgroundRuns}

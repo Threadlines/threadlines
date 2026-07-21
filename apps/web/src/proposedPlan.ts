@@ -26,6 +26,7 @@ export function buildCollapsedProposedPlanPreviewMarkdown(
   },
 ): string {
   const maxLines = options?.maxLines ?? 8;
+  const fencePattern = /^\s{0,3}(`{3,}|~{3,})/;
   const lines = stripDisplayedPlanMarkdown(planMarkdown)
     .trimEnd()
     .split(/\r?\n/)
@@ -33,6 +34,7 @@ export function buildCollapsedProposedPlanPreviewMarkdown(
   const previewLines: string[] = [];
   let visibleLineCount = 0;
   let hasMoreContent = false;
+  let openFence: string | null = null;
 
   for (const line of lines) {
     const isVisibleLine = line.trim().length > 0;
@@ -41,6 +43,10 @@ export function buildCollapsedProposedPlanPreviewMarkdown(
       break;
     }
     previewLines.push(line);
+    const fenceMatch = line.match(fencePattern);
+    if (fenceMatch?.[1]) {
+      openFence = openFence === null ? fenceMatch[1] : null;
+    }
     if (isVisibleLine) {
       visibleLineCount += 1;
     }
@@ -55,6 +61,11 @@ export function buildCollapsedProposedPlanPreviewMarkdown(
   }
 
   if (hasMoreContent) {
+    // Cutting inside a fenced block would swallow the ellipsis (and the rest
+    // of the preview styling) into an unclosed code block.
+    if (openFence !== null) {
+      previewLines.push(openFence.startsWith("`") ? "```" : "~~~");
+    }
     previewLines.push("", "...");
   }
 
@@ -71,7 +82,10 @@ function sanitizePlanFileSegment(input: string): string {
 }
 
 export function buildPlanImplementationPrompt(planMarkdown: string): string {
-  return `PLEASE IMPLEMENT THIS PLAN:\n${planMarkdown.trim()}`;
+  // The leading phrase matches the Codex plan-mode handoff prompt; the
+  // trailing instruction makes the provider mirror the plan into its todo
+  // tool, which drives the step progress badge in the activity header.
+  return `PLEASE IMPLEMENT THIS PLAN:\n${planMarkdown.trim()}\n\nTrack your progress with your plan/todo tool as you implement, one entry per plan step.`;
 }
 
 export function resolvePlanFollowUpSubmission(input: { draftText: string; planMarkdown: string }): {

@@ -333,6 +333,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
               planMarkdown: "# Ship it",
               implementedAt: "2026-02-24T00:00:05.500Z",
               implementationThreadId: ThreadId.make("thread-2"),
+              dismissedAt: null,
               createdAt: "2026-02-24T00:00:05.000Z",
               updatedAt: "2026-02-24T00:00:05.500Z",
             },

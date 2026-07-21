@@ -753,6 +753,7 @@ describe("hasActionableProposedPlan", () => {
         planMarkdown: "# Plan",
         implementedAt: null,
         implementationThreadId: null,
+        dismissedAt: null,
         createdAt: "2026-02-23T00:00:00.000Z",
         updatedAt: "2026-02-23T00:00:01.000Z",
       }),
@@ -767,6 +768,22 @@ describe("hasActionableProposedPlan", () => {
         planMarkdown: "# Plan",
         implementedAt: "2026-02-23T00:00:02.000Z",
         implementationThreadId: ThreadId.make("thread-implement"),
+        dismissedAt: null,
+        createdAt: "2026-02-23T00:00:00.000Z",
+        updatedAt: "2026-02-23T00:00:02.000Z",
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false for a dismissed proposed plan", () => {
+    expect(
+      hasActionableProposedPlan({
+        id: "plan-1",
+        turnId: TurnId.make("turn-1"),
+        planMarkdown: "# Plan",
+        implementedAt: null,
+        implementationThreadId: null,
+        dismissedAt: "2026-02-23T00:00:02.000Z",
         createdAt: "2026-02-23T00:00:00.000Z",
         updatedAt: "2026-02-23T00:00:02.000Z",
       }),
@@ -3105,6 +3122,56 @@ describe("deriveTimelineEntries", () => {
     );
 
     expect(entries.map((entry) => entry.kind)).toEqual(["fork-context", "message"]);
+  });
+
+  it("attaches the seed outcome to fork context entries", () => {
+    const forkContextActivity = makeActivity({
+      id: "fork-context",
+      createdAt: "2026-02-23T00:00:01.000Z",
+      kind: "thread.fork.context",
+      summary: "Fork context carried over",
+      tone: "info",
+      payload: {
+        sourceThreadId: "thread-source",
+        sourceThreadTitle: "Source thread",
+        sourceMessageId: "message-source",
+        sourceMessageRole: "assistant",
+        sourceMessageText: "Finished setup.",
+        sourceMessageCreatedAt: "2026-02-23T00:00:00.000Z",
+        workspaceMode: "current",
+        includedMessageCount: 2,
+        includedToolSummaryCount: 1,
+        includedAttachmentCount: 0,
+        omittedAttachmentCount: 0,
+        contextText: "Carried context",
+        attachments: [],
+        modelSelection: {
+          instanceId: "codex",
+          model: "gpt-5.4",
+        },
+        createdAt: "2026-02-23T00:00:01.000Z",
+      },
+    });
+
+    const [withoutOutcome] = deriveForkContextEntries([forkContextActivity]);
+    expect(withoutOutcome?.seedMode).toBeUndefined();
+
+    const [withOutcome] = deriveForkContextEntries([
+      forkContextActivity,
+      makeActivity({
+        id: "fork-seed-outcome",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "thread.fork.seed-outcome",
+        summary: "Forked with full provider history",
+        tone: "info",
+        payload: {
+          seedMode: "provider-native",
+          sourceProviderThreadId: "codex-source-thread",
+          lastTurnId: "codex-turn-3",
+        },
+      }),
+    ]);
+    expect(withOutcome?.seedMode).toBe("provider-native");
   });
 
   it("suppresses assistant messages that exactly echo same-turn subagent results", () => {

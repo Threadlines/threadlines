@@ -1201,6 +1201,44 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.proposed-plan.dismiss": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const proposedPlan = thread.proposedPlans.find((entry) => entry.id === command.planId);
+      if (!proposedPlan) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Proposed plan '${command.planId}' does not exist on thread '${command.threadId}'.`,
+        });
+      }
+      if (proposedPlan.implementedAt !== null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Proposed plan '${command.planId}' is already implemented and cannot be dismissed.`,
+        });
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.proposed-plan-upserted",
+        payload: {
+          threadId: command.threadId,
+          proposedPlan: {
+            ...proposedPlan,
+            dismissedAt: proposedPlan.dismissedAt ?? command.createdAt,
+            updatedAt: command.createdAt,
+          },
+        },
+      };
+    }
+
     case "thread.turn.diff.complete": {
       yield* requireThread({
         readModel,

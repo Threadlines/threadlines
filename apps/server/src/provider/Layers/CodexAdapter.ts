@@ -2096,6 +2096,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ...(isCodexResumeCursorSchema(input.resumeCursor)
             ? { resumeCursor: input.resumeCursor }
             : {}),
+          ...(input.forkFrom !== undefined ? { forkFrom: input.forkFrom } : {}),
           runtimeMode: input.runtimeMode,
           ...(input.modelSelection?.instanceId === boundInstanceId
             ? { model: input.modelSelection.model }
@@ -2559,6 +2560,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       activeTurnSteering: "supported",
       reviewStart: "supported",
       threadGoals: "supported",
+      nativeThreadFork: "supported",
     },
     startSession,
     sendTurn,

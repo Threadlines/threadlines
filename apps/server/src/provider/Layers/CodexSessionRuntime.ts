@@ -12,6 +12,7 @@ import {
   type ProviderReviewTarget,
   type ProviderRequestKind,
   type ProviderSession,
+  type ProviderSessionForkFrom,
   type ProviderStartReviewResult,
   type ProviderTurnStartResult,
   type ProviderUserInputAnswers,
@@ -135,6 +136,11 @@ export interface CodexSessionRuntimeOptions {
   readonly model?: string;
   readonly serviceTier?: CodexServiceTier | undefined;
   readonly resumeCursor?: CodexResumeCursor;
+  /** Open the session as a provider-side fork of another thread's history.
+   *  Ignored when `resumeCursor` is present (a restart resumes the session's
+   *  own thread). Fork failures fail the start — the orchestration reactor
+   *  owns the fallback to context-seed seeding. */
+  readonly forkFrom?: ProviderSessionForkFrom;
 }
 
 /** Attachment input items appended after the prompt text. Codex app-server
@@ -393,6 +399,27 @@ function buildThreadStartParams(input: {
   };
 }
 
+function buildThreadForkParams(input: {
+  readonly sourceThreadId: string;
+  readonly lastTurnId: string | undefined;
+  readonly cwd: string;
+  readonly runtimeMode: RuntimeMode;
+  readonly model: string | undefined;
+  readonly serviceTier: CodexServiceTier | undefined;
+}): EffectCodexSchema.V2ThreadForkParams {
+  const config = runtimeModeToThreadConfig(input.runtimeMode);
+  return {
+    threadId: input.sourceThreadId,
+    ...(input.lastTurnId !== undefined ? { lastTurnId: input.lastTurnId } : {}),
+    cwd: input.cwd,
+    approvalPolicy: config.approvalPolicy,
+    sandbox: config.sandbox,
+    ...(config.approvalsReviewer ? { approvalsReviewer: config.approvalsReviewer } : {}),
+    ...(input.model ? { model: input.model } : {}),
+    ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
+  };
+}
+
 function runtimeModeToTurnSandboxPolicy(
   input: RuntimeMode,
 ): EffectCodexSchema.V2TurnStartParams__SandboxPolicy {
@@ -608,6 +635,16 @@ function isLoggedToolRouterExitCode(target: string | undefined, message: string)
   return target === CODEX_TOOL_ROUTER_LOG_TARGET && /^error=Exit code: \d+\b/.test(message);
 }
 
+/** True when the app-server predates `thread/fork` + `lastTurnId` (JSON-RPC
+ *  method-not-found / invalid-params from Codex binaries older than 0.143),
+ *  so callers can fall back to the deprecated `thread/rollback`. */
+export function isNativeThreadForkUnsupportedError(error: unknown): boolean {
+  return (
+    error instanceof CodexErrors.CodexAppServerRequestError &&
+    (error.code === -32601 || error.code === -32602)
+  );
+}
+
 export function isRecoverableThreadResumeError(error: unknown): boolean {
   const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
   if (!message.includes("thread")) {
@@ -618,9 +655,10 @@ export function isRecoverableThreadResumeError(error: unknown): boolean {
 
 type CodexThreadOpenResponse =
   | CodexRpc.ClientRequestResponsesByMethod["thread/start"]
-  | CodexRpc.ClientRequestResponsesByMethod["thread/resume"];
+  | CodexRpc.ClientRequestResponsesByMethod["thread/resume"]
+  | CodexRpc.ClientRequestResponsesByMethod["thread/fork"];
 
-type CodexThreadOpenMethod = "thread/start" | "thread/resume";
+type CodexThreadOpenMethod = "thread/start" | "thread/resume" | "thread/fork";
 
 interface CodexThreadOpenClient {
   readonly request: <M extends CodexThreadOpenMethod>(
@@ -657,6 +695,11 @@ export const openCodexThread = (input: {
   readonly requestedModel: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
   readonly resumeThreadId: string | undefined;
+  /** Same-driver native fork: open the thread as a provider-side copy of
+   *  another thread's history through `lastTurnId` (inclusive). Only honored
+   *  when there is no `resumeThreadId`. Fork failures propagate — the caller
+   *  owns any fallback to seeded starts. */
+  readonly forkFrom?: ProviderSessionForkFrom | undefined;
   /** Invoked when a requested native resume is unrecoverable and the thread
    *  falls back to a fresh start. Lets callers surface the degraded resume
    *  instead of silently continuing without history. */
@@ -671,6 +714,23 @@ export const openCodexThread = (input: {
   });
 
   if (resumeThreadId === undefined) {
+    const forkFrom = input.forkFrom;
+    if (forkFrom !== undefined) {
+      return withCodexRequestTimeout(
+        "fork a Codex thread",
+        input.client.request(
+          "thread/fork",
+          buildThreadForkParams({
+            sourceThreadId: forkFrom.providerThreadId,
+            lastTurnId: forkFrom.lastTurnId,
+            cwd: input.cwd,
+            runtimeMode: input.runtimeMode,
+            model: input.requestedModel,
+            serviceTier: input.serviceTier,
+          }),
+        ),
+      );
+    }
     return withCodexRequestTimeout(
       "start a Codex thread",
       input.client.request("thread/start", startParams),
@@ -1738,6 +1798,7 @@ export const makeCodexSessionRuntime = (
         requestedModel,
         serviceTier: options.serviceTier,
         resumeThreadId: readResumeCursorThreadId(options.resumeCursor),
+        forkFrom: options.forkFrom,
         onResumeFallback: (cause) =>
           emitEvent({
             kind: "notification",
@@ -1980,15 +2041,84 @@ export const makeCodexSessionRuntime = (
       rollbackThread: (numTurns) =>
         Effect.gen(function* () {
           const providerThreadId = yield* readProviderThreadId;
-          const response = yield* client.request("thread/rollback", {
-            threadId: providerThreadId,
-            numTurns,
+
+          const legacyRollback = Effect.gen(function* () {
+            const response = yield* client.request("thread/rollback", {
+              threadId: providerThreadId,
+              numTurns,
+            });
+            yield* updateSession(sessionRef, {
+              status: "ready",
+              activeTurnId: undefined,
+            });
+            return parseThreadSnapshot(response);
           });
-          yield* updateSession(sessionRef, {
-            status: "ready",
-            activeTurnId: undefined,
+
+          // Codex is deprecating `thread/rollback` in favor of `thread/fork`
+          // + `lastTurnId`: fork history through the last surviving turn and
+          // adopt the forked thread as this session's provider thread. The
+          // superseded thread intentionally survives — it still holds the
+          // undone turns.
+          const current = parseThreadSnapshot(
+            yield* client.request("thread/read", {
+              threadId: providerThreadId,
+              includeTurns: true,
+            }),
+          );
+          const lastSurvivingTurn = current.turns[current.turns.length - 1 - numTurns];
+          if (lastSurvivingTurn === undefined) {
+            // Rolling back the entire history leaves no fork cut point; the
+            // in-place rollback still models "empty thread" correctly.
+            return yield* legacyRollback;
+          }
+
+          const forkRollback = Effect.gen(function* () {
+            const session = yield* Ref.get(sessionRef);
+            const forked = yield* withCodexRequestTimeout(
+              "fork a Codex thread to roll back",
+              client.request(
+                "thread/fork",
+                buildThreadForkParams({
+                  sourceThreadId: providerThreadId,
+                  lastTurnId: lastSurvivingTurn.id,
+                  cwd: session.cwd ?? options.cwd,
+                  runtimeMode: options.runtimeMode,
+                  model: normalizeCodexModelSlug(session.model),
+                  serviceTier: options.serviceTier,
+                }),
+              ),
+            );
+            const forkedThreadId = forked.thread.id;
+            yield* updateSession(sessionRef, {
+              status: "ready",
+              activeTurnId: undefined,
+              resumeCursor: { threadId: forkedThreadId },
+            });
+            yield* Effect.logInfo("codex thread rollback forked to a new provider thread", {
+              threadId: options.threadId,
+              supersededProviderThreadId: providerThreadId,
+              forkedProviderThreadId: forkedThreadId,
+              lastTurnId: lastSurvivingTurn.id,
+            });
+            const response = yield* client.request("thread/read", {
+              threadId: forkedThreadId,
+              includeTurns: true,
+            });
+            return parseThreadSnapshot(response);
           });
-          return parseThreadSnapshot(response);
+
+          return yield* forkRollback.pipe(
+            Effect.catchIf(isNativeThreadForkUnsupportedError, (error) =>
+              Effect.logWarning(
+                "codex thread/fork rollback fell back to deprecated thread/rollback",
+                {
+                  threadId: options.threadId,
+                  providerThreadId,
+                  cause: error.message,
+                },
+              ).pipe(Effect.andThen(legacyRollback)),
+            ),
+          );
         }),
       deleteThread: Effect.gen(function* () {
         const providerThreadId = yield* readProviderThreadId;

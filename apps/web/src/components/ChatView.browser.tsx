@@ -986,6 +986,7 @@ function createSnapshotWithLongProposedPlan(): OrchestrationReadModel {
                 planMarkdown,
                 implementedAt: null,
                 implementationThreadId: null,
+                dismissedAt: null,
                 createdAt: isoAt(1_000),
                 updatedAt: isoAt(1_001),
               },
@@ -1207,6 +1208,7 @@ function createSnapshotWithPlanFollowUpPrompt(options?: {
                 planMarkdown,
                 implementedAt: null,
                 implementationThreadId: null,
+                dismissedAt: null,
                 createdAt: isoAt(1_002),
                 updatedAt: isoAt(1_003),
               },
@@ -1694,6 +1696,21 @@ function findButtonByText(text: string): HTMLButtonElement | null {
 
 async function waitForButtonByText(text: string): Promise<HTMLButtonElement> {
   return waitForElement(() => findButtonByText(text), `Unable to find "${text}" button.`);
+}
+
+/** The proposed-plan timeline card renders its own "Implement" button, so
+ *  composer-footer assertions must scope their lookup to the footer. */
+async function waitForButtonByTextWithin(
+  container: HTMLElement,
+  text: string,
+): Promise<HTMLButtonElement> {
+  return waitForElement(
+    () =>
+      (Array.from(container.querySelectorAll("button")).find(
+        (button) => button.textContent?.trim() === text,
+      ) ?? null) as HTMLButtonElement | null,
+    `Unable to find "${text}" button in scoped container.`,
+  );
 }
 
 function findButtonContainingText(text: string): HTMLButtonElement | null {
@@ -7559,7 +7576,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       );
       const initialModelPickerOffset =
         initialModelPicker.getBoundingClientRect().left - footer.getBoundingClientRect().left;
-      const initialImplementButton = await waitForButtonByText("Implement");
+      const initialImplementButton = await waitForButtonByTextWithin(footer, "Implement");
       const initialImplementWidth = initialImplementButton.getBoundingClientRect().width;
 
       await waitForElement(
@@ -7574,7 +7591,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       });
       await expectComposerActionsContained();
 
-      const implementButton = await waitForButtonByText("Implement");
+      const implementButton = await waitForButtonByTextWithin(footer, "Implement");
       const implementActionsButton = await waitForElement(
         () =>
           document.querySelector<HTMLButtonElement>('button[aria-label="Implementation actions"]'),

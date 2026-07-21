@@ -138,8 +138,14 @@ export function derivePlanTaskBadge(input: {
     const total = activePlan.steps.length;
     const activeStepIndex = activePlan.steps.findIndex((step) => step.status === "inProgress");
     const completedCount = activePlan.steps.filter((step) => step.status === "completed").length;
-    const visibleStep = activeStepIndex >= 0 ? activeStepIndex + 1 : completedCount;
-    const label = `${Math.max(visibleStep, 0)}/${total}`;
+    // Before anything starts, "0/N" reads like stalled progress — show the
+    // queued step count instead and switch to n/m once work begins.
+    const label =
+      activeStepIndex >= 0
+        ? `${activeStepIndex + 1}/${total}`
+        : completedCount > 0
+          ? `${completedCount}/${total}`
+          : `${total}`;
     const tone =
       completedCount === total
         ? "complete"
@@ -156,7 +162,9 @@ export function derivePlanTaskBadge(input: {
           ? `Tasks, working on step ${activeStepIndex + 1} of ${total}`
           : completedCount === total
             ? `Tasks complete, ${completedCount} of ${total}`
-            : `Tasks, ${completedCount} of ${total} complete`,
+            : completedCount > 0
+              ? `Tasks, ${completedCount} of ${total} complete`
+              : `Tasks, ${total} steps queued`,
       tone,
       pulse: activeStepIndex >= 0,
     };

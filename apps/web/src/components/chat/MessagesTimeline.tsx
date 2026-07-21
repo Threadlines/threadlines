@@ -4,6 +4,7 @@ import {
   type ProviderDriverKind,
   PROVIDER_DISPLAY_NAMES,
   type ServerProviderSkill,
+  type ThreadId,
   type TurnId,
 } from "@threadlines/contracts";
 import {
@@ -70,7 +71,7 @@ import { LiveNode, SpineRow } from "../ui/threadline";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
 import type { FilePreviewRequest } from "./FilePreviewDialog";
 import { loadChatAttachmentBlob } from "../../lib/attachmentPreviewQuery";
-import { ProposedPlanCard } from "./ProposedPlanCard";
+import { ProposedPlanCard, type ProposedPlanCardStatus } from "./ProposedPlanCard";
 import { ChangedFilesTree } from "./ChangedFilesTree";
 import { DiffStatLabel, hasNonZeroStat } from "./DiffStatLabel";
 import { MessageCopyButton } from "./MessageCopyButton";
@@ -147,6 +148,18 @@ interface TimelineRowSharedState {
   searchTargetMessageId: MessageId | null;
   searchTargetQuery: string;
   activeSearchTargetMessageId: MessageId | null;
+  proposedPlanState: TimelineProposedPlanState | null;
+}
+
+/** Lifecycle context for proposed-plan rows: which plan is still actionable,
+ *  and the implement/navigate handlers the active card should expose. */
+export interface TimelineProposedPlanState {
+  readonly activePlanId: string | null;
+  readonly activeThreadId: ThreadId | null;
+  readonly onImplement?: (() => void) | undefined;
+  readonly onImplementInNewThread?: (() => void) | undefined;
+  readonly onDismiss?: (() => void) | undefined;
+  readonly onOpenThread: (threadId: ThreadId) => void;
 }
 
 interface TimelineRowActivityState {
@@ -506,6 +519,14 @@ interface MessagesTimelineProps {
       }
     | null
     | undefined;
+  planScrollTarget?:
+    | {
+        readonly planId: string;
+        readonly requestKey: number;
+      }
+    | null
+    | undefined;
+  proposedPlanState?: TimelineProposedPlanState | null | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -545,6 +566,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onRunMcpAuthReconnect,
   onIsAtEndChange,
   searchTarget = null,
+  planScrollTarget = null,
+  proposedPlanState = null,
 }: MessagesTimelineProps) {
   const rawRows = useMemo(
     () =>
@@ -754,6 +777,40 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     onIsAtEndChange,
     searchTarget,
     searchTargetRowIndex,
+    setAutoStickToBottomState,
+  ]);
+
+  const planScrollTargetRowIndex = useMemo(
+    () =>
+      planScrollTarget
+        ? rows.findIndex(
+            (row) =>
+              row.kind === "proposed-plan" && row.proposedPlan.id === planScrollTarget.planId,
+          )
+        : -1,
+    [planScrollTarget, rows],
+  );
+
+  useEffect(() => {
+    if (!planScrollTarget || planScrollTargetRowIndex < 0 || !legendListReady) {
+      return;
+    }
+    clearUserScrollLockTimer();
+    setAutoStickToBottomState(false);
+    onIsAtEndChange(false);
+    const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    void listRef.current?.scrollToIndex({
+      index: planScrollTargetRowIndex,
+      animated: !prefersReducedMotion,
+      viewPosition: 0.2,
+    });
+  }, [
+    clearUserScrollLockTimer,
+    legendListReady,
+    listRef,
+    onIsAtEndChange,
+    planScrollTarget,
+    planScrollTargetRowIndex,
     setAutoStickToBottomState,
   ]);
 
@@ -1075,6 +1132,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       searchTargetMessageId: searchTarget?.messageId ?? null,
       searchTargetQuery: searchTarget?.query ?? "",
       activeSearchTargetMessageId,
+      proposedPlanState,
     }),
     [
       timestampFormat,
@@ -1098,6 +1156,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       searchTarget?.messageId,
       searchTarget?.query,
       activeSearchTargetMessageId,
+      proposedPlanState,
     ],
   );
   const activityState = useMemo<TimelineRowActivityState>(
@@ -1570,6 +1629,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
 function ForkContextTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "fork-context" }> }) {
   const ctx = use(TimelineRowCtx);
   const payload = row.forkContext.payload;
+  const isNativeFork = row.forkContext.seedMode === "provider-native";
   const sourceRole = payload.sourceMessageRole === "assistant" ? "assistant" : "user";
   const contextCounts = [
     `${payload.includedMessageCount} message${payload.includedMessageCount === 1 ? "" : "s"}`,
@@ -1597,7 +1657,9 @@ function ForkContextTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "fo
               </p>
             </div>
             <p className="mt-1 text-xs text-muted-foreground/75">
-              Current files were used. Context carried over: {contextCounts.join(", ") || "none"}.
+              {isNativeFork
+                ? "Current files were used. Full conversation history carried over (native provider fork)."
+                : `Current files were used. Context carried over: ${contextCounts.join(", ") || "none"}.`}
             </p>
             <div className="mt-2 rounded-md border border-border/60 bg-background/45 px-3 py-2">
               <p className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/55">
@@ -1617,14 +1679,16 @@ function ForkContextTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "fo
                   : null}
               </p>
             ) : null}
-            <details className="mt-2 group/fork-context">
-              <summary className="cursor-pointer select-none text-xs text-muted-foreground/75 transition-colors hover:text-foreground">
-                Carried context
-              </summary>
-              <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-md border border-border/60 bg-background/55 p-3 text-[11px] leading-relaxed text-muted-foreground/85">
-                {payload.contextText}
-              </pre>
-            </details>
+            {isNativeFork ? null : (
+              <details className="mt-2 group/fork-context">
+                <summary className="cursor-pointer select-none text-xs text-muted-foreground/75 transition-colors hover:text-foreground">
+                  Carried context
+                </summary>
+                <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-md border border-border/60 bg-background/55 p-3 text-[11px] leading-relaxed text-muted-foreground/85">
+                  {payload.contextText}
+                </pre>
+              </details>
+            )}
           </div>
         </div>
       </div>
@@ -2060,14 +2124,40 @@ function ProposedPlanTimelineRow({
   row: Extract<TimelineRow, { kind: "proposed-plan" }>;
 }) {
   const ctx = use(TimelineRowCtx);
+  const planState = ctx.proposedPlanState;
+  const proposedPlan = row.proposedPlan;
+  const status: ProposedPlanCardStatus =
+    proposedPlan.implementedAt !== null
+      ? "implemented"
+      : (proposedPlan.dismissedAt ?? null) !== null
+        ? "dismissed"
+        : planState === null || proposedPlan.id === planState.activePlanId
+          ? "actionable"
+          : "superseded";
+  const implementationThreadId =
+    status === "implemented" &&
+    proposedPlan.implementationThreadId !== null &&
+    proposedPlan.implementationThreadId !== planState?.activeThreadId
+      ? proposedPlan.implementationThreadId
+      : null;
+  const isActionable = status === "actionable" && planState !== null;
 
   return (
     <div className="min-w-0 px-1 py-0.5">
       <ProposedPlanCard
-        planMarkdown={row.proposedPlan.planMarkdown}
+        planMarkdown={proposedPlan.planMarkdown}
         environmentId={ctx.activeThreadEnvironmentId}
         cwd={ctx.markdownCwd}
         workspaceRoot={ctx.workspaceRoot}
+        status={status}
+        onImplement={isActionable ? planState.onImplement : undefined}
+        onImplementInNewThread={isActionable ? planState.onImplementInNewThread : undefined}
+        onDismiss={isActionable ? planState.onDismiss : undefined}
+        onOpenImplementationThread={
+          implementationThreadId && planState
+            ? () => planState.onOpenThread(implementationThreadId)
+            : undefined
+        }
       />
     </div>
   );

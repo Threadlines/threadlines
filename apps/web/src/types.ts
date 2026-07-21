@@ -74,6 +74,7 @@ export interface ProposedPlan {
   planMarkdown: string;
   implementedAt: string | null;
   implementationThreadId: ThreadId | null;
+  dismissedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }

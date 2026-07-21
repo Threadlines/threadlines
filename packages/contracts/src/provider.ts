@@ -96,6 +96,21 @@ export const ThreadContextSeed = Schema.Struct({
 });
 export type ThreadContextSeed = typeof ThreadContextSeed.Type;
 
+/**
+ * `ProviderSessionForkFrom` — same-driver native fork request.
+ *
+ * Opens the new session as a provider-side fork of another thread's persisted
+ * history instead of seeding a fresh session from the transcript. Requires the
+ * source thread to live in the same provider instance (same provider home).
+ */
+export const ProviderSessionForkFrom = Schema.Struct({
+  providerThreadId: TrimmedNonEmptyString,
+  // Provider turn to cut the copied history through, inclusive. Absent means
+  // fork the full history.
+  lastTurnId: Schema.optional(TrimmedNonEmptyString),
+});
+export type ProviderSessionForkFrom = typeof ProviderSessionForkFrom.Type;
+
 export const ProviderSessionStartInput = Schema.Struct({
   threadId: ThreadId,
   provider: Schema.optional(ProviderDriverKind),
@@ -108,6 +123,10 @@ export const ProviderSessionStartInput = Schema.Struct({
   // there is no native `resumeCursor` for the target driver. Adapters inject it
   // as a priming preamble on the first turn.
   contextSeed: Schema.optional(ThreadContextSeed),
+  // Same-driver native fork of another thread's provider history. Mutually
+  // exclusive with `resumeCursor`; callers fall back to `contextSeed` seeding
+  // when the fork cannot be honored.
+  forkFrom: Schema.optional(ProviderSessionForkFrom),
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
   sandboxMode: Schema.optional(ProviderSandboxMode),
   runtimeMode: RuntimeMode,
@@ -129,6 +148,9 @@ export const ProviderSendTurnInput = Schema.Struct({
   telemetryContext: Schema.optional(
     Schema.Struct({
       kind: Schema.Literal("thread_fork"),
+      // How the forked session was seeded: provider-side history fork or
+      // budgeted transcript preamble.
+      seedMode: Schema.optional(Schema.Literals(["provider-native", "context-seed"])),
       sourceModelSelection: Schema.optional(ModelSelection),
       includedMessageCount: NonNegativeInt,
       includedToolSummaryCount: NonNegativeInt,

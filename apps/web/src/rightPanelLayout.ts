@@ -40,8 +40,16 @@ export const CHAT_HEADER_BOTTOM_CSS_VAR = "--chat-header-bottom";
 /**
  * Publishes the chat header's bottom edge (in viewport px) as a root-level CSS
  * variable so body-portaled overlays can align to it. Attach the returned ref
- * to the chat header element; the variable falls back to the 0px default from
- * index.css while no header is mounted.
+ * to the chat header element.
+ *
+ * The value is a viewport-relative position, so it must be re-measured when
+ * the header moves, not just when it resizes: mobile browsers scroll the
+ * layout viewport to reveal a focused input under the on-screen keyboard, and
+ * a publish captured in that state would otherwise stick until the next
+ * header resize. Clamping keeps a mid-scroll measurement from pulling the
+ * overlays above the viewport, and the last value survives header unmounts
+ * (loading states, thread switches) so an open sheet doesn't snap to the top
+ * before the header remounts and republishes.
  */
 export function useChatHeaderBottomVarRef(): RefCallback<HTMLElement> {
   return useCallback((node: HTMLElement | null) => {
@@ -50,14 +58,23 @@ export function useChatHeaderBottomVarRef(): RefCallback<HTMLElement> {
     }
     const rootStyle = document.documentElement.style;
     const publish = () => {
-      rootStyle.setProperty(CHAT_HEADER_BOTTOM_CSS_VAR, `${node.getBoundingClientRect().bottom}px`);
+      rootStyle.setProperty(
+        CHAT_HEADER_BOTTOM_CSS_VAR,
+        `${Math.max(0, node.getBoundingClientRect().bottom)}px`,
+      );
     };
     const observer = new ResizeObserver(publish);
     observer.observe(node);
+    const viewport = window.visualViewport;
+    window.addEventListener("scroll", publish, { passive: true });
+    viewport?.addEventListener("resize", publish);
+    viewport?.addEventListener("scroll", publish);
     publish();
     return () => {
       observer.disconnect();
-      rootStyle.removeProperty(CHAT_HEADER_BOTTOM_CSS_VAR);
+      window.removeEventListener("scroll", publish);
+      viewport?.removeEventListener("resize", publish);
+      viewport?.removeEventListener("scroll", publish);
     };
   }, []);
 }

@@ -364,6 +364,24 @@ validationLayer("CodexAdapterLive validation", (it) => {
       });
     }),
   );
+  it.effect("passes forkFrom through to the session runtime", () =>
+    Effect.gen(function* () {
+      validationRuntimeFactory.factory.mockClear();
+      const adapter = yield* CodexAdapter;
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-fork"),
+        runtimeMode: "full-access",
+        forkFrom: { providerThreadId: "source-thread", lastTurnId: "turn-3" },
+      });
+
+      assert.deepStrictEqual(validationRuntimeFactory.factory.mock.calls[0]?.[0]?.forkFrom, {
+        providerThreadId: "source-thread",
+        lastTurnId: "turn-3",
+      });
+    }),
+  );
 });
 
 const sessionRuntimeFactory = makeRuntimeFactory();

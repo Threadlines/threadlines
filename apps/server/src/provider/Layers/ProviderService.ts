@@ -841,6 +841,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             input.modelSelection !== undefined &&
             sourceModelSelection.model !== input.modelSelection.model,
           hasForkContext: true,
+          seedMode: input.telemetryContext.seedMode ?? "context-seed",
           includedMessageCount: input.telemetryContext.includedMessageCount,
           includedToolSummaryCount: input.telemetryContext.includedToolSummaryCount,
           includedAttachmentCount: input.telemetryContext.includedAttachmentCount,
@@ -1570,6 +1571,15 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           ? { targetUserMessageId: input.targetUserMessageId }
           : undefined,
       );
+      // Rollbacks may adopt a new provider thread (Codex rolls back by
+      // forking); re-persist the binding so a restart before the next turn
+      // resumes the rolled-back thread instead of the superseded one.
+      const rolledBackSession = (yield* routed.adapter.listSessions()).find(
+        (session) => session.threadId === routed.threadId,
+      );
+      if (rolledBackSession !== undefined) {
+        yield* upsertSessionBinding(rolledBackSession, routed.threadId);
+      }
       yield* analytics.record("provider.conversation.rolled_back", {
         provider: routed.adapter.provider,
         turns: input.numTurns,

@@ -383,6 +383,20 @@ export const ThreadForkContextPayload = Schema.Struct({
 });
 export type ThreadForkContextPayload = typeof ThreadForkContextPayload.Type;
 
+/**
+ * Payload of the `thread.fork.seed-outcome` activity appended once the fork's
+ * initial turn dispatch settles. Records how the forked session was actually
+ * seeded: `provider-native` (provider-side history fork, full fidelity) or
+ * `context-seed` (budgeted transcript preamble).
+ */
+export const ThreadForkSeedOutcomeActivityKind = "thread.fork.seed-outcome";
+export const ThreadForkSeedOutcomePayload = Schema.Struct({
+  seedMode: Schema.Literals(["provider-native", "context-seed"]),
+  sourceProviderThreadId: Schema.optional(TrimmedNonEmptyString),
+  lastTurnId: Schema.optional(TrimmedNonEmptyString),
+});
+export type ThreadForkSeedOutcomePayload = typeof ThreadForkSeedOutcomePayload.Type;
+
 export const OrchestrationProposedPlanId = TrimmedNonEmptyString;
 export type OrchestrationProposedPlanId = typeof OrchestrationProposedPlanId.Type;
 
@@ -394,6 +408,7 @@ export const OrchestrationProposedPlan = Schema.Struct({
   implementationThreadId: Schema.NullOr(ThreadId).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  dismissedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -1012,6 +1027,14 @@ const ThreadGoalStateSetCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadProposedPlanDismissCommand = Schema.Struct({
+  type: Schema.Literal("thread.proposed-plan.dismiss"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  planId: OrchestrationProposedPlanId,
+  createdAt: IsoDateTime,
+});
+
 const DispatchableClientOrchestrationCommand = Schema.Union([
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,
@@ -1037,6 +1060,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadSessionStopCommand,
   ThreadGoalSetCommand,
   ThreadGoalClearCommand,
+  ThreadProposedPlanDismissCommand,
 ]);
 export type DispatchableClientOrchestrationCommand =
   typeof DispatchableClientOrchestrationCommand.Type;
@@ -1066,6 +1090,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadSessionStopCommand,
   ThreadGoalSetCommand,
   ThreadGoalClearCommand,
+  ThreadProposedPlanDismissCommand,
 ]);
 export type ClientOrchestrationCommand = typeof ClientOrchestrationCommand.Type;
 

@@ -9,7 +9,7 @@ import {
   stripDisplayedPlanMarkdown,
 } from "../../proposedPlan";
 import ChatMarkdown from "../ChatMarkdown";
-import { EllipsisIcon } from "lucide-react";
+import { ArrowUpRightIcon, CheckIcon, EllipsisIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
@@ -28,16 +28,79 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
 import { readEnvironmentApi } from "~/environmentApi";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 
+export type ProposedPlanCardStatus = "actionable" | "implemented" | "superseded" | "dismissed";
+
+function PlanStatusChip({
+  status,
+  onOpenImplementationThread,
+}: {
+  status: ProposedPlanCardStatus;
+  onOpenImplementationThread: (() => void) | undefined;
+}) {
+  if (status === "implemented") {
+    const label = (
+      <>
+        <CheckIcon aria-hidden="true" className="size-3" />
+        <span>Implemented</span>
+        {onOpenImplementationThread ? (
+          <ArrowUpRightIcon aria-hidden="true" className="size-3" />
+        ) : null}
+      </>
+    );
+    if (onOpenImplementationThread) {
+      return (
+        <button
+          type="button"
+          className="inline-flex h-5 shrink-0 cursor-pointer items-center gap-1 rounded-[var(--app-radius-badge)] bg-success/15 px-1.5 text-[11px] leading-none font-medium text-success transition-colors hover:bg-success/25"
+          onClick={onOpenImplementationThread}
+          title="Open implementation thread"
+        >
+          {label}
+        </button>
+      );
+    }
+    return (
+      <span className="inline-flex h-5 shrink-0 items-center gap-1 rounded-[var(--app-radius-badge)] bg-success/15 px-1.5 text-[11px] leading-none font-medium text-success">
+        {label}
+      </span>
+    );
+  }
+
+  if (status === "superseded" || status === "dismissed") {
+    return (
+      <span className="inline-flex h-5 shrink-0 items-center rounded-[var(--app-radius-badge)] border border-border/60 bg-muted/40 px-1.5 text-[11px] leading-none text-muted-foreground/75">
+        {status === "superseded" ? "Superseded" : "Dismissed"}
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex h-5 shrink-0 items-center rounded-[var(--app-radius-badge)] bg-amber-500/15 px-1.5 text-[11px] leading-none font-medium text-amber-600 dark:text-amber-400">
+      Ready
+    </span>
+  );
+}
+
 export const ProposedPlanCard = memo(function ProposedPlanCard({
   planMarkdown,
   environmentId,
   cwd,
   workspaceRoot,
+  status = "actionable",
+  onImplement,
+  onImplementInNewThread,
+  onOpenImplementationThread,
+  onDismiss,
 }: {
   planMarkdown: string;
   environmentId: EnvironmentId;
   cwd: string | undefined;
   workspaceRoot: string | undefined;
+  status?: ProposedPlanCardStatus;
+  onImplement?: (() => void) | undefined;
+  onImplementInNewThread?: (() => void) | undefined;
+  onOpenImplementationThread?: (() => void) | undefined;
+  onDismiss?: (() => void) | undefined;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [isSaveDialogOpen, setIsSaveDialogOpen] = useState(false);
@@ -137,28 +200,49 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
   };
 
   return (
-    <div className="rounded-2xl border border-border/80 bg-card/70 p-4 sm:p-5">
+    <div
+      className={cn(
+        "rounded-2xl border border-border/80 bg-card/70 p-4 sm:p-5",
+        status === "superseded" && "border-border/50 opacity-80",
+      )}
+    >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
           <Badge variant="secondary">Plan</Badge>
-          <p className="truncate text-sm font-medium text-foreground">{title}</p>
+          <p className="min-w-0 truncate text-sm font-medium text-foreground">{title}</p>
+          <PlanStatusChip status={status} onOpenImplementationThread={onOpenImplementationThread} />
         </div>
-        <Menu>
-          <MenuTrigger
-            render={<Button aria-label="Plan actions" size="icon-xs" variant="outline" />}
-          >
-            <EllipsisIcon aria-hidden="true" className="size-4" />
-          </MenuTrigger>
-          <MenuPopup align="end">
-            <MenuItem onClick={handleCopyPlan}>
-              {isCopied ? "Copied!" : "Copy to clipboard"}
-            </MenuItem>
-            <MenuItem onClick={handleDownload}>Download as markdown</MenuItem>
-            <MenuItem onClick={openSaveDialog} disabled={!workspaceRoot || isSavingToWorkspace}>
-              Save to workspace
-            </MenuItem>
-          </MenuPopup>
-        </Menu>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {onImplement ? (
+            <Button size="xs" onClick={onImplement}>
+              Implement
+            </Button>
+          ) : null}
+          <Menu>
+            <MenuTrigger
+              render={<Button aria-label="Plan actions" size="icon-xs" variant="outline" />}
+            >
+              <EllipsisIcon aria-hidden="true" className="size-4" />
+            </MenuTrigger>
+            <MenuPopup align="end">
+              {onImplementInNewThread ? (
+                <MenuItem onClick={onImplementInNewThread}>Implement in new thread</MenuItem>
+              ) : null}
+              <MenuItem onClick={handleCopyPlan}>
+                {isCopied ? "Copied!" : "Copy to clipboard"}
+              </MenuItem>
+              <MenuItem onClick={handleDownload}>Download as markdown</MenuItem>
+              <MenuItem onClick={openSaveDialog} disabled={!workspaceRoot || isSavingToWorkspace}>
+                Save to workspace
+              </MenuItem>
+              {onDismiss ? (
+                <MenuItem onClick={onDismiss} className="text-destructive">
+                  Dismiss plan
+                </MenuItem>
+              ) : null}
+            </MenuPopup>
+          </Menu>
+        </div>
       </div>
       <div className="mt-4">
         <div className={cn("relative", canCollapse && !expanded && "max-h-104 overflow-hidden")}>

@@ -60,6 +60,9 @@ interface ChatHeaderProps {
   onDeleteProjectScript: (scriptId: string) => Promise<void>;
   onToggleBackgroundRunTerminal: (terminalId: string) => void;
   onStopBackgroundRun: (run: ThreadBackgroundRunItem) => void;
+  onViewProposedPlan?: (() => void) | undefined;
+  onImplementProposedPlan?: (() => void) | undefined;
+  onDismissProposedPlan?: (() => void) | undefined;
   onOpenForkSourceThread: (threadId: ThreadId) => void;
   onToggleTerminal: () => void;
   onToggleSourceControl: () => void;
@@ -118,6 +121,9 @@ export const ChatHeader = memo(function ChatHeader({
   onDeleteProjectScript,
   onToggleBackgroundRunTerminal,
   onStopBackgroundRun,
+  onViewProposedPlan,
+  onImplementProposedPlan,
+  onDismissProposedPlan,
   onOpenForkSourceThread,
   onToggleTerminal,
   onToggleSourceControl,
@@ -187,6 +193,9 @@ export const ChatHeader = memo(function ChatHeader({
           backgroundRuns={backgroundRuns}
           onToggleBackgroundRunTerminal={onToggleBackgroundRunTerminal}
           onStopBackgroundRun={onStopBackgroundRun}
+          onViewProposedPlan={onViewProposedPlan}
+          onImplementProposedPlan={onImplementProposedPlan}
+          onDismissProposedPlan={onDismissProposedPlan}
         />
         {activeProjectScripts && (
           <ProjectScriptsControl

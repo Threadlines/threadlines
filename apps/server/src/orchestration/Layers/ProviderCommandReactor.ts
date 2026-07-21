@@ -14,9 +14,12 @@ import {
   type OrchestrationSession,
   ThreadId,
   type ProviderSession,
+  type ProviderSessionForkFrom,
   type RuntimeMode,
   type ThreadContextSeed,
   ThreadForkContextPayload,
+  ThreadForkSeedOutcomeActivityKind,
+  type ThreadForkSeedOutcomePayload,
   type TurnId,
 } from "@threadlines/contracts";
 import { withContextSeedPreamble } from "@threadlines/shared/contextSeed";
@@ -92,6 +95,37 @@ type ProviderIntentEvent = Extract<
 function toNonEmptyProviderInput(value: string | undefined): string | undefined {
   const normalized = value?.trim();
   return normalized && normalized.length > 0 ? normalized : undefined;
+}
+
+/**
+ * Resolves the provider turn a native fork should cut through, inclusive.
+ *
+ * Fork anchors on a message; provider forks cut at turn granularity. An
+ * assistant/tool anchor forks through its own turn. A user-message anchor
+ * means "retry from before it", so the cut is the previous turn and the
+ * superseded user message stays out of the forked history. Returns undefined
+ * when no turn at or before the anchor is known (native fork not applicable).
+ */
+export function resolveForkCutTurnId(
+  messages: ReadonlyArray<{
+    readonly id: MessageId;
+    readonly role: string;
+    readonly turnId: TurnId | null;
+  }>,
+  sourceMessageId: MessageId,
+): TurnId | undefined {
+  const sourceIndex = messages.findIndex((message) => message.id === sourceMessageId);
+  if (sourceIndex === -1) {
+    return undefined;
+  }
+  const startIndex = messages[sourceIndex]?.role === "user" ? sourceIndex - 1 : sourceIndex;
+  for (let index = startIndex; index >= 0; index -= 1) {
+    const turnId = messages[index]?.turnId;
+    if (turnId !== null && turnId !== undefined) {
+      return turnId;
+    }
+  }
+  return undefined;
 }
 
 function resolveWorkspaceRealPath(value: string): string {
@@ -425,6 +459,9 @@ const make = Effect.gen(function* () {
     options?: {
       readonly modelSelection?: ModelSelection;
       readonly excludeContextSeedMessageId?: MessageId;
+      /** Same-driver native fork request for a fresh session start. Falls
+       *  back to a plain start (context-seed seeding) when the fork fails. */
+      readonly forkFrom?: ProviderSessionForkFrom;
     },
   ) {
     const thread = yield* resolveThread(threadId);
@@ -551,6 +588,7 @@ const make = Effect.gen(function* () {
         readonly resumeCursor?: unknown;
         readonly provider?: ProviderDriverKind;
         readonly contextSeed?: ThreadContextSeed;
+        readonly forkFrom?: ProviderSessionForkFrom;
       },
       startKind: "fresh" | "restart" | "handoff" = "fresh",
     ) =>
@@ -563,6 +601,7 @@ const make = Effect.gen(function* () {
           modelSelection: desiredModelSelection,
           ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
           ...(input?.contextSeed !== undefined ? { contextSeed: input.contextSeed } : {}),
+          ...(input?.forkFrom !== undefined ? { forkFrom: input.forkFrom } : {}),
           runtimeMode: desiredRuntimeMode,
         })
         .pipe(
@@ -584,6 +623,12 @@ const make = Effect.gen(function* () {
         const mappedStatus = mapProviderSessionStatusToOrchestrationStatus(session.status);
         const shouldPreservePendingTurnStartup =
           thread.session?.status === "starting" && mappedStatus === "ready";
+        // Provider-side identifiers arrive via runtime ingestion
+        // (`thread.started`); a rebind must not wipe them. They only survive
+        // when the session continues on the same provider instance — after an
+        // instance switch they describe the outgoing provider.
+        const continuesSameInstance =
+          thread.session?.providerInstanceId === session.providerInstanceId;
         yield* setThreadSession({
           threadId,
           session: {
@@ -591,6 +636,12 @@ const make = Effect.gen(function* () {
             status: shouldPreservePendingTurnStartup ? "starting" : mappedStatus,
             providerName: session.provider,
             providerInstanceId: session.providerInstanceId,
+            providerSessionId: continuesSameInstance
+              ? (thread.session?.providerSessionId ?? null)
+              : null,
+            providerThreadId: continuesSameInstance
+              ? (thread.session?.providerThreadId ?? null)
+              : null,
             runtimeMode: desiredRuntimeMode,
             // Provider turn ids are not orchestration turn ids.
             activeTurnId: null,
@@ -633,7 +684,7 @@ const make = Effect.gen(function* () {
         "handoff",
       );
       yield* bindSessionToThread(handoffSession);
-      return handoffSession.threadId;
+      return { sessionThreadId: handoffSession.threadId, nativeForkApplied: false };
     }
 
     const existingSessionThreadId =
@@ -656,7 +707,7 @@ const make = Effect.gen(function* () {
       const shouldRestartForModelChange = modelChanged && sessionModelSwitch === "unsupported";
 
       if (!runtimeModeChanged && !cwdChanged && !instanceChanged && !shouldRestartForModelChange) {
-        return existingSessionThreadId;
+        return { sessionThreadId: existingSessionThreadId, nativeForkApplied: false };
       }
 
       const restartReason = runtimeModeChanged
@@ -704,12 +755,37 @@ const make = Effect.gen(function* () {
         cwd: restartedSession.cwd,
       });
       yield* bindSessionToThread(restartedSession);
-      return restartedSession.threadId;
+      return { sessionThreadId: restartedSession.threadId, nativeForkApplied: false };
+    }
+
+    // Fresh start. When a native fork is requested, try it first; a fork
+    // failure degrades (visibly, never silently) to a plain start so the
+    // caller can fall back to context-seed seeding.
+    const forkFrom = options?.forkFrom;
+    if (forkFrom !== undefined) {
+      const forkedSession = yield* startProviderSession({ forkFrom }).pipe(
+        Effect.map(Option.some),
+        Effect.catch((error) =>
+          Effect.logWarning(
+            "provider command reactor native fork start failed; falling back to context seed",
+            {
+              threadId,
+              sourceProviderThreadId: forkFrom.providerThreadId,
+              lastTurnId: forkFrom.lastTurnId,
+              error: String(error),
+            },
+          ).pipe(Effect.as(Option.none<ProviderSession>())),
+        ),
+      );
+      if (Option.isSome(forkedSession)) {
+        yield* bindSessionToThread(forkedSession.value);
+        return { sessionThreadId: forkedSession.value.threadId, nativeForkApplied: true };
+      }
     }
 
     const startedSession = yield* startProviderSession(undefined);
     yield* bindSessionToThread(startedSession);
-    return startedSession.threadId;
+    return { sessionThreadId: startedSession.threadId, nativeForkApplied: false };
   });
 
   const buildSendTurnRequestForThread = Effect.fnUntraced(function* (input: {
@@ -730,29 +806,6 @@ const make = Effect.gen(function* () {
         new Error(`Thread '${input.threadId}' was not found in read model.`),
       );
     }
-    yield* ensureSessionForThread(input.threadId, input.createdAt, {
-      ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
-      excludeContextSeedMessageId: input.messageId,
-    });
-    if (input.modelSelection !== undefined) {
-      threadModelSelections.set(input.threadId, input.modelSelection);
-    }
-    const messageText =
-      input.providerContext !== undefined
-        ? withContextSeedPreamble(input.providerContext, input.messageText)
-        : input.messageText;
-    const normalizedInput = toNonEmptyProviderInput(messageText);
-    const normalizedAttachments = [
-      ...(input.providerAttachments ?? []),
-      ...(input.attachments ?? []),
-    ];
-    const activeSession = yield* providerService
-      .listSessions()
-      .pipe(
-        Effect.map((sessions) => sessions.find((session) => session.threadId === input.threadId)),
-      );
-    const requestedModelSelection =
-      input.modelSelection ?? threadModelSelections.get(input.threadId) ?? thread.modelSelection;
     const forkContextActivity = thread.activities.find(
       (activity) =>
         activity.kind === "thread.fork.context" && isThreadForkContextPayload(activity.payload),
@@ -768,10 +821,63 @@ const make = Effect.gen(function* () {
         ? forkContextActivity.payload
         : undefined;
     const sourceThread = forkContext ? yield* resolveThread(forkContext.sourceThreadId) : undefined;
+
+    // Same-driver forks on the fork's initial turn can carry full provider
+    // history natively instead of the budgeted context-seed preamble. The
+    // source's provider thread must live in the very instance the new session
+    // starts in (provider forks copy instance-local persisted history).
+    let forkFrom: ProviderSessionForkFrom | undefined;
+    if (forkContext !== undefined && sourceThread !== undefined) {
+      const desiredInstanceId = (input.modelSelection ?? thread.modelSelection).instanceId;
+      const sourceSession = sourceThread.session;
+      const sourceProviderThreadId = sourceSession?.providerThreadId ?? null;
+      if (
+        sourceThread.projectId === thread.projectId &&
+        sourceProviderThreadId !== null &&
+        sourceSession?.providerInstanceId === desiredInstanceId
+      ) {
+        const capabilities = yield* providerService
+          .getCapabilities(desiredInstanceId)
+          .pipe(Effect.option, Effect.map(Option.getOrUndefined));
+        const lastTurnId = resolveForkCutTurnId(sourceThread.messages, forkContext.sourceMessageId);
+        if (capabilities?.nativeThreadFork === "supported" && lastTurnId !== undefined) {
+          forkFrom = { providerThreadId: sourceProviderThreadId, lastTurnId };
+        }
+      }
+    }
+
+    const ensured = yield* ensureSessionForThread(input.threadId, input.createdAt, {
+      ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
+      excludeContextSeedMessageId: input.messageId,
+      ...(forkFrom !== undefined ? { forkFrom } : {}),
+    });
+    const nativeForkApplied = ensured.nativeForkApplied;
+    if (input.modelSelection !== undefined) {
+      threadModelSelections.set(input.threadId, input.modelSelection);
+    }
+    // A natively forked session already holds the full source history; the
+    // context-seed preamble and re-sent source attachments would duplicate it.
+    const messageText =
+      input.providerContext !== undefined && !nativeForkApplied
+        ? withContextSeedPreamble(input.providerContext, input.messageText)
+        : input.messageText;
+    const normalizedInput = toNonEmptyProviderInput(messageText);
+    const normalizedAttachments = [
+      ...(nativeForkApplied ? [] : (input.providerAttachments ?? [])),
+      ...(input.attachments ?? []),
+    ];
+    const activeSession = yield* providerService
+      .listSessions()
+      .pipe(
+        Effect.map((sessions) => sessions.find((session) => session.threadId === input.threadId)),
+      );
+    const requestedModelSelection =
+      input.modelSelection ?? threadModelSelections.get(input.threadId) ?? thread.modelSelection;
     const telemetryContext =
       forkContext !== undefined
         ? {
             kind: "thread_fork" as const,
+            seedMode: nativeForkApplied ? ("provider-native" as const) : ("context-seed" as const),
             ...(sourceThread?.modelSelection !== undefined
               ? { sourceModelSelection: sourceThread.modelSelection }
               : {}),
@@ -781,6 +887,37 @@ const make = Effect.gen(function* () {
             omittedAttachmentCount: forkContext.omittedAttachmentCount,
           }
         : undefined;
+
+    if (forkContext !== undefined) {
+      const seedOutcomePayload: ThreadForkSeedOutcomePayload = {
+        seedMode: nativeForkApplied ? "provider-native" : "context-seed",
+        ...(forkFrom !== undefined
+          ? {
+              sourceProviderThreadId: forkFrom.providerThreadId,
+              ...(forkFrom.lastTurnId !== undefined ? { lastTurnId: forkFrom.lastTurnId } : {}),
+            }
+          : {}),
+      };
+      yield* orchestrationEngine
+        .dispatch({
+          type: "thread.activity.append",
+          commandId: serverCommandId("thread-fork-seed-outcome"),
+          threadId: input.threadId,
+          activity: {
+            id: EventId.make(crypto.randomUUID()),
+            tone: "info",
+            kind: ThreadForkSeedOutcomeActivityKind,
+            summary: nativeForkApplied
+              ? "Forked with full provider history"
+              : "Forked with summarized context",
+            payload: seedOutcomePayload,
+            turnId: null,
+            createdAt: input.createdAt,
+          },
+          createdAt: input.createdAt,
+        })
+        .pipe(Effect.catch(() => Effect.void));
+    }
     const modelForTurn =
       input.modelSelection ??
       (activeSession?.model !== undefined
@@ -1505,6 +1642,11 @@ const make = Effect.gen(function* () {
         ...(thread.session?.providerInstanceId !== undefined
           ? { providerInstanceId: thread.session.providerInstanceId }
           : {}),
+        providerSessionId: thread.session?.providerSessionId ?? null,
+        // Keep the provider-side thread identity on stopped sessions: native
+        // forks and resumes of this thread still need it after the runtime
+        // is gone.
+        providerThreadId: thread.session?.providerThreadId ?? null,
         runtimeMode: thread.session?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
         activeTurnId: null,
         lastError: thread.session?.lastError ?? null,

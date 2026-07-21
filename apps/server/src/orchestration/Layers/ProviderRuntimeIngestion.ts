@@ -201,11 +201,17 @@ function findMessageById(
 
 function findProposedPlanById(
   proposedPlans: ReadonlyArray<
-    Pick<OrchestrationProposedPlan, "id" | "createdAt" | "implementedAt" | "implementationThreadId">
+    Pick<
+      OrchestrationProposedPlan,
+      "id" | "createdAt" | "implementedAt" | "implementationThreadId" | "dismissedAt"
+    >
   >,
   planId: string,
 ):
-  | Pick<OrchestrationProposedPlan, "id" | "createdAt" | "implementedAt" | "implementationThreadId">
+  | Pick<
+      OrchestrationProposedPlan,
+      "id" | "createdAt" | "implementedAt" | "implementationThreadId" | "dismissedAt"
+    >
   | undefined {
   for (let index = 0; index < proposedPlans.length; index += 1) {
     const proposedPlan = proposedPlans[index];
@@ -1626,6 +1632,7 @@ const make = Effect.gen(function* () {
       createdAt: string;
       implementedAt: string | null;
       implementationThreadId: ThreadId | null;
+      dismissedAt: string | null;
     }>;
     planId: string;
     turnId?: TurnId;
@@ -1650,6 +1657,7 @@ const make = Effect.gen(function* () {
           planMarkdown,
           implementedAt: existingPlan?.implementedAt ?? null,
           implementationThreadId: existingPlan?.implementationThreadId ?? null,
+          dismissedAt: existingPlan?.dismissedAt ?? null,
           createdAt: existingPlan?.createdAt ?? input.createdAt,
           updatedAt: input.updatedAt,
         },
@@ -1665,6 +1673,7 @@ const make = Effect.gen(function* () {
       createdAt: string;
       implementedAt: string | null;
       implementationThreadId: ThreadId | null;
+      dismissedAt: string | null;
     }>;
     planId: string;
     turnId?: TurnId;

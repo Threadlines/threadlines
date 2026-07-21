@@ -11,6 +11,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ThreadContextSeed,
+  ThreadForkSeedOutcomeActivityKind,
 } from "@threadlines/contracts";
 import { createModelSelection } from "@threadlines/shared/model";
 import {
@@ -56,6 +57,7 @@ import {
   providerErrorLabel,
   providerErrorLabelFromInstanceHint,
   ProviderCommandReactorLive,
+  resolveForkCutTurnId,
 } from "./ProviderCommandReactor.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
@@ -151,6 +153,10 @@ describe("ProviderCommandReactor", () => {
     readonly baseDir?: string;
     readonly threadModelSelection?: ModelSelection;
     readonly sessionModelSwitch?: "unsupported" | "in-session";
+    readonly nativeThreadFork?: "supported" | "unsupported";
+    /** Fail session starts that request a native fork, to exercise the
+     *  context-seed fallback path. */
+    readonly failNativeForkStart?: boolean;
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -166,62 +172,80 @@ describe("ProviderCommandReactor", () => {
       instanceId: ProviderInstanceId.make("codex"),
       model: "gpt-5-codex",
     };
-    const startSession = vi.fn((_: unknown, input: unknown) => {
-      const sessionIndex = nextSessionIndex++;
-      const resumeCursor =
-        typeof input === "object" && input !== null && "resumeCursor" in input
-          ? input.resumeCursor
-          : undefined;
-      const threadId =
-        typeof input === "object" &&
-        input !== null &&
-        "threadId" in input &&
-        typeof input.threadId === "string"
-          ? ThreadId.make(input.threadId)
-          : ThreadId.make(`thread-${sessionIndex}`);
-      const inputModelSelection =
-        typeof input === "object" && input !== null && "modelSelection" in input
-          ? (input.modelSelection as ModelSelection | undefined)
-          : undefined;
-      const providerInstanceId =
-        typeof input === "object" && input !== null && "providerInstanceId" in input
-          ? (input.providerInstanceId as ProviderInstanceId | undefined)
-          : inputModelSelection?.instanceId;
-      const provider =
-        typeof input === "object" &&
-        input !== null &&
-        "provider" in input &&
-        typeof input.provider === "string"
-          ? (input.provider as ProviderSession["provider"])
-          : ProviderDriverKind.make(inputModelSelection?.instanceId ?? modelSelection.instanceId);
-      const session: ProviderSession = {
-        provider,
-        ...(providerInstanceId ? { providerInstanceId } : {}),
-        status: "ready" as const,
-        runtimeMode:
+    const failNativeForkStart = input?.failNativeForkStart === true;
+    const startSession = vi.fn(
+      (_: unknown, input: unknown): Effect.Effect<ProviderSession, ProviderAdapterRequestError> => {
+        if (
+          failNativeForkStart &&
           typeof input === "object" &&
           input !== null &&
-          "runtimeMode" in input &&
-          (input.runtimeMode === "approval-required" || input.runtimeMode === "full-access")
-            ? input.runtimeMode
-            : "full-access",
-        ...(typeof input === "object" &&
-        input !== null &&
-        "cwd" in input &&
-        typeof input.cwd === "string"
-          ? { cwd: input.cwd }
-          : {}),
-        ...((inputModelSelection?.model ?? modelSelection.model)
-          ? { model: inputModelSelection?.model ?? modelSelection.model }
-          : {}),
-        threadId,
-        resumeCursor: resumeCursor ?? { opaque: `resume-${sessionIndex}` },
-        createdAt: now,
-        updatedAt: now,
-      };
-      runtimeSessions.push(session);
-      return Effect.succeed(session);
-    });
+          "forkFrom" in input &&
+          input.forkFrom !== undefined
+        ) {
+          return Effect.fail(
+            new ProviderAdapterRequestError({
+              provider: "codex",
+              method: "thread.turn.start",
+              detail: "native fork start failed in test harness",
+            }),
+          );
+        }
+        const sessionIndex = nextSessionIndex++;
+        const resumeCursor =
+          typeof input === "object" && input !== null && "resumeCursor" in input
+            ? input.resumeCursor
+            : undefined;
+        const threadId =
+          typeof input === "object" &&
+          input !== null &&
+          "threadId" in input &&
+          typeof input.threadId === "string"
+            ? ThreadId.make(input.threadId)
+            : ThreadId.make(`thread-${sessionIndex}`);
+        const inputModelSelection =
+          typeof input === "object" && input !== null && "modelSelection" in input
+            ? (input.modelSelection as ModelSelection | undefined)
+            : undefined;
+        const providerInstanceId =
+          typeof input === "object" && input !== null && "providerInstanceId" in input
+            ? (input.providerInstanceId as ProviderInstanceId | undefined)
+            : inputModelSelection?.instanceId;
+        const provider =
+          typeof input === "object" &&
+          input !== null &&
+          "provider" in input &&
+          typeof input.provider === "string"
+            ? (input.provider as ProviderSession["provider"])
+            : ProviderDriverKind.make(inputModelSelection?.instanceId ?? modelSelection.instanceId);
+        const session: ProviderSession = {
+          provider,
+          ...(providerInstanceId ? { providerInstanceId } : {}),
+          status: "ready" as const,
+          runtimeMode:
+            typeof input === "object" &&
+            input !== null &&
+            "runtimeMode" in input &&
+            (input.runtimeMode === "approval-required" || input.runtimeMode === "full-access")
+              ? input.runtimeMode
+              : "full-access",
+          ...(typeof input === "object" &&
+          input !== null &&
+          "cwd" in input &&
+          typeof input.cwd === "string"
+            ? { cwd: input.cwd }
+            : {}),
+          ...((inputModelSelection?.model ?? modelSelection.model)
+            ? { model: inputModelSelection?.model ?? modelSelection.model }
+            : {}),
+          threadId,
+          resumeCursor: resumeCursor ?? { opaque: `resume-${sessionIndex}` },
+          createdAt: now,
+          updatedAt: now,
+        };
+        runtimeSessions.push(session);
+        return Effect.succeed(session);
+      },
+    );
     const sendTurn = vi.fn((_: unknown) =>
       Effect.succeed({
         threadId: ThreadId.make("thread-1"),
@@ -338,6 +362,9 @@ describe("ProviderCommandReactor", () => {
       getCapabilities: (_provider) =>
         Effect.succeed({
           sessionModelSwitch: input?.sessionModelSwitch ?? "in-session",
+          ...(input?.nativeThreadFork !== undefined
+            ? { nativeThreadFork: input.nativeThreadFork }
+            : {}),
         }),
       getInstanceInfo: (instanceId) => {
         const raw = String(instanceId);
@@ -1189,6 +1216,230 @@ describe("ProviderCommandReactor", () => {
 
     await waitFor(() => harness.sendTurn.mock.calls.length === 3);
     expect(harness.sendTurn.mock.calls[2]?.[0]).not.toHaveProperty("telemetryContext");
+  });
+
+  /** Drives a same-instance Codex fork: seeds the source thread with an
+   *  assistant message on a known provider turn and a session that exposes a
+   *  provider thread id, then dispatches the fork. */
+  async function dispatchNativeForkScenario(
+    harness: Awaited<ReturnType<typeof createHarness>>,
+    options?: { readonly stopSourceSessionFirst?: boolean },
+  ) {
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-native-fork-source"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-native-fork-source"),
+          role: "user",
+          text: "Build the first version.",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.assistant.delta",
+        commandId: CommandId.make("cmd-native-fork-assistant-delta"),
+        threadId: ThreadId.make("thread-1"),
+        messageId: asMessageId("assistant-message-native-fork"),
+        delta: "First version is done.",
+        turnId: asTurnId("codex-turn-3"),
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.assistant.complete",
+        commandId: CommandId.make("cmd-native-fork-assistant-complete"),
+        threadId: ThreadId.make("thread-1"),
+        messageId: asMessageId("assistant-message-native-fork"),
+        turnId: asTurnId("codex-turn-3"),
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-native-fork-session-set"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "ready",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          providerSessionId: null,
+          providerThreadId: "codex-source-thread",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    if (options?.stopSourceSessionFirst) {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.stop",
+          commandId: CommandId.make("cmd-native-fork-source-stop"),
+          threadId: ThreadId.make("thread-1"),
+          createdAt: now,
+        }),
+      );
+      await waitFor(async () => {
+        const readModel = await harness.readModel();
+        return (
+          readModel.threads.find((thread) => String(thread.id) === "thread-1")?.session?.status ===
+          "stopped"
+        );
+      });
+    }
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.fork",
+        commandId: CommandId.make("cmd-thread-fork-native"),
+        threadId: ThreadId.make("thread-fork"),
+        sourceThreadId: ThreadId.make("thread-1"),
+        sourceMessageId: asMessageId("assistant-message-native-fork"),
+        message: {
+          messageId: asMessageId("user-message-native-fork"),
+          role: "user",
+          text: "Now build the second version.",
+        },
+        modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5-codex"),
+        runtimeMode: "approval-required",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        workspaceMode: "current",
+        includeAttachments: true,
+        projectId: asProjectId("project-1"),
+        title: "Native Forked Thread",
+        branch: null,
+        worktreePath: null,
+        forkContext: {
+          sourceThreadId: ThreadId.make("thread-1"),
+          sourceThreadTitle: "Thread",
+          sourceMessageId: asMessageId("assistant-message-native-fork"),
+          sourceMessageRole: "assistant",
+          sourceMessageText: "First version is done.",
+          sourceMessageCreatedAt: now,
+          workspaceMode: "current",
+          includedMessageCount: 2,
+          includedToolSummaryCount: 0,
+          includedAttachmentCount: 0,
+          omittedAttachmentCount: 0,
+          contextText: "Carried fork context.",
+          attachments: [],
+          modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5-codex"),
+          createdAt: "2026-01-01T00:00:01.000Z",
+        },
+        providerContext: "Carried fork context.",
+        providerAttachments: [],
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+
+    const forkStartInputs = harness.startSession.mock.calls
+      .map((call) => call[1] as ProviderSessionStartInput)
+      .filter((startInput) => String(startInput.threadId) === "thread-fork");
+    const forkThread = (await harness.readModel()).threads.find(
+      (thread) => String(thread.id) === "thread-fork",
+    );
+    const seedOutcome = forkThread?.activities.find(
+      (activity) => activity.kind === ThreadForkSeedOutcomeActivityKind,
+    );
+    return { forkStartInputs, seedOutcome, sendTurnInput: harness.sendTurn.mock.calls[1]?.[0] };
+  }
+
+  it("starts same-instance codex forks natively and skips the context-seed preamble", async () => {
+    const harness = await createHarness({ nativeThreadFork: "supported" });
+
+    const { forkStartInputs, seedOutcome, sendTurnInput } =
+      await dispatchNativeForkScenario(harness);
+
+    expect(forkStartInputs).toHaveLength(1);
+    expect(forkStartInputs[0]?.forkFrom).toEqual({
+      providerThreadId: "codex-source-thread",
+      lastTurnId: asTurnId("codex-turn-3"),
+    });
+    // Full history is carried provider-side; the first turn is the bare
+    // user message with no seeded transcript preamble.
+    expect(sendTurnInput).toMatchObject({
+      threadId: ThreadId.make("thread-fork"),
+      input: "Now build the second version.",
+      telemetryContext: expect.objectContaining({
+        kind: "thread_fork",
+        seedMode: "provider-native",
+      }),
+    });
+    expect(seedOutcome?.payload).toMatchObject({
+      seedMode: "provider-native",
+      sourceProviderThreadId: "codex-source-thread",
+      lastTurnId: asTurnId("codex-turn-3"),
+    });
+  });
+
+  it("forks natively from a source thread whose session has stopped", async () => {
+    const harness = await createHarness({ nativeThreadFork: "supported" });
+
+    const { forkStartInputs, seedOutcome } = await dispatchNativeForkScenario(harness, {
+      stopSourceSessionFirst: true,
+    });
+
+    // The stop must not wipe the source's provider thread identity — the
+    // fork still cuts through the recorded provider turn.
+    expect(forkStartInputs).toHaveLength(1);
+    expect(forkStartInputs[0]?.forkFrom).toEqual({
+      providerThreadId: "codex-source-thread",
+      lastTurnId: asTurnId("codex-turn-3"),
+    });
+    expect(seedOutcome?.payload).toMatchObject({ seedMode: "provider-native" });
+  });
+
+  it("falls back to the context-seed preamble when the native fork start fails", async () => {
+    const harness = await createHarness({
+      nativeThreadFork: "supported",
+      failNativeForkStart: true,
+    });
+
+    const { forkStartInputs, seedOutcome, sendTurnInput } =
+      await dispatchNativeForkScenario(harness);
+
+    expect(forkStartInputs).toHaveLength(2);
+    expect(forkStartInputs[0]?.forkFrom).toBeDefined();
+    expect(forkStartInputs[1]?.forkFrom).toBeUndefined();
+    const sentText = (sendTurnInput as { input?: string }).input ?? "";
+    expect(sentText).toContain("Now build the second version.");
+    expect(sentText).not.toBe("Now build the second version.");
+    expect(seedOutcome?.payload).toMatchObject({ seedMode: "context-seed" });
+    expect(
+      (sendTurnInput as { telemetryContext?: { seedMode?: string } }).telemetryContext,
+    ).toMatchObject({ seedMode: "context-seed" });
+  });
+
+  it("keeps forks on the context-seed path when the driver lacks native fork support", async () => {
+    const harness = await createHarness();
+
+    const { forkStartInputs, seedOutcome, sendTurnInput } =
+      await dispatchNativeForkScenario(harness);
+
+    expect(forkStartInputs).toHaveLength(1);
+    expect(forkStartInputs[0]?.forkFrom).toBeUndefined();
+    const sentText = (sendTurnInput as { input?: string }).input ?? "";
+    expect(sentText).toContain("Now build the second version.");
+    expect(sentText).not.toBe("Now build the second version.");
+    expect(seedOutcome?.payload).toMatchObject({ seedMode: "context-seed" });
   });
 
   it("forwards claude effort options through session start and turn send", async () => {
@@ -2927,6 +3178,7 @@ describe("ProviderCommandReactor", () => {
           status: "ready",
           providerName: "codex",
           providerInstanceId: ProviderInstanceId.make("codex_work"),
+          providerThreadId: "codex-thread-9",
           runtimeMode: "approval-required",
           activeTurnId: null,
           lastError: null,
@@ -2952,6 +3204,50 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.status).toBe("stopped");
     expect(thread?.session?.threadId).toBe("thread-1");
     expect(thread?.session?.providerInstanceId).toBe(ProviderInstanceId.make("codex_work"));
+    // Provider-side thread identity survives the stop: native forks and
+    // resumes of this thread still need it after the runtime is gone.
+    expect(thread?.session?.providerThreadId).toBe("codex-thread-9");
     expect(thread?.session?.activeTurnId).toBeNull();
+  });
+});
+
+describe("resolveForkCutTurnId", () => {
+  const message = (id: string, role: "user" | "assistant", turnId: string | null) => ({
+    id: asMessageId(id),
+    role,
+    turnId: turnId === null ? null : asTurnId(turnId),
+  });
+
+  it("forks through the anchoring assistant message's turn", () => {
+    const messages = [
+      message("u1", "user", "turn-1"),
+      message("a1", "assistant", "turn-1"),
+      message("u2", "user", "turn-2"),
+      message("a2", "assistant", "turn-2"),
+    ];
+    expect(resolveForkCutTurnId(messages, asMessageId("a1"))).toBe(asTurnId("turn-1"));
+    expect(resolveForkCutTurnId(messages, asMessageId("a2"))).toBe(asTurnId("turn-2"));
+  });
+
+  it("cuts before a user anchor so the fork can retry it", () => {
+    const messages = [
+      message("u1", "user", "turn-1"),
+      message("a1", "assistant", "turn-1"),
+      message("u2", "user", "turn-2"),
+      message("a2", "assistant", "turn-2"),
+    ];
+    expect(resolveForkCutTurnId(messages, asMessageId("u2"))).toBe(asTurnId("turn-1"));
+  });
+
+  it("skips messages without turn ids when walking back", () => {
+    const messages = [message("a1", "assistant", "turn-1"), message("a2", "assistant", null)];
+    expect(resolveForkCutTurnId(messages, asMessageId("a2"))).toBe(asTurnId("turn-1"));
+  });
+
+  it("returns undefined when no prior turn exists or the anchor is unknown", () => {
+    const messages = [message("u1", "user", "turn-1"), message("a1", "assistant", null)];
+    expect(resolveForkCutTurnId(messages, asMessageId("u1"))).toBeUndefined();
+    expect(resolveForkCutTurnId(messages, asMessageId("missing"))).toBeUndefined();
+    expect(resolveForkCutTurnId([], asMessageId("u1"))).toBeUndefined();
   });
 });

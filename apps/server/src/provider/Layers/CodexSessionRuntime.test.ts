@@ -16,6 +16,7 @@ import {
   buildTurnStartParams,
   classifyCodexStderrLine,
   enrichCollabAgentToolPayload,
+  isNativeThreadForkUnsupportedError,
   isRecoverableThreadResumeError,
   makeCodexStderrLineClassifier,
   openCodexThread,
@@ -606,10 +607,13 @@ describe("classifyCodexStderrLine", () => {
 
 describe("openCodexThread", () => {
   it("falls back to thread/start when resume fails recoverably", async () => {
-    const calls: Array<{ method: "thread/start" | "thread/resume"; payload: unknown }> = [];
+    const calls: Array<{
+      method: "thread/start" | "thread/resume" | "thread/fork";
+      payload: unknown;
+    }> = [];
     const started = makeThreadOpenResponse("fresh-thread");
     const client = {
-      request: <M extends "thread/start" | "thread/resume">(
+      request: <M extends "thread/start" | "thread/resume" | "thread/fork">(
         method: M,
         payload: CodexRpc.ClientRequestParamsByMethod[M],
       ) => {
@@ -661,7 +665,7 @@ describe("openCodexThread", () => {
 
   it("propagates non-recoverable resume failures", async () => {
     const client = {
-      request: <M extends "thread/start" | "thread/resume">(
+      request: <M extends "thread/start" | "thread/resume" | "thread/fork">(
         method: M,
         _payload: CodexRpc.ClientRequestParamsByMethod[M],
       ) => {
@@ -695,5 +699,139 @@ describe("openCodexThread", () => {
         isCodexAppServerRequestError(error) &&
         error.errorMessage === "timed out waiting for server",
     );
+  });
+
+  it("opens via thread/fork when forkFrom is provided without a resume cursor", async () => {
+    const calls: Array<{
+      method: "thread/start" | "thread/resume" | "thread/fork";
+      payload: unknown;
+    }> = [];
+    const forked = makeThreadOpenResponse("forked-thread");
+    const client = {
+      request: <M extends "thread/start" | "thread/resume" | "thread/fork">(
+        method: M,
+        payload: CodexRpc.ClientRequestParamsByMethod[M],
+      ) => {
+        calls.push({ method, payload });
+        return Effect.succeed(forked as CodexRpc.ClientRequestResponsesByMethod[M]);
+      },
+    };
+
+    const opened = await Effect.runPromise(
+      openCodexThread({
+        client,
+        threadId: ThreadId.make("thread-1"),
+        runtimeMode: "full-access",
+        cwd: "/tmp/project",
+        requestedModel: "gpt-5.3-codex",
+        serviceTier: undefined,
+        resumeThreadId: undefined,
+        forkFrom: { providerThreadId: "source-thread", lastTurnId: "turn-7" },
+      }),
+    );
+
+    assert.equal(opened.thread.id, "forked-thread");
+    assert.deepStrictEqual(
+      calls.map((call) => call.method),
+      ["thread/fork"],
+    );
+    assert.deepStrictEqual(calls[0]?.payload, {
+      threadId: "source-thread",
+      lastTurnId: "turn-7",
+      cwd: "/tmp/project",
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+      model: "gpt-5.3-codex",
+    });
+  });
+
+  it("propagates fork failures without silently starting fresh", async () => {
+    const calls: string[] = [];
+    const client = {
+      request: <M extends "thread/start" | "thread/resume" | "thread/fork">(
+        method: M,
+        _payload: CodexRpc.ClientRequestParamsByMethod[M],
+      ) => {
+        calls.push(method);
+        if (method === "thread/fork") {
+          return Effect.fail(CodexErrors.CodexAppServerRequestError.methodNotFound("thread/fork"));
+        }
+        return Effect.succeed(
+          makeThreadOpenResponse("fresh-thread") as CodexRpc.ClientRequestResponsesByMethod[M],
+        );
+      },
+    };
+
+    await assert.rejects(
+      Effect.runPromise(
+        openCodexThread({
+          client,
+          threadId: ThreadId.make("thread-1"),
+          runtimeMode: "full-access",
+          cwd: "/tmp/project",
+          requestedModel: "gpt-5.3-codex",
+          serviceTier: undefined,
+          resumeThreadId: undefined,
+          forkFrom: { providerThreadId: "source-thread", lastTurnId: "turn-7" },
+        }),
+      ),
+      (error: unknown) => isCodexAppServerRequestError(error) && error.code === -32601,
+    );
+    assert.deepStrictEqual(calls, ["thread/fork"]);
+  });
+
+  it("prefers native resume over forkFrom", async () => {
+    const calls: string[] = [];
+    const client = {
+      request: <M extends "thread/start" | "thread/resume" | "thread/fork">(
+        method: M,
+        _payload: CodexRpc.ClientRequestParamsByMethod[M],
+      ) => {
+        calls.push(method);
+        return Effect.succeed(
+          makeThreadOpenResponse("resumed-thread") as CodexRpc.ClientRequestResponsesByMethod[M],
+        );
+      },
+    };
+
+    const opened = await Effect.runPromise(
+      openCodexThread({
+        client,
+        threadId: ThreadId.make("thread-1"),
+        runtimeMode: "full-access",
+        cwd: "/tmp/project",
+        requestedModel: "gpt-5.3-codex",
+        serviceTier: undefined,
+        resumeThreadId: "own-thread",
+        forkFrom: { providerThreadId: "source-thread", lastTurnId: "turn-7" },
+      }),
+    );
+
+    assert.equal(opened.thread.id, "resumed-thread");
+    assert.deepStrictEqual(calls, ["thread/resume"]);
+  });
+});
+
+describe("isNativeThreadForkUnsupportedError", () => {
+  it("classifies method-not-found and invalid-params as unsupported", () => {
+    assert.equal(
+      isNativeThreadForkUnsupportedError(
+        CodexErrors.CodexAppServerRequestError.methodNotFound("thread/fork"),
+      ),
+      true,
+    );
+    assert.equal(
+      isNativeThreadForkUnsupportedError(
+        CodexErrors.CodexAppServerRequestError.invalidParams("unknown field `lastTurnId`"),
+      ),
+      true,
+    );
+    assert.equal(
+      isNativeThreadForkUnsupportedError(
+        CodexErrors.CodexAppServerRequestError.internalError("boom"),
+      ),
+      false,
+    );
+    assert.equal(isNativeThreadForkUnsupportedError(new Error("boom")), false);
   });
 });

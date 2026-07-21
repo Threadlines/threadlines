@@ -23,7 +23,7 @@ describe("proposedPlanTitle", () => {
 describe("buildPlanImplementationPrompt", () => {
   it("formats the plan exactly like the Codex follow-up handoff prompt", () => {
     expect(buildPlanImplementationPrompt("## Ship it\n\n- step 1\n")).toBe(
-      "PLEASE IMPLEMENT THIS PLAN:\n## Ship it\n\n- step 1",
+      "PLEASE IMPLEMENT THIS PLAN:\n## Ship it\n\n- step 1\n\nTrack your progress with your plan/todo tool as you implement, one entry per plan step.",
     );
   });
 });
@@ -46,6 +46,28 @@ describe("buildCollapsedProposedPlanPreviewMarkdown", () => {
         maxLines: 2,
       }),
     ).toBe("- step 1\n- step 2\n\n...");
+  });
+
+  it("closes an open code fence before the overflow marker when truncating mid-block", () => {
+    expect(
+      buildCollapsedProposedPlanPreviewMarkdown(
+        "# Integrate RPC\n\n```ts\nconst a = 1;\nconst b = 2;\nconst c = 3;\n```\n\n- follow-up",
+        {
+          maxLines: 3,
+        },
+      ),
+    ).toBe("```ts\nconst a = 1;\nconst b = 2;\n```\n\n...");
+  });
+
+  it("does not add a stray fence when the preview ends on a closed block", () => {
+    expect(
+      buildCollapsedProposedPlanPreviewMarkdown(
+        "# Integrate RPC\n\n```ts\nconst a = 1;\n```\n\n- step 1\n- step 2",
+        {
+          maxLines: 3,
+        },
+      ),
+    ).toBe("```ts\nconst a = 1;\n```\n\n...");
   });
 });
 
@@ -71,7 +93,7 @@ describe("resolvePlanFollowUpSubmission", () => {
         planMarkdown: "## Ship it\n\n- step 1\n",
       }),
     ).toEqual({
-      text: "PLEASE IMPLEMENT THIS PLAN:\n## Ship it\n\n- step 1",
+      text: "PLEASE IMPLEMENT THIS PLAN:\n## Ship it\n\n- step 1\n\nTrack your progress with your plan/todo tool as you implement, one entry per plan step.",
       interactionMode: "default",
     });
   });

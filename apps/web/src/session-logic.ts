@@ -10,6 +10,8 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ThreadForkContextPayload,
+  ThreadForkSeedOutcomeActivityKind,
+  type ThreadForkSeedOutcomePayload,
   type ToolLifecycleItemType,
   type UserInputQuestion,
   type ThreadId,
@@ -161,6 +163,7 @@ export interface LatestProposedPlanState {
   planMarkdown: string;
   implementedAt: string | null;
   implementationThreadId: ThreadId | null;
+  dismissedAt: string | null;
 }
 
 export type SubagentProgressStatus =
@@ -254,6 +257,10 @@ export interface ForkContextEntry {
   id: string;
   createdAt: string;
   payload: ThreadForkContextPayload;
+  /** How the forked session was actually seeded, from the reactor's
+   *  `thread.fork.seed-outcome` activity. Absent until that turn settles
+   *  (and on threads forked before the outcome activity existed). */
+  seedMode?: ThreadForkSeedOutcomePayload["seedMode"];
 }
 
 export type TimelineEntry =
@@ -671,9 +678,18 @@ export function findSidebarProposedPlan(input: {
 }
 
 export function hasActionableProposedPlan(
-  proposedPlan: LatestProposedPlanState | Pick<ProposedPlan, "implementedAt"> | null,
+  proposedPlan:
+    | LatestProposedPlanState
+    | Pick<ProposedPlan, "implementedAt" | "dismissedAt">
+    | null,
 ): boolean {
-  return proposedPlan !== null && proposedPlan.implementedAt === null;
+  // `?? null` tolerates snapshots from older desktop servers whose plans
+  // predate the dismissedAt field.
+  return (
+    proposedPlan !== null &&
+    proposedPlan.implementedAt === null &&
+    (proposedPlan.dismissedAt ?? null) === null
+  );
 }
 
 interface InternalSubagentRecord extends SubagentProgressItem {
@@ -806,9 +822,20 @@ function asForkContextPayload(payload: unknown): ThreadForkContextPayload | null
   return record as unknown as ThreadForkContextPayload;
 }
 
+function asForkSeedMode(payload: unknown): ThreadForkSeedOutcomePayload["seedMode"] | null {
+  const seedMode = asRecord(payload)?.seedMode;
+  return seedMode === "provider-native" || seedMode === "context-seed" ? seedMode : null;
+}
+
 export function deriveForkContextEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): ForkContextEntry[] {
+  // A forked thread carries a single fork-context activity; the seed outcome
+  // arrives as a separate activity once the initial turn dispatch settles.
+  const seedMode = activities
+    .filter((activity) => activity.kind === ThreadForkSeedOutcomeActivityKind)
+    .map((activity) => asForkSeedMode(activity.payload))
+    .findLast((mode) => mode !== null);
   return activities
     .filter((activity) => activity.kind === "thread.fork.context")
     .flatMap((activity) => {
@@ -821,6 +848,7 @@ export function deriveForkContextEntries(
           id: activity.id,
           createdAt: activity.createdAt,
           payload,
+          ...(seedMode != null ? { seedMode } : {}),
         },
       ];
     })
@@ -2400,6 +2428,7 @@ function toLatestProposedPlanState(proposedPlan: ProposedPlan): LatestProposedPl
     planMarkdown: proposedPlan.planMarkdown,
     implementedAt: proposedPlan.implementedAt,
     implementationThreadId: proposedPlan.implementationThreadId,
+    dismissedAt: proposedPlan.dismissedAt,
   };
 }
 
