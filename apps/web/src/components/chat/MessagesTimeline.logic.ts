@@ -2,6 +2,7 @@ import * as Equal from "effect/Equal";
 import {
   type ModelFallbackState,
   type ForkContextEntry,
+  type SubagentLiveEntry,
   type SubagentResultEntry,
   type TimelineEntry,
   type WorkLogEntry,
@@ -86,6 +87,12 @@ export type MessagesTimelineRow =
       id: string;
       createdAt: string;
       result: SubagentResultEntry;
+    }
+  | {
+      kind: "subagent-live";
+      id: string;
+      createdAt: string;
+      live: SubagentLiveEntry;
     }
   | {
       kind: "fork-context";
@@ -318,6 +325,16 @@ export function deriveMessagesTimelineRows(input: {
         id: timelineEntry.id,
         createdAt: timelineEntry.createdAt,
         result: timelineEntry.result,
+      });
+      continue;
+    }
+
+    if (timelineEntry.kind === "subagent-live") {
+      nextRows.push({
+        kind: "subagent-live",
+        id: timelineEntry.id,
+        createdAt: timelineEntry.createdAt,
+        live: timelineEntry.live,
       });
       continue;
     }
@@ -566,6 +583,9 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
 
     case "subagent-result":
       return a.result === (b as typeof a).result;
+
+    case "subagent-live":
+      return a.live === (b as typeof a).live;
 
     case "fork-context":
       return a.forkContext === (b as typeof a).forkContext;

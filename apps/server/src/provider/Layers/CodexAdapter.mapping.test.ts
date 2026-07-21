@@ -9,8 +9,13 @@ import {
   TurnId,
 } from "@threadlines/contracts";
 import { describe, it } from "vite-plus/test";
+import type * as EffectCodexSchema from "effect-codex-app-server/schema";
 
-import { mapToRuntimeEvents } from "./CodexAdapter.ts";
+import {
+  mapCodexSubagentTranscript,
+  mapToRuntimeEvents,
+  readCodexSubagentParentThreadId,
+} from "./CodexAdapter.ts";
 
 describe("CodexAdapter item mapping", () => {
   it("maps native subagent activity into the canonical collab-agent shape", () => {
@@ -67,6 +72,104 @@ describe("CodexAdapter item mapping", () => {
           },
         },
       },
+    });
+  });
+
+  it("maps a stored Codex child thread into the shared transcript shape", () => {
+    const thread = {
+      id: "child-thread",
+      parentThreadId: "parent-thread",
+      source: {
+        subAgent: {
+          thread_spawn: {
+            depth: 1,
+            parent_thread_id: "parent-thread",
+          },
+        },
+      },
+      turns: [
+        {
+          id: "turn-child-1",
+          status: "completed",
+          items: [
+            {
+              id: "user-1",
+              type: "userMessage",
+              content: [{ type: "text", text: "Inspect the update path" }],
+            },
+            {
+              id: "reasoning-1",
+              type: "reasoning",
+              summary: ["Checking the runtime wiring"],
+            },
+            {
+              id: "command-1",
+              type: "commandExecution",
+              command: "rg -n update apps/server",
+              commandActions: [],
+              cwd: "C:/repo",
+              status: "completed",
+              aggregatedOutput: "apps/server/src/update.ts:10",
+            },
+            {
+              id: "assistant-1",
+              type: "agentMessage",
+              phase: "final_answer",
+              text: "The update path is correctly wired.",
+            },
+          ],
+        },
+      ],
+    } as unknown as EffectCodexSchema.V2ThreadReadResponse["thread"];
+
+    assert.equal(readCodexSubagentParentThreadId(thread), "parent-thread");
+    assert.deepStrictEqual(mapCodexSubagentTranscript(thread), {
+      truncated: false,
+      entries: [
+        { role: "user", text: "Inspect the update path", toolUses: [] },
+        { role: "thinking", text: "Checking the runtime wiring", toolUses: [] },
+        {
+          role: "assistant",
+          text: "",
+          toolUses: [{ name: "shell_command", summary: "rg -n update apps/server" }],
+          outputPreview: "apps/server/src/update.ts:10",
+        },
+        {
+          role: "assistant",
+          text: "The update path is correctly wired.",
+          toolUses: [],
+        },
+      ],
+    });
+  });
+
+  it("uses source ancestry metadata and honors transcript limits", () => {
+    const thread = {
+      id: "grandchild-thread",
+      source: {
+        subAgent: {
+          thread_spawn: {
+            depth: 2,
+            parent_thread_id: "child-thread",
+          },
+        },
+      },
+      turns: [
+        {
+          id: "turn-grandchild-1",
+          status: "completed",
+          items: [
+            { id: "assistant-1", type: "agentMessage", text: "First" },
+            { id: "assistant-2", type: "agentMessage", text: "Second" },
+          ],
+        },
+      ],
+    } as unknown as EffectCodexSchema.V2ThreadReadResponse["thread"];
+
+    assert.equal(readCodexSubagentParentThreadId(thread), "child-thread");
+    assert.deepStrictEqual(mapCodexSubagentTranscript(thread, { limit: 1 }), {
+      truncated: true,
+      entries: [{ role: "assistant", text: "First", toolUses: [] }],
     });
   });
 });

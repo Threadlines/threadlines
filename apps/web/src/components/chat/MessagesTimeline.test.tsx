@@ -942,6 +942,73 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("medium");
   });
 
+  it("renders live subagent commentary as a flat transient row", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "subagent-live:turn-1:agent-1",
+            kind: "subagent-live",
+            createdAt: "2026-03-17T19:12:20.000Z",
+            live: {
+              id: "subagent-live:turn-1:agent-1",
+              createdAt: "2026-03-17T19:12:20.000Z",
+              turnId: TurnId.make("turn-1"),
+              agentThreadId: "agent-1",
+              label: "Reviewer subagent",
+              nickname: "Heisenberg",
+              role: "reviewer",
+              objective: "Inspect timeline rendering",
+              body: "I’m tracing the Codex child events now.",
+              model: "gpt-5.5",
+              reasoningEffort: "medium",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('data-subagent-live-row="true"');
+    expect(markup).toContain('data-subagent-live-body="true"');
+    expect(markup).toContain("Heisenberg");
+    expect(markup).toContain("Subagent");
+    expect(markup).toContain("Working");
+    expect(markup).toContain("Live commentary");
+    expect(markup).toContain("tracing the Codex child events now");
+    expect(markup).not.toContain('data-subagent-result-row="true"');
+  });
+
+  it("labels a completed spawn operation as spawned rather than finished", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderTimeline(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "spawn-agent",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:20.000Z",
+            entry: {
+              id: "spawn-agent",
+              createdAt: "2026-03-17T19:12:20.000Z",
+              label: "Subagent task",
+              detail: "Audit Codex child activity",
+              tone: "tool",
+              itemType: "collab_agent_tool_call",
+              subagentOperation: "delegation",
+              executionState: "completed",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Spawned subagent");
+    expect(markup).not.toContain("Finished subagent task");
+  });
+
   it("collapses very long subagent results and keeps meta chips in the footer", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const longBody = Array.from({ length: 40 }, (_, index) => `- finding ${index}`).join("\n");

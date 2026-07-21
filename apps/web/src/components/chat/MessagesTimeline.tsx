@@ -1631,6 +1631,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       ) : null}
       {row.kind === "fork-context" ? <ForkContextTimelineRow row={row} /> : null}
       {row.kind === "proposed-plan" ? <ProposedPlanTimelineRow row={row} /> : null}
+      {row.kind === "subagent-live" ? <SubagentLiveTimelineRow row={row} /> : null}
       {row.kind === "subagent-result" ? <SubagentResultTimelineRow row={row} /> : null}
       {row.kind === "working" ? <WorkingTimelineRow row={row} /> : null}
     </div>
@@ -2195,6 +2196,51 @@ const COLLAPSED_MESSAGE_FADE_STYLE: CSSProperties = {
 
 const MAX_COLLAPSED_SUBAGENT_RESULT_LINES = 12;
 const MAX_COLLAPSED_SUBAGENT_RESULT_LENGTH = 900;
+
+function SubagentLiveTimelineRow({
+  row,
+}: {
+  row: Extract<TimelineRow, { kind: "subagent-live" }>;
+}) {
+  const ctx = use(TimelineRowCtx);
+  const displayName = formatSubagentDisplayName(row.live);
+
+  return (
+    <div className="min-w-0 px-1 py-0.5" data-subagent-live-row="true">
+      <div className="max-w-2xl border-l-2 border-primary/25 bg-primary/[0.025] py-1.5 pr-2 pl-3">
+        <div className="mb-1.5 flex min-w-0 items-center gap-1.5">
+          <BotIcon className="size-3.5 shrink-0 text-primary-readable/70" aria-hidden="true" />
+          <p className="truncate text-[11px] font-medium text-foreground/80">{displayName}</p>
+          <span className="shrink-0 rounded border border-border/50 bg-background/45 px-1 py-px text-[9px] uppercase tracking-[0.12em] text-muted-foreground/55">
+            Subagent
+          </span>
+          <span className="ml-auto inline-flex shrink-0 items-center gap-1 text-[10px] text-muted-foreground/55">
+            <span
+              className="size-1.5 animate-pulse rounded-full bg-primary/65 motion-reduce:animate-none"
+              aria-hidden="true"
+            />
+            Working
+          </span>
+        </div>
+        <div
+          className="min-w-0 text-[13px] text-muted-foreground/85"
+          data-subagent-live-body="true"
+        >
+          <ChatMarkdown
+            text={row.live.body}
+            cwd={ctx.markdownCwd}
+            environmentId={ctx.activeThreadEnvironmentId}
+            isStreaming
+            skills={ctx.skills}
+          />
+        </div>
+        <p className="mt-1 text-[9px] tracking-tight tabular-nums text-muted-foreground/30">
+          Live commentary · {formatTimestamp(row.createdAt, ctx.timestampFormat)}
+        </p>
+      </div>
+    </div>
+  );
+}
 
 function SubagentResultTimelineRow({
   row,
@@ -4319,6 +4365,9 @@ function workEntryActionHeading(
   }
 
   if (isSubagentWorkEntry(workEntry)) {
+    if (isSubagentDelegationEntry(workEntry)) {
+      return formatActionHeading(workEntry.executionState, "Spawning", "Spawned", "subagent");
+    }
     return formatActionHeading(
       workEntry.executionState,
       "Running",

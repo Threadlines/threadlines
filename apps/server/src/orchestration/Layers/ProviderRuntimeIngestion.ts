@@ -738,6 +738,39 @@ function childProviderThreadIdForEvent(
   return providerThreadId === parentProviderThreadId ? undefined : providerThreadId;
 }
 
+function recordFromUnknown(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function assistantMessagePhaseFromEvent(
+  event: ProviderRuntimeEvent,
+): "commentary" | "final_answer" | undefined {
+  if (event.type !== "item.completed" || event.payload.itemType !== "assistant_message") {
+    return undefined;
+  }
+
+  const data = recordFromUnknown(event.payload.data);
+  const item = recordFromUnknown(data?.item);
+  const phase = item?.phase ?? data?.phase;
+  return phase === "commentary" || phase === "final_answer" ? phase : undefined;
+}
+
+function withSourceAgentThreadId(
+  activity: OrchestrationThreadActivity,
+  sourceAgentThreadId: string,
+): OrchestrationThreadActivity {
+  const payload = recordFromUnknown(activity.payload);
+  return {
+    ...activity,
+    payload: {
+      ...(payload ?? { data: activity.payload }),
+      sourceAgentThreadId,
+    },
+  };
+}
+
 function appendSubagentResultText(existing: string | undefined, delta: string): string {
   const nextText = `${existing ?? ""}${delta}`;
   if (nextText.length <= MAX_BUFFERED_SUBAGENT_RESULT_CHARS) {
@@ -810,7 +843,14 @@ function subagentResultActivity(input: {
     payload: {
       itemType: "collab_agent_tool_call",
       status: input.status,
+      sourceAgentThreadId: input.childProviderThreadId,
       data: {
+        ...(input.status === "inProgress"
+          ? {
+              subagentLiveText: input.body,
+              subagentLiveTextAt: input.createdAt,
+            }
+          : {}),
         item: {
           id: subagentResultToolCallId(input),
           type: "collabAgentToolCall",
@@ -821,7 +861,7 @@ function subagentResultActivity(input: {
           agentsStates: {
             [input.childProviderThreadId]: {
               status: input.status === "completed" ? "completed" : "running",
-              message: input.body,
+              ...(input.status === "completed" ? { message: input.body } : {}),
             },
           },
         },
@@ -1470,10 +1510,17 @@ const make = Effect.gen(function* () {
       } satisfies ProviderActivityStreamSnapshot;
     });
 
-  const projectRuntimeActivities = (event: ProviderRuntimeEvent) =>
+  const projectRuntimeActivities = (
+    event: ProviderRuntimeEvent,
+    thread: Pick<OrchestrationThread, "session">,
+  ) =>
     Effect.gen(function* () {
       const stream = yield* appendBufferedActivityStream(event);
-      return projectRuntimeEventToActivities(event, { stream });
+      const activities = projectRuntimeEventToActivities(event, { stream });
+      const childProviderThreadId = childProviderThreadIdForEvent(event, thread);
+      return childProviderThreadId
+        ? activities.map((activity) => withSourceAgentThreadId(activity, childProviderThreadId))
+        : activities;
     });
 
   const clearAssistantMessageState = (messageId: MessageId) =>
@@ -2301,7 +2348,12 @@ const make = Effect.gen(function* () {
             thread,
             childProviderThreadId,
             body,
-            status: "completed",
+            // Codex completes each assistant-message item, including interim
+            // commentary. Only an explicit final answer is terminal. Missing
+            // phase keeps the legacy completion behavior for older models that
+            // do not emit message phases.
+            status:
+              assistantMessagePhaseFromEvent(event) === "commentary" ? "inProgress" : "completed",
             createdAt: now,
           });
         } else {
@@ -2520,7 +2572,7 @@ const make = Effect.gen(function* () {
         }
       }
 
-      const activities = yield* projectRuntimeActivities(event);
+      const activities = yield* projectRuntimeActivities(event, thread);
       yield* Effect.forEach(activities, (activity) =>
         orchestrationEngine.dispatch({
           type: "thread.activity.append",

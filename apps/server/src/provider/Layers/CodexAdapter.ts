@@ -18,6 +18,8 @@ import {
   ProviderInstanceId,
   type ProviderRuntimeEvent,
   type ProviderRequestKind,
+  type ProviderSubagentTranscriptEntry,
+  type ProviderSubagentTranscriptResult,
   type RuntimeThreadGoalSnapshot,
   type ThreadTokenUsageSnapshot,
   type ProviderUserInputAnswers,
@@ -78,6 +80,232 @@ const isCodexSessionRuntimeThreadIdMissingError = Schema.is(
 const isCodexResumeCursorSchema = Schema.is(CodexResumeCursorSchema);
 
 const PROVIDER = ProviderDriverKind.make("codex");
+const CODEX_SUBAGENT_TRANSCRIPT_DEFAULT_LIMIT = 200;
+const CODEX_SUBAGENT_TRANSCRIPT_TEXT_MAX_CHARS = 4_000;
+const CODEX_SUBAGENT_TRANSCRIPT_OUTPUT_MAX_CHARS = 2_000;
+const CODEX_SUBAGENT_TRANSCRIPT_TOOL_SUMMARY_MAX_CHARS = 1_000;
+const CODEX_SUBAGENT_MAX_ANCESTRY_DEPTH = 32;
+
+type CodexStoredThread = EffectCodexSchema.V2ThreadReadResponse["thread"];
+type CodexStoredThreadItem = CodexStoredThread["turns"][number]["items"][number];
+
+function capCodexTranscriptText(value: string, maxChars: number): string {
+  const trimmed = value.trim();
+  return trimmed.length > maxChars ? trimmed.slice(0, maxChars) : trimmed;
+}
+
+function codexJsonPreview(value: unknown, maxChars: number): string {
+  if (value === undefined || value === null) {
+    return "";
+  }
+  try {
+    const serialized = JSON.stringify(value, null, 2);
+    return capCodexTranscriptText(serialized ?? String(value), maxChars);
+  } catch {
+    return capCodexTranscriptText(String(value), maxChars);
+  }
+}
+
+function codexToolEntry(input: {
+  readonly name: string;
+  readonly summary?: string | undefined;
+  readonly outputPreview?: string | undefined;
+}): ProviderSubagentTranscriptEntry {
+  const summary = capCodexTranscriptText(
+    input.summary ?? "",
+    CODEX_SUBAGENT_TRANSCRIPT_TOOL_SUMMARY_MAX_CHARS,
+  );
+  const outputPreview = capCodexTranscriptText(
+    input.outputPreview ?? "",
+    CODEX_SUBAGENT_TRANSCRIPT_OUTPUT_MAX_CHARS,
+  );
+  return {
+    role: "assistant",
+    text: "",
+    toolUses: [{ name: input.name, summary }],
+    ...(outputPreview.length > 0 ? { outputPreview } : {}),
+  };
+}
+
+function codexMcpOutputPreview(
+  result: Extract<CodexStoredThreadItem, { readonly type: "mcpToolCall" }>["result"],
+): string {
+  if (!result) {
+    return "";
+  }
+  const text = result.content.flatMap((part) => {
+    if (typeof part === "string") {
+      return [part];
+    }
+    if (part && typeof part === "object" && "text" in part) {
+      const candidate = (part as { readonly text?: unknown }).text;
+      return typeof candidate === "string" ? [candidate] : [];
+    }
+    return [];
+  });
+  if (text.length > 0) {
+    return text.join("\n");
+  }
+  return codexJsonPreview(result.structuredContent, CODEX_SUBAGENT_TRANSCRIPT_OUTPUT_MAX_CHARS);
+}
+
+function mapCodexStoredItem(
+  item: CodexStoredThreadItem,
+): ProviderSubagentTranscriptEntry | undefined {
+  switch (item.type) {
+    case "userMessage": {
+      const text = item.content
+        .map((content) => {
+          switch (content.type) {
+            case "text":
+              return content.text;
+            case "image":
+              return "[image]";
+            case "localImage":
+              return `[local image: ${content.path}]`;
+            case "skill":
+              return `[$${content.name} skill]`;
+            case "mention":
+              return `[@${content.name}]`;
+          }
+        })
+        .join("\n");
+      return {
+        role: "user",
+        text: capCodexTranscriptText(text, CODEX_SUBAGENT_TRANSCRIPT_TEXT_MAX_CHARS),
+        toolUses: [],
+      };
+    }
+    case "hookPrompt": {
+      const text = item.fragments.map((fragment) => fragment.text).join("\n");
+      return text.trim().length > 0
+        ? {
+            role: "system",
+            text: capCodexTranscriptText(text, CODEX_SUBAGENT_TRANSCRIPT_TEXT_MAX_CHARS),
+            toolUses: [],
+          }
+        : undefined;
+    }
+    case "agentMessage":
+      return {
+        role: "assistant",
+        text: capCodexTranscriptText(item.text, CODEX_SUBAGENT_TRANSCRIPT_TEXT_MAX_CHARS),
+        toolUses: [],
+      };
+    case "plan":
+      return {
+        role: "assistant",
+        text: capCodexTranscriptText(item.text, CODEX_SUBAGENT_TRANSCRIPT_TEXT_MAX_CHARS),
+        toolUses: [],
+      };
+    case "reasoning": {
+      const text = item.summary?.join("\n") ?? "";
+      return text.trim().length > 0
+        ? {
+            role: "thinking",
+            text: capCodexTranscriptText(text, CODEX_SUBAGENT_TRANSCRIPT_TEXT_MAX_CHARS),
+            toolUses: [],
+          }
+        : undefined;
+    }
+    case "commandExecution":
+      return codexToolEntry({
+        name: "shell_command",
+        summary: item.command,
+        ...(item.aggregatedOutput ? { outputPreview: item.aggregatedOutput } : {}),
+      });
+    case "fileChange":
+      return codexToolEntry({
+        name: "apply_patch",
+        summary: item.changes.map((change) => `${change.kind} ${change.path}`).join(", "),
+      });
+    case "mcpToolCall":
+      return codexToolEntry({
+        name: `${item.server}.${item.tool}`,
+        summary: codexJsonPreview(item.arguments, CODEX_SUBAGENT_TRANSCRIPT_TOOL_SUMMARY_MAX_CHARS),
+        outputPreview: item.error?.message ?? codexMcpOutputPreview(item.result),
+      });
+    case "dynamicToolCall":
+      return codexToolEntry({
+        name: item.namespace ? `${item.namespace}.${item.tool}` : item.tool,
+        summary: codexJsonPreview(item.arguments, CODEX_SUBAGENT_TRANSCRIPT_TOOL_SUMMARY_MAX_CHARS),
+        outputPreview: (item.contentItems ?? [])
+          .map((content) =>
+            content.type === "inputText" ? content.text : `[image: ${content.imageUrl}]`,
+          )
+          .join("\n"),
+      });
+    case "collabAgentToolCall":
+      return codexToolEntry({
+        name: item.tool,
+        summary: item.prompt ?? item.receiverThreadIds.join(", "),
+      });
+    case "subAgentActivity":
+      return codexToolEntry({
+        name: "subagent",
+        summary: `${item.kind}: ${item.agentPath}`,
+      });
+    case "webSearch":
+      return codexToolEntry({ name: "web_search", summary: item.query });
+    case "imageView":
+      return codexToolEntry({ name: "view_image", summary: item.path });
+    case "sleep":
+      return codexToolEntry({ name: "sleep", summary: `${item.durationMs} ms` });
+    case "imageGeneration":
+      return codexToolEntry({
+        name: "image_generation",
+        summary: item.revisedPrompt ?? item.status,
+        outputPreview: item.result,
+      });
+    case "enteredReviewMode":
+      return { role: "system", text: item.review, toolUses: [] };
+    case "exitedReviewMode":
+      return { role: "system", text: item.review, toolUses: [] };
+    case "contextCompaction":
+      return { role: "system", text: "Context compacted", toolUses: [] };
+  }
+}
+
+export function mapCodexSubagentTranscript(
+  thread: CodexStoredThread,
+  options?: { readonly limit?: number },
+): ProviderSubagentTranscriptResult {
+  const entries = thread.turns.flatMap((turn) =>
+    turn.items.flatMap((item) => {
+      const entry = mapCodexStoredItem(item);
+      return entry === undefined ? [] : [entry];
+    }),
+  );
+  const limit = options?.limit ?? CODEX_SUBAGENT_TRANSCRIPT_DEFAULT_LIMIT;
+  return {
+    entries: entries.slice(0, limit),
+    truncated: entries.length > limit,
+  };
+}
+
+/** Prefer the canonical parentThreadId, with the source metadata retained by
+ * older app-server versions as a compatibility fallback. */
+export function readCodexSubagentParentThreadId(thread: CodexStoredThread): string | undefined {
+  if (thread.parentThreadId?.trim()) {
+    return thread.parentThreadId;
+  }
+  const source = thread.source as unknown;
+  if (!source || typeof source !== "object" || !("subAgent" in source)) {
+    return undefined;
+  }
+  const subAgent = (source as { readonly subAgent?: unknown }).subAgent;
+  if (!subAgent || typeof subAgent !== "object" || !("thread_spawn" in subAgent)) {
+    return undefined;
+  }
+  const spawn = (subAgent as { readonly thread_spawn?: unknown }).thread_spawn;
+  if (!spawn || typeof spawn !== "object" || !("parent_thread_id" in spawn)) {
+    return undefined;
+  }
+  const parentThreadId = (spawn as { readonly parent_thread_id?: unknown }).parent_thread_id;
+  return typeof parentThreadId === "string" && parentThreadId.trim().length > 0
+    ? parentThreadId
+    : undefined;
+}
 
 function providerErrorClass(message: string): "authentication_error" | "provider_error" {
   return isProviderAuthErrorMessage(message) ? "authentication_error" : "provider_error";
@@ -2435,6 +2663,52 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       })),
     );
 
+  const readSubagentTranscript: NonNullable<CodexAdapterShape["readSubagentTranscript"]> =
+    Effect.fn("readSubagentTranscript")(function* (threadId, input) {
+      const requestError = (detail: string) =>
+        new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "readSubagentTranscript",
+          detail,
+        });
+      const context = yield* requireSession(threadId);
+      const root = yield* context.runtime.readThread.pipe(
+        Effect.mapError((cause) => mapCodexRuntimeError(threadId, "thread/read", cause)),
+      );
+      if (input.agentId === root.threadId) {
+        return yield* requestError("The requested transcript belongs to the parent thread.");
+      }
+
+      const readStoredThread = (providerThreadId: string) =>
+        context.runtime
+          .readStoredThread(providerThreadId)
+          .pipe(Effect.mapError((cause) => mapCodexRuntimeError(threadId, "thread/read", cause)));
+      const candidate = yield* readStoredThread(input.agentId);
+      const visited = new Set<string>([candidate.id]);
+      let current = candidate;
+
+      for (let depth = 0; depth < CODEX_SUBAGENT_MAX_ANCESTRY_DEPTH; depth += 1) {
+        const parentThreadId = readCodexSubagentParentThreadId(current);
+        if (parentThreadId === root.threadId) {
+          return mapCodexSubagentTranscript(
+            candidate,
+            input.limit !== undefined ? { limit: input.limit } : undefined,
+          );
+        }
+        if (!parentThreadId || visited.has(parentThreadId)) {
+          return yield* requestError(
+            `Codex thread '${input.agentId}' is not a subagent of this conversation.`,
+          );
+        }
+        visited.add(parentThreadId);
+        current = yield* readStoredThread(parentThreadId);
+      }
+
+      return yield* requestError(
+        `Codex thread '${input.agentId}' exceeded the supported subagent nesting depth.`,
+      );
+    });
+
   const rollbackThread: CodexAdapterShape["rollbackThread"] = (threadId, numTurns) => {
     if (!Number.isInteger(numTurns) || numTurns < 1) {
       return Effect.fail(
@@ -2571,6 +2845,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     setThreadGoal,
     clearThreadGoal,
     readThread,
+    readSubagentTranscript,
     rollbackThread,
     deleteThread,
     respondToRequest,

@@ -67,6 +67,7 @@ import {
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
   deriveSubagentProgressState,
+  deriveSubagentLiveEntries,
   deriveSubagentResultEntries,
   findSidebarProposedPlan,
   findLatestProposedPlan,
@@ -2201,6 +2202,7 @@ export default function ChatView(props: ChatViewProps) {
         workLogEntries,
         deriveSubagentResultEntries(threadActivities),
         forkContextEntries,
+        deriveSubagentLiveEntries(threadActivities),
       ),
     [
       activeThread?.proposedPlans,

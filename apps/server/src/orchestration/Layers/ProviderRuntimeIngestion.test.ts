@@ -1337,7 +1337,7 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
-  it("projects child provider-thread assistant output as a subagent result activity", async () => {
+  it("keeps child commentary live, attributes child activity, and completes only the final answer", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
 
@@ -1375,7 +1375,7 @@ describe("ProviderRuntimeIngestion", () => {
       },
       payload: {
         streamKind: "assistant_text",
-        delta: "Read-only investigation only. ",
+        delta: "I am checking the runtime path. ",
       },
     });
     harness.emit({
@@ -1393,7 +1393,7 @@ describe("ProviderRuntimeIngestion", () => {
       },
       payload: {
         streamKind: "assistant_text",
-        delta: "Findings are complete.",
+        delta: "I will report back when done.",
       },
     });
     harness.emit({
@@ -1412,6 +1412,72 @@ describe("ProviderRuntimeIngestion", () => {
       payload: {
         itemType: "assistant_message",
         status: "completed",
+        data: {
+          item: {
+            phase: "commentary",
+          },
+        },
+      },
+    });
+    harness.emit({
+      type: "item.started",
+      eventId: asEventId("evt-child-command-started"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-parent"),
+      itemId: asItemId("child-command-1"),
+      providerRefs: {
+        providerThreadId: "child-provider-thread",
+        providerTurnId: "child-turn-1",
+        providerItemId: asItemId("child-command-1"),
+      },
+      payload: {
+        itemType: "command_execution",
+        status: "inProgress",
+        title: "Running command",
+        detail: "git status --short",
+      },
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-child-final-delta"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-parent"),
+      itemId: asItemId("child-message-final"),
+      providerRefs: {
+        providerThreadId: "child-provider-thread",
+        providerTurnId: "child-turn-1",
+        providerItemId: asItemId("child-message-final"),
+      },
+      payload: {
+        streamKind: "assistant_text",
+        delta: "The runtime path is correct.",
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-child-final-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-parent"),
+      itemId: asItemId("child-message-final"),
+      providerRefs: {
+        providerThreadId: "child-provider-thread",
+        providerTurnId: "child-turn-1",
+        providerItemId: asItemId("child-message-final"),
+      },
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+        data: {
+          item: {
+            phase: "final_answer",
+          },
+        },
       },
     });
 
@@ -1428,16 +1494,55 @@ describe("ProviderRuntimeIngestion", () => {
     );
 
     expect(
-      thread.messages.some((message) =>
-        message.text.includes("Read-only investigation only. Findings are complete."),
-      ),
+      thread.messages.some((message) => message.text.includes("I am checking the runtime path.")),
     ).toBe(false);
 
-    const activity = thread.activities.find((entry) => entry.kind === "subagent.result");
+    const subagentActivities = thread.activities.filter(
+      (entry) => entry.kind === "subagent.result",
+    );
+    const commentaryActivity = subagentActivities.find(
+      (entry) => (entry.payload as { status?: string }).status === "inProgress",
+    );
+    expect(commentaryActivity?.payload).toMatchObject({
+      status: "inProgress",
+      sourceAgentThreadId: "child-provider-thread",
+      data: {
+        subagentLiveText: "I am checking the runtime path. I will report back when done.",
+        subagentLiveTextAt: now,
+        item: {
+          agentsStates: {
+            "child-provider-thread": {
+              status: "running",
+            },
+          },
+        },
+      },
+    });
+    expect(
+      (
+        (commentaryActivity?.payload ?? {}) as {
+          data?: { item?: { agentsStates?: Record<string, { message?: string }> } };
+        }
+      ).data?.item?.agentsStates?.["child-provider-thread"]?.message,
+    ).toBeUndefined();
+
+    const childCommandActivity = thread.activities.find((entry) => {
+      const payload = entry.payload as { itemType?: string; sourceAgentThreadId?: string };
+      return (
+        payload.itemType === "command_execution" &&
+        payload.sourceAgentThreadId === "child-provider-thread"
+      );
+    });
+    expect(childCommandActivity).toBeDefined();
+
+    const activity = subagentActivities.find(
+      (entry) => (entry.payload as { status?: string }).status === "completed",
+    );
     expect(activity).toBeDefined();
     expect(activity?.turnId).toBe("turn-parent");
     const payload = activity?.payload as {
       status?: string;
+      sourceAgentThreadId?: string;
       data?: {
         item?: {
           receiverThreadIds?: string[];
@@ -1446,10 +1551,11 @@ describe("ProviderRuntimeIngestion", () => {
       };
     };
     expect(payload.status).toBe("completed");
+    expect(payload.sourceAgentThreadId).toBe("child-provider-thread");
     expect(payload.data?.item?.receiverThreadIds).toEqual(["child-provider-thread"]);
     expect(payload.data?.item?.agentsStates?.["child-provider-thread"]).toMatchObject({
       status: "completed",
-      message: "Read-only investigation only. Findings are complete.",
+      message: "The runtime path is correct.",
     });
   });
 

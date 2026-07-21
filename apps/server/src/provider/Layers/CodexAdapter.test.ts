@@ -35,11 +35,12 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as CodexErrors from "effect-codex-app-server/errors";
+import type * as EffectCodexSchema from "effect-codex-app-server/schema";
 
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
-import { ProviderAdapterValidationError } from "../Errors.ts";
+import { ProviderAdapterRequestError, ProviderAdapterValidationError } from "../Errors.ts";
 import type { CodexAdapterShape } from "../Services/CodexAdapter.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import {
@@ -65,6 +66,32 @@ const asTurnId = (value: string): TurnId => TurnId.make(value);
 const asEventId = (value: string): EventId => EventId.make(value);
 const asItemId = (value: string): ProviderItemId => ProviderItemId.make(value);
 const asMessageId = (value: string): MessageId => MessageId.make(value);
+
+function makeStoredThread(input: {
+  readonly id: string;
+  readonly parentThreadId: string;
+  readonly items?: ReadonlyArray<unknown>;
+}): EffectCodexSchema.V2ThreadReadResponse["thread"] {
+  return {
+    id: input.id,
+    parentThreadId: input.parentThreadId,
+    source: {
+      subAgent: {
+        thread_spawn: {
+          depth: 1,
+          parent_thread_id: input.parentThreadId,
+        },
+      },
+    },
+    turns: [
+      {
+        id: `turn-${input.id}`,
+        items: input.items ?? [],
+        status: "completed",
+      },
+    ],
+  } as unknown as EffectCodexSchema.V2ThreadReadResponse["thread"];
+}
 
 class FakeCodexRuntime implements CodexSessionRuntimeShape {
   private readonly eventQueue = Effect.runSync(Queue.unbounded<ProviderEvent>());
@@ -150,6 +177,13 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
       }),
   );
 
+  public readonly readStoredThreadImpl = vi.fn(
+    (providerThreadId: string): Promise<EffectCodexSchema.V2ThreadReadResponse["thread"]> =>
+      Promise.resolve(
+        makeStoredThread({ id: providerThreadId, parentThreadId: "provider-thread-1" }),
+      ),
+  );
+
   public readonly rollbackThreadImpl = vi.fn(
     (_numTurns: number): Promise<CodexThreadSnapshot> =>
       Promise.resolve({
@@ -210,6 +244,10 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
   clearGoal = Effect.promise(() => this.clearGoalImpl());
 
   readThread = Effect.promise(() => this.readThreadImpl());
+
+  readStoredThread(providerThreadId: string) {
+    return Effect.promise(() => this.readStoredThreadImpl(providerThreadId));
+  }
 
   rollbackThread(numTurns: number) {
     return Effect.promise(() => this.rollbackThreadImpl(numTurns));
@@ -380,6 +418,106 @@ validationLayer("CodexAdapterLive validation", (it) => {
         providerThreadId: "source-thread",
         lastTurnId: "turn-3",
       });
+    }),
+  );
+});
+
+const transcriptRuntimeFactory = makeRuntimeFactory();
+const transcriptLayer = it.layer(
+  Layer.effect(
+    CodexAdapter,
+    Effect.gen(function* () {
+      const codexConfig = decodeCodexSettings({});
+      return yield* makeCodexAdapter(codexConfig, {
+        makeRuntime: transcriptRuntimeFactory.factory,
+      });
+    }),
+  ).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  ),
+);
+
+transcriptLayer("CodexAdapterLive subagent transcripts", (it) => {
+  it.effect("reads a descendant Codex thread through the adapter boundary", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("thread-transcript-success");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const runtime = transcriptRuntimeFactory.lastRuntime;
+      assert.ok(runtime);
+      runtime.readStoredThreadImpl.mockImplementation((providerThreadId: string) =>
+        Promise.resolve(
+          makeStoredThread({
+            id: providerThreadId,
+            parentThreadId: "provider-thread-1",
+            items: [
+              {
+                id: "assistant-child-1",
+                type: "agentMessage",
+                phase: "final_answer",
+                text: "Child result",
+              },
+            ],
+          }),
+        ),
+      );
+
+      const readSubagentTranscript = adapter.readSubagentTranscript;
+      assert.ok(readSubagentTranscript);
+      const result = yield* readSubagentTranscript(threadId, {
+        threadId,
+        agentId: "child-provider-thread",
+      });
+
+      assert.deepStrictEqual(result, {
+        entries: [{ role: "assistant", text: "Child result", toolUses: [] }],
+        truncated: false,
+      });
+      assert.deepStrictEqual(
+        runtime.readStoredThreadImpl.mock.calls.map(([id]) => id),
+        ["child-provider-thread"],
+      );
+    }),
+  );
+
+  it.effect("rejects a provider thread outside the active root ancestry", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("thread-transcript-rejected");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const runtime = transcriptRuntimeFactory.lastRuntime;
+      assert.ok(runtime);
+      runtime.readStoredThreadImpl.mockImplementation((providerThreadId: string) =>
+        Promise.resolve(
+          makeStoredThread({
+            id: providerThreadId,
+            parentThreadId: "outside-root",
+          }),
+        ),
+      );
+
+      const readSubagentTranscript = adapter.readSubagentTranscript;
+      assert.ok(readSubagentTranscript);
+      const result = yield* readSubagentTranscript(threadId, {
+        threadId,
+        agentId: "unrelated-provider-thread",
+      }).pipe(Effect.result);
+
+      assert.equal(result?._tag, "Failure");
+      assert.ok(result?._tag === "Failure");
+      assert.ok(result.failure instanceof ProviderAdapterRequestError);
+      assert.match(result.failure.detail, /not a subagent of this conversation/);
     }),
   );
 });

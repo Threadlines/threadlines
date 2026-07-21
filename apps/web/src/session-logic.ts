@@ -233,6 +233,20 @@ export interface SubagentResultEntry {
   reasoningEffort: string | null;
 }
 
+export interface SubagentLiveEntry {
+  id: string;
+  createdAt: string;
+  turnId: TurnId | null;
+  agentThreadId: string;
+  label: string;
+  nickname?: string | null;
+  role: string | null;
+  objective: string | null;
+  body: string;
+  model: string | null;
+  reasoningEffort: string | null;
+}
+
 export function formatSubagentDisplayName(input: {
   label: string;
   nickname?: string | null;
@@ -299,6 +313,12 @@ export type TimelineEntry =
       kind: "subagent-result";
       createdAt: string;
       result: SubagentResultEntry;
+    }
+  | {
+      id: string;
+      kind: "subagent-live";
+      createdAt: string;
+      live: SubagentLiveEntry;
     }
   | {
       id: string;
@@ -705,6 +725,7 @@ export function hasActionableProposedPlan(
 }
 
 interface InternalSubagentRecord extends SubagentProgressItem {
+  liveBodyUpdatedAt: string | null;
   resultActivityId: string | null;
   resultBody: string | null;
   resultCreatedAt: string | null;
@@ -732,6 +753,7 @@ export function deriveSubagentProgressState(input: {
   );
   const items = visibleRecords.map(
     ({
+      liveBodyUpdatedAt: _liveBodyUpdatedAt,
       resultActivityId: _resultActivityId,
       resultBody: _resultBody,
       resultCreatedAt: _resultCreatedAt,
@@ -802,6 +824,42 @@ export function deriveSubagentResultEntries(
       role: record.role,
       objective: record.objective,
       body: record.resultBody,
+      model: record.model,
+      reasoningEffort: record.reasoningEffort,
+    }))
+    .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
+}
+
+/** Latest streamed commentary for each still-running child agent. These rows
+ *  are transient: the terminal result clears `liveBody` and replaces them
+ *  with the durable subagent-result row. */
+export function deriveSubagentLiveEntries(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): SubagentLiveEntry[] {
+  return collectSubagentActivityRecords(activities, {})
+    .filter(
+      (
+        record,
+      ): record is InternalSubagentRecord & {
+        agentThreadId: string;
+        liveBody: string;
+        liveBodyUpdatedAt: string;
+      } =>
+        record.agentThreadId !== null &&
+        record.liveBody !== null &&
+        record.liveBodyUpdatedAt !== null &&
+        isActiveSubagentStatus(record.status),
+    )
+    .map((record) => ({
+      id: `subagent-live:${record.turnId ?? "no-turn"}:${record.agentThreadId}`,
+      createdAt: record.liveBodyUpdatedAt,
+      turnId: record.turnId,
+      agentThreadId: record.agentThreadId,
+      label: record.label,
+      ...(record.nickname ? { nickname: record.nickname } : {}),
+      role: record.role,
+      objective: record.objective,
+      body: record.liveBody,
       model: record.model,
       reasoningEffort: record.reasoningEffort,
     }))
@@ -1017,6 +1075,12 @@ function collectSubagentActivityRecords(
         resultBody !== null
           ? null
           : (asTrimmedString(data?.subagentLiveText) ?? previous?.liveBody ?? null);
+      const liveBodyUpdatedAt =
+        resultBody !== null
+          ? null
+          : asTrimmedString(data?.subagentLiveText)
+            ? (asTrimmedString(data?.subagentLiveTextAt) ?? activity.createdAt)
+            : (previous?.liveBodyUpdatedAt ?? null);
 
       byAgentId.set(agentId, {
         id: agentId,
@@ -1031,6 +1095,7 @@ function collectSubagentActivityRecords(
         model: model ?? previous?.model ?? null,
         reasoningEffort: reasoningEffort ?? previous?.reasoningEffort ?? null,
         liveBody,
+        liveBodyUpdatedAt,
         createdAt: previous?.createdAt ?? activity.createdAt,
         updatedAt: activity.createdAt,
         resultActivityId,
@@ -1068,6 +1133,7 @@ function applySubagentTaskCompletion(
     statusLabel: subagentProgressStatusLabel(status),
     // The task settled; live progress text no longer describes the agent.
     liveBody: null,
+    liveBodyUpdatedAt: null,
     updatedAt: activity.createdAt,
   });
 }
@@ -1797,6 +1863,18 @@ function toDerivedWorkLogEntry(
         toolUseId: asTrimmedString(payload?.toolUseId),
       };
     }
+  }
+  const payloadData = asRecord(payload?.data);
+  const sourceAgentThreadId =
+    asTrimmedString(payload?.sourceAgentThreadId) ??
+    asTrimmedString(payloadData?.sourceAgentThreadId);
+  if (sourceAgentThreadId) {
+    entry.subagentTask = {
+      subagentType:
+        asTrimmedString(payload?.sourceAgentLabel) ??
+        asTrimmedString(payloadData?.sourceAgentLabel),
+      toolUseId: sourceAgentThreadId,
+    };
   }
   if (itemType === "collab_agent_tool_call") {
     const spawnToolUseId = extractToolCallId(payload);
@@ -3683,6 +3761,7 @@ export function deriveTimelineEntries(
   workEntries: WorkLogEntry[],
   subagentResults: SubagentResultEntry[] = [],
   forkContexts: ForkContextEntry[] = [],
+  subagentLiveEntries: SubagentLiveEntry[] = [],
 ): TimelineEntry[] {
   const suppressedAssistantEchoIds = findSubagentResultEchoMessageIds(messages, subagentResults);
   const messageRows: TimelineEntry[] = messages
@@ -3711,6 +3790,12 @@ export function deriveTimelineEntries(
     createdAt: result.createdAt,
     result,
   }));
+  const subagentLiveRows: TimelineEntry[] = subagentLiveEntries.map((live) => ({
+    id: live.id,
+    kind: "subagent-live",
+    createdAt: live.createdAt,
+    live,
+  }));
   const forkContextRows: TimelineEntry[] = forkContexts.map((forkContext) => ({
     id: forkContext.id,
     kind: "fork-context",
@@ -3722,6 +3807,7 @@ export function deriveTimelineEntries(
     ...messageRows,
     ...proposedPlanRows,
     ...workRows,
+    ...subagentLiveRows,
     ...subagentResultRows,
   ].toSorted((a, b) => {
     const timeDelta = a.createdAt.localeCompare(b.createdAt);

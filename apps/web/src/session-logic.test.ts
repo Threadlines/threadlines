@@ -15,6 +15,7 @@ import {
   deriveActivePlanState,
   derivePendingApprovals,
   derivePendingUserInputs,
+  deriveSubagentLiveEntries,
   deriveSubagentProgressState,
   deriveSubagentResultEntries,
   deriveForkContextEntries,
@@ -3815,6 +3816,14 @@ describe("deriveSubagentProgressState", () => {
       status: "running",
       liveBody: "Scanning migrations now.",
     });
+    expect(deriveSubagentLiveEntries([spawn, liveUpdate, statusOnlyUpdate])).toEqual([
+      expect.objectContaining({
+        id: "subagent-live:turn-1:tool-agent-live",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        agentThreadId: "tool-agent-live",
+        body: "Scanning migrations now.",
+      }),
+    ]);
 
     const completed = deriveSubagentProgressState({
       activities: [spawn, liveUpdate, statusOnlyUpdate, completion],
@@ -3825,6 +3834,34 @@ describe("deriveSubagentProgressState", () => {
       status: "completed",
       liveBody: null,
     });
+    expect(deriveSubagentLiveEntries([spawn, liveUpdate, statusOnlyUpdate, completion])).toEqual(
+      [],
+    );
+  });
+
+  it("attributes forwarded Codex child activities to a subagent lane", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "child-command",
+        kind: "tool.started",
+        summary: "Ran command",
+        payload: {
+          itemType: "command_execution",
+          sourceAgentThreadId: "agent-codex-1",
+          sourceAgentLabel: "Runtime trace",
+          data: { command: "rg providerThreadId" },
+        },
+      }),
+    ]);
+
+    expect(entries).toEqual([
+      expect.objectContaining({
+        subagentTask: {
+          subagentType: "Runtime trace",
+          toolUseId: "agent-codex-1",
+        },
+      }),
+    ]);
   });
 
   it("keeps failed subagents visible after the turn settles", () => {

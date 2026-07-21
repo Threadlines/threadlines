@@ -210,6 +210,11 @@ export interface CodexSessionRuntimeShape {
   readonly getGoal: Effect.Effect<CodexThreadGoal | null, CodexSessionRuntimeError>;
   readonly clearGoal: Effect.Effect<void, CodexSessionRuntimeError>;
   readonly readThread: Effect.Effect<CodexThreadSnapshot, CodexSessionRuntimeError>;
+  /** Read any persisted Codex provider thread without resuming it. Callers
+   * must authorize the provider thread before exposing its contents. */
+  readonly readStoredThread: (
+    providerThreadId: string,
+  ) => Effect.Effect<EffectCodexSchema.V2ThreadReadResponse["thread"], CodexSessionRuntimeError>;
   readonly rollbackThread: (
     numTurns: number,
   ) => Effect.Effect<CodexThreadSnapshot, CodexSessionRuntimeError>;
@@ -2038,6 +2043,13 @@ export const makeCodexSessionRuntime = (
         });
         return parseThreadSnapshot(response);
       }),
+      readStoredThread: (providerThreadId) =>
+        client
+          .request("thread/read", {
+            threadId: providerThreadId,
+            includeTurns: true,
+          })
+          .pipe(Effect.map((response) => response.thread)),
       rollbackThread: (numTurns) =>
         Effect.gen(function* () {
           const providerThreadId = yield* readProviderThreadId;
