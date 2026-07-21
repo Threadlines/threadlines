@@ -506,6 +506,19 @@ function messageFromClaudeStreamCause(
   return normalizeClaudeStreamMessages(cause)[0] ?? fallback;
 }
 
+/**
+ * A SIGTERM exit (code 143) is always an intentional stop — app quit during
+ * an update, session reaping, or an operator kill — never a Claude crash.
+ * During app shutdown the child can die before this adapter's finalizer marks
+ * the session stopped, so the stream reports it as a process failure; treat
+ * it as an interruption instead of persisting a scary provider error.
+ */
+function isClaudeSigtermExitCause(cause: Cause.Cause<{ readonly message: string }>): boolean {
+  return normalizeClaudeStreamMessages(cause).some(
+    (message) => /exited with code 143\b/i.test(message) || /\bSIGTERM\b/.test(message),
+  );
+}
+
 function interruptionMessageFromClaudeCause(
   cause: Cause.Cause<{ readonly message: string }>,
 ): string {
@@ -4498,6 +4511,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             "interrupted",
             interruptionMessageFromClaudeCause(exit.cause),
           );
+        }
+      } else if (isClaudeSigtermExitCause(exit.cause)) {
+        if (context.turnState) {
+          yield* completeTurn(context, "interrupted", "Claude session was stopped.");
         }
       } else {
         const message = messageFromClaudeStreamCause(exit.cause, "Claude runtime stream failed.");
