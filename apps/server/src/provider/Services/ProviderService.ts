@@ -25,6 +25,8 @@ import type {
   ProviderStartReviewResult,
   ProviderSteerTurnInput,
   ProviderStopSessionInput,
+  RuntimeThreadGoalSnapshot,
+  ThreadGoalStatus,
   ThreadId,
   ProviderTurnStartResult,
 } from "@threadlines/contracts";
@@ -80,6 +82,25 @@ export interface ProviderServiceShape {
    * Ask the active provider session to compact its context.
    */
   readonly compactContext: (input: {
+    readonly threadId: ThreadId;
+  }) => Effect.Effect<void, ProviderServiceError>;
+
+  /**
+   * Attach or update a long-horizon goal on the thread's provider session.
+   * Fields other than `threadId` are partial; omitted ones keep their
+   * provider-side values. Returns the provider's authoritative goal state.
+   */
+  readonly setThreadGoal: (input: {
+    readonly threadId: ThreadId;
+    readonly objective?: string;
+    readonly status?: ThreadGoalStatus;
+    readonly tokenBudget?: number | null;
+  }) => Effect.Effect<RuntimeThreadGoalSnapshot, ProviderServiceError>;
+
+  /**
+   * Detach the thread's goal.
+   */
+  readonly clearThreadGoal: (input: {
     readonly threadId: ThreadId;
   }) => Effect.Effect<void, ProviderServiceError>;
 

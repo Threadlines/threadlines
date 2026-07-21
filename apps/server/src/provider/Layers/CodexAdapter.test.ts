@@ -45,9 +45,11 @@ import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.t
 import {
   type CodexSessionRuntimeOptions,
   type CodexSessionRuntimeSendTurnInput,
+  type CodexSessionRuntimeSetGoalInput,
   type CodexSessionRuntimeShape,
   type CodexSessionRuntimeStartReviewInput,
   type CodexSessionRuntimeSteerTurnInput,
+  type CodexThreadGoal,
   type CodexThreadSnapshot,
 } from "./CodexSessionRuntime.ts";
 import { makeCodexAdapter } from "./CodexAdapter.ts";
@@ -113,6 +115,33 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
 
   public readonly compactContextImpl = vi.fn((): Promise<void> => Promise.resolve(undefined));
 
+  public goalState: CodexThreadGoal | null = null;
+
+  public readonly setGoalImpl = vi.fn(
+    (input: CodexSessionRuntimeSetGoalInput): Promise<CodexThreadGoal> => {
+      const updated: CodexThreadGoal = {
+        createdAt: this.goalState?.createdAt ?? 1_760_000_000_000,
+        objective: input.objective ?? this.goalState?.objective ?? "default objective",
+        status: input.status ?? this.goalState?.status ?? "active",
+        threadId: "provider-thread-1",
+        timeUsedSeconds: this.goalState?.timeUsedSeconds ?? 0,
+        tokenBudget:
+          input.tokenBudget !== undefined
+            ? input.tokenBudget
+            : (this.goalState?.tokenBudget ?? null),
+        tokensUsed: this.goalState?.tokensUsed ?? 0,
+        updatedAt: 1_760_000_000_000,
+      };
+      this.goalState = updated;
+      return Promise.resolve(updated);
+    },
+  );
+
+  public readonly clearGoalImpl = vi.fn((): Promise<void> => {
+    this.goalState = null;
+    return Promise.resolve(undefined);
+  });
+
   public readonly readThreadImpl = vi.fn(
     (): Promise<CodexThreadSnapshot> =>
       Promise.resolve({
@@ -172,6 +201,13 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
   }
 
   compactContext = Effect.promise(() => this.compactContextImpl());
+
+  setGoal = (input: CodexSessionRuntimeSetGoalInput) =>
+    Effect.promise(() => this.setGoalImpl(input));
+
+  getGoal = Effect.sync(() => this.goalState);
+
+  clearGoal = Effect.promise(() => this.clearGoalImpl());
 
   readThread = Effect.promise(() => this.readThreadImpl());
 
@@ -785,6 +821,75 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         stillHasSession = yield* adapter.hasSession(threadId);
       }
       assert.equal(stillHasSession, false);
+    }),
+  );
+
+  it.effect("maps thread goal notifications into goal runtime events", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const goalEventFiber = yield* Stream.runHead(
+        adapter.streamEvents.pipe(Stream.filter((event) => event.type === "goal.updated")),
+      ).pipe(Effect.forkChild);
+
+      yield* runtime.emit({
+        id: asEventId("evt-goal-updated"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-07-10T00:00:00.000Z",
+        method: "thread/goal/updated",
+        threadId: asThreadId("thread-1"),
+        payload: {
+          threadId: "provider-thread-1",
+          goal: {
+            // Mixed epoch units on purpose: seconds and milliseconds both
+            // normalize to the same ISO timeline.
+            createdAt: 1_760_000_000,
+            objective: "Ship goal support",
+            status: "active",
+            threadId: "provider-thread-1",
+            timeUsedSeconds: 42,
+            tokenBudget: 5_000_000,
+            tokensUsed: 1_200_000,
+            updatedAt: 1_760_000_400_000,
+          },
+        },
+      } satisfies ProviderEvent);
+
+      const goalEvent = yield* Fiber.join(goalEventFiber).pipe(Effect.timeout("1 second"));
+      assert.equal(goalEvent._tag, "Some");
+      if (goalEvent._tag === "Some" && goalEvent.value.type === "goal.updated") {
+        assert.deepEqual(goalEvent.value.payload.goal, {
+          objective: "Ship goal support",
+          status: "active",
+          tokenBudget: 5_000_000,
+          tokensUsed: 1_200_000,
+          timeUsedSeconds: 42,
+          createdAt: new Date(1_760_000_000_000).toISOString(),
+          updatedAt: new Date(1_760_000_400_000).toISOString(),
+        });
+      }
+    }),
+  );
+
+  it.effect("sets and clears a thread goal through the session runtime", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      assert.ok(adapter.setThreadGoal);
+      assert.ok(adapter.clearThreadGoal);
+
+      const goal = yield* adapter.setThreadGoal({
+        threadId: asThreadId("thread-1"),
+        objective: "Ship goal support",
+        tokenBudget: 1_000,
+      });
+      assert.equal(goal.objective, "Ship goal support");
+      assert.equal(goal.status, "active");
+      assert.equal(goal.tokenBudget, 1_000);
+      assert.equal(runtime.setGoalImpl.mock.calls.length, 1);
+
+      yield* adapter.clearThreadGoal(asThreadId("thread-1"));
+      assert.equal(runtime.clearGoalImpl.mock.calls.length, 1);
+      assert.equal(runtime.goalState, null);
     }),
   );
 

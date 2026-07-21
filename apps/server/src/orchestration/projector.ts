@@ -34,6 +34,7 @@ import {
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
   ThreadEffectiveCwdSetPayload,
+  ThreadGoalStateSetPayload,
   ThreadFollowUpSubmittedPayload,
   ThreadFollowUpAcceptedPayload,
   ThreadTurnDiffCompletedPayload,
@@ -583,6 +584,26 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             effectiveCwd: payload.effectiveCwd,
+            updatedAt: event.occurredAt,
+          }),
+        };
+      });
+
+    case "thread.goal-state-set":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          ThreadGoalStateSetPayload,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        if (!nextBase.threads.some((entry) => entry.id === payload.threadId)) {
+          return nextBase;
+        }
+        return {
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            goal: payload.goal,
             updatedAt: event.occurredAt,
           }),
         };

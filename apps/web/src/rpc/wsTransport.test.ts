@@ -330,6 +330,34 @@ describe("WsTransport", () => {
     await transport.dispose();
   });
 
+  it("fires onFirstMessage once per socket connection", async () => {
+    const onFirstMessage = vi.fn();
+    const transport = createTransport("ws://localhost:3020", { onFirstMessage });
+
+    await waitFor(() => {
+      expect(sockets).toHaveLength(1);
+    });
+    const firstSocket = getSocket();
+    firstSocket.open();
+    expect(onFirstMessage).not.toHaveBeenCalled();
+
+    firstSocket.serverMessage(JSON.stringify({ _tag: "Pong" }));
+    firstSocket.serverMessage(JSON.stringify({ _tag: "Pong" }));
+    expect(onFirstMessage).toHaveBeenCalledOnce();
+
+    firstSocket.close(1006, "connection reset");
+    await waitFor(() => {
+      expect(sockets).toHaveLength(2);
+    }, 2_000);
+
+    const secondSocket = getSocket();
+    secondSocket.open();
+    secondSocket.serverMessage(JSON.stringify({ _tag: "Pong" }));
+    expect(onFirstMessage).toHaveBeenCalledTimes(2);
+
+    await transport.dispose();
+  });
+
   it("does not report an intentional dispose as a reconnectable disconnect", async () => {
     const onClose = vi.fn();
     const transport = createTransport("ws://localhost:3020", {

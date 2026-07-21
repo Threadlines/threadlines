@@ -83,7 +83,9 @@ type ProviderIntentEvent = Extract<
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
       | "thread.session-stop-requested"
-      | "thread.session-set";
+      | "thread.session-set"
+      | "thread.goal-set-requested"
+      | "thread.goal-clear-requested";
   }
 >;
 
@@ -291,7 +293,8 @@ const make = Effect.gen(function* () {
       | "provider.context-compact.failed"
       | "provider.approval.respond.failed"
       | "provider.user-input.respond.failed"
-      | "provider.session.stop.failed";
+      | "provider.session.stop.failed"
+      | "provider.goal.failed";
     readonly summary: string;
     readonly detail: string;
     readonly turnId: TurnId | null;
@@ -1294,6 +1297,70 @@ const make = Effect.gen(function* () {
     }
   });
 
+  const processGoalSetRequested = Effect.fn("processGoalSetRequested")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.goal-set-requested" }>,
+  ) {
+    const thread = yield* resolveThread(event.payload.threadId);
+    if (!thread) {
+      return;
+    }
+    // Goals live provider-side, so the thread needs a live session before the
+    // goal RPC. Cold threads get their session started (or resumed) here.
+    yield* ensureSessionForThread(event.payload.threadId, event.payload.createdAt)
+      .pipe(
+        Effect.flatMap(() =>
+          providerService.setThreadGoal({
+            threadId: event.payload.threadId,
+            ...(event.payload.objective !== undefined
+              ? { objective: event.payload.objective }
+              : {}),
+            ...(event.payload.status !== undefined ? { status: event.payload.status } : {}),
+            ...(event.payload.tokenBudget !== undefined
+              ? { tokenBudget: event.payload.tokenBudget }
+              : {}),
+          }),
+        ),
+        Effect.asVoid,
+      )
+      .pipe(
+        Effect.catchCause((cause) =>
+          appendProviderFailureActivity({
+            threadId: event.payload.threadId,
+            kind: "provider.goal.failed",
+            summary: "Goal update failed",
+            detail: formatFailureDetail(cause),
+            turnId: null,
+            createdAt: event.payload.createdAt,
+          }),
+        ),
+      );
+  });
+
+  const processGoalClearRequested = Effect.fn("processGoalClearRequested")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.goal-clear-requested" }>,
+  ) {
+    const thread = yield* resolveThread(event.payload.threadId);
+    if (!thread) {
+      return;
+    }
+    yield* ensureSessionForThread(event.payload.threadId, event.payload.createdAt)
+      .pipe(
+        Effect.flatMap(() => providerService.clearThreadGoal({ threadId: event.payload.threadId })),
+      )
+      .pipe(
+        Effect.catchCause((cause) =>
+          appendProviderFailureActivity({
+            threadId: event.payload.threadId,
+            kind: "provider.goal.failed",
+            summary: "Goal clear failed",
+            detail: formatFailureDetail(cause),
+            turnId: null,
+            createdAt: event.payload.createdAt,
+          }),
+        ),
+      );
+  });
+
   const processContextCompactRequested = Effect.fn("processContextCompactRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.context-compact-requested" }>,
   ) {
@@ -1543,6 +1610,12 @@ const make = Effect.gen(function* () {
       case "thread.context-compact-requested":
         yield* processContextCompactRequested(event);
         return;
+      case "thread.goal-set-requested":
+        yield* processGoalSetRequested(event);
+        return;
+      case "thread.goal-clear-requested":
+        yield* processGoalClearRequested(event);
+        return;
       case "thread.approval-response-requested":
         yield* processApprovalResponseRequested(event);
         return;
@@ -1589,7 +1662,9 @@ const make = Effect.gen(function* () {
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||
         event.type === "thread.session-stop-requested" ||
-        event.type === "thread.session-set"
+        event.type === "thread.session-set" ||
+        event.type === "thread.goal-set-requested" ||
+        event.type === "thread.goal-clear-requested"
       ) {
         return yield* worker.enqueue(String(event.aggregateId), event);
       }

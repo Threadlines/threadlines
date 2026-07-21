@@ -20,6 +20,8 @@ import type {
   ProviderSessionStartInput,
   ProviderSteerTurnInput,
   MessageId,
+  RuntimeThreadGoalSnapshot,
+  ThreadGoalStatus,
   ThreadId,
   ProviderTurnStartResult,
   TurnId,
@@ -31,6 +33,15 @@ export type ProviderSessionModelSwitchMode = "in-session" | "unsupported";
 export type ProviderManualContextCompactionMode = "supported" | "unsupported";
 export type ProviderActiveTurnSteeringMode = "supported" | "unsupported";
 export type ProviderReviewStartMode = "supported" | "unsupported";
+export type ProviderThreadGoalsMode = "supported" | "unsupported";
+
+/** Partial goal update: omitted fields keep their provider-side values. */
+export interface ProviderSetThreadGoalInput {
+  readonly threadId: ThreadId;
+  readonly objective?: string;
+  readonly status?: ThreadGoalStatus;
+  readonly tokenBudget?: number | null;
+}
 
 export interface ProviderAdapterCapabilities {
   /**
@@ -52,6 +63,12 @@ export interface ProviderAdapterCapabilities {
    * Declares whether this adapter can start native provider code reviews.
    */
   readonly reviewStart?: ProviderReviewStartMode;
+
+  /**
+   * Declares whether this adapter supports long-horizon thread goals
+   * (Codex goal mode).
+   */
+  readonly threadGoals?: ProviderThreadGoalsMode;
 }
 
 export interface ProviderThreadTurnSnapshot {
@@ -123,6 +140,20 @@ export interface ProviderAdapterShape<TError> {
    * `capabilities.manualContextCompaction` unset or `"unsupported"`.
    */
   readonly compactContext?: (threadId: ThreadId) => Effect.Effect<void, TError>;
+
+  /**
+   * Attach or update a long-horizon goal on the thread's provider session.
+   * Optional; must be present when `capabilities.threadGoals` is
+   * `"supported"`. Returns the provider's authoritative goal state.
+   */
+  readonly setThreadGoal?: (
+    input: ProviderSetThreadGoalInput,
+  ) => Effect.Effect<RuntimeThreadGoalSnapshot, TError>;
+
+  /**
+   * Detach the thread's goal. Optional; see `setThreadGoal`.
+   */
+  readonly clearThreadGoal?: (threadId: ThreadId) => Effect.Effect<void, TError>;
 
   /**
    * Respond to an interactive approval request.

@@ -433,6 +433,35 @@ export const OrchestrationSession = Schema.Struct({
 });
 export type OrchestrationSession = typeof OrchestrationSession.Type;
 
+/** Mirrors the Codex app-server ThreadGoal status values verbatim so no
+ *  lossy mapping sits between the provider and the read model. */
+export const ThreadGoalStatus = Schema.Literals([
+  "active",
+  "paused",
+  "blocked",
+  "usageLimited",
+  "budgetLimited",
+  "complete",
+]);
+export type ThreadGoalStatus = typeof ThreadGoalStatus.Type;
+
+/**
+ * A long-horizon goal attached to a thread (Codex goal mode). Authoritative
+ * state comes from provider `goal.updated` notifications; commands only
+ * express intent.
+ */
+export const OrchestrationThreadGoal = Schema.Struct({
+  threadId: ThreadId,
+  objective: TrimmedNonEmptyString,
+  status: ThreadGoalStatus,
+  tokenBudget: Schema.NullOr(NonNegativeInt),
+  tokensUsed: NonNegativeInt,
+  timeUsedSeconds: NonNegativeInt,
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type OrchestrationThreadGoal = typeof OrchestrationThreadGoal.Type;
+
 export const OrchestrationCheckpointFile = Schema.Struct({
   path: TrimmedNonEmptyString,
   kind: TrimmedNonEmptyString,
@@ -516,6 +545,9 @@ export const OrchestrationThread = Schema.Struct({
   effectiveCwd: Schema.NullOr(TrimmedNonEmptyString).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  goal: Schema.NullOr(OrchestrationThreadGoal).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -566,6 +598,9 @@ export const OrchestrationThreadShell = Schema.Struct({
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   /** See OrchestrationThread.effectiveCwd. */
   effectiveCwd: Schema.NullOr(TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  goal: Schema.NullOr(OrchestrationThreadGoal).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
@@ -945,6 +980,38 @@ const ThreadSessionStopCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/** Intent: attach or update a goal on the thread's provider session. Partial —
+ *  omitted fields keep their current provider-side values (pause/resume send
+ *  only `status`). Authoritative state flows back via `goal.updated`. */
+const ThreadGoalSetCommand = Schema.Struct({
+  type: Schema.Literal("thread.goal.set"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  objective: Schema.optional(TrimmedNonEmptyString),
+  status: Schema.optional(ThreadGoalStatus),
+  tokenBudget: Schema.optional(Schema.NullOr(NonNegativeInt)),
+  createdAt: IsoDateTime,
+});
+
+/** Intent: detach the thread's goal. */
+const ThreadGoalClearCommand = Schema.Struct({
+  type: Schema.Literal("thread.goal.clear"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  createdAt: IsoDateTime,
+});
+
+/** Provider-internal: record provider-reported goal state (null when the
+ *  provider cleared it). Emitted by runtime ingestion off `goal.updated` /
+ *  `goal.cleared` events. */
+const ThreadGoalStateSetCommand = Schema.Struct({
+  type: Schema.Literal("thread.goal.state.set"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  goal: Schema.NullOr(OrchestrationThreadGoal),
+  createdAt: IsoDateTime,
+});
+
 const DispatchableClientOrchestrationCommand = Schema.Union([
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,
@@ -968,6 +1035,8 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadUserInputRespondCommand,
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
+  ThreadGoalSetCommand,
+  ThreadGoalClearCommand,
 ]);
 export type DispatchableClientOrchestrationCommand =
   typeof DispatchableClientOrchestrationCommand.Type;
@@ -995,6 +1064,8 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadUserInputRespondCommand,
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
+  ThreadGoalSetCommand,
+  ThreadGoalClearCommand,
 ]);
 export type ClientOrchestrationCommand = typeof ClientOrchestrationCommand.Type;
 
@@ -1106,6 +1177,9 @@ const ThreadRevertCompleteCommand = Schema.Struct({
 const InternalOrchestrationCommand = Schema.Union([
   ThreadSessionSetCommand,
   ThreadEffectiveCwdSetCommand,
+  ThreadGoalSetCommand,
+  ThreadGoalClearCommand,
+  ThreadGoalStateSetCommand,
   ThreadMessageUserRecordCommand,
   ThreadMessageAssistantDeltaCommand,
   ThreadMessageAssistantCompleteCommand,
@@ -1149,6 +1223,9 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.session-stop-requested",
   "thread.session-set",
   "thread.effective-cwd-set",
+  "thread.goal-set-requested",
+  "thread.goal-clear-requested",
+  "thread.goal-state-set",
   "thread.proposed-plan-upserted",
   "thread.turn-diff-completed",
   "thread.activity-appended",
@@ -1345,6 +1422,25 @@ export const ThreadEffectiveCwdSetPayload = Schema.Struct({
   updatedAt: IsoDateTime,
 });
 
+export const ThreadGoalSetRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  objective: Schema.optional(TrimmedNonEmptyString),
+  status: Schema.optional(ThreadGoalStatus),
+  tokenBudget: Schema.optional(Schema.NullOr(NonNegativeInt)),
+  createdAt: IsoDateTime,
+});
+
+export const ThreadGoalClearRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  createdAt: IsoDateTime,
+});
+
+export const ThreadGoalStateSetPayload = Schema.Struct({
+  threadId: ThreadId,
+  goal: Schema.NullOr(OrchestrationThreadGoal),
+  updatedAt: IsoDateTime,
+});
+
 export const ThreadProposedPlanUpsertedPayload = Schema.Struct({
   threadId: ThreadId,
   proposedPlan: OrchestrationProposedPlan,
@@ -1512,6 +1608,21 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.effective-cwd-set"),
     payload: ThreadEffectiveCwdSetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.goal-set-requested"),
+    payload: ThreadGoalSetRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.goal-clear-requested"),
+    payload: ThreadGoalClearRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.goal-state-set"),
+    payload: ThreadGoalStateSetPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

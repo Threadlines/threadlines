@@ -6,6 +6,7 @@ import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react
 
 import ChatView from "../components/ChatView";
 import { ChatRightPanelInlineSidebar } from "../components/ChatRightPanelInlineSidebar";
+import { HostedStaticLoadingState } from "../components/HostedStaticStatusStates";
 import { threadHasPromotableServerActivity } from "../components/ChatView.logic";
 import { DiffWorkerPoolProvider } from "../components/DiffWorkerPoolProvider";
 import {
@@ -15,6 +16,7 @@ import {
   type DiffPanelMode,
 } from "../components/DiffPanelShell";
 import { finalizePromotedDraftThreadByRef, useComposerDraftStore } from "../composerDraftStore";
+import { useSavedEnvironmentRegistryStore } from "../environments/runtime";
 import {
   closeRightPanelSearchParams,
   type DiffRouteSearch,
@@ -88,9 +90,13 @@ const LazyDiffPanelWithBack = (props: {
 
 function ChatThreadRouteView() {
   const navigate = useNavigate();
+  const { authGateState } = Route.useRouteContext();
   const threadRef = Route.useParams({
     select: (params) => resolveThreadRouteRef(params),
   });
+  const savedEnvironmentLabel = useSavedEnvironmentRegistryStore((state) =>
+    threadRef ? (state.byId[threadRef.environmentId]?.label ?? null) : null,
+  );
   const setLastChatThreadRef = useUiStateStore((state) => state.setLastChatThreadRef);
   const search = Route.useSearch();
   const shouldUseDiffSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
@@ -331,6 +337,13 @@ function ChatThreadRouteView() {
   }, [draftThread?.promotedTo, serverThreadHasPromotableActivity, threadRef]);
 
   if (!threadRef || !bootstrapComplete || !routeThreadExists) {
+    // On hosted (phone) sessions the only content source is the relay
+    // bootstrap, so a refreshed deep link lands here with nothing loaded yet.
+    // Rendering nothing reads as a broken empty page; show the same loading
+    // surface the index route uses until the bootstrap resolves the thread.
+    if (authGateState.status === "hosted-static" && !bootstrapComplete) {
+      return <HostedStaticLoadingState label={savedEnvironmentLabel} />;
+    }
     return null;
   }
 

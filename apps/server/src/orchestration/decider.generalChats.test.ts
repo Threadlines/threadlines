@@ -162,6 +162,7 @@ function makeThread(input: {
     branch: null,
     worktreePath: null,
     effectiveCwd: null,
+    goal: null,
     latestTurn: null,
     createdAt: now,
     updatedAt: now,

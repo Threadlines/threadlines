@@ -242,6 +242,18 @@ describe("ProviderCommandReactor", () => {
     );
     const interruptTurn = vi.fn((_: unknown) => Effect.void);
     const compactContext = vi.fn<ProviderServiceShape["compactContext"]>(() => Effect.void);
+    const setThreadGoal = vi.fn<ProviderServiceShape["setThreadGoal"]>((goalInput) =>
+      Effect.succeed({
+        objective: goalInput.objective ?? "existing objective",
+        status: goalInput.status ?? "active",
+        tokenBudget: goalInput.tokenBudget ?? null,
+        tokensUsed: 0,
+        timeUsedSeconds: 0,
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+    const clearThreadGoal = vi.fn<ProviderServiceShape["clearThreadGoal"]>(() => Effect.void);
     const respondToRequest = vi.fn<ProviderServiceShape["respondToRequest"]>(() => Effect.void);
     const respondToUserInput = vi.fn<ProviderServiceShape["respondToUserInput"]>(() => Effect.void);
     const stopSession = vi.fn((input: unknown) =>
@@ -317,6 +329,8 @@ describe("ProviderCommandReactor", () => {
       startReview: () => unsupported(),
       interruptTurn: interruptTurn as ProviderServiceShape["interruptTurn"],
       compactContext,
+      setThreadGoal: setThreadGoal as ProviderServiceShape["setThreadGoal"],
+      clearThreadGoal: clearThreadGoal as ProviderServiceShape["clearThreadGoal"],
       respondToRequest: respondToRequest as ProviderServiceShape["respondToRequest"],
       respondToUserInput: respondToUserInput as ProviderServiceShape["respondToUserInput"],
       stopSession: stopSession as ProviderServiceShape["stopSession"],
@@ -453,6 +467,8 @@ describe("ProviderCommandReactor", () => {
       steerTurn,
       interruptTurn,
       compactContext,
+      setThreadGoal,
+      clearThreadGoal,
       respondToRequest,
       respondToUserInput,
       stopSession,
@@ -532,6 +548,44 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.latestTurn).toMatchObject({
       turnId: "turn-1",
       state: "running",
+    });
+  });
+
+  it("reacts to thread.goal.set by ensuring a session and setting the provider goal", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.goal.set",
+        commandId: CommandId.make("cmd-goal-set-1"),
+        threadId: ThreadId.make("thread-1"),
+        objective: "Keep the test suite green",
+        tokenBudget: 500_000,
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.setThreadGoal.mock.calls.length === 1);
+    // A cold thread gets its provider session started before the goal RPC.
+    expect(harness.startSession.mock.calls.length).toBe(1);
+    expect(harness.setThreadGoal.mock.calls[0]?.[0]).toMatchObject({
+      threadId: ThreadId.make("thread-1"),
+      objective: "Keep the test suite green",
+      tokenBudget: 500_000,
+    });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.goal.clear",
+        commandId: CommandId.make("cmd-goal-clear-1"),
+        threadId: ThreadId.make("thread-1"),
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.clearThreadGoal.mock.calls.length === 1);
+    expect(harness.clearThreadGoal.mock.calls[0]?.[0]).toMatchObject({
+      threadId: ThreadId.make("thread-1"),
     });
   });
 

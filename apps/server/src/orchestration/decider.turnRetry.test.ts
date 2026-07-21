@@ -47,6 +47,7 @@ function makeThread(overrides: Partial<OrchestrationThread> = {}): Orchestration
     branch: null,
     worktreePath: null,
     effectiveCwd: null,
+    goal: null,
     latestTurn: {
       turnId: TurnId.make("turn-failed"),
       state: "error",

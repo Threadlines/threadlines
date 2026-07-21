@@ -1001,6 +1001,76 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.goal.set": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+          metadata: {},
+        }),
+        type: "thread.goal-set-requested",
+        payload: {
+          threadId: command.threadId,
+          ...(command.objective !== undefined ? { objective: command.objective } : {}),
+          ...(command.status !== undefined ? { status: command.status } : {}),
+          ...(command.tokenBudget !== undefined ? { tokenBudget: command.tokenBudget } : {}),
+          createdAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.goal.clear": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+          metadata: {},
+        }),
+        type: "thread.goal-clear-requested",
+        payload: {
+          threadId: command.threadId,
+          createdAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.goal.state.set": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+          metadata: {},
+        }),
+        type: "thread.goal-state-set",
+        payload: {
+          threadId: command.threadId,
+          goal: command.goal,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
     case "thread.message.user.record": {
       yield* requireThread({
         readModel,

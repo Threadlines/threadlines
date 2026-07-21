@@ -55,6 +55,12 @@ const decodeV2ReviewStartResponse = Schema.decodeUnknownEffect(
 );
 const decodeV2TurnSteerParams = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnSteerParams);
 const decodeV2TurnSteerResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnSteerResponse);
+const decodeV2ThreadGoalSetResponse = Schema.decodeUnknownEffect(
+  EffectCodexSchema.V2ThreadGoalSetResponse,
+);
+const decodeV2ThreadGoalGetResponse = Schema.decodeUnknownEffect(
+  EffectCodexSchema.V2ThreadGoalGetResponse,
+);
 
 const PROVIDER = ProviderDriverKind.make("codex");
 const CODEX_APP_SERVER_REQUEST_TIMEOUT = Duration.seconds(60);
@@ -192,6 +198,11 @@ export interface CodexSessionRuntimeShape {
   ) => Effect.Effect<ProviderStartReviewResult, CodexSessionRuntimeError>;
   readonly interruptTurn: (turnId?: TurnId) => Effect.Effect<void, CodexSessionRuntimeError>;
   readonly compactContext: Effect.Effect<void, CodexSessionRuntimeError>;
+  readonly setGoal: (
+    input: CodexSessionRuntimeSetGoalInput,
+  ) => Effect.Effect<CodexThreadGoal, CodexSessionRuntimeError>;
+  readonly getGoal: Effect.Effect<CodexThreadGoal | null, CodexSessionRuntimeError>;
+  readonly clearGoal: Effect.Effect<void, CodexSessionRuntimeError>;
   readonly readThread: Effect.Effect<CodexThreadSnapshot, CodexSessionRuntimeError>;
   readonly rollbackThread: (
     numTurns: number,
@@ -207,6 +218,14 @@ export interface CodexSessionRuntimeShape {
   ) => Effect.Effect<void, CodexSessionRuntimeError>;
   readonly events: Stream.Stream<ProviderEvent, never>;
   readonly close: Effect.Effect<void>;
+}
+
+export type CodexThreadGoal = EffectCodexSchema.V2ThreadGoalSetResponse__ThreadGoal;
+
+export interface CodexSessionRuntimeSetGoalInput {
+  readonly objective?: string;
+  readonly status?: EffectCodexSchema.V2ThreadGoalSetParams__ThreadGoalStatus;
+  readonly tokenBudget?: number | null;
 }
 
 export type CodexSessionRuntimeError =
@@ -697,6 +716,8 @@ function readNotificationThreadId(notification: CodexServerNotification): string
     case "thread/closed":
     case "thread/name/updated":
     case "thread/tokenUsage/updated":
+    case "thread/goal/updated":
+    case "thread/goal/cleared":
     case "turn/started":
     case "model/safetyBuffering/updated":
     case "hook/started":
@@ -1901,6 +1922,49 @@ export const makeCodexSessionRuntime = (
         yield* withCodexRequestTimeout(
           "compact a Codex thread",
           client.request("thread/compact/start", {
+            threadId: providerThreadId,
+          }),
+        );
+      }),
+      setGoal: (input) =>
+        Effect.gen(function* () {
+          const providerThreadId = yield* readProviderThreadId;
+          const rawResponse = yield* withCodexRequestTimeout(
+            "set a Codex thread goal",
+            client.raw.request("thread/goal/set", {
+              threadId: providerThreadId,
+              ...(input.objective !== undefined ? { objective: input.objective } : {}),
+              ...(input.status !== undefined ? { status: input.status } : {}),
+              ...(input.tokenBudget !== undefined ? { tokenBudget: input.tokenBudget } : {}),
+            }),
+          );
+          const response = yield* decodeV2ThreadGoalSetResponse(rawResponse).pipe(
+            Effect.mapError((error) =>
+              toProtocolParseError("Invalid thread/goal/set response payload", error),
+            ),
+          );
+          return response.goal;
+        }),
+      getGoal: Effect.gen(function* () {
+        const providerThreadId = yield* readProviderThreadId;
+        const rawResponse = yield* withCodexRequestTimeout(
+          "read a Codex thread goal",
+          client.raw.request("thread/goal/get", {
+            threadId: providerThreadId,
+          }),
+        );
+        const response = yield* decodeV2ThreadGoalGetResponse(rawResponse).pipe(
+          Effect.mapError((error) =>
+            toProtocolParseError("Invalid thread/goal/get response payload", error),
+          ),
+        );
+        return response.goal ?? null;
+      }),
+      clearGoal: Effect.gen(function* () {
+        const providerThreadId = yield* readProviderThreadId;
+        yield* withCodexRequestTimeout(
+          "clear a Codex thread goal",
+          client.raw.request("thread/goal/clear", {
             threadId: providerThreadId,
           }),
         );

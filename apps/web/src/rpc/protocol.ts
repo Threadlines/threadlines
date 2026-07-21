@@ -32,6 +32,12 @@ export interface WsProtocolLifecycleHandlers {
   readonly isActive?: () => boolean;
   readonly onAttempt?: (socketUrl: string) => void;
   readonly onOpen?: () => void;
+  /**
+   * First inbound frame on a socket connection. On relay transports the relay
+   * forwards only desktop frames to devices, so this is the earliest proof
+   * that the desktop peer is actually reachable — an open socket is not.
+   */
+  readonly onFirstMessage?: () => void;
   readonly onHeartbeatPing?: () => void;
   readonly onHeartbeatPong?: () => void;
   readonly onHeartbeatTimeout?: () => void;
@@ -111,7 +117,10 @@ function normalizeProtocols(
 }
 
 type ComposedWsProtocolLifecycleHandlers = Required<
-  Pick<WsProtocolLifecycleHandlers, "isActive" | "onAttempt" | "onOpen" | "onError" | "onClose">
+  Pick<
+    WsProtocolLifecycleHandlers,
+    "isActive" | "onAttempt" | "onOpen" | "onFirstMessage" | "onError" | "onClose"
+  >
 >;
 
 function defaultLifecycleHandlers(
@@ -125,6 +134,7 @@ function defaultLifecycleHandlers(
     onOpen: () => {
       recordWsConnectionOpened(resolveConnectionMetadata(handlers));
     },
+    onFirstMessage: () => undefined,
     onError: (message) => {
       clearAllTrackedRpcRequests();
       recordWsConnectionErrored(message, resolveConnectionMetadata(handlers));
@@ -160,6 +170,12 @@ function composeLifecycleHandlers(
       }
       defaults.onOpen();
       handlers?.onOpen?.();
+    },
+    onFirstMessage: () => {
+      if (!isActive()) {
+        return;
+      }
+      handlers?.onFirstMessage?.();
     },
     onError: (message) => {
       if (!isActive()) {
@@ -213,6 +229,16 @@ export function createWsRpcProtocolLayer(
         },
         { once: true },
       );
+      // Self-guarded instead of { once: true }: the relay chunking patch
+      // funnels message listeners and does not honor listener options.
+      let sawFirstMessage = false;
+      socket.addEventListener("message", () => {
+        if (sawFirstMessage) {
+          return;
+        }
+        sawFirstMessage = true;
+        lifecycle.onFirstMessage();
+      });
       socket.addEventListener(
         "error",
         () => {

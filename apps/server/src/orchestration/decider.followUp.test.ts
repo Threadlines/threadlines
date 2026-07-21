@@ -34,6 +34,7 @@ const readModelAfterProviderDelivery: OrchestrationReadModel = {
       branch: null,
       worktreePath: null,
       effectiveCwd: null,
+      goal: null,
       latestTurn: {
         turnId: TurnId.make("turn-follow-up"),
         state: "completed",

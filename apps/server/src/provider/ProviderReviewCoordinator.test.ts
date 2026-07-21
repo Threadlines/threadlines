@@ -41,6 +41,7 @@ function makeThreadShell(
     branch: "main",
     worktreePath: null,
     effectiveCwd: null,
+    goal: null,
     latestTurn: null,
     createdAt: NOW,
     updatedAt: NOW,

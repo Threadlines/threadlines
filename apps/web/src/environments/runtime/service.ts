@@ -11,7 +11,10 @@ import {
   type TerminalEvent,
   ThreadId,
 } from "@threadlines/contracts";
-import { RELAY_CLOSE_CODE_SESSION_EXPIRED } from "@threadlines/contracts/relay";
+import {
+  RELAY_CLOSE_CODE_PEER_UNAVAILABLE,
+  RELAY_CLOSE_CODE_SESSION_EXPIRED,
+} from "@threadlines/contracts/relay";
 import { type QueryClient } from "@tanstack/react-query";
 import { Throttler } from "@tanstack/react-pacer";
 import {
@@ -1258,6 +1261,7 @@ function createSavedEnvironmentClient(
   bearerToken: string,
 ): WsRpcClient {
   useSavedEnvironmentRuntimeStore.getState().ensure(environmentId);
+  const isRelay = Boolean(getSavedEnvironmentRecord(environmentId)?.relay);
 
   return createWsRpcClient(
     new WsTransport(
@@ -1291,7 +1295,20 @@ function createSavedEnvironmentClient(
           setRuntimeConnecting(environmentId);
         },
         onOpen: () => {
+          // The relay accepts device sockets whether or not the desktop is
+          // bridged behind it, so an open relay socket proves nothing about
+          // the desktop. Stay "connecting" until the first inbound frame —
+          // in raw mode the relay only forwards desktop frames to devices.
+          if (isRelay) {
+            setRuntimeConnecting(environmentId);
+            return;
+          }
           setRuntimeConnected(environmentId);
+        },
+        onFirstMessage: () => {
+          if (isRelay) {
+            setRuntimeConnected(environmentId);
+          }
         },
         onError: (message: string) => {
           const mismatch = resolveServerConfigVersionMismatch(
@@ -1318,6 +1335,15 @@ function createSavedEnvironmentClient(
             void markRelaySavedEnvironmentLinkExpired(environmentId);
             return;
           }
+          if (
+            details.code === RELAY_CLOSE_CODE_PEER_UNAVAILABLE &&
+            getSavedEnvironmentRecord(environmentId)?.relay
+          ) {
+            // The relay closes device sockets that send while no desktop is
+            // bridged; surface that instead of the raw close reason.
+            setRuntimeDisconnected(environmentId, "The desktop app is not connected to the relay.");
+            return;
+          }
           setRuntimeDisconnected(
             environmentId,
             appendVersionMismatchHint(
@@ -1329,7 +1355,7 @@ function createSavedEnvironmentClient(
           );
         },
       },
-      getSavedEnvironmentRecord(environmentId)?.relay
+      isRelay
         ? {
             preservePath: true,
             protocols: relayWebSocketProtocols(bearerToken),

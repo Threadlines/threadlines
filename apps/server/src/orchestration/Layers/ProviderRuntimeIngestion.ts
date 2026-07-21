@@ -1870,6 +1870,40 @@ const make = Effect.gen(function* () {
         return;
       }
 
+      if (event.type === "goal.updated") {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.goal.state.set",
+          commandId: providerCommandId(event, "goal-updated"),
+          threadId: thread.id,
+          goal: {
+            threadId: thread.id,
+            objective: event.payload.goal.objective,
+            status: event.payload.goal.status,
+            tokenBudget: event.payload.goal.tokenBudget ?? null,
+            tokensUsed: event.payload.goal.tokensUsed,
+            timeUsedSeconds: event.payload.goal.timeUsedSeconds,
+            createdAt: event.payload.goal.createdAt,
+            updatedAt: event.payload.goal.updatedAt,
+          },
+          createdAt: event.createdAt,
+        });
+        return;
+      }
+
+      if (event.type === "goal.cleared") {
+        if (thread.goal === null) {
+          return;
+        }
+        yield* orchestrationEngine.dispatch({
+          type: "thread.goal.state.set",
+          commandId: providerCommandId(event, "goal-cleared"),
+          threadId: thread.id,
+          goal: null,
+          createdAt: event.createdAt,
+        });
+        return;
+      }
+
       let loadedThreadDetail: OrchestrationThread | null | undefined;
       const getLoadedThreadDetail = () =>
         Effect.gen(function* () {

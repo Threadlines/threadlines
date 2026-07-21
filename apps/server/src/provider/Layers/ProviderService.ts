@@ -23,6 +23,8 @@ import {
   ProviderStartReviewInput,
   ProviderSteerTurnInput,
   ProviderStopSessionInput,
+  ThreadGoalStatus,
+  TrimmedNonEmptyString,
   type ProviderInstanceId,
   type ProviderDriverKind,
   type ProviderRuntimeEvent,
@@ -86,6 +88,15 @@ const ProviderCompactContextInput = Schema.Struct({
   threadId: ThreadId,
 });
 const ProviderDeleteThreadInput = Schema.Struct({
+  threadId: ThreadId,
+});
+const ProviderSetThreadGoalServiceInput = Schema.Struct({
+  threadId: ThreadId,
+  objective: Schema.optional(TrimmedNonEmptyString),
+  status: Schema.optional(ThreadGoalStatus),
+  tokenBudget: Schema.optional(Schema.NullOr(NonNegativeInt)),
+});
+const ProviderClearThreadGoalServiceInput = Schema.Struct({
   threadId: ThreadId,
 });
 
@@ -1215,6 +1226,114 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     },
   );
 
+  const setThreadGoal: ProviderServiceShape["setThreadGoal"] = Effect.fn("setThreadGoal")(
+    function* (rawInput) {
+      const input = yield* decodeInputOrValidationError({
+        operation: "ProviderService.setThreadGoal",
+        schema: ProviderSetThreadGoalServiceInput,
+        payload: rawInput,
+      });
+      const routed = yield* resolveRoutableSession({
+        threadId: input.threadId,
+        operation: "ProviderService.setThreadGoal",
+        allowRecovery: true,
+      });
+      yield* Effect.annotateCurrentSpan({
+        "provider.operation": "set-thread-goal",
+        "provider.kind": routed.adapter.provider,
+        "provider.thread_id": input.threadId,
+      });
+      if (
+        routed.adapter.capabilities.threadGoals !== "supported" ||
+        routed.adapter.setThreadGoal === undefined
+      ) {
+        return yield* toValidationError(
+          "ProviderService.setThreadGoal",
+          `Provider '${routed.adapter.provider}' does not support thread goals.`,
+        );
+      }
+      const goal = yield* routed.adapter.setThreadGoal({
+        threadId: routed.threadId,
+        ...(input.objective !== undefined ? { objective: input.objective } : {}),
+        ...(input.status !== undefined ? { status: input.status } : {}),
+        ...(input.tokenBudget !== undefined ? { tokenBudget: input.tokenBudget } : {}),
+      });
+      // Project the authoritative response directly: goal notifications keep
+      // later autonomous updates flowing, but the requester's own change must
+      // not depend on the app-server echoing a notification back.
+      yield* processRuntimeEvent(
+        {
+          instanceId: routed.instanceId,
+          provider: routed.adapter.provider,
+        },
+        {
+          eventId: EventId.make(crypto.randomUUID()),
+          provider: routed.adapter.provider,
+          providerInstanceId: routed.instanceId,
+          threadId: input.threadId,
+          createdAt: yield* nowIso,
+          type: "goal.updated",
+          payload: {
+            goal,
+          },
+        },
+      );
+      yield* analytics.record("provider.goal.set", {
+        provider: routed.adapter.provider,
+        status: goal.status,
+      });
+      return goal;
+    },
+  );
+
+  const clearThreadGoal: ProviderServiceShape["clearThreadGoal"] = Effect.fn("clearThreadGoal")(
+    function* (rawInput) {
+      const input = yield* decodeInputOrValidationError({
+        operation: "ProviderService.clearThreadGoal",
+        schema: ProviderClearThreadGoalServiceInput,
+        payload: rawInput,
+      });
+      const routed = yield* resolveRoutableSession({
+        threadId: input.threadId,
+        operation: "ProviderService.clearThreadGoal",
+        allowRecovery: true,
+      });
+      yield* Effect.annotateCurrentSpan({
+        "provider.operation": "clear-thread-goal",
+        "provider.kind": routed.adapter.provider,
+        "provider.thread_id": input.threadId,
+      });
+      if (
+        routed.adapter.capabilities.threadGoals !== "supported" ||
+        routed.adapter.clearThreadGoal === undefined
+      ) {
+        return yield* toValidationError(
+          "ProviderService.clearThreadGoal",
+          `Provider '${routed.adapter.provider}' does not support thread goals.`,
+        );
+      }
+      yield* routed.adapter.clearThreadGoal(routed.threadId);
+      yield* processRuntimeEvent(
+        {
+          instanceId: routed.instanceId,
+          provider: routed.adapter.provider,
+        },
+        {
+          eventId: EventId.make(crypto.randomUUID()),
+          provider: routed.adapter.provider,
+          providerInstanceId: routed.instanceId,
+          threadId: input.threadId,
+          createdAt: yield* nowIso,
+          type: "goal.cleared",
+          payload: {},
+        },
+      );
+      yield* analytics.record("provider.goal.cleared", {
+        provider: routed.adapter.provider,
+      });
+    },
+  );
+
   const respondToRequest: ProviderServiceShape["respondToRequest"] = Effect.fn("respondToRequest")(
     function* (rawInput) {
       const input = yield* decodeInputOrValidationError({
@@ -1572,6 +1691,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     startReview,
     interruptTurn,
     compactContext,
+    setThreadGoal,
+    clearThreadGoal,
     respondToRequest,
     respondToUserInput,
     stopSession,
