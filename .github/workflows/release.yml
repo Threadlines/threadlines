@@ -772,6 +772,7 @@ jobs:
         run: ls -la release
 
       - name: Boot AppImage and verify backend serves
+        timeout-minutes: 3
         run: |
           set -euo pipefail
           command -v xvfb-run >/dev/null || (sudo apt-get update && sudo apt-get install -y xvfb)
@@ -781,9 +782,26 @@ jobs:
           xvfb-run -a "$appimage" --appimage-extract-and-run --no-sandbox > "$RUNNER_TEMP/app.log" 2>&1 &
           app_pid=$!
 
+          cleanup() {
+            kill "$app_pid" 2>/dev/null || true
+            for _ in $(seq 1 5); do
+              if ! kill -0 "$app_pid" 2>/dev/null; then
+                break
+              fi
+              sleep 1
+            done
+            kill -KILL "$app_pid" 2>/dev/null || true
+            wait "$app_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          probe_url() {
+            curl --connect-timeout 1 --max-time 1 -sf -o /dev/null "$1"
+          }
+
           url=""
           for _ in $(seq 1 45); do
-            if curl -sf -o /dev/null "http://127.0.0.1:3773/"; then
+            if probe_url "http://127.0.0.1:3773/"; then
               url="http://127.0.0.1:3773/"
               break
             fi
@@ -796,7 +814,7 @@ jobs:
 
           if [ -z "$url" ]; then
             for port in $(ss -tlnp 2>/dev/null | awk '/threadlines|node|electron/ {split($4, a, ":"); print a[length(a)]}' | sort -u); do
-              if curl -sf -o /dev/null "http://127.0.0.1:${port}/"; then
+              if probe_url "http://127.0.0.1:${port}/"; then
                 url="http://127.0.0.1:${port}/"
                 break
               fi
@@ -810,7 +828,10 @@ jobs:
           fi
 
           echo "Backend serving at $url"
-          kill "$app_pid" 2>/dev/null || true
+
+      - name: Dump Linux app log on failure
+        if: failure()
+        run: cat "$RUNNER_TEMP/app.log" 2>/dev/null || true
 
       - name: Upload Linux assets to draft release
         env:

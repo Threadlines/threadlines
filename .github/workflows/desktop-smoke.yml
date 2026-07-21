@@ -48,14 +48,32 @@ jobs:
           xcrun stapler validate "$RUNNER_TEMP/Threadlines.app"
 
       - name: Launch app and verify backend serves
+        timeout-minutes: 3
         run: |
           export THREADLINES_HOME="$RUNNER_TEMP/threadlines-home"
           "$RUNNER_TEMP/Threadlines.app/Contents/MacOS/Threadlines" > "$RUNNER_TEMP/app.log" 2>&1 &
           app_pid=$!
 
+          cleanup() {
+            kill "$app_pid" 2>/dev/null || true
+            for _ in $(seq 1 5); do
+              if ! kill -0 "$app_pid" 2>/dev/null; then
+                break
+              fi
+              sleep 1
+            done
+            kill -KILL "$app_pid" 2>/dev/null || true
+            wait "$app_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          probe_url() {
+            curl --connect-timeout 1 --max-time 1 -sf -o /dev/null "$1"
+          }
+
           url=""
           for _ in $(seq 1 45); do
-            if curl -sf -o /dev/null "http://127.0.0.1:3773/"; then
+            if probe_url "http://127.0.0.1:3773/"; then
               url="http://127.0.0.1:3773/"
               break
             fi
@@ -69,7 +87,7 @@ jobs:
           if [ -z "$url" ]; then
             # Fall back to any loopback port the app family is listening on.
             for port in $(lsof -a -iTCP -sTCP:LISTEN -P -n 2>/dev/null | awk '/Threadlines|threadlin|node/ {sub(/.*:/, "", $9); print $9}' | sort -u); do
-              if curl -sf -o /dev/null "http://127.0.0.1:${port}/"; then
+              if probe_url "http://127.0.0.1:${port}/"; then
                 url="http://127.0.0.1:${port}/"
                 break
               fi
@@ -82,9 +100,8 @@ jobs:
           fi
 
           echo "Backend serving at $url"
-          curl -s "$url" | head -c 400
-          curl -sf -o /dev/null "$url" || exit 1
-          kill "$app_pid" 2>/dev/null || true
+          curl --connect-timeout 1 --max-time 1 -s "$url" | head -c 400
+          probe_url "$url"
 
       - name: Dump app log on failure
         if: failure()
@@ -113,6 +130,7 @@ jobs:
         run: vp run dist:desktop:artifact -- --platform linux --target AppImage --arch x64 --build-version 0.2.2-smoke.0
 
       - name: Boot AppImage and verify backend serves
+        timeout-minutes: 3
         run: |
           command -v xvfb-run >/dev/null || (sudo apt-get update && sudo apt-get install -y xvfb)
           appimage="$(ls release/*.AppImage | head -1)"
@@ -122,9 +140,26 @@ jobs:
           xvfb-run -a "$appimage" --appimage-extract-and-run --no-sandbox > "$RUNNER_TEMP/app.log" 2>&1 &
           app_pid=$!
 
+          cleanup() {
+            kill "$app_pid" 2>/dev/null || true
+            for _ in $(seq 1 5); do
+              if ! kill -0 "$app_pid" 2>/dev/null; then
+                break
+              fi
+              sleep 1
+            done
+            kill -KILL "$app_pid" 2>/dev/null || true
+            wait "$app_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          probe_url() {
+            curl --connect-timeout 1 --max-time 1 -sf -o /dev/null "$1"
+          }
+
           url=""
           for _ in $(seq 1 45); do
-            if curl -sf -o /dev/null "http://127.0.0.1:3773/"; then
+            if probe_url "http://127.0.0.1:3773/"; then
               url="http://127.0.0.1:3773/"
               break
             fi
@@ -137,7 +172,7 @@ jobs:
 
           if [ -z "$url" ]; then
             for port in $(ss -tlnp 2>/dev/null | awk '/threadlines|node|electron/ {split($4, a, ":"); print a[length(a)]}' | sort -u); do
-              if curl -sf -o /dev/null "http://127.0.0.1:${port}/"; then
+              if probe_url "http://127.0.0.1:${port}/"; then
                 url="http://127.0.0.1:${port}/"
                 break
               fi
@@ -150,9 +185,8 @@ jobs:
           fi
 
           echo "Backend serving at $url"
-          curl -s "$url" | head -c 400
-          curl -sf -o /dev/null "$url" || exit 1
-          kill "$app_pid" 2>/dev/null || true
+          curl --connect-timeout 1 --max-time 1 -s "$url" | head -c 400
+          probe_url "$url"
 
       - name: Dump app log on failure
         if: failure()
