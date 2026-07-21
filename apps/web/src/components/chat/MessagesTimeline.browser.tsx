@@ -256,18 +256,36 @@ describe("MessagesTimeline", () => {
               subagentTask: { subagentType: "general-purpose", toolUseId: "toolu_spawn_1" },
             },
           },
+          {
+            id: "entry-subagent-2",
+            kind: "work",
+            createdAt: "2026-04-13T12:00:02.000Z",
+            entry: {
+              id: "work-subagent-2",
+              createdAt: "2026-04-13T12:00:02.000Z",
+              label: "Running Inspect key app package.json deps",
+              tone: "thinking",
+              subagentTask: { subagentType: "general-purpose", toolUseId: "toolu_spawn_1" },
+            },
+          },
         ]}
       />,
     );
 
     try {
       const subagentRows = document.querySelectorAll("[data-subagent-work-row='true']");
-      expect(subagentRows).toHaveLength(1);
+      expect(subagentRows).toHaveLength(2);
       expect(subagentRows[0]?.textContent).toContain("List source structure");
       expect(subagentRows[0]?.querySelector("svg.lucide-corner-down-right")).not.toBeNull();
       expect(subagentRows[0]?.textContent).not.toContain("Running main model step");
+      // The lane entering after a main-model row is labeled; the contiguous
+      // same-agent row after it stays bare.
+      const laneLabels = document.querySelectorAll("[data-subagent-lane-label='true']");
+      expect(laneLabels).toHaveLength(1);
+      expect(laneLabels[0]?.textContent).toBe("general-purpose");
+      expect(subagentRows[0]?.contains(laneLabels[0] ?? null)).toBe(true);
       await expect
-        .element(page.getByLabelText(/Subagent \(general-purpose\):/))
+        .element(page.getByLabelText(/Subagent \(general-purpose\): Running List source/))
         .toBeInTheDocument();
     } finally {
       await screen.unmount();

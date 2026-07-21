@@ -11,6 +11,39 @@ import { type MessageId, type TurnId } from "@threadlines/contracts";
 
 export const MAX_VISIBLE_WORK_LOG_ENTRIES = 6;
 
+/**
+ * Lane-entry labels for subagent work rows. Subagent activity can interleave
+ * with main-model rows (and with other agents' rows) mid-turn, so a row only
+ * gets its agent label when the previous rendered row belongs to a different
+ * lane — a main-model row, another agent, a group boundary. Contiguous
+ * same-agent runs and rows directly under their own spawn row stay bare.
+ */
+export function deriveSubagentLaneLabels(
+  entries: ReadonlyArray<WorkLogEntry>,
+): ReadonlyArray<string | null> {
+  const laneKeyOf = (entry: WorkLogEntry): string | null => {
+    if (entry.subagentTask) {
+      return entry.subagentTask.toolUseId ?? entry.subagentTask.subagentType ?? "subagent";
+    }
+    // A collab spawn/update row anchors the same lane as the rows it spawned.
+    if (entry.itemType === "collab_agent_tool_call" && entry.toolCallId) {
+      return entry.toolCallId;
+    }
+    return null;
+  };
+
+  return entries.map((entry, index) => {
+    if (!entry.subagentTask) {
+      return null;
+    }
+    const previous = index > 0 ? entries[index - 1] : undefined;
+    if (previous && laneKeyOf(previous) === laneKeyOf(entry)) {
+      return null;
+    }
+    return entry.subagentTask.subagentType ?? "subagent";
+  });
+}
+
 export interface TimelineDurationMessage {
   id: string;
   role: "user" | "assistant" | "system";

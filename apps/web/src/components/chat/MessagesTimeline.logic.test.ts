@@ -1,11 +1,70 @@
 import { describe, expect, it } from "vite-plus/test";
+import type { WorkLogEntry } from "../../session-logic";
 import {
   computeStableMessagesTimelineRows,
   computeMessageDurationStart,
   deriveMessagesTimelineRows,
+  deriveSubagentLaneLabels,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
 } from "./MessagesTimeline.logic";
+
+describe("deriveSubagentLaneLabels", () => {
+  const mainRow = (id: string): WorkLogEntry => ({
+    id,
+    createdAt: "2026-02-23T00:00:00.000Z",
+    label: "Main model step",
+    tone: "thinking",
+  });
+  const spawnRow = (id: string, toolUseId: string): WorkLogEntry => ({
+    id,
+    createdAt: "2026-02-23T00:00:00.000Z",
+    label: "Subagent task",
+    tone: "tool",
+    itemType: "collab_agent_tool_call",
+    toolCallId: toolUseId,
+  });
+  const agentRow = (id: string, toolUseId: string, subagentType = "general-purpose") =>
+    ({
+      id,
+      createdAt: "2026-02-23T00:00:00.000Z",
+      label: "Running agent step",
+      tone: "thinking",
+      subagentTask: { subagentType, toolUseId },
+    }) satisfies WorkLogEntry;
+
+  it("keeps contiguous same-agent runs bare, including under their own spawn row", () => {
+    const labels = deriveSubagentLaneLabels([
+      spawnRow("spawn", "toolu_a"),
+      agentRow("a1", "toolu_a"),
+      agentRow("a2", "toolu_a"),
+    ]);
+    expect(labels).toEqual([null, null, null]);
+  });
+
+  it("labels lane entries after main-model rows and at group boundaries", () => {
+    const labels = deriveSubagentLaneLabels([
+      agentRow("a1", "toolu_a"),
+      mainRow("m1"),
+      agentRow("a2", "toolu_a"),
+      agentRow("a3", "toolu_a"),
+    ]);
+    expect(labels).toEqual(["general-purpose", null, "general-purpose", null]);
+  });
+
+  it("labels every lane switch when parallel agents interleave", () => {
+    const labels = deriveSubagentLaneLabels([
+      agentRow("a1", "toolu_a", "code-reviewer"),
+      agentRow("b1", "toolu_b", "Explore"),
+      agentRow("a2", "toolu_a", "code-reviewer"),
+    ]);
+    expect(labels).toEqual(["code-reviewer", "Explore", "code-reviewer"]);
+  });
+
+  it("never labels main-model rows", () => {
+    expect(deriveSubagentLaneLabels([mainRow("m1"), mainRow("m2")])).toEqual([null, null]);
+  });
+});
 
 describe("computeMessageDurationStart", () => {
   it("returns message createdAt when there is no preceding user message", () => {

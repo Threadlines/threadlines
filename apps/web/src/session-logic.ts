@@ -108,6 +108,9 @@ export interface WorkLogEntry {
    *  the main model's. Drives the indented child-row rendering in the
    *  timeline. */
   subagentTask?: { subagentType: string | null; toolUseId: string | null };
+  /** Provider tool call id backing this row, when the activity carried one.
+   *  Lets the timeline correlate a subagent lane with its spawn row. */
+  toolCallId?: string;
   requestKind?: PendingApproval["requestKind"];
   executionState?: "running" | "completed" | "failed";
   authReconnect?: ProviderAuthReconnectAction;
@@ -131,7 +134,6 @@ export type ActiveModelFallbackState = ModelFallbackState;
 interface DerivedWorkLogEntry extends WorkLogEntry {
   activityKind: OrchestrationThreadActivity["kind"];
   collapseKey?: string;
-  toolCallId?: string;
   redactedThinking?: boolean;
 }
 

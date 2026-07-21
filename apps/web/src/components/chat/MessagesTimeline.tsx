@@ -80,6 +80,7 @@ import {
   computeStableMessagesTimelineRows,
   MAX_VISIBLE_WORK_LOG_ENTRIES,
   deriveMessagesTimelineRows,
+  deriveSubagentLaneLabels,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
   type StableMessagesTimelineRowsState,
@@ -2621,6 +2622,8 @@ const WorkGroupSection = memo(function WorkGroupSection({
       ? summarizedEntries.slice(-MAX_VISIBLE_WORK_LOG_ENTRIES)
       : summarizedEntries;
 
+  const transcriptLaneLabels = deriveSubagentLaneLabels(transcriptEntries);
+
   if (!shouldRenderReceipt) {
     return (
       <div data-work-activity-inline="true" style={spineStyle()}>
@@ -2636,6 +2639,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
               workEntry={workEntry}
               workspaceRoot={workspaceRoot}
               inSpine
+              subagentLaneLabel={transcriptLaneLabels[index] ?? null}
             />
           </SpineRow>
         ))}
@@ -2672,6 +2676,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
                 workEntry={workEntry}
                 workspaceRoot={workspaceRoot}
                 inSpine
+                subagentLaneLabel={transcriptLaneLabels[index] ?? null}
               />
             </SpineRow>
           ))}
@@ -2701,6 +2706,7 @@ function LiveActivitySpine({
 }) {
   const liveEntries = deriveLiveActivityEntries(entries);
   const hiddenSummary = summarizeLiveHiddenWorkEntries(entries, liveEntries);
+  const liveLaneLabels = deriveSubagentLaneLabels(liveEntries);
   const lastIndex = liveEntries.length - 1;
 
   return (
@@ -2727,6 +2733,7 @@ function LiveActivitySpine({
                 workEntry={workEntry}
                 workspaceRoot={workspaceRoot}
                 inSpine
+                subagentLaneLabel={liveLaneLabels[index] ?? null}
               />
               {isCurrent && liveStartedAt ? (
                 <LiveTurnElapsedTimer createdAt={liveStartedAt} />
@@ -2785,7 +2792,7 @@ function ActivityReceipt({
       </div>
       <button
         type="button"
-        className="shrink-0 cursor-pointer text-[10px] font-medium text-muted-foreground/55 transition-colors duration-150 hover:text-foreground/75"
+        className="shrink-0 text-[10px] font-medium text-muted-foreground/55 transition-colors duration-150 hover:text-foreground/75"
         aria-expanded={isExpanded}
         aria-label={isExpanded ? "Hide activity" : "Show activity"}
         data-activity-transcript-toggle="true"
@@ -4979,6 +4986,9 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
   inSpine?: boolean;
+  /** Agent label shown when this subagent row starts a new lane after a
+   *  main-model row or a different agent's row (interleaved activity). */
+  subagentLaneLabel?: string | null;
 }) {
   const {
     turnDiffSummaryByTurnId,
@@ -4988,7 +4998,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     onRunMcpAuthReconnect,
   } = use(TimelineRowCtx);
   const [isOutputExpanded, setIsOutputExpanded] = useState(false);
-  const { isLiveActivity, workspaceRoot, inSpine = false } = props;
+  const { isLiveActivity, workspaceRoot, inSpine = false, subagentLaneLabel = null } = props;
   const workEntry = resolveDisplayedWorkEntry(props.workEntry, isLiveActivity);
 
   if (isSubagentWorkEntry(workEntry)) {
@@ -5095,6 +5105,14 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           )}
         </span>
       )}
+      {subagentTask && subagentLaneLabel ? (
+        <span
+          className="max-w-28 shrink-0 truncate rounded border border-border/50 bg-background/60 px-1 py-px text-[9px] leading-none font-medium tracking-[0.08em] text-muted-foreground/70 uppercase"
+          data-subagent-lane-label="true"
+        >
+          {subagentLaneLabel}
+        </span>
+      ) : null}
       <div className={cn("min-w-0 flex-1 overflow-hidden", subagentTask && "opacity-80")}>
         {rawCommand || hasExpandableOutput ? (
           <div className="max-w-full">
