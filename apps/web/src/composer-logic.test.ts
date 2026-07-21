@@ -6,6 +6,7 @@ import {
   detectComposerTrigger,
   expandCollapsedComposerCursor,
   isCollapsedCursorAdjacentToInlineToken,
+  parseComposerGoalCommand,
   parseStandaloneComposerSlashCommand,
   replaceTextRange,
 } from "./composer-logic";
@@ -326,5 +327,28 @@ describe("parseStandaloneComposerSlashCommand", () => {
 
   it("ignores slash commands with extra message text", () => {
     expect(parseStandaloneComposerSlashCommand("/plan explain this")).toBeNull();
+  });
+});
+
+describe("parseComposerGoalCommand", () => {
+  it("parses bare /goal as an editor-open request", () => {
+    expect(parseComposerGoalCommand("/goal")).toEqual({ objective: null });
+    expect(parseComposerGoalCommand(" /goal  ")).toEqual({ objective: null });
+    expect(parseComposerGoalCommand("/GOAL")).toEqual({ objective: null });
+  });
+
+  it("parses trailing text as the objective, preserving inner newlines", () => {
+    expect(parseComposerGoalCommand("/goal get the tests green")).toEqual({
+      objective: "get the tests green",
+    });
+    expect(parseComposerGoalCommand("/goal ship it\nthen open a PR")).toEqual({
+      objective: "ship it\nthen open a PR",
+    });
+  });
+
+  it("does not match other text or prefixed commands", () => {
+    expect(parseComposerGoalCommand("goal without slash")).toBeNull();
+    expect(parseComposerGoalCommand("/goals are great")).toBeNull();
+    expect(parseComposerGoalCommand("tell me about /goal")).toBeNull();
   });
 });

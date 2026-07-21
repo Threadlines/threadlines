@@ -3,6 +3,7 @@ import type {
   ChatSkillReference,
   EnvironmentId,
   ModelSelection,
+  OrchestrationThreadGoal,
   ProjectEntry,
   ProviderApprovalDecision,
   ProviderInteractionMode,
@@ -389,6 +390,7 @@ export interface ChatComposerHandle {
   focusAtEnd: () => void;
   focusAt: (cursor: number) => void;
   openModelPicker: () => void;
+  openGoalEditor: () => void;
   toggleModelPicker: () => void;
   isModelPickerOpen: () => boolean;
   readSnapshot: () => {
@@ -513,6 +515,9 @@ export interface ChatComposerProps {
   onInterrupt: () => void;
   // Goal (Codex goal mode)
   goalDispatching?: boolean | undefined;
+  /** Freshly dispatched goal state not yet confirmed by the projection —
+   *  preferred over the (possibly stale) server goal while present. */
+  optimisticGoal?: OrchestrationThreadGoal | null | undefined;
   onSetThreadGoal?: ((input: ComposerGoalSetInput) => void) | undefined;
   onClearThreadGoal?: (() => void) | undefined;
   onCompactContext?: (() => void) | undefined;
@@ -603,6 +608,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onSend,
     onInterrupt,
     goalDispatching,
+    optimisticGoal,
     onSetThreadGoal,
     onClearThreadGoal,
     onCompactContext,
@@ -697,7 +703,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       explicitSelectedInstanceId,
     ) ?? ProviderDriverKind.make("codex");
   const selectedProvider: ProviderDriverKind = lockedProvider ?? unlockedSelectedProvider;
-  const threadGoal = activeThread?.goal ?? null;
+  const threadGoal = optimisticGoal ?? activeThread?.goal ?? null;
   const goalSupported =
     selectedProvider === CODEX_AGENT_PROVIDER &&
     activeThreadId !== null &&
@@ -958,6 +964,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const [isComposerModelPickerOpen, setIsComposerModelPickerOpen] = useState(false);
   const [isGoalEditorOpen, setIsGoalEditorOpen] = useState(false);
   const goalBarVisible = goalSupported && (threadGoal !== null || isGoalEditorOpen);
+  // Commands that will trigger on Enter in this thread; the editor tints the
+  // leading token so typed-past-the-menu commands still read as commands.
+  const recognizedSlashCommands = useMemo(
+    () => ["plan", "default", ...(goalSupported ? ["goal"] : [])],
+    [goalSupported],
+  );
 
   useEffect(() => {
     setIsGoalEditorOpen(false);
@@ -2287,6 +2299,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       openModelPicker: () => {
         setIsComposerModelPickerOpen(true);
       },
+      openGoalEditor: () => {
+        setIsGoalEditorOpen(true);
+      },
       toggleModelPicker: () => {
         setIsComposerModelPickerOpen((open) => !open);
       },
@@ -2407,6 +2422,25 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           </Tooltip>
         </div>
       ) : null}
+      {!isComposerCollapsedMobile && goalBarVisible ? (
+        <div className="mx-auto w-[calc(100%-5rem)] overflow-hidden rounded-t-xl border border-b-0 border-border/55 bg-card/60 shadow-black/5 shadow-sm">
+          <ComposerGoalBar
+            goal={threadGoal}
+            editorOpen={isGoalEditorOpen}
+            isDispatching={goalDispatching === true}
+            onOpenEditor={() => setIsGoalEditorOpen(true)}
+            onCloseEditor={() => setIsGoalEditorOpen(false)}
+            onSetGoal={(input) => {
+              onSetThreadGoal?.(input);
+              setIsGoalEditorOpen(false);
+            }}
+            onClearGoal={() => {
+              onClearThreadGoal?.();
+              setIsGoalEditorOpen(false);
+            }}
+          />
+        </div>
+      ) : null}
       <div
         className={cn(
           "group rounded-2xl p-px transition-[background-color,box-shadow] duration-200",
@@ -2446,45 +2480,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             scheduleComposerCollapseCheck();
           }}
         >
-          {!isComposerCollapsedMobile && goalBarVisible ? (
-            <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
-              <ComposerGoalBar
-                goal={threadGoal}
-                editorOpen={isGoalEditorOpen}
-                isDispatching={goalDispatching === true}
-                onOpenEditor={() => setIsGoalEditorOpen(true)}
-                onCloseEditor={() => setIsGoalEditorOpen(false)}
-                onSetGoal={(input) => {
-                  onSetThreadGoal?.(input);
-                  setIsGoalEditorOpen(false);
-                }}
-                onClearGoal={() => {
-                  onClearThreadGoal?.();
-                  setIsGoalEditorOpen(false);
-                }}
-              />
-            </div>
-          ) : null}
           {!isComposerCollapsedMobile &&
             (activePendingApproval ? (
-              <div
-                className={cn(
-                  goalBarVisible ? null : "rounded-t-[19px]",
-                  "border-b border-border/65 bg-muted/20",
-                )}
-              >
+              <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
                 <ComposerPendingApprovalPanel
                   approval={activePendingApproval}
                   pendingCount={pendingApprovals.length}
                 />
               </div>
             ) : pendingUserInputs.length > 0 ? (
-              <div
-                className={cn(
-                  goalBarVisible ? null : "rounded-t-[19px]",
-                  "border-b border-border/65 bg-muted/20",
-                )}
-              >
+              <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
                 <ComposerPendingUserInputPanel
                   pendingUserInputs={pendingUserInputs}
                   respondingRequestIds={respondingRequestIds}
@@ -2496,12 +2501,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 />
               </div>
             ) : showPlanFollowUpPrompt && activeProposedPlan ? (
-              <div
-                className={cn(
-                  goalBarVisible ? null : "rounded-t-[19px]",
-                  "border-b border-border/65 bg-muted/20",
-                )}
-              >
+              <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
                 <ComposerPlanFollowUpBanner
                   key={activeProposedPlan.id}
                   planTitle={proposedPlanTitle(activeProposedPlan.planMarkdown) ?? null}
@@ -2801,6 +2801,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 cursor={composerCursor}
                 terminalContexts={[]}
                 skills={composerSkills}
+                recognizedSlashCommands={recognizedSlashCommands}
                 {...(showMobilePendingAnswerActions ? { className: "max-sm:pb-11" } : {})}
                 onRemoveTerminalContext={removeComposerTerminalContextFromDraft}
                 onChange={onPromptChange}

@@ -26,6 +26,7 @@ import {
   HomeIcon,
   LinkIcon,
   MessageSquareIcon,
+  MessagesSquareIcon,
   SettingsIcon,
   SquarePenIcon,
 } from "lucide-react";
@@ -546,6 +547,16 @@ function OpenCommandPaletteDialog() {
     () => new Map<ProjectId, string>(projects.map((project) => [project.id, project.name])),
     [projects],
   );
+  const projectByScopedKey = useMemo(
+    () =>
+      new Map(
+        projects.map((project) => [
+          scopedProjectKey(scopeProjectRef(project.environmentId, project.id)),
+          project,
+        ]),
+      ),
+    [projects],
+  );
   const existingGitHubRepositoryKeys = useMemo(() => {
     const keys = new Set<string>();
     for (const project of projects) {
@@ -774,7 +785,24 @@ function OpenCommandPaletteDialog() {
         ...(activeThreadId ? { activeThreadId } : {}),
         projectTitleById,
         sortOrder: settings.sidebarThreadSortOrder,
-        icon: <MessageSquareIcon className={ITEM_ICON_CLASS} />,
+        icon: (thread) => {
+          const project = projectByScopedKey.get(
+            scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
+          );
+          if (!project) {
+            return <MessageSquareIcon className={ITEM_ICON_CLASS} />;
+          }
+          if (project.kind === "general-chat") {
+            return <MessagesSquareIcon className={ITEM_ICON_CLASS} />;
+          }
+          return (
+            <ProjectFavicon
+              environmentId={project.environmentId}
+              cwd={project.cwd}
+              className={ITEM_ICON_CLASS}
+            />
+          );
+        },
         renderLeadingContent: (thread) => <ThreadRowLeadingStatus thread={thread} />,
         renderTrailingContent: (thread) => <ThreadRowTrailingStatus thread={thread} />,
         runThread: async (thread) => {
@@ -784,7 +812,14 @@ function OpenCommandPaletteDialog() {
           });
         },
       }),
-    [activeThreadId, navigate, projectTitleById, settings.sidebarThreadSortOrder, threads],
+    [
+      activeThreadId,
+      navigate,
+      projectByScopedKey,
+      projectTitleById,
+      settings.sidebarThreadSortOrder,
+      threads,
+    ],
   );
   const recentThreadItems = allThreadItems.slice(0, RECENT_THREAD_LIMIT);
   const threadContentSearchTargets = useMemo<ReadonlyArray<ThreadSearchTarget>>(() => {

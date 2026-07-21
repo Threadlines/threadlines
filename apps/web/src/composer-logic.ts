@@ -268,6 +268,21 @@ export function parseStandaloneComposerSlashCommand(
   return "default";
 }
 
+/**
+ * Parse a submitted `/goal` command. Bare `/goal` opens the goal editor;
+ * `/goal <objective…>` sets the goal directly with the remaining text, so the
+ * command works however the composer menu was dismissed (space, escape, or
+ * never shown).
+ */
+export function parseComposerGoalCommand(text: string): { objective: string | null } | null {
+  const match = /^\/goal(?:\s+([\s\S]+))?$/i.exec(text.trim());
+  if (!match) {
+    return null;
+  }
+  const objective = match[1]?.trim();
+  return { objective: objective && objective.length > 0 ? objective : null };
+}
+
 export function replaceTextRange(
   text: string,
   rangeStart: number,

@@ -129,6 +129,12 @@
   * {
     @apply border-border outline-ring/50;
   }
+  /* Tailwind v4 preflight resets buttons to cursor: default; the app treats
+     every enabled button as clickable, so restore the pointer globally. */
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
   html {
     background-color: var(--app-chrome-background);
   }
@@ -1124,4 +1130,20 @@ label:has(> select#reasoning-effort) select {
 
 .dark .model-picker-list::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.15);
+}
+
+/* Leading slash-command token in the composer (ComposerCommandTextNode).
+   One-shot fade-in on recognition; no looping animation. */
+.composer-command-token {
+  color: var(--color-primary-readable);
+  animation: composer-command-token-in 180ms ease-out;
+}
+
+@keyframes composer-command-token-in {
+  from {
+    opacity: 0.45;
+  }
+  to {
+    opacity: 1;
+  }
 }
