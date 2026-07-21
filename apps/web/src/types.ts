@@ -138,6 +138,8 @@ export interface Thread {
   effectiveCwd: string | null;
   /** Long-horizon provider goal attached to this thread (Codex goal mode). */
   goal: OrchestrationThreadGoal | null;
+  /** Projected Codex realtime voice-session state. */
+  voiceActive?: boolean;
   turnDiffSummaries: TurnDiffSummary[];
   activities: OrchestrationThreadActivity[];
 }
@@ -162,6 +164,8 @@ export interface ThreadShell {
   effectiveCwd: string | null;
   /** See Thread.goal. */
   goal: OrchestrationThreadGoal | null;
+  /** See Thread.voiceActive. */
+  voiceActive?: boolean;
 }
 
 export interface ThreadTurnState {

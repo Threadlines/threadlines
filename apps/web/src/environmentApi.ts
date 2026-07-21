@@ -18,7 +18,8 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
     },
     realtime: {
       appendAudio: rpcClient.realtime.appendAudio,
-      subscribeAudio: (input, callback) => rpcClient.realtime.subscribeAudio(input, callback),
+      subscribeAudio: (input, callback, options?: { readonly onComplete?: () => void }) =>
+        rpcClient.realtime.subscribeAudio(input, callback, options),
     },
     projects: {
       searchEntries: rpcClient.projects.searchEntries,

@@ -293,6 +293,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     worktreePath: thread.worktreePath,
     effectiveCwd: thread.effectiveCwd,
     goal: thread.goal,
+    voiceActive: thread.voiceActive ?? false,
     turnDiffSummaries: thread.checkpoints.map(mapTurnDiffSummary),
     activities: thread.activities.map((activity) => ({ ...activity })),
   };
@@ -326,6 +327,7 @@ function mapThreadShell(
     worktreePath: thread.worktreePath,
     effectiveCwd: thread.effectiveCwd,
     goal: thread.goal,
+    voiceActive: thread.voiceActive ?? false,
   };
   const session = thread.session ? mapSession(thread.session) : null;
   const turnState: ThreadTurnState = {
@@ -378,6 +380,7 @@ function toThreadShell(thread: Thread): ThreadShell {
     worktreePath: thread.worktreePath,
     effectiveCwd: thread.effectiveCwd,
     goal: thread.goal,
+    voiceActive: thread.voiceActive ?? false,
   };
 }
 
@@ -533,6 +536,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     left.branch === right.branch &&
     left.worktreePath === right.worktreePath &&
     left.effectiveCwd === right.effectiveCwd &&
+    left.voiceActive === right.voiceActive &&
     threadGoalsEqual(left.goal, right.goal)
   );
 }
@@ -1469,6 +1473,7 @@ function applyEnvironmentOrchestrationEvent(
           worktreePath: event.payload.worktreePath,
           effectiveCwd: null,
           goal: null,
+          voiceActive: false,
           latestTurn: null,
           createdAt: event.payload.createdAt,
           updatedAt: event.payload.updatedAt,
@@ -1556,6 +1561,13 @@ function applyEnvironmentOrchestrationEvent(
       return updateThreadState(state, event.payload.threadId, (thread) => ({
         ...thread,
         goal: event.payload.goal,
+        updatedAt: event.payload.updatedAt,
+      }));
+
+    case "thread.realtime-state-set":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        voiceActive: event.payload.active,
         updatedAt: event.payload.updatedAt,
       }));
 

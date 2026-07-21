@@ -114,6 +114,8 @@ import {
 import { useTheme } from "../hooks/useTheme";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { useMediaQuery } from "../hooks/useMediaQuery";
+import { useRealtimeVoiceMode } from "../hooks/useRealtimeVoiceMode";
+import { useWsConnectionStatus } from "../rpc/wsConnectionState";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import {
   RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY,
@@ -1322,6 +1324,7 @@ export default function ChatView(props: ChatViewProps) {
   // drive the environment picker in BranchToolbar.
   const allProjects = useStore(useShallow(selectProjectsAcrossEnvironments));
   const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const primaryWsConnectionStatus = useWsConnectionStatus();
   const savedEnvironmentRegistry = useSavedEnvironmentRegistryStore((s) => s.byId);
   const savedEnvironmentRuntimeById = useSavedEnvironmentRuntimeStore((s) => s.byId);
   const activeSavedEnvironmentRecord =
@@ -2311,6 +2314,33 @@ export default function ChatView(props: ChatViewProps) {
   }, [activeProviderInstanceId, providerStatuses, selectedProvider]);
   const activeProviderDriver =
     activeProviderStatus?.driver ?? activeThread?.session?.provider ?? selectedProvider;
+  const voiceSupported = activeProviderDriver === ProviderDriverKind.make("codex");
+  const voiceConnectionAvailable = activeThread
+    ? activeThread.environmentId === primaryEnvironmentId || primaryEnvironmentId === null
+      ? primaryWsConnectionStatus.phase === "connected"
+      : activeSavedEnvironmentConnectionState === "connected"
+    : false;
+  const activeSessionCanStartVoice =
+    activeThread?.session !== null &&
+    activeThread?.session !== undefined &&
+    activeThread.session.orchestrationStatus !== "starting" &&
+    activeThread.session.orchestrationStatus !== "stopped" &&
+    activeThread.session.orchestrationStatus !== "error";
+  const voiceMode = useRealtimeVoiceMode({
+    threadId: activeThread?.id ?? null,
+    environmentId,
+    supported: voiceSupported,
+    canStart: isServerThread && activeSessionCanStartVoice,
+    connectionAvailable: voiceConnectionAvailable,
+    projectedActive: activeThread?.voiceActive ?? false,
+  });
+  const voiceStartDisabledReason = !isServerThread
+    ? "Send a message to create this thread before starting voice mode"
+    : !activeSessionCanStartVoice
+      ? "Start the Codex session before starting voice mode"
+      : !voiceConnectionAvailable
+        ? "Reconnect before starting voice mode"
+        : null;
   const activeProviderLabel =
     activeProviderStatus?.displayName?.trim() ||
     formatProviderDriverKindLabel(activeProviderDriver);
@@ -6115,6 +6145,20 @@ export default function ChatView(props: ChatViewProps) {
                   scheduleStickToBottom={scheduleTimelineStickToBottom}
                   onSend={onSend}
                   onInterrupt={onInterrupt}
+                  voiceControl={{
+                    supported: voiceSupported,
+                    canStart:
+                      voiceStartDisabledReason === null &&
+                      voiceMode.state.status !== "starting" &&
+                      voiceMode.state.status !== "active",
+                    disabledReason: voiceStartDisabledReason,
+                    projectedActive: voiceMode.projectedActive,
+                    state: voiceMode.state,
+                    onStart: voiceMode.start,
+                    onToggleMute: voiceMode.toggleMute,
+                    onStop: voiceMode.stop,
+                    onModalityChange: voiceMode.setModality,
+                  }}
                   onCompactContext={contextCompactControlVisible ? onCompactContext : undefined}
                   goalDispatching={
                     activeThread !== undefined && goalDispatchingThreadId === activeThread.id

@@ -87,6 +87,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     worktreePath: null,
     effectiveCwd: null,
     goal: null,
+    voiceActive: false,
     ...overrides,
   };
 }
@@ -136,6 +137,7 @@ function makeState(thread: Thread): AppState {
         worktreePath: thread.worktreePath,
         effectiveCwd: thread.effectiveCwd,
         goal: null,
+        voiceActive: thread.voiceActive ?? false,
       },
     },
     threadSessionById: {
@@ -452,6 +454,25 @@ describe("setThreadBranch", () => {
 });
 
 describe("incremental orchestration updates", () => {
+  it("projects realtime voice state into thread detail and shell state", () => {
+    const state = makeState(makeThread());
+
+    const next = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.realtime-state-set", {
+        threadId: ThreadId.make("thread-1"),
+        active: true,
+        updatedAt: "2026-02-27T00:00:01.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(next)[0]?.voiceActive).toBe(true);
+    expect(
+      localEnvironmentStateOf(next).threadShellById[ThreadId.make("thread-1")]?.voiceActive,
+    ).toBe(true);
+  });
+
   it("does not mark bootstrap complete for incremental events", () => {
     const state = withActiveEnvironmentState(localEnvironmentStateOf(makeState(makeThread())), {
       bootstrapComplete: false,

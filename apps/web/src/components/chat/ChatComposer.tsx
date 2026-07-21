@@ -151,6 +151,7 @@ import {
 import { searchProviderSkills } from "../../providerSkillSearch";
 import { resolveComposerSkillReferences } from "../../providerSkillReferences";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
+import { ComposerVoiceControls, type ComposerVoiceControlsProps } from "./ComposerVoiceControls";
 
 const ATTACHMENT_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES / (1024 * 1024))}MB`;
 const ALL_ATTACHMENT_ACCEPT = `image/*,${FILE_ATTACHMENT_ACCEPT}`;
@@ -513,6 +514,7 @@ export interface ChatComposerProps {
   // Callbacks
   onSend: (e?: { preventDefault: () => void }) => void;
   onInterrupt: () => void;
+  voiceControl?: ComposerVoiceControlsProps | undefined;
   // Goal (Codex goal mode)
   goalDispatching?: boolean | undefined;
   /** Freshly dispatched goal state not yet confirmed by the projection —
@@ -607,6 +609,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     scheduleStickToBottom,
     onSend,
     onInterrupt,
+    voiceControl,
     goalDispatching,
     optimisticGoal,
     onSetThreadGoal,
@@ -2639,6 +2642,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               isComposerCollapsedMobile && "hidden",
             )}
           >
+            {voiceControl?.state.error ? (
+              <div
+                role="alert"
+                className="mb-2 rounded-md border border-destructive/25 bg-destructive/5 px-2.5 py-1.5 text-destructive text-xs"
+              >
+                {voiceControl.state.error}
+              </div>
+            ) : null}
             {composerMenuOpen && !isComposerApprovalState && (
               <div className="absolute inset-x-0 bottom-full z-20 mb-2 px-1">
                 <ComposerCommandMenu
@@ -2994,6 +3005,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   onAttachFiles={openAttachmentFilePicker}
                   onCaptureScreenshot={onCaptureScreenshot}
                 />
+                {voiceControl ? <ComposerVoiceControls {...voiceControl} /> : null}
                 <ComposerFooterPrimaryActions
                   compact={isComposerPrimaryActionsCompact}
                   activeContextWindow={activeContextWindow}

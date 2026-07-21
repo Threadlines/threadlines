@@ -49,6 +49,12 @@ const rpcClientMock = {
       registerListener(terminalEventListeners, listener),
     ),
   },
+  realtime: {
+    appendAudio: vi.fn(),
+    subscribeAudio: vi.fn(
+      (_input: unknown, _listener: unknown, _options?: unknown) => () => undefined,
+    ),
+  },
   projects: {
     searchEntries: vi.fn(),
     writeFile: vi.fn(),
@@ -419,6 +425,25 @@ describe("wsApi", () => {
 
     expect(rpcClientMock.vcs.onStatus).toHaveBeenCalledWith({ cwd: "/repo" }, onStatus, undefined);
     expect(onStatus).toHaveBeenCalledWith(gitStatus);
+  });
+
+  it("forwards realtime audio stream completion handling", async () => {
+    const { createEnvironmentApi } = await import("./environmentApi");
+    const api = createEnvironmentApi(rpcClientMock as never);
+    const onAudio = vi.fn();
+    const onComplete = vi.fn();
+
+    (api.realtime.subscribeAudio as unknown as typeof rpcClientMock.realtime.subscribeAudio)(
+      { threadId: ThreadId.make("thread-1") },
+      onAudio,
+      { onComplete },
+    );
+
+    expect(rpcClientMock.realtime.subscribeAudio).toHaveBeenCalledWith(
+      { threadId: ThreadId.make("thread-1") },
+      onAudio,
+      { onComplete },
+    );
   });
 
   it("forwards git status refreshes directly to the RPC client", async () => {

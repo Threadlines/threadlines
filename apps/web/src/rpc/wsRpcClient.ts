@@ -299,6 +299,15 @@ export function dispatchCommandRetryOptions(command: unknown): {
   };
 }
 
+function isRealtimeStartCommand(command: unknown): boolean {
+  return (
+    typeof command === "object" &&
+    command !== null &&
+    "type" in command &&
+    command.type === "thread.realtime.start"
+  );
+}
+
 export function createWsRpcClient(transport: WsTransport): WsRpcClient {
   return {
     dispose: () => transport.dispose(),
@@ -610,11 +619,16 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
       // Commands are deduped server-side by commandId receipts, so re-sending
       // through socket drops and session swaps cannot double-apply. Without
       // this, a send racing a phone-link reconnect was simply lost.
-      dispatchCommand: (input) =>
-        transport.requestWithReconnectRetry(
-          (client) => client[ORCHESTRATION_WS_METHODS.dispatchCommand](input),
-          dispatchCommandRetryOptions(input),
-        ),
+      dispatchCommand: (input) => {
+        const execute = (client: WsRpcProtocolClient) =>
+          client[ORCHESTRATION_WS_METHODS.dispatchCommand](input);
+        // Starting voice is intentionally connection-bound. Replaying it on
+        // a replacement socket would resurrect a microphone session after
+        // the UI has already torn capture down.
+        return isRealtimeStartCommand(input)
+          ? transport.request(execute)
+          : transport.requestWithReconnectRetry(execute, dispatchCommandRetryOptions(input));
+      },
       getTurnDiff: (input) =>
         transport.request((client) => client[ORCHESTRATION_WS_METHODS.getTurnDiff](input)),
       getFullThreadDiff: (input) =>

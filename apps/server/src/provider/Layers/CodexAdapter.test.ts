@@ -15,6 +15,7 @@ import {
   type ProviderEvent,
   type ProviderSession,
   type ProviderStartReviewResult,
+  type ProviderRealtimeVoicesList,
   type ProviderTurnStartResult,
   type ProviderUserInputAnswers,
   ThreadId,
@@ -45,6 +46,7 @@ import type { CodexAdapterShape } from "../Services/CodexAdapter.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import {
   type CodexSessionRuntimeOptions,
+  type CodexSessionRuntimeRealtimeStartInput,
   type CodexSessionRuntimeSendTurnInput,
   type CodexSessionRuntimeSetGoalInput,
   type CodexSessionRuntimeShape,
@@ -139,11 +141,19 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
   public readonly interruptTurnImpl = vi.fn(
     (_turnId?: TurnId): Promise<void> => Promise.resolve(undefined),
   );
-  public readonly realtimeStartImpl = vi.fn((): Promise<void> => Promise.resolve(undefined));
+  public readonly realtimeStartImpl = vi.fn(
+    (_input?: CodexSessionRuntimeRealtimeStartInput): Promise<void> => Promise.resolve(undefined),
+  );
   public readonly realtimeStopImpl = vi.fn((): Promise<void> => Promise.resolve(undefined));
   public readonly realtimeAppendAudioImpl = vi.fn((): Promise<void> => Promise.resolve(undefined));
   public readonly realtimeListVoicesImpl = vi.fn(
-    (): Promise<ReadonlyArray<string>> => Promise.resolve(["alloy"]),
+    (): Promise<ProviderRealtimeVoicesList> =>
+      Promise.resolve({
+        v1: ["juniper"],
+        v2: ["alloy"],
+        defaultV1: "juniper",
+        defaultV2: "alloy",
+      }),
   );
 
   public readonly compactContextImpl = vi.fn((): Promise<void> => Promise.resolve(undefined));
@@ -240,7 +250,8 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
     return Effect.promise(() => this.interruptTurnImpl(turnId));
   }
 
-  realtimeStart = Effect.promise(() => this.realtimeStartImpl());
+  realtimeStart = (input?: CodexSessionRuntimeRealtimeStartInput) =>
+    Effect.promise(() => this.realtimeStartImpl(input));
 
   realtimeStop = Effect.promise(() => this.realtimeStopImpl());
 

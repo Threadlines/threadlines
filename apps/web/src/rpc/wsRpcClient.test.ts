@@ -134,6 +134,31 @@ describe("wsRpcClient", () => {
       attemptTimeoutMs: 25_000,
     });
   });
+
+  it("does not replay realtime start across a connection replacement", () => {
+    const request = vi.fn(async (_execute: unknown) => ({ sequence: 1 }));
+    const requestWithReconnectRetry = vi.fn();
+    const transport = {
+      dispose: vi.fn(async () => undefined),
+      reconnect: vi.fn(async () => undefined),
+      request,
+      requestStream: vi.fn(),
+      requestWithReconnectRetry,
+      subscribe: vi.fn(() => () => undefined),
+    };
+
+    const client = createWsRpcClient(transport as unknown as WsTransport);
+    void client.orchestration.dispatchCommand({
+      type: "thread.realtime.start",
+      commandId: "11111111-1111-4111-8111-111111111111",
+      threadId: "22222222-2222-4222-8222-222222222222",
+      outputModality: "audio",
+      createdAt: "2026-07-03T00:00:00.000Z",
+    } as Parameters<typeof client.orchestration.dispatchCommand>[0]);
+
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(requestWithReconnectRetry).not.toHaveBeenCalled();
+  });
 });
 
 describe("dispatchCommandRetryOptions", () => {
