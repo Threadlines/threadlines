@@ -865,7 +865,8 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("Finished reviewer subagent");
+    expect(markup).toContain("Spawned subagent");
+    expect(markup).not.toContain("Finished reviewer subagent");
     expect(markup).toContain("Inspect timeline rendering");
     expect(markup).toContain('data-subagent-activity-row="true"');
     expect(markup).toContain("Subagent");
