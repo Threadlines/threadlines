@@ -165,6 +165,31 @@ export function hasHostedPairingRouteIntent(url: URL = new URL(window.location.h
   );
 }
 
+/**
+ * Relay pairing sessions carry a `pairingUrl` minted by the relay worker,
+ * which always targets the stable hosted app — and sessions stored before the
+ * channel split predate channel-aware links entirely. Rewrite known hosted
+ * origins to this build's channel host so nightly desktops hand out nightly
+ * links; custom or self-hosted targets pass through untouched.
+ */
+export function channelMatchedHostedPairingUrl(pairingUrl: string): string {
+  try {
+    const url = new URL(pairingUrl);
+    if (!hostedStaticOrigins().has(url.origin)) {
+      return pairingUrl;
+    }
+    const target = new URL(configuredHostedAppUrl());
+    if (url.origin === target.origin) {
+      return pairingUrl;
+    }
+    url.protocol = target.protocol;
+    url.host = target.host;
+    return url.toString();
+  } catch {
+    return pairingUrl;
+  }
+}
+
 export function buildHostedPairingUrl(input: {
   readonly host: string;
   readonly token: string;

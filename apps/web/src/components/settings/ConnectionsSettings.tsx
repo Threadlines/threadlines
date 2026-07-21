@@ -75,7 +75,11 @@ import {
 } from "../ui/menu";
 import { Textarea } from "../ui/textarea";
 import { getPairingTokenFromUrl, setPairingTokenOnUrl } from "../../pairingUrl";
-import { hostedAppDisplayHost, readHostedPairingRequest } from "../../hostedPairing";
+import {
+  channelMatchedHostedPairingUrl,
+  hostedAppDisplayHost,
+  readHostedPairingRequest,
+} from "../../hostedPairing";
 import {
   createServerPairingCredential,
   fetchSessionState,
@@ -111,6 +115,14 @@ const accessTimestampFormatter = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
   timeStyle: "short",
 });
+
+/** The relay worker mints pairing URLs against the stable hosted app; align
+ *  them (and sessions stored before the channel split) with this build's
+ *  release channel before they are shown, copied, or opened. */
+function normalizeRelayPairingSession<T extends { readonly pairingUrl: string }>(session: T): T {
+  const pairingUrl = channelMatchedHostedPairingUrl(session.pairingUrl);
+  return pairingUrl === session.pairingUrl ? session : { ...session, pairingUrl };
+}
 
 function formatAccessTimestamp(value: string): string {
   const parsed = new Date(value);
@@ -1713,7 +1725,9 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
       .getRelayPairingSession()
       .then((session) => {
         if (cancelled) return;
-        setMobileConnectSession((current) => current ?? session);
+        setMobileConnectSession(
+          (current) => current ?? (session ? normalizeRelayPairingSession(session) : session),
+        );
       })
       .catch(() => {
         // A stale preload or transient IPC failure should not block creating a fresh phone link.
@@ -1740,16 +1754,17 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
           return;
         }
         setMobileConnectError(null);
+        const normalizedSession = normalizeRelayPairingSession(session);
         setMobileConnectSession((current) => {
           if (
             !current ||
-            current.sessionId !== session.sessionId ||
-            current.status !== session.status ||
-            current.expiresAt !== session.expiresAt ||
-            current.pairingUrl !== session.pairingUrl ||
-            current.relayOrigin !== session.relayOrigin
+            current.sessionId !== normalizedSession.sessionId ||
+            current.status !== normalizedSession.status ||
+            current.expiresAt !== normalizedSession.expiresAt ||
+            current.pairingUrl !== normalizedSession.pairingUrl ||
+            current.relayOrigin !== normalizedSession.relayOrigin
           ) {
-            return session;
+            return normalizedSession;
           }
           return current;
         });
@@ -1852,7 +1867,7 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
     setIsCreatingMobileConnectLink(true);
     setMobileConnectError(null);
     try {
-      const session = await desktopBridge.createRelayPairingSession();
+      const session = normalizeRelayPairingSession(await desktopBridge.createRelayPairingSession());
       setMobileConnectSession(session);
       copyMobileConnectLink(session.pairingUrl, "mobile-link");
     } catch (error) {

@@ -4,6 +4,7 @@ import {
   buildHostedPairingUrl,
   buildHostedRelayPairingUrl,
   buildRelayDeviceSocketUrl,
+  channelMatchedHostedPairingUrl,
   hasHostedPairingRequest,
   hasHostedPairingRouteIntent,
   isHostedStaticApp,
@@ -13,6 +14,33 @@ import {
 describe("hostedPairing", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
+  });
+
+  describe("channelMatchedHostedPairingUrl", () => {
+    const relayMintedUrl =
+      "https://app.threadlines.dev/pair?relay=https%3A%2F%2Frelay.example.workers.dev&session=abc#token=SECRET";
+
+    it("rewrites relay-minted stable URLs to the configured channel host", () => {
+      vi.stubEnv("VITE_HOSTED_APP_URL", "https://nightly.app.threadlines.dev");
+
+      expect(channelMatchedHostedPairingUrl(relayMintedUrl)).toBe(
+        "https://nightly.app.threadlines.dev/pair?relay=https%3A%2F%2Frelay.example.workers.dev&session=abc#token=SECRET",
+      );
+    });
+
+    it("keeps URLs already on the configured channel host verbatim", () => {
+      vi.stubEnv("VITE_HOSTED_APP_URL", "https://app.threadlines.dev");
+
+      expect(channelMatchedHostedPairingUrl(relayMintedUrl)).toBe(relayMintedUrl);
+    });
+
+    it("leaves custom or self-hosted pairing targets untouched", () => {
+      vi.stubEnv("VITE_HOSTED_APP_URL", "https://nightly.app.threadlines.dev");
+
+      const selfHosted = "https://threadlines.internal.example.com/pair?session=abc#token=SECRET";
+      expect(channelMatchedHostedPairingUrl(selfHosted)).toBe(selfHosted);
+      expect(channelMatchedHostedPairingUrl("not a url")).toBe("not a url");
+    });
   });
 
   it("reads hosted pairing host and query token parameters", () => {
