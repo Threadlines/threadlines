@@ -13,6 +13,13 @@ updates:
       # catalog and hardcodes the lockfile importer), producing unmergeable
       # PRs. The typecheck toolchain is bumped manually instead.
       - dependency-name: "@effect/tsgo"
+      # Same catalog-hardcoding bug (PR #75 rewrote the root importer's
+      # 'catalog:' specifier to a literal 0.2.5, breaking frozen-lockfile
+      # installs). vite-plus must also move in lockstep with the `vite`
+      # catalog alias (@voidzero-dev/vite-plus-core) and the setup-vp pins
+      # in CI workflows, so it is bumped manually as a coordinated change.
+      - dependency-name: "vite-plus"
+      - dependency-name: "vite"
       # Electron bumps can regress GPU compositing in ways CI cannot catch
       # (43.1.1 produced stale-tile strips at the sidebar boundary on
       # Windows). Bump manually and soak on real hardware first.
