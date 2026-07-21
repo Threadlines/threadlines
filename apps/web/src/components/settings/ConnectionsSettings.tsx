@@ -75,7 +75,7 @@ import {
 } from "../ui/menu";
 import { Textarea } from "../ui/textarea";
 import { getPairingTokenFromUrl, setPairingTokenOnUrl } from "../../pairingUrl";
-import { readHostedPairingRequest } from "../../hostedPairing";
+import { hostedAppDisplayHost, readHostedPairingRequest } from "../../hostedPairing";
 import {
   createServerPairingCredential,
   fetchSessionState,
@@ -2868,7 +2868,7 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
             <div className="grid gap-2 text-[11px] text-muted-foreground sm:grid-cols-2">
               <div>
                 <span className="block font-medium text-foreground/75">Hosted app</span>
-                app.threadlines.dev
+                {hostedAppDisplayHost()}
               </div>
               <div>
                 <span className="block font-medium text-foreground/75">Relay</span>
@@ -2918,7 +2918,7 @@ export function ConnectionsSettings({ surface = "full" }: { surface?: "full" | "
             ? "Creating a Cloudflare relay session and opening the desktop bridge."
             : mobileConnectErrorView
               ? mobileConnectErrorView.description
-              : "Create a private app.threadlines.dev link for your phone. No same Wi-Fi or Tailscale setup required."
+              : `Create a private ${hostedAppDisplayHost()} link for your phone. No same Wi-Fi or Tailscale setup required.`
       }
       control={
         desktopBridge ? (

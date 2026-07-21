@@ -1,6 +1,8 @@
+import { APP_VERSION } from "./branding";
 import { getPairingTokenFromUrl, setPairingTokenOnUrl } from "./pairingUrl";
 
 const DEFAULT_HOSTED_APP_URL = "https://app.threadlines.dev";
+const NIGHTLY_HOSTED_APP_URL = "https://nightly.app.threadlines.dev";
 
 export interface HostedPairingRequest {
   readonly kind: "direct";
@@ -21,8 +23,32 @@ export type AnyHostedPairingRequest = HostedPairingRequest | HostedRelayPairingR
 
 export type HostedAppChannel = "latest" | "nightly";
 
+/** Nightly desktop builds pair phones against the nightly hosted app so both
+ *  sides track the same release channel; without this every nightly user sees
+ *  a version-mismatch banner against the stable hosted deployment. */
+function isNightlyAppVersion(version: string | null | undefined): boolean {
+  return typeof version === "string" && version.includes("-nightly.");
+}
+
+export function hostedAppUrlForChannel(): string {
+  const explicit = import.meta.env.VITE_HOSTED_APP_URL?.trim();
+  if (explicit) {
+    return explicit;
+  }
+  return isNightlyAppVersion(APP_VERSION) ? NIGHTLY_HOSTED_APP_URL : DEFAULT_HOSTED_APP_URL;
+}
+
 function configuredHostedAppUrl(): string {
-  return import.meta.env.VITE_HOSTED_APP_URL?.trim() || DEFAULT_HOSTED_APP_URL;
+  return hostedAppUrlForChannel();
+}
+
+/** Bare host of the hosted app the pairing links target, for UI copy. */
+export function hostedAppDisplayHost(): string {
+  try {
+    return new URL(hostedAppUrlForChannel()).host;
+  } catch {
+    return "app.threadlines.dev";
+  }
 }
 
 function configuredBackendUrl(): string {
@@ -44,7 +70,7 @@ function originFromUrl(value: string): string | null {
 
 function hostedStaticOrigins(): ReadonlySet<string> {
   return new Set(
-    [configuredHostedAppUrl(), DEFAULT_HOSTED_APP_URL]
+    [configuredHostedAppUrl(), DEFAULT_HOSTED_APP_URL, NIGHTLY_HOSTED_APP_URL]
       .map(originFromUrl)
       .filter((origin): origin is string => origin !== null),
   );

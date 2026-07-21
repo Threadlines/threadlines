@@ -970,6 +970,7 @@ jobs:
     uses: ./.github/workflows/deploy-web.yml
     with:
       ref: ${{ needs.preflight.outputs.ref }}
+      channel: ${{ needs.preflight.outputs.channel == 'nightly' && 'nightly' || 'latest' }}
     secrets: inherit
 
   cleanup_failed_release:

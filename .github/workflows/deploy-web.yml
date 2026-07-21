@@ -7,28 +7,34 @@ on:
         description: "Git ref to build and deploy. Defaults to the caller's commit."
         required: false
         type: string
+      channel:
+        description: "Hosted app channel: latest deploys app.threadlines.dev, nightly deploys nightly.app.threadlines.dev."
+        required: false
+        type: string
+        default: latest
 
 permissions:
   contents: read
 
 jobs:
   deploy:
-    name: Deploy app.threadlines.dev
+    name: Deploy ${{ inputs.channel == 'nightly' && 'nightly.app.threadlines.dev' || 'app.threadlines.dev' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     concurrency:
-      group: deploy-app-threadlines-dev
+      group: deploy-${{ inputs.channel == 'nightly' && 'nightly-' || '' }}app-threadlines-dev
       cancel-in-progress: false
     environment:
-      name: app.threadlines.dev
-      url: https://app.threadlines.dev
+      name: ${{ inputs.channel == 'nightly' && 'nightly.app.threadlines.dev' || 'app.threadlines.dev' }}
+      url: ${{ inputs.channel == 'nightly' && 'https://nightly.app.threadlines.dev' || 'https://app.threadlines.dev' }}
     env:
       VERCEL_CLI_VERSION: 54.14.5
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-      VITE_HOSTED_APP_CHANNEL: latest
-      VITE_HOSTED_APP_URL: https://app.threadlines.dev
+      VERCEL_PROJECT_ID: ${{ inputs.channel == 'nightly' && secrets.VERCEL_PROJECT_ID_NIGHTLY || secrets.VERCEL_PROJECT_ID }}
+      VITE_HOSTED_APP_CHANNEL: ${{ inputs.channel == 'nightly' && 'nightly' || 'latest' }}
+      VITE_HOSTED_APP_URL: ${{ inputs.channel == 'nightly' && 'https://nightly.app.threadlines.dev' || 'https://app.threadlines.dev' }}
+      HOSTED_APP_URL: ${{ inputs.channel == 'nightly' && 'https://nightly.app.threadlines.dev' || 'https://app.threadlines.dev' }}
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -78,11 +84,11 @@ jobs:
           vercel deploy --prebuilt --prod --yes --token="$VERCEL_TOKEN" | tee /tmp/vercel-deploy.log
           deployment_url="$(grep -Eo 'https://[^ ]+' /tmp/vercel-deploy.log | tail -n 1)"
           {
-            echo "### app.threadlines.dev deployment"
+            echo "### ${HOSTED_APP_URL#https://} deployment"
             echo
             echo "- Commit: $(git rev-parse HEAD)"
             if [[ -n "$deployment_url" ]]; then
               echo "- Deployment: $deployment_url"
             fi
-            echo "- Production URL: https://app.threadlines.dev"
+            echo "- Production URL: $HOSTED_APP_URL"
           } >> "$GITHUB_STEP_SUMMARY"
