@@ -4703,6 +4703,22 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             reason: "starting a fresh session because no project directory holds the transcript",
           });
           resumeState = undefined;
+          // Degraded resume must be visible to the user, not just the server
+          // log: the fresh session has none of the thread's earlier context.
+          const fallbackStamp = yield* makeEventStamp();
+          yield* offerRuntimeEvent({
+            type: "runtime.warning",
+            eventId: fallbackStamp.eventId,
+            provider: PROVIDER,
+            createdAt: fallbackStamp.createdAt,
+            threadId,
+            payload: {
+              message:
+                "Could not restore this thread's previous Claude session (its transcript is missing). Starting fresh — earlier context from this thread is not available to the model.",
+              warningKind: "resume-fallback",
+            },
+            providerRefs: {},
+          });
         }
       }
 

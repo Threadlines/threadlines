@@ -638,6 +638,10 @@ export const openCodexThread = (input: {
   readonly requestedModel: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
   readonly resumeThreadId: string | undefined;
+  /** Invoked when a requested native resume is unrecoverable and the thread
+   *  falls back to a fresh start. Lets callers surface the degraded resume
+   *  instead of silently continuing without history. */
+  readonly onResumeFallback?: (cause: string) => Effect.Effect<void>;
 }): Effect.Effect<CodexThreadOpenResponse, CodexErrors.CodexAppServerError> => {
   const resumeThreadId = input.resumeThreadId;
   const startParams = buildThreadStartParams({
@@ -669,6 +673,7 @@ export const openCodexThread = (input: {
         recoverable: true,
         cause: error.message,
       }).pipe(
+        Effect.andThen(input.onResumeFallback?.(error.message) ?? Effect.void),
         Effect.andThen(
           withCodexRequestTimeout(
             "start a Codex thread",
@@ -1712,6 +1717,13 @@ export const makeCodexSessionRuntime = (
         requestedModel,
         serviceTier: options.serviceTier,
         resumeThreadId: readResumeCursorThreadId(options.resumeCursor),
+        onResumeFallback: (cause) =>
+          emitEvent({
+            kind: "notification",
+            threadId: options.threadId,
+            method: "warning",
+            message: `Could not restore this thread's previous Codex session (${cause}). Starting fresh — the provider no longer has this thread's earlier context.`,
+          }),
       });
 
       const providerThreadId = opened.thread.id;

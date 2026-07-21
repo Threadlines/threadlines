@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { CommandId, type OrchestrationSession } from "@threadlines/contracts";
+import { CommandId, type OrchestrationSession, type ThreadId } from "@threadlines/contracts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -79,14 +79,34 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
     );
     const sweepIntervalMs = Math.max(1, options?.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS);
 
-    const listActiveProviderThreadIds = providerService.listSessions().pipe(
-      Effect.map((sessions) => new Set(sessions.map((session) => session.threadId))),
-      Effect.catchCause((cause) =>
-        Effect.logWarning("provider.session.reaper.list-sessions-failed", { cause }).pipe(
-          Effect.as(null),
+    const listProviderSessions = providerService
+      .listSessions()
+      .pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("provider.session.reaper.list-sessions-failed", { cause }).pipe(
+            Effect.as(null),
+          ),
         ),
-      ),
-    );
+      );
+
+    // Any live session, regardless of activity. Used by startup reconciliation
+    // to decide whether a projected session still has a runtime behind it.
+    const toLiveProviderThreadIds = (sessions: ReadonlyArray<{ threadId: ThreadId }> | null) =>
+      sessions === null ? null : new Set(sessions.map((session) => session.threadId));
+
+    // Only sessions doing work right now. Idle `ready` (and dead `error`/
+    // `closed`) sessions must NOT exempt a thread from the inactivity sweep —
+    // that would keep one provider subprocess alive per opened thread forever.
+    const toBusyProviderThreadIds = (
+      sessions: ReadonlyArray<{ threadId: ThreadId; status: string }> | null,
+    ) =>
+      sessions === null
+        ? null
+        : new Set(
+            sessions
+              .filter((session) => session.status === "connecting" || session.status === "running")
+              .map((session) => session.threadId),
+          );
 
     const dispatchStoppedProjection = (input: {
       readonly binding: ProviderRuntimeBindingWithMetadata;
@@ -116,7 +136,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
 
     const reconcileStartup = Effect.gen(function* () {
       const bindings = yield* directory.listBindings();
-      const activeProviderThreadIds = yield* listActiveProviderThreadIds;
+      const activeProviderThreadIds = toLiveProviderThreadIds(yield* listProviderSessions);
       const nowIso = DateTime.formatIso(yield* DateTime.now);
       let reconciledCount = 0;
       let orphanedCount = 0;
@@ -187,7 +207,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
 
     const sweep = Effect.gen(function* () {
       const bindings = yield* directory.listBindings();
-      const activeProviderThreadIds = yield* listActiveProviderThreadIds;
+      const busyProviderThreadIds = toBusyProviderThreadIds(yield* listProviderSessions);
       const now = yield* Clock.currentTimeMillis;
       const nowIso = DateTime.formatIso(yield* DateTime.now);
       let reapedCount = 0;
@@ -215,7 +235,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
         const thread = yield* projectionSnapshotQuery
           .getThreadShellById(binding.threadId)
           .pipe(Effect.map(Option.getOrUndefined));
-        if (activeProviderThreadIds?.has(binding.threadId)) {
+        if (busyProviderThreadIds?.has(binding.threadId)) {
           yield* Effect.logDebug("provider.session.reaper.skipped-active-turn", {
             threadId: binding.threadId,
             activeTurnId: thread?.session?.activeTurnId ?? null,
@@ -224,7 +244,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
           });
           continue;
         }
-        if (activeProviderThreadIds === null && thread?.session?.activeTurnId != null) {
+        if (busyProviderThreadIds === null && thread?.session?.activeTurnId != null) {
           yield* Effect.logDebug("provider.session.reaper.skipped-active-turn", {
             threadId: binding.threadId,
             activeTurnId: thread.session.activeTurnId,

@@ -747,6 +747,47 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("removes the session from the map when the codex child exits unexpectedly", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("thread-dead-child");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const runtime = lifecycleRuntimeFactory.lastRuntime;
+      assert.ok(runtime);
+      assert.equal(yield* adapter.hasSession(threadId), true);
+      const exitEventFiber = yield* Stream.runHead(
+        adapter.streamEvents.pipe(Stream.filter((event) => event.type === "session.exited")),
+      ).pipe(Effect.forkChild);
+
+      yield* runtime.emit({
+        id: asEventId("evt-child-died"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-07-10T00:00:00.000Z",
+        method: "session/exited",
+        threadId,
+        payload: {
+          message: "Codex App Server exited with code 1.",
+        },
+      } satisfies ProviderEvent);
+
+      const exitEvent = yield* Fiber.join(exitEventFiber).pipe(Effect.timeout("1 second"));
+      assert.equal(exitEvent._tag, "Some");
+
+      // Cleanup runs just after the exit event is offered downstream.
+      let stillHasSession = true;
+      for (let attempt = 0; attempt < 100 && stillHasSession; attempt += 1) {
+        yield* Effect.yieldNow;
+        stillHasSession = yield* adapter.hasSession(threadId);
+      }
+      assert.equal(stillHasSession, false);
+    }),
+  );
+
   it.effect("maps safety-buffering updates and preserves a remapped parent turn", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();

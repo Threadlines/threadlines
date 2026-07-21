@@ -2090,6 +2090,18 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               return;
             }
             yield* Queue.offerAll(runtimeEventQueue, runtimeEvents);
+            // A dead child (crash or graceful close outside stopSession) must
+            // not linger in the session map: hasSession/listSessions would
+            // keep routing turns to it instead of letting the next turn start
+            // a fresh session from the resume cursor.
+            if (runtimeEvents.some((runtimeEvent) => runtimeEvent.type === "session.exited")) {
+              const session = sessions.get(event.threadId);
+              if (session && !session.stopped) {
+                yield* stopSessionInternal(session, {
+                  interruptEventFiber: false,
+                });
+              }
+            }
             if (
               options?.onAccountRateLimitsUpdated &&
               event.method === "account/rateLimits/updated"

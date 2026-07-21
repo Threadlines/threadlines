@@ -2613,7 +2613,7 @@ describe("ClaudeAdapterLive", () => {
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
 
-      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 6).pipe(
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 7).pipe(
         Stream.runCollect,
         Effect.forkChild,
       );
@@ -2646,6 +2646,9 @@ describe("ClaudeAdapterLive", () => {
           "session.started",
           "session.configured",
           "session.state.changed",
+          // The replacement resume finds no transcript on disk in this
+          // harness, so the fresh-start fallback is surfaced as a warning.
+          "runtime.warning",
           "session.started",
           "session.configured",
           "session.state.changed",
@@ -5525,6 +5528,10 @@ describe("ClaudeAdapterLive", () => {
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
 
+      const warningFiber = yield* Stream.runHead(
+        adapter.streamEvents.pipe(Stream.filter((event) => event.type === "runtime.warning")),
+      ).pipe(Effect.forkChild);
+
       const session = yield* adapter.startSession({
         threadId: RESUME_THREAD_ID,
         provider: ProviderDriverKind.make("claudeAgent"),
@@ -5552,6 +5559,14 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(resumeCursor.resume, createInput?.options.sessionId);
       assert.equal(resumeCursor.resumeSessionAt, undefined);
       assert.equal(resumeCursor.turnCount, 0);
+
+      // The degraded resume is surfaced to the user, not just server logs.
+      const warning = yield* Fiber.join(warningFiber).pipe(Effect.timeout("1 second"));
+      assert.equal(warning._tag, "Some");
+      if (warning._tag === "Some" && warning.value.type === "runtime.warning") {
+        assert.equal(warning.value.payload.warningKind, "resume-fallback");
+        assert.match(warning.value.payload.message, /Starting fresh/);
+      }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

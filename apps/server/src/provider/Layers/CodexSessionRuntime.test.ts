@@ -626,6 +626,7 @@ describe("openCodexThread", () => {
       },
     };
 
+    const fallbackCauses: string[] = [];
     const opened = await Effect.runPromise(
       openCodexThread({
         client,
@@ -635,10 +636,16 @@ describe("openCodexThread", () => {
         requestedModel: "gpt-5.3-codex",
         serviceTier: undefined,
         resumeThreadId: "stale-thread",
+        onResumeFallback: (cause) =>
+          Effect.sync(() => {
+            fallbackCauses.push(cause);
+          }),
       }),
     );
 
     assert.equal(opened.thread.id, "fresh-thread");
+    assert.equal(fallbackCauses.length, 1);
+    assert.match(fallbackCauses[0] ?? "", /thread not found/);
     assert.deepStrictEqual(
       calls.map((call) => call.method),
       ["thread/resume", "thread/start"],
