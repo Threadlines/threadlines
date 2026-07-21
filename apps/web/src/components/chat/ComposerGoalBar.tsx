@@ -1,5 +1,5 @@
 import type { OrchestrationThreadGoal, ThreadGoalStatus } from "@threadlines/contracts";
-import { PauseIcon, PlayIcon, XIcon } from "lucide-react";
+import { CheckIcon, PauseIcon, PlayIcon, XIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
@@ -113,11 +113,19 @@ export function ComposerGoalBar({
       data-composer-goal-bar="true"
       className="flex min-w-0 items-center gap-2 px-3 py-1.5 text-xs sm:px-4"
     >
-      <span
-        className={cn("size-1.5 shrink-0 rounded-full", presentation.dotClassName)}
-        title={`Goal ${presentation.label.toLowerCase()}`}
-        aria-hidden="true"
-      />
+      {goal.status === "complete" ? (
+        <CheckIcon
+          className="size-3 shrink-0 text-sky-500"
+          aria-hidden="true"
+          data-goal-complete="true"
+        />
+      ) : (
+        <span
+          className={cn("size-1.5 shrink-0 rounded-full", presentation.dotClassName)}
+          title={`Goal ${presentation.label.toLowerCase()}`}
+          aria-hidden="true"
+        />
+      )}
       <button
         type="button"
         className="min-w-0 flex-1 truncate text-left text-foreground/90 hover:text-foreground"
@@ -145,16 +153,76 @@ export function ComposerGoalBar({
           <pauseResumeAction.icon className="size-3.5" />
         </Button>
       ) : null}
-      <Button
-        size="icon-xs"
-        variant="ghost"
-        aria-label="Clear goal"
-        disabled={isDispatching}
-        onClick={onClearGoal}
-      >
-        <XIcon className="size-3.5" />
-      </Button>
+      <GoalClearButton
+        isDispatching={isDispatching}
+        // Clearing a live goal abandons work in flight; clearing a finished
+        // one is just tidying up, so the confirm step only guards live goals.
+        requireConfirm={goal.status !== "complete"}
+        onClearGoal={onClearGoal}
+      />
     </div>
+  );
+}
+
+/**
+ * Clearing detaches a goal Codex is actively driving toward, so the ✕ arms a
+ * destructive confirm instead of firing immediately; the armed state reverts
+ * on its own after a beat if the user looks away.
+ */
+function GoalClearButton({
+  isDispatching,
+  requireConfirm,
+  onClearGoal,
+}: {
+  readonly isDispatching: boolean;
+  readonly requireConfirm: boolean;
+  readonly onClearGoal: () => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+
+  useEffect(() => {
+    if (!confirming) {
+      return;
+    }
+    const timeoutId = window.setTimeout(() => setConfirming(false), 4000);
+    return () => window.clearTimeout(timeoutId);
+  }, [confirming]);
+
+  if (confirming) {
+    return (
+      <Button
+        size="xs"
+        variant="destructive-outline"
+        aria-label="Confirm clear goal"
+        disabled={isDispatching}
+        onClick={() => {
+          setConfirming(false);
+          onClearGoal();
+        }}
+        onBlur={() => setConfirming(false)}
+      >
+        Clear goal?
+      </Button>
+    );
+  }
+
+  return (
+    <Button
+      size="icon-xs"
+      variant="ghost"
+      aria-label="Clear goal"
+      className={requireConfirm ? "text-muted-foreground hover:text-destructive-foreground" : ""}
+      disabled={isDispatching}
+      onClick={() => {
+        if (requireConfirm) {
+          setConfirming(true);
+          return;
+        }
+        onClearGoal();
+      }}
+    >
+      <XIcon className="size-3.5" />
+    </Button>
   );
 }
 
@@ -192,9 +260,14 @@ function ComposerGoalEditor({
     if (!canSubmit) {
       return;
     }
+    // Editing a finished, limited, or blocked goal re-arms it — Codex only
+    // resumes driving once the goal is active again. A deliberately paused
+    // goal stays paused; resume is its own control.
+    const reactivate = goal !== null && goal.status !== "active" && goal.status !== "paused";
     onSetGoal({
       objective: trimmedObjective,
       tokenBudget: tokenBudget ?? null,
+      ...(reactivate ? { status: "active" as const } : {}),
     });
   };
 

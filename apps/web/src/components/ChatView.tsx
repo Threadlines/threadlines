@@ -4487,34 +4487,6 @@ export default function ChatView(props: ChatViewProps) {
       });
       dispatchSucceeded = true;
       markLocalDispatchAccepted(threadRefForSend);
-      const draftGoalToFlush = draftThreadGoals.get(threadIdForSend);
-      if (draftGoalToFlush !== undefined) {
-        // The bootstrap in the turn.start above materialized the thread, so
-        // the goal captured on the draft can be attached now.
-        setDraftThreadGoals((current) => {
-          const next = new Map(current);
-          next.delete(threadIdForSend);
-          return next;
-        });
-        await api.orchestration
-          .dispatchCommand({
-            type: "thread.goal.set",
-            commandId: newCommandId(),
-            threadId: threadIdForSend,
-            objective: draftGoalToFlush.objective,
-            tokenBudget: draftGoalToFlush.tokenBudget,
-            createdAt: new Date().toISOString(),
-          })
-          .catch((error: unknown) => {
-            toastManager.add(
-              stackedThreadToast({
-                type: "error",
-                title: "Could not set goal",
-                description: error instanceof Error ? error.message : "Goal could not be attached.",
-              }),
-            );
-          });
-      }
       if (isServerThread && ctxSelectedModel) {
         await persistThreadSettingsForNextTurn({
           threadId: threadIdForSend,
@@ -4601,37 +4573,42 @@ export default function ChatView(props: ChatViewProps) {
   };
 
   const [goalDispatchingThreadId, setGoalDispatchingThreadId] = useState<ThreadId | null>(null);
-  // Goals set before the thread exists server-side (draft threads only
-  // materialize with the first turn's bootstrap). Kept client-side and
-  // flushed as thread.goal.set right after the first turn dispatches.
-  const [draftThreadGoals, setDraftThreadGoals] = useState<
-    ReadonlyMap<ThreadId, OrchestrationThreadGoal>
+  // Bridges the gap between dispatching a goal and its authoritative state
+  // arriving through the projection stream — without it the bar flickers out
+  // while a brand-new thread materializes (and edits briefly show the stale
+  // pre-edit goal). Each entry remembers the server goal's updatedAt at
+  // dispatch time; the entry clears once the server state advances past that
+  // baseline, or the dispatch fails.
+  const [optimisticGoals, setOptimisticGoals] = useState<
+    ReadonlyMap<ThreadId, { goal: OrchestrationThreadGoal; baselineUpdatedAt: string | null }>
   >(new Map());
+
+  useEffect(() => {
+    const threadId = activeThread?.id;
+    if (threadId === undefined) {
+      return;
+    }
+    const entry = optimisticGoals.get(threadId);
+    if (!entry) {
+      return;
+    }
+    const serverGoal = activeThread?.goal ?? null;
+    const serverAdvanced =
+      serverGoal !== null &&
+      (entry.baselineUpdatedAt === null || serverGoal.updatedAt !== entry.baselineUpdatedAt);
+    if (!serverAdvanced) {
+      return;
+    }
+    setOptimisticGoals((current) => {
+      const next = new Map(current);
+      next.delete(threadId);
+      return next;
+    });
+  }, [activeThread?.goal, activeThread?.id, optimisticGoals]);
 
   const onSetThreadGoal = useCallback(
     async (input: ComposerGoalSetInput) => {
-      if (!activeThread) {
-        return;
-      }
-      if (!isServerThread) {
-        const threadId = activeThread.id;
-        const nowIso = new Date().toISOString();
-        setDraftThreadGoals((current) => {
-          const existing = current.get(threadId);
-          const next = new Map(current);
-          next.set(threadId, {
-            threadId,
-            objective: input.objective ?? existing?.objective ?? "",
-            status: input.status ?? existing?.status ?? "active",
-            tokenBudget:
-              input.tokenBudget !== undefined ? input.tokenBudget : (existing?.tokenBudget ?? null),
-            tokensUsed: 0,
-            timeUsedSeconds: 0,
-            createdAt: existing?.createdAt ?? nowIso,
-            updatedAt: nowIso,
-          });
-          return next;
-        });
+      if (!activeThread || !activeProject) {
         return;
       }
       const api = readEnvironmentApi(environmentId);
@@ -4646,8 +4623,75 @@ export default function ChatView(props: ChatViewProps) {
         return;
       }
       const threadId = activeThread.id;
+      const existingGoal = activeThread.goal ?? null;
+      // The composer picker's selection lives in composer state until a send;
+      // goals must honor it the same way the send path does, or the goal's
+      // session starts on the thread's stale (often default) model.
+      const goalModelSelection =
+        composerRef.current?.getSendContext().selectedModelSelection ?? activeThread.modelSelection;
+      const optimisticObjective = input.objective ?? existingGoal?.objective;
+      if (optimisticObjective !== undefined) {
+        const nowIso = new Date().toISOString();
+        setOptimisticGoals((current) => {
+          const next = new Map(current);
+          next.set(threadId, {
+            baselineUpdatedAt: existingGoal?.updatedAt ?? null,
+            goal: {
+              threadId,
+              objective: optimisticObjective,
+              status: input.status ?? existingGoal?.status ?? "active",
+              tokenBudget:
+                input.tokenBudget !== undefined
+                  ? input.tokenBudget
+                  : (existingGoal?.tokenBudget ?? null),
+              tokensUsed: existingGoal?.tokensUsed ?? 0,
+              timeUsedSeconds: existingGoal?.timeUsedSeconds ?? 0,
+              createdAt: existingGoal?.createdAt ?? nowIso,
+              updatedAt: nowIso,
+            },
+          });
+          return next;
+        });
+      }
+      const dropOptimisticGoal = () =>
+        setOptimisticGoals((current) => {
+          if (!current.has(threadId)) {
+            return current;
+          }
+          const next = new Map(current);
+          next.delete(threadId);
+          return next;
+        });
       setGoalDispatchingThreadId(threadId);
       try {
+        // Codex starts working the moment a goal becomes active — a goal on a
+        // not-yet-created thread materializes it immediately (same shape as
+        // the plan-implementation flow) so the session spins up and the first
+        // auto-turn begins without waiting for a user message.
+        if (!isServerThread) {
+          if (input.objective === undefined) {
+            return;
+          }
+          await api.orchestration.dispatchCommand({
+            type: "thread.create",
+            commandId: newCommandId(),
+            threadId,
+            projectId: activeProject.id,
+            title: truncate(input.objective),
+            modelSelection: goalModelSelection,
+            runtimeMode,
+            interactionMode: "default",
+            branch: activeThreadBranch,
+            worktreePath: activeThread.worktreePath,
+            createdAt: new Date().toISOString(),
+          });
+        } else {
+          await persistThreadSettingsForNextTurn({
+            threadId,
+            createdAt: new Date().toISOString(),
+            modelSelection: goalModelSelection,
+          });
+        }
         await api.orchestration.dispatchCommand({
           type: "thread.goal.set",
           commandId: newCommandId(),
@@ -4658,6 +4702,7 @@ export default function ChatView(props: ChatViewProps) {
           createdAt: new Date().toISOString(),
         });
       } catch (error) {
+        dropOptimisticGoal();
         toastManager.add(
           stackedThreadToast({
             type: "error",
@@ -4669,23 +4714,21 @@ export default function ChatView(props: ChatViewProps) {
         setGoalDispatchingThreadId((current) => (current === threadId ? null : current));
       }
     },
-    [activeThread, environmentId, isServerThread],
+    [
+      activeThread,
+      activeProject,
+      activeThreadBranch,
+      environmentId,
+      isServerThread,
+      persistThreadSettingsForNextTurn,
+      runtimeMode,
+    ],
   );
 
   const onClearThreadGoal = useCallback(async () => {
-    if (!activeThread) {
-      return;
-    }
-    if (!isServerThread) {
-      const threadId = activeThread.id;
-      setDraftThreadGoals((current) => {
-        if (!current.has(threadId)) {
-          return current;
-        }
-        const next = new Map(current);
-        next.delete(threadId);
-        return next;
-      });
+    // Goals only exist on server threads now that setting one materializes
+    // the thread immediately.
+    if (!activeThread || !isServerThread) {
       return;
     }
     const api = readEnvironmentApi(environmentId);
@@ -6074,9 +6117,9 @@ export default function ChatView(props: ChatViewProps) {
                   goalDispatching={
                     activeThread !== undefined && goalDispatchingThreadId === activeThread.id
                   }
-                  draftGoal={
-                    activeThread !== undefined && !isServerThread
-                      ? (draftThreadGoals.get(activeThread.id) ?? null)
+                  optimisticGoal={
+                    activeThread !== undefined
+                      ? (optimisticGoals.get(activeThread.id)?.goal ?? null)
                       : null
                   }
                   onSetThreadGoal={onSetThreadGoal}

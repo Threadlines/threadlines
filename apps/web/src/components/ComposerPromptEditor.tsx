@@ -30,9 +30,12 @@ import {
   $getRoot,
   HISTORY_MERGE_TAG,
   DecoratorNode,
+  TextNode,
+  type EditorConfig,
   type ElementNode,
   type LexicalNode,
   type SerializedLexicalNode,
+  type SerializedTextNode,
   type EditorState,
   type NodeKey,
   type Spread,
@@ -424,6 +427,138 @@ function $createComposerTerminalContextNode(
   context: TerminalContextDraft,
 ): ComposerTerminalContextNode {
   return $applyNodeReplacement(new ComposerTerminalContextNode(context));
+}
+
+type SerializedComposerCommandTextNode = Spread<
+  {
+    type: "composer-command";
+    version: 1;
+  },
+  SerializedTextNode
+>;
+
+/**
+ * Leading slash-command token (`/goal`, `/plan`, …) tinted in place, the way
+ * Codex and Claude Code style recognized commands. Serializes as plain text —
+ * prompt segmentation, cursor collapse/expand mapping, and drafts never see
+ * it — and a paired transform demotes it back to a plain TextNode the moment
+ * it stops being the prompt's leading recognized command.
+ */
+class ComposerCommandTextNode extends TextNode {
+  static override getType(): string {
+    return "composer-command";
+  }
+
+  static override clone(node: ComposerCommandTextNode): ComposerCommandTextNode {
+    return new ComposerCommandTextNode(node.__text, node.__key);
+  }
+
+  static override importJSON(
+    serializedNode: SerializedComposerCommandTextNode,
+  ): ComposerCommandTextNode {
+    return $createComposerCommandTextNode(serializedNode.text).updateFromJSON(serializedNode);
+  }
+
+  override exportJSON(): SerializedComposerCommandTextNode {
+    return {
+      ...super.exportJSON(),
+      type: "composer-command",
+      version: 1,
+    };
+  }
+
+  override createDOM(config: EditorConfig): HTMLElement {
+    const dom = super.createDOM(config);
+    dom.classList.add("composer-command-token");
+    return dom;
+  }
+
+  override isTextEntity(): true {
+    return true;
+  }
+
+  // Typing at either edge lands in sibling text nodes so the token itself
+  // stays canonical; the revalidation transform handles the rest.
+  override canInsertTextBefore(): boolean {
+    return false;
+  }
+
+  override canInsertTextAfter(): boolean {
+    return false;
+  }
+}
+
+function $createComposerCommandTextNode(text: string): ComposerCommandTextNode {
+  return $applyNodeReplacement(new ComposerCommandTextNode(text));
+}
+
+const LEADING_COMMAND_TOKEN_REGEX = /^\/([a-z][a-z-]*)(?=\s|$)/i;
+
+/** The token is only styleable while it is the very start of the prompt: the
+ *  first text of the first paragraph, with nothing before it. */
+function $isLeadingPromptNode(node: TextNode): boolean {
+  if (node.getPreviousSibling() !== null) {
+    return false;
+  }
+  const paragraph = node.getParent();
+  if (paragraph === null || !$isElementNode(paragraph)) {
+    return false;
+  }
+  return paragraph.getPreviousSibling() === null && paragraph.getParent() === $getRoot();
+}
+
+function ComposerCommandHighlightPlugin(props: { recognizedSlashCommands: ReadonlyArray<string> }) {
+  const [editor] = useLexicalComposerContext();
+  const recognizedRef = useRef<ReadonlySet<string>>(new Set());
+  recognizedRef.current = new Set(props.recognizedSlashCommands.map((name) => name.toLowerCase()));
+
+  useEffect(() => {
+    const unregisterPromote = editor.registerNodeTransform(TextNode, (node) => {
+      if (node instanceof ComposerCommandTextNode) {
+        return;
+      }
+      if (!node.isSimpleText() || !$isLeadingPromptNode(node)) {
+        return;
+      }
+      const match = LEADING_COMMAND_TOKEN_REGEX.exec(node.getTextContent());
+      if (!match || !recognizedRef.current.has(match[1]?.toLowerCase() ?? "")) {
+        return;
+      }
+      const token = match[0];
+      let target = node;
+      if (node.getTextContent().length > token.length) {
+        const [head] = node.splitText(token.length);
+        if (head === undefined) {
+          return;
+        }
+        target = head;
+      }
+      target.replace($createComposerCommandTextNode(token));
+    });
+
+    const unregisterDemote = editor.registerNodeTransform(ComposerCommandTextNode, (node) => {
+      const text = node.getTextContent();
+      const match = LEADING_COMMAND_TOKEN_REGEX.exec(text);
+      const exactToken =
+        match !== null &&
+        match[0] === text &&
+        recognizedRef.current.has(match[1]?.toLowerCase() ?? "");
+      const next = node.getNextSibling();
+      const boundaryIntact =
+        next === null || !$isTextNode(next) || /^\s/.test(next.getTextContent());
+      if (exactToken && boundaryIntact && $isLeadingPromptNode(node)) {
+        return;
+      }
+      node.replace($createTextNode(text));
+    });
+
+    return () => {
+      unregisterPromote();
+      unregisterDemote();
+    };
+  }, [editor]);
+
+  return null;
 }
 
 type ComposerInlineTokenNode =
@@ -883,6 +1018,9 @@ interface ComposerPromptEditorProps {
   cursor: number;
   terminalContexts: ReadonlyArray<TerminalContextDraft>;
   skills: ReadonlyArray<ServerProviderSkill>;
+  /** Slash commands that trigger on Enter in this thread; the leading token
+   *  is tinted while it matches one of these. */
+  recognizedSlashCommands?: ReadonlyArray<string>;
   disabled: boolean;
   placeholder: string;
   className?: string;
@@ -1440,6 +1578,7 @@ function ComposerPromptEditorInner({
   cursor,
   terminalContexts,
   skills,
+  recognizedSlashCommands,
   disabled,
   placeholder,
   className,
@@ -1692,6 +1831,7 @@ function ComposerPromptEditorInner({
           ErrorBoundary={LexicalErrorBoundary}
         />
         <OnChangePlugin onChange={handleEditorChange} />
+        <ComposerCommandHighlightPlugin recognizedSlashCommands={recognizedSlashCommands ?? []} />
         <ComposerCommandKeyPlugin {...(onCommandKeyDown ? { onCommandKeyDown } : {})} />
         <ComposerSurroundSelectionPlugin terminalContexts={terminalContexts} skills={skills} />
         <ComposerInlineTokenArrowPlugin />
@@ -1709,6 +1849,7 @@ export function ComposerPromptEditor({
   cursor,
   terminalContexts,
   skills,
+  recognizedSlashCommands,
   disabled,
   placeholder,
   className,
@@ -1725,7 +1866,12 @@ export function ComposerPromptEditor({
     () => ({
       namespace: "threadlines-composer-editor",
       editable: true,
-      nodes: [ComposerMentionNode, ComposerSkillNode, ComposerTerminalContextNode],
+      nodes: [
+        ComposerMentionNode,
+        ComposerSkillNode,
+        ComposerTerminalContextNode,
+        ComposerCommandTextNode,
+      ],
       editorState: () => {
         $setComposerEditorPrompt(
           initialValueRef.current,
@@ -1753,6 +1899,7 @@ export function ComposerPromptEditor({
         onChange={onChange}
         onPaste={onPaste}
         editorRef={editorRef}
+        {...(recognizedSlashCommands ? { recognizedSlashCommands } : {})}
         {...(onCommandKeyDown ? { onCommandKeyDown } : {})}
         {...(className ? { className } : {})}
       />
