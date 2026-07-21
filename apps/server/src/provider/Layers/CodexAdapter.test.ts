@@ -1031,6 +1031,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();
       assert.ok(adapter.setThreadGoal);
+      assert.ok(adapter.getThreadGoal);
       assert.ok(adapter.clearThreadGoal);
 
       const goal = yield* adapter.setThreadGoal({
@@ -1042,6 +1043,17 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       assert.equal(goal.status, "active");
       assert.equal(goal.tokenBudget, 1_000);
       assert.equal(runtime.setGoalImpl.mock.calls.length, 1);
+
+      const readGoal = yield* adapter.getThreadGoal(asThreadId("thread-1"));
+      assert.deepEqual(readGoal, goal);
+
+      const pausedGoal = yield* adapter.setThreadGoal({
+        threadId: asThreadId("thread-1"),
+        status: "paused",
+      });
+      assert.equal(pausedGoal.status, "paused");
+      assert.equal(pausedGoal.objective, "Ship goal support");
+      assert.equal(pausedGoal.tokenBudget, 1_000);
 
       yield* adapter.clearThreadGoal(asThreadId("thread-1"));
       assert.equal(runtime.clearGoalImpl.mock.calls.length, 1);

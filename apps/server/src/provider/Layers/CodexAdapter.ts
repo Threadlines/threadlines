@@ -2639,6 +2639,17 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       ),
     );
 
+  const getThreadGoal: NonNullable<CodexAdapterShape["getThreadGoal"]> = (threadId) =>
+    requireSession(threadId).pipe(
+      Effect.flatMap((session) => session.runtime.getGoal),
+      Effect.map((goal) => (goal === null ? null : normalizeCodexThreadGoal(goal))),
+      Effect.mapError((cause) =>
+        cause._tag === "ProviderAdapterSessionNotFoundError"
+          ? cause
+          : mapCodexRuntimeError(threadId, "thread/goal/get", cause),
+      ),
+    );
+
   const clearThreadGoal: NonNullable<CodexAdapterShape["clearThreadGoal"]> = (threadId) =>
     requireSession(threadId).pipe(
       Effect.flatMap((session) => session.runtime.clearGoal),
@@ -2843,6 +2854,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     interruptTurn,
     compactContext,
     setThreadGoal,
+    getThreadGoal,
     clearThreadGoal,
     readThread,
     readSubagentTranscript,

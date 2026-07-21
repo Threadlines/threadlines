@@ -210,7 +210,7 @@ describe("DesktopBackendManager", () => {
         assert.isDefined(spawnedCommand.options.forceKillAfter);
         assert.equal(
           Duration.toMillis(Duration.fromInputUnsafe(spawnedCommand.options.forceKillAfter)),
-          2_000,
+          8_000,
         );
 
         assert.deepEqual(yield* decodeBootstrap(bootstrapJson), configWithObservability);

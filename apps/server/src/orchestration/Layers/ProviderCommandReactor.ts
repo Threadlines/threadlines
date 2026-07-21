@@ -49,6 +49,7 @@ import {
 } from "../../checkpointing/Utils.ts";
 import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
 import { ensureGeneralChatThreadScratchCwd } from "../generalChats.ts";
+import { pauseActiveThreadGoalForStop } from "../threadGoalLifecycle.ts";
 import {
   increment,
   orchestrationEventsProcessedTotal,
@@ -1630,6 +1631,19 @@ const make = Effect.gen(function* () {
 
     const now = event.payload.createdAt;
     if (thread.session && thread.session.status !== "stopped") {
+      yield* pauseActiveThreadGoalForStop({
+        threadId: thread.id,
+        projectionSnapshotQuery,
+        providerService,
+        orchestrationEngine,
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("provider.goal.pause-before-session-stop-failed", {
+            threadId: thread.id,
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      );
       yield* providerService.stopSession({ threadId: thread.id });
     }
 

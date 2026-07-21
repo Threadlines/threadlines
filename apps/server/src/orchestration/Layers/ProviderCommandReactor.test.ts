@@ -278,6 +278,9 @@ describe("ProviderCommandReactor", () => {
       }),
     );
     const clearThreadGoal = vi.fn<ProviderServiceShape["clearThreadGoal"]>(() => Effect.void);
+    const pauseThreadGoalForStop = vi.fn<ProviderServiceShape["pauseThreadGoalForStop"]>(() =>
+      Effect.succeed(null),
+    );
     const respondToRequest = vi.fn<ProviderServiceShape["respondToRequest"]>(() => Effect.void);
     const respondToUserInput = vi.fn<ProviderServiceShape["respondToUserInput"]>(() => Effect.void);
     const stopSession = vi.fn((input: unknown) =>
@@ -354,6 +357,7 @@ describe("ProviderCommandReactor", () => {
       interruptTurn: interruptTurn as ProviderServiceShape["interruptTurn"],
       compactContext,
       setThreadGoal: setThreadGoal as ProviderServiceShape["setThreadGoal"],
+      pauseThreadGoalForStop,
       clearThreadGoal: clearThreadGoal as ProviderServiceShape["clearThreadGoal"],
       respondToRequest: respondToRequest as ProviderServiceShape["respondToRequest"],
       respondToUserInput: respondToUserInput as ProviderServiceShape["respondToUserInput"],
@@ -496,6 +500,7 @@ describe("ProviderCommandReactor", () => {
       interruptTurn,
       compactContext,
       setThreadGoal,
+      pauseThreadGoalForStop,
       clearThreadGoal,
       respondToRequest,
       respondToUserInput,
@@ -3191,6 +3196,36 @@ describe("ProviderCommandReactor", () => {
 
     await Effect.runPromise(
       harness.engine.dispatch({
+        type: "thread.goal.state.set",
+        commandId: CommandId.make("cmd-active-goal-for-session-stop"),
+        threadId: ThreadId.make("thread-1"),
+        goal: {
+          threadId: ThreadId.make("thread-1"),
+          objective: "Pause before closing",
+          status: "active",
+          tokenBudget: 100_000,
+          tokensUsed: 1_000,
+          timeUsedSeconds: 30,
+          createdAt: now,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    harness.pauseThreadGoalForStop.mockImplementationOnce(() =>
+      Effect.succeed({
+        objective: "Pause before closing",
+        status: "paused",
+        tokenBudget: 100_000,
+        tokensUsed: 1_000,
+        timeUsedSeconds: 30,
+        createdAt: now,
+        updatedAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
         type: "thread.session.stop",
         commandId: CommandId.make("cmd-session-stop"),
         threadId: ThreadId.make("thread-1"),
@@ -3199,6 +3234,12 @@ describe("ProviderCommandReactor", () => {
     );
 
     await waitFor(() => harness.stopSession.mock.calls.length === 1);
+    expect(harness.pauseThreadGoalForStop).toHaveBeenCalledWith({
+      threadId: ThreadId.make("thread-1"),
+    });
+    expect(harness.pauseThreadGoalForStop.mock.invocationCallOrder[0]).toBeLessThan(
+      harness.stopSession.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER,
+    );
     const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(thread?.session).not.toBeNull();
@@ -3209,6 +3250,11 @@ describe("ProviderCommandReactor", () => {
     // resumes of this thread still need it after the runtime is gone.
     expect(thread?.session?.providerThreadId).toBe("codex-thread-9");
     expect(thread?.session?.activeTurnId).toBeNull();
+    expect(thread?.goal).toMatchObject({
+      objective: "Pause before closing",
+      status: "paused",
+      tokenBudget: 100_000,
+    });
   });
 });
 

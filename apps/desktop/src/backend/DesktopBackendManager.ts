@@ -35,7 +35,9 @@ const MAX_RESTART_DELAY = Duration.seconds(10);
 const DEFAULT_BACKEND_READINESS_TIMEOUT = Duration.minutes(1);
 const DEFAULT_BACKEND_READINESS_INTERVAL = Duration.millis(100);
 const DEFAULT_BACKEND_READINESS_REQUEST_TIMEOUT = Duration.seconds(1);
-const DEFAULT_BACKEND_TERMINATE_GRACE = Duration.seconds(2);
+// Give the server's shutdown finalizers time to pause and persist active
+// provider goals before falling back to a force kill.
+const DEFAULT_BACKEND_TERMINATE_GRACE = Duration.seconds(8);
 const BACKEND_READINESS_PATH = "/.well-known/threadlines/environment";
 
 type BackendProcessLayerServices = ChildProcessSpawner.ChildProcessSpawner | HttpClient.HttpClient;

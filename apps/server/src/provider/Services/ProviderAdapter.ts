@@ -160,6 +160,14 @@ export interface ProviderAdapterShape<TError> {
   ) => Effect.Effect<RuntimeThreadGoalSnapshot, TError>;
 
   /**
+   * Read the provider's authoritative goal state without mutating it.
+   * Optional; must be present when `capabilities.threadGoals` is `"supported"`.
+   */
+  readonly getThreadGoal?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<RuntimeThreadGoalSnapshot | null, TError>;
+
+  /**
    * Detach the thread's goal. Optional; see `setThreadGoal`.
    */
   readonly clearThreadGoal?: (threadId: ThreadId) => Effect.Effect<void, TError>;

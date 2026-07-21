@@ -11,6 +11,7 @@ import type {
   ProviderStartReviewInput,
   ProviderStartReviewResult,
   ProviderTurnStartResult,
+  RuntimeThreadGoalSnapshot,
 } from "@threadlines/contracts";
 import {
   ApprovalRequestId,
@@ -44,7 +45,10 @@ import {
   ProviderValidationError,
   type ProviderAdapterError,
 } from "../Errors.ts";
-import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
+import type {
+  ProviderAdapterShape,
+  ProviderSetThreadGoalInput,
+} from "../Services/ProviderAdapter.ts";
 import {
   ProviderAdapterRegistry,
   type ProviderAdapterRegistryShape,
@@ -92,6 +96,7 @@ type LegacyProviderRuntimeEvent = {
 
 function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
   const sessions = new Map<ThreadId, ProviderSession>();
+  const goals = new Map<ThreadId, RuntimeThreadGoalSnapshot>();
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
 
   const startSession = vi.fn((input: ProviderSessionStartInput) =>
@@ -144,6 +149,40 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
 
   const compactContext = vi.fn(
     (_threadId: ThreadId): Effect.Effect<void, ProviderAdapterError> => Effect.void,
+  );
+
+  const getThreadGoal = vi.fn(
+    (threadId: ThreadId): Effect.Effect<RuntimeThreadGoalSnapshot | null, ProviderAdapterError> =>
+      Effect.succeed(goals.get(threadId) ?? null),
+  );
+
+  const setThreadGoal = vi.fn(
+    (
+      input: ProviderSetThreadGoalInput,
+    ): Effect.Effect<RuntimeThreadGoalSnapshot, ProviderAdapterError> =>
+      Effect.sync(() => {
+        const previous = goals.get(input.threadId);
+        const now = "2026-01-01T00:00:00.000Z";
+        const goal: RuntimeThreadGoalSnapshot = {
+          objective: input.objective ?? previous?.objective ?? "default objective",
+          status: input.status ?? previous?.status ?? "active",
+          tokenBudget:
+            input.tokenBudget !== undefined ? input.tokenBudget : (previous?.tokenBudget ?? null),
+          tokensUsed: previous?.tokensUsed ?? 0,
+          timeUsedSeconds: previous?.timeUsedSeconds ?? 0,
+          createdAt: previous?.createdAt ?? now,
+          updatedAt: now,
+        };
+        goals.set(input.threadId, goal);
+        return goal;
+      }),
+  );
+
+  const clearThreadGoal = vi.fn(
+    (threadId: ThreadId): Effect.Effect<void, ProviderAdapterError> =>
+      Effect.sync(() => {
+        goals.delete(threadId);
+      }),
   );
 
   const startReview = vi.fn(
@@ -234,12 +273,16 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
       sessionModelSwitch: "in-session",
       manualContextCompaction: "supported",
       reviewStart: provider === CODEX_DRIVER ? "supported" : "unsupported",
+      threadGoals: provider === CODEX_DRIVER ? "supported" : "unsupported",
     },
     startSession,
     sendTurn,
     startReview,
     interruptTurn,
     compactContext,
+    getThreadGoal,
+    setThreadGoal,
+    clearThreadGoal,
     respondToRequest,
     respondToUserInput,
     stopSession,
@@ -278,6 +321,9 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     startReview,
     interruptTurn,
     compactContext,
+    getThreadGoal,
+    setThreadGoal,
+    clearThreadGoal,
     respondToRequest,
     respondToUserInput,
     stopSession,
@@ -1163,6 +1209,64 @@ routing.layer("ProviderServiceLive routing", (it) => {
         assert.equal(startPayload.threadId, initial.threadId);
       }
       assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+    }),
+  );
+
+  it.effect("pauses an active goal for stop without changing its objective or budget", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-goal-pause-for-stop");
+
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-goal-pause",
+        runtimeMode: "full-access",
+      });
+      yield* provider.setThreadGoal({
+        threadId,
+        objective: "Finish the lifecycle fix",
+        tokenBudget: 250_000,
+      });
+      routing.codex.getThreadGoal.mockClear();
+      routing.codex.setThreadGoal.mockClear();
+
+      const paused = yield* provider.pauseThreadGoalForStop({ threadId });
+
+      assert.equal(paused?.status, "paused");
+      assert.equal(paused?.objective, "Finish the lifecycle fix");
+      assert.equal(paused?.tokenBudget, 250_000);
+      assert.deepEqual(routing.codex.getThreadGoal.mock.calls, [[threadId]]);
+      assert.deepEqual(routing.codex.setThreadGoal.mock.calls, [[{ threadId, status: "paused" }]]);
+    }),
+  );
+
+  it.effect("does not recover a stopped session just to pause its goal", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-goal-pause-cold");
+
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-goal-cold",
+        runtimeMode: "full-access",
+      });
+      yield* provider.setThreadGoal({
+        threadId,
+        objective: "Stay cold",
+      });
+      yield* provider.stopSession({ threadId });
+      routing.codex.startSession.mockClear();
+      routing.codex.getThreadGoal.mockClear();
+
+      const result = yield* provider.pauseThreadGoalForStop({ threadId });
+
+      assert.equal(result, null);
+      assert.equal(routing.codex.startSession.mock.calls.length, 0);
+      assert.equal(routing.codex.getThreadGoal.mock.calls.length, 0);
     }),
   );
 

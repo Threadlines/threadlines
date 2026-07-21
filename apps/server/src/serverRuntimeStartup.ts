@@ -20,6 +20,7 @@ import * as Scope from "effect/Scope";
 import * as Context from "effect/Context";
 import * as Console from "effect/Console";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 
 import { ServerConfig } from "./config.ts";
 import { Keybindings } from "./keybindings.ts";
@@ -28,12 +29,14 @@ import { ensureGeneralChatsProject } from "./orchestration/generalChats.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { OrchestrationReactor } from "./orchestration/Services/OrchestrationReactor.ts";
+import { pauseActiveThreadGoalForStop } from "./orchestration/threadGoalLifecycle.ts";
 import { ServerLifecycleEvents } from "./serverLifecycleEvents.ts";
 import { ServerSettingsService } from "./serverSettings.ts";
 import { ServerEnvironment } from "./environment/Services/ServerEnvironment.ts";
 import { AnalyticsService } from "./telemetry/Services/AnalyticsService.ts";
 import { ServerAuth } from "./auth/Services/ServerAuth.ts";
 import { ProviderSessionReaper } from "./provider/Services/ProviderSessionReaper.ts";
+import { ProviderService } from "./provider/Services/ProviderService.ts";
 import { SleepInhibitor } from "./power/Services/SleepInhibitor.ts";
 import {
   formatHeadlessServeOutput,
@@ -280,6 +283,36 @@ const runStartupPhase = <A, E, R>(phase: string, effect: Effect.Effect<A, E, R>)
     Effect.withSpan(`server.startup.${phase}`),
   );
 
+export const pauseActiveGoalsForShutdown = Effect.gen(function* () {
+  const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+  const providerService = yield* ProviderService;
+  const orchestrationEngine = yield* OrchestrationEngineService;
+  const snapshot = yield* projectionSnapshotQuery.getShellSnapshot();
+  const activeGoalThreads = snapshot.threads.filter((thread) => thread.goal?.status === "active");
+
+  yield* Effect.forEach(
+    activeGoalThreads,
+    (thread) =>
+      pauseActiveThreadGoalForStop({
+        threadId: thread.id,
+        projectionSnapshotQuery,
+        providerService,
+        orchestrationEngine,
+      }).pipe(
+        Effect.timeout(Duration.seconds(5)),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("provider.goal.pause-on-shutdown-failed", {
+            threadId: thread.id,
+            cause,
+          }),
+        ),
+      ),
+    // Shutdown has one shared desktop grace window, so pause live sessions in
+    // parallel instead of allowing batches to outlive that window.
+    { concurrency: "unbounded", discard: true },
+  );
+});
+
 export const makeServerRuntimeStartup = Effect.gen(function* () {
   const serverConfig = yield* ServerConfig;
   const keybindings = yield* Keybindings;
@@ -295,6 +328,15 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
   const reactorScope = yield* Scope.make("sequential");
 
   yield* Effect.addFinalizer(() => Scope.close(reactorScope, Exit.void));
+  // Registered after the reactor finalizer so LIFO scope teardown pauses and
+  // persists goals while provider sessions and ingestion are still alive.
+  yield* Effect.addFinalizer(() =>
+    pauseActiveGoalsForShutdown.pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("provider.goal.pause-all-on-shutdown-failed", { cause }),
+      ),
+    ),
+  );
 
   const startup = Effect.gen(function* () {
     yield* Effect.logDebug("startup phase: starting keybindings runtime");

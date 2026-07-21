@@ -11,6 +11,7 @@ import * as Schedule from "effect/Schedule";
 
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { pauseActiveThreadGoalForStop } from "../../orchestration/threadGoalLifecycle.ts";
 import {
   ProviderSessionDirectory,
   type ProviderRuntimeBindingWithMetadata,
@@ -254,7 +255,20 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
           continue;
         }
 
-        const reaped = yield* providerService.stopSession({ threadId: binding.threadId }).pipe(
+        const reaped = yield* pauseActiveThreadGoalForStop({
+          threadId: binding.threadId,
+          projectionSnapshotQuery,
+          providerService,
+          orchestrationEngine,
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("provider.goal.pause-before-session-reap-failed", {
+              threadId: binding.threadId,
+              provider: binding.provider,
+              cause,
+            }),
+          ),
+          Effect.andThen(providerService.stopSession({ threadId: binding.threadId })),
           Effect.tap(() => {
             return Effect.all(
               [

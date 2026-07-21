@@ -100,6 +100,15 @@ export interface ProviderServiceShape {
   }) => Effect.Effect<RuntimeThreadGoalSnapshot, ProviderServiceError>;
 
   /**
+   * Pause an active goal before stopping its live provider session.
+   * Never recovers a cold session. Returns the authoritative provider state,
+   * or null when there is no live goal-capable session.
+   */
+  readonly pauseThreadGoalForStop: (input: {
+    readonly threadId: ThreadId;
+  }) => Effect.Effect<RuntimeThreadGoalSnapshot | null, ProviderServiceError>;
+
+  /**
    * Detach the thread's goal.
    */
   readonly clearThreadGoal: (input: {

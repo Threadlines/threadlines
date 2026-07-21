@@ -1336,6 +1336,48 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     },
   );
 
+  const pauseThreadGoalForStop: ProviderServiceShape["pauseThreadGoalForStop"] = Effect.fn(
+    "pauseThreadGoalForStop",
+  )(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.pauseThreadGoalForStop",
+      schema: ProviderClearThreadGoalServiceInput,
+      payload: rawInput,
+    });
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: "ProviderService.pauseThreadGoalForStop",
+      allowRecovery: false,
+    });
+    yield* Effect.annotateCurrentSpan({
+      "provider.operation": "pause-thread-goal-for-stop",
+      "provider.kind": routed.adapter.provider,
+      "provider.thread_id": input.threadId,
+    });
+    if (
+      !routed.isActive ||
+      routed.adapter.capabilities.threadGoals !== "supported" ||
+      routed.adapter.getThreadGoal === undefined ||
+      routed.adapter.setThreadGoal === undefined
+    ) {
+      return null;
+    }
+
+    const currentGoal = yield* routed.adapter.getThreadGoal(routed.threadId);
+    if (currentGoal === null || currentGoal.status !== "active") {
+      return currentGoal;
+    }
+
+    const pausedGoal = yield* routed.adapter.setThreadGoal({
+      threadId: routed.threadId,
+      status: "paused",
+    });
+    yield* analytics.record("provider.goal.paused_for_stop", {
+      provider: routed.adapter.provider,
+    });
+    return pausedGoal;
+  });
+
   const respondToRequest: ProviderServiceShape["respondToRequest"] = Effect.fn("respondToRequest")(
     function* (rawInput) {
       const input = yield* decodeInputOrValidationError({
@@ -1731,6 +1773,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     interruptTurn,
     compactContext,
     setThreadGoal,
+    pauseThreadGoalForStop,
     clearThreadGoal,
     respondToRequest,
     respondToUserInput,

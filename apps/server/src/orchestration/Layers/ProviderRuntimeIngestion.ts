@@ -42,6 +42,7 @@ import {
   ProviderRuntimeIngestionService,
   type ProviderRuntimeIngestionShape,
 } from "../Services/ProviderRuntimeIngestion.ts";
+import { toOrchestrationThreadGoal } from "../threadGoalLifecycle.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import {
   projectRuntimeEventToActivities,
@@ -1931,16 +1932,7 @@ const make = Effect.gen(function* () {
           type: "thread.goal.state.set",
           commandId: providerCommandId(event, "goal-updated"),
           threadId: thread.id,
-          goal: {
-            threadId: thread.id,
-            objective: event.payload.goal.objective,
-            status: event.payload.goal.status,
-            tokenBudget: event.payload.goal.tokenBudget ?? null,
-            tokensUsed: event.payload.goal.tokensUsed,
-            timeUsedSeconds: event.payload.goal.timeUsedSeconds,
-            createdAt: event.payload.goal.createdAt,
-            updatedAt: event.payload.goal.updatedAt,
-          },
+          goal: toOrchestrationThreadGoal(thread.id, event.payload.goal),
           createdAt: event.createdAt,
         });
         return;

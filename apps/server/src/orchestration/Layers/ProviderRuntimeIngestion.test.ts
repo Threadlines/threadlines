@@ -105,6 +105,7 @@ function createProviderServiceHarness() {
     interruptTurn: () => unsupported(),
     compactContext: () => unsupported(),
     setThreadGoal: () => unsupported(),
+    pauseThreadGoalForStop: () => unsupported(),
     clearThreadGoal: () => unsupported(),
     respondToRequest: () => unsupported(),
     respondToUserInput: () => unsupported(),
