@@ -861,6 +861,13 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
         CFBundleIconName: MAC_ADAPTIVE_ICON_NAME,
       };
     }
+    macConfig.extendInfo = {
+      ...(macConfig.extendInfo ?? {}),
+      // Required for getUserMedia microphone access (realtime voice mode);
+      // macOS refuses mic prompts for apps without a usage description.
+      NSMicrophoneUsageDescription:
+        "Threadlines uses the microphone for voice conversations with coding agents.",
+    };
     if (signed) {
       macConfig.hardenedRuntime = true;
       macConfig.gatekeeperAssess = true;
