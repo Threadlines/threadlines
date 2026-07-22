@@ -15,6 +15,7 @@ const DEFAULT_REPOSITORY = "Threadlines/threadlines";
 const DEFAULT_OUTPUT_DIRECTORY = "apps/marketing/src/content/changelog";
 const DEFAULT_PR_BODY = "release-content-pr.md";
 const MAX_SOCIAL_CHARACTERS = 260;
+const SOCIAL_BRAND_MARKER = "🧵";
 
 export interface ReleaseEvidenceCommit {
   readonly hash: string;
@@ -241,7 +242,7 @@ function buildPrompt(input: GenerateReleaseContentInput): string {
     "- Every highlight and smaller improvement must cite one or more exact short hashes from the supplied evidence.",
     "- Do not invent capabilities, outcomes, metrics, dates, platforms, or roadmap claims.",
     "- Use direct, restrained language. Avoid hype, superlatives, and implementation jargon.",
-    `- The social post must include 'Threadlines v${input.version}', include ${changelogUrl(input.version)}, and remain at or below ${MAX_SOCIAL_CHARACTERS} Unicode characters.`,
+    `- The social post must begin exactly with 'Threadlines v${input.version} is out ${SOCIAL_BRAND_MARKER}', include ${changelogUrl(input.version)}, and remain at or below ${MAX_SOCIAL_CHARACTERS} Unicode characters.`,
     "- The social post should contain at most four compact bullets and must only mention claims present in the highlights or smaller improvements.",
     "",
     `Version: ${input.version}`,
@@ -356,8 +357,9 @@ export function validateReleaseSummary(
       `Social post is ${socialLength} characters; maximum is ${MAX_SOCIAL_CHARACTERS}.`,
     );
   }
-  if (!social.includes(`Threadlines v${input.version}`)) {
-    throw new Error(`Social post must include 'Threadlines v${input.version}'.`);
+  const requiredLead = `Threadlines v${input.version} is out ${SOCIAL_BRAND_MARKER}`;
+  if (!social.startsWith(requiredLead)) {
+    throw new Error(`Social post must begin with '${requiredLead}'.`);
   }
   if (!social.includes(changelogUrl(input.version))) {
     throw new Error(`Social post must include '${changelogUrl(input.version)}'.`);

@@ -46,7 +46,7 @@ const draft: ReleaseSummaryDraft = {
   ],
   alsoImproved: [],
   social:
-    "Threadlines v0.2.5 is out ✨\n\n• Codex Goals\n• Live subagent progress\n\nhttps://www.threadlines.dev/changelog/v0.2.5",
+    "Threadlines v0.2.5 is out 🧵\n\n• Codex Goals\n• Live subagent progress\n\nhttps://www.threadlines.dev/changelog/v0.2.5",
 };
 
 it("turns a grounded summary into editable changelog and PR review artifacts", () => {
@@ -89,6 +89,17 @@ it("rejects public claims that cite commits outside the release range", () => {
         { version: "0.2.5", evidence },
       ),
     /unknown evidence hash/,
+  );
+});
+
+it("requires the Threadlines thread marker in social drafts", () => {
+  assert.throws(
+    () =>
+      validateReleaseSummary(
+        { ...draft, social: draft.social.replace("🧵", "✨") },
+        { version: "0.2.5", evidence },
+      ),
+    /must begin with 'Threadlines v0\.2\.5 is out 🧵'/,
   );
 });
 
