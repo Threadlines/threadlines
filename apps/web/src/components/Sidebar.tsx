@@ -157,8 +157,10 @@ import {
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import {
+  buildOnDeckSyncInput,
   getSidebarThreadIdsToPrewarm,
   getSidebarThreadWindow,
+  isOnDeckDismissible,
   resolveAdjacentThreadId,
   isContextMenuPointerDown,
   resolveProjectStatusIndicator,
@@ -172,6 +174,7 @@ import {
   useThreadJumpHintVisibility,
   ThreadStatusPill,
 } from "./Sidebar.logic";
+import { OnDeckSection, type OnDeckEntry } from "./sidebar/OnDeckSection";
 import { startNewGeneralChatThread } from "../lib/chatThreadActions";
 import { sortThreads } from "../lib/threadSort";
 import { SidebarUpdatePill } from "./sidebar/SidebarUpdatePill";
@@ -2753,6 +2756,8 @@ interface SidebarProjectsContentProps {
   threadPreviewCount: SidebarThreadPreviewCount;
   updateSettings: ReturnType<typeof useUpdateSettings>["updateSettings"];
   openAddProject: () => void;
+  /** The On Deck working-set group, rendered between search and the tree. */
+  onDeckSection: React.ReactNode;
   generalChatsProjectRef: ScopedProjectRef | null;
   /** Pinned above the Projects section; null while there are no general chats. */
   generalChatsProject: SidebarProjectSnapshot | null;
@@ -2794,6 +2799,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     threadPreviewCount,
     updateSettings,
     openAddProject,
+    onDeckSection,
     generalChatsProjectRef,
     generalChatsProject,
     isManualProjectSorting,
@@ -2875,6 +2881,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarGroup>
+      {onDeckSection}
       {/* The slot below search is always the General Chats home: a quiet
           new-chat action row until the first chat exists, then the group
           itself (whose hover button takes over starting new chats). */}
@@ -3070,6 +3077,10 @@ export default function Sidebar() {
   const projectExpandedById = useUiStateStore((store) => store.projectExpandedById);
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const reorderProjects = useUiStateStore((store) => store.reorderProjects);
+  const threadLastVisitedAtById = useUiStateStore((store) => store.threadLastVisitedAtById);
+  const onDeckThreadKeys = useUiStateStore((store) => store.onDeckThreadKeys);
+  const syncOnDeck = useUiStateStore((store) => store.syncOnDeck);
+  const dismissFromOnDeck = useUiStateStore((store) => store.dismissFromOnDeck);
   const navigate = useNavigate();
   const pathname = useLocation({ select: (loc) => loc.pathname });
   const isOnSettings = pathname.startsWith("/settings");
@@ -3364,47 +3375,128 @@ export default function Sidebar() {
     return hasVisibleThreads ? snapshot : null;
   }, [sidebarProjects, threadsByProjectKey]);
   const isManualProjectSorting = sidebarProjectSortOrder === "manual";
-  const visibleSidebarThreadKeys = useMemo(
-    () =>
-      [...(generalChatsSnapshot ? [generalChatsSnapshot] : []), ...sortedProjects].flatMap(
-        (project) => {
-          const projectExpanded = projectExpandedById[project.projectKey] ?? true;
-          if (!projectExpanded) {
-            return [];
-          }
-          const projectThreads = sortThreads(
-            (threadsByProjectKey.get(project.projectKey) ?? []).filter(
-              (thread) => thread.archivedAt === null,
-            ),
-            sidebarThreadSortOrder,
-          );
-          // Mirrors SidebarProjectItem's rendering window so jump labels and
-          // thread traversal line up with the rows that are actually visible.
-          const { visibleThreads } = getSidebarThreadWindow({
-            threads: projectThreads,
-            getThreadKey: (thread) =>
-              scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
-            activeThreadKey: project.projectKey === activeRouteProjectKey ? routeThreadKey : null,
-            previewLimit: sidebarThreadPreviewCount,
-            revealedCount: revealedThreadCountsByProject.get(project.projectKey) ?? 0,
-          });
-          return visibleThreads.map((thread) =>
-            scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
-          );
-        },
-      ),
-    [
-      activeRouteProjectKey,
-      generalChatsSnapshot,
+
+  // On Deck: the cross-project working set pinned above the project browser.
+  // Status pills are computed once per visible thread and shared between the
+  // deck reconcile (store) and the rendered deck rows.
+  const onDeckStatusByThreadKey = useMemo(() => {
+    const statuses = new Map<string, ThreadStatusPill | null>();
+    for (const thread of visibleThreads) {
+      const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+      const lastVisitedAt = threadLastVisitedAtById[threadKey];
+      statuses.set(
+        threadKey,
+        resolveThreadStatusPill({
+          thread: {
+            ...thread,
+            ...(lastVisitedAt !== undefined ? { lastVisitedAt } : {}),
+          },
+        }),
+      );
+    }
+    return statuses;
+  }, [threadLastVisitedAtById, visibleThreads]);
+
+  useEffect(() => {
+    syncOnDeck(
+      visibleThreads.map((thread) => {
+        const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+        return buildOnDeckSyncInput({
+          threadKey,
+          pinnedAt: thread.pinnedAt,
+          status: onDeckStatusByThreadKey.get(threadKey) ?? null,
+        });
+      }),
       routeThreadKey,
-      sidebarThreadSortOrder,
-      sidebarThreadPreviewCount,
-      revealedThreadCountsByProject,
-      projectExpandedById,
-      sortedProjects,
-      threadsByProjectKey,
-    ],
+    );
+  }, [onDeckStatusByThreadKey, routeThreadKey, syncOnDeck, visibleThreads]);
+
+  const onDeckEntries = useMemo<OnDeckEntry[]>(() => {
+    return onDeckThreadKeys.flatMap((threadKey) => {
+      const thread = sidebarThreadByKey.get(threadKey);
+      if (!thread || thread.archivedAt !== null) {
+        return [];
+      }
+      const status = onDeckStatusByThreadKey.get(threadKey) ?? null;
+      const physicalKey =
+        projectPhysicalKeyByScopedRef.get(
+          scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
+        ) ?? scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId));
+      const project = sidebarProjectByKey.get(physicalToLogicalKey.get(physicalKey) ?? physicalKey);
+      return [
+        {
+          thread,
+          status,
+          projectLabel: project?.kind === "general-chat" ? "chats" : (project?.displayName ?? null),
+          dismissible: isOnDeckDismissible(status),
+        },
+      ];
+    });
+  }, [
+    onDeckStatusByThreadKey,
+    onDeckThreadKeys,
+    physicalToLogicalKey,
+    projectPhysicalKeyByScopedRef,
+    sidebarProjectByKey,
+    sidebarThreadByKey,
+  ]);
+  const onDeckVisibleThreadKeys = useMemo(
+    () =>
+      onDeckEntries.map((entry) =>
+        scopedThreadKey(scopeThreadRef(entry.thread.environmentId, entry.thread.id)),
+      ),
+    [onDeckEntries],
   );
+
+  const visibleSidebarThreadKeys = useMemo(() => {
+    const projectThreadKeys = [
+      ...(generalChatsSnapshot ? [generalChatsSnapshot] : []),
+      ...sortedProjects,
+    ].flatMap((project) => {
+      const projectExpanded = projectExpandedById[project.projectKey] ?? true;
+      if (!projectExpanded) {
+        return [];
+      }
+      const projectThreads = sortThreads(
+        (threadsByProjectKey.get(project.projectKey) ?? []).filter(
+          (thread) => thread.archivedAt === null,
+        ),
+        sidebarThreadSortOrder,
+      );
+      // Mirrors SidebarProjectItem's rendering window so jump labels and
+      // thread traversal line up with the rows that are actually visible.
+      const { visibleThreads } = getSidebarThreadWindow({
+        threads: projectThreads,
+        getThreadKey: (thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+        activeThreadKey: project.projectKey === activeRouteProjectKey ? routeThreadKey : null,
+        previewLimit: sidebarThreadPreviewCount,
+        revealedCount: revealedThreadCountsByProject.get(project.projectKey) ?? 0,
+      });
+      return visibleThreads.map((thread) =>
+        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+      );
+    });
+    // Deck rows render above the tree, so they lead the visual order that jump
+    // keys and thread traversal follow. A thread on deck keeps one identity:
+    // its project-tree row is deduped here so jump indices stay aligned (both
+    // rows show the deck position's label).
+    const onDeckKeySet = new Set(onDeckVisibleThreadKeys);
+    return [
+      ...onDeckVisibleThreadKeys,
+      ...projectThreadKeys.filter((threadKey) => !onDeckKeySet.has(threadKey)),
+    ];
+  }, [
+    activeRouteProjectKey,
+    generalChatsSnapshot,
+    onDeckVisibleThreadKeys,
+    routeThreadKey,
+    sidebarThreadSortOrder,
+    sidebarThreadPreviewCount,
+    revealedThreadCountsByProject,
+    projectExpandedById,
+    sortedProjects,
+    threadsByProjectKey,
+  ]);
   const threadJumpCommandByKey = useMemo(() => {
     const mapping = new Map<string, NonNullable<ReturnType<typeof threadJumpCommandForIndex>>>();
     for (const [visibleThreadIndex, threadKey] of visibleSidebarThreadKeys.entries()) {
@@ -3455,6 +3547,25 @@ export default function Sidebar() {
   const visibleThreadJumpLabelByKey = showThreadJumpHints
     ? threadJumpLabelByKey
     : EMPTY_THREAD_JUMP_LABELS;
+  const onDeckSection = useMemo(
+    () =>
+      onDeckEntries.length > 0 ? (
+        <OnDeckSection
+          entries={onDeckEntries}
+          routeThreadKey={routeThreadKey}
+          threadJumpLabelByKey={visibleThreadJumpLabelByKey}
+          navigateToThread={navigateToThread}
+          dismissFromOnDeck={dismissFromOnDeck}
+        />
+      ) : null,
+    [
+      dismissFromOnDeck,
+      navigateToThread,
+      onDeckEntries,
+      routeThreadKey,
+      visibleThreadJumpLabelByKey,
+    ],
+  );
   const orderedSidebarThreadKeys = visibleSidebarThreadKeys;
   const prewarmedSidebarThreadKeys = useMemo(
     () => getSidebarThreadIdsToPrewarm(visibleSidebarThreadKeys),
@@ -3623,6 +3734,7 @@ export default function Sidebar() {
             threadPreviewCount={sidebarThreadPreviewCount}
             updateSettings={updateSettings}
             openAddProject={openAddProjectCommandPalette}
+            onDeckSection={onDeckSection}
             generalChatsProjectRef={generalChatsProjectRef}
             generalChatsProject={generalChatsSnapshot}
             isManualProjectSorting={isManualProjectSorting}

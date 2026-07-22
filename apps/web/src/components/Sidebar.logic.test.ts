@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import { ProviderDriverKind } from "@threadlines/contracts";
 
 import {
+  buildOnDeckSyncInput,
   createThreadJumpHintVisibilityController,
   getSidebarThreadIdsToPrewarm,
+  isOnDeckDismissible,
   getVisibleSidebarThreadIds,
   resolveAdjacentThreadId,
   getFallbackThreadIdAfterDelete,
@@ -1236,5 +1238,37 @@ describe("sortProjectsForSidebar", () => {
     );
 
     expect(timestamp).toBe(Date.parse("2026-03-09T10:10:00.000Z"));
+  });
+});
+
+describe("on deck classification", () => {
+  const pill = (label: import("./Sidebar.logic").ThreadStatusPill["label"]) => ({
+    label,
+    colorClass: "",
+    dotClass: "",
+    pulse: false,
+  });
+
+  it("buildOnDeckSyncInput separates live work from unseen completions", () => {
+    expect(
+      buildOnDeckSyncInput({ threadKey: "t-1", pinnedAt: null, status: pill("Working") }),
+    ).toEqual({ key: "t-1", pinned: false, live: true, unseen: false });
+    expect(
+      buildOnDeckSyncInput({ threadKey: "t-2", pinnedAt: null, status: pill("Completed") }),
+    ).toEqual({ key: "t-2", pinned: false, live: false, unseen: true });
+    expect(
+      buildOnDeckSyncInput({
+        threadKey: "t-3",
+        pinnedAt: "2026-03-09T10:00:00.000Z",
+        status: null,
+      }),
+    ).toEqual({ key: "t-3", pinned: true, live: false, unseen: false });
+  });
+
+  it("isOnDeckDismissible allows dismissing settled rows only", () => {
+    expect(isOnDeckDismissible(null)).toBe(true);
+    expect(isOnDeckDismissible(pill("Completed"))).toBe(true);
+    expect(isOnDeckDismissible(pill("Working"))).toBe(false);
+    expect(isOnDeckDismissible(pill("Pending Approval"))).toBe(false);
   });
 });

@@ -3,9 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 
 import {
   clearThreadUi,
+  dismissFromOnDeck,
   hydratePersistedProjectState,
   markThreadVisited,
   markThreadUnread,
+  ON_DECK_MAX_THREADS,
+  type OnDeckSyncInput,
   PERSISTED_STATE_KEY,
   type PersistedUiState,
   persistState,
@@ -14,6 +17,7 @@ import {
   setLastChatThreadRef,
   setProjectExpanded,
   setThreadChangedFilesExpanded,
+  syncOnDeck,
   syncProjects,
   syncThreads,
   type UiState,
@@ -25,10 +29,16 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     projectOrder: [],
     threadLastVisitedAtById: {},
     threadChangedFilesExpandedById: {},
+    onDeckThreadKeys: [],
+    onDeckDismissedThreadKeys: [],
     defaultAdvertisedEndpointKey: null,
     lastChatThreadRef: null,
     ...overrides,
   };
+}
+
+function makeOnDeckInput(key: string, overrides: Partial<OnDeckSyncInput> = {}): OnDeckSyncInput {
+  return { key, pinned: false, live: false, unseen: false, ...overrides };
 }
 
 describe("uiStateStore pure functions", () => {
@@ -674,5 +684,90 @@ describe("uiStateStore persistence round-trip", () => {
     ]);
 
     expect(rehydrated.projectExpandedById[nextLogicalKey]).toBe(false);
+  });
+});
+
+describe("on deck", () => {
+  it("syncOnDeck keeps insertion order stable while activity reorders the input", () => {
+    let state = syncOnDeck(
+      makeUiState(),
+      [makeOnDeckInput("t-a", { live: true }), makeOnDeckInput("t-b", { live: true })],
+      null,
+    );
+    expect(state.onDeckThreadKeys).toEqual(["t-a", "t-b"]);
+
+    // Later activity on t-b resorts the sidebar input; deck positions hold.
+    state = syncOnDeck(
+      state,
+      [makeOnDeckInput("t-b", { live: true }), makeOnDeckInput("t-a", { live: true })],
+      null,
+    );
+    expect(state.onDeckThreadKeys).toEqual(["t-a", "t-b"]);
+
+    // New live threads append at the bottom.
+    state = syncOnDeck(
+      state,
+      [
+        makeOnDeckInput("t-c", { live: true }),
+        makeOnDeckInput("t-b", { live: true }),
+        makeOnDeckInput("t-a", { live: true }),
+      ],
+      null,
+    );
+    expect(state.onDeckThreadKeys).toEqual(["t-a", "t-b", "t-c"]);
+  });
+
+  it("membership is sticky: settled threads stay until dismissed, and dismissal lifts when the thread goes live again", () => {
+    let state = syncOnDeck(makeUiState(), [makeOnDeckInput("t-a", { live: true })], null);
+    expect(state.onDeckThreadKeys).toEqual(["t-a"]);
+
+    // Thread settles and its completion is seen — still on deck.
+    state = syncOnDeck(state, [makeOnDeckInput("t-a")], null);
+    expect(state.onDeckThreadKeys).toEqual(["t-a"]);
+
+    state = dismissFromOnDeck(state, "t-a");
+    expect(state.onDeckThreadKeys).toEqual([]);
+
+    // An unseen completion alone does not resurrect a dismissed thread.
+    state = syncOnDeck(state, [makeOnDeckInput("t-a", { unseen: true })], null);
+    expect(state.onDeckThreadKeys).toEqual([]);
+
+    // Going live again clears the dismissal and re-enters the deck.
+    state = syncOnDeck(state, [makeOnDeckInput("t-a", { live: true })], null);
+    expect(state.onDeckThreadKeys).toEqual(["t-a"]);
+    expect(state.onDeckDismissedThreadKeys).toEqual([]);
+  });
+
+  it("syncOnDeck drops deck and dismissal entries for threads that no longer exist", () => {
+    const state = makeUiState({
+      onDeckThreadKeys: ["t-gone", "t-a"],
+      onDeckDismissedThreadKeys: ["t-gone-too"],
+    });
+
+    const next = syncOnDeck(state, [makeOnDeckInput("t-a")], null);
+
+    expect(next.onDeckThreadKeys).toEqual(["t-a"]);
+    expect(next.onDeckDismissedThreadKeys).toEqual([]);
+  });
+
+  it("syncOnDeck evicts oldest quiet rows beyond the cap but spares pinned, live, unseen, and active rows", () => {
+    const quietKeys = Array.from({ length: ON_DECK_MAX_THREADS + 1 }, (_, i) => `t-q${i}`);
+    const state = makeUiState({ onDeckThreadKeys: quietKeys });
+
+    const next = syncOnDeck(
+      state,
+      [...quietKeys.map((key) => makeOnDeckInput(key)), makeOnDeckInput("t-live", { live: true })],
+      "t-q0",
+    );
+
+    // 9 candidates, cap 7: the two oldest quiet rows go, except t-q0 which is
+    // the open thread, so t-q1 and t-q2 are evicted instead.
+    expect(next.onDeckThreadKeys).toEqual(["t-q0", ...quietKeys.slice(3), "t-live"]);
+  });
+
+  it("syncOnDeck returns the same state when nothing changed", () => {
+    const state = makeUiState({ onDeckThreadKeys: ["t-a"] });
+    const next = syncOnDeck(state, [makeOnDeckInput("t-a", { live: true })], null);
+    expect(next).toBe(state);
   });
 });

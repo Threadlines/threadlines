@@ -10,6 +10,7 @@ import {
   type ThreadSortInput,
 } from "../lib/threadSort";
 import type { SidebarThreadSummary, Thread } from "../types";
+import type { OnDeckSyncInput } from "../uiStateStore";
 import { cn } from "../lib/utils";
 import { isLatestTurnSettled } from "../session-logic";
 
@@ -419,6 +420,35 @@ export function resolveThreadStatusPill(input: {
   }
 
   return null;
+}
+
+/** Statuses that mean the provider is working or waiting on the user right now. */
+const ON_DECK_LIVE_STATUSES: ReadonlySet<ThreadStatusPill["label"]> = new Set([
+  "Pending Approval",
+  "Awaiting Input",
+  "Working",
+  "Starting",
+  "Plan Ready",
+  "Background",
+]);
+
+/** Maps a thread's status pill and pin state onto the deck's entry signals. */
+export function buildOnDeckSyncInput(input: {
+  threadKey: string;
+  pinnedAt: string | null;
+  status: ThreadStatusPill | null;
+}): OnDeckSyncInput {
+  return {
+    key: input.threadKey,
+    pinned: input.pinnedAt !== null,
+    live: input.status !== null && ON_DECK_LIVE_STATUSES.has(input.status.label),
+    unseen: input.status?.label === "Completed",
+  };
+}
+
+/** Only settled rows offer the dismiss affordance; live work can't be waved away. */
+export function isOnDeckDismissible(status: ThreadStatusPill | null): boolean {
+  return status === null || !ON_DECK_LIVE_STATUSES.has(status.label);
 }
 
 export function resolveProjectStatusIndicator(
