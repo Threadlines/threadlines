@@ -46,11 +46,15 @@ const draft: ReleaseSummaryDraft = {
   ],
   alsoImproved: [],
   social:
-    "Threadlines v0.2.5 is out 🧵\n\n• Codex Goals\n• Live subagent progress\n\nhttps://www.threadlines.dev/changelog/v0.2.5",
+    "Threadlines v0.2.5 is out 🧵\n\n• Codex Goals\n• Live subagent progress\n\nRelease notes: https://github.com/Threadlines/threadlines/releases/tag/v0.2.5",
 };
 
 it("turns a grounded summary into editable changelog and PR review artifacts", () => {
-  const validated = validateReleaseSummary(draft, { version: "0.2.5", evidence });
+  const validated = validateReleaseSummary(draft, {
+    version: "0.2.5",
+    repository: "Threadlines/threadlines",
+    evidence,
+  });
   const changelog = renderChangelogEntry(validated, {
     releaseDate: "2026-07-22",
     repository: "Threadlines/threadlines",
@@ -86,7 +90,7 @@ it("rejects public claims that cite commits outside the release range", () => {
             draft.highlights[1],
           ],
         },
-        { version: "0.2.5", evidence },
+        { version: "0.2.5", repository: "Threadlines/threadlines", evidence },
       ),
     /unknown evidence hash/,
   );
@@ -97,23 +101,57 @@ it("requires the Threadlines thread marker in social drafts", () => {
     () =>
       validateReleaseSummary(
         { ...draft, social: draft.social.replace("🧵", "✨") },
-        { version: "0.2.5", evidence },
+        { version: "0.2.5", repository: "Threadlines/threadlines", evidence },
       ),
     /must begin with 'Threadlines v0\.2\.5 is out 🧵'/,
   );
+
+  assert.throws(
+    () =>
+      validateReleaseSummary(
+        {
+          ...draft,
+          social: draft.social.replace("Release notes:", "Read more:"),
+        },
+        { version: "0.2.5", repository: "Threadlines/threadlines", evidence },
+      ),
+    /must end with 'Release notes:/,
+  );
 });
 
-it("uses schema-constrained, non-persisted Responses API output", async () => {
+it("rejects release titles that repeat the product or version", () => {
+  assert.throws(
+    () =>
+      validateReleaseSummary(
+        { ...draft, title: "Threadlines v0.2.5: Goals and visible subagents" },
+        { version: "0.2.5", repository: "Threadlines/threadlines", evidence },
+      ),
+    /must not repeat the product name or version/,
+  );
+});
+
+it("uses schema-constrained GitHub Models output", async () => {
+  let requestUrl: string | undefined;
   let requestBody: Record<string, unknown> | undefined;
-  const fakeFetch: typeof fetch = async (_input, init) => {
+  const unnormalizedDraft = {
+    ...draft,
+    title: "Threadlines v0.2.5: Goals and visible subagents",
+    social: draft.social.replace(
+      `\n\nRelease notes: https://github.com/Threadlines/threadlines/releases/tag/v0.2.5`,
+      ` https://github.com/Threadlines/threadlines/releases/tag/v0.2.5`,
+    ),
+  };
+  const fakeFetch: typeof fetch = async (input, init) => {
+    requestUrl = String(input);
     requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
     return new Response(
       JSON.stringify({
-        status: "completed",
-        output: [
+        choices: [
           {
-            type: "message",
-            content: [{ type: "output_text", text: JSON.stringify(draft) }],
+            message: {
+              role: "assistant",
+              content: JSON.stringify(unnormalizedDraft),
+            },
           },
         ],
       }),
@@ -130,13 +168,14 @@ it("uses schema-constrained, non-persisted Responses API output", async () => {
       repository: "Threadlines/threadlines",
       evidence,
     },
-    { apiKey: "test-key", fetch: fakeFetch },
+    { token: "test-token", fetch: fakeFetch },
   );
 
   assert.deepEqual(result, draft);
-  assert.equal(requestBody?.store, false);
+  assert.equal(requestUrl, "https://models.github.ai/inference/chat/completions");
+  assert.equal(requestBody?.model, "openai/gpt-4.1");
   assert.equal(
-    (requestBody?.text as { format?: { type?: unknown } } | undefined)?.format?.type,
+    (requestBody?.response_format as { type?: unknown } | undefined)?.type,
     "json_schema",
   );
 });

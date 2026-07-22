@@ -2314,12 +2314,10 @@ export default function ChatView(props: ChatViewProps) {
   }, [activeProviderInstanceId, providerStatuses, selectedProvider]);
   const activeProviderDriver =
     activeProviderStatus?.driver ?? activeThread?.session?.provider ?? selectedProvider;
-  // Voice is hidden without API-key auth: codex realtime conversations refuse
-  // ChatGPT-subscription logins ("realtime conversation requires API key
-  // auth"), so showing the mic would offer a feature that can only fail.
-  const voiceSupported =
-    activeProviderDriver === ProviderDriverKind.make("codex") &&
-    activeProviderStatus?.auth.type === "apiKey";
+  // Realtime voice remains dormant until Threadlines can support its separate
+  // API-key billing model as a complete product experience. Keeping this gate
+  // here also lets the hook clean up any projected session left by an older build.
+  const voiceSupported = false;
   const voiceConnectionAvailable = activeThread
     ? activeThread.environmentId === primaryEnvironmentId || primaryEnvironmentId === null
       ? primaryWsConnectionStatus.phase === "connected"

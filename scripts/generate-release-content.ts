@@ -10,11 +10,12 @@ import { stringify as stringifyYaml } from "yaml";
 
 import { resolvePreviousStableTag } from "./lib/release-tags.ts";
 
-const DEFAULT_MODEL = "gpt-5.6";
+const DEFAULT_MODEL = "openai/gpt-4.1";
+const GITHUB_MODELS_API_URL = "https://models.github.ai/inference/chat/completions";
 const DEFAULT_REPOSITORY = "Threadlines/threadlines";
 const DEFAULT_OUTPUT_DIRECTORY = "apps/marketing/src/content/changelog";
 const DEFAULT_PR_BODY = "release-content-pr.md";
-const MAX_SOCIAL_CHARACTERS = 260;
+const MAX_SOCIAL_CHARACTERS = 280;
 const SOCIAL_BRAND_MARKER = "🧵";
 
 export interface ReleaseEvidenceCommit {
@@ -54,22 +55,9 @@ interface GenerateReleaseContentInput {
   readonly evidence: ReadonlyArray<ReleaseEvidenceCommit>;
 }
 
-interface OpenAIResponseContent {
-  readonly type?: unknown;
-  readonly text?: unknown;
-  readonly refusal?: unknown;
-}
-
-interface OpenAIResponseOutput {
-  readonly type?: unknown;
-  readonly content?: unknown;
-}
-
-interface OpenAIResponseBody {
-  readonly status?: unknown;
+interface GitHubModelsResponseBody {
   readonly error?: unknown;
-  readonly incomplete_details?: unknown;
-  readonly output?: unknown;
+  readonly choices?: unknown;
 }
 
 const releaseSummarySchema = {
@@ -242,8 +230,10 @@ function buildPrompt(input: GenerateReleaseContentInput): string {
     "- Every highlight and smaller improvement must cite one or more exact short hashes from the supplied evidence.",
     "- Do not invent capabilities, outcomes, metrics, dates, platforms, or roadmap claims.",
     "- Use direct, restrained language. Avoid hype, superlatives, and implementation jargon.",
-    `- The social post must begin exactly with 'Threadlines v${input.version} is out ${SOCIAL_BRAND_MARKER}', include ${changelogUrl(input.version)}, and remain at or below ${MAX_SOCIAL_CHARACTERS} Unicode characters.`,
-    "- The social post should contain at most four compact bullets and must only mention claims present in the highlights or smaller improvements.",
+    "- The title must be a short release theme and must not repeat the product name or version.",
+    "- The summary must be one complete sentence under 220 characters; never cut off a word or sentence to reach the limit.",
+    `- The social post must begin exactly with 'Threadlines v${input.version} is out ${SOCIAL_BRAND_MARKER}', end exactly with 'Release notes: ${releaseUrl(input.repository, input.version)}' so X renders GitHub's release card, and remain at or below ${MAX_SOCIAL_CHARACTERS} Unicode characters.`,
+    "- The social post should contain at most four compact bullets, each ideally under 50 characters, and must only mention claims present in the highlights or smaller improvements.",
     "",
     `Version: ${input.version}`,
     `Release date: ${input.releaseDate}`,
@@ -257,32 +247,19 @@ function buildPrompt(input: GenerateReleaseContentInput): string {
   ].join("\n");
 }
 
-function extractResponseText(body: OpenAIResponseBody): string {
-  if (body.status !== "completed") {
+function extractResponseText(body: GitHubModelsResponseBody): string {
+  if (!Array.isArray(body.choices) || body.choices.length === 0) {
     throw new Error(
-      `OpenAI response did not complete: ${JSON.stringify(body.error ?? body.incomplete_details)}`,
+      `GitHub Models response did not include a completion: ${JSON.stringify(body.error)}`,
     );
   }
-  if (!Array.isArray(body.output)) {
-    throw new Error("OpenAI response did not include output items.");
-  }
 
-  const textParts: Array<string> = [];
-  for (const output of body.output as ReadonlyArray<OpenAIResponseOutput>) {
-    if (output.type !== "message" || !Array.isArray(output.content)) continue;
-    for (const content of output.content as ReadonlyArray<OpenAIResponseContent>) {
-      if (content.type === "refusal") {
-        throw new Error(`OpenAI refused the release summary request: ${String(content.refusal)}`);
-      }
-      if (content.type === "output_text" && typeof content.text === "string") {
-        textParts.push(content.text);
-      }
-    }
+  const choice = expectRecord(body.choices[0], "GitHub Models completion");
+  const message = expectRecord(choice.message, "GitHub Models completion message");
+  if (typeof message.refusal === "string" && message.refusal.trim().length > 0) {
+    throw new Error(`GitHub Models refused the release summary request: ${message.refusal}`);
   }
-
-  const text = textParts.join("").trim();
-  if (!text) throw new Error("OpenAI response did not include structured output text.");
-  return text;
+  return expectString(message.content, "GitHub Models completion content");
 }
 
 function expectRecord(value: unknown, name: string): Record<string, unknown> {
@@ -306,14 +283,107 @@ function expectEvidence(value: unknown, name: string): ReadonlyArray<string> {
   return value.map((entry, index) => expectString(entry, `${name}[${index}]`));
 }
 
+function unicodeLength(value: string): number {
+  return Array.from(value).length;
+}
+
+function truncateSocialBullet(value: string, maxCharacters: number): string {
+  const normalized = value.trim();
+  if (unicodeLength(normalized) <= maxCharacters) return normalized;
+
+  const characters = Array.from(normalized);
+  const sliced = characters.slice(0, Math.max(1, maxCharacters - 1)).join("");
+  const wordBoundary = sliced.replace(/\s+\S*$/, "").trimEnd();
+  return `${wordBoundary || sliced.trimEnd()}…`;
+}
+
+function renderNormalizedSocialPost(
+  input: Pick<GenerateReleaseContentInput, "version" | "repository">,
+  bullets: ReadonlyArray<string>,
+): string {
+  const header = `Threadlines v${input.version} is out ${SOCIAL_BRAND_MARKER}`;
+  const footer = `Release notes: ${releaseUrl(input.repository, input.version)}`;
+  const selectedBullets = bullets
+    .map((bullet) => bullet.trim())
+    .filter(Boolean)
+    .slice(0, 4);
+  const bulletFrame = selectedBullets.map(() => "• ").join("\n");
+  const fixedCharacters = unicodeLength(`${header}\n\n${bulletFrame}\n\n${footer}`);
+  let remainingCharacters = Math.max(0, MAX_SOCIAL_CHARACTERS - fixedCharacters);
+  const fittedBullets = selectedBullets.map((bullet, index) => {
+    const remainingBullets = selectedBullets.length - index;
+    const budget = Math.floor(remainingCharacters / remainingBullets);
+    const fitted = truncateSocialBullet(bullet, budget);
+    remainingCharacters -= unicodeLength(fitted);
+    return fitted;
+  });
+
+  return `${header}\n\n${fittedBullets.map((bullet) => `• ${bullet}`).join("\n")}\n\n${footer}`;
+}
+
+function normalizeGeneratedReleaseSummary(
+  value: unknown,
+  input: Pick<GenerateReleaseContentInput, "version" | "repository">,
+): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
+
+  const record = value as Record<string, unknown>;
+  const title =
+    typeof record.title === "string"
+      ? record.title
+          .trim()
+          .replace(
+            new RegExp(
+              `^Threadlines\\s+v?${input.version.replaceAll(".", "\\.")}\\s*(?::|[-–—])\\s*`,
+              "i",
+            ),
+            "",
+          )
+      : record.title;
+
+  if (typeof record.social !== "string") return { ...record, title };
+
+  const requiredReleaseUrl = releaseUrl(input.repository, input.version);
+  const socialBullets = record.social
+    .replaceAll(requiredReleaseUrl, "")
+    .replaceAll(changelogUrl(input.version), "")
+    .split(/\r?\n/)
+    .flatMap((line) => {
+      const match = /^[•*-]\s+(.+)$/.exec(line.trim());
+      return match?.[1] ? [match[1]] : [];
+    });
+  const highlightTitles = Array.isArray(record.highlights)
+    ? record.highlights.flatMap((highlight) => {
+        if (typeof highlight !== "object" || highlight === null || Array.isArray(highlight)) {
+          return [];
+        }
+        const highlightTitle = (highlight as Record<string, unknown>).title;
+        return typeof highlightTitle === "string" ? [highlightTitle] : [];
+      })
+    : [];
+
+  return {
+    ...record,
+    title,
+    social: renderNormalizedSocialPost(
+      input,
+      socialBullets.length > 0 ? socialBullets : highlightTitles,
+    ),
+  };
+}
+
 export function validateReleaseSummary(
   value: unknown,
-  input: Pick<GenerateReleaseContentInput, "version" | "evidence">,
+  input: Pick<GenerateReleaseContentInput, "version" | "repository" | "evidence">,
 ): ReleaseSummaryDraft {
   const record = expectRecord(value, "release summary");
   const version = expectString(record.version, "version");
   if (version !== input.version) {
     throw new Error(`Release summary version '${version}' does not match '${input.version}'.`);
+  }
+  const title = expectString(record.title, "title");
+  if (/threadlines/i.test(title) || title.includes(input.version)) {
+    throw new Error("Release summary title must not repeat the product name or version.");
   }
 
   if (
@@ -361,13 +431,15 @@ export function validateReleaseSummary(
   if (!social.startsWith(requiredLead)) {
     throw new Error(`Social post must begin with '${requiredLead}'.`);
   }
-  if (!social.includes(changelogUrl(input.version))) {
-    throw new Error(`Social post must include '${changelogUrl(input.version)}'.`);
+  const requiredReleaseUrl = releaseUrl(input.repository, input.version);
+  const requiredFinalLine = `Release notes: ${requiredReleaseUrl}`;
+  if (!social.endsWith(requiredFinalLine)) {
+    throw new Error(`Social post must end with '${requiredFinalLine}'.`);
   }
 
   return {
     version,
-    title: expectString(record.title, "title"),
+    title,
     summary: expectString(record.summary, "summary"),
     highlights,
     alsoImproved,
@@ -378,30 +450,35 @@ export function validateReleaseSummary(
 export async function requestReleaseSummary(
   input: GenerateReleaseContentInput,
   options: {
-    readonly apiKey: string;
+    readonly token: string;
     readonly model?: string;
     readonly fetch?: typeof fetch;
   },
 ): Promise<ReleaseSummaryDraft> {
   const execute = options.fetch ?? fetch;
-  const response = await execute("https://api.openai.com/v1/responses", {
+  const response = await execute(GITHUB_MODELS_API_URL, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${options.apiKey}`,
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${options.token}`,
       "Content-Type": "application/json",
+      "X-GitHub-Api-Version": "2026-03-10",
     },
     body: JSON.stringify({
       model: options.model ?? DEFAULT_MODEL,
-      store: false,
-      reasoning: { effort: "medium" },
-      instructions:
-        "You are the release editor for Threadlines. Produce grounded, concise customer-facing copy from only the supplied commit evidence.",
-      input: buildPrompt(input),
-      max_output_tokens: 4_000,
-      text: {
-        verbosity: "low",
-        format: {
-          type: "json_schema",
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are the release editor for Threadlines. Produce grounded, concise customer-facing copy from only the supplied commit evidence.",
+        },
+        { role: "user", content: buildPrompt(input) },
+      ],
+      max_tokens: 4_000,
+      temperature: 0.2,
+      response_format: {
+        type: "json_schema",
+        json_schema: {
           name: "threadlines_release_summary",
           strict: true,
           schema: releaseSummarySchema,
@@ -410,12 +487,16 @@ export async function requestReleaseSummary(
     }),
   });
 
-  const responseBody = (await response.json()) as OpenAIResponseBody;
+  const responseBody = (await response.json()) as GitHubModelsResponseBody;
   if (!response.ok) {
-    throw new Error(`OpenAI API ${response.status}: ${JSON.stringify(responseBody)}`);
+    throw new Error(`GitHub Models API ${response.status}: ${JSON.stringify(responseBody)}`);
   }
 
-  return validateReleaseSummary(JSON.parse(extractResponseText(responseBody)), input);
+  const generated = normalizeGeneratedReleaseSummary(
+    JSON.parse(extractResponseText(responseBody)),
+    input,
+  );
+  return validateReleaseSummary(generated, input);
 }
 
 export function renderChangelogEntry(
@@ -534,15 +615,15 @@ async function main(): Promise<void> {
     throw new Error(`No commits found in ${previousTag}..${currentRef}.`);
   }
 
-  const apiKey = process.env.OPENAI_API_KEY?.trim();
-  if (!apiKey) {
-    throw new Error("OPENAI_API_KEY is required to draft stable release content.");
+  const token = process.env.GITHUB_TOKEN?.trim();
+  if (!token) {
+    throw new Error("GITHUB_TOKEN with models: read permission is required to draft content.");
   }
 
   const input = { version, releaseDate, previousTag, currentRef, repository, evidence };
   const draft = await requestReleaseSummary(input, {
-    apiKey,
-    model: values.model ?? process.env.OPENAI_RELEASE_SUMMARY_MODEL ?? DEFAULT_MODEL,
+    token,
+    model: values.model ?? process.env.GITHUB_RELEASE_SUMMARY_MODEL ?? DEFAULT_MODEL,
   });
 
   const outputDirectory = normalizeRequiredString(values["output-directory"], "output-directory");

@@ -36,7 +36,7 @@ const changelog = defineCollection({
       )
       .max(6)
       .default([]),
-    social: z.string().min(1).max(260),
+    social: z.string().min(1).max(280),
   }),
 });
 

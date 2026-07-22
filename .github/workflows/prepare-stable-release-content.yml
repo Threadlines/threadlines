@@ -20,6 +20,7 @@ on:
 
 permissions:
   contents: write
+  models: read
   pull-requests: write
 
 concurrency:
@@ -32,8 +33,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      OPENAI_RELEASE_SUMMARY_MODEL: ${{ vars.OPENAI_RELEASE_SUMMARY_MODEL }}
+      GITHUB_TOKEN: ${{ github.token }}
+      GITHUB_RELEASE_SUMMARY_MODEL: ${{ vars.GITHUB_RELEASE_SUMMARY_MODEL }}
       VERSION_INPUT: ${{ inputs.version }}
       CURRENT_REF_INPUT: ${{ inputs.current_ref }}
       RELEASE_DATE_INPUT: ${{ inputs.release_date }}
@@ -56,11 +57,11 @@ jobs:
       - name: Install dependencies
         run: vp install --frozen-lockfile
 
-      - name: Verify release drafting credentials
+      - name: Verify release drafting token
         run: |
           set -euo pipefail
-          if [[ -z "${OPENAI_API_KEY:-}" ]]; then
-            echo "::error::Missing OPENAI_API_KEY. Add it as a GitHub Actions repository secret before drafting stable release content."
+          if [[ -z "${GITHUB_TOKEN:-}" ]]; then
+            echo "::error::The workflow GITHUB_TOKEN is unavailable."
             exit 1
           fi
 

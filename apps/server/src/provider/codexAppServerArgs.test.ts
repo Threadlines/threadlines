@@ -8,8 +8,6 @@ it("suppresses the warning for Threadlines' intentional unstable Codex feature",
     "-c",
     "features.default_mode_request_user_input=true",
     "-c",
-    "features.realtime_conversation=true",
-    "-c",
     "suppress_unstable_features_warning=true",
   ]);
 });

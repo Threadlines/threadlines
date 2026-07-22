@@ -132,25 +132,30 @@ Before publishing a stable release, run **Prepare Stable Release Content** from
 GitHub Actions with the target version. The workflow:
 
 1. summarizes the commits since the previous stable tag with schema-constrained
-   OpenAI output;
+   GitHub Models output;
 2. validates that every public claim cites a commit in that release range;
-3. creates the marketing changelog entry and an X draft capped at 260 Unicode
+3. creates the marketing changelog entry and an X draft capped at 280 Unicode
    characters; and
 4. opens a Draft PR and tries to assign it to the person who ran the workflow.
 
 Review the copy in the PR, edit the generated changelog file as needed, and use
 the Vercel Preview check to inspect the rendered page. Merging the PR approves
-the marketing and GitHub release copy. It never posts to social media.
+the marketing and GitHub release copy. The X draft links to the GitHub release
+so X renders GitHub's release card. It never posts to social media.
 
-Configure `OPENAI_API_KEY` as a GitHub Actions repository secret. The generator
-uses `gpt-5.6` by default; set the optional `OPENAI_RELEASE_SUMMARY_MODEL`
-repository variable to change the model without editing the workflow.
+The generator uses GitHub Models through the workflow's built-in `GITHUB_TOKEN`
+and `models: read` permission, so it does not require a custom API secret. GitHub
+Models' free API usage is currently a rate-limited public preview. The default
+model is `openai/gpt-4.1`; set the optional `GITHUB_RELEASE_SUMMARY_MODEL`
+repository variable to choose another model from the GitHub Models catalog.
 
 For a local draft, use:
 
 ```bash
-OPENAI_API_KEY=... vp run release:content -- --version 0.2.5 --current-ref HEAD
+GITHUB_TOKEN=... vp run release:content -- --version 0.2.5 --current-ref HEAD
 ```
+
+For a local run, the token needs `models: read` permission.
 
 The stable release workflow refuses to publish when the matching reviewed entry
 is missing. Its GitHub release body places those highlights first and keeps the

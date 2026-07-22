@@ -330,39 +330,6 @@ const make = Effect.gen(function* () {
       window.maximize();
     }
 
-    const isAppOrigin = (candidate: string): boolean => {
-      try {
-        return new URL(candidate).origin === new URL(window.webContents.getURL()).origin;
-      } catch {
-        return false;
-      }
-    };
-    window.webContents.session.setPermissionRequestHandler(
-      (_webContents, permission, callback, details) => {
-        if (permission === "media") {
-          const mediaTypes =
-            "mediaTypes" in details ? (details.mediaTypes ?? undefined) : undefined;
-          const microphoneOnly =
-            mediaTypes !== undefined &&
-            mediaTypes.includes("audio") &&
-            !mediaTypes.includes("video");
-          callback(microphoneOnly && isAppOrigin(details.requestingUrl));
-          return;
-        }
-        // Match Electron's permissive default for everything but media so
-        // existing renderer capabilities keep working unchanged.
-        callback(true);
-      },
-    );
-    window.webContents.session.setPermissionCheckHandler(
-      (_webContents, permission, requestingOrigin) => {
-        if (permission === "media") {
-          return isAppOrigin(requestingOrigin);
-        }
-        return true;
-      },
-    );
-
     window.on("close", () => {
       const bounds = getPersistableMainWindowBounds(window);
       const width = normalizeRestoredDimension(bounds.width, MIN_MAIN_WINDOW_WIDTH);

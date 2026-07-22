@@ -48,7 +48,6 @@ function makeFakeBrowserWindow(input?: {
   const webContents = {
     copyImageAt: vi.fn(),
     focus: vi.fn(),
-    getURL: vi.fn(() => "http://127.0.0.1:7100/"),
     isLoadingMainFrame: vi.fn(() => false),
     on: vi.fn((eventName: string, listener: (...args: unknown[]) => void) => {
       webContentsHandlers.set(eventName, [...(webContentsHandlers.get(eventName) ?? []), listener]);
@@ -58,10 +57,6 @@ function makeFakeBrowserWindow(input?: {
     openDevTools: vi.fn(),
     replaceMisspelling: vi.fn(),
     send: vi.fn(),
-    session: {
-      setPermissionCheckHandler: vi.fn(),
-      setPermissionRequestHandler: vi.fn(),
-    },
     setWindowOpenHandler: vi.fn(),
   };
 
