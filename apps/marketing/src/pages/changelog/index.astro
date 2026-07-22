@@ -87,7 +87,7 @@ const entries = sortChangelogEntries(await getCollection("changelog"));
 
   .release-entry a {
     display: block;
-    padding: 24px 0;
+    padding: 20px 0;
   }
 
   .release-meta {
@@ -104,10 +104,10 @@ const entries = sortChangelogEntries(await getCollection("changelog"));
   }
 
   .release-entry h2 {
-    margin: 10px 0 6px;
-    font-size: clamp(20px, 2.6vw, 24px);
-    line-height: 1.2;
-    letter-spacing: -0.02em;
+    margin: 8px 0 4px;
+    font-size: clamp(18px, 2.4vw, 21px);
+    line-height: 1.25;
+    letter-spacing: -0.015em;
   }
 
   .release-arrow {
@@ -120,9 +120,10 @@ const entries = sortChangelogEntries(await getCollection("changelog"));
   }
 
   .release-entry p {
-    max-width: 68ch;
+    max-width: 64ch;
     color: var(--fg-muted);
-    line-height: 1.6;
+    font-size: 15px;
+    line-height: 1.55;
   }
 
   @media (max-width: 620px) {

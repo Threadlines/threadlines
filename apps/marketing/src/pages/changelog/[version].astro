@@ -108,7 +108,7 @@ const structuredData = {
   }
 
   .release-header {
-    padding: 32px 0 36px;
+    padding: 28px 0 30px;
     border-bottom: 1px solid var(--border);
   }
 
@@ -126,16 +126,16 @@ const structuredData = {
 
   .release-header h1 {
     max-width: 780px;
-    margin: 14px 0 12px;
-    font-size: clamp(32px, 5vw, 48px);
+    margin: 12px 0 10px;
+    font-size: clamp(28px, 4.5vw, 40px);
     text-wrap: balance;
   }
 
   .release-header > p {
-    max-width: 680px;
+    max-width: 640px;
     color: var(--fg-muted);
-    font-size: 19px;
-    line-height: 1.65;
+    font-size: 16px;
+    line-height: 1.6;
     text-wrap: pretty;
   }
 
@@ -145,42 +145,44 @@ const structuredData = {
 
   .highlight {
     display: grid;
-    grid-template-columns: 48px minmax(0, 1fr);
-    gap: 18px;
-    padding: 22px 0;
+    grid-template-columns: 40px minmax(0, 1fr);
+    gap: 14px;
+    padding: 18px 0;
     border-bottom: 1px solid var(--border);
   }
 
   .highlight-number {
-    padding-top: 5px;
+    padding-top: 4px;
     color: var(--accent-bright);
     font-family: var(--font-mono);
     font-size: 11px;
   }
 
   .highlight h2 {
-    margin-bottom: 6px;
-    font-size: 22px;
-    letter-spacing: -0.02em;
+    margin-bottom: 4px;
+    font-size: 19px;
+    letter-spacing: -0.015em;
   }
 
   .highlight p {
-    max-width: 68ch;
+    max-width: 64ch;
     color: var(--fg-muted);
-    line-height: 1.65;
+    font-size: 15px;
+    line-height: 1.6;
   }
 
   .also-improved {
-    padding: 24px 0 0;
+    padding: 20px 0 0;
   }
 
   .also-improved ul {
     display: grid;
-    gap: 8px;
-    margin-top: 14px;
+    gap: 6px;
+    margin-top: 12px;
     padding-left: 20px;
     color: var(--fg-muted);
-    line-height: 1.6;
+    font-size: 15px;
+    line-height: 1.55;
   }
 
   .also-improved li::marker {
@@ -192,7 +194,7 @@ const structuredData = {
     flex-wrap: wrap;
     align-items: center;
     gap: 20px 28px;
-    margin-top: 36px;
+    margin-top: 32px;
   }
 
   .release-actions a {

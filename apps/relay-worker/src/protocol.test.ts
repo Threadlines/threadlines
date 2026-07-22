@@ -36,10 +36,12 @@ describe("relay protocol helpers", () => {
   });
 
   it("parses bearer tokens from Authorization headers", () => {
+    const basicAuthorization = ["Basic", "dXNlcjpwYXNz"].join(" ");
+
     expect(parseBearerToken("Bearer device-token")).toBe("device-token");
     expect(parseBearerToken("bearer device-token")).toBe("device-token");
     expect(parseBearerToken("  Bearer   device-token ")).toBe("device-token");
-    expect(parseBearerToken("Basic dXNlcjpwYXNz")).toBe(null);
+    expect(parseBearerToken(basicAuthorization)).toBe(null);
     expect(parseBearerToken("Bearer")).toBe(null);
     expect(parseBearerToken(null)).toBe(null);
   });

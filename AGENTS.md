@@ -33,6 +33,23 @@ If a tradeoff is required, choose correctness and robustness over short-term con
 
 Long term maintainability is a core priority. If you add new functionality, first check if there is shared logic that can be extracted to a separate module. Duplicate logic across multiple files is a code smell and should be avoided. Don't be afraid to change existing code. Don't take shortcuts by just adding local logic to solve a problem.
 
+## Design System (marketing site and web UI)
+
+Threadlines is dense and flat. When building or changing any user-facing surface:
+
+- Structure comes from typography, spacing, and hairline dividers (`--border`), not boxes.
+  Never wrap content in a bordered/rounded/filled card unless it's a clickable tile or an
+  input surface. A list of items is dividers between rows, not a stack of cards.
+- Compact type scale: one display-size element per page (~40px max), section headings
+  18–20px, body 15–16px. If a heading feels impressive, it's too big.
+- Tight vertical rhythm: list rows 16–20px padding, section gaps under 40px. If the page
+  scrolls mostly through whitespace, shrink the gaps, not the content.
+- Copy is scannable: lead with the feature name, keep descriptions to one sentence
+  (about two rendered lines). Users skim changelogs and UIs; they don't read them.
+- Hover feedback is a color shift only — no translateY lifts, scale, or shadows.
+- Reuse the existing tokens (`--border`, `--surface`, `--fg-*`, mono `--font-mono` for
+  meta labels like versions and dates). No new colors, radii, or shadows without agreement.
+
 ## Package Roles
 
 - `apps/server`: Node.js WebSocket server. Manages provider sessions (Codex, Claude, Cursor, OpenCode), serves the React web app, and owns the event-sourced orchestration core.
