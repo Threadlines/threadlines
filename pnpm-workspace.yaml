@@ -14,7 +14,7 @@ catalog:
   "@effect/platform-node-shared": 4.0.0-beta.97
   "@effect/sql-sqlite-bun": 4.0.0-beta.97
   "@effect/tsgo": 0.13.2
-  "@effect/vitest": 4.0.0-beta.97
+  "@effect/vitest": 4.0.0-beta.100
   "@pierre/diffs": 1.3.0-beta.9
   "@types/bun": ^1.3.11
   "@types/node": ^24.10.13
