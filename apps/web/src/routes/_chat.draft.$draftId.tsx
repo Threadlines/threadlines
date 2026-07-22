@@ -9,7 +9,7 @@ import { ChatRightPanelInlineSidebar } from "../components/ChatRightPanelInlineS
 import { useComposerDraftStore, DraftId } from "../composerDraftStore";
 import {
   closeRightPanelSearchParams,
-  isSourceControlPanelOpen,
+  isDraftSourceControlPanelOpen,
   parseDiffRouteSearch,
   stripRightPanelSearchParams,
 } from "../diffRouteSearch";
@@ -83,9 +83,7 @@ function DraftChatThreadRouteView() {
       }),
     [draftSession?.promotedTo, serverThread, serverThreadHasTurnActivity, serverThreadRef],
   );
-  const rawSourceControlOpen = isSourceControlPanelOpen(search, {
-    defaultOpen: !shouldUseSourceControlSheet,
-  });
+  const rawSourceControlOpen = isDraftSourceControlPanelOpen(search);
   const draftProjectRef = draftSession
     ? scopeProjectRef(draftSession.environmentId, draftSession.projectId)
     : null;

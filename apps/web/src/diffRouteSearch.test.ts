@@ -4,7 +4,7 @@ import {
   closeRightPanelSearchParams,
   isSourceControlPanelOpen,
   parseDiffRouteSearch,
-  preserveRightPanelSearchParamsForNavigation,
+  preserveRightPanelSearchParamsForDraftNavigation,
   stripDiffSearchParams,
   stripRightPanelSearchParams,
 } from "./diffRouteSearch";
@@ -199,21 +199,13 @@ describe("closeRightPanelSearchParams", () => {
   });
 });
 
-describe("preserveRightPanelSearchParamsForNavigation", () => {
-  it("keeps source control explicitly open while clearing diff params", () => {
+describe("preserveRightPanelSearchParamsForDraftNavigation", () => {
+  it("carries an explicit open state while clearing diff params", () => {
     expect(
-      preserveRightPanelSearchParamsForNavigation(
-        {
-          diff: "1",
-          diffMode: "workingTree",
-          sourceControl: "0",
-          sourceControlReturn: "1",
-          diffTurnId: "turn-1",
-          diffFilePath: "src/app.ts",
-          keep: "yes",
-        },
-        { sourceControlOpen: true },
-      ),
+      preserveRightPanelSearchParamsForDraftNavigation({
+        sourceControl: "1",
+        keep: "yes",
+      }),
     ).toEqual({
       keep: "yes",
       diff: undefined,
@@ -225,25 +217,38 @@ describe("preserveRightPanelSearchParamsForNavigation", () => {
     });
   });
 
-  it("keeps source control explicitly closed while clearing diff params", () => {
+  it("carries an explicit closed state", () => {
     expect(
-      preserveRightPanelSearchParamsForNavigation(
-        {
-          diff: "1",
-          diffMode: "workingTree",
-          sourceControl: "1",
-          sourceControlReturn: "1",
-          diffTurnId: "turn-1",
-          diffFilePath: "src/app.ts",
-          keep: "yes",
-        },
-        { sourceControlOpen: false },
-      ),
+      preserveRightPanelSearchParamsForDraftNavigation({
+        sourceControl: "0",
+        keep: "yes",
+      }),
     ).toEqual({
       keep: "yes",
       diff: undefined,
       diffMode: undefined,
       sourceControl: "0",
+      sourceControlReturn: undefined,
+      diffTurnId: undefined,
+      diffFilePath: undefined,
+    });
+  });
+
+  it("drops implicit state so the draft route applies its own default", () => {
+    expect(
+      preserveRightPanelSearchParamsForDraftNavigation({
+        diff: "1",
+        diffMode: "workingTree",
+        sourceControlReturn: "1",
+        diffTurnId: "turn-1",
+        diffFilePath: "src/app.ts",
+        keep: "yes",
+      }),
+    ).toEqual({
+      keep: "yes",
+      diff: undefined,
+      diffMode: undefined,
+      sourceControl: undefined,
       sourceControlReturn: undefined,
       diffTurnId: undefined,
       diffFilePath: undefined,

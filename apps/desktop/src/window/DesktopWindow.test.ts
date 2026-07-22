@@ -1,5 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -412,6 +413,76 @@ describe("DesktopWindow", () => {
         assert.isFalse(template.some((item) => item.label === "No suggestions"));
         assert.deepEqual(fakeWindow.replaceMisspelling.mock.calls, [["I've"]]);
         assert.equal(fakeWindow.webContentsFocus.mock.calls.length, 1);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("only opens the newest spelling menu when platform lookups overlap", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const firstSuggestions = yield* Deferred.make<ReadonlyArray<string>>();
+      const secondSuggestions = yield* Deferred.make<ReadonlyArray<string>>();
+      const platformSuggestionsFor = vi.fn((word: string) =>
+        Deferred.await(word === "firstt" ? firstSuggestions : secondSuggestions),
+      );
+      const popupTemplate = vi.fn((_input: ElectronMenu.ElectronMenuTemplateInput) => Effect.void);
+      const layer = makeTestLayer({
+        window: fakeWindow.window,
+        createCount,
+        mainWindow,
+        electronMenu: {
+          setApplicationMenu: () => Effect.void,
+          popupTemplate,
+          showContextMenu: () => Effect.succeed(Option.none()),
+        },
+        electronSpelling: { platformSuggestionsFor },
+      });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.handleBackendReady;
+
+        const contextMenuParams = (misspelledWord: string) =>
+          ({
+            misspelledWord,
+            dictionarySuggestions: [],
+            linkURL: "",
+            mediaType: "none",
+            editFlags: {
+              canUndo: false,
+              canRedo: false,
+              canCut: true,
+              canCopy: true,
+              canPaste: true,
+              canDelete: false,
+              canSelectAll: true,
+              canEditRichly: false,
+            },
+            frame: {} as Electron.WebFrameMain,
+            menuSourceType: "mouse",
+          }) satisfies Partial<Electron.ContextMenuParams>;
+
+        fakeWindow.emitWebContents(
+          "context-menu",
+          { preventDefault: vi.fn() },
+          contextMenuParams("firstt"),
+        );
+        fakeWindow.emitWebContents(
+          "context-menu",
+          { preventDefault: vi.fn() },
+          contextMenuParams("secondd"),
+        );
+
+        yield* Deferred.succeed(secondSuggestions, ["second"]);
+        yield* waitForMockCalls(popupTemplate);
+        assert.equal(popupTemplate.mock.calls.length, 1);
+        assert.equal(popupTemplate.mock.calls[0]?.[0].template[0]?.label, "second");
+
+        yield* Deferred.succeed(firstSuggestions, ["first"]);
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+        assert.equal(popupTemplate.mock.calls.length, 1);
       }).pipe(Effect.provide(layer));
     }),
   );

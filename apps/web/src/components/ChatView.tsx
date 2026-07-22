@@ -47,9 +47,10 @@ import { isElectron } from "../env";
 import { ensureLocalApi, readLocalApi } from "../localApi";
 import {
   closeRightPanelSearchParams,
+  isDraftSourceControlPanelOpen,
   isSourceControlPanelOpen,
   parseDiffRouteSearch,
-  preserveRightPanelSearchParamsForNavigation,
+  preserveRightPanelSearchParamsForDraftNavigation,
   stripRightPanelSearchParams,
 } from "../diffRouteSearch";
 import {
@@ -190,6 +191,7 @@ import { getComposerProviderState } from "./chat/composerProviderState";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline, type TimelineProposedPlanState } from "./chat/MessagesTimeline";
+import { DraftEmptyState } from "./chat/DraftEmptyState";
 import { ProviderModelPicker } from "./chat/ProviderModelPicker";
 import { ChatHeader, type ForkHeaderContext } from "./chat/ChatHeader";
 import type { ThreadBackgroundRunItem } from "./chat/ThreadActivityPopover";
@@ -1261,19 +1263,17 @@ export default function ChatView(props: ChatViewProps) {
     composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE;
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
-  const sourceControlOpen = isSourceControlPanelOpen(rawSearch, {
-    defaultOpen: !shouldUseRightPanelSheet,
-  });
+  // Mirror the owning route's panel default: server threads open on wide
+  // viewports, drafts stay closed until explicitly opened.
+  const sourceControlOpen =
+    routeKind === "server"
+      ? isSourceControlPanelOpen(rawSearch, { defaultOpen: !shouldUseRightPanelSheet })
+      : isDraftSourceControlPanelOpen(rawSearch);
   // The diff panel is a drill-in of source control, so the header toggle
   // treats the right panel as one unit: it stays pressed while a diff is
   // open and pressing it closes the whole panel.
   const diffPanelOpen = rawSearch.diff === "1";
   const rightPanelEngaged = sourceControlOpen || diffPanelOpen;
-  const preserveRightPanelSearchForDraftNavigation = useCallback(
-    (previous: Record<string, unknown>) =>
-      preserveRightPanelSearchParamsForNavigation(previous, { sourceControlOpen }),
-    [sourceControlOpen],
-  );
   const activeThreadId = activeThread?.id ?? null;
   const activeThreadRef = useMemo(
     () => (activeThread ? scopeThreadRef(activeThread.environmentId, activeThread.id) : null),
@@ -1323,6 +1323,34 @@ export default function ChatView(props: ChatViewProps) {
   // General Chat threads run in a hidden scratch workspace: source-control,
   // scripts, and open-in affordances stay hidden even though a project exists.
   const isGeneralChatThread = activeProject?.kind === "general-chat";
+  const insertDraftStarterPrompt = useCallback(
+    (text: string) => {
+      setComposerDraftPrompt(composerDraftTarget, text);
+      window.requestAnimationFrame(() => {
+        composerRef.current?.focusAtEnd();
+      });
+    },
+    [composerDraftTarget, composerRef, setComposerDraftPrompt],
+  );
+  const draftTimelineEmptyState = useMemo(
+    () =>
+      isLocalDraftThread && draftThread ? (
+        <DraftEmptyState
+          currentProjectRef={scopeProjectRef(draftThread.environmentId, draftThread.projectId)}
+          currentProjectName={activeProject?.name ?? null}
+          isGeneralChat={isGeneralChatThread}
+          onInsertPrompt={insertDraftStarterPrompt}
+        />
+      ) : undefined,
+    [
+      activeProject?.name,
+      draftThread?.environmentId,
+      draftThread?.projectId,
+      insertDraftStarterPrompt,
+      isGeneralChatThread,
+      isLocalDraftThread,
+    ],
+  );
 
   const shouldRetainThreadDetailSubscription = routeKind === "server" || serverThread !== undefined;
   useEffect(() => {
@@ -1503,7 +1531,7 @@ export default function ChatView(props: ChatViewProps) {
           await navigate({
             to: "/draft/$draftId",
             params: buildDraftThreadRouteParams(storedDraftSession.draftId),
-            search: preserveRightPanelSearchForDraftNavigation,
+            search: preserveRightPanelSearchParamsForDraftNavigation,
           });
         }
         return storedDraftSession.threadId;
@@ -1538,7 +1566,7 @@ export default function ChatView(props: ChatViewProps) {
       await navigate({
         to: "/draft/$draftId",
         params: buildDraftThreadRouteParams(nextDraftId),
-        search: preserveRightPanelSearchForDraftNavigation,
+        search: preserveRightPanelSearchParamsForDraftNavigation,
       });
       return nextThreadId;
     },
@@ -1549,7 +1577,6 @@ export default function ChatView(props: ChatViewProps) {
       getDraftSessionByLogicalProjectKey,
       isServerThread,
       navigate,
-      preserveRightPanelSearchForDraftNavigation,
       projectGroupingSettings,
       routeKind,
       setDraftThreadContext,
@@ -3764,9 +3791,13 @@ export default function ChatView(props: ChatViewProps) {
     setIsRevertingCheckpoint(false);
   }, [activeThread?.id]);
 
+  // Pristine drafts (the home surface) open without stealing focus; the
+  // composer takes focus once a conversation exists or via an explicit action.
+  const skipEntryComposerFocus = isLocalDraftThread && (activeThread?.messages.length ?? 0) === 0;
   useEffect(() => {
     if (
       !activeThread?.id ||
+      skipEntryComposerFocus ||
       timelineSearchTargetRef.current ||
       terminalState.terminalOpen ||
       isCoarsePointer
@@ -3779,7 +3810,13 @@ export default function ChatView(props: ChatViewProps) {
     return () => {
       window.cancelAnimationFrame(frame);
     };
-  }, [activeThread?.id, focusComposer, isCoarsePointer, terminalState.terminalOpen]);
+  }, [
+    activeThread?.id,
+    focusComposer,
+    isCoarsePointer,
+    skipEntryComposerFocus,
+    terminalState.terminalOpen,
+  ]);
 
   useEffect(() => {
     if (!activeThread?.id) return;
@@ -6058,6 +6095,7 @@ export default function ChatView(props: ChatViewProps) {
             {/* Messages — LegendList handles virtualization and scrolling internally */}
             <MessagesTimeline
               key={activeThread.id}
+              emptyState={draftTimelineEmptyState}
               isWorking={isWorking}
               activeStatusLabel={activeStatusLabel}
               activeTurnInProgress={isWorking || !latestTurnSettled}

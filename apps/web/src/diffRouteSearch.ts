@@ -107,13 +107,17 @@ export function closeRightPanelSearchParams<T extends Record<string, unknown>>(p
   };
 }
 
-export function preserveRightPanelSearchParamsForNavigation<T extends Record<string, unknown>>(
+/**
+ * Navigating into a draft carries only explicit panel state (`sourceControl`
+ * set to "1" or "0" by a user toggle or deep link). Implicit defaults are not
+ * baked into the URL; the destination route applies its own default.
+ */
+export function preserveRightPanelSearchParamsForDraftNavigation<T extends Record<string, unknown>>(
   params: T,
-  options: { sourceControlOpen: boolean },
 ) {
-  return options.sourceControlOpen
-    ? { ...stripRightPanelSearchParams(params), sourceControl: "1" as const }
-    : closeRightPanelSearchParams(params);
+  const { sourceControl } = parseDiffRouteSearch(params);
+  const stripped = stripRightPanelSearchParams(params);
+  return sourceControl ? { ...stripped, sourceControl } : stripped;
 }
 
 export function isSourceControlPanelOpen(
@@ -127,6 +131,16 @@ export function isSourceControlPanelOpen(
     return true;
   }
   return options.defaultOpen ?? true;
+}
+
+/**
+ * Drafts start with the source-control panel closed: a pristine thread has no
+ * turn activity to review, and the home/new-thread surface should read as a
+ * clean page. Only explicit `sourceControl=1` opens it; the wide-viewport
+ * default that applies to server threads does not.
+ */
+export function isDraftSourceControlPanelOpen(search: DiffRouteSearch): boolean {
+  return isSourceControlPanelOpen(search, { defaultOpen: false });
 }
 
 export function parseDiffRouteSearch(search: Record<string, unknown>): DiffRouteSearch {

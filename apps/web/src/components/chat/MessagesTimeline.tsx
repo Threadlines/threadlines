@@ -484,6 +484,7 @@ function revealTimelineSearchMatch(
 // ---------------------------------------------------------------------------
 
 interface MessagesTimelineProps {
+  emptyState?: ReactNode;
   isWorking: boolean;
   activeStatusLabel?: string | undefined;
   activeTurnInProgress: boolean;
@@ -541,6 +542,7 @@ interface MessagesTimelineProps {
 // ---------------------------------------------------------------------------
 
 export const MessagesTimeline = memo(function MessagesTimeline({
+  emptyState,
   isWorking,
   activeStatusLabel,
   activeTurnInProgress,
@@ -1189,6 +1191,15 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   );
 
   if (rows.length === 0 && !isWorking) {
+    if (emptyState) {
+      return (
+        <div className="h-full overflow-y-auto overscroll-y-contain">
+          <div className="flex min-h-full flex-col items-center justify-center px-4 py-8">
+            {emptyState}
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="flex h-full items-center justify-center">
         <p className="text-sm text-muted-foreground/30">
